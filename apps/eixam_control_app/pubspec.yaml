@@ -1,0 +1,17 @@
+name: eixam_control_app
+description: Reference app for EIXAM Connect SDK
+version: 0.1.0
+publish_to: 'none'
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  eixam_connect_core:
+    path: ../../packages/eixam_connect_core
+  eixam_connect_flutter:
+    path: ../../packages/eixam_connect_flutter
+  eixam_connect_ui:
+    path: ../../packages/eixam_connect_ui
+flutter:
+  uses-material-design: true

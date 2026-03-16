@@ -1,0 +1,71 @@
+import '../config/eixam_sdk_config.dart';
+import '../config/eixam_session.dart';
+import '../entities/death_man_plan.dart';
+import '../entities/device_status.dart';
+import '../entities/emergency_contact.dart';
+import '../entities/permission_state.dart';
+import '../entities/sos_incident.dart';
+import '../entities/tracking_position.dart';
+import '../enums/sos_state.dart';
+import '../enums/tracking_state.dart';
+import '../events/eixam_sdk_event.dart';
+
+/// Public SDK contract consumed by host apps.
+abstract class EixamConnectSdk {
+  Future<void> initialize(EixamSdkConfig config);
+  Future<void> setSession(EixamSession session);
+  Future<void> clearSession();
+
+  Future<DeviceStatus> pairDevice({required String pairingCode});
+  Future<DeviceStatus> activateDevice({required String activationCode});
+  Future<DeviceStatus> getDeviceStatus();
+  Future<DeviceStatus> refreshDeviceStatus();
+  Future<void> unpairDevice();
+  Stream<DeviceStatus> watchDeviceStatus();
+
+  Future<PermissionState> getPermissionState();
+  Future<PermissionState> requestLocationPermission();
+  Future<PermissionState> requestNotificationPermission();
+  Future<PermissionState> requestBluetoothPermission();
+
+  Future<void> initializeNotifications();
+  Future<void> showLocalNotification({required String title, required String body});
+
+  Future<void> startTracking();
+  Future<void> stopTracking();
+  Future<TrackingPosition?> getCurrentPosition();
+  Future<TrackingState> getTrackingState();
+  Stream<TrackingPosition> watchPositions();
+  Stream<TrackingState> watchTrackingState();
+
+  Future<SosIncident> triggerSos({String? message, String triggerSource = 'button_ui'});
+  Future<SosIncident> cancelSos({String? reason});
+  Future<SosState> getSosState();
+  Stream<SosState> watchSosState();
+
+  Future<List<EmergencyContact>> listEmergencyContacts();
+  Stream<List<EmergencyContact>> watchEmergencyContacts();
+  Future<EmergencyContact> addEmergencyContact({
+    required String name,
+    String? phone,
+    String? email,
+    int priority = 1,
+    bool active = true,
+  });
+  Future<EmergencyContact> updateEmergencyContact(EmergencyContact contact);
+  Future<void> setEmergencyContactActive(String contactId, bool active);
+  Future<void> removeEmergencyContact(String contactId);
+
+  Future<DeathManPlan> scheduleDeathMan({
+    required DateTime expectedReturnAt,
+    Duration gracePeriod = const Duration(minutes: 30),
+    Duration checkInWindow = const Duration(minutes: 10),
+    bool autoTriggerSos = true,
+  });
+  Future<DeathManPlan?> getActiveDeathManPlan();
+  Future<void> confirmDeathManCheckIn(String planId);
+  Future<void> cancelDeathMan(String planId);
+  Stream<DeathManPlan> watchDeathManPlans();
+
+  Stream<EixamSdkEvent> watchEvents();
+}
