@@ -1,4 +1,4 @@
-/// DTO representation of an SOS incident returned by the backend layer.
+//// DTO representation of an SOS incident returned by the backend layer.
 class SosIncidentDto {
   final String id;
   final String state;
