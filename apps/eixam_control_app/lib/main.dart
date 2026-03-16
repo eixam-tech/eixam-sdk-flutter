@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
+import 'package:eixam_connect_core/src/events/realtime_event.dart';
 import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
 import 'package:eixam_connect_ui/eixam_connect_ui.dart';
 import 'package:flutter/material.dart';
@@ -209,6 +211,8 @@ class _DemoHomePageState extends State<DemoHomePage> {
   DeviceStatus? _deviceStatus;
   DeathManPlan? _activeDeathManPlan;
   List<EmergencyContact> _contacts = <EmergencyContact>[];
+  RealtimeConnectionState? _realtimeConnectionState;
+  RealtimeEvent? _lastRealtimeEvent;
   String? _lastError;
 
   StreamSubscription<TrackingPosition>? _positionSub;
@@ -217,6 +221,8 @@ class _DemoHomePageState extends State<DemoHomePage> {
   StreamSubscription<DeviceStatus>? _deviceStatusSub;
   StreamSubscription<DeathManPlan>? _deathManSub;
   StreamSubscription<List<EmergencyContact>>? _contactsSub;
+  StreamSubscription<RealtimeConnectionState>? _realtimeConnectionSub;
+  StreamSubscription<RealtimeEvent>? _realtimeEventsSub;
 
   bool _loadingPermissions = false;
   bool _loadingTracking = false;
@@ -291,6 +297,26 @@ class _DemoHomePageState extends State<DemoHomePage> {
         if (!mounted) return;
         setState(() {
           _contacts = contacts;
+        });
+      },
+      onError: _handleStreamError,
+    );
+
+    _realtimeConnectionSub = sdk.watchRealtimeConnectionState().listen(
+      (state) {
+        if (!mounted) return;
+        setState(() {
+          _realtimeConnectionState = state;
+        });
+      },
+      onError: _handleStreamError,
+    );
+
+    _realtimeEventsSub = sdk.watchRealtimeEvents().listen(
+      (event) {
+        if (!mounted) return;
+        setState(() {
+          _lastRealtimeEvent = event;
         });
       },
       onError: _handleStreamError,
@@ -885,6 +911,8 @@ class _DemoHomePageState extends State<DemoHomePage> {
     _deviceStatusSub?.cancel();
     _deathManSub?.cancel();
     _contactsSub?.cancel();
+    _realtimeConnectionSub?.cancel();
+    _realtimeEventsSub?.cancel();
     super.dispose();
   }
 
@@ -894,6 +922,31 @@ class _DemoHomePageState extends State<DemoHomePage> {
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          _SectionCard(
+            title: 'Realtime',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _InfoLine(
+                  label: 'Connection state',
+                  value: _realtimeConnectionState?.name ?? 'Unknown',
+                ),
+                _InfoLine(
+                  label: 'Last event type',
+                  value: _lastRealtimeEvent?.type ?? '-',
+                ),
+                _InfoLine(
+                  label: 'Last event timestamp',
+                  value: _lastRealtimeEvent?.timestamp.toIso8601String() ?? '-',
+                ),
+                _InfoLine(
+                  label: 'Last event payload',
+                  value: _lastRealtimeEvent?.payload.toString() ?? '-',
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
           _SectionCard(
             title: 'Permissions',
             child: Column(
@@ -1341,3 +1394,4 @@ class _InfoLine extends StatelessWidget {
     );
   }
 }
+

@@ -6,9 +6,11 @@ import '../entities/emergency_contact.dart';
 import '../entities/permission_state.dart';
 import '../entities/sos_incident.dart';
 import '../entities/tracking_position.dart';
+import '../enums/realtime_connection_state.dart';
 import '../enums/sos_state.dart';
 import '../enums/tracking_state.dart';
 import '../events/eixam_sdk_event.dart';
+import '../events/realtime_event.dart';
 
 /// Public SDK contract consumed by host apps.
 abstract class EixamConnectSdk {
@@ -29,7 +31,10 @@ abstract class EixamConnectSdk {
   Future<PermissionState> requestBluetoothPermission();
 
   Future<void> initializeNotifications();
-  Future<void> showLocalNotification({required String title, required String body});
+  Future<void> showLocalNotification({
+    required String title,
+    required String body,
+  });
 
   Future<void> startTracking();
   Future<void> stopTracking();
@@ -38,7 +43,10 @@ abstract class EixamConnectSdk {
   Stream<TrackingPosition> watchPositions();
   Stream<TrackingState> watchTrackingState();
 
-  Future<SosIncident> triggerSos({String? message, String triggerSource = 'button_ui'});
+  Future<SosIncident> triggerSos({
+    String? message,
+    String triggerSource = 'button_ui',
+  });
   Future<SosIncident> cancelSos({String? reason});
   Future<SosState> getSosState();
   Stream<SosState> watchSosState();
@@ -68,4 +76,10 @@ abstract class EixamConnectSdk {
   Stream<DeathManPlan> watchDeathManPlans();
 
   Stream<EixamSdkEvent> watchEvents();
+
+  /// Realtime transport connection lifecycle.
+  Stream<RealtimeConnectionState> watchRealtimeConnectionState();
+
+  /// Raw realtime events received by the SDK transport layer.
+  Stream<RealtimeEvent> watchRealtimeEvents();
 }
