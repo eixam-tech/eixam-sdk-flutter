@@ -77,7 +77,13 @@ abstract class EixamConnectSdk {
 
   Stream<EixamSdkEvent> watchEvents();
 
-  /// Realtime transport connection lifecycle.
+  /// Returns the last known realtime transport connection state.
+  Future<RealtimeConnectionState> getRealtimeConnectionState();
+
+  /// Returns the last realtime event received by the SDK, if any.
+  Future<RealtimeEvent?> getLastRealtimeEvent();
+
+  /// Realtime transport connection lifecycle stream.
   Stream<RealtimeConnectionState> watchRealtimeConnectionState();
 
   /// Raw realtime events received by the SDK transport layer.

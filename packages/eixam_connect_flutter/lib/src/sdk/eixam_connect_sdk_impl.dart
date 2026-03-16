@@ -39,6 +39,10 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
   bool _deathManCheckInNotified = false;
   bool _deathManOverdueNotified = false;
 
+  RealtimeConnectionState _lastRealtimeConnectionState =
+      RealtimeConnectionState.disconnected;
+  RealtimeEvent? _lastRealtimeEvent;
+
   EixamConnectSdkImpl({
     required this.sosRepository,
     required this.trackingRepository,
@@ -63,6 +67,7 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
 
     _realtimeConnectionSub = realtimeClient.watchConnectionState().listen(
       (state) {
+        _lastRealtimeConnectionState = state;
         _realtimeConnectionStateController.add(state);
       },
       onError: (Object error) {
@@ -72,6 +77,7 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
 
     _realtimeEventsSub = realtimeClient.watchEvents().listen(
       (event) {
+        _lastRealtimeEvent = event;
         _realtimeEventsController.add(event);
       },
       onError: (Object error) {
@@ -322,6 +328,16 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
   @override
   Stream<EixamSdkEvent> watchEvents() {
     return _eventsController.stream;
+  }
+
+  @override
+  Future<RealtimeConnectionState> getRealtimeConnectionState() async {
+    return _lastRealtimeConnectionState;
+  }
+
+  @override
+  Future<RealtimeEvent?> getLastRealtimeEvent() async {
+    return _lastRealtimeEvent;
   }
 
   @override
