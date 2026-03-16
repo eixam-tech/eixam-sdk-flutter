@@ -339,6 +339,8 @@ class _DemoHomePageState extends State<DemoHomePage> {
       final deviceStatus = await sdk.getDeviceStatus();
       final deathManPlan = await sdk.getActiveDeathManPlan();
       final contacts = await sdk.listEmergencyContacts();
+      final realtimeConnectionState = await sdk.getRealtimeConnectionState();
+      final lastRealtimeEvent = await sdk.getLastRealtimeEvent();
 
       if (!mounted) return;
 
@@ -350,6 +352,8 @@ class _DemoHomePageState extends State<DemoHomePage> {
         _deviceStatus = deviceStatus;
         _activeDeathManPlan = deathManPlan;
         _contacts = contacts;
+        _realtimeConnectionState = realtimeConnectionState;
+        _lastRealtimeEvent = lastRealtimeEvent;
       });
     } catch (e) {
       if (!mounted) return;
