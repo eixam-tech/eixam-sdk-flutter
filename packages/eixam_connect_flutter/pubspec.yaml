@@ -14,3 +14,4 @@ dependencies:
   permission_handler: ^11.3.1
   flutter_local_notifications: ^17.2.3
   shared_preferences: ^2.3.2
+  flutter_blue_plus: ^1.35.5

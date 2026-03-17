@@ -10,6 +10,7 @@ import '../data/repositories/local_notifications_repository.dart';
 import '../data/repositories/platform_permissions_repository.dart';
 import '../device/ble_device_runtime_provider.dart';
 import '../device/mock_ble_client.dart';
+import '../device/real_ble_client.dart';
 import 'eixam_connect_sdk_impl.dart';
 import 'mock_realtime_client.dart';
 
@@ -46,8 +47,12 @@ class DemoSdkFactory {
       localStore: store,
     );
 
-    final bleClient = MockBleClient();
-    await bleClient.initialize();
+   final bleClient = RealBleClient();
+    try {
+      await bleClient.initialize();
+    } catch (_) {
+        // no tombis l'app al bootstrap
+    }
 
     final deviceRepository = InMemoryDeviceRepository(
       runtimeProvider: BleDeviceRuntimeProvider(bleClient: bleClient),

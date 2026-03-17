@@ -114,10 +114,22 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     );
   }
 
-  BleScanResult? _pickBestCandidate(List<BleScanResult> scanResults) {
+  /*BleScanResult? _pickBestCandidate(List<BleScanResult> scanResults) {
     if (scanResults.isEmpty) return null;
     final sorted = [...scanResults]..sort((a, b) => b.rssi.compareTo(a.rssi));
     return sorted.first;
+  }*/
+
+  BleScanResult? _pickBestCandidate(List<BleScanResult> scanResults) {
+  final compatible = scanResults.where((d) {
+    final name = d.name.toLowerCase();
+    return name.contains('eixam') || name.contains('wismesh') || name.contains('rak');
+  }).toList();
+
+  if (compatible.isEmpty) return null;
+
+  compatible.sort((a, b) => b.rssi.compareTo(a.rssi));
+  return compatible.first;
   }
 
   Future<bool> _resolveConnection(String deviceId) async {
@@ -130,5 +142,16 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     if (!currentStatus.activated) return DeviceLifecycleState.paired;
     if (connected) return DeviceLifecycleState.ready;
     return DeviceLifecycleState.activated;
+  }
+
+    @override
+  Future<Stream<List<int>>> subscribeNotifications(String deviceId) async {
+   final connected = await _bleClient.isConnected(deviceId);
+    if (!connected) {
+      throw Exception('Device not connected: $deviceId');
+    }
+
+    // Mock buit de moment
+    return const Stream<List<int>>.empty();
   }
 }

@@ -85,4 +85,23 @@ class MockBleClient implements BleClient {
   Future<void> dispose() async {
     await _adapterController.close();
   }
+
+  @override
+Future<void> writeCommand(String deviceId, List<int> data) async {
+  if (!_connectedDeviceIds.contains(deviceId)) {
+    throw Exception('Device not connected: $deviceId');
+  }
+
+  // Mock sense efecte real. Si vols, aquí pots simular respostes.
+}
+
+  @override
+  Future<Stream<List<int>>> subscribeNotifications(String deviceId) async {
+    if (!_connectedDeviceIds.contains(deviceId)) {
+      throw Exception('Device not connected: $deviceId');
+    }
+
+    // Mock buit de moment
+    return const Stream<List<int>>.empty();
+  }
 }

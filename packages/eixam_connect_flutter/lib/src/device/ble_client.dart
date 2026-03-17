@@ -19,4 +19,8 @@ abstract class BleClient {
   Future<int?> readBatteryLevel(String deviceId);
   Future<int?> readSignalQuality(String deviceId);
   Future<String?> readFirmwareVersion(String deviceId);
+
+  Future<void> writeCommand(String deviceId, List<int> data);
+  Future<Stream<List<int>>> subscribeNotifications(String deviceId);
 }
+  
