@@ -2,41 +2,53 @@ import 'dart:async';
 
 import 'package:async/async.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:flutter/foundation.dart';
 
 import 'ble_adapter_state.dart';
 import 'ble_client.dart';
+import 'ble_debug_registry.dart';
 import 'ble_scan_result.dart';
 
 class RealBleClient implements BleClient {
   final Map<String, BluetoothDevice> _devices = {};
   final Map<String, List<BluetoothService>> _servicesCache = {};
+  StreamSubscription<BluetoothAdapterState>? _adapterStateSub;
 
-  static final Guid eixamServiceUuid =
-      Guid('6ba1b218-15a8-461f-9fa8-5dcae273ea00');
+  static final Guid eixamServiceUuid = Guid(
+    '6ba1b218-15a8-461f-9fa8-5dcae273ea00',
+  );
 
-  static final Guid telNotifyCharUuid =
-      Guid('6ba1b218-15a8-461f-9fa8-5dcae273ea01');
+  static final Guid telNotifyCharUuid = Guid(
+    '6ba1b218-15a8-461f-9fa8-5dcae273ea01',
+  );
 
-  static final Guid sosNotifyCharUuid =
-      Guid('6ba1b218-15a8-461f-9fa8-5dcae273ea02');
+  static final Guid sosNotifyCharUuid = Guid(
+    '6ba1b218-15a8-461f-9fa8-5dcae273ea02',
+  );
 
-  static final Guid inetWriteCharUuid =
-      Guid('6ba1b218-15a8-461f-9fa8-5dcae273ea03');
+  static final Guid inetWriteCharUuid = Guid(
+    '6ba1b218-15a8-461f-9fa8-5dcae273ea03',
+  );
 
-  static final Guid cmdWriteCharUuid =
-      Guid('6ba1b218-15a8-461f-9fa8-5dcae273ea04');
+  static final Guid cmdWriteCharUuid = Guid(
+    '6ba1b218-15a8-461f-9fa8-5dcae273ea04',
+  );
 
-  static final Guid batteryServiceUuid =
-      Guid('0000180F-0000-1000-8000-00805F9B34FB');
+  static final Guid batteryServiceUuid = Guid(
+    '0000180F-0000-1000-8000-00805F9B34FB',
+  );
 
-  static final Guid batteryLevelCharUuid =
-      Guid('00002A19-0000-1000-8000-00805F9B34FB');
+  static final Guid batteryLevelCharUuid = Guid(
+    '00002A19-0000-1000-8000-00805F9B34FB',
+  );
 
-  static final Guid deviceInfoServiceUuid =
-      Guid('0000180A-0000-1000-8000-00805F9B34FB');
+  static final Guid deviceInfoServiceUuid = Guid(
+    '0000180A-0000-1000-8000-00805F9B34FB',
+  );
 
-  static final Guid firmwareRevisionCharUuid =
-      Guid('00002A26-0000-1000-8000-00805F9B34FB');
+  static final Guid firmwareRevisionCharUuid = Guid(
+    '00002A26-0000-1000-8000-00805F9B34FB',
+  );
 
   bool _initialized = false;
 
@@ -45,19 +57,35 @@ class RealBleClient implements BleClient {
     if (await FlutterBluePlus.isSupported == false) {
       throw Exception('BLE no suportat en aquest dispositiu');
     }
+    _adapterStateSub?.cancel();
+    _adapterStateSub = FlutterBluePlus.adapterState.listen((state) {
+      final mapped = _mapAdapterState(state);
+      BleDebugRegistry.instance.update(adapterState: mapped);
+      _log('BLE adapter -> $mapped');
+    });
+    BleDebugRegistry.instance.update(
+      adapterState: _mapAdapterState(FlutterBluePlus.adapterStateNow),
+    );
+    BleDebugRegistry.instance.recordEvent('Real BLE client initialized');
     _initialized = true;
   }
 
   @override
   Future<BleAdapterState> getAdapterState() async {
     _ensureInitialized();
-    return _mapAdapterState(FlutterBluePlus.adapterStateNow);
+    final state = _mapAdapterState(FlutterBluePlus.adapterStateNow);
+    BleDebugRegistry.instance.update(adapterState: state);
+    return state;
   }
 
   @override
   Stream<BleAdapterState> watchAdapterState() {
     _ensureInitialized();
-    return FlutterBluePlus.adapterState.map(_mapAdapterState);
+    return FlutterBluePlus.adapterState.map((state) {
+      final mapped = _mapAdapterState(state);
+      BleDebugRegistry.instance.update(adapterState: mapped);
+      return mapped;
+    });
   }
 
   @override
@@ -76,10 +104,10 @@ class RealBleClient implements BleClient {
         final name = r.advertisementData.advName.isNotEmpty
             ? r.advertisementData.advName
             : (r.device.platformName.isNotEmpty
-                ? r.device.platformName
-                : 'Unknown');
+                  ? r.device.platformName
+                  : 'Unknown');
 
-        print(
+        _log(
           'BLE scan -> id=$id name="$name" rssi=${r.rssi} '
           'connectable=${r.advertisementData.connectable} '
           'serviceUuids=${r.advertisementData.serviceUuids}',
@@ -106,6 +134,9 @@ class RealBleClient implements BleClient {
 
     final results = deduped.values.toList()
       ..sort((a, b) => b.rssi.compareTo(a.rssi));
+    BleDebugRegistry.instance.recordEvent(
+      'BLE scan completed with ${results.length} connectable candidate(s)',
+    );
 
     return results;
   }
@@ -118,6 +149,12 @@ class RealBleClient implements BleClient {
     if (device == null) {
       throw Exception('Dispositiu no trobat: $deviceId');
     }
+    BleDebugRegistry.instance.update(
+      selectedDeviceId: deviceId,
+      telNotifySubscribed: false,
+      sosNotifySubscribed: false,
+    );
+    BleDebugRegistry.instance.recordEvent('Connecting to $deviceId');
 
     final connectionState = await device.connectionState.first;
     if (connectionState != BluetoothConnectionState.connected) {
@@ -127,11 +164,17 @@ class RealBleClient implements BleClient {
     final services = await device.discoverServices();
     _servicesCache[deviceId] = services;
 
-    print('BLE connect -> deviceId=$deviceId services=${services.length}');
+    BleDebugRegistry.instance.update(
+      discoveredServices: services.map((service) => service.uuid.str).toList(),
+    );
+    BleDebugRegistry.instance.registerCommandWriter(
+      (data) => writeCommand(deviceId, data),
+    );
+    _log('BLE connect -> deviceId=$deviceId services=${services.length}');
     for (final s in services) {
-      print('Service: ${s.uuid}');
+      _log('Service: ${s.uuid}');
       for (final c in s.characteristics) {
-        print(
+        _log(
           '  Characteristic: ${c.uuid} '
           'read=${c.properties.read} '
           'write=${c.properties.write} '
@@ -151,6 +194,13 @@ class RealBleClient implements BleClient {
       await device.disconnect();
     }
     _servicesCache.remove(deviceId);
+    BleDebugRegistry.instance.clearCommandWriter();
+    BleDebugRegistry.instance.update(
+      telNotifySubscribed: false,
+      sosNotifySubscribed: false,
+      commandWriterReady: false,
+    );
+    BleDebugRegistry.instance.recordEvent('Disconnected from $deviceId');
   }
 
   @override
@@ -214,24 +264,29 @@ class RealBleClient implements BleClient {
       throw Exception('Command payload cannot be empty');
     }
 
-    final Guid targetUuid =
-        data.length <= 4 ? inetWriteCharUuid : cmdWriteCharUuid;
+    final Guid targetUuid = data.length <= 4
+        ? inetWriteCharUuid
+        : cmdWriteCharUuid;
 
-    final c = await _findCharacteristic(
-      deviceId,
-      eixamServiceUuid,
-      targetUuid,
-    );
+    final c = await _findCharacteristic(deviceId, eixamServiceUuid, targetUuid);
 
     if (c == null) {
       throw Exception('EIXAM write characteristic not found');
     }
 
+    final payload = _hex(data);
+    _log(
+      'BLE write -> deviceId=$deviceId target=${targetUuid.str} payload=$payload',
+    );
     if (c.properties.writeWithoutResponse) {
       await c.write(data, withoutResponse: true);
     } else {
       await c.write(data, withoutResponse: false);
     }
+    BleDebugRegistry.instance.update(lastCommandSent: payload);
+    BleDebugRegistry.instance.recordEvent(
+      'Command written to $deviceId (${data.length} bytes)',
+    );
   }
 
   @override
@@ -253,11 +308,29 @@ class RealBleClient implements BleClient {
 
     await tel.setNotifyValue(true);
     await sos.setNotifyValue(true);
+    BleDebugRegistry.instance.update(
+      telNotifySubscribed: true,
+      sosNotifySubscribed: true,
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'Notify subscription enabled for $deviceId',
+    );
+    _log(
+      'BLE notify subscribe -> deviceId=$deviceId tel=${tel.uuid.str} sos=${sos.uuid.str}',
+    );
 
     final telStream = tel.lastValueStream.map((v) => v.toList());
     final sosStream = sos.lastValueStream.map((v) => v.toList());
 
-    return StreamGroup.merge([telStream, sosStream]);
+    return StreamGroup.merge([telStream, sosStream]).map((packet) {
+      final payload = _hex(packet);
+      BleDebugRegistry.instance.update(lastPacketReceived: payload);
+      BleDebugRegistry.instance.recordEvent(
+        'Notify packet received from $deviceId (${packet.length} bytes)',
+      );
+      _log('BLE notify packet -> deviceId=$deviceId payload=$payload');
+      return packet;
+    });
   }
 
   @override
@@ -273,6 +346,10 @@ class RealBleClient implements BleClient {
     }
 
     if (eixamService == null) {
+      BleDebugRegistry.instance.update(eixamServiceFound: false);
+      BleDebugRegistry.instance.recordEvent(
+        'Compatibility check failed for $deviceId: EIXAM service not found',
+      );
       return false;
     }
 
@@ -280,6 +357,7 @@ class RealBleClient implements BleClient {
     bool hasSos = false;
     bool hasInet = false;
     bool hasCmd = false;
+    BleDebugRegistry.instance.update(eixamServiceFound: true);
 
     for (final c in eixamService.characteristics) {
       if (c.uuid == telNotifyCharUuid) hasTel = true;
@@ -288,7 +366,13 @@ class RealBleClient implements BleClient {
       if (c.uuid == cmdWriteCharUuid) hasCmd = true;
     }
 
-    return hasTel && hasSos && hasInet && hasCmd;
+    final compatible = hasTel && hasSos && hasInet && hasCmd;
+    BleDebugRegistry.instance.recordEvent(
+      compatible
+          ? 'Compatibility check passed for $deviceId'
+          : 'Compatibility check failed for $deviceId: missing required characteristics',
+    );
+    return compatible;
   }
 
   Future<List<BluetoothService>> _services(String deviceId) async {
@@ -329,6 +413,14 @@ class RealBleClient implements BleClient {
     if (!_initialized) {
       throw Exception('RealBleClient not initialized');
     }
+  }
+
+  void _log(String message) {
+    debugPrint(message);
+  }
+
+  String _hex(List<int> data) {
+    return data.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join(' ');
   }
 
   BleAdapterState _mapAdapterState(BluetoothAdapterState state) {

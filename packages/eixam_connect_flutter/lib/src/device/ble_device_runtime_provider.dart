@@ -1,7 +1,11 @@
+import 'dart:async';
+
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:flutter/foundation.dart';
 
 import 'ble_adapter_state.dart';
 import 'ble_client.dart';
+import 'ble_debug_registry.dart';
 import 'ble_scan_result.dart';
 import 'device_runtime_provider.dart';
 
@@ -13,10 +17,11 @@ import 'device_runtime_provider.dart';
 /// require changes in the repository or in the public SDK contract.
 class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   BleDeviceRuntimeProvider({required BleClient bleClient})
-      : _bleClient = bleClient;
+    : _bleClient = bleClient;
 
   final BleClient _bleClient;
   String? _connectedDeviceId;
+  StreamSubscription<List<int>>? _notificationSubscription;
 
   @override
   Future<DeviceStatus> pair({
@@ -44,19 +49,34 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     }
 
     final candidates = _sortCandidates(scanResults);
+    BleDebugRegistry.instance.recordEvent(
+      'Pairing will evaluate ${candidates.length} BLE candidate(s)',
+    );
 
     for (final candidate in candidates) {
       try {
+        _log(
+          'BLE pair candidate -> id=${candidate.deviceId} name=${candidate.name} rssi=${candidate.rssi}',
+        );
+        BleDebugRegistry.instance.update(selectedDeviceId: candidate.deviceId);
+        BleDebugRegistry.instance.recordEvent(
+          'Selected BLE candidate ${candidate.deviceId} (${candidate.name})',
+        );
         await _bleClient.connect(candidate.deviceId);
 
-        final compatible =
-            await _bleClient.isEixamCompatible(candidate.deviceId);
+        final compatible = await _bleClient.isEixamCompatible(
+          candidate.deviceId,
+        );
         if (!compatible) {
           await _bleClient.disconnect(candidate.deviceId);
           continue;
         }
 
         _connectedDeviceId = candidate.deviceId;
+        await _bindNotifications(candidate.deviceId);
+        BleDebugRegistry.instance.recordEvent(
+          'Pairing succeeded for ${candidate.deviceId}',
+        );
 
         return currentStatus.copyWith(
           deviceId: candidate.deviceId,
@@ -66,10 +86,10 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
           connected: true,
           lifecycleState: DeviceLifecycleState.paired,
           batteryLevel: await _bleClient.readBatteryLevel(candidate.deviceId),
-          firmwareVersion:
-              await _bleClient.readFirmwareVersion(candidate.deviceId),
-          signalQuality:
-              await _bleClient.readSignalQuality(candidate.deviceId),
+          firmwareVersion: await _bleClient.readFirmwareVersion(
+            candidate.deviceId,
+          ),
+          signalQuality: await _bleClient.readSignalQuality(candidate.deviceId),
           lastSeen: DateTime.now(),
           lastSyncedAt: DateTime.now(),
           clearProvisioningError: true,
@@ -99,15 +119,18 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       throw const DeviceException.invalidActivationCode();
     }
 
+    BleDebugRegistry.instance.recordEvent(
+      'Activation succeeded for ${currentStatus.deviceId}',
+    );
     return currentStatus.copyWith(
       activated: true,
       connected: await _resolveConnection(currentStatus.deviceId),
       lifecycleState: DeviceLifecycleState.ready,
       batteryLevel: await _bleClient.readBatteryLevel(currentStatus.deviceId),
-      firmwareVersion:
-          await _bleClient.readFirmwareVersion(currentStatus.deviceId),
-      signalQuality:
-          await _bleClient.readSignalQuality(currentStatus.deviceId),
+      firmwareVersion: await _bleClient.readFirmwareVersion(
+        currentStatus.deviceId,
+      ),
+      signalQuality: await _bleClient.readSignalQuality(currentStatus.deviceId),
       lastSeen: DateTime.now(),
       lastSyncedAt: DateTime.now(),
       clearProvisioningError: true,
@@ -119,9 +142,13 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     if (!currentStatus.paired) return currentStatus;
 
     final adapterState = await _bleClient.getAdapterState();
-    final connected = adapterState == BleAdapterState.poweredOn &&
+    final connected =
+        adapterState == BleAdapterState.poweredOn &&
         await _resolveConnection(currentStatus.deviceId);
 
+    BleDebugRegistry.instance.recordEvent(
+      'Refreshed device status for ${currentStatus.deviceId}',
+    );
     return currentStatus.copyWith(
       connected: connected,
       batteryLevel: connected
@@ -142,10 +169,13 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
   @override
   Future<DeviceStatus> unpair(DeviceStatus currentStatus) async {
+    await _notificationSubscription?.cancel();
+    _notificationSubscription = null;
     if (_connectedDeviceId != null) {
       await _bleClient.disconnect(_connectedDeviceId!);
     }
     _connectedDeviceId = null;
+    BleDebugRegistry.instance.recordEvent('Device unpaired');
 
     return currentStatus.copyWith(
       paired: false,
@@ -168,6 +198,25 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   Future<bool> _resolveConnection(String deviceId) async {
     final id = _connectedDeviceId ?? deviceId;
     return _bleClient.isConnected(id);
+  }
+
+  Future<void> _bindNotifications(String deviceId) async {
+    await _notificationSubscription?.cancel();
+    final stream = await _bleClient.subscribeNotifications(deviceId);
+    _notificationSubscription = stream.listen(
+      (packet) {
+        _log('BLE runtime packet -> deviceId=$deviceId bytes=${packet.length}');
+      },
+      onError: (Object error) {
+        BleDebugRegistry.instance.recordEvent(
+          'Notify subscription error for $deviceId: $error',
+        );
+      },
+    );
+  }
+
+  void _log(String message) {
+    debugPrint(message);
   }
 
   DeviceLifecycleState _resolveLifecycle(

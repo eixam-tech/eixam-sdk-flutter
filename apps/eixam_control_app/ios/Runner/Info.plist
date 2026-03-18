@@ -26,6 +26,10 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>EIXAM needs Bluetooth access to pair and communicate with the safety device.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>EIXAM needs your location to support tracking and SOS validation flows.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

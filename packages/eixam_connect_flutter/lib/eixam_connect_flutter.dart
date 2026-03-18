@@ -20,6 +20,9 @@ export 'src/sdk/contacts_controller.dart';
 export 'src/sdk/device_controller.dart';
 
 export 'src/device/ble_adapter_state.dart';
+export 'src/device/ble_debug_event.dart';
+export 'src/device/ble_debug_registry.dart';
+export 'src/device/ble_debug_state.dart';
 export 'src/device/ble_client.dart';
 export 'src/device/ble_scan_result.dart';
 export 'src/device/ble_device_runtime_provider.dart';

@@ -9,6 +9,7 @@ import '../data/repositories/in_memory_sos_repository.dart';
 import '../data/repositories/local_notifications_repository.dart';
 import '../data/repositories/platform_permissions_repository.dart';
 import '../device/ble_device_runtime_provider.dart';
+import '../device/ble_debug_registry.dart';
 import '../device/mock_ble_client.dart';
 import '../device/real_ble_client.dart';
 import 'eixam_connect_sdk_impl.dart';
@@ -22,6 +23,8 @@ import 'mock_realtime_client.dart';
 /// SOS transitions stored locally during previous runs.
 class DemoSdkFactory {
   static Future<EixamConnectSdk> create() async {
+    BleDebugRegistry.instance.reset();
+
     final store = SharedPrefsSdkStore();
     final permissionsRepository = PlatformPermissionsRepository();
 
@@ -30,28 +33,22 @@ class DemoSdkFactory {
     await store.remove(SharedPrefsSdkStore.sosStateKey);
     await store.remove(SharedPrefsSdkStore.sosIncidentKey);
 
-    final sosRepository = InMemorySosRepository(
-      localStore: store,
-    );
+    final sosRepository = InMemorySosRepository(localStore: store);
 
     final trackingRepository = GeolocatorTrackingRepository(
       permissionsRepository: permissionsRepository,
       localStore: store,
     );
 
-    final deathManRepository = InMemoryDeathManRepository(
-      localStore: store,
-    );
+    final deathManRepository = InMemoryDeathManRepository(localStore: store);
 
-    final contactsRepository = InMemoryContactsRepository(
-      localStore: store,
-    );
+    final contactsRepository = InMemoryContactsRepository(localStore: store);
 
-   final bleClient = RealBleClient();
+    final bleClient = RealBleClient();
     try {
       await bleClient.initialize();
     } catch (_) {
-        // no tombis l'app al bootstrap
+      // no tombis l'app al bootstrap
     }
 
     final deviceRepository = InMemoryDeviceRepository(

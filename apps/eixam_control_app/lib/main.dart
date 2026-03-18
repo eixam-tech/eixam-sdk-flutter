@@ -7,6 +7,8 @@ import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
 import 'package:eixam_connect_ui/eixam_connect_ui.dart';
 import 'package:flutter/material.dart';
 
+import 'device_detail_screen.dart';
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const BootstrapApp());
@@ -724,6 +726,14 @@ class _DemoHomePageState extends State<DemoHomePage> {
     }
   }
 
+  Future<void> _openDeviceDetail() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (context) => DeviceDetailScreen(sdk: sdk),
+      ),
+    );
+  }
+
   Future<void> _scheduleQuickDeathMan() async {
     setState(() {
       _loadingDeathMan = true;
@@ -1034,9 +1044,8 @@ class _DemoHomePageState extends State<DemoHomePage> {
                       child: const Text('Init notifications'),
                     ),
                     ElevatedButton(
-                      onPressed: _loadingNotifications
-                          ? null
-                          : _showTestNotification,
+                      onPressed:
+                          _loadingNotifications ? null : _showTestNotification,
                       child: const Text('Test notification'),
                     ),
                   ],
@@ -1137,6 +1146,7 @@ class _DemoHomePageState extends State<DemoHomePage> {
           const SizedBox(height: 16),
           _SectionCard(
             title: 'Device',
+            onTap: _openDeviceDetail,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1179,6 +1189,14 @@ class _DemoHomePageState extends State<DemoHomePage> {
                 _InfoLine(
                   label: 'Firmware',
                   value: _deviceStatus?.firmwareVersion ?? '-',
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'Tap this card to open device detail and BLE debug tools.',
+                  style: TextStyle(
+                    color: Colors.black54,
+                    fontSize: 12,
+                  ),
                 ),
                 _InfoLine(
                   label: 'Provisioning error',
@@ -1226,7 +1244,8 @@ class _DemoHomePageState extends State<DemoHomePage> {
                 ),
                 _InfoLine(
                   label: 'Expected return',
-                  value: _activeDeathManPlan?.expectedReturnAt.toString() ?? '-',
+                  value:
+                      _activeDeathManPlan?.expectedReturnAt.toString() ?? '-',
                 ),
                 _InfoLine(
                   label: 'Grace period',
@@ -1246,9 +1265,8 @@ class _DemoHomePageState extends State<DemoHomePage> {
                   runSpacing: 8,
                   children: [
                     ElevatedButton(
-                      onPressed: _loadingDeathMan
-                          ? null
-                          : _scheduleQuickDeathMan,
+                      onPressed:
+                          _loadingDeathMan ? null : _scheduleQuickDeathMan,
                       child: const Text('Quick demo (20s)'),
                     ),
                     ElevatedButton(
@@ -1281,13 +1299,13 @@ class _DemoHomePageState extends State<DemoHomePage> {
                 if (_contacts.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   ..._contacts.take(3).map(
-                    (contact) => Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: Text(
-                        '${contact.name} · active=${contact.active} · priority=${contact.priority}',
+                        (contact) => Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Text(
+                            '${contact.name} · active=${contact.active} · priority=${contact.priority}',
+                          ),
+                        ),
                       ),
-                    ),
-                  ),
                 ],
                 const SizedBox(height: 12),
                 Wrap(
@@ -1341,29 +1359,46 @@ class _SectionCard extends StatelessWidget {
   const _SectionCard({
     required this.title,
     required this.child,
+    this.onTap,
   });
 
   final String title;
   final Widget child;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              title,
-              style: const TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  if (onTap != null)
+                    const Icon(
+                      Icons.chevron_right,
+                      color: Colors.black54,
+                    ),
+                ],
               ),
-            ),
-            const SizedBox(height: 12),
-            child,
-          ],
+              const SizedBox(height: 12),
+              child,
+            ],
+          ),
         ),
       ),
     );
