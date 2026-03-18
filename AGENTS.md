@@ -53,9 +53,9 @@ Contains:
 - repositories
 - local persistence
 - permissions
-- BLE provider skeleton
+- BLE provider/runtime
 - demo/bootstrap factories
-- realtime mock wiring
+- realtime skeleton or mock wiring
 
 #### eixam_connect_ui
 Contains:
@@ -72,21 +72,21 @@ Contains:
 
 ## Product architecture rules
 
-The project should remain **SDK-first**.
+The project must remain **SDK-first**.
 
 That means:
 
 1. The SDK is the main product foundation.
 2. The reference app exists to validate and demonstrate the SDK.
 3. Business-critical logic should live in the SDK, not only in the demo app.
-4. The Control app should consume the SDK like a host app would.
+4. The Control app should consume the SDK like a real host app would.
 5. UI decisions should not pollute SDK domain contracts.
 
 ---
 
 ## Current implemented modules
 
-At the time of this document, the repository already includes work on:
+The repository already includes work on:
 
 - SOS module
 - tracking module
@@ -98,12 +98,12 @@ At the time of this document, the repository already includes work on:
 - emergency contacts
 - Death Man Protocol
 - device module
-- BLE provider skeleton
+- BLE runtime/provider layer
 - local persistence
 - demo bootstrap flow
 - realtime skeleton
 - mock realtime client
-- cached realtime state exposed through public SDK API
+- cached realtime state exposed through the public SDK API
 - reference app validation surface
 
 ---
@@ -137,170 +137,109 @@ A lightweight skeleton is acceptable, but the final production client must follo
 
 ---
 
-## BLE status
+## Current BLE status
 
-BLE is currently at skeleton/prototyping level.
+BLE is no longer just conceptual. Current repo reality:
 
-What exists:
-- BLE abstraction
-- mock BLE client
-- BLE runtime provider
-- Bluetooth permissions wiring
-- native permission checklist
+### What already works
+- BLE scan on Android physical device
+- BLE connection to a real device
+- manual device selection is preferred over auto-picking candidates
+- real device service discovery
+- compatibility diagnostics after `discoverServices()`
 
-What does **not** exist yet:
-- final production BLE client implementation
-- full provisioning flow against a real device
-- full production pairing lifecycle
+### Current compatibility rule
+Do **not** validate BLE devices by advertised name.
+
+Do **not** assume a device is compatible just because scan sees it.
+
+Compatibility must be validated only after:
+1. BLE connect
+2. `discoverServices()`
+
+### Current firmware reality
+The current real device exposes:
+- EIXAM main service: `6ba1b218-15a8-461f-9fa8-5dcae273ea00`
+- TEL notify characteristic: `6ba1b218-15a8-461f-9fa8-5dcae273ea01`
+- SOS notify characteristic: `6ba1b218-15a8-461f-9fa8-5dcae273ea02`
+- INET write characteristic: `6ba1b218-15a8-461f-9fa8-5dcae273ea03`
+
+The CMD characteristic `...ea04` may be missing on the current firmware version.
+
+### Soft compatibility rule
+For now, treat the device as compatible enough to proceed if all of these are present:
+- service `ea00`
+- characteristic `ea01`
+- characteristic `ea02`
+- characteristic `ea03`
+
+Treat `ea04` as optional for now.
+
+Do not hard-fail the connection only because `ea04` is missing.
+Instead, surface a warning in logs/UI.
+
+### BLE behavior rules
+#### Scan
+- During BLE debug/testing, do not filter scan results by advertised device name
+- Do not require advertised service UUIDs during scan
+- Prefer broad scan + manual user selection
+- Show discovered devices in UI when possible
+
+#### Connect
+- Do not auto-connect to arbitrary scan candidates during debug
+- Let the user choose which device to connect to
+- After manual selection:
+  - connect
+  - discover services
+  - log everything
+  - validate compatibility
+
+#### Notifications
+After successful connection to a compatible device:
+- subscribe to TEL notify
+- subscribe to SOS notify
+
+#### Command writes
+- Use INET when command size fits current firmware limitations
+- If a command requires CMD and CMD is unavailable, show a precise warning/error
+- Do not silently fail
 
 ---
 
-## Persistence status
+## BLE logging requirements
 
-Local persistence already exists for several modules.
+When working on BLE, always log:
+- adapter state
+- scan results
+- selected device
+- connection start
+- connection success/failure
+- discovered services
+- discovered characteristics
+- characteristic properties:
+  - read
+  - write
+  - writeWithoutResponse
+  - notify
+- notify subscription state
+- last command sent
+- last packet received
+- compatibility result
+- exact error when a connection or compatibility step fails
 
-Guidelines:
-- restoration must be defensive
-- invalid/transient persisted states must not break bootstrap
-- restoring state must not replay invalid transitions
-- bootstrap must remain resilient
-
----
-
-## Demo app role
-
-The reference app is used to validate:
-- bootstrap
-- permissions
-- notifications
-- tracking
-- SOS
-- device state
-- Death Man flows
-- emergency contacts
-- realtime mock state
-
-The demo app is useful, but it is **not** the final goal.
-The SDK remains the priority.
+Validation should be diagnostic-first, not pass/fail-only.
 
 ---
 
-## Development rules
+## Android-specific rules
 
-### 1. Prefer SDK changes over demo-only changes
-If a capability belongs to the SDK, implement it in the SDK first.
+- Prioritize testing on physical Android devices, not emulator
+- Ensure Android BLE permissions are correctly declared
+- Ensure runtime Bluetooth permissions are handled
+- If scan requires it on Android, be explicit about location/fine location requirements
+- Keep Android install/debug workflows practical and scriptable
 
-### 2. Keep code comments and technical docs in English
-All shared code should remain internationally readable.
+Preferred entrypoint from monorepo root:
 
-### 3. Keep commits small and coherent
-Prefer small, meaningful commits over large mixed ones.
-
-### 4. Do not invent backend contracts
-If backend behavior is undefined, explicitly mark the implementation as mock, placeholder, or pending backend alignment.
-
-### 5. Do not introduce duplicate paths or duplicate working copies
-Use only the top-level monorepo.
-
-### 6. Avoid hiding state inside UI
-If state is meaningful for host apps, prefer exposing it through the SDK public contract.
-
-### 7. Make bootstrap resilient
-App startup should not fail because of stale persistence or optional runtime modules.
-
-### 8. Favor explicit entrypoints
-Use:
 ```bash
 flutter run -t apps/eixam_control_app/lib/main.dart
-```
-
-### 9. Keep architecture modular
-- enums in `src/enums`
-- interfaces in `src/interfaces`
-- events in `src/events`
-- entities/models in their proper folders
-- Flutter-specific implementation only in `eixam_connect_flutter`
-
-### 10. Document what changes
-If a new SDK capability is introduced, update documentation accordingly.
-
----
-
-## Documentation rules
-
-The repo should maintain these docs:
-
-- `README.md` → project overview
-- `RUN_PROJECT.md` → how to run the monorepo/reference app
-- `SDK_ARCHITECTURE.md` → architecture and package responsibilities
-- `AGENTS.md` → shared context and working rules for coding agents
-- `NEXT_STEPS.md` → current roadmap, blockers and priorities
-- `HOST_APP_INTEGRATION.md` → host app integration guidance
-- `BLE_PROVIDER_INTEGRATION.md` → BLE/provider design notes
-- `NATIVE_PERMISSIONS_CHECKLIST.md` → Android/iOS permission requirements
-
----
-
-## Commit style
-
-Recommended commit message style:
-
-- `feat: ...`
-- `fix: ...`
-- `docs: ...`
-- `refactor: ...`
-- `chore: ...`
-
-Examples:
-- `feat: expose realtime streams through public SDK API`
-- `feat: cache and expose latest realtime state through SDK`
-- `docs: add English run guide for shared SDK project`
-
----
-
-## Current priorities
-
-The current priority is to continue strengthening the SDK.
-
-### Priority order
-1. Consolidate documentation
-2. Keep the demo/reference app usable for validation
-3. Continue SDK hardening
-4. Wait for backend before final WebSocket integration
-5. Revisit production BLE implementation when appropriate
-
----
-
-## Deferred work waiting for backend
-
-These areas should wait for backend alignment:
-
-- final WebSocket realtime contract
-- production realtime event schema
-- auth/session coupling for realtime
-- backend-driven state synchronization rules
-
----
-
-## How to run the project
-
-From the monorepo root:
-
-```bash
-flutter clean
-flutter pub get
-flutter run -t apps/eixam_control_app/lib/main.dart
-```
-
----
-
-## Final guidance for coding agents
-
-When making changes in this repo:
-
-- verify the correct repo root
-- work on the SDK-first architecture
-- avoid assumptions about missing backend contracts
-- prefer explicit, documented changes
-- keep the project stable and runnable
-- use the reference app to validate SDK behavior

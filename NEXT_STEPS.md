@@ -69,6 +69,7 @@ Create and maintain the following docs in the repo:
 - `SDK_ARCHITECTURE.md`
 - `AGENTS.md`
 - `NEXT_STEPS.md`
+- `AGENTS_SUMMARY_CONTEXT.md`
 
 ### 2. Clean and organize documentation ownership
 Decide which document is:
