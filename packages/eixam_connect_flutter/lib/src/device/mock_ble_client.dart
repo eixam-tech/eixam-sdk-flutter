@@ -22,6 +22,7 @@ class MockBleClient implements BleClient {
   @override
   Future<void> initialize() async {
     BleDebugRegistry.instance.update(adapterState: _adapterState);
+    BleDebugRegistry.instance.registerScanner(scan);
     BleDebugRegistry.instance.recordEvent(
       'Mock BLE client initialized with adapter state $_adapterState',
     );
@@ -36,7 +37,7 @@ class MockBleClient implements BleClient {
 
   @override
   Future<List<BleScanResult>> scan({
-    Duration timeout = const Duration(seconds: 4),
+    Duration timeout = const Duration(seconds: 8),
   }) async {
     await Future<void>.delayed(const Duration(milliseconds: 450));
     if (_adapterState != BleAdapterState.poweredOn) {
@@ -52,6 +53,9 @@ class MockBleClient implements BleClient {
         name: 'EIXAM R1 Demo',
         rssi: -42 - _random.nextInt(20),
         connectable: true,
+        advertisedServiceUuids: const <String>[
+          '6ba1b218-15a8-461f-9fa8-5dcae273ea00',
+        ],
         discoveredAt: DateTime.now(),
       ),
     ];

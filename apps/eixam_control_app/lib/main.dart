@@ -625,6 +625,21 @@ class _DemoHomePageState extends State<DemoHomePage> {
     }
   }
 
+  Future<void> _ensureBleReadyForPairing() async {
+    var state = await sdk.getPermissionState();
+    if (!state.hasBluetoothAccess) {
+      state = await sdk.requestBluetoothPermission();
+    }
+    if (!state.hasLocationAccess &&
+        state.location != SdkPermissionStatus.serviceDisabled) {
+      state = await sdk.requestLocationPermission();
+    }
+    if (!mounted) return;
+    setState(() {
+      _permissionState = state;
+    });
+  }
+
   Future<void> _pairDevice() async {
     setState(() {
       _loadingDevice = true;
@@ -632,6 +647,7 @@ class _DemoHomePageState extends State<DemoHomePage> {
     });
 
     try {
+      await _ensureBleReadyForPairing();
       final status = await sdk.pairDevice(pairingCode: 'DEMO-PAIR-001');
       if (!mounted) return;
       setState(() {

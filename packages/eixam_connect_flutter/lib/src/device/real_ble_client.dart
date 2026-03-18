@@ -66,6 +66,7 @@ class RealBleClient implements BleClient {
     BleDebugRegistry.instance.update(
       adapterState: _mapAdapterState(FlutterBluePlus.adapterStateNow),
     );
+    BleDebugRegistry.instance.registerScanner(scan);
     BleDebugRegistry.instance.recordEvent('Real BLE client initialized');
     _initialized = true;
   }
@@ -90,16 +91,20 @@ class RealBleClient implements BleClient {
 
   @override
   Future<List<BleScanResult>> scan({
-    Duration timeout = const Duration(seconds: 4),
+    Duration timeout = const Duration(seconds: 8),
   }) async {
     _ensureInitialized();
 
     final Map<String, BleScanResult> deduped = {};
+    BleDebugRegistry.instance.update(isScanning: true, scanResults: const []);
 
     final sub = FlutterBluePlus.scanResults.listen((scanResults) {
       for (final r in scanResults) {
         final id = r.device.remoteId.str;
         _devices[id] = r.device;
+        final advertisedServiceUuids = r.advertisementData.serviceUuids
+            .map((uuid) => uuid.str)
+            .toList(growable: false);
 
         final name = r.advertisementData.advName.isNotEmpty
             ? r.advertisementData.advName
@@ -110,24 +115,30 @@ class RealBleClient implements BleClient {
         _log(
           'BLE scan -> id=$id name="$name" rssi=${r.rssi} '
           'connectable=${r.advertisementData.connectable} '
-          'serviceUuids=${r.advertisementData.serviceUuids}',
+          'serviceUuids=$advertisedServiceUuids',
         );
-
-        if (!r.advertisementData.connectable) {
-          continue;
-        }
 
         deduped[id] = BleScanResult(
           deviceId: id,
           name: name,
           rssi: r.rssi,
           connectable: r.advertisementData.connectable,
+          advertisedServiceUuids: advertisedServiceUuids,
           discoveredAt: DateTime.now(),
+        );
+        BleDebugRegistry.instance.update(
+          scanResults: deduped.values.toList()
+            ..sort((a, b) => b.rssi.compareTo(a.rssi)),
         );
       }
     });
 
-    await FlutterBluePlus.startScan(timeout: timeout);
+    await FlutterBluePlus.startScan(
+      timeout: timeout,
+      androidScanMode: AndroidScanMode.lowLatency,
+      androidUsesFineLocation: true,
+      androidCheckLocationServices: true,
+    );
     await Future.delayed(timeout);
     await FlutterBluePlus.stopScan();
     await sub.cancel();
@@ -135,8 +146,9 @@ class RealBleClient implements BleClient {
     final results = deduped.values.toList()
       ..sort((a, b) => b.rssi.compareTo(a.rssi));
     BleDebugRegistry.instance.recordEvent(
-      'BLE scan completed with ${results.length} connectable candidate(s)',
+      'BLE scan completed with ${results.length} discovered device(s)',
     );
+    BleDebugRegistry.instance.update(isScanning: false, scanResults: results);
 
     return results;
   }
@@ -156,32 +168,50 @@ class RealBleClient implements BleClient {
     );
     BleDebugRegistry.instance.recordEvent('Connecting to $deviceId');
 
-    final connectionState = await device.connectionState.first;
-    if (connectionState != BluetoothConnectionState.connected) {
-      await device.connect(timeout: const Duration(seconds: 10));
-    }
-
-    final services = await device.discoverServices();
-    _servicesCache[deviceId] = services;
-
-    BleDebugRegistry.instance.update(
-      discoveredServices: services.map((service) => service.uuid.str).toList(),
-    );
-    BleDebugRegistry.instance.registerCommandWriter(
-      (data) => writeCommand(deviceId, data),
-    );
-    _log('BLE connect -> deviceId=$deviceId services=${services.length}');
-    for (final s in services) {
-      _log('Service: ${s.uuid}');
-      for (final c in s.characteristics) {
-        _log(
-          '  Characteristic: ${c.uuid} '
-          'read=${c.properties.read} '
-          'write=${c.properties.write} '
-          'writeWithoutResponse=${c.properties.writeWithoutResponse} '
-          'notify=${c.properties.notify}',
-        );
+    try {
+      final connectionState = await device.connectionState.first;
+      if (connectionState != BluetoothConnectionState.connected) {
+        await device.connect(timeout: const Duration(seconds: 10));
       }
+
+      BleDebugRegistry.instance.recordEvent('Connected to $deviceId');
+
+      final services = await device.discoverServices();
+      _servicesCache[deviceId] = services;
+
+      BleDebugRegistry.instance.update(
+        discoveredServices: services
+            .map((service) => service.uuid.str)
+            .toList(),
+      );
+      BleDebugRegistry.instance.registerCommandWriter(
+        (data) => writeCommand(deviceId, data),
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'discoverServices succeeded for $deviceId with ${services.length} service(s)',
+      );
+      _log('BLE connect -> deviceId=$deviceId services=${services.length}');
+      for (final s in services) {
+        _log('Service: ${s.uuid}');
+        for (final c in s.characteristics) {
+          _log(
+            '  Characteristic: ${c.uuid} '
+            'read=${c.properties.read} '
+            'write=${c.properties.write} '
+            'writeWithoutResponse=${c.properties.writeWithoutResponse} '
+            'notify=${c.properties.notify}',
+          );
+        }
+      }
+    } catch (error, stackTrace) {
+      BleDebugRegistry.instance.recordEvent(
+        'Connection/discoverServices failed for $deviceId: $error',
+      );
+      debugPrint(
+        'BLE connect/discoverServices failed -> deviceId=$deviceId error=$error',
+      );
+      debugPrintStack(stackTrace: stackTrace);
+      rethrow;
     }
   }
 
@@ -264,14 +294,19 @@ class RealBleClient implements BleClient {
       throw Exception('Command payload cannot be empty');
     }
 
-    final Guid targetUuid = data.length <= 4
-        ? inetWriteCharUuid
-        : cmdWriteCharUuid;
-
+    final bool useInet = data.length <= 4;
+    final Guid targetUuid = useInet ? inetWriteCharUuid : cmdWriteCharUuid;
     final c = await _findCharacteristic(deviceId, eixamServiceUuid, targetUuid);
 
     if (c == null) {
-      throw Exception('EIXAM write characteristic not found');
+      if (useInet) {
+        throw Exception(
+          'INET characteristic (ea03) not found on connected device',
+        );
+      }
+      throw Exception(
+        'CMD characteristic (ea04) is missing on this connected EIXAM device. Advanced commands requiring CMD are unavailable.',
+      );
     }
 
     final payload = _hex(data);
@@ -346,7 +381,13 @@ class RealBleClient implements BleClient {
     }
 
     if (eixamService == null) {
-      BleDebugRegistry.instance.update(eixamServiceFound: false);
+      BleDebugRegistry.instance.update(
+        eixamServiceFound: false,
+        telFound: false,
+        sosFound: false,
+        inetFound: false,
+        cmdFound: false,
+      );
       BleDebugRegistry.instance.recordEvent(
         'Compatibility check failed for $deviceId: EIXAM service not found',
       );
@@ -357,7 +398,6 @@ class RealBleClient implements BleClient {
     bool hasSos = false;
     bool hasInet = false;
     bool hasCmd = false;
-    BleDebugRegistry.instance.update(eixamServiceFound: true);
 
     for (final c in eixamService.characteristics) {
       if (c.uuid == telNotifyCharUuid) hasTel = true;
@@ -366,12 +406,25 @@ class RealBleClient implements BleClient {
       if (c.uuid == cmdWriteCharUuid) hasCmd = true;
     }
 
-    final compatible = hasTel && hasSos && hasInet && hasCmd;
+    BleDebugRegistry.instance.update(
+      eixamServiceFound: true,
+      telFound: hasTel,
+      sosFound: hasSos,
+      inetFound: hasInet,
+      cmdFound: hasCmd,
+    );
+
+    final compatible = hasTel && hasSos && hasInet;
     BleDebugRegistry.instance.recordEvent(
       compatible
           ? 'Compatibility check passed for $deviceId'
           : 'Compatibility check failed for $deviceId: missing required characteristics',
     );
+    if (compatible && !hasCmd) {
+      BleDebugRegistry.instance.recordEvent(
+        'Connected to EIXAM device, but CMD characteristic (ea04) is missing. Advanced commands may be unavailable.',
+      );
+    }
     return compatible;
   }
 

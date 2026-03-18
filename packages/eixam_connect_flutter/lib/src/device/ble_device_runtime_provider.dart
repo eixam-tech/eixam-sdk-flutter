@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import 'ble_adapter_state.dart';
 import 'ble_client.dart';
+import 'ble_connection_status.dart';
 import 'ble_debug_registry.dart';
 import 'ble_scan_result.dart';
 import 'device_runtime_provider.dart';
@@ -48,62 +49,144 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       );
     }
 
-    final candidates = _sortCandidates(scanResults);
-    BleDebugRegistry.instance.recordEvent(
-      'Pairing will evaluate ${candidates.length} BLE candidate(s)',
-    );
-
-    for (final candidate in candidates) {
-      try {
-        _log(
-          'BLE pair candidate -> id=${candidate.deviceId} name=${candidate.name} rssi=${candidate.rssi}',
-        );
-        BleDebugRegistry.instance.update(selectedDeviceId: candidate.deviceId);
-        BleDebugRegistry.instance.recordEvent(
-          'Selected BLE candidate ${candidate.deviceId} (${candidate.name})',
-        );
-        await _bleClient.connect(candidate.deviceId);
-
-        final compatible = await _bleClient.isEixamCompatible(
-          candidate.deviceId,
-        );
-        if (!compatible) {
-          await _bleClient.disconnect(candidate.deviceId);
-          continue;
-        }
-
-        _connectedDeviceId = candidate.deviceId;
-        await _bindNotifications(candidate.deviceId);
-        BleDebugRegistry.instance.recordEvent(
-          'Pairing succeeded for ${candidate.deviceId}',
-        );
-
-        return currentStatus.copyWith(
-          deviceId: candidate.deviceId,
-          deviceAlias: candidate.name,
-          model: 'EIXAM R1',
-          paired: true,
-          connected: true,
-          lifecycleState: DeviceLifecycleState.paired,
-          batteryLevel: await _bleClient.readBatteryLevel(candidate.deviceId),
-          firmwareVersion: await _bleClient.readFirmwareVersion(
-            candidate.deviceId,
-          ),
-          signalQuality: await _bleClient.readSignalQuality(candidate.deviceId),
-          lastSeen: DateTime.now(),
-          lastSyncedAt: DateTime.now(),
-          clearProvisioningError: true,
-        );
-      } catch (_) {
-        try {
-          await _bleClient.disconnect(candidate.deviceId);
-        } catch (_) {}
-      }
+    final selectedDeviceId =
+        BleDebugRegistry.instance.currentState.selectedDeviceId;
+    if (selectedDeviceId == null || selectedDeviceId.isEmpty) {
+      throw const DeviceException(
+        'E_DEVICE_NOT_SELECTED',
+        'Select a BLE device before pairing.',
+      );
     }
 
-    throw const DeviceException(
-      'E_DEVICE_NOT_FOUND',
-      'No compatible EIXAM device was found nearby.',
+    final candidate = _findSelectedCandidate(scanResults, selectedDeviceId);
+    if (candidate == null) {
+      throw const DeviceException(
+        'E_DEVICE_NOT_FOUND',
+        'Selected BLE device was not found in the latest scan results.',
+      );
+    }
+
+    try {
+      _log(
+        'BLE selected candidate -> id=${candidate.deviceId} name=${candidate.name} rssi=${candidate.rssi}',
+      );
+      BleDebugRegistry.instance.update(
+        selectedDeviceId: candidate.deviceId,
+        connectionStatus: BleConnectionStatus.connecting,
+        connectionError: null,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'Connection started for ${candidate.deviceId}',
+      );
+      await _bleClient.connect(candidate.deviceId);
+      BleDebugRegistry.instance.update(
+        connectionStatus: BleConnectionStatus.connected,
+        connectionError: null,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'Connection succeeded for ${candidate.deviceId}',
+      );
+
+      BleDebugRegistry.instance.recordEvent(
+        'Discover services succeeded for ${candidate.deviceId}',
+      );
+      final compatible = await _bleClient.isEixamCompatible(candidate.deviceId);
+      BleDebugRegistry.instance.recordEvent(
+        'Compatibility result for ${candidate.deviceId}: $compatible',
+      );
+      if (!compatible) {
+        BleDebugRegistry.instance.update(
+          connectionStatus: BleConnectionStatus.incompatible,
+          connectionError:
+              'Connected, but required EIXAM service/characteristics were not found.',
+        );
+        await _bleClient.disconnect(candidate.deviceId);
+        throw const DeviceException(
+          'E_DEVICE_INCOMPATIBLE',
+          'Selected device is not compatible with the EIXAM BLE protocol.',
+        );
+      }
+
+      _connectedDeviceId = candidate.deviceId;
+      await _bindNotifications(candidate.deviceId);
+      BleDebugRegistry.instance.recordEvent(
+        'Pairing succeeded for ${candidate.deviceId}',
+      );
+
+      return currentStatus.copyWith(
+        deviceId: candidate.deviceId,
+        deviceAlias: candidate.name,
+        model: 'EIXAM R1',
+        paired: true,
+        connected: true,
+        lifecycleState: DeviceLifecycleState.paired,
+        batteryLevel: await _bleClient.readBatteryLevel(candidate.deviceId),
+        firmwareVersion: await _bleClient.readFirmwareVersion(
+          candidate.deviceId,
+        ),
+        signalQuality: await _bleClient.readSignalQuality(candidate.deviceId),
+        lastSeen: DateTime.now(),
+        lastSyncedAt: DateTime.now(),
+        clearProvisioningError: true,
+      );
+    } catch (error, stackTrace) {
+      final currentStatus =
+          BleDebugRegistry.instance.currentState.connectionStatus;
+      if (currentStatus != BleConnectionStatus.incompatible) {
+        BleDebugRegistry.instance.update(
+          connectionStatus: BleConnectionStatus.failed,
+          connectionError: error.toString(),
+        );
+      }
+      BleDebugRegistry.instance.recordEvent(
+        'Connection failed for ${candidate.deviceId}: $error',
+      );
+      debugPrint(
+        'BLE pair failed -> deviceId=${candidate.deviceId} error=$error',
+      );
+      debugPrintStack(stackTrace: stackTrace);
+      try {
+        await _bleClient.disconnect(candidate.deviceId);
+      } catch (_) {}
+      rethrow;
+    }
+  }
+
+  BleScanResult? _findSelectedCandidate(
+    List<BleScanResult> scanResults,
+    String selectedDeviceId,
+  ) {
+    for (final scanResult in scanResults) {
+      if (scanResult.deviceId == selectedDeviceId) {
+        return scanResult;
+      }
+    }
+    return null;
+  }
+
+  List<BleScanResult> _sortCandidates(List<BleScanResult> scanResults) {
+    final candidates = scanResults.where((d) => d.connectable).toList()
+      ..sort((a, b) => b.rssi.compareTo(a.rssi));
+    return candidates;
+  }
+
+  Future<bool> _resolveConnection(String deviceId) async {
+    final id = _connectedDeviceId ?? deviceId;
+    return _bleClient.isConnected(id);
+  }
+
+  Future<void> _bindNotifications(String deviceId) async {
+    await _notificationSubscription?.cancel();
+    final stream = await _bleClient.subscribeNotifications(deviceId);
+    _notificationSubscription = stream.listen(
+      (packet) {
+        _log('BLE runtime packet -> deviceId=$deviceId bytes=${packet.length}');
+      },
+      onError: (Object error) {
+        BleDebugRegistry.instance.recordEvent(
+          'Notify subscription error for $deviceId: $error',
+        );
+      },
     );
   }
 
@@ -186,32 +269,6 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       lastSeen: DateTime.now(),
       lastSyncedAt: DateTime.now(),
       signalQuality: null,
-    );
-  }
-
-  List<BleScanResult> _sortCandidates(List<BleScanResult> scanResults) {
-    final candidates = scanResults.where((d) => d.connectable).toList()
-      ..sort((a, b) => b.rssi.compareTo(a.rssi));
-    return candidates;
-  }
-
-  Future<bool> _resolveConnection(String deviceId) async {
-    final id = _connectedDeviceId ?? deviceId;
-    return _bleClient.isConnected(id);
-  }
-
-  Future<void> _bindNotifications(String deviceId) async {
-    await _notificationSubscription?.cancel();
-    final stream = await _bleClient.subscribeNotifications(deviceId);
-    _notificationSubscription = stream.listen(
-      (packet) {
-        _log('BLE runtime packet -> deviceId=$deviceId bytes=${packet.length}');
-      },
-      onError: (Object error) {
-        BleDebugRegistry.instance.recordEvent(
-          'Notify subscription error for $deviceId: $error',
-        );
-      },
     );
   }
 

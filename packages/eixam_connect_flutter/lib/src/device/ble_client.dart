@@ -11,7 +11,9 @@ abstract class BleClient {
   Future<BleAdapterState> getAdapterState();
   Stream<BleAdapterState> watchAdapterState();
 
-  Future<List<BleScanResult>> scan({Duration timeout = const Duration(seconds: 4)});
+  Future<List<BleScanResult>> scan({
+    Duration timeout = const Duration(seconds: 8),
+  });
   Future<void> connect(String deviceId);
   Future<void> disconnect(String deviceId);
   Future<bool> isConnected(String deviceId);
@@ -24,6 +26,4 @@ abstract class BleClient {
   Future<Stream<List<int>>> subscribeNotifications(String deviceId);
 
   Future<bool> isEixamCompatible(String deviceId);
-
 }
-  

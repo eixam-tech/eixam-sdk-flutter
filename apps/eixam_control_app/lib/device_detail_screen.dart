@@ -18,10 +18,13 @@ class DeviceDetailScreen extends StatefulWidget {
 
 class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   DeviceStatus? _deviceStatus;
+  PermissionState? _permissionState;
   BleDebugState _bleDebugState = BleDebugRegistry.instance.currentState;
   StreamSubscription<DeviceStatus>? _deviceStatusSub;
   StreamSubscription<BleDebugState>? _bleDebugSub;
   bool _loadingDevice = false;
+  bool _loadingScan = false;
+  bool _loadingPermissions = false;
   String? _lastError;
 
   @override
@@ -55,9 +58,11 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   Future<void> _loadInitialState() async {
     try {
       final status = await widget.sdk.getDeviceStatus();
+      final permissionState = await widget.sdk.getPermissionState();
       if (!mounted) return;
       setState(() {
         _deviceStatus = status;
+        _permissionState = permissionState;
       });
     } catch (error) {
       _handleError(error);
@@ -97,8 +102,14 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
 
   Future<void> _pairDevice() {
     return _runDeviceAction(() async {
+      await _ensureScanPrerequisites(requestIfMissing: true);
       await widget.sdk.pairDevice(pairingCode: 'DEMO-PAIR-001');
     });
+  }
+
+  Future<void> _pairSelectedDevice(BleScanResult scan) async {
+    BleDebugRegistry.instance.selectDevice(scan.deviceId);
+    await _pairDevice();
   }
 
   Future<void> _activateDevice() {
@@ -128,6 +139,67 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       await BleDebugRegistry.instance.sendCommand(data);
     } catch (error) {
       _handleError(error);
+    }
+  }
+
+  Future<bool> _ensureScanPrerequisites({
+    required bool requestIfMissing,
+  }) async {
+    var state = await widget.sdk.getPermissionState();
+    if (requestIfMissing && !state.hasBluetoothAccess) {
+      state = await widget.sdk.requestBluetoothPermission();
+    }
+    if (requestIfMissing &&
+        !state.hasLocationAccess &&
+        state.location != SdkPermissionStatus.serviceDisabled) {
+      state = await widget.sdk.requestLocationPermission();
+    }
+    if (!mounted) return false;
+    setState(() {
+      _permissionState = state;
+    });
+    return state.hasBluetoothAccess && state.bluetoothEnabled;
+  }
+
+  Future<void> _requestScanPermissions() async {
+    setState(() {
+      _loadingPermissions = true;
+      _lastError = null;
+    });
+    try {
+      await _ensureScanPrerequisites(requestIfMissing: true);
+    } catch (error) {
+      _handleError(error);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loadingPermissions = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _runScan() async {
+    setState(() {
+      _loadingScan = true;
+      _lastError = null;
+    });
+    try {
+      final ready = await _ensureScanPrerequisites(requestIfMissing: true);
+      if (!ready) {
+        throw StateError(
+          'Bluetooth permission or adapter state is not ready for scanning.',
+        );
+      }
+      await BleDebugRegistry.instance.startScan();
+    } catch (error) {
+      _handleError(error);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loadingScan = false;
+        });
+      }
     }
   }
 
@@ -227,6 +299,154 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
             ),
             const SizedBox(height: 16),
             _CardSection(
+              title: 'BLE Discovery',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _InfoLine(
+                    label: 'Bluetooth permission',
+                    value: _permissionState?.bluetooth.toString() ?? '-',
+                  ),
+                  _InfoLine(
+                    label: 'Bluetooth enabled',
+                    value: _permissionState?.bluetoothEnabled.toString() ?? '-',
+                  ),
+                  _InfoLine(
+                    label: 'Location permission',
+                    value: _permissionState?.location.toString() ?? '-',
+                  ),
+                  _InfoLine(
+                    label: 'Adapter state',
+                    value: _bleDebugState.adapterState.toString(),
+                  ),
+                  _InfoLine(
+                    label: 'Scanning',
+                    value: _bleDebugState.isScanning.toString(),
+                  ),
+                  _InfoLine(
+                    label: 'Connection status',
+                    value: _bleDebugState.connectionStatus.name,
+                  ),
+                  _InfoLine(
+                    label: 'Connection error',
+                    value: _bleDebugState.connectionError ?? '-',
+                  ),
+                  if (_bleDebugState.connectionError != null) ...[
+                    const SizedBox(height: 8),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.red.withValues(alpha: 0.06),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: Colors.red.withValues(alpha: 0.25),
+                        ),
+                      ),
+                      child: SelectableText(
+                        _bleDebugState.connectionError!,
+                        style: const TextStyle(fontFamily: 'monospace'),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      ElevatedButton(
+                        onPressed: _loadingPermissions
+                            ? null
+                            : _requestScanPermissions,
+                        child: const Text('Request BLE perms'),
+                      ),
+                      ElevatedButton(
+                        onPressed: _loadingScan ? null : _runScan,
+                        child: const Text('Scan BLE'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  if (_bleDebugState.scanResults.isEmpty)
+                    const Text('No BLE devices discovered yet.')
+                  else
+                    Column(
+                      children: _bleDebugState.scanResults.map((scan) {
+                        final title = scan.name.isEmpty ? 'Unknown' : scan.name;
+                        final services = scan.advertisedServiceUuids.isEmpty
+                            ? '-'
+                            : scan.advertisedServiceUuids.join(', ');
+                        final isSelected =
+                            _bleDebugState.selectedDeviceId == scan.deviceId;
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Material(
+                            color: isSelected
+                                ? Colors.blue.withValues(alpha: 0.06)
+                                : Colors.transparent,
+                            borderRadius: BorderRadius.circular(10),
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(10),
+                              onTap: _loadingDevice || !scan.connectable
+                                  ? null
+                                  : () => _pairSelectedDevice(scan),
+                              child: Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  border: Border.all(
+                                    color: isSelected
+                                        ? Colors.blue
+                                        : Colors.black.withValues(alpha: 0.12),
+                                  ),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            title,
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                          ),
+                                        ),
+                                        if (isSelected)
+                                          const Chip(
+                                            label: Text('Selected'),
+                                          ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 6),
+                                    Text('id: ${scan.deviceId}'),
+                                    Text('rssi: ${scan.rssi}'),
+                                    Text('connectable: ${scan.connectable}'),
+                                    Text('advertised services: $services'),
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      scan.connectable
+                                          ? 'Tap to connect and pair this device'
+                                          : 'Device is not connectable',
+                                      style: const TextStyle(
+                                        color: Colors.black54,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      }).toList(growable: false),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            _CardSection(
               title: 'Actions',
               child: Wrap(
                 spacing: 8,
@@ -266,9 +486,72 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                     value: _bleDebugState.selectedDeviceId ?? '-',
                   ),
                   _InfoLine(
+                    label: 'Connection status',
+                    value: _bleDebugState.connectionStatus.name,
+                  ),
+                  _InfoLine(
+                    label: 'Connection error',
+                    value: _bleDebugState.connectionError ?? '-',
+                  ),
+                  if (_bleDebugState.connectionError != null) ...[
+                    const SizedBox(height: 8),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.red.withValues(alpha: 0.06),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: Colors.red.withValues(alpha: 0.25),
+                        ),
+                      ),
+                      child: SelectableText(
+                        _bleDebugState.connectionError!,
+                        style: const TextStyle(fontFamily: 'monospace'),
+                      ),
+                    ),
+                  ],
+                  _InfoLine(
                     label: 'EIXAM service found',
                     value: _bleDebugState.eixamServiceFound.toString(),
                   ),
+                  _InfoLine(
+                    label: 'TEL found',
+                    value: _bleDebugState.telFound.toString(),
+                  ),
+                  _InfoLine(
+                    label: 'SOS found',
+                    value: _bleDebugState.sosFound.toString(),
+                  ),
+                  _InfoLine(
+                    label: 'INET found',
+                    value: _bleDebugState.inetFound.toString(),
+                  ),
+                  _InfoLine(
+                    label: 'CMD found',
+                    value: _bleDebugState.cmdFound.toString(),
+                  ),
+                  if (_bleDebugState.eixamServiceFound &&
+                      _bleDebugState.telFound &&
+                      _bleDebugState.sosFound &&
+                      _bleDebugState.inetFound &&
+                      !_bleDebugState.cmdFound) ...[
+                    const SizedBox(height: 8),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: Colors.orange.withValues(alpha: 0.3),
+                        ),
+                      ),
+                      child: const Text(
+                        'Connected to EIXAM device, but CMD characteristic (ea04) is missing. Advanced commands may be unavailable.',
+                      ),
+                    ),
+                  ],
                   _InfoLine(
                     label: 'TEL notify subscribed',
                     value: _bleDebugState.telNotifySubscribed.toString(),
