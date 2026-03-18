@@ -1,5 +1,6 @@
 import 'dart:async';
-import 'dart:typed_data';
+
+import 'package:async/async.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import 'ble_adapter_state.dart';
@@ -10,42 +11,52 @@ class RealBleClient implements BleClient {
   final Map<String, BluetoothDevice> _devices = {};
   final Map<String, List<BluetoothService>> _servicesCache = {};
 
-  // PLACEHOLDERS fins tenir UUIDs reals del firmware
-  static final Guid commandServiceUuid =
-      Guid('0000FFF0-0000-1000-8000-00805F9B34FB');
-  static final Guid commandWriteCharUuid =
-      Guid('0000FFF1-0000-1000-8000-00805F9B34FB');
-  static final Guid notifyCharUuid =
-      Guid('0000FFF2-0000-1000-8000-00805F9B34FB');
+  static final Guid eixamServiceUuid =
+      Guid('6ba1b218-15a8-461f-9fa8-5dcae273ea00');
+
+  static final Guid telNotifyCharUuid =
+      Guid('6ba1b218-15a8-461f-9fa8-5dcae273ea01');
+
+  static final Guid sosNotifyCharUuid =
+      Guid('6ba1b218-15a8-461f-9fa8-5dcae273ea02');
+
+  static final Guid inetWriteCharUuid =
+      Guid('6ba1b218-15a8-461f-9fa8-5dcae273ea03');
+
+  static final Guid cmdWriteCharUuid =
+      Guid('6ba1b218-15a8-461f-9fa8-5dcae273ea04');
 
   static final Guid batteryServiceUuid =
       Guid('0000180F-0000-1000-8000-00805F9B34FB');
+
   static final Guid batteryLevelCharUuid =
       Guid('00002A19-0000-1000-8000-00805F9B34FB');
+
   static final Guid deviceInfoServiceUuid =
       Guid('0000180A-0000-1000-8000-00805F9B34FB');
+
   static final Guid firmwareRevisionCharUuid =
       Guid('00002A26-0000-1000-8000-00805F9B34FB');
 
-    @override
-    Future<void> initialize() async {
-        try {
-            if (await FlutterBluePlus.isSupported == false) {
-             throw Exception('BLE no suportat en aquest dispositiu');
-            }
-        } catch (e) {
-            rethrow;
-        }
+  bool _initialized = false;
+
+  @override
+  Future<void> initialize() async {
+    if (await FlutterBluePlus.isSupported == false) {
+      throw Exception('BLE no suportat en aquest dispositiu');
     }
+    _initialized = true;
+  }
 
   @override
   Future<BleAdapterState> getAdapterState() async {
-    final state = FlutterBluePlus.adapterStateNow;
-    return _mapAdapterState(state);
+    _ensureInitialized();
+    return _mapAdapterState(FlutterBluePlus.adapterStateNow);
   }
 
   @override
   Stream<BleAdapterState> watchAdapterState() {
+    _ensureInitialized();
     return FlutterBluePlus.adapterState.map(_mapAdapterState);
   }
 
@@ -53,9 +64,9 @@ class RealBleClient implements BleClient {
   Future<List<BleScanResult>> scan({
     Duration timeout = const Duration(seconds: 4),
   }) async {
-    final results = <BleScanResult>[];
+    _ensureInitialized();
 
-    await FlutterBluePlus.startScan(timeout: timeout);
+    final Map<String, BleScanResult> deduped = {};
 
     final sub = FlutterBluePlus.scanResults.listen((scanResults) {
       for (final r in scanResults) {
@@ -64,52 +75,93 @@ class RealBleClient implements BleClient {
 
         final name = r.advertisementData.advName.isNotEmpty
             ? r.advertisementData.advName
-            : (r.device.platformName.isNotEmpty ? r.device.platformName : 'Unknown');
+            : (r.device.platformName.isNotEmpty
+                ? r.device.platformName
+                : 'Unknown');
 
-        results.removeWhere((e) => e.deviceId == id);
-        results.add(
-          BleScanResult(
-            deviceId: id,
-            name: name,
-            rssi: r.rssi,
-            connectable: r.advertisementData.connectable,
-            discoveredAt: DateTime.now(),
-          ),
+        print(
+          'BLE scan -> id=$id name="$name" rssi=${r.rssi} '
+          'connectable=${r.advertisementData.connectable} '
+          'serviceUuids=${r.advertisementData.serviceUuids}',
+        );
+
+        if (!r.advertisementData.connectable) {
+          continue;
+        }
+
+        deduped[id] = BleScanResult(
+          deviceId: id,
+          name: name,
+          rssi: r.rssi,
+          connectable: r.advertisementData.connectable,
+          discoveredAt: DateTime.now(),
         );
       }
     });
 
+    await FlutterBluePlus.startScan(timeout: timeout);
     await Future.delayed(timeout);
     await FlutterBluePlus.stopScan();
     await sub.cancel();
+
+    final results = deduped.values.toList()
+      ..sort((a, b) => b.rssi.compareTo(a.rssi));
 
     return results;
   }
 
   @override
   Future<void> connect(String deviceId) async {
+    _ensureInitialized();
+
     final device = _devices[deviceId];
     if (device == null) {
       throw Exception('Dispositiu no trobat: $deviceId');
     }
 
-    await device.connect(timeout: const Duration(seconds: 10));
-    _servicesCache[deviceId] = await device.discoverServices();
-  }
+    final connectionState = await device.connectionState.first;
+    if (connectionState != BluetoothConnectionState.connected) {
+      await device.connect(timeout: const Duration(seconds: 10));
+    }
 
-  @override
-  Future<void> disconnect(String deviceId) async {
-    final device = _devices[deviceId];
-    if (device != null) {
-      await device.disconnect();
+    final services = await device.discoverServices();
+    _servicesCache[deviceId] = services;
+
+    print('BLE connect -> deviceId=$deviceId services=${services.length}');
+    for (final s in services) {
+      print('Service: ${s.uuid}');
+      for (final c in s.characteristics) {
+        print(
+          '  Characteristic: ${c.uuid} '
+          'read=${c.properties.read} '
+          'write=${c.properties.write} '
+          'writeWithoutResponse=${c.properties.writeWithoutResponse} '
+          'notify=${c.properties.notify}',
+        );
+      }
     }
   }
 
   @override
+  Future<void> disconnect(String deviceId) async {
+    _ensureInitialized();
+
+    final device = _devices[deviceId];
+    if (device != null) {
+      await device.disconnect();
+    }
+    _servicesCache.remove(deviceId);
+  }
+
+  @override
   Future<bool> isConnected(String deviceId) async {
+    _ensureInitialized();
+
     final device = _devices[deviceId];
     if (device == null) return false;
-    return device.isConnected;
+
+    final state = await device.connectionState.first;
+    return state == BluetoothConnectionState.connected;
   }
 
   @override
@@ -128,7 +180,18 @@ class RealBleClient implements BleClient {
 
   @override
   Future<int?> readSignalQuality(String deviceId) async {
-    return null;
+    final device = _devices[deviceId];
+    if (device == null) return null;
+
+    try {
+      final rssi = await device.readRssi();
+      if (rssi >= -60) return 4;
+      if (rssi >= -75) return 3;
+      if (rssi >= -90) return 2;
+      return 1;
+    } catch (_) {
+      return null;
+    }
   }
 
   @override
@@ -147,33 +210,85 @@ class RealBleClient implements BleClient {
 
   @override
   Future<void> writeCommand(String deviceId, List<int> data) async {
+    if (data.isEmpty) {
+      throw Exception('Command payload cannot be empty');
+    }
+
+    final Guid targetUuid =
+        data.length <= 4 ? inetWriteCharUuid : cmdWriteCharUuid;
+
     final c = await _findCharacteristic(
       deviceId,
-      commandServiceUuid,
-      commandWriteCharUuid,
+      eixamServiceUuid,
+      targetUuid,
     );
 
     if (c == null) {
-      throw Exception('Characteristic d’escriptura no trobada');
+      throw Exception('EIXAM write characteristic not found');
     }
 
-    await c.write(data, withoutResponse: false);
+    if (c.properties.writeWithoutResponse) {
+      await c.write(data, withoutResponse: true);
+    } else {
+      await c.write(data, withoutResponse: false);
+    }
   }
 
   @override
   Future<Stream<List<int>>> subscribeNotifications(String deviceId) async {
-    final c = await _findCharacteristic(
+    final tel = await _findCharacteristic(
       deviceId,
-      commandServiceUuid,
-      notifyCharUuid,
+      eixamServiceUuid,
+      telNotifyCharUuid,
+    );
+    final sos = await _findCharacteristic(
+      deviceId,
+      eixamServiceUuid,
+      sosNotifyCharUuid,
     );
 
-    if (c == null) {
-      throw Exception('Characteristic de notificacions no trobada');
+    if (tel == null || sos == null) {
+      throw Exception('EIXAM notify characteristics not found');
     }
 
-    await c.setNotifyValue(true);
-    return c.onValueReceived.map((value) => value.toList());
+    await tel.setNotifyValue(true);
+    await sos.setNotifyValue(true);
+
+    final telStream = tel.lastValueStream.map((v) => v.toList());
+    final sosStream = sos.lastValueStream.map((v) => v.toList());
+
+    return StreamGroup.merge([telStream, sosStream]);
+  }
+
+  @override
+  Future<bool> isEixamCompatible(String deviceId) async {
+    final services = await _services(deviceId);
+
+    BluetoothService? eixamService;
+    for (final s in services) {
+      if (s.uuid == eixamServiceUuid) {
+        eixamService = s;
+        break;
+      }
+    }
+
+    if (eixamService == null) {
+      return false;
+    }
+
+    bool hasTel = false;
+    bool hasSos = false;
+    bool hasInet = false;
+    bool hasCmd = false;
+
+    for (final c in eixamService.characteristics) {
+      if (c.uuid == telNotifyCharUuid) hasTel = true;
+      if (c.uuid == sosNotifyCharUuid) hasSos = true;
+      if (c.uuid == inetWriteCharUuid) hasInet = true;
+      if (c.uuid == cmdWriteCharUuid) hasCmd = true;
+    }
+
+    return hasTel && hasSos && hasInet && hasCmd;
   }
 
   Future<List<BluetoothService>> _services(String deviceId) async {
@@ -182,7 +297,9 @@ class RealBleClient implements BleClient {
     }
 
     final device = _devices[deviceId];
-    if (device == null) return [];
+    if (device == null) {
+      return [];
+    }
 
     final services = await device.discoverServices();
     _servicesCache[deviceId] = services;
@@ -208,18 +325,24 @@ class RealBleClient implements BleClient {
     return null;
   }
 
+  void _ensureInitialized() {
+    if (!_initialized) {
+      throw Exception('RealBleClient not initialized');
+    }
+  }
+
   BleAdapterState _mapAdapterState(BluetoothAdapterState state) {
     switch (state) {
-    case BluetoothAdapterState.on:
-      return BleAdapterState.poweredOn;
-    case BluetoothAdapterState.off:
-      return BleAdapterState.poweredOff;
-    case BluetoothAdapterState.unauthorized:
-      return BleAdapterState.unauthorized;
-    case BluetoothAdapterState.unavailable:
-      return BleAdapterState.unsupported;
-    default:
-      return BleAdapterState.unknown;
+      case BluetoothAdapterState.on:
+        return BleAdapterState.poweredOn;
+      case BluetoothAdapterState.off:
+        return BleAdapterState.poweredOff;
+      case BluetoothAdapterState.unauthorized:
+        return BleAdapterState.unauthorized;
+      case BluetoothAdapterState.unavailable:
+        return BleAdapterState.unsupported;
+      default:
+        return BleAdapterState.unknown;
     }
   }
 }

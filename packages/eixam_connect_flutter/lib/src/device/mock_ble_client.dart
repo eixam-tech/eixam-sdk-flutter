@@ -30,7 +30,9 @@ class MockBleClient implements BleClient {
   Stream<BleAdapterState> watchAdapterState() => _adapterController.stream;
 
   @override
-  Future<List<BleScanResult>> scan({Duration timeout = const Duration(seconds: 4)}) async {
+  Future<List<BleScanResult>> scan({
+    Duration timeout = const Duration(seconds: 4),
+  }) async {
     await Future<void>.delayed(const Duration(milliseconds: 450));
     if (_adapterState != BleAdapterState.poweredOn) {
       return const <BleScanResult>[];
@@ -59,7 +61,8 @@ class MockBleClient implements BleClient {
   }
 
   @override
-  Future<bool> isConnected(String deviceId) async => _connectedDeviceIds.contains(deviceId);
+  Future<bool> isConnected(String deviceId) async =>
+      _connectedDeviceIds.contains(deviceId);
 
   @override
   Future<int?> readBatteryLevel(String deviceId) async =>
@@ -71,7 +74,31 @@ class MockBleClient implements BleClient {
 
   @override
   Future<String?> readFirmwareVersion(String deviceId) async =>
-      _connectedDeviceIds.contains(deviceId) ? '0.2.0-ble-mock' : null;
+      _connectedDeviceIds.contains(deviceId) ? '2.7.21-mock' : null;
+
+  @override
+  Future<void> writeCommand(String deviceId, List<int> data) async {
+    if (!_connectedDeviceIds.contains(deviceId)) {
+      throw Exception('Device not connected: $deviceId');
+    }
+    if (data.isEmpty) {
+      throw Exception('Command payload cannot be empty');
+    }
+  }
+
+  @override
+  Future<Stream<List<int>>> subscribeNotifications(String deviceId) async {
+    if (!_connectedDeviceIds.contains(deviceId)) {
+      throw Exception('Device not connected: $deviceId');
+    }
+
+    return const Stream<List<int>>.empty();
+  }
+
+  @override
+  Future<bool> isEixamCompatible(String deviceId) async {
+    return _connectedDeviceIds.contains(deviceId);
+  }
 
   /// Allows tests or future demo screens to simulate a Bluetooth adapter change.
   Future<void> setAdapterState(BleAdapterState state) async {
@@ -84,24 +111,5 @@ class MockBleClient implements BleClient {
 
   Future<void> dispose() async {
     await _adapterController.close();
-  }
-
-  @override
-Future<void> writeCommand(String deviceId, List<int> data) async {
-  if (!_connectedDeviceIds.contains(deviceId)) {
-    throw Exception('Device not connected: $deviceId');
-  }
-
-  // Mock sense efecte real. Si vols, aquí pots simular respostes.
-}
-
-  @override
-  Future<Stream<List<int>>> subscribeNotifications(String deviceId) async {
-    if (!_connectedDeviceIds.contains(deviceId)) {
-      throw Exception('Device not connected: $deviceId');
-    }
-
-    // Mock buit de moment
-    return const Stream<List<int>>.empty();
   }
 }

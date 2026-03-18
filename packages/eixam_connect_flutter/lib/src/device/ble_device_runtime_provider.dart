@@ -12,49 +12,86 @@ import 'device_runtime_provider.dart';
 /// mock BLE client. Replacing the client with a real BLE adapter should not
 /// require changes in the repository or in the public SDK contract.
 class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
-  BleDeviceRuntimeProvider({required BleClient bleClient}) : _bleClient = bleClient;
+  BleDeviceRuntimeProvider({required BleClient bleClient})
+      : _bleClient = bleClient;
 
   final BleClient _bleClient;
   String? _connectedDeviceId;
 
   @override
-  Future<DeviceStatus> pair({required DeviceStatus currentStatus, required String pairingCode}) async {
+  Future<DeviceStatus> pair({
+    required DeviceStatus currentStatus,
+    required String pairingCode,
+  }) async {
     if (pairingCode.trim().length < 4) {
       throw const DeviceException.invalidPairingCode();
     }
 
     final adapterState = await _bleClient.getAdapterState();
     if (adapterState != BleAdapterState.poweredOn) {
-      throw const DeviceException('E_DEVICE_BLUETOOTH_OFF', 'Bluetooth must be enabled before pairing.');
+      throw const DeviceException(
+        'E_DEVICE_BLUETOOTH_OFF',
+        'Bluetooth must be enabled before pairing.',
+      );
     }
 
     final scanResults = await _bleClient.scan();
-    final candidate = _pickBestCandidate(scanResults);
-    if (candidate == null) {
-      throw const DeviceException('E_DEVICE_NOT_FOUND', 'No compatible EIXAM device was found nearby.');
+    if (scanResults.isEmpty) {
+      throw const DeviceException(
+        'E_DEVICE_NOT_FOUND',
+        'No BLE devices were found nearby.',
+      );
     }
 
-    await _bleClient.connect(candidate.deviceId);
-    _connectedDeviceId = candidate.deviceId;
+    final candidates = _sortCandidates(scanResults);
 
-    return currentStatus.copyWith(
-      deviceId: candidate.deviceId,
-      deviceAlias: candidate.name,
-      model: 'EIXAM R1',
-      paired: true,
-      connected: true,
-      lifecycleState: DeviceLifecycleState.paired,
-      batteryLevel: await _bleClient.readBatteryLevel(candidate.deviceId),
-      firmwareVersion: await _bleClient.readFirmwareVersion(candidate.deviceId),
-      signalQuality: await _bleClient.readSignalQuality(candidate.deviceId),
-      lastSeen: DateTime.now(),
-      lastSyncedAt: DateTime.now(),
-      clearProvisioningError: true,
+    for (final candidate in candidates) {
+      try {
+        await _bleClient.connect(candidate.deviceId);
+
+        final compatible =
+            await _bleClient.isEixamCompatible(candidate.deviceId);
+        if (!compatible) {
+          await _bleClient.disconnect(candidate.deviceId);
+          continue;
+        }
+
+        _connectedDeviceId = candidate.deviceId;
+
+        return currentStatus.copyWith(
+          deviceId: candidate.deviceId,
+          deviceAlias: candidate.name,
+          model: 'EIXAM R1',
+          paired: true,
+          connected: true,
+          lifecycleState: DeviceLifecycleState.paired,
+          batteryLevel: await _bleClient.readBatteryLevel(candidate.deviceId),
+          firmwareVersion:
+              await _bleClient.readFirmwareVersion(candidate.deviceId),
+          signalQuality:
+              await _bleClient.readSignalQuality(candidate.deviceId),
+          lastSeen: DateTime.now(),
+          lastSyncedAt: DateTime.now(),
+          clearProvisioningError: true,
+        );
+      } catch (_) {
+        try {
+          await _bleClient.disconnect(candidate.deviceId);
+        } catch (_) {}
+      }
+    }
+
+    throw const DeviceException(
+      'E_DEVICE_NOT_FOUND',
+      'No compatible EIXAM device was found nearby.',
     );
   }
 
   @override
-  Future<DeviceStatus> activate({required DeviceStatus currentStatus, required String activationCode}) async {
+  Future<DeviceStatus> activate({
+    required DeviceStatus currentStatus,
+    required String activationCode,
+  }) async {
     if (!currentStatus.paired) {
       throw const DeviceException.notPaired();
     }
@@ -67,8 +104,10 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       connected: await _resolveConnection(currentStatus.deviceId),
       lifecycleState: DeviceLifecycleState.ready,
       batteryLevel: await _bleClient.readBatteryLevel(currentStatus.deviceId),
-      firmwareVersion: await _bleClient.readFirmwareVersion(currentStatus.deviceId),
-      signalQuality: await _bleClient.readSignalQuality(currentStatus.deviceId),
+      firmwareVersion:
+          await _bleClient.readFirmwareVersion(currentStatus.deviceId),
+      signalQuality:
+          await _bleClient.readSignalQuality(currentStatus.deviceId),
       lastSeen: DateTime.now(),
       lastSyncedAt: DateTime.now(),
       clearProvisioningError: true,
@@ -85,9 +124,15 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
     return currentStatus.copyWith(
       connected: connected,
-      batteryLevel: connected ? await _bleClient.readBatteryLevel(currentStatus.deviceId) : currentStatus.batteryLevel,
-      firmwareVersion: connected ? await _bleClient.readFirmwareVersion(currentStatus.deviceId) : currentStatus.firmwareVersion,
-      signalQuality: connected ? await _bleClient.readSignalQuality(currentStatus.deviceId) : currentStatus.signalQuality,
+      batteryLevel: connected
+          ? await _bleClient.readBatteryLevel(currentStatus.deviceId)
+          : currentStatus.batteryLevel,
+      firmwareVersion: connected
+          ? await _bleClient.readFirmwareVersion(currentStatus.deviceId)
+          : currentStatus.firmwareVersion,
+      signalQuality: connected
+          ? await _bleClient.readSignalQuality(currentStatus.deviceId)
+          : currentStatus.signalQuality,
       lifecycleState: _resolveLifecycle(currentStatus, connected),
       lastSeen: connected ? DateTime.now() : currentStatus.lastSeen,
       lastSyncedAt: DateTime.now(),
@@ -114,22 +159,10 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     );
   }
 
-  /*BleScanResult? _pickBestCandidate(List<BleScanResult> scanResults) {
-    if (scanResults.isEmpty) return null;
-    final sorted = [...scanResults]..sort((a, b) => b.rssi.compareTo(a.rssi));
-    return sorted.first;
-  }*/
-
-  BleScanResult? _pickBestCandidate(List<BleScanResult> scanResults) {
-  final compatible = scanResults.where((d) {
-    final name = d.name.toLowerCase();
-    return name.contains('eixam') || name.contains('wismesh') || name.contains('rak');
-  }).toList();
-
-  if (compatible.isEmpty) return null;
-
-  compatible.sort((a, b) => b.rssi.compareTo(a.rssi));
-  return compatible.first;
+  List<BleScanResult> _sortCandidates(List<BleScanResult> scanResults) {
+    final candidates = scanResults.where((d) => d.connectable).toList()
+      ..sort((a, b) => b.rssi.compareTo(a.rssi));
+    return candidates;
   }
 
   Future<bool> _resolveConnection(String deviceId) async {
@@ -137,21 +170,13 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     return _bleClient.isConnected(id);
   }
 
-  DeviceLifecycleState _resolveLifecycle(DeviceStatus currentStatus, bool connected) {
+  DeviceLifecycleState _resolveLifecycle(
+    DeviceStatus currentStatus,
+    bool connected,
+  ) {
     if (!currentStatus.paired) return DeviceLifecycleState.unpaired;
     if (!currentStatus.activated) return DeviceLifecycleState.paired;
     if (connected) return DeviceLifecycleState.ready;
     return DeviceLifecycleState.activated;
-  }
-
-    @override
-  Future<Stream<List<int>>> subscribeNotifications(String deviceId) async {
-   final connected = await _bleClient.isConnected(deviceId);
-    if (!connected) {
-      throw Exception('Device not connected: $deviceId');
-    }
-
-    // Mock buit de moment
-    return const Stream<List<int>>.empty();
   }
 }
