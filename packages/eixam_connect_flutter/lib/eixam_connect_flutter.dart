@@ -30,3 +30,4 @@ export 'src/device/ble_device_runtime_provider.dart';
 export 'src/device/mock_ble_client.dart';
 export 'src/device/device_runtime_provider.dart';
 export 'src/device/mock_device_runtime_provider.dart';
+export 'src/device/device_sos_controller.dart';

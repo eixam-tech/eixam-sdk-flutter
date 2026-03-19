@@ -18,11 +18,16 @@ class DeviceDetailScreen extends StatefulWidget {
 
 class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   DeviceStatus? _deviceStatus;
+  DeviceSosStatus _deviceSosStatus = DeviceSosStatus.initial();
+  final TextEditingController _ackRelayNodeIdController =
+      TextEditingController();
   PermissionState? _permissionState;
   BleDebugState _bleDebugState = BleDebugRegistry.instance.currentState;
   StreamSubscription<DeviceStatus>? _deviceStatusSub;
+  StreamSubscription<DeviceSosStatus>? _deviceSosSub;
   StreamSubscription<BleDebugState>? _bleDebugSub;
   bool _loadingDevice = false;
+  bool _loadingSos = false;
   bool _loadingScan = false;
   bool _loadingPermissions = false;
   String? _lastError;
@@ -45,6 +50,16 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       onError: _handleError,
     );
 
+    _deviceSosSub = widget.sdk.watchDeviceSosStatus().listen(
+      (status) {
+        if (!mounted) return;
+        setState(() {
+          _deviceSosStatus = status;
+        });
+      },
+      onError: _handleError,
+    );
+
     _bleDebugSub = BleDebugRegistry.instance.watch().listen(
       (state) {
         if (!mounted) return;
@@ -58,10 +73,12 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   Future<void> _loadInitialState() async {
     try {
       final status = await widget.sdk.getDeviceStatus();
+      final deviceSosStatus = await widget.sdk.getDeviceSosStatus();
       final permissionState = await widget.sdk.getPermissionState();
       if (!mounted) return;
       setState(() {
         _deviceStatus = status;
+        _deviceSosStatus = deviceSosStatus;
         _permissionState = permissionState;
       });
     } catch (error) {
@@ -142,6 +159,31 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     }
   }
 
+  Future<void> _runSosAction(
+    Future<DeviceSosStatus> Function() action,
+  ) async {
+    setState(() {
+      _loadingSos = true;
+      _lastError = null;
+    });
+
+    try {
+      final status = await action();
+      if (!mounted) return;
+      setState(() {
+        _deviceSosStatus = status;
+      });
+    } catch (error) {
+      _handleError(error);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loadingSos = false;
+        });
+      }
+    }
+  }
+
   Future<bool> _ensureScanPrerequisites({
     required bool requestIfMissing,
   }) async {
@@ -206,7 +248,9 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   @override
   void dispose() {
     _deviceStatusSub?.cancel();
+    _deviceSosSub?.cancel();
     _bleDebugSub?.cancel();
+    _ackRelayNodeIdController.dispose();
     super.dispose();
   }
 
@@ -293,6 +337,215 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                   _InfoLine(
                     label: 'Last sync',
                     value: _formatDate(status?.lastSyncedAt),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            _CardSection(
+              title: 'SOS State',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      Chip(
+                        label: Text(_deviceSosBadgeLabel(_deviceSosStatus)),
+                        backgroundColor: _deviceSosBadgeColor(
+                          _deviceSosStatus.state,
+                        ),
+                      ),
+                      if (_deviceSosStatus.optimistic)
+                        const Chip(label: Text('Optimistic')),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  _InfoLine(
+                    label: 'Current state',
+                    value: _deviceSosStatus.state.name,
+                  ),
+                  _InfoLine(
+                    label: 'State source',
+                    value: _deviceSosStatus.derivedFromBlePacket
+                        ? 'Derived from BLE packet parsing'
+                        : 'Local/runtime state',
+                  ),
+                  _InfoLine(
+                    label: 'Last SOS packet length',
+                    value: _deviceSosStatus.lastPacketLength?.toString() ?? '-',
+                  ),
+                  _InfoLine(
+                    label: 'Last SOS packet timestamp',
+                    value: _formatDate(_deviceSosStatus.lastPacketAt),
+                  ),
+                  _InfoLine(
+                    label: 'Last SOS packet hex',
+                    value: _deviceSosStatus.lastPacketHex ?? '-',
+                  ),
+                  _InfoLine(
+                    label: 'Last transition',
+                    value: _deviceSosStatus.lastEvent,
+                  ),
+                  _InfoLine(
+                    label: 'Decoded nodeId',
+                    value: _formatNodeId(_deviceSosStatus.nodeId),
+                  ),
+                  _InfoLine(
+                    label: 'Decoded flags',
+                    value: _formatByte(_deviceSosStatus.flags),
+                  ),
+                  _InfoLine(
+                    label: 'Decoded marker',
+                    value: _formatByte(_deviceSosStatus.marker),
+                  ),
+                  _InfoLine(
+                    label: 'Decoded status byte',
+                    value: _formatByte(_deviceSosStatus.statusByte),
+                  ),
+                  _InfoLine(
+                    label: 'Decoder note',
+                    value: _deviceSosStatus.decoderNote ?? '-',
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            _CardSection(
+              title: 'SOS Controls',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      ElevatedButton(
+                        onPressed: _canTriggerDeviceSos
+                            ? () => _runSosAction(widget.sdk.triggerDeviceSos)
+                            : null,
+                        child: const Text('Trigger SOS'),
+                      ),
+                      ElevatedButton(
+                        onPressed: _canConfirmDeviceSos
+                            ? () => _runSosAction(widget.sdk.confirmDeviceSos)
+                            : null,
+                        child: const Text('Confirm SOS'),
+                      ),
+                      OutlinedButton(
+                        onPressed: _canCancelDeviceSos
+                            ? () => _runSosAction(widget.sdk.cancelDeviceSos)
+                            : null,
+                        child: Text(_cancelDeviceSosLabel),
+                      ),
+                      ElevatedButton(
+                        onPressed: _canAcknowledgeDeviceSos
+                            ? () =>
+                                  _runSosAction(widget.sdk.acknowledgeDeviceSos)
+                            : null,
+                        child: const Text('Acknowledge SOS'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            _CardSection(
+              title: 'Connectivity Controls',
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  OutlinedButton(
+                    onPressed: _bleDebugState.commandWriterReady
+                        ? () => _sendBleCommand(const [0x01])
+                        : null,
+                    child: const Text('INET OK'),
+                  ),
+                  OutlinedButton(
+                    onPressed: _bleDebugState.commandWriterReady
+                        ? () => _sendBleCommand(const [0x02])
+                        : null,
+                    child: const Text('INET LOST'),
+                  ),
+                  OutlinedButton(
+                    onPressed: _bleDebugState.commandWriterReady
+                        ? () => _sendBleCommand(const [0x03])
+                        : null,
+                    child: const Text('POS CONFIRMED'),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            _CardSection(
+              title: 'Advanced Controls',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    controller: _ackRelayNodeIdController,
+                    decoration: const InputDecoration(
+                      labelText: 'SOS_ACK_RELAY nodeId',
+                      hintText: '0x00801AA8 or decimal',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: OutlinedButton(
+                      onPressed: _bleDebugState.commandWriterReady
+                          ? _sendAckRelayCommand
+                          : null,
+                      child: const Text('ACK Relay'),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: OutlinedButton(
+                      onPressed: _bleDebugState.commandWriterReady
+                          ? _confirmAndSendShutdown
+                          : null,
+                      child: const Text('Shutdown'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            _CardSection(
+              title: 'Last Command Result',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _InfoLine(
+                    label: 'Last command sent',
+                    value: _lastCommandLabel(_bleDebugState.lastCommandSent),
+                  ),
+                  _InfoLine(
+                    label: 'Last payload hex',
+                    value: _bleDebugState.lastCommandSent ?? '-',
+                  ),
+                  _InfoLine(
+                    label: 'Target characteristic',
+                    value: _bleDebugState.lastWriteTargetCharacteristic ?? '-',
+                  ),
+                  _InfoLine(
+                    label: 'Write success/failure',
+                    value: _bleDebugState.lastWriteResult ?? '-',
+                  ),
+                  _InfoLine(
+                    label: 'Timestamp',
+                    value: _formatDate(_bleDebugState.lastWriteAt),
+                  ),
+                  _InfoLine(
+                    label: 'Exact error',
+                    value: _bleDebugState.lastWriteError ?? '-',
                   ),
                 ],
               ),
@@ -474,43 +727,19 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
             const SizedBox(height: 16),
             _CardSection(
               title: 'BLE Debug',
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              child: ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                childrenPadding: EdgeInsets.zero,
+                title: const Text('Tap to expand'),
                 children: [
                   _InfoLine(
                     label: 'Adapter state',
                     value: _bleDebugState.adapterState.toString(),
                   ),
                   _InfoLine(
-                    label: 'Selected device id',
+                    label: 'Connected device id',
                     value: _bleDebugState.selectedDeviceId ?? '-',
                   ),
-                  _InfoLine(
-                    label: 'Connection status',
-                    value: _bleDebugState.connectionStatus.name,
-                  ),
-                  _InfoLine(
-                    label: 'Connection error',
-                    value: _bleDebugState.connectionError ?? '-',
-                  ),
-                  if (_bleDebugState.connectionError != null) ...[
-                    const SizedBox(height: 8),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.red.withValues(alpha: 0.06),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: Colors.red.withValues(alpha: 0.25),
-                        ),
-                      ),
-                      child: SelectableText(
-                        _bleDebugState.connectionError!,
-                        style: const TextStyle(fontFamily: 'monospace'),
-                      ),
-                    ),
-                  ],
                   _InfoLine(
                     label: 'EIXAM service found',
                     value: _bleDebugState.eixamServiceFound.toString(),
@@ -531,27 +760,6 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                     label: 'CMD found',
                     value: _bleDebugState.cmdFound.toString(),
                   ),
-                  if (_bleDebugState.eixamServiceFound &&
-                      _bleDebugState.telFound &&
-                      _bleDebugState.sosFound &&
-                      _bleDebugState.inetFound &&
-                      !_bleDebugState.cmdFound) ...[
-                    const SizedBox(height: 8),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.orange.withValues(alpha: 0.08),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: Colors.orange.withValues(alpha: 0.3),
-                        ),
-                      ),
-                      child: const Text(
-                        'Connected to EIXAM device, but CMD characteristic (ea04) is missing. Advanced commands may be unavailable.',
-                      ),
-                    ),
-                  ],
                   _InfoLine(
                     label: 'TEL notify subscribed',
                     value: _bleDebugState.telNotifySubscribed.toString(),
@@ -561,59 +769,8 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                     value: _bleDebugState.sosNotifySubscribed.toString(),
                   ),
                   _InfoLine(
-                    label: 'Command channel ready',
-                    value: _bleDebugState.commandWriterReady.toString(),
-                  ),
-                  _InfoLine(
-                    label: 'Last command sent',
-                    value: _bleDebugState.lastCommandSent ?? '-',
-                  ),
-                  _InfoLine(
-                    label: 'Last packet received',
-                    value: _bleDebugState.lastPacketReceived ?? '-',
-                  ),
-                  _InfoLine(
-                    label: 'Discovered services',
-                    value: _bleDebugState.discoveredServices.isEmpty
-                        ? '-'
-                        : _bleDebugState.discoveredServices.join(', '),
-                  ),
-                  const SizedBox(height: 12),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      OutlinedButton(
-                        onPressed: _bleDebugState.commandWriterReady
-                            ? () => _sendBleCommand(const [0x01])
-                            : null,
-                        child: const Text('INET OK'),
-                      ),
-                      OutlinedButton(
-                        onPressed: _bleDebugState.commandWriterReady
-                            ? () => _sendBleCommand(const [0x02])
-                            : null,
-                        child: const Text('INET LOST'),
-                      ),
-                      OutlinedButton(
-                        onPressed: _bleDebugState.commandWriterReady
-                            ? () => _sendBleCommand(const [0x06])
-                            : null,
-                        child: const Text('SOS Trigger'),
-                      ),
-                      OutlinedButton(
-                        onPressed: _bleDebugState.commandWriterReady
-                            ? () => _sendBleCommand(const [0x04])
-                            : null,
-                        child: const Text('SOS Cancel'),
-                      ),
-                      OutlinedButton(
-                        onPressed: _bleDebugState.commandWriterReady
-                            ? () => _sendBleCommand(const [0x10])
-                            : null,
-                        child: const Text('Shutdown'),
-                      ),
-                    ],
+                    label: 'Compatibility mode',
+                    value: _compatibilityModeLabel(),
                   ),
                 ],
               ),
@@ -665,12 +822,188 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     return 'Disconnected';
   }
 
+  bool get _canTriggerDeviceSos {
+    final state = _deviceSosStatus.state;
+    return !_loadingSos &&
+        (state == DeviceSosState.inactive ||
+            state == DeviceSosState.resolved ||
+            state == DeviceSosState.unknown);
+  }
+
+  bool get _canConfirmDeviceSos =>
+      !_loadingSos && _deviceSosStatus.state == DeviceSosState.preConfirm;
+
+  bool get _canAcknowledgeDeviceSos =>
+      !_loadingSos && _deviceSosStatus.state == DeviceSosState.active;
+
+  bool get _canCancelDeviceSos {
+    final state = _deviceSosStatus.state;
+    return !_loadingSos &&
+        (state == DeviceSosState.preConfirm ||
+            state == DeviceSosState.active ||
+            state == DeviceSosState.acknowledged);
+  }
+
+  String get _cancelDeviceSosLabel {
+    return _deviceSosStatus.state == DeviceSosState.preConfirm
+        ? 'Cancel SOS'
+        : 'Resolve SOS';
+  }
+
+  String _deviceSosBadgeLabel(DeviceSosStatus status) {
+    final text = switch (status.state) {
+      DeviceSosState.inactive => 'Inactive',
+      DeviceSosState.preConfirm => 'Pre-confirm',
+      DeviceSosState.active => 'Active',
+      DeviceSosState.acknowledged => 'Acknowledged',
+      DeviceSosState.resolved => 'Resolved',
+      DeviceSosState.unknown => 'Unknown',
+    };
+    return status.optimistic ? '$text (pending)' : text;
+  }
+
+  Color _deviceSosBadgeColor(DeviceSosState state) {
+    switch (state) {
+      case DeviceSosState.inactive:
+        return Colors.grey.shade300;
+      case DeviceSosState.preConfirm:
+        return Colors.orange.shade200;
+      case DeviceSosState.active:
+        return Colors.red.shade200;
+      case DeviceSosState.acknowledged:
+        return Colors.blue.shade200;
+      case DeviceSosState.resolved:
+        return Colors.green.shade200;
+      case DeviceSosState.unknown:
+        return Colors.black12;
+    }
+  }
+
+  String _formatByte(int? value) {
+    if (value == null) return '-';
+    return '0x${value.toRadixString(16).padLeft(2, '0')}';
+  }
+
+  String _formatNodeId(int? nodeId) {
+    if (nodeId == null) return '-';
+    final normalized = nodeId & 0xFFFFFFFF;
+    return '0x${normalized.toRadixString(16).padLeft(8, '0')}';
+  }
+
+  String _lastCommandLabel(String? payloadHex) {
+    if (payloadHex == null || payloadHex.trim().isEmpty) {
+      return '-';
+    }
+    final firstToken = payloadHex.trim().split(RegExp(r'\s+')).first;
+    final opcode = int.tryParse(firstToken, radix: 16);
+    if (opcode == null) {
+      return payloadHex;
+    }
+    switch (opcode) {
+      case 0x01:
+        return 'INET OK';
+      case 0x02:
+        return 'INET LOST';
+      case 0x03:
+        return 'POS CONFIRMED';
+      case 0x04:
+        return 'SOS CANCEL';
+      case 0x05:
+        return 'SOS CONFIRM';
+      case 0x06:
+        return 'SOS TRIGGER APP';
+      case 0x07:
+        return 'SOS ACK';
+      case 0x08:
+        return 'SOS ACK RELAY';
+      case 0x10:
+        return 'SHUTDOWN';
+      default:
+        return '0x${opcode.toRadixString(16).padLeft(2, '0')}';
+    }
+  }
+
+  String _compatibilityModeLabel() {
+    final softCompatible =
+        _bleDebugState.eixamServiceFound &&
+        _bleDebugState.telFound &&
+        _bleDebugState.sosFound &&
+        _bleDebugState.inetFound;
+    if (!softCompatible) {
+      return 'Incompatible';
+    }
+    if (_bleDebugState.cmdFound) {
+      return 'Full';
+    }
+    return 'Soft';
+  }
+
   String _formatDate(DateTime? value) {
     if (value == null) return '-';
     final local = value.toLocal();
     String two(int part) => part.toString().padLeft(2, '0');
     return '${local.year}-${two(local.month)}-${two(local.day)} '
         '${two(local.hour)}:${two(local.minute)}:${two(local.second)}';
+  }
+
+  Future<void> _sendAckRelayCommand() async {
+    final raw = _ackRelayNodeIdController.text.trim();
+    if (raw.isEmpty) {
+      _handleError(StateError('Enter a nodeId for SOS_ACK_RELAY.'));
+      return;
+    }
+
+    final nodeId = _parseNodeId(raw);
+    if (nodeId == null) {
+      _handleError(
+        StateError('Invalid nodeId. Use decimal or hex like 0x00801AA8.'),
+      );
+      return;
+    }
+
+    final payload = <int>[
+      0x08,
+      nodeId & 0xFF,
+      (nodeId >> 8) & 0xFF,
+      (nodeId >> 16) & 0xFF,
+      (nodeId >> 24) & 0xFF,
+    ];
+    await _sendBleCommand(payload);
+  }
+
+  int? _parseNodeId(String raw) {
+    if (raw.startsWith('0x') || raw.startsWith('0X')) {
+      return int.tryParse(raw.substring(2), radix: 16);
+    }
+    return int.tryParse(raw);
+  }
+
+  Future<void> _confirmAndSendShutdown() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Confirm Shutdown'),
+          content: const Text(
+            'Send opcode 0x10 to the connected device?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Send'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed == true) {
+      await _sendBleCommand(const [0x10]);
+    }
   }
 }
 

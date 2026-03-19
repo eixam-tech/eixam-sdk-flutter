@@ -5,6 +5,8 @@ import 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
 import 'package:eixam_connect_core/src/events/realtime_event.dart';
 import 'package:eixam_connect_core/src/interfaces/realtime_client.dart';
 
+import '../device/device_sos_controller.dart';
+
 /// Main SDK orchestrator used by host apps.
 ///
 /// It composes repositories, exposes a stable public API and coordinates
@@ -19,6 +21,7 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
   final PermissionsRepository permissionsRepository;
   final NotificationsRepository notificationsRepository;
   final RealtimeClient realtimeClient;
+  final DeviceSosController deviceSosController;
 
   final StreamController<EixamSdkEvent> _eventsController =
       StreamController.broadcast();
@@ -52,6 +55,7 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
     required this.permissionsRepository,
     required this.notificationsRepository,
     required this.realtimeClient,
+    required this.deviceSosController,
   });
 
   @override
@@ -124,6 +128,36 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
   @override
   Stream<DeviceStatus> watchDeviceStatus() {
     return deviceRepository.watchDeviceStatus();
+  }
+
+  @override
+  Future<DeviceSosStatus> getDeviceSosStatus() {
+    return deviceSosController.getStatus();
+  }
+
+  @override
+  Stream<DeviceSosStatus> watchDeviceSosStatus() {
+    return deviceSosController.watchStatus();
+  }
+
+  @override
+  Future<DeviceSosStatus> triggerDeviceSos() {
+    return deviceSosController.triggerSos();
+  }
+
+  @override
+  Future<DeviceSosStatus> confirmDeviceSos() {
+    return deviceSosController.confirmSos();
+  }
+
+  @override
+  Future<DeviceSosStatus> cancelDeviceSos() {
+    return deviceSosController.cancelSos();
+  }
+
+  @override
+  Future<DeviceSosStatus> acknowledgeDeviceSos() {
+    return deviceSosController.acknowledgeSos();
   }
 
   @override
@@ -454,6 +488,7 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
     _deathManTimer?.cancel();
     await _realtimeConnectionSub?.cancel();
     await _realtimeEventsSub?.cancel();
+    await deviceSosController.dispose();
     await realtimeClient.disconnect();
     await _realtimeConnectionStateController.close();
     await _realtimeEventsController.close();

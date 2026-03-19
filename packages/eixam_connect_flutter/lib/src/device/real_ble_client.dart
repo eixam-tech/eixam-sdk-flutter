@@ -313,14 +313,40 @@ class RealBleClient implements BleClient {
     _log(
       'BLE write -> deviceId=$deviceId target=${targetUuid.str} payload=$payload',
     );
-    if (c.properties.writeWithoutResponse) {
-      await c.write(data, withoutResponse: true);
-    } else {
-      await c.write(data, withoutResponse: false);
+    BleDebugRegistry.instance.update(
+      lastCommandSent: payload,
+      lastWriteTargetCharacteristic: targetUuid.str,
+      lastWriteResult: 'PENDING',
+      lastWriteAt: DateTime.now(),
+      lastWriteError: null,
+    );
+    try {
+      if (c.properties.writeWithoutResponse) {
+        await c.write(data, withoutResponse: true);
+      } else {
+        await c.write(data, withoutResponse: false);
+      }
+    } catch (error) {
+      BleDebugRegistry.instance.update(
+        lastWriteTargetCharacteristic: targetUuid.str,
+        lastWriteResult: 'FAILED: $error',
+        lastWriteAt: DateTime.now(),
+        lastWriteError: error.toString(),
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'BLE write failed -> target=${targetUuid.str} payload=$payload error=$error',
+      );
+      rethrow;
     }
-    BleDebugRegistry.instance.update(lastCommandSent: payload);
+    BleDebugRegistry.instance.update(
+      lastCommandSent: payload,
+      lastWriteTargetCharacteristic: targetUuid.str,
+      lastWriteResult: 'SUCCESS',
+      lastWriteAt: DateTime.now(),
+      lastWriteError: null,
+    );
     BleDebugRegistry.instance.recordEvent(
-      'Command written to $deviceId (${data.length} bytes)',
+      'Command written to $deviceId (${data.length} bytes) target=${targetUuid.str}',
     );
   }
 
@@ -366,6 +392,27 @@ class RealBleClient implements BleClient {
       _log('BLE notify packet -> deviceId=$deviceId payload=$payload');
       return packet;
     });
+  }
+
+  @override
+  Future<Stream<List<int>>> subscribeSosNotifications(String deviceId) async {
+    final sos = await _findCharacteristic(
+      deviceId,
+      eixamServiceUuid,
+      sosNotifyCharUuid,
+    );
+
+    if (sos == null) {
+      throw Exception('EIXAM SOS notify characteristic not found');
+    }
+
+    await sos.setNotifyValue(true);
+    BleDebugRegistry.instance.update(sosNotifySubscribed: true);
+    BleDebugRegistry.instance.recordEvent(
+      'SOS notify subscription enabled for $deviceId',
+    );
+
+    return sos.lastValueStream.map((packet) => packet.toList());
   }
 
   @override

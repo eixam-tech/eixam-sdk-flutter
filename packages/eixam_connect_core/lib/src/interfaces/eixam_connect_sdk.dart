@@ -1,6 +1,7 @@
 import '../config/eixam_sdk_config.dart';
 import '../config/eixam_session.dart';
 import '../entities/death_man_plan.dart';
+import '../entities/device_sos_status.dart';
 import '../entities/device_status.dart';
 import '../entities/emergency_contact.dart';
 import '../entities/permission_state.dart';
@@ -24,6 +25,12 @@ abstract class EixamConnectSdk {
   Future<DeviceStatus> refreshDeviceStatus();
   Future<void> unpairDevice();
   Stream<DeviceStatus> watchDeviceStatus();
+  Future<DeviceSosStatus> getDeviceSosStatus();
+  Stream<DeviceSosStatus> watchDeviceSosStatus();
+  Future<DeviceSosStatus> triggerDeviceSos();
+  Future<DeviceSosStatus> confirmDeviceSos();
+  Future<DeviceSosStatus> cancelDeviceSos();
+  Future<DeviceSosStatus> acknowledgeDeviceSos();
 
   Future<PermissionState> getPermissionState();
   Future<PermissionState> requestLocationPermission();

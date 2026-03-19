@@ -16,6 +16,10 @@ class BleDebugState {
     this.sosNotifySubscribed = false,
     this.commandWriterReady = false,
     this.lastCommandSent,
+    this.lastWriteTargetCharacteristic,
+    this.lastWriteResult,
+    this.lastWriteAt,
+    this.lastWriteError,
     this.lastPacketReceived,
     this.discoveredServices = const <String>[],
     this.scanResults = const <BleScanResult>[],
@@ -36,6 +40,10 @@ class BleDebugState {
   final bool sosNotifySubscribed;
   final bool commandWriterReady;
   final String? lastCommandSent;
+  final String? lastWriteTargetCharacteristic;
+  final String? lastWriteResult;
+  final DateTime? lastWriteAt;
+  final String? lastWriteError;
   final String? lastPacketReceived;
   final List<String> discoveredServices;
   final List<BleScanResult> scanResults;
@@ -56,6 +64,10 @@ class BleDebugState {
     bool? sosNotifySubscribed,
     bool? commandWriterReady,
     String? lastCommandSent,
+    String? lastWriteTargetCharacteristic,
+    String? lastWriteResult,
+    DateTime? lastWriteAt,
+    String? lastWriteError,
     String? lastPacketReceived,
     List<String>? discoveredServices,
     List<BleScanResult>? scanResults,
@@ -76,6 +88,11 @@ class BleDebugState {
       sosNotifySubscribed: sosNotifySubscribed ?? this.sosNotifySubscribed,
       commandWriterReady: commandWriterReady ?? this.commandWriterReady,
       lastCommandSent: lastCommandSent ?? this.lastCommandSent,
+      lastWriteTargetCharacteristic:
+          lastWriteTargetCharacteristic ?? this.lastWriteTargetCharacteristic,
+      lastWriteResult: lastWriteResult ?? this.lastWriteResult,
+      lastWriteAt: lastWriteAt ?? this.lastWriteAt,
+      lastWriteError: lastWriteError ?? this.lastWriteError,
       lastPacketReceived: lastPacketReceived ?? this.lastPacketReceived,
       discoveredServices: discoveredServices ?? this.discoveredServices,
       scanResults: scanResults ?? this.scanResults,

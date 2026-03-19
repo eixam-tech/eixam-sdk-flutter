@@ -24,6 +24,7 @@ abstract class BleClient {
 
   Future<void> writeCommand(String deviceId, List<int> data);
   Future<Stream<List<int>>> subscribeNotifications(String deviceId);
+  Future<Stream<List<int>>> subscribeSosNotifications(String deviceId);
 
   Future<bool> isEixamCompatible(String deviceId);
 }

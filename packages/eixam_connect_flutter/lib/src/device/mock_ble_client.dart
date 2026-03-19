@@ -13,6 +13,8 @@ import 'ble_scan_result.dart';
 class MockBleClient implements BleClient {
   final StreamController<BleAdapterState> _adapterController =
       StreamController<BleAdapterState>.broadcast();
+  final Map<String, StreamController<List<int>>> _notifyControllers =
+      <String, StreamController<List<int>>>{};
   final Random _random = Random();
   BleAdapterState _adapterState = BleAdapterState.poweredOn;
   final Set<String> _connectedDeviceIds = <String>{};
@@ -85,6 +87,7 @@ class MockBleClient implements BleClient {
   @override
   Future<void> disconnect(String deviceId) async {
     _connectedDeviceIds.remove(deviceId);
+    await _notifyControllers.remove(deviceId)?.close();
     BleDebugRegistry.instance.update(
       telNotifySubscribed: false,
       sosNotifySubscribed: false,
@@ -124,14 +127,26 @@ class MockBleClient implements BleClient {
       lastCommandSent: data
           .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
           .join(' '),
+      lastWriteTargetCharacteristic: data.length <= 4
+          ? '6ba1b218-15a8-461f-9fa8-5dcae273ea03'
+          : '6ba1b218-15a8-461f-9fa8-5dcae273ea04',
+      lastWriteResult: 'SUCCESS',
+      lastWriteAt: DateTime.now(),
+      lastWriteError: null,
     );
     BleDebugRegistry.instance.recordEvent(
       'Mock command written to $deviceId (${data.length} bytes)',
     );
+    _emitMockSosPacket(deviceId, data.first);
   }
 
   @override
   Future<Stream<List<int>>> subscribeNotifications(String deviceId) async {
+    return subscribeSosNotifications(deviceId);
+  }
+
+  @override
+  Future<Stream<List<int>>> subscribeSosNotifications(String deviceId) async {
     if (!_connectedDeviceIds.contains(deviceId)) {
       throw Exception('Device not connected: $deviceId');
     }
@@ -143,7 +158,18 @@ class MockBleClient implements BleClient {
     BleDebugRegistry.instance.recordEvent(
       'Mock notify subscription enabled for $deviceId',
     );
-    return const Stream<List<int>>.empty();
+    final controller =
+        _notifyControllers[deviceId] ??
+        StreamController<List<int>>.broadcast();
+    _notifyControllers[deviceId] = controller;
+    return controller.stream.map((packet) {
+      BleDebugRegistry.instance.update(
+        lastPacketReceived: packet
+            .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
+            .join(' '),
+      );
+      return packet;
+    });
   }
 
   @override
@@ -169,6 +195,35 @@ class MockBleClient implements BleClient {
   }
 
   Future<void> dispose() async {
+    for (final controller in _notifyControllers.values) {
+      await controller.close();
+    }
     await _adapterController.close();
+  }
+
+  void _emitMockSosPacket(String deviceId, int opcode) {
+    final controller = _notifyControllers[deviceId];
+    if (controller == null || controller.isClosed) {
+      return;
+    }
+
+    const nodeId = <int>[0xA8, 0x1A, 0x80, 0x00];
+    switch (opcode) {
+      case 0x04:
+        controller.add(<int>[...nodeId, 0x08, 0x00, 0x00, 0x00, 0x80, 0x12]);
+        return;
+      case 0x05:
+        controller.add(<int>[...nodeId, 0x08, 0x00, 0x00, 0x00, 0x80, 0x42]);
+        return;
+      case 0x06:
+        controller.add(<int>[...nodeId, 0x08, 0x00, 0x00, 0x00, 0x80, 0x32]);
+        return;
+      case 0x07:
+      case 0x08:
+        controller.add(<int>[...nodeId, 0x08, 0x00, 0x00, 0x00, 0x80, 0x52]);
+        return;
+      default:
+        return;
+    }
   }
 }

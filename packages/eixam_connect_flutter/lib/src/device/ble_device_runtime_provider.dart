@@ -8,6 +8,7 @@ import 'ble_client.dart';
 import 'ble_connection_status.dart';
 import 'ble_debug_registry.dart';
 import 'ble_scan_result.dart';
+import 'device_sos_controller.dart';
 import 'device_runtime_provider.dart';
 
 /// BLE-oriented runtime provider that keeps device provisioning logic isolated
@@ -17,12 +18,18 @@ import 'device_runtime_provider.dart';
 /// mock BLE client. Replacing the client with a real BLE adapter should not
 /// require changes in the repository or in the public SDK contract.
 class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
-  BleDeviceRuntimeProvider({required BleClient bleClient})
-    : _bleClient = bleClient;
+  BleDeviceRuntimeProvider({
+    required BleClient bleClient,
+    DeviceSosController? deviceSosController,
+  }) : _bleClient = bleClient,
+       _deviceSosController = deviceSosController ?? DeviceSosController();
 
   final BleClient _bleClient;
   String? _connectedDeviceId;
+  final DeviceSosController _deviceSosController;
   StreamSubscription<List<int>>? _notificationSubscription;
+
+  DeviceSosController get deviceSosController => _deviceSosController;
 
   @override
   Future<DeviceStatus> pair({
@@ -188,6 +195,11 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         );
       },
     );
+    final sosStream = await _bleClient.subscribeSosNotifications(deviceId);
+    await _deviceSosController.attach(
+      notifications: sosStream,
+      commandWriter: (data) => _bleClient.writeCommand(deviceId, data),
+    );
   }
 
   @override
@@ -254,6 +266,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   Future<DeviceStatus> unpair(DeviceStatus currentStatus) async {
     await _notificationSubscription?.cancel();
     _notificationSubscription = null;
+    await _deviceSosController.detach();
     if (_connectedDeviceId != null) {
       await _bleClient.disconnect(_connectedDeviceId!);
     }
