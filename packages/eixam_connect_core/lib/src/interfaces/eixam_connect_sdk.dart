@@ -1,6 +1,7 @@
 import '../config/eixam_sdk_config.dart';
 import '../config/eixam_session.dart';
 import '../entities/death_man_plan.dart';
+import '../entities/ble_notification_navigation_request.dart';
 import '../entities/device_sos_status.dart';
 import '../entities/device_status.dart';
 import '../entities/emergency_contact.dart';
@@ -31,6 +32,10 @@ abstract class EixamConnectSdk {
   Future<DeviceSosStatus> confirmDeviceSos();
   Future<DeviceSosStatus> cancelDeviceSos();
   Future<DeviceSosStatus> acknowledgeDeviceSos();
+  Future<BleNotificationNavigationRequest?>
+  consumePendingBleNotificationNavigationRequest();
+  Stream<BleNotificationNavigationRequest>
+  watchBleNotificationNavigationRequests();
 
   Future<PermissionState> getPermissionState();
   Future<PermissionState> requestLocationPermission();

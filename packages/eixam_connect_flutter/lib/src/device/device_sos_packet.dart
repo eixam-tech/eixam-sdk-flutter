@@ -32,10 +32,7 @@ class DeviceSosPacket {
     }
 
     final nodeId =
-        packet[0] |
-        (packet[1] << 8) |
-        (packet[2] << 16) |
-        (packet[3] << 24);
+        packet[0] | (packet[1] << 8) | (packet[2] << 16) | (packet[3] << 24);
     final flags = packet[4];
     final counter = packet[5] | (packet[6] << 8) | (packet[7] << 16);
     final marker = packet[8];
@@ -97,7 +94,17 @@ class DeviceSosPacket {
       case 0x1:
         return (
           state: DeviceSosState.resolved,
-          note: 'Derived from status high nibble 0x1 as resolved/inactive terminal state.',
+          note:
+              'Derived from status high nibble 0x1 as resolved/inactive terminal state.',
+        );
+      case 0x2:
+        return (
+          state: previousState == DeviceSosState.inactive
+              ? DeviceSosState.inactive
+              : DeviceSosState.resolved,
+          note:
+              'Derived from status high nibble 0x2 as a terminal/cancel packet. '
+              'When an SOS was already active, treat it as resolved; otherwise treat it as inactive.',
         );
       case 0x3:
         return (
@@ -122,6 +129,20 @@ class DeviceSosPacket {
     }
 
     if ((flags & 0x08) != 0 || marker == 0x80) {
+      if (previousState == DeviceSosState.preConfirm ||
+          previousState == DeviceSosState.active ||
+          previousState == DeviceSosState.acknowledged) {
+        if (statusByte < 0x30) {
+          return (
+            state: DeviceSosState.resolved,
+            note:
+                'Fallback derivation: packet matches the SOS notify shape and carries '
+                'an unmapped terminal-like status byte '
+                '0x${statusByte.toRadixString(16).padLeft(2, '0')}. '
+                'Because the previous state was ${previousState.name}, treat it as resolved.',
+          );
+        }
+      }
       return (
         state: previousState == DeviceSosState.inactive
             ? DeviceSosState.active
@@ -141,8 +162,6 @@ class DeviceSosPacket {
   }
 
   static String _hex(List<int> data) {
-    return data
-        .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
-        .join(' ');
+    return data.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join(' ');
   }
 }

@@ -25,6 +25,7 @@ class DeviceSosController {
   StreamSubscription<List<int>>? _notificationSubscription;
   DeviceCommandWriter? _commandWriter;
   DeviceSosStatus _status = DeviceSosStatus.initial();
+  _PendingCommandDiagnostics? _pendingCommandDiagnostics;
 
   DeviceSosStatus get currentStatus => _status;
 
@@ -51,6 +52,8 @@ class DeviceSosController {
     _emit(
       DeviceSosStatus(
         state: DeviceSosState.inactive,
+        previousState: _status.state,
+        transitionSource: DeviceSosTransitionSource.unknown,
         lastEvent: 'Device SOS controller detached',
         updatedAt: DateTime.now(),
       ),
@@ -100,8 +103,8 @@ class DeviceSosController {
     return _sendCommand(
       opcode: _sosAck,
       optimisticState: DeviceSosState.acknowledged,
-      optimisticEvent: 'App acknowledged SOS on device',
-      failureEvent: 'SOS acknowledge write failed',
+      optimisticEvent: 'App sent backend acknowledgment to device',
+      failureEvent: 'Backend acknowledgment write failed',
     );
   }
 
@@ -117,22 +120,26 @@ class DeviceSosController {
     }
 
     final previous = _status;
+    _startCommandDiagnostics(opcode, previous.state);
     _emit(
       DeviceSosStatus(
         state: optimisticState,
+        previousState: previous.state,
+        transitionSource: DeviceSosTransitionSource.app,
         lastEvent: optimisticEvent,
         updatedAt: DateTime.now(),
         optimistic: true,
         derivedFromBlePacket: false,
         lastOpcode: opcode,
-        decoderNote: 'Optimistic local transition pending BLE/device confirmation.',
+        decoderNote:
+            'Optimistic local transition pending BLE/device confirmation.',
       ),
     );
 
     try {
       await writer(<int>[opcode]);
       BleDebugRegistry.instance.recordEvent(
-        'Device SOS command sent: ${_opcodeLabel(opcode)}',
+        'Device SOS command sent: ${_opcodeLabel(opcode)} previousState=${previous.state.name}',
       );
       return _status;
     } catch (error, stackTrace) {
@@ -141,6 +148,8 @@ class DeviceSosController {
           lastEvent: '$failureEvent: $error',
           updatedAt: DateTime.now(),
           optimistic: false,
+          previousState: previous.previousState,
+          transitionSource: previous.transitionSource,
           lastOpcode: opcode,
         ),
       );
@@ -170,14 +179,14 @@ class DeviceSosController {
     }
 
     final previous = _status.state;
-    final event =
-        'SOS notify decoded -> nodeId=${parsed.nodeId} '
+    final event = 'SOS notify decoded -> nodeId=${parsed.nodeId} '
         'flags=0x${parsed.flags.toRadixString(16).padLeft(2, '0')} '
         'counter=${parsed.counter} '
         'marker=0x${parsed.marker.toRadixString(16).padLeft(2, '0')} '
         'statusByte=0x${parsed.statusByte.toRadixString(16).padLeft(2, '0')} '
         'derived=${parsed.derivedState.name}';
     BleDebugRegistry.instance.recordEvent(event);
+    _completeCommandDiagnosticsWithPacket(parsed);
     BleDebugRegistry.instance.recordEvent(
       'SOS transition -> ${previous.name} -> ${parsed.derivedState.name}',
     );
@@ -190,6 +199,8 @@ class DeviceSosController {
     _emit(
       _status.copyWith(
         state: parsed.derivedState,
+        previousState: previous,
+        transitionSource: DeviceSosTransitionSource.device,
         lastEvent: event,
         updatedAt: DateTime.now(),
         optimistic: false,
@@ -219,13 +230,13 @@ class DeviceSosController {
       case 0x09:
         return 'SOS_RESOLVED';
       case _sosCancel:
-        return 'SOS_CANCEL';
+        return 'SOS_CANCEL_RESOLVE';
       case _sosConfirm:
         return 'SOS_CONFIRM';
       case _sosTriggerApp:
         return 'SOS_TRIGGER_APP';
       case _sosAck:
-        return 'SOS_ACK';
+        return 'SOS_BACKEND_ACK';
       case _sosAckRelay:
         return 'SOS_ACK_RELAY';
       default:
@@ -238,14 +249,60 @@ class DeviceSosController {
     _controller.add(next);
   }
 
+  void _startCommandDiagnostics(int opcode, DeviceSosState previousState) {
+    if (opcode != _sosCancel && opcode != _sosAck) {
+      return;
+    }
+
+    _pendingCommandDiagnostics?.timer.cancel();
+    final diagnostics = _PendingCommandDiagnostics(
+      opcode: opcode,
+      previousState: previousState,
+      timer: Timer(const Duration(seconds: 3), () {
+        BleDebugRegistry.instance.recordEvent(
+          'Command response diagnostics -> command=${_opcodeLabel(opcode)} previousState=${previousState.name} nextPacket=none emittedNewBleStatePacket=false',
+        );
+        _pendingCommandDiagnostics = null;
+      }),
+    );
+    _pendingCommandDiagnostics = diagnostics;
+    BleDebugRegistry.instance.recordEvent(
+      'Command diagnostics armed -> command=${_opcodeLabel(opcode)} previousState=${previousState.name}',
+    );
+  }
+
+  void _completeCommandDiagnosticsWithPacket(DeviceSosPacket packet) {
+    final diagnostics = _pendingCommandDiagnostics;
+    if (diagnostics == null) {
+      return;
+    }
+
+    diagnostics.timer.cancel();
+    BleDebugRegistry.instance.recordEvent(
+      'Command response diagnostics -> command=${_opcodeLabel(diagnostics.opcode)} previousState=${diagnostics.previousState.name} nextPacket=${packet.rawHex} derived=${packet.derivedState.name} emittedNewBleStatePacket=true',
+    );
+    _pendingCommandDiagnostics = null;
+  }
+
   String _hex(List<int> data) {
-    return data
-        .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
-        .join(' ');
+    return data.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join(' ');
   }
 
   Future<void> dispose() async {
+    _pendingCommandDiagnostics?.timer.cancel();
     await _notificationSubscription?.cancel();
     await _controller.close();
   }
+}
+
+class _PendingCommandDiagnostics {
+  const _PendingCommandDiagnostics({
+    required this.opcode,
+    required this.previousState,
+    required this.timer,
+  });
+
+  final int opcode;
+  final DeviceSosState previousState;
+  final Timer timer;
 }

@@ -1,7 +1,10 @@
 import '../enums/device_sos_state.dart';
+import '../enums/device_sos_transition_source.dart';
 
 class DeviceSosStatus {
   final DeviceSosState state;
+  final DeviceSosState? previousState;
+  final DeviceSosTransitionSource transitionSource;
   final String lastEvent;
   final DateTime updatedAt;
   final bool optimistic;
@@ -18,6 +21,8 @@ class DeviceSosStatus {
 
   const DeviceSosStatus({
     required this.state,
+    this.previousState,
+    this.transitionSource = DeviceSosTransitionSource.unknown,
     required this.lastEvent,
     required this.updatedAt,
     this.optimistic = false,
@@ -36,6 +41,8 @@ class DeviceSosStatus {
   factory DeviceSosStatus.initial() {
     return DeviceSosStatus(
       state: DeviceSosState.inactive,
+      previousState: null,
+      transitionSource: DeviceSosTransitionSource.unknown,
       lastEvent: 'Device SOS inactive',
       updatedAt: DateTime.now(),
     );
@@ -43,6 +50,8 @@ class DeviceSosStatus {
 
   DeviceSosStatus copyWith({
     DeviceSosState? state,
+    DeviceSosState? previousState,
+    DeviceSosTransitionSource? transitionSource,
     String? lastEvent,
     DateTime? updatedAt,
     bool? optimistic,
@@ -59,6 +68,8 @@ class DeviceSosStatus {
   }) {
     return DeviceSosStatus(
       state: state ?? this.state,
+      previousState: previousState ?? this.previousState,
+      transitionSource: transitionSource ?? this.transitionSource,
       lastEvent: lastEvent ?? this.lastEvent,
       updatedAt: updatedAt ?? this.updatedAt,
       optimistic: optimistic ?? this.optimistic,

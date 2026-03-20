@@ -7,6 +7,7 @@ import 'ble_adapter_state.dart';
 import 'ble_client.dart';
 import 'ble_connection_status.dart';
 import 'ble_debug_registry.dart';
+import 'ble_incoming_event.dart';
 import 'ble_scan_result.dart';
 import 'device_sos_controller.dart';
 import 'device_runtime_provider.dart';
@@ -21,15 +22,21 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   BleDeviceRuntimeProvider({
     required BleClient bleClient,
     DeviceSosController? deviceSosController,
-  }) : _bleClient = bleClient,
-       _deviceSosController = deviceSosController ?? DeviceSosController();
+  })  : _bleClient = bleClient,
+        _deviceSosController = deviceSosController ?? DeviceSosController();
 
   final BleClient _bleClient;
   String? _connectedDeviceId;
+  String? _connectedDeviceAlias;
   final DeviceSosController _deviceSosController;
   StreamSubscription<List<int>>? _notificationSubscription;
+  final StreamController<BleIncomingEvent> _incomingEventsController =
+      StreamController<BleIncomingEvent>.broadcast();
+  DateTime? _lastAppCommandAt;
 
   DeviceSosController get deviceSosController => _deviceSosController;
+  Stream<BleIncomingEvent> watchIncomingEvents() =>
+      _incomingEventsController.stream;
 
   @override
   Future<DeviceStatus> pair({
@@ -115,6 +122,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       }
 
       _connectedDeviceId = candidate.deviceId;
+      _connectedDeviceAlias = candidate.name;
       await _bindNotifications(candidate.deviceId);
       BleDebugRegistry.instance.recordEvent(
         'Pairing succeeded for ${candidate.deviceId}',
@@ -184,10 +192,37 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
   Future<void> _bindNotifications(String deviceId) async {
     await _notificationSubscription?.cancel();
+    final commandWriter = (List<int> data) {
+      _lastAppCommandAt = DateTime.now();
+      BleDebugRegistry.instance.recordEvent(
+        'BLE app command tracked -> deviceId=$deviceId payload=${_hex(data)}',
+      );
+      return _bleClient.writeCommand(deviceId, data);
+    };
+    BleDebugRegistry.instance.registerCommandWriter(commandWriter);
     final stream = await _bleClient.subscribeNotifications(deviceId);
     _notificationSubscription = stream.listen(
       (packet) {
-        _log('BLE runtime packet -> deviceId=$deviceId bytes=${packet.length}');
+        final payloadHex = _hex(packet);
+        final source = _inferPacketSource();
+        final eventType = _eventTypeFor(packet);
+        _log(
+          'BLE runtime packet -> deviceId=$deviceId type=$eventType source=${source.name} bytes=${packet.length} payload=$payloadHex',
+        );
+        BleDebugRegistry.instance.recordEvent(
+          'BLE incoming event -> deviceId=$deviceId type=$eventType source=${source.name} payload=$payloadHex',
+        );
+        _incomingEventsController.add(
+          BleIncomingEvent(
+            deviceId: deviceId,
+            deviceAlias: _connectedDeviceAlias,
+            eventType: eventType,
+            payload: List<int>.unmodifiable(packet),
+            payloadHex: payloadHex,
+            source: source,
+            receivedAt: DateTime.now(),
+          ),
+        );
       },
       onError: (Object error) {
         BleDebugRegistry.instance.recordEvent(
@@ -198,7 +233,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     final sosStream = await _bleClient.subscribeSosNotifications(deviceId);
     await _deviceSosController.attach(
       notifications: sosStream,
-      commandWriter: (data) => _bleClient.writeCommand(deviceId, data),
+      commandWriter: commandWriter,
     );
   }
 
@@ -237,8 +272,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     if (!currentStatus.paired) return currentStatus;
 
     final adapterState = await _bleClient.getAdapterState();
-    final connected =
-        adapterState == BleAdapterState.poweredOn &&
+    final connected = adapterState == BleAdapterState.poweredOn &&
         await _resolveConnection(currentStatus.deviceId);
 
     BleDebugRegistry.instance.recordEvent(
@@ -271,6 +305,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       await _bleClient.disconnect(_connectedDeviceId!);
     }
     _connectedDeviceId = null;
+    _connectedDeviceAlias = null;
+    _lastAppCommandAt = null;
     BleDebugRegistry.instance.recordEvent('Device unpaired');
 
     return currentStatus.copyWith(
@@ -289,6 +325,29 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     debugPrint(message);
   }
 
+  DeviceSosTransitionSource _inferPacketSource() {
+    final lastAppCommandAt = _lastAppCommandAt;
+    if (lastAppCommandAt == null) {
+      return DeviceSosTransitionSource.device;
+    }
+    final elapsed = DateTime.now().difference(lastAppCommandAt);
+    if (elapsed <= const Duration(milliseconds: 1200)) {
+      return DeviceSosTransitionSource.app;
+    }
+    return DeviceSosTransitionSource.device;
+  }
+
+  String _eventTypeFor(List<int> packet) {
+    if (packet.length == 10) {
+      return 'sos_packet';
+    }
+    return 'notify_packet';
+  }
+
+  String _hex(List<int> data) {
+    return data.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join(' ');
+  }
+
   DeviceLifecycleState _resolveLifecycle(
     DeviceStatus currentStatus,
     bool connected,
@@ -297,5 +356,10 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     if (!currentStatus.activated) return DeviceLifecycleState.paired;
     if (connected) return DeviceLifecycleState.ready;
     return DeviceLifecycleState.activated;
+  }
+
+  Future<void> dispose() async {
+    await _notificationSubscription?.cancel();
+    await _incomingEventsController.close();
   }
 }

@@ -8,9 +8,15 @@ class DeviceDetailScreen extends StatefulWidget {
   const DeviceDetailScreen({
     super.key,
     required this.sdk,
+    this.notificationContextMessage,
+    this.notificationActionId,
+    this.notificationNodeId,
   });
 
   final EixamConnectSdk sdk;
+  final String? notificationContextMessage;
+  final String? notificationActionId;
+  final int? notificationNodeId;
 
   @override
   State<DeviceDetailScreen> createState() => _DeviceDetailScreenState();
@@ -37,6 +43,14 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     super.initState();
     _bindStreams();
     _loadInitialState();
+    if (widget.notificationContextMessage != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(widget.notificationContextMessage!)),
+        );
+      });
+    }
   }
 
   void _bindStreams() {
@@ -274,6 +288,29 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
               model: status?.model ?? '-',
               deviceId: status?.deviceId ?? '-',
             ),
+            if (widget.notificationContextMessage != null) ...[
+              const SizedBox(height: 16),
+              _CardSection(
+                title: 'Notification Context',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _InfoLine(
+                      label: 'Action',
+                      value: widget.notificationActionId ?? '-',
+                    ),
+                    _InfoLine(
+                      label: 'Message',
+                      value: widget.notificationContextMessage ?? '-',
+                    ),
+                    _InfoLine(
+                      label: 'Node ID',
+                      value: _formatNodeId(widget.notificationNodeId),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             const SizedBox(height: 16),
             _CardSection(
               title: 'Lifecycle',
@@ -441,13 +478,20 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                         child: Text(_cancelDeviceSosLabel),
                       ),
                       ElevatedButton(
-                        onPressed: _canAcknowledgeDeviceSos
+                        onPressed: _canSendBackendAck
                             ? () =>
-                                  _runSosAction(widget.sdk.acknowledgeDeviceSos)
+                                _runSosAction(widget.sdk.acknowledgeDeviceSos)
                             : null,
-                        child: const Text('Acknowledge SOS'),
+                        child: const Text('Send Backend ACK'),
                       ),
                     ],
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Command meanings: Confirm SOS sends 0x05 during countdown. '
+                    'Cancel and Resolve both send 0x04. '
+                    'Send Backend ACK sends 0x07 to tell the device the backend acknowledged the SOS; it is not a local "mark as seen" action.',
+                    style: TextStyle(color: Colors.black54),
                   ),
                 ],
               ),
@@ -833,7 +877,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   bool get _canConfirmDeviceSos =>
       !_loadingSos && _deviceSosStatus.state == DeviceSosState.preConfirm;
 
-  bool get _canAcknowledgeDeviceSos =>
+  bool get _canSendBackendAck =>
       !_loadingSos && _deviceSosStatus.state == DeviceSosState.active;
 
   bool get _canCancelDeviceSos {
@@ -907,13 +951,13 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       case 0x03:
         return 'POS CONFIRMED';
       case 0x04:
-        return 'SOS CANCEL';
+        return 'SOS CANCEL / RESOLVE';
       case 0x05:
         return 'SOS CONFIRM';
       case 0x06:
         return 'SOS TRIGGER APP';
       case 0x07:
-        return 'SOS ACK';
+        return 'BACKEND SOS ACK';
       case 0x08:
         return 'SOS ACK RELAY';
       case 0x10:
@@ -924,8 +968,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   }
 
   String _compatibilityModeLabel() {
-    final softCompatible =
-        _bleDebugState.eixamServiceFound &&
+    final softCompatible = _bleDebugState.eixamServiceFound &&
         _bleDebugState.telFound &&
         _bleDebugState.sosFound &&
         _bleDebugState.inetFound;

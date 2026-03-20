@@ -45,7 +45,8 @@ class ApiSdkFactory {
     final bleClient = MockBleClient();
     await bleClient.initialize();
 
-    final deviceRuntimeProvider = BleDeviceRuntimeProvider(bleClient: bleClient);
+    final deviceRuntimeProvider =
+        BleDeviceRuntimeProvider(bleClient: bleClient);
     final deviceRepository = InMemoryDeviceRepository(
       runtimeProvider: deviceRuntimeProvider,
       localStore: store,
@@ -69,6 +70,7 @@ class ApiSdkFactory {
       notificationsRepository: LocalNotificationsRepository(),
       realtimeClient: realtimeClient,
       deviceSosController: deviceRuntimeProvider.deviceSosController,
+      bleIncomingEvents: deviceRuntimeProvider.watchIncomingEvents(),
     );
 
     await sdk.initialize(
@@ -113,7 +115,8 @@ class ApiSdkFactory {
       // no tombis l'app al bootstrap
     }
 
-    final deviceRuntimeProvider = BleDeviceRuntimeProvider(bleClient: bleClient);
+    final deviceRuntimeProvider =
+        BleDeviceRuntimeProvider(bleClient: bleClient);
     final deviceRepository = InMemoryDeviceRepository(
       runtimeProvider: deviceRuntimeProvider,
       localStore: store,
@@ -137,6 +140,7 @@ class ApiSdkFactory {
       notificationsRepository: LocalNotificationsRepository(),
       realtimeClient: realtimeClient,
       deviceSosController: deviceRuntimeProvider.deviceSosController,
+      bleIncomingEvents: deviceRuntimeProvider.watchIncomingEvents(),
     );
 
     await sdk.initialize(

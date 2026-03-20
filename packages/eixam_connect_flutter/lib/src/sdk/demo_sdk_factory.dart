@@ -51,7 +51,8 @@ class DemoSdkFactory {
       // no tombis l'app al bootstrap
     }
 
-    final deviceRuntimeProvider = BleDeviceRuntimeProvider(bleClient: bleClient);
+    final deviceRuntimeProvider =
+        BleDeviceRuntimeProvider(bleClient: bleClient);
     final deviceRepository = InMemoryDeviceRepository(
       runtimeProvider: deviceRuntimeProvider,
       localStore: store,
@@ -74,6 +75,7 @@ class DemoSdkFactory {
       notificationsRepository: LocalNotificationsRepository(),
       realtimeClient: realtimeClient,
       deviceSosController: deviceRuntimeProvider.deviceSosController,
+      bleIncomingEvents: deviceRuntimeProvider.watchIncomingEvents(),
     );
 
     await sdk.initialize(

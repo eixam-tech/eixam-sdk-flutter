@@ -225,6 +225,8 @@ class _DemoHomePageState extends State<DemoHomePage> {
   StreamSubscription<List<EmergencyContact>>? _contactsSub;
   StreamSubscription<RealtimeConnectionState>? _realtimeConnectionSub;
   StreamSubscription<RealtimeEvent>? _realtimeEventsSub;
+  StreamSubscription<BleNotificationNavigationRequest>?
+      _bleNotificationNavigationSub;
 
   bool _loadingPermissions = false;
   bool _loadingTracking = false;
@@ -241,6 +243,7 @@ class _DemoHomePageState extends State<DemoHomePage> {
     super.initState();
     _bindStreams();
     _loadInitialState();
+    _bindBleNotificationNavigation();
   }
 
   void _bindStreams() {
@@ -323,6 +326,23 @@ class _DemoHomePageState extends State<DemoHomePage> {
       },
       onError: _handleStreamError,
     );
+  }
+
+  void _bindBleNotificationNavigation() {
+    _bleNotificationNavigationSub =
+        sdk.watchBleNotificationNavigationRequests().listen(
+      (request) {
+        if (!mounted) return;
+        _openDeviceDetailFromNotification(request);
+      },
+      onError: _handleStreamError,
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final pending =
+          await sdk.consumePendingBleNotificationNavigationRequest();
+      if (!mounted || pending == null) return;
+      _openDeviceDetailFromNotification(pending);
+    });
   }
 
   void _handleStreamError(Object error) {
@@ -750,6 +770,21 @@ class _DemoHomePageState extends State<DemoHomePage> {
     );
   }
 
+  Future<void> _openDeviceDetailFromNotification(
+    BleNotificationNavigationRequest request,
+  ) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (context) => DeviceDetailScreen(
+          sdk: sdk,
+          notificationContextMessage: request.reason,
+          notificationActionId: request.actionId,
+          notificationNodeId: request.nodeId,
+        ),
+      ),
+    );
+  }
+
   Future<void> _scheduleQuickDeathMan() async {
     setState(() {
       _loadingDeathMan = true;
@@ -943,6 +978,7 @@ class _DemoHomePageState extends State<DemoHomePage> {
     _contactsSub?.cancel();
     _realtimeConnectionSub?.cancel();
     _realtimeEventsSub?.cancel();
+    _bleNotificationNavigationSub?.cancel();
     super.dispose();
   }
 
