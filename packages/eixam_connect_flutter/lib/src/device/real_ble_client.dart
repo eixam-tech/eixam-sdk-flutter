@@ -1,51 +1,41 @@
 import 'dart:async';
 
 import 'package:async/async.dart';
-import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import 'ble_adapter_state.dart';
 import 'ble_client.dart';
 import 'ble_debug_registry.dart';
 import 'ble_scan_result.dart';
+import 'eixam_ble_command.dart';
+import 'eixam_ble_notification.dart';
+import 'eixam_ble_protocol.dart';
 
 class RealBleClient implements BleClient {
   final Map<String, BluetoothDevice> _devices = {};
   final Map<String, List<BluetoothService>> _servicesCache = {};
   StreamSubscription<BluetoothAdapterState>? _adapterStateSub;
 
-  static final Guid eixamServiceUuid = Guid(
-    '6ba1b218-15a8-461f-9fa8-5dcae273ea00',
-  );
-
-  static final Guid telNotifyCharUuid = Guid(
-    '6ba1b218-15a8-461f-9fa8-5dcae273ea01',
-  );
-
-  static final Guid sosNotifyCharUuid = Guid(
-    '6ba1b218-15a8-461f-9fa8-5dcae273ea02',
-  );
-
-  static final Guid inetWriteCharUuid = Guid(
-    '6ba1b218-15a8-461f-9fa8-5dcae273ea03',
-  );
-
-  static final Guid cmdWriteCharUuid = Guid(
-    '6ba1b218-15a8-461f-9fa8-5dcae273ea04',
-  );
+  static final Guid eixamServiceUuid = Guid(EixamBleProtocol.serviceUuid);
+  static final Guid telNotifyCharUuid =
+      Guid(EixamBleProtocol.telNotifyCharacteristicUuid);
+  static final Guid sosNotifyCharUuid =
+      Guid(EixamBleProtocol.sosNotifyCharacteristicUuid);
+  static final Guid inetWriteCharUuid =
+      Guid(EixamBleProtocol.inetWriteCharacteristicUuid);
+  static final Guid cmdWriteCharUuid =
+      Guid(EixamBleProtocol.cmdWriteCharacteristicUuid);
 
   static final Guid batteryServiceUuid = Guid(
     '0000180F-0000-1000-8000-00805F9B34FB',
   );
-
   static final Guid batteryLevelCharUuid = Guid(
     '00002A19-0000-1000-8000-00805F9B34FB',
   );
-
   static final Guid deviceInfoServiceUuid = Guid(
     '0000180A-0000-1000-8000-00805F9B34FB',
   );
-
   static final Guid firmwareRevisionCharUuid = Guid(
     '00002A26-0000-1000-8000-00805F9B34FB',
   );
@@ -113,9 +103,7 @@ class RealBleClient implements BleClient {
                   : 'Unknown');
 
         _log(
-          'BLE scan -> id=$id name="$name" rssi=${r.rssi} '
-          'connectable=${r.advertisementData.connectable} '
-          'serviceUuids=$advertisedServiceUuids',
+          'BLE scan -> id=$id name="$name" rssi=${r.rssi} connectable=${r.advertisementData.connectable} serviceUuids=$advertisedServiceUuids',
         );
 
         deduped[id] = BleScanResult(
@@ -185,7 +173,7 @@ class RealBleClient implements BleClient {
             .toList(),
       );
       BleDebugRegistry.instance.registerCommandWriter(
-        (data) => writeCommand(deviceId, data),
+        (command) => writeDeviceCommand(deviceId, command),
       );
       BleDebugRegistry.instance.recordEvent(
         'discoverServices succeeded for $deviceId with ${services.length} service(s)',
@@ -195,11 +183,7 @@ class RealBleClient implements BleClient {
         _log('Service: ${s.uuid}');
         for (final c in s.characteristics) {
           _log(
-            '  Characteristic: ${c.uuid} '
-            'read=${c.properties.read} '
-            'write=${c.properties.write} '
-            'writeWithoutResponse=${c.properties.writeWithoutResponse} '
-            'notify=${c.properties.notify}',
+            '  Characteristic: ${c.uuid} read=${c.properties.read} write=${c.properties.write} writeWithoutResponse=${c.properties.writeWithoutResponse} notify=${c.properties.notify}',
           );
         }
       }
@@ -289,17 +273,21 @@ class RealBleClient implements BleClient {
   }
 
   @override
-  Future<void> writeCommand(String deviceId, List<int> data) async {
+  Future<void> writeDeviceCommand(
+    String deviceId,
+    EixamDeviceCommand command,
+  ) async {
+    final data = command.encode();
     if (data.isEmpty) {
       throw Exception('Command payload cannot be empty');
     }
 
-    final bool useInet = data.length <= 4;
-    final Guid targetUuid = useInet ? inetWriteCharUuid : cmdWriteCharUuid;
+    final targetUuid =
+        command.usesCmdCharacteristic ? cmdWriteCharUuid : inetWriteCharUuid;
     final c = await _findCharacteristic(deviceId, eixamServiceUuid, targetUuid);
 
     if (c == null) {
-      if (useInet) {
+      if (!command.usesCmdCharacteristic) {
         throw Exception(
           'INET characteristic (ea03) not found on connected device',
         );
@@ -309,9 +297,9 @@ class RealBleClient implements BleClient {
       );
     }
 
-    final payload = _hex(data);
+    final payload = command.encodedHex;
     _log(
-      'BLE write -> deviceId=$deviceId target=${targetUuid.str} payload=$payload',
+      'BLE write -> deviceId=$deviceId target=${targetUuid.str} command=${command.label} payload=$payload',
     );
     BleDebugRegistry.instance.update(
       lastCommandSent: payload,
@@ -346,12 +334,14 @@ class RealBleClient implements BleClient {
       lastWriteError: null,
     );
     BleDebugRegistry.instance.recordEvent(
-      'Command written to $deviceId (${data.length} bytes) target=${targetUuid.str}',
+      'Command written to $deviceId (${command.label}) target=${targetUuid.str}',
     );
   }
 
   @override
-  Future<Stream<List<int>>> subscribeNotifications(String deviceId) async {
+  Future<Stream<EixamBleNotification>> subscribeEixamNotifications(
+    String deviceId,
+  ) async {
     final tel = await _findCharacteristic(
       deviceId,
       eixamServiceUuid,
@@ -380,39 +370,33 @@ class RealBleClient implements BleClient {
       'BLE notify subscribe -> deviceId=$deviceId tel=${tel.uuid.str} sos=${sos.uuid.str}',
     );
 
-    final telStream = tel.lastValueStream.map((v) => v.toList());
-    final sosStream = sos.lastValueStream.map((v) => v.toList());
+    final telStream = tel.lastValueStream.map(
+      (v) => EixamBleNotification(
+        channel: EixamBleChannel.tel,
+        payload: v.toList(),
+        receivedAt: DateTime.now(),
+      ),
+    );
+    final sosStream = sos.lastValueStream.map(
+      (v) => EixamBleNotification(
+        channel: EixamBleChannel.sos,
+        payload: v.toList(),
+        receivedAt: DateTime.now(),
+      ),
+    );
 
-    return StreamGroup.merge([telStream, sosStream]).map((packet) {
-      final payload = _hex(packet);
-      BleDebugRegistry.instance.update(lastPacketReceived: payload);
-      BleDebugRegistry.instance.recordEvent(
-        'Notify packet received from $deviceId (${packet.length} bytes)',
+    return StreamGroup.merge([telStream, sosStream]).map((notification) {
+      BleDebugRegistry.instance.update(
+        lastPacketReceived: notification.payloadHex,
       );
-      _log('BLE notify packet -> deviceId=$deviceId payload=$payload');
-      return packet;
+      BleDebugRegistry.instance.recordEvent(
+        'Notify packet received from $deviceId channel=${notification.channel.name} (${notification.payload.length} bytes)',
+      );
+      _log(
+        'BLE notify packet -> deviceId=$deviceId channel=${notification.channel.name} payload=${notification.payloadHex}',
+      );
+      return notification;
     });
-  }
-
-  @override
-  Future<Stream<List<int>>> subscribeSosNotifications(String deviceId) async {
-    final sos = await _findCharacteristic(
-      deviceId,
-      eixamServiceUuid,
-      sosNotifyCharUuid,
-    );
-
-    if (sos == null) {
-      throw Exception('EIXAM SOS notify characteristic not found');
-    }
-
-    await sos.setNotifyValue(true);
-    BleDebugRegistry.instance.update(sosNotifySubscribed: true);
-    BleDebugRegistry.instance.recordEvent(
-      'SOS notify subscription enabled for $deviceId',
-    );
-
-    return sos.lastValueStream.map((packet) => packet.toList());
   }
 
   @override
@@ -517,10 +501,6 @@ class RealBleClient implements BleClient {
 
   void _log(String message) {
     debugPrint(message);
-  }
-
-  String _hex(List<int> data) {
-    return data.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join(' ');
   }
 
   BleAdapterState _mapAdapterState(BluetoothAdapterState state) {

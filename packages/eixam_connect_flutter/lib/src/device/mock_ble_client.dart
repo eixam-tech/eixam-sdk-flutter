@@ -5,16 +5,15 @@ import 'ble_adapter_state.dart';
 import 'ble_client.dart';
 import 'ble_debug_registry.dart';
 import 'ble_scan_result.dart';
+import 'eixam_ble_command.dart';
+import 'eixam_ble_notification.dart';
+import 'eixam_ble_protocol.dart';
 
-/// Demo BLE client used by the starter project.
-///
-/// It behaves like a tiny BLE environment with one discoverable EIXAM device so
-/// the rest of the SDK can evolve before integrating a real Bluetooth library.
 class MockBleClient implements BleClient {
   final StreamController<BleAdapterState> _adapterController =
       StreamController<BleAdapterState>.broadcast();
-  final Map<String, StreamController<List<int>>> _notifyControllers =
-      <String, StreamController<List<int>>>{};
+  final Map<String, StreamController<EixamBleNotification>> _notifyControllers =
+      <String, StreamController<EixamBleNotification>>{};
   final Random _random = Random();
   BleAdapterState _adapterState = BleAdapterState.poweredOn;
   final Set<String> _connectedDeviceIds = <String>{};
@@ -55,9 +54,7 @@ class MockBleClient implements BleClient {
         name: 'EIXAM R1 Demo',
         rssi: -42 - _random.nextInt(20),
         connectable: true,
-        advertisedServiceUuids: const <String>[
-          '6ba1b218-15a8-461f-9fa8-5dcae273ea00',
-        ],
+        advertisedServiceUuids: const <String>[EixamBleProtocol.serviceUuid],
         discoveredAt: DateTime.now(),
       ),
     ];
@@ -74,12 +71,16 @@ class MockBleClient implements BleClient {
     BleDebugRegistry.instance.update(
       selectedDeviceId: deviceId,
       eixamServiceFound: deviceId == demoDeviceId,
+      telFound: deviceId == demoDeviceId,
+      sosFound: deviceId == demoDeviceId,
+      inetFound: deviceId == demoDeviceId,
+      cmdFound: deviceId == demoDeviceId,
       telNotifySubscribed: false,
       sosNotifySubscribed: false,
-      discoveredServices: const <String>['mock-eixam-service'],
+      discoveredServices: const <String>[EixamBleProtocol.serviceUuid],
     );
     BleDebugRegistry.instance.registerCommandWriter(
-      (data) => writeCommand(deviceId, data),
+      (command) => writeDeviceCommand(deviceId, command),
     );
     BleDebugRegistry.instance.recordEvent('Mock BLE connected to $deviceId');
   }
@@ -116,37 +117,35 @@ class MockBleClient implements BleClient {
       _connectedDeviceIds.contains(deviceId) ? '2.7.21-mock' : null;
 
   @override
-  Future<void> writeCommand(String deviceId, List<int> data) async {
+  Future<void> writeDeviceCommand(
+    String deviceId,
+    EixamDeviceCommand command,
+  ) async {
     if (!_connectedDeviceIds.contains(deviceId)) {
       throw Exception('Device not connected: $deviceId');
     }
+    final data = command.encode();
     if (data.isEmpty) {
       throw Exception('Command payload cannot be empty');
     }
+
     BleDebugRegistry.instance.update(
-      lastCommandSent: data
-          .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
-          .join(' '),
-      lastWriteTargetCharacteristic: data.length <= 4
-          ? '6ba1b218-15a8-461f-9fa8-5dcae273ea03'
-          : '6ba1b218-15a8-461f-9fa8-5dcae273ea04',
+      lastCommandSent: command.encodedHex,
+      lastWriteTargetCharacteristic: command.targetCharacteristicUuid,
       lastWriteResult: 'SUCCESS',
       lastWriteAt: DateTime.now(),
       lastWriteError: null,
     );
     BleDebugRegistry.instance.recordEvent(
-      'Mock command written to $deviceId (${data.length} bytes)',
+      'Mock command written to $deviceId (${command.label})',
     );
-    _emitMockSosPacket(deviceId, data.first);
+    _emitMockPackets(deviceId, command);
   }
 
   @override
-  Future<Stream<List<int>>> subscribeNotifications(String deviceId) async {
-    return subscribeSosNotifications(deviceId);
-  }
-
-  @override
-  Future<Stream<List<int>>> subscribeSosNotifications(String deviceId) async {
+  Future<Stream<EixamBleNotification>> subscribeEixamNotifications(
+    String deviceId,
+  ) async {
     if (!_connectedDeviceIds.contains(deviceId)) {
       throw Exception('Device not connected: $deviceId');
     }
@@ -160,15 +159,13 @@ class MockBleClient implements BleClient {
     );
     final controller =
         _notifyControllers[deviceId] ??
-        StreamController<List<int>>.broadcast();
+        StreamController<EixamBleNotification>.broadcast();
     _notifyControllers[deviceId] = controller;
-    return controller.stream.map((packet) {
+    return controller.stream.map((notification) {
       BleDebugRegistry.instance.update(
-        lastPacketReceived: packet
-            .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
-            .join(' '),
+        lastPacketReceived: notification.payloadHex,
       );
-      return packet;
+      return notification;
     });
   }
 
@@ -177,7 +174,6 @@ class MockBleClient implements BleClient {
     return deviceId == demoDeviceId;
   }
 
-  /// Allows tests or future demo screens to simulate a Bluetooth adapter change.
   Future<void> setAdapterState(BleAdapterState state) async {
     _adapterState = state;
     BleDebugRegistry.instance.update(adapterState: state);
@@ -201,26 +197,66 @@ class MockBleClient implements BleClient {
     await _adapterController.close();
   }
 
-  void _emitMockSosPacket(String deviceId, int opcode) {
+  void _emitMockPackets(String deviceId, EixamDeviceCommand command) {
     final controller = _notifyControllers[deviceId];
     if (controller == null || controller.isClosed) {
       return;
     }
 
-    const nodeId = <int>[0xA8, 0x1A, 0x80, 0x00];
-    switch (opcode) {
-      case 0x04:
-        controller.add(<int>[...nodeId, 0x08, 0x00, 0x00, 0x00, 0x80, 0x12]);
+    void emit(EixamBleChannel channel, List<int> payload) {
+      controller.add(
+        EixamBleNotification(
+          channel: channel,
+          payload: payload,
+          receivedAt: DateTime.now(),
+        ),
+      );
+    }
+
+    switch (command.opcode) {
+      case 0x06:
+        emit(EixamBleChannel.sos, <int>[
+          0xA8,
+          0x1A,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x01,
+          0x40,
+        ]);
         return;
       case 0x05:
-        controller.add(<int>[...nodeId, 0x08, 0x00, 0x00, 0x00, 0x80, 0x42]);
+        emit(EixamBleChannel.sos, <int>[
+          0xA8,
+          0x1A,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x02,
+          0x80,
+        ]);
         return;
-      case 0x06:
-        controller.add(<int>[...nodeId, 0x08, 0x00, 0x00, 0x00, 0x80, 0x32]);
-        return;
-      case 0x07:
-      case 0x08:
-        controller.add(<int>[...nodeId, 0x08, 0x00, 0x00, 0x00, 0x80, 0x52]);
+      case 0x01:
+      case 0x02:
+      case 0x03:
+        emit(EixamBleChannel.tel, <int>[
+          0xA8,
+          0x1A,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x01,
+          0x21,
+        ]);
         return;
       default:
         return;

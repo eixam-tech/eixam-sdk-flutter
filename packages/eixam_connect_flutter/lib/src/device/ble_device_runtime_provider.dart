@@ -9,15 +9,14 @@ import 'ble_connection_status.dart';
 import 'ble_debug_registry.dart';
 import 'ble_incoming_event.dart';
 import 'ble_scan_result.dart';
-import 'device_sos_controller.dart';
 import 'device_runtime_provider.dart';
+import 'device_sos_controller.dart';
+import 'eixam_ble_command.dart';
+import 'eixam_ble_notification.dart';
+import 'eixam_ble_protocol.dart';
+import 'eixam_sos_packet.dart';
+import 'eixam_tel_packet.dart';
 
-/// BLE-oriented runtime provider that keeps device provisioning logic isolated
-/// from repositories and controllers.
-///
-/// The current implementation is intentionally simple and can run on top of the
-/// mock BLE client. Replacing the client with a real BLE adapter should not
-/// require changes in the repository or in the public SDK contract.
 class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   BleDeviceRuntimeProvider({
     required BleClient bleClient,
@@ -26,12 +25,13 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         _deviceSosController = deviceSosController ?? DeviceSosController();
 
   final BleClient _bleClient;
-  String? _connectedDeviceId;
-  String? _connectedDeviceAlias;
   final DeviceSosController _deviceSosController;
-  StreamSubscription<List<int>>? _notificationSubscription;
   final StreamController<BleIncomingEvent> _incomingEventsController =
       StreamController<BleIncomingEvent>.broadcast();
+
+  String? _connectedDeviceId;
+  String? _connectedDeviceAlias;
+  StreamSubscription<EixamBleNotification>? _notificationSubscription;
   DateTime? _lastAppCommandAt;
 
   DeviceSosController get deviceSosController => _deviceSosController;
@@ -101,9 +101,6 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         'Connection succeeded for ${candidate.deviceId}',
       );
 
-      BleDebugRegistry.instance.recordEvent(
-        'Discover services succeeded for ${candidate.deviceId}',
-      );
       final compatible = await _bleClient.isEixamCompatible(candidate.deviceId);
       BleDebugRegistry.instance.recordEvent(
         'Compatibility result for ${candidate.deviceId}: $compatible',
@@ -179,12 +176,6 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     return null;
   }
 
-  List<BleScanResult> _sortCandidates(List<BleScanResult> scanResults) {
-    final candidates = scanResults.where((d) => d.connectable).toList()
-      ..sort((a, b) => b.rssi.compareTo(a.rssi));
-    return candidates;
-  }
-
   Future<bool> _resolveConnection(String deviceId) async {
     final id = _connectedDeviceId ?? deviceId;
     return _bleClient.isConnected(id);
@@ -192,48 +183,76 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
   Future<void> _bindNotifications(String deviceId) async {
     await _notificationSubscription?.cancel();
-    final commandWriter = (List<int> data) {
+    final commandWriter = (EixamDeviceCommand command) {
       _lastAppCommandAt = DateTime.now();
       BleDebugRegistry.instance.recordEvent(
-        'BLE app command tracked -> deviceId=$deviceId payload=${_hex(data)}',
+        'BLE app command tracked -> deviceId=$deviceId command=${command.label} payload=${command.encodedHex}',
       );
-      return _bleClient.writeCommand(deviceId, data);
+      return _bleClient.writeDeviceCommand(deviceId, command);
     };
     BleDebugRegistry.instance.registerCommandWriter(commandWriter);
-    final stream = await _bleClient.subscribeNotifications(deviceId);
+    await _deviceSosController.attach(commandWriter: commandWriter);
+
+    final stream = await _bleClient.subscribeEixamNotifications(deviceId);
     _notificationSubscription = stream.listen(
-      (packet) {
-        final payloadHex = _hex(packet);
+      (notification) {
         final source = _inferPacketSource();
-        final eventType = _eventTypeFor(packet);
-        _log(
-          'BLE runtime packet -> deviceId=$deviceId type=$eventType source=${source.name} bytes=${packet.length} payload=$payloadHex',
-        );
-        BleDebugRegistry.instance.recordEvent(
-          'BLE incoming event -> deviceId=$deviceId type=$eventType source=${source.name} payload=$payloadHex',
-        );
-        _incomingEventsController.add(
-          BleIncomingEvent(
-            deviceId: deviceId,
-            deviceAlias: _connectedDeviceAlias,
-            eventType: eventType,
-            payload: List<int>.unmodifiable(packet),
-            payloadHex: payloadHex,
-            source: source,
-            receivedAt: DateTime.now(),
-          ),
-        );
+        switch (notification.channel) {
+          case EixamBleChannel.tel:
+            final telPacket = EixamTelPacket.tryParse(notification.payload);
+            BleDebugRegistry.instance.recordEvent(
+              telPacket == null
+                  ? 'TEL packet rejected -> len=${notification.payload.length} payload=${notification.payloadHex}'
+                  : 'TEL packet decoded -> nodeId=${_formatNodeId(telPacket.nodeId)} packetId=${telPacket.packetId} batt=${telPacket.batteryLevel} gps=${telPacket.gpsQuality}',
+            );
+            _incomingEventsController.add(
+              BleIncomingEvent(
+                deviceId: deviceId,
+                deviceAlias: _connectedDeviceAlias,
+                eventType: telPacket == null ? 'tel_packet_invalid' : 'tel_packet',
+                channel: notification.channel,
+                payload: List<int>.unmodifiable(notification.payload),
+                payloadHex: notification.payloadHex,
+                source: DeviceSosTransitionSource.device,
+                receivedAt: notification.receivedAt,
+                telPacket: telPacket,
+              ),
+            );
+            break;
+          case EixamBleChannel.sos:
+            final sosPacket = EixamSosPacket.tryParse(notification.payload);
+            BleDebugRegistry.instance.recordEvent(
+              sosPacket == null
+                  ? 'SOS packet rejected -> len=${notification.payload.length} payload=${notification.payloadHex}'
+                  : 'SOS packet decoded -> nodeId=${_formatNodeId(sosPacket.nodeId)} sosType=${sosPacket.sosType} packetId=${sosPacket.packetId} relayCount=${sosPacket.relayCount}',
+            );
+            if (sosPacket != null) {
+              _deviceSosController.handleIncomingSosPacket(
+                sosPacket,
+                source: source,
+              );
+            }
+            _incomingEventsController.add(
+              BleIncomingEvent(
+                deviceId: deviceId,
+                deviceAlias: _connectedDeviceAlias,
+                eventType: sosPacket == null ? 'sos_packet_invalid' : 'sos_packet',
+                channel: notification.channel,
+                payload: List<int>.unmodifiable(notification.payload),
+                payloadHex: notification.payloadHex,
+                source: source,
+                receivedAt: notification.receivedAt,
+                sosPacket: sosPacket,
+              ),
+            );
+            break;
+        }
       },
       onError: (Object error) {
         BleDebugRegistry.instance.recordEvent(
           'Notify subscription error for $deviceId: $error',
         );
       },
-    );
-    final sosStream = await _bleClient.subscribeSosNotifications(deviceId);
-    await _deviceSosController.attach(
-      notifications: sosStream,
-      commandWriter: commandWriter,
     );
   }
 
@@ -337,15 +356,9 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     return DeviceSosTransitionSource.device;
   }
 
-  String _eventTypeFor(List<int> packet) {
-    if (packet.length == 10) {
-      return 'sos_packet';
-    }
-    return 'notify_packet';
-  }
-
-  String _hex(List<int> data) {
-    return data.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join(' ');
+  String _formatNodeId(int nodeId) {
+    final normalized = nodeId & 0xFFFF;
+    return '0x${normalized.toRadixString(16).padLeft(4, '0')}';
   }
 
   DeviceLifecycleState _resolveLifecycle(

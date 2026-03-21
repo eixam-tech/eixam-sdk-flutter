@@ -13,10 +13,16 @@ class DeviceSosStatus {
   final String? lastPacketHex;
   final int? lastPacketLength;
   final DateTime? lastPacketAt;
+  final String? lastPacketSignature;
   final int? nodeId;
   final int? flags;
-  final int? marker;
-  final int? statusByte;
+  final int? sosType;
+  final int? retryCount;
+  final int? relayCount;
+  final int? batteryLevel;
+  final int? gpsQuality;
+  final int? packetId;
+  final bool? hasLocation;
   final String? decoderNote;
 
   const DeviceSosStatus({
@@ -31,10 +37,16 @@ class DeviceSosStatus {
     this.lastPacketHex,
     this.lastPacketLength,
     this.lastPacketAt,
+    this.lastPacketSignature,
     this.nodeId,
     this.flags,
-    this.marker,
-    this.statusByte,
+    this.sosType,
+    this.retryCount,
+    this.relayCount,
+    this.batteryLevel,
+    this.gpsQuality,
+    this.packetId,
+    this.hasLocation,
     this.decoderNote,
   });
 
@@ -60,10 +72,16 @@ class DeviceSosStatus {
     String? lastPacketHex,
     int? lastPacketLength,
     DateTime? lastPacketAt,
+    String? lastPacketSignature,
     int? nodeId,
     int? flags,
-    int? marker,
-    int? statusByte,
+    int? sosType,
+    int? retryCount,
+    int? relayCount,
+    int? batteryLevel,
+    int? gpsQuality,
+    int? packetId,
+    bool? hasLocation,
     String? decoderNote,
   }) {
     return DeviceSosStatus(
@@ -78,10 +96,16 @@ class DeviceSosStatus {
       lastPacketHex: lastPacketHex ?? this.lastPacketHex,
       lastPacketLength: lastPacketLength ?? this.lastPacketLength,
       lastPacketAt: lastPacketAt ?? this.lastPacketAt,
+      lastPacketSignature: lastPacketSignature ?? this.lastPacketSignature,
       nodeId: nodeId ?? this.nodeId,
       flags: flags ?? this.flags,
-      marker: marker ?? this.marker,
-      statusByte: statusByte ?? this.statusByte,
+      sosType: sosType ?? this.sosType,
+      retryCount: retryCount ?? this.retryCount,
+      relayCount: relayCount ?? this.relayCount,
+      batteryLevel: batteryLevel ?? this.batteryLevel,
+      gpsQuality: gpsQuality ?? this.gpsQuality,
+      packetId: packetId ?? this.packetId,
+      hasLocation: hasLocation ?? this.hasLocation,
       decoderNote: decoderNote ?? this.decoderNote,
     );
   }

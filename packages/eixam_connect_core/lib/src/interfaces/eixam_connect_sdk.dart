@@ -32,6 +32,11 @@ abstract class EixamConnectSdk {
   Future<DeviceSosStatus> confirmDeviceSos();
   Future<DeviceSosStatus> cancelDeviceSos();
   Future<DeviceSosStatus> acknowledgeDeviceSos();
+  Future<void> sendInetOkToDevice();
+  Future<void> sendInetLostToDevice();
+  Future<void> sendPositionConfirmedToDevice();
+  Future<void> sendSosAckRelayToDevice({required int nodeId});
+  Future<void> sendShutdownToDevice();
   Future<BleNotificationNavigationRequest?>
   consumePendingBleNotificationNavigationRequest();
   Stream<BleNotificationNavigationRequest>

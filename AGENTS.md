@@ -53,7 +53,7 @@ Contains:
 - repositories
 - local persistence
 - permissions
-- BLE provider/runtime
+- BLE transport/runtime
 - demo/bootstrap factories
 - realtime skeleton or mock wiring
 
@@ -81,6 +81,28 @@ That means:
 3. Business-critical logic should live in the SDK, not only in the demo app.
 4. The Control app should consume the SDK like a real host app would.
 5. UI decisions should not pollute SDK domain contracts.
+
+---
+
+## Source of truth documents
+
+The current BLE source of truth is:
+
+- `docs/eixam/07_BLE_APP_PROTOCOL.md`
+
+If code behavior or old assumptions differ from this file, treat the protocol document as the intended contract and treat mismatches as:
+- firmware mismatch
+- stale implementation
+- incomplete integration
+- or temporary compatibility workaround
+
+Other important technical references:
+- `SDK_ARCHITECTURE.md`
+- `README.md`
+- `packages/eixam_connect_flutter/NATIVE_PERMISSIONS_CHECKLIST.md`
+- `packages/eixam_connect_flutter/BLE_PROVIDER_INTEGRATION.md`
+- `docs/eixam/BLE_RUNTIME_FLOW.md`
+- `docs/eixam/01_SPRINT1_TEL_BLE_SOS.md` if present
 
 ---
 
@@ -139,16 +161,48 @@ A lightweight skeleton is acceptable, but the final production client must follo
 
 ## Current BLE status
 
-BLE is no longer just conceptual. Current repo reality:
+BLE is now in active real-device integration, not just conceptual scaffolding.
 
 ### What already works
 - BLE scan on Android physical device
 - BLE connection to a real device
 - manual device selection is preferred over auto-picking candidates
-- real device service discovery
-- compatibility diagnostics after `discoverServices()`
+- service discovery on real device
+- subscription to TEL and SOS notifications
+- app-to-device writes through INET
+- internal device control/testing UI exists or is being expanded
 
-### Current compatibility rule
+### BLE source of truth
+Use `docs/eixam/07_BLE_APP_PROTOCOL.md` as the current contract.
+
+### Current BLE protocol model
+The protocol defines:
+
+- Service `ea00`
+- TEL notify `ea01`
+- SOS notify `ea02`
+- INET write `ea03`
+- CMD write `ea04`
+
+TEL packets:
+- always 10 bytes
+
+SOS packets:
+- 10 bytes or 5 bytes
+
+App → device commands include:
+- `0x01` INET_OK
+- `0x02` INET_LOST
+- `0x03` POS_CONFIRMED
+- `0x04` SOS_CANCEL
+- `0x05` SOS_CONFIRM
+- `0x06` SOS_TRIGGER_APP
+- `0x07` SOS_ACK
+- `0x08` SOS_ACK_RELAY
+- `0x10` SHUTDOWN
+- `0x20` PROVISION (future / not implemented)
+
+### BLE compatibility rule
 Do **not** validate BLE devices by advertised name.
 
 Do **not** assume a device is compatible just because scan sees it.
@@ -157,35 +211,75 @@ Compatibility must be validated only after:
 1. BLE connect
 2. `discoverServices()`
 
-### Current firmware reality
-The current real device exposes:
-- EIXAM main service: `6ba1b218-15a8-461f-9fa8-5dcae273ea00`
-- TEL notify characteristic: `6ba1b218-15a8-461f-9fa8-5dcae273ea01`
-- SOS notify characteristic: `6ba1b218-15a8-461f-9fa8-5dcae273ea02`
-- INET write characteristic: `6ba1b218-15a8-461f-9fa8-5dcae273ea03`
+### Protocol-first rule
+BLE behavior should be implemented as:
 
-The CMD characteristic `...ea04` may be missing on the current firmware version.
+1. BLE transport
+2. packet decode / command encode
+3. runtime events / orchestration
+4. UI rendering and user actions
 
-### Soft compatibility rule
-For now, treat the device as compatible enough to proceed if all of these are present:
-- service `ea00`
-- characteristic `ea01`
-- characteristic `ea02`
-- characteristic `ea03`
+Do not let UI write raw byte arrays directly.
+Do not spread protocol parsing across random widgets.
 
-Treat `ea04` as optional for now.
+---
 
-Do not hard-fail the connection only because `ea04` is missing.
-Instead, surface a warning in logs/UI.
+## BLE architecture direction
 
-### BLE behavior rules
-#### Scan
+The preferred architecture is:
+
+### A. BLE transport layer
+Responsibilities:
+- connect
+- disconnect
+- discover services
+- subscribe TEL/SOS
+- write INET/CMD
+
+### B. Protocol layer
+Responsibilities:
+- decode TEL packets
+- decode SOS packets
+- encode device commands
+
+Examples of explicit models/helpers that are encouraged:
+- `EixamTelPacket`
+- `EixamSosPacket`
+- `EixamDeviceCommand`
+- packet decoder
+- command encoder
+
+### C. Runtime / orchestration layer
+Responsibilities:
+- consume decoded packets
+- expose runtime state/events
+- drive local notifications
+- drive backend-facing actions
+- decide when to send:
+  - `POS_CONFIRMED`
+  - `SOS_ACK`
+  - `SOS_ACK_RELAY`
+
+### D. UI layer
+Responsibilities:
+- render current state
+- render last packets
+- render BLE debug info
+- render device control actions
+
+UI should not own protocol logic.
+
+---
+
+## BLE behavior rules
+
+### Scan
 - During BLE debug/testing, do not filter scan results by advertised device name
 - Do not require advertised service UUIDs during scan
 - Prefer broad scan + manual user selection
 - Show discovered devices in UI when possible
 
-#### Connect
+### Connect
 - Do not auto-connect to arbitrary scan candidates during debug
 - Let the user choose which device to connect to
 - After manual selection:
@@ -194,15 +288,60 @@ Instead, surface a warning in logs/UI.
   - log everything
   - validate compatibility
 
-#### Notifications
-After successful connection to a compatible device:
+### Notifications / incoming packets
+After successful connection:
 - subscribe to TEL notify
 - subscribe to SOS notify
 
-#### Command writes
-- Use INET when command size fits current firmware limitations
-- If a command requires CMD and CMD is unavailable, show a precise warning/error
+Do not treat raw packet spam as business-level state automatically.
+Prefer:
+- decode packet
+- publish runtime event
+- derive only the minimum useful UI/runtime state
+
+### Command writes
+- Use INET when command size fits protocol/device limits
+- Use CMD when payload requires it
+- If CMD is missing on a specific device/firmware, surface this as a compatibility warning or implementation caveat, not as hidden behavior
 - Do not silently fail
+
+### Backend-related flows
+Follow the protocol flow:
+
+#### TEL
+- receive TEL
+- decode TEL
+- send to backend if internet exists
+- when backend confirms position, send `POS_CONFIRMED`
+
+#### SOS
+- receive SOS
+- decode SOS
+- send to backend
+- when backend acknowledges:
+  - if current device is origin → send `SOS_ACK`
+  - if current device is relay → send `SOS_ACK_RELAY(nodeId LE)`
+
+---
+
+## SOS semantics rules
+
+Use protocol semantics, not loose UI wording.
+
+### Correct mappings
+- `Resolve` should map to `SOS_CANCEL` (`0x04`)
+- `Cancel` should map to `SOS_CANCEL` (`0x04`)
+- `Trigger SOS` should map to `SOS_TRIGGER_APP` (`0x06`)
+- `Confirm SOS` should map to `SOS_CONFIRM` (`0x05`)
+- `Backend ACK` should map to `SOS_ACK` (`0x07`)
+- `ACK Relay` should map to `SOS_ACK_RELAY` (`0x08`)
+
+### Important meaning
+`SOS_ACK` means:
+- backend/rescue has acknowledged the SOS
+- not “user saw the alert”
+
+Do not label this action ambiguously as plain “Acknowledge” if the intended meaning is backend acknowledgment.
 
 ---
 
@@ -228,6 +367,25 @@ When working on BLE, always log:
 - exact error when a connection or compatibility step fails
 
 Validation should be diagnostic-first, not pass/fail-only.
+
+---
+
+## Local notification rules
+
+Current direction:
+- local notifications should be driven by meaningful device-originated events
+- avoid packet-level spam
+- avoid duplicate/repeated notifications when the device is just beeping or retransmitting the same situation
+- never notify for app-originated actions unless explicitly required
+
+The preferred pattern is:
+- incoming device packet/event
+- runtime event classification
+- local notification decision
+
+Not:
+- UI-only heuristics
+- raw packet = always notify forever
 
 ---
 

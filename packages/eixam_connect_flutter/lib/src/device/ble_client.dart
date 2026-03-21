@@ -1,4 +1,6 @@
 import 'ble_adapter_state.dart';
+import 'eixam_ble_command.dart';
+import 'eixam_ble_notification.dart';
 import 'ble_scan_result.dart';
 
 /// Abstraction over the BLE stack used by the device runtime provider.
@@ -22,9 +24,10 @@ abstract class BleClient {
   Future<int?> readSignalQuality(String deviceId);
   Future<String?> readFirmwareVersion(String deviceId);
 
-  Future<void> writeCommand(String deviceId, List<int> data);
-  Future<Stream<List<int>>> subscribeNotifications(String deviceId);
-  Future<Stream<List<int>>> subscribeSosNotifications(String deviceId);
+  Future<void> writeDeviceCommand(String deviceId, EixamDeviceCommand command);
+  Future<Stream<EixamBleNotification>> subscribeEixamNotifications(
+    String deviceId,
+  );
 
   Future<bool> isEixamCompatible(String deviceId);
 }

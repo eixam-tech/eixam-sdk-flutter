@@ -161,13 +161,13 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     });
   }
 
-  Future<void> _sendBleCommand(List<int> data) async {
+  Future<void> _runCommandAction(Future<void> Function() action) async {
     setState(() {
       _lastError = null;
     });
 
     try {
-      await BleDebugRegistry.instance.sendCommand(data);
+      await action();
     } catch (error) {
       _handleError(error);
     }
@@ -435,12 +435,32 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                     value: _formatByte(_deviceSosStatus.flags),
                   ),
                   _InfoLine(
-                    label: 'Decoded marker',
-                    value: _formatByte(_deviceSosStatus.marker),
+                    label: 'Decoded SOS type',
+                    value: _deviceSosStatus.sosType?.toString() ?? '-',
                   ),
                   _InfoLine(
-                    label: 'Decoded status byte',
-                    value: _formatByte(_deviceSosStatus.statusByte),
+                    label: 'Retry count',
+                    value: _deviceSosStatus.retryCount?.toString() ?? '-',
+                  ),
+                  _InfoLine(
+                    label: 'Relay count',
+                    value: _deviceSosStatus.relayCount?.toString() ?? '-',
+                  ),
+                  _InfoLine(
+                    label: 'Battery level',
+                    value: _deviceSosStatus.batteryLevel?.toString() ?? '-',
+                  ),
+                  _InfoLine(
+                    label: 'GPS quality',
+                    value: _deviceSosStatus.gpsQuality?.toString() ?? '-',
+                  ),
+                  _InfoLine(
+                    label: 'Packet id',
+                    value: _deviceSosStatus.packetId?.toString() ?? '-',
+                  ),
+                  _InfoLine(
+                    label: 'Has location',
+                    value: _deviceSosStatus.hasLocation?.toString() ?? '-',
                   ),
                   _InfoLine(
                     label: 'Decoder note',
@@ -505,19 +525,22 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                 children: [
                   OutlinedButton(
                     onPressed: _bleDebugState.commandWriterReady
-                        ? () => _sendBleCommand(const [0x01])
+                        ? () => _runCommandAction(widget.sdk.sendInetOkToDevice)
                         : null,
                     child: const Text('INET OK'),
                   ),
                   OutlinedButton(
                     onPressed: _bleDebugState.commandWriterReady
-                        ? () => _sendBleCommand(const [0x02])
+                        ? () =>
+                            _runCommandAction(widget.sdk.sendInetLostToDevice)
                         : null,
                     child: const Text('INET LOST'),
                   ),
                   OutlinedButton(
                     onPressed: _bleDebugState.commandWriterReady
-                        ? () => _sendBleCommand(const [0x03])
+                        ? () => _runCommandAction(
+                              widget.sdk.sendPositionConfirmedToDevice,
+                            )
                         : null,
                     child: const Text('POS CONFIRMED'),
                   ),
@@ -534,7 +557,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                     controller: _ackRelayNodeIdController,
                     decoration: const InputDecoration(
                       labelText: 'SOS_ACK_RELAY nodeId',
-                      hintText: '0x00801AA8 or decimal',
+                      hintText: '0x1AA8 or decimal',
                       border: OutlineInputBorder(),
                     ),
                   ),
@@ -930,8 +953,8 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
 
   String _formatNodeId(int? nodeId) {
     if (nodeId == null) return '-';
-    final normalized = nodeId & 0xFFFFFFFF;
-    return '0x${normalized.toRadixString(16).padLeft(8, '0')}';
+    final normalized = nodeId & 0xFFFF;
+    return '0x${normalized.toRadixString(16).padLeft(4, '0')}';
   }
 
   String _lastCommandLabel(String? payloadHex) {
@@ -999,19 +1022,20 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     final nodeId = _parseNodeId(raw);
     if (nodeId == null) {
       _handleError(
-        StateError('Invalid nodeId. Use decimal or hex like 0x00801AA8.'),
+        StateError('Invalid nodeId. Use decimal or hex like 0x1AA8.'),
+      );
+      return;
+    }
+    if (nodeId < 0 || nodeId > 0xFFFF) {
+      _handleError(
+        StateError('SOS_ACK_RELAY expects a 16-bit nodeId (0 to 65535).'),
       );
       return;
     }
 
-    final payload = <int>[
-      0x08,
-      nodeId & 0xFF,
-      (nodeId >> 8) & 0xFF,
-      (nodeId >> 16) & 0xFF,
-      (nodeId >> 24) & 0xFF,
-    ];
-    await _sendBleCommand(payload);
+    await _runCommandAction(
+      () => widget.sdk.sendSosAckRelayToDevice(nodeId: nodeId),
+    );
   }
 
   int? _parseNodeId(String raw) {
@@ -1045,7 +1069,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     );
 
     if (confirmed == true) {
-      await _sendBleCommand(const [0x10]);
+      await _runCommandAction(widget.sdk.sendShutdownToDevice);
     }
   }
 }

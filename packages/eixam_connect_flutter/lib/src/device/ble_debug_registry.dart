@@ -2,11 +2,12 @@ import 'dart:async';
 
 import 'ble_adapter_state.dart';
 import 'ble_connection_status.dart';
+import 'eixam_ble_command.dart';
 import 'ble_debug_event.dart';
 import 'ble_debug_state.dart';
 import 'ble_scan_result.dart';
 
-typedef BleCommandWriter = Future<void> Function(List<int> data);
+typedef BleCommandWriter = Future<void> Function(EixamDeviceCommand command);
 typedef BleScanner = Future<List<BleScanResult>> Function();
 
 class BleDebugRegistry {
@@ -133,11 +134,11 @@ class BleDebugRegistry {
     }
   }
 
-  Future<void> sendCommand(List<int> data) async {
+  Future<void> sendCommand(EixamDeviceCommand command) async {
     final writer = _commandWriter;
     if (writer == null) {
       throw StateError('BLE command channel is not ready.');
     }
-    await writer(data);
+    await writer(command);
   }
 }

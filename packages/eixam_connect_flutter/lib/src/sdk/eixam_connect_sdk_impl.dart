@@ -58,6 +58,7 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
   DeviceStatus? _lastDeviceStatus;
   DeviceSosStatus _lastDeviceSosStatus = DeviceSosStatus.initial();
   BleNotificationNavigationRequest? _pendingBleNotificationNavigationRequest;
+  String? _lastBleNotificationSignature;
 
   static const String _openAppActionId = 'open_app';
   static const String _backendAckSosActionId = 'backend_ack_sos';
@@ -206,6 +207,31 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
   }
 
   @override
+  Future<void> sendInetOkToDevice() {
+    return deviceSosController.sendInetOk();
+  }
+
+  @override
+  Future<void> sendInetLostToDevice() {
+    return deviceSosController.sendInetLost();
+  }
+
+  @override
+  Future<void> sendPositionConfirmedToDevice() {
+    return deviceSosController.sendPositionConfirmed();
+  }
+
+  @override
+  Future<void> sendSosAckRelayToDevice({required int nodeId}) {
+    return deviceSosController.sendAckRelay(nodeId: nodeId);
+  }
+
+  @override
+  Future<void> sendShutdownToDevice() {
+    return deviceSosController.sendShutdown();
+  }
+
+  @override
   Future<BleNotificationNavigationRequest?>
       consumePendingBleNotificationNavigationRequest() async {
     final pending = _pendingBleNotificationNavigationRequest;
@@ -259,60 +285,45 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
   }
 
   Future<void> _handleDeviceSosStatus(DeviceSosStatus status) async {
-    final previousSnapshot = _lastDeviceSosStatus;
     _lastDeviceSosStatus = status;
-    final previousState = status.previousState ?? previousSnapshot.state;
-    final newState = status.state;
+    final packetSignature = status.lastPacketSignature;
 
     BleDebugRegistry.instance.recordEvent(
-      'SOS raw packet observed -> payload=${status.lastPacketHex ?? '-'} previous=${previousState.name} new=${newState.name} source=${status.transitionSource.name}',
+      'SOS packet observed -> payload=${status.lastPacketHex ?? '-'} state=${status.state.name} source=${status.transitionSource.name}',
     );
 
     if (!status.derivedFromBlePacket) {
       BleDebugRegistry.instance.recordEvent(
-        'SOS notification skipped -> previous=${previousState.name} new=${newState.name} source=${status.transitionSource.name} reason=not_from_ble_packet',
+        'SOS notification skipped -> reason=not_from_ble_packet',
       );
       return;
     }
 
     if (status.transitionSource != DeviceSosTransitionSource.device) {
       BleDebugRegistry.instance.recordEvent(
-        'SOS notification skipped -> previous=${previousState.name} new=${newState.name} source=${status.transitionSource.name} reason=source_not_device',
+        'SOS notification skipped -> reason=source_not_device',
       );
       return;
     }
 
-    if (previousState == newState) {
+    if (packetSignature == null || packetSignature == _lastBleNotificationSignature) {
       BleDebugRegistry.instance.recordEvent(
-        'SOS notification skipped -> previous=${previousState.name} new=${newState.name} source=${status.transitionSource.name} reason=same_derived_state',
+        'SOS notification skipped -> reason=duplicate_or_missing_signature',
       );
       return;
     }
-
-    final kind = _notificationKindForSosTransition(previousState, newState);
-    if (kind == null) {
-      BleDebugRegistry.instance.recordEvent(
-        'SOS notification skipped -> previous=${previousState.name} new=${newState.name} source=${status.transitionSource.name} reason=transition_not_relevant',
-      );
-      return;
-    }
+    _lastBleNotificationSignature = packetSignature;
 
     final deviceLabel = _deviceLabel(
       deviceAlias: _lastDeviceStatus?.deviceAlias,
       fallbackDeviceId: _lastDeviceStatus?.deviceId,
     );
-    final title = _notificationTitleFor(kind, deviceLabel);
-    final body = _notificationBodyForSosTransition(
-      kind,
-      deviceLabel,
-      status,
-      previousState,
-      newState,
-    );
-    final actions = _notificationActionsForSosState(newState);
+    final title = 'SOS received from $deviceLabel';
+    final body = _notificationBodyForSosPacket(status);
+    final actions = _notificationActionsForSosState(DeviceSosState.active);
     final payload = BleSosNotificationPayload(
-      kind: kind,
-      state: newState,
+      kind: 'sos_received',
+      state: status.state,
       transitionSource: status.transitionSource,
       deviceId: _lastDeviceStatus?.deviceId,
       deviceAlias: _lastDeviceStatus?.deviceAlias,
@@ -320,7 +331,7 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
     );
 
     BleDebugRegistry.instance.recordEvent(
-      'SOS notification emitted -> previous=${previousState.name} new=${newState.name} source=${status.transitionSource.name} reason=$kind',
+      'SOS notification emitted -> signature=$packetSignature source=${status.transitionSource.name}',
     );
 
     try {
@@ -333,72 +344,21 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
       );
     } catch (error, stackTrace) {
       BleDebugRegistry.instance.recordEvent(
-        'Local BLE notification failed -> kind=$kind error=$error',
+        'Local BLE notification failed -> kind=sos_received error=$error',
       );
       debugPrint('Local BLE notification failed: $error');
       debugPrintStack(stackTrace: stackTrace);
     }
   }
 
-  String? _notificationKindForSosTransition(
-    DeviceSosState previousState,
-    DeviceSosState newState,
-  ) {
-    if (previousState == DeviceSosState.inactive &&
-        newState == DeviceSosState.preConfirm) {
-      return 'sos_generated';
-    }
-    if (previousState == DeviceSosState.inactive &&
-        newState == DeviceSosState.active) {
-      return 'sos_generated';
-    }
-    if (previousState == DeviceSosState.preConfirm &&
-        newState == DeviceSosState.active) {
-      return 'sos_activated';
-    }
-    if ((previousState == DeviceSosState.preConfirm ||
-            previousState == DeviceSosState.active ||
-            previousState == DeviceSosState.acknowledged) &&
-        (newState == DeviceSosState.resolved ||
-            newState == DeviceSosState.inactive)) {
-      return 'sos_resolved';
-    }
-    return null;
-  }
-
-  String _notificationTitleFor(String kind, String deviceLabel) {
-    switch (kind) {
-      case 'sos_generated':
-        return 'SOS generated on $deviceLabel';
-      case 'sos_activated':
-        return 'SOS activated on $deviceLabel';
-      case 'sos_resolved':
-        return 'SOS cancelled on $deviceLabel';
-      default:
-        return 'Device SOS event from $deviceLabel';
-    }
-  }
-
-  String _notificationBodyForSosTransition(
-    String kind,
-    String deviceLabel,
-    DeviceSosStatus status,
-    DeviceSosState previousState,
-    DeviceSosState newState,
-  ) {
+  String _notificationBodyForSosPacket(DeviceSosStatus status) {
     final nodeId = status.nodeId;
     final nodeIdSuffix =
         nodeId == null ? '' : ' Node ${_formatNodeId(nodeId)}.';
-    switch (kind) {
-      case 'sos_generated':
-        return 'The device started an SOS sequence.$nodeIdSuffix';
-      case 'sos_activated':
-        return 'The device escalated from countdown to active SOS.$nodeIdSuffix';
-      case 'sos_resolved':
-        return 'The device cancelled or resolved the SOS.$nodeIdSuffix';
-      default:
-        return 'SOS state changed from ${previousState.name} to ${newState.name}.$nodeIdSuffix';
-    }
+    final locationSuffix = status.hasLocation == true
+        ? ' Packet includes location.'
+        : ' Packet does not include location.';
+    return 'The connected device sent an SOS packet.$nodeIdSuffix$locationSuffix';
   }
 
   List<LocalNotificationAction> _notificationActionsForSosState(
@@ -590,8 +550,8 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
     if (nodeId == null) {
       return '-';
     }
-    final normalized = nodeId & 0xFFFFFFFF;
-    return '0x${normalized.toRadixString(16).padLeft(8, '0')}';
+    final normalized = nodeId & 0xFFFF;
+    return '0x${normalized.toRadixString(16).padLeft(4, '0')}';
   }
 
   int _nextBleNotificationId() {
