@@ -202,6 +202,7 @@ class DeviceSosController {
         retryCount: packet.retryCount,
         relayCount: packet.relayCount,
         batteryLevel: packet.batteryLevel,
+        batteryState: DeviceBatteryLevel.fromProtocolValue(packet.batteryLevel),
         gpsQuality: packet.gpsQuality,
         packetId: packet.packetId,
         hasLocation: packet.hasPosition,

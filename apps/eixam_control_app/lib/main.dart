@@ -1232,7 +1232,7 @@ class _DemoHomePageState extends State<DemoHomePage> {
                 ),
                 _InfoLine(
                   label: 'Battery',
-                  value: _deviceStatus?.batteryLevel?.toString() ?? '-',
+                  value: _formatDeviceBattery(_deviceStatus),
                 ),
                 _InfoLine(
                   label: 'Signal',
@@ -1405,6 +1405,19 @@ class _DemoHomePageState extends State<DemoHomePage> {
       ),
     );
   }
+}
+
+String _formatDeviceBattery(DeviceStatus? status) {
+  if (status == null) {
+    return '-';
+  }
+
+  final batteryState = status.effectiveBatteryState;
+  if (batteryState == null) {
+    return '-';
+  }
+
+  return '${batteryState.label} (~${batteryState.approximatePercentage}% UI est.)';
 }
 
 class _SectionCard extends StatelessWidget {

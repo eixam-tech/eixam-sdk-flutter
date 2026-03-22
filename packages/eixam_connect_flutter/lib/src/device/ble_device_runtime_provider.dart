@@ -28,15 +28,22 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   final DeviceSosController _deviceSosController;
   final StreamController<BleIncomingEvent> _incomingEventsController =
       StreamController<BleIncomingEvent>.broadcast();
+  final StreamController<DeviceStatus> _runtimeStatusController =
+      StreamController<DeviceStatus>.broadcast();
 
   String? _connectedDeviceId;
   String? _connectedDeviceAlias;
   StreamSubscription<EixamBleNotification>? _notificationSubscription;
   DateTime? _lastAppCommandAt;
+  DeviceStatus? _lastRuntimeStatus;
+  int? _lastTelBatteryLevel;
+  int? _lastSosBatteryLevel;
 
   DeviceSosController get deviceSosController => _deviceSosController;
   Stream<BleIncomingEvent> watchIncomingEvents() =>
       _incomingEventsController.stream;
+  @override
+  Stream<DeviceStatus> watchRuntimeStatus() => _runtimeStatusController.stream;
 
   @override
   Future<DeviceStatus> pair({
@@ -125,14 +132,16 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         'Pairing succeeded for ${candidate.deviceId}',
       );
 
-      return currentStatus.copyWith(
+      final nextStatus = currentStatus.copyWith(
         deviceId: candidate.deviceId,
         deviceAlias: candidate.name,
         model: 'EIXAM R1',
         paired: true,
         connected: true,
         lifecycleState: DeviceLifecycleState.paired,
-        batteryLevel: await _bleClient.readBatteryLevel(candidate.deviceId),
+        batteryLevel: _effectiveBatteryLevel(currentStatus),
+        batteryState: _effectiveBatteryState(currentStatus),
+        batterySource: _effectiveBatterySource(currentStatus),
         firmwareVersion: await _bleClient.readFirmwareVersion(
           candidate.deviceId,
         ),
@@ -141,6 +150,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         lastSyncedAt: DateTime.now(),
         clearProvisioningError: true,
       );
+      _publishRuntimeStatus(nextStatus, reason: 'pair_completed');
+      return nextStatus;
     } catch (error, stackTrace) {
       final currentStatus =
           BleDebugRegistry.instance.currentState.connectionStatus;
@@ -201,10 +212,16 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
           case EixamBleChannel.tel:
             final telPacket = EixamTelPacket.tryParse(notification.payload);
             BleDebugRegistry.instance.recordEvent(
+              'TEL raw payload (ea01) -> ${notification.payloadHex}',
+            );
+            BleDebugRegistry.instance.recordEvent(
               telPacket == null
                   ? 'TEL packet rejected -> len=${notification.payload.length} payload=${notification.payloadHex}'
                   : 'TEL packet decoded -> nodeId=${_formatNodeId(telPacket.nodeId)} packetId=${telPacket.packetId} batt=${telPacket.batteryLevel} gps=${telPacket.gpsQuality}',
             );
+            if (telPacket != null) {
+              _handleTelBatteryUpdate(telPacket);
+            }
             _incomingEventsController.add(
               BleIncomingEvent(
                 deviceId: deviceId,
@@ -222,11 +239,15 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
           case EixamBleChannel.sos:
             final sosPacket = EixamSosPacket.tryParse(notification.payload);
             BleDebugRegistry.instance.recordEvent(
+              'SOS raw payload (ea02) -> ${notification.payloadHex}',
+            );
+            BleDebugRegistry.instance.recordEvent(
               sosPacket == null
                   ? 'SOS packet rejected -> len=${notification.payload.length} payload=${notification.payloadHex}'
                   : 'SOS packet decoded -> nodeId=${_formatNodeId(sosPacket.nodeId)} sosType=${sosPacket.sosType} packetId=${sosPacket.packetId} relayCount=${sosPacket.relayCount}',
             );
             if (sosPacket != null) {
+              _handleSosBatteryUpdate(sosPacket);
               _deviceSosController.handleIncomingSosPacket(
                 sosPacket,
                 source: source,
@@ -271,11 +292,13 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     BleDebugRegistry.instance.recordEvent(
       'Activation succeeded for ${currentStatus.deviceId}',
     );
-    return currentStatus.copyWith(
+    final nextStatus = currentStatus.copyWith(
       activated: true,
       connected: await _resolveConnection(currentStatus.deviceId),
       lifecycleState: DeviceLifecycleState.ready,
-      batteryLevel: await _bleClient.readBatteryLevel(currentStatus.deviceId),
+      batteryLevel: _effectiveBatteryLevel(currentStatus),
+      batteryState: _effectiveBatteryState(currentStatus),
+      batterySource: _effectiveBatterySource(currentStatus),
       firmwareVersion: await _bleClient.readFirmwareVersion(
         currentStatus.deviceId,
       ),
@@ -284,6 +307,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       lastSyncedAt: DateTime.now(),
       clearProvisioningError: true,
     );
+    _publishRuntimeStatus(nextStatus, reason: 'activate_completed');
+    return nextStatus;
   }
 
   @override
@@ -297,11 +322,17 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     BleDebugRegistry.instance.recordEvent(
       'Refreshed device status for ${currentStatus.deviceId}',
     );
-    return currentStatus.copyWith(
+    final nextStatus = currentStatus.copyWith(
       connected: connected,
       batteryLevel: connected
-          ? await _bleClient.readBatteryLevel(currentStatus.deviceId)
+          ? _effectiveBatteryLevel(currentStatus)
           : currentStatus.batteryLevel,
+      batteryState: connected
+          ? _effectiveBatteryState(currentStatus)
+          : currentStatus.effectiveBatteryState,
+      batterySource: connected
+          ? _effectiveBatterySource(currentStatus)
+          : currentStatus.batterySource,
       firmwareVersion: connected
           ? await _bleClient.readFirmwareVersion(currentStatus.deviceId)
           : currentStatus.firmwareVersion,
@@ -313,6 +344,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       lastSyncedAt: DateTime.now(),
       clearProvisioningError: true,
     );
+    _publishRuntimeStatus(nextStatus, reason: 'refresh_completed');
+    return nextStatus;
   }
 
   @override
@@ -326,18 +359,29 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     _connectedDeviceId = null;
     _connectedDeviceAlias = null;
     _lastAppCommandAt = null;
+    _lastTelBatteryLevel = null;
+    _lastSosBatteryLevel = null;
     BleDebugRegistry.instance.recordEvent('Device unpaired');
 
-    return currentStatus.copyWith(
+    final nextStatus = DeviceStatus(
+      deviceId: currentStatus.deviceId,
+      deviceAlias: currentStatus.deviceAlias,
+      model: currentStatus.model,
       paired: false,
       activated: false,
       connected: false,
-      lifecycleState: DeviceLifecycleState.unpaired,
-      provisioningError: null,
+      batteryLevel: null,
+      batteryState: null,
+      batterySource: null,
+      firmwareVersion: currentStatus.firmwareVersion,
       lastSeen: DateTime.now(),
       lastSyncedAt: DateTime.now(),
       signalQuality: null,
+      lifecycleState: DeviceLifecycleState.unpaired,
+      provisioningError: null,
     );
+    _publishRuntimeStatus(nextStatus, reason: 'unpair_completed');
+    return nextStatus;
   }
 
   void _log(String message) {
@@ -371,8 +415,89 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     return DeviceLifecycleState.activated;
   }
 
+  void _handleTelBatteryUpdate(EixamTelPacket packet) {
+    _lastTelBatteryLevel = packet.batteryLevel;
+    BleDebugRegistry.instance.recordEvent(
+      'Decoded TEL battery -> nodeId=${_formatNodeId(packet.nodeId)} raw=${packet.batteryLevel} state=${DeviceBatteryLevel.fromProtocolValue(packet.batteryLevel)?.label ?? "-"}',
+    );
+    _publishPacketDerivedBattery(reason: 'tel_packet');
+  }
+
+  void _handleSosBatteryUpdate(EixamSosPacket packet) {
+    _lastSosBatteryLevel = packet.batteryLevel;
+    BleDebugRegistry.instance.recordEvent(
+      'Decoded SOS battery -> nodeId=${_formatNodeId(packet.nodeId)} raw=${packet.batteryLevel} state=${DeviceBatteryLevel.fromProtocolValue(packet.batteryLevel)?.label ?? "-"}',
+    );
+    _publishPacketDerivedBattery(reason: 'sos_packet');
+  }
+
+  void _publishPacketDerivedBattery({required String reason}) {
+    final currentStatus = _lastRuntimeStatus;
+    if (currentStatus == null) {
+      BleDebugRegistry.instance.recordEvent(
+        'Battery update deferred -> reason=$reason status=uninitialized',
+      );
+      return;
+    }
+
+    final rawBatteryLevel = _effectiveBatteryLevel(currentStatus);
+    final batteryState = _effectiveBatteryState(currentStatus);
+    final batterySource = _effectiveBatterySource(currentStatus);
+    final nextStatus = currentStatus.copyWith(
+      batteryLevel: rawBatteryLevel,
+      batteryState: batteryState,
+      batterySource: batterySource,
+      lastSeen: DateTime.now(),
+      lastSyncedAt: DateTime.now(),
+    );
+
+    final unchanged = currentStatus.batteryLevel == nextStatus.batteryLevel &&
+        currentStatus.effectiveBatteryState == nextStatus.effectiveBatteryState &&
+        currentStatus.batterySource == nextStatus.batterySource;
+    if (unchanged) {
+      BleDebugRegistry.instance.recordEvent(
+        'Final battery value sent to UI -> source=${batterySource?.name ?? "-"} raw=${rawBatteryLevel?.toString() ?? "-"} state=${batteryState?.label ?? "-"} approx=${batteryState?.approximatePercentage.toString() ?? "-"} changed=false',
+      );
+      return;
+    }
+
+    _publishRuntimeStatus(nextStatus, reason: reason);
+  }
+
+  int? _effectiveBatteryLevel(DeviceStatus currentStatus) {
+    return _lastTelBatteryLevel ??
+        _lastSosBatteryLevel ??
+        currentStatus.batteryLevel;
+  }
+
+  DeviceBatteryLevel? _effectiveBatteryState(DeviceStatus currentStatus) {
+    return DeviceBatteryLevel.fromProtocolValue(
+          _effectiveBatteryLevel(currentStatus),
+        ) ??
+        currentStatus.effectiveBatteryState;
+  }
+
+  DeviceBatterySource? _effectiveBatterySource(DeviceStatus currentStatus) {
+    if (_lastTelBatteryLevel != null) {
+      return DeviceBatterySource.telPacket;
+    }
+    if (_lastSosBatteryLevel != null) {
+      return DeviceBatterySource.sosPacket;
+    }
+    return currentStatus.batterySource;
+  }
+
+  void _publishRuntimeStatus(DeviceStatus nextStatus, {required String reason}) {
+    _lastRuntimeStatus = nextStatus;
+    BleDebugRegistry.instance.recordEvent(
+      'Final battery value sent to UI -> source=${nextStatus.batterySource?.name ?? "-"} raw=${nextStatus.batteryLevel?.toString() ?? "-"} state=${nextStatus.effectiveBatteryState?.label ?? "-"} approx=${nextStatus.approximateBatteryPercentage?.toString() ?? "-"} changed=true reason=$reason',
+    );
+    _runtimeStatusController.add(nextStatus);
+  }
+
   Future<void> dispose() async {
     await _notificationSubscription?.cancel();
+    await _runtimeStatusController.close();
     await _incomingEventsController.close();
   }
 }

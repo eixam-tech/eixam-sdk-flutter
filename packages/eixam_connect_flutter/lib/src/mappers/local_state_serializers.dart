@@ -134,6 +134,8 @@ class LocalStateSerializers {
       'activated': status.activated,
       'connected': status.connected,
       'batteryLevel': status.batteryLevel,
+      'batteryState': status.effectiveBatteryState?.name,
+      'batterySource': status.batterySource?.name,
       'firmwareVersion': status.firmwareVersion,
       'lastSeen': status.lastSeen?.toIso8601String(),
       'lastSyncedAt': status.lastSyncedAt?.toIso8601String(),
@@ -144,6 +146,27 @@ class LocalStateSerializers {
   }
 
   static DeviceStatus deviceStatusFromJson(Map<String, dynamic> json) {
+    final rawBatteryLevel = json['batteryLevel'] as int?;
+    final batteryStateName = json['batteryState'] as String?;
+    final batterySourceName = json['batterySource'] as String?;
+
+    DeviceBatteryLevel? batteryState;
+    for (final value in DeviceBatteryLevel.values) {
+      if (value.name == batteryStateName) {
+        batteryState = value;
+        break;
+      }
+    }
+    batteryState ??= DeviceBatteryLevel.fromProtocolValue(rawBatteryLevel);
+
+    DeviceBatterySource? batterySource;
+    for (final value in DeviceBatterySource.values) {
+      if (value.name == batterySourceName) {
+        batterySource = value;
+        break;
+      }
+    }
+
     return DeviceStatus(
       deviceId: json['deviceId'] as String,
       deviceAlias: json['deviceAlias'] as String?,
@@ -151,7 +174,9 @@ class LocalStateSerializers {
       paired: json['paired'] as bool? ?? false,
       activated: json['activated'] as bool? ?? false,
       connected: json['connected'] as bool? ?? false,
-      batteryLevel: json['batteryLevel'] as int?,
+      batteryLevel: rawBatteryLevel,
+      batteryState: batteryState,
+      batterySource: batterySource,
       firmwareVersion: json['firmwareVersion'] as String?,
       lastSeen: json['lastSeen'] == null ? null : DateTime.parse(json['lastSeen'] as String),
       lastSyncedAt: json['lastSyncedAt'] == null ? null : DateTime.parse(json['lastSyncedAt'] as String),

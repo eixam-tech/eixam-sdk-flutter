@@ -357,6 +357,14 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                 children: [
                   _InfoLine(
                     label: 'Battery',
+                    value: _formatDeviceBattery(status),
+                  ),
+                  _InfoLine(
+                    label: 'Battery source',
+                    value: _formatBatterySource(status?.batterySource),
+                  ),
+                  _InfoLine(
+                    label: 'Battery protocol level',
                     value: status?.batteryLevel?.toString() ?? '-',
                   ),
                   _InfoLine(
@@ -448,7 +456,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                   ),
                   _InfoLine(
                     label: 'Battery level',
-                    value: _deviceSosStatus.batteryLevel?.toString() ?? '-',
+                    value: _formatSosBattery(_deviceSosStatus),
                   ),
                   _InfoLine(
                     label: 'GPS quality',
@@ -1010,6 +1018,37 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     String two(int part) => part.toString().padLeft(2, '0');
     return '${local.year}-${two(local.month)}-${two(local.day)} '
         '${two(local.hour)}:${two(local.minute)}:${two(local.second)}';
+  }
+
+  String _formatDeviceBattery(DeviceStatus? status) {
+    if (status == null) {
+      return '-';
+    }
+
+    final batteryState = status.effectiveBatteryState;
+    if (batteryState == null) {
+      return '-';
+    }
+
+    return '${batteryState.label} (~${batteryState.approximatePercentage}% UI est.)';
+  }
+
+  String _formatBatterySource(DeviceBatterySource? source) {
+    return switch (source) {
+      DeviceBatterySource.telPacket => 'Latest TEL packet',
+      DeviceBatterySource.sosPacket => 'Latest SOS packet',
+      DeviceBatterySource.unknown => 'Unknown',
+      null => '-',
+    };
+  }
+
+  String _formatSosBattery(DeviceSosStatus status) {
+    final batteryState = status.batteryState;
+    if (batteryState == null) {
+      return status.batteryLevel?.toString() ?? '-';
+    }
+
+    return '${batteryState.label} (raw ${status.batteryLevel ?? "-"})';
   }
 
   Future<void> _sendAckRelayCommand() async {

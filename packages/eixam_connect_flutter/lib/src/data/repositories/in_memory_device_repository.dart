@@ -16,11 +16,17 @@ class InMemoryDeviceRepository implements DeviceRepository {
     required DeviceRuntimeProvider runtimeProvider,
     SharedPrefsSdkStore? localStore,
   })  : _runtimeProvider = runtimeProvider,
-        _localStore = localStore;
+        _localStore = localStore {
+    _runtimeStatusSub = _runtimeProvider.watchRuntimeStatus().listen((status) async {
+      _status = status;
+      await _persistAndEmit();
+    });
+  }
 
   final DeviceRuntimeProvider _runtimeProvider;
   final SharedPrefsSdkStore? _localStore;
   final StreamController<DeviceStatus> _controller = StreamController<DeviceStatus>.broadcast();
+  StreamSubscription<DeviceStatus>? _runtimeStatusSub;
 
   Timer? _heartbeatTimer;
   DeviceStatus _status = const DeviceStatus(
@@ -30,7 +36,9 @@ class InMemoryDeviceRepository implements DeviceRepository {
     paired: false,
     activated: false,
     connected: false,
-    batteryLevel: 85,
+    batteryLevel: null,
+    batteryState: null,
+    batterySource: null,
     firmwareVersion: '0.1.0-demo',
     lifecycleState: DeviceLifecycleState.unpaired,
   );

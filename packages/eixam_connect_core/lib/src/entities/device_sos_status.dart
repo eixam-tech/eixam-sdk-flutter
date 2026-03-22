@@ -1,5 +1,6 @@
 import '../enums/device_sos_state.dart';
 import '../enums/device_sos_transition_source.dart';
+import '../enums/device_battery_level.dart';
 
 class DeviceSosStatus {
   final DeviceSosState state;
@@ -20,6 +21,7 @@ class DeviceSosStatus {
   final int? retryCount;
   final int? relayCount;
   final int? batteryLevel;
+  final DeviceBatteryLevel? batteryState;
   final int? gpsQuality;
   final int? packetId;
   final bool? hasLocation;
@@ -44,6 +46,7 @@ class DeviceSosStatus {
     this.retryCount,
     this.relayCount,
     this.batteryLevel,
+    this.batteryState,
     this.gpsQuality,
     this.packetId,
     this.hasLocation,
@@ -79,6 +82,7 @@ class DeviceSosStatus {
     int? retryCount,
     int? relayCount,
     int? batteryLevel,
+    DeviceBatteryLevel? batteryState,
     int? gpsQuality,
     int? packetId,
     bool? hasLocation,
@@ -103,6 +107,7 @@ class DeviceSosStatus {
       retryCount: retryCount ?? this.retryCount,
       relayCount: relayCount ?? this.relayCount,
       batteryLevel: batteryLevel ?? this.batteryLevel,
+      batteryState: batteryState ?? this.batteryState,
       gpsQuality: gpsQuality ?? this.gpsQuality,
       packetId: packetId ?? this.packetId,
       hasLocation: hasLocation ?? this.hasLocation,

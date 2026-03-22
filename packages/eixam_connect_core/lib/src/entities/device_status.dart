@@ -1,4 +1,6 @@
 import '../enums/device_lifecycle_state.dart';
+import '../enums/device_battery_level.dart';
+import '../enums/device_battery_source.dart';
 
 /// Runtime view of the paired EIXAM device exposed by the SDK.
 ///
@@ -12,7 +14,10 @@ class DeviceStatus {
   final bool paired;
   final bool activated;
   final bool connected;
+  /// Raw EIXAM protocol battery value (`0..3`), not a true percentage.
   final int? batteryLevel;
+  final DeviceBatteryLevel? batteryState;
+  final DeviceBatterySource? batterySource;
   final String? firmwareVersion;
   final DateTime? lastSeen;
   final DateTime? lastSyncedAt;
@@ -28,6 +33,8 @@ class DeviceStatus {
     required this.activated,
     required this.connected,
     this.batteryLevel,
+    this.batteryState,
+    this.batterySource,
     this.firmwareVersion,
     this.lastSeen,
     this.lastSyncedAt,
@@ -40,6 +47,12 @@ class DeviceStatus {
   /// workflows such as location tracking and SOS triggering.
   bool get isReadyForSafety => paired && activated && connected;
 
+  DeviceBatteryLevel? get effectiveBatteryState =>
+      batteryState ?? DeviceBatteryLevel.fromProtocolValue(batteryLevel);
+
+  int? get approximateBatteryPercentage =>
+      effectiveBatteryState?.approximatePercentage;
+
   DeviceStatus copyWith({
     String? deviceId,
     String? deviceAlias,
@@ -48,6 +61,8 @@ class DeviceStatus {
     bool? activated,
     bool? connected,
     int? batteryLevel,
+    DeviceBatteryLevel? batteryState,
+    DeviceBatterySource? batterySource,
     String? firmwareVersion,
     DateTime? lastSeen,
     DateTime? lastSyncedAt,
@@ -64,6 +79,8 @@ class DeviceStatus {
       activated: activated ?? this.activated,
       connected: connected ?? this.connected,
       batteryLevel: batteryLevel ?? this.batteryLevel,
+      batteryState: batteryState ?? this.batteryState,
+      batterySource: batterySource ?? this.batterySource,
       firmwareVersion: firmwareVersion ?? this.firmwareVersion,
       lastSeen: lastSeen ?? this.lastSeen,
       lastSyncedAt: lastSyncedAt ?? this.lastSyncedAt,

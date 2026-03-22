@@ -9,6 +9,10 @@ class MockDeviceRuntimeProvider implements DeviceRuntimeProvider {
   final Random _random = Random();
 
   @override
+  Stream<DeviceStatus> watchRuntimeStatus() =>
+      const Stream<DeviceStatus>.empty();
+
+  @override
   Future<DeviceStatus> pair({required DeviceStatus currentStatus, required String pairingCode}) async {
     if (pairingCode.trim().length < 4) {
       throw const DeviceException.invalidPairingCode();
@@ -21,6 +25,11 @@ class MockDeviceRuntimeProvider implements DeviceRuntimeProvider {
       lifecycleState: currentStatus.activated
           ? DeviceLifecycleState.activated
           : DeviceLifecycleState.paired,
+      batteryLevel:
+          currentStatus.batteryLevel ?? DeviceBatteryLevel.ok.protocolValue,
+      batteryState:
+          currentStatus.effectiveBatteryState ?? DeviceBatteryLevel.ok,
+      batterySource: currentStatus.batterySource ?? DeviceBatterySource.unknown,
       lastSeen: DateTime.now(),
       lastSyncedAt: DateTime.now(),
       signalQuality: 4,
@@ -41,6 +50,11 @@ class MockDeviceRuntimeProvider implements DeviceRuntimeProvider {
       activated: true,
       connected: true,
       lifecycleState: DeviceLifecycleState.ready,
+      batteryLevel:
+          currentStatus.batteryLevel ?? DeviceBatteryLevel.ok.protocolValue,
+      batteryState:
+          currentStatus.effectiveBatteryState ?? DeviceBatteryLevel.ok,
+      batterySource: currentStatus.batterySource ?? DeviceBatterySource.unknown,
       lastSeen: DateTime.now(),
       lastSyncedAt: DateTime.now(),
       signalQuality: 4,
@@ -52,11 +66,15 @@ class MockDeviceRuntimeProvider implements DeviceRuntimeProvider {
   Future<DeviceStatus> refresh(DeviceStatus currentStatus) async {
     if (!currentStatus.paired) return currentStatus;
 
-    final battery = ((currentStatus.batteryLevel ?? 80) - _random.nextInt(2)).clamp(15, 100);
+    final currentBatteryLevel =
+        currentStatus.batteryLevel ?? DeviceBatteryLevel.ok.protocolValue;
+    final battery = (currentBatteryLevel - _random.nextInt(2)).clamp(0, 3);
     final activated = currentStatus.activated;
     return currentStatus.copyWith(
       connected: true,
       batteryLevel: battery,
+      batteryState: DeviceBatteryLevel.fromProtocolValue(battery),
+      batterySource: DeviceBatterySource.unknown,
       lastSeen: DateTime.now(),
       lastSyncedAt: DateTime.now(),
       signalQuality: 2 + _random.nextInt(3),
@@ -67,15 +85,22 @@ class MockDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
   @override
   Future<DeviceStatus> unpair(DeviceStatus currentStatus) async {
-    return currentStatus.copyWith(
+    return DeviceStatus(
+      deviceId: currentStatus.deviceId,
+      deviceAlias: currentStatus.deviceAlias,
+      model: currentStatus.model,
       paired: false,
       activated: false,
       connected: false,
-      lifecycleState: DeviceLifecycleState.unpaired,
+      batteryLevel: null,
+      batteryState: null,
+      batterySource: null,
+      firmwareVersion: currentStatus.firmwareVersion,
       lastSeen: DateTime.now(),
       lastSyncedAt: DateTime.now(),
-      provisioningError: null,
       signalQuality: null,
+      lifecycleState: DeviceLifecycleState.unpaired,
+      provisioningError: null,
     );
   }
 }
