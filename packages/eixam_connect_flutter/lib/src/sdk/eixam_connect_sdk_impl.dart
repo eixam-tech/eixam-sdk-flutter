@@ -58,7 +58,8 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
   DeviceStatus? _lastDeviceStatus;
   DeviceSosStatus _lastDeviceSosStatus = DeviceSosStatus.initial();
   BleNotificationNavigationRequest? _pendingBleNotificationNavigationRequest;
-  String? _lastBleNotificationSignature;
+  String? _activeDeviceSosCycleKey;
+  String? _notifiedDeviceSosCycleKey;
 
   static const String _openAppActionId = 'open_app';
   static const String _backendAckSosActionId = 'backend_ack_sos';
@@ -286,33 +287,74 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
 
   Future<void> _handleDeviceSosStatus(DeviceSosStatus status) async {
     _lastDeviceSosStatus = status;
-    final packetSignature = status.lastPacketSignature;
+    final cycleKey = _deriveDeviceSosCycleKey(status);
 
     BleDebugRegistry.instance.recordEvent(
       'SOS packet observed -> payload=${status.lastPacketHex ?? '-'} state=${status.state.name} source=${status.transitionSource.name}',
     );
+    BleDebugRegistry.instance.recordEvent(
+      'SOS state derived -> state=${status.state.name} previous=${status.previousState?.name ?? '-'} source=${status.transitionSource.name} derivedFromBle=${status.derivedFromBlePacket} nodeId=${_formatNodeId(status.nodeId)} packetId=${status.packetId?.toString() ?? '-'}',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'SOS cycle evaluated -> key=${cycleKey ?? '-'} activeCycle=${_activeDeviceSosCycleKey ?? '-'} notifiedCycle=${_notifiedDeviceSosCycleKey ?? '-'}',
+    );
+
+    if (_isSosCycleClosed(status.state)) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS notification suppression reset -> reason=cycle_closed clearedCycle=${_activeDeviceSosCycleKey ?? "-"}',
+      );
+      _activeDeviceSosCycleKey = null;
+      _notifiedDeviceSosCycleKey = null;
+    }
 
     if (!status.derivedFromBlePacket) {
       BleDebugRegistry.instance.recordEvent(
-        'SOS notification skipped -> reason=not_from_ble_packet',
+        'SOS notification skipped -> reason=not_from_ble_packet cycleKey=${cycleKey ?? "-"}',
       );
       return;
     }
 
     if (status.transitionSource != DeviceSosTransitionSource.device) {
       BleDebugRegistry.instance.recordEvent(
-        'SOS notification skipped -> reason=source_not_device',
+        'SOS notification skipped -> reason=source_not_device cycleKey=${cycleKey ?? "-"}',
       );
       return;
     }
 
-    if (packetSignature == null || packetSignature == _lastBleNotificationSignature) {
+    if (!_isSosCycleNotifiable(status.state)) {
       BleDebugRegistry.instance.recordEvent(
-        'SOS notification skipped -> reason=duplicate_or_missing_signature',
+        'SOS notification skipped -> reason=state_not_notifiable state=${status.state.name} cycleKey=${cycleKey ?? "-"}',
       );
       return;
     }
-    _lastBleNotificationSignature = packetSignature;
+
+    if (cycleKey == null) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS notification skipped -> reason=missing_cycle_key',
+      );
+      return;
+    }
+
+    final previousActiveCycleKey = _activeDeviceSosCycleKey;
+    if (previousActiveCycleKey == null) {
+      _activeDeviceSosCycleKey = cycleKey;
+      BleDebugRegistry.instance.recordEvent(
+        'SOS cycle opened -> key=$cycleKey',
+      );
+    } else if (previousActiveCycleKey != cycleKey) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS notification skipped -> reason=cycle_already_open activeCycle=$previousActiveCycleKey incomingCycle=$cycleKey',
+      );
+      return;
+    }
+
+    if (_notifiedDeviceSosCycleKey == cycleKey) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS notification skipped -> reason=already_notified_for_cycle cycleKey=$cycleKey',
+      );
+      return;
+    }
+    _notifiedDeviceSosCycleKey = cycleKey;
 
     final deviceLabel = _deviceLabel(
       deviceAlias: _lastDeviceStatus?.deviceAlias,
@@ -331,7 +373,7 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
     );
 
     BleDebugRegistry.instance.recordEvent(
-      'SOS notification emitted -> signature=$packetSignature source=${status.transitionSource.name}',
+      'SOS notification emitted -> cycleKey=$cycleKey source=${status.transitionSource.name}',
     );
 
     try {
@@ -349,6 +391,39 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
       debugPrint('Local BLE notification failed: $error');
       debugPrintStack(stackTrace: stackTrace);
     }
+  }
+
+  bool _isSosCycleNotifiable(DeviceSosState state) {
+    return state == DeviceSosState.preConfirm ||
+        state == DeviceSosState.active ||
+        state == DeviceSosState.acknowledged;
+  }
+
+  bool _isSosCycleClosed(DeviceSosState state) {
+    return state == DeviceSosState.inactive || state == DeviceSosState.resolved;
+  }
+
+  String? _deriveDeviceSosCycleKey(DeviceSosStatus status) {
+    if (!_isSosCycleNotifiable(status.state)) {
+      return null;
+    }
+
+    final deviceId = _lastDeviceStatus?.deviceId?.trim();
+    final nodeId = status.nodeId;
+    final packetId = status.packetId;
+
+    if (deviceId != null &&
+        deviceId.isNotEmpty &&
+        nodeId != null &&
+        packetId != null) {
+      return '$deviceId:$nodeId:$packetId:${status.sosType ?? -1}';
+    }
+
+    if (nodeId != null && packetId != null) {
+      return 'node:$nodeId:packet:$packetId:${status.sosType ?? -1}';
+    }
+
+    return status.lastPacketSignature;
   }
 
   String _notificationBodyForSosPacket(DeviceSosStatus status) {
