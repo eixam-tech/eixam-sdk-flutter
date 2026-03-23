@@ -54,6 +54,8 @@ Contains:
 - local persistence
 - permissions
 - BLE transport/runtime
+- trusted device persistence
+- auto-connect / reconnect orchestration
 - demo/bootstrap factories
 - realtime skeleton or mock wiring
 
@@ -81,16 +83,19 @@ That means:
 3. Business-critical logic should live in the SDK, not only in the demo app.
 4. The Control app should consume the SDK like a real host app would.
 5. UI decisions should not pollute SDK domain contracts.
+6. BLE protocol parsing, device orchestration, and reconnect behavior should live in SDK/runtime layers, not in random app widgets.
 
 ---
 
 ## Source of truth documents
 
-The current BLE source of truth is:
+The BLE source of truth is the latest protocol documentation available in the repo.
 
-- `docs/eixam/07_BLE_APP_PROTOCOL.md`
+Preferred references:
+- `docs/eixam/07_BLE_APP_PROTOCOL.md` if present
+- otherwise the latest repository-level BLE protocol document used by the current integration work
 
-If code behavior or old assumptions differ from this file, treat the protocol document as the intended contract and treat mismatches as:
+If code behavior or old assumptions differ from the current BLE protocol document, treat the protocol document as the intended contract and treat mismatches as:
 - firmware mismatch
 - stale implementation
 - incomplete integration
@@ -101,7 +106,6 @@ Other important technical references:
 - `README.md`
 - `packages/eixam_connect_flutter/NATIVE_PERMISSIONS_CHECKLIST.md`
 - `packages/eixam_connect_flutter/BLE_PROVIDER_INTEGRATION.md`
-- `docs/eixam/BLE_RUNTIME_FLOW.md`
 - `docs/eixam/01_SPRINT1_TEL_BLE_SOS.md` if present
 
 ---
@@ -122,6 +126,8 @@ The repository already includes work on:
 - device module
 - BLE runtime/provider layer
 - local persistence
+- trusted BLE device persistence
+- auto-connect / reconnect lifecycle
 - demo bootstrap flow
 - realtime skeleton
 - mock realtime client
@@ -148,7 +154,7 @@ What does **not** exist yet:
 - production WebSocket transport
 - final backend realtime protocol
 - authentication handshake
-- reconnect strategy
+- reconnect strategy for production realtime
 - message contract finalization
 
 ### Important rule
@@ -171,9 +177,14 @@ BLE is now in active real-device integration, not just conceptual scaffolding.
 - subscription to TEL and SOS notifications
 - app-to-device writes through INET
 - internal device control/testing UI exists or is being expanded
+- preferred/trusted device persistence
+- auto-connect on app startup
+- auto-connect on app resume
+- foreground auto-reconnect after unexpected disconnects
+- manual disconnect prevents unwanted auto-reconnect
 
 ### BLE source of truth
-Use `docs/eixam/07_BLE_APP_PROTOCOL.md` as the current contract.
+Use the latest `07_BLE_APP_PROTOCOL` document in the repo as the current contract.
 
 ### Current BLE protocol model
 The protocol defines:
@@ -184,13 +195,30 @@ The protocol defines:
 - INET write `ea03`
 - CMD write `ea04`
 
-TEL packets:
-- always 10 bytes
+### TEL packets
+TEL is **not limited to classic 10-byte packets anymore**.
 
-SOS packets:
-- 10 bytes or 5 bytes
+Supported TEL input types may include:
+- classic TEL packets of 10 bytes
+- aggregate/fragment packets using opcode `0xD0`
+  - byte 0 = `0xD0`
+  - bytes 1..2 = total length
+  - bytes 3..4 = offset
+  - remaining bytes = fragment payload
 
-App → device commands include:
+Large TEL aggregate payloads must be reassembled in the runtime/provider layer, not in UI widgets.
+
+### SOS packets
+SOS is **not limited to just classic mesh packets anymore**.
+
+Supported SOS input types may include:
+- 10-byte SOS mesh packets
+- 5-byte minimal SOS mesh packets
+- 4-byte device control/event packets:
+  - `0xE1` → manual/user deactivation event
+  - `0xE2` → app cancel acknowledgement event
+
+### App → device commands include
 - `0x01` INET_OK
 - `0x02` INET_LOST
 - `0x03` POS_CONFIRMED
@@ -238,13 +266,19 @@ Responsibilities:
 
 ### B. Protocol layer
 Responsibilities:
-- decode TEL packets
-- decode SOS packets
+- decode classic TEL packets
+- decode TEL aggregate fragments
+- reassemble TEL aggregate payloads
+- decode SOS mesh packets
+- decode SOS device event packets
 - encode device commands
 
 Examples of explicit models/helpers that are encouraged:
 - `EixamTelPacket`
+- `EixamTelFragment`
+- `EixamTelReassembler`
 - `EixamSosPacket`
+- `EixamSosEventPacket`
 - `EixamDeviceCommand`
 - packet decoder
 - command encoder
@@ -253,12 +287,16 @@ Examples of explicit models/helpers that are encouraged:
 Responsibilities:
 - consume decoded packets
 - expose runtime state/events
+- classify incoming packet kinds
 - drive local notifications
 - drive backend-facing actions
 - decide when to send:
   - `POS_CONFIRMED`
   - `SOS_ACK`
   - `SOS_ACK_RELAY`
+- manage trusted device behavior
+- manage auto-connect / reconnect rules
+- deduplicate repeated SOS events when needed
 
 ### D. UI layer
 Responsibilities:
@@ -266,8 +304,39 @@ Responsibilities:
 - render last packets
 - render BLE debug info
 - render device control actions
+- render connection state
+- render reconnecting / disconnected / manual disconnect feedback
 
 UI should not own protocol logic.
+
+---
+
+## BLE connection lifecycle rules
+
+The SDK/runtime should support a **trusted device** model.
+
+### Preferred device rules
+- Only one preferred device is needed for now
+- A device becomes preferred only after a successful connection
+- Persist at least:
+  - device identifier / remoteId
+  - display name if available
+  - last connected timestamp
+
+### Auto-connect / reconnect rules
+- On app startup:
+  - if a preferred device exists and manual disconnect is not active, try auto-connect
+- On app resume:
+  - if a preferred device exists and the app is not connected, try auto-connect
+- On unexpected disconnect in foreground:
+  - retry with controlled backoff
+- On manual disconnect:
+  - disable auto-reconnect until the user explicitly connects again
+
+### Important rule
+Do **not** create overlapping connection attempts.
+
+Startup auto-connect, resume auto-connect, manual connect, and reconnect retries must be coordinated through runtime/orchestration logic, not through independent UI triggers.
 
 ---
 
@@ -281,12 +350,13 @@ UI should not own protocol logic.
 
 ### Connect
 - Do not auto-connect to arbitrary scan candidates during debug
-- Let the user choose which device to connect to
+- Let the user choose which device to connect to initially
 - After manual selection:
   - connect
   - discover services
   - log everything
   - validate compatibility
+- If the device becomes trusted/preferred, future reconnects may use stored identifier-based logic
 
 ### Notifications / incoming packets
 After successful connection:
@@ -311,13 +381,17 @@ Follow the protocol flow:
 #### TEL
 - receive TEL
 - decode TEL
+- if fragment, reassemble if needed
 - send to backend if internet exists
 - when backend confirms position, send `POS_CONFIRMED`
 
 #### SOS
 - receive SOS
 - decode SOS
-- send to backend
+- classify whether it is:
+  - mesh SOS packet
+  - device event packet
+- send to backend when appropriate
 - when backend acknowledges:
   - if current device is origin → send `SOS_ACK`
   - if current device is relay → send `SOS_ACK_RELAY(nodeId LE)`
@@ -329,7 +403,7 @@ Follow the protocol flow:
 Use protocol semantics, not loose UI wording.
 
 ### Correct mappings
-- `Resolve` should map to `SOS_CANCEL` (`0x04`)
+- `Resolve` should map to `SOS_CANCEL` (`0x04`) when the intended firmware action is cancel/resolve
 - `Cancel` should map to `SOS_CANCEL` (`0x04`)
 - `Trigger SOS` should map to `SOS_TRIGGER_APP` (`0x06`)
 - `Confirm SOS` should map to `SOS_CONFIRM` (`0x05`)
@@ -342,6 +416,15 @@ Use protocol semantics, not loose UI wording.
 - not “user saw the alert”
 
 Do not label this action ambiguously as plain “Acknowledge” if the intended meaning is backend acknowledgment.
+
+### Device-originated SOS control events
+If firmware sends device event packets such as `0xE1` or `0xE2`, prefer protocol-aware state transitions instead of UI-only assumptions.
+
+Examples:
+- `0xE1` may indicate manual deactivation from the physical device
+- `0xE2` may indicate successful cancel acknowledgement from the app/device flow
+
+These events should update runtime/controller state explicitly.
 
 ---
 
@@ -364,6 +447,10 @@ When working on BLE, always log:
 - last command sent
 - last packet received
 - compatibility result
+- preferred device save/load decisions
+- startup auto-connect attempts
+- resume auto-connect attempts
+- reconnect scheduling and outcome
 - exact error when a connection or compatibility step fails
 
 Validation should be diagnostic-first, not pass/fail-only.

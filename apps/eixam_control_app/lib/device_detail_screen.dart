@@ -272,6 +272,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   Widget build(BuildContext context) {
     final status = _deviceStatus;
     final deviceName = status?.deviceAlias ?? status?.model ?? 'EIXAM device';
+    final hasScanResults = _bleDebugState.scanResults.isNotEmpty;
 
     return Scaffold(
       appBar: AppBar(
@@ -282,591 +283,87 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _DeviceHeader(
+            _DeviceHeroCard(
               deviceName: deviceName,
               statusLabel: _statusLabel(status),
               model: status?.model ?? '-',
               deviceId: status?.deviceId ?? '-',
-            ),
-            if (widget.notificationContextMessage != null) ...[
-              const SizedBox(height: 16),
-              _CardSection(
-                title: 'Notification Context',
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _InfoLine(
-                      label: 'Action',
-                      value: widget.notificationActionId ?? '-',
-                    ),
-                    _InfoLine(
-                      label: 'Message',
-                      value: widget.notificationContextMessage ?? '-',
-                    ),
-                    _InfoLine(
-                      label: 'Node ID',
-                      value: _formatNodeId(widget.notificationNodeId),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-            const SizedBox(height: 16),
-            _CardSection(
-              title: 'Lifecycle',
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      _StepChip(
-                          label: 'Paired', active: status?.paired ?? false),
-                      _StepChip(
-                        label: 'Connected',
-                        active: status?.connected ?? false,
-                      ),
-                      _StepChip(
-                        label: 'Activated',
-                        active: status?.activated ?? false,
-                      ),
-                      _StepChip(
-                        label: 'Ready',
-                        active: status?.isReadyForSafety ?? false,
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  _InfoLine(
-                    label: 'Lifecycle state',
-                    value: status?.lifecycleState.toString() ?? '-',
-                  ),
-                  _InfoLine(
-                    label: 'Provisioning error',
-                    value: status?.provisioningError ?? '-',
-                  ),
-                ],
-              ),
+              batterySummary: _formatDeviceBattery(status),
+              readinessSummary: _deviceReadinessSummary(status),
+              isConnected: status?.connected ?? false,
+              isReady: status?.isReadyForSafety ?? false,
             ),
             const SizedBox(height: 16),
-            _CardSection(
-              title: 'Device Health',
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _InfoLine(
-                    label: 'Battery',
-                    value: _formatDeviceBattery(status),
-                  ),
-                  _InfoLine(
-                    label: 'Battery source',
-                    value: _formatBatterySource(status?.batterySource),
-                  ),
-                  _InfoLine(
-                    label: 'Battery protocol level',
-                    value: status?.batteryLevel?.toString() ?? '-',
-                  ),
-                  _InfoLine(
-                    label: 'Signal',
-                    value: status?.signalQuality?.toString() ?? '-',
-                  ),
-                  _InfoLine(
-                    label: 'Firmware',
-                    value: status?.firmwareVersion ?? '-',
-                  ),
-                  _InfoLine(
-                    label: 'Last seen',
-                    value: _formatDate(status?.lastSeen),
-                  ),
-                  _InfoLine(
-                    label: 'Last sync',
-                    value: _formatDate(status?.lastSyncedAt),
-                  ),
-                ],
-              ),
+            _DeviceOverviewCard(
+              status: status,
+              lastSeen: _formatDate(status?.lastSeen),
+              connectionSummary: _connectionSummary(status),
             ),
             const SizedBox(height: 16),
-            _CardSection(
-              title: 'SOS State',
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      Chip(
-                        label: Text(_deviceSosBadgeLabel(_deviceSosStatus)),
-                        backgroundColor: _deviceSosBadgeColor(
-                          _deviceSosStatus.state,
-                        ),
-                      ),
-                      if (_deviceSosStatus.optimistic)
-                        const Chip(label: Text('Optimistic')),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  _InfoLine(
-                    label: 'Current state',
-                    value: _deviceSosStatus.state.name,
-                  ),
-                  _InfoLine(
-                    label: 'State source',
-                    value: _deviceSosStatus.derivedFromBlePacket
-                        ? 'Derived from BLE packet parsing'
-                        : 'Local/runtime state',
-                  ),
-                  _InfoLine(
-                    label: 'Last SOS packet length',
-                    value: _deviceSosStatus.lastPacketLength?.toString() ?? '-',
-                  ),
-                  _InfoLine(
-                    label: 'Last SOS packet timestamp',
-                    value: _formatDate(_deviceSosStatus.lastPacketAt),
-                  ),
-                  _InfoLine(
-                    label: 'Last SOS packet hex',
-                    value: _deviceSosStatus.lastPacketHex ?? '-',
-                  ),
-                  _InfoLine(
-                    label: 'Last transition',
-                    value: _deviceSosStatus.lastEvent,
-                  ),
-                  _InfoLine(
-                    label: 'Decoded nodeId',
-                    value: _formatNodeId(_deviceSosStatus.nodeId),
-                  ),
-                  _InfoLine(
-                    label: 'Decoded flags',
-                    value: _formatByte(_deviceSosStatus.flags),
-                  ),
-                  _InfoLine(
-                    label: 'Decoded SOS type',
-                    value: _deviceSosStatus.sosType?.toString() ?? '-',
-                  ),
-                  _InfoLine(
-                    label: 'Retry count',
-                    value: _deviceSosStatus.retryCount?.toString() ?? '-',
-                  ),
-                  _InfoLine(
-                    label: 'Relay count',
-                    value: _deviceSosStatus.relayCount?.toString() ?? '-',
-                  ),
-                  _InfoLine(
-                    label: 'Battery level',
-                    value: _formatSosBattery(_deviceSosStatus),
-                  ),
-                  _InfoLine(
-                    label: 'GPS quality',
-                    value: _deviceSosStatus.gpsQuality?.toString() ?? '-',
-                  ),
-                  _InfoLine(
-                    label: 'Packet id',
-                    value: _deviceSosStatus.packetId?.toString() ?? '-',
-                  ),
-                  _InfoLine(
-                    label: 'Has location',
-                    value: _deviceSosStatus.hasLocation?.toString() ?? '-',
-                  ),
-                  _InfoLine(
-                    label: 'Decoder note',
-                    value: _deviceSosStatus.decoderNote ?? '-',
-                  ),
-                ],
-              ),
+            _SafetyStatusCard(
+              status: _deviceSosStatus,
+              badgeLabel: _deviceSosBadgeLabel(_deviceSosStatus),
+              sourceLabel: _deviceSosStatus.derivedFromBlePacket
+                  ? 'Updated from device packet'
+                  : 'Updated by app/runtime state',
+              lastPacketAt: _formatDate(_deviceSosStatus.lastPacketAt),
             ),
             const SizedBox(height: 16),
-            _CardSection(
-              title: 'SOS Controls',
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      ElevatedButton(
-                        onPressed: _canTriggerDeviceSos
-                            ? () => _runSosAction(widget.sdk.triggerDeviceSos)
-                            : null,
-                        child: const Text('Trigger SOS'),
-                      ),
-                      ElevatedButton(
-                        onPressed: _canConfirmDeviceSos
-                            ? () => _runSosAction(widget.sdk.confirmDeviceSos)
-                            : null,
-                        child: const Text('Confirm SOS'),
-                      ),
-                      OutlinedButton(
-                        onPressed: _canCancelDeviceSos
-                            ? () => _runSosAction(widget.sdk.cancelDeviceSos)
-                            : null,
-                        child: Text(_cancelDeviceSosLabel),
-                      ),
-                      ElevatedButton(
-                        onPressed: _canSendBackendAck
-                            ? () =>
-                                _runSosAction(widget.sdk.acknowledgeDeviceSos)
-                            : null,
-                        child: const Text('Send Backend ACK'),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  const Text(
-                    'Command meanings: Confirm SOS sends 0x05 during countdown. '
-                    'Cancel and Resolve both send 0x04. '
-                    'Send Backend ACK sends 0x07 to tell the device the backend acknowledged the SOS; it is not a local "mark as seen" action.',
-                    style: TextStyle(color: Colors.black54),
-                  ),
-                ],
-              ),
+            _SosActionsCard(
+              canTriggerDeviceSos: _canTriggerDeviceSos,
+              canConfirmDeviceSos: _canConfirmDeviceSos,
+              canCancelDeviceSos: _canCancelDeviceSos,
+              canSendBackendAck: _canSendBackendAck,
+              cancelDeviceSosLabel: _cancelDeviceSosLabel,
+              onTrigger: () => _runSosAction(widget.sdk.triggerDeviceSos),
+              onConfirm: () => _runSosAction(widget.sdk.confirmDeviceSos),
+              onCancel: () => _runSosAction(widget.sdk.cancelDeviceSos),
+              onAcknowledge: () =>
+                  _runSosAction(widget.sdk.acknowledgeDeviceSos),
             ),
             const SizedBox(height: 16),
-            _CardSection(
-              title: 'Connectivity Controls',
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  OutlinedButton(
-                    onPressed: _bleDebugState.commandWriterReady
-                        ? () => _runCommandAction(widget.sdk.sendInetOkToDevice)
-                        : null,
-                    child: const Text('INET OK'),
-                  ),
-                  OutlinedButton(
-                    onPressed: _bleDebugState.commandWriterReady
-                        ? () =>
-                            _runCommandAction(widget.sdk.sendInetLostToDevice)
-                        : null,
-                    child: const Text('INET LOST'),
-                  ),
-                  OutlinedButton(
-                    onPressed: _bleDebugState.commandWriterReady
-                        ? () => _runCommandAction(
-                              widget.sdk.sendPositionConfirmedToDevice,
-                            )
-                        : null,
-                    child: const Text('POS CONFIRMED'),
-                  ),
-                ],
-              ),
+            _ConnectionActionsCard(
+              loadingDevice: _loadingDevice,
+              onPair: _pairDevice,
+              onActivate: _activateDevice,
+              onRefresh: _refreshDevice,
+              onUnpair: _unpairDevice,
             ),
             const SizedBox(height: 16),
-            _CardSection(
-              title: 'Advanced Controls',
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  TextField(
-                    controller: _ackRelayNodeIdController,
-                    decoration: const InputDecoration(
-                      labelText: 'SOS_ACK_RELAY nodeId',
-                      hintText: '0x1AA8 or decimal',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: OutlinedButton(
-                      onPressed: _bleDebugState.commandWriterReady
-                          ? _sendAckRelayCommand
-                          : null,
-                      child: const Text('ACK Relay'),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: OutlinedButton(
-                      onPressed: _bleDebugState.commandWriterReady
-                          ? _confirmAndSendShutdown
-                          : null,
-                      child: const Text('Shutdown'),
-                    ),
-                  ),
-                ],
-              ),
+            _BluetoothSetupCard(
+              permissionState: _permissionState,
+              bleDebugState: _bleDebugState,
+              loadingPermissions: _loadingPermissions,
+              loadingScan: _loadingScan,
+              showScanResults: _bleDebugState.isScanning || hasScanResults,
+              onRequestPermissions: _requestScanPermissions,
+              onRunScan: _runScan,
+              onPairSelectedDevice: _pairSelectedDevice,
+              loadingDevice: _loadingDevice,
             ),
             const SizedBox(height: 16),
-            _CardSection(
-              title: 'Last Command Result',
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _InfoLine(
-                    label: 'Last command sent',
-                    value: _lastCommandLabel(_bleDebugState.lastCommandSent),
-                  ),
-                  _InfoLine(
-                    label: 'Last payload hex',
-                    value: _bleDebugState.lastCommandSent ?? '-',
-                  ),
-                  _InfoLine(
-                    label: 'Target characteristic',
-                    value: _bleDebugState.lastWriteTargetCharacteristic ?? '-',
-                  ),
-                  _InfoLine(
-                    label: 'Write success/failure',
-                    value: _bleDebugState.lastWriteResult ?? '-',
-                  ),
-                  _InfoLine(
-                    label: 'Timestamp',
-                    value: _formatDate(_bleDebugState.lastWriteAt),
-                  ),
-                  _InfoLine(
-                    label: 'Exact error',
-                    value: _bleDebugState.lastWriteError ?? '-',
-                  ),
-                ],
+            _AdvancedDebugSection(
+              notificationContextMessage: widget.notificationContextMessage,
+              notificationActionId: widget.notificationActionId,
+              notificationNodeId: widget.notificationNodeId,
+              bleDebugState: _bleDebugState,
+              deviceSosStatus: _deviceSosStatus,
+              ackRelayNodeIdController: _ackRelayNodeIdController,
+              commandWriterReady: _bleDebugState.commandWriterReady,
+              onSendInetOk: () => _runCommandAction(widget.sdk.sendInetOkToDevice),
+              onSendInetLost: () =>
+                  _runCommandAction(widget.sdk.sendInetLostToDevice),
+              onSendPositionConfirmed: () => _runCommandAction(
+                widget.sdk.sendPositionConfirmedToDevice,
               ),
-            ),
-            const SizedBox(height: 16),
-            _CardSection(
-              title: 'BLE Discovery',
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _InfoLine(
-                    label: 'Bluetooth permission',
-                    value: _permissionState?.bluetooth.toString() ?? '-',
-                  ),
-                  _InfoLine(
-                    label: 'Bluetooth enabled',
-                    value: _permissionState?.bluetoothEnabled.toString() ?? '-',
-                  ),
-                  _InfoLine(
-                    label: 'Location permission',
-                    value: _permissionState?.location.toString() ?? '-',
-                  ),
-                  _InfoLine(
-                    label: 'Adapter state',
-                    value: _bleDebugState.adapterState.toString(),
-                  ),
-                  _InfoLine(
-                    label: 'Scanning',
-                    value: _bleDebugState.isScanning.toString(),
-                  ),
-                  _InfoLine(
-                    label: 'Connection status',
-                    value: _bleDebugState.connectionStatus.name,
-                  ),
-                  _InfoLine(
-                    label: 'Connection error',
-                    value: _bleDebugState.connectionError ?? '-',
-                  ),
-                  if (_bleDebugState.connectionError != null) ...[
-                    const SizedBox(height: 8),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.red.withValues(alpha: 0.06),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: Colors.red.withValues(alpha: 0.25),
-                        ),
-                      ),
-                      child: SelectableText(
-                        _bleDebugState.connectionError!,
-                        style: const TextStyle(fontFamily: 'monospace'),
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 12),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      ElevatedButton(
-                        onPressed: _loadingPermissions
-                            ? null
-                            : _requestScanPermissions,
-                        child: const Text('Request BLE perms'),
-                      ),
-                      ElevatedButton(
-                        onPressed: _loadingScan ? null : _runScan,
-                        child: const Text('Scan BLE'),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  if (_bleDebugState.scanResults.isEmpty)
-                    const Text('No BLE devices discovered yet.')
-                  else
-                    Column(
-                      children: _bleDebugState.scanResults.map((scan) {
-                        final title = scan.name.isEmpty ? 'Unknown' : scan.name;
-                        final services = scan.advertisedServiceUuids.isEmpty
-                            ? '-'
-                            : scan.advertisedServiceUuids.join(', ');
-                        final isSelected =
-                            _bleDebugState.selectedDeviceId == scan.deviceId;
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: Material(
-                            color: isSelected
-                                ? Colors.blue.withValues(alpha: 0.06)
-                                : Colors.transparent,
-                            borderRadius: BorderRadius.circular(10),
-                            child: InkWell(
-                              borderRadius: BorderRadius.circular(10),
-                              onTap: _loadingDevice || !scan.connectable
-                                  ? null
-                                  : () => _pairSelectedDevice(scan),
-                              child: Container(
-                                width: double.infinity,
-                                padding: const EdgeInsets.all(12),
-                                decoration: BoxDecoration(
-                                  border: Border.all(
-                                    color: isSelected
-                                        ? Colors.blue
-                                        : Colors.black.withValues(alpha: 0.12),
-                                  ),
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Row(
-                                      children: [
-                                        Expanded(
-                                          child: Text(
-                                            title,
-                                            style: const TextStyle(
-                                              fontWeight: FontWeight.w700,
-                                            ),
-                                          ),
-                                        ),
-                                        if (isSelected)
-                                          const Chip(
-                                            label: Text('Selected'),
-                                          ),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 6),
-                                    Text('id: ${scan.deviceId}'),
-                                    Text('rssi: ${scan.rssi}'),
-                                    Text('connectable: ${scan.connectable}'),
-                                    Text('advertised services: $services'),
-                                    const SizedBox(height: 8),
-                                    Text(
-                                      scan.connectable
-                                          ? 'Tap to connect and pair this device'
-                                          : 'Device is not connectable',
-                                      style: const TextStyle(
-                                        color: Colors.black54,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                        );
-                      }).toList(growable: false),
-                    ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-            _CardSection(
-              title: 'Actions',
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  ElevatedButton(
-                    onPressed: _loadingDevice ? null : _pairDevice,
-                    child: const Text('Pair'),
-                  ),
-                  ElevatedButton(
-                    onPressed: _loadingDevice ? null : _activateDevice,
-                    child: const Text('Activate'),
-                  ),
-                  ElevatedButton(
-                    onPressed: _loadingDevice ? null : _refreshDevice,
-                    child: const Text('Refresh'),
-                  ),
-                  ElevatedButton(
-                    onPressed: _loadingDevice ? null : _unpairDevice,
-                    child: const Text('Unpair'),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-            _CardSection(
-              title: 'BLE Debug',
-              child: ExpansionTile(
-                tilePadding: EdgeInsets.zero,
-                childrenPadding: EdgeInsets.zero,
-                title: const Text('Tap to expand'),
-                children: [
-                  _InfoLine(
-                    label: 'Adapter state',
-                    value: _bleDebugState.adapterState.toString(),
-                  ),
-                  _InfoLine(
-                    label: 'Connected device id',
-                    value: _bleDebugState.selectedDeviceId ?? '-',
-                  ),
-                  _InfoLine(
-                    label: 'EIXAM service found',
-                    value: _bleDebugState.eixamServiceFound.toString(),
-                  ),
-                  _InfoLine(
-                    label: 'TEL found',
-                    value: _bleDebugState.telFound.toString(),
-                  ),
-                  _InfoLine(
-                    label: 'SOS found',
-                    value: _bleDebugState.sosFound.toString(),
-                  ),
-                  _InfoLine(
-                    label: 'INET found',
-                    value: _bleDebugState.inetFound.toString(),
-                  ),
-                  _InfoLine(
-                    label: 'CMD found',
-                    value: _bleDebugState.cmdFound.toString(),
-                  ),
-                  _InfoLine(
-                    label: 'TEL notify subscribed',
-                    value: _bleDebugState.telNotifySubscribed.toString(),
-                  ),
-                  _InfoLine(
-                    label: 'SOS notify subscribed',
-                    value: _bleDebugState.sosNotifySubscribed.toString(),
-                  ),
-                  _InfoLine(
-                    label: 'Compatibility mode',
-                    value: _compatibilityModeLabel(),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-            _CardSection(
-              title: 'Live Events',
-              child: _bleDebugState.events.isEmpty
-                  ? const Text('No BLE events yet.')
-                  : Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children:
-                          _bleDebugState.events.reversed.take(10).map((event) {
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: Text(
-                            '${_formatDate(event.timestamp)}  ${event.message}',
-                          ),
-                        );
-                      }).toList(growable: false),
-                    ),
+              onSendAckRelay: _sendAckRelayCommand,
+              onSendShutdown: _confirmAndSendShutdown,
+              compatibilityModeLabel: _compatibilityModeLabel(),
+              formatDate: _formatDate,
+              formatNodeId: _formatNodeId,
+              formatByte: _formatByte,
+              formatSosBattery: _formatSosBattery,
+              lastCommandLabel: _lastCommandLabel(_bleDebugState.lastCommandSent),
             ),
             if (_lastError != null) ...[
               const SizedBox(height: 16),
@@ -895,6 +392,29 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     if (status.connected) return 'Connected';
     if (status.paired) return 'Paired';
     return 'Disconnected';
+  }
+
+  String _connectionSummary(DeviceStatus? status) {
+    if (status == null) return 'Disconnected';
+    if (status.connected) return 'Connected';
+    if (status.paired) return 'Paired, not connected';
+    return 'Not connected';
+  }
+
+  String _deviceReadinessSummary(DeviceStatus? status) {
+    if (status == null) {
+      return 'No active device connection';
+    }
+    if (status.isReadyForSafety) {
+      return 'Connected and ready for safety workflows';
+    }
+    if (status.connected) {
+      return 'Connected, but setup is not complete';
+    }
+    if (status.paired) {
+      return 'Device is paired but currently offline';
+    }
+    return 'Device is not paired';
   }
 
   bool get _canTriggerDeviceSos {
@@ -927,31 +447,14 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
 
   String _deviceSosBadgeLabel(DeviceSosStatus status) {
     final text = switch (status.state) {
-      DeviceSosState.inactive => 'Inactive',
-      DeviceSosState.preConfirm => 'Pre-confirm',
+      DeviceSosState.inactive => 'Safe',
+      DeviceSosState.preConfirm => 'Waiting confirmation',
       DeviceSosState.active => 'Active',
       DeviceSosState.acknowledged => 'Acknowledged',
       DeviceSosState.resolved => 'Resolved',
       DeviceSosState.unknown => 'Unknown',
     };
     return status.optimistic ? '$text (pending)' : text;
-  }
-
-  Color _deviceSosBadgeColor(DeviceSosState state) {
-    switch (state) {
-      case DeviceSosState.inactive:
-        return Colors.grey.shade300;
-      case DeviceSosState.preConfirm:
-        return Colors.orange.shade200;
-      case DeviceSosState.active:
-        return Colors.red.shade200;
-      case DeviceSosState.acknowledged:
-        return Colors.blue.shade200;
-      case DeviceSosState.resolved:
-        return Colors.green.shade200;
-      case DeviceSosState.unknown:
-        return Colors.black12;
-    }
   }
 
   String _formatByte(int? value) {
@@ -1033,15 +536,6 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     return '${batteryState.label} (~${batteryState.approximatePercentage}% UI est.)';
   }
 
-  String _formatBatterySource(DeviceBatterySource? source) {
-    return switch (source) {
-      DeviceBatterySource.telPacket => 'Latest TEL packet',
-      DeviceBatterySource.sosPacket => 'Latest SOS packet',
-      DeviceBatterySource.unknown => 'Unknown',
-      null => '-',
-    };
-  }
-
   String _formatSosBattery(DeviceSosStatus status) {
     final batteryState = status.batteryState;
     if (batteryState == null) {
@@ -1113,18 +607,26 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   }
 }
 
-class _DeviceHeader extends StatelessWidget {
-  const _DeviceHeader({
+class _DeviceHeroCard extends StatelessWidget {
+  const _DeviceHeroCard({
     required this.deviceName,
     required this.statusLabel,
     required this.model,
     required this.deviceId,
+    required this.batterySummary,
+    required this.readinessSummary,
+    required this.isConnected,
+    required this.isReady,
   });
 
   final String deviceName;
   final String statusLabel;
   final String model;
   final String deviceId;
+  final String batterySummary;
+  final String readinessSummary;
+  final bool isConnected;
+  final bool isReady;
 
   @override
   Widget build(BuildContext context) {
@@ -1148,13 +650,673 @@ class _DeviceHeader extends StatelessWidget {
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 Chip(label: Text(statusLabel)),
-                Text('Model: $model'),
+                _StatusPill(
+                  label: isConnected ? 'Connected' : 'Offline',
+                  active: isConnected,
+                ),
+                _StatusPill(
+                  label: isReady ? 'Ready for safety' : 'Setup needed',
+                  active: isReady,
+                ),
               ],
             ),
             const SizedBox(height: 8),
-            SelectableText('Device ID: $deviceId'),
+            Text('Model: $model'),
+            const SizedBox(height: 4),
+            Text(
+              readinessSummary,
+              style: const TextStyle(color: Colors.black54),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _SummaryTile(
+                    label: 'Battery',
+                    value: batterySummary,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _SummaryTile(
+                    label: 'Device ID',
+                    value: deviceId,
+                    compact: true,
+                  ),
+                ),
+              ],
+            ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _DeviceOverviewCard extends StatelessWidget {
+  const _DeviceOverviewCard({
+    required this.status,
+    required this.lastSeen,
+    required this.connectionSummary,
+  });
+
+  final DeviceStatus? status;
+  final String lastSeen;
+  final String connectionSummary;
+
+  @override
+  Widget build(BuildContext context) {
+    return _CardSection(
+      title: 'Quick Overview',
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: _SummaryTile(
+                  label: 'Connection',
+                  value: connectionSummary,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _SummaryTile(
+                  label: 'Ready for safety',
+                  value: status?.isReadyForSafety == true ? 'Yes' : 'No',
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _SummaryTile(
+                  label: 'Firmware',
+                  value: status?.firmwareVersion ?? '-',
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _SummaryTile(
+                  label: 'Last seen',
+                  value: lastSeen,
+                ),
+              ),
+            ],
+          ),
+          if (status?.provisioningError != null) ...[
+            const SizedBox(height: 12),
+            _SummaryTile(
+              label: 'Provisioning issue',
+              value: status!.provisioningError!,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _SafetyStatusCard extends StatelessWidget {
+  const _SafetyStatusCard({
+    required this.status,
+    required this.badgeLabel,
+    required this.sourceLabel,
+    required this.lastPacketAt,
+  });
+
+  final DeviceSosStatus status;
+  final String badgeLabel;
+  final String sourceLabel;
+  final String lastPacketAt;
+
+  @override
+  Widget build(BuildContext context) {
+    return _CardSection(
+      title: 'Safety Status',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Chip(
+                label: Text(badgeLabel),
+                backgroundColor: _badgeColor(status.state),
+              ),
+              if (status.optimistic)
+                const Chip(label: Text('Pending confirmation')),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _InfoLine(
+            label: 'Last transition',
+            value: status.lastEvent,
+          ),
+          _InfoLine(
+            label: 'Last device update',
+            value: lastPacketAt,
+          ),
+          _InfoLine(
+            label: 'Source',
+            value: sourceLabel,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Color _badgeColor(DeviceSosState state) {
+    switch (state) {
+      case DeviceSosState.inactive:
+        return Colors.green.shade100;
+      case DeviceSosState.preConfirm:
+        return Colors.orange.shade200;
+      case DeviceSosState.active:
+        return Colors.red.shade200;
+      case DeviceSosState.acknowledged:
+        return Colors.blue.shade200;
+      case DeviceSosState.resolved:
+        return Colors.green.shade200;
+      case DeviceSosState.unknown:
+        return Colors.black12;
+    }
+  }
+}
+
+class _SosActionsCard extends StatelessWidget {
+  const _SosActionsCard({
+    required this.canTriggerDeviceSos,
+    required this.canConfirmDeviceSos,
+    required this.canCancelDeviceSos,
+    required this.canSendBackendAck,
+    required this.cancelDeviceSosLabel,
+    required this.onTrigger,
+    required this.onConfirm,
+    required this.onCancel,
+    required this.onAcknowledge,
+  });
+
+  final bool canTriggerDeviceSos;
+  final bool canConfirmDeviceSos;
+  final bool canCancelDeviceSos;
+  final bool canSendBackendAck;
+  final String cancelDeviceSosLabel;
+  final VoidCallback onTrigger;
+  final VoidCallback onConfirm;
+  final VoidCallback onCancel;
+  final VoidCallback onAcknowledge;
+
+  @override
+  Widget build(BuildContext context) {
+    return _CardSection(
+      title: 'SOS Actions',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              ElevatedButton(
+                onPressed: canTriggerDeviceSos ? onTrigger : null,
+                child: const Text('Trigger SOS'),
+              ),
+              ElevatedButton(
+                onPressed: canConfirmDeviceSos ? onConfirm : null,
+                child: const Text('Confirm SOS'),
+              ),
+              OutlinedButton(
+                onPressed: canCancelDeviceSos ? onCancel : null,
+                child: Text(cancelDeviceSosLabel),
+              ),
+              ElevatedButton(
+                onPressed: canSendBackendAck ? onAcknowledge : null,
+                child: const Text('Send Backend ACK'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            'Confirm sends the device confirmation command. Cancel and Resolve use the same cancel opcode. Backend ACK tells the device the backend acknowledged the SOS.',
+            style: TextStyle(color: Colors.black54),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ConnectionActionsCard extends StatelessWidget {
+  const _ConnectionActionsCard({
+    required this.loadingDevice,
+    required this.onPair,
+    required this.onActivate,
+    required this.onRefresh,
+    required this.onUnpair,
+  });
+
+  final bool loadingDevice;
+  final VoidCallback onPair;
+  final VoidCallback onActivate;
+  final VoidCallback onRefresh;
+  final VoidCallback onUnpair;
+
+  @override
+  Widget build(BuildContext context) {
+    return _CardSection(
+      title: 'Device Actions',
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          ElevatedButton(
+            onPressed: loadingDevice ? null : onPair,
+            child: const Text('Pair / Connect'),
+          ),
+          ElevatedButton(
+            onPressed: loadingDevice ? null : onActivate,
+            child: const Text('Activate'),
+          ),
+          ElevatedButton(
+            onPressed: loadingDevice ? null : onRefresh,
+            child: const Text('Refresh'),
+          ),
+          ElevatedButton(
+            onPressed: loadingDevice ? null : onUnpair,
+            child: const Text('Unpair'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BluetoothSetupCard extends StatelessWidget {
+  const _BluetoothSetupCard({
+    required this.permissionState,
+    required this.bleDebugState,
+    required this.loadingPermissions,
+    required this.loadingScan,
+    required this.showScanResults,
+    required this.onRequestPermissions,
+    required this.onRunScan,
+    required this.onPairSelectedDevice,
+    required this.loadingDevice,
+  });
+
+  final PermissionState? permissionState;
+  final BleDebugState bleDebugState;
+  final bool loadingPermissions;
+  final bool loadingScan;
+  final bool showScanResults;
+  final Future<void> Function() onRequestPermissions;
+  final Future<void> Function() onRunScan;
+  final Future<void> Function(BleScanResult scan) onPairSelectedDevice;
+  final bool loadingDevice;
+
+  @override
+  Widget build(BuildContext context) {
+    return _CardSection(
+      title: 'Bluetooth Setup',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: _SummaryTile(
+                  label: 'Bluetooth permission',
+                  value: permissionState?.bluetooth.toString() ?? '-',
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _SummaryTile(
+                  label: 'Bluetooth enabled',
+                  value: permissionState?.bluetoothEnabled.toString() ?? '-',
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _SummaryTile(
+                  label: 'Adapter state',
+                  value: bleDebugState.adapterState.toString(),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _SummaryTile(
+                  label: 'Connection status',
+                  value: bleDebugState.connectionStatus.name,
+                ),
+              ),
+            ],
+          ),
+          if (bleDebugState.connectionError != null) ...[
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.red.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: Colors.red.withValues(alpha: 0.25),
+                ),
+              ),
+              child: Text(bleDebugState.connectionError!),
+            ),
+          ],
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              ElevatedButton(
+                onPressed: loadingPermissions ? null : onRequestPermissions,
+                child: const Text('Request BLE permissions'),
+              ),
+              ElevatedButton(
+                onPressed: loadingScan ? null : onRunScan,
+                child: const Text('Scan BLE'),
+              ),
+            ],
+          ),
+          if (showScanResults) ...[
+            const SizedBox(height: 12),
+            if (bleDebugState.scanResults.isEmpty)
+              const Text('No BLE devices discovered yet.')
+            else
+              Column(
+                children: bleDebugState.scanResults.map((scan) {
+                  final title = scan.name.isEmpty ? 'Unknown device' : scan.name;
+                  final isSelected =
+                      bleDebugState.selectedDeviceId == scan.deviceId;
+                  final services = scan.advertisedServiceUuids.isEmpty
+                      ? null
+                      : scan.advertisedServiceUuids.join(', ');
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: _ScanResultCard(
+                      title: title,
+                      scan: scan,
+                      isSelected: isSelected,
+                      services: services,
+                      onTap: loadingDevice || !scan.connectable
+                          ? null
+                          : () => onPairSelectedDevice(scan),
+                    ),
+                  );
+                }).toList(growable: false),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _AdvancedDebugSection extends StatelessWidget {
+  const _AdvancedDebugSection({
+    required this.notificationContextMessage,
+    required this.notificationActionId,
+    required this.notificationNodeId,
+    required this.bleDebugState,
+    required this.deviceSosStatus,
+    required this.ackRelayNodeIdController,
+    required this.commandWriterReady,
+    required this.onSendInetOk,
+    required this.onSendInetLost,
+    required this.onSendPositionConfirmed,
+    required this.onSendAckRelay,
+    required this.onSendShutdown,
+    required this.compatibilityModeLabel,
+    required this.formatDate,
+    required this.formatNodeId,
+    required this.formatByte,
+    required this.formatSosBattery,
+    required this.lastCommandLabel,
+  });
+
+  final String? notificationContextMessage;
+  final String? notificationActionId;
+  final int? notificationNodeId;
+  final BleDebugState bleDebugState;
+  final DeviceSosStatus deviceSosStatus;
+  final TextEditingController ackRelayNodeIdController;
+  final bool commandWriterReady;
+  final VoidCallback onSendInetOk;
+  final VoidCallback onSendInetLost;
+  final VoidCallback onSendPositionConfirmed;
+  final VoidCallback onSendAckRelay;
+  final VoidCallback onSendShutdown;
+  final String compatibilityModeLabel;
+  final String Function(DateTime? value) formatDate;
+  final String Function(int? nodeId) formatNodeId;
+  final String Function(int? value) formatByte;
+  final String Function(DeviceSosStatus status) formatSosBattery;
+  final String lastCommandLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    return _CardSection(
+      title: 'Advanced Debug',
+      child: ExpansionTile(
+        tilePadding: EdgeInsets.zero,
+        childrenPadding: EdgeInsets.zero,
+        title: const Text('Technical diagnostics and low-level controls'),
+        children: [
+          if (notificationContextMessage != null) ...[
+            const _SubsectionTitle('Notification Context'),
+            _InfoLine(
+              label: 'Action',
+              value: notificationActionId ?? '-',
+            ),
+            _InfoLine(
+              label: 'Message',
+              value: notificationContextMessage ?? '-',
+            ),
+            _InfoLine(
+              label: 'Node ID',
+              value: formatNodeId(notificationNodeId),
+            ),
+            const SizedBox(height: 16),
+          ],
+          const _SubsectionTitle('Connectivity Controls'),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton(
+                onPressed: commandWriterReady ? onSendInetOk : null,
+                child: const Text('INET OK'),
+              ),
+              OutlinedButton(
+                onPressed: commandWriterReady ? onSendInetLost : null,
+                child: const Text('INET LOST'),
+              ),
+              OutlinedButton(
+                onPressed: commandWriterReady ? onSendPositionConfirmed : null,
+                child: const Text('POS CONFIRMED'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          const _SubsectionTitle('Advanced Controls'),
+          TextField(
+            controller: ackRelayNodeIdController,
+            decoration: const InputDecoration(
+              labelText: 'SOS_ACK_RELAY nodeId',
+              hintText: '0x1AA8 or decimal',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton(
+                onPressed: commandWriterReady ? onSendAckRelay : null,
+                child: const Text('ACK Relay'),
+              ),
+              OutlinedButton(
+                onPressed: commandWriterReady ? onSendShutdown : null,
+                child: const Text('Shutdown'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          const _SubsectionTitle('SOS Raw Details'),
+          _InfoLine(
+            label: 'Packet timestamp',
+            value: formatDate(deviceSosStatus.lastPacketAt),
+          ),
+          _InfoLine(
+            label: 'Packet length',
+            value: deviceSosStatus.lastPacketLength?.toString() ?? '-',
+          ),
+          _InfoLine(
+            label: 'Packet hex',
+            value: deviceSosStatus.lastPacketHex ?? '-',
+          ),
+          _InfoLine(
+            label: 'Decoded nodeId',
+            value: formatNodeId(deviceSosStatus.nodeId),
+          ),
+          _InfoLine(
+            label: 'Decoded flags',
+            value: formatByte(deviceSosStatus.flags),
+          ),
+          _InfoLine(
+            label: 'SOS type',
+            value: deviceSosStatus.sosType?.toString() ?? '-',
+          ),
+          _InfoLine(
+            label: 'Retry count',
+            value: deviceSosStatus.retryCount?.toString() ?? '-',
+          ),
+          _InfoLine(
+            label: 'Relay count',
+            value: deviceSosStatus.relayCount?.toString() ?? '-',
+          ),
+          _InfoLine(
+            label: 'Battery level',
+            value: formatSosBattery(deviceSosStatus),
+          ),
+          _InfoLine(
+            label: 'GPS quality',
+            value: deviceSosStatus.gpsQuality?.toString() ?? '-',
+          ),
+          _InfoLine(
+            label: 'Packet id',
+            value: deviceSosStatus.packetId?.toString() ?? '-',
+          ),
+          _InfoLine(
+            label: 'Has location',
+            value: deviceSosStatus.hasLocation?.toString() ?? '-',
+          ),
+          _InfoLine(
+            label: 'Decoder note',
+            value: deviceSosStatus.decoderNote ?? '-',
+          ),
+          const SizedBox(height: 16),
+          const _SubsectionTitle('Last Command Result'),
+          _InfoLine(
+            label: 'Last command sent',
+            value: lastCommandLabel,
+          ),
+          _InfoLine(
+            label: 'Payload hex',
+            value: bleDebugState.lastCommandSent ?? '-',
+          ),
+          _InfoLine(
+            label: 'Target characteristic',
+            value: bleDebugState.lastWriteTargetCharacteristic ?? '-',
+          ),
+          _InfoLine(
+            label: 'Write success/failure',
+            value: bleDebugState.lastWriteResult ?? '-',
+          ),
+          _InfoLine(
+            label: 'Timestamp',
+            value: formatDate(bleDebugState.lastWriteAt),
+          ),
+          _InfoLine(
+            label: 'Exact error',
+            value: bleDebugState.lastWriteError ?? '-',
+          ),
+          const SizedBox(height: 16),
+          const _SubsectionTitle('BLE Debug'),
+          _InfoLine(
+            label: 'Connected device id',
+            value: bleDebugState.selectedDeviceId ?? '-',
+          ),
+          _InfoLine(
+            label: 'Scanning',
+            value: bleDebugState.isScanning.toString(),
+          ),
+          _InfoLine(
+            label: 'EIXAM service found',
+            value: bleDebugState.eixamServiceFound.toString(),
+          ),
+          _InfoLine(
+            label: 'TEL found',
+            value: bleDebugState.telFound.toString(),
+          ),
+          _InfoLine(
+            label: 'SOS found',
+            value: bleDebugState.sosFound.toString(),
+          ),
+          _InfoLine(
+            label: 'INET found',
+            value: bleDebugState.inetFound.toString(),
+          ),
+          _InfoLine(
+            label: 'CMD found',
+            value: bleDebugState.cmdFound.toString(),
+          ),
+          _InfoLine(
+            label: 'TEL notify subscribed',
+            value: bleDebugState.telNotifySubscribed.toString(),
+          ),
+          _InfoLine(
+            label: 'SOS notify subscribed',
+            value: bleDebugState.sosNotifySubscribed.toString(),
+          ),
+          _InfoLine(
+            label: 'Compatibility mode',
+            value: compatibilityModeLabel,
+          ),
+          _InfoLine(
+            label: 'Exact connection error',
+            value: bleDebugState.connectionError ?? '-',
+          ),
+          const SizedBox(height: 16),
+          const _SubsectionTitle('Live Events'),
+          if (bleDebugState.events.isEmpty)
+            const Text('No BLE events yet.')
+          else
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: bleDebugState.events.reversed.take(10).map((event) {
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    '${formatDate(event.timestamp)}  ${event.message}',
+                  ),
+                );
+              }).toList(growable: false),
+            ),
+        ],
       ),
     );
   }
@@ -1193,8 +1355,54 @@ class _CardSection extends StatelessWidget {
   }
 }
 
-class _StepChip extends StatelessWidget {
-  const _StepChip({
+class _SummaryTile extends StatelessWidget {
+  const _SummaryTile({
+    required this.label,
+    required this.value,
+    this.compact = false,
+  });
+
+  final String label;
+  final String value;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.03),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.black54,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 6),
+          SelectableText(
+            value,
+            style: TextStyle(
+              fontSize: compact ? 13 : 14,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatusPill extends StatelessWidget {
+  const _StatusPill({
     required this.label,
     required this.active,
   });
@@ -1205,12 +1413,100 @@ class _StepChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Chip(
-      avatar: Icon(
-        active ? Icons.check_circle : Icons.radio_button_unchecked,
-        size: 18,
-        color: active ? Colors.green : Colors.grey,
-      ),
       label: Text(label),
+      backgroundColor: active
+          ? Colors.green.withValues(alpha: 0.14)
+          : Colors.black.withValues(alpha: 0.06),
+    );
+  }
+}
+
+class _ScanResultCard extends StatelessWidget {
+  const _ScanResultCard({
+    required this.title,
+    required this.scan,
+    required this.isSelected,
+    required this.services,
+    required this.onTap,
+  });
+
+  final String title;
+  final BleScanResult scan;
+  final bool isSelected;
+  final String? services;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: isSelected
+          ? Colors.blue.withValues(alpha: 0.06)
+          : Colors.transparent,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: onTap,
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            border: Border.all(
+              color: isSelected
+                  ? Colors.blue
+                  : Colors.black.withValues(alpha: 0.12),
+            ),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                  if (isSelected) const Chip(label: Text('Selected')),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text('Device ID: ${scan.deviceId}'),
+              Text('RSSI: ${scan.rssi}'),
+              Text('Connectable: ${scan.connectable ? "Yes" : "No"}'),
+              if (services != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    'Advertised services: $services',
+                    style: const TextStyle(
+                      color: Colors.black54,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SubsectionTitle extends StatelessWidget {
+  const _SubsectionTitle(this.label);
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(
+        label,
+        style: const TextStyle(fontWeight: FontWeight.w700),
+      ),
     );
   }
 }
