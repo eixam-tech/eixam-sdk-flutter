@@ -229,6 +229,20 @@ class RealBleClient implements BleClient {
   }
 
   @override
+  Stream<bool> watchConnection(String deviceId) {
+    _ensureInitialized();
+
+    final device = _devices[deviceId];
+    if (device == null) {
+      return const Stream<bool>.empty();
+    }
+
+    return device.connectionState
+        .map((state) => state == BluetoothConnectionState.connected)
+        .distinct();
+  }
+
+  @override
   Future<int?> readBatteryLevel(String deviceId) async {
     final c = await _findCharacteristic(
       deviceId,

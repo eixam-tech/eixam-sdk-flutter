@@ -1,1 +1,11 @@
-enum BleConnectionStatus { idle, connecting, connected, incompatible, failed }
+enum BleConnectionStatus {
+  idle,
+  connecting,
+  connected,
+  reconnectScheduled,
+  reconnecting,
+  disconnectedManual,
+  disconnectedUnexpected,
+  incompatible,
+  failed,
+}

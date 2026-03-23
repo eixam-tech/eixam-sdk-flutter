@@ -56,6 +56,18 @@ class SharedPrefsSdkStore {
     return prefs.getString(key);
   }
 
+  /// Persists a plain boolean value.
+  Future<void> saveBool(String key, bool value) async {
+    final prefs = await _instance;
+    await prefs.setBool(key, value);
+  }
+
+  /// Reads a plain boolean value.
+  Future<bool?> readBool(String key) async {
+    final prefs = await _instance;
+    return prefs.getBool(key);
+  }
+
   /// Removes the stored value for [key].
   Future<void> remove(String key) async {
     final prefs = await _instance;

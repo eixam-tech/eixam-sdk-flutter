@@ -1,6 +1,7 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import '../data/datasources_local/shared_prefs_sdk_store.dart';
+import '../data/datasources_local/preferred_ble_device_store.dart';
 import '../data/repositories/geolocator_tracking_repository.dart';
 import '../data/repositories/in_memory_contacts_repository.dart';
 import '../data/repositories/in_memory_death_man_repository.dart';
@@ -10,7 +11,6 @@ import '../data/repositories/local_notifications_repository.dart';
 import '../data/repositories/platform_permissions_repository.dart';
 import '../device/ble_device_runtime_provider.dart';
 import '../device/ble_debug_registry.dart';
-import '../device/mock_ble_client.dart';
 import '../device/real_ble_client.dart';
 import 'eixam_connect_sdk_impl.dart';
 import 'mock_realtime_client.dart';
@@ -26,6 +26,7 @@ class DemoSdkFactory {
     BleDebugRegistry.instance.reset();
 
     final store = SharedPrefsSdkStore();
+    final preferredBleDeviceStore = PreferredBleDeviceStore(localStore: store);
     final permissionsRepository = PlatformPermissionsRepository();
 
     // Defensive demo bootstrap:
@@ -76,6 +77,7 @@ class DemoSdkFactory {
       realtimeClient: realtimeClient,
       deviceSosController: deviceRuntimeProvider.deviceSosController,
       bleIncomingEvents: deviceRuntimeProvider.watchIncomingEvents(),
+      preferredBleDeviceStore: preferredBleDeviceStore,
     );
 
     await sdk.initialize(

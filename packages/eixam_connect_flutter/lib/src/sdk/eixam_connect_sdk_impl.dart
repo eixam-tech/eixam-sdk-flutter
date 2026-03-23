@@ -4,11 +4,13 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
 import 'package:eixam_connect_core/src/events/realtime_event.dart';
 import 'package:eixam_connect_core/src/interfaces/realtime_client.dart';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 
+import '../data/datasources_local/preferred_ble_device_store.dart';
 import '../device/ble_debug_registry.dart';
 import '../device/ble_incoming_event.dart';
 import '../device/device_sos_controller.dart';
+import 'ble_auto_reconnect_coordinator.dart';
 import 'ble_sos_notification_payload.dart';
 
 /// Main SDK orchestrator used by host apps.
@@ -16,7 +18,7 @@ import 'ble_sos_notification_payload.dart';
 /// It composes repositories, exposes a stable public API and coordinates
 /// cross-module workflows such as attaching a location snapshot to SOS or
 /// escalating a Death Man plan into SOS automatically.
-class EixamConnectSdkImpl implements EixamConnectSdk {
+class EixamConnectSdkImpl with WidgetsBindingObserver implements EixamConnectSdk {
   final SosRepository sosRepository;
   final TrackingRepository trackingRepository;
   final ContactsRepository contactsRepository;
@@ -27,6 +29,7 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
   final RealtimeClient realtimeClient;
   final DeviceSosController deviceSosController;
   final Stream<BleIncomingEvent> bleIncomingEvents;
+  final PreferredBleDeviceStore preferredBleDeviceStore;
 
   final StreamController<EixamSdkEvent> _eventsController =
       StreamController.broadcast();
@@ -60,6 +63,7 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
   BleNotificationNavigationRequest? _pendingBleNotificationNavigationRequest;
   String? _activeDeviceSosCycleKey;
   String? _notifiedDeviceSosCycleKey;
+  late final BleAutoReconnectCoordinator _bleAutoReconnectCoordinator;
 
   static const String _openAppActionId = 'open_app';
   static const String _backendAckSosActionId = 'backend_ack_sos';
@@ -77,19 +81,31 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
     required this.realtimeClient,
     required this.deviceSosController,
     required this.bleIncomingEvents,
-  });
+    required this.preferredBleDeviceStore,
+  }) {
+    _bleAutoReconnectCoordinator = BleAutoReconnectCoordinator(
+      deviceRepository: deviceRepository,
+      preferredDeviceStore: preferredBleDeviceStore,
+    );
+  }
 
   @override
   Future<void> initialize(EixamSdkConfig config) async {
     _config = config;
     _lastDeviceStatus = await deviceRepository.getDeviceStatus();
     _lastDeviceSosStatus = await deviceSosController.getStatus();
+    WidgetsBinding.instance.addObserver(this);
+    await _bleAutoReconnectCoordinator.initialize(
+      initialStatus: _lastDeviceStatus!,
+      deviceStatusStream: deviceRepository.watchDeviceStatus(),
+    );
     _bindDeviceStreams();
     await notificationsRepository.initialize(
       onAction: _handleNotificationAction,
     );
     _bindRealtimeStreams();
     await realtimeClient.connect();
+    await _bleAutoReconnectCoordinator.tryAutoConnectOnStartup();
   }
 
   void _bindDeviceStreams() {
@@ -164,12 +180,32 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
 
   @override
   Future<void> unpairDevice() {
-    return deviceRepository.unpairDevice();
+    return _bleAutoReconnectCoordinator.unpairDeviceManually(
+      deviceRepository.unpairDevice,
+    );
   }
 
   @override
   Future<DeviceStatus> pairDevice({required String pairingCode}) {
-    return deviceRepository.pairDevice(pairingCode: pairingCode);
+    return _bleAutoReconnectCoordinator.pairDeviceManually(
+      pairingCode: pairingCode,
+    );
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    switch (state) {
+      case AppLifecycleState.resumed:
+        _bleAutoReconnectCoordinator.setAppForeground(true);
+        unawaited(_bleAutoReconnectCoordinator.tryAutoConnectOnResume());
+        break;
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.hidden:
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+        _bleAutoReconnectCoordinator.setAppForeground(false);
+        break;
+    }
   }
 
   @override
@@ -926,7 +962,9 @@ class EixamConnectSdkImpl implements EixamConnectSdk {
   }
 
   Future<void> dispose() async {
+    WidgetsBinding.instance.removeObserver(this);
     _deathManTimer?.cancel();
+    await _bleAutoReconnectCoordinator.dispose();
     await _realtimeConnectionSub?.cancel();
     await _realtimeEventsSub?.cancel();
     await _deviceStatusSub?.cancel();

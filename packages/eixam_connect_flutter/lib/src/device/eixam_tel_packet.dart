@@ -27,6 +27,7 @@ class EixamTelPacket {
   final int headingBucket;
 
   static EixamTelPacket? tryParse(List<int> bytes) {
+    // Classic TEL packets are fixed-width 10-byte payloads.
     if (bytes.length != EixamBleProtocol.telPacketLength) {
       return null;
     }

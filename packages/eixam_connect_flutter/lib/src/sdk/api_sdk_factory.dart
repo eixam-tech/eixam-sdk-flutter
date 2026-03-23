@@ -1,6 +1,7 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import '../data/datasources_local/shared_prefs_sdk_store.dart';
+import '../data/datasources_local/preferred_ble_device_store.dart';
 import '../data/datasources_remote/mock_sos_remote_data_source.dart';
 import '../data/repositories/api_sos_repository.dart';
 import '../data/repositories/geolocator_tracking_repository.dart';
@@ -26,6 +27,7 @@ class ApiSdkFactory {
     BleDebugRegistry.instance.reset();
 
     final store = SharedPrefsSdkStore();
+    final preferredBleDeviceStore = PreferredBleDeviceStore(localStore: store);
     final permissionsRepository = PlatformPermissionsRepository();
 
     final sosRepository = ApiSosRepository(
@@ -71,6 +73,7 @@ class ApiSdkFactory {
       realtimeClient: realtimeClient,
       deviceSosController: deviceRuntimeProvider.deviceSosController,
       bleIncomingEvents: deviceRuntimeProvider.watchIncomingEvents(),
+      preferredBleDeviceStore: preferredBleDeviceStore,
     );
 
     await sdk.initialize(
@@ -90,6 +93,7 @@ class ApiSdkFactory {
     BleDebugRegistry.instance.reset();
 
     final store = SharedPrefsSdkStore();
+    final preferredBleDeviceStore = PreferredBleDeviceStore(localStore: store);
     final permissionsRepository = PlatformPermissionsRepository();
 
     // Temporary mock fallback until the real HTTP datasource constructor
@@ -141,6 +145,7 @@ class ApiSdkFactory {
       realtimeClient: realtimeClient,
       deviceSosController: deviceRuntimeProvider.deviceSosController,
       bleIncomingEvents: deviceRuntimeProvider.watchIncomingEvents(),
+      preferredBleDeviceStore: preferredBleDeviceStore,
     );
 
     await sdk.initialize(

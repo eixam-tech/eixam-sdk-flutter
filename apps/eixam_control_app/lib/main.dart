@@ -39,6 +39,14 @@ class _SdkBootstrapScreenState extends State<SdkBootstrapScreen> {
   String? _stackTrace;
   EixamConnectSdk? _sdk;
 
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _bootstrapSdk();
+    });
+  }
+
   Future<void> _bootstrapSdk() async {
     setState(() {
       _isLoading = true;

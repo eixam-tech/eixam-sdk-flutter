@@ -14,6 +14,8 @@ class MockBleClient implements BleClient {
       StreamController<BleAdapterState>.broadcast();
   final Map<String, StreamController<EixamBleNotification>> _notifyControllers =
       <String, StreamController<EixamBleNotification>>{};
+  final Map<String, StreamController<bool>> _connectionControllers =
+      <String, StreamController<bool>>{};
   final Random _random = Random();
   BleAdapterState _adapterState = BleAdapterState.poweredOn;
   final Set<String> _connectedDeviceIds = <String>{};
@@ -68,6 +70,7 @@ class MockBleClient implements BleClient {
   Future<void> connect(String deviceId) async {
     if (_adapterState != BleAdapterState.poweredOn) return;
     _connectedDeviceIds.add(deviceId);
+    _connectionController(deviceId).add(true);
     BleDebugRegistry.instance.update(
       selectedDeviceId: deviceId,
       eixamServiceFound: deviceId == demoDeviceId,
@@ -88,6 +91,7 @@ class MockBleClient implements BleClient {
   @override
   Future<void> disconnect(String deviceId) async {
     _connectedDeviceIds.remove(deviceId);
+    _connectionController(deviceId).add(false);
     await _notifyControllers.remove(deviceId)?.close();
     BleDebugRegistry.instance.update(
       telNotifySubscribed: false,
@@ -103,6 +107,10 @@ class MockBleClient implements BleClient {
   @override
   Future<bool> isConnected(String deviceId) async =>
       _connectedDeviceIds.contains(deviceId);
+
+  @override
+  Stream<bool> watchConnection(String deviceId) =>
+      _connectionController(deviceId).stream;
 
   @override
   Future<int?> readBatteryLevel(String deviceId) async =>
@@ -180,6 +188,9 @@ class MockBleClient implements BleClient {
     BleDebugRegistry.instance.recordEvent('Mock BLE adapter changed to $state');
     _adapterController.add(state);
     if (state != BleAdapterState.poweredOn) {
+      for (final deviceId in _connectedDeviceIds.toList()) {
+        _connectionController(deviceId).add(false);
+      }
       _connectedDeviceIds.clear();
       BleDebugRegistry.instance.clearCommandWriter();
       BleDebugRegistry.instance.update(
@@ -194,7 +205,17 @@ class MockBleClient implements BleClient {
     for (final controller in _notifyControllers.values) {
       await controller.close();
     }
+    for (final controller in _connectionControllers.values) {
+      await controller.close();
+    }
     await _adapterController.close();
+  }
+
+  StreamController<bool> _connectionController(String deviceId) {
+    return _connectionControllers.putIfAbsent(
+      deviceId,
+      () => StreamController<bool>.broadcast(),
+    );
   }
 
   void _emitMockPackets(String deviceId, EixamDeviceCommand command) {

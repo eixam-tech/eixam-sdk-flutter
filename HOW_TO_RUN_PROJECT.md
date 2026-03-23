@@ -82,6 +82,21 @@ flutter run -t apps/eixam_control_app/lib/main.dart
 
 This is the recommended sequence for daily development and debugging.
 
+## 5.1 BLE preferred device and reconnect UX
+
+The reference app now bootstraps the SDK on app start so BLE auto-connect can run immediately.
+
+Current behavior:
+- the SDK remembers one preferred BLE device after a successful connection
+- the SDK tries to reconnect on startup and when the app resumes
+- unexpected foreground disconnects retry with backoff
+- manual disconnect/unpair disables auto-reconnect until the next explicit connect
+
+Current scope:
+- foreground reconnect only
+- no persistent background BLE daemon behavior
+- reconnect uses the stored device identifier through the existing BLE scan/connect flow
+
 ---
 
 ## 6. Alternative: run from the app folder

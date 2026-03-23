@@ -35,6 +35,7 @@ class EixamSosPacket {
   final EixamPositionData? position;
 
   static EixamSosPacket? tryParse(List<int> bytes) {
+    // Mesh SOS packets remain the classic 10-byte or 5-byte payloads.
     if (bytes.length != EixamBleProtocol.sosPacketLengthWithPosition &&
         bytes.length != EixamBleProtocol.sosPacketLengthMinimal) {
       return null;

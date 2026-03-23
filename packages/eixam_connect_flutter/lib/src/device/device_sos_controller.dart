@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import 'ble_debug_registry.dart';
 import 'eixam_ble_command.dart';
+import 'eixam_sos_event_packet.dart';
 import 'eixam_sos_packet.dart';
 
 typedef DeviceCommandWriter = Future<void> Function(EixamDeviceCommand command);
@@ -210,6 +211,93 @@ class DeviceSosController {
             'Decoded from the SOS characteristic using the current protocol document. Runtime phase is kept intentionally minimal because the BLE payload no longer relies on the old ad-hoc status-byte mapping.',
       ),
     );
+  }
+
+  void handleIncomingSosEventPacket(
+    EixamSosEventPacket packet, {
+    required DeviceSosTransitionSource source,
+  }) {
+    final now = DateTime.now();
+    final previous = _status.state;
+    final nextState = _resolveEventState(packet, previous);
+    final controlEventLabel = _describeEventPacket(packet);
+    final event =
+        'SOS device event decoded -> $controlEventLabel '
+        'nodeId=${_formatNodeId(packet.nodeId)} '
+        'subcode=0x${packet.subcode.toRadixString(16).padLeft(2, '0')}';
+
+    BleDebugRegistry.instance.recordEvent(event);
+    BleDebugRegistry.instance.recordEvent(
+      'SOS transition -> ${previous.name} -> ${nextState.name}',
+    );
+
+    _emit(
+      _status.copyWith(
+        state: nextState,
+        previousState: previous,
+        transitionSource: source,
+        lastEvent: event,
+        updatedAt: now,
+        optimistic: false,
+        derivedFromBlePacket: true,
+        lastOpcode: packet.opcode,
+        lastPacketHex: packet.rawHex,
+        lastPacketLength: packet.rawBytes.length,
+        lastPacketAt: now,
+        lastPacketSignature:
+            '${packet.nodeId}:${packet.opcode}:${packet.subcode}:${packet.rawHex}',
+        nodeId: packet.nodeId,
+        packetId: null,
+        hasLocation: false,
+        decoderNote:
+            'Decoded SOS device control event ($controlEventLabel) from the SOS characteristic.',
+      ),
+    );
+  }
+
+  DeviceSosState _resolveEventState(
+    EixamSosEventPacket packet,
+    DeviceSosState current,
+  ) {
+    switch (packet.opcode) {
+      case 0xE1:
+        if (packet.subcode == 0x01) {
+          return DeviceSosState.inactive;
+        }
+        if (packet.subcode == 0x02) {
+          return DeviceSosState.resolved;
+        }
+        return current;
+      case 0xE2:
+        if (packet.subcode == 0x01) {
+          return DeviceSosState.inactive;
+        }
+        if (packet.subcode == 0x02 || packet.subcode == 0x03) {
+          return DeviceSosState.resolved;
+        }
+        return current;
+      default:
+        return current;
+    }
+  }
+
+  String _describeEventPacket(EixamSosEventPacket packet) {
+    if (packet.isUserDeactivated) {
+      return switch (packet.subcode) {
+        0x01 => 'user deactivated to inactive',
+        0x02 => 'user deactivated to resolved',
+        _ => 'user deactivated event',
+      };
+    }
+    if (packet.isAppCancelAck) {
+      return switch (packet.subcode) {
+        0x01 => 'app cancel acknowledged as inactive',
+        0x02 => 'app cancel acknowledged as resolved',
+        0x03 => 'app cancel acknowledged as resolved',
+        _ => 'app cancel acknowledgment',
+      };
+    }
+    return 'unknown control event';
   }
 
   String _formatNodeId(int nodeId) {

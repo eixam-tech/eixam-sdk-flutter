@@ -14,8 +14,11 @@ import 'device_sos_controller.dart';
 import 'eixam_ble_command.dart';
 import 'eixam_ble_notification.dart';
 import 'eixam_ble_protocol.dart';
+import 'eixam_sos_event_packet.dart';
 import 'eixam_sos_packet.dart';
+import 'eixam_tel_fragment.dart';
 import 'eixam_tel_packet.dart';
+import 'eixam_tel_reassembler.dart';
 
 class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   BleDeviceRuntimeProvider({
@@ -30,14 +33,19 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       StreamController<BleIncomingEvent>.broadcast();
   final StreamController<DeviceStatus> _runtimeStatusController =
       StreamController<DeviceStatus>.broadcast();
+  final EixamTelReassembler _telReassembler = EixamTelReassembler();
 
   String? _connectedDeviceId;
   String? _connectedDeviceAlias;
   StreamSubscription<EixamBleNotification>? _notificationSubscription;
+  StreamSubscription<bool>? _connectionStateSubscription;
   DateTime? _lastAppCommandAt;
   DeviceStatus? _lastRuntimeStatus;
   int? _lastTelBatteryLevel;
   int? _lastSosBatteryLevel;
+  final Map<String, DateTime> _recentSosPacketSignatures = <String, DateTime>{};
+
+  static const Duration _recentSosDedupWindow = Duration(seconds: 2);
 
   DeviceSosController get deviceSosController => _deviceSosController;
   Stream<BleIncomingEvent> watchIncomingEvents() =>
@@ -128,6 +136,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       _connectedDeviceId = candidate.deviceId;
       _connectedDeviceAlias = candidate.name;
       await _bindNotifications(candidate.deviceId);
+      await _bindConnectionMonitor(candidate.deviceId);
       BleDebugRegistry.instance.recordEvent(
         'Pairing succeeded for ${candidate.deviceId}',
       );
@@ -207,65 +216,12 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     final stream = await _bleClient.subscribeEixamNotifications(deviceId);
     _notificationSubscription = stream.listen(
       (notification) {
-        final source = _inferPacketSource();
         switch (notification.channel) {
           case EixamBleChannel.tel:
-            final telPacket = EixamTelPacket.tryParse(notification.payload);
-            BleDebugRegistry.instance.recordEvent(
-              'TEL raw payload (ea01) -> ${notification.payloadHex}',
-            );
-            BleDebugRegistry.instance.recordEvent(
-              telPacket == null
-                  ? 'TEL packet rejected -> len=${notification.payload.length} payload=${notification.payloadHex}'
-                  : 'TEL packet decoded -> nodeId=${_formatNodeId(telPacket.nodeId)} packetId=${telPacket.packetId} batt=${telPacket.batteryLevel} gps=${telPacket.gpsQuality}',
-            );
-            if (telPacket != null) {
-              _handleTelBatteryUpdate(telPacket);
-            }
-            _incomingEventsController.add(
-              BleIncomingEvent(
-                deviceId: deviceId,
-                deviceAlias: _connectedDeviceAlias,
-                eventType: telPacket == null ? 'tel_packet_invalid' : 'tel_packet',
-                channel: notification.channel,
-                payload: List<int>.unmodifiable(notification.payload),
-                payloadHex: notification.payloadHex,
-                source: DeviceSosTransitionSource.device,
-                receivedAt: notification.receivedAt,
-                telPacket: telPacket,
-              ),
-            );
+            _handleTelNotification(deviceId, notification);
             break;
           case EixamBleChannel.sos:
-            final sosPacket = EixamSosPacket.tryParse(notification.payload);
-            BleDebugRegistry.instance.recordEvent(
-              'SOS raw payload (ea02) -> ${notification.payloadHex}',
-            );
-            BleDebugRegistry.instance.recordEvent(
-              sosPacket == null
-                  ? 'SOS packet rejected -> len=${notification.payload.length} payload=${notification.payloadHex}'
-                  : 'SOS packet decoded -> nodeId=${_formatNodeId(sosPacket.nodeId)} sosType=${sosPacket.sosType} packetId=${sosPacket.packetId} relayCount=${sosPacket.relayCount}',
-            );
-            if (sosPacket != null) {
-              _handleSosBatteryUpdate(sosPacket);
-              _deviceSosController.handleIncomingSosPacket(
-                sosPacket,
-                source: source,
-              );
-            }
-            _incomingEventsController.add(
-              BleIncomingEvent(
-                deviceId: deviceId,
-                deviceAlias: _connectedDeviceAlias,
-                eventType: sosPacket == null ? 'sos_packet_invalid' : 'sos_packet',
-                channel: notification.channel,
-                payload: List<int>.unmodifiable(notification.payload),
-                payloadHex: notification.payloadHex,
-                source: source,
-                receivedAt: notification.receivedAt,
-                sosPacket: sosPacket,
-              ),
-            );
+            _handleSosNotification(deviceId, notification);
             break;
         }
       },
@@ -350,6 +306,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
   @override
   Future<DeviceStatus> unpair(DeviceStatus currentStatus) async {
+    await _connectionStateSubscription?.cancel();
+    _connectionStateSubscription = null;
     await _notificationSubscription?.cancel();
     _notificationSubscription = null;
     await _deviceSosController.detach();
@@ -361,6 +319,12 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     _lastAppCommandAt = null;
     _lastTelBatteryLevel = null;
     _lastSosBatteryLevel = null;
+    _recentSosPacketSignatures.clear();
+    _telReassembler.reset();
+    BleDebugRegistry.instance.update(
+      connectionStatus: BleConnectionStatus.disconnectedManual,
+      connectionError: null,
+    );
     BleDebugRegistry.instance.recordEvent('Device unpaired');
 
     final nextStatus = DeviceStatus(
@@ -403,6 +367,267 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   String _formatNodeId(int nodeId) {
     final normalized = nodeId & 0xFFFF;
     return '0x${normalized.toRadixString(16).padLeft(4, '0')}';
+  }
+
+  Future<void> _handleUnexpectedDisconnect(String deviceId) async {
+    final currentStatus = _lastRuntimeStatus;
+    if (currentStatus == null || !currentStatus.connected) {
+      return;
+    }
+
+    await _notificationSubscription?.cancel();
+    _notificationSubscription = null;
+    BleDebugRegistry.instance.clearCommandWriter();
+    BleDebugRegistry.instance.update(
+      telNotifySubscribed: false,
+      sosNotifySubscribed: false,
+      commandWriterReady: false,
+      connectionStatus: BleConnectionStatus.disconnectedUnexpected,
+      connectionError: 'Unexpected BLE disconnect',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'Unexpected disconnect detected for $deviceId',
+    );
+
+    final nextStatus = currentStatus.copyWith(
+      connected: false,
+      lifecycleState: _resolveLifecycle(currentStatus, false),
+      lastSyncedAt: DateTime.now(),
+      provisioningError: 'Unexpected BLE disconnect',
+    );
+    _publishRuntimeStatus(nextStatus, reason: 'unexpected_disconnect');
+  }
+
+  void _handleTelNotification(
+    String deviceId,
+    EixamBleNotification notification,
+  ) {
+    BleDebugRegistry.instance.recordEvent(
+      'TEL raw payload (ea01) -> ${notification.payloadHex}',
+    );
+
+    final isClassicCandidate =
+        notification.payload.length == EixamBleProtocol.telPacketLength &&
+        notification.payload.first !=
+            EixamBleProtocol.telAggregateFragmentOpcode;
+    final telPacket = isClassicCandidate
+        ? EixamTelPacket.tryParse(notification.payload)
+        : null;
+    if (telPacket != null) {
+      BleDebugRegistry.instance.recordEvent(
+        'TEL packet decoded -> nodeId=${_formatNodeId(telPacket.nodeId)} packetId=${telPacket.packetId} batt=${telPacket.batteryLevel} gps=${telPacket.gpsQuality}',
+      );
+      _handleTelBatteryUpdate(telPacket);
+      _incomingEventsController.add(
+        BleIncomingEvent(
+          deviceId: deviceId,
+          deviceAlias: _connectedDeviceAlias,
+          type: BleIncomingEventType.telPosition,
+          channel: notification.channel,
+          payload: List<int>.unmodifiable(notification.payload),
+          payloadHex: notification.payloadHex,
+          source: DeviceSosTransitionSource.device,
+          receivedAt: notification.receivedAt,
+          telPacket: telPacket,
+        ),
+      );
+      return;
+    }
+
+    final telFragment = EixamTelFragment.tryParse(notification.payload);
+    if (telFragment != null) {
+      BleDebugRegistry.instance.recordEvent(
+        'TEL aggregate fragment decoded -> totalLen=${telFragment.totalLength} offset=${telFragment.offset} fragmentLen=${telFragment.fragmentLength}',
+      );
+      _incomingEventsController.add(
+        BleIncomingEvent(
+          deviceId: deviceId,
+          deviceAlias: _connectedDeviceAlias,
+          type: BleIncomingEventType.telAggregateFragment,
+          channel: notification.channel,
+          payload: List<int>.unmodifiable(notification.payload),
+          payloadHex: notification.payloadHex,
+          source: DeviceSosTransitionSource.device,
+          receivedAt: notification.receivedAt,
+          telFragment: telFragment,
+        ),
+      );
+
+      final completedPayload = _telReassembler.addFragment(telFragment);
+      if (completedPayload != null) {
+        BleDebugRegistry.instance.recordEvent(
+          'TEL aggregate completed -> totalLen=${completedPayload.length}',
+        );
+        _incomingEventsController.add(
+          BleIncomingEvent(
+            deviceId: deviceId,
+            deviceAlias: _connectedDeviceAlias,
+            type: BleIncomingEventType.telAggregateComplete,
+            channel: notification.channel,
+            payload: List<int>.unmodifiable(notification.payload),
+            payloadHex: notification.payloadHex,
+            source: DeviceSosTransitionSource.device,
+            receivedAt: notification.receivedAt,
+            telFragment: telFragment,
+            aggregatePayload: completedPayload,
+          ),
+        );
+      }
+      return;
+    }
+
+    BleDebugRegistry.instance.recordEvent(
+      'TEL packet rejected -> len=${notification.payload.length} payload=${notification.payloadHex}',
+    );
+    _incomingEventsController.add(
+      BleIncomingEvent(
+        deviceId: deviceId,
+        deviceAlias: _connectedDeviceAlias,
+        type: BleIncomingEventType.unknownProtocolPacket,
+        channel: notification.channel,
+        payload: List<int>.unmodifiable(notification.payload),
+        payloadHex: notification.payloadHex,
+        source: DeviceSosTransitionSource.device,
+        receivedAt: notification.receivedAt,
+      ),
+    );
+  }
+
+  Future<void> _bindConnectionMonitor(String deviceId) async {
+    await _connectionStateSubscription?.cancel();
+    _connectionStateSubscription = _bleClient.watchConnection(deviceId).listen(
+      (isConnected) {
+        if (isConnected) {
+          return;
+        }
+        unawaited(_handleUnexpectedDisconnect(deviceId));
+      },
+      onError: (Object error) {
+        BleDebugRegistry.instance.recordEvent(
+          'Connection monitor error for $deviceId: $error',
+        );
+      },
+    );
+  }
+
+  void _handleSosNotification(
+    String deviceId,
+    EixamBleNotification notification,
+  ) {
+    final source = _inferPacketSource();
+    BleDebugRegistry.instance.recordEvent(
+      'SOS raw payload (ea02) -> ${notification.payloadHex}',
+    );
+
+    final sosEventPacket = notification.payload.length == 4
+        ? EixamSosEventPacket.tryParse(notification.payload)
+        : null;
+    if (sosEventPacket != null) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS device event decoded -> nodeId=${_formatNodeId(sosEventPacket.nodeId)} opcode=0x${sosEventPacket.opcode.toRadixString(16).padLeft(2, '0')} subcode=0x${sosEventPacket.subcode.toRadixString(16).padLeft(2, '0')}',
+      );
+      if (_shouldProcessSosPacket(
+        nodeId: sosEventPacket.nodeId,
+        packetId: null,
+        rawHex: sosEventPacket.rawHex,
+      )) {
+        _deviceSosController.handleIncomingSosEventPacket(
+          sosEventPacket,
+          source: source,
+        );
+      } else {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS duplicate suppressed -> ${sosEventPacket.rawHex}',
+        );
+      }
+      _incomingEventsController.add(
+        BleIncomingEvent(
+          deviceId: deviceId,
+          deviceAlias: _connectedDeviceAlias,
+          type: BleIncomingEventType.sosDeviceEvent,
+          channel: notification.channel,
+          payload: List<int>.unmodifiable(notification.payload),
+          payloadHex: notification.payloadHex,
+          source: source,
+          receivedAt: notification.receivedAt,
+          sosEventPacket: sosEventPacket,
+        ),
+      );
+      return;
+    }
+
+    final sosPacket = EixamSosPacket.tryParse(notification.payload);
+    if (sosPacket != null) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS packet decoded -> nodeId=${_formatNodeId(sosPacket.nodeId)} sosType=${sosPacket.sosType} packetId=${sosPacket.packetId} relayCount=${sosPacket.relayCount}',
+      );
+      _handleSosBatteryUpdate(sosPacket);
+      if (_shouldProcessSosPacket(
+        nodeId: sosPacket.nodeId,
+        packetId: sosPacket.packetId,
+        rawHex: sosPacket.rawHex,
+      )) {
+        _deviceSosController.handleIncomingSosPacket(
+          sosPacket,
+          source: source,
+        );
+      } else {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS duplicate suppressed -> ${sosPacket.rawHex}',
+        );
+      }
+      _incomingEventsController.add(
+        BleIncomingEvent(
+          deviceId: deviceId,
+          deviceAlias: _connectedDeviceAlias,
+          type: BleIncomingEventType.sosMeshPacket,
+          channel: notification.channel,
+          payload: List<int>.unmodifiable(notification.payload),
+          payloadHex: notification.payloadHex,
+          source: source,
+          receivedAt: notification.receivedAt,
+          sosPacket: sosPacket,
+        ),
+      );
+      return;
+    }
+
+    BleDebugRegistry.instance.recordEvent(
+      'SOS packet rejected -> len=${notification.payload.length} payload=${notification.payloadHex}',
+    );
+    _incomingEventsController.add(
+      BleIncomingEvent(
+        deviceId: deviceId,
+        deviceAlias: _connectedDeviceAlias,
+        type: BleIncomingEventType.unknownProtocolPacket,
+        channel: notification.channel,
+        payload: List<int>.unmodifiable(notification.payload),
+        payloadHex: notification.payloadHex,
+        source: source,
+        receivedAt: notification.receivedAt,
+      ),
+    );
+  }
+
+  bool _shouldProcessSosPacket({
+    required int nodeId,
+    required int? packetId,
+    required String rawHex,
+  }) {
+    final now = DateTime.now();
+    _recentSosPacketSignatures.removeWhere(
+      (_, seenAt) => now.difference(seenAt) > _recentSosDedupWindow,
+    );
+
+    final signature = '$nodeId:${packetId ?? 'na'}:$rawHex';
+    final previousSeenAt = _recentSosPacketSignatures[signature];
+    if (previousSeenAt != null &&
+        now.difference(previousSeenAt) <= _recentSosDedupWindow) {
+      return false;
+    }
+
+    _recentSosPacketSignatures[signature] = now;
+    return true;
   }
 
   DeviceLifecycleState _resolveLifecycle(
@@ -496,6 +721,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   }
 
   Future<void> dispose() async {
+    await _connectionStateSubscription?.cancel();
     await _notificationSubscription?.cancel();
     await _runtimeStatusController.close();
     await _incomingEventsController.close();

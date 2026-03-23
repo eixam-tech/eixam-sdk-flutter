@@ -19,6 +19,7 @@ abstract class BleClient {
   Future<void> connect(String deviceId);
   Future<void> disconnect(String deviceId);
   Future<bool> isConnected(String deviceId);
+  Stream<bool> watchConnection(String deviceId);
 
   Future<int?> readBatteryLevel(String deviceId);
   Future<int?> readSignalQuality(String deviceId);

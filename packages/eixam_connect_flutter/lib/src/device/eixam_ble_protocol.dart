@@ -12,8 +12,13 @@ class EixamBleProtocol {
       '6ba1b218-15a8-461f-9fa8-5dcae273ea04';
 
   static const int telPacketLength = 10;
+  static const int telAggregateFragmentOpcode = 0xD0;
+  static const int telAggregateFragmentHeaderLength = 5;
+  static const int telAggregateFragmentMaxPayloadLength = 15;
   static const int sosPacketLengthWithPosition = 10;
   static const int sosPacketLengthMinimal = 5;
+  static const int sosEventUserDeactivatedOpcode = 0xE1;
+  static const int sosEventAppCancelAckOpcode = 0xE2;
   static const int inetMaxPayloadLength = 4;
 
   static String hex(List<int> data) {
