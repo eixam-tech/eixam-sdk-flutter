@@ -1,28 +1,14 @@
 @echo off
-title EIXAM Flutter Demo Runner
+title EIXAM Control App Demo
 
 echo ==========================================
-echo EIXAM SDK - Flutter Demo Runner
+echo EIXAM Control App - Demo Run
 echo ==========================================
 echo.
 
-cd /d C:\Users\roger\flutterdev\eixam_connect_sdk\apps\eixam_control_app
+cd /d "%~dp0\apps\eixam_control_app"
 
-echo Current directory:
-cd
-echo.
-
-echo [1/3] Running flutter clean...
-call flutter clean
-if errorlevel 1 (
-    echo.
-    echo ERROR: flutter clean failed.
-    pause
-    exit /b 1
-)
-
-echo.
-echo [2/3] Running flutter pub get...
+echo [1/2] Fetching dependencies...
 call flutter pub get
 if errorlevel 1 (
     echo.
@@ -32,7 +18,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [3/3] Running flutter app...
+echo [2/2] Running demo app...
 call flutter run -t lib/main.dart
 if errorlevel 1 (
     echo.
