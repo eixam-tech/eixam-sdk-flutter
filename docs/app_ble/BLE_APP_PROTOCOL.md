@@ -55,7 +55,7 @@ L’app ha de **reassemblar** tots els fragments (mateix `totalLen`, `offset` cr
 
 ### 1.1 TEL (telemetria) — característica TEL
 
-**Quan:** El dispositiu envia la seva posició periòdicament (interval TEL, p. ex. 120 s) i durant el compte enrere SOS. **Reenviament de TEL d’altres nodes (LoRa → BLE)** està planejat **Sprint 3** (`03_SPRINT3_…`, `04_ROADMAP.md`); encara no al firmware actual.
+**Quan:** El dispositiu envia la seva posició periòdicament (interval TEL, p. ex. 120 s) i durant el compte enrere SOS. **Reenviament de TEL d’altres nodes (LoRa → BLE):** si **BLE connectat**, el firmware reenvia **paquets TEL vàlids de 10 B** rebuts per LoRa cap a l’app (notify TEL), amb **rate-limit per node font** (`EIXAM_TEL_RX_BLE_MIN_INTERVAL_MS`, per defecte 60 s) i taula de **8** ids; només **`EIXAM_CLIENT`**.
 
 **Format (cas clàssic):** **10 bytes** (paquet de posició Eixam).
 
@@ -157,6 +157,25 @@ Totes les comandes es reben per **escriptura** a la característica **INET** (ea
 
 L’app ha d’enviar com a mínim 1 byte (l’opcode). Les comandes amb payload exigeixen la longitud adequada (per 0x08, len >= 3).
 
+### 2.3 Rescue status estructurat (Sprint 3 fase 1)
+
+Per `STATUS_REQ` (`0x05`, port LoRa 261), el node víctima respon amb `STATUS_RESP` (`0x85`) perquè l’app del rescatador pugui pintar UI sense inferir només de TEL/SOS.
+
+**Payload `STATUS_RESP` (10 B, port 261):**
+
+| Byte(s) | Camp | Tipus | Descripció |
+|---------|------|-------|------------|
+| 0–1 | rescueId | uint16 LE | node id lògic del rescatador que ha fet el request |
+| 2–3 | victimId | uint16 LE | node víctima que respon |
+| 4 | `0x85` | uint8 | `EIXAM_RESCUE_CMD_STATUS_RESP` |
+| 5 | state | uint8 | `EixamSOSState` (`0=INACTIVE`, `1=COUNTDOWN`, `2=ACTIVE`, `3=ACKNOWLEDGED`, `4=RESOLVED`) |
+| 6 | batt2b | uint8 | bateria codificada Eixam (0..3) |
+| 7 | gpsQ2b | uint8 | qualitat GPS (0..3) |
+| 8 | retryCount | uint8 | contador actual de reintents SOS |
+| 9 | flags | uint8 | bit0: relay pending ACK; bit1: INET disponible |
+
+**Nota d’integració app/backend:** el firmware també manté el push contextual existent (`notify SOS` + `TEL`) després del `STATUS_REQ`, però el `STATUS_RESP` és la font “neteja” per a la UI d’estat de rescat.
+
 ---
 
 ## 3. Flux típics per a l’app
@@ -205,6 +224,8 @@ El dispositiu reprodueix tons per buzzer en aquests moments (resum; detall a `01
 - **Tons i SOS:** `01_SPRINT1_TEL_BLE_SOS.md` (secció «Estat actual del Sprint 1»)
 
 Aquest document reflecta l’estat **BLE** (**Sprint 1** + **Sprint 2** cluster, agregats `0xD0`, i **notify SOS** com a §1.2). Extensions (provisioning, més comandes, TEL veíns LoRa→BLE) es documentaran quan s’implementin. Per **backend / ports mesh 258–260**, veieu **`09_BACKEND_APP_HANDOFF.md`**.
+
+Per **sync diferit de backlog local** (final excursio / punt CIM) vegeu també **`13_BLE_BACKLOG_SYNC_PROTOCOL.md`**.
 
 ---
 
