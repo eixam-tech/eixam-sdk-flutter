@@ -171,7 +171,7 @@ class GeolocatorTrackingRepository implements TrackingRepository {
       speed: position.speed,
       heading: position.heading,
       source: DeliveryMode.mobile,
-      timestamp: position.timestamp ?? DateTime.now(),
+      timestamp: position.timestamp,
     );
   }
 

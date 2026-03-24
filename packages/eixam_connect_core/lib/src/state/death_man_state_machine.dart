@@ -1,4 +1,3 @@
-import '../entities/death_man_plan.dart';
 import '../enums/death_man_status.dart';
 import '../errors/eixam_sdk_exception.dart';
 

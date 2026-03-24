@@ -56,8 +56,6 @@ class EixamConnectSdkImpl
   StreamSubscription<DeviceSosStatus>? _deviceSosSub;
   StreamSubscription<GuidedRescueState>? _guidedRescueSub;
 
-  EixamSdkConfig? _config;
-  EixamSession? _session;
   Timer? _deathManTimer;
   bool _deathManCheckInNotified = false;
   bool _deathManOverdueNotified = false;
@@ -66,7 +64,6 @@ class EixamConnectSdkImpl
       RealtimeConnectionState.disconnected;
   RealtimeEvent? _lastRealtimeEvent;
   DeviceStatus? _lastDeviceStatus;
-  DeviceSosStatus _lastDeviceSosStatus = DeviceSosStatus.initial();
   GuidedRescueState _guidedRescueState = const GuidedRescueState.unsupported();
   BleNotificationNavigationRequest? _pendingBleNotificationNavigationRequest;
   String? _activeDeviceSosCycleKey;
@@ -100,9 +97,8 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> initialize(EixamSdkConfig config) async {
-    _config = config;
     _lastDeviceStatus = await deviceRepository.getDeviceStatus();
-    _lastDeviceSosStatus = await deviceSosController.getStatus();
+    await deviceSosController.getStatus();
     _guidedRescueState = guidedRescueRuntime == null
         ? _fallbackGuidedRescueState()
         : await guidedRescueRuntime!.getCurrentState();
@@ -182,12 +178,12 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> setSession(EixamSession session) async {
-    _session = session;
+    // TODO: wire host/backend session state into authenticated SDK transports.
   }
 
   @override
   Future<void> clearSession() async {
-    _session = null;
+    // TODO: clear authenticated SDK transport session state once implemented.
   }
 
   @override
@@ -415,7 +411,6 @@ class EixamConnectSdkImpl
   }
 
   Future<void> _handleDeviceSosStatus(DeviceSosStatus status) async {
-    _lastDeviceSosStatus = status;
     final cycleKey = _deriveDeviceSosCycleKey(status);
 
     BleDebugRegistry.instance.recordEvent(
@@ -537,7 +532,7 @@ class EixamConnectSdkImpl
       return null;
     }
 
-    final deviceId = _lastDeviceStatus?.deviceId?.trim();
+    final deviceId = _lastDeviceStatus?.deviceId.trim();
     final nodeId = status.nodeId;
     final packetId = status.packetId;
 

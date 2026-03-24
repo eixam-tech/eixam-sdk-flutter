@@ -147,4 +147,12 @@ class InMemoryDeviceRepository implements DeviceRepository {
     );
     _controller.add(_status);
   }
+
+  /// TODO: promote disposal to a shared repository lifecycle contract if more
+  /// runtime-backed repositories need explicit cleanup.
+  Future<void> dispose() async {
+    _stopHeartbeat();
+    await _runtimeStatusSub?.cancel();
+    await _controller.close();
+  }
 }
