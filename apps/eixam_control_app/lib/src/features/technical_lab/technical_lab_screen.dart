@@ -47,7 +47,8 @@ class _TechnicalLabScreenState extends State<TechnicalLabScreen> {
   }
 
   String _notificationMessage(BleNotificationNavigationRequest request) {
-    final node = request.nodeId == null ? '' : ' node ${_formatNodeId(request.nodeId)}';
+    final node =
+        request.nodeId == null ? '' : ' node ${_formatNodeId(request.nodeId)}';
     return '${request.reason} (${request.actionId})$node';
   }
 
@@ -129,7 +130,8 @@ class _TechnicalLabScreenState extends State<TechnicalLabScreen> {
                   loading: _controller.loadingPermissions,
                   onRefresh: _controller.refreshPermissions,
                   onRequestBluetooth: _controller.requestScanPermissions,
-                  onRequestNotifications: _controller.requestNotificationPermission,
+                  onRequestNotifications:
+                      _controller.requestNotificationPermission,
                 ),
                 const SizedBox(height: 16),
                 NotificationsSection(
@@ -145,7 +147,8 @@ class _TechnicalLabScreenState extends State<TechnicalLabScreen> {
                     children: [
                       Text(
                         deviceViewState.deviceName,
-                        style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w700),
+                        style: const TextStyle(
+                            fontSize: 24, fontWeight: FontWeight.w700),
                       ),
                       const SizedBox(height: 8),
                       Wrap(
@@ -153,7 +156,9 @@ class _TechnicalLabScreenState extends State<TechnicalLabScreen> {
                         runSpacing: 8,
                         children: [
                           Chip(label: Text(deviceViewState.statusLabel)),
-                          StatusPill(label: 'Connected', active: status?.connected ?? false),
+                          StatusPill(
+                              label: 'Connected',
+                              active: status?.connected ?? false),
                           StatusPill(
                             label: 'Ready',
                             active: status?.isReadyForSafety ?? false,
@@ -169,10 +174,15 @@ class _TechnicalLabScreenState extends State<TechnicalLabScreen> {
                         label: 'Readiness',
                         value: deviceViewState.readinessSummary,
                       ),
-                      LabInfoLine(label: 'Device ID', value: status?.deviceId ?? '-'),
-                      LabInfoLine(label: 'Model', value: deviceViewState.modelLabel),
-                      LabInfoLine(label: 'Alias', value: deviceViewState.aliasLabel),
-                      LabInfoLine(label: 'Battery', value: deviceViewState.batterySummary),
+                      LabInfoLine(
+                          label: 'Device ID', value: status?.deviceId ?? '-'),
+                      LabInfoLine(
+                          label: 'Model', value: deviceViewState.modelLabel),
+                      LabInfoLine(
+                          label: 'Alias', value: deviceViewState.aliasLabel),
+                      LabInfoLine(
+                          label: 'Battery',
+                          value: deviceViewState.batterySummary),
                       LabInfoLine(
                         label: 'Firmware',
                         value: deviceViewState.firmwareLabel,
@@ -188,22 +198,27 @@ class _TechnicalLabScreenState extends State<TechnicalLabScreen> {
                     runSpacing: 8,
                     children: [
                       ElevatedButton(
-                        onPressed: _controller.loadingDevice ? null : _controller.pairDevice,
+                        onPressed: _controller.loadingDevice
+                            ? null
+                            : _controller.pairDevice,
                         child: const Text('Pair / Connect'),
                       ),
                       ElevatedButton(
-                        onPressed:
-                            _controller.loadingDevice ? null : _controller.activateDevice,
+                        onPressed: _controller.loadingDevice
+                            ? null
+                            : _controller.activateDevice,
                         child: const Text('Activate'),
                       ),
                       ElevatedButton(
-                        onPressed:
-                            _controller.loadingDevice ? null : _controller.refreshDevice,
+                        onPressed: _controller.loadingDevice
+                            ? null
+                            : _controller.refreshDevice,
                         child: const Text('Refresh'),
                       ),
                       ElevatedButton(
-                        onPressed:
-                            _controller.loadingDevice ? null : _controller.unpairDevice,
+                        onPressed: _controller.loadingDevice
+                            ? null
+                            : _controller.unpairDevice,
                         child: const Text('Unpair'),
                       ),
                     ],
@@ -215,7 +230,8 @@ class _TechnicalLabScreenState extends State<TechnicalLabScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      LabInfoLine(label: 'State', value: deviceSosViewState.label),
+                      LabInfoLine(
+                          label: 'State', value: deviceSosViewState.label),
                       LabInfoLine(
                         label: 'Transition source',
                         value: deviceSosViewState.sourceLabel,
@@ -297,13 +313,16 @@ class _TechnicalLabScreenState extends State<TechnicalLabScreen> {
                         runSpacing: 8,
                         children: [
                           ElevatedButton(
-                            onPressed: _controller.loadingScan ? null : _controller.runScan,
+                            onPressed: _controller.loadingScan
+                                ? null
+                                : _controller.runScan,
                             child: const Text('Scan BLE'),
                           ),
                         ],
                       ),
                       const SizedBox(height: 12),
-                      if (!bleDebugState.isScanning && !diagnosticsViewState.hasScanResults)
+                      if (!bleDebugState.isScanning &&
+                          !diagnosticsViewState.hasScanResults)
                         const Text('No BLE devices discovered yet.')
                       else
                         Column(
@@ -314,14 +333,18 @@ class _TechnicalLabScreenState extends State<TechnicalLabScreen> {
                             return Padding(
                               padding: const EdgeInsets.only(bottom: 8),
                               child: ScanResultCard(
-                                title: scan.name.isEmpty ? 'Unknown device' : scan.name,
+                                title: scan.name.isEmpty
+                                    ? 'Unknown device'
+                                    : scan.name,
                                 scan: scan,
-                                isSelected:
-                                    bleDebugState.selectedDeviceId == scan.deviceId,
+                                isSelected: bleDebugState.selectedDeviceId ==
+                                    scan.deviceId,
                                 services: services,
-                                onTap: _controller.loadingDevice || !scan.connectable
+                                onTap: _controller.loadingDevice ||
+                                        !scan.connectable
                                     ? null
-                                    : () => _controller.pairSelectedDevice(scan),
+                                    : () =>
+                                        _controller.pairSelectedDevice(scan),
                               ),
                             );
                           }).toList(growable: false),
@@ -335,15 +358,17 @@ class _TechnicalLabScreenState extends State<TechnicalLabScreen> {
                   child: ExpansionTile(
                     tilePadding: EdgeInsets.zero,
                     childrenPadding: EdgeInsets.zero,
-                    title: const Text('Technical diagnostics and low-level controls'),
+                    title: const Text(
+                        'Technical diagnostics and low-level controls'),
                     children: [
                       Wrap(
                         spacing: 8,
                         runSpacing: 8,
                         children: [
                           OutlinedButton(
-                            onPressed:
-                                bleDebugState.commandWriterReady ? _controller.sendInetOk : null,
+                            onPressed: bleDebugState.commandWriterReady
+                                ? _controller.sendInetOk
+                                : null,
                             child: const Text('INET OK'),
                           ),
                           OutlinedButton(
@@ -376,8 +401,8 @@ class _TechnicalLabScreenState extends State<TechnicalLabScreen> {
                         children: [
                           OutlinedButton(
                             onPressed: bleDebugState.commandWriterReady
-                                ? () =>
-                                    _controller.sendAckRelay(_ackRelayNodeIdController.text)
+                                ? () => _controller.sendAckRelay(
+                                    _ackRelayNodeIdController.text)
                                 : null,
                             child: const Text('ACK Relay'),
                           ),
@@ -392,12 +417,14 @@ class _TechnicalLabScreenState extends State<TechnicalLabScreen> {
                       const SizedBox(height: 16),
                       LabInfoLine(
                         label: 'Packet timestamp',
-                        value: _formatDate(_controller.deviceSosStatus.lastPacketAt),
+                        value: _formatDate(
+                            _controller.deviceSosStatus.lastPacketAt),
                       ),
                       LabInfoLine(
                         label: 'Packet length',
-                        value:
-                            _controller.deviceSosStatus.lastPacketLength?.toString() ?? '-',
+                        value: _controller.deviceSosStatus.lastPacketLength
+                                ?.toString() ??
+                            '-',
                       ),
                       LabInfoLine(
                         label: 'Packet hex',
@@ -405,23 +432,32 @@ class _TechnicalLabScreenState extends State<TechnicalLabScreen> {
                       ),
                       LabInfoLine(
                         label: 'Decoded nodeId',
-                        value: _formatNodeId(_controller.deviceSosStatus.nodeId),
+                        value:
+                            _formatNodeId(_controller.deviceSosStatus.nodeId),
                       ),
                       LabInfoLine(
                         label: 'Retry count',
-                        value: _controller.deviceSosStatus.retryCount?.toString() ?? '-',
+                        value: _controller.deviceSosStatus.retryCount
+                                ?.toString() ??
+                            '-',
                       ),
                       LabInfoLine(
                         label: 'Relay count',
-                        value: _controller.deviceSosStatus.relayCount?.toString() ?? '-',
+                        value: _controller.deviceSosStatus.relayCount
+                                ?.toString() ??
+                            '-',
                       ),
                       LabInfoLine(
                         label: 'GPS quality',
-                        value: _controller.deviceSosStatus.gpsQuality?.toString() ?? '-',
+                        value: _controller.deviceSosStatus.gpsQuality
+                                ?.toString() ??
+                            '-',
                       ),
                       LabInfoLine(
                         label: 'Packet id',
-                        value: _controller.deviceSosStatus.packetId?.toString() ?? '-',
+                        value:
+                            _controller.deviceSosStatus.packetId?.toString() ??
+                                '-',
                       ),
                       LabInfoLine(
                         label: 'Decoder note',
@@ -438,7 +474,8 @@ class _TechnicalLabScreenState extends State<TechnicalLabScreen> {
                       ),
                       LabInfoLine(
                         label: 'Target characteristic',
-                        value: bleDebugState.lastWriteTargetCharacteristic ?? '-',
+                        value:
+                            bleDebugState.lastWriteTargetCharacteristic ?? '-',
                       ),
                       LabInfoLine(
                         label: 'Write success/failure',
@@ -465,13 +502,19 @@ class _TechnicalLabScreenState extends State<TechnicalLabScreen> {
                         label: 'EIXAM service found',
                         value: bleDebugState.eixamServiceFound.toString(),
                       ),
-                      LabInfoLine(label: 'TEL found', value: bleDebugState.telFound.toString()),
-                      LabInfoLine(label: 'SOS found', value: bleDebugState.sosFound.toString()),
+                      LabInfoLine(
+                          label: 'TEL found',
+                          value: bleDebugState.telFound.toString()),
+                      LabInfoLine(
+                          label: 'SOS found',
+                          value: bleDebugState.sosFound.toString()),
                       LabInfoLine(
                         label: 'INET found',
                         value: bleDebugState.inetFound.toString(),
                       ),
-                      LabInfoLine(label: 'CMD found', value: bleDebugState.cmdFound.toString()),
+                      LabInfoLine(
+                          label: 'CMD found',
+                          value: bleDebugState.cmdFound.toString()),
                       LabInfoLine(
                         label: 'TEL notify subscribed',
                         value: bleDebugState.telNotifySubscribed.toString(),
@@ -486,7 +529,9 @@ class _TechnicalLabScreenState extends State<TechnicalLabScreen> {
                       else
                         Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
-                          children: bleDebugState.events.reversed.take(10).map((event) {
+                          children: bleDebugState.events.reversed
+                              .take(10)
+                              .map((event) {
                             return Padding(
                               padding: const EdgeInsets.only(bottom: 8),
                               child: Text(

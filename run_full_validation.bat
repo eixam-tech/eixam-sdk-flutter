@@ -8,8 +8,12 @@ echo.
 
 cd /d "%~dp0"
 
-echo [1/4] Checking formatting...
-call dart format --set-exit-if-changed .
+echo [0/4] Cleaning generated build folders...
+if exist "apps\eixam_control_app\build" rmdir /s /q "apps\eixam_control_app\build"
+
+echo.
+echo [1/4] Checking formatting (tracked source folders only)...
+call dart format --set-exit-if-changed apps packages docs
 if errorlevel 1 (
     echo.
     echo ERROR: format check failed.

@@ -26,56 +26,60 @@ class EixamUiTexts {
   });
 
   factory EixamUiTexts.es() => const EixamUiTexts(
-        sosButtonLabel: 'SOS',
-        sosIdle: 'SOS inactivo',
-        sosSending: 'Enviando SOS...',
-        sosSent: 'SOS enviado',
-        sosCancelled: 'SOS cancelado',
-        sosFailed: 'Error SOS',
-        sosUnknownPrefix: 'Estado SOS',
-        deathManCheckInTitle: 'Confirmación de seguridad',
-        deathManCheckInMessage: 'Confirma que estás bien para evitar activar el protocolo SOS.',
-        confirmSafety: 'Estoy bien',
-      );
+    sosButtonLabel: 'SOS',
+    sosIdle: 'SOS inactivo',
+    sosSending: 'Enviando SOS...',
+    sosSent: 'SOS enviado',
+    sosCancelled: 'SOS cancelado',
+    sosFailed: 'Error SOS',
+    sosUnknownPrefix: 'Estado SOS',
+    deathManCheckInTitle: 'Confirmación de seguridad',
+    deathManCheckInMessage:
+        'Confirma que estás bien para evitar activar el protocolo SOS.',
+    confirmSafety: 'Estoy bien',
+  );
 
   factory EixamUiTexts.en() => const EixamUiTexts(
-        sosButtonLabel: 'SOS',
-        sosIdle: 'SOS inactive',
-        sosSending: 'Sending SOS...',
-        sosSent: 'SOS sent',
-        sosCancelled: 'SOS cancelled',
-        sosFailed: 'SOS error',
-        sosUnknownPrefix: 'SOS status',
-        deathManCheckInTitle: 'Safety check-in',
-        deathManCheckInMessage: 'Confirm you are safe to avoid triggering the SOS protocol.',
-        confirmSafety: 'I am safe',
-      );
+    sosButtonLabel: 'SOS',
+    sosIdle: 'SOS inactive',
+    sosSending: 'Sending SOS...',
+    sosSent: 'SOS sent',
+    sosCancelled: 'SOS cancelled',
+    sosFailed: 'SOS error',
+    sosUnknownPrefix: 'SOS status',
+    deathManCheckInTitle: 'Safety check-in',
+    deathManCheckInMessage:
+        'Confirm you are safe to avoid triggering the SOS protocol.',
+    confirmSafety: 'I am safe',
+  );
 
   factory EixamUiTexts.ca() => const EixamUiTexts(
-        sosButtonLabel: 'SOS',
-        sosIdle: 'SOS inactiu',
-        sosSending: 'Enviant SOS...',
-        sosSent: 'SOS enviat',
-        sosCancelled: 'SOS cancel·lat',
-        sosFailed: 'Error SOS',
-        sosUnknownPrefix: 'Estat SOS',
-        deathManCheckInTitle: 'Confirmació de seguretat',
-        deathManCheckInMessage: 'Confirma que estàs bé per evitar activar el protocol SOS.',
-        confirmSafety: 'Estic bé',
-      );
+    sosButtonLabel: 'SOS',
+    sosIdle: 'SOS inactiu',
+    sosSending: 'Enviant SOS...',
+    sosSent: 'SOS enviat',
+    sosCancelled: 'SOS cancel·lat',
+    sosFailed: 'Error SOS',
+    sosUnknownPrefix: 'Estat SOS',
+    deathManCheckInTitle: 'Confirmació de seguretat',
+    deathManCheckInMessage:
+        'Confirma que estàs bé per evitar activar el protocol SOS.',
+    confirmSafety: 'Estic bé',
+  );
 
   factory EixamUiTexts.fr() => const EixamUiTexts(
-        sosButtonLabel: 'SOS',
-        sosIdle: 'SOS inactif',
-        sosSending: 'Envoi du SOS...',
-        sosSent: 'SOS envoyé',
-        sosCancelled: 'SOS annulé',
-        sosFailed: 'Erreur SOS',
-        sosUnknownPrefix: 'État SOS',
-        deathManCheckInTitle: 'Confirmation de sécurité',
-        deathManCheckInMessage: 'Confirmez que vous allez bien pour éviter d’activer le protocole SOS.',
-        confirmSafety: 'Je vais bien',
-      );
+    sosButtonLabel: 'SOS',
+    sosIdle: 'SOS inactif',
+    sosSending: 'Envoi du SOS...',
+    sosSent: 'SOS envoyé',
+    sosCancelled: 'SOS annulé',
+    sosFailed: 'Erreur SOS',
+    sosUnknownPrefix: 'État SOS',
+    deathManCheckInTitle: 'Confirmation de sécurité',
+    deathManCheckInMessage:
+        'Confirmez que vous allez bien pour éviter d’activer le protocole SOS.',
+    confirmSafety: 'Je vais bien',
+  );
 
   factory EixamUiTexts.fromLocaleCode(String localeCode) {
     switch (localeCode.toLowerCase()) {
@@ -112,7 +116,8 @@ class EixamUiTexts {
       sosFailed: sosFailed ?? this.sosFailed,
       sosUnknownPrefix: sosUnknownPrefix ?? this.sosUnknownPrefix,
       deathManCheckInTitle: deathManCheckInTitle ?? this.deathManCheckInTitle,
-      deathManCheckInMessage: deathManCheckInMessage ?? this.deathManCheckInMessage,
+      deathManCheckInMessage:
+          deathManCheckInMessage ?? this.deathManCheckInMessage,
       confirmSafety: confirmSafety ?? this.confirmSafety,
     );
   }

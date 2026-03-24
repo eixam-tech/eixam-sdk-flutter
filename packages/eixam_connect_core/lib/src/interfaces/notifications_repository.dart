@@ -1,5 +1,5 @@
-typedef NotificationActionHandler =
-    Future<void> Function(NotificationActionInvocation invocation);
+typedef NotificationActionHandler = Future<void> Function(
+    NotificationActionInvocation invocation);
 
 class NotificationActionInvocation {
   const NotificationActionInvocation({

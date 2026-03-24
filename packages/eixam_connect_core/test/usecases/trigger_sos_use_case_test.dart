@@ -7,7 +7,8 @@ import '../support/fakes/fake_sos_repository.dart';
 
 void main() {
   group('TriggerSosUseCase', () {
-    test('forwards the request to the repository and returns the incident', () async {
+    test('forwards the request to the repository and returns the incident',
+        () async {
       final position = buildTrackingPosition();
       final incident = buildSosIncident(positionSnapshot: position);
       final repository = FakeSosRepository(triggerResult: incident);

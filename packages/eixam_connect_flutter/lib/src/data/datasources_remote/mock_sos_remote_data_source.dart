@@ -39,10 +39,12 @@ class MockSosRemoteDataSource implements SosRemoteDataSource {
   }
 
   @override
-  Future<SosIncidentDto> cancelSos({required String incidentId, String? reason}) async {
+  Future<SosIncidentDto> cancelSos(
+      {required String incidentId, String? reason}) async {
     await Future<void>.delayed(const Duration(milliseconds: 200));
     if (_active == null || _active!.id != incidentId) {
-      throw const SosException('E_SOS_NOT_FOUND', 'Active SOS incident not found');
+      throw const SosException(
+          'E_SOS_NOT_FOUND', 'Active SOS incident not found');
     }
     _active = _active!.copyWith(state: SosState.cancelled.name);
     return _active!;

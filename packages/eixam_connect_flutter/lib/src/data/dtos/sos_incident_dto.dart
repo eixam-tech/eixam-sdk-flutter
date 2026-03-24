@@ -21,9 +21,11 @@ class SosIncidentDto {
       id: json['id'] as String,
       state: json['state'] as String,
       createdAt: json['createdAt'] as String,
-      triggerSource: json['triggerSource'] as String? ?? json['trigger_source'] as String?,
+      triggerSource:
+          json['triggerSource'] as String? ?? json['trigger_source'] as String?,
       message: json['message'] as String?,
-      positionSnapshot: json['positionSnapshot'] as Map<String, dynamic>? ?? json['position_snapshot'] as Map<String, dynamic>?,
+      positionSnapshot: json['positionSnapshot'] as Map<String, dynamic>? ??
+          json['position_snapshot'] as Map<String, dynamic>?,
     );
   }
 

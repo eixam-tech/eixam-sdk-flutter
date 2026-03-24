@@ -20,7 +20,8 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
 
   Map<String, String> get _headers => {
         'Content-Type': 'application/json',
-        if (authToken != null && authToken!.isNotEmpty) 'Authorization': 'Bearer $authToken',
+        if (authToken != null && authToken!.isNotEmpty)
+          'Authorization': 'Bearer $authToken',
       };
 
   @override
@@ -55,11 +56,13 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
       throw SosException('E_HTTP_SOS_TRIGGER_FAILED', response.body);
     }
 
-    return SosIncidentDto.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    return SosIncidentDto.fromJson(
+        jsonDecode(response.body) as Map<String, dynamic>);
   }
 
   @override
-  Future<SosIncidentDto> cancelSos({required String incidentId, String? reason}) async {
+  Future<SosIncidentDto> cancelSos(
+      {required String incidentId, String? reason}) async {
     final uri = Uri.parse('${config.apiBaseUrl}/alerts/sos/$incidentId/cancel');
     final response = await client.post(
       uri,
@@ -71,7 +74,8 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
       throw SosException('E_HTTP_SOS_CANCEL_FAILED', response.body);
     }
 
-    return SosIncidentDto.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    return SosIncidentDto.fromJson(
+        jsonDecode(response.body) as Map<String, dynamic>);
   }
 
   @override
@@ -86,6 +90,7 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
       throw SosException('E_HTTP_SOS_GET_ACTIVE_FAILED', response.body);
     }
 
-    return SosIncidentDto.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    return SosIncidentDto.fromJson(
+        jsonDecode(response.body) as Map<String, dynamic>);
   }
 }

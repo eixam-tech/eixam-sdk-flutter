@@ -6,13 +6,16 @@ void main() {
     test('allows the monitoring to expiration flow', () {
       final machine = DeathManStateMachine();
 
-      expect(machine.transitionTo(DeathManStatus.monitoring), DeathManStatus.monitoring);
-      expect(machine.transitionTo(DeathManStatus.overdue), DeathManStatus.overdue);
+      expect(machine.transitionTo(DeathManStatus.monitoring),
+          DeathManStatus.monitoring);
+      expect(
+          machine.transitionTo(DeathManStatus.overdue), DeathManStatus.overdue);
       expect(
         machine.transitionTo(DeathManStatus.awaitingConfirmation),
         DeathManStatus.awaitingConfirmation,
       );
-      expect(machine.transitionTo(DeathManStatus.expired), DeathManStatus.expired);
+      expect(
+          machine.transitionTo(DeathManStatus.expired), DeathManStatus.expired);
     });
 
     test('allows cancellation before expiration', () {
@@ -20,7 +23,8 @@ void main() {
 
       machine.transitionTo(DeathManStatus.monitoring);
 
-      expect(machine.transitionTo(DeathManStatus.cancelled), DeathManStatus.cancelled);
+      expect(machine.transitionTo(DeathManStatus.cancelled),
+          DeathManStatus.cancelled);
     });
 
     test('rejects invalid transitions', () {

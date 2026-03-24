@@ -79,7 +79,9 @@ void main() {
       await realtimeClient.dispose();
     });
 
-    test('triggerSos attaches the current position when location access is granted', () async {
+    test(
+        'triggerSos attaches the current position when location access is granted',
+        () async {
       permissionsRepository.permissionState = const PermissionState(
         location: SdkPermissionStatus.granted,
       );
@@ -96,7 +98,9 @@ void main() {
       expect(sosRepository.lastPositionSnapshot!.latitude, 41.38);
     });
 
-    test('triggerSos continues without a position snapshot when permission lookup fails', () async {
+    test(
+        'triggerSos continues without a position snapshot when permission lookup fails',
+        () async {
       permissionsRepository.getPermissionStateError = StateError('boom');
 
       await sdk.triggerSos(message: 'Need help');
@@ -105,7 +109,9 @@ void main() {
       expect(sosRepository.lastPositionSnapshot, isNull);
     });
 
-    test('requestNotificationPermission asks both repositories and returns permission state', () async {
+    test(
+        'requestNotificationPermission asks both repositories and returns permission state',
+        () async {
       permissionsRepository.permissionState = const PermissionState(
         notifications: SdkPermissionStatus.granted,
       );
@@ -117,7 +123,9 @@ void main() {
       expect(result.notifications, SdkPermissionStatus.granted);
     });
 
-    test('guided rescue exposes an unsupported state until a runtime is wired in', () async {
+    test(
+        'guided rescue exposes an unsupported state until a runtime is wired in',
+        () async {
       final initial = await sdk.getGuidedRescueState();
       final configured = await sdk.setGuidedRescueSession(
         targetNodeId: 0x1001,
@@ -141,7 +149,8 @@ void main() {
       );
     });
 
-    test('tracking facade delegates start and stop to the tracking repository', () async {
+    test('tracking facade delegates start and stop to the tracking repository',
+        () async {
       await sdk.startTracking();
       await sdk.stopTracking();
 
@@ -165,7 +174,8 @@ void main() {
       expect(await sdk.listEmergencyContacts(), isEmpty);
     });
 
-    test('device facade delegates refresh and exposes the latest status', () async {
+    test('device facade delegates refresh and exposes the latest status',
+        () async {
       final updated = buildDeviceStatus(
         deviceId: 'device-2',
         connected: true,
@@ -180,7 +190,9 @@ void main() {
       expect(deviceRepository.refreshCallCount, 1);
     });
 
-    test('initialize binds realtime streams and caches the latest facade values', () async {
+    test(
+        'initialize binds realtime streams and caches the latest facade values',
+        () async {
       realtimeClient.stateToEmitOnConnect = RealtimeConnectionState.connected;
       realtimeClient.eventToEmitOnConnect = RealtimeEvent(
         type: 'sos_ack',
@@ -201,7 +213,8 @@ void main() {
       expect((await sdk.getLastRealtimeEvent())?.type, 'sos_ack');
     });
 
-    test('watchRealtime streams expose values pushed after initialization', () async {
+    test('watchRealtime streams expose values pushed after initialization',
+        () async {
       await sdk.initialize(
         const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
       );
@@ -253,7 +266,9 @@ void main() {
       expect((event as SOSCancelledEvent).incidentId, incident.id);
     });
 
-    test('scheduleDeathMan transitions the repository to monitoring and emits an event', () async {
+    test(
+        'scheduleDeathMan transitions the repository to monitoring and emits an event',
+        () async {
       final eventFuture = takeNextFromStream(sdk.watchEvents());
 
       final plan = await sdk.scheduleDeathMan(
@@ -282,7 +297,8 @@ void main() {
 
       final event = await eventFuture;
       expect(event, isA<DeathManStatusChangedEvent>());
-      expect((event as DeathManStatusChangedEvent).status, DeathManStatus.confirmedSafe.name);
+      expect((event as DeathManStatusChangedEvent).status,
+          DeathManStatus.confirmedSafe.name);
     });
   });
 }

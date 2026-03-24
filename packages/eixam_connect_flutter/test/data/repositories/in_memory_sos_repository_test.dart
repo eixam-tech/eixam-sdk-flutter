@@ -84,7 +84,8 @@ void main() {
       expect(await repository.getSosState(), SosState.sent);
     });
 
-    test('persists cancellation state and keeps the active incident snapshot', () async {
+    test('persists cancellation state and keeps the active incident snapshot',
+        () async {
       final store = MemorySharedPrefsSdkStore();
       final repository = InMemorySosRepository(localStore: store);
 
@@ -94,7 +95,8 @@ void main() {
       );
       await repository.cancelSos(reason: 'Resolved');
 
-      expect(store.stringValues[SharedPrefsSdkStore.sosStateKey], SosState.cancelled.name);
+      expect(store.stringValues[SharedPrefsSdkStore.sosStateKey],
+          SosState.cancelled.name);
       expect(store.jsonValues[SharedPrefsSdkStore.sosIncidentKey], isNotNull);
       expect(
         store.jsonValues[SharedPrefsSdkStore.sosIncidentKey]?['state'],

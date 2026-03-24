@@ -4,7 +4,8 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   group('EixamSosEventPacket.tryParse', () {
     test('parses user-deactivated event packets', () {
-      final packet = EixamSosEventPacket.tryParse(<int>[0xE1, 0x02, 0x34, 0x12]);
+      final packet =
+          EixamSosEventPacket.tryParse(<int>[0xE1, 0x02, 0x34, 0x12]);
 
       expect(packet, isNotNull);
       expect(packet!.isUserDeactivated, isTrue);
@@ -14,7 +15,8 @@ void main() {
     });
 
     test('rejects unsupported opcodes', () {
-      expect(EixamSosEventPacket.tryParse(<int>[0xE3, 0x00, 0x00, 0x00]), isNull);
+      expect(
+          EixamSosEventPacket.tryParse(<int>[0xE3, 0x00, 0x00, 0x00]), isNull);
     });
   });
 }

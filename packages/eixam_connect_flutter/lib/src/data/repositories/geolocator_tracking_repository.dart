@@ -27,8 +27,10 @@ class GeolocatorTrackingRepository implements TrackingRepository {
   final LocationSettings locationSettings;
   final Duration staleAfter;
 
-  final StreamController<TrackingPosition> _positionsController = StreamController.broadcast();
-  final StreamController<TrackingState> _trackingStateController = StreamController.broadcast();
+  final StreamController<TrackingPosition> _positionsController =
+      StreamController.broadcast();
+  final StreamController<TrackingState> _trackingStateController =
+      StreamController.broadcast();
 
   StreamSubscription<Position>? _subscription;
   Timer? _freshnessTimer;
@@ -39,17 +41,22 @@ class GeolocatorTrackingRepository implements TrackingRepository {
   Future<void> restoreState() async {
     if (_localStore == null) return;
 
-    final positionJson = await _localStore.readJson(SharedPrefsSdkStore.trackingPositionKey);
-    final stateRaw = await _localStore.readString(SharedPrefsSdkStore.trackingStateKey);
+    final positionJson =
+        await _localStore.readJson(SharedPrefsSdkStore.trackingPositionKey);
+    final stateRaw =
+        await _localStore.readString(SharedPrefsSdkStore.trackingStateKey);
 
     if (positionJson != null) {
-      _lastPosition = LocalStateSerializers.trackingPositionFromJson(positionJson);
+      _lastPosition =
+          LocalStateSerializers.trackingPositionFromJson(positionJson);
       _positionsController.add(_lastPosition!);
     }
 
     _state = TrackingState.values.firstWhere(
       (value) => value.name == stateRaw,
-      orElse: () => _lastPosition?.isStale == true ? TrackingState.stale : TrackingState.idle,
+      orElse: () => _lastPosition?.isStale == true
+          ? TrackingState.stale
+          : TrackingState.idle,
     );
     _trackingStateController.add(_state);
   }
@@ -59,7 +66,8 @@ class GeolocatorTrackingRepository implements TrackingRepository {
     await _ensureLocationPermission();
 
     try {
-      final position = await Geolocator.getCurrentPosition(locationSettings: locationSettings);
+      final position = await Geolocator.getCurrentPosition(
+          locationSettings: locationSettings);
       _lastPosition = _mapPosition(position);
       _positionsController.add(_lastPosition!);
       _setState(TrackingState.tracking);
@@ -69,7 +77,8 @@ class GeolocatorTrackingRepository implements TrackingRepository {
     } catch (error) {
       _setState(TrackingState.error);
       await _persistState();
-      throw TrackingException('E_TRACKING_CURRENT_POSITION_ERROR', error.toString());
+      throw TrackingException(
+          'E_TRACKING_CURRENT_POSITION_ERROR', error.toString());
     }
   }
 
@@ -84,7 +93,9 @@ class GeolocatorTrackingRepository implements TrackingRepository {
 
     try {
       await _subscription?.cancel();
-      _subscription = Geolocator.getPositionStream(locationSettings: locationSettings).listen(
+      _subscription =
+          Geolocator.getPositionStream(locationSettings: locationSettings)
+              .listen(
         (position) async {
           _lastPosition = _mapPosition(position);
           _positionsController.add(_lastPosition!);
@@ -130,7 +141,8 @@ class GeolocatorTrackingRepository implements TrackingRepository {
     final state = await permissionsRepository.getPermissionState();
     if (!state.hasLocationAccess) {
       _setState(TrackingState.error);
-      throw const TrackingException('E_LOCATION_PERMISSION_REQUIRED', 'Location permission is required');
+      throw const TrackingException(
+          'E_LOCATION_PERMISSION_REQUIRED', 'Location permission is required');
     }
   }
 
@@ -166,7 +178,8 @@ class GeolocatorTrackingRepository implements TrackingRepository {
   Future<void> _persistState() async {
     if (_localStore == null) return;
 
-    await _localStore.saveString(SharedPrefsSdkStore.trackingStateKey, _state.name);
+    await _localStore.saveString(
+        SharedPrefsSdkStore.trackingStateKey, _state.name);
     if (_lastPosition == null) {
       await _localStore.remove(SharedPrefsSdkStore.trackingPositionKey);
       return;

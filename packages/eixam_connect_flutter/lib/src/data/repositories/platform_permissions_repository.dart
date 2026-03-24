@@ -131,7 +131,8 @@ class PlatformPermissionsRepository implements PermissionsRepository {
 
   SdkPermissionStatus _mapPermissionStatus(ph.PermissionStatus status) {
     if (status.isGranted) return SdkPermissionStatus.granted;
-    if (status.isPermanentlyDenied) return SdkPermissionStatus.permanentlyDenied;
+    if (status.isPermanentlyDenied)
+      return SdkPermissionStatus.permanentlyDenied;
     if (status.isRestricted) return SdkPermissionStatus.restricted;
     if (status.isLimited) return SdkPermissionStatus.limited;
     if (status.isDenied) return SdkPermissionStatus.denied;

@@ -17,7 +17,8 @@ class InMemoryDeviceRepository implements DeviceRepository {
     SharedPrefsSdkStore? localStore,
   })  : _runtimeProvider = runtimeProvider,
         _localStore = localStore {
-    _runtimeStatusSub = _runtimeProvider.watchRuntimeStatus().listen((status) async {
+    _runtimeStatusSub =
+        _runtimeProvider.watchRuntimeStatus().listen((status) async {
       _status = status;
       await _persistAndEmit();
     });
@@ -25,7 +26,8 @@ class InMemoryDeviceRepository implements DeviceRepository {
 
   final DeviceRuntimeProvider _runtimeProvider;
   final SharedPrefsSdkStore? _localStore;
-  final StreamController<DeviceStatus> _controller = StreamController<DeviceStatus>.broadcast();
+  final StreamController<DeviceStatus> _controller =
+      StreamController<DeviceStatus>.broadcast();
   StreamSubscription<DeviceStatus>? _runtimeStatusSub;
 
   Timer? _heartbeatTimer;
@@ -45,7 +47,8 @@ class InMemoryDeviceRepository implements DeviceRepository {
 
   /// Restores the last persisted device state, if any.
   Future<void> restoreState() async {
-    final raw = await _localStore?.readJson(SharedPrefsSdkStore.deviceStatusKey);
+    final raw =
+        await _localStore?.readJson(SharedPrefsSdkStore.deviceStatusKey);
     if (raw != null) {
       _status = LocalStateSerializers.deviceStatusFromJson(raw);
     }
@@ -59,7 +62,8 @@ class InMemoryDeviceRepository implements DeviceRepository {
   Future<DeviceStatus> pairDevice({required String pairingCode}) async {
     await _setLifecycle(DeviceLifecycleState.pairing);
     try {
-      _status = await _runtimeProvider.pair(currentStatus: _status, pairingCode: pairingCode);
+      _status = await _runtimeProvider.pair(
+          currentStatus: _status, pairingCode: pairingCode);
       await _persistAndEmit();
       _startHeartbeat();
       return _status;
@@ -73,7 +77,8 @@ class InMemoryDeviceRepository implements DeviceRepository {
   Future<DeviceStatus> activateDevice({required String activationCode}) async {
     await _setLifecycle(DeviceLifecycleState.activating);
     try {
-      _status = await _runtimeProvider.activate(currentStatus: _status, activationCode: activationCode);
+      _status = await _runtimeProvider.activate(
+          currentStatus: _status, activationCode: activationCode);
       await _persistAndEmit();
       _startHeartbeat();
       return _status;

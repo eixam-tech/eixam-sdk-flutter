@@ -39,9 +39,9 @@ abstract class EixamConnectSdk {
   Future<void> sendSosAckRelayToDevice({required int nodeId});
   Future<void> sendShutdownToDevice();
   Future<BleNotificationNavigationRequest?>
-  consumePendingBleNotificationNavigationRequest();
+      consumePendingBleNotificationNavigationRequest();
   Stream<BleNotificationNavigationRequest>
-  watchBleNotificationNavigationRequests();
+      watchBleNotificationNavigationRequests();
 
   Future<PermissionState> getPermissionState();
   Future<PermissionState> requestLocationPermission();

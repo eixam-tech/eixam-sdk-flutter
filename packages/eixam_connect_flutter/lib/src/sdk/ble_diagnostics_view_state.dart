@@ -10,8 +10,10 @@ class BleDiagnosticsViewState {
   });
 
   factory BleDiagnosticsViewState.fromState(BleDebugState state) {
-    final softCompatible =
-        state.eixamServiceFound && state.telFound && state.sosFound && state.inetFound;
+    final softCompatible = state.eixamServiceFound &&
+        state.telFound &&
+        state.sosFound &&
+        state.inetFound;
 
     return BleDiagnosticsViewState(
       adapterStateLabel: state.adapterState.toString(),

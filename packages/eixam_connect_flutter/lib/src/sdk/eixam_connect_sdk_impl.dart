@@ -19,7 +19,9 @@ import 'guided_rescue_runtime.dart';
 /// It composes repositories, exposes a stable public API and coordinates
 /// cross-module workflows such as attaching a location snapshot to SOS or
 /// escalating a Death Man plan into SOS automatically.
-class EixamConnectSdkImpl with WidgetsBindingObserver implements EixamConnectSdk {
+class EixamConnectSdkImpl
+    with WidgetsBindingObserver
+    implements EixamConnectSdk {
   final SosRepository sosRepository;
   final TrackingRepository trackingRepository;
   final ContactsRepository contactsRepository;

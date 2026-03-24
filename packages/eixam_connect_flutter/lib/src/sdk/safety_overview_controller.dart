@@ -45,10 +45,10 @@ class SafetyOverviewController extends ChangeNotifier {
   StreamSubscription<RealtimeConnectionState>? _realtimeConnectionSub;
   StreamSubscription<RealtimeEvent>? _realtimeEventsSub;
 
-  DeviceViewState get deviceViewState => DeviceViewState.fromStatus(deviceStatus);
+  DeviceViewState get deviceViewState =>
+      DeviceViewState.fromStatus(deviceStatus);
   RescueViewState get rescueViewState => RescueViewState.fromSdkState(
-        rescueState:
-            guidedRescueState ?? const GuidedRescueState.unsupported(),
+        rescueState: guidedRescueState ?? const GuidedRescueState.unsupported(),
         deviceStatus: deviceStatus,
         lastPosition: lastPosition,
       );

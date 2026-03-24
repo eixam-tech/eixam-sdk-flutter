@@ -196,7 +196,8 @@ class DeviceSosController {
         lastPacketHex: packet.rawHex,
         lastPacketLength: packet.rawBytes.length,
         lastPacketAt: DateTime.now(),
-        lastPacketSignature: '${packet.nodeId}:${packet.packetId}:${packet.rawHex}',
+        lastPacketSignature:
+            '${packet.nodeId}:${packet.packetId}:${packet.rawHex}',
         nodeId: packet.nodeId,
         flags: packet.flagsWord,
         sosType: packet.sosType,
@@ -221,8 +222,7 @@ class DeviceSosController {
     final previous = _status.state;
     final nextState = _resolveEventState(packet, previous);
     final controlEventLabel = _describeEventPacket(packet);
-    final event =
-        'SOS device event decoded -> $controlEventLabel '
+    final event = 'SOS device event decoded -> $controlEventLabel '
         'nodeId=${_formatNodeId(packet.nodeId)} '
         'subcode=0x${packet.subcode.toRadixString(16).padLeft(2, '0')}';
 

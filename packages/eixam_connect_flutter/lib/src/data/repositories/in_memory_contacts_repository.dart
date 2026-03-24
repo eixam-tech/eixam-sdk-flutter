@@ -10,7 +10,8 @@ import '../../mappers/local_state_serializers.dart';
 /// It persists the contact list to shared preferences so host apps can restore
 /// emergency escalation targets between launches.
 class InMemoryContactsRepository implements ContactsRepository {
-  InMemoryContactsRepository({SharedPrefsSdkStore? localStore}) : _localStore = localStore;
+  InMemoryContactsRepository({SharedPrefsSdkStore? localStore})
+      : _localStore = localStore;
 
   final SharedPrefsSdkStore? _localStore;
   final List<EmergencyContact> _contacts = [];
@@ -18,7 +19,8 @@ class InMemoryContactsRepository implements ContactsRepository {
       StreamController<List<EmergencyContact>>.broadcast();
 
   Future<void> restoreState() async {
-    final raw = await _localStore?.readJson(SharedPrefsSdkStore.emergencyContactsKey);
+    final raw =
+        await _localStore?.readJson(SharedPrefsSdkStore.emergencyContactsKey);
     final items = raw?['items'];
     if (items is List) {
       _contacts
@@ -62,7 +64,8 @@ class InMemoryContactsRepository implements ContactsRepository {
   }
 
   @override
-  Future<EmergencyContact> updateEmergencyContact(EmergencyContact contact) async {
+  Future<EmergencyContact> updateEmergencyContact(
+      EmergencyContact contact) async {
     final index = _contacts.indexWhere((item) => item.id == contact.id);
     if (index == -1) {
       throw StateError('Emergency contact not found: ${contact.id}');

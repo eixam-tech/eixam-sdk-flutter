@@ -99,8 +99,8 @@ class RealBleClient implements BleClient {
         final name = r.advertisementData.advName.isNotEmpty
             ? r.advertisementData.advName
             : (r.device.platformName.isNotEmpty
-                  ? r.device.platformName
-                  : 'Unknown');
+                ? r.device.platformName
+                : 'Unknown');
 
         _log(
           'BLE scan -> id=$id name="$name" rssi=${r.rssi} connectable=${r.advertisementData.connectable} serviceUuids=$advertisedServiceUuids',
@@ -168,9 +168,8 @@ class RealBleClient implements BleClient {
       _servicesCache[deviceId] = services;
 
       BleDebugRegistry.instance.update(
-        discoveredServices: services
-            .map((service) => service.uuid.str)
-            .toList(),
+        discoveredServices:
+            services.map((service) => service.uuid.str).toList(),
       );
       BleDebugRegistry.instance.registerCommandWriter(
         (command) => writeDeviceCommand(deviceId, command),

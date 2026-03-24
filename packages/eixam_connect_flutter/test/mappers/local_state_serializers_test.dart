@@ -52,12 +52,16 @@ void main() {
       expect(restored.triggerSource, incident.triggerSource);
       expect(restored.message, incident.message);
       expect(restored.createdAt, incident.createdAt);
-      expect(restored.positionSnapshot?.latitude, incident.positionSnapshot?.latitude);
-      expect(restored.positionSnapshot?.longitude, incident.positionSnapshot?.longitude);
+      expect(restored.positionSnapshot?.latitude,
+          incident.positionSnapshot?.latitude);
+      expect(restored.positionSnapshot?.longitude,
+          incident.positionSnapshot?.longitude);
     });
 
-    test('restores battery state from stored name before protocol fallback', () {
-      final restored = LocalStateSerializers.deviceStatusFromJson(<String, dynamic>{
+    test('restores battery state from stored name before protocol fallback',
+        () {
+      final restored =
+          LocalStateSerializers.deviceStatusFromJson(<String, dynamic>{
         'deviceId': 'device-1',
         'paired': true,
         'activated': true,

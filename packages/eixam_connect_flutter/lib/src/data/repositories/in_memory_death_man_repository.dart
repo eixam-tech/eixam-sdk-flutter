@@ -10,16 +10,19 @@ import '../../mappers/local_state_serializers.dart';
 /// It keeps the active plan in memory but can also persist it locally so the
 /// monitoring workflow can be restored when the host app is reopened.
 class InMemoryDeathManRepository implements DeathManRepository {
-  InMemoryDeathManRepository({SharedPrefsSdkStore? localStore}) : _localStore = localStore;
+  InMemoryDeathManRepository({SharedPrefsSdkStore? localStore})
+      : _localStore = localStore;
 
   final SharedPrefsSdkStore? _localStore;
-  final StreamController<DeathManPlan> _controller = StreamController<DeathManPlan>.broadcast();
+  final StreamController<DeathManPlan> _controller =
+      StreamController<DeathManPlan>.broadcast();
   DeathManPlan? _activePlan;
 
   /// Restores the active plan from local storage, if any.
   Future<void> restoreState() async {
     if (_localStore == null) return;
-    final json = await _localStore.readJson(SharedPrefsSdkStore.deathManPlanKey);
+    final json =
+        await _localStore.readJson(SharedPrefsSdkStore.deathManPlanKey);
     if (json == null) return;
 
     _activePlan = LocalStateSerializers.deathManPlanFromJson(json);
@@ -68,9 +71,11 @@ class InMemoryDeathManRepository implements DeathManRepository {
   }
 
   @override
-  Future<DeathManPlan> updatePlanStatus(String planId, DeathManStatus status) async {
+  Future<DeathManPlan> updatePlanStatus(
+      String planId, DeathManStatus status) async {
     if (_activePlan?.id != planId || _activePlan == null) {
-      throw const DeathManException('E_DEATH_MAN_PLAN_NOT_FOUND', 'Death Man plan not found');
+      throw const DeathManException(
+          'E_DEATH_MAN_PLAN_NOT_FOUND', 'Death Man plan not found');
     }
     _activePlan = _activePlan!.copyWith(status: status);
     _controller.add(_activePlan!);

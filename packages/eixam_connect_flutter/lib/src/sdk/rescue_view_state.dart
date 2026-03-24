@@ -40,8 +40,9 @@ class RescueViewState {
           : 'Guided Rescue Phase 1 now has an SDK contract, but runtime orchestration is still pending.',
       sessionLabel: sessionLabel,
       targetStateLabel: targetStateLabel,
-      deviceLabel:
-          deviceStatus?.deviceAlias ?? deviceStatus?.deviceId ?? 'No device selected',
+      deviceLabel: deviceStatus?.deviceAlias ??
+          deviceStatus?.deviceId ??
+          'No device selected',
       lastKnownPositionLabel: positionLabel,
       availabilityNote: rescueState.unavailableReason ??
           'Waiting for runtime support to execute rescue commands.',
@@ -50,9 +51,9 @@ class RescueViewState {
         'Structured STATUS_RESP decoder feeding GuidedRescueStatusSnapshot',
         'Backend/app orchestration for rescue session selection and lifecycle',
       ],
-      canRequestPosition: rescueState.canRun(GuidedRescueAction.requestPosition),
-      canAcknowledgeSos:
-          rescueState.canRun(GuidedRescueAction.acknowledgeSos),
+      canRequestPosition:
+          rescueState.canRun(GuidedRescueAction.requestPosition),
+      canAcknowledgeSos: rescueState.canRun(GuidedRescueAction.acknowledgeSos),
       canEnableBuzzer: rescueState.canRun(GuidedRescueAction.buzzerOn),
       canDisableBuzzer: rescueState.canRun(GuidedRescueAction.buzzerOff),
       canRequestStatus: rescueState.canRun(GuidedRescueAction.requestStatus),

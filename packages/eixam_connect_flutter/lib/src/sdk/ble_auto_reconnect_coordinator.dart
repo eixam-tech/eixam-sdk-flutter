@@ -12,8 +12,8 @@ class BleAutoReconnectCoordinator {
     required DeviceRepository deviceRepository,
     required PreferredBleDeviceStore preferredDeviceStore,
     this.autoReconnectPairingCode = 'AUTO-RECONNECT',
-  }) : _deviceRepository = deviceRepository,
-       _preferredDeviceStore = preferredDeviceStore;
+  })  : _deviceRepository = deviceRepository,
+        _preferredDeviceStore = preferredDeviceStore;
 
   static const List<Duration> _retryBackoff = <Duration>[
     Duration(seconds: 2),
@@ -39,8 +39,8 @@ class BleAutoReconnectCoordinator {
     required Stream<DeviceStatus> deviceStatusStream,
   }) async {
     _lastStatus = initialStatus;
-    _manualDisconnectRequested = await _preferredDeviceStore
-        .readManualDisconnectRequested();
+    _manualDisconnectRequested =
+        await _preferredDeviceStore.readManualDisconnectRequested();
     await _deviceStatusSub?.cancel();
     _deviceStatusSub = deviceStatusStream.listen(_handleDeviceStatus);
   }

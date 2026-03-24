@@ -21,7 +21,8 @@ void main() {
       expect(notReady.isReadyForSafety, isFalse);
     });
 
-    test('derives battery state and approximate percentage from protocol value', () {
+    test('derives battery state and approximate percentage from protocol value',
+        () {
       const status = DeviceStatus(
         deviceId: 'device-1',
         paired: true,

@@ -161,7 +161,8 @@ class FakeContactsRepository implements ContactsRepository {
   }
 
   @override
-  Future<EmergencyContact> updateEmergencyContact(EmergencyContact contact) async {
+  Future<EmergencyContact> updateEmergencyContact(
+      EmergencyContact contact) async {
     final index = contacts.indexWhere((item) => item.id == contact.id);
     contacts[index] = contact;
     _controller.add(List<EmergencyContact>.unmodifiable(contacts));
@@ -181,7 +182,7 @@ class FakeContactsRepository implements ContactsRepository {
 
 class FakeDeviceRepository implements DeviceRepository {
   FakeDeviceRepository({required DeviceStatus initialStatus})
-    : _status = initialStatus;
+      : _status = initialStatus;
 
   final StreamController<DeviceStatus> _controller =
       StreamController<DeviceStatus>.broadcast();

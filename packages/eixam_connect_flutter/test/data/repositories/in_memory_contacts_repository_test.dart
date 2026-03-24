@@ -27,9 +27,11 @@ void main() {
       );
 
       final updated = await repository.listEmergencyContacts();
-      expect(updated.map((contact) => contact.name), <String>['Alice', 'Bruno']);
+      expect(
+          updated.map((contact) => contact.name), <String>['Alice', 'Bruno']);
 
-      final persisted = store.jsonValues[SharedPrefsSdkStore.emergencyContactsKey];
+      final persisted =
+          store.jsonValues[SharedPrefsSdkStore.emergencyContactsKey];
       expect(persisted, isNotNull);
       expect((persisted!['items'] as List).length, 2);
       expect(first.active, isTrue);
@@ -37,7 +39,8 @@ void main() {
 
     test('restores and sorts contacts from local storage', () async {
       final store = MemorySharedPrefsSdkStore()
-        ..jsonValues[SharedPrefsSdkStore.emergencyContactsKey] = <String, dynamic>{
+        ..jsonValues[SharedPrefsSdkStore.emergencyContactsKey] =
+            <String, dynamic>{
           'items': <Map<String, dynamic>>[
             <String, dynamic>{
               'id': 'contact-2',
@@ -58,7 +61,8 @@ void main() {
       await repository.restoreState();
 
       final contacts = await repository.listEmergencyContacts();
-      expect(contacts.map((contact) => contact.id), <String>['contact-1', 'contact-2']);
+      expect(contacts.map((contact) => contact.id),
+          <String>['contact-1', 'contact-2']);
     });
 
     test('toggles active flag and removes contacts safely', () async {

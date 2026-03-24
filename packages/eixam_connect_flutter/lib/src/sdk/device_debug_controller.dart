@@ -221,7 +221,8 @@ class DeviceDebugController extends ChangeNotifier {
 
     final nodeId = _parseNodeId(raw);
     if (nodeId == null) {
-      _handleError(StateError('Invalid nodeId. Use decimal or hex like 0x1AA8.'));
+      _handleError(
+          StateError('Invalid nodeId. Use decimal or hex like 0x1AA8.'));
       return;
     }
     if (nodeId < 0 || nodeId > 0xFFFF) {

@@ -24,7 +24,9 @@ class PreferredBleDevice {
 
     final deviceId = json['deviceId'] as String?;
     final lastConnectedAtRaw = json['lastConnectedAt'] as String?;
-    if (deviceId == null || deviceId.trim().isEmpty || lastConnectedAtRaw == null) {
+    if (deviceId == null ||
+        deviceId.trim().isEmpty ||
+        lastConnectedAtRaw == null) {
       return null;
     }
 

@@ -31,13 +31,16 @@ class DeviceException extends EixamSdkException {
       : this('E_DEVICE_INVALID_PAIRING_CODE', 'The pairing code is not valid.');
 
   const DeviceException.invalidActivationCode()
-      : this('E_DEVICE_INVALID_ACTIVATION_CODE', 'The activation code is not valid.');
+      : this('E_DEVICE_INVALID_ACTIVATION_CODE',
+            'The activation code is not valid.');
 
   const DeviceException.notPaired()
-      : this('E_DEVICE_NOT_PAIRED', 'The device must be paired before this action.');
+      : this('E_DEVICE_NOT_PAIRED',
+            'The device must be paired before this action.');
 
   const DeviceException.notActivated()
-      : this('E_DEVICE_NOT_ACTIVATED', 'The device must be activated before this action.');
+      : this('E_DEVICE_NOT_ACTIVATED',
+            'The device must be activated before this action.');
 }
 
 class ContactsException extends EixamSdkException {

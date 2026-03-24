@@ -408,8 +408,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
     final isClassicCandidate =
         notification.payload.length == EixamBleProtocol.telPacketLength &&
-        notification.payload.first !=
-            EixamBleProtocol.telAggregateFragmentOpcode;
+            notification.payload.first !=
+                EixamBleProtocol.telAggregateFragmentOpcode;
     final telPacket = isClassicCandidate
         ? EixamTelPacket.tryParse(notification.payload)
         : null;
@@ -677,7 +677,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     );
 
     final unchanged = currentStatus.batteryLevel == nextStatus.batteryLevel &&
-        currentStatus.effectiveBatteryState == nextStatus.effectiveBatteryState &&
+        currentStatus.effectiveBatteryState ==
+            nextStatus.effectiveBatteryState &&
         currentStatus.batterySource == nextStatus.batterySource;
     if (unchanged) {
       BleDebugRegistry.instance.recordEvent(
@@ -712,7 +713,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     return currentStatus.batterySource;
   }
 
-  void _publishRuntimeStatus(DeviceStatus nextStatus, {required String reason}) {
+  void _publishRuntimeStatus(DeviceStatus nextStatus,
+      {required String reason}) {
     _lastRuntimeStatus = nextStatus;
     BleDebugRegistry.instance.recordEvent(
       'Final battery value sent to UI -> source=${nextStatus.batterySource?.name ?? "-"} raw=${nextStatus.batteryLevel?.toString() ?? "-"} state=${nextStatus.effectiveBatteryState?.label ?? "-"} approx=${nextStatus.approximateBatteryPercentage?.toString() ?? "-"} changed=true reason=$reason',

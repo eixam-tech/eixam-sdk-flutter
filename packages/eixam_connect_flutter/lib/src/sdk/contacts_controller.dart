@@ -42,7 +42,8 @@ class ContactsController extends ChangeNotifier {
 
   /// Toggles whether a contact participates in emergency resolution.
   Future<void> toggleActive(EmergencyContact contact) async {
-    await _run(() => sdk.setEmergencyContactActive(contact.id, !contact.active));
+    await _run(
+        () => sdk.setEmergencyContactActive(contact.id, !contact.active));
   }
 
   /// Removes an emergency contact from the SDK store.

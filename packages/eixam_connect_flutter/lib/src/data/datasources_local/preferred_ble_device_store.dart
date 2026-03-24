@@ -3,7 +3,7 @@ import 'shared_prefs_sdk_store.dart';
 
 class PreferredBleDeviceStore {
   PreferredBleDeviceStore({SharedPrefsSdkStore? localStore})
-    : _localStore = localStore ?? SharedPrefsSdkStore();
+      : _localStore = localStore ?? SharedPrefsSdkStore();
 
   static const String preferredDeviceKey = 'eixam.ble.preferred_device';
   static const String manualDisconnectRequestedKey =

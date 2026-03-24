@@ -27,7 +27,8 @@ void main() {
       ])!;
 
       expect(reassembler.addFragment(first), isNull);
-      expect(reassembler.addFragment(second), <int>[0x10, 0x11, 0x12, 0x13, 0x14, 0x15]);
+      expect(reassembler.addFragment(second),
+          <int>[0x10, 0x11, 0x12, 0x13, 0x14, 0x15]);
     });
 
     test('returns null and resets on conflicting overlapping fragments', () {

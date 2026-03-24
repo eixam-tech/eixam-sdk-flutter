@@ -32,8 +32,7 @@ class EixamTelReassembler {
       if (!overlaps) {
         continue;
       }
-      final sameRange =
-          existingStart == fragment.offset &&
+      final sameRange = existingStart == fragment.offset &&
           existingEnd == fragmentEnd &&
           _listEquals(entry.value, fragment.fragmentPayload);
       if (sameRange) {

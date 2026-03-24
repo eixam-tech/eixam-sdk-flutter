@@ -6,11 +6,14 @@ void main() {
     test('allows the happy path from idle to resolved and back to idle', () {
       final machine = SosStateMachine();
 
-      expect(machine.transitionTo(SosState.triggerRequested), SosState.triggerRequested);
-      expect(machine.transitionTo(SosState.triggeredLocal), SosState.triggeredLocal);
+      expect(machine.transitionTo(SosState.triggerRequested),
+          SosState.triggerRequested);
+      expect(machine.transitionTo(SosState.triggeredLocal),
+          SosState.triggeredLocal);
       expect(machine.transitionTo(SosState.sending), SosState.sending);
       expect(machine.transitionTo(SosState.sent), SosState.sent);
-      expect(machine.transitionTo(SosState.acknowledged), SosState.acknowledged);
+      expect(
+          machine.transitionTo(SosState.acknowledged), SosState.acknowledged);
       expect(machine.transitionTo(SosState.resolved), SosState.resolved);
       expect(machine.transitionTo(SosState.idle), SosState.idle);
     });

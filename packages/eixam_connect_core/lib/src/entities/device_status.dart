@@ -14,6 +14,7 @@ class DeviceStatus {
   final bool paired;
   final bool activated;
   final bool connected;
+
   /// Raw EIXAM protocol battery value (`0..3`), not a true percentage.
   final int? batteryLevel;
   final DeviceBatteryLevel? batteryState;

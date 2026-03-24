@@ -20,8 +20,10 @@ class DeviceController extends ChangeNotifier {
   bool get isActivated => status?.activated ?? false;
   bool get isReadyForSafety => status?.isReadyForSafety ?? false;
   bool get canPair => !isBusy && !(status?.paired ?? false);
-  bool get canActivate => !isBusy && (status?.paired ?? false) && !(status?.activated ?? false);
-  DeviceLifecycleState get lifecycleState => status?.lifecycleState ?? DeviceLifecycleState.unpaired;
+  bool get canActivate =>
+      !isBusy && (status?.paired ?? false) && !(status?.activated ?? false);
+  DeviceLifecycleState get lifecycleState =>
+      status?.lifecycleState ?? DeviceLifecycleState.unpaired;
 
   /// Loads the latest status and subscribes to runtime updates.
   Future<void> initialize() async {
@@ -53,7 +55,8 @@ class DeviceController extends ChangeNotifier {
         status = await sdk.getDeviceStatus();
       });
 
-  Future<void> _run(Future<void> Function() action, {bool clearError = true}) async {
+  Future<void> _run(Future<void> Function() action,
+      {bool clearError = true}) async {
     isBusy = true;
     if (clearError) lastError = null;
     notifyListeners();

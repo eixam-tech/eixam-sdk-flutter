@@ -31,9 +31,10 @@ class _EixamDemoAppState extends State<EixamDemoApp> {
   }
 
   void _bindNotificationNavigation() {
-    _notificationSub = widget.sdk.watchBleNotificationNavigationRequests().listen(
-      _openTechnicalLabFromNotification,
-    );
+    _notificationSub =
+        widget.sdk.watchBleNotificationNavigationRequests().listen(
+              _openTechnicalLabFromNotification,
+            );
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final pending =

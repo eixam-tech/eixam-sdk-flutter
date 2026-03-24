@@ -89,7 +89,8 @@ class OperationalSosSection extends StatelessWidget {
           const SizedBox(height: 12),
           InfoLine(label: 'State', value: viewState.label),
           InfoLine(label: 'Incident ID', value: incident?.id ?? '-'),
-          InfoLine(label: 'Trigger source', value: incident?.triggerSource ?? '-'),
+          InfoLine(
+              label: 'Trigger source', value: incident?.triggerSource ?? '-'),
           InfoLine(label: 'Message', value: incident?.message ?? '-'),
         ],
       ),
@@ -121,12 +122,14 @@ class TrackingSummarySection extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           InfoLine(label: 'Tracking state', value: state?.name ?? 'Unknown'),
-          InfoLine(label: 'Latitude', value: position?.latitude.toString() ?? '-'),
+          InfoLine(
+              label: 'Latitude', value: position?.latitude.toString() ?? '-'),
           InfoLine(
             label: 'Longitude',
             value: position?.longitude.toString() ?? '-',
           ),
-          InfoLine(label: 'Accuracy', value: position?.accuracy.toString() ?? '-'),
+          InfoLine(
+              label: 'Accuracy', value: position?.accuracy.toString() ?? '-'),
           InfoLine(label: 'Source', value: position?.source.toString() ?? '-'),
           const SizedBox(height: 12),
           Wrap(
@@ -251,12 +254,15 @@ class DeathManSummarySection extends StatelessWidget {
             label: 'Expected return',
             value: plan?.expectedReturnAt.toString() ?? '-',
           ),
-          InfoLine(label: 'Grace period', value: plan?.gracePeriod.toString() ?? '-'),
+          InfoLine(
+              label: 'Grace period',
+              value: plan?.gracePeriod.toString() ?? '-'),
           InfoLine(
             label: 'Check-in window',
             value: plan?.checkInWindow.toString() ?? '-',
           ),
-          InfoLine(label: 'Auto SOS', value: plan?.autoTriggerSos.toString() ?? '-'),
+          InfoLine(
+              label: 'Auto SOS', value: plan?.autoTriggerSos.toString() ?? '-'),
           const SizedBox(height: 12),
           Wrap(
             spacing: 8,

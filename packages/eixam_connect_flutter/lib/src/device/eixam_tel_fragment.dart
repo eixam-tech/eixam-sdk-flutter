@@ -18,8 +18,7 @@ class EixamTelFragment {
   int get fragmentLength => fragmentPayload.length;
 
   static EixamTelFragment? tryParse(List<int> bytes) {
-    if (bytes.length <
-        EixamBleProtocol.telAggregateFragmentHeaderLength + 1) {
+    if (bytes.length < EixamBleProtocol.telAggregateFragmentHeaderLength + 1) {
       return null;
     }
     if (bytes.first != EixamBleProtocol.telAggregateFragmentOpcode) {
@@ -34,7 +33,8 @@ class EixamTelFragment {
     if (totalLength <= 0 || payload.isEmpty) {
       return null;
     }
-    if (payload.length > EixamBleProtocol.telAggregateFragmentMaxPayloadLength) {
+    if (payload.length >
+        EixamBleProtocol.telAggregateFragmentMaxPayloadLength) {
       return null;
     }
 

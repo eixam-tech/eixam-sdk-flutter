@@ -38,6 +38,7 @@ class EixamUiScope extends InheritedWidget {
 
   @override
   bool updateShouldNotify(EixamUiScope oldWidget) {
-    return localeCode != oldWidget.localeCode || overrides != oldWidget.overrides;
+    return localeCode != oldWidget.localeCode ||
+        overrides != oldWidget.overrides;
   }
 }

@@ -9,7 +9,8 @@ import '../../support/fakes/memory_shared_prefs_sdk_store.dart';
 
 void main() {
   group('InMemoryDeviceRepository', () {
-    test('pairDevice emits lifecycle progress and persists runtime status', () async {
+    test('pairDevice emits lifecycle progress and persists runtime status',
+        () async {
       final store = MemorySharedPrefsSdkStore();
       final runtimeProvider = FakeDeviceRuntimeProvider()
         ..pairResult = buildDeviceStatus(
@@ -33,17 +34,21 @@ void main() {
         localStore: store,
       );
       final emittedStatuses = <DeviceStatus>[];
-      final subscription = repository.watchDeviceStatus().listen(emittedStatuses.add);
+      final subscription =
+          repository.watchDeviceStatus().listen(emittedStatuses.add);
 
       try {
         final result = await repository.pairDevice(pairingCode: '1234');
         await Future<void>.delayed(Duration.zero);
 
         expect(result.lifecycleState, DeviceLifecycleState.paired);
-        expect(emittedStatuses.first.lifecycleState, DeviceLifecycleState.pairing);
-        expect(emittedStatuses.last.lifecycleState, DeviceLifecycleState.paired);
         expect(
-          store.jsonValues[SharedPrefsSdkStore.deviceStatusKey]?['lifecycleState'],
+            emittedStatuses.first.lifecycleState, DeviceLifecycleState.pairing);
+        expect(
+            emittedStatuses.last.lifecycleState, DeviceLifecycleState.paired);
+        expect(
+          store.jsonValues[SharedPrefsSdkStore.deviceStatusKey]
+              ?['lifecycleState'],
           DeviceLifecycleState.paired.name,
         );
       } finally {
@@ -53,7 +58,8 @@ void main() {
       }
     });
 
-    test('pairDevice stores failure status when runtime pairing throws', () async {
+    test('pairDevice stores failure status when runtime pairing throws',
+        () async {
       final runtimeProvider = FakeDeviceRuntimeProvider()
         ..pairError = const DeviceException(
           'E_DEVICE_PAIR_FAILED',

@@ -29,18 +29,21 @@ class LocalStateSerializers {
     );
   }
 
-  static List<Map<String, dynamic>> emergencyContactsToJson(List<EmergencyContact> contacts) {
+  static List<Map<String, dynamic>> emergencyContactsToJson(
+      List<EmergencyContact> contacts) {
     return contacts.map(emergencyContactToJson).toList(growable: false);
   }
 
   static List<EmergencyContact> emergencyContactsFromJson(List<dynamic> items) {
     return items
         .whereType<Map>()
-        .map((item) => emergencyContactFromJson(Map<String, dynamic>.from(item)))
+        .map(
+            (item) => emergencyContactFromJson(Map<String, dynamic>.from(item)))
         .toList(growable: false);
   }
 
-  static Map<String, dynamic> trackingPositionToJson(TrackingPosition position) {
+  static Map<String, dynamic> trackingPositionToJson(
+      TrackingPosition position) {
     return {
       'latitude': position.latitude,
       'longitude': position.longitude,
@@ -124,7 +127,6 @@ class LocalStateSerializers {
     );
   }
 
-
   static Map<String, dynamic> deviceStatusToJson(DeviceStatus status) {
     return {
       'deviceId': status.deviceId,
@@ -178,8 +180,12 @@ class LocalStateSerializers {
       batteryState: batteryState,
       batterySource: batterySource,
       firmwareVersion: json['firmwareVersion'] as String?,
-      lastSeen: json['lastSeen'] == null ? null : DateTime.parse(json['lastSeen'] as String),
-      lastSyncedAt: json['lastSyncedAt'] == null ? null : DateTime.parse(json['lastSyncedAt'] as String),
+      lastSeen: json['lastSeen'] == null
+          ? null
+          : DateTime.parse(json['lastSeen'] as String),
+      lastSyncedAt: json['lastSyncedAt'] == null
+          ? null
+          : DateTime.parse(json['lastSyncedAt'] as String),
       signalQuality: json['signalQuality'] as int?,
       lifecycleState: DeviceLifecycleState.values.firstWhere(
         (value) => value.name == json['lifecycleState'],
@@ -188,5 +194,4 @@ class LocalStateSerializers {
       provisioningError: json['provisioningError'] as String?,
     );
   }
-
 }

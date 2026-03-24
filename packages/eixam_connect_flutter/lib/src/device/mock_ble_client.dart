@@ -165,8 +165,7 @@ class MockBleClient implements BleClient {
     BleDebugRegistry.instance.recordEvent(
       'Mock notify subscription enabled for $deviceId',
     );
-    final controller =
-        _notifyControllers[deviceId] ??
+    final controller = _notifyControllers[deviceId] ??
         StreamController<EixamBleNotification>.broadcast();
     _notifyControllers[deviceId] = controller;
     return controller.stream.map((notification) {

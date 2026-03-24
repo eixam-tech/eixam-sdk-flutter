@@ -12,8 +12,16 @@ class SosStateMachine {
       SosState.arming => {SosState.triggerRequested, SosState.idle},
       SosState.triggerRequested => {SosState.triggeredLocal, SosState.failed},
       SosState.triggeredLocal => {SosState.sending, SosState.cancelRequested},
-      SosState.sending => {SosState.sent, SosState.failed, SosState.cancelRequested},
-      SosState.sent => {SosState.acknowledged, SosState.cancelRequested, SosState.resolved},
+      SosState.sending => {
+          SosState.sent,
+          SosState.failed,
+          SosState.cancelRequested
+        },
+      SosState.sent => {
+          SosState.acknowledged,
+          SosState.cancelRequested,
+          SosState.resolved
+        },
       SosState.acknowledged => {SosState.resolved},
       SosState.cancelRequested => {SosState.cancelled, SosState.failed},
       SosState.cancelled => {SosState.idle},
@@ -22,7 +30,8 @@ class SosStateMachine {
     };
 
     if (!allowed.contains(next)) {
-      throw const SosException('E_SOS_INVALID_TRANSITION', 'Invalid SOS state transition');
+      throw const SosException(
+          'E_SOS_INVALID_TRANSITION', 'Invalid SOS state transition');
     }
 
     _state = next;

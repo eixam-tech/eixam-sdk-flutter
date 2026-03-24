@@ -26,7 +26,8 @@ class ApiSosRepository implements SosRepository {
   final SharedPrefsSdkStore? _localStore;
 
   final SosStateMachine _stateMachine = SosStateMachine();
-  final StreamController<SosState> _stateController = StreamController<SosState>.broadcast();
+  final StreamController<SosState> _stateController =
+      StreamController<SosState>.broadcast();
 
   SosIncident? _activeIncident;
 
@@ -34,8 +35,10 @@ class ApiSosRepository implements SosRepository {
   Future<void> restoreState() async {
     if (_localStore == null) return;
 
-    final incidentJson = await _localStore.readJson(SharedPrefsSdkStore.sosIncidentKey);
-    final stateRaw = await _localStore.readString(SharedPrefsSdkStore.sosStateKey);
+    final incidentJson =
+        await _localStore.readJson(SharedPrefsSdkStore.sosIncidentKey);
+    final stateRaw =
+        await _localStore.readString(SharedPrefsSdkStore.sosStateKey);
 
     if (incidentJson != null) {
       _activeIncident = LocalStateSerializers.sosIncidentFromJson(incidentJson);
@@ -55,8 +58,12 @@ class ApiSosRepository implements SosRepository {
     TrackingPosition? positionSnapshot,
   }) async {
     final current = _stateMachine.current;
-    if (current != SosState.idle && current != SosState.failed && current != SosState.cancelled && current != SosState.resolved) {
-      throw const SosException('E_SOS_ALREADY_ACTIVE', 'There is already an SOS flow in progress');
+    if (current != SosState.idle &&
+        current != SosState.failed &&
+        current != SosState.cancelled &&
+        current != SosState.resolved) {
+      throw const SosException(
+          'E_SOS_ALREADY_ACTIVE', 'There is already an SOS flow in progress');
     }
 
     _emit(SosState.triggerRequested);
@@ -84,8 +91,11 @@ class ApiSosRepository implements SosRepository {
   @override
   Future<SosIncident> cancelSos({String? reason}) async {
     final current = _stateMachine.current;
-    if ({SosState.idle, SosState.cancelled, SosState.resolved}.contains(current) || _activeIncident == null) {
-      throw const SosException('E_SOS_CANCEL_NOT_ALLOWED', 'There is no active SOS to cancel');
+    if ({SosState.idle, SosState.cancelled, SosState.resolved}
+            .contains(current) ||
+        _activeIncident == null) {
+      throw const SosException(
+          'E_SOS_CANCEL_NOT_ALLOWED', 'There is no active SOS to cancel');
     }
 
     _emit(SosState.cancelRequested);
@@ -137,7 +147,8 @@ class ApiSosRepository implements SosRepository {
   Future<void> _persistState() async {
     if (_localStore == null) return;
 
-    await _localStore.saveString(SharedPrefsSdkStore.sosStateKey, _stateMachine.current.name);
+    await _localStore.saveString(
+        SharedPrefsSdkStore.sosStateKey, _stateMachine.current.name);
     if (_activeIncident == null || _stateMachine.current == SosState.idle) {
       await _localStore.remove(SharedPrefsSdkStore.sosIncidentKey);
       return;

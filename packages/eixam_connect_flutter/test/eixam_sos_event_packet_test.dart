@@ -4,7 +4,8 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   group('EixamSosEventPacket.tryParse', () {
     test('parses valid SOS device events', () {
-      final packet = EixamSosEventPacket.tryParse(<int>[0xE1, 0x02, 0x34, 0x12]);
+      final packet =
+          EixamSosEventPacket.tryParse(<int>[0xE1, 0x02, 0x34, 0x12]);
 
       expect(packet, isNotNull);
       expect(packet!.opcode, 0xE1);

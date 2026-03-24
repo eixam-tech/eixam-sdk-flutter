@@ -10,7 +10,8 @@ void main() {
   group('GeolocatorTrackingRepository.restoreState', () {
     test('restores persisted position and explicit tracking state', () async {
       final store = MemorySharedPrefsSdkStore()
-        ..jsonValues[SharedPrefsSdkStore.trackingPositionKey] = <String, dynamic>{
+        ..jsonValues[SharedPrefsSdkStore.trackingPositionKey] =
+            <String, dynamic>{
           'latitude': 41.3874,
           'longitude': 2.1686,
           'source': DeliveryMode.mobile.name,
@@ -32,9 +33,12 @@ void main() {
       expect(await repository.getTrackingState(), TrackingState.tracking);
     });
 
-    test('falls back to stale when restored position is old and no state is persisted', () async {
+    test(
+        'falls back to stale when restored position is old and no state is persisted',
+        () async {
       final store = MemorySharedPrefsSdkStore()
-        ..jsonValues[SharedPrefsSdkStore.trackingPositionKey] = <String, dynamic>{
+        ..jsonValues[SharedPrefsSdkStore.trackingPositionKey] =
+            <String, dynamic>{
           'latitude': 41.3874,
           'longitude': 2.1686,
           'source': DeliveryMode.mobile.name,

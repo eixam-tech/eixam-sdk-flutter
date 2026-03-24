@@ -19,7 +19,8 @@ class SosIncidentMapper {
       message: dto.message,
       positionSnapshot: dto.positionSnapshot == null
           ? null
-          : LocalStateSerializers.trackingPositionFromJson(dto.positionSnapshot!),
+          : LocalStateSerializers.trackingPositionFromJson(
+              dto.positionSnapshot!),
     );
   }
 }

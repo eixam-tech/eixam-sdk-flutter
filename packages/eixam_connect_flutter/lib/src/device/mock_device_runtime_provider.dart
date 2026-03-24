@@ -13,7 +13,9 @@ class MockDeviceRuntimeProvider implements DeviceRuntimeProvider {
       const Stream<DeviceStatus>.empty();
 
   @override
-  Future<DeviceStatus> pair({required DeviceStatus currentStatus, required String pairingCode}) async {
+  Future<DeviceStatus> pair(
+      {required DeviceStatus currentStatus,
+      required String pairingCode}) async {
     if (pairingCode.trim().length < 4) {
       throw const DeviceException.invalidPairingCode();
     }
@@ -38,7 +40,9 @@ class MockDeviceRuntimeProvider implements DeviceRuntimeProvider {
   }
 
   @override
-  Future<DeviceStatus> activate({required DeviceStatus currentStatus, required String activationCode}) async {
+  Future<DeviceStatus> activate(
+      {required DeviceStatus currentStatus,
+      required String activationCode}) async {
     if (!currentStatus.paired) {
       throw const DeviceException.notPaired();
     }
@@ -78,7 +82,8 @@ class MockDeviceRuntimeProvider implements DeviceRuntimeProvider {
       lastSeen: DateTime.now(),
       lastSyncedAt: DateTime.now(),
       signalQuality: 2 + _random.nextInt(3),
-      lifecycleState: activated ? DeviceLifecycleState.ready : DeviceLifecycleState.paired,
+      lifecycleState:
+          activated ? DeviceLifecycleState.ready : DeviceLifecycleState.paired,
       clearProvisioningError: true,
     );
   }

@@ -1,6 +1,7 @@
 sealed class EixamSdkEvent {
   final DateTime timestamp;
-  EixamSdkEvent({DateTime? timestamp}) : timestamp = timestamp ?? DateTime.now();
+  EixamSdkEvent({DateTime? timestamp})
+      : timestamp = timestamp ?? DateTime.now();
 }
 
 class SOSTriggeredEvent extends EixamSdkEvent {

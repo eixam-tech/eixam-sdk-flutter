@@ -23,7 +23,9 @@ void main() {
       expect(configured.rescueNodeId, 0x2002);
     });
 
-    test('request position, request status, acknowledge, and buzzer actions delegate', () async {
+    test(
+        'request position, request status, acknowledge, and buzzer actions delegate',
+        () async {
       final repository = FakeGuidedRescueRepository();
 
       await RequestGuidedRescuePositionUseCase(repository)();

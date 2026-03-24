@@ -4,7 +4,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('InMemoryTrackingRepository', () {
-    test('starts and stops tracking while updating the public tracking state', () async {
+    test('starts and stops tracking while updating the public tracking state',
+        () async {
       final repository = InMemoryTrackingRepository();
 
       expect(await repository.getTrackingState(), TrackingState.idle);
@@ -16,13 +17,15 @@ void main() {
       expect(await repository.getTrackingState(), TrackingState.idle);
     });
 
-    test('watchTrackingState yields the current state for each new subscriber', () async {
+    test('watchTrackingState yields the current state for each new subscriber',
+        () async {
       final repository = InMemoryTrackingRepository();
 
       expect(await repository.watchTrackingState().first, TrackingState.idle);
 
       await repository.startTracking();
-      expect(await repository.watchTrackingState().first, TrackingState.tracking);
+      expect(
+          await repository.watchTrackingState().first, TrackingState.tracking);
     });
   });
 }
