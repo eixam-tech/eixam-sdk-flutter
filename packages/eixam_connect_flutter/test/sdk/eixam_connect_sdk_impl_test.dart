@@ -159,5 +159,32 @@ void main() {
       expect(await connectionFuture, RealtimeConnectionState.connected);
       expect((await eventFuture).type, 'status_update');
     });
+
+    test('triggerSos emits a public SDK event with the incident id', () async {
+      final eventFuture = takeNextFromStream(sdk.watchEvents());
+
+      final incident = await sdk.triggerSos(
+        message: 'Need help',
+        triggerSource: 'button_ui',
+      );
+
+      final event = await eventFuture;
+      expect(event, isA<SOSTriggeredEvent>());
+      expect((event as SOSTriggeredEvent).incidentId, incident.id);
+    });
+
+    test('scheduleDeathMan transitions the repository to monitoring and emits an event', () async {
+      final eventFuture = takeNextFromStream(sdk.watchEvents());
+
+      final plan = await sdk.scheduleDeathMan(
+        expectedReturnAt: DateTime.utc(2026, 1, 2, 12),
+      );
+
+      final event = await eventFuture;
+      expect(plan.status, DeathManStatus.monitoring);
+      expect(deathManRepository.updateCallCount, 1);
+      expect(event, isA<DeathManScheduledEvent>());
+      expect((event as DeathManScheduledEvent).planId, plan.id);
+    });
   });
 }

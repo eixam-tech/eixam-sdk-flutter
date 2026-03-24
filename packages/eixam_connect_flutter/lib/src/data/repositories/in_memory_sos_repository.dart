@@ -36,7 +36,8 @@ class InMemorySosRepository implements SosRepository {
       orElse: () => _activeIncident?.state ?? SosState.idle,
     );
 
-    _emit(restoredState);
+    _restoreState(restoredState);
+    _stateController.add(_stateMachine.current);
   }
 
   @override
@@ -94,6 +95,70 @@ class InMemorySosRepository implements SosRepository {
   void _emit(SosState state) {
     _stateMachine.transitionTo(state);
     _stateController.add(_stateMachine.current);
+  }
+
+  void _restoreState(SosState state) {
+    if (state == SosState.idle) {
+      return;
+    }
+
+    final path = switch (state) {
+      SosState.idle => const <SosState>[],
+      SosState.arming => const <SosState>[SosState.arming],
+      SosState.triggerRequested => const <SosState>[SosState.triggerRequested],
+      SosState.triggeredLocal => const <SosState>[
+          SosState.triggerRequested,
+          SosState.triggeredLocal,
+        ],
+      SosState.sending => const <SosState>[
+          SosState.triggerRequested,
+          SosState.triggeredLocal,
+          SosState.sending,
+        ],
+      SosState.sent => const <SosState>[
+          SosState.triggerRequested,
+          SosState.triggeredLocal,
+          SosState.sending,
+          SosState.sent,
+        ],
+      SosState.acknowledged => const <SosState>[
+          SosState.triggerRequested,
+          SosState.triggeredLocal,
+          SosState.sending,
+          SosState.sent,
+          SosState.acknowledged,
+        ],
+      SosState.cancelRequested => const <SosState>[
+          SosState.triggerRequested,
+          SosState.triggeredLocal,
+          SosState.sending,
+          SosState.sent,
+          SosState.cancelRequested,
+        ],
+      SosState.cancelled => const <SosState>[
+          SosState.triggerRequested,
+          SosState.triggeredLocal,
+          SosState.sending,
+          SosState.sent,
+          SosState.cancelRequested,
+          SosState.cancelled,
+        ],
+      SosState.resolved => const <SosState>[
+          SosState.triggerRequested,
+          SosState.triggeredLocal,
+          SosState.sending,
+          SosState.sent,
+          SosState.resolved,
+        ],
+      SosState.failed => const <SosState>[
+          SosState.triggerRequested,
+          SosState.failed,
+        ],
+    };
+
+    for (final next in path) {
+      _stateMachine.transitionTo(next);
+    }
   }
 
   Future<void> _persistState() async {

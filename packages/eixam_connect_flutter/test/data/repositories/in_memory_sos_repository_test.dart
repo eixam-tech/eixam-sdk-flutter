@@ -1,6 +1,9 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
+import 'package:eixam_connect_flutter/src/data/datasources_local/shared_prefs_sdk_store.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../../support/fakes/memory_shared_prefs_sdk_store.dart';
 
 void main() {
   group('InMemorySosRepository', () {
@@ -21,7 +24,6 @@ void main() {
       expect(
         emitted,
         containsAllInOrder(<SosState>[
-          SosState.idle,
           SosState.triggerRequested,
           SosState.triggeredLocal,
           SosState.sending,
@@ -57,6 +59,62 @@ void main() {
 
       expect(cancelled.state, SosState.cancelled);
       expect(await repository.getSosState(), SosState.cancelled);
+    });
+
+    test('restores persisted SOS incident and state', () async {
+      final store = MemorySharedPrefsSdkStore()
+        ..stringValues[SharedPrefsSdkStore.sosStateKey] = SosState.sent.name
+        ..jsonValues[SharedPrefsSdkStore.sosIncidentKey] = <String, dynamic>{
+          'id': 'sos-42',
+          'state': SosState.sent.name,
+          'createdAt': DateTime.utc(2026, 1, 1, 12).toIso8601String(),
+          'triggerSource': 'button_ui',
+          'message': 'Need help',
+          'positionSnapshot': <String, dynamic>{
+            'latitude': 41.3874,
+            'longitude': 2.1686,
+            'source': DeliveryMode.mobile.name,
+            'timestamp': DateTime.utc(2026, 1, 1, 12).toIso8601String(),
+          },
+        };
+      final repository = InMemorySosRepository(localStore: store);
+
+      await repository.restoreState();
+
+      expect(await repository.getSosState(), SosState.sent);
+    });
+
+    test('persists cancellation state and keeps the active incident snapshot', () async {
+      final store = MemorySharedPrefsSdkStore();
+      final repository = InMemorySosRepository(localStore: store);
+
+      await repository.triggerSos(
+        message: 'Need help',
+        triggerSource: 'button_ui',
+      );
+      await repository.cancelSos(reason: 'Resolved');
+
+      expect(store.stringValues[SharedPrefsSdkStore.sosStateKey], SosState.cancelled.name);
+      expect(store.jsonValues[SharedPrefsSdkStore.sosIncidentKey], isNotNull);
+      expect(
+        store.jsonValues[SharedPrefsSdkStore.sosIncidentKey]?['state'],
+        SosState.cancelled.name,
+      );
+    });
+
+    test('rejects cancellation when no active SOS exists', () async {
+      final repository = InMemorySosRepository();
+
+      await expectLater(
+        repository.cancelSos(reason: 'Nothing to cancel'),
+        throwsA(
+          isA<SosException>().having(
+            (error) => error.code,
+            'code',
+            'E_SOS_CANCEL_NOT_ALLOWED',
+          ),
+        ),
+      );
     });
   });
 }
