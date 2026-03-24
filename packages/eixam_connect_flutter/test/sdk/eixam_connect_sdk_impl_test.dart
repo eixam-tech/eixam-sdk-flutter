@@ -117,6 +117,45 @@ void main() {
       expect(result.notifications, SdkPermissionStatus.granted);
     });
 
+    test('tracking facade delegates start and stop to the tracking repository', () async {
+      await sdk.startTracking();
+      await sdk.stopTracking();
+
+      expect(trackingRepository.startCallCount, 1);
+      expect(trackingRepository.stopCallCount, 1);
+    });
+
+    test('contacts facade delegates add, toggle, and remove flows', () async {
+      final contact = await sdk.addEmergencyContact(
+        name: 'Alice',
+        phone: '+34123456789',
+      );
+
+      expect(contact.name, 'Alice');
+      expect((await sdk.listEmergencyContacts()).single.id, contact.id);
+
+      await sdk.setEmergencyContactActive(contact.id, false);
+      expect((await sdk.listEmergencyContacts()).single.active, isFalse);
+
+      await sdk.removeEmergencyContact(contact.id);
+      expect(await sdk.listEmergencyContacts(), isEmpty);
+    });
+
+    test('device facade delegates refresh and exposes the latest status', () async {
+      final updated = buildDeviceStatus(
+        deviceId: 'device-2',
+        connected: true,
+        paired: true,
+        activated: true,
+        lifecycleState: DeviceLifecycleState.ready,
+      );
+      deviceRepository.emitStatus(updated);
+
+      expect((await sdk.getDeviceStatus()).deviceId, 'device-2');
+      expect((await sdk.refreshDeviceStatus()).deviceId, 'device-2');
+      expect(deviceRepository.refreshCallCount, 1);
+    });
+
     test('initialize binds realtime streams and caches the latest facade values', () async {
       realtimeClient.stateToEmitOnConnect = RealtimeConnectionState.connected;
       realtimeClient.eventToEmitOnConnect = RealtimeEvent(
@@ -173,6 +212,23 @@ void main() {
       expect((event as SOSTriggeredEvent).incidentId, incident.id);
     });
 
+    test('cancelSos emits a public SDK cancellation event', () async {
+      final contactIncident = SosIncident(
+        id: 'sos-1',
+        state: SosState.cancelled,
+        createdAt: DateTime.utc(2026, 1, 1),
+      );
+      sosRepository.currentIncident = contactIncident;
+      final eventFuture = takeNextFromStream(sdk.watchEvents());
+
+      final incident = await sdk.cancelSos(reason: 'Resolved');
+
+      final event = await eventFuture;
+      expect(incident.state, SosState.cancelled);
+      expect(event, isA<SOSCancelledEvent>());
+      expect((event as SOSCancelledEvent).incidentId, incident.id);
+    });
+
     test('scheduleDeathMan transitions the repository to monitoring and emits an event', () async {
       final eventFuture = takeNextFromStream(sdk.watchEvents());
 
@@ -185,6 +241,24 @@ void main() {
       expect(deathManRepository.updateCallCount, 1);
       expect(event, isA<DeathManScheduledEvent>());
       expect((event as DeathManScheduledEvent).planId, plan.id);
+    });
+
+    test('confirmDeathManCheckIn emits a status-changed event', () async {
+      deathManRepository.activePlan = DeathManPlan(
+        id: 'deathman-1',
+        expectedReturnAt: DateTime.utc(2026, 1, 2, 12),
+        gracePeriod: const Duration(minutes: 30),
+        checkInWindow: const Duration(minutes: 10),
+        autoTriggerSos: true,
+        status: DeathManStatus.monitoring,
+      );
+      final eventFuture = takeNextFromStream(sdk.watchEvents());
+
+      await sdk.confirmDeathManCheckIn('deathman-1');
+
+      final event = await eventFuture;
+      expect(event, isA<DeathManStatusChangedEvent>());
+      expect((event as DeathManStatusChangedEvent).status, DeathManStatus.confirmedSafe.name);
     });
   });
 }
