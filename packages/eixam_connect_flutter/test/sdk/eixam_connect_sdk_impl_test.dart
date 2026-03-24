@@ -1,0 +1,163 @@
+import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
+import 'package:eixam_connect_core/src/events/realtime_event.dart';
+import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
+import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
+import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import '../support/builders/device_status_builder.dart';
+import '../support/fakes/memory_shared_prefs_sdk_store.dart';
+import '../support/fakes/sdk_contract_fakes.dart';
+import '../support/stream_test_helpers.dart';
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  group('EixamConnectSdkImpl', () {
+    late FakeSosRepository sosRepository;
+    late FakeTrackingRepository trackingRepository;
+    late FakeContactsRepository contactsRepository;
+    late FakeDeviceRepository deviceRepository;
+    late FakeDeathManRepository deathManRepository;
+    late FakePermissionsRepository permissionsRepository;
+    late FakeNotificationsRepository notificationsRepository;
+    late FakeRealtimeClient realtimeClient;
+    late DeviceSosController deviceSosController;
+    late PreferredBleDeviceStore preferredDeviceStore;
+    late EixamConnectSdkImpl sdk;
+
+    setUp(() {
+      sosRepository = FakeSosRepository();
+      trackingRepository = FakeTrackingRepository(
+        currentPosition: TrackingPosition(
+          latitude: 41.38,
+          longitude: 2.17,
+          timestamp: DateTime.utc(2026, 1, 1, 10),
+          source: DeliveryMode.mobile,
+        ),
+      );
+      contactsRepository = FakeContactsRepository();
+      deviceRepository = FakeDeviceRepository(
+        initialStatus: buildDeviceStatus(
+          connected: false,
+          lifecycleState: DeviceLifecycleState.unpaired,
+          paired: false,
+          activated: false,
+        ),
+      );
+      deathManRepository = FakeDeathManRepository();
+      permissionsRepository = FakePermissionsRepository();
+      notificationsRepository = FakeNotificationsRepository();
+      realtimeClient = FakeRealtimeClient();
+      deviceSosController = DeviceSosController();
+      preferredDeviceStore = PreferredBleDeviceStore(
+        localStore: MemorySharedPrefsSdkStore(),
+      );
+      sdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: realtimeClient,
+        deviceSosController: deviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+    });
+
+    tearDown(() async {
+      await sdk.dispose();
+      await sosRepository.dispose();
+      await trackingRepository.dispose();
+      await contactsRepository.dispose();
+      await deviceRepository.dispose();
+      await deathManRepository.dispose();
+      await realtimeClient.dispose();
+    });
+
+    test('triggerSos attaches the current position when location access is granted', () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+      );
+
+      await sdk.triggerSos(
+        message: 'Need help',
+        triggerSource: 'button_ui',
+      );
+
+      expect(sosRepository.triggerCallCount, 1);
+      expect(sosRepository.lastMessage, 'Need help');
+      expect(sosRepository.lastTriggerSource, 'button_ui');
+      expect(sosRepository.lastPositionSnapshot, isNotNull);
+      expect(sosRepository.lastPositionSnapshot!.latitude, 41.38);
+    });
+
+    test('triggerSos continues without a position snapshot when permission lookup fails', () async {
+      permissionsRepository.getPermissionStateError = StateError('boom');
+
+      await sdk.triggerSos(message: 'Need help');
+
+      expect(sosRepository.triggerCallCount, 1);
+      expect(sosRepository.lastPositionSnapshot, isNull);
+    });
+
+    test('requestNotificationPermission asks both repositories and returns permission state', () async {
+      permissionsRepository.permissionState = const PermissionState(
+        notifications: SdkPermissionStatus.granted,
+      );
+
+      final result = await sdk.requestNotificationPermission();
+
+      expect(notificationsRepository.requestPermissionCallCount, 1);
+      expect(permissionsRepository.requestNotificationPermissionCallCount, 1);
+      expect(result.notifications, SdkPermissionStatus.granted);
+    });
+
+    test('initialize binds realtime streams and caches the latest facade values', () async {
+      realtimeClient.stateToEmitOnConnect = RealtimeConnectionState.connected;
+      realtimeClient.eventToEmitOnConnect = RealtimeEvent(
+        type: 'sos_ack',
+        timestamp: DateTime.utc(2026, 1, 1, 10),
+        payload: const <String, dynamic>{'incidentId': 'sos-1'},
+      );
+
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+      );
+
+      expect(realtimeClient.connectCallCount, 1);
+      expect(notificationsRepository.initializeCallCount, 1);
+      expect(
+        await sdk.getRealtimeConnectionState(),
+        RealtimeConnectionState.connected,
+      );
+      expect((await sdk.getLastRealtimeEvent())?.type, 'sos_ack');
+    });
+
+    test('watchRealtime streams expose values pushed after initialization', () async {
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+      );
+
+      final connectionFuture = takeNextFromStream(
+        sdk.watchRealtimeConnectionState(),
+      );
+      final eventFuture = takeNextFromStream(sdk.watchRealtimeEvents());
+
+      realtimeClient.emitConnectionState(RealtimeConnectionState.connected);
+      realtimeClient.emitEvent(
+        RealtimeEvent(
+          type: 'status_update',
+          timestamp: DateTime.utc(2026, 1, 1, 11),
+        ),
+      );
+
+      expect(await connectionFuture, RealtimeConnectionState.connected);
+      expect((await eventFuture).type, 'status_update');
+    });
+  });
+}
