@@ -5,6 +5,7 @@ import '../entities/ble_notification_navigation_request.dart';
 import '../entities/device_sos_status.dart';
 import '../entities/device_status.dart';
 import '../entities/emergency_contact.dart';
+import '../entities/guided_rescue_state.dart';
 import '../entities/permission_state.dart';
 import '../entities/sos_incident.dart';
 import '../entities/tracking_position.dart';
@@ -52,6 +53,19 @@ abstract class EixamConnectSdk {
     required String title,
     required String body,
   });
+
+  Future<GuidedRescueState> getGuidedRescueState();
+  Stream<GuidedRescueState> watchGuidedRescueState();
+  Future<GuidedRescueState> setGuidedRescueSession({
+    required int targetNodeId,
+    required int rescueNodeId,
+  });
+  Future<void> clearGuidedRescueSession();
+  Future<void> requestGuidedRescuePosition();
+  Future<void> acknowledgeGuidedRescueSos();
+  Future<void> enableGuidedRescueBuzzer();
+  Future<void> disableGuidedRescueBuzzer();
+  Future<void> requestGuidedRescueStatus();
 
   Future<void> startTracking();
   Future<void> stopTracking();

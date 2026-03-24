@@ -204,7 +204,8 @@ class GuidedRescueEntrySection extends StatelessWidget {
         children: [
           Text(viewState.summary),
           const SizedBox(height: 12),
-          InfoLine(label: 'SOS context', value: viewState.sosStateLabel),
+          InfoLine(label: 'Rescue session', value: viewState.sessionLabel),
+          InfoLine(label: 'Target state', value: viewState.targetStateLabel),
           InfoLine(label: 'Device context', value: viewState.deviceLabel),
           InfoLine(
             label: 'Last known position',

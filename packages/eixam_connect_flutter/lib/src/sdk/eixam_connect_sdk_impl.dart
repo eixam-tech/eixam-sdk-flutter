@@ -12,6 +12,7 @@ import '../device/ble_incoming_event.dart';
 import '../device/device_sos_controller.dart';
 import 'ble_auto_reconnect_coordinator.dart';
 import 'ble_sos_notification_payload.dart';
+import 'guided_rescue_runtime.dart';
 
 /// Main SDK orchestrator used by host apps.
 ///
@@ -30,6 +31,7 @@ class EixamConnectSdkImpl with WidgetsBindingObserver implements EixamConnectSdk
   final DeviceSosController deviceSosController;
   final Stream<BleIncomingEvent> bleIncomingEvents;
   final PreferredBleDeviceStore preferredBleDeviceStore;
+  final GuidedRescueRuntime? guidedRescueRuntime;
 
   final StreamController<EixamSdkEvent> _eventsController =
       StreamController.broadcast();
@@ -40,6 +42,8 @@ class EixamConnectSdkImpl with WidgetsBindingObserver implements EixamConnectSdk
 
   final StreamController<RealtimeEvent> _realtimeEventsController =
       StreamController<RealtimeEvent>.broadcast();
+  final StreamController<GuidedRescueState> _guidedRescueStateController =
+      StreamController<GuidedRescueState>.broadcast();
   final StreamController<BleNotificationNavigationRequest>
       _bleNotificationNavigationController =
       StreamController<BleNotificationNavigationRequest>.broadcast();
@@ -48,6 +52,7 @@ class EixamConnectSdkImpl with WidgetsBindingObserver implements EixamConnectSdk
   StreamSubscription<RealtimeEvent>? _realtimeEventsSub;
   StreamSubscription<DeviceStatus>? _deviceStatusSub;
   StreamSubscription<DeviceSosStatus>? _deviceSosSub;
+  StreamSubscription<GuidedRescueState>? _guidedRescueSub;
 
   EixamSdkConfig? _config;
   EixamSession? _session;
@@ -60,6 +65,7 @@ class EixamConnectSdkImpl with WidgetsBindingObserver implements EixamConnectSdk
   RealtimeEvent? _lastRealtimeEvent;
   DeviceStatus? _lastDeviceStatus;
   DeviceSosStatus _lastDeviceSosStatus = DeviceSosStatus.initial();
+  GuidedRescueState _guidedRescueState = const GuidedRescueState.unsupported();
   BleNotificationNavigationRequest? _pendingBleNotificationNavigationRequest;
   String? _activeDeviceSosCycleKey;
   String? _notifiedDeviceSosCycleKey;
@@ -82,6 +88,7 @@ class EixamConnectSdkImpl with WidgetsBindingObserver implements EixamConnectSdk
     required this.deviceSosController,
     required this.bleIncomingEvents,
     required this.preferredBleDeviceStore,
+    this.guidedRescueRuntime,
   }) {
     _bleAutoReconnectCoordinator = BleAutoReconnectCoordinator(
       deviceRepository: deviceRepository,
@@ -94,18 +101,36 @@ class EixamConnectSdkImpl with WidgetsBindingObserver implements EixamConnectSdk
     _config = config;
     _lastDeviceStatus = await deviceRepository.getDeviceStatus();
     _lastDeviceSosStatus = await deviceSosController.getStatus();
+    _guidedRescueState = guidedRescueRuntime == null
+        ? _fallbackGuidedRescueState()
+        : await guidedRescueRuntime!.getCurrentState();
     WidgetsBinding.instance.addObserver(this);
     await _bleAutoReconnectCoordinator.initialize(
       initialStatus: _lastDeviceStatus!,
       deviceStatusStream: deviceRepository.watchDeviceStatus(),
     );
     _bindDeviceStreams();
+    _bindGuidedRescueStreams();
     await notificationsRepository.initialize(
       onAction: _handleNotificationAction,
     );
     _bindRealtimeStreams();
     await realtimeClient.connect();
     await _bleAutoReconnectCoordinator.tryAutoConnectOnStartup();
+  }
+
+  void _bindGuidedRescueStreams() {
+    _guidedRescueSub?.cancel();
+
+    if (guidedRescueRuntime == null) {
+      _guidedRescueStateController.add(_guidedRescueState);
+      return;
+    }
+
+    _guidedRescueSub = guidedRescueRuntime!.watchState().listen((state) {
+      _guidedRescueState = state;
+      _guidedRescueStateController.add(state);
+    });
   }
 
   void _bindDeviceStreams() {
@@ -319,6 +344,72 @@ class EixamConnectSdkImpl with WidgetsBindingObserver implements EixamConnectSdk
       title: title,
       body: body,
     );
+  }
+
+  @override
+  Future<GuidedRescueState> getGuidedRescueState() async => _guidedRescueState;
+
+  @override
+  Stream<GuidedRescueState> watchGuidedRescueState() =>
+      _guidedRescueStateController.stream;
+
+  @override
+  Future<GuidedRescueState> setGuidedRescueSession({
+    required int targetNodeId,
+    required int rescueNodeId,
+  }) async {
+    if (guidedRescueRuntime == null) {
+      _guidedRescueState = _fallbackGuidedRescueState().copyWith(
+        targetNodeId: targetNodeId,
+        rescueNodeId: rescueNodeId,
+        lastUpdatedAt: DateTime.now(),
+        clearLastError: true,
+      );
+      _guidedRescueStateController.add(_guidedRescueState);
+      return _guidedRescueState;
+    }
+
+    _guidedRescueState = await guidedRescueRuntime!.setSession(
+      targetNodeId: targetNodeId,
+      rescueNodeId: rescueNodeId,
+    );
+    _guidedRescueStateController.add(_guidedRescueState);
+    return _guidedRescueState;
+  }
+
+  @override
+  Future<void> clearGuidedRescueSession() async {
+    if (guidedRescueRuntime == null) {
+      _guidedRescueState = _fallbackGuidedRescueState();
+      _guidedRescueStateController.add(_guidedRescueState);
+      return;
+    }
+    await guidedRescueRuntime!.clearSession();
+  }
+
+  @override
+  Future<void> requestGuidedRescuePosition() {
+    return _runGuidedRescueCommand(GuidedRescueAction.requestPosition);
+  }
+
+  @override
+  Future<void> acknowledgeGuidedRescueSos() {
+    return _runGuidedRescueCommand(GuidedRescueAction.acknowledgeSos);
+  }
+
+  @override
+  Future<void> enableGuidedRescueBuzzer() {
+    return _runGuidedRescueCommand(GuidedRescueAction.buzzerOn);
+  }
+
+  @override
+  Future<void> disableGuidedRescueBuzzer() {
+    return _runGuidedRescueCommand(GuidedRescueAction.buzzerOff);
+  }
+
+  @override
+  Future<void> requestGuidedRescueStatus() {
+    return _runGuidedRescueCommand(GuidedRescueAction.requestStatus);
   }
 
   Future<void> _handleDeviceSosStatus(DeviceSosStatus status) async {
@@ -961,6 +1052,47 @@ class EixamConnectSdkImpl with WidgetsBindingObserver implements EixamConnectSdk
     _deathManOverdueNotified = false;
   }
 
+  Future<void> _runGuidedRescueCommand(GuidedRescueAction action) async {
+    final state = _guidedRescueState;
+    if (!state.hasSession) {
+      throw const RescueException.missingSession();
+    }
+
+    if (guidedRescueRuntime == null) {
+      _guidedRescueState = state.copyWith(
+        lastError: const RescueException.notImplemented().message,
+        lastUpdatedAt: DateTime.now(),
+      );
+      _guidedRescueStateController.add(_guidedRescueState);
+      throw const RescueException.notImplemented();
+    }
+
+    switch (action) {
+      case GuidedRescueAction.requestPosition:
+        await guidedRescueRuntime!.requestPosition();
+        break;
+      case GuidedRescueAction.acknowledgeSos:
+        await guidedRescueRuntime!.acknowledgeSos();
+        break;
+      case GuidedRescueAction.buzzerOn:
+        await guidedRescueRuntime!.enableBuzzer();
+        break;
+      case GuidedRescueAction.buzzerOff:
+        await guidedRescueRuntime!.disableBuzzer();
+        break;
+      case GuidedRescueAction.requestStatus:
+        await guidedRescueRuntime!.requestStatus();
+        break;
+    }
+  }
+
+  GuidedRescueState _fallbackGuidedRescueState() {
+    return GuidedRescueState.unsupported(
+      unavailableReason:
+          'Guided Rescue Phase 1 contract is exposed by the SDK, but the runtime orchestration is still pending.',
+    );
+  }
+
   Future<void> dispose() async {
     WidgetsBinding.instance.removeObserver(this);
     _deathManTimer?.cancel();
@@ -969,10 +1101,12 @@ class EixamConnectSdkImpl with WidgetsBindingObserver implements EixamConnectSdk
     await _realtimeEventsSub?.cancel();
     await _deviceStatusSub?.cancel();
     await _deviceSosSub?.cancel();
+    await _guidedRescueSub?.cancel();
     await deviceSosController.dispose();
     await realtimeClient.disconnect();
     await _realtimeConnectionStateController.close();
     await _realtimeEventsController.close();
+    await _guidedRescueStateController.close();
     await _bleNotificationNavigationController.close();
     await _eventsController.close();
   }

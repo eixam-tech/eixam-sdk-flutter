@@ -117,6 +117,30 @@ void main() {
       expect(result.notifications, SdkPermissionStatus.granted);
     });
 
+    test('guided rescue exposes an unsupported state until a runtime is wired in', () async {
+      final initial = await sdk.getGuidedRescueState();
+      final configured = await sdk.setGuidedRescueSession(
+        targetNodeId: 0x1001,
+        rescueNodeId: 0x2002,
+      );
+
+      expect(initial.hasRuntimeSupport, isFalse);
+      expect(configured.targetNodeId, 0x1001);
+      expect(configured.rescueNodeId, 0x2002);
+      expect(configured.hasSession, isTrue);
+
+      await expectLater(
+        sdk.requestGuidedRescueStatus(),
+        throwsA(
+          isA<RescueException>().having(
+            (error) => error.code,
+            'code',
+            'E_RESCUE_NOT_IMPLEMENTED',
+          ),
+        ),
+      );
+    });
+
     test('tracking facade delegates start and stop to the tracking repository', () async {
       await sdk.startTracking();
       await sdk.stopTracking();

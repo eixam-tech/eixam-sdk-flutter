@@ -1,52 +1,63 @@
-# EIXAM Connect Starter
+## Architecture principles
 
-Starter workspace for the EIXAM Connect SDK built with Dart and Flutter.
+EIXAM is being built as an **SDK-first safety platform** in Flutter/Dart.
 
-## Workspace structure
+This means:
 
-- `packages/eixam_connect_core`: domain contracts, entities, state machines and use cases
-- `packages/eixam_connect_flutter`: Flutter implementations, repositories, controllers and factories
-- `packages/eixam_connect_ui`: reusable UI components and default SDK texts
-- `apps/eixam_control_app`: reference host app used to validate the SDK
+- the SDK is the core product layer
+- the host app must remain thin
+- the reference/control app is a validation host, not the final product UX
+- critical logic should live in the SDK, not in app widgets
 
-## Current capabilities
+The current validated architecture is:
 
-- SOS flow with state machine and location snapshot best effort
-- Tracking with permissions, stale detection and observable controller
-- Emergency contacts with local persistence
-- Death Man Protocol with local notifications and optional SOS escalation
-- Local state persistence for SOS, tracking, contacts and Death Man
+- **EIXAM SOS Core**
+- **EIXAM Connect SDK**
+- **EIXAM Control App** (reference/demo host)
+- **Safety Dashboard** (future operational layer)
 
-## Native integration
+## Key project documentation
 
-Before running the host app, review:
+Start here for architecture and project-level guidance:
 
-- `packages/eixam_connect_flutter/NATIVE_PERMISSIONS_CHECKLIST.md`
+- `docs/sdk/SDK_ARCHITECTURE.md`
+- `docs/sdk/SDK_DECISIONS.md`
+- `docs/sdk/SDK_QUALITY_GATES.md`
+- `docs/sdk/SDK_TESTING_STRATEGY.md`
 
-That file documents:
-- Android Manifest requirements
-- iOS `Info.plist` requirements
-- notification setup notes
-- background tracking notes
-- explicit confirmation that `shared_preferences` does **not** require extra native permissions
+APP/BLE integration source-of-truth docs:
 
-## Recommended next steps
+- `docs/app_ble/APP_HANDOFF_FINAL.md`
+- `docs/app_ble/BLE_APP_PROTOCOL.md`
+- `docs/app_ble/BLE_BACKLOG_SYNC_PROTOCOL.md`
+- `docs/app_ble/GUIDED_RESCUE_PHASE1.md`
 
-1. Wire real backend repositories for SOS, contacts and devices
-2. Add websocket/realtime support
-3. Add stronger persistence and encryption where needed
-4. Expand the UI kit and move the reference app toward a real control app
+Additional project context:
 
+- `docs/context/TEAM_HANDOFF_INDEX.md`
+- `docs/context/ROADMAP.md`
 
-## Device runtime abstraction
+## Reference app scope
 
-The starter now includes a `DeviceRuntimeProvider` abstraction. This keeps pairing, activation and refresh logic behind a replaceable boundary so a future BLE or backend runtime can be plugged in without changing the public SDK API.
+`apps/eixam_control_app` is the current reference host app used to:
 
+- bootstrap the SDK
+- validate SDK module integration
+- test technical integration flows
+- support internal operational validation
 
-## Bluetooth permission support
+It is not the final product UX. It is primarily a validation host and technical playground.
 
-The SDK now exposes Bluetooth permission state and a runtime `requestBluetoothPermission()` API. Native Bluetooth declarations are still required in the host app manifest / plist. See `packages/eixam_connect_flutter/NATIVE_PERMISSIONS_CHECKLIST.md`.
+## Developer quality checks
 
+Before merging relevant changes, run:
 
-## BLE runtime scaffold
-- See `packages/eixam_connect_flutter/BLE_PROVIDER_INTEGRATION.md` for the current BLE-oriented runtime abstraction.
+- `dart format --set-exit-if-changed .`
+- `flutter analyze`
+- `flutter test`
+
+For architecture and quality expectations, see:
+
+- `docs/sdk/SDK_DECISIONS.md`
+- `docs/sdk/SDK_QUALITY_GATES.md`
+- `docs/sdk/SDK_TESTING_STRATEGY.md`

@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:eixam_control_app/main.dart';
+import 'package:eixam_control_app/src/bootstrap/bootstrap_app.dart';
 
 void main() {
   testWidgets('Bootstrap screen renders', (WidgetTester tester) async {

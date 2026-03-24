@@ -15,6 +15,7 @@ export 'src/sdk/death_man_controller.dart';
 export 'src/sdk/demo_sdk_factory.dart';
 export 'src/sdk/device_debug_controller.dart';
 export 'src/sdk/eixam_connect_sdk_impl.dart';
+export 'src/sdk/guided_rescue_runtime.dart';
 export 'src/sdk/device_view_state.dart';
 export 'src/sdk/rescue_view_state.dart';
 export 'src/sdk/sos_controller.dart';

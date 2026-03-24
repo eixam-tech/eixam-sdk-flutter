@@ -42,7 +42,9 @@ class GuidedRescuePhase1Screen extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                InfoLine(label: 'SOS state', value: rescueViewState.sosStateLabel),
+                InfoLine(label: 'SOS state', value: sosState.name),
+                InfoLine(label: 'Rescue session', value: rescueViewState.sessionLabel),
+                InfoLine(label: 'Target state', value: rescueViewState.targetStateLabel),
                 InfoLine(label: 'Target device', value: rescueViewState.deviceLabel),
                 InfoLine(
                   label: 'Last known position',

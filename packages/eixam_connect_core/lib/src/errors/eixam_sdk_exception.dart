@@ -47,3 +47,19 @@ class ContactsException extends EixamSdkException {
 class DeathManException extends EixamSdkException {
   const DeathManException(super.code, super.message);
 }
+
+class RescueException extends EixamSdkException {
+  const RescueException(super.code, super.message);
+
+  const RescueException.notImplemented()
+      : this(
+          'E_RESCUE_NOT_IMPLEMENTED',
+          'Guided Rescue Phase 1 is not implemented in the current SDK runtime.',
+        );
+
+  const RescueException.missingSession()
+      : this(
+          'E_RESCUE_SESSION_REQUIRED',
+          'A guided rescue session must be configured before issuing rescue commands.',
+        );
+}

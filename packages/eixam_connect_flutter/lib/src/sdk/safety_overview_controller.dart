@@ -20,6 +20,7 @@ class SafetyOverviewController extends ChangeNotifier {
   SosState? sosState;
   SosIncident? activeIncident;
   DeviceStatus? deviceStatus;
+  GuidedRescueState? guidedRescueState;
   DeathManPlan? activeDeathManPlan;
   List<EmergencyContact> contacts = const <EmergencyContact>[];
   RealtimeConnectionState? realtimeConnectionState;
@@ -38,14 +39,16 @@ class SafetyOverviewController extends ChangeNotifier {
   StreamSubscription<TrackingState>? _trackingStateSub;
   StreamSubscription<SosState>? _sosStateSub;
   StreamSubscription<DeviceStatus>? _deviceStatusSub;
+  StreamSubscription<GuidedRescueState>? _guidedRescueSub;
   StreamSubscription<DeathManPlan>? _deathManSub;
   StreamSubscription<List<EmergencyContact>>? _contactsSub;
   StreamSubscription<RealtimeConnectionState>? _realtimeConnectionSub;
   StreamSubscription<RealtimeEvent>? _realtimeEventsSub;
 
   DeviceViewState get deviceViewState => DeviceViewState.fromStatus(deviceStatus);
-  RescueViewState get rescueViewState => RescueViewState.fromAvailableState(
-        sosState: sosState,
+  RescueViewState get rescueViewState => RescueViewState.fromSdkState(
+        rescueState:
+            guidedRescueState ?? const GuidedRescueState.unsupported(),
         deviceStatus: deviceStatus,
         lastPosition: lastPosition,
       );
@@ -90,6 +93,14 @@ class SafetyOverviewController extends ChangeNotifier {
     _deviceStatusSub = sdk.watchDeviceStatus().listen(
       (status) {
         deviceStatus = status;
+        notifyListeners();
+      },
+      onError: _handleStreamError,
+    );
+
+    _guidedRescueSub = sdk.watchGuidedRescueState().listen(
+      (state) {
+        guidedRescueState = state;
         notifyListeners();
       },
       onError: _handleStreamError,
@@ -140,6 +151,7 @@ class SafetyOverviewController extends ChangeNotifier {
       lastPosition = await sdk.getCurrentPosition();
       sosState = await sdk.getSosState();
       deviceStatus = await sdk.getDeviceStatus();
+      guidedRescueState = await sdk.getGuidedRescueState();
       activeDeathManPlan = await sdk.getActiveDeathManPlan();
       contacts = await sdk.listEmergencyContacts();
       realtimeConnectionState = await sdk.getRealtimeConnectionState();
@@ -346,6 +358,7 @@ class SafetyOverviewController extends ChangeNotifier {
     _trackingStateSub?.cancel();
     _sosStateSub?.cancel();
     _deviceStatusSub?.cancel();
+    _guidedRescueSub?.cancel();
     _deathManSub?.cancel();
     _contactsSub?.cancel();
     _realtimeConnectionSub?.cancel();

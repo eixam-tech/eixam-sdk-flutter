@@ -4,7 +4,8 @@ class RescueViewState {
   const RescueViewState({
     required this.hasSdkSupport,
     required this.summary,
-    required this.sosStateLabel,
+    required this.sessionLabel,
+    required this.targetStateLabel,
     required this.deviceLabel,
     required this.lastKnownPositionLabel,
     required this.availabilityNote,
@@ -16,40 +17,52 @@ class RescueViewState {
     this.canRequestStatus = false,
   });
 
-  factory RescueViewState.fromAvailableState({
-    required SosState? sosState,
+  factory RescueViewState.fromSdkState({
+    required GuidedRescueState rescueState,
     required DeviceStatus? deviceStatus,
     required TrackingPosition? lastPosition,
   }) {
-    final positionLabel = lastPosition == null
+    final snapshot = rescueState.lastStatusSnapshot;
+    final effectivePosition =
+        rescueState.lastKnownTargetPosition ?? lastPosition;
+    final positionLabel = effectivePosition == null
         ? 'No tracked position available yet'
-        : '${lastPosition.latitude}, ${lastPosition.longitude}';
+        : '${effectivePosition.latitude}, ${effectivePosition.longitude}';
+    final targetStateLabel = snapshot?.targetState.name ?? 'unknown';
+    final sessionLabel = rescueState.hasSession
+        ? '${_formatNodeId(rescueState.targetNodeId)} -> ${_formatNodeId(rescueState.rescueNodeId)}'
+        : 'No rescue session configured';
 
     return RescueViewState(
-      hasSdkSupport: false,
-      summary:
-          'Guided Rescue Phase 1 is prepared as an operational validation surface, but the rescue command/state contract is not yet exposed by the public SDK.',
-      sosStateLabel: sosState?.name ?? 'unknown',
+      hasSdkSupport: rescueState.hasRuntimeSupport,
+      summary: rescueState.hasRuntimeSupport
+          ? 'Guided Rescue Phase 1 is available through the SDK contract.'
+          : 'Guided Rescue Phase 1 now has an SDK contract, but runtime orchestration is still pending.',
+      sessionLabel: sessionLabel,
+      targetStateLabel: targetStateLabel,
       deviceLabel:
           deviceStatus?.deviceAlias ?? deviceStatus?.deviceId ?? 'No device selected',
       lastKnownPositionLabel: positionLabel,
-      availabilityNote:
-          'Waiting for SDK APIs for rescue commands, status responses, and presentation-ready rescue state.',
+      availabilityNote: rescueState.unavailableReason ??
+          'Waiting for runtime support to execute rescue commands.',
       missingSdkApis: const <String>[
-        'sendRescueRequestPosition(targetNodeId, rescueNodeId)',
-        'sendRescueAcknowledgeSos(targetNodeId, rescueNodeId)',
-        'sendRescueBuzzerOn(targetNodeId, rescueNodeId)',
-        'sendRescueBuzzerOff(targetNodeId, rescueNodeId)',
-        'requestRescueStatus(targetNodeId, rescueNodeId)',
-        'watchRescueViewState() / getRescueViewState()',
-        'Structured STATUS_RESP model for Guided Rescue Phase 1',
+        'BLE/runtime implementation for Rescue port 261 command delivery',
+        'Structured STATUS_RESP decoder feeding GuidedRescueStatusSnapshot',
+        'Backend/app orchestration for rescue session selection and lifecycle',
       ],
+      canRequestPosition: rescueState.canRun(GuidedRescueAction.requestPosition),
+      canAcknowledgeSos:
+          rescueState.canRun(GuidedRescueAction.acknowledgeSos),
+      canEnableBuzzer: rescueState.canRun(GuidedRescueAction.buzzerOn),
+      canDisableBuzzer: rescueState.canRun(GuidedRescueAction.buzzerOff),
+      canRequestStatus: rescueState.canRun(GuidedRescueAction.requestStatus),
     );
   }
 
   final bool hasSdkSupport;
   final String summary;
-  final String sosStateLabel;
+  final String sessionLabel;
+  final String targetStateLabel;
   final String deviceLabel;
   final String lastKnownPositionLabel;
   final String availabilityNote;
@@ -59,4 +72,11 @@ class RescueViewState {
   final bool canEnableBuzzer;
   final bool canDisableBuzzer;
   final bool canRequestStatus;
+
+  static String _formatNodeId(int? nodeId) {
+    if (nodeId == null) {
+      return '-';
+    }
+    return '0x${(nodeId & 0xFFFF).toRadixString(16).padLeft(4, '0')}';
+  }
 }
