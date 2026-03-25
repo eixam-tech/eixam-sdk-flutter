@@ -1,3 +1,4 @@
+import 'package:async/async.dart';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
 import 'package:eixam_connect_core/src/events/realtime_event.dart';
@@ -244,9 +245,11 @@ void main() {
         const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
       );
 
-      final connectionStatesFuture =
-          sdk.watchRealtimeConnectionState().take(2).toList();
+      final connectionQueue = StreamQueue<RealtimeConnectionState>(
+          sdk.watchRealtimeConnectionState());
       final eventFuture = takeNextFromStream(sdk.watchRealtimeEvents());
+
+      expect(await connectionQueue.next, RealtimeConnectionState.disconnected);
 
       realtimeClient.emitConnectionState(RealtimeConnectionState.connected);
       realtimeClient.emitEvent(
@@ -256,14 +259,9 @@ void main() {
         ),
       );
 
-      expect(
-        await connectionStatesFuture,
-        <RealtimeConnectionState>[
-          RealtimeConnectionState.disconnected,
-          RealtimeConnectionState.connected,
-        ],
-      );
+      expect(await connectionQueue.next, RealtimeConnectionState.connected);
       expect((await eventFuture).type, 'status_update');
+      await connectionQueue.cancel();
     });
 
     test('watchRealtimeConnectionState replays the cached connection state',
@@ -321,7 +319,7 @@ void main() {
       final eventFuture = takeNextFromStream(sdk.watchEvents());
 
       final plan = await sdk.scheduleDeathMan(
-        expectedReturnAt: DateTime.utc(2026, 1, 2, 12),
+        expectedReturnAt: DateTime.now().add(const Duration(hours: 2)),
       );
 
       final event = await eventFuture;
