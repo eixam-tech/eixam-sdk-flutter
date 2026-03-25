@@ -396,6 +396,46 @@ class SafetyOverviewController extends ChangeNotifier {
     );
   }
 
+  Future<void> configureGuidedRescueSessionForValidation({
+    required String targetNodeIdText,
+    required String rescueNodeIdText,
+  }) async {
+    await _runFlag(
+      (value) => loadingGuidedRescue = value,
+      () async {
+        final targetNodeId = _parseGuidedRescueNodeId(
+          targetNodeIdText,
+          fieldLabel: 'target',
+        );
+        final rescueNodeId = _parseGuidedRescueNodeId(
+          rescueNodeIdText,
+          fieldLabel: 'rescue',
+        );
+        guidedRescueState = await sdk.setGuidedRescueSession(
+          targetNodeId: targetNodeId,
+          rescueNodeId: rescueNodeId,
+        );
+      },
+    );
+  }
+
+  int _parseGuidedRescueNodeId(
+    String rawValue, {
+    required String fieldLabel,
+  }) {
+    final value = rawValue.trim();
+    final parsed = value.toLowerCase().startsWith('0x')
+        ? int.tryParse(value.substring(2), radix: 16)
+        : int.tryParse(value);
+    if (parsed == null || parsed < 0 || parsed > 0xFFFF) {
+      throw RescueException(
+        'E_RESCUE_INVALID_NODE_ID',
+        'Enter a valid $fieldLabel node id in decimal or 0x hex format.',
+      );
+    }
+    return parsed;
+  }
+
   Future<void> _runFlag(
     void Function(bool value) setFlag,
     Future<void> Function() action,

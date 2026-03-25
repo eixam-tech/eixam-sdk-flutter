@@ -6,7 +6,7 @@ import 'package:flutter/material.dart';
 import '../../shared/presentation/info_line.dart';
 import '../../shared/presentation/section_card.dart';
 
-class GuidedRescuePhase1Screen extends StatelessWidget {
+class GuidedRescuePhase1Screen extends StatefulWidget {
   const GuidedRescuePhase1Screen({
     super.key,
     required this.controller,
@@ -15,14 +15,42 @@ class GuidedRescuePhase1Screen extends StatelessWidget {
   final SafetyOverviewController controller;
 
   @override
+  State<GuidedRescuePhase1Screen> createState() =>
+      _GuidedRescuePhase1ScreenState();
+}
+
+class _GuidedRescuePhase1ScreenState extends State<GuidedRescuePhase1Screen> {
+  late final TextEditingController _targetNodeController;
+  late final TextEditingController _rescueNodeController;
+
+  @override
+  void initState() {
+    super.initState();
+    final initialState = widget.controller.guidedRescueState;
+    _targetNodeController = TextEditingController(
+      text: _initialNodeIdValue(initialState?.targetNodeId, fallback: '0x1001'),
+    );
+    _rescueNodeController = TextEditingController(
+      text: _initialNodeIdValue(initialState?.rescueNodeId, fallback: '0x2002'),
+    );
+  }
+
+  @override
+  void dispose() {
+    _targetNodeController.dispose();
+    _rescueNodeController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: controller,
+      animation: widget.controller,
       builder: (context, _) {
-        final rescueViewState = controller.rescueViewState;
-        final rescueState = controller.guidedRescueState ??
+        final rescueViewState = widget.controller.rescueViewState;
+        final rescueState = widget.controller.guidedRescueState ??
             const GuidedRescueState.unsupported();
-        final sosState = controller.sosState ?? SosState.idle;
+        final sosState = widget.controller.sosState ?? SosState.idle;
         final snapshot = rescueState.lastStatusSnapshot;
 
         return Scaffold(
@@ -40,10 +68,61 @@ class GuidedRescuePhase1Screen extends StatelessWidget {
                     ),
                     const SizedBox(height: 12),
                     SosStatusBanner(state: sosState),
-                    if (controller.loadingGuidedRescue) ...[
+                    if (widget.controller.loadingGuidedRescue) ...[
                       const SizedBox(height: 12),
                       const LinearProgressIndicator(),
                     ],
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              SectionCard(
+                title: 'Validation Session Bootstrap',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Use an explicit rescue session bootstrap for internal validation. The app only collects target and rescue node ids, then asks the SDK to configure the session.',
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _targetNodeController,
+                      decoration: const InputDecoration(
+                        labelText: 'Target node id',
+                        hintText: '0x1001',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _rescueNodeController,
+                      decoration: const InputDecoration(
+                        labelText: 'Rescue node id',
+                        hintText: '0x2002',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        FilledButton(
+                          onPressed: widget.controller.loadingGuidedRescue
+                              ? null
+                              : _configureSession,
+                          child: const Text('Configure session'),
+                        ),
+                        OutlinedButton(
+                          onPressed: _resolveAction(
+                            enabled: rescueState.hasSession,
+                            busy: widget.controller.loadingGuidedRescue,
+                            action: widget.controller.clearGuidedRescueSession,
+                          ),
+                          child: const Text('Clear session'),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
               ),
@@ -177,8 +256,8 @@ class GuidedRescuePhase1Screen extends StatelessWidget {
                           onPressed: _resolveAction(
                             enabled: rescueState
                                 .canRun(GuidedRescueAction.requestStatus),
-                            busy: controller.loadingGuidedRescue,
-                            action: controller.requestGuidedRescueStatus,
+                            busy: widget.controller.loadingGuidedRescue,
+                            action: widget.controller.requestGuidedRescueStatus,
                           ),
                           child: const Text('Request status'),
                         ),
@@ -186,8 +265,9 @@ class GuidedRescuePhase1Screen extends StatelessWidget {
                           onPressed: _resolveAction(
                             enabled: rescueState
                                 .canRun(GuidedRescueAction.requestPosition),
-                            busy: controller.loadingGuidedRescue,
-                            action: controller.requestGuidedRescuePosition,
+                            busy: widget.controller.loadingGuidedRescue,
+                            action:
+                                widget.controller.requestGuidedRescuePosition,
                           ),
                           child: const Text('Request position'),
                         ),
@@ -195,8 +275,9 @@ class GuidedRescuePhase1Screen extends StatelessWidget {
                           onPressed: _resolveAction(
                             enabled: rescueState
                                 .canRun(GuidedRescueAction.acknowledgeSos),
-                            busy: controller.loadingGuidedRescue,
-                            action: controller.acknowledgeGuidedRescueSos,
+                            busy: widget.controller.loadingGuidedRescue,
+                            action:
+                                widget.controller.acknowledgeGuidedRescueSos,
                           ),
                           child: const Text('Acknowledge SOS'),
                         ),
@@ -204,8 +285,8 @@ class GuidedRescuePhase1Screen extends StatelessWidget {
                           onPressed: _resolveAction(
                             enabled:
                                 rescueState.canRun(GuidedRescueAction.buzzerOn),
-                            busy: controller.loadingGuidedRescue,
-                            action: controller.enableGuidedRescueBuzzer,
+                            busy: widget.controller.loadingGuidedRescue,
+                            action: widget.controller.enableGuidedRescueBuzzer,
                           ),
                           child: const Text('Buzzer on'),
                         ),
@@ -213,18 +294,10 @@ class GuidedRescuePhase1Screen extends StatelessWidget {
                           onPressed: _resolveAction(
                             enabled: rescueState
                                 .canRun(GuidedRescueAction.buzzerOff),
-                            busy: controller.loadingGuidedRescue,
-                            action: controller.disableGuidedRescueBuzzer,
+                            busy: widget.controller.loadingGuidedRescue,
+                            action: widget.controller.disableGuidedRescueBuzzer,
                           ),
                           child: const Text('Buzzer off'),
-                        ),
-                        OutlinedButton(
-                          onPressed: _resolveAction(
-                            enabled: rescueState.hasSession,
-                            busy: controller.loadingGuidedRescue,
-                            action: controller.clearGuidedRescueSession,
-                          ),
-                          child: const Text('Clear session'),
                         ),
                       ],
                     ),
@@ -233,12 +306,14 @@ class GuidedRescuePhase1Screen extends StatelessWidget {
                     if (rescueState.lastError != null) ...[
                       const SizedBox(height: 8),
                       SelectableText(
-                          'SDK rescue error: ${rescueState.lastError}'),
+                        'SDK rescue error: ${rescueState.lastError}',
+                      ),
                     ],
-                    if (controller.lastError != null) ...[
+                    if (widget.controller.lastError != null) ...[
                       const SizedBox(height: 8),
                       SelectableText(
-                          'Last controller error: ${controller.lastError}'),
+                        'Last controller error: ${widget.controller.lastError}',
+                      ),
                     ],
                   ],
                 ),
@@ -269,7 +344,7 @@ class GuidedRescuePhase1Screen extends StatelessWidget {
                     ),
                     SizedBox(height: 8),
                     Text(
-                      'Belongs in app: route into the rescue screen, render GuidedRescueState, and trigger SDK methods for validation.',
+                      'Belongs in app: route into the rescue screen, collect validation inputs, render GuidedRescueState, and trigger SDK methods.',
                     ),
                   ],
                 ),
@@ -278,6 +353,13 @@ class GuidedRescuePhase1Screen extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+
+  Future<void> _configureSession() {
+    return widget.controller.configureGuidedRescueSessionForValidation(
+      targetNodeIdText: _targetNodeController.text,
+      rescueNodeIdText: _rescueNodeController.text,
     );
   }
 
@@ -292,6 +374,10 @@ class GuidedRescuePhase1Screen extends StatelessWidget {
     return () {
       action();
     };
+  }
+
+  String _initialNodeIdValue(int? nodeId, {required String fallback}) {
+    return nodeId == null ? fallback : _formatNodeId(nodeId);
   }
 
   String _formatNodeId(int? nodeId) {
