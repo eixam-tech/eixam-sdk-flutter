@@ -207,6 +207,12 @@ class GuidedRescueEntrySection extends StatelessWidget {
         children: [
           Text(viewState.summary),
           const SizedBox(height: 12),
+          InfoLine(
+            label: 'Runtime readiness',
+            value: viewState.hasSdkSupport
+                ? viewState.availabilityNote
+                : 'SDK rescue runtime unavailable',
+          ),
           InfoLine(label: 'Rescue session', value: viewState.sessionLabel),
           InfoLine(label: 'Target state', value: viewState.targetStateLabel),
           InfoLine(label: 'Device context', value: viewState.deviceLabel),

@@ -112,10 +112,7 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
   void _openGuidedRescue() {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => GuidedRescuePhase1Screen(
-          rescueViewState: _controller.rescueViewState,
-          sosState: _controller.sosState ?? SosState.idle,
-        ),
+        builder: (_) => GuidedRescuePhase1Screen(controller: _controller),
       ),
     );
   }

@@ -33,6 +33,7 @@ class SafetyOverviewController extends ChangeNotifier {
   bool loadingNotifications = false;
   bool loadingDeathMan = false;
   bool loadingContacts = false;
+  bool loadingGuidedRescue = false;
 
   bool _initialized = false;
   StreamSubscription<TrackingPosition>? _positionSub;
@@ -331,6 +332,66 @@ class SafetyOverviewController extends ChangeNotifier {
       () async {
         await sdk.removeEmergencyContact(contacts.first.id);
         contacts = await sdk.listEmergencyContacts();
+      },
+    );
+  }
+
+  Future<void> requestGuidedRescueStatus() async {
+    await _runFlag(
+      (value) => loadingGuidedRescue = value,
+      () async {
+        await sdk.requestGuidedRescueStatus();
+        guidedRescueState = await sdk.getGuidedRescueState();
+      },
+    );
+  }
+
+  Future<void> requestGuidedRescuePosition() async {
+    await _runFlag(
+      (value) => loadingGuidedRescue = value,
+      () async {
+        await sdk.requestGuidedRescuePosition();
+        guidedRescueState = await sdk.getGuidedRescueState();
+      },
+    );
+  }
+
+  Future<void> acknowledgeGuidedRescueSos() async {
+    await _runFlag(
+      (value) => loadingGuidedRescue = value,
+      () async {
+        await sdk.acknowledgeGuidedRescueSos();
+        guidedRescueState = await sdk.getGuidedRescueState();
+      },
+    );
+  }
+
+  Future<void> enableGuidedRescueBuzzer() async {
+    await _runFlag(
+      (value) => loadingGuidedRescue = value,
+      () async {
+        await sdk.enableGuidedRescueBuzzer();
+        guidedRescueState = await sdk.getGuidedRescueState();
+      },
+    );
+  }
+
+  Future<void> disableGuidedRescueBuzzer() async {
+    await _runFlag(
+      (value) => loadingGuidedRescue = value,
+      () async {
+        await sdk.disableGuidedRescueBuzzer();
+        guidedRescueState = await sdk.getGuidedRescueState();
+      },
+    );
+  }
+
+  Future<void> clearGuidedRescueSession() async {
+    await _runFlag(
+      (value) => loadingGuidedRescue = value,
+      () async {
+        await sdk.clearGuidedRescueSession();
+        guidedRescueState = await sdk.getGuidedRescueState();
       },
     );
   }
