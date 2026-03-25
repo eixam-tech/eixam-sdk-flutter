@@ -4,6 +4,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
 import 'package:eixam_connect_core/src/events/realtime_event.dart';
 import 'package:eixam_connect_core/src/interfaces/realtime_client.dart';
+import 'package:eixam_connect_flutter/src/sdk/guided_rescue_runtime.dart';
 
 class FakeSosRepository implements SosRepository {
   SosIncident currentIncident = SosIncident(
@@ -423,5 +424,101 @@ class FakeRealtimeClient implements RealtimeClient {
   Future<void> dispose() async {
     await _connectionController.close();
     await _eventsController.close();
+  }
+}
+
+class FakeGuidedRescueRuntime implements GuidedRescueRuntime {
+  FakeGuidedRescueRuntime({
+    GuidedRescueState? initialState,
+  }) : _state = initialState ??
+            const GuidedRescueState(
+              hasRuntimeSupport: true,
+              availableActions: <GuidedRescueAction>{
+                GuidedRescueAction.requestPosition,
+                GuidedRescueAction.acknowledgeSos,
+                GuidedRescueAction.buzzerOn,
+                GuidedRescueAction.buzzerOff,
+                GuidedRescueAction.requestStatus,
+              },
+            );
+
+  final StreamController<GuidedRescueState> _controller =
+      StreamController<GuidedRescueState>.broadcast();
+
+  GuidedRescueState _state;
+  int requestPositionCallCount = 0;
+  int acknowledgeSosCallCount = 0;
+  int enableBuzzerCallCount = 0;
+  int disableBuzzerCallCount = 0;
+  int requestStatusCallCount = 0;
+  int clearSessionCallCount = 0;
+
+  @override
+  Future<GuidedRescueState> getCurrentState() async => _state;
+
+  @override
+  Stream<GuidedRescueState> watchState() => _controller.stream;
+
+  @override
+  Future<GuidedRescueState> setSession({
+    required int targetNodeId,
+    required int rescueNodeId,
+  }) async {
+    _state = _state.copyWith(
+      hasRuntimeSupport: true,
+      targetNodeId: targetNodeId,
+      rescueNodeId: rescueNodeId,
+      lastUpdatedAt: DateTime.utc(2026, 1, 1, 12),
+      clearLastError: true,
+    );
+    _controller.add(_state);
+    return _state;
+  }
+
+  @override
+  Future<void> clearSession() async {
+    clearSessionCallCount++;
+    _state = GuidedRescueState(
+      hasRuntimeSupport: true,
+      availableActions: _state.availableActions,
+      lastKnownTargetPosition: _state.lastKnownTargetPosition,
+      lastStatusSnapshot: _state.lastStatusSnapshot,
+      lastUpdatedAt: DateTime.utc(2026, 1, 1, 12, 5),
+    );
+    _controller.add(_state);
+  }
+
+  @override
+  Future<void> requestPosition() async {
+    requestPositionCallCount++;
+  }
+
+  @override
+  Future<void> acknowledgeSos() async {
+    acknowledgeSosCallCount++;
+  }
+
+  @override
+  Future<void> enableBuzzer() async {
+    enableBuzzerCallCount++;
+  }
+
+  @override
+  Future<void> disableBuzzer() async {
+    disableBuzzerCallCount++;
+  }
+
+  @override
+  Future<void> requestStatus() async {
+    requestStatusCallCount++;
+  }
+
+  void emitState(GuidedRescueState state) {
+    _state = state;
+    _controller.add(state);
+  }
+
+  Future<void> dispose() async {
+    await _controller.close();
   }
 }

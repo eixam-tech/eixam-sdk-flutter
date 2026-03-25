@@ -11,6 +11,7 @@ void main() {
       );
       final getState = GetGuidedRescueStateUseCase(repository);
       final setSession = SetGuidedRescueSessionUseCase(repository);
+      final clearSession = ClearGuidedRescueSessionUseCase(repository);
 
       expect((await getState()).hasRuntimeSupport, isFalse);
 
@@ -21,6 +22,9 @@ void main() {
 
       expect(configured.targetNodeId, 0x1001);
       expect(configured.rescueNodeId, 0x2002);
+
+      await clearSession();
+      expect(repository.clearSessionCallCount, 1);
     });
 
     test(

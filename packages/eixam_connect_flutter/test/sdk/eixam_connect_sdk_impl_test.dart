@@ -284,6 +284,127 @@ void main() {
       expect(state.unavailableReason, isNotEmpty);
     });
 
+    test(
+        'guided rescue public APIs delegate to the runtime when support is available',
+        () async {
+      final localGuidedRescueRuntime = FakeGuidedRescueRuntime();
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController();
+      final runtimeSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        guidedRescueRuntime: localGuidedRescueRuntime,
+      );
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+
+        final initialState = await runtimeSdk.getGuidedRescueState();
+        expect(initialState.hasRuntimeSupport, isTrue);
+
+        final configured = await runtimeSdk.setGuidedRescueSession(
+          targetNodeId: 0x1001,
+          rescueNodeId: 0x2002,
+        );
+        expect(configured.hasSession, isTrue);
+        expect(configured.targetNodeId, 0x1001);
+        expect(configured.rescueNodeId, 0x2002);
+
+        await runtimeSdk.requestGuidedRescuePosition();
+        await runtimeSdk.requestGuidedRescueStatus();
+        await runtimeSdk.acknowledgeGuidedRescueSos();
+        await runtimeSdk.enableGuidedRescueBuzzer();
+        await runtimeSdk.disableGuidedRescueBuzzer();
+
+        expect(localGuidedRescueRuntime.requestPositionCallCount, 1);
+        expect(localGuidedRescueRuntime.requestStatusCallCount, 1);
+        expect(localGuidedRescueRuntime.acknowledgeSosCallCount, 1);
+        expect(localGuidedRescueRuntime.enableBuzzerCallCount, 1);
+        expect(localGuidedRescueRuntime.disableBuzzerCallCount, 1);
+
+        await runtimeSdk.clearGuidedRescueSession();
+        expect(localGuidedRescueRuntime.clearSessionCallCount, 1);
+        expect((await runtimeSdk.getGuidedRescueState()).hasSession, isFalse);
+      } finally {
+        await runtimeSdk.dispose();
+        await localGuidedRescueRuntime.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test('watchGuidedRescueState forwards runtime state updates', () async {
+      final localGuidedRescueRuntime = FakeGuidedRescueRuntime();
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController();
+      final runtimeSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        guidedRescueRuntime: localGuidedRescueRuntime,
+      );
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+
+        final statesFuture = runtimeSdk.watchGuidedRescueState().take(2).toList();
+
+        localGuidedRescueRuntime.emitState(
+          GuidedRescueState(
+            hasRuntimeSupport: true,
+            targetNodeId: 0x1001,
+            rescueNodeId: 0x2002,
+            availableActions: const <GuidedRescueAction>{
+              GuidedRescueAction.requestStatus,
+              GuidedRescueAction.requestPosition,
+            },
+            lastStatusSnapshot: GuidedRescueStatusSnapshot(
+              targetNodeId: 0x1001,
+              rescueNodeId: 0x2002,
+              targetState: GuidedRescueTargetState.active,
+              retryCount: 2,
+              batteryLevel: DeviceBatteryLevel.ok,
+              gpsQuality: 3,
+              relayPendingAck: true,
+              internetAvailable: true,
+              receivedAt: DateTime.utc(2026, 1, 1, 12),
+            ),
+            lastUpdatedAt: DateTime.utc(2026, 1, 1, 12),
+          ),
+        );
+
+        final states = await statesFuture;
+        expect(states.first.hasRuntimeSupport, isTrue);
+        expect(states.last.lastStatusSnapshot?.targetState,
+            GuidedRescueTargetState.active);
+        expect(states.last.canRun(GuidedRescueAction.requestStatus), isTrue);
+      } finally {
+        await runtimeSdk.dispose();
+        await localGuidedRescueRuntime.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
     test('triggerSos emits a public SDK event with the incident id', () async {
       final eventFuture = takeNextFromStream(sdk.watchEvents());
 

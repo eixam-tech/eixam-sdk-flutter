@@ -45,6 +45,7 @@ export 'src/usecases/cancel_sos_use_case.dart';
 export 'src/usecases/get_sos_state_use_case.dart';
 export 'src/usecases/get_guided_rescue_state_use_case.dart';
 export 'src/usecases/set_guided_rescue_session_use_case.dart';
+export 'src/usecases/clear_guided_rescue_session_use_case.dart';
 export 'src/usecases/request_guided_rescue_status_use_case.dart';
 export 'src/usecases/request_guided_rescue_position_use_case.dart';
 export 'src/usecases/acknowledge_guided_rescue_sos_use_case.dart';
