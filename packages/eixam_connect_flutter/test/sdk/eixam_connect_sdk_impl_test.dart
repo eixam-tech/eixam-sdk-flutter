@@ -244,9 +244,8 @@ void main() {
         const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
       );
 
-      final connectionFuture = takeNextFromStream(
-        sdk.watchRealtimeConnectionState(),
-      );
+      final connectionStatesFuture =
+          sdk.watchRealtimeConnectionState().take(2).toList();
       final eventFuture = takeNextFromStream(sdk.watchRealtimeEvents());
 
       realtimeClient.emitConnectionState(RealtimeConnectionState.connected);
@@ -257,7 +256,13 @@ void main() {
         ),
       );
 
-      expect(await connectionFuture, RealtimeConnectionState.connected);
+      expect(
+        await connectionStatesFuture,
+        <RealtimeConnectionState>[
+          RealtimeConnectionState.disconnected,
+          RealtimeConnectionState.connected,
+        ],
+      );
       expect((await eventFuture).type, 'status_update');
     });
 
@@ -359,7 +364,7 @@ void main() {
       await sdk.initialize(
         const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
       );
-      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
 
       expect(
         deathManRepository.activePlan?.status,

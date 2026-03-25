@@ -965,83 +965,11 @@ class EixamConnectSdkImpl
 
   void _startDeathManMonitoring(String planId) {
     _deathManTimer?.cancel();
-    _deathManTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
-      final plan = await deathManRepository.getActiveDeathManPlan();
-      if (plan == null || plan.id != planId) return;
-
-      final now = DateTime.now();
-      final overdueAt = plan.expectedReturnAt.add(plan.gracePeriod);
-      final expiresAt = overdueAt.add(plan.checkInWindow);
-
-      if ((plan.status == DeathManStatus.monitoring ||
-              plan.status == DeathManStatus.scheduled) &&
-          now.isAfter(plan.expectedReturnAt)) {
-        await deathManRepository.updatePlanStatus(
-          plan.id,
-          DeathManStatus.overdue,
-        );
-        if (!_deathManOverdueNotified) {
-          _deathManOverdueNotified = true;
-          await _notifyDeathMan(
-            'Safety check pending',
-            'You are past the expected return time. Please confirm that you are safe.',
-          );
-          _eventsController.add(
-            DeathManStatusChangedEvent(plan.id, DeathManStatus.overdue.name),
-          );
-        }
-      }
-
-      if (plan.status == DeathManStatus.overdue && now.isAfter(overdueAt)) {
-        await deathManRepository.updatePlanStatus(
-          plan.id,
-          DeathManStatus.awaitingConfirmation,
-        );
-        if (!_deathManCheckInNotified) {
-          _deathManCheckInNotified = true;
-          await _notifyDeathMan(
-            'Confirmation required',
-            'If you do not respond during the check-in window, the SOS protocol will be triggered.',
-          );
-          _eventsController.add(
-            DeathManStatusChangedEvent(
-              plan.id,
-              DeathManStatus.awaitingConfirmation.name,
-            ),
-          );
-        }
-      }
-
-      final refreshed = await deathManRepository.getActiveDeathManPlan();
-      if (refreshed == null) return;
-
-      if (refreshed.status == DeathManStatus.awaitingConfirmation &&
-          now.isAfter(expiresAt)) {
-        await deathManRepository.updatePlanStatus(
-          refreshed.id,
-          DeathManStatus.escalated,
-        );
-        _eventsController.add(DeathManEscalatedEvent(refreshed.id));
-        await _notifyDeathMan(
-          'Protocol escalated',
-          'No response was received. Automatic escalation has been triggered.',
-        );
-        if (refreshed.autoTriggerSos) {
-          await triggerSos(
-            message: 'Auto-triggered by Death Man Protocol',
-            triggerSource: 'death_man_protocol',
-          );
-        }
-        await deathManRepository.updatePlanStatus(
-          refreshed.id,
-          DeathManStatus.expired,
-        );
-        _eventsController.add(
-          DeathManStatusChangedEvent(refreshed.id, DeathManStatus.expired.name),
-        );
-        _stopDeathManMonitoring();
-      }
-    });
+    unawaited(_evaluateDeathManPlan(planId));
+    _deathManTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => unawaited(_evaluateDeathManPlan(planId)),
+    );
   }
 
   Future<void> _notifyDeathMan(String title, String body) async {
@@ -1083,6 +1011,83 @@ class EixamConnectSdkImpl
     _deathManOverdueNotified = activePlan.status == DeathManStatus.overdue ||
         activePlan.status == DeathManStatus.awaitingConfirmation;
     _startDeathManMonitoring(activePlan.id);
+  }
+
+  Future<void> _evaluateDeathManPlan(String planId) async {
+    var plan = await deathManRepository.getActiveDeathManPlan();
+    if (plan == null || plan.id != planId) {
+      return;
+    }
+
+    final now = DateTime.now();
+    final overdueAt = plan.expectedReturnAt.add(plan.gracePeriod);
+    final expiresAt = overdueAt.add(plan.checkInWindow);
+
+    if ((plan.status == DeathManStatus.monitoring ||
+            plan.status == DeathManStatus.scheduled) &&
+        now.isAfter(plan.expectedReturnAt)) {
+      plan = await deathManRepository.updatePlanStatus(
+        plan.id,
+        DeathManStatus.overdue,
+      );
+      if (!_deathManOverdueNotified) {
+        _deathManOverdueNotified = true;
+        await _notifyDeathMan(
+          'Safety check pending',
+          'You are past the expected return time. Please confirm that you are safe.',
+        );
+        _eventsController.add(
+          DeathManStatusChangedEvent(plan.id, DeathManStatus.overdue.name),
+        );
+      }
+    }
+
+    if (plan.status == DeathManStatus.overdue && now.isAfter(overdueAt)) {
+      plan = await deathManRepository.updatePlanStatus(
+        plan.id,
+        DeathManStatus.awaitingConfirmation,
+      );
+      if (!_deathManCheckInNotified) {
+        _deathManCheckInNotified = true;
+        await _notifyDeathMan(
+          'Confirmation required',
+          'If you do not respond during the check-in window, the SOS protocol will be triggered.',
+        );
+        _eventsController.add(
+          DeathManStatusChangedEvent(
+            plan.id,
+            DeathManStatus.awaitingConfirmation.name,
+          ),
+        );
+      }
+    }
+
+    if (plan.status == DeathManStatus.awaitingConfirmation &&
+        now.isAfter(expiresAt)) {
+      await deathManRepository.updatePlanStatus(
+        plan.id,
+        DeathManStatus.escalated,
+      );
+      _eventsController.add(DeathManEscalatedEvent(plan.id));
+      await _notifyDeathMan(
+        'Protocol escalated',
+        'No response was received. Automatic escalation has been triggered.',
+      );
+      if (plan.autoTriggerSos) {
+        await triggerSos(
+          message: 'Auto-triggered by Death Man Protocol',
+          triggerSource: 'death_man_protocol',
+        );
+      }
+      await deathManRepository.updatePlanStatus(
+        plan.id,
+        DeathManStatus.expired,
+      );
+      _eventsController.add(
+        DeathManStatusChangedEvent(plan.id, DeathManStatus.expired.name),
+      );
+      _stopDeathManMonitoring();
+    }
   }
 
   bool _shouldMonitorDeathManPlan(DeathManStatus status) {
