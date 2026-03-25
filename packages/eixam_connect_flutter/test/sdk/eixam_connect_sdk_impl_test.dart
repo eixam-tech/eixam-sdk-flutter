@@ -250,6 +250,7 @@ void main() {
       final eventFuture = takeNextFromStream(sdk.watchRealtimeEvents());
 
       expect(await connectionQueue.next, RealtimeConnectionState.disconnected);
+      final connectedStateFuture = connectionQueue.next;
 
       realtimeClient.emitConnectionState(RealtimeConnectionState.connected);
       realtimeClient.emitEvent(
@@ -259,7 +260,7 @@ void main() {
         ),
       );
 
-      expect(await connectionQueue.next, RealtimeConnectionState.connected);
+      expect(await connectedStateFuture, RealtimeConnectionState.connected);
       expect((await eventFuture).type, 'status_update');
       await connectionQueue.cancel();
     });
