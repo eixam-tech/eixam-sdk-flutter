@@ -367,7 +367,8 @@ void main() {
           const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
         );
 
-        final statesFuture = runtimeSdk.watchGuidedRescueState().take(2).toList();
+        final statesFuture =
+            runtimeSdk.watchGuidedRescueState().take(2).toList();
 
         localGuidedRescueRuntime.emitState(
           GuidedRescueState(
