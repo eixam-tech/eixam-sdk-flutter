@@ -114,6 +114,7 @@ class EixamConnectSdkImpl
     );
     _bindRealtimeStreams();
     await realtimeClient.connect();
+    await _resumeDeathManMonitoringIfNeeded();
     await _bleAutoReconnectCoordinator.tryAutoConnectOnStartup();
   }
 
@@ -188,30 +189,33 @@ class EixamConnectSdkImpl
 
   @override
   Future<DeviceStatus> activateDevice({required String activationCode}) {
-    return deviceRepository.activateDevice(activationCode: activationCode);
-  }
-
-  @override
-  Future<DeviceStatus> getDeviceStatus() {
-    return deviceRepository.getDeviceStatus();
-  }
-
-  @override
-  Future<DeviceStatus> refreshDeviceStatus() {
-    return deviceRepository.refreshDeviceStatus();
-  }
-
-  @override
-  Future<void> unpairDevice() {
-    return _bleAutoReconnectCoordinator.unpairDeviceManually(
-      deviceRepository.unpairDevice,
+    return _cacheDeviceStatus(
+      deviceRepository.activateDevice(activationCode: activationCode),
     );
   }
 
   @override
+  Future<DeviceStatus> getDeviceStatus() =>
+      _cacheDeviceStatus(deviceRepository.getDeviceStatus());
+
+  @override
+  Future<DeviceStatus> refreshDeviceStatus() =>
+      _cacheDeviceStatus(deviceRepository.refreshDeviceStatus());
+
+  @override
+  Future<void> unpairDevice() async {
+    await _bleAutoReconnectCoordinator.unpairDeviceManually(
+      deviceRepository.unpairDevice,
+    );
+    _lastDeviceStatus = await deviceRepository.getDeviceStatus();
+  }
+
+  @override
   Future<DeviceStatus> pairDevice({required String pairingCode}) {
-    return _bleAutoReconnectCoordinator.pairDeviceManually(
-      pairingCode: pairingCode,
+    return _cacheDeviceStatus(
+      _bleAutoReconnectCoordinator.pairDeviceManually(
+        pairingCode: pairingCode,
+      ),
     );
   }
 
@@ -232,8 +236,12 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Stream<DeviceStatus> watchDeviceStatus() {
-    return deviceRepository.watchDeviceStatus();
+  Stream<DeviceStatus> watchDeviceStatus() async* {
+    final current =
+        _lastDeviceStatus ?? await deviceRepository.getDeviceStatus();
+    _lastDeviceStatus = current;
+    yield current;
+    yield* deviceRepository.watchDeviceStatus();
   }
 
   @override
@@ -242,8 +250,9 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Stream<DeviceSosStatus> watchDeviceSosStatus() {
-    return deviceSosController.watchStatus();
+  Stream<DeviceSosStatus> watchDeviceSosStatus() async* {
+    yield await deviceSosController.getStatus();
+    yield* deviceSosController.watchStatus();
   }
 
   @override
@@ -348,8 +357,10 @@ class EixamConnectSdkImpl
   Future<GuidedRescueState> getGuidedRescueState() async => _guidedRescueState;
 
   @override
-  Stream<GuidedRescueState> watchGuidedRescueState() =>
-      _guidedRescueStateController.stream;
+  Stream<GuidedRescueState> watchGuidedRescueState() async* {
+    yield _guidedRescueState;
+    yield* _guidedRescueStateController.stream;
+  }
 
   @override
   Future<GuidedRescueState> setGuidedRescueSession({
@@ -778,8 +789,12 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Stream<TrackingPosition> watchPositions() {
-    return trackingRepository.watchPositions();
+  Stream<TrackingPosition> watchPositions() async* {
+    final current = await trackingRepository.getCurrentPosition();
+    if (current != null) {
+      yield current;
+    }
+    yield* trackingRepository.watchPositions();
   }
 
   @override
@@ -938,8 +953,9 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Stream<RealtimeConnectionState> watchRealtimeConnectionState() {
-    return _realtimeConnectionStateController.stream;
+  Stream<RealtimeConnectionState> watchRealtimeConnectionState() async* {
+    yield _lastRealtimeConnectionState;
+    yield* _realtimeConnectionStateController.stream;
   }
 
   @override
@@ -1047,6 +1063,33 @@ class EixamConnectSdkImpl
     _deathManTimer = null;
     _deathManCheckInNotified = false;
     _deathManOverdueNotified = false;
+  }
+
+  Future<DeviceStatus> _cacheDeviceStatus(
+    Future<DeviceStatus> future,
+  ) async {
+    final status = await future;
+    _lastDeviceStatus = status;
+    return status;
+  }
+
+  Future<void> _resumeDeathManMonitoringIfNeeded() async {
+    final activePlan = await deathManRepository.getActiveDeathManPlan();
+    if (activePlan == null || !_shouldMonitorDeathManPlan(activePlan.status)) {
+      return;
+    }
+    _deathManCheckInNotified =
+        activePlan.status == DeathManStatus.awaitingConfirmation;
+    _deathManOverdueNotified = activePlan.status == DeathManStatus.overdue ||
+        activePlan.status == DeathManStatus.awaitingConfirmation;
+    _startDeathManMonitoring(activePlan.id);
+  }
+
+  bool _shouldMonitorDeathManPlan(DeathManStatus status) {
+    return status == DeathManStatus.scheduled ||
+        status == DeathManStatus.monitoring ||
+        status == DeathManStatus.overdue ||
+        status == DeathManStatus.awaitingConfirmation;
   }
 
   Future<void> _runGuidedRescueCommand(GuidedRescueAction action) async {

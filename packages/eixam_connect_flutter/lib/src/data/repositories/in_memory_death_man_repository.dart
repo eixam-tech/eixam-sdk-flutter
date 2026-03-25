@@ -13,6 +13,13 @@ class InMemoryDeathManRepository implements DeathManRepository {
   InMemoryDeathManRepository({SharedPrefsSdkStore? localStore})
       : _localStore = localStore;
 
+  static const Set<DeathManStatus> _activeStatuses = <DeathManStatus>{
+    DeathManStatus.scheduled,
+    DeathManStatus.monitoring,
+    DeathManStatus.overdue,
+    DeathManStatus.awaitingConfirmation,
+  };
+
   final SharedPrefsSdkStore? _localStore;
   final StreamController<DeathManPlan> _controller =
       StreamController<DeathManPlan>.broadcast();
@@ -25,15 +32,24 @@ class InMemoryDeathManRepository implements DeathManRepository {
         await _localStore.readJson(SharedPrefsSdkStore.deathManPlanKey);
     if (json == null) return;
 
-    _activePlan = LocalStateSerializers.deathManPlanFromJson(json);
-    _controller.add(_activePlan!);
+    final restoredPlan = LocalStateSerializers.deathManPlanFromJson(json);
+    if (_isActiveStatus(restoredPlan.status)) {
+      _activePlan = restoredPlan;
+      _controller.add(restoredPlan);
+      return;
+    }
+
+    _activePlan = null;
+    await _localStore.remove(SharedPrefsSdkStore.deathManPlanKey);
   }
 
   @override
   Future<void> cancelDeathMan(String planId) async {
     if (_activePlan?.id == planId) {
-      _activePlan = _activePlan?.copyWith(status: DeathManStatus.cancelled);
-      _controller.add(_activePlan!);
+      final cancelledPlan =
+          _activePlan!.copyWith(status: DeathManStatus.cancelled);
+      _controller.add(cancelledPlan);
+      _activePlan = null;
       await _persistState();
     }
   }
@@ -41,14 +57,22 @@ class InMemoryDeathManRepository implements DeathManRepository {
   @override
   Future<void> confirmDeathManCheckIn(String planId) async {
     if (_activePlan?.id == planId) {
-      _activePlan = _activePlan?.copyWith(status: DeathManStatus.confirmedSafe);
-      _controller.add(_activePlan!);
+      final confirmedPlan =
+          _activePlan!.copyWith(status: DeathManStatus.confirmedSafe);
+      _controller.add(confirmedPlan);
+      _activePlan = null;
       await _persistState();
     }
   }
 
   @override
-  Future<DeathManPlan?> getActiveDeathManPlan() async => _activePlan;
+  Future<DeathManPlan?> getActiveDeathManPlan() async {
+    final plan = _activePlan;
+    if (plan == null || !_isActiveStatus(plan.status)) {
+      return null;
+    }
+    return plan;
+  }
 
   @override
   Future<DeathManPlan> scheduleDeathMan({
@@ -77,10 +101,11 @@ class InMemoryDeathManRepository implements DeathManRepository {
       throw const DeathManException(
           'E_DEATH_MAN_PLAN_NOT_FOUND', 'Death Man plan not found');
     }
-    _activePlan = _activePlan!.copyWith(status: status);
-    _controller.add(_activePlan!);
+    final updatedPlan = _activePlan!.copyWith(status: status);
+    _controller.add(updatedPlan);
+    _activePlan = _isActiveStatus(status) ? updatedPlan : null;
     await _persistState();
-    return _activePlan!;
+    return updatedPlan;
   }
 
   @override
@@ -99,4 +124,7 @@ class InMemoryDeathManRepository implements DeathManRepository {
       LocalStateSerializers.deathManPlanToJson(_activePlan!),
     );
   }
+
+  bool _isActiveStatus(DeathManStatus status) =>
+      _activeStatuses.contains(status);
 }

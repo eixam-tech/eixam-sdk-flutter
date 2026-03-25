@@ -27,5 +27,22 @@ void main() {
       expect(
           await repository.watchTrackingState().first, TrackingState.tracking);
     });
+
+    test('watchPositions replays the current last known position', () async {
+      final repository = InMemoryTrackingRepository(
+        initialPosition: TrackingPosition(
+          latitude: 41.38,
+          longitude: 2.17,
+          timestamp: DateTime.utc(2026, 1, 1, 10),
+          source: DeliveryMode.mobile,
+        ),
+        initialState: TrackingState.tracking,
+      );
+
+      final position = await repository.watchPositions().first;
+
+      expect(position.latitude, 41.38);
+      expect(position.longitude, 2.17);
+    });
   });
 }

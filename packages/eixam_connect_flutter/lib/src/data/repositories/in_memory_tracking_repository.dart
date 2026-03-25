@@ -3,6 +3,12 @@ import 'dart:async';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 class InMemoryTrackingRepository implements TrackingRepository {
+  InMemoryTrackingRepository({
+    TrackingPosition? initialPosition,
+    TrackingState initialState = TrackingState.idle,
+  })  : _lastPosition = initialPosition,
+        _state = initialState;
+
   final StreamController<TrackingPosition> _positionsController =
       StreamController.broadcast();
   final StreamController<TrackingState> _stateController =
@@ -30,7 +36,13 @@ class InMemoryTrackingRepository implements TrackingRepository {
   }
 
   @override
-  Stream<TrackingPosition> watchPositions() => _positionsController.stream;
+  Stream<TrackingPosition> watchPositions() async* {
+    final current = _lastPosition;
+    if (current != null) {
+      yield current;
+    }
+    yield* _positionsController.stream;
+  }
 
   @override
   Stream<TrackingState> watchTrackingState() async* {

@@ -7,7 +7,7 @@ import '../../support/fakes/memory_shared_prefs_sdk_store.dart';
 import '../../support/fakes/sdk_contract_fakes.dart';
 
 void main() {
-  group('GeolocatorTrackingRepository.restoreState', () {
+  group('GeolocatorTrackingRepository', () {
     test('restores persisted position and explicit tracking state', () async {
       final store = MemorySharedPrefsSdkStore()
         ..jsonValues[SharedPrefsSdkStore.trackingPositionKey] =
@@ -55,6 +55,28 @@ void main() {
       await repository.restoreState();
 
       expect(await repository.getTrackingState(), TrackingState.stale);
+    });
+
+    test('watchPositions replays the restored last known position', () async {
+      final store = MemorySharedPrefsSdkStore()
+        ..jsonValues[SharedPrefsSdkStore.trackingPositionKey] =
+            <String, dynamic>{
+          'latitude': 41.3874,
+          'longitude': 2.1686,
+          'source': DeliveryMode.mobile.name,
+          'timestamp': DateTime.utc(2026, 1, 1, 12).toIso8601String(),
+        };
+
+      final repository = GeolocatorTrackingRepository(
+        permissionsRepository: FakePermissionsRepository(),
+        localStore: store,
+      );
+
+      await repository.restoreState();
+
+      final replayed = await repository.watchPositions().first;
+      expect(replayed.latitude, 41.3874);
+      expect(replayed.longitude, 2.1686);
     });
   });
 }

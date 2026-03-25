@@ -129,7 +129,13 @@ class GeolocatorTrackingRepository implements TrackingRepository {
   }
 
   @override
-  Stream<TrackingPosition> watchPositions() => _positionsController.stream;
+  Stream<TrackingPosition> watchPositions() async* {
+    final current = _lastPosition;
+    if (current != null) {
+      yield current;
+    }
+    yield* _positionsController.stream;
+  }
 
   @override
   Stream<TrackingState> watchTrackingState() async* {

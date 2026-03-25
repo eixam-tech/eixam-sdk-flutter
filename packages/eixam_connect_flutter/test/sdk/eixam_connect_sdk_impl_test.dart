@@ -158,6 +158,13 @@ void main() {
       expect(trackingRepository.stopCallCount, 1);
     });
 
+    test('watchPositions replays the last known tracking position', () async {
+      final position = await sdk.watchPositions().first;
+
+      expect(position.latitude, 41.38);
+      expect(position.longitude, 2.17);
+    });
+
     test('contacts facade delegates add, toggle, and remove flows', () async {
       final contact = await sdk.addEmergencyContact(
         name: 'Alice',
@@ -188,6 +195,24 @@ void main() {
       expect((await sdk.getDeviceStatus()).deviceId, 'device-2');
       expect((await sdk.refreshDeviceStatus()).deviceId, 'device-2');
       expect(deviceRepository.refreshCallCount, 1);
+    });
+
+    test('watchDeviceStatus replays the latest known device status', () async {
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+      );
+
+      final status = await sdk.watchDeviceStatus().first;
+
+      expect(status.deviceId, 'demo-device');
+      expect(status.lifecycleState, DeviceLifecycleState.unpaired);
+    });
+
+    test('watchDeviceSosStatus replays the current controller state', () async {
+      final status = await sdk.watchDeviceSosStatus().first;
+
+      expect(status.state, DeviceSosState.inactive);
+      expect(status.transitionSource, DeviceSosTransitionSource.unknown);
     });
 
     test(
@@ -234,6 +259,25 @@ void main() {
 
       expect(await connectionFuture, RealtimeConnectionState.connected);
       expect((await eventFuture).type, 'status_update');
+    });
+
+    test('watchRealtimeConnectionState replays the cached connection state',
+        () async {
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+      );
+
+      expect(
+        await sdk.watchRealtimeConnectionState().first,
+        RealtimeConnectionState.disconnected,
+      );
+    });
+
+    test('watchGuidedRescueState replays the current fallback state', () async {
+      final state = await sdk.watchGuidedRescueState().first;
+
+      expect(state.hasRuntimeSupport, isFalse);
+      expect(state.unavailableReason, isNotEmpty);
     });
 
     test('triggerSos emits a public SDK event with the incident id', () async {
@@ -299,6 +343,30 @@ void main() {
       expect(event, isA<DeathManStatusChangedEvent>());
       expect((event as DeathManStatusChangedEvent).status,
           DeathManStatus.confirmedSafe.name);
+    });
+
+    test('initialize resumes monitoring for a restored active Death Man plan',
+        () async {
+      deathManRepository.activePlan = DeathManPlan(
+        id: 'deathman-restore',
+        expectedReturnAt: DateTime.now().subtract(const Duration(minutes: 2)),
+        gracePeriod: const Duration(seconds: 1),
+        checkInWindow: const Duration(minutes: 5),
+        autoTriggerSos: false,
+        status: DeathManStatus.monitoring,
+      );
+
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+
+      expect(
+        deathManRepository.activePlan?.status,
+        DeathManStatus.awaitingConfirmation,
+      );
+      expect(deathManRepository.updateCallCount, 2);
+      expect(notificationsRepository.notifications, hasLength(2));
     });
   });
 }
