@@ -367,8 +367,11 @@ void main() {
           const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
         );
 
-        final statesFuture =
-            runtimeSdk.watchGuidedRescueState().take(2).toList();
+        final stateQueue =
+            StreamQueue<GuidedRescueState>(runtimeSdk.watchGuidedRescueState());
+
+        expect((await stateQueue.next).hasRuntimeSupport, isTrue);
+        final updatedStateFuture = stateQueue.next;
 
         localGuidedRescueRuntime.emitState(
           GuidedRescueState(
@@ -394,11 +397,11 @@ void main() {
           ),
         );
 
-        final states = await statesFuture;
-        expect(states.first.hasRuntimeSupport, isTrue);
-        expect(states.last.lastStatusSnapshot?.targetState,
+        final updatedState = await updatedStateFuture;
+        expect(updatedState.lastStatusSnapshot?.targetState,
             GuidedRescueTargetState.active);
-        expect(states.last.canRun(GuidedRescueAction.requestStatus), isTrue);
+        expect(updatedState.canRun(GuidedRescueAction.requestStatus), isTrue);
+        await stateQueue.cancel();
       } finally {
         await runtimeSdk.dispose();
         await localGuidedRescueRuntime.dispose();
