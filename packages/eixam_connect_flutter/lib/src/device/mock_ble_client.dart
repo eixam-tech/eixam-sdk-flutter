@@ -19,6 +19,7 @@ class MockBleClient implements BleClient {
   final Random _random = Random();
   BleAdapterState _adapterState = BleAdapterState.poweredOn;
   final Set<String> _connectedDeviceIds = <String>{};
+  final List<EixamDeviceCommand> writtenCommands = <EixamDeviceCommand>[];
 
   static const String demoDeviceId = 'ble-demo-r1';
 
@@ -147,6 +148,7 @@ class MockBleClient implements BleClient {
     BleDebugRegistry.instance.recordEvent(
       'Mock command written to $deviceId (${command.label})',
     );
+    writtenCommands.add(command);
     _emitMockPackets(deviceId, command);
   }
 
@@ -234,8 +236,24 @@ class MockBleClient implements BleClient {
     }
 
     switch (command.opcode) {
-      case 0x06:
-        emit(EixamBleChannel.sos, <int>[
+      case 0x01:
+        if (command.bytes.length == 5) {
+          final targetNodeId = command.bytes[0] | (command.bytes[1] << 8);
+          emit(EixamBleChannel.tel, <int>[
+            targetNodeId & 0xFF,
+            (targetNodeId >> 8) & 0xFF,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+            0x21,
+          ]);
+          return;
+        }
+        emit(EixamBleChannel.tel, <int>[
           0xA8,
           0x1A,
           0x00,
@@ -245,10 +263,27 @@ class MockBleClient implements BleClient {
           0x00,
           0x00,
           0x01,
-          0x40,
+          0x21,
         ]);
         return;
       case 0x05:
+        if (command.bytes.length == 5) {
+          final targetNodeId = command.bytes[0] | (command.bytes[1] << 8);
+          final rescueNodeId = command.bytes[2] | (command.bytes[3] << 8);
+          emit(EixamBleChannel.tel, <int>[
+            rescueNodeId & 0xFF,
+            (rescueNodeId >> 8) & 0xFF,
+            targetNodeId & 0xFF,
+            (targetNodeId >> 8) & 0xFF,
+            0x85,
+            0x02,
+            0x03,
+            0x03,
+            0x01,
+            0x03,
+          ]);
+          return;
+        }
         emit(EixamBleChannel.sos, <int>[
           0xA8,
           0x1A,
@@ -262,9 +297,12 @@ class MockBleClient implements BleClient {
           0x80,
         ]);
         return;
-      case 0x01:
       case 0x02:
       case 0x03:
+      case 0x04:
+        if (command.bytes.length == 5) {
+          return;
+        }
         emit(EixamBleChannel.tel, <int>[
           0xA8,
           0x1A,
@@ -276,6 +314,20 @@ class MockBleClient implements BleClient {
           0x00,
           0x01,
           0x21,
+        ]);
+        return;
+      case 0x06:
+        emit(EixamBleChannel.sos, <int>[
+          0xA8,
+          0x1A,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x01,
+          0x40,
         ]);
         return;
       default:

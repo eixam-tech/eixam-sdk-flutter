@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:flutter/foundation.dart';
 
+import '../sdk/guided_rescue_runtime.dart';
 import 'ble_adapter_state.dart';
 import 'ble_client.dart';
 import 'ble_connection_status.dart';
@@ -14,13 +15,15 @@ import 'device_sos_controller.dart';
 import 'eixam_ble_command.dart';
 import 'eixam_ble_notification.dart';
 import 'eixam_ble_protocol.dart';
+import 'eixam_guided_rescue_status_packet.dart';
 import 'eixam_sos_event_packet.dart';
 import 'eixam_sos_packet.dart';
 import 'eixam_tel_fragment.dart';
 import 'eixam_tel_packet.dart';
 import 'eixam_tel_reassembler.dart';
 
-class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
+class BleDeviceRuntimeProvider
+    implements DeviceRuntimeProvider, GuidedRescueRuntime {
   BleDeviceRuntimeProvider({
     required BleClient bleClient,
     DeviceSosController? deviceSosController,
@@ -33,6 +36,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       StreamController<BleIncomingEvent>.broadcast();
   final StreamController<DeviceStatus> _runtimeStatusController =
       StreamController<DeviceStatus>.broadcast();
+  final StreamController<GuidedRescueState> _guidedRescueStateController =
+      StreamController<GuidedRescueState>.broadcast();
   final EixamTelReassembler _telReassembler = EixamTelReassembler();
 
   String? _connectedDeviceId;
@@ -41,17 +46,26 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   StreamSubscription<bool>? _connectionStateSubscription;
   DateTime? _lastAppCommandAt;
   DeviceStatus? _lastRuntimeStatus;
+  GuidedRescueState _guidedRescueState = const GuidedRescueState(
+    hasRuntimeSupport: true,
+    availableActions: <GuidedRescueAction>{},
+    unavailableReason:
+        'Configure a guided rescue session before issuing rescue commands.',
+  );
   int? _lastTelBatteryLevel;
   int? _lastSosBatteryLevel;
   final Map<String, DateTime> _recentSosPacketSignatures = <String, DateTime>{};
 
   static const Duration _recentSosDedupWindow = Duration(seconds: 2);
+  static const String _rescueDeviceNotReadyCode = 'E_RESCUE_DEVICE_NOT_READY';
 
   DeviceSosController get deviceSosController => _deviceSosController;
   Stream<BleIncomingEvent> watchIncomingEvents() =>
       _incomingEventsController.stream;
   @override
   Stream<DeviceStatus> watchRuntimeStatus() => _runtimeStatusController.stream;
+  @override
+  Stream<GuidedRescueState> watchState() => _guidedRescueStateController.stream;
 
   @override
   Future<DeviceStatus> pair({
@@ -160,6 +174,14 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         clearProvisioningError: true,
       );
       _publishRuntimeStatus(nextStatus, reason: 'pair_completed');
+      _publishGuidedRescueState(
+        _guidedRescueState.copyWith(
+          availableActions: _resolvedGuidedRescueActions(),
+          unavailableReason: _resolvedGuidedRescueUnavailableReason(),
+          lastUpdatedAt: DateTime.now(),
+          clearLastError: true,
+        ),
+      );
       return nextStatus;
     } catch (error, stackTrace) {
       final currentStatus =
@@ -264,6 +286,14 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       clearProvisioningError: true,
     );
     _publishRuntimeStatus(nextStatus, reason: 'activate_completed');
+    _publishGuidedRescueState(
+      _guidedRescueState.copyWith(
+        availableActions: _resolvedGuidedRescueActions(),
+        unavailableReason: _resolvedGuidedRescueUnavailableReason(),
+        lastUpdatedAt: DateTime.now(),
+        clearLastError: true,
+      ),
+    );
     return nextStatus;
   }
 
@@ -301,6 +331,13 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       clearProvisioningError: true,
     );
     _publishRuntimeStatus(nextStatus, reason: 'refresh_completed');
+    _publishGuidedRescueState(
+      _guidedRescueState.copyWith(
+        availableActions: _resolvedGuidedRescueActions(),
+        unavailableReason: _resolvedGuidedRescueUnavailableReason(),
+        lastUpdatedAt: DateTime.now(),
+      ),
+    );
     return nextStatus;
   }
 
@@ -345,7 +382,118 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       provisioningError: null,
     );
     _publishRuntimeStatus(nextStatus, reason: 'unpair_completed');
+    _publishGuidedRescueState(
+      _guidedRescueState.copyWith(
+        availableActions: _resolvedGuidedRescueActions(),
+        unavailableReason: _resolvedGuidedRescueUnavailableReason(),
+        lastUpdatedAt: DateTime.now(),
+      ),
+    );
     return nextStatus;
+  }
+
+  @override
+  Future<GuidedRescueState> getCurrentState() async => _guidedRescueState;
+
+  @override
+  Future<GuidedRescueState> setSession({
+    required int targetNodeId,
+    required int rescueNodeId,
+  }) async {
+    final nextState = GuidedRescueState(
+      hasRuntimeSupport: true,
+      targetNodeId: targetNodeId,
+      rescueNodeId: rescueNodeId,
+      availableActions: _resolvedGuidedRescueActions(
+        hasSession: true,
+        deviceReady: _isGuidedRescueDeviceReady,
+      ),
+      unavailableReason: _resolvedGuidedRescueUnavailableReason(
+        hasSession: true,
+        deviceReady: _isGuidedRescueDeviceReady,
+      ),
+      lastUpdatedAt: DateTime.now(),
+    );
+    _publishGuidedRescueState(nextState);
+    return nextState;
+  }
+
+  @override
+  Future<void> clearSession() async {
+    _publishGuidedRescueState(
+      GuidedRescueState(
+        hasRuntimeSupport: true,
+        availableActions: _resolvedGuidedRescueActions(
+          hasSession: false,
+          deviceReady: _isGuidedRescueDeviceReady,
+        ),
+        unavailableReason: _resolvedGuidedRescueUnavailableReason(
+          hasSession: false,
+          deviceReady: _isGuidedRescueDeviceReady,
+        ),
+        lastUpdatedAt: DateTime.now(),
+      ),
+    );
+  }
+
+  @override
+  Future<void> requestPosition() {
+    return _runGuidedRescueCommand(
+      command: EixamDeviceCommand.guidedRescue(
+        targetNodeId: _requireGuidedRescueTargetNodeId(),
+        rescueNodeId: _requireGuidedRescueRescueNodeId(),
+        commandCode: 0x01,
+        label: 'GUIDED RESCUE REQUEST POS',
+      ),
+    );
+  }
+
+  @override
+  Future<void> acknowledgeSos() {
+    return _runGuidedRescueCommand(
+      command: EixamDeviceCommand.guidedRescue(
+        targetNodeId: _requireGuidedRescueTargetNodeId(),
+        rescueNodeId: _requireGuidedRescueRescueNodeId(),
+        commandCode: 0x02,
+        label: 'GUIDED RESCUE ACK SOS',
+      ),
+    );
+  }
+
+  @override
+  Future<void> enableBuzzer() {
+    return _runGuidedRescueCommand(
+      command: EixamDeviceCommand.guidedRescue(
+        targetNodeId: _requireGuidedRescueTargetNodeId(),
+        rescueNodeId: _requireGuidedRescueRescueNodeId(),
+        commandCode: 0x03,
+        label: 'GUIDED RESCUE BUZZER ON',
+      ),
+    );
+  }
+
+  @override
+  Future<void> disableBuzzer() {
+    return _runGuidedRescueCommand(
+      command: EixamDeviceCommand.guidedRescue(
+        targetNodeId: _requireGuidedRescueTargetNodeId(),
+        rescueNodeId: _requireGuidedRescueRescueNodeId(),
+        commandCode: 0x04,
+        label: 'GUIDED RESCUE BUZZER OFF',
+      ),
+    );
+  }
+
+  @override
+  Future<void> requestStatus() {
+    return _runGuidedRescueCommand(
+      command: EixamDeviceCommand.guidedRescue(
+        targetNodeId: _requireGuidedRescueTargetNodeId(),
+        rescueNodeId: _requireGuidedRescueRescueNodeId(),
+        commandCode: 0x05,
+        label: 'GUIDED RESCUE STATUS REQ',
+      ),
+    );
   }
 
   void _log(String message) {
@@ -396,6 +544,13 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       provisioningError: 'Unexpected BLE disconnect',
     );
     _publishRuntimeStatus(nextStatus, reason: 'unexpected_disconnect');
+    _publishGuidedRescueState(
+      _guidedRescueState.copyWith(
+        availableActions: _resolvedGuidedRescueActions(),
+        unavailableReason: _resolvedGuidedRescueUnavailableReason(),
+        lastUpdatedAt: DateTime.now(),
+      ),
+    );
   }
 
   void _handleTelNotification(
@@ -410,6 +565,32 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         notification.payload.length == EixamBleProtocol.telPacketLength &&
             notification.payload.first !=
                 EixamBleProtocol.telAggregateFragmentOpcode;
+    final rescueStatusPacket = isClassicCandidate
+        ? EixamGuidedRescueStatusPacket.tryParse(
+            notification.payload,
+            receivedAt: notification.receivedAt,
+          )
+        : null;
+    if (rescueStatusPacket != null) {
+      BleDebugRegistry.instance.recordEvent(
+        'Guided rescue status decoded -> rescueId=${_formatNodeId(rescueStatusPacket.rescueNodeId)} victimId=${_formatNodeId(rescueStatusPacket.victimNodeId)} state=${rescueStatusPacket.targetState.name}',
+      );
+      _handleGuidedRescueStatusPacket(rescueStatusPacket);
+      _incomingEventsController.add(
+        BleIncomingEvent(
+          deviceId: deviceId,
+          deviceAlias: _connectedDeviceAlias,
+          type: BleIncomingEventType.guidedRescueStatus,
+          channel: notification.channel,
+          payload: List<int>.unmodifiable(notification.payload),
+          payloadHex: notification.payloadHex,
+          source: DeviceSosTransitionSource.device,
+          receivedAt: notification.receivedAt,
+          guidedRescueStatusPacket: rescueStatusPacket,
+        ),
+      );
+      return;
+    }
     final telPacket = isClassicCandidate
         ? EixamTelPacket.tryParse(notification.payload)
         : null;
@@ -418,6 +599,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         'TEL packet decoded -> nodeId=${_formatNodeId(telPacket.nodeId)} packetId=${telPacket.packetId} batt=${telPacket.batteryLevel} gps=${telPacket.gpsQuality}',
       );
       _handleTelBatteryUpdate(telPacket);
+      _handleGuidedRescueTelPacket(telPacket, notification.receivedAt);
       _incomingEventsController.add(
         BleIncomingEvent(
           deviceId: deviceId,
@@ -562,6 +744,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         'SOS packet decoded -> nodeId=${_formatNodeId(sosPacket.nodeId)} sosType=${sosPacket.sosType} packetId=${sosPacket.packetId} relayCount=${sosPacket.relayCount}',
       );
       _handleSosBatteryUpdate(sosPacket);
+      _handleGuidedRescueSosPacket(sosPacket, notification.receivedAt);
       if (_shouldProcessSosPacket(
         nodeId: sosPacket.nodeId,
         packetId: sosPacket.packetId,
@@ -722,10 +905,194 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     _runtimeStatusController.add(nextStatus);
   }
 
+  bool get _isGuidedRescueDeviceReady =>
+      _connectedDeviceId != null && (_lastRuntimeStatus?.connected ?? true);
+
+  Set<GuidedRescueAction> _resolvedGuidedRescueActions({
+    bool? hasSession,
+    bool? deviceReady,
+  }) {
+    final effectiveHasSession = hasSession ?? _guidedRescueState.hasSession;
+    final effectiveDeviceReady = deviceReady ??
+        (_connectedDeviceId != null && _isGuidedRescueDeviceReady);
+    if (!effectiveHasSession || !effectiveDeviceReady) {
+      return const <GuidedRescueAction>{};
+    }
+    return const <GuidedRescueAction>{
+      GuidedRescueAction.requestPosition,
+      GuidedRescueAction.acknowledgeSos,
+      GuidedRescueAction.buzzerOn,
+      GuidedRescueAction.buzzerOff,
+      GuidedRescueAction.requestStatus,
+    };
+  }
+
+  String? _resolvedGuidedRescueUnavailableReason({
+    bool? hasSession,
+    bool? deviceReady,
+  }) {
+    final effectiveHasSession = hasSession ?? _guidedRescueState.hasSession;
+    final effectiveDeviceReady = deviceReady ?? _isGuidedRescueDeviceReady;
+    if (!effectiveHasSession) {
+      return 'Configure a guided rescue session before issuing rescue commands.';
+    }
+    if (!effectiveDeviceReady) {
+      return 'Connect a compatible EIXAM device before issuing guided rescue commands.';
+    }
+    return null;
+  }
+
+  int _requireGuidedRescueTargetNodeId() {
+    final targetNodeId = _guidedRescueState.targetNodeId;
+    if (targetNodeId == null) {
+      throw const RescueException.missingSession();
+    }
+    return targetNodeId;
+  }
+
+  int _requireGuidedRescueRescueNodeId() {
+    final rescueNodeId = _guidedRescueState.rescueNodeId;
+    if (rescueNodeId == null) {
+      throw const RescueException.missingSession();
+    }
+    return rescueNodeId;
+  }
+
+  Future<void> _runGuidedRescueCommand({
+    required EixamDeviceCommand command,
+  }) async {
+    final deviceId = _connectedDeviceId;
+    if (deviceId == null || !await _bleClient.isConnected(deviceId)) {
+      final message =
+          'A compatible connected device is required before issuing guided rescue commands.';
+      _publishGuidedRescueState(
+        _guidedRescueState.copyWith(
+          availableActions: _resolvedGuidedRescueActions(
+            deviceReady: false,
+          ),
+          unavailableReason: _resolvedGuidedRescueUnavailableReason(
+            deviceReady: false,
+          ),
+          lastError: message,
+          lastUpdatedAt: DateTime.now(),
+        ),
+      );
+      throw const RescueException(
+        _rescueDeviceNotReadyCode,
+        'A compatible connected device is required before issuing guided rescue commands.',
+      );
+    }
+
+    await _bleClient.writeDeviceCommand(deviceId, command);
+    _publishGuidedRescueState(
+      _guidedRescueState.copyWith(
+        availableActions: _resolvedGuidedRescueActions(deviceReady: true),
+        unavailableReason: _resolvedGuidedRescueUnavailableReason(
+          deviceReady: true,
+        ),
+        lastUpdatedAt: DateTime.now(),
+        clearLastError: true,
+      ),
+    );
+  }
+
+  void _handleGuidedRescueStatusPacket(EixamGuidedRescueStatusPacket packet) {
+    if (!_matchesGuidedRescueSession(
+      targetNodeId: packet.victimNodeId,
+      rescueNodeId: packet.rescueNodeId,
+    )) {
+      return;
+    }
+
+    _publishGuidedRescueState(
+      _guidedRescueState.copyWith(
+        availableActions: _resolvedGuidedRescueActions(),
+        unavailableReason: _resolvedGuidedRescueUnavailableReason(),
+        lastStatusSnapshot: packet.toSnapshot(),
+        lastUpdatedAt: packet.receivedAt,
+        clearLastError: true,
+      ),
+    );
+  }
+
+  void _handleGuidedRescueTelPacket(
+    EixamTelPacket packet,
+    DateTime receivedAt,
+  ) {
+    if (!_matchesGuidedRescueSession(targetNodeId: packet.nodeId)) {
+      return;
+    }
+
+    _publishGuidedRescueState(
+      _guidedRescueState.copyWith(
+        availableActions: _resolvedGuidedRescueActions(),
+        unavailableReason: _resolvedGuidedRescueUnavailableReason(),
+        lastKnownTargetPosition: TrackingPosition(
+          latitude: packet.position.latitude,
+          longitude: packet.position.longitude,
+          altitude: packet.position.altitudeMeters.toDouble(),
+          timestamp: receivedAt,
+          source: DeliveryMode.mesh,
+        ),
+        lastUpdatedAt: receivedAt,
+        clearLastError: true,
+      ),
+    );
+  }
+
+  void _handleGuidedRescueSosPacket(
+    EixamSosPacket packet,
+    DateTime receivedAt,
+  ) {
+    if (!_matchesGuidedRescueSession(targetNodeId: packet.nodeId) ||
+        packet.position == null) {
+      return;
+    }
+
+    _publishGuidedRescueState(
+      _guidedRescueState.copyWith(
+        availableActions: _resolvedGuidedRescueActions(),
+        unavailableReason: _resolvedGuidedRescueUnavailableReason(),
+        lastKnownTargetPosition: TrackingPosition(
+          latitude: packet.position!.latitude,
+          longitude: packet.position!.longitude,
+          altitude: packet.position!.altitudeMeters.toDouble(),
+          timestamp: receivedAt,
+          source: DeliveryMode.mesh,
+        ),
+        lastUpdatedAt: receivedAt,
+        clearLastError: true,
+      ),
+    );
+  }
+
+  bool _matchesGuidedRescueSession({
+    required int targetNodeId,
+    int? rescueNodeId,
+  }) {
+    if (!_guidedRescueState.hasSession) {
+      return false;
+    }
+    if (_guidedRescueState.targetNodeId != targetNodeId) {
+      return false;
+    }
+    if (rescueNodeId != null &&
+        _guidedRescueState.rescueNodeId != rescueNodeId) {
+      return false;
+    }
+    return true;
+  }
+
+  void _publishGuidedRescueState(GuidedRescueState nextState) {
+    _guidedRescueState = nextState;
+    _guidedRescueStateController.add(nextState);
+  }
+
   Future<void> dispose() async {
     await _connectionStateSubscription?.cancel();
     await _notificationSubscription?.cancel();
     await _runtimeStatusController.close();
     await _incomingEventsController.close();
+    await _guidedRescueStateController.close();
   }
 }

@@ -75,6 +75,7 @@ class DemoSdkFactory {
       permissionsRepository: permissionsRepository,
       notificationsRepository: LocalNotificationsRepository(),
       realtimeClient: realtimeClient,
+      guidedRescueRuntime: deviceRuntimeProvider,
       deviceSosController: deviceRuntimeProvider.deviceSosController,
       bleIncomingEvents: deviceRuntimeProvider.watchIncomingEvents(),
       preferredBleDeviceStore: preferredBleDeviceStore,

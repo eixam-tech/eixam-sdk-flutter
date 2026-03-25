@@ -45,11 +45,10 @@ class RescueViewState {
           'No device selected',
       lastKnownPositionLabel: positionLabel,
       availabilityNote: rescueState.unavailableReason ??
-          'Waiting for runtime support to execute rescue commands.',
+          'Guided Rescue runtime is connected and ready for device-backed commands.',
       missingSdkApis: const <String>[
-        'BLE/runtime implementation for Rescue port 261 command delivery',
-        'Structured STATUS_RESP decoder feeding GuidedRescueStatusSnapshot',
         'Backend/app orchestration for rescue session selection and lifecycle',
+        'Production rescue transport validation against final firmware/backend coordination',
       ],
       canRequestPosition:
           rescueState.canRun(GuidedRescueAction.requestPosition),

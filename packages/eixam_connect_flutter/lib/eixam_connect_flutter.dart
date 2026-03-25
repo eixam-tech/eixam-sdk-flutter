@@ -40,6 +40,7 @@ export 'src/device/disconnect_reason.dart';
 export 'src/device/eixam_ble_command.dart';
 export 'src/device/eixam_ble_notification.dart';
 export 'src/device/eixam_ble_protocol.dart';
+export 'src/device/eixam_guided_rescue_status_packet.dart';
 export 'src/device/preferred_ble_device.dart';
 export 'src/device/eixam_sos_event_packet.dart';
 export 'src/device/eixam_sos_packet.dart';
