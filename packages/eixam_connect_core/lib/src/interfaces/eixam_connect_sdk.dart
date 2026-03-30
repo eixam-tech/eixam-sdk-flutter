@@ -18,7 +18,15 @@ import '../events/realtime_event.dart';
 /// Public SDK contract consumed by host apps.
 abstract class EixamConnectSdk {
   Future<void> initialize(EixamSdkConfig config);
+
+  /// Stores the signed SDK identity payload provided by the host app.
+  ///
+  /// Host apps are expected to obtain `appId`, `externalUserId`, and
+  /// `userHash` from their own backend or partner backend. The mobile SDK does
+  /// not call partner signing routes and does not compute the hash locally.
   Future<void> setSession(EixamSession session);
+
+  /// Clears the currently persisted SDK identity payload.
   Future<void> clearSession();
 
   Future<DeviceStatus> pairDevice({required String pairingCode});

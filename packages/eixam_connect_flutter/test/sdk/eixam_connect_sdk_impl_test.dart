@@ -1,12 +1,24 @@
+import 'dart:async';
+
 import 'package:async/async.dart';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
 import 'package:eixam_connect_core/src/events/realtime_event.dart';
 import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
+import 'package:eixam_connect_flutter/src/data/datasources_local/sdk_session_store.dart';
+import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_http_transport.dart';
+import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_identity_remote_data_source.dart';
+import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_session_context.dart';
+import 'package:eixam_connect_flutter/src/data/repositories/mqtt_operational_sos_repository.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_sos_packet.dart';
+import 'package:eixam_connect_flutter/src/sdk/mqtt_realtime_client.dart';
+import 'package:eixam_connect_flutter/src/sdk/operational_realtime_client.dart';
+import 'package:eixam_connect_flutter/src/sdk/sdk_mqtt_contract.dart';
+import 'package:eixam_connect_flutter/src/sdk/sdk_mqtt_transport.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
 
 import '../support/builders/device_status_builder.dart';
 import '../support/fakes/memory_shared_prefs_sdk_store.dart';
@@ -440,6 +452,313 @@ void main() {
       expect((event as SOSCancelledEvent).incidentId, incident.id);
     });
 
+    test('setSession persists the signed SDK identity without bootstrap',
+        () async {
+      final localStore = MemorySharedPrefsSdkStore();
+      final localSessionStore = SdkSessionStore(localStore: localStore);
+      final localSessionContext = SdkSessionContext();
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController();
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        sessionStore: localSessionStore,
+        sessionContext: localSessionContext,
+      );
+
+      try {
+        const session = EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-123',
+          userHash: 'deadbeef',
+        );
+
+        await localSdk.setSession(session);
+        final persisted = await localSessionStore.load();
+
+        expect(localSessionContext.currentSession, isNotNull);
+        expect(persisted?.appId, 'app-demo');
+        expect(persisted?.externalUserId, 'external-123');
+        expect(persisted?.userHash, 'deadbeef');
+        expect(localSessionContext.currentSession?.sdkUserId, isNull);
+        expect(persisted?.sdkUserId, isNull);
+      } finally {
+        await localSdk.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test('clearSession removes the persisted SDK identity', () async {
+      final localStore = MemorySharedPrefsSdkStore();
+      final localSessionStore = SdkSessionStore(localStore: localStore);
+      final localSessionContext = SdkSessionContext();
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController();
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        sessionStore: localSessionStore,
+        sessionContext: localSessionContext,
+      );
+
+      try {
+        await localSessionStore.save(
+          const EixamSession(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+            sdkUserId: 'sdk-user-42',
+          ),
+        );
+
+        await localSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await localSdk.clearSession();
+
+        expect(await localSessionStore.load(), isNull);
+        expect(localSessionContext.currentSession, isNull);
+        expect(localRealtimeClient.disconnectCallCount, greaterThanOrEqualTo(1));
+      } finally {
+        await localSdk.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test(
+        'sdk identity enrichment composes /v1/sdk/me headers correctly without requiring sdkUserId ahead of time',
+        () async {
+      late http.Request capturedRequest;
+      final client = _RecordingClient(
+        handler: (request) async {
+          capturedRequest = request;
+          return http.Response(
+            '{"user":{"id":"sdk-user-42"}}',
+            200,
+            headers: const <String, String>{
+              'content-type': 'application/json',
+            },
+          );
+        },
+      );
+      final dataSource = HttpSdkIdentityRemoteDataSource(
+        transport: SdkHttpTransport(
+          client: client,
+          config: const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          sessionContext: SdkSessionContext(),
+        ),
+      );
+      const session = EixamSession(
+        appId: 'app-demo',
+        externalUserId: 'external-123',
+        userHash: 'deadbeef',
+      );
+
+      final bootstrapped = await dataSource.bootstrapSession(session);
+
+      expect(capturedRequest.method, 'GET');
+      expect(capturedRequest.url.toString(), 'https://example.test/v1/sdk/me');
+      expect(capturedRequest.headers['X-App-ID'], 'app-demo');
+      expect(capturedRequest.headers['X-User-ID'], 'external-123');
+      expect(capturedRequest.headers['Authorization'], 'Bearer deadbeef');
+      expect(bootstrapped.sdkUserId, 'sdk-user-42');
+    });
+
+    test('mqtt operational publish requires a signed session', () async {
+      final sessionContext = SdkSessionContext();
+      final mqttClient = MqttRealtimeClient(
+        config: const EixamSdkConfig(
+          apiBaseUrl: 'https://api.example.test',
+          websocketUrl: 'wss://mqtt.example.test/mqtt',
+        ),
+        sessionContext: sessionContext,
+        transportFactory: (_) => _FakeSdkMqttTransport(),
+      );
+
+      try {
+        await expectLater(
+          mqttClient.publishOperationalSos(
+            MqttOperationalSosRequest(
+              timestamp: DateTime.utc(2026, 3, 30, 12),
+              positionSnapshot: TrackingPosition(
+                latitude: 41.38,
+                longitude: 2.17,
+                altitude: 8,
+                timestamp: DateTime.utc(2026, 3, 30, 12),
+              ),
+            ),
+          ),
+          throwsA(
+            isA<AuthException>().having(
+              (error) => error.code,
+              'code',
+              'E_SDK_SESSION_REQUIRED',
+            ),
+          ),
+        );
+      } finally {
+        await mqttClient.dispose();
+      }
+    });
+
+    test('mqtt realtime composes connect properties and event topics', () async {
+      final sessionContext = SdkSessionContext()
+        ..currentSession = const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-123',
+          userHash: 'deadbeef',
+          sdkUserId: 'sdk-user-42',
+        );
+      late SdkMqttConnectRequest capturedRequest;
+      late _FakeSdkMqttTransport transport;
+      final mqttClient = MqttRealtimeClient(
+        config: const EixamSdkConfig(
+          apiBaseUrl: 'https://api.example.test',
+          websocketUrl: 'wss://mqtt.example.test/mqtt',
+        ),
+        sessionContext: sessionContext,
+        transportFactory: (request) {
+          capturedRequest = request;
+          transport = _FakeSdkMqttTransport();
+          return transport;
+        },
+      );
+
+      try {
+        await mqttClient.connect();
+
+        expect(capturedRequest.userProperties, <String, String>{
+          'x_app_id': 'app-demo',
+          'x_user_id': 'external-123',
+          'authorization': 'Bearer deadbeef',
+        });
+        expect(
+          transport.subscriptions,
+          containsAll(<String>[
+            'sos/events/sdk-user-42',
+            'sos/events/external-123',
+          ]),
+        );
+      } finally {
+        await mqttClient.dispose();
+      }
+    });
+
+    test('mqtt realtime prevents overlapping connect attempts', () async {
+      final sessionContext = SdkSessionContext()
+        ..currentSession = const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-123',
+          userHash: 'deadbeef',
+        );
+      final completer = Completer<void>();
+      final transport = _FakeSdkMqttTransport(connectCompleter: completer);
+      final mqttClient = MqttRealtimeClient(
+        config: const EixamSdkConfig(
+          apiBaseUrl: 'https://api.example.test',
+          websocketUrl: 'wss://mqtt.example.test/mqtt',
+        ),
+        sessionContext: sessionContext,
+        transportFactory: (_) => transport,
+      );
+
+      try {
+        final first = mqttClient.connect();
+        final second = mqttClient.connect();
+        await Future<void>.delayed(Duration.zero);
+        expect(transport.connectCallCount, 1);
+
+        completer.complete();
+        await Future.wait(<Future<void>>[first, second]);
+
+        expect(transport.connectCallCount, 1);
+      } finally {
+        await mqttClient.dispose();
+      }
+    });
+
+    test('mqtt reconnect is stopped by manual disconnect', () async {
+      final sessionContext = SdkSessionContext()
+        ..currentSession = const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-123',
+          userHash: 'deadbeef',
+        );
+      final firstTransport = _FakeSdkMqttTransport();
+      final transports = <_FakeSdkMqttTransport>[firstTransport];
+      final mqttClient = MqttRealtimeClient(
+        config: const EixamSdkConfig(
+          apiBaseUrl: 'https://api.example.test',
+          websocketUrl: 'wss://mqtt.example.test/mqtt',
+        ),
+        sessionContext: sessionContext,
+        reconnectDelay: const Duration(milliseconds: 20),
+        transportFactory: (_) => transports.removeAt(0),
+      );
+
+      try {
+        await mqttClient.connect();
+        firstTransport.emitDisconnect(solicited: false);
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        await mqttClient.disconnect();
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+
+        expect(firstTransport.connectCallCount, 1);
+        expect(firstTransport.disconnectCallCount, greaterThanOrEqualTo(1));
+        expect(transports, isEmpty);
+      } finally {
+        await mqttClient.dispose();
+      }
+    });
+
+    test('mqtt SOS repository publishes alerts over mqtt topic', () async {
+      final realtimeClient = _FakeOperationalRealtimeClient();
+      final repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+      );
+
+      try {
+        final incident = await repository.triggerSos(
+          message: 'Need help',
+          triggerSource: 'button_ui',
+          positionSnapshot: TrackingPosition(
+            latitude: 41.38,
+            longitude: 2.17,
+            altitude: 8,
+            timestamp: DateTime.utc(2026, 3, 30, 12),
+          ),
+        );
+
+        expect(incident.state, SosState.sent);
+        expect(realtimeClient.publishedRequests, hasLength(1));
+        final envelope = SdkMqttContract.buildOperationalSosEnvelope(
+          realtimeClient.publishedRequests.single,
+        );
+        expect(envelope.topic, SdkMqttTopics.sosAlerts);
+      } finally {
+        await repository.dispose();
+        await realtimeClient.dispose();
+      }
+    });
+
     test(
         'scheduleDeathMan transitions the repository to monitoring and emits an event',
         () async {
@@ -568,6 +887,115 @@ void main() {
       }
     });
   });
+}
+
+class _RecordingClient extends http.BaseClient {
+  _RecordingClient({required this.handler});
+
+  final Future<http.Response> Function(http.Request request) handler;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    final replayable = http.Request(request.method, request.url)
+      ..headers.addAll(request.headers);
+    final response = await handler(replayable);
+    return http.StreamedResponse(
+      Stream<List<int>>.value(response.bodyBytes),
+      response.statusCode,
+      headers: response.headers,
+      request: request,
+    );
+  }
+}
+
+class _FakeSdkMqttTransport implements SdkMqttTransport {
+  _FakeSdkMqttTransport({this.connectCompleter});
+
+  final Completer<void>? connectCompleter;
+  final StreamController<SdkMqttIncomingMessage> _messageController =
+      StreamController<SdkMqttIncomingMessage>.broadcast();
+  final StreamController<SdkMqttDisconnectEvent> _disconnectController =
+      StreamController<SdkMqttDisconnectEvent>.broadcast();
+  final List<String> subscriptions = <String>[];
+
+  int connectCallCount = 0;
+  int disconnectCallCount = 0;
+  bool _disposed = false;
+
+  @override
+  Future<void> connect() async {
+    connectCallCount++;
+    await connectCompleter?.future;
+  }
+
+  @override
+  Future<void> disconnect() async {
+    disconnectCallCount++;
+  }
+
+  @override
+  Future<void> dispose() async {
+    if (_disposed) {
+      return;
+    }
+    _disposed = true;
+    await _messageController.close();
+    await _disconnectController.close();
+  }
+
+  void emitDisconnect({required bool solicited}) {
+    _disconnectController.add(SdkMqttDisconnectEvent(solicited: solicited));
+  }
+
+  @override
+  Future<void> publish({
+    required String topic,
+    required String payload,
+  }) async {}
+
+  @override
+  Future<void> subscribe(String topic) async {
+    subscriptions.add(topic);
+  }
+
+  @override
+  Stream<SdkMqttDisconnectEvent> watchDisconnects() =>
+      _disconnectController.stream;
+
+  @override
+  Stream<SdkMqttIncomingMessage> watchMessages() => _messageController.stream;
+}
+
+class _FakeOperationalRealtimeClient implements OperationalRealtimeClient {
+  final List<MqttOperationalSosRequest> publishedRequests =
+      <MqttOperationalSosRequest>[];
+  final StreamController<RealtimeEvent> _eventsController =
+      StreamController<RealtimeEvent>.broadcast();
+
+  @override
+  Future<void> publishOperationalSos(MqttOperationalSosRequest request) async {
+    publishedRequests.add(
+      request.copyWith(sdkUserId: 'sdk-user-42'),
+    );
+  }
+
+  @override
+  Future<void> reconnectIfSessionChanged(EixamSession session) async {}
+
+  @override
+  Future<void> connect() async {}
+
+  @override
+  Future<void> disconnect() async {}
+
+  @override
+  Stream<RealtimeConnectionState> watchConnectionState() =>
+      const Stream<RealtimeConnectionState>.empty();
+
+  @override
+  Stream<RealtimeEvent> watchEvents() => _eventsController.stream;
+
+  Future<void> dispose() => _eventsController.close();
 }
 
 EixamSosPacket _deviceOriginPacket() {

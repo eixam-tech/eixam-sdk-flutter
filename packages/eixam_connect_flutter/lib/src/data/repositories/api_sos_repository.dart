@@ -105,7 +105,11 @@ class ApiSosRepository implements SosRepository {
         incidentId: _activeIncident!.id,
         reason: reason,
       );
-      _activeIncident = mapper.toDomain(dto);
+      if (dto == null) {
+        _activeIncident = _activeIncident!.copyWith(state: SosState.cancelled);
+      } else {
+        _activeIncident = mapper.toDomain(dto);
+      }
       _emit(_activeIncident!.state);
       await _persistState();
       return _activeIncident!;

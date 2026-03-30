@@ -39,7 +39,7 @@ class MockSosRemoteDataSource implements SosRemoteDataSource {
   }
 
   @override
-  Future<SosIncidentDto> cancelSos(
+  Future<SosIncidentDto?> cancelSos(
       {required String incidentId, String? reason}) async {
     await Future<void>.delayed(const Duration(milliseconds: 200));
     if (_active == null || _active!.id != incidentId) {

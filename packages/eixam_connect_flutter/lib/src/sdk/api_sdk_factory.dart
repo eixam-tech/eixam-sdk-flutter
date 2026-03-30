@@ -2,31 +2,34 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import '../data/datasources_local/shared_prefs_sdk_store.dart';
 import '../data/datasources_local/preferred_ble_device_store.dart';
+import '../data/datasources_local/sdk_session_store.dart';
 import '../data/datasources_remote/mock_sos_remote_data_source.dart';
+import '../data/datasources_remote/sdk_session_context.dart';
 import '../data/repositories/api_sos_repository.dart';
 import '../data/repositories/geolocator_tracking_repository.dart';
 import '../data/repositories/in_memory_contacts_repository.dart';
 import '../data/repositories/in_memory_death_man_repository.dart';
 import '../data/repositories/in_memory_device_repository.dart';
 import '../data/repositories/local_notifications_repository.dart';
+import '../data/repositories/mqtt_operational_sos_repository.dart';
 import '../data/repositories/platform_permissions_repository.dart';
 import '../device/ble_device_runtime_provider.dart';
 import '../device/ble_debug_registry.dart';
 import '../device/mock_ble_client.dart';
 import '../device/real_ble_client.dart';
 import 'eixam_connect_sdk_impl.dart';
+import 'mqtt5_sdk_transport.dart';
+import 'mqtt_realtime_client.dart';
 import 'mock_realtime_client.dart';
 
 /// Factory helpers for API-backed and mock-API-backed SDK instances.
-///
-/// For now both factory methods use mock SOS remote data while the realtime
-/// layer and SDK plumbing are stabilized. The HTTP remote datasource can be
-/// reintroduced once its constructor contract is confirmed.
 class ApiSdkFactory {
   static Future<EixamConnectSdk> createMockApi() async {
     BleDebugRegistry.instance.reset();
 
     final store = SharedPrefsSdkStore();
+    final sessionStore = SdkSessionStore(localStore: store);
+    final sessionContext = SdkSessionContext();
     final preferredBleDeviceStore = PreferredBleDeviceStore(localStore: store);
     final permissionsRepository = PlatformPermissionsRepository();
 
@@ -75,6 +78,8 @@ class ApiSdkFactory {
       deviceSosController: deviceRuntimeProvider.deviceSosController,
       bleIncomingEvents: deviceRuntimeProvider.watchIncomingEvents(),
       preferredBleDeviceStore: preferredBleDeviceStore,
+      sessionStore: sessionStore,
+      sessionContext: sessionContext,
     );
 
     await sdk.initialize(
@@ -94,13 +99,24 @@ class ApiSdkFactory {
     BleDebugRegistry.instance.reset();
 
     final store = SharedPrefsSdkStore();
+    final sessionStore = SdkSessionStore(localStore: store);
+    final sessionContext = SdkSessionContext();
     final preferredBleDeviceStore = PreferredBleDeviceStore(localStore: store);
     final permissionsRepository = PlatformPermissionsRepository();
-
-    // Temporary mock fallback until the real HTTP datasource constructor
-    // is confirmed and aligned with the SDK.
-    final sosRepository = ApiSosRepository(
-      remoteDataSource: MockSosRemoteDataSource(),
+    final config = EixamSdkConfig(
+      apiBaseUrl: apiBaseUrl,
+      websocketUrl: websocketUrl,
+    );
+    final realtimeClient = MqttRealtimeClient(
+      config: config,
+      sessionContext: sessionContext,
+      transportFactory: (request) => Mqtt5SdkTransport(
+        request: request,
+        enableLogging: config.enableLogging,
+      ),
+    );
+    final sosRepository = MqttOperationalSosRepository(
+      realtimeClient: realtimeClient,
       localStore: store,
     );
 
@@ -117,7 +133,7 @@ class ApiSdkFactory {
     try {
       await bleClient.initialize();
     } catch (_) {
-      // no tombis l'app al bootstrap
+      // Keep SDK bootstrap resilient even when BLE is temporarily unavailable.
     }
 
     final deviceRuntimeProvider =
@@ -126,8 +142,6 @@ class ApiSdkFactory {
       runtimeProvider: deviceRuntimeProvider,
       localStore: store,
     );
-
-    final realtimeClient = MockRealtimeClient();
 
     await sosRepository.restoreState();
     await trackingRepository.restoreState();
@@ -148,11 +162,15 @@ class ApiSdkFactory {
       deviceSosController: deviceRuntimeProvider.deviceSosController,
       bleIncomingEvents: deviceRuntimeProvider.watchIncomingEvents(),
       preferredBleDeviceStore: preferredBleDeviceStore,
+      sessionStore: sessionStore,
+      sessionContext: sessionContext,
+      disposeCallback: () async {
+        await sosRepository.dispose();
+        await realtimeClient.dispose();
+      },
     );
 
-    await sdk.initialize(
-      EixamSdkConfig(apiBaseUrl: apiBaseUrl, websocketUrl: websocketUrl),
-    );
+    await sdk.initialize(config);
 
     return sdk;
   }

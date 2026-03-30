@@ -10,10 +10,7 @@ class SosIncidentMapper {
   SosIncident toDomain(SosIncidentDto dto) {
     return SosIncident(
       id: dto.id,
-      state: SosState.values.firstWhere(
-        (value) => value.name == dto.state,
-        orElse: () => SosState.failed,
-      ),
+      state: _mapState(dto.state),
       createdAt: DateTime.parse(dto.createdAt),
       triggerSource: dto.triggerSource,
       message: dto.message,
@@ -22,5 +19,18 @@ class SosIncidentMapper {
           : LocalStateSerializers.trackingPositionFromJson(
               dto.positionSnapshot!),
     );
+  }
+
+  SosState _mapState(String value) {
+    return switch (value) {
+      'active' => SosState.sent,
+      'acknowledged' => SosState.acknowledged,
+      'cancelled' => SosState.cancelled,
+      'resolved' => SosState.resolved,
+      _ => SosState.values.firstWhere(
+          (candidate) => candidate.name == value,
+          orElse: () => SosState.failed,
+        ),
+    };
   }
 }

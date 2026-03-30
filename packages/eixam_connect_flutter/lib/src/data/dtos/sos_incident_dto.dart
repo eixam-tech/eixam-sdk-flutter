@@ -1,4 +1,6 @@
 //// DTO representation of an SOS incident returned by the backend layer.
+import 'package:eixam_connect_core/eixam_connect_core.dart';
+
 class SosIncidentDto {
   final String id;
   final String state;
@@ -19,13 +21,18 @@ class SosIncidentDto {
   factory SosIncidentDto.fromJson(Map<String, dynamic> json) {
     return SosIncidentDto(
       id: json['id'] as String,
-      state: json['state'] as String,
-      createdAt: json['createdAt'] as String,
+      state: (json['state'] as String?) ??
+          (json['status'] as String?) ??
+          'failed',
+      createdAt: (json['createdAt'] as String?) ??
+          (json['created_at'] as String?) ??
+          (json['occurredAt'] as String?) ??
+          (json['timestamp'] as String?) ??
+          DateTime.now().toIso8601String(),
       triggerSource:
           json['triggerSource'] as String? ?? json['trigger_source'] as String?,
       message: json['message'] as String?,
-      positionSnapshot: json['positionSnapshot'] as Map<String, dynamic>? ??
-          json['position_snapshot'] as Map<String, dynamic>?,
+      positionSnapshot: _positionSnapshotFromJson(json),
     );
   }
 
@@ -45,5 +52,30 @@ class SosIncidentDto {
       message: message ?? this.message,
       positionSnapshot: positionSnapshot ?? this.positionSnapshot,
     );
+  }
+
+  static Map<String, dynamic>? _positionSnapshotFromJson(
+    Map<String, dynamic> json,
+  ) {
+    final existing = json['positionSnapshot'] as Map<String, dynamic>? ??
+        json['position_snapshot'] as Map<String, dynamic>?;
+    if (existing != null) return existing;
+
+    final latitude = json['latitude'];
+    final longitude = json['longitude'];
+    if (latitude is! num || longitude is! num) {
+      return null;
+    }
+
+    return <String, dynamic>{
+      'latitude': latitude.toDouble(),
+      'longitude': longitude.toDouble(),
+      if (json['altitude'] is num) 'altitude': (json['altitude'] as num).toDouble(),
+      'source': DeliveryMode.mobile.name,
+      'timestamp': (json['timestamp'] as String?) ??
+          (json['occurredAt'] as String?) ??
+          (json['createdAt'] as String?) ??
+          DateTime.now().toIso8601String(),
+    };
   }
 }

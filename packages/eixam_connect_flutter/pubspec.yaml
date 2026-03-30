@@ -16,6 +16,7 @@ dependencies:
   shared_preferences: ^2.3.2
   flutter_blue_plus: ^1.35.5
   async: ^2.11.0
+  mqtt5_client: ^4.17.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -7,12 +7,15 @@ import 'package:eixam_connect_core/src/interfaces/realtime_client.dart';
 import 'package:flutter/widgets.dart';
 
 import '../data/datasources_local/preferred_ble_device_store.dart';
-import '../device/ble_debug_registry.dart';
+import '../data/datasources_local/sdk_session_store.dart';
 import '../device/ble_incoming_event.dart';
 import '../device/device_sos_controller.dart';
+import '../device/ble_debug_registry.dart';
+import '../data/datasources_remote/sdk_session_context.dart';
 import 'ble_auto_reconnect_coordinator.dart';
 import 'ble_sos_notification_payload.dart';
 import 'guided_rescue_runtime.dart';
+import 'operational_realtime_client.dart';
 
 /// Main SDK orchestrator used by host apps.
 ///
@@ -34,6 +37,9 @@ class EixamConnectSdkImpl
   final Stream<BleIncomingEvent> bleIncomingEvents;
   final PreferredBleDeviceStore preferredBleDeviceStore;
   final GuidedRescueRuntime? guidedRescueRuntime;
+  final SdkSessionStore? sessionStore;
+  final SdkSessionContext? sessionContext;
+  final Future<void> Function()? disposeCallback;
 
   final StreamController<EixamSdkEvent> _eventsController =
       StreamController.broadcast();
@@ -69,6 +75,7 @@ class EixamConnectSdkImpl
   String? _activeDeviceSosCycleKey;
   String? _notifiedDeviceSosCycleKey;
   DeviceSosState? _notifiedDeviceSosState;
+  EixamSession? _session;
   late final BleAutoReconnectCoordinator _bleAutoReconnectCoordinator;
 
   static const String _openAppActionId = 'open_app';
@@ -90,6 +97,9 @@ class EixamConnectSdkImpl
     required this.bleIncomingEvents,
     required this.preferredBleDeviceStore,
     this.guidedRescueRuntime,
+    this.sessionStore,
+    this.sessionContext,
+    this.disposeCallback,
   }) {
     _bleAutoReconnectCoordinator = BleAutoReconnectCoordinator(
       deviceRepository: deviceRepository,
@@ -99,6 +109,10 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> initialize(EixamSdkConfig config) async {
+    _session = await sessionStore?.load();
+    if (sessionContext != null) {
+      sessionContext!.currentSession = _session;
+    }
     _lastDeviceStatus = await deviceRepository.getDeviceStatus();
     await deviceSosController.getStatus();
     _guidedRescueState = guidedRescueRuntime == null
@@ -181,12 +195,27 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> setSession(EixamSession session) async {
-    // TODO: wire host/backend session state into authenticated SDK transports.
+    _session = session;
+    if (sessionContext != null) {
+      sessionContext!.currentSession = session;
+    }
+    await sessionStore?.save(session);
+    final realtime = realtimeClient;
+    if (realtime is OperationalRealtimeClient) {
+      await realtime.reconnectIfSessionChanged(session);
+      return;
+    }
+    await realtimeClient.connect();
   }
 
   @override
   Future<void> clearSession() async {
-    // TODO: clear authenticated SDK transport session state once implemented.
+    _session = null;
+    if (sessionContext != null) {
+      sessionContext!.currentSession = null;
+    }
+    await sessionStore?.clear();
+    await realtimeClient.disconnect();
   }
 
   @override
@@ -1234,6 +1263,7 @@ class EixamConnectSdkImpl
     await _guidedRescueSub?.cancel();
     await deviceSosController.dispose();
     await realtimeClient.disconnect();
+    await disposeCallback?.call();
     await _realtimeConnectionStateController.close();
     await _realtimeEventsController.close();
     await _guidedRescueStateController.close();
