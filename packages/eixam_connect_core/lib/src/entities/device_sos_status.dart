@@ -3,9 +3,12 @@ import '../enums/device_sos_transition_source.dart';
 import '../enums/device_battery_level.dart';
 
 class DeviceSosStatus {
+  static const Object _unset = Object();
+
   final DeviceSosState state;
   final DeviceSosState? previousState;
   final DeviceSosTransitionSource transitionSource;
+  final DeviceSosTransitionSource triggerOrigin;
   final String lastEvent;
   final DateTime updatedAt;
   final bool optimistic;
@@ -26,11 +29,15 @@ class DeviceSosStatus {
   final int? packetId;
   final bool? hasLocation;
   final String? decoderNote;
+  final DateTime? countdownStartedAt;
+  final DateTime? expectedActivationAt;
+  final int? countdownRemainingSeconds;
 
   const DeviceSosStatus({
     required this.state,
     this.previousState,
     this.transitionSource = DeviceSosTransitionSource.unknown,
+    this.triggerOrigin = DeviceSosTransitionSource.unknown,
     required this.lastEvent,
     required this.updatedAt,
     this.optimistic = false,
@@ -51,6 +58,9 @@ class DeviceSosStatus {
     this.packetId,
     this.hasLocation,
     this.decoderNote,
+    this.countdownStartedAt,
+    this.expectedActivationAt,
+    this.countdownRemainingSeconds,
   });
 
   factory DeviceSosStatus.initial() {
@@ -58,6 +68,7 @@ class DeviceSosStatus {
       state: DeviceSosState.inactive,
       previousState: null,
       transitionSource: DeviceSosTransitionSource.unknown,
+      triggerOrigin: DeviceSosTransitionSource.unknown,
       lastEvent: 'Device SOS inactive',
       updatedAt: DateTime.now(),
     );
@@ -67,6 +78,7 @@ class DeviceSosStatus {
     DeviceSosState? state,
     DeviceSosState? previousState,
     DeviceSosTransitionSource? transitionSource,
+    DeviceSosTransitionSource? triggerOrigin,
     String? lastEvent,
     DateTime? updatedAt,
     bool? optimistic,
@@ -87,11 +99,15 @@ class DeviceSosStatus {
     int? packetId,
     bool? hasLocation,
     String? decoderNote,
+    Object? countdownStartedAt = _unset,
+    Object? expectedActivationAt = _unset,
+    Object? countdownRemainingSeconds = _unset,
   }) {
     return DeviceSosStatus(
       state: state ?? this.state,
       previousState: previousState ?? this.previousState,
       transitionSource: transitionSource ?? this.transitionSource,
+      triggerOrigin: triggerOrigin ?? this.triggerOrigin,
       lastEvent: lastEvent ?? this.lastEvent,
       updatedAt: updatedAt ?? this.updatedAt,
       optimistic: optimistic ?? this.optimistic,
@@ -112,6 +128,15 @@ class DeviceSosStatus {
       packetId: packetId ?? this.packetId,
       hasLocation: hasLocation ?? this.hasLocation,
       decoderNote: decoderNote ?? this.decoderNote,
+      countdownStartedAt: identical(countdownStartedAt, _unset)
+          ? this.countdownStartedAt
+          : countdownStartedAt as DateTime?,
+      expectedActivationAt: identical(expectedActivationAt, _unset)
+          ? this.expectedActivationAt
+          : expectedActivationAt as DateTime?,
+      countdownRemainingSeconds: identical(countdownRemainingSeconds, _unset)
+          ? this.countdownRemainingSeconds
+          : countdownRemainingSeconds as int?,
     );
   }
 }

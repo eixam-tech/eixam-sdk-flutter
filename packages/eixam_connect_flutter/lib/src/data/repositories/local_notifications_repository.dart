@@ -41,10 +41,11 @@ class LocalNotificationsRepository implements NotificationsRepository {
               },
             ),
             DarwinNotificationAction.plain(
-              'backend_ack_sos',
-              'Send Backend ACK',
+              'cancel_sos',
+              'Cancel SOS',
               options: <DarwinNotificationActionOption>{
                 DarwinNotificationActionOption.foreground,
+                DarwinNotificationActionOption.destructive,
               },
             ),
             DarwinNotificationAction.plain(
@@ -55,11 +56,18 @@ class LocalNotificationsRepository implements NotificationsRepository {
               },
             ),
             DarwinNotificationAction.plain(
-              'cancel_or_resolve_sos',
+              'resolve_sos',
               'Resolve SOS',
               options: <DarwinNotificationActionOption>{
                 DarwinNotificationActionOption.foreground,
                 DarwinNotificationActionOption.destructive,
+              },
+            ),
+            DarwinNotificationAction.plain(
+              'confirm_dead_man_safe',
+              'I\'m OK',
+              options: <DarwinNotificationActionOption>{
+                DarwinNotificationActionOption.foreground,
               },
             ),
           ],

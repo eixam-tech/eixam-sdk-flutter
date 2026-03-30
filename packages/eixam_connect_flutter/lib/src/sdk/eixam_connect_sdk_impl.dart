@@ -68,12 +68,14 @@ class EixamConnectSdkImpl
   BleNotificationNavigationRequest? _pendingBleNotificationNavigationRequest;
   String? _activeDeviceSosCycleKey;
   String? _notifiedDeviceSosCycleKey;
+  DeviceSosState? _notifiedDeviceSosState;
   late final BleAutoReconnectCoordinator _bleAutoReconnectCoordinator;
 
   static const String _openAppActionId = 'open_app';
-  static const String _backendAckSosActionId = 'backend_ack_sos';
-  static const String _cancelOrResolveSosActionId = 'cancel_or_resolve_sos';
+  static const String _cancelSosActionId = 'cancel_sos';
+  static const String _resolveSosActionId = 'resolve_sos';
   static const String _confirmSosActionId = 'confirm_sos';
+  static const String _confirmDeadManSafeActionId = 'confirm_dead_man_safe';
 
   EixamConnectSdkImpl({
     required this.sosRepository,
@@ -423,6 +425,11 @@ class EixamConnectSdkImpl
 
   Future<void> _handleDeviceSosStatus(DeviceSosStatus status) async {
     final cycleKey = _deriveDeviceSosCycleKey(status);
+    final isDeviceTimeoutPromotion = !status.derivedFromBlePacket &&
+        status.state == DeviceSosState.active &&
+        status.previousState == DeviceSosState.preConfirm &&
+        status.triggerOrigin == DeviceSosTransitionSource.device &&
+        status.transitionSource == DeviceSosTransitionSource.device;
 
     BleDebugRegistry.instance.recordEvent(
       'SOS packet observed -> payload=${status.lastPacketHex ?? '-'} state=${status.state.name} source=${status.transitionSource.name}',
@@ -431,7 +438,7 @@ class EixamConnectSdkImpl
       'SOS state derived -> state=${status.state.name} previous=${status.previousState?.name ?? '-'} source=${status.transitionSource.name} derivedFromBle=${status.derivedFromBlePacket} nodeId=${_formatNodeId(status.nodeId)} packetId=${status.packetId?.toString() ?? '-'}',
     );
     BleDebugRegistry.instance.recordEvent(
-      'SOS cycle evaluated -> key=${cycleKey ?? '-'} activeCycle=${_activeDeviceSosCycleKey ?? '-'} notifiedCycle=${_notifiedDeviceSosCycleKey ?? '-'}',
+      'SOS cycle evaluated -> key=${cycleKey ?? '-'} activeCycle=${_activeDeviceSosCycleKey ?? '-'} notifiedCycle=${_notifiedDeviceSosCycleKey ?? '-'} notifiedState=${_notifiedDeviceSosState?.name ?? '-'}',
     );
 
     if (_isSosCycleClosed(status.state)) {
@@ -440,9 +447,10 @@ class EixamConnectSdkImpl
       );
       _activeDeviceSosCycleKey = null;
       _notifiedDeviceSosCycleKey = null;
+      _notifiedDeviceSosState = null;
     }
 
-    if (!status.derivedFromBlePacket) {
+    if (!status.derivedFromBlePacket && !isDeviceTimeoutPromotion) {
       BleDebugRegistry.instance.recordEvent(
         'SOS notification skipped -> reason=not_from_ble_packet cycleKey=${cycleKey ?? "-"}',
       );
@@ -484,20 +492,23 @@ class EixamConnectSdkImpl
     }
 
     if (_notifiedDeviceSosCycleKey == cycleKey) {
+      if (_notifiedDeviceSosState == status.state) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS notification skipped -> reason=already_notified_for_cycle_state cycleKey=$cycleKey state=${status.state.name}',
+        );
+        return;
+      }
       BleDebugRegistry.instance.recordEvent(
-        'SOS notification skipped -> reason=already_notified_for_cycle cycleKey=$cycleKey',
+        'SOS notification state advanced -> cycleKey=$cycleKey from=${_notifiedDeviceSosState?.name ?? "-"} to=${status.state.name}',
       );
-      return;
     }
-    _notifiedDeviceSosCycleKey = cycleKey;
 
-    final deviceLabel = _deviceLabel(
-      deviceAlias: _lastDeviceStatus?.deviceAlias,
-      fallbackDeviceId: _lastDeviceStatus?.deviceId,
-    );
-    final title = 'SOS received from $deviceLabel';
-    final body = _notificationBodyForSosPacket(status);
-    final actions = _notificationActionsForSosState(DeviceSosState.active);
+    _notifiedDeviceSosCycleKey = cycleKey;
+    _notifiedDeviceSosState = status.state;
+
+    final title = _notificationTitleForSosState(status.state);
+    final body = _notificationBodyForSosState(status.state);
+    final actions = _notificationActionsForSosState(status.state);
     final payload = BleSosNotificationPayload(
       kind: 'sos_received',
       state: status.state,
@@ -561,14 +572,18 @@ class EixamConnectSdkImpl
     return status.lastPacketSignature;
   }
 
-  String _notificationBodyForSosPacket(DeviceSosStatus status) {
-    final nodeId = status.nodeId;
-    final nodeIdSuffix =
-        nodeId == null ? '' : ' Node ${_formatNodeId(nodeId)}.';
-    final locationSuffix = status.hasLocation == true
-        ? ' Packet includes location.'
-        : ' Packet does not include location.';
-    return 'The connected device sent an SOS packet.$nodeIdSuffix$locationSuffix';
+  String _notificationTitleForSosState(DeviceSosState state) {
+    if (state == DeviceSosState.preConfirm) {
+      return 'Preventive SOS sent';
+    }
+    return 'SOS activated';
+  }
+
+  String _notificationBodyForSosState(DeviceSosState state) {
+    if (state == DeviceSosState.preConfirm) {
+      return 'Pending confirmation. You can cancel it or confirm it now.';
+    }
+    return 'Emergency protocol is now active. You can cancel or resolve the SOS.';
   }
 
   List<LocalNotificationAction> _notificationActionsForSosState(
@@ -585,17 +600,17 @@ class EixamConnectSdkImpl
     if (state == DeviceSosState.preConfirm) {
       actions.add(
         const LocalNotificationAction(
-          id: _confirmSosActionId,
-          title: 'Confirm SOS',
+          id: _cancelSosActionId,
+          title: 'Cancel SOS',
           foreground: true,
+          destructive: true,
         ),
       );
       actions.add(
         const LocalNotificationAction(
-          id: _cancelOrResolveSosActionId,
-          title: 'Resolve SOS',
+          id: _confirmSosActionId,
+          title: 'Confirm SOS',
           foreground: true,
-          destructive: true,
         ),
       );
     }
@@ -603,14 +618,15 @@ class EixamConnectSdkImpl
     if (state == DeviceSosState.active) {
       actions.add(
         const LocalNotificationAction(
-          id: _backendAckSosActionId,
-          title: 'Send Backend ACK',
+          id: _cancelSosActionId,
+          title: 'Cancel SOS',
           foreground: true,
+          destructive: true,
         ),
       );
       actions.add(
         const LocalNotificationAction(
-          id: _cancelOrResolveSosActionId,
+          id: _resolveSosActionId,
           title: 'Resolve SOS',
           foreground: true,
           destructive: true,
@@ -621,7 +637,15 @@ class EixamConnectSdkImpl
     if (state == DeviceSosState.acknowledged) {
       actions.add(
         const LocalNotificationAction(
-          id: _cancelOrResolveSosActionId,
+          id: _cancelSosActionId,
+          title: 'Cancel SOS',
+          foreground: true,
+          destructive: true,
+        ),
+      );
+      actions.add(
+        const LocalNotificationAction(
+          id: _resolveSosActionId,
           title: 'Resolve SOS',
           foreground: true,
           destructive: true,
@@ -635,12 +659,27 @@ class EixamConnectSdkImpl
   Future<void> _handleNotificationAction(
     NotificationActionInvocation invocation,
   ) async {
-    final payload = BleSosNotificationPayload.tryParse(invocation.payload);
     final actionId = invocation.actionId;
     BleDebugRegistry.instance.recordEvent(
       'Notification action tapped -> action=$actionId payload=${invocation.payload ?? '-'} launchedApp=${invocation.launchedApp}',
     );
 
+    final deathManPayload =
+        _DeathManNotificationPayload.tryParse(invocation.payload);
+    if (deathManPayload != null) {
+      try {
+        await _handleDeathManNotificationAction(actionId, deathManPayload);
+      } catch (error, stackTrace) {
+        BleDebugRegistry.instance.recordEvent(
+          'Death Man notification action failed -> action=$actionId error=$error',
+        );
+        debugPrint('Death Man notification action failed: $error');
+        debugPrintStack(stackTrace: stackTrace);
+      }
+      return;
+    }
+
+    final payload = BleSosNotificationPayload.tryParse(invocation.payload);
     if (payload == null) {
       await _queueBleNotificationNavigation(
         actionId: actionId,
@@ -682,10 +721,8 @@ class EixamConnectSdkImpl
         'BLE command attempted from notification action -> action=$actionId',
       );
       switch (actionId) {
-        case _backendAckSosActionId:
-          await acknowledgeDeviceSos();
-          return;
-        case _cancelOrResolveSosActionId:
+        case _cancelSosActionId:
+        case _resolveSosActionId:
           await cancelDeviceSos();
           return;
         case _confirmSosActionId:
@@ -719,6 +756,26 @@ class EixamConnectSdkImpl
     }
   }
 
+  Future<void> _handleDeathManNotificationAction(
+    String actionId,
+    _DeathManNotificationPayload payload,
+  ) async {
+    if (actionId == _confirmDeadManSafeActionId) {
+      await confirmDeathManCheckIn(payload.planId);
+      final activePlan = await deathManRepository.getActiveDeathManPlan();
+      if (activePlan?.id == payload.planId) {
+        await cancelDeathMan(payload.planId);
+      }
+      return;
+    }
+
+    await _queueBleNotificationNavigation(
+      actionId: actionId,
+      reason: 'Open the app to review the Dead Man safety check.',
+      state: DeviceSosState.unknown,
+    );
+  }
+
   bool _canExecuteBleActionNow() {
     final status = _lastDeviceStatus;
     return status != null &&
@@ -744,16 +801,6 @@ class EixamConnectSdkImpl
     );
     _pendingBleNotificationNavigationRequest = request;
     _bleNotificationNavigationController.add(request);
-  }
-
-  String _deviceLabel({String? deviceAlias, String? fallbackDeviceId}) {
-    if (deviceAlias != null && deviceAlias.trim().isNotEmpty) {
-      return deviceAlias;
-    }
-    if (fallbackDeviceId != null && fallbackDeviceId.trim().isNotEmpty) {
-      return fallbackDeviceId;
-    }
-    return 'EIXAM device';
   }
 
   String _formatNodeId(int? nodeId) {
@@ -972,7 +1019,12 @@ class EixamConnectSdkImpl
     );
   }
 
-  Future<void> _notifyDeathMan(String title, String body) async {
+  Future<void> _notifyDeathMan(
+    String title,
+    String body, {
+    String? planId,
+    bool includeConfirmAction = false,
+  }) async {
     try {
       await notificationsRepository.initialize(
         onAction: _handleNotificationAction,
@@ -980,6 +1032,12 @@ class EixamConnectSdkImpl
       await notificationsRepository.showLocalNotification(
         title: title,
         body: body,
+        payload: planId == null
+            ? null
+            : _DeathManNotificationPayload(planId).serialize(),
+        actions: _notificationActionsForDeathMan(
+          includeConfirmAction: includeConfirmAction,
+        ),
       );
     } catch (_) {
       // Best effort; death man logic should continue.
@@ -1035,6 +1093,8 @@ class EixamConnectSdkImpl
         await _notifyDeathMan(
           'Safety check pending',
           'You are past the expected return time. Please confirm that you are safe.',
+          planId: plan.id,
+          includeConfirmAction: true,
         );
         _eventsController.add(
           DeathManStatusChangedEvent(plan.id, DeathManStatus.overdue.name),
@@ -1052,6 +1112,8 @@ class EixamConnectSdkImpl
         await _notifyDeathMan(
           'Confirmation required',
           'If you do not respond during the check-in window, the SOS protocol will be triggered.',
+          planId: plan.id,
+          includeConfirmAction: true,
         );
         _eventsController.add(
           DeathManStatusChangedEvent(
@@ -1072,6 +1134,7 @@ class EixamConnectSdkImpl
       await _notifyDeathMan(
         'Protocol escalated',
         'No response was received. Automatic escalation has been triggered.',
+        planId: plan.id,
       );
       if (plan.autoTriggerSos) {
         await triggerSos(
@@ -1095,6 +1158,28 @@ class EixamConnectSdkImpl
         status == DeathManStatus.monitoring ||
         status == DeathManStatus.overdue ||
         status == DeathManStatus.awaitingConfirmation;
+  }
+
+  List<LocalNotificationAction> _notificationActionsForDeathMan({
+    required bool includeConfirmAction,
+  }) {
+    final actions = <LocalNotificationAction>[
+      const LocalNotificationAction(
+        id: _openAppActionId,
+        title: 'Open app',
+        foreground: true,
+      ),
+    ];
+    if (includeConfirmAction) {
+      actions.add(
+        const LocalNotificationAction(
+          id: _confirmDeadManSafeActionId,
+          title: 'I\'m OK',
+          foreground: true,
+        ),
+      );
+    }
+    return actions;
   }
 
   Future<void> _runGuidedRescueCommand(GuidedRescueAction action) async {
@@ -1154,5 +1239,24 @@ class EixamConnectSdkImpl
     await _guidedRescueStateController.close();
     await _bleNotificationNavigationController.close();
     await _eventsController.close();
+  }
+}
+
+class _DeathManNotificationPayload {
+  const _DeathManNotificationPayload(this.planId);
+
+  final String planId;
+
+  String serialize() => 'death_man:$planId';
+
+  static _DeathManNotificationPayload? tryParse(String? payload) {
+    if (payload == null || !payload.startsWith('death_man:')) {
+      return null;
+    }
+    final planId = payload.substring('death_man:'.length).trim();
+    if (planId.isEmpty) {
+      return null;
+    }
+    return _DeathManNotificationPayload(planId);
   }
 }

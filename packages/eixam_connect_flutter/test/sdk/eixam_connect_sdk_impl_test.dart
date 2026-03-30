@@ -5,6 +5,7 @@ import 'package:eixam_connect_core/src/events/realtime_event.dart';
 import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_sos_packet.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/builders/device_status_builder.dart';
@@ -497,5 +498,89 @@ void main() {
       expect(deathManRepository.updateCallCount, 2);
       expect(notificationsRepository.notifications, hasLength(2));
     });
+
+    test(
+        'device-originated SOS notifies preConfirm first and active only after timeout',
+        () async {
+      final localNotificationsRepository = FakeNotificationsRepository();
+      final localDeviceSosController = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 35),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: localNotificationsRepository,
+        realtimeClient: realtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        await localSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+
+        localDeviceSosController.handleIncomingSosPacket(
+          _deviceOriginPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        expect(localNotificationsRepository.notifications, hasLength(1));
+        expect(
+          localNotificationsRepository.notifications.first.title,
+          'Preventive SOS sent',
+        );
+        expect(
+          localNotificationsRepository.notifications.first.body,
+          'Pending confirmation. You can cancel it or confirm it now.',
+        );
+        expect(
+          localNotificationsRepository.notifications.first.actions
+              .map((action) => action.title),
+          containsAll(<String>['Cancel SOS', 'Confirm SOS']),
+        );
+
+        await Future<void>.delayed(const Duration(milliseconds: 70));
+
+        expect(localNotificationsRepository.notifications, hasLength(2));
+        expect(
+          localNotificationsRepository.notifications.last.title,
+          'SOS activated',
+        );
+        expect(
+          localNotificationsRepository.notifications.last.body,
+          'Emergency protocol is now active. You can cancel or resolve the SOS.',
+        );
+        expect(
+          localNotificationsRepository.notifications.last.actions
+              .map((action) => action.title),
+          containsAll(<String>['Cancel SOS', 'Resolve SOS']),
+        );
+      } finally {
+        await localSdk.dispose();
+      }
+    });
   });
+}
+
+EixamSosPacket _deviceOriginPacket() {
+  return EixamSosPacket.tryParse(<int>[
+    0x34,
+    0x12,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x50,
+  ])!;
 }
