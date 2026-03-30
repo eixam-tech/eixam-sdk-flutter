@@ -146,13 +146,18 @@ void main() {
 
       final status = controller.currentStatus;
       expect(status.state, DeviceSosState.preConfirm);
+      expect(status.previousState, DeviceSosState.inactive);
       expect(status.triggerOrigin, DeviceSosTransitionSource.device);
       expect(status.countdownStartedAt, isNotNull);
       expect(status.expectedActivationAt, isNotNull);
+      expect(status.countdownRemainingSeconds, greaterThan(0));
+      expect(status.state, isNot(DeviceSosState.active));
       expect(
         status.decoderNote,
-        contains(
-            'mapped it to preConfirm while the local 20-second countdown is pending'),
+        allOf(
+          contains('treats the first SOS packet in a new cycle as preConfirm'),
+          contains('owns the 20-second timeout locally'),
+        ),
       );
     });
 
