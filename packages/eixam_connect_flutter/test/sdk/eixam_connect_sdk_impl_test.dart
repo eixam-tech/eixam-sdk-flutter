@@ -1368,16 +1368,26 @@ void main() {
 
     test('BLE bridge publishes telemetry from TEL position events', () async {
       final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final connectionStates =
+          StreamController<RealtimeConnectionState>.broadcast();
       final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      EixamSession? session = const EixamSession.signed(
+        appId: 'app-demo',
+        externalUserId: 'external-123',
+        userHash: 'deadbeef',
+      );
       final bridge = BleOperationalRuntimeBridge(
         bleIncomingEvents: bleEvents.stream,
+        connectionStates: connectionStates.stream,
         realtimeEvents: realtimeEvents.stream,
         telemetryRepository: telemetryRepository,
         sosRepository: sosRepository,
         deviceSosController: deviceSosController,
+        sessionProvider: () => session,
       )..start();
 
       try {
+        connectionStates.add(RealtimeConnectionState.connected);
         bleEvents.add(_bridgeTelEvent(signature: 'tel-1'));
         await Future<void>.delayed(Duration.zero);
 
@@ -1386,22 +1396,33 @@ void main() {
       } finally {
         await bridge.dispose();
         await bleEvents.close();
+        await connectionStates.close();
         await realtimeEvents.close();
       }
     });
 
     test('BLE bridge publishes SOS from SOS packets with position', () async {
       final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final connectionStates =
+          StreamController<RealtimeConnectionState>.broadcast();
       final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      EixamSession? session = const EixamSession.signed(
+        appId: 'app-demo',
+        externalUserId: 'external-123',
+        userHash: 'deadbeef',
+      );
       final bridge = BleOperationalRuntimeBridge(
         bleIncomingEvents: bleEvents.stream,
+        connectionStates: connectionStates.stream,
         realtimeEvents: realtimeEvents.stream,
         telemetryRepository: telemetryRepository,
         sosRepository: sosRepository,
         deviceSosController: deviceSosController,
+        sessionProvider: () => session,
       )..start();
 
       try {
+        connectionStates.add(RealtimeConnectionState.connected);
         bleEvents.add(_bridgeSosEvent(signature: 'sos-1'));
         await Future<void>.delayed(Duration.zero);
 
@@ -1411,22 +1432,33 @@ void main() {
       } finally {
         await bridge.dispose();
         await bleEvents.close();
+        await connectionStates.close();
         await realtimeEvents.close();
       }
     });
 
     test('BLE bridge skips publish when minimum fields are missing', () async {
       final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final connectionStates =
+          StreamController<RealtimeConnectionState>.broadcast();
       final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      EixamSession? session = const EixamSession.signed(
+        appId: 'app-demo',
+        externalUserId: 'external-123',
+        userHash: 'deadbeef',
+      );
       final bridge = BleOperationalRuntimeBridge(
         bleIncomingEvents: bleEvents.stream,
+        connectionStates: connectionStates.stream,
         realtimeEvents: realtimeEvents.stream,
         telemetryRepository: telemetryRepository,
         sosRepository: sosRepository,
         deviceSosController: deviceSosController,
+        sessionProvider: () => session,
       )..start();
 
       try {
+        connectionStates.add(RealtimeConnectionState.connected);
         bleEvents.add(_bridgeInvalidTelEvent(signature: 'tel-invalid'));
         bleEvents.add(_bridgeSosWithoutPositionEvent(signature: 'sos-min'));
         await Future<void>.delayed(Duration.zero);
@@ -1436,6 +1468,7 @@ void main() {
       } finally {
         await bridge.dispose();
         await bleEvents.close();
+        await connectionStates.close();
         await realtimeEvents.close();
       }
     });
@@ -1443,9 +1476,16 @@ void main() {
     test('BLE bridge applies backend confirmations to device commands',
         () async {
       final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final connectionStates =
+          StreamController<RealtimeConnectionState>.broadcast();
       final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
       final commands = <EixamDeviceCommand>[];
       final controller = DeviceSosController();
+      EixamSession? session = const EixamSession.signed(
+        appId: 'app-demo',
+        externalUserId: 'external-123',
+        userHash: 'deadbeef',
+      );
       await controller.attach(
         commandWriter: (command) async {
           commands.add(command);
@@ -1453,13 +1493,16 @@ void main() {
       );
       final bridge = BleOperationalRuntimeBridge(
         bleIncomingEvents: bleEvents.stream,
+        connectionStates: connectionStates.stream,
         realtimeEvents: realtimeEvents.stream,
         telemetryRepository: telemetryRepository,
         sosRepository: sosRepository,
         deviceSosController: controller,
+        sessionProvider: () => session,
       )..start();
 
       try {
+        connectionStates.add(RealtimeConnectionState.connected);
         await controller.triggerSos();
         await controller.confirmSos();
 
@@ -1499,22 +1542,33 @@ void main() {
         await bridge.dispose();
         await controller.dispose();
         await bleEvents.close();
+        await connectionStates.close();
         await realtimeEvents.close();
       }
     });
 
     test('BLE bridge deduplicates overlapping TEL and SOS publishes', () async {
       final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final connectionStates =
+          StreamController<RealtimeConnectionState>.broadcast();
       final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      EixamSession? session = const EixamSession.signed(
+        appId: 'app-demo',
+        externalUserId: 'external-123',
+        userHash: 'deadbeef',
+      );
       final bridge = BleOperationalRuntimeBridge(
         bleIncomingEvents: bleEvents.stream,
+        connectionStates: connectionStates.stream,
         realtimeEvents: realtimeEvents.stream,
         telemetryRepository: telemetryRepository,
         sosRepository: sosRepository,
         deviceSosController: deviceSosController,
+        sessionProvider: () => session,
       )..start();
 
       try {
+        connectionStates.add(RealtimeConnectionState.connected);
         final telEvent = _bridgeTelEvent(signature: 'dup-tel');
         final sosEvent = _bridgeSosEvent(signature: 'dup-sos');
         bleEvents.add(telEvent);
@@ -1528,6 +1582,181 @@ void main() {
       } finally {
         await bridge.dispose();
         await bleEvents.close();
+        await connectionStates.close();
+        await realtimeEvents.close();
+      }
+    });
+
+    test('BLE TEL while MQTT disconnected retains only the latest pending telemetry and publishes once on reconnect',
+        () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final connectionStates =
+          StreamController<RealtimeConnectionState>.broadcast();
+      final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      EixamSession? session = const EixamSession.signed(
+        appId: 'app-demo',
+        externalUserId: 'external-123',
+        userHash: 'deadbeef',
+      );
+      final bridge = BleOperationalRuntimeBridge(
+        bleIncomingEvents: bleEvents.stream,
+        connectionStates: connectionStates.stream,
+        realtimeEvents: realtimeEvents.stream,
+        telemetryRepository: telemetryRepository,
+        sosRepository: sosRepository,
+        deviceSosController: deviceSosController,
+        sessionProvider: () => session,
+      )..start();
+
+      try {
+        connectionStates.add(RealtimeConnectionState.disconnected);
+        bleEvents.add(_bridgeTelEvent(signature: 'pending-tel-1'));
+        bleEvents.add(_bridgeTelEvent(signature: 'pending-tel-2'));
+        await Future<void>.delayed(Duration.zero);
+
+        expect(telemetryRepository.publishedPayloads, isEmpty);
+
+        connectionStates.add(RealtimeConnectionState.connected);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(telemetryRepository.publishedPayloads, hasLength(1));
+        expect(
+          telemetryRepository.publishedPayloads.single.timestamp,
+          DateTime.utc(2026, 3, 31, 10),
+        );
+      } finally {
+        await bridge.dispose();
+        await bleEvents.close();
+        await connectionStates.close();
+        await realtimeEvents.close();
+      }
+    });
+
+    test('BLE SOS while MQTT disconnected is retained and published once on reconnect',
+        () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final connectionStates =
+          StreamController<RealtimeConnectionState>.broadcast();
+      final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      EixamSession? session = const EixamSession.signed(
+        appId: 'app-demo',
+        externalUserId: 'external-123',
+        userHash: 'deadbeef',
+      );
+      final bridge = BleOperationalRuntimeBridge(
+        bleIncomingEvents: bleEvents.stream,
+        connectionStates: connectionStates.stream,
+        realtimeEvents: realtimeEvents.stream,
+        telemetryRepository: telemetryRepository,
+        sosRepository: sosRepository,
+        deviceSosController: deviceSosController,
+        sessionProvider: () => session,
+      )..start();
+
+      try {
+        connectionStates.add(RealtimeConnectionState.reconnecting);
+        bleEvents.add(_bridgeSosEvent(signature: 'pending-sos-1'));
+        bleEvents.add(_bridgeSosEvent(signature: 'pending-sos-1'));
+        await Future<void>.delayed(Duration.zero);
+
+        expect(sosRepository.triggerCallCount, 0);
+
+        connectionStates.add(RealtimeConnectionState.connected);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(sosRepository.triggerCallCount, 1);
+      } finally {
+        await bridge.dispose();
+        await bleEvents.close();
+        await connectionStates.close();
+        await realtimeEvents.close();
+      }
+    });
+
+    test('clearSession-style teardown clears pending operational items and prevents replay',
+        () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final connectionStates =
+          StreamController<RealtimeConnectionState>.broadcast();
+      final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      EixamSession? session = const EixamSession.signed(
+        appId: 'app-demo',
+        externalUserId: 'external-123',
+        userHash: 'deadbeef',
+      );
+      final bridge = BleOperationalRuntimeBridge(
+        bleIncomingEvents: bleEvents.stream,
+        connectionStates: connectionStates.stream,
+        realtimeEvents: realtimeEvents.stream,
+        telemetryRepository: telemetryRepository,
+        sosRepository: sosRepository,
+        deviceSosController: deviceSosController,
+        sessionProvider: () => session,
+      )..start();
+
+      try {
+        connectionStates.add(RealtimeConnectionState.disconnected);
+        bleEvents.add(_bridgeTelEvent(signature: 'clear-tel'));
+        bleEvents.add(_bridgeSosEvent(signature: 'clear-sos'));
+        await Future<void>.delayed(Duration.zero);
+
+        bridge.clearPendingOperationalItems();
+        session = null;
+        connectionStates.add(RealtimeConnectionState.connected);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(telemetryRepository.publishedPayloads, isEmpty);
+        expect(sosRepository.triggerCallCount, 0);
+      } finally {
+        await bridge.dispose();
+        await bleEvents.close();
+        await connectionStates.close();
+        await realtimeEvents.close();
+      }
+    });
+
+    test('session change resets old pending runtime state before new session reuse',
+        () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final connectionStates =
+          StreamController<RealtimeConnectionState>.broadcast();
+      final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      EixamSession? session = const EixamSession.signed(
+        appId: 'app-demo',
+        externalUserId: 'external-123',
+        userHash: 'deadbeef',
+      );
+      final bridge = BleOperationalRuntimeBridge(
+        bleIncomingEvents: bleEvents.stream,
+        connectionStates: connectionStates.stream,
+        realtimeEvents: realtimeEvents.stream,
+        telemetryRepository: telemetryRepository,
+        sosRepository: sosRepository,
+        deviceSosController: deviceSosController,
+        sessionProvider: () => session,
+      )..start();
+
+      try {
+        connectionStates.add(RealtimeConnectionState.disconnected);
+        bleEvents.add(_bridgeSosEvent(signature: 'old-session-sos'));
+        await Future<void>.delayed(Duration.zero);
+
+        bridge.resetForSessionChange();
+        session = const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-999',
+          userHash: 'beadfeed',
+        );
+        bleEvents.add(_bridgeSosEvent(signature: 'new-session-sos'));
+        connectionStates.add(RealtimeConnectionState.connected);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(sosRepository.triggerCallCount, 1);
+        expect(sosRepository.lastPositionSnapshot, isNotNull);
+      } finally {
+        await bridge.dispose();
+        await bleEvents.close();
+        await connectionStates.close();
         await realtimeEvents.close();
       }
     });

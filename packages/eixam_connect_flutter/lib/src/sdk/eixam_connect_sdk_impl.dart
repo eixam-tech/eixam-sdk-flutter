@@ -120,10 +120,12 @@ class EixamConnectSdkImpl
     );
     _bleOperationalRuntimeBridge = BleOperationalRuntimeBridge(
       bleIncomingEvents: bleIncomingEvents,
+      connectionStates: realtimeClient.watchConnectionState(),
       realtimeEvents: realtimeClient.watchEvents(),
       telemetryRepository: telemetryRepository,
       sosRepository: sosRepository,
       deviceSosController: deviceSosController,
+      sessionProvider: () => _session,
     );
     _bindSosStreams();
   }
@@ -218,6 +220,7 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> setSession(EixamSession session) async {
+    _bleOperationalRuntimeBridge.resetForSessionChange();
     _session = await _bootstrapSessionIfNeeded(session);
     if (sessionContext != null) {
       sessionContext!.currentSession = _session;
@@ -293,6 +296,7 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> clearSession() async {
+    _bleOperationalRuntimeBridge.clearPendingOperationalItems();
     _session = null;
     if (sessionContext != null) {
       sessionContext!.currentSession = null;

@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
+import 'package:eixam_connect_core/src/events/realtime_event.dart';
 
 import '../data/repositories/telemetry_repository.dart';
 import '../device/ble_debug_registry.dart';
@@ -10,22 +12,28 @@ import '../device/device_sos_controller.dart';
 class BleOperationalRuntimeBridge {
   BleOperationalRuntimeBridge({
     required Stream<BleIncomingEvent> bleIncomingEvents,
+    required Stream<RealtimeConnectionState> connectionStates,
     required Stream<RealtimeEvent> realtimeEvents,
     required this.telemetryRepository,
     required this.sosRepository,
     required this.deviceSosController,
+    required EixamSession? Function() sessionProvider,
     DateTime Function()? now,
     Duration dedupWindow = const Duration(seconds: 3),
   })  : _bleIncomingEvents = bleIncomingEvents,
+        _connectionStates = connectionStates,
         _realtimeEvents = realtimeEvents,
+        _sessionProvider = sessionProvider,
         _now = now ?? DateTime.now,
         _dedupWindow = dedupWindow;
 
   final Stream<BleIncomingEvent> _bleIncomingEvents;
+  final Stream<RealtimeConnectionState> _connectionStates;
   final Stream<RealtimeEvent> _realtimeEvents;
   final TelemetryRepository telemetryRepository;
   final SosRepository sosRepository;
   final DeviceSosController deviceSosController;
+  final EixamSession? Function() _sessionProvider;
   final DateTime Function() _now;
   final Duration _dedupWindow;
 
@@ -34,8 +42,13 @@ class BleOperationalRuntimeBridge {
   final Map<String, DateTime> _recentConfirmationSignatures =
       <String, DateTime>{};
 
+  StreamSubscription<RealtimeConnectionState>? _connectionSub;
   StreamSubscription<BleIncomingEvent>? _bleSub;
   StreamSubscription<RealtimeEvent>? _realtimeSub;
+  RealtimeConnectionState _connectionState = RealtimeConnectionState.disconnected;
+  _PendingTelemetryPublish? _pendingTelemetry;
+  _PendingSosPublish? _pendingSos;
+  bool _flushInProgress = false;
   bool _started = false;
 
   void start() {
@@ -43,6 +56,19 @@ class BleOperationalRuntimeBridge {
       return;
     }
     _started = true;
+    _connectionSub = _connectionStates.listen(
+      (state) {
+        _connectionState = state;
+        if (_canPublishOperationally) {
+          unawaited(_flushPendingOperationalItems());
+        }
+      },
+      onError: (Object error) {
+        BleDebugRegistry.instance.recordEvent(
+          'BLE operational bridge connection-state error: $error',
+        );
+      },
+    );
     _bleSub = _bleIncomingEvents.listen(
       (event) => unawaited(_handleBleIncomingEvent(event)),
       onError: (Object error) {
@@ -62,8 +88,19 @@ class BleOperationalRuntimeBridge {
   }
 
   Future<void> dispose() async {
+    await _connectionSub?.cancel();
     await _bleSub?.cancel();
     await _realtimeSub?.cancel();
+  }
+
+  void clearPendingOperationalItems() {
+    _pendingTelemetry = null;
+    _pendingSos = null;
+  }
+
+  void resetForSessionChange() {
+    clearPendingOperationalItems();
+    _flushInProgress = false;
   }
 
   Future<void> _handleBleIncomingEvent(BleIncomingEvent event) async {
@@ -114,20 +151,22 @@ class BleOperationalRuntimeBridge {
       return;
     }
 
-    try {
-      await telemetryRepository.publishTelemetry(payload);
-      BleDebugRegistry.instance.recordEvent(
-        'BLE operational bridge published telemetry -> deviceId=${event.deviceId} signature=$signature',
+    if (!_canPublishOperationally) {
+      _pendingTelemetry = _PendingTelemetryPublish(
+        signature: signature,
+        payload: payload,
       );
-    } on EixamSdkException catch (error) {
       BleDebugRegistry.instance.recordEvent(
-        'BLE operational bridge telemetry publish rejected -> code=${error.code} message=${error.message}',
+        'BLE operational bridge retained pending telemetry -> latest_sample_wins signature=$signature',
       );
-    } catch (error) {
-      BleDebugRegistry.instance.recordEvent(
-        'BLE operational bridge telemetry publish failed -> error=$error',
-      );
+      return;
     }
+
+    await _publishTelemetryPayload(
+      payload: payload,
+      signature: signature,
+      allowPendingFallback: true,
+    );
   }
 
   Future<void> _publishSosIfValid(BleIncomingEvent event) async {
@@ -148,36 +187,32 @@ class BleOperationalRuntimeBridge {
       return;
     }
 
-    try {
-      await sosRepository.triggerSos(
+    final positionSnapshot = TrackingPosition(
+      latitude: position.latitude,
+      longitude: position.longitude,
+      altitude: position.altitudeMeters.toDouble(),
+      timestamp: event.receivedAt.toUtc(),
+      source: DeliveryMode.mesh,
+    );
+    if (!_canPublishOperationally) {
+      _pendingSos = _PendingSosPublish(
+        signature: signature,
         message: 'BLE SOS received from runtime device ${event.deviceId}',
-        triggerSource: 'ble_device_runtime',
-        positionSnapshot: TrackingPosition(
-          latitude: position.latitude,
-          longitude: position.longitude,
-          altitude: position.altitudeMeters.toDouble(),
-          timestamp: event.receivedAt.toUtc(),
-          source: DeliveryMode.mesh,
-        ),
+        positionSnapshot: positionSnapshot,
       );
       BleDebugRegistry.instance.recordEvent(
-        'BLE operational bridge published SOS -> deviceId=${event.deviceId} signature=$signature relayCount=${packet.relayCount}',
+        'BLE operational bridge retained pending SOS -> signature=$signature',
       );
-    } on SosException catch (error) {
-      if (error.code == 'E_SOS_ALREADY_ACTIVE') {
-        BleDebugRegistry.instance.recordEvent(
-          'BLE operational bridge skipped SOS publish -> reason=sos_already_active signature=$signature',
-        );
-        return;
-      }
-      BleDebugRegistry.instance.recordEvent(
-        'BLE operational bridge SOS publish rejected -> code=${error.code} message=${error.message}',
-      );
-    } catch (error) {
-      BleDebugRegistry.instance.recordEvent(
-        'BLE operational bridge SOS publish failed -> error=$error',
-      );
+      return;
     }
+
+    await _publishSosPayload(
+      signature: signature,
+      message: 'BLE SOS received from runtime device ${event.deviceId}',
+      positionSnapshot: positionSnapshot,
+      allowPendingFallback: true,
+      relayCount: packet.relayCount,
+    );
   }
 
   Future<void> _handleRealtimeEvent(RealtimeEvent event) async {
@@ -244,12 +279,164 @@ class BleOperationalRuntimeBridge {
     recentSignatures[signature] = now;
     return true;
   }
+
+  bool get _canPublishOperationally {
+    return _sessionProvider() != null &&
+        _connectionState == RealtimeConnectionState.connected;
+  }
+
+  Future<void> _flushPendingOperationalItems() async {
+    if (_flushInProgress || !_canPublishOperationally) {
+      return;
+    }
+    _flushInProgress = true;
+    try {
+      final pendingSos = _pendingSos;
+      if (pendingSos != null) {
+        final published = await _publishSosPayload(
+          signature: pendingSos.signature,
+          message: pendingSos.message,
+          positionSnapshot: pendingSos.positionSnapshot,
+          allowPendingFallback: false,
+          relayCount: null,
+        );
+        if (published) {
+          _pendingSos = null;
+        }
+      }
+
+      final pendingTelemetry = _pendingTelemetry;
+      if (pendingTelemetry != null) {
+        final published = await _publishTelemetryPayload(
+          payload: pendingTelemetry.payload,
+          signature: pendingTelemetry.signature,
+          allowPendingFallback: false,
+        );
+        if (published) {
+          _pendingTelemetry = null;
+        }
+      }
+    } finally {
+      _flushInProgress = false;
+    }
+  }
+
+  Future<bool> _publishTelemetryPayload({
+    required SdkTelemetryPayload payload,
+    required String signature,
+    required bool allowPendingFallback,
+  }) async {
+    try {
+      await telemetryRepository.publishTelemetry(payload);
+      BleDebugRegistry.instance.recordEvent(
+        'BLE operational bridge published telemetry -> signature=$signature',
+      );
+      return true;
+    } on EixamSdkException catch (error) {
+      if (allowPendingFallback && _isOperationalAvailabilityError(error)) {
+        _pendingTelemetry = _PendingTelemetryPublish(
+          signature: signature,
+          payload: payload,
+        );
+        BleDebugRegistry.instance.recordEvent(
+          'BLE operational bridge retained telemetry after publish failure -> signature=$signature code=${error.code}',
+        );
+        return false;
+      }
+      BleDebugRegistry.instance.recordEvent(
+        'BLE operational bridge telemetry publish rejected -> code=${error.code} message=${error.message}',
+      );
+      return false;
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'BLE operational bridge telemetry publish failed -> error=$error',
+      );
+      return false;
+    }
+  }
+
+  Future<bool> _publishSosPayload({
+    required String signature,
+    required String message,
+    required TrackingPosition positionSnapshot,
+    required bool allowPendingFallback,
+    required int? relayCount,
+  }) async {
+    try {
+      await sosRepository.triggerSos(
+        message: message,
+        triggerSource: 'ble_device_runtime',
+        positionSnapshot: positionSnapshot,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'BLE operational bridge published SOS -> signature=$signature relayCount=${relayCount?.toString() ?? "-"}',
+      );
+      return true;
+    } on SosException catch (error) {
+      if (error.code == 'E_SOS_ALREADY_ACTIVE') {
+        BleDebugRegistry.instance.recordEvent(
+          'BLE operational bridge skipped SOS publish -> reason=sos_already_active signature=$signature',
+        );
+        return false;
+      }
+      if (allowPendingFallback && _isOperationalAvailabilityError(error)) {
+        _pendingSos = _PendingSosPublish(
+          signature: signature,
+          message: message,
+          positionSnapshot: positionSnapshot,
+        );
+        BleDebugRegistry.instance.recordEvent(
+          'BLE operational bridge retained SOS after publish failure -> signature=$signature code=${error.code}',
+        );
+        return false;
+      }
+      BleDebugRegistry.instance.recordEvent(
+        'BLE operational bridge SOS publish rejected -> code=${error.code} message=${error.message}',
+      );
+      return false;
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'BLE operational bridge SOS publish failed -> error=$error',
+      );
+      return false;
+    }
+  }
+
+  bool _isOperationalAvailabilityError(EixamSdkException error) {
+    return error is AuthException ||
+        error is NetworkException ||
+        error.code == 'E_MQTT_NOT_CONNECTED' ||
+        error.code == 'E_SDK_SESSION_REQUIRED' ||
+        error.code == 'E_SOS_TRIGGER_FAILED';
+  }
 }
 
 enum _BleBackendConfirmationKind {
   positionConfirmed,
   sosAcknowledged,
   sosRelayAcknowledged,
+}
+
+class _PendingTelemetryPublish {
+  const _PendingTelemetryPublish({
+    required this.signature,
+    required this.payload,
+  });
+
+  final String signature;
+  final SdkTelemetryPayload payload;
+}
+
+class _PendingSosPublish {
+  const _PendingSosPublish({
+    required this.signature,
+    required this.message,
+    required this.positionSnapshot,
+  });
+
+  final String signature;
+  final String message;
+  final TrackingPosition positionSnapshot;
 }
 
 class _BleBackendConfirmation {
