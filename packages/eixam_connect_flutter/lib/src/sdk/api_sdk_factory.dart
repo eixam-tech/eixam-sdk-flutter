@@ -9,13 +9,16 @@ import '../data/datasources_remote/mock_sos_remote_data_source.dart';
 import '../data/datasources_remote/sdk_identity_remote_data_source.dart';
 import '../data/datasources_remote/sdk_session_context.dart';
 import '../data/datasources_remote/sdk_contacts_remote_data_source.dart';
+import '../data/datasources_remote/sdk_devices_remote_data_source.dart';
 import '../data/datasources_remote/sdk_http_transport.dart';
 import '../data/repositories/api_sos_repository.dart';
 import '../data/repositories/api_contacts_repository.dart';
+import '../data/repositories/api_sdk_device_registry_repository.dart';
 import '../data/repositories/geolocator_tracking_repository.dart';
 import '../data/repositories/in_memory_contacts_repository.dart';
 import '../data/repositories/in_memory_death_man_repository.dart';
 import '../data/repositories/in_memory_device_repository.dart';
+import '../data/repositories/in_memory_sdk_device_registry_repository.dart';
 import '../data/repositories/in_memory_telemetry_repository.dart';
 import '../data/repositories/local_notifications_repository.dart';
 import '../data/repositories/mqtt_operational_sos_repository.dart';
@@ -80,6 +83,7 @@ class ApiSdkFactory {
       telemetryRepository: telemetryRepository,
       contactsRepository: contactsRepository,
       deviceRepository: deviceRepository,
+      deviceRegistryRepository: InMemorySdkDeviceRegistryRepository(),
       deathManRepository: deathManRepository,
       permissionsRepository: permissionsRepository,
       notificationsRepository: LocalNotificationsRepository(),
@@ -178,6 +182,11 @@ class ApiSdkFactory {
         ),
       ),
       deviceRepository: deviceRepository,
+      deviceRegistryRepository: ApiSdkDeviceRegistryRepository(
+        remoteDataSource: HttpSdkDevicesRemoteDataSource(
+          transport: httpTransport,
+        ),
+      ),
       deathManRepository: deathManRepository,
       permissionsRepository: permissionsRepository,
       notificationsRepository: LocalNotificationsRepository(),

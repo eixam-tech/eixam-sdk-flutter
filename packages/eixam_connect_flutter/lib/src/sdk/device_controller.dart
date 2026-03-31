@@ -29,7 +29,7 @@ class DeviceController extends ChangeNotifier {
   Future<void> initialize() async {
     status = await sdk.getDeviceStatus();
     notifyListeners();
-    _subscription ??= sdk.watchDeviceStatus().listen((next) {
+    _subscription ??= sdk.deviceStatusStream.listen((next) {
       status = next;
       notifyListeners();
     }, onError: (Object error) {
@@ -39,7 +39,7 @@ class DeviceController extends ChangeNotifier {
   }
 
   Future<void> pair(String pairingCode) => _run(() async {
-        status = await sdk.pairDevice(pairingCode: pairingCode);
+        status = await sdk.connectDevice(pairingCode: pairingCode);
       });
 
   Future<void> activate(String activationCode) => _run(() async {
@@ -51,7 +51,7 @@ class DeviceController extends ChangeNotifier {
       }, clearError: false);
 
   Future<void> unpair() => _run(() async {
-        await sdk.unpairDevice();
+        await sdk.disconnectDevice();
         status = await sdk.getDeviceStatus();
       });
 

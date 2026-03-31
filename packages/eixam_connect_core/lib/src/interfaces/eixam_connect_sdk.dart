@@ -2,13 +2,16 @@ import '../config/eixam_sdk_config.dart';
 import '../config/eixam_session.dart';
 import '../entities/death_man_plan.dart';
 import '../entities/ble_notification_navigation_request.dart';
+import '../entities/backend_registered_device.dart';
 import '../entities/device_sos_status.dart';
 import '../entities/device_status.dart';
 import '../entities/emergency_contact.dart';
 import '../entities/guided_rescue_state.dart';
 import '../entities/permission_state.dart';
+import '../entities/preferred_device.dart';
 import '../entities/sdk_telemetry_payload.dart';
 import '../entities/sos_incident.dart';
+import '../entities/sos_trigger_payload.dart';
 import '../entities/tracking_position.dart';
 import '../enums/realtime_connection_state.dart';
 import '../enums/sos_state.dart';
@@ -30,11 +33,43 @@ abstract class EixamConnectSdk {
   /// Clears the currently persisted SDK identity payload.
   Future<void> clearSession();
 
+  /// Re-fetches the canonical SDK identity from `/v1/sdk/me`.
+  Future<EixamSession> refreshCanonicalIdentity();
+
+  Future<DeviceStatus> connectDevice({required String pairingCode});
+  Future<void> disconnectDevice();
+  Future<PreferredDevice?> get preferredDevice;
+  Stream<DeviceStatus> get deviceStatusStream;
+
+  Future<List<BackendRegisteredDevice>> listRegisteredDevices();
+  Future<BackendRegisteredDevice> upsertRegisteredDevice({
+    required String hardwareId,
+    required String firmwareVersion,
+    required String hardwareModel,
+    required DateTime pairedAt,
+  });
+  Future<void> deleteRegisteredDevice(String deviceId);
+
+  Future<SosIncident> triggerSos(SosTriggerPayload payload);
+  Stream<SosState> get currentSosStateStream;
+  Stream<EixamSdkEvent> get lastSosEventStream;
+
+  Future<EmergencyContact> createEmergencyContact({
+    required String name,
+    required String phone,
+    required String email,
+    int priority = 1,
+  });
+  Future<void> deleteEmergencyContact(String contactId);
+
+  @Deprecated('Use connectDevice instead.')
   Future<DeviceStatus> pairDevice({required String pairingCode});
   Future<DeviceStatus> activateDevice({required String activationCode});
   Future<DeviceStatus> getDeviceStatus();
   Future<DeviceStatus> refreshDeviceStatus();
+  @Deprecated('Use disconnectDevice instead.')
   Future<void> unpairDevice();
+  @Deprecated('Use deviceStatusStream instead.')
   Stream<DeviceStatus> watchDeviceStatus();
   Future<DeviceSosStatus> getDeviceSosStatus();
   Stream<DeviceSosStatus> watchDeviceSosStatus();
@@ -84,16 +119,14 @@ abstract class EixamConnectSdk {
   Stream<TrackingPosition> watchPositions();
   Stream<TrackingState> watchTrackingState();
 
-  Future<SosIncident> triggerSos({
-    String? message,
-    String triggerSource = 'button_ui',
-  });
   Future<SosIncident> cancelSos();
   Future<SosState> getSosState();
+  @Deprecated('Use currentSosStateStream instead.')
   Stream<SosState> watchSosState();
 
   Future<List<EmergencyContact>> listEmergencyContacts();
   Stream<List<EmergencyContact>> watchEmergencyContacts();
+  @Deprecated('Use createEmergencyContact instead.')
   Future<EmergencyContact> addEmergencyContact({
     required String name,
     required String phone,
@@ -101,6 +134,7 @@ abstract class EixamConnectSdk {
     int priority = 1,
   });
   Future<EmergencyContact> updateEmergencyContact(EmergencyContact contact);
+  @Deprecated('Use deleteEmergencyContact instead.')
   Future<void> removeEmergencyContact(String contactId);
 
   Future<DeathManPlan> scheduleDeathMan({

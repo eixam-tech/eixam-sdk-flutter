@@ -44,7 +44,7 @@ class DeviceDebugController extends ChangeNotifier {
   }
 
   void _bindStreams() {
-    _deviceStatusSub ??= sdk.watchDeviceStatus().listen(
+    _deviceStatusSub ??= sdk.deviceStatusStream.listen(
       (next) {
         status = next;
         notifyListeners();
@@ -82,7 +82,7 @@ class DeviceDebugController extends ChangeNotifier {
   Future<void> pairDevice() {
     return _runDeviceAction(() async {
       await _ensureScanPrerequisites(requestIfMissing: true);
-      await sdk.pairDevice(pairingCode: 'DEMO-PAIR-001');
+      await sdk.connectDevice(pairingCode: 'DEMO-PAIR-001');
     });
   }
 
@@ -103,7 +103,7 @@ class DeviceDebugController extends ChangeNotifier {
 
   Future<void> unpairDevice() {
     return _runDeviceAction(() async {
-      await sdk.unpairDevice();
+      await sdk.disconnectDevice();
     });
   }
 

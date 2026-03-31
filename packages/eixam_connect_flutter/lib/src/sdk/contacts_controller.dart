@@ -32,7 +32,7 @@ class ContactsController extends ChangeNotifier {
     required String email,
     int priority = 1,
   }) async {
-    await _run(() => sdk.addEmergencyContact(
+    await _run(() => sdk.createEmergencyContact(
           name: name,
           phone: phone,
           email: email,
@@ -42,7 +42,7 @@ class ContactsController extends ChangeNotifier {
 
   /// Removes an emergency contact from the SDK store.
   Future<void> remove(String contactId) async {
-    await _run(() => sdk.removeEmergencyContact(contactId));
+    await _run(() => sdk.deleteEmergencyContact(contactId));
   }
 
   Future<void> _run(Future<dynamic> Function() action) async {

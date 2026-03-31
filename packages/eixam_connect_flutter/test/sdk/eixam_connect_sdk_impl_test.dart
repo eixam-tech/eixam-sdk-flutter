@@ -43,6 +43,7 @@ void main() {
     late FakeTelemetryRepository telemetryRepository;
     late FakeContactsRepository contactsRepository;
     late FakeDeviceRepository deviceRepository;
+    late FakeSdkDeviceRegistryRepository deviceRegistryRepository;
     late FakeDeathManRepository deathManRepository;
     late FakePermissionsRepository permissionsRepository;
     late FakeNotificationsRepository notificationsRepository;
@@ -71,6 +72,7 @@ void main() {
           activated: false,
         ),
       );
+      deviceRegistryRepository = FakeSdkDeviceRegistryRepository();
       deathManRepository = FakeDeathManRepository();
       permissionsRepository = FakePermissionsRepository();
       notificationsRepository = FakeNotificationsRepository();
@@ -85,6 +87,7 @@ void main() {
         telemetryRepository: telemetryRepository,
         contactsRepository: contactsRepository,
         deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
         deathManRepository: deathManRepository,
         permissionsRepository: permissionsRepository,
         notificationsRepository: notificationsRepository,
@@ -113,8 +116,10 @@ void main() {
       );
 
       await sdk.triggerSos(
-        message: 'Need help',
-        triggerSource: 'button_ui',
+        const SosTriggerPayload(
+          message: 'Need help',
+          triggerSource: 'button_ui',
+        ),
       );
 
       expect(sosRepository.triggerCallCount, 1);
@@ -129,7 +134,7 @@ void main() {
         () async {
       permissionsRepository.getPermissionStateError = StateError('boom');
 
-      await sdk.triggerSos(message: 'Need help');
+      await sdk.triggerSos(const SosTriggerPayload(message: 'Need help'));
 
       expect(sosRepository.triggerCallCount, 1);
       expect(sosRepository.lastPositionSnapshot, isNull);
@@ -209,18 +214,38 @@ void main() {
       expect(position.longitude, 2.17);
     });
 
-    test('contacts facade delegates add and remove flows', () async {
-      final contact = await sdk.addEmergencyContact(
+    test('contacts facade delegates create, update, and delete flows', () async {
+      final contact = await sdk.createEmergencyContact(
         name: 'Alice',
         phone: '+34123456789',
         email: 'alice@example.com',
       );
+      final updated = await sdk.updateEmergencyContact(
+        contact.copyWith(priority: 2),
+      );
 
       expect(contact.name, 'Alice');
+      expect(updated.priority, 2);
       expect((await sdk.listEmergencyContacts()).single.id, contact.id);
 
-      await sdk.removeEmergencyContact(contact.id);
+      await sdk.deleteEmergencyContact(contact.id);
       expect(await sdk.listEmergencyContacts(), isEmpty);
+    });
+
+    test('backend device registry facade delegates list, upsert, and delete',
+        () async {
+      final upserted = await sdk.upsertRegisteredDevice(
+        hardwareId: 'hw-1',
+        firmwareVersion: '1.2.3',
+        hardwareModel: 'EIXAM R1',
+        pairedAt: DateTime.utc(2026, 3, 31, 9),
+      );
+
+      expect(upserted.hardwareId, 'hw-1');
+      expect((await sdk.listRegisteredDevices()).single.id, upserted.id);
+
+      await sdk.deleteRegisteredDevice(upserted.id);
+      expect(await sdk.listRegisteredDevices(), isEmpty);
     });
 
     test('device facade delegates refresh and exposes the latest status',
@@ -244,10 +269,27 @@ void main() {
         const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
       );
 
-      final status = await sdk.watchDeviceStatus().first;
+      final status = await sdk.deviceStatusStream.first;
 
       expect(status.deviceId, 'demo-device');
       expect(status.lifecycleState, DeviceLifecycleState.unpaired);
+    });
+
+    test('local device runtime facade exposes connect, disconnect, and preferred device',
+        () async {
+      await sdk.connectDevice(pairingCode: 'PAIR-123');
+      await sdk.disconnectDevice();
+      await preferredDeviceStore.savePreferredDevice(
+        PreferredDevice(
+          deviceId: 'device-preferred',
+          displayName: 'Field Unit',
+          lastConnectedAt: DateTime.utc(2026, 3, 31, 8),
+        ),
+      );
+
+      expect(deviceRepository.lastPairingCode, 'PAIR-123');
+      expect(deviceRepository.unpairCallCount, 1);
+      expect((await sdk.preferredDevice)?.deviceId, 'device-preferred');
     });
 
     test('watchDeviceSosStatus replays the current controller state', () async {
@@ -337,6 +379,7 @@ void main() {
         telemetryRepository: telemetryRepository,
         contactsRepository: contactsRepository,
         deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
         deathManRepository: deathManRepository,
         permissionsRepository: permissionsRepository,
         notificationsRepository: notificationsRepository,
@@ -395,6 +438,7 @@ void main() {
         telemetryRepository: telemetryRepository,
         contactsRepository: contactsRepository,
         deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
         deathManRepository: deathManRepository,
         permissionsRepository: permissionsRepository,
         notificationsRepository: notificationsRepository,
@@ -456,13 +500,31 @@ void main() {
       final eventFuture = takeNextFromStream(sdk.watchEvents());
 
       final incident = await sdk.triggerSos(
-        message: 'Need help',
-        triggerSource: 'button_ui',
+        const SosTriggerPayload(
+          message: 'Need help',
+          triggerSource: 'button_ui',
+        ),
       );
 
       final event = await eventFuture;
       expect(event, isA<SOSTriggeredEvent>());
       expect((event as SOSTriggeredEvent).incidentId, incident.id);
+    });
+
+    test('currentSosStateStream exposes the facade SOS state stream', () async {
+      sosRepository.currentIncident = sosRepository.currentIncident.copyWith(
+        state: SosState.sent,
+      );
+
+      expect(await sdk.currentSosStateStream.first, SosState.sent);
+    });
+
+    test('lastSosEventStream replays the latest SOS facade event', () async {
+      await sdk.triggerSos(const SosTriggerPayload(message: 'Need help'));
+
+      final event = await sdk.lastSosEventStream.first;
+
+      expect(event, isA<SOSTriggeredEvent>());
     });
 
     test('cancelSos emits a public SDK cancellation event', () async {
@@ -499,6 +561,7 @@ void main() {
         telemetryRepository: telemetryRepository,
         contactsRepository: contactsRepository,
         deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
         deathManRepository: deathManRepository,
         permissionsRepository: permissionsRepository,
         notificationsRepository: notificationsRepository,
@@ -566,6 +629,7 @@ void main() {
         telemetryRepository: telemetryRepository,
         contactsRepository: contactsRepository,
         deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
         deathManRepository: deathManRepository,
         permissionsRepository: permissionsRepository,
         notificationsRepository: notificationsRepository,
@@ -611,6 +675,7 @@ void main() {
         telemetryRepository: telemetryRepository,
         contactsRepository: contactsRepository,
         deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
         deathManRepository: deathManRepository,
         permissionsRepository: permissionsRepository,
         notificationsRepository: notificationsRepository,
@@ -672,6 +737,7 @@ void main() {
         telemetryRepository: telemetryRepository,
         contactsRepository: contactsRepository,
         deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
         deathManRepository: deathManRepository,
         permissionsRepository: permissionsRepository,
         notificationsRepository: notificationsRepository,
@@ -706,6 +772,74 @@ void main() {
             'partner/user 42');
         expect(persisted?.canonicalExternalUserId, 'partner/user 42');
         expect(persisted?.sdkUserId, 'sdk-user-42');
+      } finally {
+        await localSdk.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test('refreshCanonicalIdentity updates the current canonical identity',
+        () async {
+      final localStore = MemorySharedPrefsSdkStore();
+      final localSessionStore = SdkSessionStore(localStore: localStore);
+      final localSessionContext = SdkSessionContext();
+      late http.Request capturedRequest;
+      final client = _RecordingClient(
+        handler: (request) async {
+          capturedRequest = request;
+          return http.Response(
+            '{"user":{"id":"sdk-user-99","external_user_id":"canonical-user-99"}}',
+            200,
+            headers: const <String, String>{
+              'content-type': 'application/json',
+            },
+          );
+        },
+      );
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController();
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        sessionStore: localSessionStore,
+        sessionContext: localSessionContext,
+        identityRemoteDataSource: HttpSdkIdentityRemoteDataSource(
+          transport: SdkHttpTransport(
+            client: client,
+            config: const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+            sessionContext: localSessionContext,
+          ),
+        ),
+      );
+
+      try {
+        await localSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+            canonicalExternalUserId: 'stale-canonical',
+          ),
+        );
+
+        final refreshed = await localSdk.refreshCanonicalIdentity();
+        final persisted = await localSessionStore.load();
+
+        expect(capturedRequest.url.toString(), 'https://example.test/v1/sdk/me');
+        expect(refreshed.canonicalExternalUserId, 'canonical-user-99');
+        expect(localSessionContext.currentSession?.sdkUserId, 'sdk-user-99');
+        expect(persisted?.canonicalExternalUserId, 'canonical-user-99');
       } finally {
         await localSdk.dispose();
         await localRealtimeClient.dispose();
@@ -1034,6 +1168,7 @@ void main() {
         telemetryRepository: telemetryRepository,
         contactsRepository: contactsRepository,
         deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
         deathManRepository: deathManRepository,
         permissionsRepository: permissionsRepository,
         notificationsRepository: notificationsRepository,
@@ -1505,6 +1640,7 @@ void main() {
         telemetryRepository: telemetryRepository,
         contactsRepository: contactsRepository,
         deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
         deathManRepository: deathManRepository,
         permissionsRepository: permissionsRepository,
         notificationsRepository: localNotificationsRepository,

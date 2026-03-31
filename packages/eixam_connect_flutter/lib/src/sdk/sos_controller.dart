@@ -35,7 +35,7 @@ class SosController extends ChangeNotifier {
   /// Loads the current SOS state and subscribes to future updates.
   Future<void> initialize() async {
     _state = await sdk.getSosState();
-    _subscription = sdk.watchSosState().listen((state) {
+    _subscription = sdk.currentSosStateStream.listen((state) {
       _state = state;
       notifyListeners();
     });
@@ -48,7 +48,9 @@ class SosController extends ChangeNotifier {
     _setBusy(true);
     _lastError = null;
     try {
-      _lastIncident = await sdk.triggerSos(message: message);
+      _lastIncident = await sdk.triggerSos(
+        SosTriggerPayload(message: message),
+      );
     } on EixamSdkException catch (error) {
       _lastError = error.message;
     } finally {

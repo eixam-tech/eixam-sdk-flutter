@@ -32,6 +32,7 @@ class EixamConnectSdkImpl
   final TelemetryRepository telemetryRepository;
   final ContactsRepository contactsRepository;
   final DeviceRepository deviceRepository;
+  final SdkDeviceRegistryRepository deviceRegistryRepository;
   final DeathManRepository deathManRepository;
   final PermissionsRepository permissionsRepository;
   final NotificationsRepository notificationsRepository;
@@ -81,6 +82,7 @@ class EixamConnectSdkImpl
   String? _notifiedDeviceSosCycleKey;
   DeviceSosState? _notifiedDeviceSosState;
   EixamSession? _session;
+  EixamSdkEvent? _lastSosEvent;
   String? _pendingCancelledIncidentId;
   late final BleAutoReconnectCoordinator _bleAutoReconnectCoordinator;
 
@@ -96,6 +98,7 @@ class EixamConnectSdkImpl
     required this.telemetryRepository,
     required this.contactsRepository,
     required this.deviceRepository,
+    required this.deviceRegistryRepository,
     required this.deathManRepository,
     required this.permissionsRepository,
     required this.notificationsRepository,
@@ -218,6 +221,33 @@ class EixamConnectSdkImpl
     await realtimeClient.connect();
   }
 
+  @override
+  Future<EixamSession> refreshCanonicalIdentity() async {
+    final session = _session;
+    if (session == null) {
+      throw const AuthException(
+        'E_SDK_SESSION_REQUIRED',
+        'An SDK session must be configured before refreshing identity.',
+      );
+    }
+    final remoteDataSource = identityRemoteDataSource;
+    final refreshed = remoteDataSource == null
+        ? session
+        : await remoteDataSource.bootstrapSession(session);
+    _session = refreshed;
+    if (sessionContext != null) {
+      sessionContext!.currentSession = refreshed;
+    }
+    await sessionStore?.save(refreshed);
+    final realtime = realtimeClient;
+    if (realtime is OperationalRealtimeClient) {
+      await realtime.reconnectIfSessionChanged(refreshed);
+    } else {
+      await realtime.connect();
+    }
+    return refreshed;
+  }
+
   Future<EixamSession?> _bootstrapSessionIfNeeded(EixamSession? session) async {
     if (session == null) {
       return null;
@@ -240,7 +270,7 @@ class EixamConnectSdkImpl
       final incidentId = _pendingCancelledIncidentId;
       if (state == SosState.cancelled && incidentId != null) {
         _pendingCancelledIncidentId = null;
-        _eventsController.add(SOSCancelledEvent(incidentId));
+        _publishSdkEvent(SOSCancelledEvent(incidentId));
         return;
       }
       if (state == SosState.idle ||
@@ -260,6 +290,24 @@ class EixamConnectSdkImpl
     await sessionStore?.clear();
     await realtimeClient.disconnect();
   }
+
+  @override
+  Future<DeviceStatus> connectDevice({required String pairingCode}) {
+    return pairDevice(pairingCode: pairingCode);
+  }
+
+  @override
+  Future<void> disconnectDevice() {
+    return unpairDevice();
+  }
+
+  @override
+  Future<PreferredDevice?> get preferredDevice {
+    return preferredBleDeviceStore.getPreferredDevice();
+  }
+
+  @override
+  Stream<DeviceStatus> get deviceStatusStream => watchDeviceStatus();
 
   @override
   Future<DeviceStatus> activateDevice({required String activationCode}) {
@@ -927,10 +975,7 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Future<SosIncident> triggerSos({
-    String? message,
-    String triggerSource = 'button_ui',
-  }) async {
+  Future<SosIncident> triggerSos(SosTriggerPayload payload) async {
     TrackingPosition? positionSnapshot;
     try {
       final permissionState = await permissionsRepository.getPermissionState();
@@ -942,11 +987,11 @@ class EixamConnectSdkImpl
     }
 
     final incident = await sosRepository.triggerSos(
-      message: message,
-      triggerSource: triggerSource,
+      message: payload.message,
+      triggerSource: payload.triggerSource,
       positionSnapshot: positionSnapshot,
     );
-    _eventsController.add(SOSTriggeredEvent(incident.id));
+    _publishSdkEvent(SOSTriggeredEvent(incident.id));
     return incident;
   }
 
@@ -955,7 +1000,7 @@ class EixamConnectSdkImpl
     final incident = await sosRepository.cancelSos();
     if (incident.state == SosState.cancelled) {
       _pendingCancelledIncidentId = null;
-      _eventsController.add(SOSCancelledEvent(incident.id));
+      _publishSdkEvent(SOSCancelledEvent(incident.id));
     } else {
       _pendingCancelledIncidentId = incident.id;
     }
@@ -968,8 +1013,48 @@ class EixamConnectSdkImpl
   }
 
   @override
+  Stream<SosState> get currentSosStateStream async* {
+    yield await sosRepository.getSosState();
+    yield* sosRepository.watchSosState();
+  }
+
+  @override
+  Stream<EixamSdkEvent> get lastSosEventStream async* {
+    final current = _lastSosEvent;
+    if (current != null) {
+      yield current;
+    }
+    yield* _eventsController.stream.where(_isSosSdkEvent);
+  }
+
+  @override
   Stream<SosState> watchSosState() {
     return sosRepository.watchSosState();
+  }
+
+  @override
+  Future<List<BackendRegisteredDevice>> listRegisteredDevices() {
+    return deviceRegistryRepository.listRegisteredDevices();
+  }
+
+  @override
+  Future<BackendRegisteredDevice> upsertRegisteredDevice({
+    required String hardwareId,
+    required String firmwareVersion,
+    required String hardwareModel,
+    required DateTime pairedAt,
+  }) {
+    return deviceRegistryRepository.upsertRegisteredDevice(
+      hardwareId: hardwareId,
+      firmwareVersion: firmwareVersion,
+      hardwareModel: hardwareModel,
+      pairedAt: pairedAt,
+    );
+  }
+
+  @override
+  Future<void> deleteRegisteredDevice(String deviceId) {
+    return deviceRegistryRepository.removeRegisteredDevice(deviceId);
   }
 
   @override
@@ -980,6 +1065,21 @@ class EixamConnectSdkImpl
   @override
   Stream<List<EmergencyContact>> watchEmergencyContacts() {
     return contactsRepository.watchEmergencyContacts();
+  }
+
+  @override
+  Future<EmergencyContact> createEmergencyContact({
+    required String name,
+    required String phone,
+    required String email,
+    int priority = 1,
+  }) {
+    return addEmergencyContact(
+      name: name,
+      phone: phone,
+      email: email,
+      priority: priority,
+    );
   }
 
   @override
@@ -1003,6 +1103,11 @@ class EixamConnectSdkImpl
   }
 
   @override
+  Future<void> deleteEmergencyContact(String contactId) {
+    return removeEmergencyContact(contactId);
+  }
+
+  @override
   Future<void> removeEmergencyContact(String contactId) {
     return contactsRepository.removeEmergencyContact(contactId);
   }
@@ -1022,7 +1127,7 @@ class EixamConnectSdkImpl
     );
     _deathManCheckInNotified = false;
     _deathManOverdueNotified = false;
-    _eventsController.add(DeathManScheduledEvent(plan.id));
+    _publishSdkEvent(DeathManScheduledEvent(plan.id));
     await deathManRepository.updatePlanStatus(
       plan.id,
       DeathManStatus.monitoring,
@@ -1039,7 +1144,7 @@ class EixamConnectSdkImpl
   @override
   Future<void> confirmDeathManCheckIn(String planId) async {
     await deathManRepository.confirmDeathManCheckIn(planId);
-    _eventsController.add(
+    _publishSdkEvent(
       DeathManStatusChangedEvent(planId, DeathManStatus.confirmedSafe.name),
     );
     _stopDeathManMonitoring();
@@ -1048,7 +1153,7 @@ class EixamConnectSdkImpl
   @override
   Future<void> cancelDeathMan(String planId) async {
     await deathManRepository.cancelDeathMan(planId);
-    _eventsController.add(
+    _publishSdkEvent(
       DeathManStatusChangedEvent(planId, DeathManStatus.cancelled.name),
     );
     _stopDeathManMonitoring();
@@ -1171,7 +1276,7 @@ class EixamConnectSdkImpl
           planId: plan.id,
           includeConfirmAction: true,
         );
-        _eventsController.add(
+        _publishSdkEvent(
           DeathManStatusChangedEvent(plan.id, DeathManStatus.overdue.name),
         );
       }
@@ -1190,7 +1295,7 @@ class EixamConnectSdkImpl
           planId: plan.id,
           includeConfirmAction: true,
         );
-        _eventsController.add(
+        _publishSdkEvent(
           DeathManStatusChangedEvent(
             plan.id,
             DeathManStatus.awaitingConfirmation.name,
@@ -1205,7 +1310,7 @@ class EixamConnectSdkImpl
         plan.id,
         DeathManStatus.escalated,
       );
-      _eventsController.add(DeathManEscalatedEvent(plan.id));
+      _publishSdkEvent(DeathManEscalatedEvent(plan.id));
       await _notifyDeathMan(
         'Protocol escalated',
         'No response was received. Automatic escalation has been triggered.',
@@ -1213,15 +1318,17 @@ class EixamConnectSdkImpl
       );
       if (plan.autoTriggerSos) {
         await triggerSos(
-          message: 'Auto-triggered by Death Man Protocol',
-          triggerSource: 'death_man_protocol',
+          const SosTriggerPayload(
+            message: 'Auto-triggered by Death Man Protocol',
+            triggerSource: 'death_man_protocol',
+          ),
         );
       }
       await deathManRepository.updatePlanStatus(
         plan.id,
         DeathManStatus.expired,
       );
-      _eventsController.add(
+      _publishSdkEvent(
         DeathManStatusChangedEvent(plan.id, DeathManStatus.expired.name),
       );
       _stopDeathManMonitoring();
@@ -1296,6 +1403,17 @@ class EixamConnectSdkImpl
       unavailableReason:
           'Guided Rescue Phase 1 contract is exposed by the SDK, but the runtime orchestration is still pending.',
     );
+  }
+
+  void _publishSdkEvent(EixamSdkEvent event) {
+    if (_isSosSdkEvent(event)) {
+      _lastSosEvent = event;
+    }
+    _eventsController.add(event);
+  }
+
+  bool _isSosSdkEvent(EixamSdkEvent event) {
+    return event is SOSTriggeredEvent || event is SOSCancelledEvent;
   }
 
   Future<void> dispose() async {

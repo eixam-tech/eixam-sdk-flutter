@@ -5,6 +5,7 @@ export 'src/data/repositories/geolocator_tracking_repository.dart';
 export 'src/data/repositories/in_memory_contacts_repository.dart';
 export 'src/data/repositories/in_memory_death_man_repository.dart';
 export 'src/data/repositories/in_memory_device_repository.dart';
+export 'src/data/repositories/in_memory_sdk_device_registry_repository.dart';
 export 'src/data/repositories/in_memory_sos_repository.dart';
 export 'src/data/repositories/in_memory_telemetry_repository.dart';
 export 'src/data/repositories/in_memory_tracking_repository.dart';

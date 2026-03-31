@@ -83,7 +83,7 @@ class SafetyOverviewController extends ChangeNotifier {
       onError: _handleStreamError,
     );
 
-    _sosStateSub = sdk.watchSosState().listen(
+    _sosStateSub = sdk.currentSosStateStream.listen(
       (state) {
         sosState = state;
         notifyListeners();
@@ -91,7 +91,7 @@ class SafetyOverviewController extends ChangeNotifier {
       onError: _handleStreamError,
     );
 
-    _deviceStatusSub = sdk.watchDeviceStatus().listen(
+    _deviceStatusSub = sdk.deviceStatusStream.listen(
       (status) {
         deviceStatus = status;
         notifyListeners();
@@ -217,8 +217,10 @@ class SafetyOverviewController extends ChangeNotifier {
       (value) => loadingSos = value,
       () async {
         activeIncident = await sdk.triggerSos(
-          message: 'Manual SOS triggered from demo',
-          triggerSource: 'button_ui',
+          const SosTriggerPayload(
+            message: 'Manual SOS triggered from demo',
+            triggerSource: 'button_ui',
+          ),
         );
         sosState = await sdk.getSosState();
       },
@@ -297,7 +299,7 @@ class SafetyOverviewController extends ChangeNotifier {
       (value) => loadingContacts = value,
       () async {
         final now = DateTime.now().millisecondsSinceEpoch;
-        await sdk.addEmergencyContact(
+        await sdk.createEmergencyContact(
           name: 'Sample Contact $now',
           phone: '+34123456789',
           email: 'sample$now@eixam.dev',
@@ -314,7 +316,7 @@ class SafetyOverviewController extends ChangeNotifier {
     await _runFlag(
       (value) => loadingContacts = value,
       () async {
-        await sdk.removeEmergencyContact(contacts.first.id);
+        await sdk.deleteEmergencyContact(contacts.first.id);
         contacts = await sdk.listEmergencyContacts();
       },
     );

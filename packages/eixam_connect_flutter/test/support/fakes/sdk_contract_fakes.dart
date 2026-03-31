@@ -183,6 +183,49 @@ class FakeContactsRepository implements ContactsRepository {
   }
 }
 
+class FakeSdkDeviceRegistryRepository implements SdkDeviceRegistryRepository {
+  final List<BackendRegisteredDevice> devices = <BackendRegisteredDevice>[];
+
+  @override
+  Future<List<BackendRegisteredDevice>> listRegisteredDevices() async {
+    return List<BackendRegisteredDevice>.unmodifiable(devices);
+  }
+
+  @override
+  Future<void> removeRegisteredDevice(String deviceId) async {
+    devices.removeWhere((device) => device.id == deviceId);
+  }
+
+  @override
+  Future<BackendRegisteredDevice> upsertRegisteredDevice({
+    required String hardwareId,
+    required String firmwareVersion,
+    required String hardwareModel,
+    required DateTime pairedAt,
+  }) async {
+    final existingIndex =
+        devices.indexWhere((device) => device.hardwareId == hardwareId);
+    final now = DateTime.utc(2026, 3, 31, 12);
+    final device = BackendRegisteredDevice(
+      id: existingIndex >= 0
+          ? devices[existingIndex].id
+          : 'device-${devices.length + 1}',
+      hardwareId: hardwareId,
+      firmwareVersion: firmwareVersion,
+      hardwareModel: hardwareModel,
+      pairedAt: pairedAt,
+      createdAt: existingIndex >= 0 ? devices[existingIndex].createdAt : now,
+      updatedAt: now,
+    );
+    if (existingIndex >= 0) {
+      devices[existingIndex] = device;
+    } else {
+      devices.add(device);
+    }
+    return device;
+  }
+}
+
 class FakeDeviceRepository implements DeviceRepository {
   FakeDeviceRepository({required DeviceStatus initialStatus})
       : _status = initialStatus;
