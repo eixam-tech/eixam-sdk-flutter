@@ -3,10 +3,14 @@ import 'package:flutter/material.dart';
 class AppShellScreen extends StatelessWidget {
   const AppShellScreen({
     super.key,
+    required this.backendLabel,
+    required this.backendUrl,
     required this.onOpenOperationalDemo,
     required this.onOpenTechnicalLab,
   });
 
+  final String backendLabel;
+  final String backendUrl;
   final VoidCallback onOpenOperationalDemo;
   final VoidCallback onOpenTechnicalLab;
 
@@ -17,7 +21,10 @@ class AppShellScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          const _IntroCard(),
+          _IntroCard(
+            backendLabel: backendLabel,
+            backendUrl: backendUrl,
+          ),
           const SizedBox(height: 16),
           _SurfaceCard(
             title: 'SDK Validation Console',
@@ -45,7 +52,13 @@ class AppShellScreen extends StatelessWidget {
 }
 
 class _IntroCard extends StatelessWidget {
-  const _IntroCard();
+  const _IntroCard({
+    required this.backendLabel,
+    required this.backendUrl,
+  });
+
+  final String backendLabel;
+  final String backendUrl;
 
   @override
   Widget build(BuildContext context) {
@@ -54,15 +67,22 @@ class _IntroCard extends StatelessWidget {
         padding: const EdgeInsets.all(20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: const [
-            Text(
+          children: [
+            const Text(
               'Thin host app shell',
               style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
             ),
-            SizedBox(height: 8),
-            Text(
+            const SizedBox(height: 8),
+            const Text(
               'The reference app is now a thin SDK host with two separate surfaces: operational validation and technical diagnostics.',
             ),
+            const SizedBox(height: 12),
+            Text(
+              'Active backend: $backendLabel',
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 4),
+            Text(backendUrl),
           ],
         ),
       ),

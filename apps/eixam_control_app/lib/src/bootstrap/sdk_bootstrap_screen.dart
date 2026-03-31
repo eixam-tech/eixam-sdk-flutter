@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
 import 'package:flutter/material.dart';
 
 import '../app_shell/eixam_demo_app.dart';
+import 'validation_backend_config.dart';
+import 'validation_backend_config_store.dart';
 
 class SdkBootstrapScreen extends StatefulWidget {
   const SdkBootstrapScreen({super.key});
@@ -16,22 +20,43 @@ class _SdkBootstrapScreenState extends State<SdkBootstrapScreen> {
   String? _error;
   String? _stackTrace;
   EixamConnectSdk? _sdk;
+  final ValidationBackendConfigStore _configStore =
+      ValidationBackendConfigStore();
+  ValidationBackendConfig? _activeConfig;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _bootstrapSdk());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _initializeBootstrap());
   }
 
-  Future<void> _bootstrapSdk() async {
+  Future<void> _initializeBootstrap() async {
+    final config = await _configStore.load();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _activeConfig = config;
+    });
+    await _bootstrapSdk(config: config);
+  }
+
+  Future<void> _bootstrapSdk({ValidationBackendConfig? config}) async {
+    final nextConfig = config ?? _activeConfig ?? ValidationBackendConfig.production;
     setState(() {
       _isLoading = true;
       _error = null;
       _stackTrace = null;
+      _activeConfig = nextConfig;
     });
 
     try {
-      final sdk = await DemoSdkFactory.create();
+      final previousSdk = _sdk;
+      final sdk = await ApiSdkFactory.createHttpApi(
+        apiBaseUrl: nextConfig.apiBaseUrl,
+        websocketUrl: nextConfig.mqttWebsocketUrl,
+      );
+      await _disposeSdk(previousSdk);
       if (!mounted) return;
       setState(() {
         _sdk = sdk;
@@ -49,11 +74,27 @@ class _SdkBootstrapScreenState extends State<SdkBootstrapScreen> {
     }
   }
 
+  Future<void> _reconfigureBackend(ValidationBackendConfig config) async {
+    await _configStore.save(config);
+    await _bootstrapSdk(config: config);
+  }
+
+  Future<void> _disposeSdk(EixamConnectSdk? sdk) async {
+    if (sdk is EixamConnectSdkImpl) {
+      await sdk.dispose();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final sdk = _sdk;
-    if (sdk != null) {
-      return EixamDemoApp(sdk: sdk);
+    final activeConfig = _activeConfig;
+    if (sdk != null && activeConfig != null) {
+      return EixamDemoApp(
+        sdk: sdk,
+        backendConfig: activeConfig,
+        onReconfigureBackend: _reconfigureBackend,
+      );
     }
 
     return Scaffold(
@@ -83,12 +124,26 @@ class _SdkBootstrapScreenState extends State<SdkBootstrapScreen> {
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton(
-                      onPressed: _isLoading ? null : _bootstrapSdk,
+                      onPressed: _isLoading
+                          ? null
+                          : () => _bootstrapSdk(config: activeConfig),
                       child: Text(
                         _isLoading ? 'Bootstrapping SDK...' : 'Start SDK',
                       ),
                     ),
                   ),
+                  if (activeConfig != null) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      'Active backend: ${activeConfig.label} (${activeConfig.apiBaseUrl})',
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'MQTT websocket: ${activeConfig.mqttWebsocketUrl}',
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
                   const SizedBox(height: 16),
                   if (_error != null)
                     _DiagnosticBox(
@@ -118,6 +173,12 @@ class _SdkBootstrapScreenState extends State<SdkBootstrapScreen> {
         ),
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    unawaited(_disposeSdk(_sdk));
+    super.dispose();
   }
 }
 

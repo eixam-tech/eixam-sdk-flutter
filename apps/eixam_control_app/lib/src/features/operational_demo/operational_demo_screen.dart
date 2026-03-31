@@ -1,6 +1,7 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:flutter/material.dart';
 
+import '../../bootstrap/validation_backend_config.dart';
 import '../../shared/presentation/info_line.dart';
 import '../../shared/presentation/section_card.dart';
 import 'operational_demo_sections.dart';
@@ -10,10 +11,15 @@ class OperationalDemoScreen extends StatefulWidget {
   const OperationalDemoScreen({
     super.key,
     required this.sdk,
+    required this.backendConfig,
+    required this.onApplyBackendConfig,
     required this.onOpenTechnicalLab,
   });
 
   final EixamConnectSdk sdk;
+  final ValidationBackendConfig backendConfig;
+  final Future<void> Function(ValidationBackendConfig config)
+      onApplyBackendConfig;
   final VoidCallback onOpenTechnicalLab;
 
   @override
@@ -47,11 +53,20 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
   final _devicePairedAtController =
       TextEditingController(text: DateTime.now().toUtc().toIso8601String());
   final _pairingCodeController = TextEditingController(text: 'DEMO-PAIR-001');
+  late final TextEditingController _apiBaseUrlController;
+  late final TextEditingController _mqttWebsocketUrlController;
+  late ValidationBackendPreset _selectedBackendPreset;
+  bool _applyingBackendConfig = false;
 
   @override
   void initState() {
     super.initState();
     _controller = ValidationConsoleController(sdk: widget.sdk);
+    _selectedBackendPreset = widget.backendConfig.preset;
+    _apiBaseUrlController =
+        TextEditingController(text: widget.backendConfig.apiBaseUrl);
+    _mqttWebsocketUrlController =
+        TextEditingController(text: widget.backendConfig.mqttWebsocketUrl);
     _controller.initialize();
   }
 
@@ -76,6 +91,8 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
     _deviceModelController.dispose();
     _devicePairedAtController.dispose();
     _pairingCodeController.dispose();
+    _apiBaseUrlController.dispose();
+    _mqttWebsocketUrlController.dispose();
     super.dispose();
   }
 
@@ -94,6 +111,98 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
             child: ListView(
               padding: const EdgeInsets.all(16),
               children: [
+                ConsoleSection(
+                  title: 'Backend Environment',
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      DropdownButtonFormField<ValidationBackendPreset>(
+                        initialValue: _selectedBackendPreset,
+                        decoration: const InputDecoration(
+                          labelText: 'Environment',
+                          border: OutlineInputBorder(),
+                        ),
+                        items: const [
+                          DropdownMenuItem(
+                            value: ValidationBackendPreset.production,
+                            child: Text('Production'),
+                          ),
+                          DropdownMenuItem(
+                            value: ValidationBackendPreset.staging,
+                            child: Text('Staging'),
+                          ),
+                          DropdownMenuItem(
+                            value: ValidationBackendPreset.customLocal,
+                            child: Text('Custom local'),
+                          ),
+                          DropdownMenuItem(
+                            value: ValidationBackendPreset.custom,
+                            child: Text('Custom URL'),
+                          ),
+                        ],
+                        onChanged: _applyingBackendConfig
+                            ? null
+                            : _handleBackendPresetChanged,
+                      ),
+                      const SizedBox(height: 12),
+                      ValidationTextField(
+                        controller: _apiBaseUrlController,
+                        label: 'HTTP base URL',
+                        hintText: 'https://api.eixam.io',
+                      ),
+                      const SizedBox(height: 8),
+                      ValidationTextField(
+                        controller: _mqttWebsocketUrlController,
+                        label: 'MQTT websocket URL',
+                        hintText: 'wss://api.eixam.io/ws',
+                      ),
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          ElevatedButton(
+                            onPressed: _applyingBackendConfig
+                                ? null
+                                : _handleApplyBackendConfig,
+                            child: Text(
+                              _applyingBackendConfig
+                                  ? 'Applying backend...'
+                                  : 'Apply backend',
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      InfoLine(
+                        label: 'Active backend',
+                        value:
+                            '${widget.backendConfig.label} (${widget.backendConfig.apiBaseUrl})',
+                      ),
+                      InfoLine(
+                        label: 'Active MQTT websocket',
+                        value: widget.backendConfig.mqttWebsocketUrl,
+                      ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'Android real-device note: localhost points to the phone itself.',
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'For local backend testing use your developer machine LAN IP like http://192.168.x.x:8080, or use adb reverse tcp:8080 tcp:8080 over USB debugging.',
+                      ),
+                      if (_showsAndroidLocalhostWarning) ...[
+                        const SizedBox(height: 12),
+                        DiagnosticsBox(
+                          label: 'Android localhost warning',
+                          value:
+                              'This config uses localhost/127.0.0.1. On a physical Android device that points to the phone itself, not your computer.',
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
                 SectionCard(
                   title: 'Validation Surface',
                   child: Column(
@@ -700,5 +809,73 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
 
   Future<void> _handleConnectDevice() async {
     await _controller.connectDevice(_pairingCodeController.text.trim());
+  }
+
+  void _handleBackendPresetChanged(ValidationBackendPreset? preset) {
+    if (preset == null) {
+      return;
+    }
+    setState(() {
+      _selectedBackendPreset = preset;
+    });
+    if (preset == ValidationBackendPreset.custom) {
+      return;
+    }
+    final config = ValidationBackendConfig.presetFor(preset);
+    _apiBaseUrlController.text = config.apiBaseUrl;
+    _mqttWebsocketUrlController.text = config.mqttWebsocketUrl;
+  }
+
+  Future<void> _handleApplyBackendConfig() async {
+    final apiBaseUrl = _apiBaseUrlController.text.trim();
+    final mqttWebsocketUrl = _mqttWebsocketUrlController.text.trim();
+    if (apiBaseUrl.isEmpty || mqttWebsocketUrl.isEmpty) {
+      _controller.reportActionError(
+        StateError('HTTP base URL and MQTT websocket URL are both required.'),
+      );
+      return;
+    }
+
+    setState(() {
+      _applyingBackendConfig = true;
+    });
+    try {
+      await widget.onApplyBackendConfig(
+        ValidationBackendConfig(
+          preset: _selectedBackendPreset,
+          label: _labelForPreset(_selectedBackendPreset),
+          apiBaseUrl: apiBaseUrl,
+          mqttWebsocketUrl: mqttWebsocketUrl,
+        ),
+      );
+    } catch (error) {
+      _controller.reportActionError(error);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _applyingBackendConfig = false;
+        });
+      }
+    }
+  }
+
+  bool get _showsAndroidLocalhostWarning {
+    final combined =
+        '${_apiBaseUrlController.text} ${_mqttWebsocketUrlController.text}'
+            .toLowerCase();
+    return combined.contains('localhost') || combined.contains('127.0.0.1');
+  }
+
+  String _labelForPreset(ValidationBackendPreset preset) {
+    switch (preset) {
+      case ValidationBackendPreset.production:
+        return 'Production';
+      case ValidationBackendPreset.staging:
+        return 'Staging';
+      case ValidationBackendPreset.customLocal:
+        return 'Custom local';
+      case ValidationBackendPreset.custom:
+        return 'Custom URL';
+    }
   }
 }

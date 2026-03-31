@@ -4,6 +4,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_ui/eixam_connect_ui.dart';
 import 'package:flutter/material.dart';
 
+import '../bootstrap/validation_backend_config.dart';
 import 'app_shell_screen.dart';
 import '../features/operational_demo/operational_demo_screen.dart';
 import '../features/technical_lab/technical_lab_screen.dart';
@@ -12,9 +13,14 @@ class EixamDemoApp extends StatefulWidget {
   const EixamDemoApp({
     super.key,
     required this.sdk,
+    required this.backendConfig,
+    required this.onReconfigureBackend,
   });
 
   final EixamConnectSdk sdk;
+  final ValidationBackendConfig backendConfig;
+  final Future<void> Function(ValidationBackendConfig config)
+      onReconfigureBackend;
 
   @override
   State<EixamDemoApp> createState() => _EixamDemoAppState();
@@ -49,6 +55,8 @@ class _EixamDemoAppState extends State<EixamDemoApp> {
       MaterialPageRoute<void>(
         builder: (_) => OperationalDemoScreen(
           sdk: widget.sdk,
+          backendConfig: widget.backendConfig,
+          onApplyBackendConfig: widget.onReconfigureBackend,
           onOpenTechnicalLab: _openTechnicalLab,
         ),
       ),
@@ -90,6 +98,8 @@ class _EixamDemoAppState extends State<EixamDemoApp> {
         navigatorKey: _navigatorKey,
         debugShowCheckedModeBanner: false,
         home: AppShellScreen(
+          backendLabel: widget.backendConfig.label,
+          backendUrl: widget.backendConfig.apiBaseUrl,
           onOpenOperationalDemo: _openOperationalDemo,
           onOpenTechnicalLab: _openTechnicalLab,
         ),
