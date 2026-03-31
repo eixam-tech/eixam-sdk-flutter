@@ -6,7 +6,7 @@ class CancelSosUseCase {
 
   const CancelSosUseCase(this.repository);
 
-  Future<SosIncident> call({String? reason}) {
-    return repository.cancelSos(reason: reason);
+  Future<SosIncident> call() {
+    return repository.cancelSos();
   }
 }

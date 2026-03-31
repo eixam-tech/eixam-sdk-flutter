@@ -111,6 +111,14 @@ class SdkHttpTransport {
     };
   }
 
+  Map<String, String> headersForCurrentSession({
+    Map<String, String>? extra,
+    EixamSession? sessionOverride,
+  }) {
+    final session = _resolveSession(sessionOverride);
+    return _headersFor(session, extra: extra);
+  }
+
   Map<String, dynamic> _decodeJson(http.Response response) {
     if (response.body.isEmpty) {
       return <String, dynamic>{};

@@ -69,6 +69,7 @@ class MqttRealtimeClient
         previous.externalUserId == session.externalUserId &&
         previous.userHash == session.userHash &&
         previous.sdkUserId == session.sdkUserId &&
+        previous.canonicalExternalUserId == session.canonicalExternalUserId &&
         _state == RealtimeConnectionState.connected) {
       return;
     }
@@ -98,11 +99,51 @@ class MqttRealtimeClient
     }
 
     final envelope = SdkMqttContract.buildOperationalSosEnvelope(
-      request.copyWith(sdkUserId: session.sdkUserId),
+      request.copyWith(
+        sdkUserId: session.canonicalExternalUserId ?? session.sdkUserId,
+      ),
     );
     await transport.publish(
       topic: envelope.topic,
       payload: envelope.payload,
+      qos: SdkMqttQos.atLeastOnce,
+      retain: false,
+    );
+  }
+
+  @override
+  Future<void> publishTelemetry(SdkTelemetryPayload payload) async {
+    final session = sessionContext.currentSession;
+    if (session == null) {
+      throw const AuthException(
+        'E_SDK_SESSION_REQUIRED',
+        'A signed SDK session must be configured before publishing telemetry over MQTT.',
+      );
+    }
+
+    await _ensureConnected(initialConnect: true);
+    final transport = _transport;
+    if (transport == null) {
+      throw const NetworkException(
+        'E_MQTT_NOT_CONNECTED',
+        'The MQTT transport is not connected.',
+      );
+    }
+
+    final envelope = SdkMqttContract.buildTelemetryEnvelope(
+      session: session,
+      payload: payload.copyWith(
+        userId: payload.userId ??
+            session.canonicalExternalUserId ??
+            session.sdkUserId ??
+            session.externalUserId,
+      ),
+    );
+    await transport.publish(
+      topic: envelope.topic,
+      payload: envelope.payload,
+      qos: SdkMqttQos.atLeastOnce,
+      retain: false,
     );
   }
 

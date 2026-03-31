@@ -55,7 +55,7 @@ void main() {
       final repository = InMemorySosRepository();
 
       await repository.triggerSos(triggerSource: 'button_ui');
-      final cancelled = await repository.cancelSos(reason: 'False alarm');
+      final cancelled = await repository.cancelSos();
 
       expect(cancelled.state, SosState.cancelled);
       expect(await repository.getSosState(), SosState.cancelled);
@@ -93,7 +93,7 @@ void main() {
         message: 'Need help',
         triggerSource: 'button_ui',
       );
-      await repository.cancelSos(reason: 'Resolved');
+      await repository.cancelSos();
 
       expect(store.stringValues[SharedPrefsSdkStore.sosStateKey],
           SosState.cancelled.name);
@@ -108,7 +108,7 @@ void main() {
       final repository = InMemorySosRepository();
 
       await expectLater(
-        repository.cancelSos(reason: 'Nothing to cancel'),
+        repository.cancelSos(),
         throwsA(
           isA<SosException>().having(
             (error) => error.code,

@@ -20,6 +20,12 @@ class SdkMqttDisconnectEvent {
   final Object? error;
 }
 
+enum SdkMqttQos {
+  atMostOnce,
+  atLeastOnce,
+  exactlyOnce,
+}
+
 abstract class SdkMqttTransport {
   Future<void> connect();
   Future<void> disconnect();
@@ -28,6 +34,8 @@ abstract class SdkMqttTransport {
   Future<void> publish({
     required String topic,
     required String payload,
+    SdkMqttQos qos = SdkMqttQos.atLeastOnce,
+    bool retain = false,
   });
 
   Stream<SdkMqttIncomingMessage> watchMessages();

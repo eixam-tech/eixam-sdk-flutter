@@ -229,9 +229,7 @@ class SafetyOverviewController extends ChangeNotifier {
     await _runFlag(
       (value) => loadingSos = value,
       () async {
-        activeIncident = await sdk.cancelSos(
-          reason: 'Cancelled from operational demo',
-        );
+        activeIncident = await sdk.cancelSos();
         sosState = await sdk.getSosState();
       },
     );

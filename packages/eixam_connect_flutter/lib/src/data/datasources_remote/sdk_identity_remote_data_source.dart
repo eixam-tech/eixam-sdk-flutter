@@ -11,8 +11,7 @@ abstract class SdkIdentityRemoteDataSource {
 /// Optional enrichment for the authenticated SDK identity.
 ///
 /// This is useful for profile/bootstrap reads such as resolving `sdkUserId`
-/// from `/v1/sdk/me`, but it is not a prerequisite for setting the session or
-/// initializing realtime credentials.
+/// and the canonical `external_user_id` from `/v1/sdk/me`.
 class HttpSdkIdentityRemoteDataSource implements SdkIdentityRemoteDataSource {
   HttpSdkIdentityRemoteDataSource({required this.transport});
 
@@ -65,6 +64,18 @@ class HttpSdkIdentityRemoteDataSource implements SdkIdentityRemoteDataSource {
       );
     }
 
-    return session.copyWith(sdkUserId: sdkUserId.trim());
+    final canonicalExternalUserId = user['external_user_id'];
+    if (canonicalExternalUserId is! String ||
+        canonicalExternalUserId.trim().isEmpty) {
+      throw const AuthException(
+        'E_SDK_ME_INVALID_RESPONSE',
+        'The backend did not return a valid canonical external user id.',
+      );
+    }
+
+    return session.copyWith(
+      sdkUserId: sdkUserId.trim(),
+      canonicalExternalUserId: canonicalExternalUserId.trim(),
+    );
   }
 }

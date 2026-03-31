@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import 'mqtt_topic_segment.dart';
+
 class SdkMqttConnectRequest {
   const SdkMqttConnectRequest({
     required this.brokerUri,
@@ -54,17 +56,18 @@ class MqttOperationalSosRequest {
 class SdkMqttTopics {
   static const String sosAlerts = 'sos/alerts';
 
-  static Set<String> eventTopicsFor(EixamSession session) {
-    final topics = <String>{};
-    if (session.sdkUserId != null && session.sdkUserId!.trim().isNotEmpty) {
-      topics.add('sos/events/${session.sdkUserId!.trim()}');
-    }
+  static String telemetryDataFor(EixamSession session) {
+    final canonicalExternalUserId =
+        MqttTopicSegment.canonicalExternalUserIdFrom(session);
+    return 'tel/${MqttTopicSegment.encode(canonicalExternalUserId)}/data';
+  }
 
-    // Backend docs still reference sdkUserId here, but the signed-session
-    // contract now allows MQTT bootstrap without /v1/sdk/me. Keep the fallback
-    // isolated until backend confirms the final event-topic identifier.
-    topics.add('sos/events/${session.externalUserId}');
-    return topics;
+  static Set<String> eventTopicsFor(EixamSession session) {
+    final canonicalExternalUserId =
+        MqttTopicSegment.canonicalExternalUserIdFrom(session);
+    return <String>{
+      'sos/events/${MqttTopicSegment.encode(canonicalExternalUserId)}',
+    };
   }
 }
 
@@ -100,6 +103,16 @@ class SdkMqttContract {
     return SdkMqttEnvelope(
       topic: SdkMqttTopics.sosAlerts,
       payload: jsonEncode(payload),
+    );
+  }
+
+  static SdkMqttEnvelope buildTelemetryEnvelope({
+    required EixamSession session,
+    required SdkTelemetryPayload payload,
+  }) {
+    return SdkMqttEnvelope(
+      topic: SdkMqttTopics.telemetryDataFor(session),
+      payload: jsonEncode(payload.toJson()),
     );
   }
 

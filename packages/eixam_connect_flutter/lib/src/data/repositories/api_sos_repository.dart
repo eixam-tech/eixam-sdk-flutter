@@ -89,7 +89,7 @@ class ApiSosRepository implements SosRepository {
   }
 
   @override
-  Future<SosIncident> cancelSos({String? reason}) async {
+  Future<SosIncident> cancelSos() async {
     final current = _stateMachine.current;
     if ({SosState.idle, SosState.cancelled, SosState.resolved}
             .contains(current) ||
@@ -101,10 +101,7 @@ class ApiSosRepository implements SosRepository {
     _emit(SosState.cancelRequested);
 
     try {
-      final dto = await remoteDataSource.cancelSos(
-        incidentId: _activeIncident!.id,
-        reason: reason,
-      );
+      final dto = await remoteDataSource.cancelSos();
       if (dto == null) {
         _activeIncident = _activeIncident!.copyWith(state: SosState.cancelled);
       } else {

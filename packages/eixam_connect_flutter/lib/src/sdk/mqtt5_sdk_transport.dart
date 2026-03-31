@@ -112,14 +112,16 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
   Future<void> publish({
     required String topic,
     required String payload,
+    SdkMqttQos qos = SdkMqttQos.atLeastOnce,
+    bool retain = false,
   }) async {
     final client = _requireClient();
     final builder = MqttPayloadBuilder()..addString(payload);
     client.publishMessage(
       topic,
-      MqttQos.atLeastOnce,
+      _toMqttQos(qos),
       builder.payload!,
-      retain: false,
+      retain: retain,
     );
   }
 
@@ -160,6 +162,14 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
       'ws' => 80,
       'ssl' || 'tls' => 8883,
       _ => 1883,
+    };
+  }
+
+  MqttQos _toMqttQos(SdkMqttQos qos) {
+    return switch (qos) {
+      SdkMqttQos.atMostOnce => MqttQos.atMostOnce,
+      SdkMqttQos.atLeastOnce => MqttQos.atLeastOnce,
+      SdkMqttQos.exactlyOnce => MqttQos.exactlyOnce,
     };
   }
 }

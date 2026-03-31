@@ -1,17 +1,23 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:http/http.dart' as http;
 
 import '../data/datasources_local/shared_prefs_sdk_store.dart';
 import '../data/datasources_local/preferred_ble_device_store.dart';
 import '../data/datasources_local/sdk_session_store.dart';
+import '../data/datasources_remote/http_sos_remote_data_source.dart';
 import '../data/datasources_remote/mock_sos_remote_data_source.dart';
+import '../data/datasources_remote/sdk_identity_remote_data_source.dart';
 import '../data/datasources_remote/sdk_session_context.dart';
+import '../data/datasources_remote/sdk_http_transport.dart';
 import '../data/repositories/api_sos_repository.dart';
 import '../data/repositories/geolocator_tracking_repository.dart';
 import '../data/repositories/in_memory_contacts_repository.dart';
 import '../data/repositories/in_memory_death_man_repository.dart';
 import '../data/repositories/in_memory_device_repository.dart';
+import '../data/repositories/in_memory_telemetry_repository.dart';
 import '../data/repositories/local_notifications_repository.dart';
 import '../data/repositories/mqtt_operational_sos_repository.dart';
+import '../data/repositories/mqtt_telemetry_repository.dart';
 import '../data/repositories/platform_permissions_repository.dart';
 import '../device/ble_device_runtime_provider.dart';
 import '../device/ble_debug_registry.dart';
@@ -42,6 +48,7 @@ class ApiSdkFactory {
       permissionsRepository: permissionsRepository,
       localStore: store,
     );
+    final telemetryRepository = InMemoryTelemetryRepository();
 
     final deathManRepository = InMemoryDeathManRepository(localStore: store);
 
@@ -68,6 +75,7 @@ class ApiSdkFactory {
     final sdk = EixamConnectSdkImpl(
       sosRepository: sosRepository,
       trackingRepository: trackingRepository,
+      telemetryRepository: telemetryRepository,
       contactsRepository: contactsRepository,
       deviceRepository: deviceRepository,
       deathManRepository: deathManRepository,
@@ -107,6 +115,12 @@ class ApiSdkFactory {
       apiBaseUrl: apiBaseUrl,
       websocketUrl: websocketUrl,
     );
+    final httpClient = http.Client();
+    final httpTransport = SdkHttpTransport(
+      client: httpClient,
+      config: config,
+      sessionContext: sessionContext,
+    );
     final realtimeClient = MqttRealtimeClient(
       config: config,
       sessionContext: sessionContext,
@@ -117,7 +131,13 @@ class ApiSdkFactory {
     );
     final sosRepository = MqttOperationalSosRepository(
       realtimeClient: realtimeClient,
+      cancelRemoteDataSource: HttpSosRemoteDataSource(
+        transport: httpTransport,
+      ),
       localStore: store,
+    );
+    final telemetryRepository = MqttTelemetryRepository(
+      realtimeClient: realtimeClient,
     );
 
     final trackingRepository = GeolocatorTrackingRepository(
@@ -152,6 +172,7 @@ class ApiSdkFactory {
     final sdk = EixamConnectSdkImpl(
       sosRepository: sosRepository,
       trackingRepository: trackingRepository,
+      telemetryRepository: telemetryRepository,
       contactsRepository: contactsRepository,
       deviceRepository: deviceRepository,
       deathManRepository: deathManRepository,
@@ -164,7 +185,11 @@ class ApiSdkFactory {
       preferredBleDeviceStore: preferredBleDeviceStore,
       sessionStore: sessionStore,
       sessionContext: sessionContext,
+      identityRemoteDataSource: HttpSdkIdentityRemoteDataSource(
+        transport: httpTransport,
+      ),
       disposeCallback: () async {
+        httpClient.close();
         await sosRepository.dispose();
         await realtimeClient.dispose();
       },

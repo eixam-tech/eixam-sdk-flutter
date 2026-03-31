@@ -7,6 +7,7 @@ class EixamSession {
   final String externalUserId;
   final String userHash;
   final String? sdkUserId;
+  final String? canonicalExternalUserId;
   final String? refreshToken;
 
   const EixamSession({
@@ -14,6 +15,7 @@ class EixamSession {
     required this.externalUserId,
     required this.userHash,
     this.sdkUserId,
+    this.canonicalExternalUserId,
     this.refreshToken,
   });
 
@@ -26,12 +28,14 @@ class EixamSession {
     required String externalUserId,
     required String userHash,
     String? sdkUserId,
+    String? canonicalExternalUserId,
     String? refreshToken,
   }) : this(
           appId: appId,
           externalUserId: externalUserId,
           userHash: userHash,
           sdkUserId: sdkUserId,
+          canonicalExternalUserId: canonicalExternalUserId,
           refreshToken: refreshToken,
         );
 
@@ -46,6 +50,7 @@ class EixamSession {
     String? externalUserId,
     String? userHash,
     Object? sdkUserId = _unset,
+    Object? canonicalExternalUserId = _unset,
     Object? refreshToken = _unset,
   }) {
     return EixamSession(
@@ -55,6 +60,10 @@ class EixamSession {
       sdkUserId: identical(sdkUserId, _unset)
           ? this.sdkUserId
           : sdkUserId as String?,
+      canonicalExternalUserId:
+          identical(canonicalExternalUserId, _unset)
+              ? this.canonicalExternalUserId
+              : canonicalExternalUserId as String?,
       refreshToken: identical(refreshToken, _unset)
           ? this.refreshToken
           : refreshToken as String?,
@@ -67,6 +76,7 @@ class EixamSession {
       'externalUserId': externalUserId,
       'userHash': userHash,
       'sdkUserId': sdkUserId,
+      'canonicalExternalUserId': canonicalExternalUserId,
       'refreshToken': refreshToken,
     };
   }
@@ -77,6 +87,7 @@ class EixamSession {
       externalUserId: json['externalUserId'] as String,
       userHash: json['userHash'] as String,
       sdkUserId: json['sdkUserId'] as String?,
+      canonicalExternalUserId: json['canonicalExternalUserId'] as String?,
       refreshToken: json['refreshToken'] as String?,
     );
   }

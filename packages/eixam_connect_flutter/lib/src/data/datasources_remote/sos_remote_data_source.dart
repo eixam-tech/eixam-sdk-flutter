@@ -10,7 +10,6 @@ abstract class SosRemoteDataSource {
     TrackingPosition? positionSnapshot,
   });
 
-  Future<SosIncidentDto?> cancelSos(
-      {required String incidentId, String? reason});
+  Future<SosIncidentDto?> cancelSos();
   Future<SosIncidentDto?> getActiveSos();
 }

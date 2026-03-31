@@ -54,9 +54,10 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
   }
 
   @override
-  Future<SosIncidentDto?> cancelSos(
-      {required String incidentId, String? reason}) async {
-    final response = await transport.post('/v1/sdk/sos/cancel');
+  Future<SosIncidentDto?> cancelSos() async {
+    final response = await transport.post(
+      '/v1/sdk/sos/cancel',
+    );
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw SosException('E_HTTP_SOS_CANCEL_FAILED', response.body);

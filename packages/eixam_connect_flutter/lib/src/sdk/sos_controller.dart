@@ -57,12 +57,12 @@ class SosController extends ChangeNotifier {
   }
 
   /// Cancels the active SOS incident when cancellation is still allowed.
-  Future<void> cancel({String? reason}) async {
+  Future<void> cancel() async {
     if (!canCancel) return;
     _setBusy(true);
     _lastError = null;
     try {
-      _lastIncident = await sdk.cancelSos(reason: reason);
+      _lastIncident = await sdk.cancelSos();
     } on EixamSdkException catch (error) {
       _lastError = error.message;
     } finally {

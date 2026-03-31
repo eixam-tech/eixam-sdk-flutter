@@ -7,6 +7,7 @@ import '../data/repositories/in_memory_contacts_repository.dart';
 import '../data/repositories/in_memory_death_man_repository.dart';
 import '../data/repositories/in_memory_device_repository.dart';
 import '../data/repositories/in_memory_sos_repository.dart';
+import '../data/repositories/in_memory_telemetry_repository.dart';
 import '../data/repositories/local_notifications_repository.dart';
 import '../data/repositories/platform_permissions_repository.dart';
 import '../device/ble_device_runtime_provider.dart';
@@ -40,6 +41,7 @@ class DemoSdkFactory {
       permissionsRepository: permissionsRepository,
       localStore: store,
     );
+    final telemetryRepository = InMemoryTelemetryRepository();
 
     final deathManRepository = InMemoryDeathManRepository(localStore: store);
 
@@ -69,6 +71,7 @@ class DemoSdkFactory {
     final sdk = EixamConnectSdkImpl(
       sosRepository: sosRepository,
       trackingRepository: trackingRepository,
+      telemetryRepository: telemetryRepository,
       contactsRepository: contactsRepository,
       deviceRepository: deviceRepository,
       deathManRepository: deathManRepository,

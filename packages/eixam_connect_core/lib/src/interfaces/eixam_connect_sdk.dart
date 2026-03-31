@@ -7,6 +7,7 @@ import '../entities/device_status.dart';
 import '../entities/emergency_contact.dart';
 import '../entities/guided_rescue_state.dart';
 import '../entities/permission_state.dart';
+import '../entities/sdk_telemetry_payload.dart';
 import '../entities/sos_incident.dart';
 import '../entities/tracking_position.dart';
 import '../enums/realtime_connection_state.dart';
@@ -77,6 +78,7 @@ abstract class EixamConnectSdk {
 
   Future<void> startTracking();
   Future<void> stopTracking();
+  Future<void> publishTelemetry(SdkTelemetryPayload payload);
   Future<TrackingPosition?> getCurrentPosition();
   Future<TrackingState> getTrackingState();
   Stream<TrackingPosition> watchPositions();
@@ -86,7 +88,7 @@ abstract class EixamConnectSdk {
     String? message,
     String triggerSource = 'button_ui',
   });
-  Future<SosIncident> cancelSos({String? reason});
+  Future<SosIncident> cancelSos();
   Future<SosState> getSosState();
   Stream<SosState> watchSosState();
 

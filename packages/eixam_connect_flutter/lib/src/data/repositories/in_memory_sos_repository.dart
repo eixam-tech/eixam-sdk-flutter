@@ -78,7 +78,7 @@ class InMemorySosRepository implements SosRepository {
   }
 
   @override
-  Future<SosIncident> cancelSos({String? reason}) async {
+  Future<SosIncident> cancelSos() async {
     final current = _stateMachine.current;
     if ({SosState.idle, SosState.cancelled, SosState.resolved}
             .contains(current) ||

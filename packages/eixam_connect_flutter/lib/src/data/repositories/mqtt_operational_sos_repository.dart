@@ -3,13 +3,16 @@ import 'dart:async';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import '../../mappers/local_state_serializers.dart';
+import '../datasources_remote/sos_remote_data_source.dart';
 import '../datasources_local/shared_prefs_sdk_store.dart';
 import '../../sdk/operational_realtime_client.dart';
 import '../../sdk/sdk_mqtt_contract.dart';
+import 'mqtt_sos_lifecycle_update.dart';
 
 class MqttOperationalSosRepository implements SosRepository {
   MqttOperationalSosRepository({
     required this.realtimeClient,
+    this.cancelRemoteDataSource,
     SharedPrefsSdkStore? localStore,
   }) : _localStore = localStore {
     _stateController.add(_stateMachine.current);
@@ -17,6 +20,7 @@ class MqttOperationalSosRepository implements SosRepository {
   }
 
   final OperationalRealtimeClient realtimeClient;
+  final SosRemoteDataSource? cancelRemoteDataSource;
   final SharedPrefsSdkStore? _localStore;
   final SosStateMachine _stateMachine = SosStateMachine();
   final StreamController<SosState> _stateController =
@@ -105,11 +109,42 @@ class MqttOperationalSosRepository implements SosRepository {
   }
 
   @override
-  Future<SosIncident> cancelSos({String? reason}) async {
-    throw const SosException(
-      'E_SOS_CANCEL_MQTT_CONTRACT_PENDING',
-      'MQTT SOS cancellation is not implemented until backend confirms the operational cancel contract.',
-    );
+  Future<SosIncident> cancelSos() async {
+    final current = _stateMachine.current;
+    if ({SosState.idle, SosState.cancelled, SosState.resolved}
+            .contains(current) ||
+        _activeIncident == null) {
+      throw const SosException(
+        'E_SOS_CANCEL_NOT_ALLOWED',
+        'There is no active SOS to cancel',
+      );
+    }
+
+    final remoteDataSource = cancelRemoteDataSource;
+    if (remoteDataSource == null) {
+      throw const SosException(
+        'E_SOS_CANCEL_HTTP_UNAVAILABLE',
+        'SOS cancellation requires an HTTP remote data source.',
+      );
+    }
+
+    _activeIncident = _activeIncident!.copyWith(state: SosState.cancelRequested);
+    _emit(SosState.cancelRequested);
+    await _persistState();
+
+    try {
+      await remoteDataSource.cancelSos();
+      await _persistState();
+      return _activeIncident!;
+    } catch (error) {
+      _activeIncident = _activeIncident!.copyWith(state: SosState.sent);
+      _emit(SosState.sent);
+      await _persistState();
+      if (error is EixamSdkException) {
+        rethrow;
+      }
+      throw SosException('E_SOS_CANCEL_FAILED', error.toString());
+    }
   }
 
   @override
@@ -124,33 +159,16 @@ class MqttOperationalSosRepository implements SosRepository {
   }
 
   void _handleRealtimeEvent(RealtimeEvent event) {
-    final payload = event.payload;
-    if (payload == null || _activeIncident == null) {
+    final update = MqttSosLifecycleUpdate.fromRealtimeEvent(event);
+    if (update == null || _activeIncident == null) {
+      return;
+    }
+    if (update.incidentId != _activeIncident!.id) {
       return;
     }
 
-    final status = (payload['status'] ?? payload['type']) as String?;
-    if (status == null) {
-      return;
-    }
-
-    final incidentId = payload['incidentId'] as String?;
-    if (incidentId != null && incidentId != _activeIncident!.id) {
-      return;
-    }
-
-    final nextState = switch (status) {
-      'acknowledged' => SosState.acknowledged,
-      'cancelled' => SosState.cancelled,
-      'resolved' => SosState.resolved,
-      _ => null,
-    };
-    if (nextState == null) {
-      return;
-    }
-
-    _activeIncident = _activeIncident!.copyWith(state: nextState);
-    _emit(nextState);
+    _activeIncident = _activeIncident!.copyWith(state: update.state);
+    _emit(update.state);
     unawaited(_persistState());
   }
 

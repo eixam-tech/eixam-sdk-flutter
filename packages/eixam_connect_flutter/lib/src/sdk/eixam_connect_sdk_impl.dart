@@ -8,10 +8,12 @@ import 'package:flutter/widgets.dart';
 
 import '../data/datasources_local/preferred_ble_device_store.dart';
 import '../data/datasources_local/sdk_session_store.dart';
+import '../data/datasources_remote/sdk_identity_remote_data_source.dart';
 import '../device/ble_incoming_event.dart';
 import '../device/device_sos_controller.dart';
 import '../device/ble_debug_registry.dart';
 import '../data/datasources_remote/sdk_session_context.dart';
+import '../data/repositories/telemetry_repository.dart';
 import 'ble_auto_reconnect_coordinator.dart';
 import 'ble_sos_notification_payload.dart';
 import 'guided_rescue_runtime.dart';
@@ -27,6 +29,7 @@ class EixamConnectSdkImpl
     implements EixamConnectSdk {
   final SosRepository sosRepository;
   final TrackingRepository trackingRepository;
+  final TelemetryRepository telemetryRepository;
   final ContactsRepository contactsRepository;
   final DeviceRepository deviceRepository;
   final DeathManRepository deathManRepository;
@@ -39,6 +42,7 @@ class EixamConnectSdkImpl
   final GuidedRescueRuntime? guidedRescueRuntime;
   final SdkSessionStore? sessionStore;
   final SdkSessionContext? sessionContext;
+  final SdkIdentityRemoteDataSource? identityRemoteDataSource;
   final Future<void> Function()? disposeCallback;
 
   final StreamController<EixamSdkEvent> _eventsController =
@@ -61,6 +65,7 @@ class EixamConnectSdkImpl
   StreamSubscription<DeviceStatus>? _deviceStatusSub;
   StreamSubscription<DeviceSosStatus>? _deviceSosSub;
   StreamSubscription<GuidedRescueState>? _guidedRescueSub;
+  StreamSubscription<SosState>? _sosStateSub;
 
   Timer? _deathManTimer;
   bool _deathManCheckInNotified = false;
@@ -76,6 +81,7 @@ class EixamConnectSdkImpl
   String? _notifiedDeviceSosCycleKey;
   DeviceSosState? _notifiedDeviceSosState;
   EixamSession? _session;
+  String? _pendingCancelledIncidentId;
   late final BleAutoReconnectCoordinator _bleAutoReconnectCoordinator;
 
   static const String _openAppActionId = 'open_app';
@@ -87,6 +93,7 @@ class EixamConnectSdkImpl
   EixamConnectSdkImpl({
     required this.sosRepository,
     required this.trackingRepository,
+    required this.telemetryRepository,
     required this.contactsRepository,
     required this.deviceRepository,
     required this.deathManRepository,
@@ -99,17 +106,20 @@ class EixamConnectSdkImpl
     this.guidedRescueRuntime,
     this.sessionStore,
     this.sessionContext,
+    this.identityRemoteDataSource,
     this.disposeCallback,
   }) {
     _bleAutoReconnectCoordinator = BleAutoReconnectCoordinator(
       deviceRepository: deviceRepository,
       preferredDeviceStore: preferredBleDeviceStore,
     );
+    _bindSosStreams();
   }
 
   @override
   Future<void> initialize(EixamSdkConfig config) async {
     _session = await sessionStore?.load();
+    _session = await _bootstrapSessionIfNeeded(_session);
     if (sessionContext != null) {
       sessionContext!.currentSession = _session;
     }
@@ -195,17 +205,50 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> setSession(EixamSession session) async {
-    _session = session;
+    _session = await _bootstrapSessionIfNeeded(session);
     if (sessionContext != null) {
-      sessionContext!.currentSession = session;
+      sessionContext!.currentSession = _session;
     }
-    await sessionStore?.save(session);
+    await sessionStore?.save(_session!);
     final realtime = realtimeClient;
     if (realtime is OperationalRealtimeClient) {
-      await realtime.reconnectIfSessionChanged(session);
+      await realtime.reconnectIfSessionChanged(_session!);
       return;
     }
     await realtimeClient.connect();
+  }
+
+  Future<EixamSession?> _bootstrapSessionIfNeeded(EixamSession? session) async {
+    if (session == null) {
+      return null;
+    }
+    final remoteDataSource = identityRemoteDataSource;
+    if (remoteDataSource == null) {
+      return session;
+    }
+    if (session.canonicalExternalUserId?.trim().isNotEmpty == true) {
+      return session;
+    }
+    final bootstrapped = await remoteDataSource.bootstrapSession(session);
+    await sessionStore?.save(bootstrapped);
+    return bootstrapped;
+  }
+
+  void _bindSosStreams() {
+    _sosStateSub?.cancel();
+    _sosStateSub = sosRepository.watchSosState().listen((state) {
+      final incidentId = _pendingCancelledIncidentId;
+      if (state == SosState.cancelled && incidentId != null) {
+        _pendingCancelledIncidentId = null;
+        _eventsController.add(SOSCancelledEvent(incidentId));
+        return;
+      }
+      if (state == SosState.idle ||
+          state == SosState.failed ||
+          state == SosState.resolved) {
+        _pendingCancelledIncidentId = null;
+      }
+    });
   }
 
   @override
@@ -855,6 +898,11 @@ class EixamConnectSdkImpl
   }
 
   @override
+  Future<void> publishTelemetry(SdkTelemetryPayload payload) {
+    return telemetryRepository.publishTelemetry(payload);
+  }
+
+  @override
   Future<TrackingPosition?> getCurrentPosition() {
     return trackingRepository.getCurrentPosition();
   }
@@ -903,9 +951,14 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Future<SosIncident> cancelSos({String? reason}) async {
-    final incident = await sosRepository.cancelSos(reason: reason);
-    _eventsController.add(SOSCancelledEvent(incident.id));
+  Future<SosIncident> cancelSos() async {
+    final incident = await sosRepository.cancelSos();
+    if (incident.state == SosState.cancelled) {
+      _pendingCancelledIncidentId = null;
+      _eventsController.add(SOSCancelledEvent(incident.id));
+    } else {
+      _pendingCancelledIncidentId = incident.id;
+    }
     return incident;
   }
 
@@ -1261,6 +1314,7 @@ class EixamConnectSdkImpl
     await _deviceStatusSub?.cancel();
     await _deviceSosSub?.cancel();
     await _guidedRescueSub?.cancel();
+    await _sosStateSub?.cancel();
     await deviceSosController.dispose();
     await realtimeClient.disconnect();
     await disposeCallback?.call();

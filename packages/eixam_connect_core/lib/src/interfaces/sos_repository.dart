@@ -14,7 +14,7 @@ abstract class SosRepository {
     TrackingPosition? positionSnapshot,
   });
 
-  Future<SosIncident> cancelSos({String? reason});
+  Future<SosIncident> cancelSos();
   Future<SosState> getSosState();
   Stream<SosState> watchSosState();
 }

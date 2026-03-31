@@ -5,6 +5,7 @@ import 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
 import 'package:eixam_connect_core/src/events/realtime_event.dart';
 import 'package:eixam_connect_core/src/interfaces/realtime_client.dart';
 import 'package:eixam_connect_flutter/src/sdk/guided_rescue_runtime.dart';
+import 'package:eixam_connect_flutter/src/data/repositories/telemetry_repository.dart';
 
 class FakeSosRepository implements SosRepository {
   SosIncident currentIncident = SosIncident(
@@ -42,7 +43,7 @@ class FakeSosRepository implements SosRepository {
   }
 
   @override
-  Future<SosIncident> cancelSos({String? reason}) async {
+  Future<SosIncident> cancelSos() async {
     cancelCallCount++;
     currentIncident = currentIncident.copyWith(state: SosState.cancelled);
     _stateController.add(currentIncident.state);
@@ -114,6 +115,15 @@ class FakeTrackingRepository implements TrackingRepository {
   Future<void> dispose() async {
     await _positionsController.close();
     await _stateController.close();
+  }
+}
+
+class FakeTelemetryRepository implements TelemetryRepository {
+  final List<SdkTelemetryPayload> publishedPayloads = <SdkTelemetryPayload>[];
+
+  @override
+  Future<void> publishTelemetry(SdkTelemetryPayload payload) async {
+    publishedPayloads.add(payload);
   }
 }
 

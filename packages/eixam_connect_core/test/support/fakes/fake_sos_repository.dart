@@ -22,8 +22,6 @@ class FakeSosRepository implements SosRepository {
   String? lastTriggerMessage;
   String? lastTriggerSource;
   TrackingPosition? lastTriggerPositionSnapshot;
-  String? lastCancelReason;
-
   set triggerResult(SosIncident value) => _triggerResult = value;
   set cancelResult(SosIncident value) => _cancelResult = value;
 
@@ -43,8 +41,7 @@ class FakeSosRepository implements SosRepository {
   }
 
   @override
-  Future<SosIncident> cancelSos({String? reason}) async {
-    lastCancelReason = reason;
+  Future<SosIncident> cancelSos() async {
     final result = _cancelResult!;
     _state = result.state;
     _controller.add(_state);
