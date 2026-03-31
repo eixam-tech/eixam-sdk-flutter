@@ -212,6 +212,51 @@ void main() {
       );
     });
 
+    test('session and operational diagnostics expose canonical MQTT topics',
+        () async {
+      final session = const EixamSession.signed(
+        appId: 'app-1',
+        externalUserId: 'partner-user',
+        userHash: 'token-1',
+        canonicalExternalUserId: 'partner/user 42',
+      );
+
+      await sdk.setSession(session);
+
+      final currentSession = await sdk.getCurrentSession();
+      final diagnostics = await sdk.getOperationalDiagnostics();
+
+      expect(currentSession?.canonicalExternalUserId, 'partner/user 42');
+      expect(
+        diagnostics.telemetryPublishTopic,
+        'tel/partner%2Fuser%2042/data',
+      );
+      expect(
+        diagnostics.sosEventTopics,
+        contains('sos/events/partner%2Fuser%2042'),
+      );
+      expect(diagnostics.hasActiveSession, isTrue);
+    });
+
+    test('clearSession clears operational diagnostics session state', () async {
+      await sdk.setSession(
+        const EixamSession.signed(
+          appId: 'app-1',
+          externalUserId: 'partner-user',
+          userHash: 'token-1',
+          canonicalExternalUserId: 'canonical-user',
+        ),
+      );
+
+      await sdk.clearSession();
+
+      final diagnostics = await sdk.getOperationalDiagnostics();
+      expect(await sdk.getCurrentSession(), isNull);
+      expect(diagnostics.session, isNull);
+      expect(diagnostics.telemetryPublishTopic, isNull);
+      expect(diagnostics.sosEventTopics, isEmpty);
+    });
+
     test('watchPositions replays the last known tracking position', () async {
       final position = await sdk.watchPositions().first;
 

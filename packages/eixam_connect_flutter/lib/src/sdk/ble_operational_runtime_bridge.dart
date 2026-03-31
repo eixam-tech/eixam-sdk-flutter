@@ -41,6 +41,8 @@ class BleOperationalRuntimeBridge {
   final Map<String, DateTime> _recentSosSignatures = <String, DateTime>{};
   final Map<String, DateTime> _recentConfirmationSignatures =
       <String, DateTime>{};
+  final StreamController<SdkBridgeDiagnostics> _diagnosticsController =
+      StreamController<SdkBridgeDiagnostics>.broadcast();
 
   StreamSubscription<RealtimeConnectionState>? _connectionSub;
   StreamSubscription<BleIncomingEvent>? _bleSub;
@@ -50,12 +52,21 @@ class BleOperationalRuntimeBridge {
   _PendingSosPublish? _pendingSos;
   bool _flushInProgress = false;
   bool _started = false;
+  SdkBridgeDiagnostics _diagnostics = const SdkBridgeDiagnostics();
+
+  SdkBridgeDiagnostics get currentDiagnostics => _diagnostics;
+
+  Stream<SdkBridgeDiagnostics> watchDiagnostics() async* {
+    yield _diagnostics;
+    yield* _diagnosticsController.stream;
+  }
 
   void start() {
     if (_started) {
       return;
     }
     _started = true;
+    _emitDiagnostics(_diagnostics.copyWith(isActive: true));
     _connectionSub = _connectionStates.listen(
       (state) {
         _connectionState = state;
@@ -88,14 +99,23 @@ class BleOperationalRuntimeBridge {
   }
 
   Future<void> dispose() async {
+    _emitDiagnostics(_diagnostics.copyWith(isActive: false));
     await _connectionSub?.cancel();
     await _bleSub?.cancel();
     await _realtimeSub?.cancel();
+    await _diagnosticsController.close();
   }
 
   void clearPendingOperationalItems() {
     _pendingTelemetry = null;
     _pendingSos = null;
+    _emitDiagnostics(
+      _diagnostics.copyWith(
+        pendingTelemetry: null,
+        pendingSos: null,
+        lastDecision: 'Pending operational items cleared',
+      ),
+    );
   }
 
   void resetForSessionChange() {
@@ -125,6 +145,12 @@ class BleOperationalRuntimeBridge {
     if (packet == null) {
       return;
     }
+    _emitDiagnostics(
+      _diagnostics.copyWith(
+        lastBleTelemetryEventSummary:
+            'device=${event.deviceId} lat=${packet.position.latitude} lng=${packet.position.longitude} raw=${packet.rawHex}',
+      ),
+    );
 
     final payload = SdkTelemetryPayload(
       timestamp: event.receivedAt.toUtc(),
@@ -137,6 +163,11 @@ class BleOperationalRuntimeBridge {
           ?.toDouble(),
     );
     if (!_hasMinimumTelemetry(payload)) {
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          lastDecision: 'Telemetry skipped: minimum fields missing',
+        ),
+      );
       BleDebugRegistry.instance.recordEvent(
         'BLE operational bridge skipped telemetry publish -> reason=minimum_fields_missing deviceId=${event.deviceId}',
       );
@@ -145,6 +176,11 @@ class BleOperationalRuntimeBridge {
 
     final signature = 'tel:${event.deviceId}:${packet.rawHex}';
     if (!_registerSignature(_recentTelemetrySignatures, signature)) {
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          lastDecision: 'Telemetry skipped: duplicate packet',
+        ),
+      );
       BleDebugRegistry.instance.recordEvent(
         'BLE operational bridge skipped telemetry publish -> reason=duplicate signature=$signature',
       );
@@ -155,6 +191,15 @@ class BleOperationalRuntimeBridge {
       _pendingTelemetry = _PendingTelemetryPublish(
         signature: signature,
         payload: payload,
+      );
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          pendingTelemetry: PendingTelemetryDiagnostics(
+            signature: signature,
+            payload: payload,
+          ),
+          lastDecision: 'Telemetry buffered: latest sample wins',
+        ),
       );
       BleDebugRegistry.instance.recordEvent(
         'BLE operational bridge retained pending telemetry -> latest_sample_wins signature=$signature',
@@ -172,7 +217,20 @@ class BleOperationalRuntimeBridge {
   Future<void> _publishSosIfValid(BleIncomingEvent event) async {
     final packet = event.sosPacket;
     final position = packet?.position;
+    if (packet != null) {
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          lastBleSosEventSummary:
+              'device=${event.deviceId} relayCount=${packet.relayCount} raw=${packet.rawHex}',
+        ),
+      );
+    }
     if (packet == null || position == null) {
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          lastDecision: 'SOS skipped: minimum fields missing',
+        ),
+      );
       BleDebugRegistry.instance.recordEvent(
         'BLE operational bridge skipped SOS publish -> reason=minimum_fields_missing deviceId=${event.deviceId}',
       );
@@ -181,6 +239,11 @@ class BleOperationalRuntimeBridge {
 
     final signature = 'sos:${event.deviceId}:${packet.rawHex}';
     if (!_registerSignature(_recentSosSignatures, signature)) {
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          lastDecision: 'SOS skipped: duplicate packet',
+        ),
+      );
       BleDebugRegistry.instance.recordEvent(
         'BLE operational bridge skipped SOS publish -> reason=duplicate signature=$signature',
       );
@@ -199,6 +262,16 @@ class BleOperationalRuntimeBridge {
         signature: signature,
         message: 'BLE SOS received from runtime device ${event.deviceId}',
         positionSnapshot: positionSnapshot,
+      );
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          pendingSos: PendingSosDiagnostics(
+            signature: signature,
+            message: 'BLE SOS received from runtime device ${event.deviceId}',
+            positionSnapshot: positionSnapshot,
+          ),
+          lastDecision: 'SOS buffered: waiting for operational connectivity',
+        ),
       );
       BleDebugRegistry.instance.recordEvent(
         'BLE operational bridge retained pending SOS -> signature=$signature',
@@ -233,9 +306,21 @@ class BleOperationalRuntimeBridge {
       switch (confirmation.kind) {
         case _BleBackendConfirmationKind.positionConfirmed:
           await deviceSosController.sendPositionConfirmed();
+          _emitDiagnostics(
+            _diagnostics.copyWith(
+              lastDeviceCommandSent: 'POS_CONFIRMED',
+              lastDecision: 'Backend confirmation applied: POS_CONFIRMED sent',
+            ),
+          );
           break;
         case _BleBackendConfirmationKind.sosAcknowledged:
           await deviceSosController.acknowledgeSos();
+          _emitDiagnostics(
+            _diagnostics.copyWith(
+              lastDeviceCommandSent: 'SOS_ACK',
+              lastDecision: 'Backend confirmation applied: SOS_ACK sent',
+            ),
+          );
           break;
         case _BleBackendConfirmationKind.sosRelayAcknowledged:
           final relayNodeId = confirmation.relayNodeId;
@@ -243,6 +328,14 @@ class BleOperationalRuntimeBridge {
             return;
           }
           await deviceSosController.sendAckRelay(nodeId: relayNodeId);
+          _emitDiagnostics(
+            _diagnostics.copyWith(
+              lastDeviceCommandSent:
+                  'SOS_ACK_RELAY(${_formatNodeId(relayNodeId)})',
+              lastDecision:
+                  'Backend confirmation applied: SOS_ACK_RELAY sent',
+            ),
+          );
           break;
       }
       BleDebugRegistry.instance.recordEvent(
@@ -302,6 +395,7 @@ class BleOperationalRuntimeBridge {
         );
         if (published) {
           _pendingSos = null;
+          _emitDiagnostics(_diagnostics.copyWith(pendingSos: null));
         }
       }
 
@@ -314,6 +408,7 @@ class BleOperationalRuntimeBridge {
         );
         if (published) {
           _pendingTelemetry = null;
+          _emitDiagnostics(_diagnostics.copyWith(pendingTelemetry: null));
         }
       }
     } finally {
@@ -328,6 +423,12 @@ class BleOperationalRuntimeBridge {
   }) async {
     try {
       await telemetryRepository.publishTelemetry(payload);
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          pendingTelemetry: null,
+          lastDecision: 'Telemetry published',
+        ),
+      );
       BleDebugRegistry.instance.recordEvent(
         'BLE operational bridge published telemetry -> signature=$signature',
       );
@@ -338,16 +439,35 @@ class BleOperationalRuntimeBridge {
           signature: signature,
           payload: payload,
         );
+        _emitDiagnostics(
+          _diagnostics.copyWith(
+            pendingTelemetry: PendingTelemetryDiagnostics(
+              signature: signature,
+              payload: payload,
+            ),
+            lastDecision: 'Telemetry buffered after publish failure',
+          ),
+        );
         BleDebugRegistry.instance.recordEvent(
           'BLE operational bridge retained telemetry after publish failure -> signature=$signature code=${error.code}',
         );
         return false;
       }
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          lastDecision: 'Telemetry rejected: ${error.code}',
+        ),
+      );
       BleDebugRegistry.instance.recordEvent(
         'BLE operational bridge telemetry publish rejected -> code=${error.code} message=${error.message}',
       );
       return false;
     } catch (error) {
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          lastDecision: 'Telemetry publish failed: $error',
+        ),
+      );
       BleDebugRegistry.instance.recordEvent(
         'BLE operational bridge telemetry publish failed -> error=$error',
       );
@@ -368,12 +488,23 @@ class BleOperationalRuntimeBridge {
         triggerSource: 'ble_device_runtime',
         positionSnapshot: positionSnapshot,
       );
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          pendingSos: null,
+          lastDecision: 'SOS published',
+        ),
+      );
       BleDebugRegistry.instance.recordEvent(
         'BLE operational bridge published SOS -> signature=$signature relayCount=${relayCount?.toString() ?? "-"}',
       );
       return true;
     } on SosException catch (error) {
       if (error.code == 'E_SOS_ALREADY_ACTIVE') {
+        _emitDiagnostics(
+          _diagnostics.copyWith(
+            lastDecision: 'SOS skipped: already active',
+          ),
+        );
         BleDebugRegistry.instance.recordEvent(
           'BLE operational bridge skipped SOS publish -> reason=sos_already_active signature=$signature',
         );
@@ -385,16 +516,36 @@ class BleOperationalRuntimeBridge {
           message: message,
           positionSnapshot: positionSnapshot,
         );
+        _emitDiagnostics(
+          _diagnostics.copyWith(
+            pendingSos: PendingSosDiagnostics(
+              signature: signature,
+              message: message,
+              positionSnapshot: positionSnapshot,
+            ),
+            lastDecision: 'SOS buffered after publish failure',
+          ),
+        );
         BleDebugRegistry.instance.recordEvent(
           'BLE operational bridge retained SOS after publish failure -> signature=$signature code=${error.code}',
         );
         return false;
       }
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          lastDecision: 'SOS rejected: ${error.code}',
+        ),
+      );
       BleDebugRegistry.instance.recordEvent(
         'BLE operational bridge SOS publish rejected -> code=${error.code} message=${error.message}',
       );
       return false;
     } catch (error) {
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          lastDecision: 'SOS publish failed: $error',
+        ),
+      );
       BleDebugRegistry.instance.recordEvent(
         'BLE operational bridge SOS publish failed -> error=$error',
       );
@@ -408,6 +559,18 @@ class BleOperationalRuntimeBridge {
         error.code == 'E_MQTT_NOT_CONNECTED' ||
         error.code == 'E_SDK_SESSION_REQUIRED' ||
         error.code == 'E_SOS_TRIGGER_FAILED';
+  }
+
+  void _emitDiagnostics(SdkBridgeDiagnostics diagnostics) {
+    _diagnostics = diagnostics;
+    if (!_diagnosticsController.isClosed) {
+      _diagnosticsController.add(_diagnostics);
+    }
+  }
+
+  String _formatNodeId(int nodeId) {
+    final normalized = nodeId & 0xFFFF;
+    return '0x${normalized.toRadixString(16).padLeft(4, '0')}';
   }
 }
 

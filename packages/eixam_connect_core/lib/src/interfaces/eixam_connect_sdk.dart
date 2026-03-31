@@ -9,6 +9,7 @@ import '../entities/emergency_contact.dart';
 import '../entities/guided_rescue_state.dart';
 import '../entities/permission_state.dart';
 import '../entities/preferred_device.dart';
+import '../entities/sdk_operational_diagnostics.dart';
 import '../entities/sdk_telemetry_payload.dart';
 import '../entities/sos_incident.dart';
 import '../entities/sos_trigger_payload.dart';
@@ -33,8 +34,13 @@ abstract class EixamConnectSdk {
   /// Clears the currently persisted SDK identity payload.
   Future<void> clearSession();
 
+  Future<EixamSession?> getCurrentSession();
+
   /// Re-fetches the canonical SDK identity from `/v1/sdk/me`.
   Future<EixamSession> refreshCanonicalIdentity();
+
+  Future<SdkOperationalDiagnostics> getOperationalDiagnostics();
+  Stream<SdkOperationalDiagnostics> watchOperationalDiagnostics();
 
   Future<DeviceStatus> connectDevice({required String pairingCode});
   Future<void> disconnectDevice();

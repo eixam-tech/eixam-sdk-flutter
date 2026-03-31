@@ -19,6 +19,7 @@ import 'ble_auto_reconnect_coordinator.dart';
 import 'ble_sos_notification_payload.dart';
 import 'guided_rescue_runtime.dart';
 import 'operational_realtime_client.dart';
+import 'sdk_mqtt_contract.dart';
 
 /// Main SDK orchestrator used by host apps.
 ///
@@ -56,6 +57,9 @@ class EixamConnectSdkImpl
 
   final StreamController<RealtimeEvent> _realtimeEventsController =
       StreamController<RealtimeEvent>.broadcast();
+  final StreamController<SdkOperationalDiagnostics>
+      _operationalDiagnosticsController =
+      StreamController<SdkOperationalDiagnostics>.broadcast();
   final StreamController<GuidedRescueState> _guidedRescueStateController =
       StreamController<GuidedRescueState>.broadcast();
   final StreamController<BleNotificationNavigationRequest>
@@ -68,6 +72,7 @@ class EixamConnectSdkImpl
   StreamSubscription<DeviceSosStatus>? _deviceSosSub;
   StreamSubscription<GuidedRescueState>? _guidedRescueSub;
   StreamSubscription<SosState>? _sosStateSub;
+  StreamSubscription<SdkBridgeDiagnostics>? _bridgeDiagnosticsSub;
 
   Timer? _deathManTimer;
   bool _deathManCheckInNotified = false;
@@ -85,6 +90,7 @@ class EixamConnectSdkImpl
   EixamSession? _session;
   EixamSdkEvent? _lastSosEvent;
   String? _pendingCancelledIncidentId;
+  SdkBridgeDiagnostics _bridgeDiagnostics = const SdkBridgeDiagnostics();
   late final BleAutoReconnectCoordinator _bleAutoReconnectCoordinator;
   late final BleOperationalRuntimeBridge _bleOperationalRuntimeBridge;
 
@@ -153,7 +159,9 @@ class EixamConnectSdkImpl
       onAction: _handleNotificationAction,
     );
     _bindRealtimeStreams();
+    _bindOperationalDiagnostics();
     _bleOperationalRuntimeBridge.start();
+    _emitOperationalDiagnostics();
     await realtimeClient.connect();
     await _resumeDeathManMonitoringIfNeeded();
     await _bleAutoReconnectCoordinator.tryAutoConnectOnStartup();
@@ -201,6 +209,7 @@ class EixamConnectSdkImpl
       (state) {
         _lastRealtimeConnectionState = state;
         _realtimeConnectionStateController.add(state);
+        _emitOperationalDiagnostics();
       },
       onError: (Object error) {
         // Keep bootstrap resilient.
@@ -218,6 +227,15 @@ class EixamConnectSdkImpl
     );
   }
 
+  void _bindOperationalDiagnostics() {
+    _bridgeDiagnosticsSub?.cancel();
+    _bridgeDiagnosticsSub =
+        _bleOperationalRuntimeBridge.watchDiagnostics().listen((diagnostics) {
+      _bridgeDiagnostics = diagnostics;
+      _emitOperationalDiagnostics();
+    });
+  }
+
   @override
   Future<void> setSession(EixamSession session) async {
     _bleOperationalRuntimeBridge.resetForSessionChange();
@@ -226,6 +244,7 @@ class EixamConnectSdkImpl
       sessionContext!.currentSession = _session;
     }
     await sessionStore?.save(_session!);
+    _emitOperationalDiagnostics();
     final realtime = realtimeClient;
     if (realtime is OperationalRealtimeClient) {
       await realtime.reconnectIfSessionChanged(_session!);
@@ -252,6 +271,7 @@ class EixamConnectSdkImpl
       sessionContext!.currentSession = refreshed;
     }
     await sessionStore?.save(refreshed);
+    _emitOperationalDiagnostics();
     final realtime = realtimeClient;
     if (realtime is OperationalRealtimeClient) {
       await realtime.reconnectIfSessionChanged(refreshed);
@@ -302,8 +322,12 @@ class EixamConnectSdkImpl
       sessionContext!.currentSession = null;
     }
     await sessionStore?.clear();
+    _emitOperationalDiagnostics();
     await realtimeClient.disconnect();
   }
+
+  @override
+  Future<EixamSession?> getCurrentSession() async => _session;
 
   @override
   Future<DeviceStatus> connectDevice({required String pairingCode}) {
@@ -1184,6 +1208,17 @@ class EixamConnectSdkImpl
   }
 
   @override
+  Future<SdkOperationalDiagnostics> getOperationalDiagnostics() async {
+    return _buildOperationalDiagnostics();
+  }
+
+  @override
+  Stream<SdkOperationalDiagnostics> watchOperationalDiagnostics() async* {
+    yield _buildOperationalDiagnostics();
+    yield* _operationalDiagnosticsController.stream;
+  }
+
+  @override
   Future<RealtimeConnectionState> getRealtimeConnectionState() async {
     return _lastRealtimeConnectionState;
   }
@@ -1430,6 +1465,37 @@ class EixamConnectSdkImpl
     return event is SOSTriggeredEvent || event is SOSCancelledEvent;
   }
 
+  SdkOperationalDiagnostics _buildOperationalDiagnostics() {
+    final session = _session;
+    String? telemetryPublishTopic;
+    List<String> sosEventTopics = const <String>[];
+
+    if (session != null) {
+      try {
+        telemetryPublishTopic = SdkMqttTopics.telemetryDataFor(session);
+        sosEventTopics = SdkMqttTopics.eventTopicsFor(session).toList()
+          ..sort();
+      } on AuthException {
+        telemetryPublishTopic = null;
+        sosEventTopics = const <String>[];
+      }
+    }
+
+    return SdkOperationalDiagnostics(
+      session: session,
+      connectionState: _lastRealtimeConnectionState,
+      telemetryPublishTopic: telemetryPublishTopic,
+      sosEventTopics: sosEventTopics,
+      bridge: _bridgeDiagnostics,
+    );
+  }
+
+  void _emitOperationalDiagnostics() {
+    if (!_operationalDiagnosticsController.isClosed) {
+      _operationalDiagnosticsController.add(_buildOperationalDiagnostics());
+    }
+  }
+
   Future<void> dispose() async {
     WidgetsBinding.instance.removeObserver(this);
     _deathManTimer?.cancel();
@@ -1440,12 +1506,14 @@ class EixamConnectSdkImpl
     await _deviceSosSub?.cancel();
     await _guidedRescueSub?.cancel();
     await _sosStateSub?.cancel();
+    await _bridgeDiagnosticsSub?.cancel();
     await _bleOperationalRuntimeBridge.dispose();
     await deviceSosController.dispose();
     await realtimeClient.disconnect();
     await disposeCallback?.call();
     await _realtimeConnectionStateController.close();
     await _realtimeEventsController.close();
+    await _operationalDiagnosticsController.close();
     await _guidedRescueStateController.close();
     await _bleNotificationNavigationController.close();
     await _eventsController.close();

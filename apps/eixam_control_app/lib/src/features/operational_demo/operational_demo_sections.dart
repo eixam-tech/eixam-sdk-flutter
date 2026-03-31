@@ -1,349 +1,165 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
-import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
-import 'package:eixam_connect_ui/eixam_connect_ui.dart';
 import 'package:flutter/material.dart';
 
-import '../../shared/presentation/info_line.dart';
 import '../../shared/presentation/section_card.dart';
 
-class RealtimeSummarySection extends StatelessWidget {
-  const RealtimeSummarySection({
+class ConsoleSection extends StatelessWidget {
+  const ConsoleSection({
     super.key,
-    required this.connectionState,
-    required this.lastEvent,
+    required this.title,
+    required this.child,
   });
 
-  final RealtimeConnectionState? connectionState;
-  final RealtimeEvent? lastEvent;
+  final String title;
+  final Widget child;
 
   @override
   Widget build(BuildContext context) {
-    return SectionCard(
-      title: 'Realtime Summary',
+    return SectionCard(title: title, child: child);
+  }
+}
+
+class ValidationTextField extends StatelessWidget {
+  const ValidationTextField({
+    super.key,
+    required this.controller,
+    required this.label,
+    this.hintText,
+    this.keyboardType,
+    this.maxLines = 1,
+  });
+
+  final TextEditingController controller;
+  final String label;
+  final String? hintText;
+  final TextInputType? keyboardType;
+  final int maxLines;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: controller,
+      keyboardType: keyboardType,
+      maxLines: maxLines,
+      decoration: InputDecoration(
+        labelText: label,
+        hintText: hintText,
+        border: const OutlineInputBorder(),
+      ),
+    );
+  }
+}
+
+class DiagnosticsBox extends StatelessWidget {
+  const DiagnosticsBox({
+    super.key,
+    required this.label,
+    required this.value,
+  });
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.03),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Operational validation stays high-level here: monitor SDK state, trigger supported workflows, and jump to the Technical Lab for BLE internals.',
+          Text(
+            label,
+            style: const TextStyle(fontWeight: FontWeight.w700),
           ),
-          const SizedBox(height: 12),
-          InfoLine(
-            label: 'Realtime connection',
-            value: connectionState?.name ?? 'Unknown',
-          ),
-          InfoLine(
-            label: 'Last realtime event',
-            value: lastEvent?.type ?? '-',
-          ),
-          InfoLine(
-            label: 'Last realtime timestamp',
-            value: lastEvent?.timestamp.toIso8601String() ?? '-',
-          ),
+          const SizedBox(height: 6),
+          SelectableText(value),
         ],
       ),
     );
   }
 }
 
-class OperationalSosSection extends StatelessWidget {
-  const OperationalSosSection({
+class ContactListTile extends StatelessWidget {
+  const ContactListTile({
     super.key,
-    required this.state,
-    required this.viewState,
-    required this.incident,
-    required this.loading,
-    required this.onTrigger,
-    required this.onCancel,
+    required this.contact,
+    required this.onEdit,
+    required this.onDelete,
   });
 
-  final SosState state;
-  final SosViewState viewState;
-  final SosIncident? incident;
-  final bool loading;
-  final VoidCallback onTrigger;
-  final VoidCallback onCancel;
+  final EmergencyContact contact;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
-    return SectionCard(
-      title: 'SOS',
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SosStatusBanner(state: state),
-          const SizedBox(height: 16),
-          Center(
-            child: SosButtonRoundLarge(
-              onPressed: viewState.canTrigger ? onTrigger : null,
-              loading: loading,
-              label: 'Trigger SOS',
-            ),
-          ),
-          const SizedBox(height: 12),
-          Center(
-            child: OutlinedButton(
-              onPressed: viewState.canCancel ? onCancel : null,
-              child: const Text('Cancel SOS'),
-            ),
-          ),
-          const SizedBox(height: 12),
-          InfoLine(label: 'State', value: viewState.label),
-          InfoLine(label: 'Incident ID', value: incident?.id ?? '-'),
-          InfoLine(
-              label: 'Trigger source', value: incident?.triggerSource ?? '-'),
-          InfoLine(label: 'Message', value: incident?.message ?? '-'),
-        ],
-      ),
-    );
-  }
-}
-
-class TrackingSummarySection extends StatelessWidget {
-  const TrackingSummarySection({
-    super.key,
-    required this.state,
-    required this.position,
-    required this.loading,
-    required this.onStart,
-    required this.onStop,
-  });
-
-  final TrackingState? state;
-  final TrackingPosition? position;
-  final bool loading;
-  final VoidCallback onStart;
-  final VoidCallback onStop;
-
-  @override
-  Widget build(BuildContext context) {
-    return SectionCard(
-      title: 'Tracking',
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          InfoLine(label: 'Tracking state', value: state?.name ?? 'Unknown'),
-          InfoLine(
-              label: 'Latitude', value: position?.latitude.toString() ?? '-'),
-          InfoLine(
-            label: 'Longitude',
-            value: position?.longitude.toString() ?? '-',
-          ),
-          InfoLine(
-              label: 'Accuracy', value: position?.accuracy.toString() ?? '-'),
-          InfoLine(label: 'Source', value: position?.source.toString() ?? '-'),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              ElevatedButton(
-                onPressed: loading ? null : onStart,
-                child: const Text('Start tracking'),
-              ),
-              ElevatedButton(
-                onPressed: loading ? null : onStop,
-                child: const Text('Stop tracking'),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class DeviceSummarySection extends StatelessWidget {
-  const DeviceSummarySection({
-    super.key,
-    required this.viewState,
-    required this.onOpenTechnicalLab,
-  });
-
-  final DeviceViewState viewState;
-  final VoidCallback onOpenTechnicalLab;
-
-  @override
-  Widget build(BuildContext context) {
-    return SectionCard(
-      title: 'Device Summary',
-      onTap: onOpenTechnicalLab,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          InfoLine(label: 'Status', value: viewState.statusLabel),
-          InfoLine(label: 'Connection', value: viewState.connectionSummary),
-          InfoLine(label: 'Readiness', value: viewState.readinessSummary),
-          InfoLine(label: 'Battery', value: viewState.batterySummary),
-          InfoLine(label: 'Model', value: viewState.modelLabel),
-          InfoLine(label: 'Alias', value: viewState.aliasLabel),
-          const SizedBox(height: 8),
-          FilledButton(
-            onPressed: onOpenTechnicalLab,
-            child: const Text('Open Technical Lab'),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class GuidedRescueEntrySection extends StatelessWidget {
-  const GuidedRescueEntrySection({
-    super.key,
-    required this.viewState,
-    required this.onOpen,
-  });
-
-  final RescueViewState viewState;
-  final VoidCallback onOpen;
-
-  @override
-  Widget build(BuildContext context) {
-    return SectionCard(
-      title: 'Guided Rescue Phase 1',
-      onTap: onOpen,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(viewState.summary),
-          const SizedBox(height: 12),
-          InfoLine(
-            label: 'Runtime readiness',
-            value: viewState.hasSdkSupport
-                ? viewState.availabilityNote
-                : 'SDK rescue runtime unavailable',
-          ),
-          InfoLine(label: 'Rescue session', value: viewState.sessionLabel),
-          InfoLine(label: 'Target state', value: viewState.targetStateLabel),
-          InfoLine(label: 'Device context', value: viewState.deviceLabel),
-          InfoLine(
-            label: 'Last known position',
-            value: viewState.lastKnownPositionLabel,
-          ),
-          const SizedBox(height: 8),
-          FilledButton(
-            onPressed: onOpen,
-            child: const Text('Open Guided Rescue'),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class DeathManSummarySection extends StatelessWidget {
-  const DeathManSummarySection({
-    super.key,
-    required this.plan,
-    required this.loading,
-    required this.onQuickDemo,
-    required this.onConfirm,
-    required this.onCancel,
-  });
-
-  final DeathManPlan? plan;
-  final bool loading;
-  final VoidCallback onQuickDemo;
-  final VoidCallback onConfirm;
-  final VoidCallback onCancel;
-
-  @override
-  Widget build(BuildContext context) {
-    return SectionCard(
-      title: 'Death Man Summary',
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          InfoLine(label: 'Plan ID', value: plan?.id ?? '-'),
-          InfoLine(label: 'Status', value: plan?.status.toString() ?? '-'),
-          InfoLine(
-            label: 'Expected return',
-            value: plan?.expectedReturnAt.toString() ?? '-',
-          ),
-          InfoLine(
-              label: 'Grace period',
-              value: plan?.gracePeriod.toString() ?? '-'),
-          InfoLine(
-            label: 'Check-in window',
-            value: plan?.checkInWindow.toString() ?? '-',
-          ),
-          InfoLine(
-              label: 'Auto SOS', value: plan?.autoTriggerSos.toString() ?? '-'),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              ElevatedButton(
-                onPressed: loading ? null : onQuickDemo,
-                child: const Text('Quick demo (20s)'),
-              ),
-              ElevatedButton(
-                onPressed: loading || plan == null ? null : onConfirm,
-                child: const Text('Confirm safe'),
-              ),
-              ElevatedButton(
-                onPressed: loading || plan == null ? null : onCancel,
-                child: const Text('Cancel plan'),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class ContactsSummarySection extends StatelessWidget {
-  const ContactsSummarySection({
-    super.key,
-    required this.contacts,
-    required this.loading,
-    required this.onAddSample,
-    required this.onRemoveFirst,
-  });
-
-  final List<EmergencyContact> contacts;
-  final bool loading;
-  final VoidCallback onAddSample;
-  final VoidCallback onRemoveFirst;
-
-  @override
-  Widget build(BuildContext context) {
-    return SectionCard(
-      title: 'Contacts Summary',
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          InfoLine(label: 'Total contacts', value: contacts.length.toString()),
-          if (contacts.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            ...contacts.take(3).map(
-                  (contact) => Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Text(
-                      '${contact.name} - priority=${contact.priority}',
-                    ),
-                  ),
-                ),
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ListTile(
+        title: Text(contact.name),
+        subtitle: Text(
+          'phone=${contact.phone}  email=${contact.email}  priority=${contact.priority}',
+        ),
+        trailing: Wrap(
+          spacing: 8,
+          children: [
+            TextButton(onPressed: onEdit, child: const Text('Edit')),
+            TextButton(onPressed: onDelete, child: const Text('Delete')),
           ],
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              ElevatedButton(
-                onPressed: loading ? null : onAddSample,
-                child: const Text('Add sample'),
-              ),
-              ElevatedButton(
-                onPressed: loading || contacts.isEmpty ? null : onRemoveFirst,
-                child: const Text('Remove first'),
-              ),
-            ],
-          ),
-        ],
+        ),
       ),
     );
   }
+}
+
+class RegistryDeviceTile extends StatelessWidget {
+  const RegistryDeviceTile({
+    super.key,
+    required this.device,
+    required this.onUseAsDraft,
+    required this.onDelete,
+  });
+
+  final BackendRegisteredDevice device;
+  final VoidCallback onUseAsDraft;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ListTile(
+        title: Text('${device.hardwareModel} (${device.hardwareId})'),
+        subtitle: Text(
+          'firmware=${device.firmwareVersion}\npairedAt=${device.pairedAt.toIso8601String()}',
+        ),
+        isThreeLine: true,
+        trailing: Wrap(
+          spacing: 8,
+          children: [
+            TextButton(onPressed: onUseAsDraft, child: const Text('Edit')),
+            TextButton(onPressed: onDelete, child: const Text('Delete')),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String formatDateTime(DateTime? value) {
+  if (value == null) {
+    return '-';
+  }
+  return value.toLocal().toIso8601String();
+}
+
+String formatNullable(String? value) {
+  final trimmed = value?.trim();
+  return trimmed == null || trimmed.isEmpty ? '-' : trimmed;
 }

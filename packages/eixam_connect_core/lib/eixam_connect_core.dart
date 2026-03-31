@@ -9,6 +9,8 @@ export 'src/entities/preferred_device.dart';
 export 'src/entities/device_sos_status.dart';
 export 'src/entities/ble_notification_navigation_request.dart';
 export 'src/entities/sdk_telemetry_payload.dart';
+export 'src/entities/sdk_bridge_diagnostics.dart';
+export 'src/entities/sdk_operational_diagnostics.dart';
 export 'src/entities/tracking_position.dart';
 export 'src/entities/sos_incident.dart';
 export 'src/entities/sos_trigger_payload.dart';

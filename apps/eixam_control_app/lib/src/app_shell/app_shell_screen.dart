@@ -20,10 +20,10 @@ class AppShellScreen extends StatelessWidget {
           const _IntroCard(),
           const SizedBox(height: 16),
           _SurfaceCard(
-            title: 'Operational Demo',
+            title: 'SDK Validation Console',
             subtitle:
-                'High-level SDK validation for SOS, tracking, device summary, Death Man, contacts, and realtime status.',
-            actionLabel: 'Open operational surface',
+                'Validate signed session, MQTT connectivity, SOS, telemetry, contacts, backend registry, runtime BLE state, and bridge diagnostics through the public SDK facade.',
+            actionLabel: 'Open validation console',
             onTap: onOpenOperationalDemo,
             accent: Colors.green,
             icon: Icons.dashboard_customize_outlined,
