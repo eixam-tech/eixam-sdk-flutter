@@ -14,6 +14,7 @@ import '../device/device_sos_controller.dart';
 import '../device/ble_debug_registry.dart';
 import '../data/datasources_remote/sdk_session_context.dart';
 import '../data/repositories/telemetry_repository.dart';
+import 'ble_operational_runtime_bridge.dart';
 import 'ble_auto_reconnect_coordinator.dart';
 import 'ble_sos_notification_payload.dart';
 import 'guided_rescue_runtime.dart';
@@ -85,6 +86,7 @@ class EixamConnectSdkImpl
   EixamSdkEvent? _lastSosEvent;
   String? _pendingCancelledIncidentId;
   late final BleAutoReconnectCoordinator _bleAutoReconnectCoordinator;
+  late final BleOperationalRuntimeBridge _bleOperationalRuntimeBridge;
 
   static const String _openAppActionId = 'open_app';
   static const String _cancelSosActionId = 'cancel_sos';
@@ -116,6 +118,13 @@ class EixamConnectSdkImpl
       deviceRepository: deviceRepository,
       preferredDeviceStore: preferredBleDeviceStore,
     );
+    _bleOperationalRuntimeBridge = BleOperationalRuntimeBridge(
+      bleIncomingEvents: bleIncomingEvents,
+      realtimeEvents: realtimeClient.watchEvents(),
+      telemetryRepository: telemetryRepository,
+      sosRepository: sosRepository,
+      deviceSosController: deviceSosController,
+    );
     _bindSosStreams();
   }
 
@@ -142,6 +151,7 @@ class EixamConnectSdkImpl
       onAction: _handleNotificationAction,
     );
     _bindRealtimeStreams();
+    _bleOperationalRuntimeBridge.start();
     await realtimeClient.connect();
     await _resumeDeathManMonitoringIfNeeded();
     await _bleAutoReconnectCoordinator.tryAutoConnectOnStartup();
@@ -1426,6 +1436,7 @@ class EixamConnectSdkImpl
     await _deviceSosSub?.cancel();
     await _guidedRescueSub?.cancel();
     await _sosStateSub?.cancel();
+    await _bleOperationalRuntimeBridge.dispose();
     await deviceSosController.dispose();
     await realtimeClient.disconnect();
     await disposeCallback?.call();

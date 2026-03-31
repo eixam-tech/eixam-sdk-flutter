@@ -21,7 +21,12 @@ import 'package:eixam_connect_flutter/src/mappers/sdk_device_registry_mapper.dar
 import 'package:eixam_connect_flutter/src/data/repositories/mqtt_operational_sos_repository.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_position_data.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_sos_packet.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_tel_packet.dart';
+import 'package:eixam_connect_flutter/src/sdk/ble_operational_runtime_bridge.dart';
 import 'package:eixam_connect_flutter/src/sdk/mqtt_realtime_client.dart';
 import 'package:eixam_connect_flutter/src/sdk/operational_realtime_client.dart';
 import 'package:eixam_connect_flutter/src/sdk/sdk_mqtt_contract.dart';
@@ -1361,6 +1366,172 @@ void main() {
       }
     });
 
+    test('BLE bridge publishes telemetry from TEL position events', () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      final bridge = BleOperationalRuntimeBridge(
+        bleIncomingEvents: bleEvents.stream,
+        realtimeEvents: realtimeEvents.stream,
+        telemetryRepository: telemetryRepository,
+        sosRepository: sosRepository,
+        deviceSosController: deviceSosController,
+      )..start();
+
+      try {
+        bleEvents.add(_bridgeTelEvent(signature: 'tel-1'));
+        await Future<void>.delayed(Duration.zero);
+
+        expect(telemetryRepository.publishedPayloads, hasLength(1));
+        expect(telemetryRepository.publishedPayloads.single.deviceId, 'device-1');
+      } finally {
+        await bridge.dispose();
+        await bleEvents.close();
+        await realtimeEvents.close();
+      }
+    });
+
+    test('BLE bridge publishes SOS from SOS packets with position', () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      final bridge = BleOperationalRuntimeBridge(
+        bleIncomingEvents: bleEvents.stream,
+        realtimeEvents: realtimeEvents.stream,
+        telemetryRepository: telemetryRepository,
+        sosRepository: sosRepository,
+        deviceSosController: deviceSosController,
+      )..start();
+
+      try {
+        bleEvents.add(_bridgeSosEvent(signature: 'sos-1'));
+        await Future<void>.delayed(Duration.zero);
+
+        expect(sosRepository.triggerCallCount, 1);
+        expect(sosRepository.lastTriggerSource, 'ble_device_runtime');
+        expect(sosRepository.lastPositionSnapshot?.source, DeliveryMode.mesh);
+      } finally {
+        await bridge.dispose();
+        await bleEvents.close();
+        await realtimeEvents.close();
+      }
+    });
+
+    test('BLE bridge skips publish when minimum fields are missing', () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      final bridge = BleOperationalRuntimeBridge(
+        bleIncomingEvents: bleEvents.stream,
+        realtimeEvents: realtimeEvents.stream,
+        telemetryRepository: telemetryRepository,
+        sosRepository: sosRepository,
+        deviceSosController: deviceSosController,
+      )..start();
+
+      try {
+        bleEvents.add(_bridgeInvalidTelEvent(signature: 'tel-invalid'));
+        bleEvents.add(_bridgeSosWithoutPositionEvent(signature: 'sos-min'));
+        await Future<void>.delayed(Duration.zero);
+
+        expect(telemetryRepository.publishedPayloads, isEmpty);
+        expect(sosRepository.triggerCallCount, 0);
+      } finally {
+        await bridge.dispose();
+        await bleEvents.close();
+        await realtimeEvents.close();
+      }
+    });
+
+    test('BLE bridge applies backend confirmations to device commands',
+        () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      final commands = <EixamDeviceCommand>[];
+      final controller = DeviceSosController();
+      await controller.attach(
+        commandWriter: (command) async {
+          commands.add(command);
+        },
+      );
+      final bridge = BleOperationalRuntimeBridge(
+        bleIncomingEvents: bleEvents.stream,
+        realtimeEvents: realtimeEvents.stream,
+        telemetryRepository: telemetryRepository,
+        sosRepository: sosRepository,
+        deviceSosController: controller,
+      )..start();
+
+      try {
+        await controller.triggerSos();
+        await controller.confirmSos();
+
+        realtimeEvents.add(
+          RealtimeEvent(
+            type: 'position_confirmed',
+            timestamp: DateTime.utc(2026, 3, 31, 10),
+            payload: const <String, dynamic>{'type': 'position_confirmed'},
+          ),
+        );
+        realtimeEvents.add(
+          RealtimeEvent(
+            type: 'sos_ack',
+            timestamp: DateTime.utc(2026, 3, 31, 10, 1),
+            payload: const <String, dynamic>{
+              'type': 'sos_ack',
+              'incidentId': 'sos-1',
+            },
+          ),
+        );
+        realtimeEvents.add(
+          RealtimeEvent(
+            type: 'sos_ack_relay',
+            timestamp: DateTime.utc(2026, 3, 31, 10, 2),
+            payload: const <String, dynamic>{
+              'type': 'sos_ack_relay',
+              'relayNodeId': 0x1234,
+            },
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(commands.map((command) => command.opcode), contains(0x03));
+        expect(commands.map((command) => command.opcode), contains(0x07));
+        expect(commands.map((command) => command.opcode), contains(0x08));
+      } finally {
+        await bridge.dispose();
+        await controller.dispose();
+        await bleEvents.close();
+        await realtimeEvents.close();
+      }
+    });
+
+    test('BLE bridge deduplicates overlapping TEL and SOS publishes', () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      final bridge = BleOperationalRuntimeBridge(
+        bleIncomingEvents: bleEvents.stream,
+        realtimeEvents: realtimeEvents.stream,
+        telemetryRepository: telemetryRepository,
+        sosRepository: sosRepository,
+        deviceSosController: deviceSosController,
+      )..start();
+
+      try {
+        final telEvent = _bridgeTelEvent(signature: 'dup-tel');
+        final sosEvent = _bridgeSosEvent(signature: 'dup-sos');
+        bleEvents.add(telEvent);
+        bleEvents.add(telEvent);
+        bleEvents.add(sosEvent);
+        bleEvents.add(sosEvent);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(telemetryRepository.publishedPayloads, hasLength(1));
+        expect(sosRepository.triggerCallCount, 1);
+      } finally {
+        await bridge.dispose();
+        await bleEvents.close();
+        await realtimeEvents.close();
+      }
+    });
+
     test('device HTTP datasource matches OpenAPI request and response mapping',
         () async {
       final requests = <http.Request>[];
@@ -1883,4 +2054,118 @@ EixamSosPacket _deviceOriginPacket() {
     0x00,
     0x50,
   ])!;
+}
+
+BleIncomingEvent _bridgeTelEvent({required String signature}) {
+  return BleIncomingEvent(
+    deviceId: 'device-1',
+    type: BleIncomingEventType.telPosition,
+    channel: EixamBleChannel.tel,
+    payload: const <int>[0x01],
+    payloadHex: signature,
+    source: DeviceSosTransitionSource.device,
+    receivedAt: DateTime.utc(2026, 3, 31, 10),
+    telPacket: EixamTelPacket(
+      rawBytes: const <int>[0x01],
+      rawHex: signature,
+      nodeId: 0x1234,
+      position: const EixamPositionData(
+        latitude: 41.38,
+        longitude: 2.17,
+        altitudeMeters: 8,
+      ),
+      metaWord: 0,
+      batteryLevel: 3,
+      gpsQuality: 2,
+      packetId: 7,
+      speedBucket: 0,
+      headingBucket: 0,
+    ),
+  );
+}
+
+BleIncomingEvent _bridgeInvalidTelEvent({required String signature}) {
+  return BleIncomingEvent(
+    deviceId: 'device-1',
+    type: BleIncomingEventType.telPosition,
+    channel: EixamBleChannel.tel,
+    payload: const <int>[0x01],
+    payloadHex: signature,
+    source: DeviceSosTransitionSource.device,
+    receivedAt: DateTime.utc(2026, 3, 31, 10),
+    telPacket: EixamTelPacket(
+      rawBytes: const <int>[0x01],
+      rawHex: signature,
+      nodeId: 0x1234,
+      position: const EixamPositionData(
+        latitude: 95,
+        longitude: 2.17,
+        altitudeMeters: 8,
+      ),
+      metaWord: 0,
+      batteryLevel: 3,
+      gpsQuality: 2,
+      packetId: 7,
+      speedBucket: 0,
+      headingBucket: 0,
+    ),
+  );
+}
+
+BleIncomingEvent _bridgeSosEvent({required String signature}) {
+  return BleIncomingEvent(
+    deviceId: 'device-1',
+    type: BleIncomingEventType.sosMeshPacket,
+    channel: EixamBleChannel.sos,
+    payload: const <int>[0x01],
+    payloadHex: signature,
+    source: DeviceSosTransitionSource.device,
+    receivedAt: DateTime.utc(2026, 3, 31, 10, 1),
+    sosPacket: EixamSosPacket(
+      rawBytes: const <int>[0x01],
+      rawHex: signature,
+      nodeId: 0x1234,
+      flagsWord: 0,
+      sosType: 1,
+      retryCount: 0,
+      relayCount: 0,
+      batteryLevel: 3,
+      gpsQuality: 2,
+      speedEstimate: 0,
+      packetId: 5,
+      hasPosition: true,
+      position: const EixamPositionData(
+        latitude: 41.38,
+        longitude: 2.17,
+        altitudeMeters: 8,
+      ),
+    ),
+  );
+}
+
+BleIncomingEvent _bridgeSosWithoutPositionEvent({required String signature}) {
+  return BleIncomingEvent(
+    deviceId: 'device-1',
+    type: BleIncomingEventType.sosMeshPacket,
+    channel: EixamBleChannel.sos,
+    payload: const <int>[0x01],
+    payloadHex: signature,
+    source: DeviceSosTransitionSource.device,
+    receivedAt: DateTime.utc(2026, 3, 31, 10, 1),
+    sosPacket: EixamSosPacket(
+      rawBytes: const <int>[0x01],
+      rawHex: signature,
+      nodeId: 0x1234,
+      flagsWord: 0,
+      sosType: 1,
+      retryCount: 0,
+      relayCount: 1,
+      batteryLevel: 3,
+      gpsQuality: 0,
+      speedEstimate: 0,
+      packetId: 6,
+      hasPosition: false,
+      sequence: 1,
+    ),
+  );
 }
