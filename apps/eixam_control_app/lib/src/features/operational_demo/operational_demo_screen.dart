@@ -91,7 +91,6 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                   contacts: _controller.contacts,
                   loading: _controller.loadingContacts,
                   onAddSample: _controller.addSampleContact,
-                  onToggleFirst: _controller.toggleFirstContact,
                   onRemoveFirst: _controller.removeFirstContact,
                 ),
                 if (_controller.lastError != null) ...[

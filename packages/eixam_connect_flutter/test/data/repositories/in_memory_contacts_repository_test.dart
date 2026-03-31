@@ -12,10 +12,14 @@ void main() {
 
       final second = await repository.addEmergencyContact(
         name: 'Zoe',
+        phone: '+34999999999',
+        email: 'zoe@example.com',
         priority: 2,
       );
       final first = await repository.addEmergencyContact(
         name: 'Alice',
+        phone: '+34123456789',
+        email: 'alice@example.com',
         priority: 1,
       );
 
@@ -34,7 +38,7 @@ void main() {
           store.jsonValues[SharedPrefsSdkStore.emergencyContactsKey];
       expect(persisted, isNotNull);
       expect((persisted!['items'] as List).length, 2);
-      expect(first.active, isTrue);
+      expect(first.createdAt, isNotNull);
     });
 
     test('restores and sorts contacts from local storage', () async {
@@ -45,14 +49,20 @@ void main() {
             <String, dynamic>{
               'id': 'contact-2',
               'name': 'Zoe',
+              'phone': '+34999999999',
+              'email': 'zoe@example.com',
               'priority': 2,
-              'active': true,
+              'createdAt': DateTime.utc(2026, 1, 1, 12, 1).toIso8601String(),
+              'updatedAt': DateTime.utc(2026, 1, 1, 12, 1).toIso8601String(),
             },
             <String, dynamic>{
               'id': 'contact-1',
               'name': 'Alice',
+              'phone': '+34123456789',
+              'email': 'alice@example.com',
               'priority': 1,
-              'active': true,
+              'createdAt': DateTime.utc(2026, 1, 1, 12).toIso8601String(),
+              'updatedAt': DateTime.utc(2026, 1, 1, 12).toIso8601String(),
             },
           ],
         };
@@ -65,14 +75,15 @@ void main() {
           <String>['contact-1', 'contact-2']);
     });
 
-    test('toggles active flag and removes contacts safely', () async {
+    test('removes contacts safely', () async {
       final repository = InMemoryContactsRepository(
         localStore: MemorySharedPrefsSdkStore(),
       );
-      final contact = await repository.addEmergencyContact(name: 'Alice');
-
-      await repository.setEmergencyContactActive(contact.id, false);
-      expect((await repository.listEmergencyContacts()).single.active, isFalse);
+      final contact = await repository.addEmergencyContact(
+        name: 'Alice',
+        phone: '+34123456789',
+        email: 'alice@example.com',
+      );
 
       await repository.removeEmergencyContact(contact.id);
       expect(await repository.listEmergencyContacts(), isEmpty);

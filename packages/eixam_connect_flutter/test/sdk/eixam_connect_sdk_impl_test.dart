@@ -13,7 +13,11 @@ import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_http_trans
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_identity_remote_data_source.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_session_context.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sos_remote_data_source.dart';
+import 'package:eixam_connect_flutter/src/data/dtos/sdk_contact_dto.dart';
+import 'package:eixam_connect_flutter/src/data/dtos/sdk_device_dto.dart';
 import 'package:eixam_connect_flutter/src/data/dtos/sos_incident_dto.dart';
+import 'package:eixam_connect_flutter/src/mappers/sdk_contact_mapper.dart';
+import 'package:eixam_connect_flutter/src/mappers/sdk_device_registry_mapper.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/mqtt_operational_sos_repository.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
@@ -205,17 +209,15 @@ void main() {
       expect(position.longitude, 2.17);
     });
 
-    test('contacts facade delegates add, toggle, and remove flows', () async {
+    test('contacts facade delegates add and remove flows', () async {
       final contact = await sdk.addEmergencyContact(
         name: 'Alice',
         phone: '+34123456789',
+        email: 'alice@example.com',
       );
 
       expect(contact.name, 'Alice');
       expect((await sdk.listEmergencyContacts()).single.id, contact.id);
-
-      await sdk.setEmergencyContactActive(contact.id, false);
-      expect((await sdk.listEmergencyContacts()).single.active, isFalse);
 
       await sdk.removeEmergencyContact(contact.id);
       expect(await sdk.listEmergencyContacts(), isEmpty);
@@ -1282,6 +1284,26 @@ void main() {
       expect(listed.single.firmwareVersion, '1.2.3');
     });
 
+    test('device registry mapper keeps backend records separate from runtime status',
+        () {
+      const dto = SdkDeviceDto(
+        id: 'device-1',
+        hardwareId: 'hw-1',
+        firmwareVersion: '1.2.3',
+        hardwareModel: 'EIXAM R1',
+        pairedAt: '2026-03-31T09:00:00.000Z',
+        createdAt: '2026-03-31T09:00:00.000Z',
+        updatedAt: '2026-03-31T09:05:00.000Z',
+      );
+
+      final mapped = const SdkDeviceRegistryMapper().toDomain(dto);
+
+      expect(mapped, isA<BackendRegisteredDevice>());
+      expect(mapped, isNot(isA<DeviceStatus>()));
+      expect(mapped.hardwareId, 'hw-1');
+      expect(mapped.updatedAt, DateTime.utc(2026, 3, 31, 9, 5));
+    });
+
     test('contacts HTTP datasource matches OpenAPI request and response mapping',
         () async {
       final requests = <http.Request>[];
@@ -1352,6 +1374,28 @@ void main() {
       expect(listed.single.name, 'Alice');
       expect(created.email, 'alice@example.com');
       expect(updated.priority, 2);
+    });
+
+    test('contact mapper matches backend schema exactly', () {
+      const dto = SdkContactDto(
+        id: 'contact-1',
+        name: 'Alice',
+        phone: '+34123456789',
+        email: 'alice@example.com',
+        priority: 1,
+        createdAt: '2026-03-31T09:00:00.000Z',
+        updatedAt: '2026-03-31T09:05:00.000Z',
+      );
+
+      final mapped = const SdkContactMapper().toDomain(dto);
+
+      expect(mapped.id, 'contact-1');
+      expect(mapped.name, 'Alice');
+      expect(mapped.phone, '+34123456789');
+      expect(mapped.email, 'alice@example.com');
+      expect(mapped.priority, 1);
+      expect(mapped.createdAt, DateTime.utc(2026, 3, 31, 9));
+      expect(mapped.updatedAt, DateTime.utc(2026, 3, 31, 9, 5));
     });
 
     test('mqtt telemetry publish requires a signed session', () async {

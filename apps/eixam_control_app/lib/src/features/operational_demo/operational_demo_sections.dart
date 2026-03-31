@@ -300,14 +300,12 @@ class ContactsSummarySection extends StatelessWidget {
     required this.contacts,
     required this.loading,
     required this.onAddSample,
-    required this.onToggleFirst,
     required this.onRemoveFirst,
   });
 
   final List<EmergencyContact> contacts;
   final bool loading;
   final VoidCallback onAddSample;
-  final VoidCallback onToggleFirst;
   final VoidCallback onRemoveFirst;
 
   @override
@@ -324,7 +322,7 @@ class ContactsSummarySection extends StatelessWidget {
                   (contact) => Padding(
                     padding: const EdgeInsets.only(bottom: 8),
                     child: Text(
-                      '${contact.name} - active=${contact.active} - priority=${contact.priority}',
+                      '${contact.name} - priority=${contact.priority}',
                     ),
                   ),
                 ),
@@ -337,10 +335,6 @@ class ContactsSummarySection extends StatelessWidget {
               ElevatedButton(
                 onPressed: loading ? null : onAddSample,
                 child: const Text('Add sample'),
-              ),
-              ElevatedButton(
-                onPressed: loading || contacts.isEmpty ? null : onToggleFirst,
-                child: const Text('Toggle first'),
               ),
               ElevatedButton(
                 onPressed: loading || contacts.isEmpty ? null : onRemoveFirst,

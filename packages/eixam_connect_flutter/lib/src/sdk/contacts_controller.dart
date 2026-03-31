@@ -28,8 +28,8 @@ class ContactsController extends ChangeNotifier {
   /// Adds a new emergency contact to the SDK store.
   Future<void> add({
     required String name,
-    String? phone,
-    String? email,
+    required String phone,
+    required String email,
     int priority = 1,
   }) async {
     await _run(() => sdk.addEmergencyContact(
@@ -38,12 +38,6 @@ class ContactsController extends ChangeNotifier {
           email: email,
           priority: priority,
         ));
-  }
-
-  /// Toggles whether a contact participates in emergency resolution.
-  Future<void> toggleActive(EmergencyContact contact) async {
-    await _run(
-        () => sdk.setEmergencyContactActive(contact.id, !contact.active));
   }
 
   /// Removes an emergency contact from the SDK store.

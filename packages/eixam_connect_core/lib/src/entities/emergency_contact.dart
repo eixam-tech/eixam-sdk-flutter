@@ -5,18 +5,20 @@
 class EmergencyContact {
   final String id;
   final String name;
-  final String? phone;
-  final String? email;
+  final String phone;
+  final String email;
   final int priority;
-  final bool active;
+  final DateTime createdAt;
+  final DateTime updatedAt;
 
   const EmergencyContact({
     required this.id,
     required this.name,
-    this.phone,
-    this.email,
+    required this.phone,
+    required this.email,
     this.priority = 1,
-    this.active = true,
+    required this.createdAt,
+    required this.updatedAt,
   });
 
   EmergencyContact copyWith({
@@ -25,7 +27,8 @@ class EmergencyContact {
     String? phone,
     String? email,
     int? priority,
-    bool? active,
+    DateTime? createdAt,
+    DateTime? updatedAt,
   }) {
     return EmergencyContact(
       id: id ?? this.id,
@@ -33,7 +36,8 @@ class EmergencyContact {
       phone: phone ?? this.phone,
       email: email ?? this.email,
       priority: priority ?? this.priority,
-      active: active ?? this.active,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
     );
   }
 }

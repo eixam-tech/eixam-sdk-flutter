@@ -96,13 +96,11 @@ abstract class EixamConnectSdk {
   Stream<List<EmergencyContact>> watchEmergencyContacts();
   Future<EmergencyContact> addEmergencyContact({
     required String name,
-    String? phone,
-    String? email,
+    required String phone,
+    required String email,
     int priority = 1,
-    bool active = true,
   });
   Future<EmergencyContact> updateEmergencyContact(EmergencyContact contact);
-  Future<void> setEmergencyContactActive(String contactId, bool active);
   Future<void> removeEmergencyContact(String contactId);
 
   Future<DeathManPlan> scheduleDeathMan({

@@ -302,21 +302,7 @@ class SafetyOverviewController extends ChangeNotifier {
           phone: '+34123456789',
           email: 'sample$now@eixam.dev',
           priority: 1,
-          active: true,
         );
-        contacts = await sdk.listEmergencyContacts();
-      },
-    );
-  }
-
-  Future<void> toggleFirstContact() async {
-    if (contacts.isEmpty) return;
-
-    await _runFlag(
-      (value) => loadingContacts = value,
-      () async {
-        final first = contacts.first;
-        await sdk.setEmergencyContactActive(first.id, !first.active);
         contacts = await sdk.listEmergencyContacts();
       },
     );

@@ -135,10 +135,9 @@ class FakeContactsRepository implements ContactsRepository {
   @override
   Future<EmergencyContact> addEmergencyContact({
     required String name,
-    String? phone,
-    String? email,
+    required String phone,
+    required String email,
     int priority = 1,
-    bool active = true,
   }) async {
     final contact = EmergencyContact(
       id: 'contact-${contacts.length + 1}',
@@ -146,7 +145,8 @@ class FakeContactsRepository implements ContactsRepository {
       phone: phone,
       email: email,
       priority: priority,
-      active: active,
+      createdAt: DateTime.utc(2026, 1, 1, 12),
+      updatedAt: DateTime.utc(2026, 1, 1, 12),
     );
     contacts.add(contact);
     _controller.add(List<EmergencyContact>.unmodifiable(contacts));
@@ -160,14 +160,6 @@ class FakeContactsRepository implements ContactsRepository {
   @override
   Future<void> removeEmergencyContact(String contactId) async {
     contacts.removeWhere((contact) => contact.id == contactId);
-    _controller.add(List<EmergencyContact>.unmodifiable(contacts));
-  }
-
-  @override
-  Future<void> setEmergencyContactActive(String contactId, bool active) async {
-    final index = contacts.indexWhere((contact) => contact.id == contactId);
-    if (index == -1) return;
-    contacts[index] = contacts[index].copyWith(active: active);
     _controller.add(List<EmergencyContact>.unmodifiable(contacts));
   }
 

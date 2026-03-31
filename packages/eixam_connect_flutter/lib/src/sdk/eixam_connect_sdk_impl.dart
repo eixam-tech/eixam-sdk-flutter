@@ -985,28 +985,21 @@ class EixamConnectSdkImpl
   @override
   Future<EmergencyContact> addEmergencyContact({
     required String name,
-    String? phone,
-    String? email,
+    required String phone,
+    required String email,
     int priority = 1,
-    bool active = true,
   }) {
     return contactsRepository.addEmergencyContact(
       name: name,
       phone: phone,
       email: email,
       priority: priority,
-      active: active,
     );
   }
 
   @override
   Future<EmergencyContact> updateEmergencyContact(EmergencyContact contact) {
     return contactsRepository.updateEmergencyContact(contact);
-  }
-
-  @override
-  Future<void> setEmergencyContactActive(String contactId, bool active) {
-    return contactsRepository.setEmergencyContactActive(contactId, active);
   }
 
   @override

@@ -14,7 +14,8 @@ class LocalStateSerializers {
       'phone': contact.phone,
       'email': contact.email,
       'priority': contact.priority,
-      'active': contact.active,
+      'createdAt': contact.createdAt.toIso8601String(),
+      'updatedAt': contact.updatedAt.toIso8601String(),
     };
   }
 
@@ -22,10 +23,15 @@ class LocalStateSerializers {
     return EmergencyContact(
       id: json['id'] as String,
       name: json['name'] as String,
-      phone: json['phone'] as String?,
-      email: json['email'] as String?,
+      phone: json['phone'] as String,
+      email: json['email'] as String,
       priority: json['priority'] as int? ?? 1,
-      active: json['active'] as bool? ?? true,
+      createdAt: json['createdAt'] == null
+          ? DateTime.now().toUtc()
+          : DateTime.parse(json['createdAt'] as String),
+      updatedAt: json['updatedAt'] == null
+          ? DateTime.now().toUtc()
+          : DateTime.parse(json['updatedAt'] as String),
     );
   }
 

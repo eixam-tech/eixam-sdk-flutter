@@ -112,6 +112,7 @@ void main() {
       expect(status.deviceId, 'device-42');
       expect(status.lifecycleState, DeviceLifecycleState.ready);
       expect(status.effectiveBatteryState, DeviceBatteryLevel.ok);
+      expect(status, isNot(isA<BackendRegisteredDevice>()));
       await runtimeProvider.dispose();
     });
   });

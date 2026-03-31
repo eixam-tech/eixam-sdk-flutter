@@ -34,18 +34,19 @@ class InMemoryContactsRepository implements ContactsRepository {
   @override
   Future<EmergencyContact> addEmergencyContact({
     required String name,
-    String? phone,
-    String? email,
+    required String phone,
+    required String email,
     int priority = 1,
-    bool active = true,
   }) async {
+    final now = DateTime.now().toUtc();
     final contact = EmergencyContact(
       id: 'contact-${DateTime.now().microsecondsSinceEpoch}',
       name: name.trim(),
-      phone: phone?.trim().isEmpty == true ? null : phone?.trim(),
-      email: email?.trim().isEmpty == true ? null : email?.trim(),
+      phone: phone.trim(),
+      email: email.trim(),
       priority: priority,
-      active: active,
+      createdAt: now,
+      updatedAt: now,
     );
     _contacts.add(contact);
     _contacts.sort(_compareByPriorityThenName);
@@ -70,18 +71,10 @@ class InMemoryContactsRepository implements ContactsRepository {
     if (index == -1) {
       throw StateError('Emergency contact not found: ${contact.id}');
     }
-    _contacts[index] = contact;
+    _contacts[index] = contact.copyWith(updatedAt: DateTime.now().toUtc());
     _contacts.sort(_compareByPriorityThenName);
     await _persistAndEmit();
     return contact;
-  }
-
-  @override
-  Future<void> setEmergencyContactActive(String contactId, bool active) async {
-    final index = _contacts.indexWhere((item) => item.id == contactId);
-    if (index == -1) return;
-    _contacts[index] = _contacts[index].copyWith(active: active);
-    await _persistAndEmit();
   }
 
   @override

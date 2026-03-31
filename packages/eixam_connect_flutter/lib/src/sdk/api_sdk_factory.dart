@@ -8,8 +8,10 @@ import '../data/datasources_remote/http_sos_remote_data_source.dart';
 import '../data/datasources_remote/mock_sos_remote_data_source.dart';
 import '../data/datasources_remote/sdk_identity_remote_data_source.dart';
 import '../data/datasources_remote/sdk_session_context.dart';
+import '../data/datasources_remote/sdk_contacts_remote_data_source.dart';
 import '../data/datasources_remote/sdk_http_transport.dart';
 import '../data/repositories/api_sos_repository.dart';
+import '../data/repositories/api_contacts_repository.dart';
 import '../data/repositories/geolocator_tracking_repository.dart';
 import '../data/repositories/in_memory_contacts_repository.dart';
 import '../data/repositories/in_memory_death_man_repository.dart';
@@ -147,8 +149,6 @@ class ApiSdkFactory {
 
     final deathManRepository = InMemoryDeathManRepository(localStore: store);
 
-    final contactsRepository = InMemoryContactsRepository(localStore: store);
-
     final bleClient = RealBleClient();
     try {
       await bleClient.initialize();
@@ -166,14 +166,17 @@ class ApiSdkFactory {
     await sosRepository.restoreState();
     await trackingRepository.restoreState();
     await deathManRepository.restoreState();
-    await contactsRepository.restoreState();
     await deviceRepository.restoreState();
 
     final sdk = EixamConnectSdkImpl(
       sosRepository: sosRepository,
       trackingRepository: trackingRepository,
       telemetryRepository: telemetryRepository,
-      contactsRepository: contactsRepository,
+      contactsRepository: ApiContactsRepository(
+        remoteDataSource: HttpSdkContactsRemoteDataSource(
+          transport: httpTransport,
+        ),
+      ),
       deviceRepository: deviceRepository,
       deathManRepository: deathManRepository,
       permissionsRepository: permissionsRepository,
