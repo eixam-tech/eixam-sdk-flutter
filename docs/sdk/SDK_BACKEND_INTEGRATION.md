@@ -27,6 +27,7 @@ At a high level:
 - the partner backend signs the mobile session
 - the SDK stores that signed session
 - the SDK enriches the session through `GET /v1/sdk/me`
+- the SDK rehydrates SOS runtime state through `GET /v1/sdk/sos`
 - the SDK uses canonical backend identity to build MQTT topics
 - SOS trigger and telemetry publish are operational MQTT flows
 - SOS cancel is a transactional HTTP flow
@@ -142,6 +143,23 @@ Important:
 
 - final SOS lifecycle state still comes from MQTT events
 - HTTP cancel does not become the lifecycle source of truth
+
+## SOS Rehydration
+
+Endpoint:
+
+- `GET /v1/sdk/sos`
+
+Behavior:
+
+- authoritative read for the currently active SDK SOS incident
+- called by the SDK runtime after startup/bootstrap and canonical identity refresh
+- if the backend reports an active or acknowledged incident, the runtime hydrates
+  in-memory SOS state from that response
+- if the backend reports no incident, the runtime moves to `idle` and clears
+  inconsistent local SOS cache
+- if the request fails, startup continues and the runtime keeps any local SOS
+  fallback state while exposing a diagnostics note
 
 ## Devices
 
@@ -362,6 +380,7 @@ This prevents stale operational items from an old session being replayed into a 
 The following rules remain unchanged:
 
 - SOS final lifecycle state comes from MQTT events
+- startup/session recovery of current SOS context comes from `GET /v1/sdk/sos`
 - HTTP cancel remains transactional only
 - telemetry remains best-effort operational data
 - runtime BLE state is not backend registry state

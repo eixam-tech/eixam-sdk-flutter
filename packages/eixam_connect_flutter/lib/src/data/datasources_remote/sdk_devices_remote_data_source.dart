@@ -41,7 +41,8 @@ class HttpSdkDevicesRemoteDataSource implements SdkDevicesRemoteDataSource {
     if (response.statusCode != 200) {
       throw DeviceException('E_HTTP_DEVICE_UPSERT_FAILED', response.body);
     }
-    final payload = _decode(response.body, errorCode: 'E_HTTP_DEVICE_UPSERT_FAILED');
+    final payload =
+        _decode(response.body, errorCode: 'E_HTTP_DEVICE_UPSERT_FAILED');
     final device = payload['device'];
     if (device is! Map<String, dynamic>) {
       throw const DeviceException(
@@ -58,7 +59,8 @@ class HttpSdkDevicesRemoteDataSource implements SdkDevicesRemoteDataSource {
     if (response.statusCode != 200) {
       throw DeviceException('E_HTTP_DEVICE_LIST_FAILED', response.body);
     }
-    final payload = _decode(response.body, errorCode: 'E_HTTP_DEVICE_LIST_FAILED');
+    final payload =
+        _decode(response.body, errorCode: 'E_HTTP_DEVICE_LIST_FAILED');
     final devices = payload['devices'];
     if (devices is! List) {
       throw const DeviceException(

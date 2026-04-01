@@ -4,6 +4,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
 import 'package:eixam_connect_core/src/events/realtime_event.dart';
 import 'package:eixam_connect_core/src/interfaces/realtime_client.dart';
+import 'package:eixam_connect_flutter/src/data/repositories/sos_runtime_rehydration_support.dart';
 import 'package:eixam_connect_flutter/src/sdk/guided_rescue_runtime.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/telemetry_repository.dart';
 
@@ -19,7 +20,7 @@ class FakeSosRepository implements SosRepository {
   String? lastMessage;
   String? lastTriggerSource;
   TrackingPosition? lastPositionSnapshot;
-  final StreamController<SosState> _stateController =
+  final StreamController<SosState> stateController =
       StreamController<SosState>.broadcast();
 
   @override
@@ -38,7 +39,7 @@ class FakeSosRepository implements SosRepository {
       triggerSource: triggerSource,
       positionSnapshot: positionSnapshot,
     );
-    _stateController.add(currentIncident.state);
+    stateController.add(currentIncident.state);
     return currentIncident;
   }
 
@@ -46,7 +47,7 @@ class FakeSosRepository implements SosRepository {
   Future<SosIncident> cancelSos() async {
     cancelCallCount++;
     currentIncident = currentIncident.copyWith(state: SosState.cancelled);
-    _stateController.add(currentIncident.state);
+    stateController.add(currentIncident.state);
     return currentIncident;
   }
 
@@ -54,10 +55,30 @@ class FakeSosRepository implements SosRepository {
   Future<SosState> getSosState() async => currentIncident.state;
 
   @override
-  Stream<SosState> watchSosState() => _stateController.stream;
+  Stream<SosState> watchSosState() => stateController.stream;
 
   Future<void> dispose() async {
-    await _stateController.close();
+    await stateController.close();
+  }
+}
+
+class FakeRehydratingSosRepository extends FakeSosRepository
+    implements SosRuntimeRehydrationSupport {
+  SosRuntimeRehydrationResult rehydrationResult =
+      const SosRuntimeRehydrationResult(
+    outcome: SosRuntimeRehydrationOutcome.clearedToIdle,
+    resultingState: SosState.idle,
+  );
+  int rehydrateCallCount = 0;
+
+  @override
+  Future<SosRuntimeRehydrationResult> rehydrateRuntimeStateFromBackend() async {
+    rehydrateCallCount++;
+    currentIncident = currentIncident.copyWith(
+      state: rehydrationResult.resultingState,
+    );
+    stateController.add(currentIncident.state);
+    return rehydrationResult;
   }
 }
 

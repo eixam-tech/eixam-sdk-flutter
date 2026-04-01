@@ -11,9 +11,9 @@ class ValidationConsoleController extends ChangeNotifier {
   EixamSession? session;
   SdkOperationalDiagnostics operationalDiagnostics =
       const SdkOperationalDiagnostics(
-        connectionState: RealtimeConnectionState.disconnected,
-        bridge: SdkBridgeDiagnostics(),
-      );
+    connectionState: RealtimeConnectionState.disconnected,
+    bridge: SdkBridgeDiagnostics(),
+  );
   RealtimeEvent? lastRealtimeEvent;
   SosState sosState = SosState.idle;
   EixamSdkEvent? lastSosEvent;

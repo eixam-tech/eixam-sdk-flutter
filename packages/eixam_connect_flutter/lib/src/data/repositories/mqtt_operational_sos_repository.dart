@@ -8,21 +8,28 @@ import '../datasources_local/shared_prefs_sdk_store.dart';
 import '../../sdk/operational_realtime_client.dart';
 import '../../sdk/sdk_mqtt_contract.dart';
 import 'mqtt_sos_lifecycle_update.dart';
+import '../../mappers/sos_incident_mapper.dart';
+import 'sos_runtime_rehydration_support.dart';
 
-class MqttOperationalSosRepository implements SosRepository {
+class MqttOperationalSosRepository
+    implements SosRepository, SosRuntimeRehydrationSupport {
   MqttOperationalSosRepository({
     required this.realtimeClient,
+    SosRemoteDataSource? remoteDataSource,
     this.cancelRemoteDataSource,
     SharedPrefsSdkStore? localStore,
-  }) : _localStore = localStore {
+  })  : remoteDataSource = remoteDataSource ?? cancelRemoteDataSource,
+        _localStore = localStore {
     _stateController.add(_stateMachine.current);
     _realtimeSub = realtimeClient.watchEvents().listen(_handleRealtimeEvent);
   }
 
   final OperationalRealtimeClient realtimeClient;
+  final SosRemoteDataSource? remoteDataSource;
   final SosRemoteDataSource? cancelRemoteDataSource;
   final SharedPrefsSdkStore? _localStore;
-  final SosStateMachine _stateMachine = SosStateMachine();
+  final SosIncidentMapper _mapper = const SosIncidentMapper();
+  SosStateMachine _stateMachine = SosStateMachine();
   final StreamController<SosState> _stateController =
       StreamController<SosState>.broadcast();
 
@@ -47,8 +54,7 @@ class MqttOperationalSosRepository implements SosRepository {
       (value) => value.name == stateRaw,
       orElse: () => _activeIncident?.state ?? SosState.idle,
     );
-    _restoreState(restoredState);
-    _stateController.add(_stateMachine.current);
+    _setState(restoredState);
   }
 
   @override
@@ -128,7 +134,8 @@ class MqttOperationalSosRepository implements SosRepository {
       );
     }
 
-    _activeIncident = _activeIncident!.copyWith(state: SosState.cancelRequested);
+    _activeIncident =
+        _activeIncident!.copyWith(state: SosState.cancelRequested);
     _emit(SosState.cancelRequested);
     await _persistState();
 
@@ -153,6 +160,47 @@ class MqttOperationalSosRepository implements SosRepository {
   @override
   Stream<SosState> watchSosState() => _stateController.stream;
 
+  @override
+  Future<SosRuntimeRehydrationResult> rehydrateRuntimeStateFromBackend() async {
+    final dataSource = remoteDataSource;
+    if (dataSource == null) {
+      return SosRuntimeRehydrationResult(
+        outcome: SosRuntimeRehydrationOutcome.keptLocalFallback,
+        resultingState: _stateMachine.current,
+        diagnosticNote:
+            'SOS rehydration skipped because no HTTP SOS data source is configured.',
+      );
+    }
+
+    try {
+      final active = await dataSource.getActiveSos();
+      if (active == null) {
+        _activeIncident = null;
+        _setState(SosState.idle);
+        await _persistState();
+        return const SosRuntimeRehydrationResult(
+          outcome: SosRuntimeRehydrationOutcome.clearedToIdle,
+          resultingState: SosState.idle,
+        );
+      }
+
+      _activeIncident = _mapper.toDomain(active);
+      _setState(_activeIncident!.state);
+      await _persistState();
+      return SosRuntimeRehydrationResult(
+        outcome: SosRuntimeRehydrationOutcome.hydratedFromBackend,
+        resultingState: _stateMachine.current,
+      );
+    } catch (error) {
+      return SosRuntimeRehydrationResult(
+        outcome: SosRuntimeRehydrationOutcome.keptLocalFallback,
+        resultingState: _stateMachine.current,
+        diagnosticNote:
+            'SOS rehydration failed; kept local fallback state. Error: $error',
+      );
+    }
+  }
+
   Future<void> dispose() async {
     await _realtimeSub?.cancel();
     await _stateController.close();
@@ -174,6 +222,12 @@ class MqttOperationalSosRepository implements SosRepository {
 
   void _emit(SosState state) {
     _stateMachine.transitionTo(state);
+    _stateController.add(_stateMachine.current);
+  }
+
+  void _setState(SosState state) {
+    _stateMachine = SosStateMachine();
+    _restoreState(state);
     _stateController.add(_stateMachine.current);
   }
 

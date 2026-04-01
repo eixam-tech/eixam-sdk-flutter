@@ -57,13 +57,11 @@ class EixamSession {
       appId: appId ?? this.appId,
       externalUserId: externalUserId ?? this.externalUserId,
       userHash: userHash ?? this.userHash,
-      sdkUserId: identical(sdkUserId, _unset)
-          ? this.sdkUserId
-          : sdkUserId as String?,
-      canonicalExternalUserId:
-          identical(canonicalExternalUserId, _unset)
-              ? this.canonicalExternalUserId
-              : canonicalExternalUserId as String?,
+      sdkUserId:
+          identical(sdkUserId, _unset) ? this.sdkUserId : sdkUserId as String?,
+      canonicalExternalUserId: identical(canonicalExternalUserId, _unset)
+          ? this.canonicalExternalUserId
+          : canonicalExternalUserId as String?,
       refreshToken: identical(refreshToken, _unset)
           ? this.refreshToken
           : refreshToken as String?,

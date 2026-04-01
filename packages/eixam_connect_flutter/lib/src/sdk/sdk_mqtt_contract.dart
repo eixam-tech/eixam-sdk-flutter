@@ -126,8 +126,9 @@ class SdkMqttContract {
         final type = decoded['type'] as String? ??
             decoded['status'] as String? ??
             'mqtt.message';
-        final occurredAtRaw =
-            decoded['updatedAt'] ?? decoded['occurredAt'] ?? decoded['openedAt'];
+        final occurredAtRaw = decoded['updatedAt'] ??
+            decoded['occurredAt'] ??
+            decoded['openedAt'];
         final occurredAt = occurredAtRaw is String
             ? DateTime.tryParse(occurredAtRaw)?.toUtc()
             : null;

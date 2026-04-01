@@ -21,9 +21,8 @@ class SosIncidentDto {
   factory SosIncidentDto.fromJson(Map<String, dynamic> json) {
     return SosIncidentDto(
       id: json['id'] as String,
-      state: (json['state'] as String?) ??
-          (json['status'] as String?) ??
-          'failed',
+      state:
+          (json['state'] as String?) ?? (json['status'] as String?) ?? 'failed',
       createdAt: (json['createdAt'] as String?) ??
           (json['created_at'] as String?) ??
           (json['occurredAt'] as String?) ??
@@ -70,7 +69,8 @@ class SosIncidentDto {
     return <String, dynamic>{
       'latitude': latitude.toDouble(),
       'longitude': longitude.toDouble(),
-      if (json['altitude'] is num) 'altitude': (json['altitude'] as num).toDouble(),
+      if (json['altitude'] is num)
+        'altitude': (json['altitude'] as num).toDouble(),
       'source': DeliveryMode.mobile.name,
       'timestamp': (json['timestamp'] as String?) ??
           (json['occurredAt'] as String?) ??

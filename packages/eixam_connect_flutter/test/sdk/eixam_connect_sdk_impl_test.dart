@@ -264,7 +264,8 @@ void main() {
       expect(position.longitude, 2.17);
     });
 
-    test('contacts facade delegates create, update, and delete flows', () async {
+    test('contacts facade delegates create, update, and delete flows',
+        () async {
       final contact = await sdk.createEmergencyContact(
         name: 'Alice',
         phone: '+34123456789',
@@ -325,7 +326,8 @@ void main() {
       expect(status.lifecycleState, DeviceLifecycleState.unpaired);
     });
 
-    test('local device runtime facade exposes connect, disconnect, and preferred device',
+    test(
+        'local device runtime facade exposes connect, disconnect, and preferred device',
         () async {
       await sdk.connectDevice(pairingCode: 'PAIR-123');
       await sdk.disconnectDevice();
@@ -754,14 +756,66 @@ void main() {
 
         expect(await localSessionStore.load(), isNull);
         expect(localSessionContext.currentSession, isNull);
-        expect(localRealtimeClient.disconnectCallCount, greaterThanOrEqualTo(1));
+        expect(
+            localRealtimeClient.disconnectCallCount, greaterThanOrEqualTo(1));
       } finally {
         await localSdk.dispose();
         await localRealtimeClient.dispose();
       }
     });
 
-    test('setSession bootstraps and stores canonical external user id from /v1/sdk/me',
+    test('initialize rehydrates SOS state from backend-backed runtime state',
+        () async {
+      final localSessionStore =
+          SdkSessionStore(localStore: MemorySharedPrefsSdkStore());
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController();
+      final localSosRepository = FakeRehydratingSosRepository()
+        ..rehydrationResult = const SosRuntimeRehydrationResult(
+          outcome: SosRuntimeRehydrationOutcome.hydratedFromBackend,
+          resultingState: SosState.acknowledged,
+        );
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: localSosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        sessionStore: localSessionStore,
+      );
+
+      try {
+        await localSessionStore.save(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+          ),
+        );
+
+        await localSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+
+        expect(localSosRepository.rehydrateCallCount, 1);
+        expect(await localSdk.getSosState(), SosState.acknowledged);
+      } finally {
+        await localSdk.dispose();
+        await localRealtimeClient.dispose();
+        await localSosRepository.dispose();
+      }
+    });
+
+    test(
+        'setSession bootstraps and stores canonical external user id from /v1/sdk/me',
         () async {
       final localStore = MemorySharedPrefsSdkStore();
       final localSessionStore = SdkSessionStore(localStore: localStore);
@@ -816,7 +870,8 @@ void main() {
         );
 
         final persisted = await localSessionStore.load();
-        expect(capturedRequest.url.toString(), 'https://example.test/v1/sdk/me');
+        expect(
+            capturedRequest.url.toString(), 'https://example.test/v1/sdk/me');
         expect(capturedRequest.headers['X-User-ID'], 'external-123');
         expect(localSessionContext.currentSession?.canonicalExternalUserId,
             'partner/user 42');
@@ -825,6 +880,51 @@ void main() {
       } finally {
         await localSdk.dispose();
         await localRealtimeClient.dispose();
+      }
+    });
+
+    test(
+        'setSession clears stale local SOS state when backend reports no incident',
+        () async {
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController();
+      final localSosRepository = FakeRehydratingSosRepository()
+        ..currentIncident = _testSosIncident(state: SosState.sent)
+        ..rehydrationResult = const SosRuntimeRehydrationResult(
+          outcome: SosRuntimeRehydrationOutcome.clearedToIdle,
+          resultingState: SosState.idle,
+        );
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: localSosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        await localSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+          ),
+        );
+
+        expect(localSosRepository.rehydrateCallCount, 1);
+        expect(await localSdk.getSosState(), SosState.idle);
+      } finally {
+        await localSdk.dispose();
+        await localRealtimeClient.dispose();
+        await localSosRepository.dispose();
       }
     });
 
@@ -886,7 +986,8 @@ void main() {
         final refreshed = await localSdk.refreshCanonicalIdentity();
         final persisted = await localSessionStore.load();
 
-        expect(capturedRequest.url.toString(), 'https://example.test/v1/sdk/me');
+        expect(
+            capturedRequest.url.toString(), 'https://example.test/v1/sdk/me');
         expect(refreshed.canonicalExternalUserId, 'canonical-user-99');
         expect(localSessionContext.currentSession?.sdkUserId, 'sdk-user-99');
         expect(persisted?.canonicalExternalUserId, 'canonical-user-99');
@@ -973,7 +1074,8 @@ void main() {
       }
     });
 
-    test('mqtt realtime composes connect properties and canonical encoded event topics',
+    test(
+        'mqtt realtime composes connect properties and canonical encoded event topics',
         () async {
       final sessionContext = SdkSessionContext()
         ..currentSession = const EixamSession.signed(
@@ -1334,7 +1436,8 @@ void main() {
       );
 
       expect(envelope.topic, 'tel/partner%2Fuser%2042/data');
-      expect(envelope.payload, '{"timestamp":"2026-03-31T10:15:00.000Z","latitude":41.38,"longitude":2.17,"altitude":8.0,"userId":"sdk-user-42","deviceId":"device-1","deviceBattery":77.5,"deviceCoverage":4,"mobileBattery":61.0,"mobileCoverage":3}');
+      expect(envelope.payload,
+          '{"timestamp":"2026-03-31T10:15:00.000Z","latitude":41.38,"longitude":2.17,"altitude":8.0,"userId":"sdk-user-42","deviceId":"device-1","deviceBattery":77.5,"deviceCoverage":4,"mobileBattery":61.0,"mobileCoverage":3}');
     });
 
     test('telemetry repository validates required coordinates before publish',
@@ -1411,6 +1514,84 @@ void main() {
       }
     });
 
+    test(
+        'refreshCanonicalIdentity keeps local SOS fallback and exposes a diagnostics note when rehydration fails',
+        () async {
+      final localStore = MemorySharedPrefsSdkStore();
+      final localSessionStore = SdkSessionStore(localStore: localStore);
+      final localSessionContext = SdkSessionContext();
+      final client = _RecordingClient(
+        handler: (request) async {
+          return http.Response(
+            '{"user":{"id":"sdk-user-99","external_user_id":"canonical-user-99"}}',
+            200,
+            headers: const <String, String>{
+              'content-type': 'application/json',
+            },
+          );
+        },
+      );
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController();
+      final localSosRepository = FakeRehydratingSosRepository()
+        ..currentIncident = _testSosIncident(state: SosState.sent)
+        ..rehydrationResult = const SosRuntimeRehydrationResult(
+          outcome: SosRuntimeRehydrationOutcome.keptLocalFallback,
+          resultingState: SosState.sent,
+          diagnosticNote: 'SOS rehydration failed; kept local fallback state.',
+        );
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: localSosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        sessionStore: localSessionStore,
+        sessionContext: localSessionContext,
+        identityRemoteDataSource: HttpSdkIdentityRemoteDataSource(
+          transport: SdkHttpTransport(
+            client: client,
+            config: const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+            sessionContext: localSessionContext,
+          ),
+        ),
+      );
+
+      try {
+        await localSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+            canonicalExternalUserId: 'stale-canonical',
+          ),
+        );
+
+        final refreshed = await localSdk.refreshCanonicalIdentity();
+        final diagnostics = await localSdk.getOperationalDiagnostics();
+
+        expect(refreshed.canonicalExternalUserId, 'canonical-user-99');
+        expect(localSosRepository.rehydrateCallCount, 2);
+        expect(await localSdk.getSosState(), SosState.sent);
+        expect(
+          diagnostics.sosRehydrationNote,
+          'SOS rehydration failed; kept local fallback state.',
+        );
+      } finally {
+        await localSdk.dispose();
+        await localRealtimeClient.dispose();
+        await localSosRepository.dispose();
+      }
+    });
+
     test('BLE bridge publishes telemetry from TEL position events', () async {
       final bleEvents = StreamController<BleIncomingEvent>.broadcast();
       final connectionStates =
@@ -1437,7 +1618,8 @@ void main() {
         await Future<void>.delayed(Duration.zero);
 
         expect(telemetryRepository.publishedPayloads, hasLength(1));
-        expect(telemetryRepository.publishedPayloads.single.deviceId, 'device-1');
+        expect(
+            telemetryRepository.publishedPayloads.single.deviceId, 'device-1');
       } finally {
         await bridge.dispose();
         await bleEvents.close();
@@ -1632,7 +1814,8 @@ void main() {
       }
     });
 
-    test('BLE TEL while MQTT disconnected retains only the latest pending telemetry and publishes once on reconnect',
+    test(
+        'BLE TEL while MQTT disconnected retains only the latest pending telemetry and publishes once on reconnect',
         () async {
       final bleEvents = StreamController<BleIncomingEvent>.broadcast();
       final connectionStates =
@@ -1677,7 +1860,8 @@ void main() {
       }
     });
 
-    test('BLE SOS while MQTT disconnected is retained and published once on reconnect',
+    test(
+        'BLE SOS while MQTT disconnected is retained and published once on reconnect',
         () async {
       final bleEvents = StreamController<BleIncomingEvent>.broadcast();
       final connectionStates =
@@ -1718,7 +1902,8 @@ void main() {
       }
     });
 
-    test('clearSession-style teardown clears pending operational items and prevents replay',
+    test(
+        'clearSession-style teardown clears pending operational items and prevents replay',
         () async {
       final bleEvents = StreamController<BleIncomingEvent>.broadcast();
       final connectionStates =
@@ -1760,7 +1945,8 @@ void main() {
       }
     });
 
-    test('session change resets old pending runtime state before new session reuse',
+    test(
+        'session change resets old pending runtime state before new session reuse',
         () async {
       final bleEvents = StreamController<BleIncomingEvent>.broadcast();
       final connectionStates =
@@ -1851,12 +2037,14 @@ void main() {
       final listed = await dataSource.listDevices();
       await dataSource.deleteDevice('device-1');
 
-      expect(requests[0].url.toString(), 'https://api.example.test/v1/sdk/devices');
+      expect(requests[0].url.toString(),
+          'https://api.example.test/v1/sdk/devices');
       expect(
         requests[0].body,
         '{"hardware_id":"hw-1","firmware_version":"1.2.3","hardware_model":"EIXAM R1","paired_at":"2026-03-31T09:00:00.000Z"}',
       );
-      expect(requests[1].url.toString(), 'https://api.example.test/v1/sdk/devices');
+      expect(requests[1].url.toString(),
+          'https://api.example.test/v1/sdk/devices');
       expect(requests[2].url.toString(),
           'https://api.example.test/v1/sdk/devices/device-1');
       expect(upserted.hardwareId, 'hw-1');
@@ -1864,7 +2052,8 @@ void main() {
       expect(listed.single.firmwareVersion, '1.2.3');
     });
 
-    test('device registry mapper keeps backend records separate from runtime status',
+    test(
+        'device registry mapper keeps backend records separate from runtime status',
         () {
       const dto = SdkDeviceDto(
         id: 'device-1',
@@ -1884,7 +2073,8 @@ void main() {
       expect(mapped.updatedAt, DateTime.utc(2026, 3, 31, 9, 5));
     });
 
-    test('contacts HTTP datasource matches OpenAPI request and response mapping',
+    test(
+        'contacts HTTP datasource matches OpenAPI request and response mapping',
         () async {
       final requests = <http.Request>[];
       final dataSource = HttpSdkContactsRemoteDataSource(
@@ -1942,7 +2132,8 @@ void main() {
       );
       await dataSource.deleteContact('contact-1');
 
-      expect(requests[0].url.toString(), 'https://api.example.test/v1/sdk/contacts');
+      expect(requests[0].url.toString(),
+          'https://api.example.test/v1/sdk/contacts');
       expect(requests[1].body,
           '{"name":"Alice","phone":"+34123456789","email":"alice@example.com","priority":1}');
       expect(requests[2].url.toString(),
@@ -2253,8 +2444,7 @@ class _PublishedMqttMessage {
 class _FakeOperationalRealtimeClient implements OperationalRealtimeClient {
   final List<MqttOperationalSosRequest> publishedRequests =
       <MqttOperationalSosRequest>[];
-  final List<SdkTelemetryPayload> publishedTelemetry =
-      <SdkTelemetryPayload>[];
+  final List<SdkTelemetryPayload> publishedTelemetry = <SdkTelemetryPayload>[];
   final StreamController<RealtimeEvent> _eventsController =
       StreamController<RealtimeEvent>.broadcast();
 
@@ -2441,5 +2631,13 @@ BleIncomingEvent _bridgeSosWithoutPositionEvent({required String signature}) {
       hasPosition: false,
       sequence: 1,
     ),
+  );
+}
+
+SosIncident _testSosIncident({required SosState state}) {
+  return SosIncident(
+    id: 'sos-test',
+    state: state,
+    createdAt: DateTime.utc(2026, 3, 31, 10),
   );
 }

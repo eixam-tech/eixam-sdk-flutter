@@ -37,10 +37,8 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
       TextEditingController(text: 'Manual SOS from validation console');
   final _sosTriggerSourceController =
       TextEditingController(text: 'debug_validation_console');
-  final _telemetryLatitudeController =
-      TextEditingController(text: '41.3825');
-  final _telemetryLongitudeController =
-      TextEditingController(text: '2.1769');
+  final _telemetryLatitudeController = TextEditingController(text: '41.3825');
+  final _telemetryLongitudeController = TextEditingController(text: '2.1769');
   final _telemetryAltitudeController = TextEditingController(text: '12.0');
   final _telemetryDeviceIdController = TextEditingController(text: 'device-1');
   final _contactNameController = TextEditingController();
@@ -276,7 +274,8 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                       ),
                       InfoLine(
                         label: 'Canonical external_user_id',
-                        value: session?.canonicalExternalUserId ?? 'Not resolved',
+                        value:
+                            session?.canonicalExternalUserId ?? 'Not resolved',
                       ),
                       InfoLine(
                         label: 'SDK user id',
@@ -356,19 +355,23 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                         runSpacing: 8,
                         children: [
                           ElevatedButton(
-                            onPressed:
-                                _controller.loadingSos ? null : _handleTriggerSos,
+                            onPressed: _controller.loadingSos
+                                ? null
+                                : _handleTriggerSos,
                             child: const Text('triggerSos(payload)'),
                           ),
                           ElevatedButton(
-                            onPressed:
-                                _controller.loadingSos ? null : _controller.cancelSos,
+                            onPressed: _controller.loadingSos
+                                ? null
+                                : _controller.cancelSos,
                             child: const Text('cancelSos()'),
                           ),
                         ],
                       ),
                       const SizedBox(height: 12),
-                      InfoLine(label: 'Current SOS state', value: _controller.sosState.name),
+                      InfoLine(
+                          label: 'Current SOS state',
+                          value: _controller.sosState.name),
                       InfoLine(
                         label: 'Last SOS event',
                         value: _controller.lastSosEvent.runtimeType.toString(),
@@ -425,8 +428,9 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                       ),
                       const SizedBox(height: 12),
                       ElevatedButton(
-                        onPressed:
-                            _controller.loadingTelemetry ? null : _handlePublishTelemetry,
+                        onPressed: _controller.loadingTelemetry
+                            ? null
+                            : _handlePublishTelemetry,
                         child: const Text('publishTelemetry(sample)'),
                       ),
                       const SizedBox(height: 12),
@@ -434,7 +438,9 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                         label: 'Last published telemetry sample',
                         value: _controller.lastPublishedTelemetrySample == null
                             ? '-'
-                            : _controller.lastPublishedTelemetrySample!.toJson().toString(),
+                            : _controller.lastPublishedTelemetrySample!
+                                .toJson()
+                                .toString(),
                       ),
                       InfoLine(
                         label: 'Pending telemetry',
@@ -477,8 +483,9 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                       ),
                       const SizedBox(height: 12),
                       ElevatedButton(
-                        onPressed:
-                            _controller.loadingContacts ? null : _handleCreateContact,
+                        onPressed: _controller.loadingContacts
+                            ? null
+                            : _handleCreateContact,
                         child: const Text('createEmergencyContact(...)'),
                       ),
                       const SizedBox(height: 12),
@@ -494,7 +501,8 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                           (contact) => ContactListTile(
                             contact: contact,
                             onEdit: () => _showEditContactDialog(contact),
-                            onDelete: () => _controller.deleteContact(contact.id),
+                            onDelete: () =>
+                                _controller.deleteContact(contact.id),
                           ),
                         ),
                     ],
@@ -599,7 +607,8 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                       ),
                       InfoLine(
                         label: 'Lifecycle',
-                        value: _controller.deviceStatus?.lifecycleState.name ?? '-',
+                        value: _controller.deviceStatus?.lifecycleState.name ??
+                            '-',
                       ),
                       InfoLine(
                         label: 'Firmware',
@@ -641,7 +650,9 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                         label: 'Pending telemetry payload',
                         value: bridge.pendingTelemetry == null
                             ? 'None'
-                            : bridge.pendingTelemetry!.payload.toJson().toString(),
+                            : bridge.pendingTelemetry!.payload
+                                .toJson()
+                                .toString(),
                       ),
                       const SizedBox(height: 8),
                       DiagnosticsBox(
@@ -652,12 +663,12 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                                 'signature': bridge.pendingSos!.signature,
                                 'message': bridge.pendingSos!.message,
                                 'position': {
-                                  'latitude':
-                                      bridge.pendingSos!.positionSnapshot.latitude,
+                                  'latitude': bridge
+                                      .pendingSos!.positionSnapshot.latitude,
                                   'longitude': bridge
                                       .pendingSos!.positionSnapshot.longitude,
-                                  'altitude':
-                                      bridge.pendingSos!.positionSnapshot.altitude,
+                                  'altitude': bridge
+                                      .pendingSos!.positionSnapshot.altitude,
                                   'timestamp': bridge
                                       .pendingSos!.positionSnapshot.timestamp
                                       .toIso8601String(),
@@ -743,9 +754,11 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
               children: [
                 ValidationTextField(controller: nameController, label: 'name'),
                 const SizedBox(height: 8),
-                ValidationTextField(controller: phoneController, label: 'phone'),
+                ValidationTextField(
+                    controller: phoneController, label: 'phone'),
                 const SizedBox(height: 8),
-                ValidationTextField(controller: emailController, label: 'email'),
+                ValidationTextField(
+                    controller: emailController, label: 'email'),
                 const SizedBox(height: 8),
                 ValidationTextField(
                   controller: priorityController,

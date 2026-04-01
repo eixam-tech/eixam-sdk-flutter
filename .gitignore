@@ -43,3 +43,7 @@ app.*.map.json
 /android/app/release
 packages/eixam_connect_flutter/build/test_cache/build/fa875cea96ff9eb23bebfb51f104f901.cache.dill.track.dill
 packages/eixam_connect_flutter/build/test_cache/build/fa875cea96ff9eb23bebfb51f104f901.cache.dill.track.dill
+*.dill
+*.dill
+*.zip
+*.dill

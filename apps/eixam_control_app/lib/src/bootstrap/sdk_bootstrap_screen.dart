@@ -42,7 +42,8 @@ class _SdkBootstrapScreenState extends State<SdkBootstrapScreen> {
   }
 
   Future<void> _bootstrapSdk({ValidationBackendConfig? config}) async {
-    final nextConfig = config ?? _activeConfig ?? ValidationBackendConfig.production;
+    final nextConfig =
+        config ?? _activeConfig ?? ValidationBackendConfig.production;
     setState(() {
       _isLoading = true;
       _error = null;

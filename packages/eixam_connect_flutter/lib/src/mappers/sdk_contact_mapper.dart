@@ -13,10 +13,13 @@ class SdkContactMapper {
       email: dto.email,
       priority: dto.priority,
       createdAt: DateTime.parse(
-        dto.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0).toIso8601String(),
+        dto.createdAt ??
+            DateTime.fromMillisecondsSinceEpoch(0).toIso8601String(),
       ).toUtc(),
       updatedAt: DateTime.parse(
-        dto.updatedAt ?? dto.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0).toIso8601String(),
+        dto.updatedAt ??
+            dto.createdAt ??
+            DateTime.fromMillisecondsSinceEpoch(0).toIso8601String(),
       ).toUtc(),
     );
   }

@@ -53,11 +53,19 @@ class MqttSosLifecycleUpdate {
     final normalized = raw.trim().toLowerCase();
     return switch (normalized) {
       'triggered' || 'opened' || 'active' || 'sent' => SosState.sent,
-      'acknowledged' || 'sos_acknowledged' || 'sos.acknowledged' =>
+      'acknowledged' ||
+      'sos_acknowledged' ||
+      'sos.acknowledged' =>
         SosState.acknowledged,
-      'cancelled' || 'canceled' || 'sos_cancelled' || 'sos.cancelled' =>
+      'cancelled' ||
+      'canceled' ||
+      'sos_cancelled' ||
+      'sos.cancelled' =>
         SosState.cancelled,
-      'resolved' || 'closed' || 'sos_resolved' || 'sos.resolved' =>
+      'resolved' ||
+      'closed' ||
+      'sos_resolved' ||
+      'sos.resolved' =>
         SosState.resolved,
       _ => null,
     };

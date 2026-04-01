@@ -33,9 +33,9 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
     final client = MqttServerClient(server, request.clientIdentifier);
     client.logging(on: enableLogging, logPayloads: enableLogging);
     client.keepAlivePeriod = 30;
-    client.port = brokerUri.hasPort ? brokerUri.port : _defaultPortFor(brokerUri);
-    client.useWebSocket =
-        brokerUri.scheme == 'ws' || brokerUri.scheme == 'wss';
+    client.port =
+        brokerUri.hasPort ? brokerUri.port : _defaultPortFor(brokerUri);
+    client.useWebSocket = brokerUri.scheme == 'ws' || brokerUri.scheme == 'wss';
     client.secure = brokerUri.scheme == 'ssl' || brokerUri.scheme == 'tls';
     client.onDisconnected = () {
       final solicited = client.connectionStatus?.disconnectionOrigin ==
@@ -81,8 +81,8 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
         if (publishMessage is! MqttPublishMessage) {
           continue;
         }
-        final payload =
-            MqttUtilities.bytesToStringAsString(publishMessage.payload.message!);
+        final payload = MqttUtilities.bytesToStringAsString(
+            publishMessage.payload.message!);
         _messageController.add(
           SdkMqttIncomingMessage(
             topic: message.topic ?? '',

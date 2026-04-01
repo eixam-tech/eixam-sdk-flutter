@@ -14,6 +14,7 @@ import '../device/device_sos_controller.dart';
 import '../device/ble_debug_registry.dart';
 import '../data/datasources_remote/sdk_session_context.dart';
 import '../data/repositories/telemetry_repository.dart';
+import '../data/repositories/sos_runtime_rehydration_support.dart';
 import 'ble_operational_runtime_bridge.dart';
 import 'ble_auto_reconnect_coordinator.dart';
 import 'ble_sos_notification_payload.dart';
@@ -90,6 +91,7 @@ class EixamConnectSdkImpl
   EixamSession? _session;
   EixamSdkEvent? _lastSosEvent;
   String? _pendingCancelledIncidentId;
+  String? _lastSosRehydrationNote;
   SdkBridgeDiagnostics _bridgeDiagnostics = const SdkBridgeDiagnostics();
   late final BleAutoReconnectCoordinator _bleAutoReconnectCoordinator;
   late final BleOperationalRuntimeBridge _bleOperationalRuntimeBridge;
@@ -143,6 +145,7 @@ class EixamConnectSdkImpl
     if (sessionContext != null) {
       sessionContext!.currentSession = _session;
     }
+    await _rehydrateSosRuntimeState();
     _lastDeviceStatus = await deviceRepository.getDeviceStatus();
     await deviceSosController.getStatus();
     _guidedRescueState = guidedRescueRuntime == null
@@ -243,6 +246,7 @@ class EixamConnectSdkImpl
     if (sessionContext != null) {
       sessionContext!.currentSession = _session;
     }
+    await _rehydrateSosRuntimeState();
     await sessionStore?.save(_session!);
     _emitOperationalDiagnostics();
     final realtime = realtimeClient;
@@ -270,6 +274,7 @@ class EixamConnectSdkImpl
     if (sessionContext != null) {
       sessionContext!.currentSession = refreshed;
     }
+    await _rehydrateSosRuntimeState();
     await sessionStore?.save(refreshed);
     _emitOperationalDiagnostics();
     final realtime = realtimeClient;
@@ -318,12 +323,35 @@ class EixamConnectSdkImpl
   Future<void> clearSession() async {
     _bleOperationalRuntimeBridge.clearPendingOperationalItems();
     _session = null;
+    _lastSosRehydrationNote = null;
     if (sessionContext != null) {
       sessionContext!.currentSession = null;
     }
     await sessionStore?.clear();
     _emitOperationalDiagnostics();
     await realtimeClient.disconnect();
+  }
+
+  Future<void> _rehydrateSosRuntimeState() async {
+    _lastSosRehydrationNote = null;
+
+    if (_session == null) {
+      return;
+    }
+
+    if (sosRepository is! SosRuntimeRehydrationSupport) {
+      return;
+    }
+    final rehydrationRepository = sosRepository as SosRuntimeRehydrationSupport;
+
+    try {
+      final result =
+          await rehydrationRepository.rehydrateRuntimeStateFromBackend();
+      _lastSosRehydrationNote = result.diagnosticNote;
+    } catch (error) {
+      _lastSosRehydrationNote =
+          'SOS rehydration failed before startup completed. Error: $error';
+    }
   }
 
   @override
@@ -1473,8 +1501,7 @@ class EixamConnectSdkImpl
     if (session != null) {
       try {
         telemetryPublishTopic = SdkMqttTopics.telemetryDataFor(session);
-        sosEventTopics = SdkMqttTopics.eventTopicsFor(session).toList()
-          ..sort();
+        sosEventTopics = SdkMqttTopics.eventTopicsFor(session).toList()..sort();
       } on AuthException {
         telemetryPublishTopic = null;
         sosEventTopics = const <String>[];
@@ -1486,6 +1513,7 @@ class EixamConnectSdkImpl
       connectionState: _lastRealtimeConnectionState,
       telemetryPublishTopic: telemetryPublishTopic,
       sosEventTopics: sosEventTopics,
+      sosRehydrationNote: _lastSosRehydrationNote,
       bridge: _bridgeDiagnostics,
     );
   }

@@ -6,13 +6,14 @@ import '../../mappers/local_state_serializers.dart';
 import '../../mappers/sos_incident_mapper.dart';
 import '../datasources_local/shared_prefs_sdk_store.dart';
 import '../datasources_remote/sos_remote_data_source.dart';
+import 'sos_runtime_rehydration_support.dart';
 
 /// SOS repository backed by a remote data source.
 ///
 /// The repository keeps a local state machine for responsive UI updates and can
 /// optionally cache the active incident so the host app restores context after a
 /// process restart.
-class ApiSosRepository implements SosRepository {
+class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
   ApiSosRepository({
     required this.remoteDataSource,
     this.mapper = const SosIncidentMapper(),
@@ -25,7 +26,7 @@ class ApiSosRepository implements SosRepository {
   final SosIncidentMapper mapper;
   final SharedPrefsSdkStore? _localStore;
 
-  final SosStateMachine _stateMachine = SosStateMachine();
+  SosStateMachine _stateMachine = SosStateMachine();
   final StreamController<SosState> _stateController =
       StreamController<SosState>.broadcast();
 
@@ -48,7 +49,7 @@ class ApiSosRepository implements SosRepository {
       (value) => value.name == stateRaw,
       orElse: () => _activeIncident?.state ?? SosState.idle,
     );
-    _emit(restoredState);
+    _setState(restoredState);
   }
 
   @override
@@ -121,17 +122,8 @@ class ApiSosRepository implements SosRepository {
   @override
   Future<SosState> getSosState() async {
     try {
-      final active = await remoteDataSource.getActiveSos();
-      if (active == null) {
-        _activeIncident = null;
-        _emit(SosState.idle);
-        await _persistState();
-        return SosState.idle;
-      }
-      _activeIncident = mapper.toDomain(active);
-      _emit(_activeIncident!.state);
-      await _persistState();
-      return _stateMachine.current;
+      final result = await rehydrateRuntimeStateFromBackend();
+      return result.resultingState;
     } catch (_) {
       return _stateMachine.current;
     }
@@ -140,9 +132,101 @@ class ApiSosRepository implements SosRepository {
   @override
   Stream<SosState> watchSosState() => _stateController.stream;
 
+  @override
+  Future<SosRuntimeRehydrationResult> rehydrateRuntimeStateFromBackend() async {
+    final active = await remoteDataSource.getActiveSos();
+    if (active == null) {
+      _activeIncident = null;
+      _setState(SosState.idle);
+      await _persistState();
+      return const SosRuntimeRehydrationResult(
+        outcome: SosRuntimeRehydrationOutcome.clearedToIdle,
+        resultingState: SosState.idle,
+      );
+    }
+
+    _activeIncident = mapper.toDomain(active);
+    _setState(_activeIncident!.state);
+    await _persistState();
+    return SosRuntimeRehydrationResult(
+      outcome: SosRuntimeRehydrationOutcome.hydratedFromBackend,
+      resultingState: _stateMachine.current,
+    );
+  }
+
   void _emit(SosState state) {
     _stateMachine.transitionTo(state);
     _stateController.add(_stateMachine.current);
+  }
+
+  void _setState(SosState state) {
+    _stateMachine = SosStateMachine();
+    _restoreState(state);
+    _stateController.add(_stateMachine.current);
+  }
+
+  void _restoreState(SosState state) {
+    if (state == SosState.idle) {
+      return;
+    }
+
+    final path = switch (state) {
+      SosState.idle => const <SosState>[],
+      SosState.arming => const <SosState>[SosState.arming],
+      SosState.triggerRequested => const <SosState>[SosState.triggerRequested],
+      SosState.triggeredLocal => const <SosState>[
+          SosState.triggerRequested,
+          SosState.triggeredLocal,
+        ],
+      SosState.sending => const <SosState>[
+          SosState.triggerRequested,
+          SosState.triggeredLocal,
+          SosState.sending,
+        ],
+      SosState.sent => const <SosState>[
+          SosState.triggerRequested,
+          SosState.triggeredLocal,
+          SosState.sending,
+          SosState.sent,
+        ],
+      SosState.acknowledged => const <SosState>[
+          SosState.triggerRequested,
+          SosState.triggeredLocal,
+          SosState.sending,
+          SosState.sent,
+          SosState.acknowledged,
+        ],
+      SosState.cancelRequested => const <SosState>[
+          SosState.triggerRequested,
+          SosState.triggeredLocal,
+          SosState.sending,
+          SosState.sent,
+          SosState.cancelRequested,
+        ],
+      SosState.cancelled => const <SosState>[
+          SosState.triggerRequested,
+          SosState.triggeredLocal,
+          SosState.sending,
+          SosState.sent,
+          SosState.cancelRequested,
+          SosState.cancelled,
+        ],
+      SosState.resolved => const <SosState>[
+          SosState.triggerRequested,
+          SosState.triggeredLocal,
+          SosState.sending,
+          SosState.sent,
+          SosState.resolved,
+        ],
+      SosState.failed => const <SosState>[
+          SosState.triggerRequested,
+          SosState.failed,
+        ],
+    };
+
+    for (final next in path) {
+      _stateMachine.transitionTo(next);
+    }
   }
 
   Future<void> _persistState() async {

@@ -197,6 +197,7 @@ Below is the current status of the SDK by module.
   - API-ready version
 - best-effort location snapshot attachment
 - persisted state support
+- backend SOS rehydration through `GET /v1/sdk/sos` after session/bootstrap
 - defensive bootstrap behavior in demo mode
 
 #### Notes
@@ -204,6 +205,8 @@ Below is the current status of the SDK by module.
 - SOS persistence has already caused bootstrap issues in the past and was stabilized defensively in the demo setup
 - runtime transitions are implemented
 - persisted transitional states required special care
+- on startup or identity refresh, the SDK reconciles local SOS state against the
+  backend authoritative incident endpoint before assuming idle
 
 #### Current maturity
 
@@ -443,6 +446,7 @@ Persistence support exists for:
 - `SharedPreferences`
 - simple serializers
 - local restore during bootstrap where applicable
+- backend reconciliation for SOS when the SDK has an authenticated session
 
 ### Important notes
 

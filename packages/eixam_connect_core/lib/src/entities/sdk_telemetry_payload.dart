@@ -73,7 +73,8 @@ class SdkTelemetryPayload {
     );
   }
 
-  static bool _hasText(String? value) => value != null && value.trim().isNotEmpty;
+  static bool _hasText(String? value) =>
+      value != null && value.trim().isNotEmpty;
 
   static const Object _unset = Object();
 }

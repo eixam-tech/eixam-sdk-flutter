@@ -13,6 +13,7 @@ export 'src/data/repositories/local_notifications_repository.dart';
 export 'src/data/repositories/mqtt_operational_sos_repository.dart';
 export 'src/data/repositories/mqtt_telemetry_repository.dart';
 export 'src/data/repositories/platform_permissions_repository.dart';
+export 'src/data/repositories/sos_runtime_rehydration_support.dart';
 export 'src/sdk/api_sdk_factory.dart';
 export 'src/sdk/ble_auto_reconnect_coordinator.dart';
 export 'src/sdk/death_man_controller.dart';

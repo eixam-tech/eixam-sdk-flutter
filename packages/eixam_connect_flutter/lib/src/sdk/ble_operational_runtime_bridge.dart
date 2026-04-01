@@ -47,7 +47,8 @@ class BleOperationalRuntimeBridge {
   StreamSubscription<RealtimeConnectionState>? _connectionSub;
   StreamSubscription<BleIncomingEvent>? _bleSub;
   StreamSubscription<RealtimeEvent>? _realtimeSub;
-  RealtimeConnectionState _connectionState = RealtimeConnectionState.disconnected;
+  RealtimeConnectionState _connectionState =
+      RealtimeConnectionState.disconnected;
   _PendingTelemetryPublish? _pendingTelemetry;
   _PendingSosPublish? _pendingSos;
   bool _flushInProgress = false;
@@ -332,8 +333,7 @@ class BleOperationalRuntimeBridge {
             _diagnostics.copyWith(
               lastDeviceCommandSent:
                   'SOS_ACK_RELAY(${_formatNodeId(relayNodeId)})',
-              lastDecision:
-                  'Backend confirmation applied: SOS_ACK_RELAY sent',
+              lastDecision: 'Backend confirmation applied: SOS_ACK_RELAY sent',
             ),
           );
           break;

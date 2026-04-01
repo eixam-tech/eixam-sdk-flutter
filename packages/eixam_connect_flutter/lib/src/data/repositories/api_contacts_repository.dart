@@ -41,8 +41,7 @@ class ApiContactsRepository implements ContactsRepository {
   @override
   Future<List<EmergencyContact>> listEmergencyContacts() async {
     final items = await remoteDataSource.listContacts();
-    _contacts =
-        items.map(mapper.toDomain).toList(growable: false);
+    _contacts = items.map(mapper.toDomain).toList(growable: false);
     _emit();
     return _contacts;
   }
@@ -57,7 +56,8 @@ class ApiContactsRepository implements ContactsRepository {
   }
 
   @override
-  Future<EmergencyContact> updateEmergencyContact(EmergencyContact contact) async {
+  Future<EmergencyContact> updateEmergencyContact(
+      EmergencyContact contact) async {
     final updated = mapper.toDomain(
       await remoteDataSource.replaceContact(
         id: contact.id,
@@ -92,5 +92,6 @@ class ApiContactsRepository implements ContactsRepository {
     return List<EmergencyContact>.unmodifiable(next);
   }
 
-  void _emit() => _controller.add(List<EmergencyContact>.unmodifiable(_contacts));
+  void _emit() =>
+      _controller.add(List<EmergencyContact>.unmodifiable(_contacts));
 }

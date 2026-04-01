@@ -14,8 +14,7 @@ typedef SdkMqttTransportFactory = SdkMqttTransport Function(
   SdkMqttConnectRequest request,
 );
 
-class MqttRealtimeClient
-    implements RealtimeClient, OperationalRealtimeClient {
+class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
   MqttRealtimeClient({
     required this.config,
     required this.sessionContext,
