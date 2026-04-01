@@ -21,6 +21,12 @@ This package includes a BLE-oriented runtime abstraction used by the device modu
 - `sosDeviceEvent`: 4-byte SOS device control event
 - `unknownProtocolPacket`: payload did not match a currently supported protocol packet
 
+## Aggregate telemetry mapping
+- Aggregate TEL fragments are reassembled in `BleDeviceRuntimeProvider` and then handed to the operational bridge as `telAggregateComplete`.
+- The bridge publishes aggregate telemetry only when the completed payload is safely mappable to the current backend telemetry contract.
+- Today that means: a completed aggregate payload that is exactly one classic 10-byte TEL packet.
+- Cluster aggregate blobs that carry richer or multi-record data are kept internal to the runtime for now and produce diagnostics instead of guessed backend publishes.
+
 ## Preferred device and reconnect behavior
 - The SDK stores one preferred BLE device after a successful full connection.
 - On SDK startup and app resume, the SDK attempts to reconnect to that preferred device when manual disconnect is not active.

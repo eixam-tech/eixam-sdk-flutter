@@ -8,6 +8,8 @@ import '../data/repositories/telemetry_repository.dart';
 import '../device/ble_debug_registry.dart';
 import '../device/ble_incoming_event.dart';
 import '../device/device_sos_controller.dart';
+import '../device/eixam_ble_protocol.dart';
+import '../device/eixam_tel_packet.dart';
 
 class BleOperationalRuntimeBridge {
   BleOperationalRuntimeBridge({
@@ -129,11 +131,22 @@ class BleOperationalRuntimeBridge {
       case BleIncomingEventType.telPosition:
         await _publishTelemetryIfValid(event);
         return;
+      case BleIncomingEventType.telAggregateFragment:
+        _emitDiagnostics(
+          _diagnostics.copyWith(
+            lastDecision: 'TEL aggregate fragment buffered in BLE runtime',
+          ),
+        );
+        BleDebugRegistry.instance.recordEvent(
+          'BLE operational bridge observed TEL aggregate fragment -> awaiting_completion deviceId=${event.deviceId}',
+        );
+        return;
+      case BleIncomingEventType.telAggregateComplete:
+        await _publishAggregateTelemetryIfMappable(event);
+        return;
       case BleIncomingEventType.sosMeshPacket:
         await _publishSosIfValid(event);
         return;
-      case BleIncomingEventType.telAggregateFragment:
-      case BleIncomingEventType.telAggregateComplete:
       case BleIncomingEventType.guidedRescueStatus:
       case BleIncomingEventType.sosDeviceEvent:
       case BleIncomingEventType.unknownProtocolPacket:
@@ -146,10 +159,81 @@ class BleOperationalRuntimeBridge {
     if (packet == null) {
       return;
     }
+    await _publishTelemetryPacket(
+      event: event,
+      packet: packet,
+      signature: 'tel:${event.deviceId}:${packet.rawHex}',
+      summary:
+          'device=${event.deviceId} lat=${packet.position.latitude} lng=${packet.position.longitude} raw=${packet.rawHex}',
+    );
+  }
+
+  Future<void> _publishAggregateTelemetryIfMappable(BleIncomingEvent event) async {
+    final aggregatePayload = event.aggregatePayload;
+    if (aggregatePayload == null || aggregatePayload.isEmpty) {
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          lastDecision: 'TEL aggregate skipped: missing completed payload',
+        ),
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'BLE operational bridge skipped aggregate telemetry -> reason=missing_payload deviceId=${event.deviceId}',
+      );
+      return;
+    }
+
+    final aggregateHex = EixamBleProtocol.hex(aggregatePayload);
     _emitDiagnostics(
       _diagnostics.copyWith(
         lastBleTelemetryEventSummary:
-            'device=${event.deviceId} lat=${packet.position.latitude} lng=${packet.position.longitude} raw=${packet.rawHex}',
+            'device=${event.deviceId} aggregateLen=${aggregatePayload.length} raw=$aggregateHex',
+      ),
+    );
+
+    if (aggregatePayload.length != EixamBleProtocol.telPacketLength) {
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          lastDecision:
+              'TEL aggregate completed but not published: aggregate payload does not fit current telemetry contract',
+        ),
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'BLE operational bridge skipped aggregate telemetry -> reason=unsupported_contract deviceId=${event.deviceId} aggregateLen=${aggregatePayload.length}',
+      );
+      return;
+    }
+
+    final packet = EixamTelPacket.tryParse(aggregatePayload);
+    if (packet == null) {
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          lastDecision: 'TEL aggregate skipped: completed payload is invalid',
+        ),
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'BLE operational bridge skipped aggregate telemetry -> reason=invalid_completed_payload deviceId=${event.deviceId}',
+      );
+      return;
+    }
+
+    await _publishTelemetryPacket(
+      event: event,
+      packet: packet,
+      signature: 'tel-aggregate:${event.deviceId}:${packet.rawHex}',
+      summary:
+          'device=${event.deviceId} aggregateLen=${aggregatePayload.length} lat=${packet.position.latitude} lng=${packet.position.longitude} raw=${packet.rawHex}',
+    );
+  }
+
+  Future<void> _publishTelemetryPacket({
+    required BleIncomingEvent event,
+    required EixamTelPacket packet,
+    required String signature,
+    required String summary,
+  }) async {
+    _emitDiagnostics(
+      _diagnostics.copyWith(
+        lastBleTelemetryEventSummary: summary,
       ),
     );
 
@@ -174,8 +258,6 @@ class BleOperationalRuntimeBridge {
       );
       return;
     }
-
-    final signature = 'tel:${event.deviceId}:${packet.rawHex}';
     if (!_registerSignature(_recentTelemetrySignatures, signature)) {
       _emitDiagnostics(
         _diagnostics.copyWith(

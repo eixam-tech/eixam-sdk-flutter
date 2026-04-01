@@ -430,7 +430,17 @@ Therefore:
 
 TEL aggregate fragments are decoded and reassembled in the BLE runtime.
 
-However, the current bridge does not yet translate aggregate-complete payloads into operational telemetry publish because a final aggregate-to-telemetry contract is not yet documented as a stable backend integration rule.
+Current bridge behavior is explicit:
+
+- `telAggregateFragment` is observed and logged but never published before completion
+- `telAggregateComplete` is published to backend telemetry only when the completed
+  aggregate payload is itself a single classic 10-byte TEL packet that fits the
+  existing public telemetry contract
+- larger cluster-style aggregate blobs such as `0xC2` remain unsupported for
+  backend telemetry publish in the current SDK because they are not representable
+  in the existing `SdkTelemetryPayload` contract without inventing semantics
+- unsupported aggregate-complete payloads are not dropped silently; the bridge
+  records a clear diagnostics decision and BLE debug event instead
 
 ### Offline Persistence
 

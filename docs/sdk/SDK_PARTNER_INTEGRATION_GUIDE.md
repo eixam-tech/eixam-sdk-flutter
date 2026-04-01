@@ -317,4 +317,6 @@ The host app should call the SDK facade and observe streams. It should not recre
 
 - BLE SOS relay-vs-origin semantics are still conservative in the current runtime bridge
 - BLE SOS packets without coordinates are not publishable as backend SOS trigger
-- TEL aggregate payload publish rules are not yet exposed as a stable partner contract
+- TEL aggregate payload publish is currently limited to aggregate-complete blobs
+  that decode cleanly as one classic 10-byte TEL packet; richer cluster
+  aggregates are intentionally not exposed as a stable partner contract yet

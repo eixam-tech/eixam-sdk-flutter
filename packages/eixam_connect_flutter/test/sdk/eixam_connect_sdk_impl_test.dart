@@ -1628,6 +1628,45 @@ void main() {
       }
     });
 
+    test('BLE bridge publishes telemetry from supported TEL aggregate payloads',
+        () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final connectionStates =
+          StreamController<RealtimeConnectionState>.broadcast();
+      final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      EixamSession? session = const EixamSession.signed(
+        appId: 'app-demo',
+        externalUserId: 'external-123',
+        userHash: 'deadbeef',
+      );
+      final bridge = BleOperationalRuntimeBridge(
+        bleIncomingEvents: bleEvents.stream,
+        connectionStates: connectionStates.stream,
+        realtimeEvents: realtimeEvents.stream,
+        telemetryRepository: telemetryRepository,
+        sosRepository: sosRepository,
+        deviceSosController: deviceSosController,
+        sessionProvider: () => session,
+      )..start();
+
+      try {
+        connectionStates.add(RealtimeConnectionState.connected);
+        bleEvents.add(_bridgeAggregateTelCompleteEvent(signature: 'agg-tel-1'));
+        await Future<void>.delayed(Duration.zero);
+
+        expect(telemetryRepository.publishedPayloads, hasLength(1));
+        expect(
+          telemetryRepository.publishedPayloads.single.deviceId,
+          'device-1',
+        );
+      } finally {
+        await bridge.dispose();
+        await bleEvents.close();
+        await connectionStates.close();
+        await realtimeEvents.close();
+      }
+    });
+
     test('BLE bridge publishes SOS from SOS packets with position', () async {
       final bleEvents = StreamController<BleIncomingEvent>.broadcast();
       final connectionStates =
@@ -1692,6 +1731,87 @@ void main() {
 
         expect(telemetryRepository.publishedPayloads, isEmpty);
         expect(sosRepository.triggerCallCount, 0);
+      } finally {
+        await bridge.dispose();
+        await bleEvents.close();
+        await connectionStates.close();
+        await realtimeEvents.close();
+      }
+    });
+
+    test('BLE bridge does not publish incomplete TEL aggregate fragments',
+        () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final connectionStates =
+          StreamController<RealtimeConnectionState>.broadcast();
+      final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      EixamSession? session = const EixamSession.signed(
+        appId: 'app-demo',
+        externalUserId: 'external-123',
+        userHash: 'deadbeef',
+      );
+      final bridge = BleOperationalRuntimeBridge(
+        bleIncomingEvents: bleEvents.stream,
+        connectionStates: connectionStates.stream,
+        realtimeEvents: realtimeEvents.stream,
+        telemetryRepository: telemetryRepository,
+        sosRepository: sosRepository,
+        deviceSosController: deviceSosController,
+        sessionProvider: () => session,
+      )..start();
+
+      try {
+        connectionStates.add(RealtimeConnectionState.connected);
+        bleEvents.add(_bridgeAggregateTelFragmentEvent(signature: 'agg-frag-1'));
+        await Future<void>.delayed(Duration.zero);
+
+        expect(telemetryRepository.publishedPayloads, isEmpty);
+        expect(
+          bridge.currentDiagnostics.lastDecision,
+          'TEL aggregate fragment buffered in BLE runtime',
+        );
+      } finally {
+        await bridge.dispose();
+        await bleEvents.close();
+        await connectionStates.close();
+        await realtimeEvents.close();
+      }
+    });
+
+    test(
+        'BLE bridge leaves an explicit diagnostic when aggregate payload is unsupported',
+        () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final connectionStates =
+          StreamController<RealtimeConnectionState>.broadcast();
+      final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      EixamSession? session = const EixamSession.signed(
+        appId: 'app-demo',
+        externalUserId: 'external-123',
+        userHash: 'deadbeef',
+      );
+      final bridge = BleOperationalRuntimeBridge(
+        bleIncomingEvents: bleEvents.stream,
+        connectionStates: connectionStates.stream,
+        realtimeEvents: realtimeEvents.stream,
+        telemetryRepository: telemetryRepository,
+        sosRepository: sosRepository,
+        deviceSosController: deviceSosController,
+        sessionProvider: () => session,
+      )..start();
+
+      try {
+        connectionStates.add(RealtimeConnectionState.connected);
+        bleEvents.add(
+          _bridgeUnsupportedAggregateTelCompleteEvent(signature: 'agg-big-1'),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(telemetryRepository.publishedPayloads, isEmpty);
+        expect(
+          bridge.currentDiagnostics.lastDecision,
+          'TEL aggregate completed but not published: aggregate payload does not fit current telemetry contract',
+        );
       } finally {
         await bridge.dispose();
         await bleEvents.close();
@@ -2631,6 +2751,60 @@ BleIncomingEvent _bridgeSosWithoutPositionEvent({required String signature}) {
       hasPosition: false,
       sequence: 1,
     ),
+  );
+}
+
+BleIncomingEvent _bridgeAggregateTelCompleteEvent({required String signature}) {
+  return BleIncomingEvent(
+    deviceId: 'device-1',
+    type: BleIncomingEventType.telAggregateComplete,
+    channel: EixamBleChannel.tel,
+    payload: const <int>[0xD0, 0x0A, 0x00, 0x00, 0x00, 0x01],
+    payloadHex: signature,
+    source: DeviceSosTransitionSource.device,
+    receivedAt: DateTime.utc(2026, 3, 31, 10),
+    aggregatePayload: const <int>[
+      0x34,
+      0x12,
+      0x01,
+      0x02,
+      0x03,
+      0x04,
+      0x05,
+      0x06,
+      0x87,
+      0x65,
+    ],
+  );
+}
+
+BleIncomingEvent _bridgeAggregateTelFragmentEvent({required String signature}) {
+  return BleIncomingEvent(
+    deviceId: 'device-1',
+    type: BleIncomingEventType.telAggregateFragment,
+    channel: EixamBleChannel.tel,
+    payload: const <int>[0xD0, 0x14, 0x00, 0x00, 0x00, 0xAA],
+    payloadHex: signature,
+    source: DeviceSosTransitionSource.device,
+    receivedAt: DateTime.utc(2026, 3, 31, 10),
+    telFragment: EixamTelFragment.tryParse(
+      const <int>[0xD0, 0x14, 0x00, 0x00, 0x00, 0xAA],
+    ),
+  );
+}
+
+BleIncomingEvent _bridgeUnsupportedAggregateTelCompleteEvent({
+  required String signature,
+}) {
+  return BleIncomingEvent(
+    deviceId: 'device-1',
+    type: BleIncomingEventType.telAggregateComplete,
+    channel: EixamBleChannel.tel,
+    payload: const <int>[0xD0, 0x15, 0x00, 0x00, 0x00, 0x01],
+    payloadHex: signature,
+    source: DeviceSosTransitionSource.device,
+    receivedAt: DateTime.utc(2026, 3, 31, 10),
+    aggregatePayload: List<int>.generate(21, (index) => index),
   );
 }
 
