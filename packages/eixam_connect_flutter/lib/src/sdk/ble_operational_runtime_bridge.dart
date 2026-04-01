@@ -9,6 +9,7 @@ import '../device/ble_debug_registry.dart';
 import '../device/ble_incoming_event.dart';
 import '../device/device_sos_controller.dart';
 import '../device/eixam_ble_protocol.dart';
+import '../device/eixam_sos_packet.dart';
 import '../device/eixam_tel_packet.dart';
 
 class BleOperationalRuntimeBridge {
@@ -301,10 +302,11 @@ class BleOperationalRuntimeBridge {
     final packet = event.sosPacket;
     final position = packet?.position;
     if (packet != null) {
+      final role = _incomingSosRoleFrom(packet);
       _emitDiagnostics(
         _diagnostics.copyWith(
           lastBleSosEventSummary:
-              'device=${event.deviceId} relayCount=${packet.relayCount} raw=${packet.rawHex}',
+              'device=${event.deviceId} role=${role.label} nodeId=${_formatNodeId(packet.nodeId)} relayCount=${packet.relayCount} raw=${packet.rawHex}',
         ),
       );
     }
@@ -341,16 +343,20 @@ class BleOperationalRuntimeBridge {
       source: DeliveryMode.mesh,
     );
     if (!_canPublishOperationally) {
+      final message = _sosRuntimeMessageFor(
+        event: event,
+        packet: packet,
+      );
       _pendingSos = _PendingSosPublish(
         signature: signature,
-        message: 'BLE SOS received from runtime device ${event.deviceId}',
+        message: message,
         positionSnapshot: positionSnapshot,
       );
       _emitDiagnostics(
         _diagnostics.copyWith(
           pendingSos: PendingSosDiagnostics(
             signature: signature,
-            message: 'BLE SOS received from runtime device ${event.deviceId}',
+            message: message,
             positionSnapshot: positionSnapshot,
           ),
           lastDecision: 'SOS buffered: waiting for operational connectivity',
@@ -364,7 +370,10 @@ class BleOperationalRuntimeBridge {
 
     await _publishSosPayload(
       signature: signature,
-      message: 'BLE SOS received from runtime device ${event.deviceId}',
+      message: _sosRuntimeMessageFor(
+        event: event,
+        packet: packet,
+      ),
       positionSnapshot: positionSnapshot,
       allowPendingFallback: true,
       relayCount: packet.relayCount,
@@ -386,6 +395,9 @@ class BleOperationalRuntimeBridge {
     }
 
     try {
+      final ackContext = _SosAckRoutingContext.fromStatus(
+        deviceSosController.currentStatus,
+      );
       switch (confirmation.kind) {
         case _BleBackendConfirmationKind.positionConfirmed:
           await deviceSosController.sendPositionConfirmed();
@@ -397,26 +409,15 @@ class BleOperationalRuntimeBridge {
           );
           break;
         case _BleBackendConfirmationKind.sosAcknowledged:
-          await deviceSosController.acknowledgeSos();
-          _emitDiagnostics(
-            _diagnostics.copyWith(
-              lastDeviceCommandSent: 'SOS_ACK',
-              lastDecision: 'Backend confirmation applied: SOS_ACK sent',
-            ),
+          await _applySosAcknowledgment(
+            confirmation: confirmation,
+            context: ackContext,
           );
           break;
         case _BleBackendConfirmationKind.sosRelayAcknowledged:
-          final relayNodeId = confirmation.relayNodeId;
-          if (relayNodeId == null) {
-            return;
-          }
-          await deviceSosController.sendAckRelay(nodeId: relayNodeId);
-          _emitDiagnostics(
-            _diagnostics.copyWith(
-              lastDeviceCommandSent:
-                  'SOS_ACK_RELAY(${_formatNodeId(relayNodeId)})',
-              lastDecision: 'Backend confirmation applied: SOS_ACK_RELAY sent',
-            ),
+          await _applySosRelayAcknowledgment(
+            confirmation: confirmation,
+            context: ackContext,
           );
           break;
       }
@@ -428,6 +429,100 @@ class BleOperationalRuntimeBridge {
         'BLE operational bridge backend confirmation failed -> signature=$signature error=$error',
       );
     }
+  }
+
+  Future<void> _applySosAcknowledgment({
+    required _BleBackendConfirmation confirmation,
+    required _SosAckRoutingContext context,
+  }) async {
+    switch (context.route) {
+      case _SosAckRoute.localOrigin:
+        await deviceSosController.acknowledgeSos();
+        _emitDiagnostics(
+          _diagnostics.copyWith(
+            lastDeviceCommandSent: 'SOS_ACK',
+            lastDecision: 'Backend confirmation applied: SOS_ACK sent',
+          ),
+        );
+        return;
+      case _SosAckRoute.relayOrigin:
+        final relayNodeId = context.nodeId;
+        if (relayNodeId == null) {
+          _emitDiagnostics(
+            _diagnostics.copyWith(
+              lastDecision:
+                  'Backend SOS acknowledgment ignored: relay context is missing the origin node id',
+            ),
+          );
+          return;
+        }
+        await deviceSosController.sendAckRelay(nodeId: relayNodeId);
+        _emitDiagnostics(
+          _diagnostics.copyWith(
+            lastDeviceCommandSent:
+                'SOS_ACK_RELAY(${_formatNodeId(relayNodeId)})',
+            lastDecision:
+                'Backend SOS acknowledgment transformed to SOS_ACK_RELAY using active relay context',
+          ),
+        );
+        return;
+      case _SosAckRoute.none:
+        _emitDiagnostics(
+          _diagnostics.copyWith(
+            lastDecision:
+                'Backend SOS acknowledgment ignored: ${context.reason}',
+          ),
+        );
+        return;
+    }
+  }
+
+  Future<void> _applySosRelayAcknowledgment({
+    required _BleBackendConfirmation confirmation,
+    required _SosAckRoutingContext context,
+  }) async {
+    if (context.route != _SosAckRoute.relayOrigin) {
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          lastDecision:
+              'Backend relay acknowledgment ignored: ${context.reason}',
+        ),
+      );
+      return;
+    }
+
+    final activeRelayNodeId = context.nodeId;
+    final requestedRelayNodeId = confirmation.relayNodeId ?? activeRelayNodeId;
+    if (requestedRelayNodeId == null) {
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          lastDecision:
+              'Backend relay acknowledgment ignored: relay node id is missing',
+        ),
+      );
+      return;
+    }
+
+    if (activeRelayNodeId != null && requestedRelayNodeId != activeRelayNodeId) {
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          lastDecision:
+              'Backend relay acknowledgment ignored: relay node id does not match the active relay SOS context',
+        ),
+      );
+      return;
+    }
+
+    await deviceSosController.sendAckRelay(nodeId: requestedRelayNodeId);
+    _emitDiagnostics(
+      _diagnostics.copyWith(
+        lastDeviceCommandSent:
+            'SOS_ACK_RELAY(${_formatNodeId(requestedRelayNodeId)})',
+        lastDecision: confirmation.relayNodeId == null
+            ? 'Backend relay acknowledgment applied using active relay context node id'
+            : 'Backend confirmation applied: SOS_ACK_RELAY sent',
+      ),
+    );
   }
 
   bool _hasMinimumTelemetry(SdkTelemetryPayload payload) {
@@ -654,12 +749,47 @@ class BleOperationalRuntimeBridge {
     final normalized = nodeId & 0xFFFF;
     return '0x${normalized.toRadixString(16).padLeft(4, '0')}';
   }
+
+  _IncomingSosRole _incomingSosRoleFrom(EixamSosPacket packet) {
+    if (packet.relayCount > 0) {
+      return _IncomingSosRole.relayOrigin;
+    }
+    return _IncomingSosRole.localOrigin;
+  }
+
+  String _sosRuntimeMessageFor({
+    required BleIncomingEvent event,
+    required EixamSosPacket packet,
+  }) {
+    final role = _incomingSosRoleFrom(packet);
+    return switch (role) {
+      _IncomingSosRole.localOrigin =>
+        'BLE SOS received from runtime device ${event.deviceId}',
+      _IncomingSosRole.relayOrigin =>
+        'BLE relay SOS received for origin ${_formatNodeId(packet.nodeId)} via runtime device ${event.deviceId}',
+    };
+  }
 }
 
 enum _BleBackendConfirmationKind {
   positionConfirmed,
   sosAcknowledged,
   sosRelayAcknowledged,
+}
+
+enum _IncomingSosRole {
+  localOrigin('local_origin'),
+  relayOrigin('relay_origin');
+
+  const _IncomingSosRole(this.label);
+
+  final String label;
+}
+
+enum _SosAckRoute {
+  localOrigin,
+  relayOrigin,
+  none,
 }
 
 class _PendingTelemetryPublish {
@@ -804,5 +934,60 @@ class _BleBackendConfirmation {
       }
     }
     return false;
+  }
+}
+
+class _SosAckRoutingContext {
+  const _SosAckRoutingContext({
+    required this.route,
+    required this.reason,
+    this.nodeId,
+  });
+
+  final _SosAckRoute route;
+  final String reason;
+  final int? nodeId;
+
+  static _SosAckRoutingContext fromStatus(DeviceSosStatus status) {
+    if (status.state != DeviceSosState.active) {
+      return _SosAckRoutingContext(
+        route: _SosAckRoute.none,
+        reason: 'no active device SOS is in progress',
+        nodeId: status.nodeId,
+      );
+    }
+
+    if (status.triggerOrigin == DeviceSosTransitionSource.app) {
+      return const _SosAckRoutingContext(
+        route: _SosAckRoute.localOrigin,
+        reason: 'active SOS was triggered locally by the app',
+      );
+    }
+
+    if (status.triggerOrigin == DeviceSosTransitionSource.device) {
+      final relayCount = status.relayCount ?? 0;
+      if (relayCount > 0) {
+        if (status.nodeId == null) {
+          return const _SosAckRoutingContext(
+            route: _SosAckRoute.none,
+            reason: 'active relay SOS is missing the origin node id',
+          );
+        }
+        return _SosAckRoutingContext(
+          route: _SosAckRoute.relayOrigin,
+          reason: 'active SOS is a relayed incident',
+          nodeId: status.nodeId,
+        );
+      }
+      return const _SosAckRoutingContext(
+        route: _SosAckRoute.localOrigin,
+        reason: 'active SOS originated on the current device',
+      );
+    }
+
+    return const _SosAckRoutingContext(
+      route: _SosAckRoute.none,
+      reason: 'SOS origin is not known well enough to route backend acknowledgment',
+    );
   }
 }

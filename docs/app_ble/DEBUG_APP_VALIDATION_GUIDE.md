@@ -317,7 +317,8 @@ Look for:
 ## Known Current Limitations
 
 - BLE SOS packets without coordinates are not currently publishable as backend SOS trigger
-- relay-vs-origin SOS semantics are still conservative and depend on backend event clarity
+- relay ACK routing now follows active runtime SOS context:
+  local-origin SOS expects `SOS_ACK`, relay-origin SOS expects `SOS_ACK_RELAY(nodeId)`, and mismatched relay ACK events are ignored with diagnostics
 - offline resilience is in-memory only for this iteration
 - telemetry is latest-sample-wins, not full queued replay
 

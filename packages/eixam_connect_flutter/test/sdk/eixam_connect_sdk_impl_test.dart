@@ -1820,7 +1820,7 @@ void main() {
       }
     });
 
-    test('BLE bridge applies backend confirmations to device commands',
+    test('BLE bridge applies backend confirmations to local-origin SOS commands',
         () async {
       final bleEvents = StreamController<BleIncomingEvent>.broadcast();
       final connectionStates =
@@ -1870,6 +1870,130 @@ void main() {
             },
           ),
         );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(commands.map((command) => command.opcode), contains(0x03));
+        expect(commands.map((command) => command.opcode), contains(0x07));
+        expect(commands.map((command) => command.opcode), isNot(contains(0x08)));
+      } finally {
+        await bridge.dispose();
+        await controller.dispose();
+        await bleEvents.close();
+        await connectionStates.close();
+        await realtimeEvents.close();
+      }
+    });
+
+    test(
+        'BLE bridge transforms backend SOS ack into SOS_ACK_RELAY for active relay SOS context',
+        () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final connectionStates =
+          StreamController<RealtimeConnectionState>.broadcast();
+      final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      final commands = <EixamDeviceCommand>[];
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 35),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      EixamSession? session = const EixamSession.signed(
+        appId: 'app-demo',
+        externalUserId: 'external-123',
+        userHash: 'deadbeef',
+      );
+      await controller.attach(
+        commandWriter: (command) async {
+          commands.add(command);
+        },
+      );
+      final bridge = BleOperationalRuntimeBridge(
+        bleIncomingEvents: bleEvents.stream,
+        connectionStates: connectionStates.stream,
+        realtimeEvents: realtimeEvents.stream,
+        telemetryRepository: telemetryRepository,
+        sosRepository: sosRepository,
+        deviceSosController: controller,
+        sessionProvider: () => session,
+      )..start();
+
+      try {
+        connectionStates.add(RealtimeConnectionState.connected);
+        controller.handleIncomingSosPacket(
+          _relayedSosPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 70));
+
+        realtimeEvents.add(
+          RealtimeEvent(
+            type: 'sos_ack',
+            timestamp: DateTime.utc(2026, 3, 31, 10, 1),
+            payload: const <String, dynamic>{
+              'type': 'sos_ack',
+              'incidentId': 'sos-relay-1',
+            },
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(commands.map((command) => command.opcode), contains(0x08));
+        expect(
+          commands.where((command) => command.opcode == 0x08).single.bytes,
+          <int>[0x08, 0x34, 0x12],
+        );
+        expect(
+          bridge.currentDiagnostics.lastDecision,
+          'Backend SOS acknowledgment transformed to SOS_ACK_RELAY using active relay context',
+        );
+      } finally {
+        await bridge.dispose();
+        await controller.dispose();
+        await bleEvents.close();
+        await connectionStates.close();
+        await realtimeEvents.close();
+      }
+    });
+
+    test(
+        'BLE bridge accepts explicit relay ack only when it matches the active relay SOS context',
+        () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final connectionStates =
+          StreamController<RealtimeConnectionState>.broadcast();
+      final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      final commands = <EixamDeviceCommand>[];
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 35),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      EixamSession? session = const EixamSession.signed(
+        appId: 'app-demo',
+        externalUserId: 'external-123',
+        userHash: 'deadbeef',
+      );
+      await controller.attach(
+        commandWriter: (command) async {
+          commands.add(command);
+        },
+      );
+      final bridge = BleOperationalRuntimeBridge(
+        bleIncomingEvents: bleEvents.stream,
+        connectionStates: connectionStates.stream,
+        realtimeEvents: realtimeEvents.stream,
+        telemetryRepository: telemetryRepository,
+        sosRepository: sosRepository,
+        deviceSosController: controller,
+        sessionProvider: () => session,
+      )..start();
+
+      try {
+        connectionStates.add(RealtimeConnectionState.connected);
+        controller.handleIncomingSosPacket(
+          _relayedSosPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 70));
+
         realtimeEvents.add(
           RealtimeEvent(
             type: 'sos_ack_relay',
@@ -1882,9 +2006,136 @@ void main() {
         );
         await Future<void>.delayed(Duration.zero);
 
-        expect(commands.map((command) => command.opcode), contains(0x03));
-        expect(commands.map((command) => command.opcode), contains(0x07));
         expect(commands.map((command) => command.opcode), contains(0x08));
+      } finally {
+        await bridge.dispose();
+        await controller.dispose();
+        await bleEvents.close();
+        await connectionStates.close();
+        await realtimeEvents.close();
+      }
+    });
+
+    test(
+        'BLE bridge ignores explicit relay ack when active SOS context is local-origin',
+        () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final connectionStates =
+          StreamController<RealtimeConnectionState>.broadcast();
+      final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      final commands = <EixamDeviceCommand>[];
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 35),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      EixamSession? session = const EixamSession.signed(
+        appId: 'app-demo',
+        externalUserId: 'external-123',
+        userHash: 'deadbeef',
+      );
+      await controller.attach(
+        commandWriter: (command) async {
+          commands.add(command);
+        },
+      );
+      final bridge = BleOperationalRuntimeBridge(
+        bleIncomingEvents: bleEvents.stream,
+        connectionStates: connectionStates.stream,
+        realtimeEvents: realtimeEvents.stream,
+        telemetryRepository: telemetryRepository,
+        sosRepository: sosRepository,
+        deviceSosController: controller,
+        sessionProvider: () => session,
+      )..start();
+
+      try {
+        connectionStates.add(RealtimeConnectionState.connected);
+        await controller.triggerSos();
+        await controller.confirmSos();
+
+        realtimeEvents.add(
+          RealtimeEvent(
+            type: 'sos_ack_relay',
+            timestamp: DateTime.utc(2026, 3, 31, 10, 2),
+            payload: const <String, dynamic>{
+              'type': 'sos_ack_relay',
+              'relayNodeId': 0x1234,
+            },
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(commands.map((command) => command.opcode), isNot(contains(0x08)));
+        expect(
+          bridge.currentDiagnostics.lastDecision,
+          'Backend relay acknowledgment ignored: active SOS was triggered locally by the app',
+        );
+      } finally {
+        await bridge.dispose();
+        await controller.dispose();
+        await bleEvents.close();
+        await connectionStates.close();
+        await realtimeEvents.close();
+      }
+    });
+
+    test(
+        'BLE bridge ignores relay ack when backend relay node id does not match the active relay SOS context',
+        () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final connectionStates =
+          StreamController<RealtimeConnectionState>.broadcast();
+      final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      final commands = <EixamDeviceCommand>[];
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 35),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      EixamSession? session = const EixamSession.signed(
+        appId: 'app-demo',
+        externalUserId: 'external-123',
+        userHash: 'deadbeef',
+      );
+      await controller.attach(
+        commandWriter: (command) async {
+          commands.add(command);
+        },
+      );
+      final bridge = BleOperationalRuntimeBridge(
+        bleIncomingEvents: bleEvents.stream,
+        connectionStates: connectionStates.stream,
+        realtimeEvents: realtimeEvents.stream,
+        telemetryRepository: telemetryRepository,
+        sosRepository: sosRepository,
+        deviceSosController: controller,
+        sessionProvider: () => session,
+      )..start();
+
+      try {
+        connectionStates.add(RealtimeConnectionState.connected);
+        controller.handleIncomingSosPacket(
+          _relayedSosPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 70));
+
+        realtimeEvents.add(
+          RealtimeEvent(
+            type: 'sos_ack_relay',
+            timestamp: DateTime.utc(2026, 3, 31, 10, 2),
+            payload: const <String, dynamic>{
+              'type': 'sos_ack_relay',
+              'relayNodeId': 0x9999,
+            },
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(commands.map((command) => command.opcode), isNot(contains(0x08)));
+        expect(
+          bridge.currentDiagnostics.lastDecision,
+          'Backend relay acknowledgment ignored: relay node id does not match the active relay SOS context',
+        );
       } finally {
         await bridge.dispose();
         await controller.dispose();
@@ -2637,6 +2888,21 @@ EixamSosPacket _deviceOriginPacket() {
     0x00,
     0x00,
     0x50,
+  ])!;
+}
+
+EixamSosPacket _relayedSosPacket() {
+  return EixamSosPacket.tryParse(<int>[
+    0x34,
+    0x12,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x54,
   ])!;
 }
 

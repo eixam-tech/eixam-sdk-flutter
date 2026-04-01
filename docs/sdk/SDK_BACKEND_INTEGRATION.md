@@ -407,15 +407,24 @@ Practical debug checkpoints:
 
 ### BLE SOS Relay Semantics
 
-The bridge currently treats relay acknowledgment conservatively.
+The bridge now applies a deterministic routing model for SOS acknowledgments.
 
-What is implemented:
+Current runtime semantics:
 
-- if backend realtime clearly indicates relay acknowledgment or includes a relay node id, the SDK sends `SOS_ACK_RELAY`
+- `triggerOrigin == app` means the SOS was initiated locally by the host app and backend acknowledgment is routed as `SOS_ACK`
+- `triggerOrigin == device` with `relayCount == 0` means the SOS is treated as originating on the current device and backend acknowledgment is routed as `SOS_ACK`
+- `triggerOrigin == device` with `relayCount > 0` and a known `nodeId` means the current device is handling a relayed SOS for origin node `nodeId`
 
-What remains open:
+Current backend acknowledgment rules:
 
-- the exact rule to infer relay-vs-origin directly from every BLE SOS situation is still not fully defined in the current backend/mobile docs
+- generic backend `sos_ack` is transformed into `SOS_ACK_RELAY(nodeId)` when the active runtime SOS context is relay-origin
+- explicit backend `sos_ack_relay` is accepted only when the active runtime SOS context is relay-origin
+- explicit backend `sos_ack_relay` is ignored when the active runtime SOS context is local-origin, inactive, or mismatched by node id
+- if the backend sends relay acknowledgment without enough information and the active relay context has a known origin `nodeId`, the SDK uses that runtime node id
+
+Still open:
+
+- if firmware/backend later need richer relay/origin semantics than `relayCount > 0` plus origin `nodeId`, that contract will need to be documented explicitly before the SDK expands beyond the current model
 
 ### Minimal SOS Packets Without Coordinates
 

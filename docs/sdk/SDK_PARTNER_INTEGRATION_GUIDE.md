@@ -315,7 +315,8 @@ The host app should call the SDK facade and observe streams. It should not recre
 
 ## Current Open Points
 
-- BLE SOS relay-vs-origin semantics are still conservative in the current runtime bridge
+- BLE SOS backend acknowledgment routing is deterministic in the current runtime bridge:
+  local-origin SOS uses `SOS_ACK`, active relay-origin SOS uses `SOS_ACK_RELAY(nodeId)`, and unexpected relay ACK events are ignored with diagnostics
 - BLE SOS packets without coordinates are not publishable as backend SOS trigger
 - TEL aggregate payload publish is currently limited to aggregate-complete blobs
   that decode cleanly as one classic 10-byte TEL packet; richer cluster
