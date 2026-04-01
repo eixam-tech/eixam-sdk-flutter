@@ -1,5 +1,8 @@
 # Debug App Validation Guide
 
+For a shorter operator-facing real backend runbook, see
+`docs/app_ble/REAL_BACKEND_VALIDATION_CHECKLIST.md`.
+
 ## Purpose
 
 This guide describes how to validate the current SDK to backend integration using the internal reference/debug app.

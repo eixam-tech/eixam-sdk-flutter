@@ -169,9 +169,17 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                                   : 'Apply backend',
                             ),
                           ),
+                          OutlinedButton(
+                            onPressed: _controller.refreshAll,
+                            child: const Text('Refresh diagnostics'),
+                          ),
                         ],
                       ),
                       const SizedBox(height: 12),
+                      InfoLine(
+                        label: 'Selected preset',
+                        value: _labelForPreset(_selectedBackendPreset),
+                      ),
                       InfoLine(
                         label: 'Active backend',
                         value:
@@ -265,7 +273,11 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                       const SizedBox(height: 12),
                       InfoLine(
                         label: 'Signed session',
-                        value: session == null ? 'Not set' : 'Configured',
+                        value: _signedSessionStatus(session),
+                      ),
+                      InfoLine(
+                        label: 'Canonical identity status',
+                        value: _canonicalIdentityStatus(session),
                       ),
                       InfoLine(label: 'appId', value: session?.appId ?? '-'),
                       InfoLine(
@@ -281,6 +293,13 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                         label: 'SDK user id',
                         value: session?.sdkUserId ?? '-',
                       ),
+                      if (diagnostics.sosRehydrationNote != null) ...[
+                        const SizedBox(height: 12),
+                        DiagnosticsBox(
+                          label: 'SOS rehydration note',
+                          value: diagnostics.sosRehydrationNote!,
+                        ),
+                      ],
                       if (_controller.lastIdentityError != null) ...[
                         const SizedBox(height: 12),
                         DiagnosticsBox(
@@ -300,6 +319,10 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                       InfoLine(
                         label: 'MQTT connection state',
                         value: diagnostics.connectionState.name,
+                      ),
+                      InfoLine(
+                        label: 'MQTT subscription status',
+                        value: _mqttSubscriptionStatus(diagnostics),
                       ),
                       InfoLine(
                         label: 'Current SOS topic subscription',
@@ -329,6 +352,12 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                         value: formatDateTime(
                           _controller.lastRealtimeEvent?.timestamp,
                         ),
+                      ),
+                      DiagnosticsBox(
+                        label: 'Last realtime payload',
+                        value: _controller.lastRealtimeEvent?.payload == null
+                            ? 'None'
+                            : _controller.lastRealtimeEvent!.payload.toString(),
                       ),
                     ],
                   ),
@@ -373,6 +402,10 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                           label: 'Current SOS state',
                           value: _controller.sosState.name),
                       InfoLine(
+                        label: 'SOS routing summary',
+                        value: _sosRoutingSummary(bridge),
+                      ),
+                      InfoLine(
                         label: 'Last SOS event',
                         value: _controller.lastSosEvent.runtimeType.toString(),
                       ),
@@ -386,6 +419,19 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                             ? 'No'
                             : 'Yes (${bridge.pendingSos!.signature})',
                       ),
+                      if (_controller.lastSosIncident != null)
+                        DiagnosticsBox(
+                          label: 'Last SOS incident snapshot',
+                          value: {
+                            'id': _controller.lastSosIncident!.id,
+                            'state': _controller.lastSosIncident!.state.name,
+                            'triggerSource':
+                                _controller.lastSosIncident!.triggerSource,
+                            'createdAt': _controller.lastSosIncident!.createdAt
+                                .toUtc()
+                                .toIso8601String(),
+                          }.toString(),
+                        ),
                     ],
                   ),
                 ),
@@ -447,6 +493,14 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                         value: bridge.pendingTelemetry == null
                             ? 'No'
                             : 'Yes (${bridge.pendingTelemetry!.signature})',
+                      ),
+                      InfoLine(
+                        label: 'Telemetry publish status',
+                        value: _telemetryPublishStatus(
+                          bridge: bridge,
+                          diagnostics: diagnostics,
+                          lastActionError: _controller.lastActionError,
+                        ),
                       ),
                       InfoLine(
                         label: 'Offline policy',
@@ -685,6 +739,35 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                     child: SelectableText(_controller.lastActionError!),
                   ),
                 ],
+                const SizedBox(height: 16),
+                SectionCard(
+                  title: 'Validation Notes',
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      InfoLine(
+                        label: 'Last bridge decision',
+                        value: bridge.lastDecision ?? '-',
+                      ),
+                      InfoLine(
+                        label: 'Last device command',
+                        value: bridge.lastDeviceCommandSent ?? '-',
+                      ),
+                      InfoLine(
+                        label: 'Last identity error',
+                        value: _controller.lastIdentityError ?? '-',
+                      ),
+                      InfoLine(
+                        label: 'Last action error',
+                        value: _controller.lastActionError ?? '-',
+                      ),
+                      InfoLine(
+                        label: 'SOS rehydration note',
+                        value: diagnostics.sosRehydrationNote ?? '-',
+                      ),
+                    ],
+                  ),
+                ),
               ],
             ),
           );
@@ -890,5 +973,67 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
       case ValidationBackendPreset.custom:
         return 'Custom URL';
     }
+  }
+
+  String _signedSessionStatus(EixamSession? session) {
+    if (session == null) {
+      return 'Not set';
+    }
+    final hasSignedFields = session.appId.trim().isNotEmpty &&
+        session.externalUserId.trim().isNotEmpty &&
+        session.userHash.trim().isNotEmpty;
+    return hasSignedFields ? 'Configured' : 'Incomplete';
+  }
+
+  String _canonicalIdentityStatus(EixamSession? session) {
+    if (session == null) {
+      return 'No session';
+    }
+    if ((session.canonicalExternalUserId ?? '').trim().isNotEmpty &&
+        (session.sdkUserId ?? '').trim().isNotEmpty) {
+      return 'Resolved from /v1/sdk/me';
+    }
+    return 'Pending / not resolved';
+  }
+
+  String _mqttSubscriptionStatus(SdkOperationalDiagnostics diagnostics) {
+    if (diagnostics.session == null) {
+      return 'No active session';
+    }
+    if (diagnostics.sosEventTopics.isEmpty) {
+      return 'Waiting for canonical identity';
+    }
+    return diagnostics.connectionState == RealtimeConnectionState.connected
+        ? 'Subscribed / connected'
+        : 'Topic ready, waiting for MQTT connection';
+  }
+
+  String _sosRoutingSummary(SdkBridgeDiagnostics bridge) {
+    final lastSos = bridge.lastBleSosEventSummary;
+    final lastCommand = bridge.lastDeviceCommandSent;
+    if (lastSos == null && lastCommand == null) {
+      return 'No SOS routing activity yet';
+    }
+    if (lastSos != null && lastCommand != null) {
+      return '$lastSos | command=$lastCommand';
+    }
+    return lastSos ?? 'command=$lastCommand';
+  }
+
+  String _telemetryPublishStatus({
+    required SdkBridgeDiagnostics bridge,
+    required SdkOperationalDiagnostics diagnostics,
+    required String? lastActionError,
+  }) {
+    if (bridge.pendingTelemetry != null) {
+      return 'Buffered for retry';
+    }
+    if (lastActionError != null && lastActionError.isNotEmpty) {
+      return 'Last publish/action failed';
+    }
+    if (!diagnostics.canPublishOperationally) {
+      return 'Not publishable yet';
+    }
+    return 'Ready / published via current path';
   }
 }
