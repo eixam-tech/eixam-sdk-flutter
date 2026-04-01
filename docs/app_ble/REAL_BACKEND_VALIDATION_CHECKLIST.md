@@ -7,6 +7,14 @@ surfaces.
 
 ## 1. Backend Environment And Session Bootstrap
 
+- In local debug builds, first-run validation defaults are prefilled with:
+  - `http://127.0.0.1:8080`
+  - `ws://127.0.0.1:8080/ws`
+  - `app_localandroid01`
+  - `roger-android-local-01`
+- Saved backend configuration still wins over those defaults.
+- The validation console can reload them with `Load local debug defaults` /
+  `Reset to local defaults`.
 - Select the intended backend environment in the validation console and confirm:
   - HTTP base URL
   - MQTT websocket URL

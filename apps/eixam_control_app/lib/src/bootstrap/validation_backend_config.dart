@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 enum ValidationBackendPreset {
   production,
   staging,
@@ -34,9 +36,9 @@ class ValidationBackendConfig {
 
   static const ValidationBackendConfig customLocal = ValidationBackendConfig(
     preset: ValidationBackendPreset.customLocal,
-    label: 'Custom local',
-    apiBaseUrl: 'http://192.168.1.100:8080',
-    mqttWebsocketUrl: 'ws://192.168.1.100:8080/ws',
+    label: 'Local Android debug',
+    apiBaseUrl: 'http://127.0.0.1:8080',
+    mqttWebsocketUrl: 'ws://127.0.0.1:8080/ws',
   );
 
   static const List<ValidationBackendConfig> presets =
@@ -102,4 +104,20 @@ class ValidationBackendConfig {
         );
     }
   }
+
+  static ValidationBackendConfig firstRunDefault() {
+    if (kDebugMode) {
+      return customLocal;
+    }
+    return production;
+  }
+}
+
+class ValidationLocalDebugDefaults {
+  static const String appId = 'app_localandroid01';
+  static const String externalUserId = 'roger-android-local-01';
+  static const String userHash =
+      '8a59d9fce6ef5d541bbb7fe14d0ada32a0551f7a3152dbe9bb5a410b7ca58e9e';
+
+  static bool get isEnabled => kDebugMode;
 }

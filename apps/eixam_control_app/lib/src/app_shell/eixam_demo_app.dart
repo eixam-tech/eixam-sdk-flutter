@@ -33,6 +33,28 @@ class _EixamDemoAppState extends State<EixamDemoApp> {
   @override
   void initState() {
     super.initState();
+    debugPrint(
+      'EixamDemoApp init -> backend=${widget.backendConfig.label} sdkHash=${identityHashCode(widget.sdk)}',
+    );
+    _bindNotificationNavigation();
+  }
+
+  @override
+  void didUpdateWidget(covariant EixamDemoApp oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final sdkChanged = !identical(oldWidget.sdk, widget.sdk);
+    final backendChanged =
+        oldWidget.backendConfig.apiBaseUrl != widget.backendConfig.apiBaseUrl ||
+            oldWidget.backendConfig.mqttWebsocketUrl !=
+                widget.backendConfig.mqttWebsocketUrl;
+    if (!sdkChanged && !backendChanged) {
+      return;
+    }
+
+    debugPrint(
+      'EixamDemoApp update -> sdkChanged=$sdkChanged backendChanged=$backendChanged reloading validation shell',
+    );
+    _notificationSub?.cancel();
     _bindNotificationNavigation();
   }
 
@@ -86,6 +108,9 @@ class _EixamDemoAppState extends State<EixamDemoApp> {
 
   @override
   void dispose() {
+    debugPrint(
+      'EixamDemoApp dispose -> backend=${widget.backendConfig.label} sdkHash=${identityHashCode(widget.sdk)}',
+    );
     _notificationSub?.cancel();
     super.dispose();
   }

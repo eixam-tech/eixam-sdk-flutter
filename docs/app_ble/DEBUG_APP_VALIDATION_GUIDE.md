@@ -3,6 +3,10 @@
 For a shorter operator-facing real backend runbook, see
 `docs/app_ble/REAL_BACKEND_VALIDATION_CHECKLIST.md`.
 
+In debug/local validation builds, the console prefills localhost backend URLs
+and the known local signed session draft on first run. Saved backend
+configuration still wins, and all fields remain editable.
+
 ## Purpose
 
 This guide describes how to validate the current SDK to backend integration using the internal reference/debug app.

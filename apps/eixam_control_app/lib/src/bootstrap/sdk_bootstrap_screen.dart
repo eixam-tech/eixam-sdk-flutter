@@ -20,6 +20,7 @@ class _SdkBootstrapScreenState extends State<SdkBootstrapScreen> {
   String? _error;
   String? _stackTrace;
   EixamConnectSdk? _sdk;
+  int _sdkGeneration = 0;
   final ValidationBackendConfigStore _configStore =
       ValidationBackendConfigStore();
   ValidationBackendConfig? _activeConfig;
@@ -44,6 +45,9 @@ class _SdkBootstrapScreenState extends State<SdkBootstrapScreen> {
   Future<void> _bootstrapSdk({ValidationBackendConfig? config}) async {
     final nextConfig =
         config ?? _activeConfig ?? ValidationBackendConfig.production;
+    debugPrint(
+      'SDK bootstrap start -> backend=${nextConfig.label} api=${nextConfig.apiBaseUrl} mqtt=${nextConfig.mqttWebsocketUrl}',
+    );
     setState(() {
       _isLoading = true;
       _error = null;
@@ -57,12 +61,19 @@ class _SdkBootstrapScreenState extends State<SdkBootstrapScreen> {
         apiBaseUrl: nextConfig.apiBaseUrl,
         websocketUrl: nextConfig.mqttWebsocketUrl,
       );
+      debugPrint(
+        'SDK bootstrap ready -> backend=${nextConfig.label} disposing_previous=${previousSdk != null}',
+      );
       await _disposeSdk(previousSdk);
       if (!mounted) return;
       setState(() {
         _sdk = sdk;
         _isLoading = false;
+        _sdkGeneration++;
       });
+      debugPrint(
+        'SDK bootstrap applied -> generation=$_sdkGeneration backend=${nextConfig.label}',
+      );
     } catch (error, stackTrace) {
       debugPrint('SDK bootstrap failed: $error');
       debugPrintStack(stackTrace: stackTrace);
@@ -76,13 +87,18 @@ class _SdkBootstrapScreenState extends State<SdkBootstrapScreen> {
   }
 
   Future<void> _reconfigureBackend(ValidationBackendConfig config) async {
+    debugPrint(
+      'Backend reconfigure requested -> backend=${config.label} api=${config.apiBaseUrl}',
+    );
     await _configStore.save(config);
     await _bootstrapSdk(config: config);
   }
 
   Future<void> _disposeSdk(EixamConnectSdk? sdk) async {
     if (sdk is EixamConnectSdkImpl) {
+      debugPrint('Disposing previous SDK instance...');
       await sdk.dispose();
+      debugPrint('Previous SDK instance disposed.');
     }
   }
 
@@ -92,6 +108,9 @@ class _SdkBootstrapScreenState extends State<SdkBootstrapScreen> {
     final activeConfig = _activeConfig;
     if (sdk != null && activeConfig != null) {
       return EixamDemoApp(
+        key: ValueKey<String>(
+          'sdk_generation_${_sdkGeneration}_${activeConfig.apiBaseUrl}_${activeConfig.mqttWebsocketUrl}',
+        ),
         sdk: sdk,
         backendConfig: activeConfig,
         onReconfigureBackend: _reconfigureBackend,

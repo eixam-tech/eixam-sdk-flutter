@@ -1,5 +1,6 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 
 import '../../bootstrap/validation_backend_config.dart';
 import '../../shared/presentation/info_line.dart';
@@ -28,11 +29,9 @@ class OperationalDemoScreen extends StatefulWidget {
 
 class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
   late final ValidationConsoleController _controller;
-  final _sessionAppIdController = TextEditingController(text: 'demo-app');
-  final _sessionExternalUserIdController =
-      TextEditingController(text: 'partner-user-42');
-  final _sessionUserHashController =
-      TextEditingController(text: 'signed-demo-token');
+  late final TextEditingController _sessionAppIdController;
+  late final TextEditingController _sessionExternalUserIdController;
+  late final TextEditingController _sessionUserHashController;
   final _sosMessageController =
       TextEditingController(text: 'Manual SOS from validation console');
   final _sosTriggerSourceController =
@@ -59,13 +58,33 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
   @override
   void initState() {
     super.initState();
+    _sessionAppIdController = TextEditingController(
+      text: ValidationLocalDebugDefaults.isEnabled
+          ? ValidationLocalDebugDefaults.appId
+          : '',
+    );
+    _sessionExternalUserIdController = TextEditingController(
+      text: ValidationLocalDebugDefaults.isEnabled
+          ? ValidationLocalDebugDefaults.externalUserId
+          : '',
+    );
+    _sessionUserHashController = TextEditingController(
+      text: ValidationLocalDebugDefaults.isEnabled
+          ? ValidationLocalDebugDefaults.userHash
+          : '',
+    );
     _controller = ValidationConsoleController(sdk: widget.sdk);
     _selectedBackendPreset = widget.backendConfig.preset;
     _apiBaseUrlController =
         TextEditingController(text: widget.backendConfig.apiBaseUrl);
     _mqttWebsocketUrlController =
         TextEditingController(text: widget.backendConfig.mqttWebsocketUrl);
-    _controller.initialize();
+    _controller.initialize().then((_) {
+      if (!mounted) {
+        return;
+      }
+      _seedSessionDraftFromCurrentState();
+    });
   }
 
   @override
@@ -173,6 +192,11 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                             onPressed: _controller.refreshAll,
                             child: const Text('Refresh diagnostics'),
                           ),
+                          if (ValidationLocalDebugDefaults.isEnabled)
+                            OutlinedButton(
+                              onPressed: _loadLocalDebugDefaults,
+                              child: const Text('Load local debug defaults'),
+                            ),
                         ],
                       ),
                       const SizedBox(height: 12),
@@ -268,6 +292,11 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                                 : _controller.refreshCanonicalIdentity,
                             child: const Text('refreshCanonicalIdentity'),
                           ),
+                          if (ValidationLocalDebugDefaults.isEnabled)
+                            OutlinedButton(
+                              onPressed: _loadLocalDebugDefaults,
+                              child: const Text('Reset to local defaults'),
+                            ),
                         ],
                       ),
                       const SizedBox(height: 12),
@@ -935,6 +964,9 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
     setState(() {
       _applyingBackendConfig = true;
     });
+    debugPrint(
+      'Validation console apply backend start -> api=$apiBaseUrl mqtt=$mqttWebsocketUrl sdkHash=${identityHashCode(widget.sdk)}',
+    );
     try {
       await widget.onApplyBackendConfig(
         ValidationBackendConfig(
@@ -943,6 +975,9 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
           apiBaseUrl: apiBaseUrl,
           mqttWebsocketUrl: mqttWebsocketUrl,
         ),
+      );
+      debugPrint(
+        'Validation console apply backend completed -> reloading validation surface expected',
       );
     } catch (error) {
       _controller.reportActionError(error);
@@ -973,6 +1008,36 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
       case ValidationBackendPreset.custom:
         return 'Custom URL';
     }
+  }
+
+  void _seedSessionDraftFromCurrentState() {
+    final session = _controller.session;
+    if (session != null) {
+      _sessionAppIdController.text = session.appId;
+      _sessionExternalUserIdController.text = session.externalUserId;
+      _sessionUserHashController.text = session.userHash;
+      return;
+    }
+
+    if (ValidationLocalDebugDefaults.isEnabled) {
+      _sessionAppIdController.text = ValidationLocalDebugDefaults.appId;
+      _sessionExternalUserIdController.text =
+          ValidationLocalDebugDefaults.externalUserId;
+      _sessionUserHashController.text = ValidationLocalDebugDefaults.userHash;
+    }
+  }
+
+  void _loadLocalDebugDefaults() {
+    final config = ValidationBackendConfig.customLocal;
+    setState(() {
+      _selectedBackendPreset = ValidationBackendPreset.customLocal;
+      _apiBaseUrlController.text = config.apiBaseUrl;
+      _mqttWebsocketUrlController.text = config.mqttWebsocketUrl;
+      _sessionAppIdController.text = ValidationLocalDebugDefaults.appId;
+      _sessionExternalUserIdController.text =
+          ValidationLocalDebugDefaults.externalUserId;
+      _sessionUserHashController.text = ValidationLocalDebugDefaults.userHash;
+    });
   }
 
   String _signedSessionStatus(EixamSession? session) {

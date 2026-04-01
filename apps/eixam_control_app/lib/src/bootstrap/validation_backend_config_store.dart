@@ -13,7 +13,7 @@ class ValidationBackendConfigStore {
     final apiBaseUrl = prefs.getString(_apiBaseUrlKey);
     final mqttWebsocketUrl = prefs.getString(_mqttWebsocketUrlKey);
     if (apiBaseUrl == null || mqttWebsocketUrl == null) {
-      return ValidationBackendConfig.production;
+      return ValidationBackendConfig.firstRunDefault();
     }
 
     return ValidationBackendConfig.fromPreferencesMap(<String, String>{
