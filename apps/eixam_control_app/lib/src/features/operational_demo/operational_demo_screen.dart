@@ -54,6 +54,8 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
   final _devicePairedAtController =
       TextEditingController(text: DateTime.now().toUtc().toIso8601String());
   final _pairingCodeController = TextEditingController(text: 'DEMO-PAIR-001');
+  final _activationCodeController = TextEditingController(text: 'DEMO-ACT-001');
+  final _ackRelayNodeIdController = TextEditingController(text: '0x1AA8');
   late final TextEditingController _apiBaseUrlController;
   late final TextEditingController _mqttUrlController;
   late ValidationBackendPreset _selectedBackendPreset;
@@ -112,6 +114,8 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
     _deviceModelController.dispose();
     _devicePairedAtController.dispose();
     _pairingCodeController.dispose();
+    _activationCodeController.dispose();
+    _ackRelayNodeIdController.dispose();
     _apiBaseUrlController.dispose();
     _mqttUrlController.dispose();
     super.dispose();
@@ -124,15 +128,35 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
       body: AnimatedBuilder(
         animation: _controller,
         builder: (context, _) {
-          final cards = _controller.buildMvpCapabilityCards(
+          final draftBackendConfig = ValidationBackendConfig(
+            preset: _selectedBackendPreset,
+            label: _labelForPreset(_selectedBackendPreset),
+            apiBaseUrl: _apiBaseUrlController.text.trim(),
+            mqttWebsocketUrl: _mqttUrlController.text.trim(),
+          );
+          final coreCards = _controller.buildMvpCapabilityCards(
             activeBackendConfig: widget.backendConfig,
-            showsAndroidLocalhostWarning: _showsAndroidLocalhostWarning,
+            activeBackendLocalhostWarning: _showsActiveBackendLocalhostWarning,
+            draftBackendConfig: draftBackendConfig,
+            draftBackendLocalhostWarning: _showsDraftBackendLocalhostWarning,
             backendApplyInProgress: _applyingBackendConfig,
             sdkGeneration: widget.sdkGeneration,
           );
-          final summary = _controller.buildSummaryViewModel(
+          final bleCards = _controller.buildBleCapabilityCards();
+          final coreSummary = _controller.buildCoreSummaryViewModel(
             activeBackendConfig: widget.backendConfig,
-            showsAndroidLocalhostWarning: _showsAndroidLocalhostWarning,
+            activeBackendLocalhostWarning: _showsActiveBackendLocalhostWarning,
+            draftBackendConfig: draftBackendConfig,
+            draftBackendLocalhostWarning: _showsDraftBackendLocalhostWarning,
+            backendApplyInProgress: _applyingBackendConfig,
+            sdkGeneration: widget.sdkGeneration,
+          );
+          final bleSummary = _controller.buildBleSummaryViewModel();
+          final overallSummary = _controller.buildSummaryViewModel(
+            activeBackendConfig: widget.backendConfig,
+            activeBackendLocalhostWarning: _showsActiveBackendLocalhostWarning,
+            draftBackendConfig: draftBackendConfig,
+            draftBackendLocalhostWarning: _showsDraftBackendLocalhostWarning,
             backendApplyInProgress: _applyingBackendConfig,
             sdkGeneration: widget.sdkGeneration,
           );
@@ -152,9 +176,29 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                         ),
                       ),
                       const SizedBox(height: 16),
-                      ValidationSummaryCard(summary: summary),
+                      _buildConsoleStatusCard(),
                       const SizedBox(height: 16),
-                      ..._buildMvpCards(cards),
+                      ValidationSummaryCard(summary: overallSummary),
+                      const SizedBox(height: 16),
+                      ValidationSummaryCard(summary: coreSummary),
+                      const SizedBox(height: 16),
+                      _buildSectionHeader(
+                        title: 'Core Validation',
+                        description:
+                            'Backend and operational capabilities that validate the current SDK session, connectivity, and backend-facing workflows.',
+                      ),
+                      const SizedBox(height: 16),
+                      ..._buildMvpCards(coreCards),
+                      const SizedBox(height: 16),
+                      ValidationSummaryCard(summary: bleSummary),
+                      const SizedBox(height: 16),
+                      _buildSectionHeader(
+                        title: 'BLE & Device Validation',
+                        description:
+                            'Device, permissions, notification, command-channel, and registry checks reused from the existing technical SDK surface.',
+                      ),
+                      const SizedBox(height: 16),
+                      ..._buildBleCards(bleCards),
                       const SizedBox(height: 16),
                       _buildAdvancedSection(),
                     ],
@@ -204,26 +248,105 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
     ];
   }
 
+  List<Widget> _buildBleCards(List<ValidationCardViewModel> cards) {
+    return <Widget>[
+      _buildPermissionsCard(cards[0]),
+      const SizedBox(height: 16),
+      _buildNotificationsCard(cards[1]),
+      const SizedBox(height: 16),
+      _buildBleScanCard(cards[2]),
+      const SizedBox(height: 16),
+      _buildPairConnectCard(cards[3]),
+      const SizedBox(height: 16),
+      _buildActivateDeviceCard(cards[4]),
+      const SizedBox(height: 16),
+      _buildRefreshDeviceStatusCard(cards[5]),
+      const SizedBox(height: 16),
+      _buildUnpairDeviceCard(cards[6]),
+      const SizedBox(height: 16),
+      _buildDeviceSosFlowCard(cards[7]),
+      const SizedBox(height: 16),
+      _buildCommandChannelReadinessCard(cards[8]),
+      const SizedBox(height: 16),
+      _buildInetCommandsCard(cards[9]),
+      const SizedBox(height: 16),
+      _buildAckRelayCard(cards[10]),
+      const SizedBox(height: 16),
+      _buildShutdownCard(cards[11]),
+      const SizedBox(height: 16),
+      _buildBackendRegistryAlignmentCard(cards[12]),
+    ];
+  }
+
+  Widget _buildSectionHeader({
+    required String title,
+    required String description,
+  }) {
+    return SectionCard(
+      title: title,
+      child: Text(description),
+    );
+  }
+
+  Widget _buildConsoleStatusCard() {
+    return SectionCard(
+      title: 'Current SDK Context',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InfoLine(
+            label: 'Active backend',
+            value:
+                '${widget.backendConfig.label} (${widget.backendConfig.apiBaseUrl})',
+          ),
+          InfoLine(
+            label: 'Active MQTT URL',
+            value: widget.backendConfig.mqttWebsocketUrl,
+          ),
+          InfoLine(
+            label: 'SDK generation',
+            value: widget.sdkGeneration.toString(),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton(
+                onPressed: _controller.refreshAll,
+                child: const Text('Refresh all'),
+              ),
+              OutlinedButton(
+                onPressed: _controller.resetValidationNoise,
+                child: const Text('Clear last errors'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildBackendConfigurationCard(ValidationCardViewModel card) {
     return ValidationCapabilityCard(
       viewModel: card,
       actions: <Widget>[
-        OutlinedButton(
-          onPressed: _controller.refreshAll,
-          child: const Text('Refresh diagnostics'),
-        ),
         if (ValidationLocalDebugDefaults.isEnabled)
           OutlinedButton(
             onPressed: _loadLocalDebugDefaults,
-            child: const Text('Load local debug defaults'),
+            child: const Text('Load defaults into draft'),
           ),
       ],
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        children: const [
-          Text(
-            'Android physical-device note: localhost points to the phone itself. Use a LAN IP or adb reverse when your backend runs on the workstation.',
-          ),
+        children: [
+          const Text('This card reflects the active SDK backend only.'),
+          if (_showsActiveBackendLocalhostWarning) ...[
+            const SizedBox(height: 8),
+            const Text(
+              'Active backend warning: localhost/127.0.0.1 points to the phone itself on a physical Android device unless you use adb reverse.',
+            ),
+          ],
         ],
       ),
     );
@@ -451,7 +574,17 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
         ),
       ],
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          const Text('This card edits the draft backend configuration only.'),
+          if (_showsDraftBackendLocalhostWarning) ...[
+            const SizedBox(height: 8),
+            const Text(
+              'Draft warning: localhost/127.0.0.1 points to the phone itself on a physical Android device unless you use adb reverse.',
+            ),
+            const SizedBox(height: 8),
+          ] else
+            const SizedBox(height: 8),
           DropdownButtonFormField<ValidationBackendPreset>(
             initialValue: _selectedBackendPreset,
             decoration: const InputDecoration(
@@ -491,6 +624,304 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
             label: 'MQTT URL',
             hintText: 'tcp://127.0.0.1:1883',
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPermissionsCard(ValidationCardViewModel card) {
+    return ValidationCapabilityCard(
+      viewModel: card,
+      actions: <Widget>[
+        OutlinedButton(
+          onPressed: _controller.refreshPermissionsValidation,
+          child: const Text('Refresh permissions'),
+        ),
+        ElevatedButton(
+          onPressed: _controller.requestBluetoothPermissionsValidation,
+          child: const Text('Request Bluetooth'),
+        ),
+        OutlinedButton(
+          onPressed: _controller.requestNotificationsPermissionValidation,
+          child: const Text('Request notifications'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildNotificationsCard(ValidationCardViewModel card) {
+    return ValidationCapabilityCard(
+      viewModel: card,
+      actions: <Widget>[
+        ElevatedButton(
+          onPressed: _controller.initializeNotificationsValidation,
+          child: const Text('Initialize notifications'),
+        ),
+        OutlinedButton(
+          onPressed: _controller.testNotificationValidation,
+          child: const Text('Test notification'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildBleScanCard(ValidationCardViewModel card) {
+    final scanResults = _controller.bleDebugState.scanResults;
+    return ValidationCapabilityCard(
+      viewModel: card,
+      actions: <Widget>[
+        ElevatedButton(
+          onPressed: _controller.runBleScanValidation,
+          child: const Text('Run BLE scan'),
+        ),
+      ],
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (scanResults.isEmpty)
+            const Text('No scan results available yet.')
+          else
+            ...scanResults.map(
+              (scan) => Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Card(
+                  child: ListTile(
+                    title:
+                        Text(scan.name.isEmpty ? 'Unknown device' : scan.name),
+                    subtitle: Text(
+                      'deviceId=${scan.deviceId}\n'
+                      'RSSI=${scan.rssi}  connectable=${scan.connectable}\n'
+                      'services=${scan.advertisedServiceUuids.isEmpty ? '-' : scan.advertisedServiceUuids.join(', ')}',
+                    ),
+                    isThreeLine: true,
+                    trailing: _controller.bleDebugState.selectedDeviceId ==
+                            scan.deviceId
+                        ? const Chip(label: Text('Selected'))
+                        : null,
+                    onTap: () =>
+                        _controller.runPairSelectedDeviceValidation(scan),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPairConnectCard(ValidationCardViewModel card) {
+    return ValidationCapabilityCard(
+      viewModel: card,
+      actions: <Widget>[
+        ElevatedButton(
+          onPressed: _handleConnectDevice,
+          child: const Text('Pair / Connect'),
+        ),
+      ],
+      child: ValidationTextField(
+        controller: _pairingCodeController,
+        label: 'pairing code',
+      ),
+    );
+  }
+
+  Widget _buildActivateDeviceCard(ValidationCardViewModel card) {
+    return ValidationCapabilityCard(
+      viewModel: card,
+      actions: <Widget>[
+        ElevatedButton(
+          onPressed: _handleActivateDevice,
+          child: const Text('Activate device'),
+        ),
+      ],
+      child: ValidationTextField(
+        controller: _activationCodeController,
+        label: 'activation code',
+      ),
+    );
+  }
+
+  Widget _buildRefreshDeviceStatusCard(ValidationCardViewModel card) {
+    return ValidationCapabilityCard(
+      viewModel: card,
+      actions: <Widget>[
+        ElevatedButton(
+          onPressed: _controller.runRefreshDeviceStatusValidation,
+          child: const Text('Refresh device'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildUnpairDeviceCard(ValidationCardViewModel card) {
+    return ValidationCapabilityCard(
+      viewModel: card,
+      actions: <Widget>[
+        ElevatedButton(
+          onPressed: _controller.runUnpairDeviceValidation,
+          child: const Text('Unpair device'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDeviceSosFlowCard(ValidationCardViewModel card) {
+    return ValidationCapabilityCard(
+      viewModel: card,
+      actions: <Widget>[
+        ElevatedButton(
+          onPressed: () => _controller.runDeviceSosValidation(
+            actionLabel: 'Trigger SOS',
+            action: _controller.deviceDebugController.triggerDeviceSos,
+          ),
+          child: const Text('Trigger SOS'),
+        ),
+        OutlinedButton(
+          onPressed: () => _controller.runDeviceSosValidation(
+            actionLabel: 'Confirm SOS',
+            action: _controller.deviceDebugController.confirmDeviceSos,
+          ),
+          child: const Text('Confirm SOS'),
+        ),
+        OutlinedButton(
+          onPressed: () => _controller.runDeviceSosValidation(
+            actionLabel: 'Cancel SOS',
+            action: _controller.deviceDebugController.cancelDeviceSos,
+          ),
+          child: const Text('Cancel SOS'),
+        ),
+        OutlinedButton(
+          onPressed: () => _controller.runDeviceSosValidation(
+            actionLabel: 'Backend ACK',
+            action: _controller.deviceDebugController.acknowledgeDeviceSos,
+          ),
+          child: const Text('Backend ACK'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCommandChannelReadinessCard(ValidationCardViewModel card) {
+    return ValidationCapabilityCard(
+      viewModel: card,
+      actions: <Widget>[
+        ElevatedButton(
+          onPressed: _controller.refreshCommandChannelReadiness,
+          child: const Text('Refresh diagnostics'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildInetCommandsCard(ValidationCardViewModel card) {
+    return ValidationCapabilityCard(
+      viewModel: card,
+      actions: <Widget>[
+        OutlinedButton(
+          onPressed: () => _controller.runInetCommandValidation(
+            actionLabel: 'INET OK',
+            action: _controller.deviceDebugController.sendInetOk,
+          ),
+          child: const Text('Send INET OK'),
+        ),
+        OutlinedButton(
+          onPressed: () => _controller.runInetCommandValidation(
+            actionLabel: 'INET LOST',
+            action: _controller.deviceDebugController.sendInetLost,
+          ),
+          child: const Text('Send INET LOST'),
+        ),
+        OutlinedButton(
+          onPressed: () => _controller.runInetCommandValidation(
+            actionLabel: 'POS CONFIRMED',
+            action: _controller.deviceDebugController.sendPositionConfirmed,
+          ),
+          child: const Text('Send POS CONFIRMED'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAckRelayCard(ValidationCardViewModel card) {
+    return ValidationCapabilityCard(
+      viewModel: card,
+      actions: <Widget>[
+        ElevatedButton(
+          onPressed: () {
+            _controller.ackRelayNodeIdDraft =
+                _ackRelayNodeIdController.text.trim();
+            _controller.runAckRelayValidation();
+          },
+          child: const Text('Send ACK Relay'),
+        ),
+      ],
+      child: ValidationTextField(
+        controller: _ackRelayNodeIdController,
+        label: 'ACK relay nodeId',
+        hintText: '0x1AA8 or decimal',
+      ),
+    );
+  }
+
+  Widget _buildShutdownCard(ValidationCardViewModel card) {
+    return ValidationCapabilityCard(
+      viewModel: card,
+      actions: <Widget>[
+        ElevatedButton(
+          onPressed: _confirmAndSendShutdown,
+          child: const Text('Send Shutdown'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildBackendRegistryAlignmentCard(ValidationCardViewModel card) {
+    return ValidationCapabilityCard(
+      viewModel: card,
+      actions: <Widget>[
+        OutlinedButton(
+          onPressed: _controller.refreshBackendDeviceRegistryValidation,
+          child: const Text('Refresh device registry'),
+        ),
+        ElevatedButton(
+          onPressed: _handleUpsertRegisteredDevice,
+          child: const Text('Upsert registered device'),
+        ),
+      ],
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ValidationTextField(
+            controller: _deviceHardwareIdController,
+            label: 'hardware_id',
+          ),
+          const SizedBox(height: 8),
+          ValidationTextField(
+            controller: _deviceFirmwareController,
+            label: 'firmware_version',
+          ),
+          const SizedBox(height: 8),
+          ValidationTextField(
+            controller: _deviceModelController,
+            label: 'hardware_model',
+          ),
+          const SizedBox(height: 8),
+          ValidationTextField(
+            controller: _devicePairedAtController,
+            label: 'paired_at (ISO-8601)',
+          ),
+          const SizedBox(height: 12),
+          if (_controller.registeredDevices.isEmpty)
+            const Text('No backend registry devices loaded.')
+          else
+            ..._controller.registeredDevices.map(
+              (device) => RegistryDeviceTile(
+                device: device,
+                onUseAsDraft: () => _seedDeviceDraft(device),
+                onDelete: () =>
+                    _controller.deleteRegisteredDeviceValidation(device.id),
+              ),
+            ),
         ],
       ),
     );
@@ -786,7 +1217,7 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
 
   Future<void> _handleUpsertRegisteredDevice() async {
     try {
-      await _controller.upsertRegisteredDevice(
+      await _controller.upsertRegisteredDeviceValidation(
         hardwareId: _deviceHardwareIdController.text.trim(),
         firmwareVersion: _deviceFirmwareController.text.trim(),
         hardwareModel: _deviceModelController.text.trim(),
@@ -805,7 +1236,43 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
   }
 
   Future<void> _handleConnectDevice() async {
-    await _controller.connectDevice(_pairingCodeController.text.trim());
+    await _controller.runPairConnectValidation(
+      pairingCode: _pairingCodeController.text.trim(),
+    );
+  }
+
+  Future<void> _handleActivateDevice() async {
+    await _controller.runActivateDeviceValidation(
+      activationCode: _activationCodeController.text.trim().isEmpty
+          ? 'DEMO-ACT-001'
+          : _activationCodeController.text.trim(),
+    );
+  }
+
+  Future<void> _confirmAndSendShutdown() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Confirm Shutdown'),
+          content: const Text('Send opcode 0x10 to the connected device?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Send'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed == true) {
+      await _controller.runShutdownValidation();
+    }
   }
 
   void _handleBackendPresetChanged(ValidationBackendPreset? preset) {
@@ -862,7 +1329,14 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
     }
   }
 
-  bool get _showsAndroidLocalhostWarning {
+  bool get _showsActiveBackendLocalhostWarning {
+    final combined =
+        '${widget.backendConfig.apiBaseUrl} ${widget.backendConfig.mqttWebsocketUrl}'
+            .toLowerCase();
+    return combined.contains('localhost') || combined.contains('127.0.0.1');
+  }
+
+  bool get _showsDraftBackendLocalhostWarning {
     final combined = '${_apiBaseUrlController.text} ${_mqttUrlController.text}'
         .toLowerCase();
     return combined.contains('localhost') || combined.contains('127.0.0.1');

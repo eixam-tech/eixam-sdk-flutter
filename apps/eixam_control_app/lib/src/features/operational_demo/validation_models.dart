@@ -16,6 +16,19 @@ enum ValidationCapabilityId {
   telemetrySample,
   contacts,
   backendReconfigure,
+  permissions,
+  notifications,
+  bleScan,
+  pairConnectDevice,
+  activateDevice,
+  refreshDeviceStatus,
+  unpairDevice,
+  deviceSosFlow,
+  commandChannelReadiness,
+  inetCommands,
+  ackRelay,
+  shutdownCommand,
+  backendDeviceRegistryAlignment,
   globalSummary,
 }
 
@@ -97,6 +110,8 @@ class ValidationCardViewModel {
 
 class ValidationSummaryViewModel {
   const ValidationSummaryViewModel({
+    required this.title,
+    required this.description,
     required this.totalCapabilities,
     required this.passed,
     required this.warning,
@@ -106,6 +121,8 @@ class ValidationSummaryViewModel {
     required this.readiness,
   });
 
+  final String title;
+  final String description;
   final int totalCapabilities;
   final int passed;
   final int warning;

@@ -21,15 +21,17 @@ class ValidationSummaryCard extends StatelessWidget {
     };
 
     return SectionCard(
-      title: 'Global Summary',
+      title: summary.title,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Text(
-                'Operational validation readiness',
-                style: TextStyle(fontWeight: FontWeight.w700),
+              Expanded(
+                child: Text(
+                  summary.description,
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
               ),
               const SizedBox(width: 12),
               Container(
@@ -54,7 +56,7 @@ class ValidationSummaryCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           InfoLine(
-            label: 'Total capabilities',
+            label: 'Capability cards',
             value: summary.totalCapabilities.toString(),
           ),
           InfoLine(label: 'Passed', value: summary.passed.toString()),

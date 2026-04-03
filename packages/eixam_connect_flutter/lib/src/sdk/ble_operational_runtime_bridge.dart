@@ -247,7 +247,7 @@ class BleOperationalRuntimeBridge {
       deviceId: event.deviceId,
       deviceBattery: DeviceBatteryLevel.fromProtocolValue(packet.batteryLevel)
           ?.approximatePercentage
-          ?.toDouble(),
+          .toDouble(),
     );
     if (!_hasMinimumTelemetry(payload)) {
       _emitDiagnostics(

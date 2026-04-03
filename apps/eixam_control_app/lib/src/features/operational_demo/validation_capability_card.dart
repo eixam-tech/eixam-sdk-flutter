@@ -89,7 +89,7 @@ class ValidationCapabilityCard extends StatelessWidget {
             const SizedBox(height: 12),
             InfoLine(
               label: 'Last execution',
-              value: result.lastExecutedAt!.toLocal().toIso8601String(),
+              value: formatDateTime(result.lastExecutedAt),
             ),
           ],
         ],

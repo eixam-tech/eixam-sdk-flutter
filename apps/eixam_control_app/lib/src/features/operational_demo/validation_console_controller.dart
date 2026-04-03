@@ -1,15 +1,18 @@
 import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../bootstrap/validation_backend_config.dart';
 import 'validation_models.dart';
 
 class ValidationConsoleController extends ChangeNotifier {
-  ValidationConsoleController({required this.sdk});
+  ValidationConsoleController({required this.sdk})
+      : deviceDebugController = DeviceDebugController(sdk: sdk);
 
   final EixamConnectSdk sdk;
+  final DeviceDebugController deviceDebugController;
 
   EixamSession? session;
   SdkOperationalDiagnostics operationalDiagnostics =
@@ -29,6 +32,11 @@ class ValidationConsoleController extends ChangeNotifier {
   PreferredDevice? preferredDevice;
   String? lastIdentityError;
   String? lastActionError;
+  String? lastNotificationsError;
+  DateTime? lastNotificationsActionAt;
+  bool notificationsInitialized = false;
+  bool notificationTestTriggered = false;
+  String _ackRelayNodeIdDraft = '0x1AA8';
 
   bool loadingSession = false;
   bool loadingSos = false;
@@ -46,8 +54,21 @@ class ValidationConsoleController extends ChangeNotifier {
   StreamSubscription<EixamSdkEvent>? _sosEventSub;
   StreamSubscription<List<EmergencyContact>>? _contactsSub;
   StreamSubscription<DeviceStatus>? _deviceStatusSub;
+  VoidCallback? _deviceDebugListener;
+
+  PermissionState? get permissionState => deviceDebugController.permissionState;
+  BleDebugState get bleDebugState => deviceDebugController.bleDebugState;
+  DeviceSosStatus get deviceSosStatus => deviceDebugController.deviceSosStatus;
+
+  String get ackRelayNodeIdDraft => _ackRelayNodeIdDraft;
+
+  set ackRelayNodeIdDraft(String value) {
+    _ackRelayNodeIdDraft = value;
+    notifyListeners();
+  }
 
   Future<void> initialize() async {
+    await deviceDebugController.initialize();
     _bindStreams();
     await refreshAll();
   }
@@ -96,6 +117,8 @@ class ValidationConsoleController extends ChangeNotifier {
       },
       onError: _handleActionError,
     );
+    _deviceDebugListener ??= () => notifyListeners();
+    deviceDebugController.addListener(_deviceDebugListener!);
   }
 
   Future<void> refreshAll() async {
@@ -108,6 +131,7 @@ class ValidationConsoleController extends ChangeNotifier {
       registeredDevices = await sdk.listRegisteredDevices();
       deviceStatus = await sdk.getDeviceStatus();
       preferredDevice = await sdk.preferredDevice;
+      await deviceDebugController.refreshAll();
       notifyListeners();
     } catch (error) {
       _handleActionError(error);
@@ -268,6 +292,23 @@ class ValidationConsoleController extends ChangeNotifier {
         priority: priority,
       );
       contacts = await sdk.listEmergencyContacts();
+      final createdVisible = contacts.any(
+        (contact) =>
+            contact.name.trim() == name.trim() &&
+            contact.phone.trim() == phone.trim() &&
+            contact.email.trim().toLowerCase() == email.trim().toLowerCase(),
+      );
+      if (createdVisible) {
+        _recordCapabilityResult(
+          ValidationCapabilityId.contacts,
+          ValidationCapabilityResult(
+            status: ValidationRunStatus.ok,
+            diagnosticText:
+                'Contact is visible in the refreshed list after manual creation.',
+            lastExecutedAt: DateTime.now().toUtc(),
+          ),
+        );
+      }
     });
   }
 
@@ -376,9 +417,253 @@ class ValidationConsoleController extends ChangeNotifier {
     });
   }
 
+  Future<void> refreshPermissionsValidation() async {
+    await _runBleCapabilityAction(
+      id: ValidationCapabilityId.permissions,
+      runningDiagnostic: 'Refreshing permissions and adapter state...',
+      action: deviceDebugController.refreshPermissions,
+      evaluate: _buildPermissionsResult,
+    );
+  }
+
+  Future<void> requestBluetoothPermissionsValidation() async {
+    await _runBleCapabilityAction(
+      id: ValidationCapabilityId.permissions,
+      runningDiagnostic: 'Requesting Bluetooth and scan prerequisites...',
+      action: deviceDebugController.requestScanPermissions,
+      evaluate: _buildPermissionsResult,
+    );
+  }
+
+  Future<void> requestNotificationsPermissionValidation() async {
+    await _runBleCapabilityAction(
+      id: ValidationCapabilityId.permissions,
+      runningDiagnostic: 'Requesting notification permission...',
+      action: deviceDebugController.requestNotificationPermission,
+      evaluate: _buildPermissionsResult,
+    );
+  }
+
+  Future<void> initializeNotificationsValidation() async {
+    await _runBleCapabilityAction(
+      id: ValidationCapabilityId.notifications,
+      runningDiagnostic: 'Initializing local notifications through the SDK...',
+      action: () async {
+        await deviceDebugController.initializeNotifications();
+        notificationsInitialized = deviceDebugController.lastError == null;
+        if (deviceDebugController.lastError != null) {
+          lastNotificationsError = deviceDebugController.lastError;
+        }
+        lastNotificationsActionAt = DateTime.now().toUtc();
+      },
+      evaluate: _buildNotificationsResult,
+    );
+  }
+
+  Future<void> testNotificationValidation() async {
+    await _runBleCapabilityAction(
+      id: ValidationCapabilityId.notifications,
+      runningDiagnostic: 'Triggering a test notification through the SDK...',
+      action: () async {
+        await deviceDebugController.showTestNotification();
+        notificationTestTriggered = deviceDebugController.lastError == null;
+        if (deviceDebugController.lastError != null) {
+          lastNotificationsError = deviceDebugController.lastError;
+        }
+        lastNotificationsActionAt = DateTime.now().toUtc();
+      },
+      evaluate: _buildNotificationsResult,
+    );
+  }
+
+  Future<void> runBleScanValidation() async {
+    await _runBleCapabilityAction(
+      id: ValidationCapabilityId.bleScan,
+      runningDiagnostic: 'Running BLE scan through the SDK debug surface...',
+      action: deviceDebugController.runScan,
+      evaluate: _buildBleScanResult,
+    );
+  }
+
+  Future<void> runPairConnectValidation(
+      {String pairingCode = 'DEMO-PAIR-001'}) async {
+    await _runBleCapabilityAction(
+      id: ValidationCapabilityId.pairConnectDevice,
+      runningDiagnostic: 'Connecting the device through the SDK...',
+      action: () async {
+        await deviceDebugController.sdk.connectDevice(pairingCode: pairingCode);
+      },
+      onAfterAction: () async {
+        await deviceDebugController.refreshAll();
+        deviceStatus = await sdk.getDeviceStatus();
+        preferredDevice = await sdk.preferredDevice;
+      },
+      evaluate: _buildPairConnectResult,
+    );
+  }
+
+  Future<void> runPairSelectedDeviceValidation(BleScanResult scan) async {
+    await _runBleCapabilityAction(
+      id: ValidationCapabilityId.pairConnectDevice,
+      runningDiagnostic: 'Connecting the selected BLE scan result...',
+      action: () => deviceDebugController.pairSelectedDevice(scan),
+      onAfterAction: () async {
+        deviceStatus = await sdk.getDeviceStatus();
+        preferredDevice = await sdk.preferredDevice;
+      },
+      evaluate: _buildPairConnectResult,
+    );
+  }
+
+  Future<void> runActivateDeviceValidation({
+    String activationCode = 'DEMO-ACT-001',
+  }) async {
+    await _runBleCapabilityAction(
+      id: ValidationCapabilityId.activateDevice,
+      runningDiagnostic: 'Activating the connected device...',
+      action: () async {
+        await sdk.activateDevice(activationCode: activationCode);
+      },
+      onAfterAction: () async {
+        await deviceDebugController.refreshAll();
+        deviceStatus = await sdk.getDeviceStatus();
+      },
+      evaluate: _buildActivateDeviceResult,
+    );
+  }
+
+  Future<void> runRefreshDeviceStatusValidation() async {
+    await _runBleCapabilityAction(
+      id: ValidationCapabilityId.refreshDeviceStatus,
+      runningDiagnostic: 'Refreshing device runtime state...',
+      action: deviceDebugController.refreshDevice,
+      onAfterAction: () async {
+        deviceStatus = await sdk.getDeviceStatus();
+      },
+      evaluate: _buildRefreshDeviceStatusResult,
+    );
+  }
+
+  Future<void> runUnpairDeviceValidation() async {
+    await _runBleCapabilityAction(
+      id: ValidationCapabilityId.unpairDevice,
+      runningDiagnostic: 'Disconnecting and clearing the active device...',
+      action: deviceDebugController.unpairDevice,
+      onAfterAction: () async {
+        deviceStatus = await sdk.getDeviceStatus();
+        preferredDevice = await sdk.preferredDevice;
+      },
+      evaluate: _buildUnpairDeviceResult,
+    );
+  }
+
+  Future<void> runDeviceSosValidation({
+    required String actionLabel,
+    required Future<void> Function() action,
+  }) async {
+    await _runBleCapabilityAction(
+      id: ValidationCapabilityId.deviceSosFlow,
+      runningDiagnostic: '$actionLabel through the SDK device SOS flow...',
+      action: action,
+      onAfterAction: () async {
+        await deviceDebugController.refreshAll();
+      },
+      evaluate: _buildDeviceSosResult,
+    );
+  }
+
+  Future<void> refreshCommandChannelReadiness() async {
+    await _runBleCapabilityAction(
+      id: ValidationCapabilityId.commandChannelReadiness,
+      runningDiagnostic: 'Refreshing BLE diagnostics and command readiness...',
+      action: deviceDebugController.refreshAll,
+      evaluate: _buildCommandChannelReadinessResult,
+    );
+  }
+
+  Future<void> runInetCommandValidation({
+    required String actionLabel,
+    required Future<void> Function() action,
+  }) async {
+    await _runBleCapabilityAction(
+      id: ValidationCapabilityId.inetCommands,
+      runningDiagnostic: '$actionLabel through the SDK command path...',
+      action: action,
+      evaluate: _buildInetCommandsResult,
+    );
+  }
+
+  Future<void> runAckRelayValidation() async {
+    await _runBleCapabilityAction(
+      id: ValidationCapabilityId.ackRelay,
+      runningDiagnostic:
+          'Sending SOS_ACK_RELAY through the SDK command path...',
+      action: () => deviceDebugController.sendAckRelay(_ackRelayNodeIdDraft),
+      evaluate: _buildAckRelayResult,
+    );
+  }
+
+  Future<void> runShutdownValidation() async {
+    await _runBleCapabilityAction(
+      id: ValidationCapabilityId.shutdownCommand,
+      runningDiagnostic: 'Sending shutdown through the SDK command path...',
+      action: deviceDebugController.sendShutdown,
+      evaluate: _buildShutdownResult,
+    );
+  }
+
+  Future<void> refreshBackendDeviceRegistryValidation() async {
+    await _runBleCapabilityAction(
+      id: ValidationCapabilityId.backendDeviceRegistryAlignment,
+      runningDiagnostic: 'Refreshing backend device registry...',
+      action: () async {
+        registeredDevices = await sdk.listRegisteredDevices();
+      },
+      evaluate: _buildBackendDeviceRegistryAlignmentResult,
+    );
+  }
+
+  Future<void> upsertRegisteredDeviceValidation({
+    required String hardwareId,
+    required String firmwareVersion,
+    required String hardwareModel,
+    required DateTime pairedAt,
+  }) async {
+    await _runBleCapabilityAction(
+      id: ValidationCapabilityId.backendDeviceRegistryAlignment,
+      runningDiagnostic: 'Upserting backend registry entry...',
+      action: () async {
+        await sdk.upsertRegisteredDevice(
+          hardwareId: hardwareId,
+          firmwareVersion: firmwareVersion,
+          hardwareModel: hardwareModel,
+          pairedAt: pairedAt,
+        );
+      },
+      onAfterAction: () async {
+        registeredDevices = await sdk.listRegisteredDevices();
+      },
+      evaluate: _buildBackendDeviceRegistryAlignmentResult,
+    );
+  }
+
+  Future<void> deleteRegisteredDeviceValidation(String deviceId) async {
+    await _runBleCapabilityAction(
+      id: ValidationCapabilityId.backendDeviceRegistryAlignment,
+      runningDiagnostic: 'Deleting backend registry entry...',
+      action: () => sdk.deleteRegisteredDevice(deviceId),
+      onAfterAction: () async {
+        registeredDevices = await sdk.listRegisteredDevices();
+      },
+      evaluate: _buildBackendDeviceRegistryAlignmentResult,
+    );
+  }
+
   List<ValidationCardViewModel> buildMvpCapabilityCards({
     required ValidationBackendConfig activeBackendConfig,
-    required bool showsAndroidLocalhostWarning,
+    required bool activeBackendLocalhostWarning,
+    required ValidationBackendConfig draftBackendConfig,
+    required bool draftBackendLocalhostWarning,
     required bool backendApplyInProgress,
     required int sdkGeneration,
   }) {
@@ -397,7 +682,7 @@ class ValidationConsoleController extends ChangeNotifier {
         ),
         result: _buildBackendConfigurationResult(
           activeBackendConfig: activeBackendConfig,
-          showsAndroidLocalhostWarning: showsAndroidLocalhostWarning,
+          showsAndroidLocalhostWarning: activeBackendLocalhostWarning,
         ),
         currentState: <ValidationStateField>[
           ValidationStateField(
@@ -634,37 +919,470 @@ class ValidationConsoleController extends ChangeNotifier {
         ),
         result: _buildBackendReconfigureResult(
           activeBackendConfig: activeBackendConfig,
+          draftBackendConfig: draftBackendConfig,
+          draftBackendLocalhostWarning: draftBackendLocalhostWarning,
           backendApplyInProgress: backendApplyInProgress,
           sdkGeneration: sdkGeneration,
         ),
         currentState: <ValidationStateField>[
           ValidationStateField(
-            label: 'Active backend',
-            value:
-                '${activeBackendConfig.label} (${activeBackendConfig.apiBaseUrl})',
+            label: 'Draft preset',
+            value: draftBackendConfig.label,
           ),
           ValidationStateField(
-            label: 'MQTT URL',
-            value: activeBackendConfig.mqttWebsocketUrl,
+            label: 'Draft HTTP base URL',
+            value: draftBackendConfig.apiBaseUrl,
           ),
           ValidationStateField(
-            label: 'SDK generation',
-            value: sdkGeneration.toString(),
+            label: 'Draft MQTT URL',
+            value: draftBackendConfig.mqttWebsocketUrl,
+          ),
+          ValidationStateField(
+            label: 'Apply status',
+            value: backendApplyInProgress ? 'Applying...' : 'Idle',
           ),
         ],
       ),
     ];
   }
 
-  ValidationSummaryViewModel buildSummaryViewModel({
+  List<ValidationCardViewModel> buildBleCapabilityCards() {
+    final status = deviceStatus;
+    final bleState = bleDebugState;
+    final deviceViewState = deviceDebugController.deviceViewState;
+
+    return <ValidationCardViewModel>[
+      ValidationCardViewModel(
+        id: ValidationCapabilityId.permissions,
+        title: 'A. Permissions',
+        description:
+            'Validate runtime permissions and adapter state required for BLE testing.',
+        isCritical: true,
+        expectation: const ValidationExpectation(
+          expectedResult:
+              'Bluetooth access is granted, notifications are reported clearly, and the Bluetooth adapter is enabled.',
+          howToValidate:
+              'Refresh permissions, request Bluetooth and notifications if needed, then confirm the adapter is enabled.',
+        ),
+        result: _buildPermissionsResult(),
+        currentState: <ValidationStateField>[
+          ValidationStateField(
+            label: 'Location permission',
+            value: permissionState?.location.toString() ?? 'Unknown',
+          ),
+          ValidationStateField(
+            label: 'Bluetooth permission',
+            value: permissionState?.bluetooth.toString() ?? 'Unknown',
+          ),
+          ValidationStateField(
+            label: 'Notifications permission',
+            value: permissionState?.notifications.toString() ?? 'Unknown',
+          ),
+          ValidationStateField(
+            label: 'Bluetooth enabled',
+            value: permissionState?.bluetoothEnabled.toString() ?? 'Unknown',
+          ),
+        ],
+      ),
+      ValidationCardViewModel(
+        id: ValidationCapabilityId.notifications,
+        title: 'B. Notifications',
+        description:
+            'Validate host-side notification initialization and a simple test notification path.',
+        expectation: const ValidationExpectation(
+          expectedResult:
+              'Notifications initialize successfully and a test notification can be triggered.',
+          howToValidate:
+              'Initialize notifications, trigger a test notification, and verify any related errors stay empty.',
+        ),
+        result: _buildNotificationsResult(),
+        currentState: <ValidationStateField>[
+          ValidationStateField(
+            label: 'Initialized',
+            value: notificationsInitialized ? 'Yes' : 'Unknown / not confirmed',
+          ),
+          ValidationStateField(
+            label: 'Test notification',
+            value: notificationTestTriggered ? 'Triggered' : 'Not run',
+          ),
+          ValidationStateField(
+            label: 'Last error',
+            value: lastNotificationsError ??
+                deviceDebugController.lastError ??
+                '-',
+          ),
+        ],
+      ),
+      ValidationCardViewModel(
+        id: ValidationCapabilityId.bleScan,
+        title: 'C. BLE scan',
+        description:
+            'Validate BLE scanning and confirm that devices appear in scan results.',
+        isCritical: true,
+        expectation: const ValidationExpectation(
+          expectedResult:
+              'BLE scan starts successfully and at least one device appears when hardware is present.',
+          howToValidate:
+              'Run a BLE scan, review the result count, and confirm whether an EIXAM service appears in the discovered devices.',
+        ),
+        result: _buildBleScanResult(),
+        currentState: <ValidationStateField>[
+          ValidationStateField(
+            label: 'Scanning',
+            value: bleState.isScanning.toString(),
+          ),
+          ValidationStateField(
+            label: 'Selected device id',
+            value: bleState.selectedDeviceId ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Scan result count',
+            value: bleState.scanResults.length.toString(),
+          ),
+          ValidationStateField(
+            label: 'EIXAM service in results',
+            value: bleState.scanResults.any(
+              (scan) => scan.advertisedServiceUuids
+                  .map((item) => item.toLowerCase())
+                  .contains('ea00'),
+            )
+                ? 'Yes'
+                : 'No / unknown',
+          ),
+        ],
+      ),
+      ValidationCardViewModel(
+        id: ValidationCapabilityId.pairConnectDevice,
+        title: 'D. Pair / Connect device',
+        description:
+            'Validate device connection and preferred-device selection through the SDK.',
+        isCritical: true,
+        expectation: const ValidationExpectation(
+          expectedResult:
+              'The device connects successfully and becomes the selected runtime device.',
+          howToValidate:
+              'Use the pairing flow or a selected scan result, then confirm connection status, readiness, and selected device metadata.',
+        ),
+        result: _buildPairConnectResult(),
+        currentState: <ValidationStateField>[
+          ValidationStateField(
+            label: 'Selected device id',
+            value: bleState.selectedDeviceId ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Connected',
+            value: status?.connected.toString() ?? 'false',
+          ),
+          ValidationStateField(
+            label: 'Readiness summary',
+            value: deviceViewState.readinessSummary,
+          ),
+          ValidationStateField(
+            label: 'Connection summary',
+            value: deviceViewState.connectionSummary,
+          ),
+          ValidationStateField(
+            label: 'Connection error',
+            value: bleState.connectionError ??
+                deviceDebugController.lastError ??
+                '-',
+          ),
+        ],
+      ),
+      ValidationCardViewModel(
+        id: ValidationCapabilityId.activateDevice,
+        title: 'E. Activate device',
+        description:
+            'Validate device activation through the public SDK device flow.',
+        isCritical: true,
+        expectation: const ValidationExpectation(
+          expectedResult:
+              'Activation succeeds and runtime state reflects an activated device.',
+          howToValidate:
+              'Run activation after connecting a device, then refresh state and confirm activated or ready status.',
+        ),
+        result: _buildActivateDeviceResult(),
+        currentState: <ValidationStateField>[
+          ValidationStateField(
+              label: 'Paired', value: status?.paired.toString() ?? 'false'),
+          ValidationStateField(
+              label: 'Activated',
+              value: status?.activated.toString() ?? 'false'),
+          ValidationStateField(
+            label: 'Lifecycle state',
+            value: status?.lifecycleState.name ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Readiness summary',
+            value: deviceViewState.readinessSummary,
+          ),
+        ],
+      ),
+      ValidationCardViewModel(
+        id: ValidationCapabilityId.refreshDeviceStatus,
+        title: 'F. Refresh device status',
+        description:
+            'Validate runtime device refresh and confirm that key device metadata renders coherently.',
+        expectation: const ValidationExpectation(
+          expectedResult:
+              'Device status refresh succeeds and key metadata fields are visible.',
+          howToValidate:
+              'Run a device refresh and inspect id, model, firmware, battery, lifecycle, connectivity, and readiness fields.',
+        ),
+        result: _buildRefreshDeviceStatusResult(),
+        currentState: <ValidationStateField>[
+          ValidationStateField(
+              label: 'Device id', value: status?.deviceId ?? '-'),
+          ValidationStateField(
+              label: 'Alias', value: status?.deviceAlias ?? '-'),
+          ValidationStateField(label: 'Model', value: status?.model ?? '-'),
+          ValidationStateField(
+              label: 'Firmware', value: status?.firmwareVersion ?? '-'),
+          ValidationStateField(
+            label: 'Battery',
+            value: deviceViewState.batterySummary,
+          ),
+          ValidationStateField(
+            label: 'Lifecycle state',
+            value: status?.lifecycleState.name ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Connected',
+            value: status?.connected.toString() ?? 'false',
+          ),
+          ValidationStateField(
+            label: 'Ready for safety',
+            value: status?.isReadyForSafety.toString() ?? 'false',
+          ),
+        ],
+      ),
+      ValidationCardViewModel(
+        id: ValidationCapabilityId.unpairDevice,
+        title: 'G. Unpair device',
+        description:
+            'Validate that the active device can be disconnected and cleared from runtime state.',
+        expectation: const ValidationExpectation(
+          expectedResult:
+              'The device is no longer active or connected in runtime state after unpair/disconnect.',
+          howToValidate:
+              'Run unpair, then refresh state and confirm the device is no longer connected or operational.',
+        ),
+        result: _buildUnpairDeviceResult(),
+        currentState: <ValidationStateField>[
+          ValidationStateField(
+              label: 'Selected device id',
+              value: bleState.selectedDeviceId ?? '-'),
+          ValidationStateField(
+              label: 'Paired', value: status?.paired.toString() ?? 'false'),
+          ValidationStateField(
+              label: 'Connected',
+              value: status?.connected.toString() ?? 'false'),
+        ],
+      ),
+      ValidationCardViewModel(
+        id: ValidationCapabilityId.deviceSosFlow,
+        title: 'H. Device SOS flow',
+        description:
+            'Validate the local device SOS state transitions exposed by the SDK device SOS flow.',
+        isCritical: true,
+        expectation: const ValidationExpectation(
+          expectedResult:
+              'Device SOS actions drive visible state transitions and expose source, detail, and packet timing clearly.',
+          howToValidate:
+              'Run trigger, confirm, cancel, or backend ACK as appropriate and inspect the resulting device SOS state and diagnostics.',
+        ),
+        result: _buildDeviceSosResult(),
+        currentState: <ValidationStateField>[
+          ValidationStateField(
+              label: 'SOS state', value: deviceSosStatus.state.name),
+          ValidationStateField(
+            label: 'Transition source',
+            value: deviceSosStatus.transitionSource.name,
+          ),
+          ValidationStateField(
+            label: 'Last event detail',
+            value: deviceSosStatus.lastEvent,
+          ),
+          ValidationStateField(
+            label: 'Packet timestamp',
+            value: deviceSosStatus.lastPacketAt == null
+                ? '-'
+                : _formatDateTime(deviceSosStatus.lastPacketAt),
+          ),
+        ],
+      ),
+      ValidationCardViewModel(
+        id: ValidationCapabilityId.commandChannelReadiness,
+        title: 'I. Command channel readiness',
+        description:
+            'Validate command writer readiness and BLE characteristic availability without exposing protocol logic in widgets.',
+        isCritical: true,
+        expectation: const ValidationExpectation(
+          expectedResult:
+              'Command writer is ready and the required EIXAM BLE characteristics are visible.',
+          howToValidate:
+              'Refresh diagnostics and confirm the service, notify characteristics, and command writer state are coherent.',
+        ),
+        result: _buildCommandChannelReadinessResult(),
+        currentState: <ValidationStateField>[
+          ValidationStateField(
+              label: 'Command writer ready',
+              value: bleState.commandWriterReady.toString()),
+          ValidationStateField(
+              label: 'EIXAM service found',
+              value: bleState.eixamServiceFound.toString()),
+          ValidationStateField(
+              label: 'TEL found', value: bleState.telFound.toString()),
+          ValidationStateField(
+              label: 'SOS found', value: bleState.sosFound.toString()),
+          ValidationStateField(
+              label: 'INET found', value: bleState.inetFound.toString()),
+          ValidationStateField(
+              label: 'CMD found', value: bleState.cmdFound.toString()),
+          ValidationStateField(
+              label: 'TEL notify subscribed',
+              value: bleState.telNotifySubscribed.toString()),
+          ValidationStateField(
+              label: 'SOS notify subscribed',
+              value: bleState.sosNotifySubscribed.toString()),
+        ],
+      ),
+      ValidationCardViewModel(
+        id: ValidationCapabilityId.inetCommands,
+        title: 'J. INET commands',
+        description:
+            'Validate low-level INET command sending through the SDK technical path.',
+        expectation: const ValidationExpectation(
+          expectedResult:
+              'INET command writes succeed and update write diagnostics clearly.',
+          howToValidate:
+              'Send INET OK, INET LOST, or POS CONFIRMED and confirm the last write metadata reflects the command result.',
+        ),
+        result: _buildInetCommandsResult(),
+        currentState: <ValidationStateField>[
+          ValidationStateField(
+              label: 'Last command sent',
+              value:
+                  deviceDebugController.diagnosticsViewState.lastCommandLabel),
+          ValidationStateField(
+              label: 'Payload hex', value: bleState.lastCommandSent ?? '-'),
+          ValidationStateField(
+              label: 'Target characteristic',
+              value: bleState.lastWriteTargetCharacteristic ?? '-'),
+          ValidationStateField(
+              label: 'Write success/failure',
+              value: bleState.lastWriteResult ?? '-'),
+          ValidationStateField(
+              label: 'Timestamp',
+              value: bleState.lastWriteAt == null
+                  ? '-'
+                  : _formatDateTime(bleState.lastWriteAt)),
+          ValidationStateField(
+              label: 'Exact error',
+              value: bleState.lastWriteError ??
+                  deviceDebugController.lastError ??
+                  '-'),
+        ],
+      ),
+      ValidationCardViewModel(
+        id: ValidationCapabilityId.ackRelay,
+        title: 'K. ACK relay',
+        description:
+            'Validate SOS ACK relay command sending with an operator-provided node id.',
+        expectation: const ValidationExpectation(
+          expectedResult:
+              'ACK relay write succeeds and write diagnostics reflect the sent command.',
+          howToValidate:
+              'Enter a relay node id, send ACK relay, and confirm the write metadata updates without parse or transport errors.',
+        ),
+        result: _buildAckRelayResult(),
+        currentState: <ValidationStateField>[
+          ValidationStateField(
+              label: 'Entered node id', value: _ackRelayNodeIdDraft),
+          ValidationStateField(
+              label: 'Last command/write',
+              value:
+                  deviceDebugController.diagnosticsViewState.lastCommandLabel),
+          ValidationStateField(
+              label: 'Exact error',
+              value: bleState.lastWriteError ??
+                  deviceDebugController.lastError ??
+                  '-'),
+        ],
+      ),
+      ValidationCardViewModel(
+        id: ValidationCapabilityId.shutdownCommand,
+        title: 'L. Shutdown command',
+        description:
+            'Validate the guarded shutdown command path for the connected device.',
+        expectation: const ValidationExpectation(
+          expectedResult:
+              'Shutdown command is sent successfully through the SDK command path.',
+          howToValidate:
+              'Send shutdown only when the operator intends to do so, then confirm the write diagnostics update coherently.',
+        ),
+        result: _buildShutdownResult(),
+        currentState: <ValidationStateField>[
+          ValidationStateField(
+              label: 'Last command/write',
+              value:
+                  deviceDebugController.diagnosticsViewState.lastCommandLabel),
+          ValidationStateField(
+              label: 'Payload hex', value: bleState.lastCommandSent ?? '-'),
+          ValidationStateField(
+              label: 'Write success/failure',
+              value: bleState.lastWriteResult ?? '-'),
+          ValidationStateField(
+              label: 'Exact error',
+              value: bleState.lastWriteError ??
+                  deviceDebugController.lastError ??
+                  '-'),
+        ],
+      ),
+      ValidationCardViewModel(
+        id: ValidationCapabilityId.backendDeviceRegistryAlignment,
+        title: 'M. Backend device registry alignment',
+        description:
+            'Validate backend device registry actions and compare runtime device state with registry data from one console.',
+        expectation: const ValidationExpectation(
+          expectedResult:
+              'Registry entries load correctly, registry actions succeed, and runtime device alignment can be inspected.',
+          howToValidate:
+              'Refresh the registry, upsert or delete entries as needed, and compare the runtime device id against backend registry records.',
+        ),
+        result: _buildBackendDeviceRegistryAlignmentResult(),
+        currentState: <ValidationStateField>[
+          ValidationStateField(
+              label: 'Registry count',
+              value: registeredDevices.length.toString()),
+          ValidationStateField(
+              label: 'Runtime device id', value: status?.deviceId ?? '-'),
+          ValidationStateField(
+              label: 'Selected registry hardware id',
+              value: registeredDevices.isEmpty
+                  ? '-'
+                  : registeredDevices.first.hardwareId),
+          ValidationStateField(
+              label: 'Aligned with runtime',
+              value: _registryAlignedWithRuntime ? 'Yes' : 'No / unknown'),
+        ],
+      ),
+    ];
+  }
+
+  ValidationSummaryViewModel buildCoreSummaryViewModel({
     required ValidationBackendConfig activeBackendConfig,
-    required bool showsAndroidLocalhostWarning,
+    required bool activeBackendLocalhostWarning,
+    required ValidationBackendConfig draftBackendConfig,
+    required bool draftBackendLocalhostWarning,
     required bool backendApplyInProgress,
     required int sdkGeneration,
   }) {
     final cards = buildMvpCapabilityCards(
       activeBackendConfig: activeBackendConfig,
-      showsAndroidLocalhostWarning: showsAndroidLocalhostWarning,
+      activeBackendLocalhostWarning: activeBackendLocalhostWarning,
+      draftBackendConfig: draftBackendConfig,
+      draftBackendLocalhostWarning: draftBackendLocalhostWarning,
       backendApplyInProgress: backendApplyInProgress,
       sdkGeneration: sdkGeneration,
     );
@@ -700,6 +1418,94 @@ class ValidationConsoleController extends ChangeNotifier {
             : ValidationReadiness.partial;
 
     return ValidationSummaryViewModel(
+      title: 'Core Readiness',
+      description:
+          'Core backend and operational readiness (${cards.length} capability cards)',
+      totalCapabilities: cards.length,
+      passed: passed,
+      warning: warning,
+      failed: failed,
+      notRun: notRun,
+      running: running,
+      readiness: readiness,
+    );
+  }
+
+  ValidationSummaryViewModel buildBleSummaryViewModel() {
+    final cards = buildBleCapabilityCards();
+    return _buildSummaryFromCards(
+      title: 'BLE / Device Readiness',
+      description:
+          'BLE and device readiness (${cards.length} capability cards)',
+      cards: cards,
+    );
+  }
+
+  ValidationSummaryViewModel buildSummaryViewModel({
+    required ValidationBackendConfig activeBackendConfig,
+    required bool activeBackendLocalhostWarning,
+    required ValidationBackendConfig draftBackendConfig,
+    required bool draftBackendLocalhostWarning,
+    required bool backendApplyInProgress,
+    required int sdkGeneration,
+  }) {
+    final cards = <ValidationCardViewModel>[
+      ...buildMvpCapabilityCards(
+        activeBackendConfig: activeBackendConfig,
+        activeBackendLocalhostWarning: activeBackendLocalhostWarning,
+        draftBackendConfig: draftBackendConfig,
+        draftBackendLocalhostWarning: draftBackendLocalhostWarning,
+        backendApplyInProgress: backendApplyInProgress,
+        sdkGeneration: sdkGeneration,
+      ),
+      ...buildBleCapabilityCards(),
+    ];
+    return _buildSummaryFromCards(
+      title: 'Overall Readiness',
+      description:
+          'Unified SDK validation readiness (${cards.length} capability cards)',
+      cards: cards,
+    );
+  }
+
+  ValidationSummaryViewModel _buildSummaryFromCards({
+    required String title,
+    required String description,
+    required List<ValidationCardViewModel> cards,
+  }) {
+    final passed = cards
+        .where((card) => card.result.status == ValidationRunStatus.ok)
+        .length;
+    final warning = cards
+        .where((card) => card.result.status == ValidationRunStatus.warning)
+        .length;
+    final failed = cards
+        .where((card) => card.result.status == ValidationRunStatus.nok)
+        .length;
+    final notRun = cards
+        .where((card) => card.result.status == ValidationRunStatus.notRun)
+        .length;
+    final running = cards
+        .where((card) => card.result.status == ValidationRunStatus.running)
+        .length;
+
+    final criticalCards = cards.where((card) => card.isCritical);
+    final hasCriticalFailure = criticalCards.any(
+      (card) => card.result.status == ValidationRunStatus.nok,
+    );
+    final allCriticalPassed = criticalCards.every(
+      (card) => card.result.status == ValidationRunStatus.ok,
+    );
+
+    final readiness = hasCriticalFailure
+        ? ValidationReadiness.blocked
+        : allCriticalPassed
+            ? ValidationReadiness.ready
+            : ValidationReadiness.partial;
+
+    return ValidationSummaryViewModel(
+      title: title,
+      description: description,
       totalCapabilities: cards.length,
       passed: passed,
       warning: warning,
@@ -762,6 +1568,16 @@ class ValidationConsoleController extends ChangeNotifier {
 
   void reportActionError(Object error) {
     _handleActionError(error);
+  }
+
+  void resetValidationNoise() {
+    lastIdentityError = null;
+    lastActionError = null;
+    lastNotificationsError = null;
+    notificationsInitialized = false;
+    notificationTestTriggered = false;
+    _capabilityRuns.clear();
+    notifyListeners();
   }
 
   bool get _hasSignedSession {
@@ -1077,6 +1893,8 @@ class ValidationConsoleController extends ChangeNotifier {
 
   ValidationCapabilityResult _buildBackendReconfigureResult({
     required ValidationBackendConfig activeBackendConfig,
+    required ValidationBackendConfig draftBackendConfig,
+    required bool draftBackendLocalhostWarning,
     required bool backendApplyInProgress,
     required int sdkGeneration,
   }) {
@@ -1092,6 +1910,20 @@ class ValidationConsoleController extends ChangeNotifier {
       return const ValidationCapabilityResult(
         status: ValidationRunStatus.nok,
         diagnosticText: 'Cannot reconfigure backend with empty URLs.',
+      );
+    }
+    if (draftBackendConfig.apiBaseUrl.trim().isEmpty ||
+        draftBackendConfig.mqttWebsocketUrl.trim().isEmpty) {
+      return const ValidationCapabilityResult(
+        status: ValidationRunStatus.nok,
+        diagnosticText: 'Draft backend configuration is incomplete.',
+      );
+    }
+    if (draftBackendLocalhostWarning) {
+      return const ValidationCapabilityResult(
+        status: ValidationRunStatus.warning,
+        diagnosticText:
+            'The pending draft backend uses localhost/127.0.0.1. On a physical Android device that points to the phone itself unless you use adb reverse.',
       );
     }
     if (sdkGeneration > 1) {
@@ -1141,6 +1973,547 @@ class ValidationConsoleController extends ChangeNotifier {
     );
   }
 
+  ValidationCapabilityResult _buildPermissionsResult() {
+    final recorded = _capabilityRuns[ValidationCapabilityId.permissions];
+    if (recorded?.status == ValidationRunStatus.running) {
+      return recorded!;
+    }
+    final current = permissionState;
+    final lastError = deviceDebugController.lastError;
+    if ((lastError ?? '').trim().isNotEmpty && recorded != null) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.nok,
+        diagnosticText: lastError,
+        lastExecutedAt: recorded.lastExecutedAt,
+      );
+    }
+    if (current == null) {
+      return const ValidationCapabilityResult(
+        status: ValidationRunStatus.notRun,
+        diagnosticText:
+            'Refresh permissions to load Bluetooth, notifications, and adapter state.',
+      );
+    }
+    if (current.hasBluetoothAccess && current.bluetoothEnabled) {
+      final notificationsReady = current.hasNotificationAccess;
+      return _mergeWithRecorded(
+        ValidationCapabilityId.permissions,
+        ValidationCapabilityResult(
+          status: notificationsReady
+              ? ValidationRunStatus.ok
+              : ValidationRunStatus.warning,
+          diagnosticText: notificationsReady
+              ? 'Bluetooth permission and adapter state are ready for BLE validation.'
+              : 'Bluetooth is ready, but notification permission still needs operator confirmation.',
+        ),
+      );
+    }
+    return _mergeWithRecorded(
+      ValidationCapabilityId.permissions,
+      const ValidationCapabilityResult(
+        status: ValidationRunStatus.warning,
+        diagnosticText:
+            'Bluetooth permission or adapter state still needs user action before BLE validation can proceed.',
+      ),
+    );
+  }
+
+  ValidationCapabilityResult _buildNotificationsResult() {
+    final recorded = _capabilityRuns[ValidationCapabilityId.notifications];
+    if (recorded?.status == ValidationRunStatus.running) {
+      return recorded!;
+    }
+    if ((lastNotificationsError ?? '').trim().isNotEmpty && recorded != null) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.nok,
+        diagnosticText: lastNotificationsError,
+        lastExecutedAt: recorded.lastExecutedAt,
+      );
+    }
+    if (notificationsInitialized && notificationTestTriggered) {
+      return _mergeWithRecorded(
+        ValidationCapabilityId.notifications,
+        const ValidationCapabilityResult(
+          status: ValidationRunStatus.ok,
+          diagnosticText:
+              'Notifications initialized successfully and a test notification was triggered.',
+        ),
+      );
+    }
+    if (notificationsInitialized || notificationTestTriggered) {
+      return _mergeWithRecorded(
+        ValidationCapabilityId.notifications,
+        const ValidationCapabilityResult(
+          status: ValidationRunStatus.warning,
+          diagnosticText:
+              'Notifications are partially validated. Run both initialize and test actions for a complete check.',
+        ),
+      );
+    }
+    return const ValidationCapabilityResult(
+      status: ValidationRunStatus.notRun,
+      diagnosticText:
+          'Initialize notifications and trigger a test notification to validate this path.',
+    );
+  }
+
+  ValidationCapabilityResult _buildBleScanResult() {
+    final recorded = _capabilityRuns[ValidationCapabilityId.bleScan];
+    if (recorded?.status == ValidationRunStatus.running) {
+      return recorded!;
+    }
+    final lastError = deviceDebugController.lastError;
+    if ((lastError ?? '').trim().isNotEmpty && recorded != null) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.nok,
+        diagnosticText: lastError,
+        lastExecutedAt: recorded.lastExecutedAt,
+      );
+    }
+    if (bleDebugState.scanResults.isNotEmpty) {
+      return _mergeWithRecorded(
+        ValidationCapabilityId.bleScan,
+        ValidationCapabilityResult(
+          status: ValidationRunStatus.ok,
+          diagnosticText:
+              'BLE scan returned ${bleDebugState.scanResults.length} result(s).',
+        ),
+      );
+    }
+    if (recorded != null) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.warning,
+        diagnosticText:
+            'BLE scan completed but no devices were discovered in the current environment.',
+        lastExecutedAt: recorded.lastExecutedAt,
+      );
+    }
+    return const ValidationCapabilityResult(
+      status: ValidationRunStatus.notRun,
+      diagnosticText: 'Run a BLE scan to validate discoverability.',
+    );
+  }
+
+  ValidationCapabilityResult _buildPairConnectResult() {
+    final recorded = _capabilityRuns[ValidationCapabilityId.pairConnectDevice];
+    if (recorded?.status == ValidationRunStatus.running) {
+      return recorded!;
+    }
+    final lastError =
+        bleDebugState.connectionError ?? deviceDebugController.lastError;
+    if ((lastError ?? '').trim().isNotEmpty && recorded != null) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.nok,
+        diagnosticText: lastError,
+        lastExecutedAt: recorded.lastExecutedAt,
+      );
+    }
+    if (deviceStatus?.connected == true) {
+      return _mergeWithRecorded(
+        ValidationCapabilityId.pairConnectDevice,
+        ValidationCapabilityResult(
+          status: ValidationRunStatus.ok,
+          diagnosticText:
+              'Device ${deviceStatus?.deviceId ?? ''} is connected through the SDK.',
+        ),
+      );
+    }
+    if ((bleDebugState.selectedDeviceId ?? '').isNotEmpty ||
+        deviceStatus?.paired == true) {
+      return _mergeWithRecorded(
+        ValidationCapabilityId.pairConnectDevice,
+        const ValidationCapabilityResult(
+          status: ValidationRunStatus.warning,
+          diagnosticText:
+              'A device is selected or paired, but the runtime is not fully connected yet.',
+        ),
+      );
+    }
+    return const ValidationCapabilityResult(
+      status: ValidationRunStatus.notRun,
+      diagnosticText:
+          'Connect the device from the validation console or from a selected scan result.',
+    );
+  }
+
+  ValidationCapabilityResult _buildActivateDeviceResult() {
+    final recorded = _capabilityRuns[ValidationCapabilityId.activateDevice];
+    if (recorded?.status == ValidationRunStatus.running) {
+      return recorded!;
+    }
+    final lastError = deviceDebugController.lastError;
+    if ((lastError ?? '').trim().isNotEmpty && recorded != null) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.nok,
+        diagnosticText: lastError,
+        lastExecutedAt: recorded.lastExecutedAt,
+      );
+    }
+    if (deviceStatus?.activated == true ||
+        deviceStatus?.isReadyForSafety == true) {
+      return _mergeWithRecorded(
+        ValidationCapabilityId.activateDevice,
+        const ValidationCapabilityResult(
+          status: ValidationRunStatus.ok,
+          diagnosticText: 'Device activation is reflected in runtime status.',
+        ),
+      );
+    }
+    if (recorded != null && deviceStatus?.paired == true) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.warning,
+        diagnosticText:
+            'Activation was requested, but the runtime does not look fully activated yet.',
+        lastExecutedAt: recorded.lastExecutedAt,
+      );
+    }
+    return const ValidationCapabilityResult(
+      status: ValidationRunStatus.notRun,
+      diagnosticText:
+          'Connect a device first, then run activation from this console.',
+    );
+  }
+
+  ValidationCapabilityResult _buildRefreshDeviceStatusResult() {
+    final recorded =
+        _capabilityRuns[ValidationCapabilityId.refreshDeviceStatus];
+    if (recorded?.status == ValidationRunStatus.running) {
+      return recorded!;
+    }
+    final lastError = deviceDebugController.lastError;
+    if ((lastError ?? '').trim().isNotEmpty && recorded != null) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.nok,
+        diagnosticText: lastError,
+        lastExecutedAt: recorded.lastExecutedAt,
+      );
+    }
+    if (deviceStatus == null) {
+      return const ValidationCapabilityResult(
+        status: ValidationRunStatus.notRun,
+        diagnosticText: 'Refresh device status after connecting a device.',
+      );
+    }
+    final hasKeyFields = (deviceStatus!.deviceId.trim().isNotEmpty) &&
+        ((deviceStatus!.model ?? '').trim().isNotEmpty) &&
+        ((deviceStatus!.firmwareVersion ?? '').trim().isNotEmpty);
+    return _mergeWithRecorded(
+      ValidationCapabilityId.refreshDeviceStatus,
+      ValidationCapabilityResult(
+        status:
+            hasKeyFields ? ValidationRunStatus.ok : ValidationRunStatus.warning,
+        diagnosticText: hasKeyFields
+            ? 'Device status refreshed and key metadata is visible.'
+            : 'Device status refreshed, but some fields are still missing.',
+      ),
+    );
+  }
+
+  ValidationCapabilityResult _buildUnpairDeviceResult() {
+    final recorded = _capabilityRuns[ValidationCapabilityId.unpairDevice];
+    if (recorded?.status == ValidationRunStatus.running) {
+      return recorded!;
+    }
+    final lastError = deviceDebugController.lastError;
+    if ((lastError ?? '').trim().isNotEmpty && recorded != null) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.nok,
+        diagnosticText: lastError,
+        lastExecutedAt: recorded.lastExecutedAt,
+      );
+    }
+    if (recorded != null &&
+        deviceStatus?.paired != true &&
+        deviceStatus?.connected != true) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.ok,
+        diagnosticText:
+            'The runtime no longer reports an active paired or connected device.',
+        lastExecutedAt: recorded.lastExecutedAt,
+      );
+    }
+    if (recorded != null) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.warning,
+        diagnosticText:
+            'Unpair was requested, but some device state still remains. Refresh the runtime once more.',
+        lastExecutedAt: recorded.lastExecutedAt,
+      );
+    }
+    return const ValidationCapabilityResult(
+      status: ValidationRunStatus.notRun,
+      diagnosticText: 'Run unpair/disconnect to validate device cleanup.',
+    );
+  }
+
+  ValidationCapabilityResult _buildDeviceSosResult() {
+    final recorded = _capabilityRuns[ValidationCapabilityId.deviceSosFlow];
+    if (recorded?.status == ValidationRunStatus.running) {
+      return recorded!;
+    }
+    final lastError = deviceDebugController.lastError;
+    if ((lastError ?? '').trim().isNotEmpty && recorded != null) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.nok,
+        diagnosticText: lastError,
+        lastExecutedAt: recorded.lastExecutedAt,
+      );
+    }
+    if (recorded != null && deviceSosStatus.optimistic) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.warning,
+        diagnosticText:
+            'The device SOS action was accepted, but final propagation still looks optimistic/pending.',
+        lastExecutedAt: recorded.lastExecutedAt,
+      );
+    }
+    if (recorded != null) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.ok,
+        diagnosticText:
+            'Device SOS state is ${deviceSosStatus.state.name} with source ${deviceSosStatus.transitionSource.name}.',
+        lastExecutedAt: recorded.lastExecutedAt,
+      );
+    }
+    return const ValidationCapabilityResult(
+      status: ValidationRunStatus.notRun,
+      diagnosticText:
+          'Run a device SOS action from this console to validate local runtime state transitions.',
+    );
+  }
+
+  ValidationCapabilityResult _buildCommandChannelReadinessResult() {
+    final recorded =
+        _capabilityRuns[ValidationCapabilityId.commandChannelReadiness];
+    if (recorded?.status == ValidationRunStatus.running) {
+      return recorded!;
+    }
+    final lastError =
+        bleDebugState.connectionError ?? deviceDebugController.lastError;
+    if ((lastError ?? '').trim().isNotEmpty && recorded != null) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.nok,
+        diagnosticText: lastError,
+        lastExecutedAt: recorded.lastExecutedAt,
+      );
+    }
+    final connected = deviceStatus?.connected == true;
+    if (connected &&
+        bleDebugState.commandWriterReady &&
+        bleDebugState.eixamServiceFound &&
+        bleDebugState.telFound &&
+        bleDebugState.sosFound &&
+        bleDebugState.inetFound) {
+      return _mergeWithRecorded(
+        ValidationCapabilityId.commandChannelReadiness,
+        const ValidationCapabilityResult(
+          status: ValidationRunStatus.ok,
+          diagnosticText:
+              'Command writer and required BLE characteristics are ready.',
+        ),
+      );
+    }
+    if (connected) {
+      return _mergeWithRecorded(
+        ValidationCapabilityId.commandChannelReadiness,
+        const ValidationCapabilityResult(
+          status: ValidationRunStatus.warning,
+          diagnosticText:
+              'The device is connected, but command-path readiness is still incomplete.',
+        ),
+      );
+    }
+    return const ValidationCapabilityResult(
+      status: ValidationRunStatus.notRun,
+      diagnosticText:
+          'Connect a device first, then refresh diagnostics to validate command readiness.',
+    );
+  }
+
+  ValidationCapabilityResult _buildInetCommandsResult() {
+    return _buildWriteResultFor(
+      ValidationCapabilityId.inetCommands,
+      notRunDiagnostic:
+          'Send INET OK, INET LOST, or POS CONFIRMED to validate the command path.',
+    );
+  }
+
+  ValidationCapabilityResult _buildAckRelayResult() {
+    return _buildWriteResultFor(
+      ValidationCapabilityId.ackRelay,
+      notRunDiagnostic:
+          'Enter a relay node id and send ACK relay to validate this path.',
+    );
+  }
+
+  ValidationCapabilityResult _buildShutdownResult() {
+    return _buildWriteResultFor(
+      ValidationCapabilityId.shutdownCommand,
+      notRunDiagnostic:
+          'Send shutdown only when you intentionally want to validate that guarded path.',
+    );
+  }
+
+  ValidationCapabilityResult _buildWriteResultFor(
+    ValidationCapabilityId id, {
+    required String notRunDiagnostic,
+  }) {
+    final recorded = _capabilityRuns[id];
+    if (recorded?.status == ValidationRunStatus.running) {
+      return recorded!;
+    }
+    if ((deviceDebugController.lastError ?? '').trim().isNotEmpty &&
+        recorded != null) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.nok,
+        diagnosticText: deviceDebugController.lastError,
+        lastExecutedAt: recorded.lastExecutedAt,
+      );
+    }
+    if ((bleDebugState.lastWriteError ?? '').trim().isNotEmpty &&
+        recorded != null) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.nok,
+        diagnosticText: bleDebugState.lastWriteError,
+        lastExecutedAt: recorded.lastExecutedAt,
+      );
+    }
+    if ((bleDebugState.lastWriteResult ?? '')
+        .toLowerCase()
+        .contains('success')) {
+      return _mergeWithRecorded(
+        id,
+        const ValidationCapabilityResult(
+          status: ValidationRunStatus.ok,
+          diagnosticText: 'The last command write completed successfully.',
+        ),
+      );
+    }
+    if (bleDebugState.commandWriterReady) {
+      return _mergeWithRecorded(
+        id,
+        const ValidationCapabilityResult(
+          status: ValidationRunStatus.warning,
+          diagnosticText:
+              'The command path exists, but the last write result is not fully confirmed yet.',
+        ),
+      );
+    }
+    return ValidationCapabilityResult(
+      status: ValidationRunStatus.notRun,
+      diagnosticText: notRunDiagnostic,
+    );
+  }
+
+  ValidationCapabilityResult _buildBackendDeviceRegistryAlignmentResult() {
+    final recorded =
+        _capabilityRuns[ValidationCapabilityId.backendDeviceRegistryAlignment];
+    if (recorded?.status == ValidationRunStatus.running) {
+      return recorded!;
+    }
+    if ((lastActionError ?? '').trim().isNotEmpty &&
+        recorded != null &&
+        lastActionError!.toLowerCase().contains('device')) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.nok,
+        diagnosticText: lastActionError,
+        lastExecutedAt: recorded.lastExecutedAt,
+      );
+    }
+    if (registeredDevices.isEmpty) {
+      return _mergeWithRecorded(
+        ValidationCapabilityId.backendDeviceRegistryAlignment,
+        const ValidationCapabilityResult(
+          status: ValidationRunStatus.warning,
+          diagnosticText:
+              'Backend registry is reachable, but no registered devices are currently loaded.',
+        ),
+      );
+    }
+    return _mergeWithRecorded(
+      ValidationCapabilityId.backendDeviceRegistryAlignment,
+      ValidationCapabilityResult(
+        status: _registryAlignedWithRuntime
+            ? ValidationRunStatus.ok
+            : ValidationRunStatus.warning,
+        diagnosticText: _registryAlignedWithRuntime
+            ? 'Backend registry entries are loaded and one aligns with the current runtime device id.'
+            : 'Backend registry entries are loaded. Compare the runtime device against the registry draft before continuing.',
+      ),
+    );
+  }
+
+  bool get _registryAlignedWithRuntime {
+    final runtimeDeviceId = deviceStatus?.deviceId.trim();
+    if (runtimeDeviceId == null || runtimeDeviceId.isEmpty) {
+      return false;
+    }
+    return registeredDevices.any(
+      (device) => device.hardwareId.trim() == runtimeDeviceId,
+    );
+  }
+
+  String _formatDateTime(DateTime? value) {
+    if (value == null) {
+      return '-';
+    }
+    final local = value.toLocal();
+    final year = local.year.toString().padLeft(4, '0');
+    final month = local.month.toString().padLeft(2, '0');
+    final day = local.day.toString().padLeft(2, '0');
+    final hour = local.hour.toString().padLeft(2, '0');
+    final minute = local.minute.toString().padLeft(2, '0');
+    final second = local.second.toString().padLeft(2, '0');
+    return '$year-$month-$day $hour:$minute:$second';
+  }
+
+  Future<void> _runBleCapabilityAction({
+    required ValidationCapabilityId id,
+    required String runningDiagnostic,
+    required Future<void> Function() action,
+    required ValidationCapabilityResult Function() evaluate,
+    Future<void> Function()? onAfterAction,
+  }) async {
+    _recordCapabilityResult(
+      id,
+      ValidationCapabilityResult(
+        status: ValidationRunStatus.running,
+        diagnosticText: runningDiagnostic,
+      ),
+    );
+    lastActionError = null;
+    try {
+      await action();
+      if (onAfterAction != null) {
+        await onAfterAction();
+      }
+      final lastError =
+          deviceDebugController.lastError ?? bleDebugState.lastWriteError;
+      if ((lastError ?? '').trim().isNotEmpty &&
+          evaluate().status != ValidationRunStatus.ok) {
+        _recordCapabilityResult(
+          id,
+          ValidationCapabilityResult(
+            status: ValidationRunStatus.nok,
+            diagnosticText: lastError,
+            lastExecutedAt: DateTime.now().toUtc(),
+          ),
+        );
+        return;
+      }
+      _recordCapabilityResult(id, evaluate());
+    } catch (error) {
+      _recordCapabilityResult(
+        id,
+        ValidationCapabilityResult(
+          status: ValidationRunStatus.nok,
+          diagnosticText: error.toString(),
+          lastExecutedAt: DateTime.now().toUtc(),
+        ),
+      );
+    }
+  }
+
   @override
   void dispose() {
     _operationalSub?.cancel();
@@ -1149,6 +2522,10 @@ class ValidationConsoleController extends ChangeNotifier {
     _sosEventSub?.cancel();
     _contactsSub?.cancel();
     _deviceStatusSub?.cancel();
+    if (_deviceDebugListener != null) {
+      deviceDebugController.removeListener(_deviceDebugListener!);
+    }
+    deviceDebugController.dispose();
     super.dispose();
   }
 }
