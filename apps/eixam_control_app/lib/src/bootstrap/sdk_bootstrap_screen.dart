@@ -109,6 +109,7 @@ class _SdkBootstrapScreenState extends State<SdkBootstrapScreen> {
     if (sdk != null && activeConfig != null) {
       return EixamDemoApp(
         sdk: sdk,
+        sdkGeneration: _sdkGeneration,
         backendConfig: activeConfig,
         onReconfigureBackend: _reconfigureBackend,
       );

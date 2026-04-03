@@ -169,7 +169,8 @@ class BleOperationalRuntimeBridge {
     );
   }
 
-  Future<void> _publishAggregateTelemetryIfMappable(BleIncomingEvent event) async {
+  Future<void> _publishAggregateTelemetryIfMappable(
+      BleIncomingEvent event) async {
     final aggregatePayload = event.aggregatePayload;
     if (aggregatePayload == null || aggregatePayload.isEmpty) {
       _emitDiagnostics(
@@ -503,7 +504,8 @@ class BleOperationalRuntimeBridge {
       return;
     }
 
-    if (activeRelayNodeId != null && requestedRelayNodeId != activeRelayNodeId) {
+    if (activeRelayNodeId != null &&
+        requestedRelayNodeId != activeRelayNodeId) {
       _emitDiagnostics(
         _diagnostics.copyWith(
           lastDecision:
@@ -987,7 +989,8 @@ class _SosAckRoutingContext {
 
     return const _SosAckRoutingContext(
       route: _SosAckRoute.none,
-      reason: 'SOS origin is not known well enough to route backend acknowledgment',
+      reason:
+          'SOS origin is not known well enough to route backend acknowledgment',
     );
   }
 }

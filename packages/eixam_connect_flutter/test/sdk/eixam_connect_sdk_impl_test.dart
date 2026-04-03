@@ -1762,7 +1762,8 @@ void main() {
 
       try {
         connectionStates.add(RealtimeConnectionState.connected);
-        bleEvents.add(_bridgeAggregateTelFragmentEvent(signature: 'agg-frag-1'));
+        bleEvents
+            .add(_bridgeAggregateTelFragmentEvent(signature: 'agg-frag-1'));
         await Future<void>.delayed(Duration.zero);
 
         expect(telemetryRepository.publishedPayloads, isEmpty);
@@ -1820,7 +1821,8 @@ void main() {
       }
     });
 
-    test('BLE bridge applies backend confirmations to local-origin SOS commands',
+    test(
+        'BLE bridge applies backend confirmations to local-origin SOS commands',
         () async {
       final bleEvents = StreamController<BleIncomingEvent>.broadcast();
       final connectionStates =
@@ -1874,7 +1876,8 @@ void main() {
 
         expect(commands.map((command) => command.opcode), contains(0x03));
         expect(commands.map((command) => command.opcode), contains(0x07));
-        expect(commands.map((command) => command.opcode), isNot(contains(0x08)));
+        expect(
+            commands.map((command) => command.opcode), isNot(contains(0x08)));
       } finally {
         await bridge.dispose();
         await controller.dispose();
@@ -2065,7 +2068,8 @@ void main() {
         );
         await Future<void>.delayed(Duration.zero);
 
-        expect(commands.map((command) => command.opcode), isNot(contains(0x08)));
+        expect(
+            commands.map((command) => command.opcode), isNot(contains(0x08)));
         expect(
           bridge.currentDiagnostics.lastDecision,
           'Backend relay acknowledgment ignored: active SOS was triggered locally by the app',
@@ -2131,7 +2135,8 @@ void main() {
         );
         await Future<void>.delayed(Duration.zero);
 
-        expect(commands.map((command) => command.opcode), isNot(contains(0x08)));
+        expect(
+            commands.map((command) => command.opcode), isNot(contains(0x08)));
         expect(
           bridge.currentDiagnostics.lastDecision,
           'Backend relay acknowledgment ignored: relay node id does not match the active relay SOS context',

@@ -13,11 +13,13 @@ class EixamDemoApp extends StatefulWidget {
   const EixamDemoApp({
     super.key,
     required this.sdk,
+    required this.sdkGeneration,
     required this.backendConfig,
     required this.onReconfigureBackend,
   });
 
   final EixamConnectSdk sdk;
+  final int sdkGeneration;
   final ValidationBackendConfig backendConfig;
   final Future<void> Function(ValidationBackendConfig config)
       onReconfigureBackend;
@@ -77,6 +79,7 @@ class _EixamDemoAppState extends State<EixamDemoApp> {
       MaterialPageRoute<void>(
         builder: (_) => OperationalDemoScreen(
           sdk: widget.sdk,
+          sdkGeneration: widget.sdkGeneration,
           backendConfig: widget.backendConfig,
           onApplyBackendConfig: _reconfigureOperationalDemo,
           onOpenTechnicalLab: _openTechnicalLab,
