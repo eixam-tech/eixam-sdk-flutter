@@ -38,7 +38,7 @@ class ValidationBackendConfig {
     preset: ValidationBackendPreset.customLocal,
     label: 'Local Android debug',
     apiBaseUrl: 'http://127.0.0.1:8080',
-    mqttWebsocketUrl: 'ws://127.0.0.1:8080/ws',
+    mqttWebsocketUrl: 'tcp://127.0.0.1:1883',
   );
 
   static const List<ValidationBackendConfig> presets =

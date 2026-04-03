@@ -108,9 +108,6 @@ class _SdkBootstrapScreenState extends State<SdkBootstrapScreen> {
     final activeConfig = _activeConfig;
     if (sdk != null && activeConfig != null) {
       return EixamDemoApp(
-        key: ValueKey<String>(
-          'sdk_generation_${_sdkGeneration}_${activeConfig.apiBaseUrl}_${activeConfig.mqttWebsocketUrl}',
-        ),
         sdk: sdk,
         backendConfig: activeConfig,
         onReconfigureBackend: _reconfigureBackend,
@@ -160,7 +157,7 @@ class _SdkBootstrapScreenState extends State<SdkBootstrapScreen> {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      'MQTT websocket: ${activeConfig.mqttWebsocketUrl}',
+                      'MQTT URL: ${activeConfig.mqttWebsocketUrl}',
                       textAlign: TextAlign.center,
                     ),
                   ],

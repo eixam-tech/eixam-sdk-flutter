@@ -147,12 +147,29 @@ because it keeps the entrypoint explicit and avoids confusion inside a monorepo.
 The current flow is:
 
 1. `main.dart` opens a bootstrap screen
-2. `DemoSdkFactory.create()` builds the local demo SDK
-3. SDK initialization runs
-4. `DemoHomePage` is shown
-5. The reference app validates the SDK modules
+2. the bootstrap screen loads the saved validation backend config, or the local
+   debug defaults on first run
+3. `ApiSdkFactory.createHttpApi(...)` bootstraps the SDK for the selected
+   backend
+4. the thin host shell is shown
+5. the validation surfaces consume the current SDK instance
 
 This is useful because it makes SDK bootstrap explicit and easier to debug.
+
+## 8.1 Local validation defaults
+
+In debug builds, first run uses these defaults unless `SharedPreferences`
+already contains a saved backend configuration:
+
+- HTTP base URL: `http://127.0.0.1:8080`
+- MQTT URL: `tcp://127.0.0.1:1883`
+- `appId`: `app_localandroid01`
+- `externalUserId`: `roger-android-local-01`
+- `userHash`: `8a59d9fce6ef5d541bbb7fe14d0ada32a0551f7a3152dbe9bb5a410b7ca58e9e`
+
+After `Apply backend`, the control app reloads the validation surface against
+the freshly bootstrapped SDK instance so follow-up calls such as
+`setSession(...)` do not keep using a disposed HTTP client.
 
 ---
 

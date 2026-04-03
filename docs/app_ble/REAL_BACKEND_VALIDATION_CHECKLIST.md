@@ -9,15 +9,16 @@ surfaces.
 
 - In local debug builds, first-run validation defaults are prefilled with:
   - `http://127.0.0.1:8080`
-  - `ws://127.0.0.1:8080/ws`
+  - `tcp://127.0.0.1:1883`
   - `app_localandroid01`
   - `roger-android-local-01`
+  - `8a59d9fce6ef5d541bbb7fe14d0ada32a0551f7a3152dbe9bb5a410b7ca58e9e`
 - Saved backend configuration still wins over those defaults.
 - The validation console can reload them with `Load local debug defaults` /
   `Reset to local defaults`.
 - Select the intended backend environment in the validation console and confirm:
   - HTTP base URL
-  - MQTT websocket URL
+  - MQTT URL
   - selected preset / active backend readout
 - Run `setSession(...)` with a real signed session.
 - Confirm the console shows:

@@ -6,6 +6,7 @@ class ValidationBackendConfigStore {
   static const String _presetKey = 'validation_backend_preset';
   static const String _labelKey = 'validation_backend_label';
   static const String _apiBaseUrlKey = 'validation_backend_api_base_url';
+  // Keep the existing preference key so older saved configs still load.
   static const String _mqttWebsocketUrlKey = 'validation_backend_mqtt_ws_url';
 
   Future<ValidationBackendConfig> load() async {

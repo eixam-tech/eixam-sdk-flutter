@@ -78,11 +78,31 @@ class _EixamDemoAppState extends State<EixamDemoApp> {
         builder: (_) => OperationalDemoScreen(
           sdk: widget.sdk,
           backendConfig: widget.backendConfig,
-          onApplyBackendConfig: widget.onReconfigureBackend,
+          onApplyBackendConfig: _reconfigureOperationalDemo,
           onOpenTechnicalLab: _openTechnicalLab,
         ),
       ),
     );
+  }
+
+  Future<void> _reconfigureOperationalDemo(
+    ValidationBackendConfig config,
+  ) async {
+    await widget.onReconfigureBackend(config);
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) {
+      return;
+    }
+
+    debugPrint(
+      'EixamDemoApp backend reconfigured -> returning to refreshed app shell with sdkHash=${identityHashCode(widget.sdk)}',
+    );
+    final navigator = _navigatorKey.currentState;
+    if (navigator == null) {
+      return;
+    }
+
+    navigator.popUntil((route) => route.isFirst);
   }
 
   void _openTechnicalLab() {
