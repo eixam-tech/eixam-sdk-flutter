@@ -2382,7 +2382,8 @@ class ValidationConsoleController extends ChangeNotifier {
   }
 
   ValidationCapabilityResult _buildProtectionReadinessResult() {
-    final recorded = _capabilityRuns[ValidationCapabilityId.protectionReadiness];
+    final recorded =
+        _capabilityRuns[ValidationCapabilityId.protectionReadiness];
     if (recorded?.status == ValidationRunStatus.running) {
       return recorded!;
     }
@@ -2463,7 +2464,9 @@ class ValidationConsoleController extends ChangeNotifier {
             ? 'Protection Mode entered with ${result.status.modeState.name} coverage semantics.'
             : (result.blockingIssues.isEmpty
                 ? 'Protection Mode could not be entered.'
-                : result.blockingIssues.map((issue) => issue.message).join(' ')),
+                : result.blockingIssues
+                    .map((issue) => issue.message)
+                    .join(' ')),
       );
     }
     if (recorded != null) {

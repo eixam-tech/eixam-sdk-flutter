@@ -724,7 +724,6 @@ class BleOperationalRuntimeBridge {
     }
     return _IncomingSosRole.localOrigin;
   }
-
 }
 
 enum _BleBackendConfirmationKind {

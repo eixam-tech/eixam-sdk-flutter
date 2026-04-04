@@ -231,8 +231,9 @@ class ProtectionModeController {
       targetRuntimeState: targetRuntimeState,
       targetCoverageLevel: targetCoverageLevel,
       options: options,
-      degradationReason:
-          targetModeState == ProtectionModeState.degraded ? _status.degradationReason : null,
+      degradationReason: targetModeState == ProtectionModeState.degraded
+          ? _status.degradationReason
+          : null,
     );
     _status = snapshot.status;
     _diagnostics = snapshot.diagnostics;

@@ -104,9 +104,8 @@ class ProtectionStatus {
           locationPermissionGranted ?? this.locationPermissionGranted,
       notificationsPermissionGranted:
           notificationsPermissionGranted ?? this.notificationsPermissionGranted,
-      platformBackgroundCapabilityReady:
-          platformBackgroundCapabilityReady ??
-              this.platformBackgroundCapabilityReady,
+      platformBackgroundCapabilityReady: platformBackgroundCapabilityReady ??
+          this.platformBackgroundCapabilityReady,
       backendReachable: backendReachable ?? this.backendReachable,
       realtimeReady: realtimeReady ?? this.realtimeReady,
       storeAndForwardEnabled:

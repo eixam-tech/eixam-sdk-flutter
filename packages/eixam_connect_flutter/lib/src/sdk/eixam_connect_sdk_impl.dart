@@ -127,7 +127,7 @@ class EixamConnectSdkImpl
     ProtectionPlatformAdapter? protectionPlatformAdapter,
     this.disposeCallback,
   }) : protectionPlatformAdapter =
-           protectionPlatformAdapter ?? const NoopProtectionPlatformAdapter() {
+            protectionPlatformAdapter ?? const NoopProtectionPlatformAdapter() {
     _bleAutoReconnectCoordinator = BleAutoReconnectCoordinator(
       deviceRepository: deviceRepository,
       preferredDeviceStore: preferredBleDeviceStore,
@@ -147,7 +147,8 @@ class EixamConnectSdkImpl
       deviceStatusProvider: () async =>
           _lastDeviceStatus ?? await deviceRepository.getDeviceStatus(),
       permissionStateProvider: permissionsRepository.getPermissionState,
-      operationalDiagnosticsProvider: () async => _buildOperationalDiagnostics(),
+      operationalDiagnosticsProvider: () async =>
+          _buildOperationalDiagnostics(),
     );
     _bindSosStreams();
   }

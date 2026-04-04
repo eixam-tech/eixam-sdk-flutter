@@ -324,8 +324,9 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
       viewModel: card,
       actions: <Widget>[
         ElevatedButton(
-          onPressed:
-              _controller.loadingProtection ? null : _controller.evaluateProtectionReadiness,
+          onPressed: _controller.loadingProtection
+              ? null
+              : _controller.evaluateProtectionReadiness,
           child: const Text('Evaluate readiness'),
         ),
       ],
@@ -358,8 +359,9 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
       viewModel: card,
       actions: <Widget>[
         ElevatedButton(
-          onPressed:
-              _controller.loadingProtection ? null : _controller.enterProtectionMode,
+          onPressed: _controller.loadingProtection
+              ? null
+              : _controller.enterProtectionMode,
           child: const Text('Enter Protection Mode'),
         ),
       ],
@@ -374,8 +376,9 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
       viewModel: card,
       actions: <Widget>[
         OutlinedButton(
-          onPressed:
-              _controller.loadingProtection ? null : _controller.exitProtectionMode,
+          onPressed: _controller.loadingProtection
+              ? null
+              : _controller.exitProtectionMode,
           child: const Text('Exit Protection Mode'),
         ),
       ],
@@ -387,8 +390,9 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
       viewModel: card,
       actions: <Widget>[
         OutlinedButton(
-          onPressed:
-              _controller.loadingProtection ? null : _controller.flushProtectionQueues,
+          onPressed: _controller.loadingProtection
+              ? null
+              : _controller.flushProtectionQueues,
           child: const Text('Flush queues'),
         ),
       ],
@@ -400,8 +404,9 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
       viewModel: card,
       actions: <Widget>[
         OutlinedButton(
-          onPressed:
-              _controller.loadingProtection ? null : _controller.rehydrateProtectionState,
+          onPressed: _controller.loadingProtection
+              ? null
+              : _controller.rehydrateProtectionState,
           child: const Text('Rehydrate state'),
         ),
       ],

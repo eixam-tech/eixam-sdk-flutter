@@ -387,7 +387,8 @@ void main() {
       expect(readiness.canArm, isFalse);
       expect(
         readiness.blockingIssues.map((issue) => issue.type),
-        contains(ProtectionBlockingIssueType.platformBackgroundCapabilityMissing),
+        contains(
+            ProtectionBlockingIssueType.platformBackgroundCapabilityMissing),
       );
       expect(diagnostics.pendingSosCount, 0);
       expect(diagnostics.pendingTelemetryCount, 0);
@@ -401,7 +402,8 @@ void main() {
       expect(result.status.modeState, ProtectionModeState.off);
       expect(
         result.blockingIssues.map((issue) => issue.type),
-        contains(ProtectionBlockingIssueType.platformBackgroundCapabilityMissing),
+        contains(
+            ProtectionBlockingIssueType.platformBackgroundCapabilityMissing),
       );
     });
 
@@ -1557,7 +1559,8 @@ void main() {
       }
     });
 
-    test('mqtt cancel settles from backend rehydration when cancel returns null',
+    test(
+        'mqtt cancel settles from backend rehydration when cancel returns null',
         () async {
       final realtimeClient = _FakeOperationalRealtimeClient();
       final cancelDataSource = _FakeCancelSosRemoteDataSource()

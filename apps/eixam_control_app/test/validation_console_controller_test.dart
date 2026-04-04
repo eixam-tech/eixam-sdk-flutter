@@ -378,9 +378,7 @@ void main() {
         () {
       controller.protectionReadiness = sdk.protectionReadiness;
       controller.protectionStatus = sdk.protectionStatus;
-      final card = controller
-          .buildProtectionCapabilityCards()
-          .firstWhere(
+      final card = controller.buildProtectionCapabilityCards().firstWhere(
             (item) => item.id == ValidationCapabilityId.protectionReadiness,
           );
 
@@ -393,9 +391,7 @@ void main() {
         () async {
       await controller.enterProtectionMode();
 
-      final card = controller
-          .buildProtectionCapabilityCards()
-          .firstWhere(
+      final card = controller.buildProtectionCapabilityCards().firstWhere(
             (item) => item.id == ValidationCapabilityId.protectionEnter,
           );
 
