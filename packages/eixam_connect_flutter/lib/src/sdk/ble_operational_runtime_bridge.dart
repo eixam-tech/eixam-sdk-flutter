@@ -146,7 +146,7 @@ class BleOperationalRuntimeBridge {
         await _publishAggregateTelemetryIfMappable(event);
         return;
       case BleIncomingEventType.sosMeshPacket:
-        await _publishSosIfValid(event);
+        _observeSosIfValid(event);
         return;
       case BleIncomingEventType.guidedRescueStatus:
       case BleIncomingEventType.sosDeviceEvent:
@@ -299,9 +299,8 @@ class BleOperationalRuntimeBridge {
     );
   }
 
-  Future<void> _publishSosIfValid(BleIncomingEvent event) async {
+  void _observeSosIfValid(BleIncomingEvent event) {
     final packet = event.sosPacket;
-    final position = packet?.position;
     if (packet != null) {
       final role = _incomingSosRoleFrom(packet);
       _emitDiagnostics(
@@ -311,14 +310,14 @@ class BleOperationalRuntimeBridge {
         ),
       );
     }
-    if (packet == null || position == null) {
+    if (packet == null) {
       _emitDiagnostics(
         _diagnostics.copyWith(
-          lastDecision: 'SOS skipped: minimum fields missing',
+          lastDecision: 'SOS observed only: invalid packet payload',
         ),
       );
       BleDebugRegistry.instance.recordEvent(
-        'BLE operational bridge skipped SOS publish -> reason=minimum_fields_missing deviceId=${event.deviceId}',
+        'BLE operational bridge observed SOS packet -> reason=invalid_payload deviceId=${event.deviceId}',
       );
       return;
     }
@@ -331,53 +330,18 @@ class BleOperationalRuntimeBridge {
         ),
       );
       BleDebugRegistry.instance.recordEvent(
-        'BLE operational bridge skipped SOS publish -> reason=duplicate signature=$signature',
+        'BLE operational bridge observed duplicate SOS packet -> signature=$signature',
       );
       return;
     }
-
-    final positionSnapshot = TrackingPosition(
-      latitude: position.latitude,
-      longitude: position.longitude,
-      altitude: position.altitudeMeters.toDouble(),
-      timestamp: event.receivedAt.toUtc(),
-      source: DeliveryMode.mesh,
-    );
-    if (!_hasOperationalSession) {
-      final message = _sosRuntimeMessageFor(
-        event: event,
-        packet: packet,
-      );
-      _pendingSos = _PendingSosPublish(
-        signature: signature,
-        message: message,
-        positionSnapshot: positionSnapshot,
-      );
-      _emitDiagnostics(
-        _diagnostics.copyWith(
-          pendingSos: PendingSosDiagnostics(
-            signature: signature,
-            message: message,
-            positionSnapshot: positionSnapshot,
-          ),
-          lastDecision: 'SOS buffered: waiting for operational connectivity',
-        ),
-      );
-      BleDebugRegistry.instance.recordEvent(
-        'BLE operational bridge retained pending SOS -> signature=$signature',
-      );
-      return;
-    }
-
-    await _publishSosPayload(
-      signature: signature,
-      message: _sosRuntimeMessageFor(
-        event: event,
-        packet: packet,
+    _emitDiagnostics(
+      _diagnostics.copyWith(
+        lastDecision:
+            'SOS observed only: backend lifecycle now waits for device SOS status to become active',
       ),
-      positionSnapshot: positionSnapshot,
-      allowPendingFallback: true,
-      relayCount: packet.relayCount,
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'BLE operational bridge observed SOS packet without backend publish -> signature=$signature',
     );
   }
 
@@ -761,18 +725,6 @@ class BleOperationalRuntimeBridge {
     return _IncomingSosRole.localOrigin;
   }
 
-  String _sosRuntimeMessageFor({
-    required BleIncomingEvent event,
-    required EixamSosPacket packet,
-  }) {
-    final role = _incomingSosRoleFrom(packet);
-    return switch (role) {
-      _IncomingSosRole.localOrigin =>
-        'BLE SOS received from runtime device ${event.deviceId}',
-      _IncomingSosRole.relayOrigin =>
-        'BLE relay SOS received for origin ${_formatNodeId(packet.nodeId)} via runtime device ${event.deviceId}',
-    };
-  }
 }
 
 enum _BleBackendConfirmationKind {

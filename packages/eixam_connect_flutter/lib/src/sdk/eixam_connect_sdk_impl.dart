@@ -636,6 +636,8 @@ class EixamConnectSdkImpl
       'SOS cycle evaluated -> key=${cycleKey ?? '-'} activeCycle=${_activeDeviceSosCycleKey ?? '-'} notifiedCycle=${_notifiedDeviceSosCycleKey ?? '-'} notifiedState=${_notifiedDeviceSosState?.name ?? '-'}',
     );
 
+    await _synchronizeDeviceOriginatedBackendLifecycle(status);
+
     if (_isSosCycleClosed(status.state)) {
       BleDebugRegistry.instance.recordEvent(
         'SOS notification suppression reset -> reason=cycle_closed clearedCycle=${_activeDeviceSosCycleKey ?? "-"}',
@@ -1147,8 +1149,7 @@ class EixamConnectSdkImpl
   }
 
   bool _isBackendSyncRelevantDeviceSosState(DeviceSosState state) {
-    return state == DeviceSosState.preConfirm ||
-        state == DeviceSosState.active ||
+    return state == DeviceSosState.active ||
         state == DeviceSosState.acknowledged;
   }
 
@@ -1164,6 +1165,28 @@ class EixamConnectSdkImpl
         incident.state != SosState.cancelled &&
         incident.state != SosState.resolved &&
         incident.state != SosState.failed;
+  }
+
+  Future<void> _synchronizeDeviceOriginatedBackendLifecycle(
+    DeviceSosStatus status,
+  ) async {
+    if (status.triggerOrigin != DeviceSosTransitionSource.device) {
+      return;
+    }
+
+    if (_isBackendSyncRelevantDeviceSosState(status.state)) {
+      await _ensureBackendSosForDeviceOriginatedCycle(
+        status,
+        triggerSource: 'ble_device_runtime_status',
+        message:
+            'Device-originated SOS became active in runtime and was promoted to backend sync.',
+      );
+      return;
+    }
+
+    if (_isDeviceSosCycleClosed(status.state)) {
+      await _cancelBackendSosForDeviceOriginatedCycle(status);
+    }
   }
 
   void _publishCancelledSosEventIfNeeded(SosIncident incident) {
