@@ -32,6 +32,30 @@ class ValidationConsoleController extends ChangeNotifier {
       const <BackendRegisteredDevice>[];
   DeviceStatus? deviceStatus;
   PreferredDevice? preferredDevice;
+  ProtectionReadinessReport protectionReadiness =
+      const ProtectionReadinessReport(canArm: false);
+  ProtectionStatus protectionStatus = ProtectionStatus(
+    modeState: ProtectionModeState.off,
+    coverageLevel: ProtectionCoverageLevel.none,
+    runtimeState: ProtectionRuntimeState.inactive,
+    sessionReady: false,
+    devicePaired: false,
+    deviceConnected: false,
+    bluetoothEnabled: false,
+    locationPermissionGranted: false,
+    notificationsPermissionGranted: false,
+    platformBackgroundCapabilityReady: false,
+    backendReachable: false,
+    realtimeReady: false,
+    storeAndForwardEnabled: false,
+    pendingSosCount: 0,
+    pendingTelemetryCount: 0,
+    updatedAt: DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+  );
+  ProtectionDiagnostics protectionDiagnostics = const ProtectionDiagnostics(
+    pendingSosCount: 0,
+    pendingTelemetryCount: 0,
+  );
   String? lastIdentityError;
   String? lastActionError;
   String? lastNotificationsError;
@@ -46,6 +70,7 @@ class ValidationConsoleController extends ChangeNotifier {
   bool loadingContacts = false;
   bool loadingDeviceRegistry = false;
   bool loadingDeviceRuntime = false;
+  bool loadingProtection = false;
 
   final Map<ValidationCapabilityId, ValidationCapabilityResult>
       _capabilityRuns = <ValidationCapabilityId, ValidationCapabilityResult>{};
@@ -56,6 +81,8 @@ class ValidationConsoleController extends ChangeNotifier {
   StreamSubscription<EixamSdkEvent>? _sosEventSub;
   StreamSubscription<List<EmergencyContact>>? _contactsSub;
   StreamSubscription<DeviceStatus>? _deviceStatusSub;
+  StreamSubscription<ProtectionStatus>? _protectionStatusSub;
+  StreamSubscription<ProtectionDiagnostics>? _protectionDiagnosticsSub;
   VoidCallback? _deviceDebugListener;
 
   PermissionState? get permissionState => deviceDebugController.permissionState;
@@ -119,6 +146,20 @@ class ValidationConsoleController extends ChangeNotifier {
       },
       onError: _handleActionError,
     );
+    _protectionStatusSub ??= sdk.watchProtectionStatus().listen(
+      (status) {
+        protectionStatus = status;
+        notifyListeners();
+      },
+      onError: _handleActionError,
+    );
+    _protectionDiagnosticsSub ??= sdk.watchProtectionDiagnostics().listen(
+      (diagnostics) {
+        protectionDiagnostics = diagnostics;
+        notifyListeners();
+      },
+      onError: _handleActionError,
+    );
     _deviceDebugListener ??= () => notifyListeners();
     deviceDebugController.addListener(_deviceDebugListener!);
   }
@@ -133,6 +174,9 @@ class ValidationConsoleController extends ChangeNotifier {
       registeredDevices = await sdk.listRegisteredDevices();
       deviceStatus = await sdk.getDeviceStatus();
       preferredDevice = await sdk.preferredDevice;
+      protectionReadiness = await sdk.evaluateProtectionReadiness();
+      protectionStatus = await sdk.getProtectionStatus();
+      protectionDiagnostics = await sdk.getProtectionDiagnostics();
       await deviceDebugController.refreshAll();
       notifyListeners();
     } catch (error) {
@@ -667,6 +711,75 @@ class ValidationConsoleController extends ChangeNotifier {
       },
       evaluate: _buildBackendDeviceRegistryAlignmentResult,
     );
+  }
+
+  Future<void> evaluateProtectionReadiness() async {
+    await _runAction((value) => loadingProtection = value, () async {
+      protectionReadiness = await sdk.evaluateProtectionReadiness();
+      protectionStatus = await sdk.getProtectionStatus();
+      protectionDiagnostics = await sdk.getProtectionDiagnostics();
+      _recordCapabilityResult(
+        ValidationCapabilityId.protectionReadiness,
+        _buildProtectionReadinessResult(),
+      );
+    });
+  }
+
+  Future<void> enterProtectionMode() async {
+    await _runAction((value) => loadingProtection = value, () async {
+      final result = await sdk.enterProtectionMode();
+      protectionStatus = result.status;
+      protectionReadiness = ProtectionReadinessReport(
+        canArm: result.success,
+        blockingIssues: result.blockingIssues,
+        warnings: protectionReadiness.warnings,
+      );
+      protectionDiagnostics = await sdk.getProtectionDiagnostics();
+      _recordCapabilityResult(
+        ValidationCapabilityId.protectionEnter,
+        _buildProtectionEnterResult(result),
+      );
+    });
+  }
+
+  Future<void> exitProtectionMode() async {
+    await _runAction((value) => loadingProtection = value, () async {
+      protectionStatus = await sdk.exitProtectionMode();
+      protectionDiagnostics = await sdk.getProtectionDiagnostics();
+      _recordCapabilityResult(
+        ValidationCapabilityId.protectionExit,
+        _buildProtectionExitResult(),
+      );
+    });
+  }
+
+  Future<void> flushProtectionQueues() async {
+    await _runAction((value) => loadingProtection = value, () async {
+      final result = await sdk.flushProtectionQueues();
+      protectionDiagnostics = await sdk.getProtectionDiagnostics();
+      protectionStatus = await sdk.getProtectionStatus();
+      _recordCapabilityResult(
+        ValidationCapabilityId.protectionFlushQueues,
+        ValidationCapabilityResult(
+          status:
+              result.success ? ValidationRunStatus.ok : ValidationRunStatus.nok,
+          diagnosticText:
+              'Protection queues flush is a safe MVP stub. SOS flushed: ${result.flushedSosCount}, telemetry flushed: ${result.flushedTelemetryCount}.',
+        ),
+      );
+    });
+  }
+
+  Future<void> rehydrateProtectionState() async {
+    await _runAction((value) => loadingProtection = value, () async {
+      protectionStatus = await sdk.rehydrateProtectionState();
+      protectionDiagnostics = await sdk.getProtectionDiagnostics();
+      protectionReadiness = await sdk.evaluateProtectionReadiness();
+      _recordCapabilityResult(
+        ValidationCapabilityId.protectionRehydrate,
+        _buildProtectionRehydrateResult(),
+      );
+    });
   }
 
   List<ValidationCardViewModel> buildMvpCapabilityCards({
@@ -1398,6 +1511,218 @@ class ValidationConsoleController extends ChangeNotifier {
     ];
   }
 
+  List<ValidationCardViewModel> buildProtectionCapabilityCards() {
+    return <ValidationCardViewModel>[
+      ValidationCardViewModel(
+        id: ValidationCapabilityId.protectionReadiness,
+        title: 'P1. Protection readiness',
+        description:
+            'Evaluate whether the current host app and SDK context can safely enter Protection Mode.',
+        expectation: const ValidationExpectation(
+          expectedResult:
+              'Protection Mode stays optional and reports blockers or warnings clearly without affecting existing runtime behavior.',
+          howToValidate:
+              'Run readiness evaluation and review blockers, warnings, and the current environment snapshot.',
+        ),
+        result: _buildProtectionReadinessResult(),
+        currentState: <ValidationStateField>[
+          ValidationStateField(
+            label: 'Can arm',
+            value: protectionReadiness.canArm ? 'Yes' : 'No',
+          ),
+          ValidationStateField(
+            label: 'Blocking issues',
+            value: protectionReadiness.blockingIssues.isEmpty
+                ? 'None'
+                : protectionReadiness.blockingIssues
+                    .map((issue) => issue.type.name)
+                    .join(', '),
+          ),
+          ValidationStateField(
+            label: 'Warnings',
+            value: protectionReadiness.warnings.isEmpty
+                ? 'None'
+                : protectionReadiness.warnings.join(' | '),
+          ),
+        ],
+      ),
+      ValidationCardViewModel(
+        id: ValidationCapabilityId.protectionStatus,
+        title: 'P2. Current protection status',
+        description:
+            'Inspect the current additive Protection Mode state without changing any existing BLE or SOS flows.',
+        expectation: const ValidationExpectation(
+          expectedResult:
+              'Protection Mode is off by default and only changes state after explicit entry or exit actions.',
+          howToValidate:
+              'Refresh or rehydrate status and confirm mode, coverage, runtime, and readiness signals are coherent.',
+        ),
+        result: _buildProtectionStatusResult(),
+        currentState: <ValidationStateField>[
+          ValidationStateField(
+            label: 'Mode state',
+            value: protectionStatus.modeState.name,
+          ),
+          ValidationStateField(
+            label: 'Coverage',
+            value: protectionStatus.coverageLevel.name,
+          ),
+          ValidationStateField(
+            label: 'Runtime state',
+            value: protectionStatus.runtimeState.name,
+          ),
+          ValidationStateField(
+            label: 'Active device',
+            value: protectionStatus.activeDeviceId ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Degradation reason',
+            value: protectionStatus.degradationReason ?? '-',
+          ),
+        ],
+      ),
+      ValidationCardViewModel(
+        id: ValidationCapabilityId.protectionDiagnostics,
+        title: 'P3. Protection diagnostics',
+        description:
+            'Review additive Protection Mode diagnostics and pending queue counters exposed by the SDK.',
+        expectation: const ValidationExpectation(
+          expectedResult:
+              'Diagnostics remain readable even with the MVP no-op adapter and do not imply native background support already exists.',
+          howToValidate:
+              'Inspect wake, failure, and pending queue fields before and after readiness, enter, flush, or rehydrate actions.',
+        ),
+        result: _buildProtectionDiagnosticsResult(),
+        currentState: <ValidationStateField>[
+          ValidationStateField(
+            label: 'Last wake',
+            value: protectionDiagnostics.lastWakeAt == null
+                ? '-'
+                : _formatDateTime(protectionDiagnostics.lastWakeAt),
+          ),
+          ValidationStateField(
+            label: 'Wake reason',
+            value: protectionDiagnostics.lastWakeReason ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Last failure',
+            value: protectionDiagnostics.lastFailureReason ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Pending SOS',
+            value: protectionDiagnostics.pendingSosCount.toString(),
+          ),
+          ValidationStateField(
+            label: 'Pending telemetry',
+            value: protectionDiagnostics.pendingTelemetryCount.toString(),
+          ),
+        ],
+      ),
+      ValidationCardViewModel(
+        id: ValidationCapabilityId.protectionEnter,
+        title: 'P4. Enter Protection Mode',
+        description:
+            'Attempt to enable the optional Protection Mode runtime through the SDK facade.',
+        expectation: const ValidationExpectation(
+          expectedResult:
+              'With the default no-op adapter, entry fails safely and explains the missing platform capability instead of mutating existing runtime behavior.',
+          howToValidate:
+              'Use the enter action and verify the result remains explicit, non-crashing, and additive.',
+        ),
+        result: _buildProtectionEnterResult(),
+        currentState: <ValidationStateField>[
+          ValidationStateField(
+            label: 'Store-and-forward',
+            value: protectionStatus.storeAndForwardEnabled ? 'Enabled' : 'Off',
+          ),
+          ValidationStateField(
+            label: 'Platform background ready',
+            value: protectionStatus.platformBackgroundCapabilityReady
+                ? 'Yes'
+                : 'No',
+          ),
+          ValidationStateField(
+            label: 'Realtime ready',
+            value: protectionStatus.realtimeReady ? 'Yes' : 'No',
+          ),
+        ],
+      ),
+      ValidationCardViewModel(
+        id: ValidationCapabilityId.protectionExit,
+        title: 'P5. Exit Protection Mode',
+        description:
+            'Stop the additive Protection Mode runtime and return to the default off state.',
+        expectation: const ValidationExpectation(
+          expectedResult:
+              'Exit returns Protection Mode to off/inactive without affecting current SDK SOS/BLE behavior.',
+          howToValidate:
+              'Run exit and confirm the mode returns to off with no side effects on the rest of the validation console.',
+        ),
+        result: _buildProtectionExitResult(),
+        currentState: <ValidationStateField>[
+          ValidationStateField(
+            label: 'Mode after exit',
+            value: protectionStatus.modeState.name,
+          ),
+          ValidationStateField(
+            label: 'Runtime after exit',
+            value: protectionStatus.runtimeState.name,
+          ),
+        ],
+      ),
+      ValidationCardViewModel(
+        id: ValidationCapabilityId.protectionFlushQueues,
+        title: 'P6. Flush protection queues',
+        description:
+            'Exercise the MVP queue flush hook without introducing a risky new queueing model.',
+        expectation: const ValidationExpectation(
+          expectedResult:
+              'Queue flush remains a safe stub and reports counts explicitly.',
+          howToValidate:
+              'Run the flush action and confirm the result is returned cleanly even when nothing is flushed yet.',
+        ),
+        result: _buildProtectionFlushResult(),
+        currentState: <ValidationStateField>[
+          ValidationStateField(
+            label: 'Status pending SOS',
+            value: protectionStatus.pendingSosCount.toString(),
+          ),
+          ValidationStateField(
+            label: 'Status pending telemetry',
+            value: protectionStatus.pendingTelemetryCount.toString(),
+          ),
+        ],
+      ),
+      ValidationCardViewModel(
+        id: ValidationCapabilityId.protectionRehydrate,
+        title: 'P7. Rehydrate protection state',
+        description:
+            'Recompute additive Protection Mode state from available SDK context without arming anything automatically.',
+        expectation: const ValidationExpectation(
+          expectedResult:
+              'Rehydration refreshes the current Protection snapshot only and does not alter startup behavior.',
+          howToValidate:
+              'Run rehydrate and confirm the status refreshes while the rest of the SDK remains untouched.',
+        ),
+        result: _buildProtectionRehydrateResult(),
+        currentState: <ValidationStateField>[
+          ValidationStateField(
+            label: 'Session ready',
+            value: protectionStatus.sessionReady ? 'Yes' : 'No',
+          ),
+          ValidationStateField(
+            label: 'Device paired',
+            value: protectionStatus.devicePaired ? 'Yes' : 'No',
+          ),
+          ValidationStateField(
+            label: 'Bluetooth ready',
+            value: protectionStatus.bluetoothEnabled ? 'Yes' : 'No',
+          ),
+        ],
+      ),
+    ];
+  }
+
   ValidationSummaryViewModel buildCoreSummaryViewModel({
     required ValidationBackendConfig activeBackendConfig,
     required bool activeBackendLocalhostWarning,
@@ -1469,6 +1794,16 @@ class ValidationConsoleController extends ChangeNotifier {
     );
   }
 
+  ValidationSummaryViewModel buildProtectionSummaryViewModel() {
+    final cards = buildProtectionCapabilityCards();
+    return _buildSummaryFromCards(
+      title: 'Protection Mode Readiness',
+      description:
+          'Optional Protection Mode readiness (${cards.length} capability cards)',
+      cards: cards,
+    );
+  }
+
   ValidationSummaryViewModel buildSummaryViewModel({
     required ValidationBackendConfig activeBackendConfig,
     required bool activeBackendLocalhostWarning,
@@ -1487,6 +1822,7 @@ class ValidationConsoleController extends ChangeNotifier {
         sdkGeneration: sdkGeneration,
       ),
       ...buildBleCapabilityCards(),
+      ...buildProtectionCapabilityCards(),
     ];
     return _buildSummaryFromCards(
       title: 'Overall Readiness',
@@ -2042,6 +2378,145 @@ class ValidationConsoleController extends ChangeNotifier {
       status: ValidationRunStatus.notRun,
       diagnosticText:
           'Apply a different backend configuration to validate SDK rebootstrap behavior.',
+    );
+  }
+
+  ValidationCapabilityResult _buildProtectionReadinessResult() {
+    final recorded = _capabilityRuns[ValidationCapabilityId.protectionReadiness];
+    if (recorded?.status == ValidationRunStatus.running) {
+      return recorded!;
+    }
+    if (protectionReadiness.canArm) {
+      return _mergeWithRecorded(
+        ValidationCapabilityId.protectionReadiness,
+        ValidationCapabilityResult(
+          status: protectionReadiness.warnings.isEmpty
+              ? ValidationRunStatus.ok
+              : ValidationRunStatus.warning,
+          diagnosticText: protectionReadiness.warnings.isEmpty
+              ? 'Protection Mode can be armed from the current SDK context.'
+              : protectionReadiness.warnings.join(' '),
+        ),
+      );
+    }
+    if (protectionReadiness.blockingIssues.isNotEmpty) {
+      return _mergeWithRecorded(
+        ValidationCapabilityId.protectionReadiness,
+        ValidationCapabilityResult(
+          status: ValidationRunStatus.warning,
+          diagnosticText: protectionReadiness.blockingIssues
+              .map((issue) => issue.message)
+              .join(' '),
+        ),
+      );
+    }
+    return _mergeWithRecorded(
+      ValidationCapabilityId.protectionReadiness,
+      const ValidationCapabilityResult(
+        status: ValidationRunStatus.notRun,
+        diagnosticText:
+            'Protection Mode is optional and currently off. Run readiness to inspect blockers and warnings.',
+      ),
+    );
+  }
+
+  ValidationCapabilityResult _buildProtectionStatusResult() {
+    return ValidationCapabilityResult(
+      status: protectionStatus.modeState == ProtectionModeState.off
+          ? ValidationRunStatus.notRun
+          : protectionStatus.modeState == ProtectionModeState.error
+              ? ValidationRunStatus.nok
+              : protectionStatus.modeState == ProtectionModeState.degraded
+                  ? ValidationRunStatus.warning
+                  : ValidationRunStatus.ok,
+      diagnosticText:
+          'Protection Mode is ${protectionStatus.modeState.name} with ${protectionStatus.coverageLevel.name} coverage and ${protectionStatus.runtimeState.name} runtime state.',
+    );
+  }
+
+  ValidationCapabilityResult _buildProtectionDiagnosticsResult() {
+    if ((protectionDiagnostics.lastFailureReason ?? '').trim().isNotEmpty) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.warning,
+        diagnosticText: protectionDiagnostics.lastFailureReason,
+      );
+    }
+    return ValidationCapabilityResult(
+      status: ValidationRunStatus.notRun,
+      diagnosticText:
+          'Protection diagnostics are idle until readiness, enter, flush, or rehydrate actions are run.',
+    );
+  }
+
+  ValidationCapabilityResult _buildProtectionEnterResult([
+    EnterProtectionModeResult? result,
+  ]) {
+    final recorded = _capabilityRuns[ValidationCapabilityId.protectionEnter];
+    if (result != null) {
+      return ValidationCapabilityResult(
+        status: result.success
+            ? (result.status.modeState == ProtectionModeState.degraded
+                ? ValidationRunStatus.warning
+                : ValidationRunStatus.ok)
+            : ValidationRunStatus.warning,
+        diagnosticText: result.success
+            ? 'Protection Mode entered with ${result.status.modeState.name} coverage semantics.'
+            : (result.blockingIssues.isEmpty
+                ? 'Protection Mode could not be entered.'
+                : result.blockingIssues.map((issue) => issue.message).join(' ')),
+      );
+    }
+    if (recorded != null) {
+      return recorded;
+    }
+    return const ValidationCapabilityResult(
+      status: ValidationRunStatus.notRun,
+      diagnosticText:
+          'Enter Protection Mode explicitly to validate the additive lifecycle.',
+    );
+  }
+
+  ValidationCapabilityResult _buildProtectionExitResult() {
+    final recorded = _capabilityRuns[ValidationCapabilityId.protectionExit];
+    if (recorded != null) {
+      return recorded;
+    }
+    if (protectionStatus.modeState == ProtectionModeState.off) {
+      return const ValidationCapabilityResult(
+        status: ValidationRunStatus.notRun,
+        diagnosticText:
+            'Protection Mode is already off by default and has not required an exit yet.',
+      );
+    }
+    return const ValidationCapabilityResult(
+      status: ValidationRunStatus.ok,
+      diagnosticText: 'Protection Mode has been returned to the off state.',
+    );
+  }
+
+  ValidationCapabilityResult _buildProtectionFlushResult() {
+    final recorded =
+        _capabilityRuns[ValidationCapabilityId.protectionFlushQueues];
+    if (recorded != null) {
+      return recorded;
+    }
+    return const ValidationCapabilityResult(
+      status: ValidationRunStatus.notRun,
+      diagnosticText:
+          'Protection queue flushing is available as an MVP stub and has not been run yet.',
+    );
+  }
+
+  ValidationCapabilityResult _buildProtectionRehydrateResult() {
+    final recorded =
+        _capabilityRuns[ValidationCapabilityId.protectionRehydrate];
+    if (recorded != null) {
+      return recorded;
+    }
+    return const ValidationCapabilityResult(
+      status: ValidationRunStatus.notRun,
+      diagnosticText:
+          'Protection state rehydration is available but has not been run yet.',
     );
   }
 
@@ -2929,6 +3404,8 @@ class ValidationConsoleController extends ChangeNotifier {
     _sosEventSub?.cancel();
     _contactsSub?.cancel();
     _deviceStatusSub?.cancel();
+    _protectionStatusSub?.cancel();
+    _protectionDiagnosticsSub?.cancel();
     if (_deviceDebugListener != null) {
       deviceDebugController.removeListener(_deviceDebugListener!);
     }

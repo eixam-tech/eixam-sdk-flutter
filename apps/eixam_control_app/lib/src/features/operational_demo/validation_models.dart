@@ -29,6 +29,13 @@ enum ValidationCapabilityId {
   ackRelay,
   shutdownCommand,
   backendDeviceRegistryAlignment,
+  protectionReadiness,
+  protectionStatus,
+  protectionDiagnostics,
+  protectionEnter,
+  protectionExit,
+  protectionFlushQueues,
+  protectionRehydrate,
   globalSummary,
 }
 

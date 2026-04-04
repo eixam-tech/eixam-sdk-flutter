@@ -373,6 +373,36 @@ void main() {
       expect(card.expectation.expectedResult, contains('does not by itself'));
       expect(currentState['Bridge SOS visibility'], 'BLE SOS packet seen');
     });
+
+    test('protection readiness reports default blockers without changing mode',
+        () {
+      controller.protectionReadiness = sdk.protectionReadiness;
+      controller.protectionStatus = sdk.protectionStatus;
+      final card = controller
+          .buildProtectionCapabilityCards()
+          .firstWhere(
+            (item) => item.id == ValidationCapabilityId.protectionReadiness,
+          );
+
+      expect(card.result.status, ValidationRunStatus.warning);
+      expect(card.result.diagnosticText, contains('Protection Mode'));
+      expect(controller.protectionStatus.modeState, ProtectionModeState.off);
+    });
+
+    test('enter protection mode records a safe warning with no-op blockers',
+        () async {
+      await controller.enterProtectionMode();
+
+      final card = controller
+          .buildProtectionCapabilityCards()
+          .firstWhere(
+            (item) => item.id == ValidationCapabilityId.protectionEnter,
+          );
+
+      expect(card.result.status, ValidationRunStatus.warning);
+      expect(card.result.diagnosticText, contains('Protection Mode'));
+      expect(controller.protectionStatus.modeState, ProtectionModeState.off);
+    });
   });
 }
 
@@ -481,11 +511,50 @@ class _FakeValidationSdk implements EixamConnectSdk {
     activated: false,
     connected: false,
   );
+  ProtectionReadinessReport protectionReadiness =
+      const ProtectionReadinessReport(
+    canArm: false,
+    blockingIssues: <ProtectionBlockingIssue>[
+      ProtectionBlockingIssue(
+        type: ProtectionBlockingIssueType.platformBackgroundCapabilityMissing,
+        message:
+            'Protection Mode platform runtime is not configured in this host app yet.',
+        canBeResolvedInline: false,
+      ),
+    ],
+  );
+  ProtectionStatus protectionStatus = ProtectionStatus(
+    modeState: ProtectionModeState.off,
+    coverageLevel: ProtectionCoverageLevel.none,
+    runtimeState: ProtectionRuntimeState.inactive,
+    sessionReady: false,
+    devicePaired: false,
+    deviceConnected: false,
+    bluetoothEnabled: false,
+    locationPermissionGranted: false,
+    notificationsPermissionGranted: false,
+    platformBackgroundCapabilityReady: false,
+    backendReachable: false,
+    realtimeReady: false,
+    storeAndForwardEnabled: false,
+    pendingSosCount: 0,
+    pendingTelemetryCount: 0,
+    updatedAt: DateTime.utc(2026, 4, 4),
+  );
+  ProtectionDiagnostics protectionDiagnostics = const ProtectionDiagnostics(
+    pendingSosCount: 0,
+    pendingTelemetryCount: 0,
+  );
   PermissionState permissionState = const PermissionState();
   DeviceSosStatus deviceSosStatus = DeviceSosStatus.initial();
   Object? telemetryError;
   Object? triggerError;
   Object? cancelError;
+  final StreamController<ProtectionStatus> _protectionStatusController =
+      StreamController<ProtectionStatus>.broadcast();
+  final StreamController<ProtectionDiagnostics>
+      _protectionDiagnosticsController =
+      StreamController<ProtectionDiagnostics>.broadcast();
 
   @override
   Future<SosIncident> triggerSos(SosTriggerPayload payload) async {
@@ -532,6 +601,68 @@ class _FakeValidationSdk implements EixamConnectSdk {
 
   @override
   Future<DeviceStatus> getDeviceStatus() async => deviceStatus;
+
+  @override
+  Future<ProtectionReadinessReport> evaluateProtectionReadiness() async =>
+      protectionReadiness;
+
+  @override
+  Future<EnterProtectionModeResult> enterProtectionMode({
+    ProtectionModeOptions options = const ProtectionModeOptions(),
+  }) async {
+    protectionStatus = protectionStatus.copyWith(
+      updatedAt: DateTime.utc(2026, 4, 4, 12),
+    );
+    _protectionStatusController.add(protectionStatus);
+    return EnterProtectionModeResult(
+      success: false,
+      status: protectionStatus,
+      blockingIssues: protectionReadiness.blockingIssues,
+    );
+  }
+
+  @override
+  Future<ProtectionStatus> exitProtectionMode() async {
+    protectionStatus = protectionStatus.copyWith(
+      modeState: ProtectionModeState.off,
+      runtimeState: ProtectionRuntimeState.inactive,
+      coverageLevel: ProtectionCoverageLevel.none,
+      updatedAt: DateTime.utc(2026, 4, 4, 13),
+    );
+    _protectionStatusController.add(protectionStatus);
+    return protectionStatus;
+  }
+
+  @override
+  Future<ProtectionStatus> getProtectionStatus() async => protectionStatus;
+
+  @override
+  Stream<ProtectionStatus> watchProtectionStatus() =>
+      _protectionStatusController.stream;
+
+  @override
+  Future<ProtectionDiagnostics> getProtectionDiagnostics() async =>
+      protectionDiagnostics;
+
+  @override
+  Stream<ProtectionDiagnostics> watchProtectionDiagnostics() =>
+      _protectionDiagnosticsController.stream;
+
+  @override
+  Future<ProtectionStatus> rehydrateProtectionState() async {
+    _protectionStatusController.add(protectionStatus);
+    return protectionStatus;
+  }
+
+  @override
+  Future<FlushProtectionQueuesResult> flushProtectionQueues() async {
+    _protectionDiagnosticsController.add(protectionDiagnostics);
+    return const FlushProtectionQueuesResult(
+      flushedSosCount: 0,
+      flushedTelemetryCount: 0,
+      success: true,
+    );
+  }
 
   @override
   Future<DeviceStatus> refreshDeviceStatus() async => deviceStatus;
@@ -584,5 +715,7 @@ class _FakeValidationSdk implements EixamConnectSdk {
   Future<void> dispose() async {
     await _sosStateController.close();
     await _sosEventController.close();
+    await _protectionStatusController.close();
+    await _protectionDiagnosticsController.close();
   }
 }

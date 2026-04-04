@@ -20,6 +20,8 @@ import 'ble_auto_reconnect_coordinator.dart';
 import 'ble_sos_notification_payload.dart';
 import 'guided_rescue_runtime.dart';
 import 'operational_realtime_client.dart';
+import 'protection_mode_controller.dart';
+import 'protection_platform_adapter.dart';
 import 'sdk_mqtt_contract.dart';
 
 /// Main SDK orchestrator used by host apps.
@@ -47,6 +49,7 @@ class EixamConnectSdkImpl
   final SdkSessionStore? sessionStore;
   final SdkSessionContext? sessionContext;
   final SdkIdentityRemoteDataSource? identityRemoteDataSource;
+  final ProtectionPlatformAdapter protectionPlatformAdapter;
   final Future<void> Function()? disposeCallback;
 
   final StreamController<EixamSdkEvent> _eventsController =
@@ -95,6 +98,7 @@ class EixamConnectSdkImpl
   SdkBridgeDiagnostics _bridgeDiagnostics = const SdkBridgeDiagnostics();
   late final BleAutoReconnectCoordinator _bleAutoReconnectCoordinator;
   late final BleOperationalRuntimeBridge _bleOperationalRuntimeBridge;
+  late final ProtectionModeController _protectionModeController;
 
   static const String _openAppActionId = 'open_app';
   static const String _cancelSosActionId = 'cancel_sos';
@@ -120,8 +124,10 @@ class EixamConnectSdkImpl
     this.sessionStore,
     this.sessionContext,
     this.identityRemoteDataSource,
+    ProtectionPlatformAdapter? protectionPlatformAdapter,
     this.disposeCallback,
-  }) {
+  }) : protectionPlatformAdapter =
+           protectionPlatformAdapter ?? const NoopProtectionPlatformAdapter() {
     _bleAutoReconnectCoordinator = BleAutoReconnectCoordinator(
       deviceRepository: deviceRepository,
       preferredDeviceStore: preferredBleDeviceStore,
@@ -134,6 +140,14 @@ class EixamConnectSdkImpl
       sosRepository: sosRepository,
       deviceSosController: deviceSosController,
       sessionProvider: () => _session,
+    );
+    _protectionModeController = ProtectionModeController(
+      platformAdapter: this.protectionPlatformAdapter,
+      sessionProvider: () async => _session,
+      deviceStatusProvider: () async =>
+          _lastDeviceStatus ?? await deviceRepository.getDeviceStatus(),
+      permissionStateProvider: permissionsRepository.getPermissionState,
+      operationalDiagnosticsProvider: () async => _buildOperationalDiagnostics(),
     );
     _bindSosStreams();
   }
@@ -548,6 +562,53 @@ class EixamConnectSdkImpl
       title: title,
       body: body,
     );
+  }
+
+  @override
+  Future<ProtectionReadinessReport> evaluateProtectionReadiness() {
+    return _protectionModeController.evaluateReadiness();
+  }
+
+  @override
+  Future<EnterProtectionModeResult> enterProtectionMode({
+    ProtectionModeOptions options = const ProtectionModeOptions(),
+  }) {
+    return _protectionModeController.enter(options: options);
+  }
+
+  @override
+  Future<ProtectionStatus> exitProtectionMode() {
+    return _protectionModeController.exit();
+  }
+
+  @override
+  Future<ProtectionStatus> getProtectionStatus() {
+    return _protectionModeController.getStatus();
+  }
+
+  @override
+  Stream<ProtectionStatus> watchProtectionStatus() {
+    return _protectionModeController.watchStatus();
+  }
+
+  @override
+  Future<ProtectionDiagnostics> getProtectionDiagnostics() {
+    return _protectionModeController.getDiagnostics();
+  }
+
+  @override
+  Stream<ProtectionDiagnostics> watchProtectionDiagnostics() {
+    return _protectionModeController.watchDiagnostics();
+  }
+
+  @override
+  Future<ProtectionStatus> rehydrateProtectionState() {
+    return _protectionModeController.rehydrate();
+  }
+
+  @override
+  Future<FlushProtectionQueuesResult> flushProtectionQueues() {
+    return _protectionModeController.flushQueues();
   }
 
   @override
@@ -1661,6 +1722,7 @@ class EixamConnectSdkImpl
     await _sosStateSub?.cancel();
     await _bridgeDiagnosticsSub?.cancel();
     await _bleOperationalRuntimeBridge.dispose();
+    await _protectionModeController.dispose();
     await deviceSosController.dispose();
     await realtimeClient.disconnect();
     await disposeCallback?.call();

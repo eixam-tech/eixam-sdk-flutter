@@ -374,6 +374,179 @@ void main() {
       expect((await sdk.getLastRealtimeEvent())?.type, 'sos_ack');
     });
 
+    test(
+        'default protection mode stays off and reports no-op platform readiness blockers',
+        () async {
+      final readiness = await sdk.evaluateProtectionReadiness();
+      final status = await sdk.getProtectionStatus();
+      final diagnostics = await sdk.getProtectionDiagnostics();
+
+      expect(status.modeState, ProtectionModeState.off);
+      expect(status.runtimeState, ProtectionRuntimeState.inactive);
+      expect(status.coverageLevel, ProtectionCoverageLevel.none);
+      expect(readiness.canArm, isFalse);
+      expect(
+        readiness.blockingIssues.map((issue) => issue.type),
+        contains(ProtectionBlockingIssueType.platformBackgroundCapabilityMissing),
+      );
+      expect(diagnostics.pendingSosCount, 0);
+      expect(diagnostics.pendingTelemetryCount, 0);
+    });
+
+    test('enterProtectionMode does not arm when critical blockers exist',
+        () async {
+      final result = await sdk.enterProtectionMode();
+
+      expect(result.success, isFalse);
+      expect(result.status.modeState, ProtectionModeState.off);
+      expect(
+        result.blockingIssues.map((issue) => issue.type),
+        contains(ProtectionBlockingIssueType.platformBackgroundCapabilityMissing),
+      );
+    });
+
+    test('protection mode can enter and exit with a ready platform adapter',
+        () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+        notifications: SdkPermissionStatus.granted,
+        bluetooth: SdkPermissionStatus.granted,
+        bluetoothEnabled: true,
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-armed',
+          connected: true,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        ),
+      );
+      final localRealtimeClient = FakeRealtimeClient()
+        ..stateToEmitOnConnect = RealtimeConnectionState.connected;
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+      );
+      final localDeviceSosController = DeviceSosController();
+      final runtimeSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: localAdapter,
+      );
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+            canonicalExternalUserId: 'canonical-user',
+          ),
+        );
+
+        final enterResult = await runtimeSdk.enterProtectionMode();
+        final exitedStatus = await runtimeSdk.exitProtectionMode();
+
+        expect(enterResult.success, isTrue);
+        expect(enterResult.status.modeState, ProtectionModeState.armed);
+        expect(enterResult.status.coverageLevel, ProtectionCoverageLevel.full);
+        expect(exitedStatus.modeState, ProtectionModeState.off);
+        expect(exitedStatus.runtimeState, ProtectionRuntimeState.inactive);
+        expect(localAdapter.startCallCount, 1);
+        expect(localAdapter.stopCallCount, 1);
+      } finally {
+        await runtimeSdk.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test('watchProtectionStatus emits additive transitions', () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+        notifications: SdkPermissionStatus.granted,
+        bluetooth: SdkPermissionStatus.granted,
+        bluetoothEnabled: true,
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-watch',
+          connected: false,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        ),
+      );
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+      );
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController();
+      final runtimeSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: localAdapter,
+      );
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+          ),
+        );
+
+        final statusQueue =
+            StreamQueue<ProtectionStatus>(runtimeSdk.watchProtectionStatus());
+        expect((await statusQueue.next).modeState, ProtectionModeState.off);
+
+        final armingFuture = statusQueue.next;
+        final degradedFuture = statusQueue.next;
+        await runtimeSdk.enterProtectionMode();
+
+        expect((await armingFuture).modeState, ProtectionModeState.arming);
+        expect((await degradedFuture).modeState, ProtectionModeState.degraded);
+        await statusQueue.cancel();
+      } finally {
+        await runtimeSdk.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
     test('watchRealtime streams expose values pushed after initialization',
         () async {
       await sdk.initialize(
@@ -2918,6 +3091,48 @@ class _RecordingClient extends http.BaseClient {
       request: request,
     );
   }
+}
+
+class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
+  _FakeProtectionPlatformAdapter({
+    required this.snapshot,
+    required this.startResult,
+  });
+
+  final ProtectionPlatformSnapshot snapshot;
+  final ProtectionPlatformStartResult startResult;
+  int startCallCount = 0;
+  int stopCallCount = 0;
+
+  @override
+  Future<ProtectionPlatformSnapshot> getPlatformSnapshot() async => snapshot;
+
+  @override
+  Future<ProtectionPlatformStartResult> startProtectionRuntime() async {
+    startCallCount++;
+    return startResult;
+  }
+
+  @override
+  Future<void> stopProtectionRuntime() async {
+    stopCallCount++;
+  }
+
+  @override
+  Future<ProtectionPermissionResult> requestProtectionPermissions() async {
+    return const ProtectionPermissionResult(
+      locationGranted: true,
+      notificationsGranted: true,
+      bluetoothGranted: true,
+    );
+  }
+
+  @override
+  Future<void> openProtectionSettings() async {}
+
+  @override
+  Stream<ProtectionPlatformEvent> watchPlatformEvents() =>
+      const Stream<ProtectionPlatformEvent>.empty();
 }
 
 class _FakeSdkMqttTransport implements SdkMqttTransport {

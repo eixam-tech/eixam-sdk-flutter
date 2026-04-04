@@ -24,6 +24,8 @@ export 'src/sdk/guided_rescue_runtime.dart';
 export 'src/sdk/mqtt_realtime_client.dart';
 export 'src/sdk/mqtt5_sdk_transport.dart';
 export 'src/sdk/device_view_state.dart';
+export 'src/sdk/protection_mode_controller.dart';
+export 'src/sdk/protection_platform_adapter.dart';
 export 'src/sdk/rescue_view_state.dart';
 export 'src/sdk/sos_controller.dart';
 export 'src/sdk/sos_view_state.dart';

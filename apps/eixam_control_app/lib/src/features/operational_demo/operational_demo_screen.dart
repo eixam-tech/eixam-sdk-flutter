@@ -143,6 +143,7 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
             sdkGeneration: widget.sdkGeneration,
           );
           final bleCards = _controller.buildBleCapabilityCards();
+          final protectionCards = _controller.buildProtectionCapabilityCards();
           final coreSummary = _controller.buildCoreSummaryViewModel(
             activeBackendConfig: widget.backendConfig,
             activeBackendLocalhostWarning: _showsActiveBackendLocalhostWarning,
@@ -152,6 +153,8 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
             sdkGeneration: widget.sdkGeneration,
           );
           final bleSummary = _controller.buildBleSummaryViewModel();
+          final protectionSummary =
+              _controller.buildProtectionSummaryViewModel();
           final overallSummary = _controller.buildSummaryViewModel(
             activeBackendConfig: widget.backendConfig,
             activeBackendLocalhostWarning: _showsActiveBackendLocalhostWarning,
@@ -189,6 +192,16 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
                       ),
                       const SizedBox(height: 16),
                       ..._buildMvpCards(coreCards),
+                      const SizedBox(height: 16),
+                      ValidationSummaryCard(summary: protectionSummary),
+                      const SizedBox(height: 16),
+                      _buildSectionHeader(
+                        title: 'Protection Mode',
+                        description:
+                            'Optional additive MVP surface. It stays off by default and currently uses a safe no-op platform adapter unless the host app wires native background support later.',
+                      ),
+                      const SizedBox(height: 16),
+                      ..._buildProtectionCards(protectionCards),
                       const SizedBox(height: 16),
                       ValidationSummaryCard(summary: bleSummary),
                       const SizedBox(height: 16),
@@ -278,6 +291,24 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
     ];
   }
 
+  List<Widget> _buildProtectionCards(List<ValidationCardViewModel> cards) {
+    return <Widget>[
+      _buildProtectionReadinessCard(cards[0]),
+      const SizedBox(height: 16),
+      _buildProtectionStatusCard(cards[1]),
+      const SizedBox(height: 16),
+      _buildProtectionDiagnosticsCard(cards[2]),
+      const SizedBox(height: 16),
+      _buildProtectionEnterCard(cards[3]),
+      const SizedBox(height: 16),
+      _buildProtectionExitCard(cards[4]),
+      const SizedBox(height: 16),
+      _buildProtectionFlushCard(cards[5]),
+      const SizedBox(height: 16),
+      _buildProtectionRehydrateCard(cards[6]),
+    ];
+  }
+
   Widget _buildSectionHeader({
     required String title,
     required String description,
@@ -285,6 +316,95 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
     return SectionCard(
       title: title,
       child: Text(description),
+    );
+  }
+
+  Widget _buildProtectionReadinessCard(ValidationCardViewModel card) {
+    return ValidationCapabilityCard(
+      viewModel: card,
+      actions: <Widget>[
+        ElevatedButton(
+          onPressed:
+              _controller.loadingProtection ? null : _controller.evaluateProtectionReadiness,
+          child: const Text('Evaluate readiness'),
+        ),
+      ],
+      child: const Text(
+        'Protection Mode is disabled by default. Readiness explains what is missing before any host app could opt in.',
+      ),
+    );
+  }
+
+  Widget _buildProtectionStatusCard(ValidationCardViewModel card) {
+    return ValidationCapabilityCard(
+      viewModel: card,
+      child: const Text(
+        'This snapshot is additive only. It does not change existing SOS, BLE, or startup behavior unless Protection Mode is explicitly entered.',
+      ),
+    );
+  }
+
+  Widget _buildProtectionDiagnosticsCard(ValidationCardViewModel card) {
+    return ValidationCapabilityCard(
+      viewModel: card,
+      child: const Text(
+        'The MVP diagnostics focus on visibility, not full native background runtime support yet.',
+      ),
+    );
+  }
+
+  Widget _buildProtectionEnterCard(ValidationCardViewModel card) {
+    return ValidationCapabilityCard(
+      viewModel: card,
+      actions: <Widget>[
+        ElevatedButton(
+          onPressed:
+              _controller.loadingProtection ? null : _controller.enterProtectionMode,
+          child: const Text('Enter Protection Mode'),
+        ),
+      ],
+      child: const Text(
+        'With the default no-op adapter, this should fail safely and explain the missing platform background capability.',
+      ),
+    );
+  }
+
+  Widget _buildProtectionExitCard(ValidationCardViewModel card) {
+    return ValidationCapabilityCard(
+      viewModel: card,
+      actions: <Widget>[
+        OutlinedButton(
+          onPressed:
+              _controller.loadingProtection ? null : _controller.exitProtectionMode,
+          child: const Text('Exit Protection Mode'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildProtectionFlushCard(ValidationCardViewModel card) {
+    return ValidationCapabilityCard(
+      viewModel: card,
+      actions: <Widget>[
+        OutlinedButton(
+          onPressed:
+              _controller.loadingProtection ? null : _controller.flushProtectionQueues,
+          child: const Text('Flush queues'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildProtectionRehydrateCard(ValidationCardViewModel card) {
+    return ValidationCapabilityCard(
+      viewModel: card,
+      actions: <Widget>[
+        OutlinedButton(
+          onPressed:
+              _controller.loadingProtection ? null : _controller.rehydrateProtectionState,
+          child: const Text('Rehydrate state'),
+        ),
+      ],
     );
   }
 

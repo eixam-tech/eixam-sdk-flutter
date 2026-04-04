@@ -9,6 +9,7 @@ import '../entities/emergency_contact.dart';
 import '../entities/guided_rescue_state.dart';
 import '../entities/permission_state.dart';
 import '../entities/preferred_device.dart';
+import '../entities/protection_mode_models.dart';
 import '../entities/sdk_operational_diagnostics.dart';
 import '../entities/sdk_telemetry_payload.dart';
 import '../entities/sos_incident.dart';
@@ -41,6 +42,17 @@ abstract class EixamConnectSdk {
 
   Future<SdkOperationalDiagnostics> getOperationalDiagnostics();
   Stream<SdkOperationalDiagnostics> watchOperationalDiagnostics();
+  Future<ProtectionReadinessReport> evaluateProtectionReadiness();
+  Future<EnterProtectionModeResult> enterProtectionMode({
+    ProtectionModeOptions options = const ProtectionModeOptions(),
+  });
+  Future<ProtectionStatus> exitProtectionMode();
+  Future<ProtectionStatus> getProtectionStatus();
+  Stream<ProtectionStatus> watchProtectionStatus();
+  Future<ProtectionDiagnostics> getProtectionDiagnostics();
+  Stream<ProtectionDiagnostics> watchProtectionDiagnostics();
+  Future<ProtectionStatus> rehydrateProtectionState();
+  Future<FlushProtectionQueuesResult> flushProtectionQueues();
 
   Future<DeviceStatus> connectDevice({required String pairingCode});
   Future<void> disconnectDevice();
