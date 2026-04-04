@@ -50,6 +50,17 @@ class ValidationCapabilityCard extends StatelessWidget {
             label: 'How to validate',
             value: viewModel.expectation.howToValidate,
           ),
+          if (viewModel.prerequisites.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            const Text(
+              'Prerequisites',
+              style: TextStyle(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 8),
+            ...viewModel.prerequisites.map(
+              (field) => InfoLine(label: field.label, value: field.value),
+            ),
+          ],
           if (viewModel.currentState.isNotEmpty) ...[
             const SizedBox(height: 12),
             const Text(

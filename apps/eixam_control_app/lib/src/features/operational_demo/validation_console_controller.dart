@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
 import 'package:flutter/foundation.dart';
+import 'package:permission_handler/permission_handler.dart' as permission_handler;
 
 import '../../bootstrap/validation_backend_config.dart';
 import 'validation_models.dart';
@@ -217,18 +218,27 @@ class ValidationConsoleController extends ChangeNotifier {
   Future<void> runTriggerSosValidation({
     required String message,
     required String triggerSource,
+    Duration timeout = const Duration(seconds: 5),
   }) async {
-    _recordCapabilityResult(
-      ValidationCapabilityId.triggerSos,
-      const ValidationCapabilityResult(
-        status: ValidationRunStatus.running,
-        diagnosticText: 'Triggering SOS through the public SDK facade...',
-      ),
-    );
-    await triggerSos(message: message, triggerSource: triggerSource);
-    _recordCapabilityResult(
-      ValidationCapabilityId.triggerSos,
-      _buildTriggerSosResult(),
+    if (!_triggerSosLocationGranted) {
+      _recordCapabilityResult(
+        ValidationCapabilityId.triggerSos,
+        const ValidationCapabilityResult(
+          status: ValidationRunStatus.warning,
+          diagnosticText:
+              'User location permission is required before running this SOS validation.',
+        ),
+      );
+      return;
+    }
+    await _runBoundedValidation<_SosValidationSnapshot>(
+      id: ValidationCapabilityId.triggerSos,
+      runningDiagnostic: 'Triggering SOS through the public SDK facade...',
+      timeout: timeout,
+      captureBaseline: _captureSosValidationSnapshot,
+      action: () => triggerSos(message: message, triggerSource: triggerSource),
+      refresh: _refreshSosValidationState,
+      evaluate: _evaluateTriggerSosValidation,
     );
   }
 
@@ -240,18 +250,17 @@ class ValidationConsoleController extends ChangeNotifier {
     });
   }
 
-  Future<void> runCancelSosValidation() async {
-    _recordCapabilityResult(
-      ValidationCapabilityId.cancelSos,
-      const ValidationCapabilityResult(
-        status: ValidationRunStatus.running,
-        diagnosticText: 'Requesting SOS cancellation through the SDK...',
-      ),
-    );
-    await cancelSos();
-    _recordCapabilityResult(
-      ValidationCapabilityId.cancelSos,
-      _buildCancelSosResult(),
+  Future<void> runCancelSosValidation({
+    Duration timeout = const Duration(seconds: 7),
+  }) async {
+    await _runBoundedValidation<_SosValidationSnapshot>(
+      id: ValidationCapabilityId.cancelSos,
+      runningDiagnostic: 'Requesting SOS cancellation through the SDK...',
+      timeout: timeout,
+      captureBaseline: _captureSosValidationSnapshot,
+      action: cancelSos,
+      refresh: _refreshSosValidationState,
+      evaluate: _evaluateCancelSosValidation,
     );
   }
 
@@ -263,18 +272,18 @@ class ValidationConsoleController extends ChangeNotifier {
     });
   }
 
-  Future<void> runTelemetryValidation(SdkTelemetryPayload payload) async {
-    _recordCapabilityResult(
-      ValidationCapabilityId.telemetrySample,
-      const ValidationCapabilityResult(
-        status: ValidationRunStatus.running,
-        diagnosticText: 'Publishing telemetry sample through the SDK...',
-      ),
-    );
-    await publishTelemetry(payload);
-    _recordCapabilityResult(
-      ValidationCapabilityId.telemetrySample,
-      _buildTelemetryResult(),
+  Future<void> runTelemetryValidation(
+    SdkTelemetryPayload payload, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    await _runBoundedValidation<_TelemetryValidationSnapshot>(
+      id: ValidationCapabilityId.telemetrySample,
+      runningDiagnostic: 'Publishing telemetry sample through the SDK...',
+      timeout: timeout,
+      captureBaseline: _captureTelemetryValidationSnapshot,
+      action: () => publishTelemetry(payload),
+      refresh: _refreshTelemetryValidationState,
+      evaluate: _evaluateTelemetryValidation,
     );
   }
 
@@ -811,6 +820,20 @@ class ValidationConsoleController extends ChangeNotifier {
               'Run the guided SOS trigger and inspect the SDK SOS state, incident snapshot, and pending SOS diagnostics.',
         ),
         result: _buildTriggerSosResult(),
+        prerequisites: <ValidationStateField>[
+          ValidationStateField(
+            label: 'Location permission',
+            value: triggerSosLocationPrerequisiteLabel,
+          ),
+          ValidationStateField(
+            label: 'MQTT ready',
+            value: triggerSosMqttReady ? 'Yes' : 'No',
+          ),
+          ValidationStateField(
+            label: 'Session ready',
+            value: triggerSosSessionReady ? 'Yes' : 'No',
+          ),
+        ],
         currentState: <ValidationStateField>[
           ValidationStateField(label: 'SOS state', value: sosState.name),
           ValidationStateField(
@@ -1604,6 +1627,74 @@ class ValidationConsoleController extends ChangeNotifier {
         (operationalDiagnostics.telemetryPublishTopic ?? '').trim().isNotEmpty;
   }
 
+  bool get _triggerSosLocationGranted =>
+      permissionState?.hasLocationAccess ?? false;
+
+  bool get triggerSosLocationNeedsSettings {
+    final location = permissionState?.location;
+    return location == SdkPermissionStatus.permanentlyDenied ||
+        location == SdkPermissionStatus.restricted ||
+        location == SdkPermissionStatus.serviceDisabled;
+  }
+
+  String get triggerSosLocationPrerequisiteLabel {
+    final location = permissionState?.location;
+    if (_triggerSosLocationGranted) {
+      return 'Granted';
+    }
+    if (triggerSosLocationNeedsSettings) {
+      return 'Permanently denied';
+    }
+    if (location == SdkPermissionStatus.denied) {
+      return 'Missing';
+    }
+    return location?.name ?? 'Unknown';
+  }
+
+  bool get triggerSosSessionReady =>
+      _hasSignedSession && _canonicalIdentityResolved;
+
+  bool get triggerSosMqttReady =>
+      operationalDiagnostics.connectionState ==
+          RealtimeConnectionState.connected &&
+      _mqttTopicReady;
+
+  Future<void> requestTriggerSosLocationPermission() async {
+    lastActionError = null;
+    notifyListeners();
+    try {
+      await sdk.requestLocationPermission();
+      await deviceDebugController.refreshPermissions();
+      _recordCapabilityResult(
+        ValidationCapabilityId.permissions,
+        _buildPermissionsResult(),
+      );
+    } catch (error) {
+      _handleActionError(error);
+    }
+  }
+
+  Future<void> openTriggerSosAppSettings() async {
+    lastActionError = null;
+    notifyListeners();
+    try {
+      final opened = await permission_handler.openAppSettings();
+      if (!opened) {
+        _handleActionError(
+          StateError('Unable to open app settings for location permission.'),
+        );
+        return;
+      }
+      await deviceDebugController.refreshPermissions();
+      _recordCapabilityResult(
+        ValidationCapabilityId.permissions,
+        _buildPermissionsResult(),
+      );
+    } catch (error) {
+      _handleActionError(error);
+    }
+  }
+
   ValidationCapabilityResult _buildBackendConfigurationResult({
     required ValidationBackendConfig activeBackendConfig,
     required bool showsAndroidLocalhostWarning,
@@ -1768,6 +1859,9 @@ class ValidationConsoleController extends ChangeNotifier {
     if (recorded?.status == ValidationRunStatus.running) {
       return recorded!;
     }
+    if (recorded != null) {
+      return recorded;
+    }
     if ((lastActionError ?? '').trim().isNotEmpty && recorded != null) {
       return ValidationCapabilityResult(
         status: ValidationRunStatus.nok,
@@ -1810,6 +1904,9 @@ class ValidationConsoleController extends ChangeNotifier {
     if (recorded?.status == ValidationRunStatus.running) {
       return recorded!;
     }
+    if (recorded != null) {
+      return recorded;
+    }
     if ((lastActionError ?? '').trim().isNotEmpty && recorded != null) {
       return ValidationCapabilityResult(
         status: ValidationRunStatus.nok,
@@ -1844,6 +1941,9 @@ class ValidationConsoleController extends ChangeNotifier {
     final recorded = _capabilityRuns[ValidationCapabilityId.telemetrySample];
     if (recorded?.status == ValidationRunStatus.running) {
       return recorded!;
+    }
+    if (recorded != null) {
+      return recorded;
     }
     if ((lastActionError ?? '').trim().isNotEmpty && recorded != null) {
       return ValidationCapabilityResult(
@@ -1959,6 +2059,255 @@ class ValidationConsoleController extends ChangeNotifier {
       lastExecutedAt: result.lastExecutedAt ?? DateTime.now().toUtc(),
     );
     notifyListeners();
+  }
+
+  _SosValidationSnapshot _captureSosValidationSnapshot() {
+    return _SosValidationSnapshot(
+      incidentId: lastSosIncident?.id,
+      incidentState: lastSosIncident?.state,
+      lastSosEventType: lastSosEvent?.runtimeType.toString(),
+    );
+  }
+
+  Future<void> _refreshSosValidationState() async {
+    sosState = await sdk.getSosState();
+    operationalDiagnostics = await sdk.getOperationalDiagnostics();
+    notifyListeners();
+  }
+
+  _TelemetryValidationSnapshot _captureTelemetryValidationSnapshot() {
+    return _TelemetryValidationSnapshot(
+      lastDecision: operationalDiagnostics.bridge.lastDecision,
+      hasPendingTelemetry:
+          operationalDiagnostics.bridge.pendingTelemetry != null,
+      lastSampleSignature:
+          _telemetryPayloadSignature(lastPublishedTelemetrySample),
+    );
+  }
+
+  Future<void> _refreshTelemetryValidationState() async {
+    operationalDiagnostics = await sdk.getOperationalDiagnostics();
+    notifyListeners();
+  }
+
+  String? _telemetryPayloadSignature(SdkTelemetryPayload? payload) {
+    return payload?.toJson().toString();
+  }
+
+  Future<void> _runBoundedValidation<T>({
+    required ValidationCapabilityId id,
+    required String runningDiagnostic,
+    required Duration timeout,
+    required T Function() captureBaseline,
+    required Future<void> Function() action,
+    required Future<void> Function() refresh,
+    required ValidationCapabilityResult Function(T baseline, Duration timeout)
+        evaluate,
+  }) async {
+    final baseline = captureBaseline();
+    final startedAt = DateTime.now().toUtc();
+    _recordCapabilityResult(
+      id,
+      ValidationCapabilityResult(
+        status: ValidationRunStatus.running,
+        diagnosticText: runningDiagnostic,
+        lastExecutedAt: startedAt,
+      ),
+    );
+    lastActionError = null;
+
+    final stopwatch = Stopwatch()..start();
+    try {
+      await action();
+      final actionError = (lastActionError ?? '').trim();
+      if (actionError.isNotEmpty) {
+        _recordCapabilityResult(
+          id,
+          ValidationCapabilityResult(
+            status: ValidationRunStatus.nok,
+            diagnosticText: actionError,
+            lastExecutedAt: startedAt,
+          ),
+        );
+        return;
+      }
+
+      await refresh();
+      final immediate = evaluate(baseline, timeout);
+      if (immediate.status == ValidationRunStatus.ok) {
+        _recordCapabilityResult(
+          id,
+          immediate.copyWith(lastExecutedAt: startedAt),
+        );
+        return;
+      }
+
+      final remaining = timeout - stopwatch.elapsed;
+      if (remaining > Duration.zero) {
+        await Future.delayed(remaining);
+        await refresh();
+      }
+
+      final settled = evaluate(baseline, timeout);
+      _recordCapabilityResult(id, settled.copyWith(lastExecutedAt: startedAt));
+    } catch (error) {
+      _recordCapabilityResult(
+        id,
+        ValidationCapabilityResult(
+          status: ValidationRunStatus.nok,
+          diagnosticText: error.toString(),
+          lastExecutedAt: startedAt,
+        ),
+      );
+    }
+  }
+
+  ValidationCapabilityResult _evaluateTriggerSosValidation(
+    _SosValidationSnapshot baseline,
+    Duration timeout,
+  ) {
+    if (_hasObservableTriggeredSos(baseline)) {
+      final incidentId = lastSosIncident?.id;
+      final detail = incidentId == null
+          ? 'SOS left idle state within ${timeout.inSeconds} seconds.'
+          : 'SOS left idle state and incident $incidentId is visible within ${timeout.inSeconds} seconds.';
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.ok,
+        diagnosticText: detail,
+      );
+    }
+
+    if (_hasAcceptedButPendingTriggerEvidence()) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.warning,
+        diagnosticText:
+            'Trigger SOS was accepted locally, but after ${timeout.inSeconds} seconds the SDK still shows pending or propagating state.',
+      );
+    }
+
+    return ValidationCapabilityResult(
+      status: ValidationRunStatus.nok,
+      diagnosticText:
+          'Trigger SOS produced no observable runtime/backend evidence within ${timeout.inSeconds} seconds.',
+    );
+  }
+
+  ValidationCapabilityResult _evaluateCancelSosValidation(
+    _SosValidationSnapshot baseline,
+    Duration timeout,
+  ) {
+    final backendVisibleState = lastSosIncident?.state;
+    if (_isNonActiveSosState(sosState) ||
+        _isNonActiveIncidentState(backendVisibleState)) {
+      final visibleState = backendVisibleState;
+      final detailState = _isNonActiveIncidentState(visibleState)
+          ? visibleState!.name
+          : sosState.name;
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.ok,
+        diagnosticText:
+            'SOS cancellation settled to $detailState within ${timeout.inSeconds} seconds.',
+      );
+    }
+
+    if (_hasAcceptedButPendingCancelEvidence(baseline)) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.warning,
+        diagnosticText:
+            'Cancel SOS was accepted locally, but after ${timeout.inSeconds} seconds the runtime still shows ${sosState.name}.',
+      );
+    }
+
+    return ValidationCapabilityResult(
+      status: ValidationRunStatus.nok,
+      diagnosticText:
+          'Cancel SOS produced no meaningful runtime/backend state change within ${timeout.inSeconds} seconds.',
+    );
+  }
+
+  ValidationCapabilityResult _evaluateTelemetryValidation(
+    _TelemetryValidationSnapshot baseline,
+    Duration timeout,
+  ) {
+    if (_hasObservableTelemetrySuccess(baseline)) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.ok,
+        diagnosticText:
+            'Telemetry sample publish is observable within ${timeout.inSeconds} seconds.',
+      );
+    }
+
+    if (_hasAcceptedButPendingTelemetryEvidence(baseline)) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.warning,
+        diagnosticText:
+            'Telemetry sample was accepted locally, but after ${timeout.inSeconds} seconds it is still buffered or awaiting propagation.',
+      );
+    }
+
+    return ValidationCapabilityResult(
+      status: ValidationRunStatus.nok,
+      diagnosticText:
+          'Telemetry sample produced no observable publish evidence within ${timeout.inSeconds} seconds.',
+    );
+  }
+
+  bool _hasObservableTriggeredSos(_SosValidationSnapshot baseline) {
+    return sosState != SosState.idle || _sosEventChangedFromBaseline(baseline);
+  }
+
+  bool _hasAcceptedButPendingTriggerEvidence() {
+    return operationalDiagnostics.bridge.pendingSos != null;
+  }
+
+  bool _hasAcceptedButPendingCancelEvidence(_SosValidationSnapshot baseline) {
+    return sosState == SosState.cancelRequested ||
+        sosState == SosState.sending ||
+        sosState == SosState.sent ||
+        sosState == SosState.acknowledged ||
+        _incidentChangedFromBaseline(baseline) ||
+        _sosEventChangedFromBaseline(baseline);
+  }
+
+  bool _hasObservableTelemetrySuccess(_TelemetryValidationSnapshot baseline) {
+    final decision =
+        operationalDiagnostics.bridge.lastDecision?.toLowerCase() ?? '';
+    return operationalDiagnostics.bridge.pendingTelemetry == null &&
+        decision != (baseline.lastDecision?.toLowerCase() ?? '') &&
+        decision.contains('telemetry published') &&
+        _telemetryPayloadSignature(lastPublishedTelemetrySample) !=
+            baseline.lastSampleSignature;
+  }
+
+  bool _hasAcceptedButPendingTelemetryEvidence(
+    _TelemetryValidationSnapshot baseline,
+  ) {
+    final decision =
+        operationalDiagnostics.bridge.lastDecision?.toLowerCase() ?? '';
+    return operationalDiagnostics.bridge.pendingTelemetry != null ||
+        (baseline.lastDecision?.toLowerCase() ?? '') != decision &&
+            decision.contains('telemetry buffered') ||
+        decision.contains('telemetry publish queued') ||
+        decision.contains('awaiting propagation');
+  }
+
+  bool _incidentChangedFromBaseline(_SosValidationSnapshot baseline) {
+    return lastSosIncident?.id != baseline.incidentId ||
+        lastSosIncident?.state != baseline.incidentState;
+  }
+
+  bool _sosEventChangedFromBaseline(_SosValidationSnapshot baseline) {
+    return lastSosEvent?.runtimeType.toString() != baseline.lastSosEventType;
+  }
+
+  bool _isNonActiveSosState(SosState state) {
+    return state == SosState.idle ||
+        state == SosState.cancelled ||
+        state == SosState.resolved;
+  }
+
+  bool _isNonActiveIncidentState(SosState? state) {
+    return state == SosState.cancelled || state == SosState.resolved;
   }
 
   _ValidationContactSignature _validationContactSignature() {
@@ -2540,4 +2889,28 @@ class _ValidationContactSignature {
   final String name;
   final String phone;
   final String email;
+}
+
+class _SosValidationSnapshot {
+  const _SosValidationSnapshot({
+    required this.incidentId,
+    required this.incidentState,
+    required this.lastSosEventType,
+  });
+
+  final String? incidentId;
+  final SosState? incidentState;
+  final String? lastSosEventType;
+}
+
+class _TelemetryValidationSnapshot {
+  const _TelemetryValidationSnapshot({
+    required this.lastDecision,
+    required this.hasPendingTelemetry,
+    required this.lastSampleSignature,
+  });
+
+  final String? lastDecision;
+  final bool hasPendingTelemetry;
+  final String? lastSampleSignature;
 }

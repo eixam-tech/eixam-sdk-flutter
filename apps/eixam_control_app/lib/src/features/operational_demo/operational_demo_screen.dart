@@ -435,6 +435,7 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
   }
 
   Widget _buildTriggerSosCard(ValidationCardViewModel card) {
+    final locationMissing = !(_controller.permissionState?.hasLocationAccess ?? false);
     return ValidationCapabilityCard(
       viewModel: card,
       actions: <Widget>[
@@ -443,6 +444,17 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
               _controller.loadingSos ? null : _handleTriggerSosValidation,
           child: const Text('Run test'),
         ),
+        if (locationMissing)
+          OutlinedButton(
+            onPressed: _controller.triggerSosLocationNeedsSettings
+                ? _controller.openTriggerSosAppSettings
+                : _controller.requestTriggerSosLocationPermission,
+            child: Text(
+              _controller.triggerSosLocationNeedsSettings
+                  ? 'Open app settings'
+                  : 'Grant location permission',
+            ),
+          ),
       ],
       child: Column(
         children: [

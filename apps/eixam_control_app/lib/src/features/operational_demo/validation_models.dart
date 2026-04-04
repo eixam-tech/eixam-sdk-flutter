@@ -96,6 +96,7 @@ class ValidationCardViewModel {
     required this.expectation,
     required this.result,
     this.isCritical = false,
+    this.prerequisites = const <ValidationStateField>[],
     this.currentState = const <ValidationStateField>[],
   });
 
@@ -105,6 +106,7 @@ class ValidationCardViewModel {
   final ValidationExpectation expectation;
   final ValidationCapabilityResult result;
   final bool isCritical;
+  final List<ValidationStateField> prerequisites;
   final List<ValidationStateField> currentState;
 }
 

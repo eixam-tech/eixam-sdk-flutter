@@ -13,6 +13,7 @@ dependencies:
     path: ../../packages/eixam_connect_flutter
   eixam_connect_ui:
     path: ../../packages/eixam_connect_ui
+  permission_handler: ^11.4.0
   shared_preferences: ^2.5.5
 dev_dependencies:
   flutter_test:
