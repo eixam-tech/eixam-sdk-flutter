@@ -597,10 +597,15 @@ void main() {
     });
 
     test(
-        'mqtt-backed cancel waits for mqtt confirmation before emitting cancelled event',
+        'mqtt-backed cancel settles immediately from backend cancel response and emits cancelled event',
         () async {
       final realtimeClient = _FakeOperationalRealtimeClient();
-      final cancelDataSource = _FakeCancelSosRemoteDataSource();
+      final cancelDataSource = _FakeCancelSosRemoteDataSource()
+        ..cancelResult = SosIncidentDto(
+          id: 'sos-1',
+          state: 'cancelled',
+          createdAt: '2026-03-30T12:00:00.000Z',
+        );
       final repository = MqttOperationalSosRepository(
         realtimeClient: realtimeClient,
         cancelRemoteDataSource: cancelDataSource,
@@ -626,7 +631,7 @@ void main() {
       final subscription = localSdk.watchEvents().listen(events.add);
 
       try {
-        final incident = await repository.triggerSos(
+        await repository.triggerSos(
           message: 'Need help',
           triggerSource: 'button_ui',
           positionSnapshot: TrackingPosition(
@@ -638,26 +643,14 @@ void main() {
         );
 
         final cancelResult = await localSdk.cancelSos();
-
-        expect(cancelResult.state, SosState.cancelRequested);
-        expect(events.whereType<SOSCancelledEvent>(), isEmpty);
-
-        realtimeClient.emitEvent(
-          RealtimeEvent(
-            type: 'mqtt.message',
-            timestamp: DateTime.utc(2026, 3, 31, 9, 2),
-            payload: <String, dynamic>{
-              'incidentId': incident.id,
-              'status': 'cancelled',
-            },
-          ),
-        );
         await Future<void>.delayed(Duration.zero);
 
+        expect(cancelResult.state, SosState.cancelled);
         expect(events.whereType<SOSCancelledEvent>(), hasLength(1));
+
         expect(
           events.whereType<SOSCancelledEvent>().single.incidentId,
-          incident.id,
+          cancelResult.id,
         );
       } finally {
         await subscription.cancel();
@@ -1355,14 +1348,19 @@ void main() {
 
     test('cancel uses http only and does not publish mqtt commands', () async {
       final realtimeClient = _FakeOperationalRealtimeClient();
-      final cancelDataSource = _FakeCancelSosRemoteDataSource();
+      final cancelDataSource = _FakeCancelSosRemoteDataSource()
+        ..cancelResult = SosIncidentDto(
+          id: 'sos-1',
+          state: 'cancelled',
+          createdAt: '2026-03-30T12:00:00.000Z',
+        );
       final repository = MqttOperationalSosRepository(
         realtimeClient: realtimeClient,
         cancelRemoteDataSource: cancelDataSource,
       );
 
       try {
-        final incident = await repository.triggerSos(
+        await repository.triggerSos(
           message: 'Need help',
           triggerSource: 'button_ui',
           positionSnapshot: TrackingPosition(
@@ -1377,21 +1375,47 @@ void main() {
 
         expect(cancelDataSource.cancelCallCount, 1);
         expect(realtimeClient.publishedRequests, hasLength(1));
-        expect(cancelled.state, SosState.cancelRequested);
-
-        realtimeClient.emitEvent(
-          RealtimeEvent(
-            type: 'mqtt.message',
-            timestamp: DateTime.utc(2026, 3, 31, 9, 2),
-            payload: <String, dynamic>{
-              'incidentId': incident.id,
-              'status': 'cancelled',
-            },
-          ),
-        );
-        await Future<void>.delayed(Duration.zero);
+        expect(cancelled.state, SosState.cancelled);
 
         expect(await repository.getSosState(), SosState.cancelled);
+      } finally {
+        await repository.dispose();
+        await realtimeClient.dispose();
+      }
+    });
+
+    test('mqtt cancel settles from backend rehydration when cancel returns null',
+        () async {
+      final realtimeClient = _FakeOperationalRealtimeClient();
+      final cancelDataSource = _FakeCancelSosRemoteDataSource()
+        ..activeAfterCancelResult = SosIncidentDto(
+          id: 'sos-1',
+          state: 'resolved',
+          createdAt: '2026-03-30T12:00:00.000Z',
+        );
+      final repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        cancelRemoteDataSource: cancelDataSource,
+      );
+
+      try {
+        await repository.triggerSos(
+          message: 'Need help',
+          triggerSource: 'button_ui',
+          positionSnapshot: TrackingPosition(
+            latitude: 41.38,
+            longitude: 2.17,
+            altitude: 8,
+            timestamp: DateTime.utc(2026, 3, 30, 12),
+          ),
+        );
+
+        final cancelled = await repository.cancelSos();
+
+        expect(cancelDataSource.cancelCallCount, 1);
+        expect(cancelDataSource.getActiveCallCount, 1);
+        expect(cancelled.state, SosState.resolved);
+        expect(await repository.getSosState(), SosState.resolved);
       } finally {
         await repository.dispose();
         await realtimeClient.dispose();
@@ -2987,15 +3011,21 @@ class _FakeOperationalRealtimeClient implements OperationalRealtimeClient {
 
 class _FakeCancelSosRemoteDataSource implements SosRemoteDataSource {
   int cancelCallCount = 0;
+  int getActiveCallCount = 0;
+  SosIncidentDto? cancelResult;
+  SosIncidentDto? activeAfterCancelResult;
 
   @override
   Future<SosIncidentDto?> cancelSos() async {
     cancelCallCount++;
-    return null;
+    return cancelResult;
   }
 
   @override
-  Future<SosIncidentDto?> getActiveSos() async => null;
+  Future<SosIncidentDto?> getActiveSos() async {
+    getActiveCallCount++;
+    return activeAfterCancelResult;
+  }
 
   @override
   Future<SosIncidentDto> triggerSos({

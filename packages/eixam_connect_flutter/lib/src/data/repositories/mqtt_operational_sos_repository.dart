@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import '../../mappers/local_state_serializers.dart';
+import '../dtos/sos_incident_dto.dart';
 import '../datasources_remote/sos_remote_data_source.dart';
 import '../datasources_local/shared_prefs_sdk_store.dart';
 import '../../sdk/operational_realtime_client.dart';
@@ -140,9 +141,13 @@ class MqttOperationalSosRepository
     await _persistState();
 
     try {
-      await remoteDataSource.cancelSos();
+      final cancelled = await remoteDataSource.cancelSos();
+      final settledIncident = await _settleCancelledIncident(
+        remoteDataSource: remoteDataSource,
+        cancelledDto: cancelled,
+      );
       await _persistState();
-      return _activeIncident!;
+      return settledIncident;
     } catch (error) {
       _activeIncident = _activeIncident!.copyWith(state: SosState.sent);
       _emit(SosState.sent);
@@ -152,6 +157,30 @@ class MqttOperationalSosRepository
       }
       throw SosException('E_SOS_CANCEL_FAILED', error.toString());
     }
+  }
+
+  Future<SosIncident> _settleCancelledIncident({
+    required SosRemoteDataSource remoteDataSource,
+    required SosIncidentDto? cancelledDto,
+  }) async {
+    if (cancelledDto != null) {
+      return _applyBackendIncident(cancelledDto);
+    }
+
+    final activeAfterCancel = await remoteDataSource.getActiveSos();
+    if (activeAfterCancel != null) {
+      return _applyBackendIncident(activeAfterCancel);
+    }
+
+    _activeIncident = _activeIncident!.copyWith(state: SosState.cancelled);
+    _setState(SosState.cancelled);
+    return _activeIncident!;
+  }
+
+  SosIncident _applyBackendIncident(SosIncidentDto dto) {
+    _activeIncident = _mapper.toDomain(dto);
+    _setState(_activeIncident!.state);
+    return _activeIncident!;
   }
 
   @override
