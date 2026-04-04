@@ -435,7 +435,8 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
   }
 
   Widget _buildTriggerSosCard(ValidationCardViewModel card) {
-    final locationMissing = !(_controller.permissionState?.hasLocationAccess ?? false);
+    final locationMissing =
+        !(_controller.permissionState?.hasLocationAccess ?? false);
     return ValidationCapabilityCard(
       viewModel: card,
       actions: <Widget>[
