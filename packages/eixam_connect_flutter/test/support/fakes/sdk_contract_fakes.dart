@@ -55,6 +55,9 @@ class FakeSosRepository implements SosRepository {
   Future<SosState> getSosState() async => currentIncident.state;
 
   @override
+  Future<SosIncident?> getCurrentIncident() async => currentIncident;
+
+  @override
   Stream<SosState> watchSosState() => stateController.stream;
 
   Future<void> dispose() async {
