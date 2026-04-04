@@ -449,13 +449,22 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Future<DeviceSosStatus> confirmDeviceSos() {
-    return deviceSosController.confirmSos();
+  Future<DeviceSosStatus> confirmDeviceSos() async {
+    final status = await deviceSosController.confirmSos();
+    await _ensureBackendSosForDeviceOriginatedCycle(
+      status,
+      triggerSource: 'ble_device_runtime_confirm',
+      message:
+          'Device-originated SOS confirmed from the app and promoted to backend sync.',
+    );
+    return status;
   }
 
   @override
-  Future<DeviceSosStatus> cancelDeviceSos() {
-    return deviceSosController.cancelSos();
+  Future<DeviceSosStatus> cancelDeviceSos() async {
+    final status = await deviceSosController.cancelSos();
+    await _cancelBackendSosForDeviceOriginatedCycle(status);
+    return status;
   }
 
   @override
@@ -1042,15 +1051,7 @@ class EixamConnectSdkImpl
 
   @override
   Future<SosIncident> triggerSos(SosTriggerPayload payload) async {
-    TrackingPosition? positionSnapshot;
-    try {
-      final permissionState = await permissionsRepository.getPermissionState();
-      if (permissionState.hasLocationAccess) {
-        positionSnapshot = await trackingRepository.getCurrentPosition();
-      }
-    } catch (_) {
-      // Best-effort snapshot: SOS should continue even if location lookup fails.
-    }
+    final positionSnapshot = await _loadPositionSnapshotForSos();
 
     final incident = await sosRepository.triggerSos(
       message: payload.message,
@@ -1069,13 +1070,109 @@ class EixamConnectSdkImpl
   @override
   Future<SosIncident> cancelSos() async {
     final incident = await sosRepository.cancelSos();
+    _publishCancelledSosEventIfNeeded(incident);
+    return incident;
+  }
+
+  Future<TrackingPosition?> _loadPositionSnapshotForSos() async {
+    try {
+      final permissionState = await permissionsRepository.getPermissionState();
+      if (permissionState.hasLocationAccess) {
+        return await trackingRepository.getCurrentPosition();
+      }
+    } catch (_) {
+      // Best-effort snapshot: SOS should continue even if location lookup fails.
+    }
+    return null;
+  }
+
+  Future<void> _ensureBackendSosForDeviceOriginatedCycle(
+    DeviceSosStatus status, {
+    required String triggerSource,
+    required String message,
+  }) async {
+    if (status.triggerOrigin != DeviceSosTransitionSource.device ||
+        !_isBackendSyncRelevantDeviceSosState(status.state)) {
+      return;
+    }
+
+    final incident = await sosRepository.getCurrentIncident();
+    if (_hasBackendVisibleSosIncident(incident)) {
+      BleDebugRegistry.instance.recordEvent(
+        'Device SOS backend sync skipped -> reason=incident_already_active state=${incident!.state.name}',
+      );
+      return;
+    }
+
+    final positionSnapshot = await _loadPositionSnapshotForSos();
+    if (positionSnapshot == null) {
+      BleDebugRegistry.instance.recordEvent(
+        'Device SOS backend sync skipped -> reason=missing_position_snapshot triggerSource=$triggerSource',
+      );
+      return;
+    }
+
+    final createdIncident = await sosRepository.triggerSos(
+      message: message,
+      triggerSource: triggerSource,
+      positionSnapshot: positionSnapshot,
+    );
+    _publishSdkEvent(SOSTriggeredEvent(createdIncident.id));
+    BleDebugRegistry.instance.recordEvent(
+      'Device SOS backend sync created incident -> incidentId=${createdIncident.id} triggerSource=$triggerSource',
+    );
+  }
+
+  Future<void> _cancelBackendSosForDeviceOriginatedCycle(
+    DeviceSosStatus status,
+  ) async {
+    if (status.triggerOrigin != DeviceSosTransitionSource.device ||
+        !_isDeviceSosCycleClosed(status.state)) {
+      return;
+    }
+
+    final incident = await sosRepository.getCurrentIncident();
+    if (!_hasBackendVisibleSosIncident(incident)) {
+      BleDebugRegistry.instance.recordEvent(
+        'Device SOS backend cancel skipped -> reason=no_active_backend_incident',
+      );
+      return;
+    }
+
+    final cancelledIncident = await sosRepository.cancelSos();
+    _publishCancelledSosEventIfNeeded(cancelledIncident);
+    BleDebugRegistry.instance.recordEvent(
+      'Device SOS backend cancel applied -> incidentId=${cancelledIncident.id}',
+    );
+  }
+
+  bool _isBackendSyncRelevantDeviceSosState(DeviceSosState state) {
+    return state == DeviceSosState.preConfirm ||
+        state == DeviceSosState.active ||
+        state == DeviceSosState.acknowledged;
+  }
+
+  bool _isDeviceSosCycleClosed(DeviceSosState state) {
+    return state == DeviceSosState.inactive || state == DeviceSosState.resolved;
+  }
+
+  bool _hasBackendVisibleSosIncident(SosIncident? incident) {
+    if (incident == null) {
+      return false;
+    }
+    return incident.state != SosState.idle &&
+        incident.state != SosState.cancelled &&
+        incident.state != SosState.resolved &&
+        incident.state != SosState.failed;
+  }
+
+  void _publishCancelledSosEventIfNeeded(SosIncident incident) {
     if (incident.state == SosState.cancelled) {
       _pendingCancelledIncidentId = null;
       _publishSdkEvent(SOSCancelledEvent(incident.id));
     } else {
       _pendingCancelledIncidentId = incident.id;
     }
-    return incident;
   }
 
   @override

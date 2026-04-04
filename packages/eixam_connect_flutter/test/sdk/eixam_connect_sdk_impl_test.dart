@@ -1703,6 +1703,42 @@ void main() {
       }
     });
 
+    test(
+        'BLE bridge publishes SOS from device packets when a session exists even before realtime reports connected',
+        () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final connectionStates =
+          StreamController<RealtimeConnectionState>.broadcast();
+      final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      EixamSession? session = const EixamSession.signed(
+        appId: 'app-demo',
+        externalUserId: 'external-123',
+        userHash: 'deadbeef',
+      );
+      final bridge = BleOperationalRuntimeBridge(
+        bleIncomingEvents: bleEvents.stream,
+        connectionStates: connectionStates.stream,
+        realtimeEvents: realtimeEvents.stream,
+        telemetryRepository: telemetryRepository,
+        sosRepository: sosRepository,
+        deviceSosController: deviceSosController,
+        sessionProvider: () => session,
+      )..start();
+
+      try {
+        bleEvents.add(_bridgeSosEvent(signature: 'sos-no-rt-1'));
+        await Future<void>.delayed(Duration.zero);
+
+        expect(sosRepository.triggerCallCount, 1);
+        expect(sosRepository.lastTriggerSource, 'ble_device_runtime');
+      } finally {
+        await bridge.dispose();
+        await bleEvents.close();
+        await connectionStates.close();
+        await realtimeEvents.close();
+      }
+    });
+
     test('BLE bridge skips publish when minimum fields are missing', () async {
       final bleEvents = StreamController<BleIncomingEvent>.broadcast();
       final connectionStates =
@@ -2239,6 +2275,7 @@ void main() {
     test(
         'BLE SOS while MQTT disconnected is retained and published once on reconnect',
         () async {
+      final unavailableSosRepository = _AvailabilityAwareSosRepository();
       final bleEvents = StreamController<BleIncomingEvent>.broadcast();
       final connectionStates =
           StreamController<RealtimeConnectionState>.broadcast();
@@ -2253,7 +2290,7 @@ void main() {
         connectionStates: connectionStates.stream,
         realtimeEvents: realtimeEvents.stream,
         telemetryRepository: telemetryRepository,
-        sosRepository: sosRepository,
+        sosRepository: unavailableSosRepository,
         deviceSosController: deviceSosController,
         sessionProvider: () => session,
       )..start();
@@ -2264,14 +2301,16 @@ void main() {
         bleEvents.add(_bridgeSosEvent(signature: 'pending-sos-1'));
         await Future<void>.delayed(Duration.zero);
 
-        expect(sosRepository.triggerCallCount, 0);
+        expect(unavailableSosRepository.triggerCallCount, 0);
 
+        unavailableSosRepository.isAvailable = true;
         connectionStates.add(RealtimeConnectionState.connected);
         await Future<void>.delayed(Duration.zero);
 
-        expect(sosRepository.triggerCallCount, 1);
+        expect(unavailableSosRepository.triggerCallCount, 1);
       } finally {
         await bridge.dispose();
+        await unavailableSosRepository.dispose();
         await bleEvents.close();
         await connectionStates.close();
         await realtimeEvents.close();
@@ -2281,6 +2320,7 @@ void main() {
     test(
         'clearSession-style teardown clears pending operational items and prevents replay',
         () async {
+      final unavailableSosRepository = _AvailabilityAwareSosRepository();
       final bleEvents = StreamController<BleIncomingEvent>.broadcast();
       final connectionStates =
           StreamController<RealtimeConnectionState>.broadcast();
@@ -2295,7 +2335,7 @@ void main() {
         connectionStates: connectionStates.stream,
         realtimeEvents: realtimeEvents.stream,
         telemetryRepository: telemetryRepository,
-        sosRepository: sosRepository,
+        sosRepository: unavailableSosRepository,
         deviceSosController: deviceSosController,
         sessionProvider: () => session,
       )..start();
@@ -2312,9 +2352,10 @@ void main() {
         await Future<void>.delayed(Duration.zero);
 
         expect(telemetryRepository.publishedPayloads, isEmpty);
-        expect(sosRepository.triggerCallCount, 0);
+        expect(unavailableSosRepository.triggerCallCount, 0);
       } finally {
         await bridge.dispose();
+        await unavailableSosRepository.dispose();
         await bleEvents.close();
         await connectionStates.close();
         await realtimeEvents.close();
@@ -2324,6 +2365,7 @@ void main() {
     test(
         'session change resets old pending runtime state before new session reuse',
         () async {
+      final unavailableSosRepository = _AvailabilityAwareSosRepository();
       final bleEvents = StreamController<BleIncomingEvent>.broadcast();
       final connectionStates =
           StreamController<RealtimeConnectionState>.broadcast();
@@ -2338,7 +2380,7 @@ void main() {
         connectionStates: connectionStates.stream,
         realtimeEvents: realtimeEvents.stream,
         telemetryRepository: telemetryRepository,
-        sosRepository: sosRepository,
+        sosRepository: unavailableSosRepository,
         deviceSosController: deviceSosController,
         sessionProvider: () => session,
       )..start();
@@ -2354,14 +2396,16 @@ void main() {
           externalUserId: 'external-999',
           userHash: 'beadfeed',
         );
+        unavailableSosRepository.isAvailable = true;
         bleEvents.add(_bridgeSosEvent(signature: 'new-session-sos'));
         connectionStates.add(RealtimeConnectionState.connected);
         await Future<void>.delayed(Duration.zero);
 
-        expect(sosRepository.triggerCallCount, 1);
-        expect(sosRepository.lastPositionSnapshot, isNotNull);
+        expect(unavailableSosRepository.triggerCallCount, 1);
+        expect(unavailableSosRepository.lastPositionSnapshot, isNotNull);
       } finally {
         await bridge.dispose();
+        await unavailableSosRepository.dispose();
         await bleEvents.close();
         await connectionStates.close();
         await realtimeEvents.close();
@@ -2708,6 +2752,88 @@ void main() {
         await localSdk.dispose();
       }
     });
+
+    test(
+        'confirmDeviceSos creates backend incident for a device-originated SOS cycle when none exists yet',
+        () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+      );
+      await deviceSosController.attach(
+        commandWriter: (command) async {},
+      );
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginPacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+
+      await sdk.confirmDeviceSos();
+
+      expect(sosRepository.triggerCallCount, 1);
+      expect(sosRepository.lastTriggerSource, 'ble_device_runtime_confirm');
+      expect(sosRepository.lastPositionSnapshot?.latitude, 41.38);
+    });
+
+    test(
+        'confirmDeviceSos does not create a duplicate backend incident when device-originated SOS is already synced',
+        () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+      );
+      await deviceSosController.attach(
+        commandWriter: (command) async {},
+      );
+      sosRepository.currentIncident = sosRepository.currentIncident.copyWith(
+        state: SosState.sent,
+        triggerSource: 'ble_device_runtime',
+      );
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginPacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+
+      await sdk.confirmDeviceSos();
+
+      expect(sosRepository.triggerCallCount, 0);
+    });
+
+    test(
+        'cancelDeviceSos cancels the backend incident for a device-originated SOS cycle',
+        () async {
+      await deviceSosController.attach(
+        commandWriter: (command) async {},
+      );
+      sosRepository.currentIncident = sosRepository.currentIncident.copyWith(
+        state: SosState.sent,
+        triggerSource: 'ble_device_runtime',
+      );
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginPacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+
+      await sdk.cancelDeviceSos();
+
+      expect(sosRepository.cancelCallCount, 1);
+      expect(sosRepository.currentIncident.state, SosState.cancelled);
+    });
+
+    test(
+        'confirmDeviceSos keeps app-originated device cycles local and does not create backend SOS implicitly',
+        () async {
+      await deviceSosController.attach(
+        commandWriter: (command) async {},
+      );
+
+      await sdk.triggerDeviceSos();
+      await sdk.confirmDeviceSos();
+
+      expect(sosRepository.triggerCallCount, 0);
+      expect(sosRepository.cancelCallCount, 0);
+    });
   });
 }
 
@@ -2878,6 +3004,29 @@ class _FakeCancelSosRemoteDataSource implements SosRemoteDataSource {
     TrackingPosition? positionSnapshot,
   }) {
     throw UnimplementedError();
+  }
+}
+
+class _AvailabilityAwareSosRepository extends FakeSosRepository {
+  bool isAvailable = false;
+
+  @override
+  Future<SosIncident> triggerSos({
+    String? message,
+    required String triggerSource,
+    TrackingPosition? positionSnapshot,
+  }) async {
+    if (!isAvailable) {
+      throw const SosException(
+        'E_MQTT_NOT_CONNECTED',
+        'Operational SOS transport is not connected yet.',
+      );
+    }
+    return super.triggerSos(
+      message: message,
+      triggerSource: triggerSource,
+      positionSnapshot: positionSnapshot,
+    );
   }
 }
 

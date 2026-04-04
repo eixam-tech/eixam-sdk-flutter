@@ -343,7 +343,7 @@ class BleOperationalRuntimeBridge {
       timestamp: event.receivedAt.toUtc(),
       source: DeliveryMode.mesh,
     );
-    if (!_canPublishOperationally) {
+    if (!_hasOperationalSession) {
       final message = _sosRuntimeMessageFor(
         event: event,
         packet: packet,
@@ -557,8 +557,10 @@ class BleOperationalRuntimeBridge {
         _connectionState == RealtimeConnectionState.connected;
   }
 
+  bool get _hasOperationalSession => _sessionProvider() != null;
+
   Future<void> _flushPendingOperationalItems() async {
-    if (_flushInProgress || !_canPublishOperationally) {
+    if (_flushInProgress || !_hasOperationalSession) {
       return;
     }
     _flushInProgress = true;
