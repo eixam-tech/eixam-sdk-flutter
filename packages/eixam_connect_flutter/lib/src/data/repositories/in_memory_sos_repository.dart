@@ -95,6 +95,9 @@ class InMemorySosRepository implements SosRepository {
   }
 
   @override
+  Future<SosIncident?> getCurrentIncident() async => _activeIncident;
+
+  @override
   Future<SosState> getSosState() async => _stateMachine.current;
 
   @override

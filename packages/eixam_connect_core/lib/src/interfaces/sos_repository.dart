@@ -15,6 +15,7 @@ abstract class SosRepository {
   });
 
   Future<SosIncident> cancelSos();
+  Future<SosIncident?> getCurrentIncident();
   Future<SosState> getSosState();
   Stream<SosState> watchSosState();
 }

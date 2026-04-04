@@ -4,6 +4,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_control_app/src/bootstrap/validation_backend_config.dart';
 import 'package:eixam_control_app/src/features/operational_demo/validation_console_controller.dart';
 import 'package:eixam_control_app/src/features/operational_demo/validation_models.dart';
+import 'package:eixam_connect_flutter/src/device/ble_debug_state.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -99,7 +100,8 @@ void main() {
       expect(result.status, isNot(ValidationRunStatus.running));
     });
 
-    test('trigger SOS finalizes immediately with WARNING when location is missing',
+    test(
+        'trigger SOS finalizes immediately with WARNING when location is missing',
         () async {
       controller.deviceDebugController.permissionState =
           const PermissionState(location: SdkPermissionStatus.denied);
@@ -202,7 +204,9 @@ void main() {
         () async {
       controller.sosState = SosState.sent;
       controller.lastSosIncident = _incident('incident-6', SosState.sent);
-      sdk.cancelIncident = _incident('incident-6', SosState.cancelled);
+      sdk.cancelIncident = _incident('incident-6', SosState.cancelRequested);
+      sdk.refreshedCurrentIncident =
+          _incident('incident-6', SosState.cancelled);
       sdk.queuedSosStates.addAll(<SosState>[
         SosState.cancelRequested,
         SosState.cancelRequested,
@@ -242,6 +246,25 @@ void main() {
       expect(result.diagnosticText, contains('observable'));
     });
 
+    test(
+        'telemetry finalizes with OK for direct publish success without bridge signal',
+        () async {
+      final payload = _payload();
+      sdk.queuedDiagnostics.addAll(<SdkOperationalDiagnostics>[
+        _diagnostics(),
+        _diagnostics(),
+      ]);
+
+      await controller.runTelemetryValidation(
+        payload,
+        timeout: const Duration(milliseconds: 20),
+      );
+
+      final result =
+          _resultFor(controller, ValidationCapabilityId.telemetrySample);
+      expect(result.status, ValidationRunStatus.ok);
+    });
+
     test('telemetry finalizes with WARNING when sample remains buffered',
         () async {
       final payload = _payload();
@@ -261,12 +284,13 @@ void main() {
       expect(result.diagnosticText, contains('buffered'));
     });
 
-    test('telemetry finalizes with NOK and remains stable across rebuild',
+    test(
+        'telemetry finalizes with NOK on meaningful failure evidence and remains stable across rebuild',
         () async {
       final payload = _payload();
       sdk.queuedDiagnostics.addAll(<SdkOperationalDiagnostics>[
-        _diagnostics(),
-        _diagnostics(),
+        _diagnostics(lastDecision: 'Telemetry publish failed: timeout'),
+        _diagnostics(lastDecision: 'Telemetry publish failed: timeout'),
       ]);
 
       await controller.runTelemetryValidation(
@@ -283,6 +307,72 @@ void main() {
       expect(second.status, first.status);
       expect(second.diagnosticText, first.diagnosticText);
     });
+
+    test('notifications finalize instead of staying RUNNING', () async {
+      await controller.initializeNotificationsValidation();
+
+      final result =
+          _resultFor(controller, ValidationCapabilityId.notifications);
+      expect(result.status, isNot(ValidationRunStatus.running));
+      expect(
+        result.status,
+        anyOf(ValidationRunStatus.warning, ValidationRunStatus.ok),
+      );
+    });
+
+    test('pair/connect returns OK when connected even with stale error',
+        () async {
+      controller.deviceDebugController.lastError = 'Old connection timeout';
+      controller.deviceDebugController.bleDebugState =
+          const BleDebugState(connectionError: 'Old BLE error');
+      sdk.deviceStatus = const DeviceStatus(
+        deviceId: 'device-42',
+        paired: true,
+        activated: true,
+        connected: true,
+      );
+
+      await controller.runPairConnectValidation();
+
+      final result =
+          _resultFor(controller, ValidationCapabilityId.pairConnectDevice);
+      expect(result.status, ValidationRunStatus.ok);
+      expect(result.diagnosticText, contains('device-42'));
+    });
+
+    test('shutdown finalizes instead of staying RUNNING', () async {
+      controller.deviceDebugController.bleDebugState = const BleDebugState(
+        commandWriterReady: true,
+        lastWriteResult: 'success',
+      );
+
+      await controller.runShutdownValidation();
+
+      final result =
+          _resultFor(controller, ValidationCapabilityId.shutdownCommand);
+      expect(result.status, ValidationRunStatus.ok);
+      expect(result.status, isNot(ValidationRunStatus.running));
+    });
+
+    test('device SOS card text clarifies runtime vs backend semantics', () {
+      controller.operationalDiagnostics = const SdkOperationalDiagnostics(
+        connectionState: RealtimeConnectionState.disconnected,
+        bridge: SdkBridgeDiagnostics(
+          lastBleSosEventSummary: 'BLE SOS packet seen',
+        ),
+      );
+
+      final card =
+          _bleCardFor(controller, ValidationCapabilityId.deviceSosFlow);
+      final currentState = {
+        for (final field in card.currentState) field.label: field.value,
+      };
+
+      expect(card.title, contains('runtime'));
+      expect(card.description, contains('runtime'));
+      expect(card.expectation.expectedResult, contains('does not by itself'));
+      expect(currentState['Bridge SOS visibility'], 'BLE SOS packet seen');
+    });
   });
 }
 
@@ -297,15 +387,26 @@ ValidationCardViewModel _cardFor(
   ValidationConsoleController controller,
   ValidationCapabilityId id,
 ) {
+  final allCards = <ValidationCardViewModel>[
+    ...controller.buildMvpCapabilityCards(
+      activeBackendConfig: ValidationBackendConfig.production,
+      activeBackendLocalhostWarning: false,
+      draftBackendConfig: ValidationBackendConfig.production,
+      draftBackendLocalhostWarning: false,
+      backendApplyInProgress: false,
+      sdkGeneration: 1,
+    ),
+    ...controller.buildBleCapabilityCards(),
+  ];
+  return allCards.firstWhere((card) => card.id == id);
+}
+
+ValidationCardViewModel _bleCardFor(
+  ValidationConsoleController controller,
+  ValidationCapabilityId id,
+) {
   return controller
-      .buildMvpCapabilityCards(
-        activeBackendConfig: ValidationBackendConfig.production,
-        activeBackendLocalhostWarning: false,
-        draftBackendConfig: ValidationBackendConfig.production,
-        draftBackendLocalhostWarning: false,
-        backendApplyInProgress: false,
-        sdkGeneration: 1,
-      )
+      .buildBleCapabilityCards()
       .firstWhere((card) => card.id == id);
 }
 
@@ -372,6 +473,16 @@ class _FakeValidationSdk implements EixamConnectSdk {
   SdkOperationalDiagnostics currentDiagnostics = _diagnostics();
   SosIncident triggerIncident = _incident('trigger-default', SosState.idle);
   SosIncident cancelIncident = _incident('cancel-default', SosState.idle);
+  SosIncident? currentIncident;
+  SosIncident? refreshedCurrentIncident;
+  DeviceStatus deviceStatus = const DeviceStatus(
+    deviceId: '',
+    paired: false,
+    activated: false,
+    connected: false,
+  );
+  PermissionState permissionState = const PermissionState();
+  DeviceSosStatus deviceSosStatus = DeviceSosStatus.initial();
   Object? telemetryError;
   Object? triggerError;
   Object? cancelError;
@@ -381,6 +492,7 @@ class _FakeValidationSdk implements EixamConnectSdk {
     if (triggerError != null) {
       throw triggerError!;
     }
+    currentIncident = triggerIncident;
     return triggerIncident;
   }
 
@@ -389,8 +501,13 @@ class _FakeValidationSdk implements EixamConnectSdk {
     if (cancelError != null) {
       throw cancelError!;
     }
+    currentIncident = cancelIncident;
     return cancelIncident;
   }
+
+  @override
+  Future<SosIncident?> getCurrentSosIncident() async =>
+      refreshedCurrentIncident ?? currentIncident;
 
   @override
   Future<void> publishTelemetry(SdkTelemetryPayload payload) async {
@@ -398,6 +515,46 @@ class _FakeValidationSdk implements EixamConnectSdk {
       throw telemetryError!;
     }
   }
+
+  @override
+  Future<void> initializeNotifications() async {}
+
+  @override
+  Future<void> showLocalNotification({
+    required String title,
+    required String body,
+  }) async {}
+
+  @override
+  Future<DeviceStatus> connectDevice({required String pairingCode}) async {
+    return deviceStatus;
+  }
+
+  @override
+  Future<DeviceStatus> getDeviceStatus() async => deviceStatus;
+
+  @override
+  Future<DeviceStatus> refreshDeviceStatus() async => deviceStatus;
+
+  @override
+  Future<PreferredDevice?> get preferredDevice async => null;
+
+  @override
+  Future<PermissionState> getPermissionState() async => permissionState;
+
+  @override
+  Future<DeviceSosStatus> getDeviceSosStatus() async => deviceSosStatus;
+
+  @override
+  Stream<DeviceSosStatus> watchDeviceSosStatus() =>
+      const Stream<DeviceSosStatus>.empty();
+
+  @override
+  Future<void> sendShutdownToDevice() async {}
+
+  @override
+  Stream<DeviceStatus> get deviceStatusStream =>
+      const Stream<DeviceStatus>.empty();
 
   @override
   Future<SosState> getSosState() async {

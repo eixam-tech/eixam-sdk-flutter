@@ -3,7 +3,8 @@ import 'dart:async';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
 import 'package:flutter/foundation.dart';
-import 'package:permission_handler/permission_handler.dart' as permission_handler;
+import 'package:permission_handler/permission_handler.dart'
+    as permission_handler;
 
 import '../../bootstrap/validation_backend_config.dart';
 import 'validation_models.dart';
@@ -1204,15 +1205,15 @@ class ValidationConsoleController extends ChangeNotifier {
       ),
       ValidationCardViewModel(
         id: ValidationCapabilityId.deviceSosFlow,
-        title: 'H. Device SOS flow',
+        title: 'H. Device/runtime SOS flow',
         description:
-            'Validate the local device SOS state transitions exposed by the SDK device SOS flow.',
+            'Validate device/runtime SOS transitions exposed by the SDK BLE device SOS flow.',
         isCritical: true,
         expectation: const ValidationExpectation(
           expectedResult:
-              'Device SOS actions drive visible state transitions and expose source, detail, and packet timing clearly.',
+              'Device/runtime SOS actions drive visible local state transitions and expose source, detail, and packet timing clearly. This card does not by itself guarantee backend persistence.',
           howToValidate:
-              'Run trigger, confirm, cancel, or backend ACK as appropriate and inspect the resulting device SOS state and diagnostics.',
+              'Run trigger, confirm, cancel, or backend ACK as appropriate and inspect the resulting device/runtime SOS state, packet diagnostics, and any bridge visibility shown here.',
         ),
         result: _buildDeviceSosResult(),
         currentState: <ValidationStateField>[
@@ -1231,6 +1232,10 @@ class ValidationConsoleController extends ChangeNotifier {
             value: deviceSosStatus.lastPacketAt == null
                 ? '-'
                 : _formatDateTime(deviceSosStatus.lastPacketAt),
+          ),
+          ValidationStateField(
+            label: 'Bridge SOS visibility',
+            value: operationalDiagnostics.bridge.lastBleSosEventSummary ?? '-',
           ),
         ],
       ),
@@ -2071,6 +2076,7 @@ class ValidationConsoleController extends ChangeNotifier {
 
   Future<void> _refreshSosValidationState() async {
     sosState = await sdk.getSosState();
+    lastSosIncident = await sdk.getCurrentSosIncident();
     operationalDiagnostics = await sdk.getOperationalDiagnostics();
     notifyListeners();
   }
@@ -2273,10 +2279,11 @@ class ValidationConsoleController extends ChangeNotifier {
     final decision =
         operationalDiagnostics.bridge.lastDecision?.toLowerCase() ?? '';
     return operationalDiagnostics.bridge.pendingTelemetry == null &&
-        decision != (baseline.lastDecision?.toLowerCase() ?? '') &&
-        decision.contains('telemetry published') &&
-        _telemetryPayloadSignature(lastPublishedTelemetrySample) !=
-            baseline.lastSampleSignature;
+        !_isTelemetryFailureDecision(decision) &&
+        (_telemetryPayloadSignature(lastPublishedTelemetrySample) !=
+                baseline.lastSampleSignature ||
+            (decision != (baseline.lastDecision?.toLowerCase() ?? '') &&
+                decision.contains('telemetry published')));
   }
 
   bool _hasAcceptedButPendingTelemetryEvidence(
@@ -2285,10 +2292,15 @@ class ValidationConsoleController extends ChangeNotifier {
     final decision =
         operationalDiagnostics.bridge.lastDecision?.toLowerCase() ?? '';
     return operationalDiagnostics.bridge.pendingTelemetry != null ||
-        (baseline.lastDecision?.toLowerCase() ?? '') != decision &&
-            decision.contains('telemetry buffered') ||
+        ((baseline.lastDecision?.toLowerCase() ?? '') != decision &&
+            decision.contains('telemetry buffered')) ||
         decision.contains('telemetry publish queued') ||
         decision.contains('awaiting propagation');
+  }
+
+  bool _isTelemetryFailureDecision(String decision) {
+    return decision.contains('telemetry publish failed') ||
+        decision.contains('telemetry rejected');
   }
 
   bool _incidentChangedFromBaseline(_SosValidationSnapshot baseline) {
@@ -2368,8 +2380,15 @@ class ValidationConsoleController extends ChangeNotifier {
   }
 
   ValidationCapabilityResult _buildNotificationsResult() {
+    return _computeNotificationsResult();
+  }
+
+  ValidationCapabilityResult _computeNotificationsResult({
+    bool ignoreRunningRecord = false,
+  }) {
     final recorded = _capabilityRuns[ValidationCapabilityId.notifications];
-    if (recorded?.status == ValidationRunStatus.running) {
+    if (!ignoreRunningRecord &&
+        recorded?.status == ValidationRunStatus.running) {
       return recorded!;
     }
     if ((lastNotificationsError ?? '').trim().isNotEmpty && recorded != null) {
@@ -2444,18 +2463,16 @@ class ValidationConsoleController extends ChangeNotifier {
   }
 
   ValidationCapabilityResult _buildPairConnectResult() {
+    return _computePairConnectResult();
+  }
+
+  ValidationCapabilityResult _computePairConnectResult({
+    bool ignoreRunningRecord = false,
+  }) {
     final recorded = _capabilityRuns[ValidationCapabilityId.pairConnectDevice];
-    if (recorded?.status == ValidationRunStatus.running) {
+    if (!ignoreRunningRecord &&
+        recorded?.status == ValidationRunStatus.running) {
       return recorded!;
-    }
-    final lastError =
-        bleDebugState.connectionError ?? deviceDebugController.lastError;
-    if ((lastError ?? '').trim().isNotEmpty && recorded != null) {
-      return ValidationCapabilityResult(
-        status: ValidationRunStatus.nok,
-        diagnosticText: lastError,
-        lastExecutedAt: recorded.lastExecutedAt,
-      );
     }
     if (deviceStatus?.connected == true) {
       return _mergeWithRecorded(
@@ -2465,6 +2482,15 @@ class ValidationConsoleController extends ChangeNotifier {
           diagnosticText:
               'Device ${deviceStatus?.deviceId ?? ''} is connected through the SDK.',
         ),
+      );
+    }
+    final lastError =
+        bleDebugState.connectionError ?? deviceDebugController.lastError;
+    if ((lastError ?? '').trim().isNotEmpty && recorded != null) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.nok,
+        diagnosticText: lastError,
+        lastExecutedAt: recorded.lastExecutedAt,
       );
     }
     if ((bleDebugState.selectedDeviceId ?? '').isNotEmpty ||
@@ -2596,8 +2622,15 @@ class ValidationConsoleController extends ChangeNotifier {
   }
 
   ValidationCapabilityResult _buildDeviceSosResult() {
+    return _computeDeviceSosResult();
+  }
+
+  ValidationCapabilityResult _computeDeviceSosResult({
+    bool ignoreRunningRecord = false,
+  }) {
     final recorded = _capabilityRuns[ValidationCapabilityId.deviceSosFlow];
-    if (recorded?.status == ValidationRunStatus.running) {
+    if (!ignoreRunningRecord &&
+        recorded?.status == ValidationRunStatus.running) {
       return recorded!;
     }
     final lastError = deviceDebugController.lastError;
@@ -2620,14 +2653,14 @@ class ValidationConsoleController extends ChangeNotifier {
       return ValidationCapabilityResult(
         status: ValidationRunStatus.ok,
         diagnosticText:
-            'Device SOS state is ${deviceSosStatus.state.name} with source ${deviceSosStatus.transitionSource.name}.',
+            'Device/runtime SOS state is ${deviceSosStatus.state.name} with source ${deviceSosStatus.transitionSource.name}. Backend persistence is not guaranteed by this card alone.',
         lastExecutedAt: recorded.lastExecutedAt,
       );
     }
     return const ValidationCapabilityResult(
       status: ValidationRunStatus.notRun,
       diagnosticText:
-          'Run a device SOS action from this console to validate local runtime state transitions.',
+          'Run a device SOS action from this console to validate device/runtime state transitions. Backend persistence must be confirmed separately.',
     );
   }
 
@@ -2706,9 +2739,11 @@ class ValidationConsoleController extends ChangeNotifier {
   ValidationCapabilityResult _buildWriteResultFor(
     ValidationCapabilityId id, {
     required String notRunDiagnostic,
+    bool ignoreRunningRecord = false,
   }) {
     final recorded = _capabilityRuns[id];
-    if (recorded?.status == ValidationRunStatus.running) {
+    if (!ignoreRunningRecord &&
+        recorded?.status == ValidationRunStatus.running) {
       return recorded!;
     }
     if ((deviceDebugController.lastError ?? '').trim().isNotEmpty &&
@@ -2839,7 +2874,8 @@ class ValidationConsoleController extends ChangeNotifier {
       final lastError =
           deviceDebugController.lastError ?? bleDebugState.lastWriteError;
       if ((lastError ?? '').trim().isNotEmpty &&
-          evaluate().status != ValidationRunStatus.ok) {
+          _evaluateBleCapabilityAction(id, evaluate).status !=
+              ValidationRunStatus.ok) {
         _recordCapabilityResult(
           id,
           ValidationCapabilityResult(
@@ -2850,7 +2886,7 @@ class ValidationConsoleController extends ChangeNotifier {
         );
         return;
       }
-      _recordCapabilityResult(id, evaluate());
+      _recordCapabilityResult(id, _evaluateBleCapabilityAction(id, evaluate));
     } catch (error) {
       _recordCapabilityResult(
         id,
@@ -2860,6 +2896,28 @@ class ValidationConsoleController extends ChangeNotifier {
           lastExecutedAt: DateTime.now().toUtc(),
         ),
       );
+    }
+  }
+
+  ValidationCapabilityResult _evaluateBleCapabilityAction(
+    ValidationCapabilityId id,
+    ValidationCapabilityResult Function() evaluate,
+  ) {
+    final recorded = _capabilityRuns[id];
+    if (recorded?.status != ValidationRunStatus.running) {
+      return evaluate();
+    }
+
+    _capabilityRuns[id] =
+        recorded!.copyWith(status: ValidationRunStatus.notRun);
+    try {
+      return evaluate();
+    } finally {
+      final current = _capabilityRuns[id];
+      if (current?.status == ValidationRunStatus.notRun &&
+          current?.lastExecutedAt == recorded.lastExecutedAt) {
+        _capabilityRuns[id] = recorded;
+      }
     }
   }
 

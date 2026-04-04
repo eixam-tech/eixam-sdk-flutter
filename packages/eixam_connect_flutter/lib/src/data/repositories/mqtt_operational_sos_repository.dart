@@ -155,6 +155,16 @@ class MqttOperationalSosRepository
   }
 
   @override
+  Future<SosIncident?> getCurrentIncident() async {
+    try {
+      await rehydrateRuntimeStateFromBackend();
+    } catch (_) {
+      // Keep the last known local incident when backend refresh is unavailable.
+    }
+    return _activeIncident;
+  }
+
+  @override
   Future<SosState> getSosState() async => _stateMachine.current;
 
   @override

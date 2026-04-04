@@ -1062,6 +1062,11 @@ class EixamConnectSdkImpl
   }
 
   @override
+  Future<SosIncident?> getCurrentSosIncident() {
+    return sosRepository.getCurrentIncident();
+  }
+
+  @override
   Future<SosIncident> cancelSos() async {
     final incident = await sosRepository.cancelSos();
     if (incident.state == SosState.cancelled) {

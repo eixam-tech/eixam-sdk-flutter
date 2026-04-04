@@ -57,6 +57,7 @@ abstract class EixamConnectSdk {
   Future<void> deleteRegisteredDevice(String deviceId);
 
   Future<SosIncident> triggerSos(SosTriggerPayload payload);
+  Future<SosIncident?> getCurrentSosIncident();
   Stream<SosState> get currentSosStateStream;
   Stream<EixamSdkEvent> get lastSosEventStream;
 
