@@ -55,6 +55,7 @@ class BleDeviceRuntimeProvider
   int? _lastTelBatteryLevel;
   int? _lastSosBatteryLevel;
   final Map<String, DateTime> _recentSosPacketSignatures = <String, DateTime>{};
+  bool _ownershipSuspended = false;
 
   static const Duration _recentSosDedupWindow = Duration(seconds: 2);
   static const String _rescueDeviceNotReadyCode = 'E_RESCUE_DEVICE_NOT_READY';
@@ -253,6 +254,52 @@ class BleDeviceRuntimeProvider
         );
       },
     );
+  }
+
+  Future<DeviceStatus?> suspendOwnership({
+    required String reason,
+  }) async {
+    _ownershipSuspended = true;
+    await _notificationSubscription?.cancel();
+    _notificationSubscription = null;
+    await _connectionStateSubscription?.cancel();
+    _connectionStateSubscription = null;
+    BleDebugRegistry.instance.clearCommandWriter();
+    await _deviceSosController.detach();
+    final deviceId = _connectedDeviceId;
+    if (deviceId != null) {
+      try {
+        await _bleClient.disconnect(deviceId);
+      } catch (_) {}
+    }
+    final currentStatus = _lastRuntimeStatus;
+    if (currentStatus == null) {
+      return null;
+    }
+    final nextStatus = currentStatus.copyWith(
+      connected: false,
+      lifecycleState: _resolveLifecycle(currentStatus, false),
+      lastSyncedAt: DateTime.now(),
+      provisioningError: 'Flutter BLE ownership released: $reason',
+    );
+    _publishRuntimeStatus(nextStatus, reason: 'ownership_released');
+    return nextStatus;
+  }
+
+  Future<DeviceStatus?> resumeOwnership({
+    required String reason,
+  }) async {
+    _ownershipSuspended = false;
+    final currentStatus = _lastRuntimeStatus;
+    if (currentStatus == null) {
+      return null;
+    }
+    final nextStatus = currentStatus.copyWith(
+      provisioningError: 'Flutter BLE ownership restored: $reason',
+      lastSyncedAt: DateTime.now(),
+    );
+    _publishRuntimeStatus(nextStatus, reason: 'ownership_restored');
+    return nextStatus;
   }
 
   @override
@@ -518,6 +565,12 @@ class BleDeviceRuntimeProvider
   }
 
   Future<void> _handleUnexpectedDisconnect(String deviceId) async {
+    if (_ownershipSuspended) {
+      BleDebugRegistry.instance.recordEvent(
+        'Unexpected disconnect ignored because Flutter BLE ownership is suspended',
+      );
+      return;
+    }
     final currentStatus = _lastRuntimeStatus;
     if (currentStatus == null || !currentStatus.connected) {
       return;

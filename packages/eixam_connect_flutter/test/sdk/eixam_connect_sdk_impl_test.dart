@@ -510,6 +510,9 @@ void main() {
         expect(enterResult.status.coverageLevel, ProtectionCoverageLevel.full);
         expect(enterResult.status.bleOwner, ProtectionBleOwner.androidService);
         expect(enterResult.status.serviceBleReady, isTrue);
+        expect(
+            localAdapter.lastStartRequest?.apiBaseUrl, 'https://example.test');
+        expect(localAdapter.lastStartRequest?.activeDeviceId, 'device-armed');
         expect(exitedStatus.modeState, ProtectionModeState.off);
         expect(exitedStatus.runtimeState, ProtectionRuntimeState.inactive);
         expect(localAdapter.startCallCount, 1);
@@ -683,6 +686,95 @@ void main() {
         expect(status.serviceBleConnected, isTrue);
         expect(status.serviceBleReady, isTrue);
         expect(diagnostics.lastBleServiceEvent, 'subscriptionsActive');
+      } finally {
+        await events.close();
+        await runtimeSdk.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test('ios restoration events update protection diagnostics safely',
+        () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+        notifications: SdkPermissionStatus.granted,
+        bluetooth: SdkPermissionStatus.granted,
+        bluetoothEnabled: true,
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-ios-restore',
+          connected: true,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        ),
+      );
+      final events = StreamController<ProtectionPlatformEvent>.broadcast();
+      final localRealtimeClient = FakeRealtimeClient()
+        ..stateToEmitOnConnect = RealtimeConnectionState.connected;
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          platform: ProtectionPlatform.ios,
+          backgroundCapabilityState: ProtectionCapabilityState.configured,
+          restorationConfigured: true,
+          coverageLevel: ProtectionCoverageLevel.partial,
+        ),
+        startResult: const ProtectionPlatformStartResult(
+          success: true,
+          coverageLevel: ProtectionCoverageLevel.partial,
+        ),
+        platformEvents: events.stream,
+      );
+      final runtimeSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: DeviceSosController(),
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: localAdapter,
+      );
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+            canonicalExternalUserId: 'canonical-user',
+          ),
+        );
+        await runtimeSdk.enterProtectionMode();
+
+        events.add(
+          ProtectionPlatformEvent(
+            type: ProtectionPlatformEventType.restorationDetected,
+            timestamp: DateTime.utc(2026, 4, 5, 13),
+            reason: 'ios_restoration',
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        final status = await runtimeSdk.getProtectionStatus();
+        final diagnostics = await runtimeSdk.getProtectionDiagnostics();
+
+        expect(status.platform, ProtectionPlatform.ios);
+        expect(status.restorationConfigured, isTrue);
+        expect(status.lastRestorationEvent, 'restorationDetected');
+        expect(diagnostics.lastRestorationEvent, 'restorationDetected');
       } finally {
         await events.close();
         await runtimeSdk.dispose();
@@ -3402,6 +3494,7 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   int startCallCount = 0;
   int stopCallCount = 0;
   int flushCallCount = 0;
+  ProtectionPlatformStartRequest? lastStartRequest;
 
   @override
   Future<ProtectionPlatformSnapshot> getPlatformSnapshot() async => snapshot;
@@ -3411,6 +3504,7 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     required ProtectionPlatformStartRequest request,
   }) async {
     startCallCount++;
+    lastStartRequest = request;
     return startResult;
   }
 

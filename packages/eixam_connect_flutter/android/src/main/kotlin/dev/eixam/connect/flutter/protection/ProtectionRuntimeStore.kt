@@ -20,12 +20,17 @@ internal class ProtectionRuntimeStore(context: Context) {
             preferences.getInt(keyReconnectAttemptCount, 0)
         val lastReconnectAttemptAt =
             preferences.getLong(keyLastReconnectAttemptAt, 0L).takeIf { it > 0L }
+        val pendingNativeSosCreateCount =
+            preferences.getInt(keyPendingNativeSosCreateCount, 0)
+        val pendingNativeSosCancelCount =
+            preferences.getInt(keyPendingNativeSosCancelCount, 0)
 
         return mapOf(
             "platformRuntimeConfigured" to true,
             "foregroundServiceConfigured" to true,
             "backgroundCapabilityReady" to true,
             "backgroundCapabilityState" to backgroundCapabilityState,
+            "restorationConfigured" to true,
             "serviceRunning" to serviceRunning,
             "runtimeActive" to runtimeActive,
             "bleOwner" to bleOwner,
@@ -38,13 +43,21 @@ internal class ProtectionRuntimeStore(context: Context) {
                 .takeIf { it > 0L },
             "lastWakeAt" to preferences.getLong(keyLastWakeAt, 0L).takeIf { it > 0L },
             "lastWakeReason" to preferences.getString(keyLastWakeReason, null),
+            "lastRestorationEvent" to preferences.getString(keyLastRestorationEvent, null),
+            "lastRestorationEventAt" to preferences.getLong(keyLastRestorationEventAt, 0L)
+                .takeIf { it > 0L },
             "lastBleServiceEvent" to preferences.getString(keyLastBleServiceEvent, null),
             "lastBleServiceEventAt" to preferences.getLong(keyLastBleServiceEventAt, 0L)
                 .takeIf { it > 0L },
             "reconnectAttemptCount" to reconnectAttemptCount,
             "lastReconnectAttemptAt" to lastReconnectAttemptAt,
-            "pendingSosCount" to preferences.getInt(keyPendingSosCount, 0),
+            "pendingSosCount" to
+                (preferences.getInt(keyPendingSosCount, 0) +
+                    pendingNativeSosCreateCount +
+                    pendingNativeSosCancelCount),
             "pendingTelemetryCount" to preferences.getInt(keyPendingTelemetryCount, 0),
+            "pendingNativeSosCreateCount" to pendingNativeSosCreateCount,
+            "pendingNativeSosCancelCount" to pendingNativeSosCancelCount,
             "runtimeState" to when {
                 runtimeActive -> "active"
                 serviceRunning -> "recovering"
@@ -59,15 +72,25 @@ internal class ProtectionRuntimeStore(context: Context) {
                 keyDegradationReason,
                 "Android Protection Mode runtime is armed in the SDK/plugin layer, but native BLE ownership is still recovering or not yet ready.",
             ),
+            "lastNativeBackendHandoffResult" to preferences.getString(
+                keyLastNativeBackendHandoffResult,
+                null,
+            ),
+            "lastNativeBackendHandoffError" to preferences.getString(
+                keyLastNativeBackendHandoffError,
+                null,
+            ),
         )
     }
 
     fun markStartRequest(
         activeDeviceId: String?,
+        apiBaseUrl: String?,
         enableStoreAndForward: Boolean,
     ) {
         preferences.edit()
             .putString(keyTargetDeviceId, activeDeviceId)
+            .putString(keyApiBaseUrl, apiBaseUrl)
             .putBoolean(keyServiceRunning, true)
             .putBoolean(keyRuntimeActive, true)
             .putString(keyBleOwner, "androidService")
@@ -76,6 +99,8 @@ internal class ProtectionRuntimeStore(context: Context) {
                 keyDegradationReason,
                 "Android foreground service owns the Protection Mode runtime. Native BLE runtime readiness is still reported separately until service BLE subscriptions are active.",
             )
+            .putLong(keyLastWakeAt, System.currentTimeMillis())
+            .putString(keyLastWakeReason, "enter_protection_mode")
             .apply()
     }
 
@@ -93,6 +118,155 @@ internal class ProtectionRuntimeStore(context: Context) {
         preferences.edit()
             .putString(keyLastFailureReason, reason)
             .putBoolean(keyRuntimeActive, false)
+            .apply()
+    }
+
+    fun currentTargetDeviceId(): String? =
+        preferences.getString(keyTargetDeviceId, null)
+
+    fun reconnectBackoffMs(defaultValue: Long): Long =
+        preferences.getLong(keyReconnectBackoffMs, defaultValue).takeIf { it > 0L } ?: defaultValue
+
+    fun saveReconnectBackoffMs(value: Long) {
+        preferences.edit().putLong(keyReconnectBackoffMs, value).apply()
+    }
+
+    fun isProtectionArmed(): Boolean =
+        preferences.getBoolean(keyServiceRunning, false) &&
+            preferences.getString(keyBleOwner, "flutter") == "androidService"
+
+    fun markServiceBleConnected() {
+        preferences.edit()
+            .putBoolean(keyServiceBleConnected, true)
+            .apply()
+    }
+
+    fun markServiceBleDisconnected() {
+        preferences.edit()
+            .putBoolean(keyServiceBleConnected, false)
+            .putBoolean(keyServiceBleReady, false)
+            .apply()
+    }
+
+    fun markServiceBleReady() {
+        preferences.edit()
+            .putBoolean(keyServiceBleReady, true)
+            .apply()
+    }
+
+    fun markReconnectAttempt(count: Int) {
+        preferences.edit()
+            .putInt(keyReconnectAttemptCount, count)
+            .putLong(keyLastReconnectAttemptAt, System.currentTimeMillis())
+            .apply()
+    }
+
+    fun recordPacket(payload: List<Int>) {
+        preferences.edit()
+            .putString(
+                keyLastPacketHex,
+                payload.joinToString(separator = "") { byte -> "%02x".format(byte) },
+            )
+            .putLong(keyLastPacketAt, System.currentTimeMillis())
+            .apply()
+    }
+
+    fun markPendingSosCreate() {
+        preferences.edit()
+            .putInt(keyPendingNativeSosCreateCount, 1)
+            .putString(keyPendingSosState, "create_pending")
+            .apply()
+    }
+
+    fun markPendingSosCancel() {
+        preferences.edit()
+            .putInt(keyPendingNativeSosCancelCount, 1)
+            .putString(keyPendingSosState, "cancel_pending")
+            .apply()
+    }
+
+    fun clearPendingSosCreate() {
+        preferences.edit()
+            .putInt(keyPendingNativeSosCreateCount, 0)
+            .apply()
+    }
+
+    fun clearPendingSosCancel() {
+        preferences.edit()
+            .putInt(keyPendingNativeSosCancelCount, 0)
+            .apply()
+    }
+
+    fun clearPendingSos() {
+        preferences.edit()
+            .putInt(keyPendingSosCount, 0)
+            .putInt(keyPendingNativeSosCreateCount, 0)
+            .putInt(keyPendingNativeSosCancelCount, 0)
+            .putString(keyPendingSosState, "idle")
+            .remove(keyActiveBackendIncidentId)
+            .remove(keyActiveBackendIncidentState)
+            .remove(keyActiveBackendIncidentAt)
+            .apply()
+    }
+
+    fun hasPendingNativeSosCreate(): Boolean =
+        preferences.getInt(keyPendingNativeSosCreateCount, 0) > 0
+
+    fun hasPendingNativeSosCancel(): Boolean =
+        preferences.getInt(keyPendingNativeSosCancelCount, 0) > 0
+
+    fun currentApiBaseUrl(): String? =
+        preferences.getString(keyApiBaseUrl, null)
+
+    fun saveApiBaseUrl(value: String?) {
+        preferences.edit().putString(keyApiBaseUrl, value).apply()
+    }
+
+    fun markBackendIncidentActive(
+        incidentId: String?,
+        incidentState: String?,
+    ) {
+        preferences.edit()
+            .putString(keyActiveBackendIncidentId, incidentId)
+            .putString(keyActiveBackendIncidentState, incidentState)
+            .putLong(keyActiveBackendIncidentAt, System.currentTimeMillis())
+            .putString(keyLastNativeBackendHandoffResult, "create_synced")
+            .remove(keyLastNativeBackendHandoffError)
+            .apply()
+    }
+
+    fun markBackendIncidentCleared(result: String = "cancel_synced") {
+        preferences.edit()
+            .remove(keyActiveBackendIncidentId)
+            .remove(keyActiveBackendIncidentState)
+            .remove(keyActiveBackendIncidentAt)
+            .putString(keyLastNativeBackendHandoffResult, result)
+            .remove(keyLastNativeBackendHandoffError)
+            .apply()
+    }
+
+    fun activeBackendIncidentId(): String? =
+        preferences.getString(keyActiveBackendIncidentId, null)
+
+    fun lastBackendIncidentState(): String? =
+        preferences.getString(keyActiveBackendIncidentState, null)
+
+    fun markBackendHandoffQueued(result: String) {
+        preferences.edit()
+            .putString(keyLastNativeBackendHandoffResult, result)
+            .apply()
+    }
+
+    fun markBackendHandoffFailure(error: String) {
+        preferences.edit()
+            .putString(keyLastNativeBackendHandoffError, error)
+            .apply()
+    }
+
+    fun markBackendHandoffSuccess(result: String) {
+        preferences.edit()
+            .putString(keyLastNativeBackendHandoffResult, result)
+            .remove(keyLastNativeBackendHandoffError)
             .apply()
     }
 
@@ -117,6 +291,11 @@ internal class ProtectionRuntimeStore(context: Context) {
                 .putLong(keyLastBleServiceEventAt, now)
         }
         when (type) {
+            "restorationDetected",
+            "restorationRehydrated",
+            -> editor
+                .putString(keyLastRestorationEvent, type)
+                .putLong(keyLastRestorationEventAt, now)
             "deviceConnected" -> editor.putBoolean(keyServiceBleConnected, true)
             "deviceDisconnected" -> editor
                 .putBoolean(keyServiceBleConnected, false)
@@ -140,6 +319,8 @@ internal class ProtectionRuntimeStore(context: Context) {
         val flushedTelemetryCount = preferences.getInt(keyPendingTelemetryCount, 0)
         preferences.edit()
             .putInt(keyPendingSosCount, 0)
+            .putInt(keyPendingNativeSosCreateCount, 0)
+            .putInt(keyPendingNativeSosCancelCount, 0)
             .putInt(keyPendingTelemetryCount, 0)
             .apply()
         return mapOf(
@@ -159,17 +340,31 @@ internal class ProtectionRuntimeStore(context: Context) {
         private const val keyTargetDeviceId = "target_device_id"
         private const val keyStoreAndForwardEnabled = "store_and_forward_enabled"
         private const val keyPendingSosCount = "pending_sos_count"
+        private const val keyPendingSosState = "pending_sos_state"
         private const val keyPendingTelemetryCount = "pending_telemetry_count"
+        private const val keyPendingNativeSosCreateCount = "pending_native_sos_create_count"
+        private const val keyPendingNativeSosCancelCount = "pending_native_sos_cancel_count"
         private const val keyReconnectAttemptCount = "reconnect_attempt_count"
         private const val keyLastReconnectAttemptAt = "last_reconnect_attempt_at"
+        private const val keyReconnectBackoffMs = "reconnect_backoff_ms"
         private const val keyLastFailureReason = "last_failure_reason"
         private const val keyLastWakeReason = "last_wake_reason"
         private const val keyLastWakeAt = "last_wake_at"
+        private const val keyLastPacketHex = "last_packet_hex"
+        private const val keyLastPacketAt = "last_packet_at"
+        private const val keyLastRestorationEvent = "last_restoration_event"
+        private const val keyLastRestorationEventAt = "last_restoration_event_at"
         private const val keyLastPlatformEvent = "last_platform_event"
         private const val keyLastPlatformEventAt = "last_platform_event_at"
         private const val keyLastBleServiceEvent = "last_ble_service_event"
         private const val keyLastBleServiceEventAt = "last_ble_service_event_at"
         private const val keyBackgroundCapabilityState = "background_capability_state"
         private const val keyDegradationReason = "degradation_reason"
+        private const val keyApiBaseUrl = "api_base_url"
+        private const val keyActiveBackendIncidentId = "active_backend_incident_id"
+        private const val keyActiveBackendIncidentState = "active_backend_incident_state"
+        private const val keyActiveBackendIncidentAt = "active_backend_incident_at"
+        private const val keyLastNativeBackendHandoffResult = "last_native_backend_handoff_result"
+        private const val keyLastNativeBackendHandoffError = "last_native_backend_handoff_error"
     }
 }

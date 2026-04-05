@@ -29,7 +29,10 @@ internal class ProtectionForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val runtimeStore = ProtectionRuntimeStore(applicationContext)
         if (intent?.action == actionStop) {
+            ProtectionRuntimeBridge.ensureRuntimeOwner(applicationContext)
+                .stop("service_stop_action")
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
@@ -41,6 +44,21 @@ internal class ProtectionForegroundService : Service() {
             type = if (intent == null) "serviceRestarted" else "runtimeStarted",
             reason = intent?.getStringExtra(extraWakeReason) ?: "service_start",
         )
+        if (intent == null) {
+            ProtectionRuntimeBridge.recordPlatformEvent(
+                context = applicationContext,
+                type = "restorationDetected",
+                reason = "service_recreated_by_system",
+            )
+            val restoredDeviceId = runtimeStore.currentTargetDeviceId()
+            if (runtimeStore.isProtectionArmed() && !restoredDeviceId.isNullOrBlank()) {
+                ProtectionRuntimeBridge.ensureRuntimeOwner(applicationContext).start(
+                    deviceId = restoredDeviceId,
+                    reconnectBackoffMs = runtimeStore.reconnectBackoffMs(defaultReconnectBackoffMs),
+                    restored = true,
+                )
+            }
+        }
         return START_STICKY
     }
 
@@ -129,6 +147,7 @@ internal class ProtectionForegroundService : Service() {
     companion object {
         private const val notificationChannelId = "eixam_protection_runtime"
         private const val notificationId = 6021
+        private const val defaultReconnectBackoffMs = 5000L
         private const val actionStart = "dev.eixam.connect.flutter.action.PROTECTION_START"
         private const val actionStop = "dev.eixam.connect.flutter.action.PROTECTION_STOP"
         private const val extraWakeReason = "wake_reason"

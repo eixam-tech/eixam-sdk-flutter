@@ -21,8 +21,14 @@ enum ProtectionPlatformEventType {
   reconnectFailed,
   servicesDiscovered,
   subscriptionsActive,
+  packetReceived,
   sosEventReceived,
   runtimeError,
+  restorationDetected,
+  restorationRehydrated,
+  nativeBackendSyncQueued,
+  nativeBackendSyncSucceeded,
+  nativeBackendSyncFailed,
   bluetoothTurnedOff,
   bluetoothTurnedOn,
 }
@@ -31,12 +37,14 @@ class ProtectionPlatformStartRequest {
   const ProtectionPlatformStartRequest({
     required this.modeOptions,
     this.activeDeviceId,
+    this.apiBaseUrl,
     this.sessionReady = false,
     this.enableStoreAndForward = true,
   });
 
   final ProtectionModeOptions modeOptions;
   final String? activeDeviceId;
+  final String? apiBaseUrl;
   final bool sessionReady;
   final bool enableStoreAndForward;
 }
@@ -71,13 +79,22 @@ class ProtectionPlatformSnapshot {
     this.lastWakeReason,
     this.platform = ProtectionPlatform.unknown,
     this.backgroundCapabilityState = ProtectionCapabilityState.unknown,
+    this.restorationConfigured = false,
     this.bleOwner = ProtectionBleOwner.flutter,
     this.serviceBleConnected = false,
     this.serviceBleReady = false,
+    this.pendingSosCount = 0,
+    this.pendingTelemetryCount = 0,
+    this.pendingNativeSosCreateCount = 0,
+    this.pendingNativeSosCancelCount = 0,
+    this.lastRestorationEvent,
+    this.lastRestorationEventAt,
     this.lastBleServiceEvent,
     this.lastBleServiceEventAt,
     this.reconnectAttemptCount = 0,
     this.lastReconnectAttemptAt,
+    this.lastNativeBackendHandoffResult,
+    this.lastNativeBackendHandoffError,
     this.degradationReason,
   });
 
@@ -97,13 +114,22 @@ class ProtectionPlatformSnapshot {
   final String? lastWakeReason;
   final ProtectionPlatform platform;
   final ProtectionCapabilityState backgroundCapabilityState;
+  final bool restorationConfigured;
   final ProtectionBleOwner bleOwner;
   final bool serviceBleConnected;
   final bool serviceBleReady;
+  final int pendingSosCount;
+  final int pendingTelemetryCount;
+  final int pendingNativeSosCreateCount;
+  final int pendingNativeSosCancelCount;
+  final String? lastRestorationEvent;
+  final DateTime? lastRestorationEventAt;
   final String? lastBleServiceEvent;
   final DateTime? lastBleServiceEventAt;
   final int reconnectAttemptCount;
   final DateTime? lastReconnectAttemptAt;
+  final String? lastNativeBackendHandoffResult;
+  final String? lastNativeBackendHandoffError;
   final String? degradationReason;
 }
 

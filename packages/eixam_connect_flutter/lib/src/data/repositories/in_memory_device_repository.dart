@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import '../../device/device_runtime_provider.dart';
+import '../../device/ble_device_runtime_provider.dart';
 import '../datasources_local/shared_prefs_sdk_store.dart';
 import '../../mappers/local_state_serializers.dart';
 
@@ -107,6 +108,37 @@ class InMemoryDeviceRepository implements DeviceRepository {
 
   @override
   Stream<DeviceStatus> watchDeviceStatus() => _controller.stream;
+
+  Future<DeviceStatus> releaseBleOwnershipToProtectionMode({
+    required String reason,
+  }) async {
+    final runtimeProvider = _runtimeProvider;
+    if (runtimeProvider is! BleDeviceRuntimeProvider) {
+      return _status;
+    }
+    final runtimeStatus =
+        await runtimeProvider.suspendOwnership(reason: reason);
+    if (runtimeStatus != null) {
+      _status = runtimeStatus;
+      await _persistAndEmit();
+    }
+    return _status;
+  }
+
+  Future<DeviceStatus> reclaimBleOwnershipFromProtectionMode({
+    required String reason,
+  }) async {
+    final runtimeProvider = _runtimeProvider;
+    if (runtimeProvider is! BleDeviceRuntimeProvider) {
+      return _status;
+    }
+    final runtimeStatus = await runtimeProvider.resumeOwnership(reason: reason);
+    if (runtimeStatus != null) {
+      _status = runtimeStatus;
+      await _persistAndEmit();
+    }
+    return _status;
+  }
 
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();

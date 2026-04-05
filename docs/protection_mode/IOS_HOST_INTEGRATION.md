@@ -3,18 +3,19 @@
 ## Current State
 
 - The SDK now includes an iOS Protection adapter and readiness/status/diagnostic participation.
-- The implementation is intentionally honest: it is scaffolded, safe, and non-crashing, but it does not claim full background BLE ownership yet.
+- The implementation is intentionally honest: it is scaffolded, safe, non-crashing, and restoration-aware, but it does not claim full background BLE ownership yet.
 
 ## Host App Expectations
 
 - Configure notification permissions UX.
 - Prepare `UIBackgroundModes` for future support, especially `bluetooth-central`.
-- Be ready for future restoration/state-preservation callbacks and lifecycle handoff wiring when the real iOS runtime lands.
+- Be ready for restoration/state-preservation callbacks and lifecycle handoff wiring as the native runtime hardens.
 
 ## What The SDK Owns Today
 
 - iOS Protection method/event channel contract
 - Base status and diagnostics reporting
+- Restoration-configured reporting and last-restoration event diagnostics
 - Honest degradation reason strings
 - Participation in the same Dart Protection API as Android
 

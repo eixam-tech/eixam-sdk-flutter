@@ -26,6 +26,7 @@
 - Protection Mode is off by default.
 - Full Protection behavior is only attempted after `enterProtectionMode()`.
 - When armed, the plugin foreground service becomes the intended Protection runtime owner and reports `bleOwner=androidService`.
+- The SDK also releases the Flutter BLE runtime from active ownership so Flutter auto-reconnect and notification subscriptions stop competing while Protection Mode is armed.
 - When disarmed, ownership returns to the default Flutter path.
 
 ## Validation
@@ -38,6 +39,7 @@
 6. Confirm:
    - foreground service is running
    - BLE owner is `androidService`
+   - Flutter runtime no longer reports itself as the active owner
    - platform events are updating
    - rehydrate returns the same additive snapshot after app reattach
 

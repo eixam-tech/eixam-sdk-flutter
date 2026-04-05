@@ -56,13 +56,27 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
       backgroundCapabilityState: _parseCapabilityState(
         snapshot['backgroundCapabilityState'] as String?,
       ),
+      restorationConfigured:
+          snapshot['restorationConfigured'] as bool? ?? false,
       bleOwner: _parseBleOwner(snapshot['bleOwner'] as String?),
       serviceBleConnected: snapshot['serviceBleConnected'] as bool? ?? false,
       serviceBleReady: snapshot['serviceBleReady'] as bool? ?? false,
+      pendingSosCount: snapshot['pendingSosCount'] as int? ?? 0,
+      pendingTelemetryCount: snapshot['pendingTelemetryCount'] as int? ?? 0,
+      pendingNativeSosCreateCount:
+          snapshot['pendingNativeSosCreateCount'] as int? ?? 0,
+      pendingNativeSosCancelCount:
+          snapshot['pendingNativeSosCancelCount'] as int? ?? 0,
+      lastRestorationEvent: snapshot['lastRestorationEvent'] as String?,
+      lastRestorationEventAt: _readDateTime(snapshot['lastRestorationEventAt']),
       lastBleServiceEvent: snapshot['lastBleServiceEvent'] as String?,
       lastBleServiceEventAt: _readDateTime(snapshot['lastBleServiceEventAt']),
       reconnectAttemptCount: snapshot['reconnectAttemptCount'] as int? ?? 0,
       lastReconnectAttemptAt: _readDateTime(snapshot['lastReconnectAttemptAt']),
+      lastNativeBackendHandoffResult:
+          snapshot['lastNativeBackendHandoffResult'] as String?,
+      lastNativeBackendHandoffError:
+          snapshot['lastNativeBackendHandoffError'] as String?,
       degradationReason: snapshot['degradationReason'] as String?,
     );
   }
@@ -75,6 +89,7 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
       'startProtectionRuntime',
       <String, dynamic>{
         'activeDeviceId': request.activeDeviceId,
+        'apiBaseUrl': request.apiBaseUrl,
         'sessionReady': request.sessionReady,
         'enableStoreAndForward': request.enableStoreAndForward,
         'autoReconnectBle': request.modeOptions.autoReconnectBle,
@@ -203,10 +218,22 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
         return ProtectionPlatformEventType.servicesDiscovered;
       case 'subscriptionsActive':
         return ProtectionPlatformEventType.subscriptionsActive;
+      case 'packetReceived':
+        return ProtectionPlatformEventType.packetReceived;
       case 'sosEventReceived':
         return ProtectionPlatformEventType.sosEventReceived;
       case 'runtimeError':
         return ProtectionPlatformEventType.runtimeError;
+      case 'restorationDetected':
+        return ProtectionPlatformEventType.restorationDetected;
+      case 'restorationRehydrated':
+        return ProtectionPlatformEventType.restorationRehydrated;
+      case 'nativeBackendSyncQueued':
+        return ProtectionPlatformEventType.nativeBackendSyncQueued;
+      case 'nativeBackendSyncSucceeded':
+        return ProtectionPlatformEventType.nativeBackendSyncSucceeded;
+      case 'nativeBackendSyncFailed':
+        return ProtectionPlatformEventType.nativeBackendSyncFailed;
       case 'bluetoothTurnedOff':
         return ProtectionPlatformEventType.bluetoothTurnedOff;
       case 'bluetoothTurnedOn':

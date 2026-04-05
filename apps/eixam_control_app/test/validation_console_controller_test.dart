@@ -404,11 +404,15 @@ void main() {
       controller.protectionStatus = controller.protectionStatus.copyWith(
         platform: ProtectionPlatform.android,
         platformRuntimeConfigured: true,
+        restorationConfigured: true,
         foregroundServiceRunning: true,
         protectionRuntimeActive: true,
         bleOwner: ProtectionBleOwner.androidService,
         serviceBleConnected: true,
         serviceBleReady: true,
+        pendingNativeSosCreateCount: 1,
+        pendingNativeSosCancelCount: 1,
+        lastNativeBackendHandoffResult: 'cancel_synced',
         modeState: ProtectionModeState.degraded,
         runtimeState: ProtectionRuntimeState.active,
         coverageLevel: ProtectionCoverageLevel.partial,
@@ -417,11 +421,18 @@ void main() {
           controller.protectionDiagnostics.copyWith(
         lastPlatformEvent: 'runtimeStarted',
         lastPlatformEventAt: DateTime.utc(2026, 4, 5, 12),
+        pendingNativeSosCreateCount: 1,
+        pendingNativeSosCancelCount: 1,
+        lastNativeBackendHandoffResult: 'cancel_synced',
       );
 
       final statusCard = controller.buildProtectionCapabilityCards().firstWhere(
             (item) => item.id == ValidationCapabilityId.protectionStatus,
           );
+      final readinessCard =
+          controller.buildProtectionCapabilityCards().firstWhere(
+                (item) => item.id == ValidationCapabilityId.protectionReadiness,
+              );
       final diagnosticsCard =
           controller.buildProtectionCapabilityCards().firstWhere(
                 (item) =>
@@ -436,6 +447,13 @@ void main() {
       );
       expect(
         {
+          for (final field in readinessCard.currentState)
+            field.label: field.value,
+        }['Restoration configured'],
+        'Yes',
+      );
+      expect(
+        {
           for (final field in statusCard.currentState) field.label: field.value,
         }['Foreground service'],
         'Yes',
@@ -447,16 +465,31 @@ void main() {
         }['Last platform event'],
         'runtimeStarted',
       );
+      expect(
+        {
+          for (final field in statusCard.currentState) field.label: field.value,
+        }['Pending native SOS create'],
+        '1',
+      );
+      expect(
+        {
+          for (final field in diagnosticsCard.currentState)
+            field.label: field.value,
+        }['Native backend result'],
+        'cancel_synced',
+      );
     });
 
     test('protection cards render iOS readiness fields honestly', () {
       controller.protectionStatus = controller.protectionStatus.copyWith(
         platform: ProtectionPlatform.ios,
         platformRuntimeConfigured: true,
+        restorationConfigured: true,
         backgroundCapabilityState: ProtectionCapabilityState.unknown,
         coverageLevel: ProtectionCoverageLevel.partial,
         degradationReason:
             'iOS host integration is scaffolded, but background BLE ownership is not implemented yet.',
+        lastRestorationEvent: 'restorationDetected',
       );
 
       final readinessCard =
@@ -476,9 +509,22 @@ void main() {
       );
       expect(
         {
+          for (final field in readinessCard.currentState)
+            field.label: field.value,
+        }['Restoration configured'],
+        'Yes',
+      );
+      expect(
+        {
           for (final field in statusCard.currentState) field.label: field.value,
         }['Degradation reason'],
         contains('iOS host integration is scaffolded'),
+      );
+      expect(
+        {
+          for (final field in statusCard.currentState) field.label: field.value,
+        }['Last restoration event'],
+        'restorationDetected',
       );
     });
   });

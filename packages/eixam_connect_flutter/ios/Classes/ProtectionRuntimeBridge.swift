@@ -29,15 +29,21 @@ final class ProtectionRuntimeBridge: NSObject, FlutterStreamHandler {
   }
 
   private let bluetoothManager = CBCentralManager(delegate: nil, queue: nil)
+  private static let restorationIdentifier = "dev.eixam.connect.flutter.protection.central"
 
   func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
     case "getPlatformSnapshot":
       result(snapshot())
     case "startProtectionRuntime":
+      defaults.set(Self.restorationIdentifier, forKey: "restoration_identifier")
+      defaults.set(true, forKey: "restoration_configured")
       defaults.set("Protection Mode on iOS is currently scaffolded only. Host app capabilities and future restoration wiring can be validated now, but background BLE ownership is not yet active.", forKey: "degradation_reason")
       defaults.set("runtimeStartRequested", forKey: "last_platform_event")
       defaults.set(Date().millisecondsSince1970, forKey: "last_platform_event_at")
+      defaults.set("restorationDetected", forKey: "last_restoration_event")
+      defaults.set(Date().millisecondsSince1970, forKey: "last_restoration_event_at")
+      eventSink?(["type": "restorationDetected", "timestamp": Date().millisecondsSince1970, "reason": "protection_runtime_started"])
       result([
         "success": true,
         "runtimeState": "inactive",
@@ -67,6 +73,7 @@ final class ProtectionRuntimeBridge: NSObject, FlutterStreamHandler {
     return [
       "backgroundCapabilityReady": false,
       "backgroundCapabilityState": backgroundCapabilityState(),
+      "restorationConfigured": defaults.bool(forKey: "restoration_configured"),
       "platformRuntimeConfigured": true,
       "runtimeActive": false,
       "bluetoothEnabled": bluetoothEnabled(),
@@ -74,6 +81,10 @@ final class ProtectionRuntimeBridge: NSObject, FlutterStreamHandler {
       "lastFailureReason": nil,
       "lastPlatformEvent": defaults.string(forKey: "last_platform_event"),
       "lastPlatformEventAt": defaults.object(forKey: "last_platform_event_at") as? Int,
+      "lastRestorationEvent": defaults.string(forKey: "last_restoration_event"),
+      "lastRestorationEventAt": defaults.object(forKey: "last_restoration_event_at") as? Int,
+      "pendingSosCount": 0,
+      "pendingTelemetryCount": 0,
       "runtimeState": "inactive",
       "coverageLevel": "partial",
       "degradationReason": defaults.string(forKey: "degradation_reason")

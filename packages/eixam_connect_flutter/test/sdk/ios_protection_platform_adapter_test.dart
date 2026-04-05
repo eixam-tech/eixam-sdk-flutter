@@ -19,10 +19,14 @@ void main() {
             return <String, dynamic>{
               'backgroundCapabilityReady': false,
               'backgroundCapabilityState': 'unknown',
+              'restorationConfigured': true,
               'platformRuntimeConfigured': true,
               'runtimeActive': false,
               'bluetoothEnabled': true,
               'notificationsGranted': true,
+              'lastRestorationEvent': 'restorationDetected',
+              'lastRestorationEventAt':
+                  DateTime.utc(2026, 4, 5, 9).millisecondsSinceEpoch,
               'runtimeState': 'inactive',
               'coverageLevel': 'partial',
               'degradationReason':
@@ -55,6 +59,8 @@ void main() {
       expect(snapshot.coverageLevel, ProtectionCoverageLevel.partial);
       expect(snapshot.backgroundCapabilityState,
           ProtectionCapabilityState.unknown);
+      expect(snapshot.restorationConfigured, isTrue);
+      expect(snapshot.lastRestorationEvent, 'restorationDetected');
       expect(snapshot.bleOwner, ProtectionBleOwner.flutter);
       expect(snapshot.degradationReason, contains('background BLE ownership'));
     });

@@ -66,20 +66,27 @@ class ProtectionStatus {
     required this.pendingSosCount,
     required this.pendingTelemetryCount,
     required this.updatedAt,
+    this.pendingNativeSosCreateCount = 0,
+    this.pendingNativeSosCancelCount = 0,
     this.platformRuntimeConfigured = false,
     this.foregroundServiceRunning = false,
     this.protectionRuntimeActive = false,
     this.platform = ProtectionPlatform.unknown,
     this.bleOwner = ProtectionBleOwner.flutter,
     this.backgroundCapabilityState = ProtectionCapabilityState.unknown,
+    this.restorationConfigured = false,
     this.serviceBleConnected = false,
     this.serviceBleReady = false,
     this.lastPlatformEvent,
     this.lastPlatformEventAt,
+    this.lastRestorationEvent,
+    this.lastRestorationEventAt,
     this.lastBleServiceEvent,
     this.lastBleServiceEventAt,
     this.reconnectAttemptCount = 0,
     this.lastReconnectAttemptAt,
+    this.lastNativeBackendHandoffResult,
+    this.lastNativeBackendHandoffError,
     this.activeDeviceId,
     this.degradationReason,
   });
@@ -99,20 +106,27 @@ class ProtectionStatus {
   final bool storeAndForwardEnabled;
   final int pendingSosCount;
   final int pendingTelemetryCount;
+  final int pendingNativeSosCreateCount;
+  final int pendingNativeSosCancelCount;
   final bool platformRuntimeConfigured;
   final bool foregroundServiceRunning;
   final bool protectionRuntimeActive;
   final ProtectionPlatform platform;
   final ProtectionBleOwner bleOwner;
   final ProtectionCapabilityState backgroundCapabilityState;
+  final bool restorationConfigured;
   final bool serviceBleConnected;
   final bool serviceBleReady;
   final String? lastPlatformEvent;
   final DateTime? lastPlatformEventAt;
+  final String? lastRestorationEvent;
+  final DateTime? lastRestorationEventAt;
   final String? lastBleServiceEvent;
   final DateTime? lastBleServiceEventAt;
   final int reconnectAttemptCount;
   final DateTime? lastReconnectAttemptAt;
+  final String? lastNativeBackendHandoffResult;
+  final String? lastNativeBackendHandoffError;
   final String? activeDeviceId;
   final String? degradationReason;
   final DateTime updatedAt;
@@ -133,20 +147,27 @@ class ProtectionStatus {
     bool? storeAndForwardEnabled,
     int? pendingSosCount,
     int? pendingTelemetryCount,
+    int? pendingNativeSosCreateCount,
+    int? pendingNativeSosCancelCount,
     bool? platformRuntimeConfigured,
     bool? foregroundServiceRunning,
     bool? protectionRuntimeActive,
     ProtectionPlatform? platform,
     ProtectionBleOwner? bleOwner,
     ProtectionCapabilityState? backgroundCapabilityState,
+    bool? restorationConfigured,
     bool? serviceBleConnected,
     bool? serviceBleReady,
     Object? lastPlatformEvent = _unset,
     Object? lastPlatformEventAt = _unset,
+    Object? lastRestorationEvent = _unset,
+    Object? lastRestorationEventAt = _unset,
     Object? lastBleServiceEvent = _unset,
     Object? lastBleServiceEventAt = _unset,
     int? reconnectAttemptCount,
     Object? lastReconnectAttemptAt = _unset,
+    Object? lastNativeBackendHandoffResult = _unset,
+    Object? lastNativeBackendHandoffError = _unset,
     Object? activeDeviceId = _unset,
     Object? degradationReason = _unset,
     DateTime? updatedAt,
@@ -172,6 +193,10 @@ class ProtectionStatus {
       pendingSosCount: pendingSosCount ?? this.pendingSosCount,
       pendingTelemetryCount:
           pendingTelemetryCount ?? this.pendingTelemetryCount,
+      pendingNativeSosCreateCount:
+          pendingNativeSosCreateCount ?? this.pendingNativeSosCreateCount,
+      pendingNativeSosCancelCount:
+          pendingNativeSosCancelCount ?? this.pendingNativeSosCancelCount,
       platformRuntimeConfigured:
           platformRuntimeConfigured ?? this.platformRuntimeConfigured,
       foregroundServiceRunning:
@@ -182,6 +207,8 @@ class ProtectionStatus {
       bleOwner: bleOwner ?? this.bleOwner,
       backgroundCapabilityState:
           backgroundCapabilityState ?? this.backgroundCapabilityState,
+      restorationConfigured:
+          restorationConfigured ?? this.restorationConfigured,
       serviceBleConnected: serviceBleConnected ?? this.serviceBleConnected,
       serviceBleReady: serviceBleReady ?? this.serviceBleReady,
       lastPlatformEvent: identical(lastPlatformEvent, _unset)
@@ -190,6 +217,12 @@ class ProtectionStatus {
       lastPlatformEventAt: identical(lastPlatformEventAt, _unset)
           ? this.lastPlatformEventAt
           : lastPlatformEventAt as DateTime?,
+      lastRestorationEvent: identical(lastRestorationEvent, _unset)
+          ? this.lastRestorationEvent
+          : lastRestorationEvent as String?,
+      lastRestorationEventAt: identical(lastRestorationEventAt, _unset)
+          ? this.lastRestorationEventAt
+          : lastRestorationEventAt as DateTime?,
       lastBleServiceEvent: identical(lastBleServiceEvent, _unset)
           ? this.lastBleServiceEvent
           : lastBleServiceEvent as String?,
@@ -201,6 +234,14 @@ class ProtectionStatus {
       lastReconnectAttemptAt: identical(lastReconnectAttemptAt, _unset)
           ? this.lastReconnectAttemptAt
           : lastReconnectAttemptAt as DateTime?,
+      lastNativeBackendHandoffResult:
+          identical(lastNativeBackendHandoffResult, _unset)
+              ? this.lastNativeBackendHandoffResult
+              : lastNativeBackendHandoffResult as String?,
+      lastNativeBackendHandoffError:
+          identical(lastNativeBackendHandoffError, _unset)
+              ? this.lastNativeBackendHandoffError
+              : lastNativeBackendHandoffError as String?,
       activeDeviceId: identical(activeDeviceId, _unset)
           ? this.activeDeviceId
           : activeDeviceId as String?,
@@ -218,6 +259,8 @@ class ProtectionDiagnostics {
   const ProtectionDiagnostics({
     required this.pendingSosCount,
     required this.pendingTelemetryCount,
+    this.pendingNativeSosCreateCount = 0,
+    this.pendingNativeSosCancelCount = 0,
     this.lastWakeAt,
     this.lastWakeReason,
     this.lastDevicePacketAt,
@@ -225,10 +268,14 @@ class ProtectionDiagnostics {
     this.lastFailureReason,
     this.lastPlatformEvent,
     this.lastPlatformEventAt,
+    this.lastRestorationEvent,
+    this.lastRestorationEventAt,
     this.lastBleServiceEvent,
     this.lastBleServiceEventAt,
     this.reconnectAttemptCount = 0,
     this.lastReconnectAttemptAt,
+    this.lastNativeBackendHandoffResult,
+    this.lastNativeBackendHandoffError,
   });
 
   final DateTime? lastWakeAt;
@@ -238,12 +285,18 @@ class ProtectionDiagnostics {
   final String? lastFailureReason;
   final String? lastPlatformEvent;
   final DateTime? lastPlatformEventAt;
+  final String? lastRestorationEvent;
+  final DateTime? lastRestorationEventAt;
   final String? lastBleServiceEvent;
   final DateTime? lastBleServiceEventAt;
   final int reconnectAttemptCount;
   final DateTime? lastReconnectAttemptAt;
   final int pendingSosCount;
   final int pendingTelemetryCount;
+  final int pendingNativeSosCreateCount;
+  final int pendingNativeSosCancelCount;
+  final String? lastNativeBackendHandoffResult;
+  final String? lastNativeBackendHandoffError;
 
   ProtectionDiagnostics copyWith({
     Object? lastWakeAt = _unset,
@@ -253,12 +306,18 @@ class ProtectionDiagnostics {
     Object? lastFailureReason = _unset,
     Object? lastPlatformEvent = _unset,
     Object? lastPlatformEventAt = _unset,
+    Object? lastRestorationEvent = _unset,
+    Object? lastRestorationEventAt = _unset,
     Object? lastBleServiceEvent = _unset,
     Object? lastBleServiceEventAt = _unset,
     int? reconnectAttemptCount,
     Object? lastReconnectAttemptAt = _unset,
     int? pendingSosCount,
     int? pendingTelemetryCount,
+    int? pendingNativeSosCreateCount,
+    int? pendingNativeSosCancelCount,
+    Object? lastNativeBackendHandoffResult = _unset,
+    Object? lastNativeBackendHandoffError = _unset,
   }) {
     return ProtectionDiagnostics(
       lastWakeAt: identical(lastWakeAt, _unset)
@@ -282,6 +341,12 @@ class ProtectionDiagnostics {
       lastPlatformEventAt: identical(lastPlatformEventAt, _unset)
           ? this.lastPlatformEventAt
           : lastPlatformEventAt as DateTime?,
+      lastRestorationEvent: identical(lastRestorationEvent, _unset)
+          ? this.lastRestorationEvent
+          : lastRestorationEvent as String?,
+      lastRestorationEventAt: identical(lastRestorationEventAt, _unset)
+          ? this.lastRestorationEventAt
+          : lastRestorationEventAt as DateTime?,
       lastBleServiceEvent: identical(lastBleServiceEvent, _unset)
           ? this.lastBleServiceEvent
           : lastBleServiceEvent as String?,
@@ -296,6 +361,18 @@ class ProtectionDiagnostics {
       pendingSosCount: pendingSosCount ?? this.pendingSosCount,
       pendingTelemetryCount:
           pendingTelemetryCount ?? this.pendingTelemetryCount,
+      pendingNativeSosCreateCount:
+          pendingNativeSosCreateCount ?? this.pendingNativeSosCreateCount,
+      pendingNativeSosCancelCount:
+          pendingNativeSosCancelCount ?? this.pendingNativeSosCancelCount,
+      lastNativeBackendHandoffResult:
+          identical(lastNativeBackendHandoffResult, _unset)
+              ? this.lastNativeBackendHandoffResult
+              : lastNativeBackendHandoffResult as String?,
+      lastNativeBackendHandoffError:
+          identical(lastNativeBackendHandoffError, _unset)
+              ? this.lastNativeBackendHandoffError
+              : lastNativeBackendHandoffError as String?,
     );
   }
 

@@ -38,14 +38,22 @@ void main() {
               'coverageLevel': 'partial',
               'bleOwner': 'androidService',
               'backgroundCapabilityState': 'configured',
+              'restorationConfigured': true,
               'serviceBleConnected': true,
               'serviceBleReady': false,
+              'pendingNativeSosCreateCount': 1,
+              'pendingNativeSosCancelCount': 0,
+              'lastRestorationEvent': 'restorationDetected',
+              'lastRestorationEventAt':
+                  DateTime.utc(2026, 4, 5, 10, 4).millisecondsSinceEpoch,
               'lastBleServiceEvent': 'deviceConnected',
               'lastBleServiceEventAt':
                   DateTime.utc(2026, 4, 5, 10, 5).millisecondsSinceEpoch,
               'reconnectAttemptCount': 2,
               'lastReconnectAttemptAt':
                   DateTime.utc(2026, 4, 5, 10, 6).millisecondsSinceEpoch,
+              'lastNativeBackendHandoffResult': 'create_synced',
+              'lastNativeBackendHandoffError': null,
               'lastWakeAt': DateTime.utc(2026, 4, 5, 9).millisecondsSinceEpoch,
               'lastWakeReason': 'enter_protection_mode',
             };
@@ -88,9 +96,14 @@ void main() {
       expect(snapshot.notificationsGranted, isTrue);
       expect(snapshot.lastPlatformEvent, 'runtimeStarted');
       expect(snapshot.bleOwner, ProtectionBleOwner.androidService);
+      expect(snapshot.restorationConfigured, isTrue);
       expect(snapshot.serviceBleConnected, isTrue);
       expect(snapshot.serviceBleReady, isFalse);
+      expect(snapshot.pendingNativeSosCreateCount, 1);
+      expect(snapshot.pendingNativeSosCancelCount, 0);
+      expect(snapshot.lastRestorationEvent, 'restorationDetected');
       expect(snapshot.reconnectAttemptCount, 2);
+      expect(snapshot.lastNativeBackendHandoffResult, 'create_synced');
       expect(snapshot.runtimeState, ProtectionRuntimeState.active);
       expect(snapshot.coverageLevel, ProtectionCoverageLevel.partial);
       expect(methodCalls.single.method, 'getPlatformSnapshot');

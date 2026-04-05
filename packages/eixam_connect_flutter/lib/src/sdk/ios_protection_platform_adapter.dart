@@ -52,7 +52,13 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
       backgroundCapabilityState: _parseCapabilityState(
         snapshot['backgroundCapabilityState'] as String?,
       ),
+      restorationConfigured:
+          snapshot['restorationConfigured'] as bool? ?? false,
       bleOwner: ProtectionBleOwner.flutter,
+      pendingSosCount: snapshot['pendingSosCount'] as int? ?? 0,
+      pendingTelemetryCount: snapshot['pendingTelemetryCount'] as int? ?? 0,
+      lastRestorationEvent: snapshot['lastRestorationEvent'] as String?,
+      lastRestorationEventAt: _readDateTime(snapshot['lastRestorationEventAt']),
       degradationReason: snapshot['degradationReason'] as String?,
     );
   }
@@ -120,11 +126,25 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
         event as Map<Object?, Object?>,
       );
       return ProtectionPlatformEvent(
-        type: ProtectionPlatformEventType.woke,
+        type: _parseEventType(data['type'] as String?),
         timestamp: _readDateTime(data['timestamp']) ?? DateTime.now().toUtc(),
         reason: data['reason'] as String?,
       );
     }).asBroadcastStream();
+  }
+
+  ProtectionPlatformEventType _parseEventType(String? value) {
+    switch (value) {
+      case 'restorationDetected':
+        return ProtectionPlatformEventType.restorationDetected;
+      case 'restorationRehydrated':
+        return ProtectionPlatformEventType.restorationRehydrated;
+      case 'runtimeError':
+        return ProtectionPlatformEventType.runtimeError;
+      case 'woke':
+      default:
+        return ProtectionPlatformEventType.woke;
+    }
   }
 
   ProtectionRuntimeState _parseRuntimeState(String? value) {

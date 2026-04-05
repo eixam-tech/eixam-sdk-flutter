@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
-import 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
 
 import 'protection_platform_adapter.dart';
 
@@ -9,11 +8,14 @@ class ProtectionModeController {
   ProtectionModeController({
     required this.platformAdapter,
     required Future<EixamSession?> Function() sessionProvider,
+    required EixamSdkConfig? Function() sdkConfigProvider,
     required Future<DeviceStatus> Function() deviceStatusProvider,
     required Future<PermissionState> Function() permissionStateProvider,
     required Future<SdkOperationalDiagnostics> Function()
         operationalDiagnosticsProvider,
+    this.onBleOwnershipChanged,
   })  : _sessionProvider = sessionProvider,
+        _sdkConfigProvider = sdkConfigProvider,
         _deviceStatusProvider = deviceStatusProvider,
         _permissionStateProvider = permissionStateProvider,
         _operationalDiagnosticsProvider = operationalDiagnosticsProvider {
@@ -30,10 +32,12 @@ class ProtectionModeController {
 
   final ProtectionPlatformAdapter platformAdapter;
   final Future<EixamSession?> Function() _sessionProvider;
+  final EixamSdkConfig? Function() _sdkConfigProvider;
   final Future<DeviceStatus> Function() _deviceStatusProvider;
   final Future<PermissionState> Function() _permissionStateProvider;
   final Future<SdkOperationalDiagnostics> Function()
       _operationalDiagnosticsProvider;
+  final Future<void> Function(ProtectionBleOwner owner)? onBleOwnershipChanged;
 
   final StreamController<ProtectionStatus> _statusController =
       StreamController<ProtectionStatus>.broadcast();
@@ -64,6 +68,8 @@ class ProtectionModeController {
     pendingSosCount: 0,
     pendingTelemetryCount: 0,
   );
+
+  ProtectionStatus get currentStatus => _status;
 
   Future<ProtectionReadinessReport> evaluateReadiness({
     ProtectionModeOptions options = const ProtectionModeOptions(),
@@ -122,6 +128,7 @@ class ProtectionModeController {
     final startRequest = ProtectionPlatformStartRequest(
       modeOptions: options,
       activeDeviceId: armingSnapshot.status.activeDeviceId,
+      apiBaseUrl: _sdkConfigProvider()?.apiBaseUrl,
       sessionReady: armingSnapshot.status.sessionReady,
       enableStoreAndForward: options.enableStoreAndForward,
     );
@@ -181,6 +188,7 @@ class ProtectionModeController {
     );
     _status = finalSnapshot.status;
     _diagnostics = finalSnapshot.diagnostics;
+    await onBleOwnershipChanged?.call(_status.bleOwner);
     _emitStatus();
     _emitDiagnostics();
     return EnterProtectionModeResult(
@@ -211,6 +219,7 @@ class ProtectionModeController {
       updatedAt: DateTime.now().toUtc(),
     );
     _diagnostics = snapshot.diagnostics;
+    await onBleOwnershipChanged?.call(_status.bleOwner);
     _emitStatus();
     _emitDiagnostics();
     return _status;
@@ -273,6 +282,7 @@ class ProtectionModeController {
     );
     _status = snapshot.status;
     _diagnostics = snapshot.diagnostics;
+    await onBleOwnershipChanged?.call(_status.bleOwner);
     _emitStatus();
     _emitDiagnostics();
     return _status;
@@ -338,10 +348,14 @@ class ProtectionModeController {
     final realtimeReady = operationalDiagnostics.connectionState ==
             RealtimeConnectionState.connected &&
         operationalDiagnostics.sosEventTopics.isNotEmpty;
-    final pendingSosCount =
-        operationalDiagnostics.bridge.pendingSos == null ? 0 : 1;
-    final pendingTelemetryCount =
-        operationalDiagnostics.bridge.pendingTelemetry == null ? 0 : 1;
+    final pendingSosCount = [
+      operationalDiagnostics.bridge.pendingSos == null ? 0 : 1,
+      platformSnapshot.pendingSosCount
+    ].reduce((a, b) => a > b ? a : b);
+    final pendingTelemetryCount = [
+      operationalDiagnostics.bridge.pendingTelemetry == null ? 0 : 1,
+      platformSnapshot.pendingTelemetryCount,
+    ].reduce((a, b) => a > b ? a : b);
 
     final blockingIssues = <ProtectionBlockingIssue>[
       if (!sessionReady)
@@ -414,20 +428,31 @@ class ProtectionModeController {
       storeAndForwardEnabled: options.enableStoreAndForward,
       pendingSosCount: pendingSosCount,
       pendingTelemetryCount: pendingTelemetryCount,
+      pendingNativeSosCreateCount:
+          platformSnapshot.pendingNativeSosCreateCount,
+      pendingNativeSosCancelCount:
+          platformSnapshot.pendingNativeSosCancelCount,
       platformRuntimeConfigured: platformSnapshot.platformRuntimeConfigured,
       foregroundServiceRunning: platformSnapshot.serviceRunning,
       protectionRuntimeActive: platformSnapshot.runtimeActive,
       platform: platformSnapshot.platform,
       bleOwner: platformSnapshot.bleOwner,
       backgroundCapabilityState: platformSnapshot.backgroundCapabilityState,
+      restorationConfigured: platformSnapshot.restorationConfigured,
       serviceBleConnected: platformSnapshot.serviceBleConnected,
       serviceBleReady: platformSnapshot.serviceBleReady,
       lastPlatformEvent: platformSnapshot.lastPlatformEvent,
       lastPlatformEventAt: platformSnapshot.lastPlatformEventAt,
+      lastRestorationEvent: platformSnapshot.lastRestorationEvent,
+      lastRestorationEventAt: platformSnapshot.lastRestorationEventAt,
       lastBleServiceEvent: platformSnapshot.lastBleServiceEvent,
       lastBleServiceEventAt: platformSnapshot.lastBleServiceEventAt,
       reconnectAttemptCount: platformSnapshot.reconnectAttemptCount,
       lastReconnectAttemptAt: platformSnapshot.lastReconnectAttemptAt,
+      lastNativeBackendHandoffResult:
+          platformSnapshot.lastNativeBackendHandoffResult,
+      lastNativeBackendHandoffError:
+          platformSnapshot.lastNativeBackendHandoffError,
       activeDeviceId:
           deviceStatus.deviceId.trim().isEmpty ? null : deviceStatus.deviceId,
       degradationReason:
@@ -443,6 +468,10 @@ class ProtectionModeController {
           platformSnapshot.lastPlatformEvent ?? _diagnostics.lastPlatformEvent,
       lastPlatformEventAt: platformSnapshot.lastPlatformEventAt ??
           _diagnostics.lastPlatformEventAt,
+      lastRestorationEvent: platformSnapshot.lastRestorationEvent ??
+          _diagnostics.lastRestorationEvent,
+      lastRestorationEventAt: platformSnapshot.lastRestorationEventAt ??
+          _diagnostics.lastRestorationEventAt,
       lastBleServiceEvent: platformSnapshot.lastBleServiceEvent ??
           _diagnostics.lastBleServiceEvent,
       lastBleServiceEventAt: platformSnapshot.lastBleServiceEventAt ??
@@ -452,6 +481,14 @@ class ProtectionModeController {
           _diagnostics.lastReconnectAttemptAt,
       pendingSosCount: pendingSosCount,
       pendingTelemetryCount: pendingTelemetryCount,
+      pendingNativeSosCreateCount:
+          platformSnapshot.pendingNativeSosCreateCount,
+      pendingNativeSosCancelCount:
+          platformSnapshot.pendingNativeSosCancelCount,
+      lastNativeBackendHandoffResult:
+          platformSnapshot.lastNativeBackendHandoffResult,
+      lastNativeBackendHandoffError:
+          platformSnapshot.lastNativeBackendHandoffError,
     );
     return _ProtectionSnapshot(
       status: status,
@@ -569,6 +606,50 @@ class ProtectionModeController {
         _emitStatus();
         _emitDiagnostics();
         break;
+      case ProtectionPlatformEventType.restorationDetected:
+      case ProtectionPlatformEventType.restorationRehydrated:
+        _status = _status.copyWith(
+          lastRestorationEvent: event.type.name,
+          lastRestorationEventAt: event.timestamp,
+          lastPlatformEvent: event.type.name,
+          lastPlatformEventAt: event.timestamp,
+          updatedAt: event.timestamp,
+        );
+        _diagnostics = _diagnostics.copyWith(
+          lastRestorationEvent: event.type.name,
+          lastRestorationEventAt: event.timestamp,
+          lastPlatformEvent: event.type.name,
+          lastPlatformEventAt: event.timestamp,
+        );
+        _emitStatus();
+        _emitDiagnostics();
+        break;
+      case ProtectionPlatformEventType.nativeBackendSyncQueued:
+      case ProtectionPlatformEventType.nativeBackendSyncSucceeded:
+      case ProtectionPlatformEventType.nativeBackendSyncFailed:
+        final result = event.type == ProtectionPlatformEventType.nativeBackendSyncSucceeded
+            ? event.reason
+            : _status.lastNativeBackendHandoffResult;
+        final error = event.type == ProtectionPlatformEventType.nativeBackendSyncFailed
+            ? event.reason
+            : _status.lastNativeBackendHandoffError;
+        _status = _status.copyWith(
+          lastPlatformEvent: event.type.name,
+          lastPlatformEventAt: event.timestamp,
+          lastNativeBackendHandoffResult: result,
+          lastNativeBackendHandoffError: error,
+          updatedAt: event.timestamp,
+        );
+        _diagnostics = _diagnostics.copyWith(
+          lastBackendSyncAt: event.timestamp,
+          lastPlatformEvent: event.type.name,
+          lastPlatformEventAt: event.timestamp,
+          lastNativeBackendHandoffResult: result,
+          lastNativeBackendHandoffError: error,
+        );
+        _emitStatus();
+        _emitDiagnostics();
+        break;
       case ProtectionPlatformEventType.deviceConnected:
         _status = _status.copyWith(
           bleOwner: ProtectionBleOwner.androidService,
@@ -582,6 +663,7 @@ class ProtectionModeController {
         break;
       case ProtectionPlatformEventType.servicesDiscovered:
       case ProtectionPlatformEventType.subscriptionsActive:
+      case ProtectionPlatformEventType.packetReceived:
       case ProtectionPlatformEventType.sosEventReceived:
         _status = _status.copyWith(
           bleOwner: ProtectionBleOwner.androidService,
@@ -688,6 +770,9 @@ class ProtectionModeController {
             event.type == ProtectionPlatformEventType.runtimeActive ||
             event.type == ProtectionPlatformEventType.runtimeRecovered ||
             event.type == ProtectionPlatformEventType.runtimeRestarted ||
+            event.type == ProtectionPlatformEventType.nativeBackendSyncQueued ||
+            event.type == ProtectionPlatformEventType.nativeBackendSyncSucceeded ||
+            event.type == ProtectionPlatformEventType.nativeBackendSyncFailed ||
             event.type == ProtectionPlatformEventType.bluetoothTurnedOff ||
             event.type == ProtectionPlatformEventType.bluetoothTurnedOn);
     if (shouldRehydrate) {

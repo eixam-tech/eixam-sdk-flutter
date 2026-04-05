@@ -14,6 +14,7 @@
    - `modeState` is not `off`
    - `bleOwner=androidService`
    - foreground service is running
+   - Flutter no longer behaves as the active BLE owner while armed
    - runtime/platform events are visible
 5. Rehydrate Protection state and confirm the snapshot remains coherent.
 6. Flush queues and confirm queue counters respond safely.
@@ -37,6 +38,7 @@
    - platform is `ios`
    - coverage is `partial` or otherwise degraded
    - background capability state is visible
+   - restoration configured and last restoration event fields are visible
    - degradation reason explains the current limitation
 4. Enter and rehydrate Protection Mode and confirm there are no crashes or false `full` claims.
 

@@ -17,6 +17,7 @@
 
 - The Android foreground service and bridge are SDK/plugin-owned.
 - The platform reports explicit BLE owner/runtime/rehydrate diagnostics.
+- The SDK releases Flutter BLE ownership when native Protection ownership is declared.
 - Arming Protection Mode does not alter the default non-Protection path when the mode is off.
 
 ## Current Android Non-Guarantees
@@ -27,6 +28,7 @@
 ## Current iOS Guarantees
 
 - The iOS adapter exists and participates safely in readiness, status, and diagnostics.
+- Restoration-aware scaffolding and last-restoration diagnostics exist in the plugin layer.
 - The SDK reports honest degradation instead of claiming full support.
 
 ## Current iOS Non-Guarantees

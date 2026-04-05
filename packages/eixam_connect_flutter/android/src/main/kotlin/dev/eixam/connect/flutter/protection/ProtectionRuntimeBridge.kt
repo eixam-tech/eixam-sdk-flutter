@@ -15,6 +15,7 @@ internal object ProtectionRuntimeBridge {
         "dev.eixam.connect_flutter/protection_runtime/events"
 
     private var eventSink: EventChannel.EventSink? = null
+    private var runtimeOwner: ProtectionBleRuntimeOwner? = null
 
     fun register(
         messenger: BinaryMessenger,
@@ -37,6 +38,9 @@ internal object ProtectionRuntimeBridge {
     }
 
     fun unregister() {
+        runtimeOwner?.stop("plugin_detached")
+        runtimeOwner?.dispose()
+        runtimeOwner = null
         eventSink = null
     }
 
@@ -64,10 +68,21 @@ internal object ProtectionRuntimeBridge {
                 val activeDeviceId = arguments?.get("activeDeviceId") as? String
                 val enableStoreAndForward =
                     arguments?.get("enableStoreAndForward") as? Boolean ?: true
+                val reconnectBackoffMs =
+                    (arguments?.get("reconnectBackoffMs") as? Number)?.toLong() ?: 5000L
                 try {
                     store.markStartRequest(
                         activeDeviceId = activeDeviceId,
+                        apiBaseUrl = arguments?.get("apiBaseUrl") as? String,
                         enableStoreAndForward = enableStoreAndForward,
+                    )
+                    store.saveReconnectBackoffMs(reconnectBackoffMs)
+                    ensureRuntimeOwner(context).start(
+                        deviceId = activeDeviceId
+                            ?: store.currentTargetDeviceId()
+                            ?: throw IllegalStateException("Protection Mode requires a protected device identifier."),
+                        reconnectBackoffMs = reconnectBackoffMs,
+                        restored = false,
                     )
                     ProtectionForegroundService.start(context)
                     recordPlatformEvent(
@@ -100,12 +115,16 @@ internal object ProtectionRuntimeBridge {
             }
 
             "stopProtectionRuntime" -> {
+                runtimeOwner?.stop("protection_runtime_stopped")
                 store.markStopped()
                 ProtectionForegroundService.stop(context)
                 result.success(null)
             }
 
-            "flushProtectionQueues" -> result.success(store.flushQueues())
+            "flushProtectionQueues" -> {
+                val flushed = ensureRuntimeOwner(context).flushPendingBackendActions("manual_flush")
+                result.success(flushed)
+            }
             else -> result.notImplemented()
         }
     }
@@ -117,6 +136,15 @@ internal object ProtectionRuntimeBridge {
     ) {
         ProtectionRuntimeStore(context).recordEvent(type = type, reason = reason)
         emitEvent(type, reason)
+    }
+
+    fun ensureRuntimeOwner(context: Context): ProtectionBleRuntimeOwner {
+        return runtimeOwner ?: ProtectionBleRuntimeOwner(
+            context = context.applicationContext,
+            runtimeStore = ProtectionRuntimeStore(context.applicationContext),
+        ).also {
+            runtimeOwner = it
+        }
     }
 
     fun recordBleEvent(

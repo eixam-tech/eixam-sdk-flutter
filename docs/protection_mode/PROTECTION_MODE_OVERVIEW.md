@@ -48,14 +48,14 @@ Protection Mode is an optional additive SDK capability that arms a higher-resili
 
 - Android Protection runtime wiring is now SDK/plugin-owned instead of validation-app-owned.
 - The plugin merges the foreground service declaration and exposes explicit BLE owner/runtime diagnostics.
-- When Protection Mode is armed, the intended owner is `androidService`; readiness advances with service BLE connection/subscription signals.
-- The current implementation persists state, ownership, queue counters, wake/reconnect metadata, and service events for rehydrate flows.
+- When Protection Mode is armed, the intended owner is `androidService`; the SDK also releases Flutter runtime ownership so the Dart BLE path stops competing once native ownership is declared.
+- The current implementation persists state, ownership, queue counters, wake/reconnect metadata, restoration-like service restart events, and service events for rehydrate flows.
 
 ## Current iOS State
 
 - iOS now participates in the same public contract.
-- The plugin reports platform/runtime readiness and honest degradation.
-- Full iOS background BLE ownership, restoration, and backend-safe lifecycle handling are not implemented yet.
+- The plugin reports platform/runtime readiness, restoration configuration, and honest degradation.
+- A plugin-owned CoreBluetooth runtime base and restoration-aware scaffold now exist, but full background BLE ownership and backend-safe lifecycle handling are still partial.
 
 ## Roadmap
 

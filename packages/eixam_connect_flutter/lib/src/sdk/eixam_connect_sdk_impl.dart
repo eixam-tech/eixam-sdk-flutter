@@ -8,6 +8,7 @@ import 'package:flutter/widgets.dart';
 
 import '../data/datasources_local/preferred_ble_device_store.dart';
 import '../data/datasources_local/sdk_session_store.dart';
+import '../data/repositories/in_memory_device_repository.dart';
 import '../data/datasources_remote/sdk_identity_remote_data_source.dart';
 import '../device/ble_incoming_event.dart';
 import '../device/device_sos_controller.dart';
@@ -97,6 +98,7 @@ class EixamConnectSdkImpl
   String? _pendingCancelledIncidentId;
   String? _lastSosRehydrationNote;
   SdkBridgeDiagnostics _bridgeDiagnostics = const SdkBridgeDiagnostics();
+  EixamSdkConfig? _sdkConfig;
   late final BleAutoReconnectCoordinator _bleAutoReconnectCoordinator;
   late final BleOperationalRuntimeBridge _bleOperationalRuntimeBridge;
   late final ProtectionModeController _protectionModeController;
@@ -145,17 +147,20 @@ class EixamConnectSdkImpl
     _protectionModeController = ProtectionModeController(
       platformAdapter: this.protectionPlatformAdapter,
       sessionProvider: () async => _session,
+      sdkConfigProvider: () => _sdkConfig,
       deviceStatusProvider: () async =>
           _lastDeviceStatus ?? await deviceRepository.getDeviceStatus(),
       permissionStateProvider: permissionsRepository.getPermissionState,
       operationalDiagnosticsProvider: () async =>
           _buildOperationalDiagnostics(),
+      onBleOwnershipChanged: _handleProtectionBleOwnershipChanged,
     );
     _bindSosStreams();
   }
 
   @override
   Future<void> initialize(EixamSdkConfig config) async {
+    _sdkConfig = config;
     _session = await sessionStore?.load();
     _session = await _bootstrapSessionIfNeeded(_session);
     if (sessionContext != null) {
@@ -428,7 +433,9 @@ class EixamConnectSdkImpl
     switch (state) {
       case AppLifecycleState.resumed:
         _bleAutoReconnectCoordinator.setAppForeground(true);
-        unawaited(_bleAutoReconnectCoordinator.tryAutoConnectOnResume());
+        if (!_isProtectionPlatformOwningBle) {
+          unawaited(_bleAutoReconnectCoordinator.tryAutoConnectOnResume());
+        }
         break;
       case AppLifecycleState.inactive:
       case AppLifecycleState.hidden:
@@ -1514,6 +1521,32 @@ class EixamConnectSdkImpl
     _deathManOverdueNotified = activePlan.status == DeathManStatus.overdue ||
         activePlan.status == DeathManStatus.awaitingConfirmation;
     _startDeathManMonitoring(activePlan.id);
+  }
+
+  bool get _isProtectionPlatformOwningBle {
+    final status = _protectionModeController.currentStatus;
+    return status.modeState != ProtectionModeState.off &&
+        status.bleOwner != ProtectionBleOwner.flutter;
+  }
+
+  Future<void> _handleProtectionBleOwnershipChanged(
+    ProtectionBleOwner owner,
+  ) async {
+    if (deviceRepository is! InMemoryDeviceRepository) {
+      return;
+    }
+    final repository = deviceRepository as InMemoryDeviceRepository;
+    if (owner == ProtectionBleOwner.androidService) {
+      await repository.releaseBleOwnershipToProtectionMode(
+        reason: 'Protection Mode native runtime is armed',
+      );
+      _bleAutoReconnectCoordinator.setAppForeground(false);
+      return;
+    }
+    await repository.reclaimBleOwnershipFromProtectionMode(
+      reason: 'Protection Mode returned BLE ownership to Flutter',
+    );
+    _bleAutoReconnectCoordinator.setAppForeground(true);
   }
 
   Future<void> _evaluateDeathManPlan(String planId) async {

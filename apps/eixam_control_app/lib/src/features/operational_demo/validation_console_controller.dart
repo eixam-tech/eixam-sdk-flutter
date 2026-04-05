@@ -50,11 +50,15 @@ class ValidationConsoleController extends ChangeNotifier {
     storeAndForwardEnabled: false,
     pendingSosCount: 0,
     pendingTelemetryCount: 0,
+    pendingNativeSosCreateCount: 0,
+    pendingNativeSosCancelCount: 0,
     updatedAt: DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
   );
   ProtectionDiagnostics protectionDiagnostics = const ProtectionDiagnostics(
     pendingSosCount: 0,
     pendingTelemetryCount: 0,
+    pendingNativeSosCreateCount: 0,
+    pendingNativeSosCancelCount: 0,
   );
   String? lastIdentityError;
   String? lastActionError;
@@ -1539,6 +1543,10 @@ class ValidationConsoleController extends ChangeNotifier {
             value: protectionStatus.backgroundCapabilityState.name,
           ),
           ValidationStateField(
+            label: 'Restoration configured',
+            value: protectionStatus.restorationConfigured ? 'Yes' : 'No',
+          ),
+          ValidationStateField(
             label: 'Can arm',
             value: protectionReadiness.canArm ? 'Yes' : 'No',
           ),
@@ -1612,8 +1620,28 @@ class ValidationConsoleController extends ChangeNotifier {
             value: protectionStatus.lastPlatformEvent ?? '-',
           ),
           ValidationStateField(
+            label: 'Last restoration event',
+            value: protectionStatus.lastRestorationEvent ?? '-',
+          ),
+          ValidationStateField(
             label: 'Last BLE service event',
             value: protectionStatus.lastBleServiceEvent ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Pending native SOS create',
+            value: protectionStatus.pendingNativeSosCreateCount.toString(),
+          ),
+          ValidationStateField(
+            label: 'Pending native SOS cancel',
+            value: protectionStatus.pendingNativeSosCancelCount.toString(),
+          ),
+          ValidationStateField(
+            label: 'Native backend result',
+            value: protectionStatus.lastNativeBackendHandoffResult ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Native backend error',
+            value: protectionStatus.lastNativeBackendHandoffError ?? '-',
           ),
           ValidationStateField(
             label: 'Degradation reason',
@@ -1659,6 +1687,16 @@ class ValidationConsoleController extends ChangeNotifier {
                 : _formatDateTime(protectionDiagnostics.lastPlatformEventAt),
           ),
           ValidationStateField(
+            label: 'Last restoration event',
+            value: protectionDiagnostics.lastRestorationEvent ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Last restoration at',
+            value: protectionDiagnostics.lastRestorationEventAt == null
+                ? '-'
+                : _formatDateTime(protectionDiagnostics.lastRestorationEventAt),
+          ),
+          ValidationStateField(
             label: 'Last BLE service event',
             value: protectionDiagnostics.lastBleServiceEvent ?? '-',
           ),
@@ -1677,8 +1715,24 @@ class ValidationConsoleController extends ChangeNotifier {
             value: protectionDiagnostics.pendingSosCount.toString(),
           ),
           ValidationStateField(
+            label: 'Pending native create',
+            value: protectionDiagnostics.pendingNativeSosCreateCount.toString(),
+          ),
+          ValidationStateField(
+            label: 'Pending native cancel',
+            value: protectionDiagnostics.pendingNativeSosCancelCount.toString(),
+          ),
+          ValidationStateField(
             label: 'Pending telemetry',
             value: protectionDiagnostics.pendingTelemetryCount.toString(),
+          ),
+          ValidationStateField(
+            label: 'Native backend result',
+            value: protectionDiagnostics.lastNativeBackendHandoffResult ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Native backend error',
+            value: protectionDiagnostics.lastNativeBackendHandoffError ?? '-',
           ),
         ],
       ),
