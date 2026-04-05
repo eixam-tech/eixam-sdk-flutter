@@ -402,14 +402,19 @@ void main() {
 
     test('protection cards render Android runtime fields when available', () {
       controller.protectionStatus = controller.protectionStatus.copyWith(
+        platform: ProtectionPlatform.android,
         platformRuntimeConfigured: true,
         foregroundServiceRunning: true,
         protectionRuntimeActive: true,
+        bleOwner: ProtectionBleOwner.androidService,
+        serviceBleConnected: true,
+        serviceBleReady: true,
         modeState: ProtectionModeState.degraded,
         runtimeState: ProtectionRuntimeState.active,
         coverageLevel: ProtectionCoverageLevel.partial,
       );
-      controller.protectionDiagnostics = controller.protectionDiagnostics.copyWith(
+      controller.protectionDiagnostics =
+          controller.protectionDiagnostics.copyWith(
         lastPlatformEvent: 'runtimeStarted',
         lastPlatformEventAt: DateTime.utc(2026, 4, 5, 12),
       );
@@ -417,12 +422,18 @@ void main() {
       final statusCard = controller.buildProtectionCapabilityCards().firstWhere(
             (item) => item.id == ValidationCapabilityId.protectionStatus,
           );
-      final diagnosticsCard = controller
-          .buildProtectionCapabilityCards()
-          .firstWhere(
-            (item) => item.id == ValidationCapabilityId.protectionDiagnostics,
-          );
+      final diagnosticsCard =
+          controller.buildProtectionCapabilityCards().firstWhere(
+                (item) =>
+                    item.id == ValidationCapabilityId.protectionDiagnostics,
+              );
 
+      expect(
+        {
+          for (final field in statusCard.currentState) field.label: field.value,
+        }['BLE owner'],
+        'androidService',
+      );
       expect(
         {
           for (final field in statusCard.currentState) field.label: field.value,
@@ -435,6 +446,39 @@ void main() {
             field.label: field.value,
         }['Last platform event'],
         'runtimeStarted',
+      );
+    });
+
+    test('protection cards render iOS readiness fields honestly', () {
+      controller.protectionStatus = controller.protectionStatus.copyWith(
+        platform: ProtectionPlatform.ios,
+        platformRuntimeConfigured: true,
+        backgroundCapabilityState: ProtectionCapabilityState.unknown,
+        coverageLevel: ProtectionCoverageLevel.partial,
+        degradationReason:
+            'iOS host integration is scaffolded, but background BLE ownership is not implemented yet.',
+      );
+
+      final readinessCard =
+          controller.buildProtectionCapabilityCards().firstWhere(
+                (item) => item.id == ValidationCapabilityId.protectionReadiness,
+              );
+      final statusCard = controller.buildProtectionCapabilityCards().firstWhere(
+            (item) => item.id == ValidationCapabilityId.protectionStatus,
+          );
+
+      expect(
+        {
+          for (final field in readinessCard.currentState)
+            field.label: field.value,
+        }['Background capability'],
+        'unknown',
+      );
+      expect(
+        {
+          for (final field in statusCard.currentState) field.label: field.value,
+        }['Degradation reason'],
+        contains('iOS host integration is scaffolded'),
       );
     });
   });

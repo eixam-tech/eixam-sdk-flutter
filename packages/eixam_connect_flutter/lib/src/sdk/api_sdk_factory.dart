@@ -33,6 +33,7 @@ import 'mqtt5_sdk_transport.dart';
 import 'mqtt_realtime_client.dart';
 import 'mock_realtime_client.dart';
 import 'protection_platform_adapter.dart';
+import 'protection_platform_adapter_factory.dart';
 
 /// Factory helpers for API-backed and mock-API-backed SDK instances.
 class ApiSdkFactory {
@@ -95,6 +96,7 @@ class ApiSdkFactory {
       preferredBleDeviceStore: preferredBleDeviceStore,
       sessionStore: sessionStore,
       sessionContext: sessionContext,
+      protectionPlatformAdapter: buildDefaultProtectionPlatformAdapter(),
     );
 
     await sdk.initialize(
@@ -202,7 +204,8 @@ class ApiSdkFactory {
       identityRemoteDataSource: HttpSdkIdentityRemoteDataSource(
         transport: httpTransport,
       ),
-      protectionPlatformAdapter: protectionPlatformAdapter,
+      protectionPlatformAdapter:
+          protectionPlatformAdapter ?? buildDefaultProtectionPlatformAdapter(),
       disposeCallback: () async {
         httpClient.close();
         await sosRepository.dispose();

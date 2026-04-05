@@ -22,6 +22,7 @@ import 'guided_rescue_runtime.dart';
 import 'operational_realtime_client.dart';
 import 'protection_mode_controller.dart';
 import 'protection_platform_adapter.dart';
+import 'protection_platform_adapter_factory.dart';
 import 'sdk_mqtt_contract.dart';
 
 /// Main SDK orchestrator used by host apps.
@@ -126,8 +127,8 @@ class EixamConnectSdkImpl
     this.identityRemoteDataSource,
     ProtectionPlatformAdapter? protectionPlatformAdapter,
     this.disposeCallback,
-  }) : protectionPlatformAdapter =
-            protectionPlatformAdapter ?? const NoopProtectionPlatformAdapter() {
+  }) : protectionPlatformAdapter = protectionPlatformAdapter ??
+            buildDefaultProtectionPlatformAdapter() {
     _bleAutoReconnectCoordinator = BleAutoReconnectCoordinator(
       deviceRepository: deviceRepository,
       preferredDeviceStore: preferredBleDeviceStore,

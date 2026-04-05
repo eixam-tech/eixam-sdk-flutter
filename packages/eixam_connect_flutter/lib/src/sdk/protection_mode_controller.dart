@@ -119,7 +119,15 @@ class ProtectionModeController {
       );
     }
 
-    final startResult = await platformAdapter.startProtectionRuntime();
+    final startRequest = ProtectionPlatformStartRequest(
+      modeOptions: options,
+      activeDeviceId: armingSnapshot.status.activeDeviceId,
+      sessionReady: armingSnapshot.status.sessionReady,
+      enableStoreAndForward: options.enableStoreAndForward,
+    );
+    final startResult = await platformAdapter.startProtectionRuntime(
+      request: startRequest,
+    );
     if (!startResult.success) {
       final failureReason = startResult.failureReason ??
           'Protection runtime could not be started in this host app.';
@@ -147,23 +155,23 @@ class ProtectionModeController {
 
     final finalSnapshot = await _buildSnapshot(
       targetModeState: _shouldRunDegraded(
-              armingSnapshot.status,
-              platformCoverageLevel: startResult.coverageLevel,
-            )
+        armingSnapshot.status,
+        platformCoverageLevel: startResult.coverageLevel,
+      )
           ? ProtectionModeState.degraded
           : ProtectionModeState.armed,
       targetRuntimeState: startResult.runtimeState,
       targetCoverageLevel: _shouldRunDegraded(
-              armingSnapshot.status,
-              platformCoverageLevel: startResult.coverageLevel,
-            )
+        armingSnapshot.status,
+        platformCoverageLevel: startResult.coverageLevel,
+      )
           ? ProtectionCoverageLevel.partial
           : startResult.coverageLevel,
       options: options,
       degradationReason: _shouldRunDegraded(
-              armingSnapshot.status,
-              platformCoverageLevel: startResult.coverageLevel,
-            )
+        armingSnapshot.status,
+        platformCoverageLevel: startResult.coverageLevel,
+      )
           ? _deriveDegradedReason(
               armingSnapshot.status,
               platformCoverageLevel: startResult.coverageLevel,
@@ -271,17 +279,29 @@ class ProtectionModeController {
   }
 
   Future<FlushProtectionQueuesResult> flushQueues() async {
+    final platformFlushResult = await platformAdapter.flushProtectionQueues();
     final pendingSos = _status.pendingSosCount;
     final pendingTelemetry = _status.pendingTelemetryCount;
     _diagnostics = _diagnostics.copyWith(
-      pendingSosCount: pendingSos,
-      pendingTelemetryCount: pendingTelemetry,
+      pendingSosCount: pendingSos - platformFlushResult.flushedSosCount < 0
+          ? 0
+          : pendingSos - platformFlushResult.flushedSosCount,
+      pendingTelemetryCount:
+          pendingTelemetry - platformFlushResult.flushedTelemetryCount < 0
+              ? 0
+              : pendingTelemetry - platformFlushResult.flushedTelemetryCount,
     );
+    _status = _status.copyWith(
+      pendingSosCount: _diagnostics.pendingSosCount,
+      pendingTelemetryCount: _diagnostics.pendingTelemetryCount,
+      updatedAt: DateTime.now().toUtc(),
+    );
+    _emitStatus();
     _emitDiagnostics();
-    return const FlushProtectionQueuesResult(
-      flushedSosCount: 0,
-      flushedTelemetryCount: 0,
-      success: true,
+    return FlushProtectionQueuesResult(
+      flushedSosCount: platformFlushResult.flushedSosCount,
+      flushedTelemetryCount: platformFlushResult.flushedTelemetryCount,
+      success: platformFlushResult.success,
     );
   }
 
@@ -397,9 +417,21 @@ class ProtectionModeController {
       platformRuntimeConfigured: platformSnapshot.platformRuntimeConfigured,
       foregroundServiceRunning: platformSnapshot.serviceRunning,
       protectionRuntimeActive: platformSnapshot.runtimeActive,
+      platform: platformSnapshot.platform,
+      bleOwner: platformSnapshot.bleOwner,
+      backgroundCapabilityState: platformSnapshot.backgroundCapabilityState,
+      serviceBleConnected: platformSnapshot.serviceBleConnected,
+      serviceBleReady: platformSnapshot.serviceBleReady,
+      lastPlatformEvent: platformSnapshot.lastPlatformEvent,
+      lastPlatformEventAt: platformSnapshot.lastPlatformEventAt,
+      lastBleServiceEvent: platformSnapshot.lastBleServiceEvent,
+      lastBleServiceEventAt: platformSnapshot.lastBleServiceEventAt,
+      reconnectAttemptCount: platformSnapshot.reconnectAttemptCount,
+      lastReconnectAttemptAt: platformSnapshot.lastReconnectAttemptAt,
       activeDeviceId:
           deviceStatus.deviceId.trim().isEmpty ? null : deviceStatus.deviceId,
-      degradationReason: degradationReason,
+      degradationReason:
+          degradationReason ?? platformSnapshot.degradationReason,
       updatedAt: DateTime.now().toUtc(),
     );
     final diagnostics = _diagnostics.copyWith(
@@ -411,6 +443,13 @@ class ProtectionModeController {
           platformSnapshot.lastPlatformEvent ?? _diagnostics.lastPlatformEvent,
       lastPlatformEventAt: platformSnapshot.lastPlatformEventAt ??
           _diagnostics.lastPlatformEventAt,
+      lastBleServiceEvent: platformSnapshot.lastBleServiceEvent ??
+          _diagnostics.lastBleServiceEvent,
+      lastBleServiceEventAt: platformSnapshot.lastBleServiceEventAt ??
+          _diagnostics.lastBleServiceEventAt,
+      reconnectAttemptCount: platformSnapshot.reconnectAttemptCount,
+      lastReconnectAttemptAt: platformSnapshot.lastReconnectAttemptAt ??
+          _diagnostics.lastReconnectAttemptAt,
       pendingSosCount: pendingSosCount,
       pendingTelemetryCount: pendingTelemetryCount,
     );
@@ -469,7 +508,33 @@ class ProtectionModeController {
         );
         _emitDiagnostics();
         break;
+      case ProtectionPlatformEventType.serviceStarted:
+      case ProtectionPlatformEventType.serviceRestarted:
+        _status = _status.copyWith(
+          foregroundServiceRunning: true,
+          bleOwner: ProtectionBleOwner.androidService,
+          lastPlatformEvent: event.type.name,
+          lastPlatformEventAt: event.timestamp,
+          updatedAt: event.timestamp,
+        );
+        _emitStatus();
+        _emitDiagnostics();
+        break;
+      case ProtectionPlatformEventType.runtimeStarting:
+        _status = _status.copyWith(
+          foregroundServiceRunning: true,
+          protectionRuntimeActive: true,
+          runtimeState: ProtectionRuntimeState.starting,
+          bleOwner: ProtectionBleOwner.androidService,
+          lastPlatformEvent: event.type.name,
+          lastPlatformEventAt: event.timestamp,
+          updatedAt: event.timestamp,
+        );
+        _emitStatus();
+        _emitDiagnostics();
+        break;
       case ProtectionPlatformEventType.runtimeStarted:
+      case ProtectionPlatformEventType.runtimeActive:
       case ProtectionPlatformEventType.runtimeRecovered:
       case ProtectionPlatformEventType.runtimeRestarted:
         _diagnostics = _diagnostics.copyWith(
@@ -480,15 +545,97 @@ class ProtectionModeController {
         _status = _status.copyWith(
           foregroundServiceRunning: true,
           protectionRuntimeActive: true,
-          runtimeState: event.type == ProtectionPlatformEventType.runtimeRecovered
-              ? ProtectionRuntimeState.recovering
-              : ProtectionRuntimeState.active,
+          bleOwner: ProtectionBleOwner.androidService,
+          runtimeState:
+              event.type == ProtectionPlatformEventType.runtimeRecovered
+                  ? ProtectionRuntimeState.recovering
+                  : ProtectionRuntimeState.active,
+          lastPlatformEvent: event.type.name,
+          lastPlatformEventAt: event.timestamp,
           updatedAt: event.timestamp,
         );
         _emitStatus();
         _emitDiagnostics();
         break;
+      case ProtectionPlatformEventType.deviceConnecting:
+        _status = _status.copyWith(
+          bleOwner: ProtectionBleOwner.androidService,
+          serviceBleConnected: false,
+          serviceBleReady: false,
+          lastBleServiceEvent: event.type.name,
+          lastBleServiceEventAt: event.timestamp,
+          updatedAt: event.timestamp,
+        );
+        _emitStatus();
+        _emitDiagnostics();
+        break;
+      case ProtectionPlatformEventType.deviceConnected:
+        _status = _status.copyWith(
+          bleOwner: ProtectionBleOwner.androidService,
+          serviceBleConnected: true,
+          lastBleServiceEvent: event.type.name,
+          lastBleServiceEventAt: event.timestamp,
+          updatedAt: event.timestamp,
+        );
+        _emitStatus();
+        _emitDiagnostics();
+        break;
+      case ProtectionPlatformEventType.servicesDiscovered:
+      case ProtectionPlatformEventType.subscriptionsActive:
+      case ProtectionPlatformEventType.sosEventReceived:
+        _status = _status.copyWith(
+          bleOwner: ProtectionBleOwner.androidService,
+          serviceBleReady:
+              event.type == ProtectionPlatformEventType.subscriptionsActive
+                  ? true
+                  : _status.serviceBleReady,
+          lastBleServiceEvent: event.type.name,
+          lastBleServiceEventAt: event.timestamp,
+          updatedAt: event.timestamp,
+        );
+        _diagnostics = _diagnostics.copyWith(
+          lastBleServiceEvent: event.type.name,
+          lastBleServiceEventAt: event.timestamp,
+        );
+        _emitStatus();
+        _emitDiagnostics();
+        break;
+      case ProtectionPlatformEventType.deviceDisconnected:
+        _status = _status.copyWith(
+          serviceBleConnected: false,
+          serviceBleReady: false,
+          lastBleServiceEvent: event.type.name,
+          lastBleServiceEventAt: event.timestamp,
+          updatedAt: event.timestamp,
+        );
+        _diagnostics = _diagnostics.copyWith(
+          lastBleServiceEvent: event.type.name,
+          lastBleServiceEventAt: event.timestamp,
+        );
+        _emitStatus();
+        _emitDiagnostics();
+        break;
+      case ProtectionPlatformEventType.reconnectScheduled:
+      case ProtectionPlatformEventType.reconnectFailed:
+        final nextReconnectAttemptCount = _status.reconnectAttemptCount + 1;
+        _status = _status.copyWith(
+          reconnectAttemptCount: nextReconnectAttemptCount,
+          lastReconnectAttemptAt: event.timestamp,
+          lastBleServiceEvent: event.type.name,
+          lastBleServiceEventAt: event.timestamp,
+          updatedAt: event.timestamp,
+        );
+        _diagnostics = _diagnostics.copyWith(
+          reconnectAttemptCount: nextReconnectAttemptCount,
+          lastReconnectAttemptAt: event.timestamp,
+          lastBleServiceEvent: event.type.name,
+          lastBleServiceEventAt: event.timestamp,
+        );
+        _emitStatus();
+        _emitDiagnostics();
+        break;
       case ProtectionPlatformEventType.runtimeStopped:
+      case ProtectionPlatformEventType.serviceStopped:
         _diagnostics = _diagnostics.copyWith(
           lastWakeAt: event.timestamp,
           lastWakeReason: event.reason,
@@ -496,18 +643,28 @@ class ProtectionModeController {
         _status = _status.copyWith(
           foregroundServiceRunning: false,
           protectionRuntimeActive: false,
+          bleOwner: ProtectionBleOwner.flutter,
+          serviceBleConnected: false,
+          serviceBleReady: false,
           runtimeState: ProtectionRuntimeState.inactive,
+          lastPlatformEvent: event.type.name,
+          lastPlatformEventAt: event.timestamp,
           updatedAt: event.timestamp,
         );
         _emitStatus();
         _emitDiagnostics();
         break;
       case ProtectionPlatformEventType.runtimeFailed:
+      case ProtectionPlatformEventType.runtimeError:
         _diagnostics = _diagnostics.copyWith(
           lastFailureReason: event.reason,
+          lastPlatformEvent: event.type.name,
+          lastPlatformEventAt: event.timestamp,
         );
         _status = _status.copyWith(
           runtimeState: ProtectionRuntimeState.failed,
+          lastPlatformEvent: event.type.name,
+          lastPlatformEventAt: event.timestamp,
           updatedAt: event.timestamp,
         );
         _emitStatus();
@@ -528,6 +685,7 @@ class ProtectionModeController {
     final shouldRehydrate = _activeOptions != null &&
         (event.type == ProtectionPlatformEventType.woke ||
             event.type == ProtectionPlatformEventType.runtimeStarted ||
+            event.type == ProtectionPlatformEventType.runtimeActive ||
             event.type == ProtectionPlatformEventType.runtimeRecovered ||
             event.type == ProtectionPlatformEventType.runtimeRestarted ||
             event.type == ProtectionPlatformEventType.bluetoothTurnedOff ||

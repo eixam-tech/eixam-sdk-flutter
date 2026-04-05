@@ -38,12 +38,6 @@
             </intent-filter>
             
         </activity>
-        <service
-            android:name=".ProtectionForegroundService"
-            android:enabled="true"
-            android:exported="false"
-            android:foregroundServiceType="connectedDevice"
-            android:stopWithTask="false" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

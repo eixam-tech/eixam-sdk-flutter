@@ -13,6 +13,23 @@ enum ProtectionCoverageLevel {
   full,
 }
 
+enum ProtectionBleOwner {
+  flutter,
+  androidService,
+}
+
+enum ProtectionPlatform {
+  unknown,
+  android,
+  ios,
+}
+
+enum ProtectionCapabilityState {
+  unknown,
+  unavailable,
+  configured,
+}
+
 enum ProtectionRuntimeState {
   inactive,
   starting,
@@ -52,6 +69,17 @@ class ProtectionStatus {
     this.platformRuntimeConfigured = false,
     this.foregroundServiceRunning = false,
     this.protectionRuntimeActive = false,
+    this.platform = ProtectionPlatform.unknown,
+    this.bleOwner = ProtectionBleOwner.flutter,
+    this.backgroundCapabilityState = ProtectionCapabilityState.unknown,
+    this.serviceBleConnected = false,
+    this.serviceBleReady = false,
+    this.lastPlatformEvent,
+    this.lastPlatformEventAt,
+    this.lastBleServiceEvent,
+    this.lastBleServiceEventAt,
+    this.reconnectAttemptCount = 0,
+    this.lastReconnectAttemptAt,
     this.activeDeviceId,
     this.degradationReason,
   });
@@ -74,6 +102,17 @@ class ProtectionStatus {
   final bool platformRuntimeConfigured;
   final bool foregroundServiceRunning;
   final bool protectionRuntimeActive;
+  final ProtectionPlatform platform;
+  final ProtectionBleOwner bleOwner;
+  final ProtectionCapabilityState backgroundCapabilityState;
+  final bool serviceBleConnected;
+  final bool serviceBleReady;
+  final String? lastPlatformEvent;
+  final DateTime? lastPlatformEventAt;
+  final String? lastBleServiceEvent;
+  final DateTime? lastBleServiceEventAt;
+  final int reconnectAttemptCount;
+  final DateTime? lastReconnectAttemptAt;
   final String? activeDeviceId;
   final String? degradationReason;
   final DateTime updatedAt;
@@ -97,6 +136,17 @@ class ProtectionStatus {
     bool? platformRuntimeConfigured,
     bool? foregroundServiceRunning,
     bool? protectionRuntimeActive,
+    ProtectionPlatform? platform,
+    ProtectionBleOwner? bleOwner,
+    ProtectionCapabilityState? backgroundCapabilityState,
+    bool? serviceBleConnected,
+    bool? serviceBleReady,
+    Object? lastPlatformEvent = _unset,
+    Object? lastPlatformEventAt = _unset,
+    Object? lastBleServiceEvent = _unset,
+    Object? lastBleServiceEventAt = _unset,
+    int? reconnectAttemptCount,
+    Object? lastReconnectAttemptAt = _unset,
     Object? activeDeviceId = _unset,
     Object? degradationReason = _unset,
     DateTime? updatedAt,
@@ -128,6 +178,29 @@ class ProtectionStatus {
           foregroundServiceRunning ?? this.foregroundServiceRunning,
       protectionRuntimeActive:
           protectionRuntimeActive ?? this.protectionRuntimeActive,
+      platform: platform ?? this.platform,
+      bleOwner: bleOwner ?? this.bleOwner,
+      backgroundCapabilityState:
+          backgroundCapabilityState ?? this.backgroundCapabilityState,
+      serviceBleConnected: serviceBleConnected ?? this.serviceBleConnected,
+      serviceBleReady: serviceBleReady ?? this.serviceBleReady,
+      lastPlatformEvent: identical(lastPlatformEvent, _unset)
+          ? this.lastPlatformEvent
+          : lastPlatformEvent as String?,
+      lastPlatformEventAt: identical(lastPlatformEventAt, _unset)
+          ? this.lastPlatformEventAt
+          : lastPlatformEventAt as DateTime?,
+      lastBleServiceEvent: identical(lastBleServiceEvent, _unset)
+          ? this.lastBleServiceEvent
+          : lastBleServiceEvent as String?,
+      lastBleServiceEventAt: identical(lastBleServiceEventAt, _unset)
+          ? this.lastBleServiceEventAt
+          : lastBleServiceEventAt as DateTime?,
+      reconnectAttemptCount:
+          reconnectAttemptCount ?? this.reconnectAttemptCount,
+      lastReconnectAttemptAt: identical(lastReconnectAttemptAt, _unset)
+          ? this.lastReconnectAttemptAt
+          : lastReconnectAttemptAt as DateTime?,
       activeDeviceId: identical(activeDeviceId, _unset)
           ? this.activeDeviceId
           : activeDeviceId as String?,
@@ -152,6 +225,10 @@ class ProtectionDiagnostics {
     this.lastFailureReason,
     this.lastPlatformEvent,
     this.lastPlatformEventAt,
+    this.lastBleServiceEvent,
+    this.lastBleServiceEventAt,
+    this.reconnectAttemptCount = 0,
+    this.lastReconnectAttemptAt,
   });
 
   final DateTime? lastWakeAt;
@@ -161,6 +238,10 @@ class ProtectionDiagnostics {
   final String? lastFailureReason;
   final String? lastPlatformEvent;
   final DateTime? lastPlatformEventAt;
+  final String? lastBleServiceEvent;
+  final DateTime? lastBleServiceEventAt;
+  final int reconnectAttemptCount;
+  final DateTime? lastReconnectAttemptAt;
   final int pendingSosCount;
   final int pendingTelemetryCount;
 
@@ -172,6 +253,10 @@ class ProtectionDiagnostics {
     Object? lastFailureReason = _unset,
     Object? lastPlatformEvent = _unset,
     Object? lastPlatformEventAt = _unset,
+    Object? lastBleServiceEvent = _unset,
+    Object? lastBleServiceEventAt = _unset,
+    int? reconnectAttemptCount,
+    Object? lastReconnectAttemptAt = _unset,
     int? pendingSosCount,
     int? pendingTelemetryCount,
   }) {
@@ -197,6 +282,17 @@ class ProtectionDiagnostics {
       lastPlatformEventAt: identical(lastPlatformEventAt, _unset)
           ? this.lastPlatformEventAt
           : lastPlatformEventAt as DateTime?,
+      lastBleServiceEvent: identical(lastBleServiceEvent, _unset)
+          ? this.lastBleServiceEvent
+          : lastBleServiceEvent as String?,
+      lastBleServiceEventAt: identical(lastBleServiceEventAt, _unset)
+          ? this.lastBleServiceEventAt
+          : lastBleServiceEventAt as DateTime?,
+      reconnectAttemptCount:
+          reconnectAttemptCount ?? this.reconnectAttemptCount,
+      lastReconnectAttemptAt: identical(lastReconnectAttemptAt, _unset)
+          ? this.lastReconnectAttemptAt
+          : lastReconnectAttemptAt as DateTime?,
       pendingSosCount: pendingSosCount ?? this.pendingSosCount,
       pendingTelemetryCount:
           pendingTelemetryCount ?? this.pendingTelemetryCount,

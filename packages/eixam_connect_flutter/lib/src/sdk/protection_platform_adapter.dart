@@ -3,14 +3,54 @@ import 'dart:async';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 enum ProtectionPlatformEventType {
+  serviceStarted,
+  serviceStopped,
+  serviceRestarted,
   woke,
+  runtimeStarting,
   runtimeStarted,
+  runtimeActive,
   runtimeStopped,
   runtimeRecovered,
   runtimeRestarted,
   runtimeFailed,
+  deviceConnecting,
+  deviceConnected,
+  deviceDisconnected,
+  reconnectScheduled,
+  reconnectFailed,
+  servicesDiscovered,
+  subscriptionsActive,
+  sosEventReceived,
+  runtimeError,
   bluetoothTurnedOff,
   bluetoothTurnedOn,
+}
+
+class ProtectionPlatformStartRequest {
+  const ProtectionPlatformStartRequest({
+    required this.modeOptions,
+    this.activeDeviceId,
+    this.sessionReady = false,
+    this.enableStoreAndForward = true,
+  });
+
+  final ProtectionModeOptions modeOptions;
+  final String? activeDeviceId;
+  final bool sessionReady;
+  final bool enableStoreAndForward;
+}
+
+class ProtectionPlatformFlushResult {
+  const ProtectionPlatformFlushResult({
+    this.flushedSosCount = 0,
+    this.flushedTelemetryCount = 0,
+    this.success = true,
+  });
+
+  final int flushedSosCount;
+  final int flushedTelemetryCount;
+  final bool success;
 }
 
 class ProtectionPlatformSnapshot {
@@ -29,6 +69,16 @@ class ProtectionPlatformSnapshot {
     this.coverageLevel = ProtectionCoverageLevel.none,
     this.lastWakeAt,
     this.lastWakeReason,
+    this.platform = ProtectionPlatform.unknown,
+    this.backgroundCapabilityState = ProtectionCapabilityState.unknown,
+    this.bleOwner = ProtectionBleOwner.flutter,
+    this.serviceBleConnected = false,
+    this.serviceBleReady = false,
+    this.lastBleServiceEvent,
+    this.lastBleServiceEventAt,
+    this.reconnectAttemptCount = 0,
+    this.lastReconnectAttemptAt,
+    this.degradationReason,
   });
 
   final bool backgroundCapabilityReady;
@@ -45,6 +95,16 @@ class ProtectionPlatformSnapshot {
   final ProtectionCoverageLevel coverageLevel;
   final DateTime? lastWakeAt;
   final String? lastWakeReason;
+  final ProtectionPlatform platform;
+  final ProtectionCapabilityState backgroundCapabilityState;
+  final ProtectionBleOwner bleOwner;
+  final bool serviceBleConnected;
+  final bool serviceBleReady;
+  final String? lastBleServiceEvent;
+  final DateTime? lastBleServiceEventAt;
+  final int reconnectAttemptCount;
+  final DateTime? lastReconnectAttemptAt;
+  final String? degradationReason;
 }
 
 class ProtectionPlatformStartResult {
@@ -89,8 +149,11 @@ class ProtectionPlatformEvent {
 
 abstract class ProtectionPlatformAdapter {
   Future<ProtectionPlatformSnapshot> getPlatformSnapshot();
-  Future<ProtectionPlatformStartResult> startProtectionRuntime();
+  Future<ProtectionPlatformStartResult> startProtectionRuntime({
+    required ProtectionPlatformStartRequest request,
+  });
   Future<void> stopProtectionRuntime();
+  Future<ProtectionPlatformFlushResult> flushProtectionQueues();
   Future<ProtectionPermissionResult> requestProtectionPermissions();
   Future<void> openProtectionSettings();
   Stream<ProtectionPlatformEvent> watchPlatformEvents();
@@ -107,7 +170,9 @@ class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }
 
   @override
-  Future<ProtectionPlatformStartResult> startProtectionRuntime() async {
+  Future<ProtectionPlatformStartResult> startProtectionRuntime({
+    required ProtectionPlatformStartRequest request,
+  }) async {
     return const ProtectionPlatformStartResult(
       success: false,
       runtimeState: ProtectionRuntimeState.failed,
@@ -119,6 +184,11 @@ class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
 
   @override
   Future<void> stopProtectionRuntime() async {}
+
+  @override
+  Future<ProtectionPlatformFlushResult> flushProtectionQueues() async {
+    return const ProtectionPlatformFlushResult();
+  }
 
   @override
   Future<ProtectionPermissionResult> requestProtectionPermissions() async {

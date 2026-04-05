@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
-import 'package:eixam_control_app/src/protection/android_protection_platform_adapter.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -10,7 +9,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   const methodChannel = MethodChannel(
-    'com.example.eixam_control_app/protection_runtime/methods',
+    'dev.eixam.connect_flutter/protection_runtime/methods',
   );
 
   group('AndroidProtectionPlatformAdapter', () {
@@ -33,12 +32,21 @@ void main() {
               'notificationsGranted': true,
               'lastFailureReason': null,
               'lastPlatformEvent': 'runtimeStarted',
-              'lastPlatformEventAt': DateTime.utc(2026, 4, 5, 10)
-                  .millisecondsSinceEpoch,
+              'lastPlatformEventAt':
+                  DateTime.utc(2026, 4, 5, 10).millisecondsSinceEpoch,
               'runtimeState': 'active',
               'coverageLevel': 'partial',
-              'lastWakeAt':
-                  DateTime.utc(2026, 4, 5, 9).millisecondsSinceEpoch,
+              'bleOwner': 'androidService',
+              'backgroundCapabilityState': 'configured',
+              'serviceBleConnected': true,
+              'serviceBleReady': false,
+              'lastBleServiceEvent': 'deviceConnected',
+              'lastBleServiceEventAt':
+                  DateTime.utc(2026, 4, 5, 10, 5).millisecondsSinceEpoch,
+              'reconnectAttemptCount': 2,
+              'lastReconnectAttemptAt':
+                  DateTime.utc(2026, 4, 5, 10, 6).millisecondsSinceEpoch,
+              'lastWakeAt': DateTime.utc(2026, 4, 5, 9).millisecondsSinceEpoch,
               'lastWakeReason': 'enter_protection_mode',
             };
           case 'startProtectionRuntime':
@@ -47,6 +55,12 @@ void main() {
               'runtimeState': 'active',
               'coverageLevel': 'partial',
               'statusMessage': 'Foreground service started.',
+            };
+          case 'flushProtectionQueues':
+            return <String, dynamic>{
+              'flushedSosCount': 1,
+              'flushedTelemetryCount': 0,
+              'success': true,
             };
           case 'stopProtectionRuntime':
             return null;
@@ -73,6 +87,10 @@ void main() {
       expect(snapshot.bluetoothEnabled, isTrue);
       expect(snapshot.notificationsGranted, isTrue);
       expect(snapshot.lastPlatformEvent, 'runtimeStarted');
+      expect(snapshot.bleOwner, ProtectionBleOwner.androidService);
+      expect(snapshot.serviceBleConnected, isTrue);
+      expect(snapshot.serviceBleReady, isFalse);
+      expect(snapshot.reconnectAttemptCount, 2);
       expect(snapshot.runtimeState, ProtectionRuntimeState.active);
       expect(snapshot.coverageLevel, ProtectionCoverageLevel.partial);
       expect(methodCalls.single.method, 'getPlatformSnapshot');
@@ -81,15 +99,26 @@ void main() {
     test('maps start and stop runtime bridge calls', () async {
       final adapter = AndroidProtectionPlatformAdapter();
 
-      final result = await adapter.startProtectionRuntime();
+      final result = await adapter.startProtectionRuntime(
+        request: const ProtectionPlatformStartRequest(
+          modeOptions: ProtectionModeOptions(),
+          activeDeviceId: 'device-123',
+        ),
+      );
+      final flushResult = await adapter.flushProtectionQueues();
       await adapter.stopProtectionRuntime();
 
       expect(result.success, isTrue);
       expect(result.coverageLevel, ProtectionCoverageLevel.partial);
       expect(result.statusMessage, 'Foreground service started.');
+      expect(flushResult.flushedSosCount, 1);
       expect(
         methodCalls.map((call) => call.method),
-        containsAll(<String>['startProtectionRuntime', 'stopProtectionRuntime']),
+        containsAll(<String>[
+          'startProtectionRuntime',
+          'flushProtectionQueues',
+          'stopProtectionRuntime',
+        ]),
       );
     });
 

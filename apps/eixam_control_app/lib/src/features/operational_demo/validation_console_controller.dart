@@ -1527,8 +1527,16 @@ class ValidationConsoleController extends ChangeNotifier {
         result: _buildProtectionReadinessResult(),
         currentState: <ValidationStateField>[
           ValidationStateField(
+            label: 'Platform',
+            value: protectionStatus.platform.name,
+          ),
+          ValidationStateField(
             label: 'Platform runtime configured',
             value: protectionStatus.platformRuntimeConfigured ? 'Yes' : 'No',
+          ),
+          ValidationStateField(
+            label: 'Background capability',
+            value: protectionStatus.backgroundCapabilityState.name,
           ),
           ValidationStateField(
             label: 'Can arm',
@@ -1576,6 +1584,10 @@ class ValidationConsoleController extends ChangeNotifier {
             value: protectionStatus.runtimeState.name,
           ),
           ValidationStateField(
+            label: 'BLE owner',
+            value: protectionStatus.bleOwner.name,
+          ),
+          ValidationStateField(
             label: 'Foreground service',
             value: protectionStatus.foregroundServiceRunning ? 'Yes' : 'No',
           ),
@@ -1584,8 +1596,24 @@ class ValidationConsoleController extends ChangeNotifier {
             value: protectionStatus.protectionRuntimeActive ? 'Yes' : 'No',
           ),
           ValidationStateField(
+            label: 'Service BLE connected',
+            value: protectionStatus.serviceBleConnected ? 'Yes' : 'No',
+          ),
+          ValidationStateField(
+            label: 'Service BLE ready',
+            value: protectionStatus.serviceBleReady ? 'Yes' : 'No',
+          ),
+          ValidationStateField(
             label: 'Active device',
             value: protectionStatus.activeDeviceId ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Last platform event',
+            value: protectionStatus.lastPlatformEvent ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Last BLE service event',
+            value: protectionStatus.lastBleServiceEvent ?? '-',
           ),
           ValidationStateField(
             label: 'Degradation reason',
@@ -1629,6 +1657,20 @@ class ValidationConsoleController extends ChangeNotifier {
             value: protectionDiagnostics.lastPlatformEventAt == null
                 ? '-'
                 : _formatDateTime(protectionDiagnostics.lastPlatformEventAt),
+          ),
+          ValidationStateField(
+            label: 'Last BLE service event',
+            value: protectionDiagnostics.lastBleServiceEvent ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Reconnect attempts',
+            value: protectionDiagnostics.reconnectAttemptCount.toString(),
+          ),
+          ValidationStateField(
+            label: 'Last reconnect at',
+            value: protectionDiagnostics.lastReconnectAttemptAt == null
+                ? '-'
+                : _formatDateTime(protectionDiagnostics.lastReconnectAttemptAt),
           ),
           ValidationStateField(
             label: 'Pending SOS',
@@ -2457,7 +2499,7 @@ class ValidationConsoleController extends ChangeNotifier {
                   ? ValidationRunStatus.warning
                   : ValidationRunStatus.ok,
       diagnosticText:
-          'Protection Mode is ${protectionStatus.modeState.name} with ${protectionStatus.coverageLevel.name} coverage, ${protectionStatus.runtimeState.name} runtime state, and foreground service ${protectionStatus.foregroundServiceRunning ? 'running' : 'stopped'}.',
+          'Protection Mode is ${protectionStatus.modeState.name} on ${protectionStatus.platform.name} with ${protectionStatus.coverageLevel.name} coverage, BLE owner ${protectionStatus.bleOwner.name}, and runtime ${protectionStatus.runtimeState.name}.',
     );
   }
 
@@ -2472,10 +2514,11 @@ class ValidationConsoleController extends ChangeNotifier {
       status: (protectionDiagnostics.lastPlatformEvent ?? '').trim().isNotEmpty
           ? ValidationRunStatus.ok
           : ValidationRunStatus.notRun,
-      diagnosticText:
-          (protectionDiagnostics.lastPlatformEvent ?? '').trim().isNotEmpty
-              ? 'Latest Android/runtime event: ${protectionDiagnostics.lastPlatformEvent}.'
-              : 'Protection diagnostics are idle until readiness, enter, flush, or rehydrate actions are run.',
+      diagnosticText: (protectionDiagnostics.lastPlatformEvent ?? '')
+              .trim()
+              .isNotEmpty
+          ? 'Latest protection event: ${protectionDiagnostics.lastPlatformEvent}.'
+          : 'Protection diagnostics are idle until readiness, enter, flush, or rehydrate actions are run.',
     );
   }
 

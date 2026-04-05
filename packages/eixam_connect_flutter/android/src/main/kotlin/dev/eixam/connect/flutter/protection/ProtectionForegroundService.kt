@@ -1,4 +1,4 @@
-package com.example.eixam_control_app
+package dev.eixam.connect.flutter.protection
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -14,65 +14,44 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 
-class ProtectionForegroundService : Service() {
+internal class ProtectionForegroundService : Service() {
     private var bluetoothReceiver: BroadcastReceiver? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         registerBluetoothReceiver()
+        ProtectionRuntimeBridge.recordPlatformEvent(
+            context = applicationContext,
+            type = "serviceStarted",
+            reason = "foreground_service_created",
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == actionStop) {
-            ProtectionRuntimeBridge.markManualStopPending(applicationContext)
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
         }
 
         startForeground(notificationId, buildNotification())
-
-        val wakeReason = intent?.getStringExtra(extraWakeReason)
-        val wasActiveBeforeStart =
-            ProtectionRuntimeBridge.isRuntimeMarkedActive(applicationContext)
-
-        when {
-            intent == null -> {
-                ProtectionRuntimeBridge.markRuntimeRestarted(
-                    applicationContext,
-                    wakeReason ?: "system_restart",
-                )
-            }
-
-            wasActiveBeforeStart -> {
-                ProtectionRuntimeBridge.markRuntimeRecovered(
-                    applicationContext,
-                    wakeReason ?: "service_rebind",
-                )
-            }
-
-            else -> {
-                ProtectionRuntimeBridge.markRuntimeStarted(
-                    applicationContext,
-                    wakeReason ?: "explicit_start",
-                )
-            }
-        }
-
+        ProtectionRuntimeBridge.recordPlatformEvent(
+            context = applicationContext,
+            type = if (intent == null) "serviceRestarted" else "runtimeStarted",
+            reason = intent?.getStringExtra(extraWakeReason) ?: "service_start",
+        )
         return START_STICKY
     }
 
     override fun onDestroy() {
         bluetoothReceiver?.let { unregisterReceiver(it) }
         bluetoothReceiver = null
-
-        if (ProtectionRuntimeBridge.consumeManualStopPending(applicationContext)) {
-            ProtectionRuntimeBridge.markRuntimeStopped(
-                applicationContext,
-                "explicit_stop",
-            )
-        }
+        ProtectionRuntimeBridge.recordPlatformEvent(
+            context = applicationContext,
+            type = "serviceStopped",
+            reason = "foreground_service_destroyed",
+        )
         super.onDestroy()
     }
 
@@ -92,15 +71,17 @@ class ProtectionForegroundService : Service() {
                         )
                     ) {
                         BluetoothAdapter.STATE_ON ->
-                            ProtectionRuntimeBridge.markBluetoothState(
-                                applicationContext,
-                                true,
+                            ProtectionRuntimeBridge.recordPlatformEvent(
+                                context = applicationContext,
+                                type = "bluetoothTurnedOn",
+                                reason = "bluetooth_on",
                             )
 
                         BluetoothAdapter.STATE_OFF ->
-                            ProtectionRuntimeBridge.markBluetoothState(
-                                applicationContext,
-                                false,
+                            ProtectionRuntimeBridge.recordPlatformEvent(
+                                context = applicationContext,
+                                type = "bluetoothTurnedOff",
+                                reason = "bluetooth_off",
                             )
                     }
                 }
@@ -118,9 +99,11 @@ class ProtectionForegroundService : Service() {
 
     private fun buildNotification(): Notification {
         return NotificationCompat.Builder(this, notificationChannelId)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle("EIXAM Protection Mode")
-            .setContentText("Protection runtime is active and keeping Android recovery hooks armed.")
+            .setContentText(
+                "Protection Mode is armed. The Android foreground service owns the runtime while coverage is active.",
+            )
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
@@ -146,8 +129,8 @@ class ProtectionForegroundService : Service() {
     companion object {
         private const val notificationChannelId = "eixam_protection_runtime"
         private const val notificationId = 6021
-        private const val actionStart = "com.example.eixam_control_app.action.PROTECTION_START"
-        private const val actionStop = "com.example.eixam_control_app.action.PROTECTION_STOP"
+        private const val actionStart = "dev.eixam.connect.flutter.action.PROTECTION_START"
+        private const val actionStop = "dev.eixam.connect.flutter.action.PROTECTION_STOP"
         private const val extraWakeReason = "wake_reason"
 
         fun start(context: Context) {
