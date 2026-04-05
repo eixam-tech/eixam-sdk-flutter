@@ -2,9 +2,11 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../app_shell/eixam_demo_app.dart';
+import '../protection/android_protection_platform_adapter.dart';
 import 'validation_backend_config.dart';
 import 'validation_backend_config_store.dart';
 
@@ -24,6 +26,7 @@ class _SdkBootstrapScreenState extends State<SdkBootstrapScreen> {
   final ValidationBackendConfigStore _configStore =
       ValidationBackendConfigStore();
   ValidationBackendConfig? _activeConfig;
+  StreamSubscription<ProtectionPlatformEvent>? _protectionRuntimeSub;
 
   @override
   void initState() {
@@ -57,10 +60,17 @@ class _SdkBootstrapScreenState extends State<SdkBootstrapScreen> {
 
     try {
       final previousSdk = _sdk;
+      final protectionPlatformAdapter = _buildProtectionPlatformAdapter();
       final sdk = await ApiSdkFactory.createHttpApi(
         apiBaseUrl: nextConfig.apiBaseUrl,
         websocketUrl: nextConfig.mqttWebsocketUrl,
+        protectionPlatformAdapter: protectionPlatformAdapter,
       );
+      await _bindProtectionRuntimeHooks(
+        sdk: sdk,
+        platformAdapter: protectionPlatformAdapter,
+      );
+      await sdk.rehydrateProtectionState();
       debugPrint(
         'SDK bootstrap ready -> backend=${nextConfig.label} disposing_previous=${previousSdk != null}',
       );
@@ -95,11 +105,47 @@ class _SdkBootstrapScreenState extends State<SdkBootstrapScreen> {
   }
 
   Future<void> _disposeSdk(EixamConnectSdk? sdk) async {
+    await _protectionRuntimeSub?.cancel();
+    _protectionRuntimeSub = null;
     if (sdk is EixamConnectSdkImpl) {
       debugPrint('Disposing previous SDK instance...');
       await sdk.dispose();
       debugPrint('Previous SDK instance disposed.');
     }
+  }
+
+  ProtectionPlatformAdapter? _buildProtectionPlatformAdapter() {
+    if (defaultTargetPlatform != TargetPlatform.android) {
+      return null;
+    }
+    return AndroidProtectionPlatformAdapter();
+  }
+
+  Future<void> _bindProtectionRuntimeHooks({
+    required EixamConnectSdk sdk,
+    ProtectionPlatformAdapter? platformAdapter,
+  }) async {
+    await _protectionRuntimeSub?.cancel();
+    _protectionRuntimeSub = null;
+    if (platformAdapter == null) {
+      return;
+    }
+
+    _protectionRuntimeSub = platformAdapter.watchPlatformEvents().listen(
+      (event) {
+        final shouldRehydrate =
+            event.type == ProtectionPlatformEventType.woke ||
+                event.type == ProtectionPlatformEventType.runtimeStarted ||
+                event.type == ProtectionPlatformEventType.runtimeRecovered ||
+                event.type == ProtectionPlatformEventType.runtimeRestarted ||
+                event.type == ProtectionPlatformEventType.bluetoothTurnedOff ||
+                event.type == ProtectionPlatformEventType.bluetoothTurnedOn;
+        if (!shouldRehydrate) {
+          return;
+        }
+        unawaited(sdk.rehydrateProtectionState());
+      },
+    );
   }
 
   @override

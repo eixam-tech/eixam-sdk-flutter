@@ -146,16 +146,29 @@ class ProtectionModeController {
     }
 
     final finalSnapshot = await _buildSnapshot(
-      targetModeState: _shouldRunDegraded(armingSnapshot.status)
+      targetModeState: _shouldRunDegraded(
+              armingSnapshot.status,
+              platformCoverageLevel: startResult.coverageLevel,
+            )
           ? ProtectionModeState.degraded
           : ProtectionModeState.armed,
       targetRuntimeState: startResult.runtimeState,
-      targetCoverageLevel: _shouldRunDegraded(armingSnapshot.status)
+      targetCoverageLevel: _shouldRunDegraded(
+              armingSnapshot.status,
+              platformCoverageLevel: startResult.coverageLevel,
+            )
           ? ProtectionCoverageLevel.partial
           : startResult.coverageLevel,
       options: options,
-      degradationReason: _shouldRunDegraded(armingSnapshot.status)
-          ? _deriveDegradedReason(armingSnapshot.status)
+      degradationReason: _shouldRunDegraded(
+              armingSnapshot.status,
+              platformCoverageLevel: startResult.coverageLevel,
+            )
+          ? _deriveDegradedReason(
+              armingSnapshot.status,
+              platformCoverageLevel: startResult.coverageLevel,
+              platformStatusMessage: startResult.statusMessage,
+            )
           : null,
     );
     _status = finalSnapshot.status;
@@ -210,30 +223,45 @@ class ProtectionModeController {
   }
 
   Future<ProtectionStatus> rehydrate() async {
+    final platformSnapshot = await platformAdapter.getPlatformSnapshot();
+    final hasRecoveredRuntime = platformSnapshot.runtimeActive ||
+        platformSnapshot.serviceRunning ||
+        platformSnapshot.runtimeState == ProtectionRuntimeState.active ||
+        platformSnapshot.runtimeState == ProtectionRuntimeState.recovering;
+    if (_activeOptions == null && hasRecoveredRuntime) {
+      _activeOptions = const ProtectionModeOptions();
+    }
+
     final options = _activeOptions ?? const ProtectionModeOptions();
     final targetModeState = _activeOptions == null
         ? ProtectionModeState.off
-        : _status.modeState == ProtectionModeState.armed
-            ? ProtectionModeState.armed
-            : _status.modeState == ProtectionModeState.degraded
-                ? ProtectionModeState.degraded
-                : ProtectionModeState.off;
+        : platformSnapshot.coverageLevel == ProtectionCoverageLevel.partial ||
+                _status.modeState == ProtectionModeState.degraded
+            ? ProtectionModeState.degraded
+            : ProtectionModeState.armed;
     final targetRuntimeState = _activeOptions == null
         ? ProtectionRuntimeState.inactive
-        : _status.runtimeState == ProtectionRuntimeState.failed
-            ? ProtectionRuntimeState.failed
-            : ProtectionRuntimeState.active;
+        : platformSnapshot.runtimeState == ProtectionRuntimeState.inactive
+            ? (_status.runtimeState == ProtectionRuntimeState.failed
+                ? ProtectionRuntimeState.failed
+                : ProtectionRuntimeState.active)
+            : platformSnapshot.runtimeState;
     final targetCoverageLevel = _activeOptions == null
         ? ProtectionCoverageLevel.none
-        : _status.coverageLevel;
+        : platformSnapshot.coverageLevel == ProtectionCoverageLevel.none
+            ? _status.coverageLevel
+            : platformSnapshot.coverageLevel;
     final snapshot = await _buildSnapshot(
       targetModeState: targetModeState,
       targetRuntimeState: targetRuntimeState,
       targetCoverageLevel: targetCoverageLevel,
       options: options,
       degradationReason: targetModeState == ProtectionModeState.degraded
-          ? _status.degradationReason
+          ? _status.degradationReason ??
+              platformSnapshot.lastFailureReason ??
+              'Protection runtime was rehydrated with partial platform coverage.'
           : null,
+      platformSnapshotOverride: platformSnapshot,
     );
     _status = snapshot.status;
     _diagnostics = snapshot.diagnostics;
@@ -269,18 +297,23 @@ class ProtectionModeController {
     required ProtectionCoverageLevel targetCoverageLevel,
     required ProtectionModeOptions options,
     String? degradationReason,
+    ProtectionPlatformSnapshot? platformSnapshotOverride,
   }) async {
     final session = await _sessionProvider();
     final deviceStatus = await _deviceStatusProvider();
     final permissionState = await _permissionStateProvider();
     final operationalDiagnostics = await _operationalDiagnosticsProvider();
-    final platformSnapshot = await platformAdapter.getPlatformSnapshot();
+    final platformSnapshot =
+        platformSnapshotOverride ?? await platformAdapter.getPlatformSnapshot();
 
     final sessionReady = session != null &&
         session.appId.trim().isNotEmpty &&
         session.externalUserId.trim().isNotEmpty &&
         session.userHash.trim().isNotEmpty;
-    final bluetoothEnabled = permissionState.canUseBluetooth;
+    final bluetoothEnabled =
+        platformSnapshot.bluetoothEnabled ?? permissionState.canUseBluetooth;
+    final notificationsGranted = platformSnapshot.notificationsGranted ??
+        permissionState.hasNotificationAccess;
     final backendReachable = sessionReady;
     final realtimeReady = operationalDiagnostics.connectionState ==
             RealtimeConnectionState.connected &&
@@ -319,7 +352,7 @@ class ProtectionModeController {
               'Location permission is required before Protection Mode can be enabled.',
           canBeResolvedInline: true,
         ),
-      if (!permissionState.hasNotificationAccess)
+      if (!notificationsGranted)
         const ProtectionBlockingIssue(
           type: ProtectionBlockingIssueType.notificationsPermissionMissing,
           message:
@@ -353,7 +386,7 @@ class ProtectionModeController {
       deviceConnected: deviceStatus.connected,
       bluetoothEnabled: bluetoothEnabled,
       locationPermissionGranted: permissionState.hasLocationAccess,
-      notificationsPermissionGranted: permissionState.hasNotificationAccess,
+      notificationsPermissionGranted: notificationsGranted,
       platformBackgroundCapabilityReady:
           platformSnapshot.backgroundCapabilityReady,
       backendReachable: backendReachable,
@@ -361,6 +394,9 @@ class ProtectionModeController {
       storeAndForwardEnabled: options.enableStoreAndForward,
       pendingSosCount: pendingSosCount,
       pendingTelemetryCount: pendingTelemetryCount,
+      platformRuntimeConfigured: platformSnapshot.platformRuntimeConfigured,
+      foregroundServiceRunning: platformSnapshot.serviceRunning,
+      protectionRuntimeActive: platformSnapshot.runtimeActive,
       activeDeviceId:
           deviceStatus.deviceId.trim().isEmpty ? null : deviceStatus.deviceId,
       degradationReason: degradationReason,
@@ -369,6 +405,12 @@ class ProtectionModeController {
     final diagnostics = _diagnostics.copyWith(
       lastWakeAt: platformSnapshot.lastWakeAt,
       lastWakeReason: platformSnapshot.lastWakeReason,
+      lastFailureReason:
+          platformSnapshot.lastFailureReason ?? _diagnostics.lastFailureReason,
+      lastPlatformEvent:
+          platformSnapshot.lastPlatformEvent ?? _diagnostics.lastPlatformEvent,
+      lastPlatformEventAt: platformSnapshot.lastPlatformEventAt ??
+          _diagnostics.lastPlatformEventAt,
       pendingSosCount: pendingSosCount,
       pendingTelemetryCount: pendingTelemetryCount,
     );
@@ -383,15 +425,28 @@ class ProtectionModeController {
     );
   }
 
-  bool _shouldRunDegraded(ProtectionStatus status) {
+  bool _shouldRunDegraded(
+    ProtectionStatus status, {
+    ProtectionCoverageLevel? platformCoverageLevel,
+  }) {
     final options = _activeOptions ?? const ProtectionModeOptions();
     if (!options.allowDegradedMode) {
       return false;
     }
-    return !status.deviceConnected || !status.realtimeReady;
+    return !status.deviceConnected ||
+        !status.realtimeReady ||
+        platformCoverageLevel == ProtectionCoverageLevel.partial;
   }
 
-  String? _deriveDegradedReason(ProtectionStatus status) {
+  String? _deriveDegradedReason(
+    ProtectionStatus status, {
+    ProtectionCoverageLevel? platformCoverageLevel,
+    String? platformStatusMessage,
+  }) {
+    if ((platformStatusMessage ?? '').trim().isNotEmpty &&
+        platformCoverageLevel == ProtectionCoverageLevel.partial) {
+      return platformStatusMessage;
+    }
     if (!status.deviceConnected) {
       return 'Protection Mode is active, but the trusted device is not connected yet.';
     }
@@ -402,6 +457,10 @@ class ProtectionModeController {
   }
 
   void _handlePlatformEvent(ProtectionPlatformEvent event) {
+    _diagnostics = _diagnostics.copyWith(
+      lastPlatformEvent: event.type.name,
+      lastPlatformEventAt: event.timestamp,
+    );
     switch (event.type) {
       case ProtectionPlatformEventType.woke:
         _diagnostics = _diagnostics.copyWith(
@@ -412,11 +471,21 @@ class ProtectionModeController {
         break;
       case ProtectionPlatformEventType.runtimeStarted:
       case ProtectionPlatformEventType.runtimeRecovered:
+      case ProtectionPlatformEventType.runtimeRestarted:
         _diagnostics = _diagnostics.copyWith(
           lastWakeAt: event.timestamp,
           lastWakeReason: event.reason,
           lastFailureReason: null,
         );
+        _status = _status.copyWith(
+          foregroundServiceRunning: true,
+          protectionRuntimeActive: true,
+          runtimeState: event.type == ProtectionPlatformEventType.runtimeRecovered
+              ? ProtectionRuntimeState.recovering
+              : ProtectionRuntimeState.active,
+          updatedAt: event.timestamp,
+        );
+        _emitStatus();
         _emitDiagnostics();
         break;
       case ProtectionPlatformEventType.runtimeStopped:
@@ -424,14 +493,47 @@ class ProtectionModeController {
           lastWakeAt: event.timestamp,
           lastWakeReason: event.reason,
         );
+        _status = _status.copyWith(
+          foregroundServiceRunning: false,
+          protectionRuntimeActive: false,
+          runtimeState: ProtectionRuntimeState.inactive,
+          updatedAt: event.timestamp,
+        );
+        _emitStatus();
         _emitDiagnostics();
         break;
       case ProtectionPlatformEventType.runtimeFailed:
         _diagnostics = _diagnostics.copyWith(
           lastFailureReason: event.reason,
         );
+        _status = _status.copyWith(
+          runtimeState: ProtectionRuntimeState.failed,
+          updatedAt: event.timestamp,
+        );
+        _emitStatus();
         _emitDiagnostics();
         break;
+      case ProtectionPlatformEventType.bluetoothTurnedOff:
+      case ProtectionPlatformEventType.bluetoothTurnedOn:
+        _status = _status.copyWith(
+          bluetoothEnabled:
+              event.type == ProtectionPlatformEventType.bluetoothTurnedOn,
+          updatedAt: event.timestamp,
+        );
+        _emitStatus();
+        _emitDiagnostics();
+        break;
+    }
+
+    final shouldRehydrate = _activeOptions != null &&
+        (event.type == ProtectionPlatformEventType.woke ||
+            event.type == ProtectionPlatformEventType.runtimeStarted ||
+            event.type == ProtectionPlatformEventType.runtimeRecovered ||
+            event.type == ProtectionPlatformEventType.runtimeRestarted ||
+            event.type == ProtectionPlatformEventType.bluetoothTurnedOff ||
+            event.type == ProtectionPlatformEventType.bluetoothTurnedOn);
+    if (shouldRehydrate) {
+      unawaited(rehydrate());
     }
   }
 

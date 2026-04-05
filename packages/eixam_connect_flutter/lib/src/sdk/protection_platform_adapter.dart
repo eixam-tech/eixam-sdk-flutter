@@ -7,17 +7,42 @@ enum ProtectionPlatformEventType {
   runtimeStarted,
   runtimeStopped,
   runtimeRecovered,
+  runtimeRestarted,
   runtimeFailed,
+  bluetoothTurnedOff,
+  bluetoothTurnedOn,
 }
 
 class ProtectionPlatformSnapshot {
   const ProtectionPlatformSnapshot({
     required this.backgroundCapabilityReady,
+    this.platformRuntimeConfigured = false,
+    this.foregroundServiceConfigured = false,
+    this.serviceRunning = false,
+    this.runtimeActive = false,
+    this.bluetoothEnabled,
+    this.notificationsGranted,
+    this.lastFailureReason,
+    this.lastPlatformEvent,
+    this.lastPlatformEventAt,
+    this.runtimeState = ProtectionRuntimeState.inactive,
+    this.coverageLevel = ProtectionCoverageLevel.none,
     this.lastWakeAt,
     this.lastWakeReason,
   });
 
   final bool backgroundCapabilityReady;
+  final bool platformRuntimeConfigured;
+  final bool foregroundServiceConfigured;
+  final bool serviceRunning;
+  final bool runtimeActive;
+  final bool? bluetoothEnabled;
+  final bool? notificationsGranted;
+  final String? lastFailureReason;
+  final String? lastPlatformEvent;
+  final DateTime? lastPlatformEventAt;
+  final ProtectionRuntimeState runtimeState;
+  final ProtectionCoverageLevel coverageLevel;
   final DateTime? lastWakeAt;
   final String? lastWakeReason;
 }
@@ -28,12 +53,14 @@ class ProtectionPlatformStartResult {
     this.runtimeState = ProtectionRuntimeState.active,
     this.coverageLevel = ProtectionCoverageLevel.full,
     this.failureReason,
+    this.statusMessage,
   });
 
   final bool success;
   final ProtectionRuntimeState runtimeState;
   final ProtectionCoverageLevel coverageLevel;
   final String? failureReason;
+  final String? statusMessage;
 }
 
 class ProtectionPermissionResult {

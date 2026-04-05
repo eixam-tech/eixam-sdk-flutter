@@ -399,6 +399,44 @@ void main() {
       expect(card.result.diagnosticText, contains('Protection Mode'));
       expect(controller.protectionStatus.modeState, ProtectionModeState.off);
     });
+
+    test('protection cards render Android runtime fields when available', () {
+      controller.protectionStatus = controller.protectionStatus.copyWith(
+        platformRuntimeConfigured: true,
+        foregroundServiceRunning: true,
+        protectionRuntimeActive: true,
+        modeState: ProtectionModeState.degraded,
+        runtimeState: ProtectionRuntimeState.active,
+        coverageLevel: ProtectionCoverageLevel.partial,
+      );
+      controller.protectionDiagnostics = controller.protectionDiagnostics.copyWith(
+        lastPlatformEvent: 'runtimeStarted',
+        lastPlatformEventAt: DateTime.utc(2026, 4, 5, 12),
+      );
+
+      final statusCard = controller.buildProtectionCapabilityCards().firstWhere(
+            (item) => item.id == ValidationCapabilityId.protectionStatus,
+          );
+      final diagnosticsCard = controller
+          .buildProtectionCapabilityCards()
+          .firstWhere(
+            (item) => item.id == ValidationCapabilityId.protectionDiagnostics,
+          );
+
+      expect(
+        {
+          for (final field in statusCard.currentState) field.label: field.value,
+        }['Foreground service'],
+        'Yes',
+      );
+      expect(
+        {
+          for (final field in diagnosticsCard.currentState)
+            field.label: field.value,
+        }['Last platform event'],
+        'runtimeStarted',
+      );
+    });
   });
 }
 

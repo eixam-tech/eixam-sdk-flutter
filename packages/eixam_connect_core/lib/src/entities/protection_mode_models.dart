@@ -49,6 +49,9 @@ class ProtectionStatus {
     required this.pendingSosCount,
     required this.pendingTelemetryCount,
     required this.updatedAt,
+    this.platformRuntimeConfigured = false,
+    this.foregroundServiceRunning = false,
+    this.protectionRuntimeActive = false,
     this.activeDeviceId,
     this.degradationReason,
   });
@@ -68,6 +71,9 @@ class ProtectionStatus {
   final bool storeAndForwardEnabled;
   final int pendingSosCount;
   final int pendingTelemetryCount;
+  final bool platformRuntimeConfigured;
+  final bool foregroundServiceRunning;
+  final bool protectionRuntimeActive;
   final String? activeDeviceId;
   final String? degradationReason;
   final DateTime updatedAt;
@@ -88,6 +94,9 @@ class ProtectionStatus {
     bool? storeAndForwardEnabled,
     int? pendingSosCount,
     int? pendingTelemetryCount,
+    bool? platformRuntimeConfigured,
+    bool? foregroundServiceRunning,
+    bool? protectionRuntimeActive,
     Object? activeDeviceId = _unset,
     Object? degradationReason = _unset,
     DateTime? updatedAt,
@@ -113,6 +122,12 @@ class ProtectionStatus {
       pendingSosCount: pendingSosCount ?? this.pendingSosCount,
       pendingTelemetryCount:
           pendingTelemetryCount ?? this.pendingTelemetryCount,
+      platformRuntimeConfigured:
+          platformRuntimeConfigured ?? this.platformRuntimeConfigured,
+      foregroundServiceRunning:
+          foregroundServiceRunning ?? this.foregroundServiceRunning,
+      protectionRuntimeActive:
+          protectionRuntimeActive ?? this.protectionRuntimeActive,
       activeDeviceId: identical(activeDeviceId, _unset)
           ? this.activeDeviceId
           : activeDeviceId as String?,
@@ -135,6 +150,8 @@ class ProtectionDiagnostics {
     this.lastDevicePacketAt,
     this.lastBackendSyncAt,
     this.lastFailureReason,
+    this.lastPlatformEvent,
+    this.lastPlatformEventAt,
   });
 
   final DateTime? lastWakeAt;
@@ -142,6 +159,8 @@ class ProtectionDiagnostics {
   final DateTime? lastDevicePacketAt;
   final DateTime? lastBackendSyncAt;
   final String? lastFailureReason;
+  final String? lastPlatformEvent;
+  final DateTime? lastPlatformEventAt;
   final int pendingSosCount;
   final int pendingTelemetryCount;
 
@@ -151,6 +170,8 @@ class ProtectionDiagnostics {
     Object? lastDevicePacketAt = _unset,
     Object? lastBackendSyncAt = _unset,
     Object? lastFailureReason = _unset,
+    Object? lastPlatformEvent = _unset,
+    Object? lastPlatformEventAt = _unset,
     int? pendingSosCount,
     int? pendingTelemetryCount,
   }) {
@@ -170,6 +191,12 @@ class ProtectionDiagnostics {
       lastFailureReason: identical(lastFailureReason, _unset)
           ? this.lastFailureReason
           : lastFailureReason as String?,
+      lastPlatformEvent: identical(lastPlatformEvent, _unset)
+          ? this.lastPlatformEvent
+          : lastPlatformEvent as String?,
+      lastPlatformEventAt: identical(lastPlatformEventAt, _unset)
+          ? this.lastPlatformEventAt
+          : lastPlatformEventAt as DateTime?,
       pendingSosCount: pendingSosCount ?? this.pendingSosCount,
       pendingTelemetryCount:
           pendingTelemetryCount ?? this.pendingTelemetryCount,

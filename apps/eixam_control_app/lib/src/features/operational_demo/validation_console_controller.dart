@@ -1527,6 +1527,10 @@ class ValidationConsoleController extends ChangeNotifier {
         result: _buildProtectionReadinessResult(),
         currentState: <ValidationStateField>[
           ValidationStateField(
+            label: 'Platform runtime configured',
+            value: protectionStatus.platformRuntimeConfigured ? 'Yes' : 'No',
+          ),
+          ValidationStateField(
             label: 'Can arm',
             value: protectionReadiness.canArm ? 'Yes' : 'No',
           ),
@@ -1572,6 +1576,14 @@ class ValidationConsoleController extends ChangeNotifier {
             value: protectionStatus.runtimeState.name,
           ),
           ValidationStateField(
+            label: 'Foreground service',
+            value: protectionStatus.foregroundServiceRunning ? 'Yes' : 'No',
+          ),
+          ValidationStateField(
+            label: 'Runtime active',
+            value: protectionStatus.protectionRuntimeActive ? 'Yes' : 'No',
+          ),
+          ValidationStateField(
             label: 'Active device',
             value: protectionStatus.activeDeviceId ?? '-',
           ),
@@ -1588,7 +1600,7 @@ class ValidationConsoleController extends ChangeNotifier {
             'Review additive Protection Mode diagnostics and pending queue counters exposed by the SDK.',
         expectation: const ValidationExpectation(
           expectedResult:
-              'Diagnostics remain readable even with the MVP no-op adapter and do not imply native background support already exists.',
+              'Diagnostics remain readable both with the default no-op path and with the Android host runtime, without overstating current MVP coverage.',
           howToValidate:
               'Inspect wake, failure, and pending queue fields before and after readiness, enter, flush, or rehydrate actions.',
         ),
@@ -1609,6 +1621,16 @@ class ValidationConsoleController extends ChangeNotifier {
             value: protectionDiagnostics.lastFailureReason ?? '-',
           ),
           ValidationStateField(
+            label: 'Last platform event',
+            value: protectionDiagnostics.lastPlatformEvent ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Last platform event at',
+            value: protectionDiagnostics.lastPlatformEventAt == null
+                ? '-'
+                : _formatDateTime(protectionDiagnostics.lastPlatformEventAt),
+          ),
+          ValidationStateField(
             label: 'Pending SOS',
             value: protectionDiagnostics.pendingSosCount.toString(),
           ),
@@ -1625,7 +1647,7 @@ class ValidationConsoleController extends ChangeNotifier {
             'Attempt to enable the optional Protection Mode runtime through the SDK facade.',
         expectation: const ValidationExpectation(
           expectedResult:
-              'With the default no-op adapter, entry fails safely and explains the missing platform capability instead of mutating existing runtime behavior.',
+              'With the Android host adapter, entry starts the foreground runtime. Without it, entry still fails safely and explains the missing platform capability.',
           howToValidate:
               'Use the enter action and verify the result remains explicit, non-crashing, and additive.',
         ),
@@ -1640,6 +1662,10 @@ class ValidationConsoleController extends ChangeNotifier {
             value: protectionStatus.platformBackgroundCapabilityReady
                 ? 'Yes'
                 : 'No',
+          ),
+          ValidationStateField(
+            label: 'Foreground service running',
+            value: protectionStatus.foregroundServiceRunning ? 'Yes' : 'No',
           ),
           ValidationStateField(
             label: 'Realtime ready',
@@ -2431,7 +2457,7 @@ class ValidationConsoleController extends ChangeNotifier {
                   ? ValidationRunStatus.warning
                   : ValidationRunStatus.ok,
       diagnosticText:
-          'Protection Mode is ${protectionStatus.modeState.name} with ${protectionStatus.coverageLevel.name} coverage and ${protectionStatus.runtimeState.name} runtime state.',
+          'Protection Mode is ${protectionStatus.modeState.name} with ${protectionStatus.coverageLevel.name} coverage, ${protectionStatus.runtimeState.name} runtime state, and foreground service ${protectionStatus.foregroundServiceRunning ? 'running' : 'stopped'}.',
     );
   }
 
@@ -2443,9 +2469,13 @@ class ValidationConsoleController extends ChangeNotifier {
       );
     }
     return ValidationCapabilityResult(
-      status: ValidationRunStatus.notRun,
+      status: (protectionDiagnostics.lastPlatformEvent ?? '').trim().isNotEmpty
+          ? ValidationRunStatus.ok
+          : ValidationRunStatus.notRun,
       diagnosticText:
-          'Protection diagnostics are idle until readiness, enter, flush, or rehydrate actions are run.',
+          (protectionDiagnostics.lastPlatformEvent ?? '').trim().isNotEmpty
+              ? 'Latest Android/runtime event: ${protectionDiagnostics.lastPlatformEvent}.'
+              : 'Protection diagnostics are idle until readiness, enter, flush, or rehydrate actions are run.',
     );
   }
 

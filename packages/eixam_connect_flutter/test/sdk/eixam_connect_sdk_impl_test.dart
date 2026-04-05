@@ -479,6 +479,82 @@ void main() {
       }
     });
 
+    test('protection mode reports degraded state for partial Android runtime',
+        () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+        notifications: SdkPermissionStatus.granted,
+        bluetooth: SdkPermissionStatus.granted,
+        bluetoothEnabled: true,
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-degraded',
+          connected: true,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        ),
+      );
+      final localRealtimeClient = FakeRealtimeClient()
+        ..stateToEmitOnConnect = RealtimeConnectionState.connected;
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+        ),
+        startResult: const ProtectionPlatformStartResult(
+          success: true,
+          coverageLevel: ProtectionCoverageLevel.partial,
+          statusMessage:
+              'Android service is active, but BLE ownership still depends on Flutter runtime rehydration.',
+        ),
+      );
+      final runtimeSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: DeviceSosController(),
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: localAdapter,
+      );
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+            canonicalExternalUserId: 'canonical-user',
+          ),
+        );
+
+        final enterResult = await runtimeSdk.enterProtectionMode();
+
+        expect(enterResult.success, isTrue);
+        expect(enterResult.status.modeState, ProtectionModeState.degraded);
+        expect(enterResult.status.coverageLevel, ProtectionCoverageLevel.partial);
+        expect(
+          enterResult.status.degradationReason,
+          contains('Android service is active'),
+        );
+      } finally {
+        await runtimeSdk.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
     test('watchProtectionStatus emits additive transitions', () async {
       permissionsRepository.permissionState = const PermissionState(
         location: SdkPermissionStatus.granted,

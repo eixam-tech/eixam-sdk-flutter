@@ -349,7 +349,7 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
     return ValidationCapabilityCard(
       viewModel: card,
       child: const Text(
-        'The MVP diagnostics focus on visibility, not full native background runtime support yet.',
+        'These diagnostics surface Android runtime state when available, while still staying honest about the current partial-coverage MVP.',
       ),
     );
   }
@@ -366,7 +366,7 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
         ),
       ],
       child: const Text(
-        'With the default no-op adapter, this should fail safely and explain the missing platform background capability.',
+        'On Android with the host adapter installed, this starts the foreground protection runtime. In other environments it still fails safely without changing existing SDK behavior.',
       ),
     );
   }

@@ -32,6 +32,7 @@ import 'eixam_connect_sdk_impl.dart';
 import 'mqtt5_sdk_transport.dart';
 import 'mqtt_realtime_client.dart';
 import 'mock_realtime_client.dart';
+import 'protection_platform_adapter.dart';
 
 /// Factory helpers for API-backed and mock-API-backed SDK instances.
 class ApiSdkFactory {
@@ -109,6 +110,7 @@ class ApiSdkFactory {
   static Future<EixamConnectSdk> createHttpApi({
     required String apiBaseUrl,
     required String websocketUrl,
+    ProtectionPlatformAdapter? protectionPlatformAdapter,
   }) async {
     BleDebugRegistry.instance.reset();
 
@@ -200,6 +202,7 @@ class ApiSdkFactory {
       identityRemoteDataSource: HttpSdkIdentityRemoteDataSource(
         transport: httpTransport,
       ),
+      protectionPlatformAdapter: protectionPlatformAdapter,
       disposeCallback: () async {
         httpClient.close();
         await sosRepository.dispose();
