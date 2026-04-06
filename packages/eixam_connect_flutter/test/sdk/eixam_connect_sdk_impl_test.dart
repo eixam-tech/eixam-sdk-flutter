@@ -464,10 +464,22 @@ void main() {
       final localAdapter = _FakeProtectionPlatformAdapter(
         snapshot: const ProtectionPlatformSnapshot(
           backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
           platform: ProtectionPlatform.android,
           bleOwner: ProtectionBleOwner.androidService,
           serviceBleConnected: true,
           serviceBleReady: true,
+          coverageLevel: ProtectionCoverageLevel.full,
+          runtimeState: ProtectionRuntimeState.active,
+          expectedBleServiceUuid: '6ba1b218-15a8-461f-9fa8-5dcae273ea00',
+          expectedBleCharacteristicUuids: <String>[
+            '6ba1b218-15a8-461f-9fa8-5dcae273ea01',
+            '6ba1b218-15a8-461f-9fa8-5dcae273ea02',
+            '6ba1b218-15a8-461f-9fa8-5dcae273ea03',
+            '6ba1b218-15a8-461f-9fa8-5dcae273ea04',
+          ],
+          discoveredBleServicesSummary:
+              '6ba1b218-15a8-461f-9fa8-5dcae273ea00[6ba1b218-15a8-461f-9fa8-5dcae273ea01,6ba1b218-15a8-461f-9fa8-5dcae273ea02,6ba1b218-15a8-461f-9fa8-5dcae273ea03,6ba1b218-15a8-461f-9fa8-5dcae273ea04]',
         ),
         startResult: const ProtectionPlatformStartResult(success: true),
       );
@@ -510,6 +522,14 @@ void main() {
         expect(enterResult.status.coverageLevel, ProtectionCoverageLevel.full);
         expect(enterResult.status.bleOwner, ProtectionBleOwner.androidService);
         expect(enterResult.status.serviceBleReady, isTrue);
+        expect(
+          enterResult.status.expectedBleServiceUuid,
+          '6ba1b218-15a8-461f-9fa8-5dcae273ea00',
+        );
+        expect(
+          enterResult.status.discoveredBleServicesSummary,
+          contains('6ba1b218-15a8-461f-9fa8-5dcae273ea00'),
+        );
         expect(
             localAdapter.lastStartRequest?.apiBaseUrl, 'https://example.test');
         expect(localAdapter.lastStartRequest?.activeDeviceId, 'device-armed');
@@ -594,7 +614,7 @@ void main() {
             enterResult.status.coverageLevel, ProtectionCoverageLevel.partial);
         expect(
           enterResult.status.degradationReason,
-          contains('Android service is active'),
+          contains('has not connected to the protected device yet'),
         );
       } finally {
         await runtimeSdk.dispose();
@@ -662,6 +682,16 @@ void main() {
           ),
         );
         await runtimeSdk.enterProtectionMode();
+        localAdapter.snapshot = const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          serviceBleConnected: true,
+          serviceBleReady: true,
+          coverageLevel: ProtectionCoverageLevel.full,
+          runtimeState: ProtectionRuntimeState.active,
+        );
 
         events.add(
           ProtectionPlatformEvent(
@@ -685,9 +715,257 @@ void main() {
         expect(status.bleOwner, ProtectionBleOwner.androidService);
         expect(status.serviceBleConnected, isTrue);
         expect(status.serviceBleReady, isTrue);
+        expect(status.modeState, ProtectionModeState.armed);
+        expect(status.coverageLevel, ProtectionCoverageLevel.full);
         expect(diagnostics.lastBleServiceEvent, 'subscriptionsActive');
       } finally {
         await events.close();
+        await runtimeSdk.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test('partial Android runtime surfaces an explicit degradation reason',
+        () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+        notifications: SdkPermissionStatus.granted,
+        bluetooth: SdkPermissionStatus.granted,
+        bluetoothEnabled: true,
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-partial',
+          connected: true,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        ),
+      );
+      final localRealtimeClient = FakeRealtimeClient();
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          serviceBleConnected: true,
+          serviceBleReady: false,
+          coverageLevel: ProtectionCoverageLevel.partial,
+          runtimeState: ProtectionRuntimeState.active,
+          degradationReason:
+              'Android foreground service connected to the protected device, but TEL/SOS subscriptions are not active yet.',
+        ),
+        startResult: const ProtectionPlatformStartResult(
+          success: true,
+          coverageLevel: ProtectionCoverageLevel.partial,
+        ),
+      );
+      final runtimeSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: DeviceSosController(),
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: localAdapter,
+      );
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+            canonicalExternalUserId: 'canonical-user',
+          ),
+        );
+
+        final enterResult = await runtimeSdk.enterProtectionMode();
+
+        expect(enterResult.success, isTrue);
+        expect(enterResult.status.modeState, ProtectionModeState.degraded);
+        expect(
+          enterResult.status.degradationReason,
+          contains('TEL/SOS subscriptions are not active yet'),
+        );
+      } finally {
+        await runtimeSdk.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test('invalid localhost backend config produces explicit degradation',
+        () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+        notifications: SdkPermissionStatus.granted,
+        bluetooth: SdkPermissionStatus.granted,
+        bluetoothEnabled: true,
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-localhost',
+          connected: true,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        ),
+      );
+      final localRealtimeClient = FakeRealtimeClient()
+        ..stateToEmitOnConnect = RealtimeConnectionState.connected;
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          serviceBleConnected: true,
+          serviceBleReady: true,
+          coverageLevel: ProtectionCoverageLevel.full,
+          runtimeState: ProtectionRuntimeState.active,
+          nativeBackendBaseUrl: 'http://127.0.0.1:8080',
+          nativeBackendConfigValid: false,
+          nativeBackendConfigIssue:
+              'Native Protection backend base URL http://127.0.0.1:8080 is invalid for a physical Android device. Use a LAN/reachable host or adb reverse with an explicit debug setup.',
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+      );
+      final runtimeSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: DeviceSosController(),
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: localAdapter,
+      );
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'http://127.0.0.1:8080'),
+        );
+        await runtimeSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+            canonicalExternalUserId: 'canonical-user',
+          ),
+        );
+
+        final enterResult = await runtimeSdk.enterProtectionMode();
+
+        expect(enterResult.success, isTrue);
+        expect(enterResult.status.modeState, ProtectionModeState.degraded);
+        expect(enterResult.status.nativeBackendConfigValid, isFalse);
+        expect(
+          enterResult.status.nativeBackendConfigIssue,
+          contains('invalid for a physical Android device'),
+        );
+      } finally {
+        await runtimeSdk.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test('debug localhost backend config stays valid for protection runtime',
+        () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+        notifications: SdkPermissionStatus.granted,
+        bluetooth: SdkPermissionStatus.granted,
+        bluetoothEnabled: true,
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-debug-local',
+          connected: true,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        ),
+      );
+      final localRealtimeClient = FakeRealtimeClient()
+        ..stateToEmitOnConnect = RealtimeConnectionState.connected;
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          serviceBleConnected: true,
+          serviceBleReady: true,
+          coverageLevel: ProtectionCoverageLevel.full,
+          runtimeState: ProtectionRuntimeState.active,
+          nativeBackendBaseUrl: 'http://127.0.0.1:8080',
+          nativeBackendConfigValid: true,
+          nativeBackendConfigIssue:
+              'Debug localhost backend allowed. Debug cleartext backend allowed',
+          debugLocalhostBackendAllowed: true,
+          debugCleartextBackendAllowed: true,
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+      );
+      final runtimeSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: DeviceSosController(),
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: localAdapter,
+      );
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'http://127.0.0.1:8080'),
+        );
+        await runtimeSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+            canonicalExternalUserId: 'canonical-user',
+          ),
+        );
+
+        final enterResult = await runtimeSdk.enterProtectionMode();
+
+        expect(enterResult.success, isTrue);
+        expect(enterResult.status.modeState, ProtectionModeState.armed);
+        expect(enterResult.status.nativeBackendConfigValid, isTrue);
+        expect(enterResult.status.debugLocalhostBackendAllowed, isTrue);
+        expect(enterResult.status.debugCleartextBackendAllowed, isTrue);
+        expect(
+          enterResult.status.nativeBackendConfigIssue,
+          contains('Debug localhost backend allowed'),
+        );
+      } finally {
         await runtimeSdk.dispose();
         await localRealtimeClient.dispose();
       }
@@ -3488,7 +3766,7 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     this.platformEvents = const Stream<ProtectionPlatformEvent>.empty(),
   });
 
-  final ProtectionPlatformSnapshot snapshot;
+  ProtectionPlatformSnapshot snapshot;
   final ProtectionPlatformStartResult startResult;
   final Stream<ProtectionPlatformEvent> platformEvents;
   int startCallCount = 0;

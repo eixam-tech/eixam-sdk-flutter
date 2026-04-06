@@ -160,31 +160,43 @@ class ProtectionModeController {
       );
     }
 
+    final postStartPlatformSnapshot = await platformAdapter.getPlatformSnapshot();
+    final postStartDeviceConnected = _isProtectionDeviceConnected(
+      armingSnapshot.status,
+      postStartPlatformSnapshot,
+    );
+    final degradedAfterStart = _shouldRunDegraded(
+      armingSnapshot.status.copyWith(
+        deviceConnected: postStartDeviceConnected,
+        serviceBleConnected: postStartPlatformSnapshot.serviceBleConnected,
+        serviceBleReady: postStartPlatformSnapshot.serviceBleReady,
+        bleOwner: postStartPlatformSnapshot.bleOwner,
+      ),
+      platformCoverageLevel: postStartPlatformSnapshot.coverageLevel,
+    );
     final finalSnapshot = await _buildSnapshot(
-      targetModeState: _shouldRunDegraded(
-        armingSnapshot.status,
-        platformCoverageLevel: startResult.coverageLevel,
-      )
+      targetModeState: degradedAfterStart
           ? ProtectionModeState.degraded
           : ProtectionModeState.armed,
-      targetRuntimeState: startResult.runtimeState,
-      targetCoverageLevel: _shouldRunDegraded(
-        armingSnapshot.status,
-        platformCoverageLevel: startResult.coverageLevel,
-      )
+      targetRuntimeState: postStartPlatformSnapshot.runtimeState,
+      targetCoverageLevel: degradedAfterStart
           ? ProtectionCoverageLevel.partial
-          : startResult.coverageLevel,
+          : postStartPlatformSnapshot.coverageLevel,
       options: options,
-      degradationReason: _shouldRunDegraded(
-        armingSnapshot.status,
-        platformCoverageLevel: startResult.coverageLevel,
-      )
+      degradationReason: degradedAfterStart
           ? _deriveDegradedReason(
-              armingSnapshot.status,
-              platformCoverageLevel: startResult.coverageLevel,
-              platformStatusMessage: startResult.statusMessage,
+              armingSnapshot.status.copyWith(
+                deviceConnected: postStartDeviceConnected,
+                serviceBleConnected: postStartPlatformSnapshot.serviceBleConnected,
+                serviceBleReady: postStartPlatformSnapshot.serviceBleReady,
+                bleOwner: postStartPlatformSnapshot.bleOwner,
+              ),
+              platformCoverageLevel: postStartPlatformSnapshot.coverageLevel,
+              platformStatusMessage: startResult.statusMessage ??
+                  postStartPlatformSnapshot.degradationReason,
             )
           : null,
+      platformSnapshotOverride: postStartPlatformSnapshot,
     );
     _status = finalSnapshot.status;
     _diagnostics = finalSnapshot.diagnostics;
@@ -252,8 +264,7 @@ class ProtectionModeController {
     final options = _activeOptions ?? const ProtectionModeOptions();
     final targetModeState = _activeOptions == null
         ? ProtectionModeState.off
-        : platformSnapshot.coverageLevel == ProtectionCoverageLevel.partial ||
-                _status.modeState == ProtectionModeState.degraded
+        : platformSnapshot.coverageLevel == ProtectionCoverageLevel.partial
             ? ProtectionModeState.degraded
             : ProtectionModeState.armed;
     final targetRuntimeState = _activeOptions == null
@@ -274,7 +285,8 @@ class ProtectionModeController {
       targetCoverageLevel: targetCoverageLevel,
       options: options,
       degradationReason: targetModeState == ProtectionModeState.degraded
-          ? _status.degradationReason ??
+          ? platformSnapshot.degradationReason ??
+              _status.degradationReason ??
               platformSnapshot.lastFailureReason ??
               'Protection runtime was rehydrated with partial platform coverage.'
           : null,
@@ -357,6 +369,32 @@ class ProtectionModeController {
       platformSnapshot.pendingTelemetryCount,
     ].reduce((a, b) => a > b ? a : b);
 
+    final protectionDeviceConnected = _isProtectionDeviceConnected(
+      ProtectionStatus(
+        modeState: targetModeState,
+        coverageLevel: targetCoverageLevel,
+        runtimeState: targetRuntimeState,
+        sessionReady: sessionReady,
+        devicePaired: deviceStatus.paired,
+        deviceConnected: deviceStatus.connected,
+        bluetoothEnabled: bluetoothEnabled,
+        locationPermissionGranted: permissionState.hasLocationAccess,
+        notificationsPermissionGranted: notificationsGranted,
+        platformBackgroundCapabilityReady:
+            platformSnapshot.backgroundCapabilityReady,
+        backendReachable: backendReachable,
+        realtimeReady: realtimeReady,
+        storeAndForwardEnabled: options.enableStoreAndForward,
+        pendingSosCount: pendingSosCount,
+        pendingTelemetryCount: pendingTelemetryCount,
+        updatedAt: DateTime.now().toUtc(),
+        bleOwner: platformSnapshot.bleOwner,
+        serviceBleConnected: platformSnapshot.serviceBleConnected,
+        serviceBleReady: platformSnapshot.serviceBleReady,
+      ),
+      platformSnapshot,
+    );
+
     final blockingIssues = <ProtectionBlockingIssue>[
       if (!sessionReady)
         const ProtectionBlockingIssue(
@@ -407,6 +445,9 @@ class ProtectionModeController {
         'The trusted device is not connected right now. Protection Mode would start in reconnect/recovery posture.',
       if (!realtimeReady)
         'Realtime/backend transport is not fully ready, so Protection Mode would rely on reconnect or store-and-forward behavior.',
+      if (!platformSnapshot.nativeBackendConfigValid &&
+          (platformSnapshot.nativeBackendConfigIssue ?? '').trim().isNotEmpty)
+        platformSnapshot.nativeBackendConfigIssue!,
       if (!options.enableStoreAndForward)
         'Store-and-forward is disabled for this Protection Mode configuration.',
     ];
@@ -417,7 +458,7 @@ class ProtectionModeController {
       runtimeState: targetRuntimeState,
       sessionReady: sessionReady,
       devicePaired: deviceStatus.paired,
-      deviceConnected: deviceStatus.connected,
+      deviceConnected: protectionDeviceConnected,
       bluetoothEnabled: bluetoothEnabled,
       locationPermissionGranted: permissionState.hasLocationAccess,
       notificationsPermissionGranted: notificationsGranted,
@@ -457,6 +498,19 @@ class ProtectionModeController {
           deviceStatus.deviceId.trim().isEmpty ? null : deviceStatus.deviceId,
       degradationReason:
           degradationReason ?? platformSnapshot.degradationReason,
+      expectedBleServiceUuid: platformSnapshot.expectedBleServiceUuid,
+      expectedBleCharacteristicUuids:
+          platformSnapshot.expectedBleCharacteristicUuids,
+      discoveredBleServicesSummary:
+          platformSnapshot.discoveredBleServicesSummary,
+      readinessFailureReason: platformSnapshot.readinessFailureReason,
+      nativeBackendBaseUrl: platformSnapshot.nativeBackendBaseUrl,
+      nativeBackendConfigValid: platformSnapshot.nativeBackendConfigValid,
+      nativeBackendConfigIssue: platformSnapshot.nativeBackendConfigIssue,
+      debugLocalhostBackendAllowed:
+          platformSnapshot.debugLocalhostBackendAllowed,
+      debugCleartextBackendAllowed:
+          platformSnapshot.debugCleartextBackendAllowed,
       updatedAt: DateTime.now().toUtc(),
     );
     final diagnostics = _diagnostics.copyWith(
@@ -489,6 +543,19 @@ class ProtectionModeController {
           platformSnapshot.lastNativeBackendHandoffResult,
       lastNativeBackendHandoffError:
           platformSnapshot.lastNativeBackendHandoffError,
+      expectedBleServiceUuid: platformSnapshot.expectedBleServiceUuid,
+      expectedBleCharacteristicUuids:
+          platformSnapshot.expectedBleCharacteristicUuids,
+      discoveredBleServicesSummary:
+          platformSnapshot.discoveredBleServicesSummary,
+      readinessFailureReason: platformSnapshot.readinessFailureReason,
+      nativeBackendBaseUrl: platformSnapshot.nativeBackendBaseUrl,
+      nativeBackendConfigValid: platformSnapshot.nativeBackendConfigValid,
+      nativeBackendConfigIssue: platformSnapshot.nativeBackendConfigIssue,
+      debugLocalhostBackendAllowed:
+          platformSnapshot.debugLocalhostBackendAllowed,
+      debugCleartextBackendAllowed:
+          platformSnapshot.debugCleartextBackendAllowed,
     );
     return _ProtectionSnapshot(
       status: status,
@@ -509,9 +576,16 @@ class ProtectionModeController {
     if (!options.allowDegradedMode) {
       return false;
     }
-    return !status.deviceConnected ||
-        !status.realtimeReady ||
-        platformCoverageLevel == ProtectionCoverageLevel.partial;
+    if (platformCoverageLevel == ProtectionCoverageLevel.partial) {
+      return true;
+    }
+    if (!status.nativeBackendConfigValid) {
+      return true;
+    }
+    if (status.bleOwner == ProtectionBleOwner.androidService) {
+      return !status.serviceBleReady;
+    }
+    return !status.deviceConnected;
   }
 
   String? _deriveDegradedReason(
@@ -526,10 +600,34 @@ class ProtectionModeController {
     if (!status.deviceConnected) {
       return 'Protection Mode is active, but the trusted device is not connected yet.';
     }
-    if (!status.realtimeReady) {
-      return 'Protection Mode is active, but realtime/backend connectivity is still recovering.';
+    if (status.bleOwner == ProtectionBleOwner.androidService &&
+        !status.serviceBleConnected) {
+      return 'Protection Mode is active, but the Android service has not connected to the protected device yet.';
+    }
+    if (status.bleOwner == ProtectionBleOwner.androidService &&
+        !status.serviceBleReady) {
+      return 'Protection Mode is active, but the Android service has not finished TEL/SOS subscriptions yet.';
+    }
+    if (!status.nativeBackendConfigValid &&
+        (status.nativeBackendConfigIssue ?? '').trim().isNotEmpty) {
+      return status.nativeBackendConfigIssue;
     }
     return status.degradationReason;
+  }
+
+  bool _isProtectionDeviceConnected(
+    ProtectionStatus status,
+    ProtectionPlatformSnapshot platformSnapshot,
+  ) {
+    if (status.deviceConnected) {
+      return true;
+    }
+    if (platformSnapshot.bleOwner == ProtectionBleOwner.androidService &&
+        (platformSnapshot.serviceBleConnected ||
+            platformSnapshot.serviceBleReady)) {
+      return true;
+    }
+    return false;
   }
 
   void _handlePlatformEvent(ProtectionPlatformEvent event) {
@@ -770,9 +868,17 @@ class ProtectionModeController {
             event.type == ProtectionPlatformEventType.runtimeActive ||
             event.type == ProtectionPlatformEventType.runtimeRecovered ||
             event.type == ProtectionPlatformEventType.runtimeRestarted ||
+            event.type == ProtectionPlatformEventType.deviceConnected ||
+            event.type == ProtectionPlatformEventType.deviceDisconnected ||
+            event.type == ProtectionPlatformEventType.servicesDiscovered ||
+            event.type == ProtectionPlatformEventType.subscriptionsActive ||
+            event.type == ProtectionPlatformEventType.reconnectScheduled ||
+            event.type == ProtectionPlatformEventType.reconnectFailed ||
             event.type == ProtectionPlatformEventType.nativeBackendSyncQueued ||
             event.type == ProtectionPlatformEventType.nativeBackendSyncSucceeded ||
             event.type == ProtectionPlatformEventType.nativeBackendSyncFailed ||
+            event.type == ProtectionPlatformEventType.runtimeError ||
+            event.type == ProtectionPlatformEventType.runtimeFailed ||
             event.type == ProtectionPlatformEventType.bluetoothTurnedOff ||
             event.type == ProtectionPlatformEventType.bluetoothTurnedOn);
     if (shouldRehydrate) {

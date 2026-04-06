@@ -78,6 +78,23 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
       lastNativeBackendHandoffError:
           snapshot['lastNativeBackendHandoffError'] as String?,
       degradationReason: snapshot['degradationReason'] as String?,
+      expectedBleServiceUuid: snapshot['expectedBleServiceUuid'] as String?,
+      expectedBleCharacteristicUuids:
+          (snapshot['expectedBleCharacteristicUuids'] as List<dynamic>? ?? const [])
+              .map((value) => value.toString())
+              .toList(growable: false),
+      discoveredBleServicesSummary:
+          snapshot['discoveredBleServicesSummary'] as String?,
+      readinessFailureReason: snapshot['readinessFailureReason'] as String?,
+      nativeBackendBaseUrl: snapshot['nativeBackendBaseUrl'] as String?,
+      nativeBackendConfigValid:
+          snapshot['nativeBackendConfigValid'] as bool? ?? true,
+      nativeBackendConfigIssue:
+          snapshot['nativeBackendConfigIssue'] as String?,
+      debugLocalhostBackendAllowed:
+          snapshot['debugLocalhostBackendAllowed'] as bool? ?? false,
+      debugCleartextBackendAllowed:
+          snapshot['debugCleartextBackendAllowed'] as bool? ?? false,
     );
   }
 

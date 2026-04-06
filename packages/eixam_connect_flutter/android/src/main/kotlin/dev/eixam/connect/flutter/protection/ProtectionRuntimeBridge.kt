@@ -2,6 +2,7 @@ package dev.eixam.connect.flutter.protection
 
 import android.bluetooth.BluetoothManager
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.os.Handler
 import android.os.Looper
 import androidx.core.app.NotificationManagerCompat
@@ -9,6 +10,7 @@ import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import java.net.URI
 
 internal object ProtectionRuntimeBridge {
     private const val methodChannelName =
@@ -17,6 +19,7 @@ internal object ProtectionRuntimeBridge {
         "dev.eixam.connect_flutter/protection_runtime/events"
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var applicationContext: Context? = null
     private var eventSink: EventChannel.EventSink? = null
     private var runtimeOwner: ProtectionBleRuntimeOwner? = null
 
@@ -24,6 +27,7 @@ internal object ProtectionRuntimeBridge {
         messenger: BinaryMessenger,
         context: Context,
     ) {
+        applicationContext = context.applicationContext
         MethodChannel(messenger, methodChannelName).setMethodCallHandler { call, result ->
             handleMethodCall(call, result, context.applicationContext)
         }
@@ -41,10 +45,16 @@ internal object ProtectionRuntimeBridge {
     }
 
     fun unregister() {
+        val context = applicationContext
+        if (context != null && ProtectionRuntimeStore(context).isProtectionArmed()) {
+            eventSink = null
+            return
+        }
         runtimeOwner?.stop("plugin_detached")
         runtimeOwner?.dispose()
         runtimeOwner = null
         eventSink = null
+        applicationContext = null
     }
 
     private fun handleMethodCall(
@@ -74,10 +84,20 @@ internal object ProtectionRuntimeBridge {
                 val reconnectBackoffMs =
                     (arguments?.get("reconnectBackoffMs") as? Number)?.toLong() ?: 5000L
                 try {
+                    val backendConfigValidation = validateNativeBackendBaseUrl(
+                        arguments?.get("apiBaseUrl") as? String,
+                    )
                     store.markStartRequest(
                         activeDeviceId = activeDeviceId,
                         apiBaseUrl = arguments?.get("apiBaseUrl") as? String,
                         enableStoreAndForward = enableStoreAndForward,
+                    )
+                    store.recordNativeBackendConfig(
+                        apiBaseUrl = arguments?.get("apiBaseUrl") as? String,
+                        isValid = backendConfigValidation.isValid,
+                        issue = backendConfigValidation.issue,
+                        debugLocalhostAllowed = backendConfigValidation.debugLocalhostAllowed,
+                        debugCleartextAllowed = backendConfigValidation.debugCleartextAllowed,
                     )
                     store.saveReconnectBackoffMs(reconnectBackoffMs)
                     ensureRuntimeOwner(context).start(
@@ -98,8 +118,10 @@ internal object ProtectionRuntimeBridge {
                             "success" to true,
                             "runtimeState" to "active",
                             "coverageLevel" to "partial",
-                            "statusMessage" to
-                                "Android foreground service is now SDK/plugin-owned. BLE ownership is assigned to the service while armed, and readiness advances to full once service BLE connection and subscriptions are confirmed.",
+                            "statusMessage" to (
+                                backendConfigValidation.issue
+                                    ?: "Android foreground service is now SDK/plugin-owned. BLE ownership is assigned to the service while armed, and readiness advances to full once service BLE connection and subscriptions are confirmed."
+                                ),
                         ),
                     )
                 } catch (error: Exception) {
@@ -185,5 +207,76 @@ internal object ProtectionRuntimeBridge {
         } else {
             mainHandler.post(block)
         }
+    }
+
+    private fun validateNativeBackendBaseUrl(apiBaseUrl: String?): BackendConfigValidation {
+        val trimmed = apiBaseUrl?.trim()
+        if (trimmed.isNullOrBlank()) {
+            return BackendConfigValidation(
+                isValid = false,
+                issue = "Native Protection backend base URL is missing.",
+            )
+        }
+        val uri = try {
+            URI(trimmed)
+        } catch (_: Exception) {
+            return BackendConfigValidation(
+                isValid = false,
+                issue = "Native Protection backend base URL is invalid: $trimmed",
+            )
+        }
+        val scheme = uri.scheme?.lowercase()
+        val host = uri.host?.lowercase()
+        if (scheme.isNullOrBlank() || host.isNullOrBlank()) {
+            return BackendConfigValidation(
+                isValid = false,
+                issue = "Native Protection backend base URL must include scheme and host: $trimmed",
+            )
+        }
+        val isLocalhost = host == "127.0.0.1" || host == "localhost"
+        val isCleartext = scheme == "http"
+        if (isDebugBuild()) {
+            val debugIssues = mutableListOf<String>()
+            if (isLocalhost) {
+                debugIssues += "Debug localhost backend allowed"
+            }
+            if (isCleartext) {
+                debugIssues += "Debug cleartext backend allowed"
+            }
+            return BackendConfigValidation(
+                isValid = true,
+                issue = debugIssues.takeIf { it.isNotEmpty() }?.joinToString(". "),
+                debugLocalhostAllowed = isLocalhost,
+                debugCleartextAllowed = isCleartext,
+            )
+        }
+        if (isLocalhost) {
+            return BackendConfigValidation(
+                isValid = false,
+                issue = "Localhost backend is not allowed in release builds: $trimmed",
+            )
+        }
+        if (isCleartext) {
+            return BackendConfigValidation(
+                isValid = false,
+                issue = "Cleartext backend is not allowed in release builds: $trimmed",
+            )
+        }
+        return BackendConfigValidation(
+            isValid = true,
+            issue = null,
+        )
+    }
+
+    private data class BackendConfigValidation(
+        val isValid: Boolean,
+        val issue: String?,
+        val debugLocalhostAllowed: Boolean = false,
+        val debugCleartextAllowed: Boolean = false,
+    )
+
+    private fun isDebugBuild(): Boolean {
+        val context = applicationContext ?: return false
+        return (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
     }
 }

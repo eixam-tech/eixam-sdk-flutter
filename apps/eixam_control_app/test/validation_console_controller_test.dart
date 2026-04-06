@@ -400,6 +400,71 @@ void main() {
       expect(controller.protectionStatus.modeState, ProtectionModeState.off);
     });
 
+    test('enter protection mode warning uses explicit degradation reason',
+        () async {
+      sdk.enterProtectionResult = EnterProtectionModeResult(
+        success: true,
+        status: sdk.protectionStatus.copyWith(
+          modeState: ProtectionModeState.degraded,
+          runtimeState: ProtectionRuntimeState.active,
+          coverageLevel: ProtectionCoverageLevel.partial,
+          foregroundServiceRunning: true,
+          protectionRuntimeActive: true,
+          bleOwner: ProtectionBleOwner.androidService,
+          serviceBleConnected: true,
+          serviceBleReady: false,
+          degradationReason:
+              'Android foreground service connected to the protected device, but TEL/SOS subscriptions are not active yet.',
+          updatedAt: DateTime.utc(2026, 4, 5, 11),
+        ),
+      );
+
+      await controller.enterProtectionMode();
+
+      final card = controller.buildProtectionCapabilityCards().firstWhere(
+            (item) => item.id == ValidationCapabilityId.protectionEnter,
+          );
+
+      expect(card.result.status, ValidationRunStatus.warning);
+      expect(
+        card.result.diagnosticText,
+        contains('TEL/SOS subscriptions are not active yet'),
+      );
+    });
+
+    test('exit protection stays not run until explicitly triggered', () {
+      controller.protectionStatus = controller.protectionStatus.copyWith(
+        modeState: ProtectionModeState.off,
+        runtimeState: ProtectionRuntimeState.inactive,
+      );
+
+      final card = controller.buildProtectionCapabilityCards().firstWhere(
+            (item) => item.id == ValidationCapabilityId.protectionExit,
+          );
+
+      expect(card.result.status, ValidationRunStatus.notRun);
+      expect(card.result.diagnosticText, contains('explicitly'));
+    });
+
+    test('exit protection becomes ok only after explicit action success',
+        () async {
+      sdk.protectionStatus = sdk.protectionStatus.copyWith(
+        modeState: ProtectionModeState.armed,
+        runtimeState: ProtectionRuntimeState.active,
+        coverageLevel: ProtectionCoverageLevel.full,
+      );
+      controller.protectionStatus = sdk.protectionStatus;
+
+      await controller.exitProtectionMode();
+
+      final card = controller.buildProtectionCapabilityCards().firstWhere(
+            (item) => item.id == ValidationCapabilityId.protectionExit,
+          );
+
+      expect(card.result.status, ValidationRunStatus.ok);
+      expect(card.result.diagnosticText, contains('returned to the off state'));
+    });
+
     test('protection cards render Android runtime fields when available', () {
       controller.protectionStatus = controller.protectionStatus.copyWith(
         platform: ProtectionPlatform.android,
@@ -413,6 +478,12 @@ void main() {
         pendingNativeSosCreateCount: 1,
         pendingNativeSosCancelCount: 1,
         lastNativeBackendHandoffResult: 'cancel_synced',
+        nativeBackendBaseUrl: 'http://127.0.0.1:8080',
+        nativeBackendConfigValid: true,
+        nativeBackendConfigIssue:
+            'Debug localhost backend allowed. Debug cleartext backend allowed',
+        debugLocalhostBackendAllowed: true,
+        debugCleartextBackendAllowed: true,
         modeState: ProtectionModeState.degraded,
         runtimeState: ProtectionRuntimeState.active,
         coverageLevel: ProtectionCoverageLevel.partial,
@@ -424,6 +495,12 @@ void main() {
         pendingNativeSosCreateCount: 1,
         pendingNativeSosCancelCount: 1,
         lastNativeBackendHandoffResult: 'cancel_synced',
+        nativeBackendBaseUrl: 'http://127.0.0.1:8080',
+        nativeBackendConfigValid: true,
+        nativeBackendConfigIssue:
+            'Debug localhost backend allowed. Debug cleartext backend allowed',
+        debugLocalhostBackendAllowed: true,
+        debugCleartextBackendAllowed: true,
       );
 
       final statusCard = controller.buildProtectionCapabilityCards().firstWhere(
@@ -477,6 +554,19 @@ void main() {
             field.label: field.value,
         }['Native backend result'],
         'cancel_synced',
+      );
+      expect(
+        {
+          for (final field in statusCard.currentState) field.label: field.value,
+        }['Debug localhost allowed'],
+        'Yes',
+      );
+      expect(
+        {
+          for (final field in diagnosticsCard.currentState)
+            field.label: field.value,
+        }['Debug cleartext allowed'],
+        'Yes',
       );
     });
 
@@ -669,6 +759,7 @@ class _FakeValidationSdk implements EixamConnectSdk {
     pendingSosCount: 0,
     pendingTelemetryCount: 0,
   );
+  EnterProtectionModeResult? enterProtectionResult;
   PermissionState permissionState = const PermissionState();
   DeviceSosStatus deviceSosStatus = DeviceSosStatus.initial();
   Object? telemetryError;
@@ -734,6 +825,12 @@ class _FakeValidationSdk implements EixamConnectSdk {
   Future<EnterProtectionModeResult> enterProtectionMode({
     ProtectionModeOptions options = const ProtectionModeOptions(),
   }) async {
+    final configuredResult = enterProtectionResult;
+    if (configuredResult != null) {
+      protectionStatus = configuredResult.status;
+      _protectionStatusController.add(protectionStatus);
+      return configuredResult;
+    }
     protectionStatus = protectionStatus.copyWith(
       updatedAt: DateTime.utc(2026, 4, 4, 12),
     );

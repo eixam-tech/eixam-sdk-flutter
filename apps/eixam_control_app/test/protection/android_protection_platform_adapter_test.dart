@@ -41,6 +41,23 @@ void main() {
               'restorationConfigured': true,
               'serviceBleConnected': true,
               'serviceBleReady': false,
+              'expectedBleServiceUuid':
+                  '6ba1b218-15a8-461f-9fa8-5dcae273ea00',
+              'expectedBleCharacteristicUuids': <String>[
+                '6ba1b218-15a8-461f-9fa8-5dcae273ea01',
+                '6ba1b218-15a8-461f-9fa8-5dcae273ea02',
+                '6ba1b218-15a8-461f-9fa8-5dcae273ea03',
+                '6ba1b218-15a8-461f-9fa8-5dcae273ea04',
+              ],
+              'discoveredBleServicesSummary':
+                  '180f[] | 6ba1b218-15a8-461f-9fa8-5dcae273ea00[6ba1b218-15a8-461f-9fa8-5dcae273ea01,6ba1b218-15a8-461f-9fa8-5dcae273ea02,6ba1b218-15a8-461f-9fa8-5dcae273ea03]',
+              'readinessFailureReason':
+                  'Required EIXAM protection characteristics are missing.',
+              'nativeBackendBaseUrl': 'https://api.example.test',
+              'nativeBackendConfigValid': true,
+              'nativeBackendConfigIssue': null,
+              'debugLocalhostBackendAllowed': false,
+              'debugCleartextBackendAllowed': false,
               'pendingNativeSosCreateCount': 1,
               'pendingNativeSosCancelCount': 0,
               'lastRestorationEvent': 'restorationDetected',
@@ -99,6 +116,23 @@ void main() {
       expect(snapshot.restorationConfigured, isTrue);
       expect(snapshot.serviceBleConnected, isTrue);
       expect(snapshot.serviceBleReady, isFalse);
+      expect(
+        snapshot.expectedBleServiceUuid,
+        '6ba1b218-15a8-461f-9fa8-5dcae273ea00',
+      );
+      expect(snapshot.expectedBleCharacteristicUuids, hasLength(4));
+      expect(
+        snapshot.discoveredBleServicesSummary,
+        contains('6ba1b218-15a8-461f-9fa8-5dcae273ea00'),
+      );
+      expect(
+        snapshot.readinessFailureReason,
+        contains('Required EIXAM protection characteristics'),
+      );
+      expect(snapshot.nativeBackendBaseUrl, 'https://api.example.test');
+      expect(snapshot.nativeBackendConfigValid, isTrue);
+      expect(snapshot.debugLocalhostBackendAllowed, isFalse);
+      expect(snapshot.debugCleartextBackendAllowed, isFalse);
       expect(snapshot.pendingNativeSosCreateCount, 1);
       expect(snapshot.pendingNativeSosCancelCount, 0);
       expect(snapshot.lastRestorationEvent, 'restorationDetected');

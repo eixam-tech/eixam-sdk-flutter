@@ -96,6 +96,15 @@ class ProtectionPlatformSnapshot {
     this.lastNativeBackendHandoffResult,
     this.lastNativeBackendHandoffError,
     this.degradationReason,
+    this.expectedBleServiceUuid,
+    this.expectedBleCharacteristicUuids = const <String>[],
+    this.discoveredBleServicesSummary,
+    this.readinessFailureReason,
+    this.nativeBackendBaseUrl,
+    this.nativeBackendConfigValid = true,
+    this.nativeBackendConfigIssue,
+    this.debugLocalhostBackendAllowed = false,
+    this.debugCleartextBackendAllowed = false,
   });
 
   final bool backgroundCapabilityReady;
@@ -131,6 +140,15 @@ class ProtectionPlatformSnapshot {
   final String? lastNativeBackendHandoffResult;
   final String? lastNativeBackendHandoffError;
   final String? degradationReason;
+  final String? expectedBleServiceUuid;
+  final List<String> expectedBleCharacteristicUuids;
+  final String? discoveredBleServicesSummary;
+  final String? readinessFailureReason;
+  final String? nativeBackendBaseUrl;
+  final bool nativeBackendConfigValid;
+  final String? nativeBackendConfigIssue;
+  final bool debugLocalhostBackendAllowed;
+  final bool debugCleartextBackendAllowed;
 }
 
 class ProtectionPlatformStartResult {

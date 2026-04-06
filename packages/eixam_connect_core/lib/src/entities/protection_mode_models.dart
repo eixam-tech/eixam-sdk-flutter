@@ -89,6 +89,15 @@ class ProtectionStatus {
     this.lastNativeBackendHandoffError,
     this.activeDeviceId,
     this.degradationReason,
+    this.expectedBleServiceUuid,
+    this.expectedBleCharacteristicUuids = const <String>[],
+    this.discoveredBleServicesSummary,
+    this.readinessFailureReason,
+    this.nativeBackendBaseUrl,
+    this.nativeBackendConfigValid = true,
+    this.nativeBackendConfigIssue,
+    this.debugLocalhostBackendAllowed = false,
+    this.debugCleartextBackendAllowed = false,
   });
 
   final ProtectionModeState modeState;
@@ -129,6 +138,15 @@ class ProtectionStatus {
   final String? lastNativeBackendHandoffError;
   final String? activeDeviceId;
   final String? degradationReason;
+  final String? expectedBleServiceUuid;
+  final List<String> expectedBleCharacteristicUuids;
+  final String? discoveredBleServicesSummary;
+  final String? readinessFailureReason;
+  final String? nativeBackendBaseUrl;
+  final bool nativeBackendConfigValid;
+  final String? nativeBackendConfigIssue;
+  final bool debugLocalhostBackendAllowed;
+  final bool debugCleartextBackendAllowed;
   final DateTime updatedAt;
 
   ProtectionStatus copyWith({
@@ -170,6 +188,15 @@ class ProtectionStatus {
     Object? lastNativeBackendHandoffError = _unset,
     Object? activeDeviceId = _unset,
     Object? degradationReason = _unset,
+    Object? expectedBleServiceUuid = _unset,
+    List<String>? expectedBleCharacteristicUuids,
+    Object? discoveredBleServicesSummary = _unset,
+    Object? readinessFailureReason = _unset,
+    Object? nativeBackendBaseUrl = _unset,
+    bool? nativeBackendConfigValid,
+    Object? nativeBackendConfigIssue = _unset,
+    bool? debugLocalhostBackendAllowed,
+    bool? debugCleartextBackendAllowed,
     DateTime? updatedAt,
   }) {
     return ProtectionStatus(
@@ -248,6 +275,30 @@ class ProtectionStatus {
       degradationReason: identical(degradationReason, _unset)
           ? this.degradationReason
           : degradationReason as String?,
+      expectedBleServiceUuid: identical(expectedBleServiceUuid, _unset)
+          ? this.expectedBleServiceUuid
+          : expectedBleServiceUuid as String?,
+      expectedBleCharacteristicUuids:
+          expectedBleCharacteristicUuids ?? this.expectedBleCharacteristicUuids,
+      discoveredBleServicesSummary:
+          identical(discoveredBleServicesSummary, _unset)
+              ? this.discoveredBleServicesSummary
+              : discoveredBleServicesSummary as String?,
+      readinessFailureReason: identical(readinessFailureReason, _unset)
+          ? this.readinessFailureReason
+          : readinessFailureReason as String?,
+      nativeBackendBaseUrl: identical(nativeBackendBaseUrl, _unset)
+          ? this.nativeBackendBaseUrl
+          : nativeBackendBaseUrl as String?,
+      nativeBackendConfigValid:
+          nativeBackendConfigValid ?? this.nativeBackendConfigValid,
+      nativeBackendConfigIssue: identical(nativeBackendConfigIssue, _unset)
+          ? this.nativeBackendConfigIssue
+          : nativeBackendConfigIssue as String?,
+      debugLocalhostBackendAllowed: debugLocalhostBackendAllowed ??
+          this.debugLocalhostBackendAllowed,
+      debugCleartextBackendAllowed: debugCleartextBackendAllowed ??
+          this.debugCleartextBackendAllowed,
       updatedAt: updatedAt ?? this.updatedAt,
     );
   }
@@ -276,6 +327,15 @@ class ProtectionDiagnostics {
     this.lastReconnectAttemptAt,
     this.lastNativeBackendHandoffResult,
     this.lastNativeBackendHandoffError,
+    this.expectedBleServiceUuid,
+    this.expectedBleCharacteristicUuids = const <String>[],
+    this.discoveredBleServicesSummary,
+    this.readinessFailureReason,
+    this.nativeBackendBaseUrl,
+    this.nativeBackendConfigValid = true,
+    this.nativeBackendConfigIssue,
+    this.debugLocalhostBackendAllowed = false,
+    this.debugCleartextBackendAllowed = false,
   });
 
   final DateTime? lastWakeAt;
@@ -297,6 +357,15 @@ class ProtectionDiagnostics {
   final int pendingNativeSosCancelCount;
   final String? lastNativeBackendHandoffResult;
   final String? lastNativeBackendHandoffError;
+  final String? expectedBleServiceUuid;
+  final List<String> expectedBleCharacteristicUuids;
+  final String? discoveredBleServicesSummary;
+  final String? readinessFailureReason;
+  final String? nativeBackendBaseUrl;
+  final bool nativeBackendConfigValid;
+  final String? nativeBackendConfigIssue;
+  final bool debugLocalhostBackendAllowed;
+  final bool debugCleartextBackendAllowed;
 
   ProtectionDiagnostics copyWith({
     Object? lastWakeAt = _unset,
@@ -318,6 +387,15 @@ class ProtectionDiagnostics {
     int? pendingNativeSosCancelCount,
     Object? lastNativeBackendHandoffResult = _unset,
     Object? lastNativeBackendHandoffError = _unset,
+    Object? expectedBleServiceUuid = _unset,
+    List<String>? expectedBleCharacteristicUuids,
+    Object? discoveredBleServicesSummary = _unset,
+    Object? readinessFailureReason = _unset,
+    Object? nativeBackendBaseUrl = _unset,
+    bool? nativeBackendConfigValid,
+    Object? nativeBackendConfigIssue = _unset,
+    bool? debugLocalhostBackendAllowed,
+    bool? debugCleartextBackendAllowed,
   }) {
     return ProtectionDiagnostics(
       lastWakeAt: identical(lastWakeAt, _unset)
@@ -373,6 +451,30 @@ class ProtectionDiagnostics {
           identical(lastNativeBackendHandoffError, _unset)
               ? this.lastNativeBackendHandoffError
               : lastNativeBackendHandoffError as String?,
+      expectedBleServiceUuid: identical(expectedBleServiceUuid, _unset)
+          ? this.expectedBleServiceUuid
+          : expectedBleServiceUuid as String?,
+      expectedBleCharacteristicUuids:
+          expectedBleCharacteristicUuids ?? this.expectedBleCharacteristicUuids,
+      discoveredBleServicesSummary:
+          identical(discoveredBleServicesSummary, _unset)
+              ? this.discoveredBleServicesSummary
+              : discoveredBleServicesSummary as String?,
+      readinessFailureReason: identical(readinessFailureReason, _unset)
+          ? this.readinessFailureReason
+          : readinessFailureReason as String?,
+      nativeBackendBaseUrl: identical(nativeBackendBaseUrl, _unset)
+          ? this.nativeBackendBaseUrl
+          : nativeBackendBaseUrl as String?,
+      nativeBackendConfigValid:
+          nativeBackendConfigValid ?? this.nativeBackendConfigValid,
+      nativeBackendConfigIssue: identical(nativeBackendConfigIssue, _unset)
+          ? this.nativeBackendConfigIssue
+          : nativeBackendConfigIssue as String?,
+      debugLocalhostBackendAllowed: debugLocalhostBackendAllowed ??
+          this.debugLocalhostBackendAllowed,
+      debugCleartextBackendAllowed: debugCleartextBackendAllowed ??
+          this.debugCleartextBackendAllowed,
     );
   }
 

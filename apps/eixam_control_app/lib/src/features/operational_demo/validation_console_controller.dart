@@ -731,6 +731,13 @@ class ValidationConsoleController extends ChangeNotifier {
 
   Future<void> enterProtectionMode() async {
     await _runAction((value) => loadingProtection = value, () async {
+      _recordCapabilityResult(
+        ValidationCapabilityId.protectionEnter,
+        const ValidationCapabilityResult(
+          status: ValidationRunStatus.running,
+          diagnosticText: 'Entering Protection Mode through the SDK facade...',
+        ),
+      );
       final result = await sdk.enterProtectionMode();
       protectionStatus = result.status;
       protectionReadiness = ProtectionReadinessReport(
@@ -748,11 +755,18 @@ class ValidationConsoleController extends ChangeNotifier {
 
   Future<void> exitProtectionMode() async {
     await _runAction((value) => loadingProtection = value, () async {
+      _recordCapabilityResult(
+        ValidationCapabilityId.protectionExit,
+        const ValidationCapabilityResult(
+          status: ValidationRunStatus.running,
+          diagnosticText: 'Exiting Protection Mode through the SDK facade...',
+        ),
+      );
       protectionStatus = await sdk.exitProtectionMode();
       protectionDiagnostics = await sdk.getProtectionDiagnostics();
       _recordCapabilityResult(
         ValidationCapabilityId.protectionExit,
-        _buildProtectionExitResult(),
+        _buildProtectionExitResult(ignoreRunningRecord: true),
       );
     });
   }
@@ -1612,6 +1626,24 @@ class ValidationConsoleController extends ChangeNotifier {
             value: protectionStatus.serviceBleReady ? 'Yes' : 'No',
           ),
           ValidationStateField(
+            label: 'Expected BLE service',
+            value: protectionStatus.expectedBleServiceUuid ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Expected BLE chars',
+            value: protectionStatus.expectedBleCharacteristicUuids.isEmpty
+                ? '-'
+                : protectionStatus.expectedBleCharacteristicUuids.join(' | '),
+          ),
+          ValidationStateField(
+            label: 'Discovered BLE services',
+            value: protectionStatus.discoveredBleServicesSummary ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Readiness failure',
+            value: protectionStatus.readinessFailureReason ?? '-',
+          ),
+          ValidationStateField(
             label: 'Active device',
             value: protectionStatus.activeDeviceId ?? '-',
           ),
@@ -1646,6 +1678,27 @@ class ValidationConsoleController extends ChangeNotifier {
           ValidationStateField(
             label: 'Degradation reason',
             value: protectionStatus.degradationReason ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Native backend URL',
+            value: protectionStatus.nativeBackendBaseUrl ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Native backend config',
+            value:
+                protectionStatus.nativeBackendConfigValid ? 'Valid' : 'Invalid',
+          ),
+          ValidationStateField(
+            label: 'Debug localhost allowed',
+            value: protectionStatus.debugLocalhostBackendAllowed ? 'Yes' : 'No',
+          ),
+          ValidationStateField(
+            label: 'Debug cleartext allowed',
+            value: protectionStatus.debugCleartextBackendAllowed ? 'Yes' : 'No',
+          ),
+          ValidationStateField(
+            label: 'Native backend issue',
+            value: protectionStatus.nativeBackendConfigIssue ?? '-',
           ),
         ],
       ),
@@ -1701,6 +1754,18 @@ class ValidationConsoleController extends ChangeNotifier {
             value: protectionDiagnostics.lastBleServiceEvent ?? '-',
           ),
           ValidationStateField(
+            label: 'Expected BLE service',
+            value: protectionDiagnostics.expectedBleServiceUuid ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Discovered BLE services',
+            value: protectionDiagnostics.discoveredBleServicesSummary ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Readiness failure',
+            value: protectionDiagnostics.readinessFailureReason ?? '-',
+          ),
+          ValidationStateField(
             label: 'Reconnect attempts',
             value: protectionDiagnostics.reconnectAttemptCount.toString(),
           ),
@@ -1733,6 +1798,32 @@ class ValidationConsoleController extends ChangeNotifier {
           ValidationStateField(
             label: 'Native backend error',
             value: protectionDiagnostics.lastNativeBackendHandoffError ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Native backend URL',
+            value: protectionDiagnostics.nativeBackendBaseUrl ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Native backend config',
+            value: protectionDiagnostics.nativeBackendConfigValid
+                ? 'Valid'
+                : 'Invalid',
+          ),
+          ValidationStateField(
+            label: 'Debug localhost allowed',
+            value: protectionDiagnostics.debugLocalhostBackendAllowed
+                ? 'Yes'
+                : 'No',
+          ),
+          ValidationStateField(
+            label: 'Debug cleartext allowed',
+            value: protectionDiagnostics.debugCleartextBackendAllowed
+                ? 'Yes'
+                : 'No',
+          ),
+          ValidationStateField(
+            label: 'Native backend issue',
+            value: protectionDiagnostics.nativeBackendConfigIssue ?? '-',
           ),
         ],
       ),
@@ -2581,6 +2672,7 @@ class ValidationConsoleController extends ChangeNotifier {
   ]) {
     final recorded = _capabilityRuns[ValidationCapabilityId.protectionEnter];
     if (result != null) {
+      final degradationReason = result.status.degradationReason;
       return ValidationCapabilityResult(
         status: result.success
             ? (result.status.modeState == ProtectionModeState.degraded
@@ -2588,13 +2680,19 @@ class ValidationConsoleController extends ChangeNotifier {
                 : ValidationRunStatus.ok)
             : ValidationRunStatus.warning,
         diagnosticText: result.success
-            ? 'Protection Mode entered with ${result.status.modeState.name} coverage semantics.'
+            ? result.status.modeState == ProtectionModeState.degraded
+                ? degradationReason ??
+                    'Protection Mode entered in a degraded state, but no explicit degradation reason was surfaced.'
+                : 'Protection Mode entered with ${result.status.modeState.name} coverage semantics.'
             : (result.blockingIssues.isEmpty
                 ? 'Protection Mode could not be entered.'
                 : result.blockingIssues
                     .map((issue) => issue.message)
                     .join(' ')),
       );
+    }
+    if (recorded?.status == ValidationRunStatus.running) {
+      return recorded!;
     }
     if (recorded != null) {
       return recorded;
@@ -2606,21 +2704,40 @@ class ValidationConsoleController extends ChangeNotifier {
     );
   }
 
-  ValidationCapabilityResult _buildProtectionExitResult() {
+  ValidationCapabilityResult _buildProtectionExitResult({
+    bool ignoreRunningRecord = false,
+  }) {
     final recorded = _capabilityRuns[ValidationCapabilityId.protectionExit];
-    if (recorded != null) {
-      return recorded;
+    if (!ignoreRunningRecord &&
+        recorded?.status == ValidationRunStatus.running) {
+      return recorded!;
     }
-    if (protectionStatus.modeState == ProtectionModeState.off) {
+    if ((lastActionError ?? '').trim().isNotEmpty && recorded != null) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.nok,
+        diagnosticText: lastActionError,
+        lastExecutedAt: recorded.lastExecutedAt,
+      );
+    }
+    if (recorded == null) {
       return const ValidationCapabilityResult(
         status: ValidationRunStatus.notRun,
         diagnosticText:
-            'Protection Mode is already off by default and has not required an exit yet.',
+            'Exit Protection Mode explicitly to validate the additive shutdown lifecycle.',
       );
     }
-    return const ValidationCapabilityResult(
+    if (protectionStatus.modeState != ProtectionModeState.off) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.warning,
+        diagnosticText:
+            'Exit was requested, but Protection Mode still reports ${protectionStatus.modeState.name}/${protectionStatus.runtimeState.name}.',
+        lastExecutedAt: recorded.lastExecutedAt,
+      );
+    }
+    return ValidationCapabilityResult(
       status: ValidationRunStatus.ok,
       diagnosticText: 'Protection Mode has been returned to the off state.',
+      lastExecutedAt: recorded.lastExecutedAt,
     );
   }
 

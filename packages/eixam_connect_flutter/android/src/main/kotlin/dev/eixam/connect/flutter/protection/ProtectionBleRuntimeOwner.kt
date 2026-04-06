@@ -12,6 +12,7 @@ import android.content.Context
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import java.util.Locale
 import java.util.UUID
 
 internal class ProtectionBleRuntimeOwner(
@@ -34,7 +35,8 @@ internal class ProtectionBleRuntimeOwner(
     private var inetWriteCharacteristic: BluetoothGattCharacteristic? = null
     private var cmdWriteCharacteristic: BluetoothGattCharacteristic? = null
     private var subscriptionStep = SubscriptionStep.idle
-    private var pendingSosLifecycleState = PendingSosLifecycleState.idle
+    private var pendingSosLifecycleState = ProtectionSosLifecycleState.idle
+    private var sosActivationRunnable: Runnable? = null
     private var backendRetryRunnable: Runnable? = null
     private val backendHandoff =
         ProtectionSosBackendHandoff(
@@ -73,9 +75,12 @@ internal class ProtectionBleRuntimeOwner(
         runtimeActive = false
         reconnectRunnable?.let(mainHandler::removeCallbacks)
         backendRetryRunnable?.let(mainHandler::removeCallbacks)
+        sosActivationRunnable?.let(mainHandler::removeCallbacks)
         reconnectRunnable = null
         backendRetryRunnable = null
+        sosActivationRunnable = null
         subscriptionStep = SubscriptionStep.idle
+        pendingSosLifecycleState = ProtectionSosLifecycleState.idle
         clearCharacteristicRefs()
         bluetoothGatt?.close()
         bluetoothGatt = null
@@ -88,6 +93,9 @@ internal class ProtectionBleRuntimeOwner(
     }
 
     fun isRunning(): Boolean = runtimeActive
+
+    fun isRunningFor(deviceId: String): Boolean =
+        runtimeActive && targetDeviceId == deviceId
 
     fun flushPendingBackendActions(reason: String): Map<String, Any> =
         backendHandoff.flushPendingActionsSync(reason)
@@ -114,6 +122,9 @@ internal class ProtectionBleRuntimeOwner(
         reconnectRunnable = null
         clearCharacteristicRefs()
         subscriptionStep = SubscriptionStep.idle
+        runtimeStore.recordReadinessFailureReason(
+            "Android foreground service is connecting to the protected BLE device.",
+        )
         ProtectionRuntimeBridge.recordBleEvent(
             context = context,
             type = "deviceConnecting",
@@ -203,13 +214,22 @@ internal class ProtectionBleRuntimeOwner(
 
     @SuppressLint("MissingPermission")
     private fun configureSubscriptions(gatt: BluetoothGatt) {
+        val discoveredServicesSummary = gatt.services.joinToString(separator = " | ") { service ->
+            val characteristics = service.characteristics.joinToString(separator = ",") {
+                it.uuid.toString().lowercase(Locale.US)
+            }
+            "${service.uuid.toString().lowercase(Locale.US)}[$characteristics]"
+        }
+        runtimeStore.recordDiscoveredServicesSummary(discoveredServicesSummary)
         val service = gatt.getService(serviceUuid)
         if (service == null) {
-            runtimeStore.markRuntimeFailure("EIXAM protection BLE service ea00 was not found.")
+            val failureReason =
+                "Expected BLE service ${serviceUuid.toString().lowercase(Locale.US)} was not found. Discovered services: ${if (discoveredServicesSummary.isBlank()) "none" else discoveredServicesSummary}"
+            runtimeStore.markRuntimeFailure(failureReason)
             ProtectionRuntimeBridge.recordPlatformEvent(
                 context = context,
                 type = "runtimeError",
-                reason = "eixam_service_missing",
+                reason = failureReason,
             )
             scheduleReconnect("eixam_service_missing")
             return
@@ -221,20 +241,33 @@ internal class ProtectionBleRuntimeOwner(
         cmdWriteCharacteristic = service.getCharacteristic(cmdWriteUuid)
 
         if (telNotifyCharacteristic == null || sosNotifyCharacteristic == null || inetWriteCharacteristic == null) {
-            runtimeStore.markRuntimeFailure("Required EIXAM protection characteristics are missing.")
+            val missingCharacteristics = buildList<String> {
+                if (telNotifyCharacteristic == null) add(telNotifyUuid.toString().lowercase(Locale.US))
+                if (sosNotifyCharacteristic == null) add(sosNotifyUuid.toString().lowercase(Locale.US))
+                if (inetWriteCharacteristic == null) add(inetWriteUuid.toString().lowercase(Locale.US))
+            }
+            val discoveredCharacteristics = service.characteristics.joinToString(separator = ",") {
+                it.uuid.toString().lowercase(Locale.US)
+            }
+            val failureReason =
+                "Required EIXAM protection characteristics are missing. Expected ${missingCharacteristics.joinToString()} but discovered $discoveredCharacteristics."
+            runtimeStore.markRuntimeFailure(failureReason)
             ProtectionRuntimeBridge.recordPlatformEvent(
                 context = context,
                 type = "runtimeError",
-                reason = "required_characteristics_missing",
+                reason = failureReason,
             )
             scheduleReconnect("required_characteristics_missing")
             return
         }
 
+        runtimeStore.recordReadinessFailureReason(
+            "Expected BLE service and required characteristics were discovered. Enabling TEL/SOS notifications.",
+        )
         ProtectionRuntimeBridge.recordBleEvent(
             context = context,
             type = "servicesDiscovered",
-            reason = "eixam_services_ready",
+            reason = "expected_service_and_characteristics_found",
         )
         subscriptionStep = SubscriptionStep.tel
         enableCharacteristicNotifications(gatt, telNotifyCharacteristic!!)
@@ -330,22 +363,52 @@ internal class ProtectionBleRuntimeOwner(
                 val subcode = payload[1] and 0xFF
                 val closed = (opcode == 0xE1 && (subcode == 0x01 || subcode == 0x02)) ||
                     (opcode == 0xE2 && (subcode == 0x01 || subcode == 0x02 || subcode == 0x03))
-                if (closed && pendingSosLifecycleState != PendingSosLifecycleState.idle) {
-                    pendingSosLifecycleState = PendingSosLifecycleState.cancelPending
-                    backendHandoff.queueCancel("device_cycle_closed")
+                if (closed && pendingSosLifecycleState != ProtectionSosLifecycleState.idle) {
+                    val closeOutcome =
+                        ProtectionSosLifecycleLogic.onClosePacket(pendingSosLifecycleState)
+                    pendingSosLifecycleState = closeOutcome.nextState
+                    cancelSosActivationTimeout()
+                    ProtectionForegroundService.showResolvedSosNotification(context)
+                    if (closeOutcome.shouldCancelBackend) {
+                        backendHandoff.queueCancel("device_cycle_closed")
+                    }
                 }
             }
 
             5, 10 -> {
-                if (pendingSosLifecycleState == PendingSosLifecycleState.idle ||
-                    pendingSosLifecycleState == PendingSosLifecycleState.cancelPending) {
-                    pendingSosLifecycleState = PendingSosLifecycleState.preConfirmSeen
-                } else if (pendingSosLifecycleState == PendingSosLifecycleState.preConfirmSeen) {
-                    pendingSosLifecycleState = PendingSosLifecycleState.createPending
-                    backendHandoff.queueCreate("device_cycle_active")
+                val nextState = ProtectionSosLifecycleLogic.onMeshPacket(pendingSosLifecycleState)
+                if (nextState == ProtectionSosLifecycleState.preConfirmSeen &&
+                    pendingSosLifecycleState != ProtectionSosLifecycleState.preConfirmSeen
+                ) {
+                    pendingSosLifecycleState = nextState
+                    ProtectionForegroundService.showPreConfirmNotification(context)
+                    scheduleSosActivationTimeout()
                 }
             }
         }
+    }
+
+    private fun scheduleSosActivationTimeout() {
+        sosActivationRunnable?.let(mainHandler::removeCallbacks)
+        sosActivationRunnable = Runnable {
+            val nextState =
+                ProtectionSosLifecycleLogic.onCountdownElapsed(pendingSosLifecycleState)
+            if (nextState == ProtectionSosLifecycleState.createPending &&
+                pendingSosLifecycleState == ProtectionSosLifecycleState.preConfirmSeen
+            ) {
+                pendingSosLifecycleState = nextState
+                ProtectionForegroundService.showActiveSosNotification(context)
+                backendHandoff.queueCreate("device_cycle_active_after_timeout")
+            }
+            sosActivationRunnable = null
+        }.also {
+            mainHandler.postDelayed(it, sosActivationDelayMs)
+        }
+    }
+
+    private fun cancelSosActivationTimeout() {
+        sosActivationRunnable?.let(mainHandler::removeCallbacks)
+        sosActivationRunnable = null
     }
 
     private val gattCallback =
@@ -475,21 +538,15 @@ internal class ProtectionBleRuntimeOwner(
         complete,
     }
 
-    private enum class PendingSosLifecycleState {
-        idle,
-        preConfirmSeen,
-        createPending,
-        cancelPending,
-    }
-
     companion object {
         private const val defaultReconnectBackoffMs = 5000L
+        private const val sosActivationDelayMs = 20_000L
 
-        private val serviceUuid: UUID = UUID.fromString("0000ea00-0000-1000-8000-00805f9b34fb")
-        private val telNotifyUuid: UUID = UUID.fromString("0000ea01-0000-1000-8000-00805f9b34fb")
-        private val sosNotifyUuid: UUID = UUID.fromString("0000ea02-0000-1000-8000-00805f9b34fb")
-        private val inetWriteUuid: UUID = UUID.fromString("0000ea03-0000-1000-8000-00805f9b34fb")
-        private val cmdWriteUuid: UUID = UUID.fromString("0000ea04-0000-1000-8000-00805f9b34fb")
+        private val serviceUuid: UUID = UUID.fromString("6ba1b218-15a8-461f-9fa8-5dcae273ea00")
+        private val telNotifyUuid: UUID = UUID.fromString("6ba1b218-15a8-461f-9fa8-5dcae273ea01")
+        private val sosNotifyUuid: UUID = UUID.fromString("6ba1b218-15a8-461f-9fa8-5dcae273ea02")
+        private val inetWriteUuid: UUID = UUID.fromString("6ba1b218-15a8-461f-9fa8-5dcae273ea03")
+        private val cmdWriteUuid: UUID = UUID.fromString("6ba1b218-15a8-461f-9fa8-5dcae273ea04")
         private val clientCharacteristicConfigUuid: UUID =
             UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
     }

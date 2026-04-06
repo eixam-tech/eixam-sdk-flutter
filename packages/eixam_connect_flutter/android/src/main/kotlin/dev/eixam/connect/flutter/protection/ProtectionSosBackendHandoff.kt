@@ -1,9 +1,11 @@
 package dev.eixam.connect.flutter.protection
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import org.json.JSONObject
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
+import java.net.URI
 import java.net.URL
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -72,7 +74,7 @@ internal class ProtectionSosBackendHandoff(
         executor.execute {
             try {
                 val session = loadSession() ?: return@execute
-                val apiBaseUrl = runtimeStore.currentApiBaseUrl() ?: return@execute
+                val apiBaseUrl = requireValidatedApiBaseUrl() ?: return@execute
                 val existingIncident = fetchActiveIncident(apiBaseUrl, session)
                 if (existingIncident != null) {
                     runtimeStore.markBackendIncidentActive(
@@ -128,7 +130,7 @@ internal class ProtectionSosBackendHandoff(
             } else {
                 val session = loadSession()
                     ?: throw IllegalStateException("Missing SDK session for native SOS backend handoff.")
-                val apiBaseUrl = runtimeStore.currentApiBaseUrl()
+                val apiBaseUrl = requireValidatedApiBaseUrl()
                     ?: throw IllegalStateException("Missing API base URL for native SOS backend handoff.")
                 val position = loadTrackingPosition()
                     ?: throw IllegalStateException("Missing tracking position for native SOS backend handoff.")
@@ -175,7 +177,7 @@ internal class ProtectionSosBackendHandoff(
         return try {
             val session = loadSession()
                 ?: throw IllegalStateException("Missing SDK session for native SOS backend cancel.")
-            val apiBaseUrl = runtimeStore.currentApiBaseUrl()
+            val apiBaseUrl = requireValidatedApiBaseUrl()
                 ?: throw IllegalStateException("Missing API base URL for native SOS backend cancel.")
             val existingIncident = runtimeStore.activeBackendIncidentId()?.let {
                 BackendIncident(id = it, state = runtimeStore.lastBackendIncidentState())
@@ -382,6 +384,80 @@ internal class ProtectionSosBackendHandoff(
         return normalizedBase + normalizedPath
     }
 
+    private fun requireValidatedApiBaseUrl(): String? {
+        val apiBaseUrl = runtimeStore.currentApiBaseUrl()?.trim()
+        val validation = validateApiBaseUrl(apiBaseUrl)
+        runtimeStore.recordNativeBackendConfig(
+            apiBaseUrl = apiBaseUrl,
+            isValid = validation.isValid,
+            issue = validation.issue,
+            debugLocalhostAllowed = validation.debugLocalhostAllowed,
+            debugCleartextAllowed = validation.debugCleartextAllowed,
+        )
+        if (!validation.isValid) {
+            throw IllegalStateException(validation.issue)
+        }
+        return apiBaseUrl
+    }
+
+    private fun validateApiBaseUrl(apiBaseUrl: String?): BackendConfigValidation {
+        if (apiBaseUrl.isNullOrBlank()) {
+            return BackendConfigValidation(
+                isValid = false,
+                issue = "Native Protection backend base URL is missing.",
+            )
+        }
+        val uri = try {
+            URI(apiBaseUrl)
+        } catch (_: Exception) {
+            return BackendConfigValidation(
+                isValid = false,
+                issue = "Native Protection backend base URL is invalid: $apiBaseUrl",
+            )
+        }
+        val scheme = uri.scheme?.lowercase()
+        val host = uri.host?.lowercase()
+        if (scheme.isNullOrBlank() || host.isNullOrBlank()) {
+            return BackendConfigValidation(
+                isValid = false,
+                issue = "Native Protection backend base URL must include scheme and host: $apiBaseUrl",
+            )
+        }
+        val isLocalhost = host == "127.0.0.1" || host == "localhost"
+        val isCleartext = scheme == "http"
+        if (isDebugBuild()) {
+            val debugIssues = mutableListOf<String>()
+            if (isLocalhost) {
+                debugIssues += "Debug localhost backend allowed"
+            }
+            if (isCleartext) {
+                debugIssues += "Debug cleartext backend allowed"
+            }
+            return BackendConfigValidation(
+                isValid = true,
+                issue = debugIssues.takeIf { it.isNotEmpty() }?.joinToString(". "),
+                debugLocalhostAllowed = isLocalhost,
+                debugCleartextAllowed = isCleartext,
+            )
+        }
+        if (isLocalhost) {
+            return BackendConfigValidation(
+                isValid = false,
+                issue = "Localhost backend is not allowed in release builds: $apiBaseUrl",
+            )
+        }
+        if (isCleartext) {
+            return BackendConfigValidation(
+                isValid = false,
+                issue = "Cleartext backend is not allowed in release builds: $apiBaseUrl",
+            )
+        }
+        return BackendConfigValidation(
+            isValid = true,
+            issue = null,
+        )
+    }
+
     private data class SessionSnapshot(
         val appId: String,
         val externalUserId: String,
@@ -409,6 +485,16 @@ internal class ProtectionSosBackendHandoff(
         val flushedCreate: Int,
         val flushedCancel: Int,
     )
+
+    private data class BackendConfigValidation(
+        val isValid: Boolean,
+        val issue: String?,
+        val debugLocalhostAllowed: Boolean = false,
+        val debugCleartextAllowed: Boolean = false,
+    )
+
+    private fun isDebugBuild(): Boolean =
+        (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
     companion object {
         private const val flutterPrefsName = "FlutterSharedPreferences"
