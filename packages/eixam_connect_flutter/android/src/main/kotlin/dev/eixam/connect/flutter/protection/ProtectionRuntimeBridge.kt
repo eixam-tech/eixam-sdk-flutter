@@ -2,6 +2,8 @@ package dev.eixam.connect.flutter.protection
 
 import android.bluetooth.BluetoothManager
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import androidx.core.app.NotificationManagerCompat
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.EventChannel
@@ -14,6 +16,7 @@ internal object ProtectionRuntimeBridge {
     private const val eventChannelName =
         "dev.eixam.connect_flutter/protection_runtime/events"
 
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var eventSink: EventChannel.EventSink? = null
     private var runtimeOwner: ProtectionBleRuntimeOwner? = null
 
@@ -161,12 +164,26 @@ internal object ProtectionRuntimeBridge {
     }
 
     private fun emitEvent(type: String, reason: String?) {
-        eventSink?.success(
+        emitSuccess(
             mapOf(
                 "type" to type,
                 "timestamp" to System.currentTimeMillis(),
                 "reason" to reason,
             ),
         )
+    }
+
+    private fun emitSuccess(event: Map<String, Any?>) {
+        dispatchToMainThread {
+            eventSink?.success(event)
+        }
+    }
+
+    private fun dispatchToMainThread(block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            block()
+        } else {
+            mainHandler.post(block)
+        }
     }
 }
