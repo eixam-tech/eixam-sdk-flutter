@@ -13,6 +13,7 @@ import '../data/datasources_remote/sdk_identity_remote_data_source.dart';
 import '../device/ble_incoming_event.dart';
 import '../device/device_sos_controller.dart';
 import '../device/ble_debug_registry.dart';
+import '../device/eixam_ble_command.dart';
 import '../data/datasources_remote/sdk_session_context.dart';
 import '../data/repositories/telemetry_repository.dart';
 import '../data/repositories/sos_runtime_rehydration_support.dart';
@@ -433,7 +434,14 @@ class EixamConnectSdkImpl
     switch (state) {
       case AppLifecycleState.resumed:
         _bleAutoReconnectCoordinator.setAppForeground(true);
-        if (!_isProtectionPlatformOwningBle) {
+        if (_isProtectionPlatformOwningBle) {
+          unawaited(
+            protectionPlatformAdapter.ensureProtectionRuntimeActive(
+              reason: 'app_foreground_resume',
+            ),
+          );
+          unawaited(_protectionModeController.rehydrate());
+        } else {
           unawaited(_bleAutoReconnectCoordinator.tryAutoConnectOnResume());
         }
         break;
@@ -516,7 +524,25 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Future<void> sendShutdownToDevice() {
+  Future<void> sendShutdownToDevice() async {
+    if (_isProtectionPlatformOwningBle) {
+      final command = EixamDeviceCommand.shutdown();
+      final result = await protectionPlatformAdapter.sendProtectionCommand(
+        request: ProtectionPlatformCommandRequest(
+          label: command.label,
+          bytes: command.encode(),
+          forceCmdCharacteristic: command.usesCmdCharacteristic,
+        ),
+      );
+      await _protectionModeController.rehydrate();
+      if (!result.success) {
+        throw StateError(
+          result.error ??
+              'Protection Mode native BLE owner could not send shutdown.',
+        );
+      }
+      return;
+    }
     return deviceSosController.sendShutdown();
   }
 
@@ -1536,7 +1562,7 @@ class EixamConnectSdkImpl
       return;
     }
     final repository = deviceRepository as InMemoryDeviceRepository;
-    if (owner == ProtectionBleOwner.androidService) {
+    if (owner != ProtectionBleOwner.flutter) {
       await repository.releaseBleOwnershipToProtectionMode(
         reason: 'Protection Mode native runtime is armed',
       );

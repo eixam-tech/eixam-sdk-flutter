@@ -354,6 +354,51 @@ void main() {
       expect(result.status, isNot(ValidationRunStatus.running));
     });
 
+    test('shutdown uses Android service route when protection mode owns BLE',
+        () async {
+      sdk.protectionStatus = sdk.protectionStatus.copyWith(
+        modeState: ProtectionModeState.armed,
+        runtimeState: ProtectionRuntimeState.active,
+        coverageLevel: ProtectionCoverageLevel.full,
+        foregroundServiceRunning: true,
+        protectionRuntimeActive: true,
+        bleOwner: ProtectionBleOwner.androidService,
+        protectedDeviceId: 'device-protected',
+        lastCommandRoute: 'androidService',
+        lastCommandResult: 'SHUTDOWN native write succeeded via androidService.',
+      );
+      controller.protectionStatus = sdk.protectionStatus;
+
+      await controller.runShutdownValidation();
+
+      final result =
+          _resultFor(controller, ValidationCapabilityId.shutdownCommand);
+      expect(result.status, ValidationRunStatus.ok);
+      expect(result.diagnosticText, contains('androidService'));
+    });
+
+    test('shutdown uses iOS plugin route when protection mode owns BLE',
+        () async {
+      sdk.protectionStatus = sdk.protectionStatus.copyWith(
+        modeState: ProtectionModeState.armed,
+        runtimeState: ProtectionRuntimeState.active,
+        coverageLevel: ProtectionCoverageLevel.full,
+        protectionRuntimeActive: true,
+        bleOwner: ProtectionBleOwner.iosPlugin,
+        protectedDeviceId: 'device-ios-protected',
+        lastCommandRoute: 'iosPlugin',
+        lastCommandResult: 'SHUTDOWN native write succeeded via iosPlugin.',
+      );
+      controller.protectionStatus = sdk.protectionStatus;
+
+      await controller.runShutdownValidation();
+
+      final result =
+          _resultFor(controller, ValidationCapabilityId.shutdownCommand);
+      expect(result.status, ValidationRunStatus.ok);
+      expect(result.diagnosticText, contains('iosPlugin'));
+    });
+
     test('device SOS card text clarifies runtime vs backend semantics', () {
       controller.operationalDiagnostics = const SdkOperationalDiagnostics(
         connectionState: RealtimeConnectionState.disconnected,
@@ -475,9 +520,12 @@ void main() {
         bleOwner: ProtectionBleOwner.androidService,
         serviceBleConnected: true,
         serviceBleReady: true,
+        protectedDeviceId: 'device-protected',
         pendingNativeSosCreateCount: 1,
         pendingNativeSosCancelCount: 1,
         lastNativeBackendHandoffResult: 'cancel_synced',
+        lastCommandRoute: 'androidService',
+        lastCommandResult: 'SHUTDOWN native write succeeded via androidService.',
         nativeBackendBaseUrl: 'http://127.0.0.1:8080',
         nativeBackendConfigValid: true,
         nativeBackendConfigIssue:
@@ -495,6 +543,9 @@ void main() {
         pendingNativeSosCreateCount: 1,
         pendingNativeSosCancelCount: 1,
         lastNativeBackendHandoffResult: 'cancel_synced',
+        protectedDeviceId: 'device-protected',
+        lastCommandRoute: 'androidService',
+        lastCommandResult: 'SHUTDOWN native write succeeded via androidService.',
         nativeBackendBaseUrl: 'http://127.0.0.1:8080',
         nativeBackendConfigValid: true,
         nativeBackendConfigIssue:
@@ -550,10 +601,23 @@ void main() {
       );
       expect(
         {
+          for (final field in statusCard.currentState) field.label: field.value,
+        }['Protected device'],
+        'device-protected',
+      );
+      expect(
+        {
           for (final field in diagnosticsCard.currentState)
             field.label: field.value,
         }['Native backend result'],
         'cancel_synced',
+      );
+      expect(
+        {
+          for (final field in diagnosticsCard.currentState)
+            field.label: field.value,
+        }['Last command route'],
+        'androidService',
       );
       expect(
         {
@@ -575,10 +639,20 @@ void main() {
         platform: ProtectionPlatform.ios,
         platformRuntimeConfigured: true,
         restorationConfigured: true,
-        backgroundCapabilityState: ProtectionCapabilityState.unknown,
+        backgroundCapabilityState: ProtectionCapabilityState.configured,
+        bleOwner: ProtectionBleOwner.iosPlugin,
+        runtimeState: ProtectionRuntimeState.recovering,
+        protectionRuntimeActive: true,
+        serviceBleConnected: true,
+        activeDeviceId: 'device-ios-runtime',
         coverageLevel: ProtectionCoverageLevel.partial,
         degradationReason:
-            'iOS host integration is scaffolded, but background BLE ownership is not implemented yet.',
+            'The iOS plugin runtime is connected, but TEL/SOS subscriptions are not active yet.',
+        lastRestorationEvent: 'restorationDetected',
+      );
+      controller.protectionDiagnostics =
+          controller.protectionDiagnostics.copyWith(
+        lastPlatformEvent: 'runtimeStarting',
         lastRestorationEvent: 'restorationDetected',
       );
 
@@ -595,7 +669,7 @@ void main() {
           for (final field in readinessCard.currentState)
             field.label: field.value,
         }['Background capability'],
-        'unknown',
+        'configured',
       );
       expect(
         {
@@ -608,13 +682,25 @@ void main() {
         {
           for (final field in statusCard.currentState) field.label: field.value,
         }['Degradation reason'],
-        contains('iOS host integration is scaffolded'),
+        contains('TEL/SOS subscriptions are not active yet'),
       );
       expect(
         {
           for (final field in statusCard.currentState) field.label: field.value,
         }['Last restoration event'],
         'restorationDetected',
+      );
+      expect(
+        {
+          for (final field in statusCard.currentState) field.label: field.value,
+        }['BLE owner'],
+        'iosPlugin',
+      );
+      expect(
+        {
+          for (final field in statusCard.currentState) field.label: field.value,
+        }['Active device'],
+        'device-ios-runtime',
       );
     });
   });

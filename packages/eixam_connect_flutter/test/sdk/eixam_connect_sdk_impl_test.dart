@@ -32,6 +32,7 @@ import 'package:eixam_connect_flutter/src/sdk/operational_realtime_client.dart';
 import 'package:eixam_connect_flutter/src/sdk/sdk_mqtt_contract.dart';
 import 'package:eixam_connect_flutter/src/sdk/sdk_mqtt_transport.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
@@ -998,10 +999,13 @@ void main() {
           platform: ProtectionPlatform.ios,
           backgroundCapabilityState: ProtectionCapabilityState.configured,
           restorationConfigured: true,
+          bleOwner: ProtectionBleOwner.iosPlugin,
+          runtimeState: ProtectionRuntimeState.recovering,
           coverageLevel: ProtectionCoverageLevel.partial,
         ),
         startResult: const ProtectionPlatformStartResult(
           success: true,
+          runtimeState: ProtectionRuntimeState.recovering,
           coverageLevel: ProtectionCoverageLevel.partial,
         ),
         platformEvents: events.stream,
@@ -1051,6 +1055,7 @@ void main() {
 
         expect(status.platform, ProtectionPlatform.ios);
         expect(status.restorationConfigured, isTrue);
+        expect(status.bleOwner, ProtectionBleOwner.iosPlugin);
         expect(status.lastRestorationEvent, 'restorationDetected');
         expect(diagnostics.lastRestorationEvent, 'restorationDetected');
       } finally {
@@ -1132,7 +1137,8 @@ void main() {
       }
     });
 
-    test('ios protection adapter reports safe degraded scaffolding', () async {
+    test('ios protection adapter reports plugin-owned degraded runtime honestly',
+        () async {
       permissionsRepository.permissionState = const PermissionState(
         location: SdkPermissionStatus.granted,
         notifications: SdkPermissionStatus.granted,
@@ -1155,17 +1161,24 @@ void main() {
           backgroundCapabilityReady: true,
           platformRuntimeConfigured: true,
           platform: ProtectionPlatform.ios,
-          backgroundCapabilityState: ProtectionCapabilityState.unknown,
+          backgroundCapabilityState: ProtectionCapabilityState.configured,
+          restorationConfigured: true,
+          bleOwner: ProtectionBleOwner.iosPlugin,
+          runtimeActive: true,
+          serviceBleConnected: true,
+          serviceBleReady: false,
+          runtimeState: ProtectionRuntimeState.recovering,
           coverageLevel: ProtectionCoverageLevel.partial,
           degradationReason:
-              'iOS host integration is scaffolded, but background BLE ownership is not implemented yet.',
+              'The iOS plugin runtime is connected, but TEL/SOS subscriptions are not active yet.',
+          activeDeviceId: 'device-ios',
         ),
         startResult: const ProtectionPlatformStartResult(
           success: true,
-          runtimeState: ProtectionRuntimeState.inactive,
+          runtimeState: ProtectionRuntimeState.recovering,
           coverageLevel: ProtectionCoverageLevel.partial,
           statusMessage:
-              'iOS Protection Mode base adapter is present, but real background BLE/runtime ownership is not implemented yet.',
+              'The iOS plugin runtime is armed, but background BLE recovery is still partial.',
         ),
       );
       final runtimeSdk = EixamConnectSdkImpl(
@@ -1204,8 +1217,471 @@ void main() {
         expect(status.platform, ProtectionPlatform.ios);
         expect(status.coverageLevel, ProtectionCoverageLevel.partial);
         expect(status.backgroundCapabilityState,
-            ProtectionCapabilityState.unknown);
-        expect(status.bleOwner, ProtectionBleOwner.flutter);
+            ProtectionCapabilityState.configured);
+        expect(status.bleOwner, ProtectionBleOwner.iosPlugin);
+        expect(status.protectionRuntimeActive, isTrue);
+        expect(status.serviceBleConnected, isTrue);
+        expect(status.serviceBleReady, isFalse);
+        expect(
+          status.degradationReason,
+          anyOf(
+            contains('background BLE recovery'),
+            contains('TEL/SOS subscriptions'),
+          ),
+        );
+      } finally {
+        await runtimeSdk.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test('ios protection resume reattaches native runtime without pairing',
+        () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+        notifications: SdkPermissionStatus.granted,
+        bluetooth: SdkPermissionStatus.granted,
+        bluetoothEnabled: true,
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-ios-resume',
+          connected: false,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        ),
+      );
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          platform: ProtectionPlatform.ios,
+          backgroundCapabilityState: ProtectionCapabilityState.configured,
+          restorationConfigured: true,
+          bleOwner: ProtectionBleOwner.iosPlugin,
+          protectedDeviceId: 'device-ios-resume',
+          activeDeviceId: 'device-ios-resume',
+          runtimeActive: true,
+          serviceBleConnected: false,
+          serviceBleReady: false,
+          runtimeState: ProtectionRuntimeState.recovering,
+          coverageLevel: ProtectionCoverageLevel.partial,
+          degradationReason:
+              'The iOS plugin runtime is armed, but the protected peripheral is not connected yet.',
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+      );
+      final runtimeSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: FakeRealtimeClient(),
+        deviceSosController: DeviceSosController(),
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: localAdapter,
+      );
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+            canonicalExternalUserId: 'canonical-user',
+          ),
+        );
+        await runtimeSdk.enterProtectionMode();
+
+        runtimeSdk.didChangeAppLifecycleState(AppLifecycleState.resumed);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(localAdapter.ensureActiveCallCount, 1);
+        expect(localAdapter.lastEnsureActiveReason, 'app_foreground_resume');
+        expect(localAdapter.lastStartRequest?.activeDeviceId, 'device-ios-resume');
+      } finally {
+        await runtimeSdk.dispose();
+      }
+    });
+
+    test('ios protection shutdown routes through native owner', () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+        notifications: SdkPermissionStatus.granted,
+        bluetooth: SdkPermissionStatus.granted,
+        bluetoothEnabled: true,
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-ios-shutdown',
+          connected: true,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        ),
+      );
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          platform: ProtectionPlatform.ios,
+          backgroundCapabilityState: ProtectionCapabilityState.configured,
+          restorationConfigured: true,
+          bleOwner: ProtectionBleOwner.iosPlugin,
+          protectedDeviceId: 'device-ios-shutdown',
+          activeDeviceId: 'device-ios-shutdown',
+          runtimeActive: true,
+          serviceBleConnected: true,
+          serviceBleReady: true,
+          runtimeState: ProtectionRuntimeState.active,
+          coverageLevel: ProtectionCoverageLevel.full,
+          lastCommandRoute: 'iosPlugin',
+          lastCommandResult: 'SHUTDOWN native write succeeded via iosPlugin.',
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+        commandResult: const ProtectionPlatformCommandResult(
+          success: true,
+          route: 'iosPlugin',
+          result: 'SHUTDOWN native write succeeded via iosPlugin.',
+        ),
+      );
+      final localDeviceSosController = DeviceSosController();
+      final runtimeSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: FakeRealtimeClient(),
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: localAdapter,
+      );
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+            canonicalExternalUserId: 'canonical-user',
+          ),
+        );
+        await runtimeSdk.enterProtectionMode();
+
+        await runtimeSdk.sendShutdownToDevice();
+        final status = await runtimeSdk.getProtectionStatus();
+
+        expect(localAdapter.sendCommandCallCount, 1);
+        expect(localAdapter.lastCommandRequest?.label, 'SHUTDOWN');
+        expect(localAdapter.lastCommandRequest?.bytes, <int>[0x10]);
+        expect(status.lastCommandRoute, 'iosPlugin');
+        expect(status.lastCommandResult, contains('SHUTDOWN'));
+      } finally {
+        await runtimeSdk.dispose();
+      }
+    });
+
+    test('android protection resume reattaches native runtime without pairing',
+        () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+        notifications: SdkPermissionStatus.granted,
+        bluetooth: SdkPermissionStatus.granted,
+        bluetoothEnabled: true,
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-resume',
+          connected: false,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        ),
+      );
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          protectedDeviceId: 'device-resume',
+          activeDeviceId: 'device-resume',
+          runtimeActive: true,
+          serviceRunning: true,
+          serviceBleConnected: false,
+          serviceBleReady: false,
+          coverageLevel: ProtectionCoverageLevel.partial,
+          runtimeState: ProtectionRuntimeState.recovering,
+          degradationReason:
+              'Android foreground service is reconnecting to the protected BLE device.',
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+      );
+      final runtimeSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: FakeRealtimeClient(),
+        deviceSosController: DeviceSosController(),
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: localAdapter,
+      );
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+            canonicalExternalUserId: 'canonical-user',
+          ),
+        );
+        await runtimeSdk.enterProtectionMode();
+
+        runtimeSdk.didChangeAppLifecycleState(AppLifecycleState.resumed);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(localAdapter.ensureActiveCallCount, 1);
+        expect(localAdapter.lastEnsureActiveReason, 'app_foreground_resume');
+        expect(localAdapter.lastStartRequest?.activeDeviceId, 'device-resume');
+      } finally {
+        await runtimeSdk.dispose();
+      }
+    });
+
+    test('android protection shutdown routes through native owner', () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+        notifications: SdkPermissionStatus.granted,
+        bluetooth: SdkPermissionStatus.granted,
+        bluetoothEnabled: true,
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-shutdown',
+          connected: true,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        ),
+      );
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          protectedDeviceId: 'device-shutdown',
+          activeDeviceId: 'device-shutdown',
+          runtimeActive: true,
+          serviceRunning: true,
+          serviceBleConnected: true,
+          serviceBleReady: true,
+          coverageLevel: ProtectionCoverageLevel.full,
+          runtimeState: ProtectionRuntimeState.active,
+          lastCommandRoute: 'androidService',
+          lastCommandResult: 'SHUTDOWN native write succeeded via androidService.',
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+        commandResult: const ProtectionPlatformCommandResult(
+          success: true,
+          route: 'androidService',
+          result: 'SHUTDOWN native write succeeded via androidService.',
+        ),
+      );
+      final localDeviceSosController = DeviceSosController();
+      final runtimeSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: FakeRealtimeClient(),
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: localAdapter,
+      );
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+            canonicalExternalUserId: 'canonical-user',
+          ),
+        );
+        await runtimeSdk.enterProtectionMode();
+
+        await runtimeSdk.sendShutdownToDevice();
+        final status = await runtimeSdk.getProtectionStatus();
+
+        expect(localAdapter.sendCommandCallCount, 1);
+        expect(localAdapter.lastCommandRequest?.label, 'SHUTDOWN');
+        expect(localAdapter.lastCommandRequest?.bytes, <int>[0x10]);
+        expect(status.lastCommandRoute, 'androidService');
+      } finally {
+        await runtimeSdk.dispose();
+      }
+    });
+
+    test('shutdown keeps Flutter path when protection mode is off', () async {
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: false,
+          platform: ProtectionPlatform.android,
+        ),
+        startResult: const ProtectionPlatformStartResult(success: false),
+      );
+      final localDeviceSosController = DeviceSosController();
+      final runtimeSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: FakeRealtimeClient(),
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: localAdapter,
+      );
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await localDeviceSosController.attach(
+          commandWriter: (_) async {},
+        );
+
+        await runtimeSdk.sendShutdownToDevice();
+
+        expect(localAdapter.sendCommandCallCount, 0);
+      } finally {
+        await runtimeSdk.dispose();
+      }
+    });
+
+    test('rehydrateProtectionState adopts restored ios plugin snapshot coherently',
+        () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+        notifications: SdkPermissionStatus.granted,
+        bluetooth: SdkPermissionStatus.granted,
+        bluetoothEnabled: true,
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-ios-restored',
+          connected: false,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        ),
+      );
+      final localRealtimeClient = FakeRealtimeClient()
+        ..stateToEmitOnConnect = RealtimeConnectionState.connected;
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          platform: ProtectionPlatform.ios,
+          backgroundCapabilityState: ProtectionCapabilityState.configured,
+          restorationConfigured: true,
+          bleOwner: ProtectionBleOwner.iosPlugin,
+          runtimeActive: true,
+          serviceBleConnected: true,
+          serviceBleReady: true,
+          runtimeState: ProtectionRuntimeState.active,
+          coverageLevel: ProtectionCoverageLevel.full,
+          activeDeviceId: 'device-ios-restored',
+          lastRestorationEvent: 'restorationRehydrated',
+          degradationReason: null,
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+      );
+      final runtimeSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: DeviceSosController(),
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: localAdapter,
+      );
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+            canonicalExternalUserId: 'canonical-user',
+          ),
+        );
+
+        final status = await runtimeSdk.rehydrateProtectionState();
+        final diagnostics = await runtimeSdk.getProtectionDiagnostics();
+
+        expect(status.platform, ProtectionPlatform.ios);
+        expect(status.modeState, ProtectionModeState.armed);
+        expect(status.coverageLevel, ProtectionCoverageLevel.full);
+        expect(status.bleOwner, ProtectionBleOwner.iosPlugin);
+        expect(status.activeDeviceId, 'device-ios-restored');
+        expect(status.degradationReason, isNull);
+        expect(diagnostics.lastRestorationEvent, 'restorationRehydrated');
       } finally {
         await runtimeSdk.dispose();
         await localRealtimeClient.dispose();
@@ -3764,15 +4240,24 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     required this.snapshot,
     required this.startResult,
     this.platformEvents = const Stream<ProtectionPlatformEvent>.empty(),
+    this.commandResult = const ProtectionPlatformCommandResult(success: true),
   });
 
   ProtectionPlatformSnapshot snapshot;
   final ProtectionPlatformStartResult startResult;
   final Stream<ProtectionPlatformEvent> platformEvents;
+  ProtectionPlatformCommandResult commandResult;
   int startCallCount = 0;
   int stopCallCount = 0;
+  int ensureActiveCallCount = 0;
   int flushCallCount = 0;
+  int sendCommandCallCount = 0;
   ProtectionPlatformStartRequest? lastStartRequest;
+  String? lastEnsureActiveReason;
+  ProtectionPlatformCommandRequest? lastCommandRequest;
+
+  @override
+  ProtectionPlatform get platform => snapshot.platform;
 
   @override
   Future<ProtectionPlatformSnapshot> getPlatformSnapshot() async => snapshot;
@@ -3792,9 +4277,26 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }
 
   @override
+  Future<void> ensureProtectionRuntimeActive({
+    String reason = 'app_foreground_resume',
+  }) async {
+    ensureActiveCallCount++;
+    lastEnsureActiveReason = reason;
+  }
+
+  @override
   Future<ProtectionPlatformFlushResult> flushProtectionQueues() async {
     flushCallCount++;
     return const ProtectionPlatformFlushResult();
+  }
+
+  @override
+  Future<ProtectionPlatformCommandResult> sendProtectionCommand({
+    required ProtectionPlatformCommandRequest request,
+  }) async {
+    sendCommandCallCount++;
+    lastCommandRequest = request;
+    return commandResult;
   }
 
   @override

@@ -38,6 +38,8 @@ internal class ProtectionBleRuntimeOwner(
     private var pendingSosLifecycleState = ProtectionSosLifecycleState.idle
     private var sosActivationRunnable: Runnable? = null
     private var backendRetryRunnable: Runnable? = null
+    private var connectionInFlight = false
+    private var pendingCommandResult: PendingCommandResult? = null
     private val backendHandoff =
         ProtectionSosBackendHandoff(
             context = context,
@@ -50,6 +52,13 @@ internal class ProtectionBleRuntimeOwner(
         reconnectBackoffMs: Long,
         restored: Boolean,
     ) {
+        if (runtimeActive && targetDeviceId == deviceId) {
+            this.reconnectBackoffMs = reconnectBackoffMs.coerceAtLeast(1000L)
+            ensureConnectedOrReconnect(
+                reason = if (restored) "restored_runtime_reconnect" else "runtime_reconnect",
+            )
+            return
+        }
         targetDeviceId = deviceId
         this.reconnectBackoffMs = reconnectBackoffMs.coerceAtLeast(1000L)
         isStopping = false
@@ -100,6 +109,122 @@ internal class ProtectionBleRuntimeOwner(
     fun flushPendingBackendActions(reason: String): Map<String, Any> =
         backendHandoff.flushPendingActionsSync(reason)
 
+    fun ensureConnectedOrReconnect(reason: String) {
+        if (!runtimeActive || isStopping || targetDeviceId.isNullOrBlank()) {
+            return
+        }
+        if (runtimeStore.snapshot()["serviceBleReady"] == true) {
+            ProtectionRuntimeBridge.recordPlatformEvent(
+                context = context,
+                type = "runtimeRecovered",
+                reason = reason,
+            )
+            return
+        }
+        if (connectionInFlight || reconnectRunnable != null) {
+            runtimeStore.recordReadinessFailureReason(
+                "Android foreground service is reconnecting to the protected BLE device.",
+            )
+            ProtectionRuntimeBridge.recordPlatformEvent(
+                context = context,
+                type = "runtimeRecovered",
+                reason = "${reason}_reconnect_in_progress",
+            )
+            return
+        }
+        connect(reason = reason)
+    }
+
+    @SuppressLint("MissingPermission")
+    fun sendCommand(
+        label: String,
+        payload: ByteArray,
+        forceCmdCharacteristic: Boolean,
+    ): Map<String, Any?> {
+        val route = "androidService"
+        runtimeStore.recordCommandRoute(route)
+        if (!runtimeActive) {
+            val error = "Protection Mode native BLE owner is not active."
+            runtimeStore.recordCommandError(error)
+            return commandResult(
+                success = false,
+                route = route,
+                result = null,
+                error = error,
+            )
+        }
+        val gatt = bluetoothGatt
+        val serviceBleConnected =
+            runtimeStore.snapshot()["serviceBleConnected"] as? Boolean ?: false
+        if (gatt == null || !serviceBleConnected) {
+            val error =
+                "Protection Mode native BLE owner is not connected to the protected device."
+            runtimeStore.recordCommandError(error)
+            ensureConnectedOrReconnect("native_command_$label")
+            return commandResult(
+                success = false,
+                route = route,
+                result = null,
+                error = error,
+            )
+        }
+
+        val characteristic =
+            if (forceCmdCharacteristic || payload.size > inetMaxPayloadLength) {
+                cmdWriteCharacteristic ?: inetWriteCharacteristic
+            } else {
+                inetWriteCharacteristic ?: cmdWriteCharacteristic
+            }
+
+        if (characteristic == null) {
+            val error =
+                "Protection Mode native BLE owner does not have a writable command characteristic ready."
+            runtimeStore.recordCommandError(error)
+            return commandResult(
+                success = false,
+                route = route,
+                result = null,
+                error = error,
+            )
+        }
+
+        pendingCommandResult = PendingCommandResult(label = label)
+        val writeAccepted =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                gatt.writeCharacteristic(
+                    characteristic,
+                    payload,
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+                ) == BluetoothStatusCodes.SUCCESS
+            } else {
+                @Suppress("DEPRECATION")
+                run {
+                    characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                    characteristic.value = payload
+                    gatt.writeCharacteristic(characteristic)
+                }
+            }
+        if (!writeAccepted) {
+            pendingCommandResult = null
+            val error = "Android native BLE owner rejected the $label write request."
+            runtimeStore.recordCommandError(error)
+            return commandResult(
+                success = false,
+                route = route,
+                result = null,
+                error = error,
+            )
+        }
+        val result = "$label native write accepted via androidService."
+        runtimeStore.recordCommandResult(result)
+        return commandResult(
+            success = true,
+            route = route,
+            result = result,
+            error = null,
+        )
+    }
+
     fun dispose() {
         backendHandoff.dispose()
     }
@@ -120,6 +245,7 @@ internal class ProtectionBleRuntimeOwner(
 
         reconnectRunnable?.let(mainHandler::removeCallbacks)
         reconnectRunnable = null
+        connectionInFlight = true
         clearCharacteristicRefs()
         subscriptionStep = SubscriptionStep.idle
         runtimeStore.recordReadinessFailureReason(
@@ -146,6 +272,7 @@ internal class ProtectionBleRuntimeOwner(
                     device.connectGatt(context, false, gattCallback)
                 }
             if (bluetoothGatt == null) {
+                connectionInFlight = false
                 runtimeStore.markRuntimeFailure("Protection Mode could not open a Bluetooth GATT session.")
                 ProtectionRuntimeBridge.recordBleEvent(
                     context = context,
@@ -155,6 +282,7 @@ internal class ProtectionBleRuntimeOwner(
                 scheduleReconnect("connect_gatt_returned_null")
             }
         } catch (error: IllegalArgumentException) {
+            connectionInFlight = false
             runtimeStore.markRuntimeFailure("Invalid protected device identifier: $deviceId")
             ProtectionRuntimeBridge.recordPlatformEvent(
                 context = context,
@@ -170,6 +298,7 @@ internal class ProtectionBleRuntimeOwner(
             return
         }
         reconnectAttemptCount += 1
+        runtimeStore.markReconnectAttempt(reconnectAttemptCount)
         ProtectionRuntimeBridge.recordBleEvent(
             context = context,
             type = "reconnectScheduled",
@@ -430,6 +559,7 @@ internal class ProtectionBleRuntimeOwner(
                 }
                 when (newState) {
                     BluetoothGatt.STATE_CONNECTED -> {
+                        connectionInFlight = false
                         reconnectAttemptCount = 0
                         runtimeStore.markServiceBleConnected()
                         ProtectionRuntimeBridge.recordBleEvent(
@@ -442,6 +572,7 @@ internal class ProtectionBleRuntimeOwner(
                     }
 
                     BluetoothGatt.STATE_DISCONNECTED -> {
+                        connectionInFlight = false
                         runtimeStore.markServiceBleDisconnected()
                         ProtectionRuntimeBridge.recordBleEvent(
                             context = context,
@@ -459,6 +590,7 @@ internal class ProtectionBleRuntimeOwner(
                 if (status == BluetoothGatt.GATT_SUCCESS) {
                     configureSubscriptions(gatt)
                 } else {
+                    connectionInFlight = false
                     runtimeStore.markRuntimeFailure("Protection Mode service discovery failed with status $status.")
                     ProtectionRuntimeBridge.recordPlatformEvent(
                         context = context,
@@ -514,6 +646,31 @@ internal class ProtectionBleRuntimeOwner(
                 }
             }
 
+            override fun onCharacteristicWrite(
+                gatt: BluetoothGatt,
+                characteristic: BluetoothGattCharacteristic,
+                status: Int,
+            ) {
+                val pending = pendingCommandResult ?: return
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    val result =
+                        "${pending.label} native write succeeded via androidService."
+                    runtimeStore.recordCommandResult(result)
+                    pending.complete(
+                        result = result,
+                    )
+                } else {
+                    runtimeStore.recordCommandError(
+                        "${pending.label} native write failed with status $status.",
+                    )
+                    pending.fail(
+                        error =
+                            "${pending.label} native write failed with status $status.",
+                    )
+                }
+                pendingCommandResult = null
+            }
+
             override fun onCharacteristicChanged(
                 gatt: BluetoothGatt,
                 characteristic: BluetoothGattCharacteristic,
@@ -540,6 +697,7 @@ internal class ProtectionBleRuntimeOwner(
 
     companion object {
         private const val defaultReconnectBackoffMs = 5000L
+        private const val inetMaxPayloadLength = 20
         private const val sosActivationDelayMs = 20_000L
 
         private val serviceUuid: UUID = UUID.fromString("6ba1b218-15a8-461f-9fa8-5dcae273ea00")
@@ -549,5 +707,43 @@ internal class ProtectionBleRuntimeOwner(
         private val cmdWriteUuid: UUID = UUID.fromString("6ba1b218-15a8-461f-9fa8-5dcae273ea04")
         private val clientCharacteristicConfigUuid: UUID =
             UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+    }
+
+    private fun commandResult(
+        success: Boolean,
+        route: String,
+        result: String?,
+        error: String?,
+    ): Map<String, Any?> {
+        return mapOf(
+            "success" to success,
+            "route" to route,
+            "result" to result,
+            "error" to error,
+        )
+    }
+
+    private class PendingCommandResult(
+        val label: String,
+    ) {
+        @Volatile
+        var result: String? = null
+
+        @Volatile
+        var error: String? = null
+
+        @Volatile
+        var completed: Boolean = false
+
+        fun complete(result: String) {
+            this.result = result
+            this.error = null
+            this.completed = true
+        }
+
+        fun fail(error: String) {
+            this.error = error
+            this.completed = true
+        }
     }
 }

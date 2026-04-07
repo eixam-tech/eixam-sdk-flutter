@@ -348,8 +348,16 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
   Widget _buildProtectionDiagnosticsCard(ValidationCardViewModel card) {
     return ValidationCapabilityCard(
       viewModel: card,
+      actions: <Widget>[
+        OutlinedButton(
+          onPressed: _controller.loadingProtection
+              ? null
+              : _controller.refreshProtectionDiagnostics,
+          child: const Text('Refresh diagnostics'),
+        ),
+      ],
       child: const Text(
-        'These diagnostics surface Android runtime state when available, while still staying honest about the current partial-coverage MVP.',
+        'These diagnostics surface native Protection runtime state and restoration activity when available, while still staying honest about partial coverage.',
       ),
     );
   }
@@ -366,7 +374,7 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
         ),
       ],
       child: const Text(
-        'On Android with the host adapter installed, this starts the foreground protection runtime. In other environments it still fails safely without changing existing SDK behavior.',
+        'On iOS or Android with native Protection support installed, this starts the platform-owned runtime. In unsupported environments it still fails safely without changing existing SDK behavior.',
       ),
     );
   }

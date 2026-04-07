@@ -168,6 +168,7 @@ internal class ProtectionForegroundService : Service() {
                 restored = restored,
             )
         } else {
+            runtimeOwner.ensureConnectedOrReconnect(wakeReason)
             ProtectionRuntimeBridge.recordPlatformEvent(
                 context = applicationContext,
                 type = "runtimeRecovered",
@@ -188,10 +189,13 @@ internal class ProtectionForegroundService : Service() {
         private const val actionStop = "dev.eixam.connect.flutter.action.PROTECTION_STOP"
         private const val extraWakeReason = "wake_reason"
 
-        fun start(context: Context) {
+        fun start(
+            context: Context,
+            wakeReason: String = "enter_protection_mode",
+        ) {
             val intent = Intent(context, ProtectionForegroundService::class.java).apply {
                 action = actionStart
-                putExtra(extraWakeReason, "enter_protection_mode")
+                putExtra(extraWakeReason, wakeReason)
             }
             ContextCompat.startForegroundService(context, intent)
         }

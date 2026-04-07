@@ -95,6 +95,8 @@ class ProtectionPlatformSnapshot {
     this.lastReconnectAttemptAt,
     this.lastNativeBackendHandoffResult,
     this.lastNativeBackendHandoffError,
+    this.protectedDeviceId,
+    this.activeDeviceId,
     this.degradationReason,
     this.expectedBleServiceUuid,
     this.expectedBleCharacteristicUuids = const <String>[],
@@ -105,6 +107,9 @@ class ProtectionPlatformSnapshot {
     this.nativeBackendConfigIssue,
     this.debugLocalhostBackendAllowed = false,
     this.debugCleartextBackendAllowed = false,
+    this.lastCommandRoute,
+    this.lastCommandResult,
+    this.lastCommandError,
   });
 
   final bool backgroundCapabilityReady;
@@ -139,6 +144,8 @@ class ProtectionPlatformSnapshot {
   final DateTime? lastReconnectAttemptAt;
   final String? lastNativeBackendHandoffResult;
   final String? lastNativeBackendHandoffError;
+  final String? protectedDeviceId;
+  final String? activeDeviceId;
   final String? degradationReason;
   final String? expectedBleServiceUuid;
   final List<String> expectedBleCharacteristicUuids;
@@ -149,6 +156,35 @@ class ProtectionPlatformSnapshot {
   final String? nativeBackendConfigIssue;
   final bool debugLocalhostBackendAllowed;
   final bool debugCleartextBackendAllowed;
+  final String? lastCommandRoute;
+  final String? lastCommandResult;
+  final String? lastCommandError;
+}
+
+class ProtectionPlatformCommandRequest {
+  const ProtectionPlatformCommandRequest({
+    required this.label,
+    required this.bytes,
+    this.forceCmdCharacteristic = false,
+  });
+
+  final String label;
+  final List<int> bytes;
+  final bool forceCmdCharacteristic;
+}
+
+class ProtectionPlatformCommandResult {
+  const ProtectionPlatformCommandResult({
+    required this.success,
+    this.route,
+    this.result,
+    this.error,
+  });
+
+  final bool success;
+  final String? route;
+  final String? result;
+  final String? error;
 }
 
 class ProtectionPlatformStartResult {
@@ -192,12 +228,19 @@ class ProtectionPlatformEvent {
 }
 
 abstract class ProtectionPlatformAdapter {
+  ProtectionPlatform get platform;
   Future<ProtectionPlatformSnapshot> getPlatformSnapshot();
   Future<ProtectionPlatformStartResult> startProtectionRuntime({
     required ProtectionPlatformStartRequest request,
   });
   Future<void> stopProtectionRuntime();
+  Future<void> ensureProtectionRuntimeActive({
+    String reason = 'app_foreground_resume',
+  });
   Future<ProtectionPlatformFlushResult> flushProtectionQueues();
+  Future<ProtectionPlatformCommandResult> sendProtectionCommand({
+    required ProtectionPlatformCommandRequest request,
+  });
   Future<ProtectionPermissionResult> requestProtectionPermissions();
   Future<void> openProtectionSettings();
   Stream<ProtectionPlatformEvent> watchPlatformEvents();
@@ -205,6 +248,9 @@ abstract class ProtectionPlatformAdapter {
 
 class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   const NoopProtectionPlatformAdapter();
+
+  @override
+  ProtectionPlatform get platform => ProtectionPlatform.unknown;
 
   @override
   Future<ProtectionPlatformSnapshot> getPlatformSnapshot() async {
@@ -230,8 +276,24 @@ class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   Future<void> stopProtectionRuntime() async {}
 
   @override
+  Future<void> ensureProtectionRuntimeActive({
+    String reason = 'app_foreground_resume',
+  }) async {}
+
+  @override
   Future<ProtectionPlatformFlushResult> flushProtectionQueues() async {
     return const ProtectionPlatformFlushResult();
+  }
+
+  @override
+  Future<ProtectionPlatformCommandResult> sendProtectionCommand({
+    required ProtectionPlatformCommandRequest request,
+  }) async {
+    return const ProtectionPlatformCommandResult(
+      success: false,
+      route: 'flutter',
+      error: 'Protection platform runtime is not configured.',
+    );
   }
 
   @override

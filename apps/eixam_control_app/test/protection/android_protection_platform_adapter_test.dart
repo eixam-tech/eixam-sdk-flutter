@@ -71,6 +71,11 @@ void main() {
                   DateTime.utc(2026, 4, 5, 10, 6).millisecondsSinceEpoch,
               'lastNativeBackendHandoffResult': 'create_synced',
               'lastNativeBackendHandoffError': null,
+              'protectedDeviceId': 'device-123',
+              'lastCommandRoute': 'androidService',
+              'lastCommandResult':
+                  'SHUTDOWN native write succeeded via androidService.',
+              'lastCommandError': null,
               'lastWakeAt': DateTime.utc(2026, 4, 5, 9).millisecondsSinceEpoch,
               'lastWakeReason': 'enter_protection_mode',
             };
@@ -86,6 +91,15 @@ void main() {
               'flushedSosCount': 1,
               'flushedTelemetryCount': 0,
               'success': true,
+            };
+          case 'resumeProtectionRuntime':
+            return null;
+          case 'sendProtectionCommand':
+            return <String, dynamic>{
+              'success': true,
+              'route': 'androidService',
+              'result': 'SHUTDOWN native write succeeded via androidService.',
+              'error': null,
             };
           case 'stopProtectionRuntime':
             return null;
@@ -138,6 +152,9 @@ void main() {
       expect(snapshot.lastRestorationEvent, 'restorationDetected');
       expect(snapshot.reconnectAttemptCount, 2);
       expect(snapshot.lastNativeBackendHandoffResult, 'create_synced');
+      expect(snapshot.protectedDeviceId, 'device-123');
+      expect(snapshot.lastCommandRoute, 'androidService');
+      expect(snapshot.lastCommandResult, contains('SHUTDOWN'));
       expect(snapshot.runtimeState, ProtectionRuntimeState.active);
       expect(snapshot.coverageLevel, ProtectionCoverageLevel.partial);
       expect(methodCalls.single.method, 'getPlatformSnapshot');
@@ -153,17 +170,28 @@ void main() {
         ),
       );
       final flushResult = await adapter.flushProtectionQueues();
+      await adapter.ensureProtectionRuntimeActive();
+      final commandResult = await adapter.sendProtectionCommand(
+        request: const ProtectionPlatformCommandRequest(
+          label: 'SHUTDOWN',
+          bytes: <int>[0x10],
+        ),
+      );
       await adapter.stopProtectionRuntime();
 
       expect(result.success, isTrue);
       expect(result.coverageLevel, ProtectionCoverageLevel.partial);
       expect(result.statusMessage, 'Foreground service started.');
       expect(flushResult.flushedSosCount, 1);
+      expect(commandResult.success, isTrue);
+      expect(commandResult.route, 'androidService');
       expect(
         methodCalls.map((call) => call.method),
         containsAll(<String>[
           'startProtectionRuntime',
           'flushProtectionQueues',
+          'resumeProtectionRuntime',
+          'sendProtectionCommand',
           'stopProtectionRuntime',
         ]),
       );

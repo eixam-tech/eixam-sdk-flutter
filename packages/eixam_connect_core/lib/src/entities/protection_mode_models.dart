@@ -16,6 +16,7 @@ enum ProtectionCoverageLevel {
 enum ProtectionBleOwner {
   flutter,
   androidService,
+  iosPlugin,
 }
 
 enum ProtectionPlatform {
@@ -87,6 +88,7 @@ class ProtectionStatus {
     this.lastReconnectAttemptAt,
     this.lastNativeBackendHandoffResult,
     this.lastNativeBackendHandoffError,
+    this.protectedDeviceId,
     this.activeDeviceId,
     this.degradationReason,
     this.expectedBleServiceUuid,
@@ -98,6 +100,9 @@ class ProtectionStatus {
     this.nativeBackendConfigIssue,
     this.debugLocalhostBackendAllowed = false,
     this.debugCleartextBackendAllowed = false,
+    this.lastCommandRoute,
+    this.lastCommandResult,
+    this.lastCommandError,
   });
 
   final ProtectionModeState modeState;
@@ -136,6 +141,7 @@ class ProtectionStatus {
   final DateTime? lastReconnectAttemptAt;
   final String? lastNativeBackendHandoffResult;
   final String? lastNativeBackendHandoffError;
+  final String? protectedDeviceId;
   final String? activeDeviceId;
   final String? degradationReason;
   final String? expectedBleServiceUuid;
@@ -147,6 +153,9 @@ class ProtectionStatus {
   final String? nativeBackendConfigIssue;
   final bool debugLocalhostBackendAllowed;
   final bool debugCleartextBackendAllowed;
+  final String? lastCommandRoute;
+  final String? lastCommandResult;
+  final String? lastCommandError;
   final DateTime updatedAt;
 
   ProtectionStatus copyWith({
@@ -186,6 +195,7 @@ class ProtectionStatus {
     Object? lastReconnectAttemptAt = _unset,
     Object? lastNativeBackendHandoffResult = _unset,
     Object? lastNativeBackendHandoffError = _unset,
+    Object? protectedDeviceId = _unset,
     Object? activeDeviceId = _unset,
     Object? degradationReason = _unset,
     Object? expectedBleServiceUuid = _unset,
@@ -197,6 +207,9 @@ class ProtectionStatus {
     Object? nativeBackendConfigIssue = _unset,
     bool? debugLocalhostBackendAllowed,
     bool? debugCleartextBackendAllowed,
+    Object? lastCommandRoute = _unset,
+    Object? lastCommandResult = _unset,
+    Object? lastCommandError = _unset,
     DateTime? updatedAt,
   }) {
     return ProtectionStatus(
@@ -269,6 +282,9 @@ class ProtectionStatus {
           identical(lastNativeBackendHandoffError, _unset)
               ? this.lastNativeBackendHandoffError
               : lastNativeBackendHandoffError as String?,
+      protectedDeviceId: identical(protectedDeviceId, _unset)
+          ? this.protectedDeviceId
+          : protectedDeviceId as String?,
       activeDeviceId: identical(activeDeviceId, _unset)
           ? this.activeDeviceId
           : activeDeviceId as String?,
@@ -295,10 +311,19 @@ class ProtectionStatus {
       nativeBackendConfigIssue: identical(nativeBackendConfigIssue, _unset)
           ? this.nativeBackendConfigIssue
           : nativeBackendConfigIssue as String?,
-      debugLocalhostBackendAllowed: debugLocalhostBackendAllowed ??
-          this.debugLocalhostBackendAllowed,
-      debugCleartextBackendAllowed: debugCleartextBackendAllowed ??
-          this.debugCleartextBackendAllowed,
+      debugLocalhostBackendAllowed:
+          debugLocalhostBackendAllowed ?? this.debugLocalhostBackendAllowed,
+      debugCleartextBackendAllowed:
+          debugCleartextBackendAllowed ?? this.debugCleartextBackendAllowed,
+      lastCommandRoute: identical(lastCommandRoute, _unset)
+          ? this.lastCommandRoute
+          : lastCommandRoute as String?,
+      lastCommandResult: identical(lastCommandResult, _unset)
+          ? this.lastCommandResult
+          : lastCommandResult as String?,
+      lastCommandError: identical(lastCommandError, _unset)
+          ? this.lastCommandError
+          : lastCommandError as String?,
       updatedAt: updatedAt ?? this.updatedAt,
     );
   }
@@ -327,6 +352,7 @@ class ProtectionDiagnostics {
     this.lastReconnectAttemptAt,
     this.lastNativeBackendHandoffResult,
     this.lastNativeBackendHandoffError,
+    this.protectedDeviceId,
     this.expectedBleServiceUuid,
     this.expectedBleCharacteristicUuids = const <String>[],
     this.discoveredBleServicesSummary,
@@ -336,6 +362,9 @@ class ProtectionDiagnostics {
     this.nativeBackendConfigIssue,
     this.debugLocalhostBackendAllowed = false,
     this.debugCleartextBackendAllowed = false,
+    this.lastCommandRoute,
+    this.lastCommandResult,
+    this.lastCommandError,
   });
 
   final DateTime? lastWakeAt;
@@ -357,6 +386,7 @@ class ProtectionDiagnostics {
   final int pendingNativeSosCancelCount;
   final String? lastNativeBackendHandoffResult;
   final String? lastNativeBackendHandoffError;
+  final String? protectedDeviceId;
   final String? expectedBleServiceUuid;
   final List<String> expectedBleCharacteristicUuids;
   final String? discoveredBleServicesSummary;
@@ -366,6 +396,9 @@ class ProtectionDiagnostics {
   final String? nativeBackendConfigIssue;
   final bool debugLocalhostBackendAllowed;
   final bool debugCleartextBackendAllowed;
+  final String? lastCommandRoute;
+  final String? lastCommandResult;
+  final String? lastCommandError;
 
   ProtectionDiagnostics copyWith({
     Object? lastWakeAt = _unset,
@@ -387,6 +420,7 @@ class ProtectionDiagnostics {
     int? pendingNativeSosCancelCount,
     Object? lastNativeBackendHandoffResult = _unset,
     Object? lastNativeBackendHandoffError = _unset,
+    Object? protectedDeviceId = _unset,
     Object? expectedBleServiceUuid = _unset,
     List<String>? expectedBleCharacteristicUuids,
     Object? discoveredBleServicesSummary = _unset,
@@ -396,6 +430,9 @@ class ProtectionDiagnostics {
     Object? nativeBackendConfigIssue = _unset,
     bool? debugLocalhostBackendAllowed,
     bool? debugCleartextBackendAllowed,
+    Object? lastCommandRoute = _unset,
+    Object? lastCommandResult = _unset,
+    Object? lastCommandError = _unset,
   }) {
     return ProtectionDiagnostics(
       lastWakeAt: identical(lastWakeAt, _unset)
@@ -451,6 +488,9 @@ class ProtectionDiagnostics {
           identical(lastNativeBackendHandoffError, _unset)
               ? this.lastNativeBackendHandoffError
               : lastNativeBackendHandoffError as String?,
+      protectedDeviceId: identical(protectedDeviceId, _unset)
+          ? this.protectedDeviceId
+          : protectedDeviceId as String?,
       expectedBleServiceUuid: identical(expectedBleServiceUuid, _unset)
           ? this.expectedBleServiceUuid
           : expectedBleServiceUuid as String?,
@@ -471,10 +511,19 @@ class ProtectionDiagnostics {
       nativeBackendConfigIssue: identical(nativeBackendConfigIssue, _unset)
           ? this.nativeBackendConfigIssue
           : nativeBackendConfigIssue as String?,
-      debugLocalhostBackendAllowed: debugLocalhostBackendAllowed ??
-          this.debugLocalhostBackendAllowed,
-      debugCleartextBackendAllowed: debugCleartextBackendAllowed ??
-          this.debugCleartextBackendAllowed,
+      debugLocalhostBackendAllowed:
+          debugLocalhostBackendAllowed ?? this.debugLocalhostBackendAllowed,
+      debugCleartextBackendAllowed:
+          debugCleartextBackendAllowed ?? this.debugCleartextBackendAllowed,
+      lastCommandRoute: identical(lastCommandRoute, _unset)
+          ? this.lastCommandRoute
+          : lastCommandRoute as String?,
+      lastCommandResult: identical(lastCommandResult, _unset)
+          ? this.lastCommandResult
+          : lastCommandResult as String?,
+      lastCommandError: identical(lastCommandError, _unset)
+          ? this.lastCommandError
+          : lastCommandError as String?,
     );
   }
 

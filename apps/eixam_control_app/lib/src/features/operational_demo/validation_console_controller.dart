@@ -666,6 +666,10 @@ class ValidationConsoleController extends ChangeNotifier {
       id: ValidationCapabilityId.shutdownCommand,
       runningDiagnostic: 'Sending shutdown through the SDK command path...',
       action: deviceDebugController.sendShutdown,
+      onAfterAction: () async {
+        protectionStatus = await sdk.getProtectionStatus();
+        protectionDiagnostics = await sdk.getProtectionDiagnostics();
+      },
       evaluate: _buildShutdownResult,
     );
   }
@@ -796,6 +800,18 @@ class ValidationConsoleController extends ChangeNotifier {
       _recordCapabilityResult(
         ValidationCapabilityId.protectionRehydrate,
         _buildProtectionRehydrateResult(),
+      );
+    });
+  }
+
+  Future<void> refreshProtectionDiagnostics() async {
+    await _runAction((value) => loadingProtection = value, () async {
+      protectionStatus = await sdk.getProtectionStatus();
+      protectionDiagnostics = await sdk.getProtectionDiagnostics();
+      protectionReadiness = await sdk.evaluateProtectionReadiness();
+      _recordCapabilityResult(
+        ValidationCapabilityId.protectionDiagnostics,
+        _buildProtectionDiagnosticsResult(),
       );
     });
   }
@@ -1648,6 +1664,10 @@ class ValidationConsoleController extends ChangeNotifier {
             value: protectionStatus.activeDeviceId ?? '-',
           ),
           ValidationStateField(
+            label: 'Protected device',
+            value: protectionStatus.protectedDeviceId ?? '-',
+          ),
+          ValidationStateField(
             label: 'Last platform event',
             value: protectionStatus.lastPlatformEvent ?? '-',
           ),
@@ -1674,6 +1694,18 @@ class ValidationConsoleController extends ChangeNotifier {
           ValidationStateField(
             label: 'Native backend error',
             value: protectionStatus.lastNativeBackendHandoffError ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Last command route',
+            value: protectionStatus.lastCommandRoute ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Last command result',
+            value: protectionStatus.lastCommandResult ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Last command error',
+            value: protectionStatus.lastCommandError ?? '-',
           ),
           ValidationStateField(
             label: 'Degradation reason',
@@ -1754,6 +1786,10 @@ class ValidationConsoleController extends ChangeNotifier {
             value: protectionDiagnostics.lastBleServiceEvent ?? '-',
           ),
           ValidationStateField(
+            label: 'Protected device',
+            value: protectionDiagnostics.protectedDeviceId ?? '-',
+          ),
+          ValidationStateField(
             label: 'Expected BLE service',
             value: protectionDiagnostics.expectedBleServiceUuid ?? '-',
           ),
@@ -1798,6 +1834,18 @@ class ValidationConsoleController extends ChangeNotifier {
           ValidationStateField(
             label: 'Native backend error',
             value: protectionDiagnostics.lastNativeBackendHandoffError ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Last command route',
+            value: protectionDiagnostics.lastCommandRoute ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Last command result',
+            value: protectionDiagnostics.lastCommandResult ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Last command error',
+            value: protectionDiagnostics.lastCommandError ?? '-',
           ),
           ValidationStateField(
             label: 'Native backend URL',
@@ -3451,6 +3499,10 @@ class ValidationConsoleController extends ChangeNotifier {
   }
 
   ValidationCapabilityResult _buildShutdownResult() {
+    if (protectionStatus.modeState != ProtectionModeState.off &&
+        protectionStatus.bleOwner != ProtectionBleOwner.flutter) {
+      return _buildProtectionShutdownResult();
+    }
     return _buildWriteResultFor(
       ValidationCapabilityId.shutdownCommand,
       notRunDiagnostic:
@@ -3508,6 +3560,48 @@ class ValidationConsoleController extends ChangeNotifier {
     return ValidationCapabilityResult(
       status: ValidationRunStatus.notRun,
       diagnosticText: notRunDiagnostic,
+    );
+  }
+
+  ValidationCapabilityResult _buildProtectionShutdownResult() {
+    final recorded = _capabilityRuns[ValidationCapabilityId.shutdownCommand];
+    if (recorded?.status == ValidationRunStatus.running) {
+      return recorded!;
+    }
+    if ((protectionStatus.lastCommandError ?? '').trim().isNotEmpty &&
+        recorded != null) {
+      return ValidationCapabilityResult(
+        status: ValidationRunStatus.nok,
+        diagnosticText: protectionStatus.lastCommandError,
+        lastExecutedAt: recorded.lastExecutedAt,
+      );
+    }
+    if ((protectionStatus.lastCommandResult ?? '').trim().isNotEmpty &&
+        (protectionStatus.lastCommandRoute ?? '').trim().isNotEmpty) {
+      return _mergeWithRecorded(
+        ValidationCapabilityId.shutdownCommand,
+        ValidationCapabilityResult(
+          status: ValidationRunStatus.ok,
+          diagnosticText:
+              'Shutdown validated through ${protectionStatus.lastCommandRoute}: ${protectionStatus.lastCommandResult}',
+        ),
+      );
+    }
+    if (protectionStatus.protectionRuntimeActive ||
+        protectionStatus.serviceBleConnected) {
+      return _mergeWithRecorded(
+        ValidationCapabilityId.shutdownCommand,
+        ValidationCapabilityResult(
+          status: ValidationRunStatus.warning,
+          diagnosticText:
+              'Protection Mode is armed with ${protectionStatus.bleOwner.name} as BLE owner, but the native shutdown result is not confirmed yet.',
+        ),
+      );
+    }
+    return ValidationCapabilityResult(
+      status: ValidationRunStatus.notRun,
+      diagnosticText:
+          'Arm Protection Mode and run shutdown to validate the ${protectionStatus.bleOwner.name} native owner command path.',
     );
   }
 

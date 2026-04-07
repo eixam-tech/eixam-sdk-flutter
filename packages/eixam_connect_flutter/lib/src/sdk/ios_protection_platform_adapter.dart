@@ -29,6 +29,9 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   Stream<ProtectionPlatformEvent>? _events;
 
   @override
+  ProtectionPlatform get platform => ProtectionPlatform.ios;
+
+  @override
   Future<ProtectionPlatformSnapshot> getPlatformSnapshot() async {
     final raw = await _methodChannel.invokeMapMethod<String, dynamic>(
       'getPlatformSnapshot',
@@ -48,18 +51,46 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
       lastPlatformEventAt: _readDateTime(snapshot['lastPlatformEventAt']),
       runtimeState: _parseRuntimeState(snapshot['runtimeState'] as String?),
       coverageLevel: _parseCoverageLevel(snapshot['coverageLevel'] as String?),
+      lastWakeAt: _readDateTime(snapshot['lastWakeAt']),
+      lastWakeReason: snapshot['lastWakeReason'] as String?,
       platform: ProtectionPlatform.ios,
       backgroundCapabilityState: _parseCapabilityState(
         snapshot['backgroundCapabilityState'] as String?,
       ),
       restorationConfigured:
           snapshot['restorationConfigured'] as bool? ?? false,
-      bleOwner: ProtectionBleOwner.flutter,
+      bleOwner: _parseBleOwner(snapshot['bleOwner'] as String?),
+      serviceBleConnected: snapshot['serviceBleConnected'] as bool? ?? false,
+      serviceBleReady: snapshot['serviceBleReady'] as bool? ?? false,
       pendingSosCount: snapshot['pendingSosCount'] as int? ?? 0,
       pendingTelemetryCount: snapshot['pendingTelemetryCount'] as int? ?? 0,
       lastRestorationEvent: snapshot['lastRestorationEvent'] as String?,
       lastRestorationEventAt: _readDateTime(snapshot['lastRestorationEventAt']),
+      lastBleServiceEvent: snapshot['lastBleServiceEvent'] as String?,
+      lastBleServiceEventAt: _readDateTime(snapshot['lastBleServiceEventAt']),
+      reconnectAttemptCount: snapshot['reconnectAttemptCount'] as int? ?? 0,
+      lastReconnectAttemptAt: _readDateTime(
+        snapshot['lastReconnectAttemptAt'],
+      ),
+      protectedDeviceId: snapshot['protectedDeviceId'] as String? ??
+          snapshot['activeDeviceId'] as String?,
+      activeDeviceId: snapshot['activeDeviceId'] as String?,
       degradationReason: snapshot['degradationReason'] as String?,
+      expectedBleServiceUuid: snapshot['expectedBleServiceUuid'] as String?,
+      expectedBleCharacteristicUuids:
+          (snapshot['expectedBleCharacteristicUuids'] as List<dynamic>? ??
+                  const <dynamic>[])
+              .whereType<String>()
+              .toList(growable: false),
+      discoveredBleServicesSummary:
+          snapshot['discoveredBleServicesSummary'] as String?,
+      readinessFailureReason: snapshot['readinessFailureReason'] as String?,
+      nativeBackendConfigValid:
+          snapshot['nativeBackendConfigValid'] as bool? ?? true,
+      nativeBackendConfigIssue: snapshot['nativeBackendConfigIssue'] as String?,
+      lastCommandRoute: snapshot['lastCommandRoute'] as String?,
+      lastCommandResult: snapshot['lastCommandResult'] as String?,
+      lastCommandError: snapshot['lastCommandError'] as String?,
     );
   }
 
@@ -69,6 +100,14 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }) async {
     final raw = await _methodChannel.invokeMapMethod<String, dynamic>(
       'startProtectionRuntime',
+      <String, dynamic>{
+        'activeDeviceId': request.activeDeviceId,
+        'apiBaseUrl': request.apiBaseUrl,
+        'sessionReady': request.sessionReady,
+        'enableStoreAndForward': request.enableStoreAndForward,
+        'autoReconnectBle': request.modeOptions.autoReconnectBle,
+        'autoFlushOnReconnect': request.modeOptions.autoFlushOnReconnect,
+      },
     );
     final result = raw ?? const <String, dynamic>{};
     return ProtectionPlatformStartResult(
@@ -86,8 +125,39 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }
 
   @override
+  Future<void> ensureProtectionRuntimeActive({
+    String reason = 'app_foreground_resume',
+  }) {
+    return _methodChannel.invokeMethod<void>(
+      'resumeProtectionRuntime',
+      <String, dynamic>{'reason': reason},
+    );
+  }
+
+  @override
   Future<ProtectionPlatformFlushResult> flushProtectionQueues() async {
     return const ProtectionPlatformFlushResult();
+  }
+
+  @override
+  Future<ProtectionPlatformCommandResult> sendProtectionCommand({
+    required ProtectionPlatformCommandRequest request,
+  }) async {
+    final raw = await _methodChannel.invokeMapMethod<String, dynamic>(
+      'sendProtectionCommand',
+      <String, dynamic>{
+        'label': request.label,
+        'bytes': request.bytes,
+        'forceCmdCharacteristic': request.forceCmdCharacteristic,
+      },
+    );
+    final result = raw ?? const <String, dynamic>{};
+    return ProtectionPlatformCommandResult(
+      success: result['success'] as bool? ?? false,
+      route: result['route'] as String?,
+      result: result['result'] as String?,
+      error: result['error'] as String?,
+    );
   }
 
   @override
@@ -135,10 +205,40 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
 
   ProtectionPlatformEventType _parseEventType(String? value) {
     switch (value) {
+      case 'runtimeStarting':
+        return ProtectionPlatformEventType.runtimeStarting;
+      case 'runtimeActive':
+        return ProtectionPlatformEventType.runtimeActive;
+      case 'runtimeRecovered':
+        return ProtectionPlatformEventType.runtimeRecovered;
+      case 'runtimeStopped':
+        return ProtectionPlatformEventType.runtimeStopped;
+      case 'runtimeFailed':
+        return ProtectionPlatformEventType.runtimeFailed;
+      case 'deviceConnecting':
+        return ProtectionPlatformEventType.deviceConnecting;
+      case 'deviceConnected':
+        return ProtectionPlatformEventType.deviceConnected;
+      case 'deviceDisconnected':
+        return ProtectionPlatformEventType.deviceDisconnected;
+      case 'reconnectScheduled':
+        return ProtectionPlatformEventType.reconnectScheduled;
+      case 'reconnectFailed':
+        return ProtectionPlatformEventType.reconnectFailed;
+      case 'servicesDiscovered':
+        return ProtectionPlatformEventType.servicesDiscovered;
+      case 'subscriptionsActive':
+        return ProtectionPlatformEventType.subscriptionsActive;
+      case 'packetReceived':
+        return ProtectionPlatformEventType.packetReceived;
       case 'restorationDetected':
         return ProtectionPlatformEventType.restorationDetected;
       case 'restorationRehydrated':
         return ProtectionPlatformEventType.restorationRehydrated;
+      case 'bluetoothTurnedOff':
+        return ProtectionPlatformEventType.bluetoothTurnedOff;
+      case 'bluetoothTurnedOn':
+        return ProtectionPlatformEventType.bluetoothTurnedOn;
       case 'runtimeError':
         return ProtectionPlatformEventType.runtimeError;
       case 'woke':
@@ -184,6 +284,18 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
       case 'unknown':
       default:
         return ProtectionCapabilityState.unknown;
+    }
+  }
+
+  ProtectionBleOwner _parseBleOwner(String? value) {
+    switch (value) {
+      case 'iosPlugin':
+        return ProtectionBleOwner.iosPlugin;
+      case 'androidService':
+        return ProtectionBleOwner.androidService;
+      case 'flutter':
+      default:
+        return ProtectionBleOwner.flutter;
     }
   }
 

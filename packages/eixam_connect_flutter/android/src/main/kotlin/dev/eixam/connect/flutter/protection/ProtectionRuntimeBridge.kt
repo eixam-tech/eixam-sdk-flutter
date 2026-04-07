@@ -150,6 +150,41 @@ internal object ProtectionRuntimeBridge {
                 val flushed = ensureRuntimeOwner(context).flushPendingBackendActions("manual_flush")
                 result.success(flushed)
             }
+            "resumeProtectionRuntime" -> {
+                val reason =
+                    (call.arguments as? Map<*, *>)?.get("reason") as? String
+                        ?: "app_foreground_resume"
+                ProtectionForegroundService.start(context, wakeReason = reason)
+                result.success(null)
+            }
+            "sendProtectionCommand" -> {
+                val arguments = call.arguments as? Map<*, *>
+                val label = arguments?.get("label") as? String ?: "BLE command"
+                val forceCmdCharacteristic =
+                    arguments?.get("forceCmdCharacteristic") as? Boolean ?: false
+                val payload =
+                    (arguments?.get("bytes") as? List<*>)?.mapNotNull { value ->
+                        (value as? Number)?.toInt()?.toByte()
+                    }?.toByteArray() ?: byteArrayOf()
+                if (payload.isEmpty()) {
+                    result.success(
+                        mapOf(
+                            "success" to false,
+                            "route" to "androidService",
+                            "result" to null,
+                            "error" to "Protection command payload is empty.",
+                        ),
+                    )
+                    return
+                }
+                result.success(
+                    ensureRuntimeOwner(context).sendCommand(
+                        label = label,
+                        payload = payload,
+                        forceCmdCharacteristic = forceCmdCharacteristic,
+                    ),
+                )
+            }
             else -> result.notImplemented()
         }
     }

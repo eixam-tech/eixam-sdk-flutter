@@ -494,8 +494,10 @@ class ProtectionModeController {
           platformSnapshot.lastNativeBackendHandoffResult,
       lastNativeBackendHandoffError:
           platformSnapshot.lastNativeBackendHandoffError,
-      activeDeviceId:
-          deviceStatus.deviceId.trim().isEmpty ? null : deviceStatus.deviceId,
+      protectedDeviceId: platformSnapshot.protectedDeviceId ??
+          platformSnapshot.activeDeviceId,
+      activeDeviceId: platformSnapshot.activeDeviceId ??
+          (deviceStatus.deviceId.trim().isEmpty ? null : deviceStatus.deviceId),
       degradationReason:
           degradationReason ?? platformSnapshot.degradationReason,
       expectedBleServiceUuid: platformSnapshot.expectedBleServiceUuid,
@@ -511,6 +513,9 @@ class ProtectionModeController {
           platformSnapshot.debugLocalhostBackendAllowed,
       debugCleartextBackendAllowed:
           platformSnapshot.debugCleartextBackendAllowed,
+      lastCommandRoute: platformSnapshot.lastCommandRoute,
+      lastCommandResult: platformSnapshot.lastCommandResult,
+      lastCommandError: platformSnapshot.lastCommandError,
       updatedAt: DateTime.now().toUtc(),
     );
     final diagnostics = _diagnostics.copyWith(
@@ -543,6 +548,8 @@ class ProtectionModeController {
           platformSnapshot.lastNativeBackendHandoffResult,
       lastNativeBackendHandoffError:
           platformSnapshot.lastNativeBackendHandoffError,
+      protectedDeviceId: platformSnapshot.protectedDeviceId ??
+          _diagnostics.protectedDeviceId,
       expectedBleServiceUuid: platformSnapshot.expectedBleServiceUuid,
       expectedBleCharacteristicUuids:
           platformSnapshot.expectedBleCharacteristicUuids,
@@ -556,6 +563,9 @@ class ProtectionModeController {
           platformSnapshot.debugLocalhostBackendAllowed,
       debugCleartextBackendAllowed:
           platformSnapshot.debugCleartextBackendAllowed,
+      lastCommandRoute: platformSnapshot.lastCommandRoute,
+      lastCommandResult: platformSnapshot.lastCommandResult,
+      lastCommandError: platformSnapshot.lastCommandError,
     );
     return _ProtectionSnapshot(
       status: status,
@@ -582,7 +592,7 @@ class ProtectionModeController {
     if (!status.nativeBackendConfigValid) {
       return true;
     }
-    if (status.bleOwner == ProtectionBleOwner.androidService) {
+    if (_isPlatformBleOwner(status.bleOwner)) {
       return !status.serviceBleReady;
     }
     return !status.deviceConnected;
@@ -600,13 +610,15 @@ class ProtectionModeController {
     if (!status.deviceConnected) {
       return 'Protection Mode is active, but the trusted device is not connected yet.';
     }
-    if (status.bleOwner == ProtectionBleOwner.androidService &&
-        !status.serviceBleConnected) {
-      return 'Protection Mode is active, but the Android service has not connected to the protected device yet.';
+    if (_isPlatformBleOwner(status.bleOwner) && !status.serviceBleConnected) {
+      return _nativeOwnerLabel(status.bleOwner) == 'Android service'
+          ? 'Protection Mode is active, but the Android service has not connected to the protected device yet.'
+          : 'Protection Mode is active, but the iOS plugin runtime has not connected to the protected device yet.';
     }
-    if (status.bleOwner == ProtectionBleOwner.androidService &&
-        !status.serviceBleReady) {
-      return 'Protection Mode is active, but the Android service has not finished TEL/SOS subscriptions yet.';
+    if (_isPlatformBleOwner(status.bleOwner) && !status.serviceBleReady) {
+      return _nativeOwnerLabel(status.bleOwner) == 'Android service'
+          ? 'Protection Mode is active, but the Android service has not finished TEL/SOS subscriptions yet.'
+          : 'Protection Mode is active, but the iOS plugin runtime has not finished TEL/SOS subscriptions yet.';
     }
     if (!status.nativeBackendConfigValid &&
         (status.nativeBackendConfigIssue ?? '').trim().isNotEmpty) {
@@ -622,7 +634,7 @@ class ProtectionModeController {
     if (status.deviceConnected) {
       return true;
     }
-    if (platformSnapshot.bleOwner == ProtectionBleOwner.androidService &&
+    if (_isPlatformBleOwner(platformSnapshot.bleOwner) &&
         (platformSnapshot.serviceBleConnected ||
             platformSnapshot.serviceBleReady)) {
       return true;
@@ -631,6 +643,7 @@ class ProtectionModeController {
   }
 
   void _handlePlatformEvent(ProtectionPlatformEvent event) {
+    final nativeOwner = _nativeBleOwner;
     _diagnostics = _diagnostics.copyWith(
       lastPlatformEvent: event.type.name,
       lastPlatformEventAt: event.timestamp,
@@ -647,7 +660,7 @@ class ProtectionModeController {
       case ProtectionPlatformEventType.serviceRestarted:
         _status = _status.copyWith(
           foregroundServiceRunning: true,
-          bleOwner: ProtectionBleOwner.androidService,
+          bleOwner: nativeOwner,
           lastPlatformEvent: event.type.name,
           lastPlatformEventAt: event.timestamp,
           updatedAt: event.timestamp,
@@ -660,7 +673,7 @@ class ProtectionModeController {
           foregroundServiceRunning: true,
           protectionRuntimeActive: true,
           runtimeState: ProtectionRuntimeState.starting,
-          bleOwner: ProtectionBleOwner.androidService,
+          bleOwner: nativeOwner,
           lastPlatformEvent: event.type.name,
           lastPlatformEventAt: event.timestamp,
           updatedAt: event.timestamp,
@@ -680,7 +693,7 @@ class ProtectionModeController {
         _status = _status.copyWith(
           foregroundServiceRunning: true,
           protectionRuntimeActive: true,
-          bleOwner: ProtectionBleOwner.androidService,
+          bleOwner: nativeOwner,
           runtimeState:
               event.type == ProtectionPlatformEventType.runtimeRecovered
                   ? ProtectionRuntimeState.recovering
@@ -694,7 +707,7 @@ class ProtectionModeController {
         break;
       case ProtectionPlatformEventType.deviceConnecting:
         _status = _status.copyWith(
-          bleOwner: ProtectionBleOwner.androidService,
+          bleOwner: nativeOwner,
           serviceBleConnected: false,
           serviceBleReady: false,
           lastBleServiceEvent: event.type.name,
@@ -750,7 +763,8 @@ class ProtectionModeController {
         break;
       case ProtectionPlatformEventType.deviceConnected:
         _status = _status.copyWith(
-          bleOwner: ProtectionBleOwner.androidService,
+          bleOwner: nativeOwner,
+          deviceConnected: true,
           serviceBleConnected: true,
           lastBleServiceEvent: event.type.name,
           lastBleServiceEventAt: event.timestamp,
@@ -764,7 +778,8 @@ class ProtectionModeController {
       case ProtectionPlatformEventType.packetReceived:
       case ProtectionPlatformEventType.sosEventReceived:
         _status = _status.copyWith(
-          bleOwner: ProtectionBleOwner.androidService,
+          bleOwner: nativeOwner,
+          deviceConnected: true,
           serviceBleReady:
               event.type == ProtectionPlatformEventType.subscriptionsActive
                   ? true
@@ -782,6 +797,7 @@ class ProtectionModeController {
         break;
       case ProtectionPlatformEventType.deviceDisconnected:
         _status = _status.copyWith(
+          deviceConnected: false,
           serviceBleConnected: false,
           serviceBleReady: false,
           lastBleServiceEvent: event.type.name,
@@ -883,6 +899,32 @@ class ProtectionModeController {
             event.type == ProtectionPlatformEventType.bluetoothTurnedOn);
     if (shouldRehydrate) {
       unawaited(rehydrate());
+    }
+  }
+
+  bool _isPlatformBleOwner(ProtectionBleOwner owner) {
+    return owner != ProtectionBleOwner.flutter;
+  }
+
+  ProtectionBleOwner get _nativeBleOwner {
+    switch (platformAdapter.platform) {
+      case ProtectionPlatform.ios:
+        return ProtectionBleOwner.iosPlugin;
+      case ProtectionPlatform.android:
+        return ProtectionBleOwner.androidService;
+      case ProtectionPlatform.unknown:
+        return ProtectionBleOwner.flutter;
+    }
+  }
+
+  String _nativeOwnerLabel(ProtectionBleOwner owner) {
+    switch (owner) {
+      case ProtectionBleOwner.androidService:
+        return 'Android service';
+      case ProtectionBleOwner.iosPlugin:
+        return 'iOS plugin runtime';
+      case ProtectionBleOwner.flutter:
+        return 'Flutter';
     }
   }
 

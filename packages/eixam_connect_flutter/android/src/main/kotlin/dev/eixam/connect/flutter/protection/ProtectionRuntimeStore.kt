@@ -36,6 +36,9 @@ internal class ProtectionRuntimeStore(context: Context) {
             "bleOwner" to bleOwner,
             "serviceBleConnected" to serviceBleConnected,
             "serviceBleReady" to serviceBleReady,
+            "protectedDeviceId" to preferences.getString(keyTargetDeviceId, null),
+            "activeDeviceId" to preferences.getString(keyTargetDeviceId, null),
+            "targetDeviceId" to preferences.getString(keyTargetDeviceId, null),
             "expectedBleServiceUuid" to preferences.getString(keyExpectedBleServiceUuid, null),
             "expectedBleCharacteristicUuids" to
                 (preferences.getString(keyExpectedBleCharacteristicUuids, null)
@@ -95,6 +98,9 @@ internal class ProtectionRuntimeStore(context: Context) {
                 keyLastNativeBackendHandoffError,
                 null,
             ),
+            "lastCommandRoute" to preferences.getString(keyLastCommandRoute, null),
+            "lastCommandResult" to preferences.getString(keyLastCommandResult, null),
+            "lastCommandError" to preferences.getString(keyLastCommandError, null),
         )
     }
 
@@ -118,6 +124,9 @@ internal class ProtectionRuntimeStore(context: Context) {
                 keyDegradationReason,
                 "Android foreground service owns the Protection Mode runtime, but the service-owned BLE link is not connected yet.",
             )
+            .remove(keyLastCommandRoute)
+            .remove(keyLastCommandResult)
+            .remove(keyLastCommandError)
             .putString(keyExpectedBleServiceUuid, expectedBleServiceUuid)
             .putString(keyExpectedBleCharacteristicUuids, expectedBleCharacteristicUuids.joinToString("|"))
             .remove(keyLastFailureReason)
@@ -166,6 +175,7 @@ internal class ProtectionRuntimeStore(context: Context) {
     fun markServiceBleConnected() {
         preferences.edit()
             .putBoolean(keyServiceBleConnected, true)
+            .putBoolean(keyRuntimeActive, true)
             .apply()
     }
 
@@ -173,6 +183,14 @@ internal class ProtectionRuntimeStore(context: Context) {
         preferences.edit()
             .putBoolean(keyServiceBleConnected, false)
             .putBoolean(keyServiceBleReady, false)
+            .putString(
+                keyDegradationReason,
+                "Android foreground service is reconnecting to the protected BLE device.",
+            )
+            .putString(
+                keyReadinessFailureReason,
+                "Android foreground service is reconnecting to the protected BLE device.",
+            )
             .apply()
     }
 
@@ -192,6 +210,25 @@ internal class ProtectionRuntimeStore(context: Context) {
     fun recordReadinessFailureReason(reason: String?) {
         preferences.edit()
             .putString(keyReadinessFailureReason, reason)
+            .apply()
+    }
+
+    fun recordCommandRoute(route: String) {
+        preferences.edit()
+            .putString(keyLastCommandRoute, route)
+            .apply()
+    }
+
+    fun recordCommandResult(result: String?) {
+        preferences.edit()
+            .putString(keyLastCommandResult, result)
+            .remove(keyLastCommandError)
+            .apply()
+    }
+
+    fun recordCommandError(error: String?) {
+        preferences.edit()
+            .putString(keyLastCommandError, error)
             .apply()
     }
 
@@ -375,13 +412,27 @@ internal class ProtectionRuntimeStore(context: Context) {
                 .putBoolean(keyServiceRunning, true)
                 .putBoolean(keyRuntimeActive, true)
                 .putString(keyBleOwner, "androidService")
+            "deviceConnecting" -> editor
+                .putBoolean(keyRuntimeActive, true)
+                .putString(
+                    keyDegradationReason,
+                    "Android foreground service is reconnecting to the protected BLE device.",
+                )
+                .putString(
+                    keyReadinessFailureReason,
+                    "Android foreground service is reconnecting to the protected BLE device.",
+                )
             "deviceConnected" -> editor.putBoolean(keyServiceBleConnected, true)
             "deviceDisconnected" -> editor
                 .putBoolean(keyServiceBleConnected, false)
                 .putBoolean(keyServiceBleReady, false)
                 .putString(
                     keyReadinessFailureReason,
-                    "Android foreground service is disconnected from the protected BLE device.",
+                    "Android foreground service is reconnecting to the protected BLE device.",
+                )
+                .putString(
+                    keyDegradationReason,
+                    "Android foreground service is reconnecting to the protected BLE device.",
                 )
             "subscriptionsActive" -> editor
                 .putBoolean(keyServiceBleConnected, true)
@@ -396,6 +447,14 @@ internal class ProtectionRuntimeStore(context: Context) {
                 editor
                     .putInt(keyReconnectAttemptCount, nextAttempt)
                     .putLong(keyLastReconnectAttemptAt, now)
+                    .putString(
+                        keyDegradationReason,
+                        "Android foreground service is reconnecting to the protected BLE device.",
+                    )
+                    .putString(
+                        keyReadinessFailureReason,
+                        "Android foreground service is reconnecting to the protected BLE device.",
+                    )
             }
             "runtimeError",
             "runtimeFailed",
@@ -500,6 +559,9 @@ internal class ProtectionRuntimeStore(context: Context) {
         private const val keyActiveBackendIncidentAt = "active_backend_incident_at"
         private const val keyLastNativeBackendHandoffResult = "last_native_backend_handoff_result"
         private const val keyLastNativeBackendHandoffError = "last_native_backend_handoff_error"
+        private const val keyLastCommandRoute = "last_command_route"
+        private const val keyLastCommandResult = "last_command_result"
+        private const val keyLastCommandError = "last_command_error"
         private const val expectedBleServiceUuid = "6ba1b218-15a8-461f-9fa8-5dcae273ea00"
         private val expectedBleCharacteristicUuids = listOf(
             "6ba1b218-15a8-461f-9fa8-5dcae273ea01",

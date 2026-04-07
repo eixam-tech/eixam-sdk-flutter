@@ -29,6 +29,9 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   Stream<ProtectionPlatformEvent>? _events;
 
   @override
+  ProtectionPlatform get platform => ProtectionPlatform.android;
+
+  @override
   Future<ProtectionPlatformSnapshot> getPlatformSnapshot() async {
     final raw = await _methodChannel.invokeMapMethod<String, dynamic>(
       'getPlatformSnapshot',
@@ -77,6 +80,10 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
           snapshot['lastNativeBackendHandoffResult'] as String?,
       lastNativeBackendHandoffError:
           snapshot['lastNativeBackendHandoffError'] as String?,
+      protectedDeviceId: snapshot['protectedDeviceId'] as String? ??
+          snapshot['targetDeviceId'] as String? ??
+          snapshot['activeDeviceId'] as String?,
+      activeDeviceId: snapshot['activeDeviceId'] as String?,
       degradationReason: snapshot['degradationReason'] as String?,
       expectedBleServiceUuid: snapshot['expectedBleServiceUuid'] as String?,
       expectedBleCharacteristicUuids:
@@ -95,6 +102,9 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
           snapshot['debugLocalhostBackendAllowed'] as bool? ?? false,
       debugCleartextBackendAllowed:
           snapshot['debugCleartextBackendAllowed'] as bool? ?? false,
+      lastCommandRoute: snapshot['lastCommandRoute'] as String?,
+      lastCommandResult: snapshot['lastCommandResult'] as String?,
+      lastCommandError: snapshot['lastCommandError'] as String?,
     );
   }
 
@@ -131,6 +141,16 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   @override
   Future<void> stopProtectionRuntime() {
     return _methodChannel.invokeMethod<void>('stopProtectionRuntime');
+  }
+
+  @override
+  Future<void> ensureProtectionRuntimeActive({
+    String reason = 'app_foreground_resume',
+  }) {
+    return _methodChannel.invokeMethod<void>(
+      'resumeProtectionRuntime',
+      <String, dynamic>{'reason': reason},
+    );
   }
 
   @override
@@ -175,6 +195,27 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
           statuses[permission_handler.Permission.notification]?.isGranted ==
               true,
       bluetoothGranted: bluetoothGranted,
+    );
+  }
+
+  @override
+  Future<ProtectionPlatformCommandResult> sendProtectionCommand({
+    required ProtectionPlatformCommandRequest request,
+  }) async {
+    final raw = await _methodChannel.invokeMapMethod<String, dynamic>(
+      'sendProtectionCommand',
+      <String, dynamic>{
+        'label': request.label,
+        'bytes': request.bytes,
+        'forceCmdCharacteristic': request.forceCmdCharacteristic,
+      },
+    );
+    final result = raw ?? const <String, dynamic>{};
+    return ProtectionPlatformCommandResult(
+      success: result['success'] as bool? ?? false,
+      route: result['route'] as String?,
+      result: result['result'] as String?,
+      error: result['error'] as String?,
     );
   }
 
@@ -293,6 +334,8 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     switch (value) {
       case 'androidService':
         return ProtectionBleOwner.androidService;
+      case 'iosPlugin':
+        return ProtectionBleOwner.iosPlugin;
       case 'flutter':
       default:
         return ProtectionBleOwner.flutter;
