@@ -87,7 +87,8 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
       degradationReason: snapshot['degradationReason'] as String?,
       expectedBleServiceUuid: snapshot['expectedBleServiceUuid'] as String?,
       expectedBleCharacteristicUuids:
-          (snapshot['expectedBleCharacteristicUuids'] as List<dynamic>? ?? const [])
+          (snapshot['expectedBleCharacteristicUuids'] as List<dynamic>? ??
+                  const [])
               .map((value) => value.toString())
               .toList(growable: false),
       discoveredBleServicesSummary:
@@ -96,8 +97,7 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
       nativeBackendBaseUrl: snapshot['nativeBackendBaseUrl'] as String?,
       nativeBackendConfigValid:
           snapshot['nativeBackendConfigValid'] as bool? ?? true,
-      nativeBackendConfigIssue:
-          snapshot['nativeBackendConfigIssue'] as String?,
+      nativeBackendConfigIssue: snapshot['nativeBackendConfigIssue'] as String?,
       debugLocalhostBackendAllowed:
           snapshot['debugLocalhostBackendAllowed'] as bool? ?? false,
       debugCleartextBackendAllowed:

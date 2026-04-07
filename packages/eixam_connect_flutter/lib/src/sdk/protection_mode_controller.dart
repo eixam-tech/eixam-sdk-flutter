@@ -160,7 +160,8 @@ class ProtectionModeController {
       );
     }
 
-    final postStartPlatformSnapshot = await platformAdapter.getPlatformSnapshot();
+    final postStartPlatformSnapshot =
+        await platformAdapter.getPlatformSnapshot();
     final postStartDeviceConnected = _isProtectionDeviceConnected(
       armingSnapshot.status,
       postStartPlatformSnapshot,
@@ -187,7 +188,8 @@ class ProtectionModeController {
           ? _deriveDegradedReason(
               armingSnapshot.status.copyWith(
                 deviceConnected: postStartDeviceConnected,
-                serviceBleConnected: postStartPlatformSnapshot.serviceBleConnected,
+                serviceBleConnected:
+                    postStartPlatformSnapshot.serviceBleConnected,
                 serviceBleReady: postStartPlatformSnapshot.serviceBleReady,
                 bleOwner: postStartPlatformSnapshot.bleOwner,
               ),
@@ -469,10 +471,8 @@ class ProtectionModeController {
       storeAndForwardEnabled: options.enableStoreAndForward,
       pendingSosCount: pendingSosCount,
       pendingTelemetryCount: pendingTelemetryCount,
-      pendingNativeSosCreateCount:
-          platformSnapshot.pendingNativeSosCreateCount,
-      pendingNativeSosCancelCount:
-          platformSnapshot.pendingNativeSosCancelCount,
+      pendingNativeSosCreateCount: platformSnapshot.pendingNativeSosCreateCount,
+      pendingNativeSosCancelCount: platformSnapshot.pendingNativeSosCancelCount,
       platformRuntimeConfigured: platformSnapshot.platformRuntimeConfigured,
       foregroundServiceRunning: platformSnapshot.serviceRunning,
       protectionRuntimeActive: platformSnapshot.runtimeActive,
@@ -494,8 +494,8 @@ class ProtectionModeController {
           platformSnapshot.lastNativeBackendHandoffResult,
       lastNativeBackendHandoffError:
           platformSnapshot.lastNativeBackendHandoffError,
-      protectedDeviceId: platformSnapshot.protectedDeviceId ??
-          platformSnapshot.activeDeviceId,
+      protectedDeviceId:
+          platformSnapshot.protectedDeviceId ?? platformSnapshot.activeDeviceId,
       activeDeviceId: platformSnapshot.activeDeviceId ??
           (deviceStatus.deviceId.trim().isEmpty ? null : deviceStatus.deviceId),
       degradationReason:
@@ -540,16 +540,14 @@ class ProtectionModeController {
           _diagnostics.lastReconnectAttemptAt,
       pendingSosCount: pendingSosCount,
       pendingTelemetryCount: pendingTelemetryCount,
-      pendingNativeSosCreateCount:
-          platformSnapshot.pendingNativeSosCreateCount,
-      pendingNativeSosCancelCount:
-          platformSnapshot.pendingNativeSosCancelCount,
+      pendingNativeSosCreateCount: platformSnapshot.pendingNativeSosCreateCount,
+      pendingNativeSosCancelCount: platformSnapshot.pendingNativeSosCancelCount,
       lastNativeBackendHandoffResult:
           platformSnapshot.lastNativeBackendHandoffResult,
       lastNativeBackendHandoffError:
           platformSnapshot.lastNativeBackendHandoffError,
-      protectedDeviceId: platformSnapshot.protectedDeviceId ??
-          _diagnostics.protectedDeviceId,
+      protectedDeviceId:
+          platformSnapshot.protectedDeviceId ?? _diagnostics.protectedDeviceId,
       expectedBleServiceUuid: platformSnapshot.expectedBleServiceUuid,
       expectedBleCharacteristicUuids:
           platformSnapshot.expectedBleCharacteristicUuids,
@@ -738,12 +736,14 @@ class ProtectionModeController {
       case ProtectionPlatformEventType.nativeBackendSyncQueued:
       case ProtectionPlatformEventType.nativeBackendSyncSucceeded:
       case ProtectionPlatformEventType.nativeBackendSyncFailed:
-        final result = event.type == ProtectionPlatformEventType.nativeBackendSyncSucceeded
-            ? event.reason
-            : _status.lastNativeBackendHandoffResult;
-        final error = event.type == ProtectionPlatformEventType.nativeBackendSyncFailed
-            ? event.reason
-            : _status.lastNativeBackendHandoffError;
+        final result =
+            event.type == ProtectionPlatformEventType.nativeBackendSyncSucceeded
+                ? event.reason
+                : _status.lastNativeBackendHandoffResult;
+        final error =
+            event.type == ProtectionPlatformEventType.nativeBackendSyncFailed
+                ? event.reason
+                : _status.lastNativeBackendHandoffError;
         _status = _status.copyWith(
           lastPlatformEvent: event.type.name,
           lastPlatformEventAt: event.timestamp,
@@ -891,7 +891,8 @@ class ProtectionModeController {
             event.type == ProtectionPlatformEventType.reconnectScheduled ||
             event.type == ProtectionPlatformEventType.reconnectFailed ||
             event.type == ProtectionPlatformEventType.nativeBackendSyncQueued ||
-            event.type == ProtectionPlatformEventType.nativeBackendSyncSucceeded ||
+            event.type ==
+                ProtectionPlatformEventType.nativeBackendSyncSucceeded ||
             event.type == ProtectionPlatformEventType.nativeBackendSyncFailed ||
             event.type == ProtectionPlatformEventType.runtimeError ||
             event.type == ProtectionPlatformEventType.runtimeFailed ||

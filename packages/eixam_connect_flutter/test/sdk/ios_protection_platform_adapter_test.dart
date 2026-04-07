@@ -41,10 +41,8 @@ void main() {
               'bleOwner': 'iosPlugin',
               'serviceBleConnected': true,
               'serviceBleReady': false,
-              'protectedDeviceId':
-                  '9D6A4E6B-4AF7-4B1F-AF32-0B7FCB66D1F1',
-              'activeDeviceId':
-                  '9D6A4E6B-4AF7-4B1F-AF32-0B7FCB66D1F1',
+              'protectedDeviceId': '9D6A4E6B-4AF7-4B1F-AF32-0B7FCB66D1F1',
+              'activeDeviceId': '9D6A4E6B-4AF7-4B1F-AF32-0B7FCB66D1F1',
               'expectedBleServiceUuid': 'ea00',
               'expectedBleCharacteristicUuids': <String>['ea01', 'ea02'],
               'discoveredBleServicesSummary': 'ea00[ea01,ea02]',
@@ -107,7 +105,8 @@ void main() {
       expect(snapshot.degradationReason, contains('TEL/SOS subscriptions'));
     });
 
-    test('start sends device id and returns partial coverage instead of false full support',
+    test(
+        'start sends device id and returns partial coverage instead of false full support',
         () async {
       final methodCalls = <MethodCall>[];
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -158,7 +157,9 @@ void main() {
       expect(commandResult.success, isTrue);
       expect(commandResult.route, 'iosPlugin');
       expect(
-        methodCalls.firstWhere((call) => call.method == 'startProtectionRuntime').arguments,
+        methodCalls
+            .firstWhere((call) => call.method == 'startProtectionRuntime')
+            .arguments,
         containsPair('activeDeviceId', '9D6A4E6B-4AF7-4B1F-AF32-0B7FCB66D1F1'),
       );
       expect(

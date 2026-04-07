@@ -365,7 +365,8 @@ void main() {
         bleOwner: ProtectionBleOwner.androidService,
         protectedDeviceId: 'device-protected',
         lastCommandRoute: 'androidService',
-        lastCommandResult: 'SHUTDOWN native write succeeded via androidService.',
+        lastCommandResult:
+            'SHUTDOWN native write succeeded via androidService.',
       );
       controller.protectionStatus = sdk.protectionStatus;
 
@@ -525,7 +526,8 @@ void main() {
         pendingNativeSosCancelCount: 1,
         lastNativeBackendHandoffResult: 'cancel_synced',
         lastCommandRoute: 'androidService',
-        lastCommandResult: 'SHUTDOWN native write succeeded via androidService.',
+        lastCommandResult:
+            'SHUTDOWN native write succeeded via androidService.',
         nativeBackendBaseUrl: 'http://127.0.0.1:8080',
         nativeBackendConfigValid: true,
         nativeBackendConfigIssue:
@@ -545,7 +547,8 @@ void main() {
         lastNativeBackendHandoffResult: 'cancel_synced',
         protectedDeviceId: 'device-protected',
         lastCommandRoute: 'androidService',
-        lastCommandResult: 'SHUTDOWN native write succeeded via androidService.',
+        lastCommandResult:
+            'SHUTDOWN native write succeeded via androidService.',
         nativeBackendBaseUrl: 'http://127.0.0.1:8080',
         nativeBackendConfigValid: true,
         nativeBackendConfigIssue:

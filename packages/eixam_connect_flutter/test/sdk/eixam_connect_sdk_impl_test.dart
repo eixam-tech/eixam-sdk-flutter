@@ -1137,7 +1137,8 @@ void main() {
       }
     });
 
-    test('ios protection adapter reports plugin-owned degraded runtime honestly',
+    test(
+        'ios protection adapter reports plugin-owned degraded runtime honestly',
         () async {
       permissionsRepository.permissionState = const PermissionState(
         location: SdkPermissionStatus.granted,
@@ -1308,7 +1309,8 @@ void main() {
 
         expect(localAdapter.ensureActiveCallCount, 1);
         expect(localAdapter.lastEnsureActiveReason, 'app_foreground_resume');
-        expect(localAdapter.lastStartRequest?.activeDeviceId, 'device-ios-resume');
+        expect(
+            localAdapter.lastStartRequest?.activeDeviceId, 'device-ios-resume');
       } finally {
         await runtimeSdk.dispose();
       }
@@ -1509,7 +1511,8 @@ void main() {
           coverageLevel: ProtectionCoverageLevel.full,
           runtimeState: ProtectionRuntimeState.active,
           lastCommandRoute: 'androidService',
-          lastCommandResult: 'SHUTDOWN native write succeeded via androidService.',
+          lastCommandResult:
+              'SHUTDOWN native write succeeded via androidService.',
         ),
         startResult: const ProtectionPlatformStartResult(success: true),
         commandResult: const ProtectionPlatformCommandResult(
@@ -1604,7 +1607,8 @@ void main() {
       }
     });
 
-    test('rehydrateProtectionState adopts restored ios plugin snapshot coherently',
+    test(
+        'rehydrateProtectionState adopts restored ios plugin snapshot coherently',
         () async {
       permissionsRepository.permissionState = const PermissionState(
         location: SdkPermissionStatus.granted,

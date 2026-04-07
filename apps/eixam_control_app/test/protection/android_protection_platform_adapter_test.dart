@@ -41,8 +41,7 @@ void main() {
               'restorationConfigured': true,
               'serviceBleConnected': true,
               'serviceBleReady': false,
-              'expectedBleServiceUuid':
-                  '6ba1b218-15a8-461f-9fa8-5dcae273ea00',
+              'expectedBleServiceUuid': '6ba1b218-15a8-461f-9fa8-5dcae273ea00',
               'expectedBleCharacteristicUuids': <String>[
                 '6ba1b218-15a8-461f-9fa8-5dcae273ea01',
                 '6ba1b218-15a8-461f-9fa8-5dcae273ea02',
