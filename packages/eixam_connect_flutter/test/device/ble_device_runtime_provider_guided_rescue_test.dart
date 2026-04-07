@@ -1,6 +1,8 @@
 import 'package:async/async.dart';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
-import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
+import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
+import 'package:eixam_connect_flutter/src/device/ble_device_runtime_provider.dart';
+import 'package:eixam_connect_flutter/src/device/mock_ble_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/builders/device_status_builder.dart';

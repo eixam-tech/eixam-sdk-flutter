@@ -1,6 +1,6 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
-import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/shared_prefs_sdk_store.dart';
+import 'package:eixam_connect_flutter/src/data/repositories/in_memory_sos_repository.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/fakes/memory_shared_prefs_sdk_store.dart';

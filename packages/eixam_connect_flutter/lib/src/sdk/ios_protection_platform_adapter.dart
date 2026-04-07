@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart'
     as permission_handler;
 
+import 'protection_platform_channel_mapper.dart';
 import 'protection_platform_adapter.dart';
 
 class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
@@ -36,62 +37,7 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     final raw = await _methodChannel.invokeMapMethod<String, dynamic>(
       'getPlatformSnapshot',
     );
-    final snapshot = raw ?? const <String, dynamic>{};
-    return ProtectionPlatformSnapshot(
-      backgroundCapabilityReady:
-          snapshot['backgroundCapabilityReady'] as bool? ?? false,
-      platformRuntimeConfigured:
-          snapshot['platformRuntimeConfigured'] as bool? ?? false,
-      serviceRunning: false,
-      runtimeActive: snapshot['runtimeActive'] as bool? ?? false,
-      bluetoothEnabled: snapshot['bluetoothEnabled'] as bool?,
-      notificationsGranted: snapshot['notificationsGranted'] as bool?,
-      lastFailureReason: snapshot['lastFailureReason'] as String?,
-      lastPlatformEvent: snapshot['lastPlatformEvent'] as String?,
-      lastPlatformEventAt: _readDateTime(snapshot['lastPlatformEventAt']),
-      runtimeState: _parseRuntimeState(snapshot['runtimeState'] as String?),
-      coverageLevel: _parseCoverageLevel(snapshot['coverageLevel'] as String?),
-      lastWakeAt: _readDateTime(snapshot['lastWakeAt']),
-      lastWakeReason: snapshot['lastWakeReason'] as String?,
-      platform: ProtectionPlatform.ios,
-      backgroundCapabilityState: _parseCapabilityState(
-        snapshot['backgroundCapabilityState'] as String?,
-      ),
-      restorationConfigured:
-          snapshot['restorationConfigured'] as bool? ?? false,
-      bleOwner: _parseBleOwner(snapshot['bleOwner'] as String?),
-      serviceBleConnected: snapshot['serviceBleConnected'] as bool? ?? false,
-      serviceBleReady: snapshot['serviceBleReady'] as bool? ?? false,
-      pendingSosCount: snapshot['pendingSosCount'] as int? ?? 0,
-      pendingTelemetryCount: snapshot['pendingTelemetryCount'] as int? ?? 0,
-      lastRestorationEvent: snapshot['lastRestorationEvent'] as String?,
-      lastRestorationEventAt: _readDateTime(snapshot['lastRestorationEventAt']),
-      lastBleServiceEvent: snapshot['lastBleServiceEvent'] as String?,
-      lastBleServiceEventAt: _readDateTime(snapshot['lastBleServiceEventAt']),
-      reconnectAttemptCount: snapshot['reconnectAttemptCount'] as int? ?? 0,
-      lastReconnectAttemptAt: _readDateTime(
-        snapshot['lastReconnectAttemptAt'],
-      ),
-      protectedDeviceId: snapshot['protectedDeviceId'] as String? ??
-          snapshot['activeDeviceId'] as String?,
-      activeDeviceId: snapshot['activeDeviceId'] as String?,
-      degradationReason: snapshot['degradationReason'] as String?,
-      expectedBleServiceUuid: snapshot['expectedBleServiceUuid'] as String?,
-      expectedBleCharacteristicUuids:
-          (snapshot['expectedBleCharacteristicUuids'] as List<dynamic>? ??
-                  const <dynamic>[])
-              .whereType<String>()
-              .toList(growable: false),
-      discoveredBleServicesSummary:
-          snapshot['discoveredBleServicesSummary'] as String?,
-      readinessFailureReason: snapshot['readinessFailureReason'] as String?,
-      nativeBackendConfigValid:
-          snapshot['nativeBackendConfigValid'] as bool? ?? true,
-      nativeBackendConfigIssue: snapshot['nativeBackendConfigIssue'] as String?,
-      lastCommandRoute: snapshot['lastCommandRoute'] as String?,
-      lastCommandResult: snapshot['lastCommandResult'] as String?,
-      lastCommandError: snapshot['lastCommandError'] as String?,
-    );
+    return mapIosProtectionPlatformSnapshot(raw ?? const <String, dynamic>{});
   }
 
   @override
@@ -109,14 +55,7 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
         'autoFlushOnReconnect': request.modeOptions.autoFlushOnReconnect,
       },
     );
-    final result = raw ?? const <String, dynamic>{};
-    return ProtectionPlatformStartResult(
-      success: result['success'] as bool? ?? false,
-      runtimeState: _parseRuntimeState(result['runtimeState'] as String?),
-      coverageLevel: _parseCoverageLevel(result['coverageLevel'] as String?),
-      failureReason: result['failureReason'] as String?,
-      statusMessage: result['statusMessage'] as String?,
-    );
+    return mapProtectionPlatformStartResult(raw ?? const <String, dynamic>{});
   }
 
   @override
@@ -151,13 +90,7 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
         'forceCmdCharacteristic': request.forceCmdCharacteristic,
       },
     );
-    final result = raw ?? const <String, dynamic>{};
-    return ProtectionPlatformCommandResult(
-      success: result['success'] as bool? ?? false,
-      route: result['route'] as String?,
-      result: result['result'] as String?,
-      error: result['error'] as String?,
-    );
+    return mapProtectionPlatformCommandResult(raw ?? const <String, dynamic>{});
   }
 
   @override
@@ -195,117 +128,7 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
       final data = Map<Object?, Object?>.from(
         event as Map<Object?, Object?>,
       );
-      return ProtectionPlatformEvent(
-        type: _parseEventType(data['type'] as String?),
-        timestamp: _readDateTime(data['timestamp']) ?? DateTime.now().toUtc(),
-        reason: data['reason'] as String?,
-      );
+      return mapIosProtectionPlatformEvent(data);
     }).asBroadcastStream();
-  }
-
-  ProtectionPlatformEventType _parseEventType(String? value) {
-    switch (value) {
-      case 'runtimeStarting':
-        return ProtectionPlatformEventType.runtimeStarting;
-      case 'runtimeActive':
-        return ProtectionPlatformEventType.runtimeActive;
-      case 'runtimeRecovered':
-        return ProtectionPlatformEventType.runtimeRecovered;
-      case 'runtimeStopped':
-        return ProtectionPlatformEventType.runtimeStopped;
-      case 'runtimeFailed':
-        return ProtectionPlatformEventType.runtimeFailed;
-      case 'deviceConnecting':
-        return ProtectionPlatformEventType.deviceConnecting;
-      case 'deviceConnected':
-        return ProtectionPlatformEventType.deviceConnected;
-      case 'deviceDisconnected':
-        return ProtectionPlatformEventType.deviceDisconnected;
-      case 'reconnectScheduled':
-        return ProtectionPlatformEventType.reconnectScheduled;
-      case 'reconnectFailed':
-        return ProtectionPlatformEventType.reconnectFailed;
-      case 'servicesDiscovered':
-        return ProtectionPlatformEventType.servicesDiscovered;
-      case 'subscriptionsActive':
-        return ProtectionPlatformEventType.subscriptionsActive;
-      case 'packetReceived':
-        return ProtectionPlatformEventType.packetReceived;
-      case 'restorationDetected':
-        return ProtectionPlatformEventType.restorationDetected;
-      case 'restorationRehydrated':
-        return ProtectionPlatformEventType.restorationRehydrated;
-      case 'bluetoothTurnedOff':
-        return ProtectionPlatformEventType.bluetoothTurnedOff;
-      case 'bluetoothTurnedOn':
-        return ProtectionPlatformEventType.bluetoothTurnedOn;
-      case 'runtimeError':
-        return ProtectionPlatformEventType.runtimeError;
-      case 'woke':
-      default:
-        return ProtectionPlatformEventType.woke;
-    }
-  }
-
-  ProtectionRuntimeState _parseRuntimeState(String? value) {
-    switch (value) {
-      case 'starting':
-        return ProtectionRuntimeState.starting;
-      case 'active':
-        return ProtectionRuntimeState.active;
-      case 'recovering':
-        return ProtectionRuntimeState.recovering;
-      case 'failed':
-        return ProtectionRuntimeState.failed;
-      case 'inactive':
-      default:
-        return ProtectionRuntimeState.inactive;
-    }
-  }
-
-  ProtectionCoverageLevel _parseCoverageLevel(String? value) {
-    switch (value) {
-      case 'partial':
-        return ProtectionCoverageLevel.partial;
-      case 'full':
-        return ProtectionCoverageLevel.full;
-      case 'none':
-      default:
-        return ProtectionCoverageLevel.none;
-    }
-  }
-
-  ProtectionCapabilityState _parseCapabilityState(String? value) {
-    switch (value) {
-      case 'configured':
-        return ProtectionCapabilityState.configured;
-      case 'unavailable':
-        return ProtectionCapabilityState.unavailable;
-      case 'unknown':
-      default:
-        return ProtectionCapabilityState.unknown;
-    }
-  }
-
-  ProtectionBleOwner _parseBleOwner(String? value) {
-    switch (value) {
-      case 'iosPlugin':
-        return ProtectionBleOwner.iosPlugin;
-      case 'androidService':
-        return ProtectionBleOwner.androidService;
-      case 'flutter':
-      default:
-        return ProtectionBleOwner.flutter;
-    }
-  }
-
-  DateTime? _readDateTime(Object? value) {
-    if (value is int) {
-      return DateTime.fromMillisecondsSinceEpoch(value, isUtc: true);
-    }
-    if (value is String && value.trim().isNotEmpty) {
-      return DateTime.tryParse(value)?.toUtc();
-    }
-    return null;
   }
 }

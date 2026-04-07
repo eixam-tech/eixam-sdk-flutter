@@ -1,66 +1,11 @@
-export 'src/data/datasources_local/preferred_ble_device_store.dart';
-export 'src/data/datasources_local/shared_prefs_sdk_store.dart';
-export 'src/data/repositories/api_sos_repository.dart';
-export 'src/data/repositories/geolocator_tracking_repository.dart';
-export 'src/data/repositories/in_memory_contacts_repository.dart';
-export 'src/data/repositories/in_memory_death_man_repository.dart';
-export 'src/data/repositories/in_memory_device_repository.dart';
-export 'src/data/repositories/in_memory_sdk_device_registry_repository.dart';
-export 'src/data/repositories/in_memory_sos_repository.dart';
-export 'src/data/repositories/in_memory_telemetry_repository.dart';
-export 'src/data/repositories/in_memory_tracking_repository.dart';
-export 'src/data/repositories/local_notifications_repository.dart';
-export 'src/data/repositories/mqtt_operational_sos_repository.dart';
-export 'src/data/repositories/mqtt_telemetry_repository.dart';
-export 'src/data/repositories/platform_permissions_repository.dart';
-export 'src/data/repositories/sos_runtime_rehydration_support.dart';
-export 'src/sdk/api_sdk_factory.dart';
-export 'src/sdk/ble_auto_reconnect_coordinator.dart';
-export 'src/sdk/death_man_controller.dart';
-export 'src/sdk/demo_sdk_factory.dart';
-export 'src/sdk/device_debug_controller.dart';
-export 'src/sdk/eixam_connect_sdk_impl.dart';
-export 'src/sdk/guided_rescue_runtime.dart';
-export 'src/sdk/mqtt_realtime_client.dart';
-export 'src/sdk/mqtt5_sdk_transport.dart';
-export 'src/sdk/device_view_state.dart';
-export 'src/sdk/protection_mode_controller.dart';
-export 'src/sdk/protection_platform_adapter_factory.dart';
-export 'src/sdk/protection_platform_adapter.dart';
-export 'src/sdk/android_protection_platform_adapter.dart';
-export 'src/sdk/ios_protection_platform_adapter.dart';
-export 'src/sdk/rescue_view_state.dart';
-export 'src/sdk/sos_controller.dart';
-export 'src/sdk/sos_view_state.dart';
-export 'src/sdk/sdk_mqtt_contract.dart';
-export 'src/sdk/ble_diagnostics_view_state.dart';
-export 'src/sdk/safety_overview_controller.dart';
-export 'src/sdk/tracking_controller.dart';
-
-export 'src/sdk/contacts_controller.dart';
-
-export 'src/sdk/device_controller.dart';
-
-export 'src/device/ble_adapter_state.dart';
-export 'src/device/ble_connection_status.dart';
-export 'src/device/ble_debug_event.dart';
-export 'src/device/ble_debug_registry.dart';
-export 'src/device/ble_debug_state.dart';
-export 'src/device/ble_client.dart';
-export 'src/device/ble_scan_result.dart';
-export 'src/device/ble_device_runtime_provider.dart';
-export 'src/device/disconnect_reason.dart';
-export 'src/device/eixam_ble_command.dart';
-export 'src/device/eixam_ble_notification.dart';
-export 'src/device/eixam_ble_protocol.dart';
-export 'src/device/eixam_guided_rescue_status_packet.dart';
-export 'src/device/preferred_ble_device.dart';
-export 'src/device/eixam_sos_event_packet.dart';
-export 'src/device/eixam_sos_packet.dart';
-export 'src/device/eixam_tel_fragment.dart';
-export 'src/device/eixam_tel_packet.dart';
-export 'src/device/eixam_tel_reassembler.dart';
-export 'src/device/mock_ble_client.dart';
-export 'src/device/device_runtime_provider.dart';
-export 'src/device/mock_device_runtime_provider.dart';
-export 'src/device/device_sos_controller.dart';
+// Partner-facing entrypoint for the Flutter SDK package.
+//
+// Anything not exported here should be treated as internal implementation
+// detail and imported only from within the monorepo.
+export 'src/public/sdk.dart';
+export 'src/public/config/config.dart';
+export 'src/public/models/models.dart';
+export 'src/public/enums/enums.dart';
+export 'src/public/events/events.dart';
+export 'src/public/errors/errors.dart';
+export 'src/public/factory/factory.dart';

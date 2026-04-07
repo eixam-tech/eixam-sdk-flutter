@@ -1,5 +1,5 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
-import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
+import 'package:eixam_connect_flutter/src/sdk/safety_overview_controller.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {

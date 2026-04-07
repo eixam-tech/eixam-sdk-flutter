@@ -2,6 +2,9 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
+import 'package:eixam_connect_flutter/src/device/ble_debug_state.dart';
+import 'package:eixam_connect_flutter/src/device/ble_scan_result.dart';
+import 'package:eixam_connect_flutter/src/sdk/device_debug_controller.dart';
 import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart'
     as permission_handler;

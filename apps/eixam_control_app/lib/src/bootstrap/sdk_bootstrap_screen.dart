@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
+import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
 import 'package:flutter/material.dart';
 
 import '../app_shell/eixam_demo_app.dart';

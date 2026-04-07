@@ -1,5 +1,5 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
-import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
+import 'package:eixam_connect_flutter/src/device/ble_scan_result.dart';
 import 'package:flutter/material.dart';
 
 class LabCard extends StatelessWidget {

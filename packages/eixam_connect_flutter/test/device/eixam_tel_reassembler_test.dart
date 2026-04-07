@@ -1,4 +1,5 @@
-import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_tel_fragment.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_tel_reassembler.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {

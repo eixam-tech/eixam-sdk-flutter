@@ -1,5 +1,5 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
-import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_guided_rescue_status_packet.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {

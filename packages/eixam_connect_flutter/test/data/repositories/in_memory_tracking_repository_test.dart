@@ -1,5 +1,5 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
-import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
+import 'package:eixam_connect_flutter/src/data/repositories/in_memory_tracking_repository.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
