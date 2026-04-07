@@ -1,0 +1,53 @@
+<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Android Integration</title><link rel='stylesheet' href='../assets/style.css'></head><body><div class='layout'><aside class='sidebar'><div class='brand'>EIXAM Docs - partner</div><nav><a class="" href="index.html">Overview</a><a class="" href="sdk-overview.html">SDK Overview</a><a class="" href="quickstart.html">Quickstart</a><a class="" href="public-api.html">Public API</a><a class="" href="public-api-examples.html">API Examples</a><a class="" href="core-concepts.html">Core Concepts</a><a class="" href="protection-mode.html">Protection Mode</a><a class="" href="flutter-integration.html">Flutter Integration</a><a class="active" href="android-integration.html">Android Integration</a><a class="" href="ios-integration.html">iOS Integration</a><a class="" href="permissions-checklist.html">Permissions Checklist</a><a class="" href="backend-integration.html">Backend Integration</a><a class="" href="api-reference.html">API Reference</a><a class="" href="troubleshooting.html">Troubleshooting</a></nav></aside><main class='content'><h1>Android Host Integration</h1>
+<h2>What The SDK/Plugin Owns</h2>
+<ul>
+<li>Protection method/event channels</li>
+<li>Foreground service class</li>
+<li>Merged service manifest declaration from the plugin</li>
+<li>Runtime snapshot persistence</li>
+<li>BLE ownership/readiness diagnostics exposed to Dart</li>
+</ul>
+<h2>What The Host App Still Owns</h2>
+<ul>
+<li>Runtime permission UX</li>
+<li>App bootstrap that constructs the SDK</li>
+<li>Validation UI consumption</li>
+<li>Any app-level notification/channel branding outside the plugin defaults</li>
+</ul>
+<h2>Required Android Setup</h2>
+<ul>
+<li>Keep Bluetooth, location, notifications, and foreground-service permissions available in the host app manifest.</li>
+<li>Bootstrap the SDK normally through <code>ApiSdkFactory.createHttpApi(...)</code> or an equivalent SDK constructor.</li>
+<li>Do not manually register a host-side Protection bridge in <code>MainActivity</code>; the plugin now auto-registers.</li>
+</ul>
+<h2>Arming Behavior</h2>
+<ul>
+<li>Protection Mode is off by default.</li>
+<li>Full Protection behavior is only attempted after <code>enterProtectionMode()</code>.</li>
+<li>When armed, the plugin foreground service becomes the intended Protection runtime owner and reports <code>bleOwner=androidService</code>.</li>
+<li>The SDK also releases the Flutter BLE runtime from active ownership so Flutter auto-reconnect and notification subscriptions stop competing while Protection Mode is armed.</li>
+<li>When disarmed, ownership returns to the default Flutter path.</li>
+</ul>
+<h2>Validation</h2>
+<ol>
+<li>Launch the control app.</li>
+<li>Confirm normal BLE/SOS behavior still works before arming Protection Mode.</li>
+<li>Open the Protection section.</li>
+<li>Run readiness.</li>
+<li>Enter Protection Mode.</li>
+<li>Confirm:<ul>
+<li>foreground service is running</li>
+<li>BLE owner is <code>androidService</code></li>
+<li>Flutter runtime no longer reports itself as the active owner</li>
+<li>platform events are updating</li>
+<li>rehydrate returns the same additive snapshot after app reattach</li>
+</ul>
+</li>
+</ol>
+<h2>Troubleshooting</h2>
+<ul>
+<li>If readiness is blocked, inspect session/device pairing/permission blockers first.</li>
+<li>If the service starts but coverage remains partial, review <code>serviceBleConnected</code>, <code>serviceBleReady</code>, <code>lastBleServiceEvent</code>, and reconnect counters.</li>
+<li>If the mode is never enabled, current app behavior should remain unchanged by design.</li>
+</ul>
+</main></div><script src='../assets/site.js'></script></body></html>

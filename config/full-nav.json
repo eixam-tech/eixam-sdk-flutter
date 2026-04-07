@@ -1,0 +1,86 @@
+[
+  [
+    "Overview",
+    "index.md"
+  ],
+  [
+    "SDK Architecture",
+    "sdk/architecture.md"
+  ],
+  [
+    "Partner Integration Guide",
+    "sdk/partner-integration-guide.md"
+  ],
+  [
+    "Backend Integration",
+    "sdk/backend-integration.md"
+  ],
+  [
+    "Public API",
+    "api/public-api.md"
+  ],
+  [
+    "Public API Examples",
+    "api/public-api-examples.md"
+  ],
+  [
+    "Protection Overview",
+    "protection/overview.md"
+  ],
+  [
+    "Android Host Integration",
+    "protection/android-host-integration.md"
+  ],
+  [
+    "iOS Host Integration",
+    "protection/ios-host-integration.md"
+  ],
+  [
+    "Permissions Checklist",
+    "integration/permissions-checklist.md"
+  ],
+  [
+    "BLE Provider Integration",
+    "integration/ble-provider-integration.md"
+  ],
+  [
+    "BLE Protocol",
+    "protocol/ble-protocol.md"
+  ],
+  [
+    "BLE Runtime Flow",
+    "protocol/ble-runtime-flow.md"
+  ],
+  [
+    "Reference App Validation Guide",
+    "reference-app/debug-app-validation-guide.md"
+  ],
+  [
+    "Real Backend Validation Checklist",
+    "reference-app/real-backend-validation-checklist.md"
+  ],
+  [
+    "Decisions",
+    "internal/decisions.md"
+  ],
+  [
+    "Quality Gates",
+    "internal/quality-gates.md"
+  ],
+  [
+    "Testing Strategy",
+    "internal/testing-strategy.md"
+  ],
+  [
+    "Testability Notes",
+    "internal/testability-notes.md"
+  ],
+  [
+    "Roadmap",
+    "internal/roadmap.md"
+  ],
+  [
+    "Team Handoff Index",
+    "internal/team-handoff-index.md"
+  ]
+]

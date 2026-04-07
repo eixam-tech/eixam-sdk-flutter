@@ -1,0 +1,372 @@
+<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Public API Examples</title><link rel='stylesheet' href='../../assets/style.css'></head><body><div class='layout'><aside class='sidebar'><div class='brand'>EIXAM Docs - full</div><nav><a class="" href="../index.html">Overview</a><a class="" href="../sdk/architecture.html">SDK Architecture</a><a class="" href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a class="" href="../sdk/backend-integration.html">Backend Integration</a><a class="" href="public-api.html">Public API</a><a class="active" href="public-api-examples.html">Public API Examples</a><a class="" href="../protection/overview.html">Protection Overview</a><a class="" href="../protection/android-host-integration.html">Android Host Integration</a><a class="" href="../protection/ios-host-integration.html">iOS Host Integration</a><a class="" href="../integration/permissions-checklist.html">Permissions Checklist</a><a class="" href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a class="" href="../protocol/ble-protocol.html">BLE Protocol</a><a class="" href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a class="" href="../reference-app/debug-app-validation-guide.html">Reference App Validation Guide</a><a class="" href="../reference-app/real-backend-validation-checklist.html">Real Backend Validation Checklist</a><a class="" href="../internal/decisions.html">Decisions</a><a class="" href="../internal/quality-gates.html">Quality Gates</a><a class="" href="../internal/testing-strategy.html">Testing Strategy</a><a class="" href="../internal/testability-notes.html">Testability Notes</a><a class="" href="../internal/roadmap.html">Roadmap</a><a class="" href="../internal/team-handoff-index.html">Team Handoff Index</a></nav></aside><main class='content'><h1>Public API Examples</h1>
+<p>Short example for every current public method on <code>EixamConnectSdk</code>, including methods excluded from the partner site.</p>
+<h2>Initialization and session</h2>
+<h3><code>initialize</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; initialize(EixamSdkConfig config)</code></p>
+<pre><code class="language-dart">await sdk.initialize(const EixamSdkConfig());
+</code></pre>
+<h3><code>setSession</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; setSession(EixamSession session)</code></p>
+<pre><code class="language-dart">await sdk.setSession(const EixamSession.signed(appId: 'partner-app', externalUserId: 'user-123', userHash: 'signed-hash'));
+</code></pre>
+<h3><code>clearSession</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; clearSession()</code></p>
+<pre><code class="language-dart">await sdk.clearSession();
+</code></pre>
+<h3><code>getCurrentSession</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;EixamSession?&gt; getCurrentSession()</code></p>
+<pre><code class="language-dart">final session = await sdk.getCurrentSession();
+</code></pre>
+<h3><code>refreshCanonicalIdentity</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;EixamSession&gt; refreshCanonicalIdentity()</code></p>
+<pre><code class="language-dart">final canonical = await sdk.refreshCanonicalIdentity();
+</code></pre>
+<h2>Operational diagnostics and protection</h2>
+<h3><code>getOperationalDiagnostics</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;SdkOperationalDiagnostics&gt; getOperationalDiagnostics()</code></p>
+<pre><code class="language-dart">final diagnostics = await sdk.getOperationalDiagnostics();
+</code></pre>
+<h3><code>watchOperationalDiagnostics</code></h3>
+<p><strong>Signature</strong>: <code>Stream&lt;SdkOperationalDiagnostics&gt; watchOperationalDiagnostics()</code></p>
+<pre><code class="language-dart">sdk.watchOperationalDiagnostics().listen((d) { /* render diagnostics */ });
+</code></pre>
+<h3><code>evaluateProtectionReadiness</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;ProtectionReadinessReport&gt; evaluateProtectionReadiness()</code></p>
+<pre><code class="language-dart">final report = await sdk.evaluateProtectionReadiness();
+</code></pre>
+<h3><code>enterProtectionMode</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;EnterProtectionModeResult&gt; enterProtectionMode({ ProtectionModeOptions options = const ProtectionModeOptions(), })</code></p>
+<pre><code class="language-dart">final result = await sdk.enterProtectionMode();
+</code></pre>
+<h3><code>exitProtectionMode</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;ProtectionStatus&gt; exitProtectionMode()</code></p>
+<pre><code class="language-dart">final status = await sdk.exitProtectionMode();
+</code></pre>
+<h3><code>getProtectionStatus</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;ProtectionStatus&gt; getProtectionStatus()</code></p>
+<pre><code class="language-dart">final status = await sdk.getProtectionStatus();
+</code></pre>
+<h3><code>watchProtectionStatus</code></h3>
+<p><strong>Signature</strong>: <code>Stream&lt;ProtectionStatus&gt; watchProtectionStatus()</code></p>
+<pre><code class="language-dart">sdk.watchProtectionStatus().listen((status) { /* update UI */ });
+</code></pre>
+<h3><code>getProtectionDiagnostics</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;ProtectionDiagnostics&gt; getProtectionDiagnostics()</code></p>
+<pre><code class="language-dart">final diagnostics = await sdk.getProtectionDiagnostics();
+</code></pre>
+<h3><code>watchProtectionDiagnostics</code></h3>
+<p><strong>Signature</strong>: <code>Stream&lt;ProtectionDiagnostics&gt; watchProtectionDiagnostics()</code></p>
+<pre><code class="language-dart">sdk.watchProtectionDiagnostics().listen((d) { /* update UI */ });
+</code></pre>
+<h3><code>rehydrateProtectionState</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;ProtectionStatus&gt; rehydrateProtectionState()</code></p>
+<pre><code class="language-dart">final status = await sdk.rehydrateProtectionState();
+</code></pre>
+<h3><code>flushProtectionQueues</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;FlushProtectionQueuesResult&gt; flushProtectionQueues()</code></p>
+<pre><code class="language-dart">final result = await sdk.flushProtectionQueues();
+</code></pre>
+<h2>Local device runtime</h2>
+<h3><code>connectDevice</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;DeviceStatus&gt; connectDevice({required String pairingCode})</code></p>
+<pre><code class="language-dart">final status = await sdk.connectDevice(pairingCode: 'PAIR-1234');
+</code></pre>
+<h3><code>disconnectDevice</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; disconnectDevice()</code></p>
+<pre><code class="language-dart">await sdk.disconnectDevice();
+</code></pre>
+<h3><code>preferredDevice</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;PreferredDevice?&gt; get preferredDevice</code></p>
+<pre><code class="language-dart">final device = await sdk.preferredDevice;
+</code></pre>
+<h3><code>deviceStatusStream</code></h3>
+<p><strong>Signature</strong>: <code>Stream&lt;DeviceStatus&gt; get deviceStatusStream</code></p>
+<pre><code class="language-dart">sdk.deviceStatusStream.listen((status) { /* render BLE/runtime state */ });
+</code></pre>
+<h3><code>pairDevice</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;DeviceStatus&gt; pairDevice({required String pairingCode})</code></p>
+<p><em>Legacy API.</em></p>
+<pre><code class="language-dart">final status = await sdk.pairDevice(pairingCode: 'PAIR-1234');
+</code></pre>
+<h3><code>activateDevice</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;DeviceStatus&gt; activateDevice({required String activationCode})</code></p>
+<pre><code class="language-dart">final status = await sdk.activateDevice(activationCode: 'ACT-1234');
+</code></pre>
+<h3><code>getDeviceStatus</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;DeviceStatus&gt; getDeviceStatus()</code></p>
+<pre><code class="language-dart">final status = await sdk.getDeviceStatus();
+</code></pre>
+<h3><code>refreshDeviceStatus</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;DeviceStatus&gt; refreshDeviceStatus()</code></p>
+<pre><code class="language-dart">final status = await sdk.refreshDeviceStatus();
+</code></pre>
+<h3><code>unpairDevice</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; unpairDevice()</code></p>
+<p><em>Legacy API.</em></p>
+<pre><code class="language-dart">await sdk.unpairDevice();
+</code></pre>
+<h3><code>watchDeviceStatus</code></h3>
+<p><strong>Signature</strong>: <code>Stream&lt;DeviceStatus&gt; watchDeviceStatus()</code></p>
+<p><em>Legacy API.</em></p>
+<pre><code class="language-dart">sdk.watchDeviceStatus().listen((status) { /* legacy status stream */ });
+</code></pre>
+<h3><code>getDeviceSosStatus</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;DeviceSosStatus&gt; getDeviceSosStatus()</code></p>
+<pre><code class="language-dart">final sos = await sdk.getDeviceSosStatus();
+</code></pre>
+<h3><code>watchDeviceSosStatus</code></h3>
+<p><strong>Signature</strong>: <code>Stream&lt;DeviceSosStatus&gt; watchDeviceSosStatus()</code></p>
+<pre><code class="language-dart">sdk.watchDeviceSosStatus().listen((sos) { /* render device SOS state */ });
+</code></pre>
+<h3><code>triggerDeviceSos</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;DeviceSosStatus&gt; triggerDeviceSos()</code></p>
+<pre><code class="language-dart">await sdk.triggerDeviceSos();
+</code></pre>
+<h3><code>confirmDeviceSos</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;DeviceSosStatus&gt; confirmDeviceSos()</code></p>
+<pre><code class="language-dart">await sdk.confirmDeviceSos();
+</code></pre>
+<h3><code>cancelDeviceSos</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;DeviceSosStatus&gt; cancelDeviceSos()</code></p>
+<pre><code class="language-dart">await sdk.cancelDeviceSos();
+</code></pre>
+<h3><code>acknowledgeDeviceSos</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;DeviceSosStatus&gt; acknowledgeDeviceSos()</code></p>
+<pre><code class="language-dart">await sdk.acknowledgeDeviceSos();
+</code></pre>
+<h3><code>sendInetOkToDevice</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; sendInetOkToDevice()</code></p>
+<pre><code class="language-dart">await sdk.sendInetOkToDevice();
+</code></pre>
+<h3><code>sendInetLostToDevice</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; sendInetLostToDevice()</code></p>
+<pre><code class="language-dart">await sdk.sendInetLostToDevice();
+</code></pre>
+<h3><code>sendPositionConfirmedToDevice</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; sendPositionConfirmedToDevice()</code></p>
+<pre><code class="language-dart">await sdk.sendPositionConfirmedToDevice();
+</code></pre>
+<h3><code>sendSosAckRelayToDevice</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; sendSosAckRelayToDevice({required int nodeId})</code></p>
+<pre><code class="language-dart">await sdk.sendSosAckRelayToDevice(nodeId: 42);
+</code></pre>
+<h3><code>sendShutdownToDevice</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; sendShutdownToDevice()</code></p>
+<pre><code class="language-dart">await sdk.sendShutdownToDevice();
+</code></pre>
+<h3><code>consumePendingBleNotificationNavigationRequest</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;BleNotificationNavigationRequest?&gt; consumePendingBleNotificationNavigationRequest()</code></p>
+<pre><code class="language-dart">final request = await sdk.consumePendingBleNotificationNavigationRequest();
+</code></pre>
+<h3><code>watchBleNotificationNavigationRequests</code></h3>
+<p><strong>Signature</strong>: <code>Stream&lt;BleNotificationNavigationRequest&gt; watchBleNotificationNavigationRequests()</code></p>
+<pre><code class="language-dart">sdk.watchBleNotificationNavigationRequests().listen((request) { /* navigate */ });
+</code></pre>
+<h2>Backend device registry</h2>
+<h3><code>listRegisteredDevices</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;List&lt;BackendRegisteredDevice&gt;&gt; listRegisteredDevices()</code></p>
+<pre><code class="language-dart">final devices = await sdk.listRegisteredDevices();
+</code></pre>
+<h3><code>upsertRegisteredDevice</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;BackendRegisteredDevice&gt; upsertRegisteredDevice({ required String hardwareId, required String firmwareVersion, required String hardwareModel, required DateTime pairedAt, })</code></p>
+<pre><code class="language-dart">await sdk.upsertRegisteredDevice(hardwareId: 'hw-1', firmwareVersion: '1.2.3', hardwareModel: 'EIXAM R1', pairedAt: DateTime.now().toUtc());
+</code></pre>
+<h3><code>deleteRegisteredDevice</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; deleteRegisteredDevice(String deviceId)</code></p>
+<pre><code class="language-dart">await sdk.deleteRegisteredDevice('device-id');
+</code></pre>
+<h2>SOS</h2>
+<h3><code>triggerSos</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;SosIncident&gt; triggerSos(SosTriggerPayload payload)</code></p>
+<pre><code class="language-dart">await sdk.triggerSos(const SosTriggerPayload(message: 'Need help', triggerSource: 'button_ui'));
+</code></pre>
+<h3><code>getCurrentSosIncident</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;SosIncident?&gt; getCurrentSosIncident()</code></p>
+<pre><code class="language-dart">final incident = await sdk.getCurrentSosIncident();
+</code></pre>
+<h3><code>currentSosStateStream</code></h3>
+<p><strong>Signature</strong>: <code>Stream&lt;SosState&gt; get currentSosStateStream</code></p>
+<pre><code class="language-dart">sdk.currentSosStateStream.listen((state) { /* render SOS state */ });
+</code></pre>
+<h3><code>lastSosEventStream</code></h3>
+<p><strong>Signature</strong>: <code>Stream&lt;EixamSdkEvent&gt; get lastSosEventStream</code></p>
+<pre><code class="language-dart">sdk.lastSosEventStream.listen((event) { /* inspect last event */ });
+</code></pre>
+<h3><code>cancelSos</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;SosIncident&gt; cancelSos()</code></p>
+<pre><code class="language-dart">await sdk.cancelSos();
+</code></pre>
+<h3><code>getSosState</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;SosState&gt; getSosState()</code></p>
+<pre><code class="language-dart">final state = await sdk.getSosState();
+</code></pre>
+<h3><code>watchSosState</code></h3>
+<p><strong>Signature</strong>: <code>Stream&lt;SosState&gt; watchSosState()</code></p>
+<p><em>Legacy API.</em></p>
+<pre><code class="language-dart">sdk.watchSosState().listen((state) { /* legacy stream */ });
+</code></pre>
+<h2>Contacts</h2>
+<h3><code>createEmergencyContact</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;EmergencyContact&gt; createEmergencyContact({ required String name, required String phone, required String email, int priority = 1, })</code></p>
+<pre><code class="language-dart">await sdk.createEmergencyContact(name: 'Alice', phone: '+34123456789', email: 'alice@example.com');
+</code></pre>
+<h3><code>deleteEmergencyContact</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; deleteEmergencyContact(String contactId)</code></p>
+<pre><code class="language-dart">await sdk.deleteEmergencyContact('contact-id');
+</code></pre>
+<h3><code>listEmergencyContacts</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;List&lt;EmergencyContact&gt;&gt; listEmergencyContacts()</code></p>
+<pre><code class="language-dart">final contacts = await sdk.listEmergencyContacts();
+</code></pre>
+<h3><code>watchEmergencyContacts</code></h3>
+<p><strong>Signature</strong>: <code>Stream&lt;List&lt;EmergencyContact&gt;&gt; watchEmergencyContacts()</code></p>
+<pre><code class="language-dart">sdk.watchEmergencyContacts().listen((contacts) { /* render contacts */ });
+</code></pre>
+<h3><code>addEmergencyContact</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;EmergencyContact&gt; addEmergencyContact({ required String name, required String phone, required String email, int priority = 1, })</code></p>
+<p><em>Legacy API.</em></p>
+<pre><code class="language-dart">await sdk.addEmergencyContact(name: 'Alice', phone: '+34123456789', email: 'alice@example.com');
+</code></pre>
+<h3><code>updateEmergencyContact</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;EmergencyContact&gt; updateEmergencyContact(EmergencyContact contact)</code></p>
+<pre><code class="language-dart">await sdk.updateEmergencyContact(contact);
+</code></pre>
+<h3><code>removeEmergencyContact</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; removeEmergencyContact(String contactId)</code></p>
+<p><em>Legacy API.</em></p>
+<pre><code class="language-dart">await sdk.removeEmergencyContact('contact-id');
+</code></pre>
+<h2>Permissions and notifications</h2>
+<h3><code>getPermissionState</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;PermissionState&gt; getPermissionState()</code></p>
+<pre><code class="language-dart">final permissions = await sdk.getPermissionState();
+</code></pre>
+<h3><code>requestLocationPermission</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;PermissionState&gt; requestLocationPermission()</code></p>
+<pre><code class="language-dart">await sdk.requestLocationPermission();
+</code></pre>
+<h3><code>requestNotificationPermission</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;PermissionState&gt; requestNotificationPermission()</code></p>
+<pre><code class="language-dart">await sdk.requestNotificationPermission();
+</code></pre>
+<h3><code>requestBluetoothPermission</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;PermissionState&gt; requestBluetoothPermission()</code></p>
+<pre><code class="language-dart">await sdk.requestBluetoothPermission();
+</code></pre>
+<h3><code>initializeNotifications</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; initializeNotifications()</code></p>
+<pre><code class="language-dart">await sdk.initializeNotifications();
+</code></pre>
+<h3><code>showLocalNotification</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; showLocalNotification({ required String title, required String body, })</code></p>
+<pre><code class="language-dart">await sdk.showLocalNotification(title: 'EIXAM', body: 'Device connected');
+</code></pre>
+<h2>Guided rescue</h2>
+<h3><code>getGuidedRescueState</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;GuidedRescueState&gt; getGuidedRescueState()</code></p>
+<pre><code class="language-dart">final state = await sdk.getGuidedRescueState();
+</code></pre>
+<h3><code>watchGuidedRescueState</code></h3>
+<p><strong>Signature</strong>: <code>Stream&lt;GuidedRescueState&gt; watchGuidedRescueState()</code></p>
+<pre><code class="language-dart">sdk.watchGuidedRescueState().listen((state) { /* internal validation */ });
+</code></pre>
+<h3><code>setGuidedRescueSession</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;GuidedRescueState&gt; setGuidedRescueSession({ required int targetNodeId, required int rescueNodeId, })</code></p>
+<pre><code class="language-dart">await sdk.setGuidedRescueSession(targetNodeId: 1001, rescueNodeId: 2001);
+</code></pre>
+<h3><code>clearGuidedRescueSession</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; clearGuidedRescueSession()</code></p>
+<pre><code class="language-dart">await sdk.clearGuidedRescueSession();
+</code></pre>
+<h3><code>requestGuidedRescuePosition</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; requestGuidedRescuePosition()</code></p>
+<pre><code class="language-dart">await sdk.requestGuidedRescuePosition();
+</code></pre>
+<h3><code>acknowledgeGuidedRescueSos</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; acknowledgeGuidedRescueSos()</code></p>
+<pre><code class="language-dart">await sdk.acknowledgeGuidedRescueSos();
+</code></pre>
+<h3><code>enableGuidedRescueBuzzer</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; enableGuidedRescueBuzzer()</code></p>
+<pre><code class="language-dart">await sdk.enableGuidedRescueBuzzer();
+</code></pre>
+<h3><code>disableGuidedRescueBuzzer</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; disableGuidedRescueBuzzer()</code></p>
+<pre><code class="language-dart">await sdk.disableGuidedRescueBuzzer();
+</code></pre>
+<h3><code>requestGuidedRescueStatus</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; requestGuidedRescueStatus()</code></p>
+<pre><code class="language-dart">await sdk.requestGuidedRescueStatus();
+</code></pre>
+<h2>Tracking and telemetry</h2>
+<h3><code>startTracking</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; startTracking()</code></p>
+<pre><code class="language-dart">await sdk.startTracking();
+</code></pre>
+<h3><code>stopTracking</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; stopTracking()</code></p>
+<pre><code class="language-dart">await sdk.stopTracking();
+</code></pre>
+<h3><code>publishTelemetry</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; publishTelemetry(SdkTelemetryPayload payload)</code></p>
+<pre><code class="language-dart">await sdk.publishTelemetry(SdkTelemetryPayload(timestamp: DateTime.now().toUtc(), latitude: 41.38, longitude: 2.17, altitude: 8, deviceId: 'device-1'));
+</code></pre>
+<h3><code>getCurrentPosition</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;TrackingPosition?&gt; getCurrentPosition()</code></p>
+<pre><code class="language-dart">final position = await sdk.getCurrentPosition();
+</code></pre>
+<h3><code>getTrackingState</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;TrackingState&gt; getTrackingState()</code></p>
+<pre><code class="language-dart">final state = await sdk.getTrackingState();
+</code></pre>
+<h3><code>watchPositions</code></h3>
+<p><strong>Signature</strong>: <code>Stream&lt;TrackingPosition&gt; watchPositions()</code></p>
+<pre><code class="language-dart">sdk.watchPositions().listen((position) { /* render position */ });
+</code></pre>
+<h3><code>watchTrackingState</code></h3>
+<p><strong>Signature</strong>: <code>Stream&lt;TrackingState&gt; watchTrackingState()</code></p>
+<pre><code class="language-dart">sdk.watchTrackingState().listen((state) { /* render tracking state */ });
+</code></pre>
+<h2>Death Man</h2>
+<h3><code>scheduleDeathMan</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;DeathManPlan&gt; scheduleDeathMan({ required DateTime expectedReturnAt, Duration gracePeriod = const Duration(minutes: 30), Duration checkInWindow = const Duration(minutes: 10), bool autoTriggerSos = true, })</code></p>
+<pre><code class="language-dart">await sdk.scheduleDeathMan(expectedReturnAt: DateTime.now().add(const Duration(hours: 4)));
+</code></pre>
+<h3><code>getActiveDeathManPlan</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;DeathManPlan?&gt; getActiveDeathManPlan()</code></p>
+<pre><code class="language-dart">final plan = await sdk.getActiveDeathManPlan();
+</code></pre>
+<h3><code>confirmDeathManCheckIn</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; confirmDeathManCheckIn(String planId)</code></p>
+<pre><code class="language-dart">await sdk.confirmDeathManCheckIn('plan-id');
+</code></pre>
+<h3><code>cancelDeathMan</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;void&gt; cancelDeathMan(String planId)</code></p>
+<pre><code class="language-dart">await sdk.cancelDeathMan('plan-id');
+</code></pre>
+<h3><code>watchDeathManPlans</code></h3>
+<p><strong>Signature</strong>: <code>Stream&lt;DeathManPlan&gt; watchDeathManPlans()</code></p>
+<pre><code class="language-dart">sdk.watchDeathManPlans().listen((plan) { /* render plan */ });
+</code></pre>
+<h2>Events and realtime</h2>
+<h3><code>watchEvents</code></h3>
+<p><strong>Signature</strong>: <code>Stream&lt;EixamSdkEvent&gt; watchEvents()</code></p>
+<pre><code class="language-dart">sdk.watchEvents().listen((event) { /* inspect SDK events */ });
+</code></pre>
+<h3><code>getRealtimeConnectionState</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;RealtimeConnectionState&gt; getRealtimeConnectionState()</code></p>
+<pre><code class="language-dart">final state = await sdk.getRealtimeConnectionState();
+</code></pre>
+<h3><code>getLastRealtimeEvent</code></h3>
+<p><strong>Signature</strong>: <code>Future&lt;RealtimeEvent?&gt; getLastRealtimeEvent()</code></p>
+<pre><code class="language-dart">final event = await sdk.getLastRealtimeEvent();
+</code></pre>
+<h3><code>watchRealtimeConnectionState</code></h3>
+<p><strong>Signature</strong>: <code>Stream&lt;RealtimeConnectionState&gt; watchRealtimeConnectionState()</code></p>
+<pre><code class="language-dart">sdk.watchRealtimeConnectionState().listen((state) { /* render transport state */ });
+</code></pre>
+<h3><code>watchRealtimeEvents</code></h3>
+<p><strong>Signature</strong>: <code>Stream&lt;RealtimeEvent&gt; watchRealtimeEvents()</code></p>
+<pre><code class="language-dart">sdk.watchRealtimeEvents().listen((event) { /* inspect transport events */ });
+</code></pre>
+</main></div><script src='../../assets/site.js'></script></body></html>

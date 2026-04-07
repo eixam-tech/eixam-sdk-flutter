@@ -1,0 +1,46 @@
+<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>BLE Provider Integration</title><link rel='stylesheet' href='../../assets/style.css'></head><body><div class='layout'><aside class='sidebar'><div class='brand'>EIXAM Docs - full</div><nav><a class="" href="../index.html">Overview</a><a class="" href="../sdk/architecture.html">SDK Architecture</a><a class="" href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a class="" href="../sdk/backend-integration.html">Backend Integration</a><a class="" href="../api/public-api.html">Public API</a><a class="" href="../api/public-api-examples.html">Public API Examples</a><a class="" href="../protection/overview.html">Protection Overview</a><a class="" href="../protection/android-host-integration.html">Android Host Integration</a><a class="" href="../protection/ios-host-integration.html">iOS Host Integration</a><a class="" href="permissions-checklist.html">Permissions Checklist</a><a class="active" href="ble-provider-integration.html">BLE Provider Integration</a><a class="" href="../protocol/ble-protocol.html">BLE Protocol</a><a class="" href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a class="" href="../reference-app/debug-app-validation-guide.html">Reference App Validation Guide</a><a class="" href="../reference-app/real-backend-validation-checklist.html">Real Backend Validation Checklist</a><a class="" href="../internal/decisions.html">Decisions</a><a class="" href="../internal/quality-gates.html">Quality Gates</a><a class="" href="../internal/testing-strategy.html">Testing Strategy</a><a class="" href="../internal/testability-notes.html">Testability Notes</a><a class="" href="../internal/roadmap.html">Roadmap</a><a class="" href="../internal/team-handoff-index.html">Team Handoff Index</a></nav></aside><main class='content'><h1>BLE provider integration notes</h1>
+<p>This package includes a BLE-oriented runtime abstraction used by the device module.</p>
+<h2>Included building blocks</h2>
+<ul>
+<li><code>BleClient</code>: low-level BLE adapter contract</li>
+<li><code>MockBleClient</code>: demo BLE environment for local development</li>
+<li><code>BleDeviceRuntimeProvider</code>: device lifecycle orchestration built on top of a BLE client</li>
+</ul>
+<h2>Protocol handling in the runtime layer</h2>
+<ul>
+<li>TEL notifications on <code>ea01</code> can be either classic 10-byte TEL position packets or <code>0xD0</code> aggregate fragments.</li>
+<li>SOS notifications on <code>ea02</code> can be classic 10-byte mesh packets, classic 5-byte minimal mesh packets, or 4-byte device event packets.</li>
+<li>TEL aggregate reassembly lives in <code>BleDeviceRuntimeProvider</code> via <code>EixamTelReassembler</code>, not in the UI layer.</li>
+<li>The UI should consume typed <code>BleIncomingEvent</code> values and avoid assuming packet shape from payload length alone.</li>
+</ul>
+<h2>Event typing</h2>
+<ul>
+<li><code>telPosition</code>: classic decoded 10-byte TEL packet</li>
+<li><code>telAggregateFragment</code>: one <code>0xD0</code> TEL aggregate fragment</li>
+<li><code>telAggregateComplete</code>: a fully reassembled TEL aggregate blob</li>
+<li><code>sosMeshPacket</code>: classic decoded SOS mesh packet</li>
+<li><code>sosDeviceEvent</code>: 4-byte SOS device control event</li>
+<li><code>unknownProtocolPacket</code>: payload did not match a currently supported protocol packet</li>
+</ul>
+<h2>Aggregate telemetry mapping</h2>
+<ul>
+<li>Aggregate TEL fragments are reassembled in <code>BleDeviceRuntimeProvider</code> and then handed to the operational bridge as <code>telAggregateComplete</code>.</li>
+<li>The bridge publishes aggregate telemetry only when the completed payload is safely mappable to the current backend telemetry contract.</li>
+<li>Today that means: a completed aggregate payload that is exactly one classic 10-byte TEL packet.</li>
+<li>Cluster aggregate blobs that carry richer or multi-record data are kept internal to the runtime for now and produce diagnostics instead of guessed backend publishes.</li>
+</ul>
+<h2>Preferred device and reconnect behavior</h2>
+<ul>
+<li>The SDK stores one preferred BLE device after a successful full connection.</li>
+<li>On SDK startup and app resume, the SDK attempts to reconnect to that preferred device when manual disconnect is not active.</li>
+<li>Unexpected foreground disconnects schedule reconnect retries with simple backoff.</li>
+<li>Manual disconnect disables auto-reconnect until the user explicitly starts a new connect flow.</li>
+<li>Reconnect currently reuses the existing scan-plus-selected-device flow by stored device identifier; it does not rely on background BLE transport or a platform daemon.</li>
+</ul>
+<h2>Recommended next step for production</h2>
+<p>Create a <code>FlutterBluePlusBleClient</code> (or equivalent) that implements <code>BleClient</code> and then inject it into <code>BleDeviceRuntimeProvider</code>.</p>
+<h2>Why this matters</h2>
+<p>The host app and the public SDK should not depend directly on a Bluetooth package. Keeping BLE behind <code>BleClient</code> makes the stack easier to test, replace and maintain.</p>
+<h2>Native prerequisites</h2>
+<p>Check <code>NATIVE_PERMISSIONS_CHECKLIST.md</code> before enabling any real BLE feature in the host app.</p>
+</main></div><script src='../../assets/site.js'></script></body></html>

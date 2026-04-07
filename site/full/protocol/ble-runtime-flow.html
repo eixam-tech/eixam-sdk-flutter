@@ -1,0 +1,40 @@
+<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>BLE Runtime Flow</title><link rel='stylesheet' href='../../assets/style.css'></head><body><div class='layout'><aside class='sidebar'><div class='brand'>EIXAM Docs - full</div><nav><a class="" href="../index.html">Overview</a><a class="" href="../sdk/architecture.html">SDK Architecture</a><a class="" href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a class="" href="../sdk/backend-integration.html">Backend Integration</a><a class="" href="../api/public-api.html">Public API</a><a class="" href="../api/public-api-examples.html">Public API Examples</a><a class="" href="../protection/overview.html">Protection Overview</a><a class="" href="../protection/android-host-integration.html">Android Host Integration</a><a class="" href="../protection/ios-host-integration.html">iOS Host Integration</a><a class="" href="../integration/permissions-checklist.html">Permissions Checklist</a><a class="" href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a class="" href="ble-protocol.html">BLE Protocol</a><a class="active" href="ble-runtime-flow.html">BLE Runtime Flow</a><a class="" href="../reference-app/debug-app-validation-guide.html">Reference App Validation Guide</a><a class="" href="../reference-app/real-backend-validation-checklist.html">Real Backend Validation Checklist</a><a class="" href="../internal/decisions.html">Decisions</a><a class="" href="../internal/quality-gates.html">Quality Gates</a><a class="" href="../internal/testing-strategy.html">Testing Strategy</a><a class="" href="../internal/testability-notes.html">Testability Notes</a><a class="" href="../internal/roadmap.html">Roadmap</a><a class="" href="../internal/team-handoff-index.html">Team Handoff Index</a></nav></aside><main class='content'><h1>BLE Runtime Flow</h1>
+<ol>
+<li><p><code>RealBleClient</code> or <code>MockBleClient</code></p>
+<ul>
+<li>scan</li>
+<li>connect</li>
+<li>discover services</li>
+<li>subscribe to TEL and SOS notify characteristics</li>
+<li>write typed commands to INET or CMD</li>
+</ul>
+</li>
+<li><p>Protocol layer</p>
+<ul>
+<li><code>EixamTelPacket.tryParse(...)</code></li>
+<li><code>EixamSosPacket.tryParse(...)</code></li>
+<li><code>EixamDeviceCommand</code></li>
+</ul>
+</li>
+<li><p>Runtime layer</p>
+<ul>
+<li><code>BleDeviceRuntimeProvider</code> receives characteristic-aware notifications</li>
+<li>decodes them</li>
+<li>emits protocol-driven incoming events</li>
+<li>forwards SOS packets into <code>DeviceSosController</code></li>
+</ul>
+</li>
+<li><p>Orchestration</p>
+<ul>
+<li><code>DeviceSosController</code> keeps only useful derived SOS state</li>
+<li><code>EixamConnectSdkImpl</code> decides whether to emit local notifications or send backend-driven BLE responses</li>
+</ul>
+</li>
+<li><p>UI</p>
+<ul>
+<li><code>DeviceDetailScreen</code> renders device state, decoded SOS details, and invokes SDK command methods</li>
+<li>UI does not assemble raw BLE payloads</li>
+</ul>
+</li>
+</ol>
+</main></div><script src='../../assets/site.js'></script></body></html>

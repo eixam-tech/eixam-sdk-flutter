@@ -1,0 +1,294 @@
+<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Reference App Validation Guide</title><link rel='stylesheet' href='../../assets/style.css'></head><body><div class='layout'><aside class='sidebar'><div class='brand'>EIXAM Docs - full</div><nav><a class="" href="../index.html">Overview</a><a class="" href="../sdk/architecture.html">SDK Architecture</a><a class="" href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a class="" href="../sdk/backend-integration.html">Backend Integration</a><a class="" href="../api/public-api.html">Public API</a><a class="" href="../api/public-api-examples.html">Public API Examples</a><a class="" href="../protection/overview.html">Protection Overview</a><a class="" href="../protection/android-host-integration.html">Android Host Integration</a><a class="" href="../protection/ios-host-integration.html">iOS Host Integration</a><a class="" href="../integration/permissions-checklist.html">Permissions Checklist</a><a class="" href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a class="" href="../protocol/ble-protocol.html">BLE Protocol</a><a class="" href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a class="active" href="debug-app-validation-guide.html">Reference App Validation Guide</a><a class="" href="real-backend-validation-checklist.html">Real Backend Validation Checklist</a><a class="" href="../internal/decisions.html">Decisions</a><a class="" href="../internal/quality-gates.html">Quality Gates</a><a class="" href="../internal/testing-strategy.html">Testing Strategy</a><a class="" href="../internal/testability-notes.html">Testability Notes</a><a class="" href="../internal/roadmap.html">Roadmap</a><a class="" href="../internal/team-handoff-index.html">Team Handoff Index</a></nav></aside><main class='content'><h1>Debug App Validation Guide</h1>
+<p>For a shorter operator-facing real backend runbook, see
+<code>docs/app_ble/REAL_BACKEND_VALIDATION_CHECKLIST.md</code>.</p>
+<p>In debug/local validation builds, the console prefills localhost backend URLs
+and the known local signed session draft on first run. Saved backend
+configuration still wins, and all fields remain editable.</p>
+<h2>Purpose</h2>
+<p>This guide describes how to validate the current SDK to backend integration using the internal reference/debug app.</p>
+<p>It is intended for:</p>
+<ul>
+<li>internal QA</li>
+<li>SDK validation sessions</li>
+<li>backend/mobile integration debugging</li>
+</ul>
+<p>It is practical and test-oriented on purpose.</p>
+<h2>Validation Scope</h2>
+<p>Current validation areas:</p>
+<ul>
+<li>signed session setup</li>
+<li><code>/v1/sdk/me</code> identity enrichment</li>
+<li>MQTT connectivity</li>
+<li>SOS trigger / cancel / lifecycle</li>
+<li>telemetry publish</li>
+<li>contacts CRUD</li>
+<li>backend device registry CRUD</li>
+<li>local runtime device status</li>
+<li>BLE runtime to backend bridge behavior</li>
+</ul>
+<h2>Before You Start</h2>
+<p>Confirm:</p>
+<ul>
+<li>backend environment is available</li>
+<li>MQTT endpoint is reachable</li>
+<li>test account can receive a signed SDK session</li>
+<li>reference app is using the current SDK packages from this monorepo</li>
+<li>BLE test device is available if runtime device validation is needed</li>
+</ul>
+<h2>1. Validate Signed Session</h2>
+<p>Expected host-side setup:</p>
+<ul>
+<li>app obtains <code>appId</code></li>
+<li>app obtains external user id</li>
+<li>app obtains signed <code>userHash</code></li>
+<li>app calls <code>sdk.setSession(...)</code></li>
+</ul>
+<p>What to verify:</p>
+<ul>
+<li>no <code>E_SDK_SESSION_REQUIRED</code> errors</li>
+<li>realtime state begins moving out of fully idle/disconnected after session setup</li>
+<li>session-dependent surfaces become usable</li>
+</ul>
+<p>If session setup fails:</p>
+<ul>
+<li>inspect partner/backend signing flow</li>
+<li>inspect app wiring before SDK calls</li>
+<li>verify logout is not clearing session immediately after setup</li>
+</ul>
+<h2>2. Validate <code>/v1/sdk/me</code></h2>
+<p>After <code>setSession(...)</code>, the SDK should call:</p>
+<ul>
+<li><code>GET /v1/sdk/me</code></li>
+</ul>
+<p>What to verify:</p>
+<ul>
+<li>backend returns valid <code>user.id</code></li>
+<li>backend returns canonical <code>user.external_user_id</code></li>
+<li>MQTT topic usage reflects canonical identity, not raw host identity</li>
+</ul>
+<p>Practical checks:</p>
+<ul>
+<li>watch SDK logs around session bootstrap</li>
+<li>inspect MQTT subscription topic built for SOS events</li>
+<li>inspect telemetry topic built for TEL publish</li>
+</ul>
+<p>If it fails:</p>
+<ul>
+<li>check auth headers</li>
+<li>check backend JSON shape</li>
+<li>confirm canonical <code>external_user_id</code> is non-empty</li>
+</ul>
+<h2>3. Verify MQTT Connectivity</h2>
+<p>The SDK currently tracks:</p>
+<ul>
+<li><code>connecting</code></li>
+<li><code>connected</code></li>
+<li><code>reconnecting</code></li>
+<li><code>disconnected</code></li>
+<li><code>error</code></li>
+</ul>
+<p>What to verify:</p>
+<ul>
+<li>session setup causes MQTT connect attempt</li>
+<li>active session uses current backend environment</li>
+<li>reconnect occurs after temporary disconnect</li>
+<li><code>clearSession()</code> tears MQTT down cleanly</li>
+</ul>
+<p>Useful checks:</p>
+<ul>
+<li>observe realtime connection state in the app validation surfaces</li>
+<li>inspect MQTT connection logs</li>
+<li>inspect that event subscriptions use <code>sos/events/{segment}</code></li>
+</ul>
+<h2>4. Test SOS Trigger / Cancel / Events</h2>
+<h3>App-initiated SOS</h3>
+<p>Use the app surface that calls:</p>
+<ul>
+<li><code>sdk.triggerSos(SosTriggerPayload(...))</code></li>
+</ul>
+<p>Verify:</p>
+<ul>
+<li>publish goes to <code>sos/alerts</code></li>
+<li>QoS 1, retain false at the transport layer</li>
+<li>payload includes timestamp and coordinates</li>
+</ul>
+<h3>Cancel</h3>
+<p>Use the app surface that calls:</p>
+<ul>
+<li><code>sdk.cancelSos()</code></li>
+</ul>
+<p>Verify:</p>
+<ul>
+<li>HTTP request goes to <code>POST /v1/sdk/sos/cancel</code></li>
+<li>request has auth headers only</li>
+<li>request sends no body</li>
+</ul>
+<p>Important:</p>
+<ul>
+<li>do not expect HTTP cancel to become final lifecycle state by itself</li>
+<li>final cancelled state must still come from MQTT lifecycle event</li>
+</ul>
+<h3>MQTT lifecycle events</h3>
+<p>Verify:</p>
+<ul>
+<li>SDK receives SOS lifecycle event on <code>sos/events/{segment}</code></li>
+<li>SOS state stream changes only after backend event</li>
+<li>final cancelled/resolved/acknowledged state follows MQTT input</li>
+</ul>
+<h2>5. Test Telemetry Publish</h2>
+<h3>App-initiated telemetry</h3>
+<p>Use a surface that calls:</p>
+<ul>
+<li><code>sdk.publishTelemetry(...)</code></li>
+</ul>
+<p>Verify:</p>
+<ul>
+<li>topic is <code>tel/{segment}/data</code></li>
+<li>canonical user identity is reflected in the topic segment</li>
+<li>payload includes timestamp, latitude, longitude, altitude</li>
+</ul>
+<h3>BLE-originated telemetry</h3>
+<p>With a connected BLE device producing TEL packets, verify:</p>
+<ul>
+<li>TEL packets are decoded in runtime</li>
+<li>the bridge publishes telemetry only when minimum valid fields exist</li>
+<li>repeated duplicate packets do not flood publishes</li>
+</ul>
+<h2>6. Test Contacts</h2>
+<p>Use the contacts validation surface.</p>
+<p>Verify:</p>
+<ul>
+<li>create contact works</li>
+<li>list contact works</li>
+<li>update contact works</li>
+<li>delete contact works</li>
+</ul>
+<p>Current expected contact fields:</p>
+<ul>
+<li><code>id</code></li>
+<li><code>name</code></li>
+<li><code>phone</code></li>
+<li><code>email</code></li>
+<li><code>priority</code></li>
+<li><code>createdAt</code></li>
+<li><code>updatedAt</code></li>
+</ul>
+<p>If UI or API expects fields like <code>active</code>, that is stale behavior and should be removed or isolated outside the public contract.</p>
+<h2>7. Test Backend Device Registry</h2>
+<p>Use the device registry validation surface if available, or call the SDK facade directly.</p>
+<p>Verify:</p>
+<ul>
+<li><code>listRegisteredDevices()</code></li>
+<li><code>upsertRegisteredDevice(...)</code></li>
+<li><code>deleteRegisteredDevice(id)</code></li>
+</ul>
+<p>Confirm the result is backend registry data, not live BLE state.</p>
+<p>Expected backend-aligned fields:</p>
+<ul>
+<li><code>id</code></li>
+<li><code>hardwareId</code></li>
+<li><code>firmwareVersion</code></li>
+<li><code>hardwareModel</code></li>
+<li><code>pairedAt</code></li>
+<li><code>createdAt</code></li>
+<li><code>updatedAt</code></li>
+</ul>
+<h2>8. Test Runtime Device Status</h2>
+<p>Connect a BLE device through the debug app.</p>
+<p>Verify:</p>
+<ul>
+<li><code>connectDevice(...)</code> updates runtime state</li>
+<li><code>deviceStatusStream</code> reflects current device lifecycle</li>
+<li>preferred device is stored after successful operational use</li>
+<li><code>disconnectDevice()</code> clears runtime connection state cleanly</li>
+</ul>
+<p>Important:</p>
+<ul>
+<li>runtime device state is not backend registry state</li>
+<li>backend registry validation should be tested separately</li>
+</ul>
+<h2>9. Test BLE Runtime To Backend Bridge</h2>
+<p>With BLE producing runtime events:</p>
+<h3>TEL</h3>
+<p>Verify:</p>
+<ul>
+<li>decoded TEL event reaches the bridge</li>
+<li>telemetry is published when MQTT is available</li>
+<li>if MQTT is unavailable, only the latest telemetry sample is retained</li>
+<li>after reconnect, the latest retained telemetry is published once</li>
+</ul>
+<h3>SOS</h3>
+<p>Verify:</p>
+<ul>
+<li>decoded BLE SOS with coordinates reaches the bridge</li>
+<li>SOS is published when MQTT is available</li>
+<li>if MQTT is unavailable, a single pending SOS trigger is retained</li>
+<li>after reconnect, the pending SOS is published once</li>
+</ul>
+<h3>Device confirmations</h3>
+<p>Verify backend realtime events can drive:</p>
+<ul>
+<li><code>POS_CONFIRMED</code></li>
+<li><code>SOS_ACK</code></li>
+<li><code>SOS_ACK_RELAY</code></li>
+</ul>
+<p>Inspect BLE/device command debug logs when these are expected.</p>
+<h2>10. Failure Debugging Checklist</h2>
+<p>When something fails, inspect in this order:</p>
+<ol>
+<li>Session exists and is current</li>
+<li><code>/v1/sdk/me</code> canonical identity succeeded</li>
+<li>MQTT connection state</li>
+<li>actual MQTT topic being used</li>
+<li>BLE packet decode success</li>
+<li>bridge retain/flush behavior</li>
+<li>backend realtime lifecycle/ack event shape</li>
+<li>device command write readiness</li>
+</ol>
+<h2>Useful Signals To Inspect</h2>
+<h3>Identity issues</h3>
+<p>Look for:</p>
+<ul>
+<li>session missing</li>
+<li>canonical external user id missing</li>
+<li><code>/v1/sdk/me</code> invalid response</li>
+</ul>
+<h3>MQTT issues</h3>
+<p>Look for:</p>
+<ul>
+<li>transport stuck in reconnecting/error</li>
+<li>no active session</li>
+<li>topic mismatch with canonical identity</li>
+</ul>
+<h3>BLE issues</h3>
+<p>Look for:</p>
+<ul>
+<li>no decoded TEL/SOS events</li>
+<li>duplicate suppression hiding repeated packets</li>
+<li>no position present in BLE SOS packet</li>
+</ul>
+<h3>Bridge issues</h3>
+<p>Look for:</p>
+<ul>
+<li>pending telemetry retained but never flushed</li>
+<li>pending SOS retained but never flushed</li>
+<li>session cleared before flush</li>
+<li>bridge reset after session change</li>
+</ul>
+<h3>Device confirmation issues</h3>
+<p>Look for:</p>
+<ul>
+<li>backend realtime event shape does not clearly indicate confirmation type</li>
+<li>relay node id missing for <code>SOS_ACK_RELAY</code></li>
+<li>device command channel not ready</li>
+</ul>
+<h2>Known Current Limitations</h2>
+<ul>
+<li>BLE SOS packets without coordinates are not currently publishable as backend SOS trigger</li>
+<li>relay ACK routing now follows active runtime SOS context:
+local-origin SOS expects <code>SOS_ACK</code>, relay-origin SOS expects <code>SOS_ACK_RELAY(nodeId)</code>, and mismatched relay ACK events are ignored with diagnostics</li>
+<li>offline resilience is in-memory only for this iteration</li>
+<li>telemetry is latest-sample-wins, not full queued replay</li>
+</ul>
+<p>These are known product/runtime limits, not random bugs.</p>
+</main></div><script src='../../assets/site.js'></script></body></html>

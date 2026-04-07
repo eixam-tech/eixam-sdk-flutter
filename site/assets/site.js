@@ -1,0 +1,1 @@
+document.querySelectorAll('.sidebar a').forEach(a=>{if(a.href===location.href)a.classList.add('active')})

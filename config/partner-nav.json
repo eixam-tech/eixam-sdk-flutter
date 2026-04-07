@@ -1,0 +1,58 @@
+[
+  [
+    "Overview",
+    "index.md"
+  ],
+  [
+    "SDK Overview",
+    "sdk-overview.md"
+  ],
+  [
+    "Quickstart",
+    "quickstart.md"
+  ],
+  [
+    "Public API",
+    "public-api.md"
+  ],
+  [
+    "API Examples",
+    "public-api-examples.md"
+  ],
+  [
+    "Core Concepts",
+    "core-concepts.md"
+  ],
+  [
+    "Protection Mode",
+    "protection-mode.md"
+  ],
+  [
+    "Flutter Integration",
+    "flutter-integration.md"
+  ],
+  [
+    "Android Integration",
+    "android-integration.md"
+  ],
+  [
+    "iOS Integration",
+    "ios-integration.md"
+  ],
+  [
+    "Permissions Checklist",
+    "permissions-checklist.md"
+  ],
+  [
+    "Backend Integration",
+    "backend-integration.md"
+  ],
+  [
+    "API Reference",
+    "api-reference.md"
+  ],
+  [
+    "Troubleshooting",
+    "troubleshooting.md"
+  ]
+]

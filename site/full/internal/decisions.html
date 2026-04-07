@@ -1,0 +1,167 @@
+<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Decisions</title><link rel='stylesheet' href='../../assets/style.css'></head><body><div class='layout'><aside class='sidebar'><div class='brand'>EIXAM Docs - full</div><nav><a class="" href="../index.html">Overview</a><a class="" href="../sdk/architecture.html">SDK Architecture</a><a class="" href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a class="" href="../sdk/backend-integration.html">Backend Integration</a><a class="" href="../api/public-api.html">Public API</a><a class="" href="../api/public-api-examples.html">Public API Examples</a><a class="" href="../protection/overview.html">Protection Overview</a><a class="" href="../protection/android-host-integration.html">Android Host Integration</a><a class="" href="../protection/ios-host-integration.html">iOS Host Integration</a><a class="" href="../integration/permissions-checklist.html">Permissions Checklist</a><a class="" href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a class="" href="../protocol/ble-protocol.html">BLE Protocol</a><a class="" href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a class="" href="../reference-app/debug-app-validation-guide.html">Reference App Validation Guide</a><a class="" href="../reference-app/real-backend-validation-checklist.html">Real Backend Validation Checklist</a><a class="active" href="decisions.html">Decisions</a><a class="" href="quality-gates.html">Quality Gates</a><a class="" href="testing-strategy.html">Testing Strategy</a><a class="" href="testability-notes.html">Testability Notes</a><a class="" href="roadmap.html">Roadmap</a><a class="" href="team-handoff-index.html">Team Handoff Index</a></nav></aside><main class='content'><h1>EIXAM SDK — Decisions d’arquitectura i producte</h1>
+<h2>Propòsit</h2>
+<p>Aquest document recull les decisions actives que governen el disseny del SDK i de la Control App de referència.</p>
+<p>No és un document de brainstorming.<br />
+És una font curta de criteri per a desenvolupament, refactors, tests i integracions futures.</p>
+<hr />
+<h2>1. Principi rector</h2>
+<p><strong>EIXAM és SDK-first.</strong></p>
+<p>El SDK és el nucli del producte.<br />
+La Control App és una app host de validació i referència, no la UX final del producte.</p>
+<p>Això implica que la lògica crítica no ha de viure a l’app, sinó al SDK.</p>
+<hr />
+<h2>2. Repartiment de responsabilitats</h2>
+<h3>2.1 Què pertany al SDK</h3>
+<p>El SDK ha de contenir, com a mínim:</p>
+<ul>
+<li>entitats i enums de domini</li>
+<li>interfícies i contractes públics</li>
+<li>use cases</li>
+<li>state machines</li>
+<li>lògica de SOS</li>
+<li>lògica de Tracking</li>
+<li>lògica de Death Man</li>
+<li>persistència i comportament de contactes d’emergència</li>
+<li>estat i contractes de dispositiu</li>
+<li>preparació per BLE/device integration</li>
+<li>preparació per realtime/backend integration</li>
+</ul>
+<p>Això està alineat amb l’arquitectura validada i amb els pilars centrals del MVP.</p>
+<h3>2.2 Què pertany a l’app host</h3>
+<p>L’app host ha de ser prima i limitar-se a:</p>
+<ul>
+<li>inicialitzar el SDK</li>
+<li>subscriure’s a streams i estats del SDK</li>
+<li>cridar APIs / use cases del SDK</li>
+<li>pintar UI</li>
+<li>oferir superfícies de validació operativa i tècnica</li>
+</ul>
+<p>L’app no ha d’absorbir lògica de negoci ni lògica de protocol.</p>
+<hr />
+<h2>3. Regla d’or de la UI</h2>
+<p><strong>La UI no interpreta protocol si això pot viure al SDK.</strong></p>
+<p>Això inclou evitar a la capa app:</p>
+<ul>
+<li>parsing de paquets com a responsabilitat principal</li>
+<li>deduplicació</li>
+<li>reassemblatge de fragments</li>
+<li>state transitions de SOS / Rescue / Device</li>
+<li>orquestració de cues o reintents</li>
+<li>decisions de disponibilitat d’accions crítiques</li>
+</ul>
+<p>La UI pot tenir helpers menors de format/render.<br />
+La lògica crítica ha d’estar encapsulada al SDK. :contentReference[oaicite:4]{index=4}</p>
+<hr />
+<h2>4. Documents font de veritat per APP/BLE</h2>
+<p>Per a treball de l’app i integració BLE, els documents de referència són:</p>
+<ul>
+<li><code>APP_HANDOFF_FINAL.md</code></li>
+<li><code>BLE_APP_PROTOCOL.md</code></li>
+<li><code>BLE_BACKLOG_SYNC_PROTOCOL.md</code></li>
+<li><code>GUIDED_RESCUE_PHASE1.md</code></li>
+</ul>
+<p>L’índex handoff els marca com el paquet final obligatori per al desenvolupador app/BLE. :contentReference[oaicite:5]{index=5}</p>
+<hr />
+<h2>5. Scope tancat respecte firmware vs app/backend</h2>
+<p>Queda tancat que:</p>
+<ul>
+<li><code>EixamRoute</code> no s’implementa a firmware</li>
+<li>Rescue avançat (fase 2) no s’implementa a firmware</li>
+<li>seguiment de ruta, desviacions i workflow avançat de rescat viuen a app/backend</li>
+</ul>
+<p>En el context del monorepo SDK-first, això s’ha de traduir en:</p>
+<ul>
+<li>lògica i contractes de producte al SDK</li>
+<li>app host com a superfície de representació i operació</li>
+</ul>
+<p>No s’ha de moure aquesta lògica a widgets de l’app. :contentReference[oaicite:6]{index=6}</p>
+<hr />
+<h2>6. Guided Rescue — decisió actual</h2>
+<p>Guided Rescue Fase 1 s’ha d’exposar al host a través del SDK, no com a bytes o operacions protocol·làries directes a la UI.</p>
+<p>La fase 1 es basa en:</p>
+<ul>
+<li><code>REQUEST_POS</code></li>
+<li><code>ACK_SOS</code></li>
+<li><code>BUZZER_ON</code></li>
+<li><code>BUZZER_OFF</code></li>
+<li><code>STATUS_REQ</code></li>
+</ul>
+<p>i una resposta <code>STATUS_RESP</code> al port 261.</p>
+<p>La lògica de càlcul de distància/rumb, proximitat i accions guiades és de capa superior (SDK-facing / app/backend), no de firmware.</p>
+<hr />
+<h2>7. Backlog sync — decisió actual</h2>
+<p>El backlog sync BLE és una capacitat real del sistema i no s’ha de modelar com a hack puntual d’app.</p>
+<p>Quan s’implementi o s’ampliï, ha de viure com a comportament i contracte del SDK:</p>
+<ul>
+<li>control de sessió</li>
+<li>pujada diferida</li>
+<li>persistència</li>
+<li>ACK coherent</li>
+<li>idempotència</li>
+</ul>
+<p>L’app només ha de reflectir-ne estat i accions. :contentReference[oaicite:8]{index=8}</p>
+<hr />
+<h2>8. Components UI reutilitzables</h2>
+<p>Quan existeixin components reutilitzables del package UI, s’han de preferir davant de widgets duplicats a l’app host.</p>
+<p>Exemple:</p>
+<ul>
+<li>botons SOS</li>
+<li>components d’estat</li>
+<li>patrons visuals de seguretat</li>
+</ul>
+<p>Això reforça el model SDK-first i redueix divergència entre integracions. :contentReference[oaicite:9]{index=9}</p>
+<hr />
+<h2>9. Testing — criteri de prioritat</h2>
+<p>La cobertura automatitzada s’ha de concentrar primer al SDK, no a la demo app.</p>
+<p>Ordre de prioritat:</p>
+<ol>
+<li>lògica pura</li>
+<li>use cases</li>
+<li>state machines</li>
+<li>contractes públics del SDK</li>
+<li>persistència</li>
+<li>adapters/repositories crítics</li>
+<li>widget tests reutilitzables</li>
+<li>smoke tests de l’host app</li>
+</ol>
+<p>Això està alineat amb l’estat actual del projecte i amb la necessitat de hardening del SDK. :contentReference[oaicite:10]{index=10}</p>
+<hr />
+<h2>10. Demo app / Control App</h2>
+<p>La demo app actual és una validation host útil, però no s’ha de tractar com a app final de producte.</p>
+<p>A curt termini, s’accepta que serveixi per:</p>
+<ul>
+<li>validació operativa</li>
+<li>validació tècnica</li>
+<li>proves internes</li>
+</ul>
+<p>A mig termini, s’ha de mantenir neta, prima i desacoblada de la lògica crítica.</p>
+<hr />
+<h2>11. Decisions actives de roadmap</h2>
+<p>A nivell de seqüència de treball, les prioritats actives són:</p>
+<ol>
+<li>consolidar documentació</li>
+<li>hardening del SDK</li>
+<li>testing strategy i cobertura útil</li>
+<li>refinament del mòdul device / BLE readiness</li>
+<li>Guided Rescue Fase 1 sobre contractes nets</li>
+<li>backlog sync</li>
+<li>tuning de consum / validació de camp quan pertoqui</li>
+</ol>
+<p>El roadmap de firmware indica que la base fins Rescue fase 1 està feta i que encara queden validacions i tuning de consum.</p>
+<hr />
+<h2>12. Anti-patterns a evitar</h2>
+<p>No fer:</p>
+<ul>
+<li>lògica crítica a widgets</li>
+<li>parsing i dedup importants a pantalles</li>
+<li>rescues implementats “ad hoc” a l’app</li>
+<li>APIs públiques del SDK massa crues si obliguen la host app a interpretar massa</li>
+<li>duplicació de components reutilitzables del package UI</li>
+<li>sobreenginyeria sense retorn clar</li>
+</ul>
+<hr />
+<h2>13. Regla de decisió</h2>
+<p>Davant qualsevol canvi, preguntar sempre:</p>
+<p><strong>Això fa el SDK més reusable o més fiable?</strong></p>
+<p>Si la resposta és no, probablement no és prioritari ara.</p>
+</main></div><script src='../../assets/site.js'></script></body></html>

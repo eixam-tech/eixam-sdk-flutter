@@ -1,0 +1,264 @@
+<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Partner Integration Guide</title><link rel='stylesheet' href='../../assets/style.css'></head><body><div class='layout'><aside class='sidebar'><div class='brand'>EIXAM Docs - full</div><nav><a class="" href="../index.html">Overview</a><a class="" href="architecture.html">SDK Architecture</a><a class="active" href="partner-integration-guide.html">Partner Integration Guide</a><a class="" href="backend-integration.html">Backend Integration</a><a class="" href="../api/public-api.html">Public API</a><a class="" href="../api/public-api-examples.html">Public API Examples</a><a class="" href="../protection/overview.html">Protection Overview</a><a class="" href="../protection/android-host-integration.html">Android Host Integration</a><a class="" href="../protection/ios-host-integration.html">iOS Host Integration</a><a class="" href="../integration/permissions-checklist.html">Permissions Checklist</a><a class="" href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a class="" href="../protocol/ble-protocol.html">BLE Protocol</a><a class="" href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a class="" href="../reference-app/debug-app-validation-guide.html">Reference App Validation Guide</a><a class="" href="../reference-app/real-backend-validation-checklist.html">Real Backend Validation Checklist</a><a class="" href="../internal/decisions.html">Decisions</a><a class="" href="../internal/quality-gates.html">Quality Gates</a><a class="" href="../internal/testing-strategy.html">Testing Strategy</a><a class="" href="../internal/testability-notes.html">Testability Notes</a><a class="" href="../internal/roadmap.html">Roadmap</a><a class="" href="../internal/team-handoff-index.html">Team Handoff Index</a></nav></aside><main class='content'><h1>SDK Partner Integration Guide</h1>
+<h2>Purpose</h2>
+<p>This guide is for partner teams integrating the EIXAM SDK into a host app.</p>
+<p>It focuses on:</p>
+<ul>
+<li>what the partner backend must provide</li>
+<li>how the host app should initialize the SDK</li>
+<li>how to use the public SDK facade v1</li>
+<li>what to expect from SOS, telemetry, contacts, and device surfaces</li>
+</ul>
+<p>This guide is intentionally simpler than the internal technical integration document.</p>
+<h2>What The Partner Backend Must Implement</h2>
+<p>The mobile SDK expects the partner/backend side to provide:</p>
+<ol>
+<li>A signed SDK session for the mobile user</li>
+<li>Backend support for <code>GET /v1/sdk/me</code></li>
+<li>Backend support for MQTT operational flows</li>
+<li>Backend support for <code>POST /v1/sdk/sos/cancel</code></li>
+<li>Backend support for contacts and registered devices HTTP surfaces already agreed in OpenAPI</li>
+</ol>
+<h2>Signed Session</h2>
+<p>The host app must supply a signed session to the SDK.</p>
+<p>Minimum fields:</p>
+<ul>
+<li><code>appId</code></li>
+<li><code>externalUserId</code></li>
+<li><code>userHash</code></li>
+</ul>
+<p>Example:</p>
+<pre><code class="language-dart">await sdk.setSession(
+  const EixamSession.signed(
+    appId: 'partner-app',
+    externalUserId: 'partner-user-123',
+    userHash: 'signed-token-or-hash',
+  ),
+);
+</code></pre>
+<p>Important:</p>
+<ul>
+<li>the SDK does not sign users locally</li>
+<li>the SDK does not call partner auth/sign endpoints on its own</li>
+</ul>
+<h2>Canonical Identity</h2>
+<p>After <code>setSession(...)</code>, the SDK enriches identity through:</p>
+<ul>
+<li><code>GET /v1/sdk/me</code></li>
+</ul>
+<p>This allows the SDK to:</p>
+<ul>
+<li>resolve canonical backend identity</li>
+<li>use the canonical external user id for MQTT topic building</li>
+</ul>
+<p>If needed, the host app can explicitly refresh this state:</p>
+<pre><code class="language-dart">await sdk.refreshCanonicalIdentity();
+</code></pre>
+<p>This is an advanced operational call, not a separate login flow.</p>
+<h2>SDK Initialization</h2>
+<p>Typical initialization flow:</p>
+<pre><code class="language-dart">final sdk = await ApiSdkFactory.createHttpApi(
+  apiBaseUrl: 'https://api.example.com',
+  websocketUrl: 'wss://mqtt.example.com/mqtt',
+);
+
+await sdk.setSession(
+  const EixamSession.signed(
+    appId: 'partner-app',
+    externalUserId: 'partner-user-123',
+    userHash: 'signed-token-or-hash',
+  ),
+);
+</code></pre>
+<p>The host app should stay thin. It should use SDK methods and streams, not implement operational backend logic itself.</p>
+<h2>Public SDK Facade v1</h2>
+<p>Primary surfaces currently exposed:</p>
+<h3>Identity / session</h3>
+<ul>
+<li><code>setSession(...)</code></li>
+<li><code>clearSession()</code></li>
+<li><code>refreshCanonicalIdentity()</code></li>
+</ul>
+<h3>SOS</h3>
+<ul>
+<li><code>triggerSos(SosTriggerPayload(...))</code></li>
+<li><code>cancelSos()</code></li>
+<li><code>currentSosStateStream</code></li>
+<li><code>lastSosEventStream</code></li>
+</ul>
+<h3>Telemetry</h3>
+<ul>
+<li><code>publishTelemetry(...)</code></li>
+</ul>
+<h3>Contacts</h3>
+<ul>
+<li><code>listEmergencyContacts()</code></li>
+<li><code>createEmergencyContact(...)</code></li>
+<li><code>updateEmergencyContact(...)</code></li>
+<li><code>deleteEmergencyContact(id)</code></li>
+</ul>
+<h3>Backend device registry</h3>
+<ul>
+<li><code>listRegisteredDevices()</code></li>
+<li><code>upsertRegisteredDevice(...)</code></li>
+<li><code>deleteRegisteredDevice(id)</code></li>
+</ul>
+<h3>Local device runtime</h3>
+<ul>
+<li><code>deviceStatusStream</code></li>
+<li><code>connectDevice(...)</code></li>
+<li><code>disconnectDevice()</code></li>
+<li><code>preferredDevice</code></li>
+</ul>
+<h2>SOS Flow</h2>
+<p>App-initiated SOS:</p>
+<pre><code class="language-dart">await sdk.triggerSos(
+  const SosTriggerPayload(
+    message: 'Need help',
+    triggerSource: 'button_ui',
+  ),
+);
+</code></pre>
+<p>Current behavior:</p>
+<ul>
+<li>SOS publish goes over MQTT</li>
+<li>cancel goes over HTTP</li>
+<li>final lifecycle state still comes from MQTT events</li>
+</ul>
+<p>That means:</p>
+<ul>
+<li><code>cancelSos()</code> requests cancellation</li>
+<li>the final cancelled state is still determined by backend MQTT lifecycle updates</li>
+</ul>
+<h2>Telemetry Flow</h2>
+<p>Telemetry is operational publish, not registry state.</p>
+<p>Example:</p>
+<pre><code class="language-dart">await sdk.publishTelemetry(
+  SdkTelemetryPayload(
+    timestamp: DateTime.now().toUtc(),
+    latitude: 41.38,
+    longitude: 2.17,
+    altitude: 8,
+    deviceId: 'device-1',
+  ),
+);
+</code></pre>
+<p>The SDK also has internal BLE-to-backend telemetry bridging for runtime BLE TEL events.</p>
+<h2>Contacts Usage</h2>
+<p>Contacts are backend-aligned 1:1.</p>
+<p>Example:</p>
+<pre><code class="language-dart">await sdk.createEmergencyContact(
+  name: 'Alice',
+  phone: '+34123456789',
+  email: 'alice@example.com',
+  priority: 1,
+);
+
+final contacts = await sdk.listEmergencyContacts();
+</code></pre>
+<p>Current public contact fields:</p>
+<ul>
+<li><code>id</code></li>
+<li><code>name</code></li>
+<li><code>phone</code></li>
+<li><code>email</code></li>
+<li><code>priority</code></li>
+<li><code>createdAt</code></li>
+<li><code>updatedAt</code></li>
+</ul>
+<h2>Backend Device Registry Usage</h2>
+<p>This is separate from local BLE runtime device status.</p>
+<p>Example:</p>
+<pre><code class="language-dart">await sdk.upsertRegisteredDevice(
+  hardwareId: 'hw-1',
+  firmwareVersion: '1.2.3',
+  hardwareModel: 'EIXAM R1',
+  pairedAt: DateTime.now().toUtc(),
+);
+
+final devices = await sdk.listRegisteredDevices();
+</code></pre>
+<p>Use this surface for backend registry records, not live BLE runtime state.</p>
+<h2>Runtime Device Usage</h2>
+<p>Use the runtime device surface for local operational state:</p>
+<pre><code class="language-dart">await sdk.connectDevice(pairingCode: 'PAIR-1234');
+
+final preferred = await sdk.preferredDevice;
+
+sdk.deviceStatusStream.listen((status) {
+  // render connection/activation/runtime state
+});
+</code></pre>
+<p>Use this for:</p>
+<ul>
+<li>current BLE/runtime status</li>
+<li>connected/paired/activated state</li>
+<li>preferred device behavior</li>
+</ul>
+<p>Do not use it as backend registry data.</p>
+<h2>Logout / Session Clear</h2>
+<p>On logout or partner session invalidation:</p>
+<pre><code class="language-dart">await sdk.clearSession();
+</code></pre>
+<p>Current behavior:</p>
+<ul>
+<li>clears the stored session</li>
+<li>disconnects MQTT runtime connectivity</li>
+<li>clears pending bridge-driven operational items</li>
+<li>prevents stale operational replay after logout</li>
+</ul>
+<h2>Troubleshooting</h2>
+<h3><code>E_SDK_SESSION_REQUIRED</code></h3>
+<p>Meaning:</p>
+<ul>
+<li>a signed session is missing</li>
+</ul>
+<p>Check:</p>
+<ul>
+<li><code>setSession(...)</code> has been called</li>
+<li>the host app is not publishing SOS or telemetry before session setup</li>
+</ul>
+<h3><code>/v1/sdk/me</code> errors</h3>
+<p>Meaning:</p>
+<ul>
+<li>session enrichment failed</li>
+</ul>
+<p>Check:</p>
+<ul>
+<li>auth headers are accepted by backend</li>
+<li>backend returns valid JSON user payload</li>
+<li>backend returns canonical <code>external_user_id</code></li>
+</ul>
+<h3>MQTT not connected / reconnecting</h3>
+<p>Meaning:</p>
+<ul>
+<li>operational publish is not currently available</li>
+</ul>
+<p>Current SDK behavior:</p>
+<ul>
+<li>telemetry keeps only the latest pending sample</li>
+<li>SOS keeps one pending trigger</li>
+<li>both retry when MQTT becomes available again</li>
+</ul>
+<h3>SOS cancel appears delayed</h3>
+<p>This is expected if backend has accepted HTTP cancel but MQTT lifecycle confirmation has not yet arrived.</p>
+<p>HTTP cancel is transactional only. MQTT remains the final lifecycle source of truth.</p>
+<h2>Current Integration Boundaries</h2>
+<p>Partner teams should assume the following are already internalized by the SDK:</p>
+<ul>
+<li>MQTT topic building</li>
+<li>BLE decode logic</li>
+<li>BLE runtime to backend bridge behavior</li>
+<li>offline operational buffering policy</li>
+<li>device-side confirmation commands</li>
+</ul>
+<p>The host app should call the SDK facade and observe streams. It should not recreate backend operational logic in app widgets or screens.</p>
+<h2>Current Open Points</h2>
+<ul>
+<li>BLE SOS backend acknowledgment routing is deterministic in the current runtime bridge:
+local-origin SOS uses <code>SOS_ACK</code>, active relay-origin SOS uses <code>SOS_ACK_RELAY(nodeId)</code>, and unexpected relay ACK events are ignored with diagnostics</li>
+<li>BLE SOS packets without coordinates are not publishable as backend SOS trigger</li>
+<li>TEL aggregate payload publish is currently limited to aggregate-complete blobs
+that decode cleanly as one classic 10-byte TEL packet; richer cluster
+aggregates are intentionally not exposed as a stable partner contract yet</li>
+</ul>
+</main></div><script src='../../assets/site.js'></script></body></html>

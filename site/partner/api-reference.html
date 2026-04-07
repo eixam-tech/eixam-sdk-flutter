@@ -1,0 +1,15 @@
+<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>API Reference</title><link rel='stylesheet' href='../assets/style.css'></head><body><div class='layout'><aside class='sidebar'><div class='brand'>EIXAM Docs - partner</div><nav><a class="" href="index.html">Overview</a><a class="" href="sdk-overview.html">SDK Overview</a><a class="" href="quickstart.html">Quickstart</a><a class="" href="public-api.html">Public API</a><a class="" href="public-api-examples.html">API Examples</a><a class="" href="core-concepts.html">Core Concepts</a><a class="" href="protection-mode.html">Protection Mode</a><a class="" href="flutter-integration.html">Flutter Integration</a><a class="" href="android-integration.html">Android Integration</a><a class="" href="ios-integration.html">iOS Integration</a><a class="" href="permissions-checklist.html">Permissions Checklist</a><a class="" href="backend-integration.html">Backend Integration</a><a class="active" href="api-reference.html">API Reference</a><a class="" href="troubleshooting.html">Troubleshooting</a></nav></aside><main class='content'><h1>API Reference</h1>
+<h2>Bootstrap</h2>
+<pre><code class="language-dart">final sdk = await ApiSdkFactory.createHttpApi(
+  apiBaseUrl: 'https://api.example.com',
+  websocketUrl: 'wss://mqtt.example.com/mqtt',
+);
+</code></pre>
+<h2>Endpoints currently referenced by docs</h2>
+<ul>
+<li><code>GET /v1/sdk/me</code></li>
+<li><code>GET /v1/sdk/sos</code></li>
+<li><code>POST /v1/sdk/sos/cancel</code></li>
+<li><code>/v1/sdk/devices</code></li>
+</ul>
+</main></div><script src='../assets/site.js'></script></body></html>

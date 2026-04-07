@@ -1,0 +1,199 @@
+<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>BLE Protocol</title><link rel='stylesheet' href='../../assets/style.css'></head><body><div class='layout'><aside class='sidebar'><div class='brand'>EIXAM Docs - full</div><nav><a class="" href="../index.html">Overview</a><a class="" href="../sdk/architecture.html">SDK Architecture</a><a class="" href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a class="" href="../sdk/backend-integration.html">Backend Integration</a><a class="" href="../api/public-api.html">Public API</a><a class="" href="../api/public-api-examples.html">Public API Examples</a><a class="" href="../protection/overview.html">Protection Overview</a><a class="" href="../protection/android-host-integration.html">Android Host Integration</a><a class="" href="../protection/ios-host-integration.html">iOS Host Integration</a><a class="" href="../integration/permissions-checklist.html">Permissions Checklist</a><a class="" href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a class="active" href="ble-protocol.html">BLE Protocol</a><a class="" href="ble-runtime-flow.html">BLE Runtime Flow</a><a class="" href="../reference-app/debug-app-validation-guide.html">Reference App Validation Guide</a><a class="" href="../reference-app/real-backend-validation-checklist.html">Real Backend Validation Checklist</a><a class="" href="../internal/decisions.html">Decisions</a><a class="" href="../internal/quality-gates.html">Quality Gates</a><a class="" href="../internal/testing-strategy.html">Testing Strategy</a><a class="" href="../internal/testability-notes.html">Testability Notes</a><a class="" href="../internal/roadmap.html">Roadmap</a><a class="" href="../internal/team-handoff-index.html">Team Handoff Index</a></nav></aside><main class='content'><h1>Eixam BLE — Protocol device ↔ app (backend)</h1>
+<p>Referència del que <strong>envia el dispositiu cap a l’app</strong> (notifications) i del que <strong>rep de l’app</strong> (provinent del backend o de l’usuari). Per preparar la integració a l’app.</p>
+<p><strong>Índex per l’equip (qui llegeix què):</strong> <code>11_TEAM_HANDOFF_INDEX.md</code>.</p>
+<hr />
+<h2>Serveis i característiques BLE</h2>
+<p>| UUID (característica) | Nom | Direcció | Descripció |
+|-----------------------|-----|----------|------------|
+| <code>6ba1b218-15a8-461f-9fa8-5dcae273ea00</code> | Service | — | Servei Eixam |
+| <code>6ba1b218-15a8-461f-9fa8-5dcae273ea01</code> | <strong>TEL</strong> | Device → App (Notify) | Telemetria: posició 10B |
+| <code>6ba1b218-15a8-461f-9fa8-5dcae273ea02</code> | <strong>SOS</strong> | Device → App (Notify) | Alertes SOS: paquet 10B (o 5B) |
+| <code>6ba1b218-15a8-461f-9fa8-5dcae273ea03</code> | <strong>INET</strong> | App → Device (Write) | Comandes curtes (1–4 bytes) |
+| <code>6ba1b218-15a8-461f-9fa8-5dcae273ea04</code> | <strong>CMD</strong> | App → Device (Write) | Comandes (1–16 bytes) |</p>
+<ul>
+<li><strong>TEL</strong> i <strong>SOS</strong>: l’app ha de subscriure’s a <strong>Notify</strong>; el dispositiu envia quan hi ha dades (cua interna FIFO per no bloquejar el mesh; veieu §6).</li>
+<li><strong>Màx. 20 bytes</strong> per notificació (excepte reassemblatge <code>0xD0</code> en múltiples notificacions).</li>
+<li><strong>INET</strong> i <strong>CMD</strong>: l’app escriu; ambdues criden el mateix handler de comandes. INET té <code>maxLen</code> 4, CMD 16 (per payloads com SOS_ACK_RELAY).</li>
+</ul>
+<p><strong>Potència RF BLE (WisMesh Tag + Eixam):</strong> es fixa <strong><code>NRF52_BLE_TX_POWER</code></strong> a <code>variants/nrf52840/rak_wismeshtag/variant.h</code> (<strong>-4 dBm</strong> per defecte), assumint mòbil a <strong>~1–2 m</strong>; redueix consum respecte al màxim del nRF52. Per gamificació / abast major, pujar a <code>0</code> o <code>4</code> (valors vàlids: vegeu <code>VALID_BLE_TX_POWER</code> a <code>NRF52Bluetooth.cpp</code>).</p>
+<hr />
+<h2>Sprint 2 — Cluster i impacte a l’app (BLE)</h2>
+<p>Resum del que el firmware fa des del <strong>Sprint 2</strong> i que l’app ha de tenir en compte (detall mesh: <code>08_SPRINT2_CLUSTER_PENDING.md</code>, <code>09_BACKEND_APP_HANDOFF.md</code>).</p>
+<p>| Tema | Comportament rellevant per BLE |
+|------|--------------------------------|
+| <strong>INET_OK / INET_LOST</strong> | Amb <strong>INET_OK</strong>, el tag pot <strong>deixar d’enviar TEL LoRa individual</strong> si és <strong>MEMBER</strong> o <strong>AGGREGATOR</strong> del cluster; les dades cap al backend passen preferentment per <strong>BLE</strong> (TEL 10 B i/o agregat). Amb <strong>INET_LOST</strong> torna el patró TEL per LoRa quan toqui. |
+| <strong>Agregat cluster <code>0xC2</code></strong> | El blob agregat (mateix wire que port <strong>258</strong> LoRa) pot arribar a l’app per <strong>notify TEL</strong> si hi ha <strong>INET_OK</strong> i <strong>BLE connectat</strong> (vegeu fragments <code>0xD0</code> més avall i §1.1). |
+| <strong>SOS</strong> | <strong>No</strong> queda suprimit pel cluster: SOS segueix <strong>LoRa</strong> (canal dedicat + canal TEL amb flag) i <strong>BLE</strong> segons §1.2. |
+| <strong>MEMBER sense app</strong> | El firmware pot anar més lent en cicles de cluster (<code>runOnce</code> ~5 s sense telèfon vs ~1 s amb app) per estalvi; amb app connectada es prioritza resposta BLE. |
+| <strong>GPS cíclic (opt-in)</strong> | Constant <code>EIXAM_GPS_CYCLIC_MEMBER_ENABLE</code> (defecte <strong>0</strong>): només MEMBER sense BLE; <strong>no</strong> canvia el wire BLE, però pot afectar freqüència de fixes que veieu a TEL. |</p>
+<h3>Format notify <strong>fragments <code>0xD0</code></strong> (característica <strong>TEL</strong>, payload &gt; 20 B)</h3>
+<p>Quan el blob (p. ex. agregat <code>0xC2…</code>) supera <strong>20 bytes</strong>, el dispositiu envia <strong>múltiples notificacions TEL</strong>. Cada fragment:</p>
+<p>| Byte(s) | Camp | Descripció |
+|---------|------|------------|
+| 0 | <code>0xD0</code> | <code>EIXAM_BLE_TEL_AGG_FRAG</code> — marca fragmentació |
+| 1–2 | totalLen | <code>uint16</code> <strong>little-endian</strong> — mida total del blob reassemblat |
+| 3–4 | offset | <code>uint16</code> <strong>little-endian</strong> — offset d’aquest fragment dins del blob |
+| 5–19 | payload | Fins a <strong>15 bytes</strong> de dades del blob (últim fragment pot ser més curt) |</p>
+<p>L’app ha de <strong>reassemblar</strong> tots els fragments (mateix <code>totalLen</code>, <code>offset</code> creixent) fins a <code>offset + len_fragment == totalLen</code>. El resultat és idèntic al paquet <strong>LoRa</strong> (vegeu <code>09</code> §4).</p>
+<hr />
+<h2>1. Device → App (notifications)</h2>
+<h3>1.1 TEL (telemetria) — característica TEL</h3>
+<p><strong>Quan:</strong> El dispositiu envia la seva posició periòdicament (interval TEL, p. ex. 120 s) i durant el compte enrere SOS. <strong>Reenviament de TEL d’altres nodes (LoRa → BLE):</strong> si <strong>BLE connectat</strong>, el firmware reenvia <strong>paquets TEL vàlids de 10 B</strong> rebuts per LoRa cap a l’app (notify TEL), amb <strong>rate-limit per node font</strong> (<code>EIXAM_TEL_RX_BLE_MIN_INTERVAL_MS</code>, per defecte 60 s) i taula de <strong>8</strong> ids; només <strong><code>EIXAM_CLIENT</code></strong>.</p>
+<p><strong>Format (cas clàssic):</strong> <strong>10 bytes</strong> (paquet de posició Eixam).</p>
+<blockquote>
+<p><strong>Cluster:</strong> Els agregats (<code>0xC2</code>, mida variable) arriben per <strong>LoRa</strong> (port 258) o, si el tag té <strong>INET_OK</strong> i BLE connectat, per <strong>TEL notify</strong> en fragments amb capçalera <strong><code>0xD0</code></strong> (totalLen, offset, dades). Després de reassemblar, el blob és el mateix que <code>0xC2</code>… Veieu <code>09_BACKEND_APP_HANDOFF.md</code> §4.</p>
+</blockquote>
+<p>| Byte | Camp | Tipus | Descripció |
+|------|------|--------|------------|
+| 0–1 | nodeId | uint16 LE | Node ID del dispositiu (origen) |
+| 2–7 | lat, lon, alt | packed | Lat (20b), Lon (21b), Alt (7b, unitats de 40 m). Formules: lat = (latEnc×180/1048576)−90; lon = (lonEnc×360/2097152)−180; alt = (altEnc)×40 m |
+| 8–9 | meta | uint16 LE | speed(4) + heading(4) + batt(2) + gpsQuality(2) + packetId(4). speed/heading 0–15; batt 0–3 (crític/baix/mitjà/ok); gpsQuality 0–3 (no fix/2D/3D/DGPS); packetId 0–15 (rotació) |</p>
+<p><strong>Decodificació ràpida (pseudocodi):</strong></p>
+<ul>
+<li><code>nodeId = bytes[0] | (bytes[1] &lt;&lt; 8)</code></li>
+<li>Lat/Lon/Alt: mateix packing que SOS 10B (veure apartat SOS més avall). B2–B7 idèntics.</li>
+<li>Meta: <code>batt = (bytes[8]&gt;&gt;6)&amp;0x03</code>, <code>gpsQuality = (bytes[8]&gt;&gt;4)&amp;0x03</code>, <code>packetId = bytes[8]&amp;0x0F</code> (bytes[9] per speed/heading si cal).</li>
+</ul>
+<p><strong>Font al firmware:</strong> <code>EixamPositionCodec::encode</code> / <code>decode</code>, <code>EixamTelModule::sendPosition</code> → <code>sendTelNotify</code>.</p>
+<hr />
+<h3>1.2 SOS — característica SOS</h3>
+<p><strong>Quan:</strong> (1) El dispositiu és <strong>origen</strong> d’un SOS i envia el seu paquet SOS (countdown o actiu). (2) El dispositiu és <strong>relay</strong> i rep un SOS per LoRa i el reenvia a l’app (perquè l’app el passi al backend). (3) L’usuari ha <strong>desactivat l’SOS amb el botó</strong> (mantenir 3 s + to descendent): notificació d’esdeveniment (veure més avall).</p>
+<h4>Notify SOS per BLE — periodicitat (comportament actual del firmware)</h4>
+<p>A més del que ja arriba per <strong>TEL</strong> amb <code>sosType != 0</code> en alguns casos, el firmware envia <strong>sempre</strong> còpies explícites per la característica <strong>SOS</strong> (<code>sendSOSNotify</code>):</p>
+<p>| Fase | Què envia per BLE <strong>SOS</strong> (i context TEL) |
+|------|-------------------------------------------|
+| <strong>Compte enrere (pre-SOS, 20 s)</strong> — <strong>primers ~2 s</strong> | A cada cicle del mòdul SOS (~<strong>500 ms</strong>): <strong>notify SOS</strong> amb <strong>10 bytes</strong> (posició actual + flags SOS, <code>encodeFull</code>). En paral·lel, <strong>TEL</strong> amb flag SOS (<code>sendPosition</code>) perquè l’app rebi posició ràpida sense esperar el període TEL normal. |
+| <strong>Compte enrere</strong> — <strong>del segon 2 al 20</strong> | <strong>No</strong> es tornen a disparar aquests enviaments BLE des d’aquest camí (només feedback sonor local). L’app ja hauria rebut les primeres notificacions; si cal posició contínua, dependrà del flux <strong>TEL</strong> habitual o de l’usuari que confirmi/cancel·li. |
+| <strong>SOS actiu / SOS reconegut (ACK)</strong> | A cada reintents amb interval <strong>Fibonacci</strong> (junt amb TX LoRa SOS i TX pel canal TEL amb SOS): de nou <strong>notify SOS</strong> <strong>10 B</strong> (<code>encodeFull</code>) per mantenir el backend alineat mentre l’emergència és activa. |
+| <strong>Relay</strong> | En rebre un SOS vàlid per mesh (origen ≠ propi node), es fa <strong>notify SOS</strong> amb el <strong>mateix payload</strong> rebut (5 B o 10 B) perquè l’app el reenviï al backend. |</p>
+<p><strong>Nota:</strong> Per a SOS <strong>actiu</strong>, el camí <strong>LoRa</strong> pot usar paquet <strong>mínim 5 B</strong> si hi ha <strong>POS_CONFIRMED</strong> (<code>0x03</code>); el camí <strong>BLE</strong> en <code>sendSOSViaBLE</code> usa <strong>sempre 10 B amb posició</strong> (GPS actual) per simplificar la integració a l’app.</p>
+<p><strong>Format normal SOS:</strong> <strong>10 bytes</strong> (amb posició) o <strong>5 bytes</strong> (sense posició).</p>
+<p><strong>Format desactivació manual (device → app):</strong> <strong>4 bytes</strong> — no és un paquet SOS mesh.</p>
+<p>| Byte | Valor | Descripció |
+|------|--------|-------------|
+| 0 | <code>0xE1</code> | <code>EIXAM_BLE_SOS_EVT_DEACTIVATED</code> — esdeveniment “usuari ha desactivat SOS amb botó 3s” |
+| 1 | <code>0x01</code> o <code>0x02</code> | <code>0x01</code> = cancel·lat durant <strong>compte enrere</strong> (pre-SOS). <code>0x02</code> = cancel·lat amb SOS <strong>ja disparat</strong> → l’app ha d’informar el backend. |
+| 2–3 | nodeId | uint16 LE — node que ha desactivat |</p>
+<p><strong>Format confirmació cancel·lació des de l’app (device → app):</strong> <strong>4 bytes</strong> — resposta després d’un <strong>Write</strong> vàlid de <code>0x04</code> (SOS_CANCEL).</p>
+<p>| Byte | Valor | Descripció |
+|------|--------|-------------|
+| 0 | <code>0xE2</code> | <code>EIXAM_BLE_SOS_EVT_APP_CANCEL_ACK</code> — el dispositiu ha aplicat la cancel·lació |
+| 1 | <code>0x01</code> / <code>0x02</code> / <code>0x03</code> | Estat des del qual s’ha cancel·lat: <strong>pre-SOS</strong> (compte enrere), <strong>SOS actiu</strong>, <strong>SOS reconegut</strong> (ACK rebut, slow retries) |
+| 2–3 | nodeId | uint16 LE |</p>
+<p>Si l’estat no era cap d’aquests (p. ex. ja <code>INACTIVE</code>), el dispositiu <strong>no</strong> envia aquest paquet (el write 0x04 no té efecte).</p>
+<p><strong>10 bytes (SOS amb posició):</strong></p>
+<p>| Byte | Camp | Tipus | Descripció |
+|------|------|--------|------------|
+| 0–1 | nodeId | uint16 LE | <strong>Origen</strong> de l’SOS (qui ha premut SOS) |
+| 2–7 | lat, lon, alt | packed | Mateix format que TEL (lat 20b, lon 21b, alt 7b) |
+| 8–9 | flags | uint16 LE | sosType(2) + retryCount(2) + relayCount(2) + battLevel(2) + gpsQuality(2) + speedEst(2) + packetId(4). <strong>sosType != 0</strong> → és un paquet SOS |</p>
+<p><strong>5 bytes (SOS mínim, sense posició):</strong><br />
+B0–B1 nodeId, B2–B3 flags (16b), B4 seq.</p>
+<p><strong>Com saber si és SOS:</strong><br />
+Si el paquet ve per la característica <strong>SOS</strong>, sempre és un esdeveniment SOS. Si es rep el mateix format 10B per <strong>TEL</strong>, es pot comprovar <code>flags.sosType != 0</code> (bits 15–14 del word flags = byte 9 high nibble).</p>
+<p><strong>Font al firmware:</strong> <code>EixamSOSPacket::encodeFull</code> / <code>decode</code>, <code>EixamSOSModule::sendSOSViaBLE</code>, <code>handleReceived</code> (relay) → <code>EixamBLEBridge::sendSOSNotify</code>; esdeveniments <code>0xE1</code> / <code>0xE2</code> → <code>notifyUserDeactivatedViaBLE</code> / <code>notifyAppCancelAck</code>.</p>
+<hr />
+<h2>2. App → Device (comandes, provinents de backend o usuari)</h2>
+<p>Totes les comandes es reben per <strong>escriptura</strong> a la característica <strong>INET</strong> (ea03) o <strong>CMD</strong> (ea04). El primer byte és sempre el <strong>opcode</strong>; els següents són el payload (si n’hi ha).</p>
+<h3>2.1 Resum de comandes</h3>
+<p>| Opcode | Nom | Payload | Descripció |
+|--------|-----|---------|------------|
+| <code>0x01</code> | INET_OK | — | App/backend té connexió a internet. Dispositivu deixa d’enviar TEL per LoRa (només BLE). |
+| <code>0x02</code> | INET_LOST | — | App ha perdut internet. Dispositiu torna a enviar TEL per LoRa. |
+| <code>0x03</code> | POS_CONFIRMED | — | Backend ha rebut/confirmat la posició. Es guarda per a SOS mínim (5B) sense posició. |
+| <code>0x04</code> | SOS_CANCEL | — | Cancel·lar SOS (countdown) o resoldre SOS actiu/reconegut. El dispositiu respon amb <strong>Notify</strong> SOS <code>[0xE2, subcodi, nodeId]</code> si s’ha aplicat (veure §1.2). |
+| <code>0x05</code> | SOS_CONFIRM | — | Confirmar SOS durant el compte enrere (com si passés el temps). |
+| <code>0x06</code> | SOS_TRIGGER_APP | — | Disparar SOS des de l’app (com HOLD 3s → compte enrere 20s). |
+| <code>0x07</code> | SOS_ACK | — | Backend ha reconegut l’SOS; el dispositiu para el to d’alerta. |
+| <code>0x08</code> | SOS_ACK_RELAY | nodeId (2 bytes, LE) | En un <strong>relay</strong>: el backend ha ackat l’SOS d’origen <code>nodeId</code>; el relay envia Rescue ACK per LoRa a aquest node. |
+| <code>0x10</code> | SHUTDOWN | — | Apagar el dispositiu (només des de l’app). |
+| <code>0x20</code> | PROVISION | (futur) | Provisioning config (no implementat). |</p>
+<h3>2.2 Format dels payloads</h3>
+<ul>
+<li><strong>1 byte:</strong> <code>[ 0xXX ]</code> — la majoria de comandes.</li>
+<li><strong>0x08 SOS_ACK_RELAY:</strong> <code>[ 0x08, nodeId_lo, nodeId_hi ]</code> (3 bytes). <code>nodeId = data[1] | (data[2] &lt;&lt; 8)</code>.</li>
+</ul>
+<p>L’app ha d’enviar com a mínim 1 byte (l’opcode). Les comandes amb payload exigeixen la longitud adequada (per 0x08, len &gt;= 3).</p>
+<h3>2.3 Rescue status estructurat (Sprint 3 fase 1)</h3>
+<p>Per <code>STATUS_REQ</code> (<code>0x05</code>, port LoRa 261), el node víctima respon amb <code>STATUS_RESP</code> (<code>0x85</code>) perquè l’app del rescatador pugui pintar UI sense inferir només de TEL/SOS.</p>
+<p><strong>Payload <code>STATUS_RESP</code> (10 B, port 261):</strong></p>
+<p>| Byte(s) | Camp | Tipus | Descripció |
+|---------|------|-------|------------|
+| 0–1 | rescueId | uint16 LE | node id lògic del rescatador que ha fet el request |
+| 2–3 | victimId | uint16 LE | node víctima que respon |
+| 4 | <code>0x85</code> | uint8 | <code>EIXAM_RESCUE_CMD_STATUS_RESP</code> |
+| 5 | state | uint8 | <code>EixamSOSState</code> (<code>0=INACTIVE</code>, <code>1=COUNTDOWN</code>, <code>2=ACTIVE</code>, <code>3=ACKNOWLEDGED</code>, <code>4=RESOLVED</code>) |
+| 6 | batt2b | uint8 | bateria codificada Eixam (0..3) |
+| 7 | gpsQ2b | uint8 | qualitat GPS (0..3) |
+| 8 | retryCount | uint8 | contador actual de reintents SOS |
+| 9 | flags | uint8 | bit0: relay pending ACK; bit1: INET disponible |</p>
+<p><strong>Nota d’integració app/backend:</strong> el firmware també manté el push contextual existent (<code>notify SOS</code> + <code>TEL</code>) després del <code>STATUS_REQ</code>, però el <code>STATUS_RESP</code> és la font “neteja” per a la UI d’estat de rescat.</p>
+<hr />
+<h2>3. Flux típics per a l’app</h2>
+<ol>
+<li><p><strong>Connexió BLE</strong></p>
+<ul>
+<li>Subscriure’s a <strong>TEL</strong> i <strong>SOS</strong> (Notify).</li>
+<li>En connectar, indicar estat d’internet: escriure <strong>INET_OK</strong> (0x01) o <strong>INET_LOST</strong> (0x02) segons connexió backend.</li>
+</ul>
+</li>
+<li><p><strong>Recepció de posicions (TEL)</strong></p>
+<ul>
+<li>Avui cada notificació <strong>BLE TEL</strong> és 10 bytes; decodificar amb el format de posició Eixam (nodeId, lat, lon, alt, meta). (Si en el futur s’afegeix agregat per BLE, caldrà discriminar per opcode/longitud — veure <code>09_BACKEND_APP_HANDOFF.md</code>.)</li>
+<li>Enviar al backend si hi ha internet; si el backend confirma posició, enviar <strong>POS_CONFIRMED</strong> (0x03) al dispositiu.</li>
+</ul>
+</li>
+<li><p><strong>Recepció d’SOS (SOS)</strong></p>
+<ul>
+<li>Durant el <strong>compte enrere</strong>, els primers ~<strong>2 s</strong> poden arribar <strong>moltes</strong> notificacions <strong>SOS</strong> (10 B) i <strong>TEL</strong> amb flag SOS; tractar com a mateixa emergència (deduplicar per <code>nodeId</code> + finestra temporal si cal).</li>
+<li>En <strong>SOS actiu</strong>, les notificacions <strong>SOS</strong> segueixen el ritme de <strong>reintents Fibonacci</strong> (no cada segon fix).</li>
+<li>Cada notificació <strong>SOS</strong> és 10 bytes (o 5 en relay si el mesh envia mínim); nodeId = <strong>origen</strong> de l’SOS.</li>
+<li>Enviar l’SOS al backend. Quan el backend reconegui l’SOS:<ul>
+<li>Si aquest dispositiu és l’<strong>origen</strong> → enviar <strong>SOS_ACK</strong> (0x07).</li>
+<li>Si aquest dispositiu és un <strong>relay</strong> (has rebut un SOS d’un altre node) → enviar <strong>SOS_ACK_RELAY</strong> (0x08) amb el nodeId de l’origen (2 bytes, little-endian).</li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p><strong>Disparar / cancel·lar SOS des de l’app</strong></p>
+<ul>
+<li>Disparar: <strong>SOS_TRIGGER_APP</strong> (0x06).</li>
+<li>Cancel·lar compte enrere o resoldre: <strong>SOS_CANCEL</strong> (0x04). Esperar <strong>Notify</strong> SOS <code>[0xE2, …]</code> per confirmar que el tag ha tornat a espera (o gestionar timeout si no arriba — estava ja INACTIVE).</li>
+</ul>
+</li>
+</ol>
+<hr />
+<h2>4. Feedback de so al dispositiu</h2>
+<p>El dispositiu reprodueix tons per buzzer en aquests moments (resum; detall a <code>01_SPRINT1_TEL_BLE_SOS.md</code>):</p>
+<ul>
+<li><strong>Activar SOS</strong> (botó 3 s o app 0x06): escala pujant Do–Mi–Sol–Si.</li>
+<li><strong>Compte enrere 20 s</strong>: bip cada <strong>1 s</strong> (recordatori); vegeu §1.2 per enviaments BLE en els primers ~2 s.</li>
+<li><strong>SOS actiu</strong>: to tipus ambulància (alta/baixa) cada 1 s fins ACK.</li>
+<li><strong>Cancel·lar / resoldre SOS</strong>: botó <strong>3 s</strong> (mateix que activar) o app 0x04; escala baixant Si–Sol–Mi–Do. Si és botó amb SOS ja disparat, l’app rep notify <code>0xE1</code> + <code>0x02</code> a la característica SOS.</li>
+<li><strong>Apagada</strong> (app 0x10): to descendent del sistema.</li>
+</ul>
+<hr />
+<h2>5. Documents i codi de referència</h2>
+<ul>
+<li><strong>Constants i UUIDs:</strong> <code>firmware/src/modules/Eixam/EixamConfig.h</code></li>
+<li><strong>Formats 10B posició:</strong> <code>EixamPositionCodec.cpp</code> (encode/decode)</li>
+<li><strong>Formats SOS 5B/10B:</strong> <code>EixamSOSPacket.cpp</code> (encode/decode)</li>
+<li><strong>Handler de comandes:</strong> <code>EixamBLEBridge::onCmdReceived</code> a <code>EixamBLEBridge.cpp</code></li>
+<li><strong>Platform BLE (NRF52):</strong> <code>src/platform/nrf52/NRF52Bluetooth.cpp</code> (setup Eixam service, Notify TEL/SOS, Write INET/CMD)</li>
+<li><strong>Tons i SOS:</strong> <code>01_SPRINT1_TEL_BLE_SOS.md</code> (secció «Estat actual del Sprint 1»)</li>
+</ul>
+<p>Aquest document reflecta l’estat <strong>BLE</strong> (<strong>Sprint 1</strong> + <strong>Sprint 2</strong> cluster, agregats <code>0xD0</code>, i <strong>notify SOS</strong> com a §1.2). Extensions (provisioning, més comandes, TEL veíns LoRa→BLE) es documentaran quan s’implementin. Per <strong>backend / ports mesh 258–260</strong>, veieu <strong><code>09_BACKEND_APP_HANDOFF.md</code></strong>.</p>
+<p>Per <strong>sync diferit de backlog local</strong> (final excursio / punt CIM) vegeu també <strong><code>13_BLE_BACKLOG_SYNC_PROTOCOL.md</code></strong>.</p>
+<hr />
+<h2>6. Cua Eixam → app (notify)</h2>
+<p>El firmware <strong>ja gestiona</strong> una cua per no perdre notifies si el stack BLE està ocupat:</p>
+<p>| Cua | Profunditat | Si s’omple |
+|-----|-------------|------------|
+| TEL (10 B i fragments d’agregat) | 8 entrades | Es descarta el <strong>més antic</strong> i s’enregistra <code>LOG_WARN</code>. |
+| SOS | 8 entrades | Igual (prioritat de <strong>drenatge</strong>: primer es buida SOS, després TEL petit, després de completar un agregat fragmentat). |</p>
+<ul>
+<li><strong>Agregat gran (<code>0xD0</code>)</strong>: mentre s’envien fragments, <strong>no</strong> s’encuen TEL petits nous al mateix flux de fragments; els 10 B van a la cua TEL. Un <strong>segon</strong> agregat gran mentre el primer encara fragmenta es <strong>rebutja</strong> (log).</li>
+<li><strong>App → dispositiu</strong>: les escriptures a INET/CMD es processen al <strong>callback</strong> (sense cua al firmware). L’app hauria d’<strong>eserialitzar</strong> comandes crítiques (p. ex. no enviar 10 writes sense esperar si cal ordre estricte).</li>
+</ul>
+<p>Implementació: <code>EixamBLEBridge.cpp</code> (<code>enqueueTel</code> / <code>enqueueSOS</code>, <code>drainQueues</code>).</p>
+</main></div><script src='../../assets/site.js'></script></body></html>

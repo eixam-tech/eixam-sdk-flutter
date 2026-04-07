@@ -1,0 +1,33 @@
+<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Quickstart</title><link rel='stylesheet' href='../assets/style.css'></head><body><div class='layout'><aside class='sidebar'><div class='brand'>EIXAM Docs - partner</div><nav><a class="" href="index.html">Overview</a><a class="" href="sdk-overview.html">SDK Overview</a><a class="active" href="quickstart.html">Quickstart</a><a class="" href="public-api.html">Public API</a><a class="" href="public-api-examples.html">API Examples</a><a class="" href="core-concepts.html">Core Concepts</a><a class="" href="protection-mode.html">Protection Mode</a><a class="" href="flutter-integration.html">Flutter Integration</a><a class="" href="android-integration.html">Android Integration</a><a class="" href="ios-integration.html">iOS Integration</a><a class="" href="permissions-checklist.html">Permissions Checklist</a><a class="" href="backend-integration.html">Backend Integration</a><a class="" href="api-reference.html">API Reference</a><a class="" href="troubleshooting.html">Troubleshooting</a></nav></aside><main class='content'><h1>Quickstart</h1>
+<h2>1. Add dependencies</h2>
+<pre><code class="language-yaml">dependencies:
+  eixam_connect_core:
+    path: ../../packages/eixam_connect_core
+  eixam_connect_flutter:
+    path: ../../packages/eixam_connect_flutter
+</code></pre>
+<h2>2. Create the SDK</h2>
+<pre><code class="language-dart">final sdk = await ApiSdkFactory.createHttpApi(
+  apiBaseUrl: 'https://api.example.com',
+  websocketUrl: 'wss://mqtt.example.com/mqtt',
+);
+</code></pre>
+<h2>3. Provide the signed session</h2>
+<pre><code class="language-dart">await sdk.setSession(
+  const EixamSession.signed(
+    appId: 'partner-app',
+    externalUserId: 'partner-user-123',
+    userHash: 'signed-token-or-hash',
+  ),
+);
+</code></pre>
+<h2>4. Subscribe to streams</h2>
+<pre><code class="language-dart">sdk.currentSosStateStream.listen((state) {
+  // render SOS state
+});
+
+sdk.deviceStatusStream.listen((status) {
+  // render runtime device state
+});
+</code></pre>
+</main></div><script src='../assets/site.js'></script></body></html>

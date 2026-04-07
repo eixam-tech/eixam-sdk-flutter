@@ -1,0 +1,88 @@
+<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Team Handoff Index</title><link rel='stylesheet' href='../../assets/style.css'></head><body><div class='layout'><aside class='sidebar'><div class='brand'>EIXAM Docs - full</div><nav><a class="" href="../index.html">Overview</a><a class="" href="../sdk/architecture.html">SDK Architecture</a><a class="" href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a class="" href="../sdk/backend-integration.html">Backend Integration</a><a class="" href="../api/public-api.html">Public API</a><a class="" href="../api/public-api-examples.html">Public API Examples</a><a class="" href="../protection/overview.html">Protection Overview</a><a class="" href="../protection/android-host-integration.html">Android Host Integration</a><a class="" href="../protection/ios-host-integration.html">iOS Host Integration</a><a class="" href="../integration/permissions-checklist.html">Permissions Checklist</a><a class="" href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a class="" href="../protocol/ble-protocol.html">BLE Protocol</a><a class="" href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a class="" href="../reference-app/debug-app-validation-guide.html">Reference App Validation Guide</a><a class="" href="../reference-app/real-backend-validation-checklist.html">Real Backend Validation Checklist</a><a class="" href="decisions.html">Decisions</a><a class="" href="quality-gates.html">Quality Gates</a><a class="" href="testing-strategy.html">Testing Strategy</a><a class="" href="testability-notes.html">Testability Notes</a><a class="" href="roadmap.html">Roadmap</a><a class="active" href="team-handoff-index.html">Team Handoff Index</a></nav></aside><main class='content'><h1>Eixam — Índex per l’equip (resum + qui llegeix què)</h1>
+<p>Un sol lloc per <strong>compartir amb companys</strong>: què està llest al firmware i <strong>quins documents</strong> han de llegir el <strong>desenvolupador d’app (BLE)</strong> i el <strong>desenvolupador de backend</strong>.</p>
+<hr />
+<h2>1. Què tenim apunt (línia base firmware, febrer 2026)</h2>
+<p>Resum; el detall està a <strong><code>10_SPRINT1_2_CONSOLIDATED.md</code></strong> i la checklist a <strong><code>04_ROADMAP.md</code></strong>.</p>
+<p>| Tema | Estat |
+|------|--------|
+| <strong>TEL 10 B</strong> (codec, LoRa port 258) | Fet |
+| <strong>SOS</strong> (LoRa 259 + BLE, Fibonacci, botó Eixam) | Fet |
+| <strong>BLE Eixam</strong> (servei propi: TEL / SOS notify, INET+CMD write, cues, fragments <code>0xD0</code>) | Fet |
+| <strong>Cluster</strong> (port 260: heartbeat 8 B, POLL/REPORT, agregat <code>0xC2</code>) | Fet (MVP) |
+| <strong>INET_OK</strong> → suprimeix TEL LoRa; dades cap a app per BLE | Fet |
+| <strong>Agregat cluster</strong> → BLE amb <code>0xD0</code> si INET + connectat | Fet |
+| <strong>NVM Eixam</strong> (<code>/eixam/config.bin</code>: PSK, URL, interval TEL…) | Fet (separat de config Meshtastic) |
+| <strong>Log posicions locals</strong> + rangetest / cobertura (docs <code>05</code> / <code>06</code>) | Fet |
+| <strong>2 dBm LoRa</strong> en tràfis <strong>propis</strong> port <strong>260</strong> (cluster) | Fet |
+| <strong>Validació camp</strong> (tests <code>04</code>) | Pendent |
+| <strong>TEL RX LoRa → BLE</strong> (veïns / familiars) | Fet (Sprint 3) |
+| <strong>TEL 258 a baixa potència en cluster</strong> | Fet (Sprint 3) |
+| <strong>Smart sampling GPS</strong> (walk/run/bike/very-fast) + log local rolling 64KB | Fet (Sprint 3) |
+| <strong>Route / Rescue avançat (fase 2)</strong> | Diferit a backend/app |</p>
+<p><strong>Versió:</strong> veure <code>version.properties</code> + <code>APP_VERSION</code> després del build; entorn típic <strong><code>rak_wismeshtag</code></strong> amb <strong><code>EIXAM_CLIENT</code></strong>.</p>
+<hr />
+<h2>2. Document per al company que fa l’<strong>app</strong> (BLE)</h2>
+<p><strong>Paquet final APP (obligatori):</strong></p>
+<ul>
+<li><a href="17_APP_HANDOFF_FINAL.md"><code>17_APP_HANDOFF_FINAL.md</code></a> — handoff final i scope tancat</li>
+<li><a href="07_BLE_APP_PROTOCOL.md"><code>07_BLE_APP_PROTOCOL.md</code></a> — protocol BLE detallat</li>
+<li><a href="13_BLE_BACKLOG_SYNC_PROTOCOL.md"><code>13_BLE_BACKLOG_SYNC_PROTOCOL.md</code></a> — sync diferit backlog</li>
+<li><a href="16_GUIDED_RESCUE_PHASE1.md"><code>16_GUIDED_RESCUE_PHASE1.md</code></a> — rescue fase 1 (primitives)</li>
+</ul>
+<p>Inclou:</p>
+<ul>
+<li>UUIDs del servei Eixam i característiques (<strong>TEL</strong>, <strong>SOS</strong>, <strong>INET</strong>, <strong>CMD</strong>).</li>
+<li>Format <strong>10 B</strong> posició (TEL) i SOS (5 B / 10 B).</li>
+<li>Comandes <strong>INET</strong> (<code>0x01</code> INET_OK, <code>0x02</code> INET_LOST, …) i <strong>CMD</strong>.</li>
+<li>Cua de notifies, fragments <strong><code>0xD0</code></strong> per blobs grans (agregat <code>0xC2</code>).</li>
+<li>Potència BLE al Tag (<code>NRF52_BLE_TX_POWER</code>).</li>
+</ul>
+<p><strong>Context compartit (opcional):</strong></p>
+<ul>
+<li><a href="11_TEAM_HANDOFF_INDEX.md"><code>11_TEAM_HANDOFF_INDEX.md</code></a></li>
+<li><a href="12_SPRINT3_BRIEFING.md"><code>12_SPRINT3_BRIEFING.md</code></a></li>
+</ul>
+<p><strong>No és el protocol Eixam:</strong> l’app <strong>Meshtastic</strong> oficial usa <strong>Protobuf / ToRadio / FromRadio</strong> sobre el servei estàndard; el vostre producte Eixam es basa en el servei <strong><code>6ba1b218-…</code></strong> del <code>07</code>. Si integreu les dues coses, calen <strong>dues piles BLE</strong> clares.</p>
+<hr />
+<h2>3. Document per al company que fa el <strong>backend</strong></h2>
+<p><strong>Paquet final BACKEND (obligatori):</strong></p>
+<ul>
+<li><a href="18_BACKEND_HANDOFF_FINAL.md"><code>18_BACKEND_HANDOFF_FINAL.md</code></a> — handoff final i scope tancat</li>
+<li><a href="15_BACKEND_ONE_PAGER.md"><code>15_BACKEND_ONE_PAGER.md</code></a> — resum ràpid operatiu</li>
+<li><a href="14_BACKEND_INGEST_UNIFIED_CONTRACT.md"><code>14_BACKEND_INGEST_UNIFIED_CONTRACT.md</code></a> — contracte únic ingest</li>
+<li><a href="13_BLE_BACKLOG_SYNC_PROTOCOL.md"><code>13_BLE_BACKLOG_SYNC_PROTOCOL.md</code></a> — ingest diferit via app BLE</li>
+<li><a href="09_BACKEND_APP_HANDOFF.md"><code>09_BACKEND_APP_HANDOFF.md</code></a> — detall ports/wire històric i context</li>
+</ul>
+<p>Inclou:</p>
+<ul>
+<li>Diferència <strong>dades per BLE (app)</strong> vs <strong>dades per LoRa / gateway</strong>.</li>
+<li>Ports <strong>258</strong> (TEL + agregat) i <strong>260</strong> (cluster).</li>
+<li>Estructura <strong>heartbeat</strong>, <strong>POLL</strong>, <strong>REPORT</strong>, agregat <strong><code>0xC2</code></strong>.</li>
+<li><strong>NodeId 16 vs 32 bits</strong>.</li>
+<li>Rangetest / CSV (<code>05</code>).</li>
+<li><strong>§9</strong> NodeDB Eixam <em>diferit</em>.</li>
+<li>Checklist ràpid per ingest API (múltiples posicions, <code>clusterId</code>, etc.).</li>
+</ul>
+<p><strong>Complements:</strong></p>
+<ul>
+<li><a href="04_ROADMAP.md"><code>04_ROADMAP.md</code></a> — estat sprint/tests</li>
+<li><a href="12_SPRINT3_BRIEFING.md"><code>12_SPRINT3_BRIEFING.md</code></a> — resum executiu</li>
+</ul>
+<hr />
+<h2>4. Altres documents útils (tota l’equip)</h2>
+<p>| Fitxer | Per a què |
+|--------|-----------|
+| <code>00_CONTEXT.md</code> | Context del fork i regles (<code>src/modules/Eixam/</code>) |
+| <code>04_ROADMAP.md</code> | Sprints, tests, pilot Sprint 2 |
+| <code>08_SPRINT2_CLUSTER_PENDING.md</code> | Cluster: què està fet vs fase 2 power |
+| <code>10_SPRINT1_2_CONSOLIDATED.md</code> | Resum tècnic S1+2 |
+| <code>12_SPRINT3_BRIEFING.md</code> | <strong>Briefing Sprint 3</strong> (objectius, línies de treball, app/backend) |
+| <code>13_BLE_BACKLOG_SYNC_PROTOCOL.md</code> | Protocol <strong>MVP definitiu</strong> de sync diferit BLE (app/backend) |
+| <code>14_BACKEND_INGEST_UNIFIED_CONTRACT.md</code> | Contracte únic backend (MQTT + BLE backlog, dedup) |
+| <code>15_BACKEND_ONE_PAGER.md</code> | Resum backend en 2 minuts (10 punts clau) |
+| <code>16_GUIDED_RESCUE_PHASE1.md</code> | Guiatge rescat fase 1 (REQUEST_POS + BUZZER proximitat) |
+| <code>03_SPRINT3_SF_RESCUE_ROUTE.md</code> | Codi / pseudocodi detallat Sprint 3 |
+| <code>05_RANGETEST_COVERAGE_LOG.md</code> / <code>06_…</code> | Logs cobertura al dispositiu |</p>
+<hr />
+<p><em>Podeu enviar aquest fitxer (<code>11_TEAM_HANDOFF_INDEX.md</code>) com a missatge introductori i adjuntar o enllaçar <code>07</code> i <code>09</code> segons el rol.</em></p>
+</main></div><script src='../../assets/site.js'></script></body></html>

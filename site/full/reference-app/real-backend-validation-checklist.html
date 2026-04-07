@@ -1,0 +1,158 @@
+<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Real Backend Validation Checklist</title><link rel='stylesheet' href='../../assets/style.css'></head><body><div class='layout'><aside class='sidebar'><div class='brand'>EIXAM Docs - full</div><nav><a class="" href="../index.html">Overview</a><a class="" href="../sdk/architecture.html">SDK Architecture</a><a class="" href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a class="" href="../sdk/backend-integration.html">Backend Integration</a><a class="" href="../api/public-api.html">Public API</a><a class="" href="../api/public-api-examples.html">Public API Examples</a><a class="" href="../protection/overview.html">Protection Overview</a><a class="" href="../protection/android-host-integration.html">Android Host Integration</a><a class="" href="../protection/ios-host-integration.html">iOS Host Integration</a><a class="" href="../integration/permissions-checklist.html">Permissions Checklist</a><a class="" href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a class="" href="../protocol/ble-protocol.html">BLE Protocol</a><a class="" href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a class="" href="debug-app-validation-guide.html">Reference App Validation Guide</a><a class="active" href="real-backend-validation-checklist.html">Real Backend Validation Checklist</a><a class="" href="../internal/decisions.html">Decisions</a><a class="" href="../internal/quality-gates.html">Quality Gates</a><a class="" href="../internal/testing-strategy.html">Testing Strategy</a><a class="" href="../internal/testability-notes.html">Testability Notes</a><a class="" href="../internal/roadmap.html">Roadmap</a><a class="" href="../internal/team-handoff-index.html">Team Handoff Index</a></nav></aside><main class='content'><h1>Real Backend Validation Checklist</h1>
+<p>Use this checklist with the demo app validation console when validating the
+current SDK against a real backend. The app remains a thin host; all business
+and operational behavior should be observed through SDK diagnostics and runtime
+surfaces.</p>
+<h2>1. Backend Environment And Session Bootstrap</h2>
+<ul>
+<li>In local debug builds, first-run validation defaults are prefilled with:<ul>
+<li><code>http://127.0.0.1:8080</code></li>
+<li><code>tcp://127.0.0.1:1883</code></li>
+<li><code>app_localandroid01</code></li>
+<li><code>roger-android-local-01</code></li>
+<li><code>8a59d9fce6ef5d541bbb7fe14d0ada32a0551f7a3152dbe9bb5a410b7ca58e9e</code></li>
+</ul>
+</li>
+<li>Saved backend configuration still wins over those defaults.</li>
+<li>The validation console can reload them with <code>Load local debug defaults</code> /
+<code>Reset to local defaults</code>.</li>
+<li>Select the intended backend environment in the validation console and confirm:<ul>
+<li>HTTP base URL</li>
+<li>MQTT URL</li>
+<li>selected preset / active backend readout</li>
+</ul>
+</li>
+<li>Run <code>setSession(...)</code> with a real signed session.</li>
+<li>Confirm the console shows:<ul>
+<li>signed session status = configured</li>
+<li>canonical identity status = resolved from <code>/v1/sdk/me</code></li>
+<li>canonical <code>external_user_id</code></li>
+<li>SDK user id</li>
+</ul>
+</li>
+<li>If bootstrap fails, inspect:<ul>
+<li>last identity/auth error</li>
+<li>SOS rehydration note</li>
+<li>last action error</li>
+</ul>
+</li>
+</ul>
+<h2>2. MQTT Connectivity And Topic Readiness</h2>
+<ul>
+<li>Confirm the console shows:<ul>
+<li>MQTT connection state</li>
+<li>MQTT subscription status</li>
+<li>current SOS topic subscription</li>
+<li>current TEL publish topic</li>
+</ul>
+</li>
+<li>Expected sequence:<ul>
+<li>canonical identity resolved first</li>
+<li>MQTT topics become available</li>
+<li>connection state becomes <code>connected</code></li>
+</ul>
+</li>
+<li>If MQTT does not connect:<ul>
+<li>compare environment URLs with the intended backend</li>
+<li>inspect the last realtime payload/event and last bridge decision</li>
+</ul>
+</li>
+</ul>
+<h2>3. SOS Trigger / ACK / Cancel</h2>
+<ul>
+<li>Trigger SOS from the validation console.</li>
+<li>Confirm:<ul>
+<li>current SOS state changes out of <code>idle</code></li>
+<li>incident id is shown</li>
+<li>pending SOS is visible if MQTT is unavailable</li>
+<li>last SOS incident snapshot is populated</li>
+</ul>
+</li>
+<li>Validate backend lifecycle handling:<ul>
+<li><code>sos_ack</code> should route as <code>SOS_ACK</code> for local-origin SOS</li>
+<li>relay-origin SOS should show a routing summary that includes relay context</li>
+<li>explicit or transformed <code>SOS_ACK_RELAY(nodeId)</code> should only appear for
+active relay-origin SOS</li>
+</ul>
+</li>
+<li>Cancel SOS and confirm final state reflects backend/runtime behavior, not only
+local button presses.</li>
+</ul>
+<h2>4. SOS Rehydration After Restart</h2>
+<ul>
+<li>Trigger or keep an SOS active in backend.</li>
+<li>Restart the app/SDK or refresh the session.</li>
+<li>Confirm:<ul>
+<li>current SOS state is reconstructed correctly</li>
+<li>the SOS rehydration note is either empty/benign or explains fallback
+behavior</li>
+</ul>
+</li>
+<li>Repeat with no active incident and confirm the SDK returns to <code>idle</code>.</li>
+</ul>
+<h2>5. TEL Publish</h2>
+<ul>
+<li>Publish a manual telemetry sample from the validation console.</li>
+<li>Confirm:<ul>
+<li>telemetry publish topic is present</li>
+<li>telemetry publish status becomes ready/published</li>
+<li>last published telemetry sample matches the request</li>
+</ul>
+</li>
+<li>If MQTT is offline:<ul>
+<li>pending telemetry should become visible</li>
+<li>after reconnect, only the latest pending sample should flush</li>
+</ul>
+</li>
+</ul>
+<h2>6. TEL Aggregate Behavior</h2>
+<ul>
+<li>For supported aggregate-complete payloads:<ul>
+<li>confirm telemetry is published through the existing backend telemetry
+contract</li>
+</ul>
+</li>
+<li>For incomplete aggregate fragments:<ul>
+<li>confirm nothing is published early</li>
+<li>confirm diagnostics mention buffering/waiting for completion</li>
+</ul>
+</li>
+<li>For unsupported aggregate-complete payloads:<ul>
+<li>confirm nothing is silently published</li>
+<li>confirm diagnostics explain that the payload does not fit the current
+telemetry contract</li>
+</ul>
+</li>
+</ul>
+<h2>7. Reconnect / Offline Behavior</h2>
+<ul>
+<li>Drop MQTT connectivity while the app remains active.</li>
+<li>Confirm:<ul>
+<li>connection state changes away from <code>connected</code></li>
+<li>pending telemetry and/or pending SOS become visible when applicable</li>
+<li>last bridge decision explains buffering or retry behavior</li>
+</ul>
+</li>
+<li>Restore connectivity and confirm:<ul>
+<li>pending items flush once</li>
+<li>diagnostics update accordingly</li>
+</ul>
+</li>
+</ul>
+<h2>8. Quick Failure Readout</h2>
+<p>When something fails, capture these fields from the validation console first:</p>
+<ul>
+<li>selected preset / active backend</li>
+<li>signed session status</li>
+<li>canonical identity status</li>
+<li>MQTT connection state</li>
+<li>current SOS topic subscription</li>
+<li>current TEL publish topic</li>
+<li>SOS routing summary</li>
+<li>telemetry publish status</li>
+<li>last bridge decision</li>
+<li>last identity/auth error</li>
+<li>last action error</li>
+<li>SOS rehydration note</li>
+</ul>
+</main></div><script src='../../assets/site.js'></script></body></html>

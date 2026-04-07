@@ -1,0 +1,201 @@
+<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Quality Gates</title><link rel='stylesheet' href='../../assets/style.css'></head><body><div class='layout'><aside class='sidebar'><div class='brand'>EIXAM Docs - full</div><nav><a class="" href="../index.html">Overview</a><a class="" href="../sdk/architecture.html">SDK Architecture</a><a class="" href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a class="" href="../sdk/backend-integration.html">Backend Integration</a><a class="" href="../api/public-api.html">Public API</a><a class="" href="../api/public-api-examples.html">Public API Examples</a><a class="" href="../protection/overview.html">Protection Overview</a><a class="" href="../protection/android-host-integration.html">Android Host Integration</a><a class="" href="../protection/ios-host-integration.html">iOS Host Integration</a><a class="" href="../integration/permissions-checklist.html">Permissions Checklist</a><a class="" href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a class="" href="../protocol/ble-protocol.html">BLE Protocol</a><a class="" href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a class="" href="../reference-app/debug-app-validation-guide.html">Reference App Validation Guide</a><a class="" href="../reference-app/real-backend-validation-checklist.html">Real Backend Validation Checklist</a><a class="" href="decisions.html">Decisions</a><a class="active" href="quality-gates.html">Quality Gates</a><a class="" href="testing-strategy.html">Testing Strategy</a><a class="" href="testability-notes.html">Testability Notes</a><a class="" href="roadmap.html">Roadmap</a><a class="" href="team-handoff-index.html">Team Handoff Index</a></nav></aside><main class='content'><h1>EIXAM SDK — Quality Gates</h1>
+<h2>Propòsit</h2>
+<p>Aquest document defineix els mínims de qualitat per considerar un canvi acceptable dins del monorepo EIXAM.</p>
+<p>L’objectiu no és burocràcia.<br />
+L’objectiu és protegir el SDK com a producte reusable i evitar regressions.</p>
+<hr />
+<h2>1. Principi general</h2>
+<p>El criteri principal no és “tenir més codi”.<br />
+El criteri principal és:</p>
+<ul>
+<li>més fiabilitat</li>
+<li>més reusabilitat</li>
+<li>menys regressions</li>
+<li>menys dependència de l’app host</li>
+</ul>
+<p>Atès que EIXAM és SDK-first, la qualitat s’ha de mesurar sobretot sobre el SDK.</p>
+<hr />
+<h2>2. Gate mínim per qualsevol canvi rellevant</h2>
+<p>Abans de considerar un canvi com a acceptable, ha de complir com a mínim:</p>
+<ul>
+<li><code>dart format --set-exit-if-changed .</code></li>
+<li><code>flutter analyze</code></li>
+<li><code>flutter test</code></li>
+</ul>
+<p>Si algun d’aquests falla, el canvi no està llest.</p>
+<hr />
+<h2>3. Gate mínim de producte-SDK</h2>
+<p>A més del gate tècnic bàsic, qualsevol canvi del SDK ha de preservar:</p>
+<ul>
+<li>API pública coherent</li>
+<li>contractes previs no trencats sense justificació</li>
+<li>estat observable estable</li>
+<li>comportament defensiu davant errors</li>
+<li>separació clara entre SDK i host app</li>
+</ul>
+<hr />
+<h2>4. Gate d’arquitectura</h2>
+<p>Un canvi no ha de:</p>
+<ul>
+<li>moure lògica crítica del SDK cap a l’app</li>
+<li>duplicar lògica de negoci en widgets</li>
+<li>exposar dades massa crues si es poden encapsular millor</li>
+<li>augmentar acoblament innecessari entre packages</li>
+</ul>
+<p>La direcció correcta és:</p>
+<ul>
+<li>nucli fort al SDK</li>
+<li>host app prima</li>
+<li>components reutilitzables al package UI.</li>
+</ul>
+<hr />
+<h2>5. Gate de testing per capes</h2>
+<h3>5.1 Canvis a <code>eixam_connect_core</code></h3>
+<p>Han d’anar preferentment acompanyats de:</p>
+<ul>
+<li>unit tests</li>
+<li>tests de state machine</li>
+<li>tests de use cases</li>
+<li>tests de contracte públic quan apliqui</li>
+</ul>
+<h3>5.2 Canvis a <code>eixam_connect_flutter</code></h3>
+<p>Han d’anar preferentment acompanyats de:</p>
+<ul>
+<li>tests de repositories/adapters</li>
+<li>tests de persistència</li>
+<li>tests de comportament observable</li>
+<li>fakes o in-memory implementations quan sigui viable</li>
+</ul>
+<h3>5.3 Canvis a <code>eixam_connect_ui</code></h3>
+<p>Han d’anar preferentment acompanyats de:</p>
+<ul>
+<li>widget tests dels components reutilitzables</li>
+<li>tests d’estats crítics (<code>loading</code>, <code>enabled</code>, <code>disabled</code>, <code>error</code>)</li>
+</ul>
+<h3>5.4 Canvis a <code>apps/eixam_control_app</code></h3>
+<p>No requereixen cobertura massiva per defecte.<br />
+Són suficients:</p>
+<ul>
+<li>smoke tests bàsics</li>
+<li>proves manuals de flux</li>
+<li>cap lògica crítica nova a la UI</li>
+</ul>
+<p>Això és coherent amb el fet que la demo app és un host de validació, no el producte final. :contentReference[oaicite:15]{index=15}</p>
+<hr />
+<h2>6. Quality gate funcional per àrees clau</h2>
+<h2>6.1 SOS</h2>
+<p>Per considerar SOS prou sòlid, cal:</p>
+<ul>
+<li>trigger funciona</li>
+<li>cancel funciona</li>
+<li>estat observable coherent</li>
+<li>persistència/restauració si aplica</li>
+<li>tests de transicions principals</li>
+<li>la UI no assumeix lògica crítica fora del SDK</li>
+</ul>
+<p>SOS és un pilar central del MVP. :contentReference[oaicite:16]{index=16}</p>
+<h2>6.2 Tracking</h2>
+<p>Per considerar Tracking prou sòlid, cal:</p>
+<ul>
+<li>start/stop correctes</li>
+<li>stream d’estat coherent</li>
+<li>stream de posició coherent</li>
+<li>gestió de stale positioning</li>
+<li>persistència/restauració si aplica</li>
+<li>contractes públics consistents</li>
+</ul>
+<h2>6.3 Death Man</h2>
+<p>Per considerar Death Man prou sòlid, cal:</p>
+<ul>
+<li>programació correcta</li>
+<li>confirmació/cancel·lació correctes</li>
+<li>finestra de gràcia coherent</li>
+<li>escalat correcte segons estat</li>
+<li>tests de transicions principals</li>
+</ul>
+<h2>6.4 Emergency Contacts</h2>
+<p>Per considerar Contactes prou sòlid, cal:</p>
+<ul>
+<li>llistar</li>
+<li>afegir</li>
+<li>actualitzar</li>
+<li>activar/desactivar</li>
+<li>eliminar</li>
+<li>persistència coherent</li>
+</ul>
+<p>El comportament pertany al SDK; la UX no.</p>
+<h2>6.5 Device / BLE readiness</h2>
+<p>Per considerar Device prou sòlid, cal:</p>
+<ul>
+<li>estat observable coherent</li>
+<li>lifecycle clar</li>
+<li>comportament defensiu</li>
+<li>no dependre de la pantalla per interpretar l’estat</li>
+<li>preparació per BLE real sense contractes trencadissos</li>
+</ul>
+<hr />
+<h2>7. Quality gate específic per APP/BLE integration</h2>
+<p>Per donar per vàlid el mínim d’integració app/BLE, han d’estar resolts o clarament contractats:</p>
+<ul>
+<li>parse TEL 10B</li>
+<li>parse SOS 5B/10B</li>
+<li>reassemblatge <code>0xD0</code></li>
+<li>deduplicació TEL/SOS</li>
+<li>tolerància offline i reintents</li>
+<li>pipeline robust cap backend</li>
+<li>superfície SOS usable</li>
+<li>superfície Rescue fase 1 usable</li>
+</ul>
+<p>Això surt directament del handoff final APP. :contentReference[oaicite:18]{index=18}</p>
+<hr />
+<h2>8. Quality gate específic per Guided Rescue Phase 1</h2>
+<p>No es considerarà prou llest si:</p>
+<ul>
+<li>la UI manipula bytes o protocol directament</li>
+<li>les accions de rescue no passen per una API clara del SDK</li>
+<li>l’estat de rescue no és observable de forma neta</li>
+<li>les regles bàsiques d’ús no estan cobertes</li>
+</ul>
+<p>Per a la fase 1, el mínim funcional gira al voltant de:</p>
+<ul>
+<li><code>REQUEST_POS</code></li>
+<li><code>ACK_SOS</code></li>
+<li><code>BUZZER_ON</code></li>
+<li><code>BUZZER_OFF</code></li>
+<li><code>STATUS_REQ</code></li>
+<li>estat retornat via <code>STATUS_RESP</code></li>
+</ul>
+<p>La fase 1 no inclou canvi de SF/canal ni rescue avançat dedicat.</p>
+<hr />
+<h2>9. Quality gate de documentació</h2>
+<p>Qualsevol canvi rellevant en arquitectura, contractes o fluxos ha d’actualitzar, si toca:</p>
+<ul>
+<li><code>README.md</code> o document principal curt</li>
+<li>docs enfocats del package o feature</li>
+<li>aquest document si canvia el nivell mínim de qualitat</li>
+<li><code>SDK_DECISIONS.md</code> si canvia una decisió de fons</li>
+</ul>
+<p>Això evita que el coneixement es quedi només al codi. :contentReference[oaicite:20]{index=20}</p>
+<hr />
+<h2>10. Quality gate de release interna</h2>
+<p>Abans de considerar una fase “prou bona” per continuar construint-hi a sobre, jo exigiria:</p>
+<ul>
+<li>format ok</li>
+<li>analyze ok</li>
+<li>tests ok</li>
+<li>host app arrenca</li>
+<li>cap regressió funcional evident</li>
+<li>decisions i docs mínimament alineades</li>
+<li>cap lògica crítica colada a la UI</li>
+</ul>
+<hr />
+<h2>11. Regla final</h2>
+<p>No promovem un canvi perquè “funciona a la demo”.<br />
+El promovem perquè:</p>
+<ul>
+<li>està ben encapsulat</li>
+<li>és testejable</li>
+<li>és reusable</li>
+<li>i és coherent amb l’estratègia SDK-first</li>
+</ul>
+</main></div><script src='../../assets/site.js'></script></body></html>
