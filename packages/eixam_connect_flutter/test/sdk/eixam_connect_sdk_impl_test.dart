@@ -2748,6 +2748,178 @@ void main() {
       }
     });
 
+    test(
+        'mqtt SOS keeps a recent local incident when backend is briefly inconsistent after trigger',
+        () async {
+      final realtimeClient = _FakeOperationalRealtimeClient();
+      var now = DateTime.utc(2026, 3, 30, 12, 0, 0);
+      final cancelDataSource = _FakeCancelSosRemoteDataSource()
+        ..backendLagAfterTriggerReads = 1;
+      final repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        cancelRemoteDataSource: cancelDataSource,
+        destructiveRehydrationGracePeriod: const Duration(seconds: 5),
+        nowProvider: () => now,
+      );
+
+      try {
+        final incident = await repository.triggerSos(
+          message: 'Need help',
+          triggerSource: 'button_ui',
+          positionSnapshot: TrackingPosition(
+            latitude: 41.38,
+            longitude: 2.17,
+            altitude: 8,
+            timestamp: DateTime.utc(2026, 3, 30, 12),
+          ),
+        );
+
+        // The backend can briefly return null after the MQTT publish even
+        // though the incident becomes visible shortly after.
+        now = now.add(const Duration(seconds: 2));
+        final current = await repository.getCurrentIncident();
+
+        expect(current?.id, incident.id);
+        expect(current?.state, SosState.sent);
+        expect(await repository.getSosState(), SosState.sent);
+        expect(cancelDataSource.getActiveCallCount, 1);
+      } finally {
+        await repository.dispose();
+        await realtimeClient.dispose();
+      }
+    });
+
+    test(
+        'mqtt cancel recovers after a refresh gap when backend incident appears on retry',
+        () async {
+      final realtimeClient = _FakeOperationalRealtimeClient();
+      var now = DateTime.utc(2026, 3, 30, 12, 0, 0);
+      final cancelDataSource = _FakeCancelSosRemoteDataSource()
+        ..cancelResult = SosIncidentDto(
+          id: 'sos-1',
+          state: 'cancelled',
+          createdAt: '2026-03-30T12:00:00.000Z',
+        )
+        ..backendLagAfterTriggerReads = 1;
+      final repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        cancelRemoteDataSource: cancelDataSource,
+        destructiveRehydrationGracePeriod: Duration.zero,
+        nowProvider: () => now,
+      );
+
+      try {
+        await repository.triggerSos(
+          message: 'Need help',
+          triggerSource: 'button_ui',
+          positionSnapshot: TrackingPosition(
+            latitude: 41.38,
+            longitude: 2.17,
+            altitude: 8,
+            timestamp: DateTime.utc(2026, 3, 30, 12),
+          ),
+        );
+
+        now = now.add(const Duration(seconds: 1));
+        expect(await repository.getCurrentIncident(), isNull);
+
+        // Cancellation retries one backend rehydrate before failing, so the
+        // delayed backend incident can still recover the flow.
+        final cancelled = await repository.cancelSos();
+
+        expect(cancelled.state, SosState.cancelled);
+        expect(cancelDataSource.getActiveCallCount, 2);
+        expect(cancelDataSource.cancelCallCount, 1);
+      } finally {
+        await repository.dispose();
+        await realtimeClient.dispose();
+      }
+    });
+
+    test(
+        'mqtt SOS clears stale local state after the grace window when backend remains null',
+        () async {
+      final realtimeClient = _FakeOperationalRealtimeClient();
+      var now = DateTime.utc(2026, 3, 30, 12, 0, 0);
+      final cancelDataSource = _FakeCancelSosRemoteDataSource()
+        ..activeIncident = null;
+      final repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        cancelRemoteDataSource: cancelDataSource,
+        destructiveRehydrationGracePeriod: const Duration(seconds: 5),
+        nowProvider: () => now,
+      );
+
+      try {
+        await repository.triggerSos(
+          message: 'Need help',
+          triggerSource: 'button_ui',
+          positionSnapshot: TrackingPosition(
+            latitude: 41.38,
+            longitude: 2.17,
+            altitude: 8,
+            timestamp: DateTime.utc(2026, 3, 30, 12),
+          ),
+        );
+
+        // After the grace window, a null backend read is treated as
+        // authoritative and the runtime returns to idle.
+        now = now.add(const Duration(seconds: 6));
+        expect(await repository.getCurrentIncident(), isNull);
+        expect(await repository.getSosState(), SosState.idle);
+      } finally {
+        await repository.dispose();
+        await realtimeClient.dispose();
+      }
+    });
+
+    test(
+        'mqtt cancel throws only after recovery also confirms there is no active incident',
+        () async {
+      final realtimeClient = _FakeOperationalRealtimeClient();
+      var now = DateTime.utc(2026, 3, 30, 12, 0, 0);
+      final cancelDataSource = _FakeCancelSosRemoteDataSource()
+        ..activeIncident = null;
+      final repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        cancelRemoteDataSource: cancelDataSource,
+        destructiveRehydrationGracePeriod: Duration.zero,
+        nowProvider: () => now,
+      );
+
+      try {
+        await repository.triggerSos(
+          message: 'Need help',
+          triggerSource: 'button_ui',
+          positionSnapshot: TrackingPosition(
+            latitude: 41.38,
+            longitude: 2.17,
+            altitude: 8,
+            timestamp: DateTime.utc(2026, 3, 30, 12),
+          ),
+        );
+
+        now = now.add(const Duration(seconds: 1));
+        expect(await repository.getCurrentIncident(), isNull);
+
+        await expectLater(
+          repository.cancelSos(),
+          throwsA(
+            isA<SosException>().having(
+              (error) => error.code,
+              'code',
+              'E_SOS_CANCEL_NOT_ALLOWED',
+            ),
+          ),
+        );
+        expect(cancelDataSource.getActiveCallCount, 2);
+        expect(cancelDataSource.cancelCallCount, 0);
+      } finally {
+        await repository.dispose();
+        await realtimeClient.dispose();
+      }
+    });
+
     test('telemetry topic builder uses the canonical encoded external user id',
         () {
       const session = EixamSession.signed(
@@ -4457,17 +4629,28 @@ class _FakeCancelSosRemoteDataSource implements SosRemoteDataSource {
   int getActiveCallCount = 0;
   SosIncidentDto? cancelResult;
   SosIncidentDto? activeAfterCancelResult;
+  int backendLagAfterTriggerReads = 0;
+  SosIncidentDto? activeIncident = SosIncidentDto(
+    id: 'sos-1',
+    state: 'sent',
+    createdAt: '2026-03-30T12:00:00.000Z',
+  );
 
   @override
   Future<SosIncidentDto?> cancelSos() async {
     cancelCallCount++;
+    activeIncident = cancelResult;
     return cancelResult;
   }
 
   @override
   Future<SosIncidentDto?> getActiveSos() async {
     getActiveCallCount++;
-    return activeAfterCancelResult;
+    if (backendLagAfterTriggerReads > 0) {
+      backendLagAfterTriggerReads--;
+      return null;
+    }
+    return activeAfterCancelResult ?? activeIncident;
   }
 
   @override
@@ -4475,8 +4658,13 @@ class _FakeCancelSosRemoteDataSource implements SosRemoteDataSource {
     String? message,
     required String triggerSource,
     TrackingPosition? positionSnapshot,
-  }) {
-    throw UnimplementedError();
+  }) async {
+    activeIncident = SosIncidentDto(
+      id: 'sos-1',
+      state: 'sent',
+      createdAt: '2026-03-30T12:00:00.000Z',
+    );
+    return activeIncident!;
   }
 }
 

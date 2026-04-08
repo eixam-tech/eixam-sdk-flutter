@@ -174,6 +174,54 @@ void main() {
       expect(result.diagnosticText, contains('cancelled'));
     });
 
+    test(
+        'trigger then cancel validation stays viable when refresh briefly sees no current incident',
+        () async {
+      controller.deviceDebugController.permissionState =
+          const PermissionState(location: SdkPermissionStatus.granted);
+      sdk.triggerIncident = _incident('incident-refresh-gap', SosState.sent);
+      sdk.cancelIncident =
+          _incident('incident-refresh-gap', SosState.cancelled);
+      sdk.queuedCurrentIncidents.addAll(<SosIncident?>[
+        // The validation host may refresh in the short backend visibility gap
+        // immediately after trigger, but it should still allow the later cancel
+        // validation to proceed through the SDK.
+        null,
+        sdk.cancelIncident,
+      ]);
+      sdk.queuedSosStates.addAll(<SosState>[
+        SosState.sent,
+        SosState.sent,
+        SosState.cancelRequested,
+        SosState.idle,
+      ]);
+      sdk.queuedDiagnostics.addAll(<SdkOperationalDiagnostics>[
+        _diagnostics(),
+        _diagnostics(),
+        _diagnostics(),
+        _diagnostics(),
+      ]);
+
+      await controller.runTriggerSosValidation(
+        message: 'demo',
+        triggerSource: 'test',
+        timeout: const Duration(milliseconds: 20),
+      );
+      await controller.runCancelSosValidation(
+        timeout: const Duration(milliseconds: 20),
+      );
+
+      expect(
+        _resultFor(controller, ValidationCapabilityId.triggerSos).status,
+        ValidationRunStatus.ok,
+      );
+      expect(
+        _resultFor(controller, ValidationCapabilityId.cancelSos).status,
+        ValidationRunStatus.ok,
+      );
+      expect(sdk.getCurrentSosIncidentCallCount, 2);
+    });
+
     test('cancel SOS finalizes with WARNING when cancellation is still pending',
         () async {
       controller.sosState = SosState.sent;
@@ -801,6 +849,7 @@ class _FakeValidationSdk implements EixamConnectSdk {
   final List<SosState> queuedSosStates = <SosState>[];
   final List<SdkOperationalDiagnostics> queuedDiagnostics =
       <SdkOperationalDiagnostics>[];
+  final List<SosIncident?> queuedCurrentIncidents = <SosIncident?>[];
 
   SosState currentSosState = SosState.idle;
   SdkOperationalDiagnostics currentDiagnostics = _diagnostics();
@@ -808,6 +857,7 @@ class _FakeValidationSdk implements EixamConnectSdk {
   SosIncident cancelIncident = _incident('cancel-default', SosState.idle);
   SosIncident? currentIncident;
   SosIncident? refreshedCurrentIncident;
+  int getCurrentSosIncidentCallCount = 0;
   DeviceStatus deviceStatus = const DeviceStatus(
     deviceId: '',
     paired: false,
@@ -879,8 +929,13 @@ class _FakeValidationSdk implements EixamConnectSdk {
   }
 
   @override
-  Future<SosIncident?> getCurrentSosIncident() async =>
-      refreshedCurrentIncident ?? currentIncident;
+  Future<SosIncident?> getCurrentSosIncident() async {
+    getCurrentSosIncidentCallCount++;
+    if (queuedCurrentIncidents.isNotEmpty) {
+      return queuedCurrentIncidents.removeAt(0);
+    }
+    return refreshedCurrentIncident ?? currentIncident;
+  }
 
   @override
   Future<void> publishTelemetry(SdkTelemetryPayload payload) async {
