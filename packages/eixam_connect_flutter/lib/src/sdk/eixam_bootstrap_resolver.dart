@@ -17,8 +17,8 @@ class EixamBootstrapResolver {
   static const String productionWebsocketUrl = 'wss://api.eixam.io/ws';
   static const String sandboxApiBaseUrl = 'https://api.sandbox.eixam.io';
   static const String sandboxWebsocketUrl = 'wss://api.sandbox.eixam.io/ws';
-  static const String stagingApiBaseUrl = 'https://api.staging.eixam.io';
-  static const String stagingWebsocketUrl = 'wss://api.staging.eixam.io/ws';
+  static const String stagingApiBaseUrl = 'https://api.staging.eixam.io/';
+  static const String stagingWebsocketUrl = 'ws://mqtt.staging.eixam.io:8080/ws';
 
   static ResolvedEixamBootstrapConfig resolve(EixamBootstrapConfig config) {
     final appId = config.appId.trim();
