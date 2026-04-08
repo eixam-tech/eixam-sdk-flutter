@@ -28,8 +28,32 @@
     "docs/full/sdk/public-api-examples.md"
   ],
   [
+    "Model Reference",
+    "docs/full/sdk/model-reference.md"
+  ],
+  [
     "Protection Mode",
     "docs/full/sdk/protection-mode.md"
+  ],
+  [
+    "Protection Overview",
+    "docs/full/protection/overview.md"
+  ],
+  [
+    "Android Protection Integration",
+    "docs/full/protection/android-host-integration.md"
+  ],
+  [
+    "iOS Protection Integration",
+    "docs/full/protection/ios-host-integration.md"
+  ],
+  [
+    "Protection Limitations",
+    "docs/full/protection/limitations.md"
+  ],
+  [
+    "Protection Validation Checklist",
+    "docs/full/protection/validation-checklist.md"
   ],
   [
     "Realtime Status",
@@ -73,6 +97,10 @@
   ],
   [
     "BLE Runtime Flow",
+    "docs/full/protocol/ble-runtime-flow.md"
+  ],
+  [
+    "BLE Runtime Flow",
     "docs/full/protocol/runtime-flow.md"
   ],
   [
@@ -88,8 +116,20 @@
     "docs/full/reference-app/real-backend-validation-checklist.md"
   ],
   [
+    "App Handoff Final",
+    "docs/full/reference-app/app-handoff-final.md"
+  ],
+  [
     "API Reference",
     "docs/full/api/api-reference.md"
+  ],
+  [
+    "API Surface",
+    "docs/full/api/public-api.md"
+  ],
+  [
+    "API Examples",
+    "docs/full/api/public-api-examples.md"
   ],
   [
     "Decisions",
@@ -110,6 +150,18 @@
   [
     "How to Run Project",
     "docs/full/internal/how-to-run-project.md"
+  ],
+  [
+    "Migration Map",
+    "docs/full/internal/migration-map.md"
+  ],
+  [
+    "Roadmap",
+    "docs/full/internal/roadmap.md"
+  ],
+  [
+    "Team Handoff Index",
+    "docs/full/internal/team-handoff-index.md"
   ],
   [
     "AGENTS",

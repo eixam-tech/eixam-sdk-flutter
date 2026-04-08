@@ -14,10 +14,10 @@
   <div class="layout">
     <aside class="sidebar">
       <div class="sidebar-title">Navigation</div>
-      <a href="index.html">Home</a><a href="sdk-overview.html">SDK Overview</a><a href="quickstart.html">Quickstart</a><a href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a href="core-concepts.html">Core Concepts</a><a href="protection-mode.html">Protection Mode</a><a href="flutter-installation.html">Flutter Installation</a><a class="active" href="flutter-integration.html">Flutter Integration</a><a href="android-integration.html">Android Integration</a><a href="ios-integration.html">iOS Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a href="backend-integration.html">Backend Integration</a><a href="api-reference.html">API Reference</a><a href="troubleshooting.html">Troubleshooting</a>
+      <a href="index.html">Home</a><a href="sdk-overview.html">SDK Overview</a><a href="quickstart.html">Quickstart</a><a href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a href="model-reference.html">Model Reference</a><a href="core-concepts.html">Core Concepts</a><a href="protection-mode.html">Protection Mode</a><a href="flutter-installation.html">Flutter Installation</a><a class="active" href="flutter-integration.html">Flutter Integration</a><a href="android-integration.html">Android Integration</a><a href="ios-integration.html">iOS Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a href="backend-integration.html">Backend Integration</a><a href="api-reference.html">API Reference</a><a href="troubleshooting.html">Troubleshooting</a>
     </aside>
     <main class="content"><h1>Flutter Integration</h1>
-<p><a id="recommended-pattern"></a></p>
+<a id="recommended-pattern"></a>
 <h2>Recommended pattern</h2>
 <p>Create one SDK instance during app bootstrap and inject it into your app state or dependency container.</p>
 <pre><code class="language-dart">class AppBootstrapper {
@@ -30,44 +30,27 @@
       ),
     );
   }
-}
-</code></pre>
-<p><a id="thin-host-app-rule"></a></p>
+}</code></pre>
+<a id="thin-host-app-rule"></a>
 <h2>Thin host-app rule</h2>
 <p>The host app should:</p>
-<ul>
-<li>own UX and navigation</li>
-<li>request permissions intentionally</li>
-<li>subscribe to SDK streams</li>
-<li>call SDK methods</li>
-</ul>
+<ul><li>own UX and navigation</li><li>request permissions intentionally</li><li>subscribe to SDK streams</li><li>call SDK methods</li></ul>
 <p>The host app should not:</p>
-<ul>
-<li>recreate backend operational logic already owned by the SDK</li>
-<li>parse BLE protocol directly in widgets</li>
-<li>hardcode transport/topic logic</li>
-</ul>
-<p><a id="session-refresh-example"></a></p>
+<ul><li>recreate backend operational logic already owned by the SDK</li><li>parse BLE protocol directly in widgets</li><li>hardcode transport/topic logic</li></ul>
+<a id="session-refresh-example"></a>
 <h2>Session refresh example</h2>
 <pre><code class="language-dart">await sdk.setSession(
   const EixamSession.signed(
     appId: 'partner-app',
-    externalUserId: 'partner-user-456',
-    userHash: 'new-signed-hash',
+    externalUserId: 'partner-user-123',
+    userHash: 'signed-session-hash-rotated',
   ),
 );
 
-await sdk.refreshCanonicalIdentity();
-</code></pre>
-<p><a id="lifecycle-recommendation"></a></p>
+await sdk.refreshCanonicalIdentity();</code></pre>
+<a id="lifecycle-recommendation"></a>
 <h2>Lifecycle recommendation</h2>
-<ul>
-<li>bootstrap once per app start</li>
-<li>keep one live SDK instance</li>
-<li>update session explicitly when login/logout changes</li>
-<li>do not rebuild the SDK instance unnecessarily for ordinary UX events</li>
-</ul>
-</main>
+<ul><li>bootstrap once per app start</li><li>keep one live SDK instance</li><li>update session explicitly when login/logout changes</li><li>do not rebuild the SDK instance unnecessarily for ordinary UX events</li></ul></main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
       <a class="toc-level-2" href="#recommended-pattern">Recommended pattern</a><a class="toc-level-2" href="#thin-host-app-rule">Thin host-app rule</a><a class="toc-level-2" href="#session-refresh-example">Session refresh example</a><a class="toc-level-2" href="#lifecycle-recommendation">Lifecycle recommendation</a>

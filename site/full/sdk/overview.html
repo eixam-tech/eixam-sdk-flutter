@@ -14,18 +14,13 @@
   <div class="layout">
     <aside class="sidebar">
       <div class="sidebar-title">Navigation</div>
-      <a href="../index.html">Home</a><a class="active" href="overview.html">SDK Overview</a><a href="architecture.html">SDK Architecture</a><a href="partner-integration-guide.html">Partner Integration Guide</a><a href="backend-integration.html">Backend Integration</a><a href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a href="protection-mode.html">Protection Mode</a><a href="realtime-status.html">Realtime Status</a><a href="troubleshooting.html">SDK Troubleshooting</a><a href="../integration/flutter-installation.html">Flutter Installation</a><a href="../integration/flutter-integration.html">Flutter Integration</a><a href="../integration/host-app-integration.html">Host App Integration</a><a href="../integration/android-host-integration.html">Android Host Integration</a><a href="../integration/ios-host-integration.html">iOS Host Integration</a><a href="../integration/permissions-checklist.html">Permissions Checklist</a><a href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../api/api-reference.html">API Reference</a><a href="../internal/decisions.html">Decisions</a><a href="../internal/quality-gates.html">Quality Gates</a><a href="../internal/testing-strategy.html">Testing Strategy</a><a href="../internal/testability-notes.html">Testability Notes</a><a href="../internal/how-to-run-project.html">How to Run Project</a><a href="../internal/agents.html">AGENTS</a>
+      <a href="../index.html">Home</a><a class="active" href="overview.html">SDK Overview</a><a href="architecture.html">SDK Architecture</a><a href="partner-integration-guide.html">Partner Integration Guide</a><a href="backend-integration.html">Backend Integration</a><a href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a href="model-reference.html">Model Reference</a><a href="protection-mode.html">Protection Mode</a><a href="../protection/overview.html">Protection Overview</a><a href="../protection/android-host-integration.html">Android Protection Integration</a><a href="../protection/ios-host-integration.html">iOS Protection Integration</a><a href="../protection/limitations.html">Protection Limitations</a><a href="../protection/validation-checklist.html">Protection Validation Checklist</a><a href="realtime-status.html">Realtime Status</a><a href="troubleshooting.html">SDK Troubleshooting</a><a href="../integration/flutter-installation.html">Flutter Installation</a><a href="../integration/flutter-integration.html">Flutter Integration</a><a href="../integration/host-app-integration.html">Host App Integration</a><a href="../integration/android-host-integration.html">Android Host Integration</a><a href="../integration/ios-host-integration.html">iOS Host Integration</a><a href="../integration/permissions-checklist.html">Permissions Checklist</a><a href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../reference-app/app-handoff-final.html">App Handoff Final</a><a href="../api/api-reference.html">API Reference</a><a href="../api/public-api.html">API Surface</a><a href="../api/public-api-examples.html">API Examples</a><a href="../internal/decisions.html">Decisions</a><a href="../internal/quality-gates.html">Quality Gates</a><a href="../internal/testing-strategy.html">Testing Strategy</a><a href="../internal/testability-notes.html">Testability Notes</a><a href="../internal/how-to-run-project.html">How to Run Project</a><a href="../internal/migration-map.html">Migration Map</a><a href="../internal/roadmap.html">Roadmap</a><a href="../internal/team-handoff-index.html">Team Handoff Index</a><a href="../internal/agents.html">AGENTS</a>
     </aside>
     <main class="content"><h1>SDK Overview</h1>
 <p>EIXAM Connect SDK is the embeddable integration layer of EIXAM's connected safety platform.</p>
 <p>The partner-facing mental model is simple:</p>
-<ul>
-<li>bootstrap the SDK once</li>
-<li>provide a signed session from your backend</li>
-<li>request permissions from your own host-app UX when needed</li>
-<li>use SDK methods and streams to drive SOS, device, tracking and safety flows</li>
-</ul>
-<p><a id="happy-path"></a></p>
+<ul><li>bootstrap the SDK once</li><li>provide a signed session from your backend</li><li>request permissions from your own host-app UX when needed</li><li>use SDK methods and streams to drive SOS, device, tracking and safety flows</li></ul>
+<a id="happy-path"></a>
 <h2>Happy path</h2>
 <pre><code class="language-dart">final sdk = await EixamConnectSdk.bootstrap(
   const EixamBootstrapConfig(
@@ -37,75 +32,39 @@
       userHash: 'signed-session-hash',
     ),
   ),
-);
-</code></pre>
-<p><a id="bootstrap-models"></a></p>
+);</code></pre>
+<a id="bootstrap-models"></a>
 <h2>Bootstrap models</h2>
-<p><a id="eixamenvironment"></a></p>
+<a id="eixamenvironment"></a>
 <h3><code>EixamEnvironment</code></h3>
 <p>Supported values:</p>
-<ul>
-<li><code>production</code></li>
-<li><code>sandbox</code></li>
-<li><code>staging</code></li>
-<li><code>custom</code></li>
-</ul>
-<p><a id="eixamcustomendpoints"></a></p>
+<ul><li><code>production</code></li><li><code>sandbox</code></li><li><code>staging</code></li><li><code>custom</code></li></ul>
+<a id="eixamcustomendpoints"></a>
 <h3><code>EixamCustomEndpoints</code></h3>
 <p>Use this only with <code>EixamEnvironment.custom</code>.</p>
 <p>Example:</p>
 <pre><code class="language-dart">const EixamCustomEndpoints(
   httpBaseUrl: 'https://partner-api.example.com',
   mqttUrl: 'wss://partner-mqtt.example.com/mqtt',
-)
-</code></pre>
-<p><a id="eixambootstrapconfig"></a></p>
+)</code></pre>
+<a id="eixambootstrapconfig"></a>
 <h3><code>EixamBootstrapConfig</code></h3>
 <p>Recommended minimum:</p>
-<ul>
-<li><code>appId</code></li>
-<li><code>environment</code></li>
-<li>optional <code>initialSession</code></li>
-</ul>
+<ul><li><code>appId</code></li><li><code>environment</code></li><li>optional <code>initialSession</code></li></ul>
 <p>Advanced optional knobs:</p>
-<ul>
-<li><code>customEndpoints</code></li>
-<li><code>enableLogging</code></li>
-<li><code>networkTimeout</code></li>
-<li><code>defaultLocaleCode</code></li>
-</ul>
-<p><a id="bootstrap-guarantees"></a></p>
+<ul><li><code>customEndpoints</code></li><li><code>enableLogging</code></li><li><code>networkTimeout</code></li><li><code>defaultLocaleCode</code></li></ul>
+<a id="bootstrap-guarantees"></a>
 <h2>Bootstrap guarantees</h2>
-<ul>
-<li>standard environments resolve internally</li>
-<li>custom endpoints are validated</li>
-<li>mismatched restored sessions are cleared</li>
-<li>the SDK keeps control of session lifecycle semantics</li>
-<li>bootstrap does not request runtime permissions or perform device pairing on its own</li>
-</ul>
-<p><a id="main-partner-capabilities"></a></p>
+<ul><li>standard environments resolve internally</li><li>custom endpoints are validated</li><li>mismatched restored sessions are cleared</li><li>the SDK keeps control of session lifecycle semantics</li><li>bootstrap does not request runtime permissions or perform device pairing on its own</li></ul>
+<a id="main-partner-capabilities"></a>
 <h2>Main partner capabilities</h2>
-<ul>
-<li>session lifecycle</li>
-<li>canonical identity refresh</li>
-<li>operational diagnostics</li>
-<li>Protection Mode</li>
-<li>device connection and BLE runtime</li>
-<li>backend device registry</li>
-<li>SOS lifecycle</li>
-<li>contacts</li>
-<li>permissions and local notifications</li>
-<li>tracking and telemetry</li>
-<li>Death Man</li>
-<li>realtime status and events</li>
-</ul>
-<p><a id="internal-note"></a></p>
+<ul><li>session lifecycle</li><li>canonical identity refresh</li><li>operational diagnostics</li><li>Protection Mode</li><li>device connection and BLE runtime</li><li>backend device registry</li><li>SOS lifecycle</li><li>contacts</li><li>permissions and local notifications</li><li>tracking and telemetry</li><li>Death Man</li><li>realtime status and events</li></ul>
+<a id="internal-note"></a>
 <h2>Internal note</h2>
-<p>The validation app may still use internal factory/bootstrap composition for environment switching and diagnostics. That does not change the recommended public partner entrypoint.</p>
-</main>
+<p>The validation app may still use internal factory/bootstrap composition for environment switching and diagnostics. That does not change the recommended public partner entrypoint.</p></main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
-      <a class="toc-level-2" href="#happy-path">Happy path</a><a class="toc-level-2" href="#bootstrap-models">Bootstrap models</a><a class="toc-level-3" href="#eixamenvironment">`EixamEnvironment`</a><a class="toc-level-3" href="#eixamcustomendpoints">`EixamCustomEndpoints`</a><a class="toc-level-3" href="#eixambootstrapconfig">`EixamBootstrapConfig`</a><a class="toc-level-2" href="#bootstrap-guarantees">Bootstrap guarantees</a><a class="toc-level-2" href="#main-partner-capabilities">Main partner capabilities</a><a class="toc-level-2" href="#internal-note">Internal note</a>
+      <a class="toc-level-2" href="#happy-path">Happy path</a><a class="toc-level-2" href="#bootstrap-models">Bootstrap models</a><a class="toc-level-3" href="#eixamenvironment">EixamEnvironment</a><a class="toc-level-3" href="#eixamcustomendpoints">EixamCustomEndpoints</a><a class="toc-level-3" href="#eixambootstrapconfig">EixamBootstrapConfig</a><a class="toc-level-2" href="#bootstrap-guarantees">Bootstrap guarantees</a><a class="toc-level-2" href="#main-partner-capabilities">Main partner capabilities</a><a class="toc-level-2" href="#internal-note">Internal note</a>
     </aside>
   </div>
 </body>

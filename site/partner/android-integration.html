@@ -14,50 +14,24 @@
   <div class="layout">
     <aside class="sidebar">
       <div class="sidebar-title">Navigation</div>
-      <a href="index.html">Home</a><a href="sdk-overview.html">SDK Overview</a><a href="quickstart.html">Quickstart</a><a href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a href="core-concepts.html">Core Concepts</a><a href="protection-mode.html">Protection Mode</a><a href="flutter-installation.html">Flutter Installation</a><a href="flutter-integration.html">Flutter Integration</a><a class="active" href="android-integration.html">Android Integration</a><a href="ios-integration.html">iOS Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a href="backend-integration.html">Backend Integration</a><a href="api-reference.html">API Reference</a><a href="troubleshooting.html">Troubleshooting</a>
+      <a href="index.html">Home</a><a href="sdk-overview.html">SDK Overview</a><a href="quickstart.html">Quickstart</a><a href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a href="model-reference.html">Model Reference</a><a href="core-concepts.html">Core Concepts</a><a href="protection-mode.html">Protection Mode</a><a href="flutter-installation.html">Flutter Installation</a><a href="flutter-integration.html">Flutter Integration</a><a class="active" href="android-integration.html">Android Integration</a><a href="ios-integration.html">iOS Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a href="backend-integration.html">Backend Integration</a><a href="api-reference.html">API Reference</a><a href="troubleshooting.html">Troubleshooting</a>
     </aside>
     <main class="content"><h1>Android Integration</h1>
-<p><a id="what-the-sdk-plugin-owns"></a></p>
+<a id="what-the-sdk-plugin-owns"></a>
 <h2>What the SDK/plugin owns</h2>
-<ul>
-<li>Protection method/event channels</li>
-<li>foreground-service-backed Protection runtime wiring</li>
-<li>merged plugin manifest pieces for the SDK-owned Android path</li>
-<li>runtime readiness and diagnostics exposed to Dart</li>
-</ul>
-<p><a id="what-the-host-app-still-owns"></a></p>
+<ul><li>Protection method/event channels</li><li>foreground-service-backed Protection runtime wiring</li><li>merged plugin manifest pieces for the SDK-owned Android path</li><li>runtime readiness and diagnostics exposed to Dart</li></ul>
+<a id="what-the-host-app-still-owns"></a>
 <h2>What the host app still owns</h2>
-<ul>
-<li>runtime permission UX</li>
-<li>app bootstrap that creates the SDK instance</li>
-<li>app-level notification/channel branding</li>
-<li>any product-specific BLE or safety UX around the SDK</li>
-</ul>
-<p><a id="required-setup"></a></p>
+<ul><li>runtime permission UX</li><li>app bootstrap that creates the SDK instance</li><li>app-level notification/channel branding</li><li>any product-specific BLE or safety UX around the SDK</li></ul>
+<a id="required-setup"></a>
 <h2>Required setup</h2>
-<ul>
-<li>declare Bluetooth, location and notification permissions</li>
-<li>keep foreground service requirements aligned with your app policy when using Protection Mode</li>
-<li>bootstrap with <code>EixamConnectSdk.bootstrap(...)</code></li>
-</ul>
-<p><a id="important-behavior"></a></p>
+<ul><li>declare Bluetooth, location and notification permissions</li><li>keep foreground service requirements aligned with your app policy when using Protection Mode</li><li>bootstrap with <code>EixamConnectSdk.bootstrap(...)</code></li></ul>
+<a id="important-behavior"></a>
 <h2>Important behavior</h2>
-<ul>
-<li>Protection Mode is off by default</li>
-<li>when armed, Android is the intended strongest current path</li>
-<li>host UI should inspect diagnostics if readiness is blocked</li>
-</ul>
-<p><a id="validation-checklist"></a></p>
+<ul><li>Protection Mode is off by default</li><li>when armed, Android is the intended strongest current path</li><li>host UI should inspect diagnostics if readiness is blocked</li></ul>
+<a id="validation-checklist"></a>
 <h2>Validation checklist</h2>
-<ol>
-<li>bootstrap the SDK</li>
-<li>request permissions explicitly</li>
-<li>connect a device if your flow requires it</li>
-<li>run <code>evaluateProtectionReadiness()</code></li>
-<li>call <code>enterProtectionMode()</code></li>
-<li>inspect <code>watchProtectionStatus()</code> and <code>watchProtectionDiagnostics()</code></li>
-</ol>
-</main>
+<ol><li>bootstrap the SDK</li><li>request permissions explicitly</li><li>connect a device if your flow requires it</li><li>run <code>evaluateProtectionReadiness()</code></li><li>call <code>enterProtectionMode()</code></li><li>inspect <code>watchProtectionStatus()</code> and <code>watchProtectionDiagnostics()</code></li></ol></main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
       <a class="toc-level-2" href="#what-the-sdk-plugin-owns">What the SDK/plugin owns</a><a class="toc-level-2" href="#what-the-host-app-still-owns">What the host app still owns</a><a class="toc-level-2" href="#required-setup">Required setup</a><a class="toc-level-2" href="#important-behavior">Important behavior</a><a class="toc-level-2" href="#validation-checklist">Validation checklist</a>

@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Model Reference</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">EIXAM Connect SDK</div>
+    <div class="site-tag">partner docs</div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Navigation</div>
+      <a href="index.html">Home</a><a href="sdk-overview.html">SDK Overview</a><a href="quickstart.html">Quickstart</a><a href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a class="active" href="model-reference.html">Model Reference</a><a href="core-concepts.html">Core Concepts</a><a href="protection-mode.html">Protection Mode</a><a href="flutter-installation.html">Flutter Installation</a><a href="flutter-integration.html">Flutter Integration</a><a href="android-integration.html">Android Integration</a><a href="ios-integration.html">iOS Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a href="backend-integration.html">Backend Integration</a><a href="api-reference.html">API Reference</a><a href="troubleshooting.html">Troubleshooting</a>
+    </aside>
+    <main class="content"><h1>Model Reference</h1>
+<p>This page summarizes the return types partner apps most often inspect.</p>
+<a id="sdkoperationaldiagnostics"></a>
+<h2><code>SdkOperationalDiagnostics</code></h2>
+<p>Purpose:</p>
+<ul><li>snapshot of operational runtime health after bootstrap and session setup</li></ul>
+<p>Common fields:</p>
+<ul><li><code>connectionState</code>: MQTT/realtime transport state</li><li><code>session</code>: current signed session when present</li><li><code>telemetryPublishTopic</code>: operational telemetry topic the SDK is using</li><li><code>sosEventTopics</code>: SOS event topics currently bound for the signed user</li><li><code>sosRehydrationNote</code>: explains fallback or rehydration behavior after startup</li><li><code>bridge.lastDecision</code>: latest bridge/runtime decision worth surfacing in diagnostics</li><li><code>bridge.pendingSos</code>: queued SOS handoff details when an SOS is buffered</li><li><code>bridge.pendingTelemetry</code>: queued telemetry payload details when telemetry is buffered</li></ul>
+<a id="devicestatus"></a>
+<h2><code>DeviceStatus</code></h2>
+<p>Purpose:</p>
+<ul><li>high-level runtime view of the connected or remembered EIXAM device</li></ul>
+<p>Common fields:</p>
+<ul><li><code>deviceId</code>: stable device identifier used by the SDK</li><li><code>lifecycleState</code>: <code>unpaired</code>, <code>paired</code>, <code>activating</code>, <code>ready</code>, or <code>error</code></li><li><code>paired</code></li><li><code>activated</code></li><li><code>connected</code></li><li><code>isReadyForSafety</code>: most useful single readiness flag for host UI</li><li><code>approximateBatteryPercentage</code></li><li><code>signalQuality</code></li><li><code>firmwareVersion</code></li><li><code>provisioningError</code></li></ul>
+<a id="devicesosstatus"></a>
+<h2><code>DeviceSosStatus</code></h2>
+<p>Purpose:</p>
+<ul><li>device-side SOS state maintained by the runtime</li></ul>
+<p>Common fields:</p>
+<ul><li><code>state</code>: <code>inactive</code>, <code>preConfirm</code>, <code>active</code>, <code>acknowledged</code>, or <code>resolved</code></li><li><code>lastEvent</code>: most recent runtime explanation</li><li><code>transitionSource</code>: where the current state came from</li><li><code>updatedAt</code></li><li><code>countdownRemainingSeconds</code>: useful during pre-confirm countdowns</li><li><code>lastPacketAt</code>: last BLE SOS packet time when relevant</li><li><code>decoderNote</code>: runtime note when packet interpretation matters</li></ul>
+<a id="emergencycontact"></a>
+<h2><code>EmergencyContact</code></h2>
+<p>Purpose:</p>
+<ul><li>backend-synced emergency contact record</li></ul>
+<p>Common fields:</p>
+<ul><li><code>id</code></li><li><code>name</code></li><li><code>phone</code></li><li><code>email</code></li><li><code>priority</code></li><li><code>updatedAt</code></li></ul>
+<a id="sosincident"></a>
+<h2><code>SosIncident</code></h2>
+<p>Purpose:</p>
+<ul><li>app-originated SOS incident tracked by the SDK runtime</li></ul>
+<p>Common fields:</p>
+<ul><li><code>id</code></li><li><code>state</code></li><li><code>createdAt</code></li><li><code>triggerSource</code></li><li><code>message</code></li><li><code>positionSnapshot</code></li></ul>
+<a id="permissionstate"></a>
+<h2><code>PermissionState</code></h2>
+<p>Purpose:</p>
+<ul><li>aggregated permission snapshot for partner UI and gating logic</li></ul>
+<p>Common fields:</p>
+<ul><li><code>location</code></li><li><code>notifications</code></li><li><code>bluetooth</code></li><li><code>bluetoothEnabled</code></li><li><code>hasLocationAccess</code></li><li><code>hasNotificationAccess</code></li><li><code>canUseBluetooth</code></li></ul>
+<a id="protectionstatus"></a>
+<h2><code>ProtectionStatus</code></h2>
+<p>Purpose:</p>
+<ul><li>current protection-mode runtime status, especially when native ownership is active</li></ul>
+<p>Common fields:</p>
+<ul><li><code>modeState</code></li><li><code>coverageLevel</code></li><li><code>runtimeState</code></li><li><code>bleOwner</code></li><li><code>protectedDeviceId</code></li><li><code>serviceBleConnected</code></li><li><code>serviceBleReady</code></li><li><code>restorationConfigured</code></li><li><code>reconnectAttemptCount</code></li><li><code>lastReconnectAttemptAt</code></li><li><code>degradationReason</code></li><li><code>lastCommandRoute</code></li><li><code>lastCommandResult</code></li><li><code>lastCommandError</code></li></ul>
+<a id="protectiondiagnostics"></a>
+<h2><code>ProtectionDiagnostics</code></h2>
+<p>Purpose:</p>
+<ul><li>detailed diagnostics for wake events, reconnects, queueing, and native command routing</li></ul>
+<p>Common fields:</p>
+<ul><li><code>lastWakeReason</code></li><li><code>lastFailureReason</code></li><li><code>lastPlatformEvent</code></li><li><code>lastRestorationEvent</code></li><li><code>reconnectAttemptCount</code></li><li><code>lastReconnectAttemptAt</code></li><li><code>protectedDeviceId</code></li><li><code>lastCommandRoute</code></li><li><code>lastCommandResult</code></li><li><code>lastCommandError</code></li><li><code>pendingSosCount</code></li><li><code>pendingTelemetryCount</code></li></ul>
+<a id="backendregistereddevice"></a>
+<h2><code>BackendRegisteredDevice</code></h2>
+<p>Purpose:</p>
+<ul><li>backend registry record for a device associated with the signed user</li></ul>
+<p>Common fields:</p>
+<ul><li><code>id</code></li><li><code>hardwareId</code></li><li><code>firmwareVersion</code></li><li><code>hardwareModel</code></li><li><code>pairedAt</code></li><li><code>updatedAt</code></li></ul></main>
+    <aside class="toc">
+      <div class="toc-title">On this page</div>
+      <a class="toc-level-2" href="#sdkoperationaldiagnostics">SdkOperationalDiagnostics</a><a class="toc-level-2" href="#devicestatus">DeviceStatus</a><a class="toc-level-2" href="#devicesosstatus">DeviceSosStatus</a><a class="toc-level-2" href="#emergencycontact">EmergencyContact</a><a class="toc-level-2" href="#sosincident">SosIncident</a><a class="toc-level-2" href="#permissionstate">PermissionState</a><a class="toc-level-2" href="#protectionstatus">ProtectionStatus</a><a class="toc-level-2" href="#protectiondiagnostics">ProtectionDiagnostics</a><a class="toc-level-2" href="#backendregistereddevice">BackendRegisteredDevice</a>
+    </aside>
+  </div>
+</body>
+</html>

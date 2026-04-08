@@ -14,51 +14,38 @@
   <div class="layout">
     <aside class="sidebar">
       <div class="sidebar-title">Navigation</div>
-      <a href="../index.html">Home</a><a href="../sdk/overview.html">SDK Overview</a><a href="../sdk/architecture.html">SDK Architecture</a><a href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a href="../sdk/backend-integration.html">Backend Integration</a><a href="../sdk/public-api.html">Public API</a><a href="../sdk/public-api-examples.html">Method Examples</a><a href="../sdk/protection-mode.html">Protection Mode</a><a href="../sdk/realtime-status.html">Realtime Status</a><a href="../sdk/troubleshooting.html">SDK Troubleshooting</a><a href="flutter-installation.html">Flutter Installation</a><a href="flutter-integration.html">Flutter Integration</a><a class="active" href="host-app-integration.html">Host App Integration</a><a href="android-host-integration.html">Android Host Integration</a><a href="ios-host-integration.html">iOS Host Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a href="ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../api/api-reference.html">API Reference</a><a href="../internal/decisions.html">Decisions</a><a href="../internal/quality-gates.html">Quality Gates</a><a href="../internal/testing-strategy.html">Testing Strategy</a><a href="../internal/testability-notes.html">Testability Notes</a><a href="../internal/how-to-run-project.html">How to Run Project</a><a href="../internal/agents.html">AGENTS</a>
+      <a href="../index.html">Home</a><a href="../sdk/overview.html">SDK Overview</a><a href="../sdk/architecture.html">SDK Architecture</a><a href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a href="../sdk/backend-integration.html">Backend Integration</a><a href="../sdk/public-api.html">Public API</a><a href="../sdk/public-api-examples.html">Method Examples</a><a href="../sdk/model-reference.html">Model Reference</a><a href="../sdk/protection-mode.html">Protection Mode</a><a href="../protection/overview.html">Protection Overview</a><a href="../protection/android-host-integration.html">Android Protection Integration</a><a href="../protection/ios-host-integration.html">iOS Protection Integration</a><a href="../protection/limitations.html">Protection Limitations</a><a href="../protection/validation-checklist.html">Protection Validation Checklist</a><a href="../sdk/realtime-status.html">Realtime Status</a><a href="../sdk/troubleshooting.html">SDK Troubleshooting</a><a href="flutter-installation.html">Flutter Installation</a><a href="flutter-integration.html">Flutter Integration</a><a class="active" href="host-app-integration.html">Host App Integration</a><a href="android-host-integration.html">Android Host Integration</a><a href="ios-host-integration.html">iOS Host Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a href="ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../reference-app/app-handoff-final.html">App Handoff Final</a><a href="../api/api-reference.html">API Reference</a><a href="../api/public-api.html">API Surface</a><a href="../api/public-api-examples.html">API Examples</a><a href="../internal/decisions.html">Decisions</a><a href="../internal/quality-gates.html">Quality Gates</a><a href="../internal/testing-strategy.html">Testing Strategy</a><a href="../internal/testability-notes.html">Testability Notes</a><a href="../internal/how-to-run-project.html">How to Run Project</a><a href="../internal/migration-map.html">Migration Map</a><a href="../internal/roadmap.html">Roadmap</a><a href="../internal/team-handoff-index.html">Team Handoff Index</a><a href="../internal/agents.html">AGENTS</a>
     </aside>
     <main class="content"><h1>Host App Integration Guide</h1>
 <p>This document explains the minimum native setup required by a Flutter host app that embeds the EIXAM Connect SDK.</p>
-<p><a id="permissions-overview"></a></p>
+<a id="permissions-overview"></a>
 <h2>Permissions overview</h2>
-<p><a id="local-storage"></a></p>
+<a id="local-storage"></a>
 <h3>Local storage</h3>
 <p>The SDK currently uses <code>shared_preferences</code> for lightweight local persistence.</p>
-<ul>
-<li>Android: no extra Manifest permission required</li>
-<li>iOS: no extra <code>Info.plist</code> key required</li>
-</ul>
-<p><a id="location"></a></p>
+<ul><li>Android: no extra Manifest permission required</li><li>iOS: no extra <code>Info.plist</code> key required</li></ul>
+<a id="location"></a>
 <h3>Location</h3>
 <p>Required if the host app wants real tracking or location snapshots attached to SOS incidents.</p>
-<p><a id="notifications"></a></p>
+<a id="notifications"></a>
 <h3>Notifications</h3>
 <p>Required for local notifications and later push support.</p>
-<p><a id="source-of-truth"></a></p>
+<a id="source-of-truth"></a>
 <h2>Source of truth</h2>
 <p>For the exact native keys and platform notes, always follow:</p>
-<ul>
-<li><code>packages/eixam_connect_flutter/NATIVE_PERMISSIONS_CHECKLIST.md</code></li>
-</ul>
-<p><a id="responsibilities-split"></a></p>
+<ul><li><code>packages/eixam_connect_flutter/NATIVE_PERMISSIONS_CHECKLIST.md</code></li></ul>
+<a id="responsibilities-split"></a>
 <h2>Responsibilities split</h2>
-<p><a id="sdk"></a></p>
+<a id="sdk"></a>
 <h3>SDK</h3>
-<ul>
-<li>Requests runtime permissions through the Flutter APIs</li>
-<li>Exposes tracking, notifications and SOS workflows</li>
-</ul>
-<p><a id="host-app"></a></p>
+<ul><li>Requests runtime permissions through the Flutter APIs</li><li>Exposes tracking, notifications and SOS workflows</li></ul>
+<a id="host-app"></a>
 <h3>Host app</h3>
-<ul>
-<li>Adds native Manifest and <code>Info.plist</code> entries</li>
-<li>Enables native capabilities when needed</li>
-<li>Provides product-specific UI and permission education screens</li>
-</ul>
-<p><a id="bluetooth-host-app-requirements"></a></p>
+<ul><li>Adds native Manifest and <code>Info.plist</code> entries</li><li>Enables native capabilities when needed</li><li>Provides product-specific UI and permission education screens</li></ul>
+<a id="bluetooth-host-app-requirements"></a>
 <h2>Bluetooth host-app requirements</h2>
 <p>If the host app uses the device module for BLE pairing or device communication, it must declare the Bluetooth permissions documented in <code>packages/eixam_connect_flutter/NATIVE_PERMISSIONS_CHECKLIST.md</code>.</p>
-<p>The SDK can request Bluetooth permission at runtime, but the native declarations remain the responsibility of the host app.</p>
-</main>
+<p>The SDK can request Bluetooth permission at runtime, but the native declarations remain the responsibility of the host app.</p></main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
       <a class="toc-level-2" href="#permissions-overview">Permissions overview</a><a class="toc-level-3" href="#local-storage">Local storage</a><a class="toc-level-3" href="#location">Location</a><a class="toc-level-3" href="#notifications">Notifications</a><a class="toc-level-2" href="#source-of-truth">Source of truth</a><a class="toc-level-2" href="#responsibilities-split">Responsibilities split</a><a class="toc-level-3" href="#sdk">SDK</a><a class="toc-level-3" href="#host-app">Host app</a><a class="toc-level-2" href="#bluetooth-host-app-requirements">Bluetooth host-app requirements</a>

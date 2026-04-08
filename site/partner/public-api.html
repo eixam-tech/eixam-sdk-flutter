@@ -14,118 +14,265 @@
   <div class="layout">
     <aside class="sidebar">
       <div class="sidebar-title">Navigation</div>
-      <a href="index.html">Home</a><a href="sdk-overview.html">SDK Overview</a><a href="quickstart.html">Quickstart</a><a class="active" href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a href="core-concepts.html">Core Concepts</a><a href="protection-mode.html">Protection Mode</a><a href="flutter-installation.html">Flutter Installation</a><a href="flutter-integration.html">Flutter Integration</a><a href="android-integration.html">Android Integration</a><a href="ios-integration.html">iOS Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a href="backend-integration.html">Backend Integration</a><a href="api-reference.html">API Reference</a><a href="troubleshooting.html">Troubleshooting</a>
+      <a href="index.html">Home</a><a href="sdk-overview.html">SDK Overview</a><a href="quickstart.html">Quickstart</a><a class="active" href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a href="model-reference.html">Model Reference</a><a href="core-concepts.html">Core Concepts</a><a href="protection-mode.html">Protection Mode</a><a href="flutter-installation.html">Flutter Installation</a><a href="flutter-integration.html">Flutter Integration</a><a href="android-integration.html">Android Integration</a><a href="ios-integration.html">iOS Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a href="backend-integration.html">Backend Integration</a><a href="api-reference.html">API Reference</a><a href="troubleshooting.html">Troubleshooting</a>
     </aside>
     <main class="content"><h1>Public API</h1>
-<p>This page describes the recommended public surface exposed to partner host apps.</p>
-<p><a id="entry-point"></a></p>
-<h2>Entry point</h2>
-<p><a id="eixamconnectsdk-bootstrap"></a></p>
+<p>This page documents the recommended partner-facing SDK methods.</p>
+<p>Deprecated and compatibility methods are intentionally omitted from the partner path. If you are migrating an older host app, use the full/internal docs for those surfaces.</p>
+<a id="bootstrap"></a>
+<h2>Bootstrap</h2>
+<a id="eixamconnectsdk-bootstrap"></a>
 <h3><code>EixamConnectSdk.bootstrap(...)</code></h3>
-<p>This is the recommended public entrypoint.</p>
-<p>Use it to create an SDK instance, resolve the selected environment, validate the bootstrap configuration and optionally seed the initial signed session.</p>
-<p><a id="session-lifecycle"></a></p>
-<h2>Session lifecycle</h2>
-<ul>
-<li><code>setSession(...)</code></li>
-<li><code>clearSession()</code></li>
-<li><code>getCurrentSession()</code></li>
-<li><code>refreshCanonicalIdentity()</code></li>
-</ul>
-<p><a id="diagnostics-and-protection"></a></p>
-<h2>Diagnostics and protection</h2>
-<ul>
-<li><code>getOperationalDiagnostics()</code></li>
-<li><code>watchOperationalDiagnostics()</code></li>
-<li><code>evaluateProtectionReadiness()</code></li>
-<li><code>enterProtectionMode(...)</code></li>
-<li><code>exitProtectionMode()</code></li>
-<li><code>getProtectionStatus()</code></li>
-<li><code>watchProtectionStatus()</code></li>
-<li><code>getProtectionDiagnostics()</code></li>
-<li><code>watchProtectionDiagnostics()</code></li>
-<li><code>rehydrateProtectionState()</code></li>
-<li><code>flushProtectionQueues()</code></li>
-</ul>
-<p><a id="device-runtime-and-backend-device-registry"></a></p>
-<h2>Device runtime and backend device registry</h2>
-<ul>
-<li><code>connectDevice(...)</code></li>
-<li><code>disconnectDevice()</code></li>
-<li><code>preferredDevice</code></li>
-<li><code>deviceStatusStream</code></li>
-<li><code>listRegisteredDevices()</code></li>
-<li><code>upsertRegisteredDevice(...)</code></li>
-<li><code>deleteRegisteredDevice(...)</code></li>
-</ul>
-<p><a id="sos"></a></p>
+<p>Purpose:</p>
+<ul><li>creates the SDK</li><li>resolves the selected environment</li><li>validates the bootstrap config</li><li>applies the initial signed session when provided</li></ul>
+<p>Returns:</p>
+<ul><li><code>Future&lt;EixamConnectSdk&gt;</code></li></ul>
+<p>Most-used inputs:</p>
+<ul><li><code>appId</code></li><li><code>environment</code></li><li><code>initialSession</code></li></ul>
+<pre><code class="language-dart">final sdk = await EixamConnectSdk.bootstrap(
+  const EixamBootstrapConfig(
+    appId: 'partner-app',
+    environment: EixamEnvironment.sandbox,
+    initialSession: EixamSession.signed(
+      appId: 'partner-app',
+      externalUserId: 'partner-user-123',
+      userHash: 'signed-session-hash',
+    ),
+  ),
+);
+
+final session = await sdk.getCurrentSession();
+debugPrint('session user=${session?.externalUserId}');</code></pre>
+<a id="diagnostics"></a>
+<h2>Diagnostics</h2>
+<a id="getoperationaldiagnostics"></a>
+<h3><code>getOperationalDiagnostics()</code></h3>
+<p>Purpose:</p>
+<ul><li>returns the latest operational runtime snapshot for session, transport, bridge, and SOS rehydration state</li></ul>
+<p>Returns:</p>
+<ul><li><a href="model-reference.html#sdkoperationaldiagnostics"><code>SdkOperationalDiagnostics</code></a></li></ul>
+<p>Common fields to inspect:</p>
+<ul><li><code>connectionState</code></li><li><code>telemetryPublishTopic</code></li><li><code>sosEventTopics</code></li><li><code>sosRehydrationNote</code></li><li><code>bridge.lastDecision</code></li><li><code>bridge.pendingSos</code></li><li><code>bridge.pendingTelemetry</code></li></ul>
+<pre><code class="language-dart">final diagnostics = await sdk.getOperationalDiagnostics();
+debugPrint('mqtt=${diagnostics.connectionState.name}');
+debugPrint('telTopic=${diagnostics.telemetryPublishTopic}');
+debugPrint('lastDecision=${diagnostics.bridge.lastDecision}');
+debugPrint('pendingSos=${diagnostics.bridge.pendingSos != null}');</code></pre>
+<a id="watchoperationaldiagnostics"></a>
+<h3><code>watchOperationalDiagnostics()</code></h3>
+<p>Purpose:</p>
+<ul><li>streams operational changes after bootstrap, session updates, reconnects, and bridge/runtime changes</li></ul>
+<p>Returns:</p>
+<ul><li><code>Stream&lt;</code><a href="model-reference.html#sdkoperationaldiagnostics"><code>SdkOperationalDiagnostics</code></a><code>&gt;</code></li></ul>
+<p>Common fields to inspect:</p>
+<ul><li><code>connectionState</code></li><li><code>bridge.lastDecision</code></li><li><code>bridge.lastBleTelemetryEventSummary</code></li><li><code>bridge.lastBleSosEventSummary</code></li></ul>
+<pre><code class="language-dart">final sub = sdk.watchOperationalDiagnostics().listen((diagnostics) {
+  debugPrint('mqtt=${diagnostics.connectionState.name}');
+  debugPrint('bridge=${diagnostics.bridge.lastDecision}');
+});</code></pre>
+<a id="device-lifecycle"></a>
+<h2>Device Lifecycle</h2>
+<a id="connectdevice"></a>
+<h3><code>connectDevice(...)</code></h3>
+<p>Purpose:</p>
+<ul><li>pairs or reconnects the partner-selected device and returns the resulting runtime status</li></ul>
+<p>Returns:</p>
+<ul><li><a href="model-reference.html#devicestatus"><code>DeviceStatus</code></a></li></ul>
+<p>Common fields to inspect:</p>
+<ul><li><code>deviceId</code></li><li><code>lifecycleState</code></li><li><code>paired</code></li><li><code>activated</code></li><li><code>connected</code></li><li><code>isReadyForSafety</code></li></ul>
+<pre><code class="language-dart">final status = await sdk.connectDevice(pairingCode: '123456');
+debugPrint('device=${status.deviceId}');
+debugPrint('lifecycle=${status.lifecycleState.name}');
+debugPrint('ready=${status.isReadyForSafety}');</code></pre>
+<a id="getdevicestatus"></a>
+<h3><code>getDeviceStatus()</code></h3>
+<p>Purpose:</p>
+<ul><li>reads the latest cached device runtime snapshot without starting a new pairing flow</li></ul>
+<p>Returns:</p>
+<ul><li><a href="model-reference.html#devicestatus"><code>DeviceStatus</code></a></li></ul>
+<p>Common fields to inspect:</p>
+<ul><li><code>deviceId</code></li><li><code>connected</code></li><li><code>lastSeen</code></li><li><code>firmwareVersion</code></li><li><code>provisioningError</code></li></ul>
+<pre><code class="language-dart">final status = await sdk.getDeviceStatus();
+debugPrint('connected=${status.connected}');
+debugPrint('lastSeen=${status.lastSeen}');
+debugPrint('firmware=${status.firmwareVersion}');</code></pre>
+<a id="devicestatusstream"></a>
+<h3><code>deviceStatusStream</code></h3>
+<p>Purpose:</p>
+<ul><li>streams lifecycle changes while the device connects, activates, disconnects, or recovers</li></ul>
+<p>Returns:</p>
+<ul><li><code>Stream&lt;</code><a href="model-reference.html#devicestatus"><code>DeviceStatus</code></a><code>&gt;</code></li></ul>
+<p>Common fields to inspect:</p>
+<ul><li><code>lifecycleState</code></li><li><code>connected</code></li><li><code>signalQuality</code></li><li><code>approximateBatteryPercentage</code></li></ul>
+<pre><code class="language-dart">final sub = sdk.deviceStatusStream.listen((status) {
+  debugPrint('lifecycle=${status.lifecycleState.name}');
+  debugPrint('connected=${status.connected}');
+  debugPrint('battery=${status.approximateBatteryPercentage}');
+});</code></pre>
+<a id="getdevicesosstatus"></a>
+<h3><code>getDeviceSosStatus()</code></h3>
+<p>Purpose:</p>
+<ul><li>returns the current device-side SOS state tracked by the SDK runtime</li></ul>
+<p>Returns:</p>
+<ul><li><a href="model-reference.html#devicesosstatus"><code>DeviceSosStatus</code></a></li></ul>
+<p>Common fields to inspect:</p>
+<ul><li><code>state</code></li><li><code>lastEvent</code></li><li><code>transitionSource</code></li><li><code>countdownRemainingSeconds</code></li><li><code>updatedAt</code></li></ul>
+<pre><code class="language-dart">final status = await sdk.getDeviceSosStatus();
+debugPrint('state=${status.state.name}');
+debugPrint('event=${status.lastEvent}');
+debugPrint('countdown=${status.countdownRemainingSeconds}');</code></pre>
+<a id="sos"></a>
 <h2>SOS</h2>
-<ul>
-<li><code>triggerSos(...)</code></li>
-<li><code>cancelSos()</code></li>
-<li><code>getCurrentSosIncident()</code></li>
-<li><code>getSosState()</code></li>
-<li><code>currentSosStateStream</code></li>
-<li><code>lastSosEventStream</code></li>
-<li><code>watchEvents()</code></li>
-</ul>
-<p><a id="contacts"></a></p>
+<a id="triggersos"></a>
+<h3><code>triggerSos(...)</code></h3>
+<p>Purpose:</p>
+<ul><li>creates an app-originated SOS incident using the current signed session and operational runtime</li></ul>
+<p>Returns:</p>
+<ul><li><a href="model-reference.html#sosincident"><code>SosIncident</code></a></li></ul>
+<p>Common fields to inspect:</p>
+<ul><li><code>id</code></li><li><code>state</code></li><li><code>createdAt</code></li><li><code>triggerSource</code></li><li><code>message</code></li></ul>
+<pre><code class="language-dart">final incident = await sdk.triggerSos(
+  const SosTriggerPayload(
+    message: 'Need assistance',
+    triggerSource: 'button_ui',
+  ),
+);
+
+debugPrint('incident=${incident.id}');
+debugPrint('state=${incident.state.name}');</code></pre>
+<a id="getcurrentsosincident"></a>
+<h3><code>getCurrentSosIncident()</code></h3>
+<p>Purpose:</p>
+<ul><li>returns the latest known active or recently settled SOS incident after runtime rehydration</li></ul>
+<p>Returns:</p>
+<ul><li><code>Future&lt;</code><a href="model-reference.html#sosincident"><code>SosIncident</code></a><code>?&gt;</code></li></ul>
+<p>Common fields to inspect:</p>
+<ul><li><code>id</code></li><li><code>state</code></li><li><code>createdAt</code></li><li><code>positionSnapshot</code></li></ul>
+<pre><code class="language-dart">final incident = await sdk.getCurrentSosIncident();
+if (incident != null) {
+  debugPrint('incident=${incident.id}');
+  debugPrint('state=${incident.state.name}');
+  debugPrint('hasPosition=${incident.positionSnapshot != null}');
+}</code></pre>
+<a id="getsosstate"></a>
+<h3><code>getSosState()</code></h3>
+<p>Purpose:</p>
+<ul><li>returns the current SOS lifecycle state when your UI needs a small status check</li></ul>
+<p>Returns:</p>
+<ul><li><code>Future&lt;SosState&gt;</code></li></ul>
+<p>Common values to handle:</p>
+<ul><li><code>idle</code></li><li><code>sent</code></li><li><code>acknowledged</code></li><li><code>cancelRequested</code></li><li><code>cancelled</code></li></ul>
+<pre><code class="language-dart">final state = await sdk.getSosState();
+debugPrint('sosState=${state.name}');</code></pre>
+<a id="contacts"></a>
 <h2>Contacts</h2>
-<ul>
-<li><code>listEmergencyContacts()</code></li>
-<li><code>watchEmergencyContacts()</code></li>
-<li><code>createEmergencyContact(...)</code></li>
-<li><code>updateEmergencyContact(...)</code></li>
-<li><code>deleteEmergencyContact(...)</code></li>
-</ul>
-<p><a id="permissions-and-notifications"></a></p>
-<h2>Permissions and notifications</h2>
-<ul>
-<li><code>getPermissionState()</code></li>
-<li><code>requestLocationPermission()</code></li>
-<li><code>requestNotificationPermission()</code></li>
-<li><code>requestBluetoothPermission()</code></li>
-<li><code>initializeNotifications()</code></li>
-<li><code>showLocalNotification(...)</code></li>
-</ul>
-<p><a id="tracking-and-telemetry"></a></p>
-<h2>Tracking and telemetry</h2>
-<ul>
-<li><code>startTracking()</code></li>
-<li><code>stopTracking()</code></li>
-<li><code>publishTelemetry(...)</code></li>
-<li><code>getCurrentPosition()</code></li>
-<li><code>getTrackingState()</code></li>
-<li><code>watchPositions()</code></li>
-<li><code>watchTrackingState()</code></li>
-</ul>
-<p><a id="death-man"></a></p>
-<h2>Death Man</h2>
-<ul>
-<li><code>scheduleDeathMan(...)</code></li>
-<li><code>getActiveDeathManPlan()</code></li>
-<li><code>confirmDeathManCheckIn(...)</code></li>
-<li><code>cancelDeathMan(...)</code></li>
-<li><code>watchDeathManPlans()</code></li>
-</ul>
-<p><a id="realtime"></a></p>
-<h2>Realtime</h2>
-<ul>
-<li><code>getRealtimeConnectionState()</code></li>
-<li><code>getLastRealtimeEvent()</code></li>
-<li><code>watchRealtimeConnectionState()</code></li>
-<li><code>watchRealtimeEvents()</code></li>
-</ul>
-<p><a id="intentionally-omitted-from-the-partner-path"></a></p>
-<h2>Intentionally omitted from the partner path</h2>
-<p>The current partner site does not present Guided Rescue Phase 1 as part of the public integration path.</p>
-<p><a id="legacy-compatibility-surfaces"></a></p>
-<h2>Legacy / compatibility surfaces</h2>
-<p>Some deprecated or compatibility methods still exist in the SDK contract for migration or internal validation purposes. They are documented in the full internal site.</p>
-</main>
+<a id="listemergencycontacts"></a>
+<h3><code>listEmergencyContacts()</code></h3>
+<p>Purpose:</p>
+<ul><li>loads the current backend-synced emergency contacts for the signed user</li></ul>
+<p>Returns:</p>
+<ul><li><code>Future&lt;List&lt;</code><a href="model-reference.html#emergencycontact"><code>EmergencyContact</code></a><code>&gt;&gt;</code></li></ul>
+<p>Common fields to inspect:</p>
+<ul><li><code>id</code></li><li><code>name</code></li><li><code>phone</code></li><li><code>priority</code></li></ul>
+<pre><code class="language-dart">final contacts = await sdk.listEmergencyContacts();
+for (final contact in contacts) {
+  debugPrint('${contact.priority}: ${contact.name} ${contact.phone}');
+}</code></pre>
+<a id="createemergencycontact"></a>
+<h3><code>createEmergencyContact(...)</code></h3>
+<p>Purpose:</p>
+<ul><li>creates a new emergency contact and returns the saved record</li></ul>
+<p>Returns:</p>
+<ul><li><a href="model-reference.html#emergencycontact"><code>EmergencyContact</code></a></li></ul>
+<p>Common fields to inspect:</p>
+<ul><li><code>id</code></li><li><code>name</code></li><li><code>phone</code></li><li><code>priority</code></li><li><code>updatedAt</code></li></ul>
+<pre><code class="language-dart">final contact = await sdk.createEmergencyContact(
+  name: 'Mountain Rescue Desk',
+  phone: '+34600000000',
+  email: 'rescue@example.com',
+  priority: 1,
+);
+
+debugPrint('contact=${contact.id}');
+debugPrint('priority=${contact.priority}');</code></pre>
+<a id="updateemergencycontact"></a>
+<h3><code>updateEmergencyContact(...)</code></h3>
+<p>Purpose:</p>
+<ul><li>updates an existing contact and returns the saved record</li></ul>
+<p>Returns:</p>
+<ul><li><a href="model-reference.html#emergencycontact"><code>EmergencyContact</code></a></li></ul>
+<p>Common fields to inspect:</p>
+<ul><li><code>id</code></li><li><code>name</code></li><li><code>phone</code></li><li><code>priority</code></li><li><code>updatedAt</code></li></ul>
+<pre><code class="language-dart">final current = (await sdk.listEmergencyContacts()).first;
+final updated = await sdk.updateEmergencyContact(
+  current.copyWith(name: 'Mountain Rescue 24/7'),
+);
+
+debugPrint('contact=${updated.id}');
+debugPrint('name=${updated.name}');
+debugPrint('updatedAt=${updated.updatedAt}');</code></pre>
+<a id="permissions"></a>
+<h2>Permissions</h2>
+<a id="getpermissionstate"></a>
+<h3><code>getPermissionState()</code></h3>
+<p>Purpose:</p>
+<ul><li>returns one aggregated snapshot for location, notifications, Bluetooth, and Bluetooth service availability</li></ul>
+<p>Returns:</p>
+<ul><li><a href="model-reference.html#permissionstate"><code>PermissionState</code></a></li></ul>
+<p>Common fields to inspect:</p>
+<ul><li><code>location</code></li><li><code>notifications</code></li><li><code>bluetooth</code></li><li><code>bluetoothEnabled</code></li><li><code>canUseBluetooth</code></li></ul>
+<pre><code class="language-dart">final state = await sdk.getPermissionState();
+debugPrint('location=${state.location.name}');
+debugPrint('notifications=${state.notifications.name}');
+debugPrint('bluetoothReady=${state.canUseBluetooth}');</code></pre>
+<a id="protection-mode"></a>
+<h2>Protection Mode</h2>
+<a id="getprotectionstatus"></a>
+<h3><code>getProtectionStatus()</code></h3>
+<p>Purpose:</p>
+<ul><li>returns the current runtime status for armed/degraded/off state and native BLE ownership</li></ul>
+<p>Returns:</p>
+<ul><li><a href="model-reference.html#protectionstatus"><code>ProtectionStatus</code></a></li></ul>
+<p>Common fields to inspect:</p>
+<ul><li><code>modeState</code></li><li><code>runtimeState</code></li><li><code>bleOwner</code></li><li><code>protectedDeviceId</code></li><li><code>serviceBleConnected</code></li><li><code>serviceBleReady</code></li><li><code>degradationReason</code></li></ul>
+<pre><code class="language-dart">final status = await sdk.getProtectionStatus();
+debugPrint('mode=${status.modeState.name}');
+debugPrint('runtime=${status.runtimeState.name}');
+debugPrint('owner=${status.bleOwner.name}');
+debugPrint('protectedDevice=${status.protectedDeviceId}');</code></pre>
+<a id="getprotectiondiagnostics"></a>
+<h3><code>getProtectionDiagnostics()</code></h3>
+<p>Purpose:</p>
+<ul><li>returns the latest native/runtime diagnostics for reconnects, wake events, queueing, and command routing</li></ul>
+<p>Returns:</p>
+<ul><li><a href="model-reference.html#protectiondiagnostics"><code>ProtectionDiagnostics</code></a></li></ul>
+<p>Common fields to inspect:</p>
+<ul><li><code>lastWakeReason</code></li><li><code>reconnectAttemptCount</code></li><li><code>lastReconnectAttemptAt</code></li><li><code>lastCommandRoute</code></li><li><code>lastCommandResult</code></li><li><code>lastCommandError</code></li></ul>
+<pre><code class="language-dart">final diagnostics = await sdk.getProtectionDiagnostics();
+debugPrint('wake=${diagnostics.lastWakeReason}');
+debugPrint('reconnects=${diagnostics.reconnectAttemptCount}');
+debugPrint('lastCommandRoute=${diagnostics.lastCommandRoute}');</code></pre>
+<a id="backend-device-registry"></a>
+<h2>Backend Device Registry</h2>
+<a id="listregistereddevices"></a>
+<h3><code>listRegisteredDevices()</code></h3>
+<p>Purpose:</p>
+<ul><li>returns backend device records associated with the signed user</li></ul>
+<p>Returns:</p>
+<ul><li><code>Future&lt;List&lt;</code><a href="model-reference.html#backendregistereddevice"><code>BackendRegisteredDevice</code></a><code>&gt;&gt;</code></li></ul>
+<p>Common fields to inspect:</p>
+<ul><li><code>id</code></li><li><code>hardwareId</code></li><li><code>firmwareVersion</code></li><li><code>hardwareModel</code></li><li><code>pairedAt</code></li></ul>
+<pre><code class="language-dart">final devices = await sdk.listRegisteredDevices();
+for (final device in devices) {
+  debugPrint('${device.hardwareId} ${device.firmwareVersion}');
+}</code></pre>
+<a id="omitted-from-the-partner-path"></a>
+<h2>Omitted from the partner path</h2>
+<p>The partner site intentionally omits:</p>
+<ul><li>deprecated compatibility methods kept only for migration</li><li>internal validation-first capability groups such as Guided Rescue Phase 1</li><li>low-level device-control examples that are not part of the recommended onboarding path</li></ul></main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
-      <a class="toc-level-2" href="#entry-point">Entry point</a><a class="toc-level-3" href="#eixamconnectsdk-bootstrap">`EixamConnectSdk.bootstrap(...)`</a><a class="toc-level-2" href="#session-lifecycle">Session lifecycle</a><a class="toc-level-2" href="#diagnostics-and-protection">Diagnostics and protection</a><a class="toc-level-2" href="#device-runtime-and-backend-device-registry">Device runtime and backend device registry</a><a class="toc-level-2" href="#sos">SOS</a><a class="toc-level-2" href="#contacts">Contacts</a><a class="toc-level-2" href="#permissions-and-notifications">Permissions and notifications</a><a class="toc-level-2" href="#tracking-and-telemetry">Tracking and telemetry</a><a class="toc-level-2" href="#death-man">Death Man</a><a class="toc-level-2" href="#realtime">Realtime</a><a class="toc-level-2" href="#intentionally-omitted-from-the-partner-path">Intentionally omitted from the partner path</a><a class="toc-level-2" href="#legacy-compatibility-surfaces">Legacy / compatibility surfaces</a>
+      <a class="toc-level-2" href="#bootstrap">Bootstrap</a><a class="toc-level-3" href="#eixamconnectsdk-bootstrap">EixamConnectSdk.bootstrap(...)</a><a class="toc-level-2" href="#diagnostics">Diagnostics</a><a class="toc-level-3" href="#getoperationaldiagnostics">getOperationalDiagnostics()</a><a class="toc-level-3" href="#watchoperationaldiagnostics">watchOperationalDiagnostics()</a><a class="toc-level-2" href="#device-lifecycle">Device Lifecycle</a><a class="toc-level-3" href="#connectdevice">connectDevice(...)</a><a class="toc-level-3" href="#getdevicestatus">getDeviceStatus()</a><a class="toc-level-3" href="#devicestatusstream">deviceStatusStream</a><a class="toc-level-3" href="#getdevicesosstatus">getDeviceSosStatus()</a><a class="toc-level-2" href="#sos">SOS</a><a class="toc-level-3" href="#triggersos">triggerSos(...)</a><a class="toc-level-3" href="#getcurrentsosincident">getCurrentSosIncident()</a><a class="toc-level-3" href="#getsosstate">getSosState()</a><a class="toc-level-2" href="#contacts">Contacts</a><a class="toc-level-3" href="#listemergencycontacts">listEmergencyContacts()</a><a class="toc-level-3" href="#createemergencycontact">createEmergencyContact(...)</a><a class="toc-level-3" href="#updateemergencycontact">updateEmergencyContact(...)</a><a class="toc-level-2" href="#permissions">Permissions</a><a class="toc-level-3" href="#getpermissionstate">getPermissionState()</a><a class="toc-level-2" href="#protection-mode">Protection Mode</a><a class="toc-level-3" href="#getprotectionstatus">getProtectionStatus()</a><a class="toc-level-3" href="#getprotectiondiagnostics">getProtectionDiagnostics()</a><a class="toc-level-2" href="#backend-device-registry">Backend Device Registry</a><a class="toc-level-3" href="#listregistereddevices">listRegisteredDevices()</a><a class="toc-level-2" href="#omitted-from-the-partner-path">Omitted from the partner path</a>
     </aside>
   </div>
 </body>

@@ -14,52 +14,33 @@
   <div class="layout">
     <aside class="sidebar">
       <div class="sidebar-title">Navigation</div>
-      <a href="index.html">Home</a><a href="sdk-overview.html">SDK Overview</a><a href="quickstart.html">Quickstart</a><a href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a href="core-concepts.html">Core Concepts</a><a href="protection-mode.html">Protection Mode</a><a href="flutter-installation.html">Flutter Installation</a><a href="flutter-integration.html">Flutter Integration</a><a href="android-integration.html">Android Integration</a><a href="ios-integration.html">iOS Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a class="active" href="backend-integration.html">Backend Integration</a><a href="api-reference.html">API Reference</a><a href="troubleshooting.html">Troubleshooting</a>
+      <a href="index.html">Home</a><a href="sdk-overview.html">SDK Overview</a><a href="quickstart.html">Quickstart</a><a href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a href="model-reference.html">Model Reference</a><a href="core-concepts.html">Core Concepts</a><a href="protection-mode.html">Protection Mode</a><a href="flutter-installation.html">Flutter Installation</a><a href="flutter-integration.html">Flutter Integration</a><a href="android-integration.html">Android Integration</a><a href="ios-integration.html">iOS Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a class="active" href="backend-integration.html">Backend Integration</a><a href="api-reference.html">API Reference</a><a href="troubleshooting.html">Troubleshooting</a>
     </aside>
     <main class="content"><h1>Backend Integration</h1>
-<p><a id="what-the-partner-backend-must-provide"></a></p>
+<a id="what-the-partner-backend-must-provide"></a>
 <h2>What the partner backend must provide</h2>
 <p>The host app is expected to rely on a partner/backend service that provides:</p>
-<ol>
-<li>a signed SDK session</li>
-<li>canonical identity support through <code>GET /v1/sdk/me</code></li>
-<li>MQTT operational support for SOS and telemetry</li>
-<li>transactional HTTP support for SOS cancel</li>
-<li>contacts and backend device registry surfaces</li>
-</ol>
-<p><a id="signed-session-contract"></a></p>
+<ol><li>a signed SDK session</li><li>canonical identity support through <code>GET /v1/sdk/me</code></li><li>MQTT operational support for SOS and telemetry</li><li>transactional HTTP support for SOS cancel</li><li>contacts and backend device registry surfaces</li></ol>
+<a id="signed-session-contract"></a>
 <h2>Signed session contract</h2>
 <p>Minimum fields:</p>
-<ul>
-<li><code>appId</code></li>
-<li><code>externalUserId</code></li>
-<li><code>userHash</code></li>
-</ul>
+<ul><li><code>appId</code></li><li><code>externalUserId</code></li><li><code>userHash</code></li></ul>
 <p>Example:</p>
 <pre><code class="language-dart">const EixamSession.signed(
   appId: 'partner-app',
   externalUserId: 'partner-user-123',
   userHash: 'signed-session-hash',
-)
-</code></pre>
-<p><a id="bootstrap-and-session"></a></p>
+)</code></pre>
+<a id="bootstrap-and-session"></a>
 <h2>Bootstrap and session</h2>
 <p>If the host app already has a signed session at startup, pass it as <code>initialSession</code> in the bootstrap config.</p>
 <p>If not, bootstrap without a session and call <code>setSession(...)</code> later.</p>
-<p><a id="current-operational-model"></a></p>
+<a id="current-operational-model"></a>
 <h2>Current operational model</h2>
-<ul>
-<li>session enrichment: HTTP <code>GET /v1/sdk/me</code></li>
-<li>SOS trigger: operational transport</li>
-<li>SOS cancel: HTTP <code>POST /v1/sdk/sos/cancel</code></li>
-<li>active SOS rehydration: <code>GET /v1/sdk/sos</code></li>
-<li>telemetry: operational transport</li>
-<li>registered devices and contacts: HTTP surfaces</li>
-</ul>
-<p><a id="important-note"></a></p>
+<ul><li>session enrichment: HTTP <code>GET /v1/sdk/me</code></li><li>SOS trigger: operational transport</li><li>SOS cancel: HTTP <code>POST /v1/sdk/sos/cancel</code></li><li>active SOS rehydration: <code>GET /v1/sdk/sos</code></li><li>telemetry: operational transport</li><li>registered devices and contacts: HTTP surfaces</li></ul>
+<a id="important-note"></a>
 <h2>Important note</h2>
-<p>The SDK does not call partner auth or signing routes on its own and does not compute the signature locally.</p>
-</main>
+<p>The SDK does not call partner auth or signing routes on its own and does not compute the signature locally.</p></main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
       <a class="toc-level-2" href="#what-the-partner-backend-must-provide">What the partner backend must provide</a><a class="toc-level-2" href="#signed-session-contract">Signed session contract</a><a class="toc-level-2" href="#bootstrap-and-session">Bootstrap and session</a><a class="toc-level-2" href="#current-operational-model">Current operational model</a><a class="toc-level-2" href="#important-note">Important note</a>

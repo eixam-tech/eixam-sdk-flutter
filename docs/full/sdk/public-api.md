@@ -1,107 +1,244 @@
 # Public API
 
-This page describes the recommended public surface exposed to partner host apps.
+This page documents the current public `EixamConnectSdk` surface used by host apps.
 
-## Entry point
+The sections below focus on the methods partners inspect most often in practice. Legacy compatibility methods remain documented in the appendix instead of the main partner path.
+
+## Bootstrap
 
 ### `EixamConnectSdk.bootstrap(...)`
 
-This is the recommended public entrypoint.
+Purpose:
+- creates the SDK
+- resolves the selected environment
+- validates the bootstrap config
+- applies the initial signed session when provided
 
-Use it to create an SDK instance, resolve the selected environment, validate the bootstrap configuration and optionally seed the initial signed session.
+Returns:
+- `Future<EixamConnectSdk>`
 
-## Session lifecycle
+## Diagnostics
 
-- `setSession(...)`
-- `clearSession()`
-- `getCurrentSession()`
-- `refreshCanonicalIdentity()`
+### `getOperationalDiagnostics()`
 
-## Diagnostics and protection
+Purpose:
+- returns the latest operational runtime snapshot for session, transport, bridge, and SOS rehydration state
 
-- `getOperationalDiagnostics()`
-- `watchOperationalDiagnostics()`
-- `evaluateProtectionReadiness()`
-- `enterProtectionMode(...)`
-- `exitProtectionMode()`
-- `getProtectionStatus()`
-- `watchProtectionStatus()`
-- `getProtectionDiagnostics()`
-- `watchProtectionDiagnostics()`
-- `rehydrateProtectionState()`
-- `flushProtectionQueues()`
+Returns:
+- [`SdkOperationalDiagnostics`](model-reference.md#sdkoperationaldiagnostics)
 
-## Device runtime and backend device registry
+Common fields:
+- `connectionState`
+- `telemetryPublishTopic`
+- `sosEventTopics`
+- `sosRehydrationNote`
+- `bridge.lastDecision`
+- `bridge.pendingSos`
+- `bridge.pendingTelemetry`
 
-- `connectDevice(...)`
-- `disconnectDevice()`
-- `preferredDevice`
-- `deviceStatusStream`
-- `listRegisteredDevices()`
-- `upsertRegisteredDevice(...)`
-- `deleteRegisteredDevice(...)`
+### `watchOperationalDiagnostics()`
+
+Purpose:
+- streams operational changes after bootstrap, session updates, reconnects, and bridge/runtime changes
+
+Returns:
+- `Stream<`[`SdkOperationalDiagnostics`](model-reference.md#sdkoperationaldiagnostics)`>`
+
+## Device Lifecycle
+
+### `connectDevice(...)`
+
+Purpose:
+- pairs or reconnects the selected device and returns the resulting runtime status
+
+Returns:
+- [`DeviceStatus`](model-reference.md#devicestatus)
+
+Common fields:
+- `deviceId`
+- `lifecycleState`
+- `paired`
+- `activated`
+- `connected`
+- `isReadyForSafety`
+
+### `getDeviceStatus()`
+
+Returns:
+- [`DeviceStatus`](model-reference.md#devicestatus)
+
+Common fields:
+- `connected`
+- `lastSeen`
+- `firmwareVersion`
+- `provisioningError`
+
+### `deviceStatusStream`
+
+Returns:
+- `Stream<`[`DeviceStatus`](model-reference.md#devicestatus)`>`
+
+Common fields:
+- `lifecycleState`
+- `connected`
+- `signalQuality`
+- `approximateBatteryPercentage`
+
+### `getDeviceSosStatus()`
+
+Returns:
+- [`DeviceSosStatus`](model-reference.md#devicesosstatus)
+
+Common fields:
+- `state`
+- `lastEvent`
+- `transitionSource`
+- `countdownRemainingSeconds`
 
 ## SOS
 
-- `triggerSos(...)`
-- `cancelSos()`
-- `getCurrentSosIncident()`
-- `getSosState()`
-- `currentSosStateStream`
-- `lastSosEventStream`
-- `watchEvents()`
+### `triggerSos(...)`
+
+Purpose:
+- creates an app-originated SOS incident using the current signed session and operational runtime
+
+Returns:
+- [`SosIncident`](model-reference.md#sosincident)
+
+Common fields:
+- `id`
+- `state`
+- `createdAt`
+- `triggerSource`
+- `message`
+
+### `getCurrentSosIncident()`
+
+Returns:
+- `Future<`[`SosIncident`](model-reference.md#sosincident)`?>`
+
+Common fields:
+- `id`
+- `state`
+- `createdAt`
+- `positionSnapshot`
+
+### `getSosState()`
+
+Returns:
+- `Future<SosState>`
+
+Common values:
+- `idle`
+- `sent`
+- `acknowledged`
+- `cancelRequested`
+- `cancelled`
 
 ## Contacts
 
-- `listEmergencyContacts()`
-- `watchEmergencyContacts()`
-- `createEmergencyContact(...)`
-- `updateEmergencyContact(...)`
-- `deleteEmergencyContact(...)`
+### `listEmergencyContacts()`
 
-## Permissions and notifications
+Returns:
+- `Future<List<`[`EmergencyContact`](model-reference.md#emergencycontact)`>>`
 
-- `getPermissionState()`
-- `requestLocationPermission()`
-- `requestNotificationPermission()`
-- `requestBluetoothPermission()`
-- `initializeNotifications()`
-- `showLocalNotification(...)`
+Common fields:
+- `id`
+- `name`
+- `phone`
+- `priority`
 
-## Tracking and telemetry
+### `createEmergencyContact(...)`
 
-- `startTracking()`
-- `stopTracking()`
-- `publishTelemetry(...)`
-- `getCurrentPosition()`
-- `getTrackingState()`
-- `watchPositions()`
-- `watchTrackingState()`
+Returns:
+- [`EmergencyContact`](model-reference.md#emergencycontact)
 
-## Death Man
+Common fields:
+- `id`
+- `name`
+- `phone`
+- `priority`
+- `updatedAt`
 
-- `scheduleDeathMan(...)`
-- `getActiveDeathManPlan()`
-- `confirmDeathManCheckIn(...)`
-- `cancelDeathMan(...)`
-- `watchDeathManPlans()`
+### `updateEmergencyContact(...)`
 
-## Realtime
+Returns:
+- [`EmergencyContact`](model-reference.md#emergencycontact)
 
-- `getRealtimeConnectionState()`
-- `getLastRealtimeEvent()`
-- `watchRealtimeConnectionState()`
-- `watchRealtimeEvents()`
+Common fields:
+- `id`
+- `name`
+- `phone`
+- `priority`
+- `updatedAt`
 
-## Intentionally omitted from the partner path
+## Permissions
 
-The current partner site does not present Guided Rescue Phase 1 as part of the public integration path.
+### `getPermissionState()`
 
-## Legacy / compatibility surfaces
+Returns:
+- [`PermissionState`](model-reference.md#permissionstate)
 
-Some deprecated or compatibility methods still exist in the SDK contract for migration or internal validation purposes. They are documented in the full internal site.
+Common fields:
+- `location`
+- `notifications`
+- `bluetooth`
+- `bluetoothEnabled`
+- `canUseBluetooth`
 
+## Protection Mode
 
-## Full-site addendum
+### `getProtectionStatus()`
 
-The full site also documents compatibility/deprecated surfaces and experimental/internal capability groups for internal teams.
+Returns:
+- [`ProtectionStatus`](model-reference.md#protectionstatus)
+
+Common fields:
+- `modeState`
+- `runtimeState`
+- `bleOwner`
+- `protectedDeviceId`
+- `serviceBleConnected`
+- `serviceBleReady`
+- `degradationReason`
+
+### `getProtectionDiagnostics()`
+
+Returns:
+- [`ProtectionDiagnostics`](model-reference.md#protectiondiagnostics)
+
+Common fields:
+- `lastWakeReason`
+- `reconnectAttemptCount`
+- `lastReconnectAttemptAt`
+- `lastCommandRoute`
+- `lastCommandResult`
+- `lastCommandError`
+
+## Backend Device Registry
+
+### `listRegisteredDevices()`
+
+Returns:
+- `Future<List<`[`BackendRegisteredDevice`](model-reference.md#backendregistereddevice)`>>`
+
+Common fields:
+- `id`
+- `hardwareId`
+- `firmwareVersion`
+- `hardwareModel`
+- `pairedAt`
+
+## Legacy / compatibility appendix
+
+The following public methods still exist for migration or internal validation, but they are intentionally excluded from the partner-facing path:
+
+- `initialize(...)`
+- `pairDevice(...)`
+- `unpairDevice()`
+- `watchDeviceStatus()`
+- `watchSosState()`
+- `addEmergencyContact(...)`
+- `removeEmergencyContact(...)`
+
+The rest of the full site may still mention these methods where migration context matters.

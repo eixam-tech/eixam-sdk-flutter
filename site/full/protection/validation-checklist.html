@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Validation Checklist: Protection Mode</title>
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">EIXAM Connect SDK</div>
+    <div class="site-tag">full docs</div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Navigation</div>
+      <a href="../index.html">Home</a><a href="../sdk/overview.html">SDK Overview</a><a href="../sdk/architecture.html">SDK Architecture</a><a href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a href="../sdk/backend-integration.html">Backend Integration</a><a href="../sdk/public-api.html">Public API</a><a href="../sdk/public-api-examples.html">Method Examples</a><a href="../sdk/model-reference.html">Model Reference</a><a href="../sdk/protection-mode.html">Protection Mode</a><a href="overview.html">Protection Overview</a><a href="android-host-integration.html">Android Protection Integration</a><a href="ios-host-integration.html">iOS Protection Integration</a><a href="limitations.html">Protection Limitations</a><a class="active" href="validation-checklist.html">Protection Validation Checklist</a><a href="../sdk/realtime-status.html">Realtime Status</a><a href="../sdk/troubleshooting.html">SDK Troubleshooting</a><a href="../integration/flutter-installation.html">Flutter Installation</a><a href="../integration/flutter-integration.html">Flutter Integration</a><a href="../integration/host-app-integration.html">Host App Integration</a><a href="../integration/android-host-integration.html">Android Host Integration</a><a href="../integration/ios-host-integration.html">iOS Host Integration</a><a href="../integration/permissions-checklist.html">Permissions Checklist</a><a href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../reference-app/app-handoff-final.html">App Handoff Final</a><a href="../api/api-reference.html">API Reference</a><a href="../api/public-api.html">API Surface</a><a href="../api/public-api-examples.html">API Examples</a><a href="../internal/decisions.html">Decisions</a><a href="../internal/quality-gates.html">Quality Gates</a><a href="../internal/testing-strategy.html">Testing Strategy</a><a href="../internal/testability-notes.html">Testability Notes</a><a href="../internal/how-to-run-project.html">How to Run Project</a><a href="../internal/migration-map.html">Migration Map</a><a href="../internal/roadmap.html">Roadmap</a><a href="../internal/team-handoff-index.html">Team Handoff Index</a><a href="../internal/agents.html">AGENTS</a>
+    </aside>
+    <main class="content"><h1>Validation Checklist: Protection Mode</h1>
+<a id="backward-compatibility"></a>
+<h2>Backward Compatibility</h2>
+<ol><li>Start the app and do not arm Protection Mode.</li><li>Validate current BLE, SOS, telemetry, and device flows still behave as before.</li></ol>
+<a id="android-full-ownership-path"></a>
+<h2>Android Full-Ownership Path</h2>
+<ol><li>Pair and connect a trusted device.</li><li>Run Protection readiness.</li><li>Enter Protection Mode.</li><li>Confirm:</li></ol>
+<ul><li><code>modeState</code> is not <code>off</code></li><li><code>bleOwner=androidService</code></li><li>foreground service is running</li><li>Flutter no longer behaves as the active BLE owner while armed</li><li>runtime/platform events are visible</li></ul>
+<ol><li>Rehydrate Protection state and confirm the snapshot remains coherent.</li><li>Flush queues and confirm queue counters respond safely.</li><li>Exit Protection Mode and confirm ownership/runtime return to the default off path.</li></ol>
+<a id="android-background-restart"></a>
+<h2>Android Background / Restart</h2>
+<ol><li>Arm Protection Mode.</li><li>Background the app.</li><li>Re-open and run rehydrate.</li><li>Confirm:</li></ol>
+<ul><li>foreground service state is still reflected</li><li>BLE owner is still reported coherently</li><li>reconnect counters and last platform/BLE service events remain available</li></ul>
+<a id="ios-base-readiness-path"></a>
+<h2>iOS Base / Readiness Path</h2>
+<ol><li>Launch on iOS.</li><li>Run Protection readiness.</li><li>Confirm status remains honest:</li></ol>
+<ul><li>platform is <code>ios</code></li><li>coverage is <code>partial</code> or otherwise degraded</li><li>background capability state is visible</li><li>restoration configured and last restoration event fields are visible</li><li>degradation reason explains the current limitation</li></ul>
+<ol><li>Enter and rehydrate Protection Mode and confirm there are no crashes or false <code>full</code> claims.</li></ol>
+<a id="expected-outcomes"></a>
+<h2>Expected Outcomes</h2>
+<ul><li>Protection Mode never auto-arms.</li><li>Non-Protection flows remain unchanged.</li><li>Android reports service ownership/readiness details when armed.</li><li>iOS reports safe base participation with honest limitations.</li></ul></main>
+    <aside class="toc">
+      <div class="toc-title">On this page</div>
+      <a class="toc-level-2" href="#backward-compatibility">Backward Compatibility</a><a class="toc-level-2" href="#android-full-ownership-path">Android Full-Ownership Path</a><a class="toc-level-2" href="#android-background-restart">Android Background / Restart</a><a class="toc-level-2" href="#ios-base-readiness-path">iOS Base / Readiness Path</a><a class="toc-level-2" href="#expected-outcomes">Expected Outcomes</a>
+    </aside>
+  </div>
+</body>
+</html>

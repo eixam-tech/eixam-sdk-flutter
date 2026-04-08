@@ -14,56 +14,41 @@
   <div class="layout">
     <aside class="sidebar">
       <div class="sidebar-title">Navigation</div>
-      <a href="index.html">Home</a><a href="sdk-overview.html">SDK Overview</a><a href="quickstart.html">Quickstart</a><a href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a class="active" href="core-concepts.html">Core Concepts</a><a href="protection-mode.html">Protection Mode</a><a href="flutter-installation.html">Flutter Installation</a><a href="flutter-integration.html">Flutter Integration</a><a href="android-integration.html">Android Integration</a><a href="ios-integration.html">iOS Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a href="backend-integration.html">Backend Integration</a><a href="api-reference.html">API Reference</a><a href="troubleshooting.html">Troubleshooting</a>
+      <a href="index.html">Home</a><a href="sdk-overview.html">SDK Overview</a><a href="quickstart.html">Quickstart</a><a href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a href="model-reference.html">Model Reference</a><a class="active" href="core-concepts.html">Core Concepts</a><a href="protection-mode.html">Protection Mode</a><a href="flutter-installation.html">Flutter Installation</a><a href="flutter-integration.html">Flutter Integration</a><a href="android-integration.html">Android Integration</a><a href="ios-integration.html">iOS Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a href="backend-integration.html">Backend Integration</a><a href="api-reference.html">API Reference</a><a href="troubleshooting.html">Troubleshooting</a>
     </aside>
     <main class="content"><h1>Core Concepts</h1>
-<p><a id="sdk-first"></a></p>
+<a id="sdk-first"></a>
 <h2>SDK-first</h2>
 <p>EIXAM is built SDK-first. The SDK owns the core safety/runtime logic and the host app consumes that logic through stable contracts.</p>
-<p><a id="bootstrap-vs-session-lifecycle"></a></p>
+<a id="bootstrap-vs-session-lifecycle"></a>
 <h2>Bootstrap vs session lifecycle</h2>
-<p><a id="bootstrap"></a></p>
+<a id="bootstrap"></a>
 <h3>Bootstrap</h3>
 <p><code>bootstrap(...)</code> creates the SDK instance and resolves environment configuration.</p>
-<p><a id="session-lifecycle"></a></p>
+<a id="session-lifecycle"></a>
 <h3>Session lifecycle</h3>
 <p><code>setSession(...)</code>, <code>clearSession()</code>, and <code>getCurrentSession()</code> manage the signed identity lifecycle after bootstrap.</p>
-<p><a id="signed-identity-vs-canonical-identity"></a></p>
+<a id="signed-identity-vs-canonical-identity"></a>
 <h2>Signed identity vs canonical identity</h2>
-<p><a id="signed-identity"></a></p>
+<a id="signed-identity"></a>
 <h3>Signed identity</h3>
 <p>The partner backend provides:</p>
-<ul>
-<li><code>appId</code></li>
-<li><code>externalUserId</code></li>
-<li><code>userHash</code></li>
-</ul>
-<p><a id="canonical-identity"></a></p>
+<ul><li><code>appId</code></li><li><code>externalUserId</code></li><li><code>userHash</code></li></ul>
+<a id="canonical-identity"></a>
 <h3>Canonical identity</h3>
 <p>The SDK can enrich the identity through <code>/v1/sdk/me</code> so internal runtime flows use the canonical backend identity for transport and topic resolution.</p>
-<p><a id="standard-vs-custom-environments"></a></p>
+<a id="standard-vs-custom-environments"></a>
 <h2>Standard vs custom environments</h2>
 <p>Use standard environments whenever possible:</p>
-<ul>
-<li><code>production</code></li>
-<li><code>sandbox</code></li>
-<li><code>staging</code></li>
-</ul>
+<ul><li><code>production</code></li><li><code>sandbox</code></li><li><code>staging</code></li></ul>
 <p>Use <code>custom</code> only when you explicitly control alternative endpoints.</p>
-<p><a id="runtime-sensitive-actions"></a></p>
+<a id="runtime-sensitive-actions"></a>
 <h2>Runtime-sensitive actions</h2>
 <p>Some capabilities are deliberately UX-sensitive and must remain explicit host-app decisions:</p>
-<ul>
-<li>requesting permissions</li>
-<li>entering Protection Mode</li>
-<li>device pairing / connection</li>
-<li>starting tracking</li>
-<li>showing partner-branded UI flows</li>
-</ul>
-<p><a id="validation-app-vs-partner-app"></a></p>
+<ul><li>requesting permissions</li><li>entering Protection Mode</li><li>device pairing / connection</li><li>starting tracking</li><li>showing partner-branded UI flows</li></ul>
+<a id="validation-app-vs-partner-app"></a>
 <h2>Validation app vs partner app</h2>
-<p>The validation app is an internal thin host used to test and observe SDK behavior. It is not the reference product UX for partners.</p>
-</main>
+<p>The validation app is an internal thin host used to test and observe SDK behavior. It is not the reference product UX for partners.</p></main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
       <a class="toc-level-2" href="#sdk-first">SDK-first</a><a class="toc-level-2" href="#bootstrap-vs-session-lifecycle">Bootstrap vs session lifecycle</a><a class="toc-level-3" href="#bootstrap">Bootstrap</a><a class="toc-level-3" href="#session-lifecycle">Session lifecycle</a><a class="toc-level-2" href="#signed-identity-vs-canonical-identity">Signed identity vs canonical identity</a><a class="toc-level-3" href="#signed-identity">Signed identity</a><a class="toc-level-3" href="#canonical-identity">Canonical identity</a><a class="toc-level-2" href="#standard-vs-custom-environments">Standard vs custom environments</a><a class="toc-level-2" href="#runtime-sensitive-actions">Runtime-sensitive actions</a><a class="toc-level-2" href="#validation-app-vs-partner-app">Validation app vs partner app</a>

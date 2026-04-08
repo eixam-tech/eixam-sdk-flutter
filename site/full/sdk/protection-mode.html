@@ -14,92 +14,34 @@
   <div class="layout">
     <aside class="sidebar">
       <div class="sidebar-title">Navigation</div>
-      <a href="../index.html">Home</a><a href="overview.html">SDK Overview</a><a href="architecture.html">SDK Architecture</a><a href="partner-integration-guide.html">Partner Integration Guide</a><a href="backend-integration.html">Backend Integration</a><a href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a class="active" href="protection-mode.html">Protection Mode</a><a href="realtime-status.html">Realtime Status</a><a href="troubleshooting.html">SDK Troubleshooting</a><a href="../integration/flutter-installation.html">Flutter Installation</a><a href="../integration/flutter-integration.html">Flutter Integration</a><a href="../integration/host-app-integration.html">Host App Integration</a><a href="../integration/android-host-integration.html">Android Host Integration</a><a href="../integration/ios-host-integration.html">iOS Host Integration</a><a href="../integration/permissions-checklist.html">Permissions Checklist</a><a href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../api/api-reference.html">API Reference</a><a href="../internal/decisions.html">Decisions</a><a href="../internal/quality-gates.html">Quality Gates</a><a href="../internal/testing-strategy.html">Testing Strategy</a><a href="../internal/testability-notes.html">Testability Notes</a><a href="../internal/how-to-run-project.html">How to Run Project</a><a href="../internal/agents.html">AGENTS</a>
+      <a href="../index.html">Home</a><a href="overview.html">SDK Overview</a><a href="architecture.html">SDK Architecture</a><a href="partner-integration-guide.html">Partner Integration Guide</a><a href="backend-integration.html">Backend Integration</a><a href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a href="model-reference.html">Model Reference</a><a class="active" href="protection-mode.html">Protection Mode</a><a href="../protection/overview.html">Protection Overview</a><a href="../protection/android-host-integration.html">Android Protection Integration</a><a href="../protection/ios-host-integration.html">iOS Protection Integration</a><a href="../protection/limitations.html">Protection Limitations</a><a href="../protection/validation-checklist.html">Protection Validation Checklist</a><a href="realtime-status.html">Realtime Status</a><a href="troubleshooting.html">SDK Troubleshooting</a><a href="../integration/flutter-installation.html">Flutter Installation</a><a href="../integration/flutter-integration.html">Flutter Integration</a><a href="../integration/host-app-integration.html">Host App Integration</a><a href="../integration/android-host-integration.html">Android Host Integration</a><a href="../integration/ios-host-integration.html">iOS Host Integration</a><a href="../integration/permissions-checklist.html">Permissions Checklist</a><a href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../reference-app/app-handoff-final.html">App Handoff Final</a><a href="../api/api-reference.html">API Reference</a><a href="../api/public-api.html">API Surface</a><a href="../api/public-api-examples.html">API Examples</a><a href="../internal/decisions.html">Decisions</a><a href="../internal/quality-gates.html">Quality Gates</a><a href="../internal/testing-strategy.html">Testing Strategy</a><a href="../internal/testability-notes.html">Testability Notes</a><a href="../internal/how-to-run-project.html">How to Run Project</a><a href="../internal/migration-map.html">Migration Map</a><a href="../internal/roadmap.html">Roadmap</a><a href="../internal/team-handoff-index.html">Team Handoff Index</a><a href="../internal/agents.html">AGENTS</a>
     </aside>
     <main class="content"><h1>Protection Mode Overview</h1>
 <p>Protection Mode is an optional additive SDK capability that arms a higher-resilience runtime for critical BLE and SOS handling without changing the default SDK behavior when it is left off.</p>
-<p><a id="goals"></a></p>
+<a id="goals"></a>
 <h2>Goals</h2>
-<ul>
-<li>Keep current BLE, SOS, telemetry, validation, and device flows unchanged unless <code>enterProtectionMode()</code> is called.</li>
-<li>Move platform-specific Protection ownership into the SDK/plugin layer as much as possible.</li>
-<li>Make Android the primary platform for foreground-service-backed ownership while the mode is armed.</li>
-<li>Include iOS now with honest scaffolding, readiness reporting, and host integration guidance instead of pretending full support already exists.</li>
-</ul>
-<p><a id="architecture"></a></p>
+<ul><li>Keep current BLE, SOS, telemetry, validation, and device flows unchanged unless <code>enterProtectionMode()</code> is called.</li><li>Move platform-specific Protection ownership into the SDK/plugin layer as much as possible.</li><li>Make Android the primary platform for foreground-service-backed ownership while the mode is armed.</li><li>Include iOS now with honest scaffolding, readiness reporting, and host integration guidance instead of pretending full support already exists.</li></ul>
+<a id="architecture"></a>
 <h2>Architecture</h2>
-<ul>
-<li><code>eixam_connect_core</code><ul>
-<li>Protection public models and additive status/diagnostic contracts.</li>
-</ul>
-</li>
-<li><code>eixam_connect_flutter</code><ul>
-<li>Protection controller, default platform adapter selection, Android native plugin bridge/service, iOS base adapter/scaffolding.</li>
-</ul>
-</li>
-<li>Host app<ul>
-<li>App target capabilities, permissions UX, bootstrap, and validation UI consumption.</li>
-</ul>
-</li>
-</ul>
-<p><a id="sdk-owned-responsibilities"></a></p>
+<ul><li><code>eixam_connect_core</code></li><li>Protection public models and additive status/diagnostic contracts.</li><li><code>eixam_connect_flutter</code></li><li>Protection controller, default platform adapter selection, Android native plugin bridge/service, iOS base adapter/scaffolding.</li><li>Host app</li><li>App target capabilities, permissions UX, bootstrap, and validation UI consumption.</li></ul>
+<a id="sdk-owned-responsibilities"></a>
 <h2>SDK-Owned Responsibilities</h2>
-<ul>
-<li>Public Protection API</li>
-<li>Protection readiness/status/diagnostics</li>
-<li>BLE owner reporting</li>
-<li>Android foreground service bridge and merged manifest service declaration</li>
-<li>Android runtime state persistence and rehydrate snapshot bridge</li>
-<li>Queue flush hook surface</li>
-<li>iOS readiness/base platform adapter scaffolding</li>
-</ul>
-<p><a id="host-required-responsibilities"></a></p>
+<ul><li>Public Protection API</li><li>Protection readiness/status/diagnostics</li><li>BLE owner reporting</li><li>Android foreground service bridge and merged manifest service declaration</li><li>Android runtime state persistence and rehydrate snapshot bridge</li><li>Queue flush hook surface</li><li>iOS readiness/base platform adapter scaffolding</li></ul>
+<a id="host-required-responsibilities"></a>
 <h2>Host-Required Responsibilities</h2>
-<ul>
-<li>App-level permission onboarding</li>
-<li>Android/iOS app capabilities and platform packaging requirements</li>
-<li>SDK bootstrap and validation UI</li>
-<li>Future iOS lifecycle/restoration integration</li>
-</ul>
-<p><a id="coverage-model"></a></p>
+<ul><li>App-level permission onboarding</li><li>Android/iOS app capabilities and platform packaging requirements</li><li>SDK bootstrap and validation UI</li><li>Future iOS lifecycle/restoration integration</li></ul>
+<a id="coverage-model"></a>
 <h2>Coverage Model</h2>
-<ul>
-<li><code>none</code><ul>
-<li>Protection Mode is off or the platform runtime is unavailable.</li>
-</ul>
-</li>
-<li><code>partial</code><ul>
-<li>Protection Mode is armed, but the platform runtime is degraded or only partially implemented.</li>
-</ul>
-</li>
-<li><code>full</code><ul>
-<li>Protection Mode has the expected platform runtime ownership and readiness signals.</li>
-</ul>
-</li>
-</ul>
-<p><a id="current-android-state"></a></p>
+<ul><li><code>none</code></li><li>Protection Mode is off or the platform runtime is unavailable.</li><li><code>partial</code></li><li>Protection Mode is armed, but the platform runtime is degraded or only partially implemented.</li><li><code>full</code></li><li>Protection Mode has the expected platform runtime ownership and readiness signals.</li></ul>
+<a id="current-android-state"></a>
 <h2>Current Android State</h2>
-<ul>
-<li>Android Protection runtime wiring is now SDK/plugin-owned instead of validation-app-owned.</li>
-<li>The plugin merges the foreground service declaration and exposes explicit BLE owner/runtime diagnostics.</li>
-<li>When Protection Mode is armed, the intended owner is <code>androidService</code>; the SDK also releases Flutter runtime ownership so the Dart BLE path stops competing once native ownership is declared.</li>
-<li>The current implementation persists state, ownership, queue counters, wake/reconnect metadata, restoration-like service restart events, and service events for rehydrate flows.</li>
-</ul>
-<p><a id="current-ios-state"></a></p>
+<ul><li>Android Protection runtime wiring is now SDK/plugin-owned instead of validation-app-owned.</li><li>The plugin merges the foreground service declaration and exposes explicit BLE owner/runtime diagnostics.</li><li>When Protection Mode is armed, the intended owner is <code>androidService</code>; the SDK also releases Flutter runtime ownership so the Dart BLE path stops competing once native ownership is declared.</li><li>The current implementation persists state, ownership, queue counters, wake/reconnect metadata, restoration-like service restart events, and service events for rehydrate flows.</li></ul>
+<a id="current-ios-state"></a>
 <h2>Current iOS State</h2>
-<ul>
-<li>iOS now participates in the same public contract.</li>
-<li>The plugin reports platform/runtime readiness, restoration configuration, and honest degradation.</li>
-<li>A plugin-owned CoreBluetooth runtime base and restoration-aware scaffold now exist, but full background BLE ownership and backend-safe lifecycle handling are still partial.</li>
-</ul>
-<p><a id="roadmap"></a></p>
+<ul><li>iOS now participates in the same public contract.</li><li>The plugin reports platform/runtime readiness, restoration configuration, and honest degradation.</li><li>A plugin-owned CoreBluetooth runtime base and restoration-aware scaffold now exist, but full background BLE ownership and backend-safe lifecycle handling are still partial.</li></ul>
+<a id="roadmap"></a>
 <h2>Roadmap</h2>
-<ul>
-<li>Complete Android native BLE runtime ownership and service-side SOS lifecycle handling.</li>
-<li>Add iOS background BLE central, restoration, and lifecycle handoff support.</li>
-<li>Expand store-and-forward beyond the current minimal Protection queue hooks only when backend protocol contracts are ready.</li>
-</ul>
-</main>
+<ul><li>Complete Android native BLE runtime ownership and service-side SOS lifecycle handling.</li><li>Add iOS background BLE central, restoration, and lifecycle handoff support.</li><li>Expand store-and-forward beyond the current minimal Protection queue hooks only when backend protocol contracts are ready.</li></ul></main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
       <a class="toc-level-2" href="#goals">Goals</a><a class="toc-level-2" href="#architecture">Architecture</a><a class="toc-level-2" href="#sdk-owned-responsibilities">SDK-Owned Responsibilities</a><a class="toc-level-2" href="#host-required-responsibilities">Host-Required Responsibilities</a><a class="toc-level-2" href="#coverage-model">Coverage Model</a><a class="toc-level-2" href="#current-android-state">Current Android State</a><a class="toc-level-2" href="#current-ios-state">Current iOS State</a><a class="toc-level-2" href="#roadmap">Roadmap</a>
