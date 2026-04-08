@@ -622,9 +622,8 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
                       ),
                     ),
                     OutlinedButton(
-                      onPressed: !_hasSdk || _clearingSession
-                          ? null
-                          : _clearSession,
+                      onPressed:
+                          !_hasSdk || _clearingSession ? null : _clearSession,
                       child: Text(
                         _clearingSession ? 'Clearing...' : 'Clear Session',
                       ),

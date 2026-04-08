@@ -37,7 +37,8 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     final raw = await _methodChannel.invokeMapMethod<String, dynamic>(
       'getPlatformSnapshot',
     );
-    return mapAndroidProtectionPlatformSnapshot(raw ?? const <String, dynamic>{});
+    return mapAndroidProtectionPlatformSnapshot(
+        raw ?? const <String, dynamic>{});
   }
 
   @override

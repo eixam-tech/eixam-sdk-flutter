@@ -161,7 +161,8 @@ ProtectionPlatformStartResult mapProtectionPlatformStartResult(
 ) {
   return ProtectionPlatformStartResult(
     success: result['success'] as bool? ?? false,
-    runtimeState: parseProtectionRuntimeState(result['runtimeState'] as String?),
+    runtimeState:
+        parseProtectionRuntimeState(result['runtimeState'] as String?),
     coverageLevel: parseProtectionCoverageLevel(
       result['coverageLevel'] as String?,
     ),
