@@ -32,11 +32,15 @@ import 'eixam_connect_sdk_impl.dart';
 import 'mqtt5_sdk_transport.dart';
 import 'mqtt_realtime_client.dart';
 import 'mock_realtime_client.dart';
+import 'eixam_bootstrap_resolver.dart';
 import 'protection_platform_adapter.dart';
 import 'protection_platform_adapter_factory.dart';
 
 /// Factory helpers for API-backed and mock-API-backed SDK instances.
 class ApiSdkFactory {
+  /// Advanced constructor retained for controlled and internal setups.
+  ///
+  /// Partner apps should prefer `EixamConnectSdk.bootstrap(...)`.
   static Future<EixamConnectSdk> createMockApi() async {
     BleDebugRegistry.instance.reset();
 
@@ -113,6 +117,7 @@ class ApiSdkFactory {
     required String apiBaseUrl,
     required String websocketUrl,
     ProtectionPlatformAdapter? protectionPlatformAdapter,
+    bool enableLogging = false,
   }) async {
     BleDebugRegistry.instance.reset();
 
@@ -124,6 +129,7 @@ class ApiSdkFactory {
     final config = EixamSdkConfig(
       apiBaseUrl: apiBaseUrl,
       websocketUrl: websocketUrl,
+      enableLogging: enableLogging,
     );
     final httpClient = http.Client();
     final httpTransport = SdkHttpTransport(
@@ -214,6 +220,31 @@ class ApiSdkFactory {
     );
 
     await sdk.initialize(config);
+
+    return sdk;
+  }
+
+  static Future<EixamConnectSdk> bootstrap(EixamBootstrapConfig config) async {
+    final resolved = EixamBootstrapResolver.resolve(config);
+
+    final sdk = await createHttpApi(
+      apiBaseUrl: resolved.sdkConfig.apiBaseUrl,
+      websocketUrl: resolved.sdkConfig.websocketUrl ?? '',
+      enableLogging: resolved.sdkConfig.enableLogging,
+    );
+
+    final restoredSession = await sdk.getCurrentSession();
+    if (!EixamBootstrapResolver.restoredSessionMatchesApp(
+      restoredSession,
+      resolved.appId,
+    )) {
+      await sdk.clearSession();
+    }
+
+    final initialSession = resolved.initialSession;
+    if (initialSession != null) {
+      await sdk.setSession(initialSession);
+    }
 
     return sdk;
   }

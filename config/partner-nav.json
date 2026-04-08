@@ -1,58 +1,62 @@
 [
   [
-    "Overview",
-    "index.md"
+    "Home",
+    "docs/partner/index.md"
   ],
   [
     "SDK Overview",
-    "sdk-overview.md"
+    "docs/partner/sdk-overview.md"
   ],
   [
     "Quickstart",
-    "quickstart.md"
+    "docs/partner/quickstart.md"
   ],
   [
     "Public API",
-    "public-api.md"
+    "docs/partner/public-api.md"
   ],
   [
-    "API Examples",
-    "public-api-examples.md"
+    "Method Examples",
+    "docs/partner/public-api-examples.md"
   ],
   [
     "Core Concepts",
-    "core-concepts.md"
+    "docs/partner/core-concepts.md"
   ],
   [
     "Protection Mode",
-    "protection-mode.md"
+    "docs/partner/protection-mode.md"
+  ],
+  [
+    "Flutter Installation",
+    "docs/partner/flutter-installation.md"
   ],
   [
     "Flutter Integration",
-    "flutter-integration.md"
+    "docs/partner/flutter-integration.md"
   ],
   [
     "Android Integration",
-    "android-integration.md"
+    "docs/partner/android-integration.md"
   ],
   [
     "iOS Integration",
-    "ios-integration.md"
+    "docs/partner/ios-integration.md"
   ],
   [
     "Permissions Checklist",
-    "permissions-checklist.md"
+    "docs/partner/permissions-checklist.md"
   ],
   [
     "Backend Integration",
-    "backend-integration.md"
+    "docs/partner/backend-integration.md"
   ],
   [
     "API Reference",
-    "api-reference.md"
+    "docs/partner/api-reference.md"
   ],
   [
     "Troubleshooting",
-    "troubleshooting.md"
+    "docs/partner/troubleshooting.md"
   ]
 ]

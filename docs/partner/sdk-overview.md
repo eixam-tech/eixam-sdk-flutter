@@ -1,33 +1,88 @@
 # SDK Overview
 
-EIXAM Connect is the embeddable integration layer for companies that want to use EIXAM as their SOS and connected safety service.
+EIXAM Connect SDK is the embeddable integration layer of EIXAM's connected safety platform.
 
-It is designed for partner products that need:
-- signed session bootstrap
-- SOS flows
-- telemetry publish
-- emergency contacts
+The partner-facing mental model is simple:
+
+- bootstrap the SDK once
+- provide a signed session from your backend
+- request permissions from your own host-app UX when needed
+- use SDK methods and streams to drive SOS, device, tracking and safety flows
+
+## Happy path
+
+```dart
+final sdk = await EixamConnectSdk.bootstrap(
+  const EixamBootstrapConfig(
+    appId: 'partner-app',
+    environment: EixamEnvironment.sandbox,
+    initialSession: EixamSession.signed(
+      appId: 'partner-app',
+      externalUserId: 'partner-user-123',
+      userHash: 'signed-session-hash',
+    ),
+  ),
+);
+```
+
+## Bootstrap models
+
+### `EixamEnvironment`
+
+Supported values:
+
+- `production`
+- `sandbox`
+- `staging`
+- `custom`
+
+### `EixamCustomEndpoints`
+
+Use this only with `EixamEnvironment.custom`.
+
+Example:
+
+```dart
+const EixamCustomEndpoints(
+  httpBaseUrl: 'https://partner-api.example.com',
+  mqttUrl: 'wss://partner-mqtt.example.com/mqtt',
+)
+```
+
+### `EixamBootstrapConfig`
+
+Recommended minimum:
+
+- `appId`
+- `environment`
+- optional `initialSession`
+
+Advanced optional knobs:
+
+- `customEndpoints`
+- `enableLogging`
+- `networkTimeout`
+- `defaultLocaleCode`
+
+## Bootstrap guarantees
+
+- standard environments resolve internally
+- custom endpoints are validated
+- mismatched restored sessions are cleared
+- the SDK keeps control of session lifecycle semantics
+- bootstrap does not request runtime permissions or perform device pairing on its own
+
+## Main partner capabilities
+
+- session lifecycle
+- canonical identity refresh
+- operational diagnostics
+- Protection Mode
+- device connection and BLE runtime
 - backend device registry
-- local BLE/runtime device state
-- permissions and notifications
-- Protection Mode as an additive resilience capability
-
-## How partners typically start
-
-1. Register the app with EIXAM.
-2. Receive environment details, credentials, and the session/auth contract.
-3. Choose the integration surface that fits the product:
-   - Flutter
-   - Android
-   - iOS
-   - Web
-   - API / backend
-4. Install the SDK or connect to the API.
-5. Implement your product UI on top of the official examples and public API.
-
-## Integration model
-
-- the SDK is the service logic layer
-- the host app should remain thin
-- the host app should focus on UI, branding, navigation, and product-specific workflows
-- business-critical EIXAM behavior should come from the SDK rather than custom widget logic
+- SOS lifecycle
+- contacts
+- permissions and local notifications
+- tracking and telemetry
+- Death Man
+- realtime status and events

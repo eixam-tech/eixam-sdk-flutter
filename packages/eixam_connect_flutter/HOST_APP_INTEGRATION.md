@@ -2,6 +2,10 @@
 
 This document explains the minimum native setup required by a Flutter host app that embeds the EIXAM Connect SDK.
 
+For the recommended partner startup flow, bootstrap the SDK through
+`EixamConnectSdk.bootstrap(EixamBootstrapConfig(...))` and keep the host app
+focused on UI, navigation, and permission education.
+
 ## Permissions overview
 
 ### Local storage

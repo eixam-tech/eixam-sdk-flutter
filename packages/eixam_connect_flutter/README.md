@@ -1,83 +1,41 @@
-# EIXAM Connect Flutter SDK
+# EIXAM Connect Flutter
 
-`eixam_connect_flutter` is the Flutter SDK for partners integrating EIXAM-powered SOS, connected device flows, telemetry, and operational diagnostics into their own app.
+Flutter runtime implementation of the EIXAM Connect SDK.
 
-The SDK is designed so the host app stays focused on UI, navigation, and product-specific workflows, while EIXAM behavior is accessed through the public SDK facade.
+This package is the partner-facing Flutter integration surface for EIXAM's connected safety platform.
 
-## Installation
+## Recommended public entrypoint
 
-Add the package to your Flutter app using the version or delivery channel provided by EIXAM.
-
-```yaml
-dependencies:
-  eixam_connect_flutter: <version-provided-by-eixam>
-```
-
-Import only the public entrypoint:
+Use the single-call bootstrap flow:
 
 ```dart
 import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
-```
 
-## Minimal Usage
-
-Create the SDK:
-
-```dart
-final sdk = await ApiSdkFactory.createHttpApi(
-  apiBaseUrl: '<eixam-api-base-url>',
-  websocketUrl: '<eixam-realtime-websocket-url>',
-);
-```
-
-Provide the signed session from your backend or auth flow:
-
-```dart
-await sdk.setSession(
-  EixamSession.signed(
-    appId: '<your-app-id>',
-    externalUserId: '<partner-user-id>',
-    userHash: '<signed-session-value>',
+final sdk = await EixamConnectSdk.bootstrap(
+  const EixamBootstrapConfig(
+    appId: 'partner-app',
+    environment: EixamEnvironment.sandbox,
+    initialSession: EixamSession.signed(
+      appId: 'partner-app',
+      externalUserId: 'partner-user-123',
+      userHash: 'signed-session-hash',
+    ),
   ),
 );
 ```
 
-Render state from the public SDK streams:
+## Bootstrap behavior
 
-```dart
-sdk.currentSosStateStream.listen((state) {
-  // Update your SOS UI.
-});
+- `production`, `sandbox`, and `staging` are resolved internally
+- `custom` requires `EixamCustomEndpoints`
+- `initialSession` is optional
+- when provided, `initialSession.appId` must match the bootstrap `appId`
+- bootstrap preserves session lifecycle and clears mismatched restored sessions
+- bootstrap does not request permissions, pair devices, or trigger other UX-sensitive actions
 
-sdk.deviceStatusStream.listen((status) {
-  // Update your device UI.
-});
-```
+## Where to read next
 
-Trigger user actions through the public facade:
-
-```dart
-await sdk.requestBluetoothPermission();
-await sdk.connectDevice(pairingCode: '<pairing-code>');
-await sdk.triggerSos(
-  const SosTriggerPayload(
-    message: 'Need help',
-    triggerSource: 'partner_app',
-  ),
-);
-```
-
-## Documentation
-
-- Partner docs: `docs/partner/`
-- Public API boundary: [PUBLIC_API.md](./PUBLIC_API.md)
-- Example app: `example/`
-- Migration notes: [MIGRATION.md](./MIGRATION.md)
-
-Replace these placeholders with the final external documentation URLs when the SDK release portal is live.
-
-## Support Boundary
-
-Only symbols exported from `package:eixam_connect_flutter/eixam_connect_flutter.dart` are supported public API for partners.
-
-Internal repositories, platform adapters, BLE/protocol packet classes, validation helpers, internal controllers, and runtime/storage internals are not supported integration points.
+- `PUBLIC_API.md`
+- `MIGRATION.md`
+- `../../docs/partner/quickstart.md`
+- `../../docs/partner/public-api-examples.md`

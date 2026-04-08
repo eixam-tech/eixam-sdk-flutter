@@ -1,3 +1,5 @@
+> Updated note: public partner-facing initialization is now documented through `EixamConnectSdk.bootstrap(...)`. Internal validation bootstrap composition may still exist separately.
+
 # EIXAM Connect SDK — Project Documentation
 
 ## 1. Purpose of this document

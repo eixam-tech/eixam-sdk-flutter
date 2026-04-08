@@ -1,17 +1,58 @@
-<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Troubleshooting</title><link rel='stylesheet' href='../assets/style.css'></head><body><div class='layout'><aside class='sidebar'><div class='brand'>EIXAM Docs - partner</div><nav><a class="" href="index.html">Overview</a><a class="" href="sdk-overview.html">SDK Overview</a><a class="" href="quickstart.html">Quickstart</a><a class="" href="public-api.html">Public API</a><a class="" href="public-api-examples.html">API Examples</a><a class="" href="core-concepts.html">Core Concepts</a><a class="" href="protection-mode.html">Protection Mode</a><a class="" href="flutter-integration.html">Flutter Integration</a><a class="" href="android-integration.html">Android Integration</a><a class="" href="ios-integration.html">iOS Integration</a><a class="" href="permissions-checklist.html">Permissions Checklist</a><a class="" href="backend-integration.html">Backend Integration</a><a class="" href="api-reference.html">API Reference</a><a class="active" href="troubleshooting.html">Troubleshooting</a></nav></aside><main class='content'><h1>Troubleshooting</h1>
-<h2>Session is set but operational flows do not work</h2>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Troubleshooting</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">EIXAM Connect SDK</div>
+    <div class="site-tag">partner docs</div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Navigation</div>
+      <a href="index.html">Home</a><a href="sdk-overview.html">SDK Overview</a><a href="quickstart.html">Quickstart</a><a href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a href="core-concepts.html">Core Concepts</a><a href="protection-mode.html">Protection Mode</a><a href="flutter-installation.html">Flutter Installation</a><a href="flutter-integration.html">Flutter Integration</a><a href="android-integration.html">Android Integration</a><a href="ios-integration.html">iOS Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a href="backend-integration.html">Backend Integration</a><a href="api-reference.html">API Reference</a><a class="active" href="troubleshooting.html">Troubleshooting</a>
+    </aside>
+    <main class="content"><h1>Troubleshooting</h1>
+<p><a id="customendpoints-rejected"></a></p>
+<h2><code>customEndpoints</code> rejected</h2>
+<p>Cause: <code>customEndpoints</code> were passed while using <code>production</code>, <code>sandbox</code>, or <code>staging</code>.</p>
+<p>Fix: only pass <code>customEndpoints</code> with <code>EixamEnvironment.custom</code>.</p>
+<p><a id="initialsession-appid-mismatch"></a></p>
+<h2><code>initialSession.appId</code> mismatch</h2>
+<p>Cause: the bootstrap <code>appId</code> and the provided signed session <code>appId</code> do not match.</p>
+<p>Fix: make both values identical.</p>
+<p><a id="bootstrap-did-not-request-permissions"></a></p>
+<h2>Bootstrap did not request permissions</h2>
+<p>Expected behavior. Permission requests remain explicit host-app actions.</p>
+<p><a id="bootstrap-did-not-pair-a-device"></a></p>
+<h2>Bootstrap did not pair a device</h2>
+<p>Expected behavior. Device pairing/connection remains an explicit host-app decision.</p>
+<p><a id="protection-readiness-is-blocked"></a></p>
+<h2>Protection readiness is blocked</h2>
+<p>Inspect:</p>
 <ul>
-<li>verify signed session values</li>
-<li>verify <code>GET /v1/sdk/me</code></li>
-<li>verify MQTT connectivity</li>
+<li>session availability</li>
+<li>paired/connected device state</li>
+<li>Bluetooth enabled state</li>
+<li>location permission</li>
+<li>notification permission</li>
+<li>platform capability readiness</li>
 </ul>
-<h2>SOS cancel succeeds over HTTP but state does not change</h2>
-<p>That is expected until the final lifecycle event arrives through MQTT.</p>
-<h2>Device appears in scan but is not compatible</h2>
-<p>Compatibility should only be decided after connect plus service discovery.</p>
-<h2>Protection Mode stays partial</h2>
-<ul>
-<li>on Android, inspect readiness and owner diagnostics</li>
-<li>on iOS, partial coverage can be expected with the current honest base implementation</li>
-</ul>
-</main></div><script src='../assets/site.js'></script></body></html>
+<p><a id="ios-protection-coverage-remains-partial"></a></p>
+<h2>iOS Protection coverage remains partial</h2>
+<p>This can be expected depending on current iOS runtime ownership support.</p>
+<p><a id="realtime-appears-incomplete"></a></p>
+<h2>Realtime appears incomplete</h2>
+<p>Current realtime may still depend on backend protocol maturity. Use runtime diagnostics and current agreed backend transport behavior as the source of truth.</p>
+</main>
+    <aside class="toc">
+      <div class="toc-title">On this page</div>
+      <a class="toc-level-2" href="#customendpoints-rejected">`customEndpoints` rejected</a><a class="toc-level-2" href="#initialsession-appid-mismatch">`initialSession.appId` mismatch</a><a class="toc-level-2" href="#bootstrap-did-not-request-permissions">Bootstrap did not request permissions</a><a class="toc-level-2" href="#bootstrap-did-not-pair-a-device">Bootstrap did not pair a device</a><a class="toc-level-2" href="#protection-readiness-is-blocked">Protection readiness is blocked</a><a class="toc-level-2" href="#ios-protection-coverage-remains-partial">iOS Protection coverage remains partial</a><a class="toc-level-2" href="#realtime-appears-incomplete">Realtime appears incomplete</a>
+    </aside>
+  </div>
+</body>
+</html>

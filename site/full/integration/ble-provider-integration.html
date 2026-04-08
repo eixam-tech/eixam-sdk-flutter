@@ -1,11 +1,31 @@
-<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>BLE Provider Integration</title><link rel='stylesheet' href='../../assets/style.css'></head><body><div class='layout'><aside class='sidebar'><div class='brand'>EIXAM Docs - full</div><nav><a class="" href="../index.html">Overview</a><a class="" href="../sdk/architecture.html">SDK Architecture</a><a class="" href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a class="" href="../sdk/backend-integration.html">Backend Integration</a><a class="" href="../api/public-api.html">Public API</a><a class="" href="../api/public-api-examples.html">Public API Examples</a><a class="" href="../protection/overview.html">Protection Overview</a><a class="" href="../protection/android-host-integration.html">Android Host Integration</a><a class="" href="../protection/ios-host-integration.html">iOS Host Integration</a><a class="" href="permissions-checklist.html">Permissions Checklist</a><a class="active" href="ble-provider-integration.html">BLE Provider Integration</a><a class="" href="../protocol/ble-protocol.html">BLE Protocol</a><a class="" href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a class="" href="../reference-app/debug-app-validation-guide.html">Reference App Validation Guide</a><a class="" href="../reference-app/real-backend-validation-checklist.html">Real Backend Validation Checklist</a><a class="" href="../internal/decisions.html">Decisions</a><a class="" href="../internal/quality-gates.html">Quality Gates</a><a class="" href="../internal/testing-strategy.html">Testing Strategy</a><a class="" href="../internal/testability-notes.html">Testability Notes</a><a class="" href="../internal/roadmap.html">Roadmap</a><a class="" href="../internal/team-handoff-index.html">Team Handoff Index</a></nav></aside><main class='content'><h1>BLE provider integration notes</h1>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BLE provider integration notes</title>
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">EIXAM Connect SDK</div>
+    <div class="site-tag">full docs</div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Navigation</div>
+      <a href="../index.html">Home</a><a href="../sdk/overview.html">SDK Overview</a><a href="../sdk/architecture.html">SDK Architecture</a><a href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a href="../sdk/backend-integration.html">Backend Integration</a><a href="../sdk/public-api.html">Public API</a><a href="../sdk/public-api-examples.html">Method Examples</a><a href="../sdk/protection-mode.html">Protection Mode</a><a href="../sdk/realtime-status.html">Realtime Status</a><a href="../sdk/troubleshooting.html">SDK Troubleshooting</a><a href="flutter-installation.html">Flutter Installation</a><a href="flutter-integration.html">Flutter Integration</a><a href="host-app-integration.html">Host App Integration</a><a href="android-host-integration.html">Android Host Integration</a><a href="ios-host-integration.html">iOS Host Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a class="active" href="ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../api/api-reference.html">API Reference</a><a href="../internal/decisions.html">Decisions</a><a href="../internal/quality-gates.html">Quality Gates</a><a href="../internal/testing-strategy.html">Testing Strategy</a><a href="../internal/testability-notes.html">Testability Notes</a><a href="../internal/how-to-run-project.html">How to Run Project</a><a href="../internal/agents.html">AGENTS</a>
+    </aside>
+    <main class="content"><h1>BLE provider integration notes</h1>
 <p>This package includes a BLE-oriented runtime abstraction used by the device module.</p>
+<p><a id="included-building-blocks"></a></p>
 <h2>Included building blocks</h2>
 <ul>
 <li><code>BleClient</code>: low-level BLE adapter contract</li>
 <li><code>MockBleClient</code>: demo BLE environment for local development</li>
 <li><code>BleDeviceRuntimeProvider</code>: device lifecycle orchestration built on top of a BLE client</li>
 </ul>
+<p><a id="protocol-handling-in-the-runtime-layer"></a></p>
 <h2>Protocol handling in the runtime layer</h2>
 <ul>
 <li>TEL notifications on <code>ea01</code> can be either classic 10-byte TEL position packets or <code>0xD0</code> aggregate fragments.</li>
@@ -13,6 +33,7 @@
 <li>TEL aggregate reassembly lives in <code>BleDeviceRuntimeProvider</code> via <code>EixamTelReassembler</code>, not in the UI layer.</li>
 <li>The UI should consume typed <code>BleIncomingEvent</code> values and avoid assuming packet shape from payload length alone.</li>
 </ul>
+<p><a id="event-typing"></a></p>
 <h2>Event typing</h2>
 <ul>
 <li><code>telPosition</code>: classic decoded 10-byte TEL packet</li>
@@ -22,6 +43,7 @@
 <li><code>sosDeviceEvent</code>: 4-byte SOS device control event</li>
 <li><code>unknownProtocolPacket</code>: payload did not match a currently supported protocol packet</li>
 </ul>
+<p><a id="aggregate-telemetry-mapping"></a></p>
 <h2>Aggregate telemetry mapping</h2>
 <ul>
 <li>Aggregate TEL fragments are reassembled in <code>BleDeviceRuntimeProvider</code> and then handed to the operational bridge as <code>telAggregateComplete</code>.</li>
@@ -29,6 +51,7 @@
 <li>Today that means: a completed aggregate payload that is exactly one classic 10-byte TEL packet.</li>
 <li>Cluster aggregate blobs that carry richer or multi-record data are kept internal to the runtime for now and produce diagnostics instead of guessed backend publishes.</li>
 </ul>
+<p><a id="preferred-device-and-reconnect-behavior"></a></p>
 <h2>Preferred device and reconnect behavior</h2>
 <ul>
 <li>The SDK stores one preferred BLE device after a successful full connection.</li>
@@ -37,10 +60,20 @@
 <li>Manual disconnect disables auto-reconnect until the user explicitly starts a new connect flow.</li>
 <li>Reconnect currently reuses the existing scan-plus-selected-device flow by stored device identifier; it does not rely on background BLE transport or a platform daemon.</li>
 </ul>
+<p><a id="recommended-next-step-for-production"></a></p>
 <h2>Recommended next step for production</h2>
 <p>Create a <code>FlutterBluePlusBleClient</code> (or equivalent) that implements <code>BleClient</code> and then inject it into <code>BleDeviceRuntimeProvider</code>.</p>
+<p><a id="why-this-matters"></a></p>
 <h2>Why this matters</h2>
 <p>The host app and the public SDK should not depend directly on a Bluetooth package. Keeping BLE behind <code>BleClient</code> makes the stack easier to test, replace and maintain.</p>
+<p><a id="native-prerequisites"></a></p>
 <h2>Native prerequisites</h2>
 <p>Check <code>NATIVE_PERMISSIONS_CHECKLIST.md</code> before enabling any real BLE feature in the host app.</p>
-</main></div><script src='../../assets/site.js'></script></body></html>
+</main>
+    <aside class="toc">
+      <div class="toc-title">On this page</div>
+      <a class="toc-level-2" href="#included-building-blocks">Included building blocks</a><a class="toc-level-2" href="#protocol-handling-in-the-runtime-layer">Protocol handling in the runtime layer</a><a class="toc-level-2" href="#event-typing">Event typing</a><a class="toc-level-2" href="#aggregate-telemetry-mapping">Aggregate telemetry mapping</a><a class="toc-level-2" href="#preferred-device-and-reconnect-behavior">Preferred device and reconnect behavior</a><a class="toc-level-2" href="#recommended-next-step-for-production">Recommended next step for production</a><a class="toc-level-2" href="#why-this-matters">Why this matters</a><a class="toc-level-2" href="#native-prerequisites">Native prerequisites</a>
+    </aside>
+  </div>
+</body>
+</html>

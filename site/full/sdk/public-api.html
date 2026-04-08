@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Public API</title>
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">EIXAM Connect SDK</div>
+    <div class="site-tag">full docs</div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Navigation</div>
+      <a href="../index.html">Home</a><a href="overview.html">SDK Overview</a><a href="architecture.html">SDK Architecture</a><a href="partner-integration-guide.html">Partner Integration Guide</a><a href="backend-integration.html">Backend Integration</a><a class="active" href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a href="protection-mode.html">Protection Mode</a><a href="realtime-status.html">Realtime Status</a><a href="troubleshooting.html">SDK Troubleshooting</a><a href="../integration/flutter-installation.html">Flutter Installation</a><a href="../integration/flutter-integration.html">Flutter Integration</a><a href="../integration/host-app-integration.html">Host App Integration</a><a href="../integration/android-host-integration.html">Android Host Integration</a><a href="../integration/ios-host-integration.html">iOS Host Integration</a><a href="../integration/permissions-checklist.html">Permissions Checklist</a><a href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../api/api-reference.html">API Reference</a><a href="../internal/decisions.html">Decisions</a><a href="../internal/quality-gates.html">Quality Gates</a><a href="../internal/testing-strategy.html">Testing Strategy</a><a href="../internal/testability-notes.html">Testability Notes</a><a href="../internal/how-to-run-project.html">How to Run Project</a><a href="../internal/agents.html">AGENTS</a>
+    </aside>
+    <main class="content"><h1>Public API</h1>
+<p>This page describes the recommended public surface exposed to partner host apps.</p>
+<p><a id="entry-point"></a></p>
+<h2>Entry point</h2>
+<p><a id="eixamconnectsdk-bootstrap"></a></p>
+<h3><code>EixamConnectSdk.bootstrap(...)</code></h3>
+<p>This is the recommended public entrypoint.</p>
+<p>Use it to create an SDK instance, resolve the selected environment, validate the bootstrap configuration and optionally seed the initial signed session.</p>
+<p><a id="session-lifecycle"></a></p>
+<h2>Session lifecycle</h2>
+<ul>
+<li><code>setSession(...)</code></li>
+<li><code>clearSession()</code></li>
+<li><code>getCurrentSession()</code></li>
+<li><code>refreshCanonicalIdentity()</code></li>
+</ul>
+<p><a id="diagnostics-and-protection"></a></p>
+<h2>Diagnostics and protection</h2>
+<ul>
+<li><code>getOperationalDiagnostics()</code></li>
+<li><code>watchOperationalDiagnostics()</code></li>
+<li><code>evaluateProtectionReadiness()</code></li>
+<li><code>enterProtectionMode(...)</code></li>
+<li><code>exitProtectionMode()</code></li>
+<li><code>getProtectionStatus()</code></li>
+<li><code>watchProtectionStatus()</code></li>
+<li><code>getProtectionDiagnostics()</code></li>
+<li><code>watchProtectionDiagnostics()</code></li>
+<li><code>rehydrateProtectionState()</code></li>
+<li><code>flushProtectionQueues()</code></li>
+</ul>
+<p><a id="device-runtime-and-backend-device-registry"></a></p>
+<h2>Device runtime and backend device registry</h2>
+<ul>
+<li><code>connectDevice(...)</code></li>
+<li><code>disconnectDevice()</code></li>
+<li><code>preferredDevice</code></li>
+<li><code>deviceStatusStream</code></li>
+<li><code>listRegisteredDevices()</code></li>
+<li><code>upsertRegisteredDevice(...)</code></li>
+<li><code>deleteRegisteredDevice(...)</code></li>
+</ul>
+<p><a id="sos"></a></p>
+<h2>SOS</h2>
+<ul>
+<li><code>triggerSos(...)</code></li>
+<li><code>cancelSos()</code></li>
+<li><code>getCurrentSosIncident()</code></li>
+<li><code>getSosState()</code></li>
+<li><code>currentSosStateStream</code></li>
+<li><code>lastSosEventStream</code></li>
+<li><code>watchEvents()</code></li>
+</ul>
+<p><a id="contacts"></a></p>
+<h2>Contacts</h2>
+<ul>
+<li><code>listEmergencyContacts()</code></li>
+<li><code>watchEmergencyContacts()</code></li>
+<li><code>createEmergencyContact(...)</code></li>
+<li><code>updateEmergencyContact(...)</code></li>
+<li><code>deleteEmergencyContact(...)</code></li>
+</ul>
+<p><a id="permissions-and-notifications"></a></p>
+<h2>Permissions and notifications</h2>
+<ul>
+<li><code>getPermissionState()</code></li>
+<li><code>requestLocationPermission()</code></li>
+<li><code>requestNotificationPermission()</code></li>
+<li><code>requestBluetoothPermission()</code></li>
+<li><code>initializeNotifications()</code></li>
+<li><code>showLocalNotification(...)</code></li>
+</ul>
+<p><a id="tracking-and-telemetry"></a></p>
+<h2>Tracking and telemetry</h2>
+<ul>
+<li><code>startTracking()</code></li>
+<li><code>stopTracking()</code></li>
+<li><code>publishTelemetry(...)</code></li>
+<li><code>getCurrentPosition()</code></li>
+<li><code>getTrackingState()</code></li>
+<li><code>watchPositions()</code></li>
+<li><code>watchTrackingState()</code></li>
+</ul>
+<p><a id="death-man"></a></p>
+<h2>Death Man</h2>
+<ul>
+<li><code>scheduleDeathMan(...)</code></li>
+<li><code>getActiveDeathManPlan()</code></li>
+<li><code>confirmDeathManCheckIn(...)</code></li>
+<li><code>cancelDeathMan(...)</code></li>
+<li><code>watchDeathManPlans()</code></li>
+</ul>
+<p><a id="realtime"></a></p>
+<h2>Realtime</h2>
+<ul>
+<li><code>getRealtimeConnectionState()</code></li>
+<li><code>getLastRealtimeEvent()</code></li>
+<li><code>watchRealtimeConnectionState()</code></li>
+<li><code>watchRealtimeEvents()</code></li>
+</ul>
+<p><a id="intentionally-omitted-from-the-partner-path"></a></p>
+<h2>Intentionally omitted from the partner path</h2>
+<p>The current partner site does not present Guided Rescue Phase 1 as part of the public integration path.</p>
+<p><a id="legacy-compatibility-surfaces"></a></p>
+<h2>Legacy / compatibility surfaces</h2>
+<p>Some deprecated or compatibility methods still exist in the SDK contract for migration or internal validation purposes. They are documented in the full internal site.</p>
+<p><a id="full-site-addendum"></a></p>
+<h2>Full-site addendum</h2>
+<p>The full site also documents compatibility/deprecated surfaces and experimental/internal capability groups for internal teams.</p>
+</main>
+    <aside class="toc">
+      <div class="toc-title">On this page</div>
+      <a class="toc-level-2" href="#entry-point">Entry point</a><a class="toc-level-3" href="#eixamconnectsdk-bootstrap">`EixamConnectSdk.bootstrap(...)`</a><a class="toc-level-2" href="#session-lifecycle">Session lifecycle</a><a class="toc-level-2" href="#diagnostics-and-protection">Diagnostics and protection</a><a class="toc-level-2" href="#device-runtime-and-backend-device-registry">Device runtime and backend device registry</a><a class="toc-level-2" href="#sos">SOS</a><a class="toc-level-2" href="#contacts">Contacts</a><a class="toc-level-2" href="#permissions-and-notifications">Permissions and notifications</a><a class="toc-level-2" href="#tracking-and-telemetry">Tracking and telemetry</a><a class="toc-level-2" href="#death-man">Death Man</a><a class="toc-level-2" href="#realtime">Realtime</a><a class="toc-level-2" href="#intentionally-omitted-from-the-partner-path">Intentionally omitted from the partner path</a><a class="toc-level-2" href="#legacy-compatibility-surfaces">Legacy / compatibility surfaces</a><a class="toc-level-2" href="#full-site-addendum">Full-site addendum</a>
+    </aside>
+  </div>
+</body>
+</html>

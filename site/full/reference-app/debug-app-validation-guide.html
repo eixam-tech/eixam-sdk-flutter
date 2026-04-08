@@ -1,9 +1,28 @@
-<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Reference App Validation Guide</title><link rel='stylesheet' href='../../assets/style.css'></head><body><div class='layout'><aside class='sidebar'><div class='brand'>EIXAM Docs - full</div><nav><a class="" href="../index.html">Overview</a><a class="" href="../sdk/architecture.html">SDK Architecture</a><a class="" href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a class="" href="../sdk/backend-integration.html">Backend Integration</a><a class="" href="../api/public-api.html">Public API</a><a class="" href="../api/public-api-examples.html">Public API Examples</a><a class="" href="../protection/overview.html">Protection Overview</a><a class="" href="../protection/android-host-integration.html">Android Host Integration</a><a class="" href="../protection/ios-host-integration.html">iOS Host Integration</a><a class="" href="../integration/permissions-checklist.html">Permissions Checklist</a><a class="" href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a class="" href="../protocol/ble-protocol.html">BLE Protocol</a><a class="" href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a class="active" href="debug-app-validation-guide.html">Reference App Validation Guide</a><a class="" href="real-backend-validation-checklist.html">Real Backend Validation Checklist</a><a class="" href="../internal/decisions.html">Decisions</a><a class="" href="../internal/quality-gates.html">Quality Gates</a><a class="" href="../internal/testing-strategy.html">Testing Strategy</a><a class="" href="../internal/testability-notes.html">Testability Notes</a><a class="" href="../internal/roadmap.html">Roadmap</a><a class="" href="../internal/team-handoff-index.html">Team Handoff Index</a></nav></aside><main class='content'><h1>Debug App Validation Guide</h1>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Debug App Validation Guide</title>
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">EIXAM Connect SDK</div>
+    <div class="site-tag">full docs</div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Navigation</div>
+      <a href="../index.html">Home</a><a href="../sdk/overview.html">SDK Overview</a><a href="../sdk/architecture.html">SDK Architecture</a><a href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a href="../sdk/backend-integration.html">Backend Integration</a><a href="../sdk/public-api.html">Public API</a><a href="../sdk/public-api-examples.html">Method Examples</a><a href="../sdk/protection-mode.html">Protection Mode</a><a href="../sdk/realtime-status.html">Realtime Status</a><a href="../sdk/troubleshooting.html">SDK Troubleshooting</a><a href="../integration/flutter-installation.html">Flutter Installation</a><a href="../integration/flutter-integration.html">Flutter Integration</a><a href="../integration/host-app-integration.html">Host App Integration</a><a href="../integration/android-host-integration.html">Android Host Integration</a><a href="../integration/ios-host-integration.html">iOS Host Integration</a><a href="../integration/permissions-checklist.html">Permissions Checklist</a><a href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="validation-app-guide.html">Validation App Guide</a><a class="active" href="debug-app-validation-guide.html">Debug Validation Guide</a><a href="real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../api/api-reference.html">API Reference</a><a href="../internal/decisions.html">Decisions</a><a href="../internal/quality-gates.html">Quality Gates</a><a href="../internal/testing-strategy.html">Testing Strategy</a><a href="../internal/testability-notes.html">Testability Notes</a><a href="../internal/how-to-run-project.html">How to Run Project</a><a href="../internal/agents.html">AGENTS</a>
+    </aside>
+    <main class="content"><h1>Debug App Validation Guide</h1>
 <p>For a shorter operator-facing real backend runbook, see
 <code>docs/app_ble/REAL_BACKEND_VALIDATION_CHECKLIST.md</code>.</p>
 <p>In debug/local validation builds, the console prefills localhost backend URLs
 and the known local signed session draft on first run. Saved backend
 configuration still wins, and all fields remain editable.</p>
+<p><a id="purpose"></a></p>
 <h2>Purpose</h2>
 <p>This guide describes how to validate the current SDK to backend integration using the internal reference/debug app.</p>
 <p>It is intended for:</p>
@@ -13,6 +32,7 @@ configuration still wins, and all fields remain editable.</p>
 <li>backend/mobile integration debugging</li>
 </ul>
 <p>It is practical and test-oriented on purpose.</p>
+<p><a id="validation-scope"></a></p>
 <h2>Validation Scope</h2>
 <p>Current validation areas:</p>
 <ul>
@@ -26,6 +46,7 @@ configuration still wins, and all fields remain editable.</p>
 <li>local runtime device status</li>
 <li>BLE runtime to backend bridge behavior</li>
 </ul>
+<p><a id="before-you-start"></a></p>
 <h2>Before You Start</h2>
 <p>Confirm:</p>
 <ul>
@@ -35,6 +56,7 @@ configuration still wins, and all fields remain editable.</p>
 <li>reference app is using the current SDK packages from this monorepo</li>
 <li>BLE test device is available if runtime device validation is needed</li>
 </ul>
+<p><a id="1-validate-signed-session"></a></p>
 <h2>1. Validate Signed Session</h2>
 <p>Expected host-side setup:</p>
 <ul>
@@ -55,6 +77,7 @@ configuration still wins, and all fields remain editable.</p>
 <li>inspect app wiring before SDK calls</li>
 <li>verify logout is not clearing session immediately after setup</li>
 </ul>
+<p><a id="2-validate-v1-sdk-me"></a></p>
 <h2>2. Validate <code>/v1/sdk/me</code></h2>
 <p>After <code>setSession(...)</code>, the SDK should call:</p>
 <ul>
@@ -78,6 +101,7 @@ configuration still wins, and all fields remain editable.</p>
 <li>check backend JSON shape</li>
 <li>confirm canonical <code>external_user_id</code> is non-empty</li>
 </ul>
+<p><a id="3-verify-mqtt-connectivity"></a></p>
 <h2>3. Verify MQTT Connectivity</h2>
 <p>The SDK currently tracks:</p>
 <ul>
@@ -100,7 +124,9 @@ configuration still wins, and all fields remain editable.</p>
 <li>inspect MQTT connection logs</li>
 <li>inspect that event subscriptions use <code>sos/events/{segment}</code></li>
 </ul>
+<p><a id="4-test-sos-trigger-cancel-events"></a></p>
 <h2>4. Test SOS Trigger / Cancel / Events</h2>
+<p><a id="app-initiated-sos"></a></p>
 <h3>App-initiated SOS</h3>
 <p>Use the app surface that calls:</p>
 <ul>
@@ -112,6 +138,7 @@ configuration still wins, and all fields remain editable.</p>
 <li>QoS 1, retain false at the transport layer</li>
 <li>payload includes timestamp and coordinates</li>
 </ul>
+<p><a id="cancel"></a></p>
 <h3>Cancel</h3>
 <p>Use the app surface that calls:</p>
 <ul>
@@ -128,6 +155,7 @@ configuration still wins, and all fields remain editable.</p>
 <li>do not expect HTTP cancel to become final lifecycle state by itself</li>
 <li>final cancelled state must still come from MQTT lifecycle event</li>
 </ul>
+<p><a id="mqtt-lifecycle-events"></a></p>
 <h3>MQTT lifecycle events</h3>
 <p>Verify:</p>
 <ul>
@@ -135,7 +163,9 @@ configuration still wins, and all fields remain editable.</p>
 <li>SOS state stream changes only after backend event</li>
 <li>final cancelled/resolved/acknowledged state follows MQTT input</li>
 </ul>
+<p><a id="5-test-telemetry-publish"></a></p>
 <h2>5. Test Telemetry Publish</h2>
+<p><a id="app-initiated-telemetry"></a></p>
 <h3>App-initiated telemetry</h3>
 <p>Use a surface that calls:</p>
 <ul>
@@ -147,6 +177,7 @@ configuration still wins, and all fields remain editable.</p>
 <li>canonical user identity is reflected in the topic segment</li>
 <li>payload includes timestamp, latitude, longitude, altitude</li>
 </ul>
+<p><a id="ble-originated-telemetry"></a></p>
 <h3>BLE-originated telemetry</h3>
 <p>With a connected BLE device producing TEL packets, verify:</p>
 <ul>
@@ -154,6 +185,7 @@ configuration still wins, and all fields remain editable.</p>
 <li>the bridge publishes telemetry only when minimum valid fields exist</li>
 <li>repeated duplicate packets do not flood publishes</li>
 </ul>
+<p><a id="6-test-contacts"></a></p>
 <h2>6. Test Contacts</h2>
 <p>Use the contacts validation surface.</p>
 <p>Verify:</p>
@@ -174,6 +206,7 @@ configuration still wins, and all fields remain editable.</p>
 <li><code>updatedAt</code></li>
 </ul>
 <p>If UI or API expects fields like <code>active</code>, that is stale behavior and should be removed or isolated outside the public contract.</p>
+<p><a id="7-test-backend-device-registry"></a></p>
 <h2>7. Test Backend Device Registry</h2>
 <p>Use the device registry validation surface if available, or call the SDK facade directly.</p>
 <p>Verify:</p>
@@ -193,6 +226,7 @@ configuration still wins, and all fields remain editable.</p>
 <li><code>createdAt</code></li>
 <li><code>updatedAt</code></li>
 </ul>
+<p><a id="8-test-runtime-device-status"></a></p>
 <h2>8. Test Runtime Device Status</h2>
 <p>Connect a BLE device through the debug app.</p>
 <p>Verify:</p>
@@ -207,8 +241,10 @@ configuration still wins, and all fields remain editable.</p>
 <li>runtime device state is not backend registry state</li>
 <li>backend registry validation should be tested separately</li>
 </ul>
+<p><a id="9-test-ble-runtime-to-backend-bridge"></a></p>
 <h2>9. Test BLE Runtime To Backend Bridge</h2>
 <p>With BLE producing runtime events:</p>
+<p><a id="tel"></a></p>
 <h3>TEL</h3>
 <p>Verify:</p>
 <ul>
@@ -217,6 +253,7 @@ configuration still wins, and all fields remain editable.</p>
 <li>if MQTT is unavailable, only the latest telemetry sample is retained</li>
 <li>after reconnect, the latest retained telemetry is published once</li>
 </ul>
+<p><a id="sos"></a></p>
 <h3>SOS</h3>
 <p>Verify:</p>
 <ul>
@@ -225,6 +262,7 @@ configuration still wins, and all fields remain editable.</p>
 <li>if MQTT is unavailable, a single pending SOS trigger is retained</li>
 <li>after reconnect, the pending SOS is published once</li>
 </ul>
+<p><a id="device-confirmations"></a></p>
 <h3>Device confirmations</h3>
 <p>Verify backend realtime events can drive:</p>
 <ul>
@@ -233,6 +271,7 @@ configuration still wins, and all fields remain editable.</p>
 <li><code>SOS_ACK_RELAY</code></li>
 </ul>
 <p>Inspect BLE/device command debug logs when these are expected.</p>
+<p><a id="10-failure-debugging-checklist"></a></p>
 <h2>10. Failure Debugging Checklist</h2>
 <p>When something fails, inspect in this order:</p>
 <ol>
@@ -245,7 +284,9 @@ configuration still wins, and all fields remain editable.</p>
 <li>backend realtime lifecycle/ack event shape</li>
 <li>device command write readiness</li>
 </ol>
+<p><a id="useful-signals-to-inspect"></a></p>
 <h2>Useful Signals To Inspect</h2>
+<p><a id="identity-issues"></a></p>
 <h3>Identity issues</h3>
 <p>Look for:</p>
 <ul>
@@ -253,6 +294,7 @@ configuration still wins, and all fields remain editable.</p>
 <li>canonical external user id missing</li>
 <li><code>/v1/sdk/me</code> invalid response</li>
 </ul>
+<p><a id="mqtt-issues"></a></p>
 <h3>MQTT issues</h3>
 <p>Look for:</p>
 <ul>
@@ -260,6 +302,7 @@ configuration still wins, and all fields remain editable.</p>
 <li>no active session</li>
 <li>topic mismatch with canonical identity</li>
 </ul>
+<p><a id="ble-issues"></a></p>
 <h3>BLE issues</h3>
 <p>Look for:</p>
 <ul>
@@ -267,6 +310,7 @@ configuration still wins, and all fields remain editable.</p>
 <li>duplicate suppression hiding repeated packets</li>
 <li>no position present in BLE SOS packet</li>
 </ul>
+<p><a id="bridge-issues"></a></p>
 <h3>Bridge issues</h3>
 <p>Look for:</p>
 <ul>
@@ -275,6 +319,7 @@ configuration still wins, and all fields remain editable.</p>
 <li>session cleared before flush</li>
 <li>bridge reset after session change</li>
 </ul>
+<p><a id="device-confirmation-issues"></a></p>
 <h3>Device confirmation issues</h3>
 <p>Look for:</p>
 <ul>
@@ -282,6 +327,7 @@ configuration still wins, and all fields remain editable.</p>
 <li>relay node id missing for <code>SOS_ACK_RELAY</code></li>
 <li>device command channel not ready</li>
 </ul>
+<p><a id="known-current-limitations"></a></p>
 <h2>Known Current Limitations</h2>
 <ul>
 <li>BLE SOS packets without coordinates are not currently publishable as backend SOS trigger</li>
@@ -291,4 +337,11 @@ local-origin SOS expects <code>SOS_ACK</code>, relay-origin SOS expects <code>SO
 <li>telemetry is latest-sample-wins, not full queued replay</li>
 </ul>
 <p>These are known product/runtime limits, not random bugs.</p>
-</main></div><script src='../../assets/site.js'></script></body></html>
+</main>
+    <aside class="toc">
+      <div class="toc-title">On this page</div>
+      <a class="toc-level-2" href="#purpose">Purpose</a><a class="toc-level-2" href="#validation-scope">Validation Scope</a><a class="toc-level-2" href="#before-you-start">Before You Start</a><a class="toc-level-2" href="#1-validate-signed-session">1. Validate Signed Session</a><a class="toc-level-2" href="#2-validate-v1-sdk-me">2. Validate `/v1/sdk/me`</a><a class="toc-level-2" href="#3-verify-mqtt-connectivity">3. Verify MQTT Connectivity</a><a class="toc-level-2" href="#4-test-sos-trigger-cancel-events">4. Test SOS Trigger / Cancel / Events</a><a class="toc-level-3" href="#app-initiated-sos">App-initiated SOS</a><a class="toc-level-3" href="#cancel">Cancel</a><a class="toc-level-3" href="#mqtt-lifecycle-events">MQTT lifecycle events</a><a class="toc-level-2" href="#5-test-telemetry-publish">5. Test Telemetry Publish</a><a class="toc-level-3" href="#app-initiated-telemetry">App-initiated telemetry</a><a class="toc-level-3" href="#ble-originated-telemetry">BLE-originated telemetry</a><a class="toc-level-2" href="#6-test-contacts">6. Test Contacts</a><a class="toc-level-2" href="#7-test-backend-device-registry">7. Test Backend Device Registry</a><a class="toc-level-2" href="#8-test-runtime-device-status">8. Test Runtime Device Status</a><a class="toc-level-2" href="#9-test-ble-runtime-to-backend-bridge">9. Test BLE Runtime To Backend Bridge</a><a class="toc-level-3" href="#tel">TEL</a><a class="toc-level-3" href="#sos">SOS</a><a class="toc-level-3" href="#device-confirmations">Device confirmations</a><a class="toc-level-2" href="#10-failure-debugging-checklist">10. Failure Debugging Checklist</a><a class="toc-level-2" href="#useful-signals-to-inspect">Useful Signals To Inspect</a><a class="toc-level-3" href="#identity-issues">Identity issues</a><a class="toc-level-3" href="#mqtt-issues">MQTT issues</a><a class="toc-level-3" href="#ble-issues">BLE issues</a><a class="toc-level-3" href="#bridge-issues">Bridge issues</a><a class="toc-level-3" href="#device-confirmation-issues">Device confirmation issues</a><a class="toc-level-2" href="#known-current-limitations">Known Current Limitations</a>
+    </aside>
+  </div>
+</body>
+</html>

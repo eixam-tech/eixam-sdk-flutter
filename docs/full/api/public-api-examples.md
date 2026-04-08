@@ -17,7 +17,7 @@ await sdk.initialize(const EixamSdkConfig());
 **Signature**: `Future<void> setSession(EixamSession session)`
 
 ```dart
-await sdk.setSession(const EixamSession.signed(appId: 'partner-app', externalUserId: 'user-123', userHash: 'signed-hash'));
+await sdk.setSession(const EixamSession.signed(appId: 'partner-app', externalUserId: 'partner-user-123', userHash: 'signed-session-hash'));
 ```
 
 ### `clearSession`

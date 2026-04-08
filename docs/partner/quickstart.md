@@ -1,86 +1,95 @@
 # Quickstart
 
-This page is for a partner team integrating EIXAM into its own app for the first time.
-
-## Before you start
-
-Before implementation begins, EIXAM provides the onboarding inputs your team needs for integration:
-
-- `appId`
-- environment and base URLs for the target environment
-- the signed session / auth contract your host app must use
-- sandbox access
-- any required feature flags enabled for your app
-
-If any of these are missing, pause the integration and request them from EIXAM before continuing.
-
-## 1. Choose your SDK surface
-
-Select the integration path that matches your product:
-
-- Flutter
-- Android
-- iOS
-- Web
-- API / backend
-
-If your app is Flutter-based, continue below and then open [Flutter Integration](./flutter-integration.md).
-
-## 2. Add the package
+## 1. Add the dependency
 
 ```yaml
 dependencies:
-  eixam_connect_flutter: <version-provided-by-eixam>
+  eixam_connect_flutter:
+    git:
+      url: https://github.com/eixam-tech/eixam-sdk-flutter
+      ref: v0.3.0
+      path: packages/eixam_connect_flutter
 ```
 
-Use the package version or distribution channel provided during your onboarding. Do not use local monorepo `path:` dependencies in a partner app.
-
-## 3. Create the SDK
+## 2. Import the package
 
 ```dart
-final sdk = await ApiSdkFactory.createHttpApi(
-  apiBaseUrl: '<eixam-api-base-url>',
-  websocketUrl: '<eixam-realtime-websocket-url>',
-);
+import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
 ```
 
-## 4. Provide the signed session
+## 3. Bootstrap the SDK
+
+### Standard environment
 
 ```dart
-await sdk.setSession(
-  EixamSession.signed(
-    appId: '<your-app-id>',
-    externalUserId: '<partner-user-id>',
-    userHash: '<signed-session-value>',
+final sdk = await EixamConnectSdk.bootstrap(
+  const EixamBootstrapConfig(
+    appId: 'partner-app',
+    environment: EixamEnvironment.sandbox,
+    initialSession: EixamSession.signed(
+      appId: 'partner-app',
+      externalUserId: 'partner-user-123',
+      userHash: 'signed-session-hash',
+    ),
   ),
 );
 ```
 
-The host app is responsible for supplying the signed session exactly as defined by the auth contract shared by EIXAM.
-
-## 5. Subscribe to SDK state
+### Custom environment
 
 ```dart
-sdk.currentSosStateStream.listen((state) {
-  // render SOS state
-});
-
-sdk.deviceStatusStream.listen((status) {
-  // render runtime device state
-});
+final sdk = await EixamConnectSdk.bootstrap(
+  const EixamBootstrapConfig(
+    appId: 'partner-app',
+    environment: EixamEnvironment.custom,
+    customEndpoints: EixamCustomEndpoints(
+      httpBaseUrl: 'https://partner-api.example.com',
+      mqttUrl: 'wss://partner-mqtt.example.com/mqtt',
+    ),
+  ),
+);
 ```
 
-## 6. Build your UI on top of the SDK
+## 4. Request permissions explicitly from your host app
 
-Your app should use the SDK as the product logic layer:
+```dart
+await sdk.requestLocationPermission();
+await sdk.requestNotificationPermission();
+await sdk.requestBluetoothPermission();
+```
 
-- call public SDK methods from your screens and view models
-- subscribe to SDK streams to render state
-- keep UI, branding, and navigation in your host app
-- use the official examples as implementation references
+## 5. Use the SDK
 
-Next steps:
+Trigger SOS:
 
-1. Open [Flutter Integration](./flutter-integration.md)
-2. Review [Public API](./public-api.md)
-3. Use [API Examples](./public-api-examples.md) to build your UI
+```dart
+await sdk.triggerSos(
+  const SosTriggerPayload(
+    message: 'Need assistance',
+    triggerSource: 'button_ui',
+  ),
+);
+```
+
+Connect a device:
+
+```dart
+await sdk.connectDevice(pairingCode: '123456');
+```
+
+Create an emergency contact:
+
+```dart
+await sdk.createEmergencyContact(
+  name: 'Mountain Rescue Desk',
+  phone: '+34600000000',
+  email: 'rescue@example.com',
+);
+```
+
+## Important notes
+
+- `initialSession` is optional
+- if you provide `initialSession`, its `appId` must match the bootstrap `appId`
+- do not pass `customEndpoints` to non-custom environments
+- bootstrap does not request permissions or trigger UX-sensitive actions for you

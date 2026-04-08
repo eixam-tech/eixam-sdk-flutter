@@ -1,398 +1,95 @@
-<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Backend Integration</title><link rel='stylesheet' href='../../assets/style.css'></head><body><div class='layout'><aside class='sidebar'><div class='brand'>EIXAM Docs - full</div><nav><a class="" href="../index.html">Overview</a><a class="" href="architecture.html">SDK Architecture</a><a class="" href="partner-integration-guide.html">Partner Integration Guide</a><a class="active" href="backend-integration.html">Backend Integration</a><a class="" href="../api/public-api.html">Public API</a><a class="" href="../api/public-api-examples.html">Public API Examples</a><a class="" href="../protection/overview.html">Protection Overview</a><a class="" href="../protection/android-host-integration.html">Android Host Integration</a><a class="" href="../protection/ios-host-integration.html">iOS Host Integration</a><a class="" href="../integration/permissions-checklist.html">Permissions Checklist</a><a class="" href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a class="" href="../protocol/ble-protocol.html">BLE Protocol</a><a class="" href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a class="" href="../reference-app/debug-app-validation-guide.html">Reference App Validation Guide</a><a class="" href="../reference-app/real-backend-validation-checklist.html">Real Backend Validation Checklist</a><a class="" href="../internal/decisions.html">Decisions</a><a class="" href="../internal/quality-gates.html">Quality Gates</a><a class="" href="../internal/testing-strategy.html">Testing Strategy</a><a class="" href="../internal/testability-notes.html">Testability Notes</a><a class="" href="../internal/roadmap.html">Roadmap</a><a class="" href="../internal/team-handoff-index.html">Team Handoff Index</a></nav></aside><main class='content'><h1>SDK Backend Integration</h1>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SDK Backend Integration</title>
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">EIXAM Connect SDK</div>
+    <div class="site-tag">full docs</div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Navigation</div>
+      <a href="../index.html">Home</a><a href="overview.html">SDK Overview</a><a href="architecture.html">SDK Architecture</a><a href="partner-integration-guide.html">Partner Integration Guide</a><a class="active" href="backend-integration.html">Backend Integration</a><a href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a href="protection-mode.html">Protection Mode</a><a href="realtime-status.html">Realtime Status</a><a href="troubleshooting.html">SDK Troubleshooting</a><a href="../integration/flutter-installation.html">Flutter Installation</a><a href="../integration/flutter-integration.html">Flutter Integration</a><a href="../integration/host-app-integration.html">Host App Integration</a><a href="../integration/android-host-integration.html">Android Host Integration</a><a href="../integration/ios-host-integration.html">iOS Host Integration</a><a href="../integration/permissions-checklist.html">Permissions Checklist</a><a href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../api/api-reference.html">API Reference</a><a href="../internal/decisions.html">Decisions</a><a href="../internal/quality-gates.html">Quality Gates</a><a href="../internal/testing-strategy.html">Testing Strategy</a><a href="../internal/testability-notes.html">Testability Notes</a><a href="../internal/how-to-run-project.html">How to Run Project</a><a href="../internal/agents.html">AGENTS</a>
+    </aside>
+    <main class="content"><h1>SDK Backend Integration</h1>
+<p><a id="purpose"></a></p>
 <h2>Purpose</h2>
-<p>This document is the current source of truth for the EIXAM SDK to backend integration as implemented in this monorepo.</p>
-<p>It focuses on:</p>
-<ul>
-<li>SDK-first architecture</li>
-<li>current mobile runtime behavior</li>
-<li>backend contracts already wired into the SDK</li>
-<li>operational resilience and current limitations</li>
-</ul>
-<p>The reference app is a validation surface, not the architecture owner. Business and operational integration logic lives in the SDK packages.</p>
-<h2>Architecture Overview</h2>
-<p>The current integration is split into four concerns:</p>
+<p>This document is the current source of truth for SDK-to-backend integration behavior in the monorepo.</p>
+<p><a id="integration-layers"></a></p>
+<h2>Integration layers</h2>
 <ol>
-<li>Identity and session bootstrap</li>
-<li>Operational backend connectivity</li>
-<li>SDK runtime and BLE device orchestration</li>
-<li>Domain-facing facade for host apps</li>
+<li>partner-provided signed identity</li>
+<li>bootstrap/environment resolution</li>
+<li>canonical identity enrichment</li>
+<li>operational transport for SOS/telemetry</li>
+<li>transactional HTTP surfaces</li>
+<li>local BLE/runtime orchestration</li>
 </ol>
-<p>At a high level:</p>
-<ul>
-<li>the partner backend signs the mobile session</li>
-<li>the SDK stores that signed session</li>
-<li>the SDK enriches the session through <code>GET /v1/sdk/me</code></li>
-<li>the SDK rehydrates SOS runtime state through <code>GET /v1/sdk/sos</code></li>
-<li>the SDK uses canonical backend identity to build MQTT topics</li>
-<li>SOS trigger and telemetry publish are operational MQTT flows</li>
-<li>SOS cancel is a transactional HTTP flow</li>
-<li>BLE runtime events are decoded locally and translated to backend-facing actions by an internal bridge</li>
-</ul>
-<h2>Package Responsibilities</h2>
-<h3><code>packages/eixam_connect_core</code></h3>
-<p>Contains:</p>
-<ul>
-<li>public SDK interfaces</li>
-<li>public domain entities</li>
-<li>enums</li>
-<li>events</li>
-<li>session/config models</li>
-</ul>
-<h3><code>packages/eixam_connect_flutter</code></h3>
-<p>Contains:</p>
-<ul>
-<li>SDK implementation</li>
-<li>HTTP and MQTT integration</li>
-<li>BLE runtime/provider logic</li>
-<li>local stores</li>
-<li>internal orchestration layers</li>
-<li>offline/reconnect operational hardening</li>
-</ul>
-<h2>Session And Identity Flow</h2>
-<h3>1. Signed Session Comes From Partner Backend</h3>
-<p>The host app is expected to receive or retrieve a signed SDK session from its own backend or partner backend.</p>
+<p><a id="signed-session-model"></a></p>
+<h2>Signed session model</h2>
 <p>Current signed identity fields:</p>
 <ul>
 <li><code>appId</code></li>
 <li><code>externalUserId</code></li>
 <li><code>userHash</code></li>
 </ul>
-<p>The SDK does not compute the signature locally and does not call partner signing endpoints.</p>
-<h3>2. SDK Stores The Signed Session</h3>
-<p>The host app calls:</p>
-<pre><code class="language-dart">await sdk.setSession(
-  const EixamSession.signed(
-    appId: 'app-demo',
-    externalUserId: 'external-user-123',
-    userHash: 'signed-token-or-hash',
+<p>The SDK does not compute these values locally.</p>
+<p><a id="bootstrap-model"></a></p>
+<h2>Bootstrap model</h2>
+<p>The public Flutter bootstrap path is:</p>
+<pre><code class="language-dart">final sdk = await EixamConnectSdk.bootstrap(
+  const EixamBootstrapConfig(
+    appId: 'partner-app',
+    environment: EixamEnvironment.production,
   ),
 );
 </code></pre>
-<p>The SDK persists that session locally and updates the runtime session context used by HTTP and MQTT layers.</p>
-<h3>3. SDK Enriches Identity Through <code>/v1/sdk/me</code></h3>
-<p>After a signed session is configured, the SDK calls:</p>
+<p>Environment rules:</p>
 <ul>
-<li><code>GET /v1/sdk/me</code></li>
+<li><code>production</code>, <code>sandbox</code>, <code>staging</code> resolve internally</li>
+<li><code>custom</code> requires <code>EixamCustomEndpoints</code></li>
+<li>mismatched restored sessions are cleared</li>
 </ul>
-<p>This step resolves:</p>
+<p><a id="canonical-identity"></a></p>
+<h2>Canonical identity</h2>
+<p>After a valid signed session is available, the SDK may call <code>GET /v1/sdk/me</code> to resolve canonical identity used by runtime/transport layers.</p>
+<p><a id="http-contracts"></a></p>
+<h2>HTTP contracts</h2>
+<p><a id="get-v1-sdk-me"></a></p>
+<h3><code>GET /v1/sdk/me</code></h3>
+<p>Enriches the session with canonical backend identity.</p>
+<p><a id="get-v1-sdk-sos"></a></p>
+<h3><code>GET /v1/sdk/sos</code></h3>
+<p>Rehydrates runtime SOS state on bootstrap/startup/refresh.</p>
+<p><a id="post-v1-sdk-sos-cancel"></a></p>
+<h3><code>POST /v1/sdk/sos/cancel</code></h3>
+<p>Transactional cancel request. Final lifecycle state still depends on runtime lifecycle events.</p>
+<p><a id="v1-sdk-devices"></a></p>
+<h3><code>/v1/sdk/devices</code></h3>
+<p>Backend registry surface for devices.</p>
+<p><a id="contacts-surface"></a></p>
+<h3>Contacts surface</h3>
+<p>Backend-aligned CRUD surface for contacts.</p>
+<p><a id="operational-transport"></a></p>
+<h2>Operational transport</h2>
 <ul>
-<li>canonical backend user identity</li>
-<li><code>sdkUserId</code></li>
-<li>canonical <code>user.external_user_id</code></li>
+<li>SOS trigger uses operational transport</li>
+<li>telemetry publish uses operational transport</li>
+<li>host apps should not bypass SDK topic/transport conventions</li>
 </ul>
-<p>That canonical external user id is then stored in the SDK session.</p>
-<h3>4. MQTT Topics Use Canonical Identity</h3>
-<p>The host-provided <code>externalUserId</code> is used for authentication headers and MQTT connect properties.</p>
-<p>The canonical backend external user id returned by <code>/v1/sdk/me</code> is used for user-scoped MQTT topics.</p>
-<p>Current topic rules:</p>
-<ul>
-<li>SOS events subscription: <code>sos/events/{segment}</code></li>
-<li>telemetry publish: <code>tel/{segment}/data</code></li>
-</ul>
-<p>The segment is encoded through the SDK MQTT topic segment utility. Raw external user ids must not be interpolated directly into MQTT paths.</p>
-<h2>HTTP Contracts</h2>
-<h2><code>/v1/sdk/me</code></h2>
-<p>Purpose:</p>
-<ul>
-<li>enrich the session with canonical backend identity</li>
-</ul>
-<p>Used by:</p>
-<ul>
-<li>SDK bootstrap</li>
-<li>explicit <code>refreshCanonicalIdentity()</code></li>
-</ul>
-<h2>SOS Cancel</h2>
-<p>Endpoint:</p>
-<ul>
-<li><code>POST /v1/sdk/sos/cancel</code></li>
-</ul>
-<p>Behavior:</p>
-<ul>
-<li>transactional HTTP request</li>
-<li>auth headers only</li>
-<li>no request body</li>
-<li>used only to request cancellation</li>
-</ul>
-<p>Important:</p>
-<ul>
-<li>final SOS lifecycle state still comes from MQTT events</li>
-<li>HTTP cancel does not become the lifecycle source of truth</li>
-</ul>
-<h2>SOS Rehydration</h2>
-<p>Endpoint:</p>
-<ul>
-<li><code>GET /v1/sdk/sos</code></li>
-</ul>
-<p>Behavior:</p>
-<ul>
-<li>authoritative read for the currently active SDK SOS incident</li>
-<li>called by the SDK runtime after startup/bootstrap and canonical identity refresh</li>
-<li>if the backend reports an active or acknowledged incident, the runtime hydrates
-in-memory SOS state from that response</li>
-<li>if the backend reports no incident, the runtime moves to <code>idle</code> and clears
-inconsistent local SOS cache</li>
-<li>if the request fails, startup continues and the runtime keeps any local SOS
-fallback state while exposing a diagnostics note</li>
-</ul>
-<h2>Devices</h2>
-<p>HTTP backend registry uses:</p>
-<ul>
-<li><code>/v1/sdk/devices</code></li>
-</ul>
-<p>This is a backend registry surface, not the runtime BLE device state.</p>
-<p>Mapped public domain shape:</p>
-<ul>
-<li><code>id</code></li>
-<li><code>hardwareId</code></li>
-<li><code>firmwareVersion</code></li>
-<li><code>hardwareModel</code></li>
-<li><code>pairedAt</code></li>
-<li><code>createdAt</code></li>
-<li><code>updatedAt</code></li>
-</ul>
-<h2>Contacts</h2>
-<p>HTTP contacts are aligned 1:1 with backend.</p>
-<p>Mapped public domain shape:</p>
-<ul>
-<li><code>id</code></li>
-<li><code>name</code></li>
-<li><code>phone</code></li>
-<li><code>email</code></li>
-<li><code>priority</code></li>
-<li><code>createdAt</code></li>
-<li><code>updatedAt</code></li>
-</ul>
-<p>No SDK-only public contact fields remain in the integration contract.</p>
-<h2>MQTT Operational Integration</h2>
-<h2>SOS Operational Path</h2>
-<p>Current operational SOS transport:</p>
-<ul>
-<li>publish to <code>sos/alerts</code></li>
-<li>subscribe to <code>sos/events/{segment}</code></li>
-<li>MQTT 5</li>
-<li>QoS 1</li>
-<li>retain <code>false</code></li>
-</ul>
-<p>Current publish payload includes at least:</p>
-<ul>
-<li><code>timestamp</code></li>
-<li><code>latitude</code></li>
-<li><code>longitude</code></li>
-<li><code>altitude</code></li>
-</ul>
-<p>Current SDK behavior:</p>
-<ul>
-<li>BLE/runtime-originated valid SOS with coordinates can be translated into backend SOS trigger publish</li>
-<li>app-originated SOS trigger also uses the same operational SOS path</li>
-<li>final SOS lifecycle transitions are still interpreted from MQTT events</li>
-</ul>
-<h2>Telemetry Operational Path</h2>
-<p>Current operational telemetry transport:</p>
-<ul>
-<li>publish to <code>tel/{segment}/data</code></li>
-<li>MQTT 5</li>
-<li>QoS 1</li>
-<li>retain <code>false</code></li>
-</ul>
-<p>Current publish payload includes at least:</p>
-<ul>
-<li><code>timestamp</code></li>
-<li><code>latitude</code></li>
-<li><code>longitude</code></li>
-<li><code>altitude</code></li>
-</ul>
-<p>Optional fields may include:</p>
-<ul>
-<li><code>userId</code></li>
-<li><code>deviceId</code></li>
-<li>runtime device battery metadata when available</li>
-</ul>
-<p>Telemetry remains operational best-effort data. It is not device registry state.</p>
-<h2>Runtime Device vs Backend Device Registry</h2>
-<p>This separation is an explicit architecture decision.</p>
-<h3>Runtime Device</h3>
-<p>Runtime device state is BLE/local operational state exposed as <code>DeviceStatus</code>.</p>
-<p>Examples:</p>
-<ul>
-<li>connection state</li>
-<li>activation state</li>
-<li>live signal</li>
-<li>live battery</li>
-<li>trusted/preferred device</li>
-<li>reconnect state</li>
-</ul>
-<h3>Backend Device Registry</h3>
-<p>Backend device registry is HTTP-backed backend data exposed as <code>BackendRegisteredDevice</code>.</p>
-<p>Examples:</p>
-<ul>
-<li>registry id</li>
-<li>hardware id</li>
-<li>firmware version</li>
-<li>hardware model</li>
-<li>paired timestamp</li>
-</ul>
-<p>The SDK does not merge these two concepts.</p>
-<h2>Contacts Alignment</h2>
-<p>Emergency contacts are backend-owned.</p>
-<p>The SDK facade and repository contract now mirror backend exactly and do not expose legacy local-only flags such as <code>active</code>.</p>
-<h2>BLE To Backend Operational Bridge</h2>
-<p>The current internal orchestration point is:</p>
-<ul>
-<li><code>BleOperationalRuntimeBridge</code></li>
-</ul>
-<p>This component sits between:</p>
-<ul>
-<li>decoded BLE runtime events</li>
-<li>operational backend repositories</li>
-<li>device-side confirmation commands</li>
-</ul>
-<p>It is responsible for:</p>
-<ul>
-<li>consuming decoded BLE TEL and SOS events</li>
-<li>deciding when backend publish should happen</li>
-<li>deciding when device-side confirmations should be sent</li>
-<li>isolating this logic from UI/controllers/widgets</li>
-</ul>
-<h3>Current Inputs</h3>
-<p>The bridge consumes:</p>
-<ul>
-<li>decoded <code>BleIncomingEvent</code></li>
-<li>realtime connection state</li>
-<li>backend realtime events</li>
-<li>current SDK session presence</li>
-</ul>
-<h3>Current Outputs</h3>
-<p>The bridge can:</p>
-<ul>
-<li>publish telemetry through the telemetry repository</li>
-<li>publish SOS through the SOS repository</li>
-<li>send <code>POS_CONFIRMED</code></li>
-<li>send <code>SOS_ACK</code></li>
-<li>send <code>SOS_ACK_RELAY</code></li>
-</ul>
-<h2>Current Resilience And Offline Policies</h2>
-<h2>Connectivity Awareness</h2>
-<p>The runtime bridge is aware of whether operational publish is currently available based on:</p>
-<ul>
-<li>active session exists</li>
-<li>realtime connection state is <code>connected</code></li>
-</ul>
-<p>Other states are treated as operationally unavailable:</p>
-<ul>
-<li><code>disconnected</code></li>
-<li><code>connecting</code></li>
-<li><code>reconnecting</code></li>
-<li><code>error</code></li>
-<li>no active session</li>
-</ul>
-<h2>Telemetry Offline Policy</h2>
-<p>Current policy:</p>
-<ul>
-<li>latest sample wins</li>
-<li>no unbounded queue</li>
-</ul>
-<p>Behavior:</p>
-<ul>
-<li>when valid BLE TEL arrives while MQTT is unavailable, the bridge retains only one pending telemetry sample</li>
-<li>if newer TEL arrives before reconnect, it replaces the previous pending sample</li>
-<li>when MQTT becomes available again, the bridge publishes the latest pending sample once</li>
-</ul>
-<p>This is intentionally best-effort, not lossless.</p>
-<h2>SOS Offline Policy</h2>
-<p>Current policy:</p>
-<ul>
-<li>retain a single pending SOS trigger</li>
-<li>retry once connectivity is available again</li>
-</ul>
-<p>Behavior:</p>
-<ul>
-<li>when valid BLE SOS arrives while MQTT is unavailable, the bridge retains one pending SOS item</li>
-<li>duplicates are deduplicated by runtime signature</li>
-<li>when MQTT becomes available again, the bridge retries that pending SOS publish once</li>
-</ul>
-<h2>Reconnect And Session Coordination</h2>
-<p>Current guarantees:</p>
-<ul>
-<li>no overlapping flush attempts inside the bridge</li>
-<li>no unbounded offline queue</li>
-<li><code>clearSession()</code> clears pending telemetry and pending SOS bridge state</li>
-<li><code>setSession(...)</code> resets previous pending bridge state before the new session is used</li>
-</ul>
-<p>This prevents stale operational items from an old session being replayed into a later one.</p>
-<h2>Source Of Truth Rules</h2>
-<p>The following rules remain unchanged:</p>
-<ul>
-<li>SOS final lifecycle state comes from MQTT events</li>
-<li>startup/session recovery of current SOS context comes from <code>GET /v1/sdk/sos</code></li>
-<li>HTTP cancel remains transactional only</li>
-<li>telemetry remains best-effort operational data</li>
-<li>runtime BLE state is not backend registry state</li>
-</ul>
-<h2>Validation And Debugging</h2>
-<p>Recommended validation surfaces:</p>
-<ul>
-<li>SDK tests in <code>packages/eixam_connect_flutter/test/sdk/eixam_connect_sdk_impl_test.dart</code></li>
-<li>reference app validation flows</li>
-<li>BLE debug UI and BLE debug registry logs</li>
-</ul>
-<p>Practical debug checkpoints:</p>
-<ul>
-<li>signed session present</li>
-<li><code>/v1/sdk/me</code> returning canonical identity</li>
-<li>MQTT connect state transitions</li>
-<li>correct MQTT topic usage</li>
-<li>BLE incoming packet decode</li>
-<li>bridge retain/flush behavior when offline</li>
-<li>backend confirmation events producing expected device commands</li>
-</ul>
-<h2>Remaining Limitations And Open Points</h2>
-<h3>BLE SOS Relay Semantics</h3>
-<p>The bridge now applies a deterministic routing model for SOS acknowledgments.</p>
-<p>Current runtime semantics:</p>
-<ul>
-<li><code>triggerOrigin == app</code> means the SOS was initiated locally by the host app and backend acknowledgment is routed as <code>SOS_ACK</code></li>
-<li><code>triggerOrigin == device</code> with <code>relayCount == 0</code> means the SOS is treated as originating on the current device and backend acknowledgment is routed as <code>SOS_ACK</code></li>
-<li><code>triggerOrigin == device</code> with <code>relayCount &gt; 0</code> and a known <code>nodeId</code> means the current device is handling a relayed SOS for origin node <code>nodeId</code></li>
-</ul>
-<p>Current backend acknowledgment rules:</p>
-<ul>
-<li>generic backend <code>sos_ack</code> is transformed into <code>SOS_ACK_RELAY(nodeId)</code> when the active runtime SOS context is relay-origin</li>
-<li>explicit backend <code>sos_ack_relay</code> is accepted only when the active runtime SOS context is relay-origin</li>
-<li>explicit backend <code>sos_ack_relay</code> is ignored when the active runtime SOS context is local-origin, inactive, or mismatched by node id</li>
-<li>if the backend sends relay acknowledgment without enough information and the active relay context has a known origin <code>nodeId</code>, the SDK uses that runtime node id</li>
-</ul>
-<p>Still open:</p>
-<ul>
-<li>if firmware/backend later need richer relay/origin semantics than <code>relayCount &gt; 0</code> plus origin <code>nodeId</code>, that contract will need to be documented explicitly before the SDK expands beyond the current model</li>
-</ul>
-<h3>Minimal SOS Packets Without Coordinates</h3>
-<p>Current MQTT SOS payload requires coordinates.</p>
-<p>Therefore:</p>
-<ul>
-<li>BLE SOS packets without position are observable in runtime</li>
-<li>but are not publishable as backend SOS trigger in the current implementation</li>
-</ul>
-<h3>TEL Aggregate Payloads</h3>
-<p>TEL aggregate fragments are decoded and reassembled in the BLE runtime.</p>
-<p>Current bridge behavior is explicit:</p>
-<ul>
-<li><code>telAggregateFragment</code> is observed and logged but never published before completion</li>
-<li><code>telAggregateComplete</code> is published to backend telemetry only when the completed
-aggregate payload is itself a single classic 10-byte TEL packet that fits the
-existing public telemetry contract</li>
-<li>larger cluster-style aggregate blobs such as <code>0xC2</code> remain unsupported for
-backend telemetry publish in the current SDK because they are not representable
-in the existing <code>SdkTelemetryPayload</code> contract without inventing semantics</li>
-<li>unsupported aggregate-complete payloads are not dropped silently; the bridge
-records a clear diagnostics decision and BLE debug event instead</li>
-</ul>
-<h3>Offline Persistence</h3>
-<p>Current resilience is in-memory runtime hardening.</p>
-<p>Not implemented in this iteration:</p>
-<ul>
-<li>persistent replay queue across app restart</li>
-<li>guaranteed delivery queue</li>
-<li>backlog synchronization with backend</li>
-</ul>
-<p>These are future evolutions, not current guarantees.</p>
-</main></div><script src='../../assets/site.js'></script></body></html>
+<p><a id="internal-note"></a></p>
+<h2>Internal note</h2>
+<p>The validation app may still expose internal backend configuration controls, but those are not part of the partner happy path.</p>
+</main>
+    <aside class="toc">
+      <div class="toc-title">On this page</div>
+      <a class="toc-level-2" href="#purpose">Purpose</a><a class="toc-level-2" href="#integration-layers">Integration layers</a><a class="toc-level-2" href="#signed-session-model">Signed session model</a><a class="toc-level-2" href="#bootstrap-model">Bootstrap model</a><a class="toc-level-2" href="#canonical-identity">Canonical identity</a><a class="toc-level-2" href="#http-contracts">HTTP contracts</a><a class="toc-level-3" href="#get-v1-sdk-me">`GET /v1/sdk/me`</a><a class="toc-level-3" href="#get-v1-sdk-sos">`GET /v1/sdk/sos`</a><a class="toc-level-3" href="#post-v1-sdk-sos-cancel">`POST /v1/sdk/sos/cancel`</a><a class="toc-level-3" href="#v1-sdk-devices">`/v1/sdk/devices`</a><a class="toc-level-3" href="#contacts-surface">Contacts surface</a><a class="toc-level-2" href="#operational-transport">Operational transport</a><a class="toc-level-2" href="#internal-note">Internal note</a>
+    </aside>
+  </div>
+</body>
+</html>

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Flutter Installation</title>
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">EIXAM Connect SDK</div>
+    <div class="site-tag">full docs</div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Navigation</div>
+      <a href="../index.html">Home</a><a href="../sdk/overview.html">SDK Overview</a><a href="../sdk/architecture.html">SDK Architecture</a><a href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a href="../sdk/backend-integration.html">Backend Integration</a><a href="../sdk/public-api.html">Public API</a><a href="../sdk/public-api-examples.html">Method Examples</a><a href="../sdk/protection-mode.html">Protection Mode</a><a href="../sdk/realtime-status.html">Realtime Status</a><a href="../sdk/troubleshooting.html">SDK Troubleshooting</a><a class="active" href="flutter-installation.html">Flutter Installation</a><a href="flutter-integration.html">Flutter Integration</a><a href="host-app-integration.html">Host App Integration</a><a href="android-host-integration.html">Android Host Integration</a><a href="ios-host-integration.html">iOS Host Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a href="ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../api/api-reference.html">API Reference</a><a href="../internal/decisions.html">Decisions</a><a href="../internal/quality-gates.html">Quality Gates</a><a href="../internal/testing-strategy.html">Testing Strategy</a><a href="../internal/testability-notes.html">Testability Notes</a><a href="../internal/how-to-run-project.html">How to Run Project</a><a href="../internal/agents.html">AGENTS</a>
+    </aside>
+    <main class="content"><h1>Flutter Installation</h1>
+<p><a id="add-the-package"></a></p>
+<h2>Add the package</h2>
+<pre><code class="language-yaml">dependencies:
+  eixam_connect_flutter:
+    git:
+      url: git@github.com:your-org/eixam_connect_sdk.git
+      path: packages/eixam_connect_flutter
+</code></pre>
+<p><a id="import"></a></p>
+<h2>Import</h2>
+<pre><code class="language-dart">import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
+</code></pre>
+<p><a id="recommended-package-boundary"></a></p>
+<h2>Recommended package boundary</h2>
+<p>Partner apps should only need the public Flutter package surface. Do not build directly against internal runtime implementation classes unless you are working in a controlled internal validation scenario.</p>
+<p><a id="next-step"></a></p>
+<h2>Next step</h2>
+<p>Continue with <a href="flutter-integration.html">Flutter Integration</a>.</p>
+</main>
+    <aside class="toc">
+      <div class="toc-title">On this page</div>
+      <a class="toc-level-2" href="#add-the-package">Add the package</a><a class="toc-level-2" href="#import">Import</a><a class="toc-level-2" href="#recommended-package-boundary">Recommended package boundary</a><a class="toc-level-2" href="#next-step">Next step</a>
+    </aside>
+  </div>
+</body>
+</html>

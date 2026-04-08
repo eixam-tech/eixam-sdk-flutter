@@ -1,16 +1,40 @@
 # Troubleshooting
 
-## Session is set but operational flows do not work
-- verify signed session values
-- verify `GET /v1/sdk/me`
-- verify MQTT connectivity
+## `customEndpoints` rejected
 
-## SOS cancel succeeds over HTTP but state does not change
-That is expected until the final lifecycle event arrives through MQTT.
+Cause: `customEndpoints` were passed while using `production`, `sandbox`, or `staging`.
 
-## Device appears in scan but is not compatible
-Compatibility should only be decided after connect plus service discovery.
+Fix: only pass `customEndpoints` with `EixamEnvironment.custom`.
 
-## Protection Mode stays partial
-- on Android, inspect readiness and owner diagnostics
-- on iOS, partial coverage can be expected with the current honest base implementation
+## `initialSession.appId` mismatch
+
+Cause: the bootstrap `appId` and the provided signed session `appId` do not match.
+
+Fix: make both values identical.
+
+## Bootstrap did not request permissions
+
+Expected behavior. Permission requests remain explicit host-app actions.
+
+## Bootstrap did not pair a device
+
+Expected behavior. Device pairing/connection remains an explicit host-app decision.
+
+## Protection readiness is blocked
+
+Inspect:
+
+- session availability
+- paired/connected device state
+- Bluetooth enabled state
+- location permission
+- notification permission
+- platform capability readiness
+
+## iOS Protection coverage remains partial
+
+This can be expected depending on current iOS runtime ownership support.
+
+## Realtime appears incomplete
+
+Current realtime may still depend on backend protocol maturity. Use runtime diagnostics and current agreed backend transport behavior as the source of truth.

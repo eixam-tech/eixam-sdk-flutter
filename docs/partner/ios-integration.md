@@ -1,42 +1,31 @@
-# iOS Host Integration
+# iOS Integration
 
-## Current State
+## Current state
 
-- The SDK now includes an iOS Protection adapter and readiness/status/diagnostic participation.
-- The implementation is intentionally honest: it is scaffolded, safe, non-crashing, and restoration-aware, but it does not claim full background BLE ownership yet.
+The SDK includes an iOS Protection adapter and participates in the same Dart public contract, but iOS should still be treated honestly: background BLE ownership is not as mature as Android.
 
-## Host App Expectations
+## Host app expectations
 
-- Configure notification permissions UX.
-- Prepare `UIBackgroundModes` for future support, especially `bluetooth-central`.
-- Be ready for restoration/state-preservation callbacks and lifecycle handoff wiring as the native runtime hardens.
+- provide notification UX
+- declare Bluetooth usage descriptions
+- prepare `UIBackgroundModes` only when your product really needs background execution
+- treat Protection Mode on iOS as capability-aware, not magically equivalent to Android
 
-## What The SDK Owns Today
+## Recommended integration rule
 
-- iOS Protection method/event channel contract
-- Base status and diagnostics reporting
-- Restoration-configured reporting and last-restoration event diagnostics
-- Honest degradation reason strings
-- Participation in the same Dart Protection API as Android
+Use the same public bootstrap path:
 
-## What Is Not Yet Implemented
+```dart
+final sdk = await EixamConnectSdk.bootstrap(
+  const EixamBootstrapConfig(
+    appId: 'partner-app',
+    environment: EixamEnvironment.production,
+  ),
+);
+```
 
-- Background BLE ownership while armed
-- Restoration-backed BLE reconnect/runtime recovery
-- Service-equivalent lifecycle ownership for critical SOS flows
-- Production-ready iOS Protection queue processing
+Then request permissions and inspect readiness before arming Protection Mode.
 
-## Readiness Interpretation
+## Troubleshooting note
 
-- `platformRuntimeConfigured=true`
-  - The host can talk to the iOS Protection adapter.
-- `backgroundCapabilityState=unknown`
-  - The SDK cannot yet guarantee the host background BLE configuration is complete.
-- `coverage=partial`
-  - The iOS base path is wired, but runtime ownership is not complete.
-
-## Troubleshooting
-
-- If Protection Mode appears partial on iOS, that is expected with the current base implementation.
-- If notifications or Bluetooth appear unavailable, inspect app permissions and capabilities first.
-- Do not rely on iOS Protection Mode for background BLE ownership until the future runtime/restoration phase is implemented.
+If iOS reports partial coverage or degraded readiness, inspect diagnostics first instead of assuming parity with Android runtime ownership.

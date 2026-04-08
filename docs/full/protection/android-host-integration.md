@@ -18,7 +18,7 @@
 ## Required Android Setup
 
 - Keep Bluetooth, location, notifications, and foreground-service permissions available in the host app manifest.
-- Bootstrap the SDK normally through `ApiSdkFactory.createHttpApi(...)` or an equivalent SDK constructor.
+- Bootstrap the SDK through `EixamConnectSdk.bootstrap(EixamBootstrapConfig(...))` before using Protection Mode.
 - Do not manually register a host-side Protection bridge in `MainActivity`; the plugin now auto-registers.
 
 ## Arming Behavior

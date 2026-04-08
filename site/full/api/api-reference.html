@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>API Reference</title>
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">EIXAM Connect SDK</div>
+    <div class="site-tag">full docs</div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Navigation</div>
+      <a href="../index.html">Home</a><a href="../sdk/overview.html">SDK Overview</a><a href="../sdk/architecture.html">SDK Architecture</a><a href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a href="../sdk/backend-integration.html">Backend Integration</a><a href="../sdk/public-api.html">Public API</a><a href="../sdk/public-api-examples.html">Method Examples</a><a href="../sdk/protection-mode.html">Protection Mode</a><a href="../sdk/realtime-status.html">Realtime Status</a><a href="../sdk/troubleshooting.html">SDK Troubleshooting</a><a href="../integration/flutter-installation.html">Flutter Installation</a><a href="../integration/flutter-integration.html">Flutter Integration</a><a href="../integration/host-app-integration.html">Host App Integration</a><a href="../integration/android-host-integration.html">Android Host Integration</a><a href="../integration/ios-host-integration.html">iOS Host Integration</a><a href="../integration/permissions-checklist.html">Permissions Checklist</a><a href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a class="active" href="api-reference.html">API Reference</a><a href="../internal/decisions.html">Decisions</a><a href="../internal/quality-gates.html">Quality Gates</a><a href="../internal/testing-strategy.html">Testing Strategy</a><a href="../internal/testability-notes.html">Testability Notes</a><a href="../internal/how-to-run-project.html">How to Run Project</a><a href="../internal/agents.html">AGENTS</a>
+    </aside>
+    <main class="content"><h1>API Reference</h1>
+<p>This page summarizes the backend-facing contracts a partner integration should expect.</p>
+<p><a id="identity"></a></p>
+<h2>Identity</h2>
+<p><a id="get-v1-sdk-me"></a></p>
+<h3><code>GET /v1/sdk/me</code></h3>
+<p>Used by the SDK to enrich the signed session with canonical backend identity.</p>
+<p><a id="sos"></a></p>
+<h2>SOS</h2>
+<p><a id="post-v1-sdk-sos-cancel"></a></p>
+<h3><code>POST /v1/sdk/sos/cancel</code></h3>
+<p>Transactional cancel request.</p>
+<p>Notes:</p>
+<ul>
+<li>no business meaning should be inferred from the HTTP response alone</li>
+<li>final SOS lifecycle state still comes from the operational runtime lifecycle</li>
+</ul>
+<p><a id="get-v1-sdk-sos"></a></p>
+<h3><code>GET /v1/sdk/sos</code></h3>
+<p>Used for SOS rehydration on startup/bootstrap and identity refresh.</p>
+<p><a id="devices"></a></p>
+<h2>Devices</h2>
+<p><a id="v1-sdk-devices"></a></p>
+<h3><code>/v1/sdk/devices</code></h3>
+<p>Backend device registry surface.</p>
+<p>Mapped public shape:</p>
+<ul>
+<li><code>id</code></li>
+<li><code>hardwareId</code></li>
+<li><code>firmwareVersion</code></li>
+<li><code>hardwareModel</code></li>
+<li><code>pairedAt</code></li>
+<li><code>createdAt</code></li>
+<li><code>updatedAt</code></li>
+</ul>
+<p><a id="contacts"></a></p>
+<h2>Contacts</h2>
+<p>Contacts are aligned 1:1 with the backend contract:</p>
+<ul>
+<li><code>id</code></li>
+<li><code>name</code></li>
+<li><code>phone</code></li>
+<li><code>email</code></li>
+<li><code>priority</code></li>
+<li><code>createdAt</code></li>
+<li><code>updatedAt</code></li>
+</ul>
+<p><a id="operational-transport"></a></p>
+<h2>Operational transport</h2>
+<p>The SDK also relies on operational transport for SOS/telemetry flows. Topic naming and exact transport details should remain aligned with the backend contract, not hardcoded independently by the host app.</p>
+</main>
+    <aside class="toc">
+      <div class="toc-title">On this page</div>
+      <a class="toc-level-2" href="#identity">Identity</a><a class="toc-level-3" href="#get-v1-sdk-me">`GET /v1/sdk/me`</a><a class="toc-level-2" href="#sos">SOS</a><a class="toc-level-3" href="#post-v1-sdk-sos-cancel">`POST /v1/sdk/sos/cancel`</a><a class="toc-level-3" href="#get-v1-sdk-sos">`GET /v1/sdk/sos`</a><a class="toc-level-2" href="#devices">Devices</a><a class="toc-level-3" href="#v1-sdk-devices">`/v1/sdk/devices`</a><a class="toc-level-2" href="#contacts">Contacts</a><a class="toc-level-2" href="#operational-transport">Operational transport</a>
+    </aside>
+  </div>
+</body>
+</html>

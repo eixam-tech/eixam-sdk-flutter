@@ -1,37 +1,60 @@
 # Migration
 
-## Public API Boundary Update
+## Migration to the single-call bootstrap flow
 
-Recent releases tighten the public API boundary of `eixam_connect_flutter`.
+The recommended public integration flow changed from a multi-step setup to a single-call bootstrap.
 
-The supported partner-facing import is now:
+## Previous pattern
 
 ```dart
-import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
+final sdk = await ApiSdkFactory.createHttpApi(
+  apiBaseUrl: 'https://partner-api.example.com',
+  websocketUrl: 'wss://partner-mqtt.example.com/mqtt',
+);
+
+await sdk.initialize(
+  const EixamSdkConfig(
+    apiBaseUrl: 'https://partner-api.example.com',
+    websocketUrl: 'wss://partner-mqtt.example.com/mqtt',
+  ),
+);
+
+await sdk.setSession(
+  const EixamSession.signed(
+    appId: 'partner-app',
+    externalUserId: 'partner-user-123',
+    userHash: 'signed-session-hash',
+  ),
+);
 ```
 
-## What Changed
+## Recommended pattern now
 
-- the root barrel now exposes only the supported public SDK surface
-- internal implementation classes are no longer exported from the root package import
+```dart
+final sdk = await EixamConnectSdk.bootstrap(
+  const EixamBootstrapConfig(
+    appId: 'partner-app',
+    environment: EixamEnvironment.sandbox,
+    initialSession: EixamSession.signed(
+      appId: 'partner-app',
+      externalUserId: 'partner-user-123',
+      userHash: 'signed-session-hash',
+    ),
+  ),
+);
+```
 
-## What Partners Should Do
+## Migration rules
 
-- import only `package:eixam_connect_flutter/eixam_connect_flutter.dart`
-- use `ApiSdkFactory`, `EixamConnectSdk`, and the public config/model/enum/event/error types exported there
-- move away from any imports under `package:eixam_connect_flutter/src/...`
+- prefer `bootstrap(...)` for new integrations
+- keep `setSession(...)`, `clearSession()`, and `getCurrentSession()` for session lifecycle
+- use `custom` only with `EixamCustomEndpoints`
+- do not pass `customEndpoints` when using `production`, `sandbox`, or `staging`
+- if you pass `initialSession`, ensure the `appId` matches the bootstrap `appId`
 
-## No Longer Exported from the Root Barrel
+## What bootstrap does not do
 
-These categories are no longer part of the supported public surface:
-
-- internal repositories
-- platform adapters
-- BLE and protocol packet classes
-- validation and debug helpers
-- internal controllers
-- runtime and storage internals
-
-## Compatibility Note
-
-Only the symbols exported from `eixam_connect_flutter.dart` should be treated as stable partner API. Anything outside that surface may change without compatibility guarantees.
+- it does not request permissions
+- it does not pair devices
+- it does not start tracking
+- it does not trigger Protection Mode automatically

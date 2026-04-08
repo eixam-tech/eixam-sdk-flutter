@@ -1,9 +1,29 @@
-<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Quality Gates</title><link rel='stylesheet' href='../../assets/style.css'></head><body><div class='layout'><aside class='sidebar'><div class='brand'>EIXAM Docs - full</div><nav><a class="" href="../index.html">Overview</a><a class="" href="../sdk/architecture.html">SDK Architecture</a><a class="" href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a class="" href="../sdk/backend-integration.html">Backend Integration</a><a class="" href="../api/public-api.html">Public API</a><a class="" href="../api/public-api-examples.html">Public API Examples</a><a class="" href="../protection/overview.html">Protection Overview</a><a class="" href="../protection/android-host-integration.html">Android Host Integration</a><a class="" href="../protection/ios-host-integration.html">iOS Host Integration</a><a class="" href="../integration/permissions-checklist.html">Permissions Checklist</a><a class="" href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a class="" href="../protocol/ble-protocol.html">BLE Protocol</a><a class="" href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a class="" href="../reference-app/debug-app-validation-guide.html">Reference App Validation Guide</a><a class="" href="../reference-app/real-backend-validation-checklist.html">Real Backend Validation Checklist</a><a class="" href="decisions.html">Decisions</a><a class="active" href="quality-gates.html">Quality Gates</a><a class="" href="testing-strategy.html">Testing Strategy</a><a class="" href="testability-notes.html">Testability Notes</a><a class="" href="roadmap.html">Roadmap</a><a class="" href="team-handoff-index.html">Team Handoff Index</a></nav></aside><main class='content'><h1>EIXAM SDK — Quality Gates</h1>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EIXAM SDK — Quality Gates</title>
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">EIXAM Connect SDK</div>
+    <div class="site-tag">full docs</div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Navigation</div>
+      <a href="../index.html">Home</a><a href="../sdk/overview.html">SDK Overview</a><a href="../sdk/architecture.html">SDK Architecture</a><a href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a href="../sdk/backend-integration.html">Backend Integration</a><a href="../sdk/public-api.html">Public API</a><a href="../sdk/public-api-examples.html">Method Examples</a><a href="../sdk/protection-mode.html">Protection Mode</a><a href="../sdk/realtime-status.html">Realtime Status</a><a href="../sdk/troubleshooting.html">SDK Troubleshooting</a><a href="../integration/flutter-installation.html">Flutter Installation</a><a href="../integration/flutter-integration.html">Flutter Integration</a><a href="../integration/host-app-integration.html">Host App Integration</a><a href="../integration/android-host-integration.html">Android Host Integration</a><a href="../integration/ios-host-integration.html">iOS Host Integration</a><a href="../integration/permissions-checklist.html">Permissions Checklist</a><a href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../api/api-reference.html">API Reference</a><a href="decisions.html">Decisions</a><a class="active" href="quality-gates.html">Quality Gates</a><a href="testing-strategy.html">Testing Strategy</a><a href="testability-notes.html">Testability Notes</a><a href="how-to-run-project.html">How to Run Project</a><a href="agents.html">AGENTS</a>
+    </aside>
+    <main class="content"><h1>EIXAM SDK — Quality Gates</h1>
+<p><a id="prop-sit"></a></p>
 <h2>Propòsit</h2>
 <p>Aquest document defineix els mínims de qualitat per considerar un canvi acceptable dins del monorepo EIXAM.</p>
 <p>L’objectiu no és burocràcia.<br />
 L’objectiu és protegir el SDK com a producte reusable i evitar regressions.</p>
 <hr />
+<p><a id="1-principi-general"></a></p>
 <h2>1. Principi general</h2>
 <p>El criteri principal no és “tenir més codi”.<br />
 El criteri principal és:</p>
@@ -15,6 +35,7 @@ El criteri principal és:</p>
 </ul>
 <p>Atès que EIXAM és SDK-first, la qualitat s’ha de mesurar sobretot sobre el SDK.</p>
 <hr />
+<p><a id="2-gate-m-nim-per-qualsevol-canvi-rellevant"></a></p>
 <h2>2. Gate mínim per qualsevol canvi rellevant</h2>
 <p>Abans de considerar un canvi com a acceptable, ha de complir com a mínim:</p>
 <ul>
@@ -24,6 +45,7 @@ El criteri principal és:</p>
 </ul>
 <p>Si algun d’aquests falla, el canvi no està llest.</p>
 <hr />
+<p><a id="3-gate-m-nim-de-producte-sdk"></a></p>
 <h2>3. Gate mínim de producte-SDK</h2>
 <p>A més del gate tècnic bàsic, qualsevol canvi del SDK ha de preservar:</p>
 <ul>
@@ -34,6 +56,7 @@ El criteri principal és:</p>
 <li>separació clara entre SDK i host app</li>
 </ul>
 <hr />
+<p><a id="4-gate-d-arquitectura"></a></p>
 <h2>4. Gate d’arquitectura</h2>
 <p>Un canvi no ha de:</p>
 <ul>
@@ -49,7 +72,9 @@ El criteri principal és:</p>
 <li>components reutilitzables al package UI.</li>
 </ul>
 <hr />
+<p><a id="5-gate-de-testing-per-capes"></a></p>
 <h2>5. Gate de testing per capes</h2>
+<p><a id="5-1-canvis-a-eixam-connect-core"></a></p>
 <h3>5.1 Canvis a <code>eixam_connect_core</code></h3>
 <p>Han d’anar preferentment acompanyats de:</p>
 <ul>
@@ -58,6 +83,7 @@ El criteri principal és:</p>
 <li>tests de use cases</li>
 <li>tests de contracte públic quan apliqui</li>
 </ul>
+<p><a id="5-2-canvis-a-eixam-connect-flutter"></a></p>
 <h3>5.2 Canvis a <code>eixam_connect_flutter</code></h3>
 <p>Han d’anar preferentment acompanyats de:</p>
 <ul>
@@ -66,12 +92,14 @@ El criteri principal és:</p>
 <li>tests de comportament observable</li>
 <li>fakes o in-memory implementations quan sigui viable</li>
 </ul>
+<p><a id="5-3-canvis-a-eixam-connect-ui"></a></p>
 <h3>5.3 Canvis a <code>eixam_connect_ui</code></h3>
 <p>Han d’anar preferentment acompanyats de:</p>
 <ul>
 <li>widget tests dels components reutilitzables</li>
 <li>tests d’estats crítics (<code>loading</code>, <code>enabled</code>, <code>disabled</code>, <code>error</code>)</li>
 </ul>
+<p><a id="5-4-canvis-a-apps-eixam-control-app"></a></p>
 <h3>5.4 Canvis a <code>apps/eixam_control_app</code></h3>
 <p>No requereixen cobertura massiva per defecte.<br />
 Són suficients:</p>
@@ -82,7 +110,9 @@ Són suficients:</p>
 </ul>
 <p>Això és coherent amb el fet que la demo app és un host de validació, no el producte final. :contentReference[oaicite:15]{index=15}</p>
 <hr />
+<p><a id="6-quality-gate-funcional-per-rees-clau"></a></p>
 <h2>6. Quality gate funcional per àrees clau</h2>
+<p><a id="6-1-sos"></a></p>
 <h2>6.1 SOS</h2>
 <p>Per considerar SOS prou sòlid, cal:</p>
 <ul>
@@ -94,6 +124,7 @@ Són suficients:</p>
 <li>la UI no assumeix lògica crítica fora del SDK</li>
 </ul>
 <p>SOS és un pilar central del MVP. :contentReference[oaicite:16]{index=16}</p>
+<p><a id="6-2-tracking"></a></p>
 <h2>6.2 Tracking</h2>
 <p>Per considerar Tracking prou sòlid, cal:</p>
 <ul>
@@ -104,6 +135,7 @@ Són suficients:</p>
 <li>persistència/restauració si aplica</li>
 <li>contractes públics consistents</li>
 </ul>
+<p><a id="6-3-death-man"></a></p>
 <h2>6.3 Death Man</h2>
 <p>Per considerar Death Man prou sòlid, cal:</p>
 <ul>
@@ -113,6 +145,7 @@ Són suficients:</p>
 <li>escalat correcte segons estat</li>
 <li>tests de transicions principals</li>
 </ul>
+<p><a id="6-4-emergency-contacts"></a></p>
 <h2>6.4 Emergency Contacts</h2>
 <p>Per considerar Contactes prou sòlid, cal:</p>
 <ul>
@@ -124,6 +157,7 @@ Són suficients:</p>
 <li>persistència coherent</li>
 </ul>
 <p>El comportament pertany al SDK; la UX no.</p>
+<p><a id="6-5-device-ble-readiness"></a></p>
 <h2>6.5 Device / BLE readiness</h2>
 <p>Per considerar Device prou sòlid, cal:</p>
 <ul>
@@ -134,6 +168,7 @@ Són suficients:</p>
 <li>preparació per BLE real sense contractes trencadissos</li>
 </ul>
 <hr />
+<p><a id="7-quality-gate-espec-fic-per-app-ble-integration"></a></p>
 <h2>7. Quality gate específic per APP/BLE integration</h2>
 <p>Per donar per vàlid el mínim d’integració app/BLE, han d’estar resolts o clarament contractats:</p>
 <ul>
@@ -148,6 +183,7 @@ Són suficients:</p>
 </ul>
 <p>Això surt directament del handoff final APP. :contentReference[oaicite:18]{index=18}</p>
 <hr />
+<p><a id="8-quality-gate-espec-fic-per-guided-rescue-phase-1"></a></p>
 <h2>8. Quality gate específic per Guided Rescue Phase 1</h2>
 <p>No es considerarà prou llest si:</p>
 <ul>
@@ -167,6 +203,7 @@ Són suficients:</p>
 </ul>
 <p>La fase 1 no inclou canvi de SF/canal ni rescue avançat dedicat.</p>
 <hr />
+<p><a id="9-quality-gate-de-documentaci"></a></p>
 <h2>9. Quality gate de documentació</h2>
 <p>Qualsevol canvi rellevant en arquitectura, contractes o fluxos ha d’actualitzar, si toca:</p>
 <ul>
@@ -177,6 +214,7 @@ Són suficients:</p>
 </ul>
 <p>Això evita que el coneixement es quedi només al codi. :contentReference[oaicite:20]{index=20}</p>
 <hr />
+<p><a id="10-quality-gate-de-release-interna"></a></p>
 <h2>10. Quality gate de release interna</h2>
 <p>Abans de considerar una fase “prou bona” per continuar construint-hi a sobre, jo exigiria:</p>
 <ul>
@@ -189,6 +227,7 @@ Són suficients:</p>
 <li>cap lògica crítica colada a la UI</li>
 </ul>
 <hr />
+<p><a id="11-regla-final"></a></p>
 <h2>11. Regla final</h2>
 <p>No promovem un canvi perquè “funciona a la demo”.<br />
 El promovem perquè:</p>
@@ -198,4 +237,11 @@ El promovem perquè:</p>
 <li>és reusable</li>
 <li>i és coherent amb l’estratègia SDK-first</li>
 </ul>
-</main></div><script src='../../assets/site.js'></script></body></html>
+</main>
+    <aside class="toc">
+      <div class="toc-title">On this page</div>
+      <a class="toc-level-2" href="#prop-sit">Propòsit</a><a class="toc-level-2" href="#1-principi-general">1. Principi general</a><a class="toc-level-2" href="#2-gate-m-nim-per-qualsevol-canvi-rellevant">2. Gate mínim per qualsevol canvi rellevant</a><a class="toc-level-2" href="#3-gate-m-nim-de-producte-sdk">3. Gate mínim de producte-SDK</a><a class="toc-level-2" href="#4-gate-d-arquitectura">4. Gate d’arquitectura</a><a class="toc-level-2" href="#5-gate-de-testing-per-capes">5. Gate de testing per capes</a><a class="toc-level-3" href="#5-1-canvis-a-eixam-connect-core">5.1 Canvis a `eixam_connect_core`</a><a class="toc-level-3" href="#5-2-canvis-a-eixam-connect-flutter">5.2 Canvis a `eixam_connect_flutter`</a><a class="toc-level-3" href="#5-3-canvis-a-eixam-connect-ui">5.3 Canvis a `eixam_connect_ui`</a><a class="toc-level-3" href="#5-4-canvis-a-apps-eixam-control-app">5.4 Canvis a `apps/eixam_control_app`</a><a class="toc-level-2" href="#6-quality-gate-funcional-per-rees-clau">6. Quality gate funcional per àrees clau</a><a class="toc-level-2" href="#6-1-sos">6.1 SOS</a><a class="toc-level-2" href="#6-2-tracking">6.2 Tracking</a><a class="toc-level-2" href="#6-3-death-man">6.3 Death Man</a><a class="toc-level-2" href="#6-4-emergency-contacts">6.4 Emergency Contacts</a><a class="toc-level-2" href="#6-5-device-ble-readiness">6.5 Device / BLE readiness</a><a class="toc-level-2" href="#7-quality-gate-espec-fic-per-app-ble-integration">7. Quality gate específic per APP/BLE integration</a><a class="toc-level-2" href="#8-quality-gate-espec-fic-per-guided-rescue-phase-1">8. Quality gate específic per Guided Rescue Phase 1</a><a class="toc-level-2" href="#9-quality-gate-de-documentaci">9. Quality gate de documentació</a><a class="toc-level-2" href="#10-quality-gate-de-release-interna">10. Quality gate de release interna</a><a class="toc-level-2" href="#11-regla-final">11. Regla final</a>
+    </aside>
+  </div>
+</body>
+</html>

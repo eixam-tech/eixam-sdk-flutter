@@ -2,6 +2,9 @@ library eixam_connect_core;
 
 export 'src/config/eixam_sdk_config.dart';
 export 'src/config/eixam_session.dart';
+export 'src/config/eixam_environment.dart';
+export 'src/config/eixam_custom_endpoints.dart';
+export 'src/config/eixam_bootstrap_config.dart';
 export 'src/entities/device_status.dart';
 export 'src/entities/device_runtime.dart';
 export 'src/entities/backend_registered_device.dart';

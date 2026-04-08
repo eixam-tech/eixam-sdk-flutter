@@ -1,86 +1,118 @@
 [
   [
-    "Overview",
-    "index.md"
+    "Home",
+    "docs/full/index.md"
+  ],
+  [
+    "SDK Overview",
+    "docs/full/sdk/overview.md"
   ],
   [
     "SDK Architecture",
-    "sdk/architecture.md"
+    "docs/full/sdk/architecture.md"
   ],
   [
     "Partner Integration Guide",
-    "sdk/partner-integration-guide.md"
+    "docs/full/sdk/partner-integration-guide.md"
   ],
   [
     "Backend Integration",
-    "sdk/backend-integration.md"
+    "docs/full/sdk/backend-integration.md"
   ],
   [
     "Public API",
-    "api/public-api.md"
+    "docs/full/sdk/public-api.md"
   ],
   [
-    "Public API Examples",
-    "api/public-api-examples.md"
+    "Method Examples",
+    "docs/full/sdk/public-api-examples.md"
   ],
   [
-    "Protection Overview",
-    "protection/overview.md"
+    "Protection Mode",
+    "docs/full/sdk/protection-mode.md"
+  ],
+  [
+    "Realtime Status",
+    "docs/full/sdk/realtime-status.md"
+  ],
+  [
+    "SDK Troubleshooting",
+    "docs/full/sdk/troubleshooting.md"
+  ],
+  [
+    "Flutter Installation",
+    "docs/full/integration/flutter-installation.md"
+  ],
+  [
+    "Flutter Integration",
+    "docs/full/integration/flutter-integration.md"
+  ],
+  [
+    "Host App Integration",
+    "docs/full/integration/host-app-integration.md"
   ],
   [
     "Android Host Integration",
-    "protection/android-host-integration.md"
+    "docs/full/integration/android-host-integration.md"
   ],
   [
     "iOS Host Integration",
-    "protection/ios-host-integration.md"
+    "docs/full/integration/ios-host-integration.md"
   ],
   [
     "Permissions Checklist",
-    "integration/permissions-checklist.md"
+    "docs/full/integration/permissions-checklist.md"
   ],
   [
     "BLE Provider Integration",
-    "integration/ble-provider-integration.md"
+    "docs/full/integration/ble-provider-integration.md"
   ],
   [
     "BLE Protocol",
-    "protocol/ble-protocol.md"
+    "docs/full/protocol/ble-protocol.md"
   ],
   [
     "BLE Runtime Flow",
-    "protocol/ble-runtime-flow.md"
+    "docs/full/protocol/runtime-flow.md"
   ],
   [
-    "Reference App Validation Guide",
-    "reference-app/debug-app-validation-guide.md"
+    "Validation App Guide",
+    "docs/full/reference-app/validation-app-guide.md"
   ],
   [
-    "Real Backend Validation Checklist",
-    "reference-app/real-backend-validation-checklist.md"
+    "Debug Validation Guide",
+    "docs/full/reference-app/debug-app-validation-guide.md"
+  ],
+  [
+    "Real Backend Checklist",
+    "docs/full/reference-app/real-backend-validation-checklist.md"
+  ],
+  [
+    "API Reference",
+    "docs/full/api/api-reference.md"
   ],
   [
     "Decisions",
-    "internal/decisions.md"
+    "docs/full/internal/decisions.md"
   ],
   [
     "Quality Gates",
-    "internal/quality-gates.md"
+    "docs/full/internal/quality-gates.md"
   ],
   [
     "Testing Strategy",
-    "internal/testing-strategy.md"
+    "docs/full/internal/testing-strategy.md"
   ],
   [
     "Testability Notes",
-    "internal/testability-notes.md"
+    "docs/full/internal/testability-notes.md"
   ],
   [
-    "Roadmap",
-    "internal/roadmap.md"
+    "How to Run Project",
+    "docs/full/internal/how-to-run-project.md"
   ],
   [
-    "Team Handoff Index",
-    "internal/team-handoff-index.md"
+    "AGENTS",
+    "docs/full/internal/agents.md"
   ]
 ]

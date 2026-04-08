@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Android Host Integration</title>
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">EIXAM Connect SDK</div>
+    <div class="site-tag">full docs</div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Navigation</div>
+      <a href="../index.html">Home</a><a href="../sdk/overview.html">SDK Overview</a><a href="../sdk/architecture.html">SDK Architecture</a><a href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a href="../sdk/backend-integration.html">Backend Integration</a><a href="../sdk/public-api.html">Public API</a><a href="../sdk/public-api-examples.html">Method Examples</a><a href="../sdk/protection-mode.html">Protection Mode</a><a href="../sdk/realtime-status.html">Realtime Status</a><a href="../sdk/troubleshooting.html">SDK Troubleshooting</a><a href="flutter-installation.html">Flutter Installation</a><a href="flutter-integration.html">Flutter Integration</a><a href="host-app-integration.html">Host App Integration</a><a class="active" href="android-host-integration.html">Android Host Integration</a><a href="ios-host-integration.html">iOS Host Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a href="ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../api/api-reference.html">API Reference</a><a href="../internal/decisions.html">Decisions</a><a href="../internal/quality-gates.html">Quality Gates</a><a href="../internal/testing-strategy.html">Testing Strategy</a><a href="../internal/testability-notes.html">Testability Notes</a><a href="../internal/how-to-run-project.html">How to Run Project</a><a href="../internal/agents.html">AGENTS</a>
+    </aside>
+    <main class="content"><blockquote>
+<p>Updated note: partner-facing docs should present <code>EixamConnectSdk.bootstrap(...)</code> as the recommended public entrypoint.</p>
+</blockquote>
+<h1>Android Host Integration</h1>
+<p><a id="what-the-sdk-plugin-owns"></a></p>
+<h2>What The SDK/Plugin Owns</h2>
+<ul>
+<li>Protection method/event channels</li>
+<li>Foreground service class</li>
+<li>Merged service manifest declaration from the plugin</li>
+<li>Runtime snapshot persistence</li>
+<li>BLE ownership/readiness diagnostics exposed to Dart</li>
+</ul>
+<p><a id="what-the-host-app-still-owns"></a></p>
+<h2>What The Host App Still Owns</h2>
+<ul>
+<li>Runtime permission UX</li>
+<li>App bootstrap that constructs the SDK</li>
+<li>Validation UI consumption</li>
+<li>Any app-level notification/channel branding outside the plugin defaults</li>
+</ul>
+<p><a id="required-android-setup"></a></p>
+<h2>Required Android Setup</h2>
+<ul>
+<li>Keep Bluetooth, location, notifications, and foreground-service permissions available in the host app manifest.</li>
+<li>Bootstrap the SDK normally through <code>ApiSdkFactory.createHttpApi(...)</code> or an equivalent SDK constructor.</li>
+<li>Do not manually register a host-side Protection bridge in <code>MainActivity</code>; the plugin now auto-registers.</li>
+</ul>
+<p><a id="arming-behavior"></a></p>
+<h2>Arming Behavior</h2>
+<ul>
+<li>Protection Mode is off by default.</li>
+<li>Full Protection behavior is only attempted after <code>enterProtectionMode()</code>.</li>
+<li>When armed, the plugin foreground service becomes the intended Protection runtime owner and reports <code>bleOwner=androidService</code>.</li>
+<li>The SDK also releases the Flutter BLE runtime from active ownership so Flutter auto-reconnect and notification subscriptions stop competing while Protection Mode is armed.</li>
+<li>When disarmed, ownership returns to the default Flutter path.</li>
+</ul>
+<p><a id="validation"></a></p>
+<h2>Validation</h2>
+<ol>
+<li>Launch the control app.</li>
+<li>Confirm normal BLE/SOS behavior still works before arming Protection Mode.</li>
+<li>Open the Protection section.</li>
+<li>Run readiness.</li>
+<li>Enter Protection Mode.</li>
+<li>Confirm:<ul>
+<li>foreground service is running</li>
+<li>BLE owner is <code>androidService</code></li>
+<li>Flutter runtime no longer reports itself as the active owner</li>
+<li>platform events are updating</li>
+<li>rehydrate returns the same additive snapshot after app reattach</li>
+</ul>
+</li>
+</ol>
+<p><a id="troubleshooting"></a></p>
+<h2>Troubleshooting</h2>
+<ul>
+<li>If readiness is blocked, inspect session/device pairing/permission blockers first.</li>
+<li>If the service starts but coverage remains partial, review <code>serviceBleConnected</code>, <code>serviceBleReady</code>, <code>lastBleServiceEvent</code>, and reconnect counters.</li>
+<li>If the mode is never enabled, current app behavior should remain unchanged by design.</li>
+</ul>
+</main>
+    <aside class="toc">
+      <div class="toc-title">On this page</div>
+      <a class="toc-level-2" href="#what-the-sdk-plugin-owns">What The SDK/Plugin Owns</a><a class="toc-level-2" href="#what-the-host-app-still-owns">What The Host App Still Owns</a><a class="toc-level-2" href="#required-android-setup">Required Android Setup</a><a class="toc-level-2" href="#arming-behavior">Arming Behavior</a><a class="toc-level-2" href="#validation">Validation</a><a class="toc-level-2" href="#troubleshooting">Troubleshooting</a>
+    </aside>
+  </div>
+</body>
+</html>

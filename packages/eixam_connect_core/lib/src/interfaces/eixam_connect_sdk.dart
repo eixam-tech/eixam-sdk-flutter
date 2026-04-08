@@ -1,3 +1,4 @@
+import '../config/eixam_bootstrap_config.dart';
 import '../config/eixam_sdk_config.dart';
 import '../config/eixam_session.dart';
 import '../entities/death_man_plan.dart';
@@ -22,7 +23,31 @@ import '../events/eixam_sdk_event.dart';
 import '../events/realtime_event.dart';
 
 /// Public SDK contract consumed by host apps.
+typedef EixamConnectSdkBootstrapper = Future<EixamConnectSdk> Function(
+  EixamBootstrapConfig config,
+);
+
+EixamConnectSdkBootstrapper? _bootstrapper;
+
+void registerEixamConnectSdkBootstrapper(
+  EixamConnectSdkBootstrapper bootstrapper,
+) {
+  _bootstrapper = bootstrapper;
+}
+
 abstract class EixamConnectSdk {
+  static Future<EixamConnectSdk> bootstrap(EixamBootstrapConfig config) {
+    final bootstrapper = _bootstrapper;
+    if (bootstrapper == null) {
+      throw UnsupportedError(
+        'No EIXAM SDK bootstrapper is registered. Import '
+        '`package:eixam_connect_flutter/eixam_connect_flutter.dart` before '
+        'calling EixamConnectSdk.bootstrap(...).',
+      );
+    }
+    return bootstrapper(config);
+  }
+
   Future<void> initialize(EixamSdkConfig config);
 
   /// Stores the signed SDK identity payload provided by the host app.

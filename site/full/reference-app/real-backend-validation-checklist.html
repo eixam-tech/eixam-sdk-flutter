@@ -1,8 +1,27 @@
-<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Real Backend Validation Checklist</title><link rel='stylesheet' href='../../assets/style.css'></head><body><div class='layout'><aside class='sidebar'><div class='brand'>EIXAM Docs - full</div><nav><a class="" href="../index.html">Overview</a><a class="" href="../sdk/architecture.html">SDK Architecture</a><a class="" href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a class="" href="../sdk/backend-integration.html">Backend Integration</a><a class="" href="../api/public-api.html">Public API</a><a class="" href="../api/public-api-examples.html">Public API Examples</a><a class="" href="../protection/overview.html">Protection Overview</a><a class="" href="../protection/android-host-integration.html">Android Host Integration</a><a class="" href="../protection/ios-host-integration.html">iOS Host Integration</a><a class="" href="../integration/permissions-checklist.html">Permissions Checklist</a><a class="" href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a class="" href="../protocol/ble-protocol.html">BLE Protocol</a><a class="" href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a class="" href="debug-app-validation-guide.html">Reference App Validation Guide</a><a class="active" href="real-backend-validation-checklist.html">Real Backend Validation Checklist</a><a class="" href="../internal/decisions.html">Decisions</a><a class="" href="../internal/quality-gates.html">Quality Gates</a><a class="" href="../internal/testing-strategy.html">Testing Strategy</a><a class="" href="../internal/testability-notes.html">Testability Notes</a><a class="" href="../internal/roadmap.html">Roadmap</a><a class="" href="../internal/team-handoff-index.html">Team Handoff Index</a></nav></aside><main class='content'><h1>Real Backend Validation Checklist</h1>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Real Backend Validation Checklist</title>
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">EIXAM Connect SDK</div>
+    <div class="site-tag">full docs</div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Navigation</div>
+      <a href="../index.html">Home</a><a href="../sdk/overview.html">SDK Overview</a><a href="../sdk/architecture.html">SDK Architecture</a><a href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a href="../sdk/backend-integration.html">Backend Integration</a><a href="../sdk/public-api.html">Public API</a><a href="../sdk/public-api-examples.html">Method Examples</a><a href="../sdk/protection-mode.html">Protection Mode</a><a href="../sdk/realtime-status.html">Realtime Status</a><a href="../sdk/troubleshooting.html">SDK Troubleshooting</a><a href="../integration/flutter-installation.html">Flutter Installation</a><a href="../integration/flutter-integration.html">Flutter Integration</a><a href="../integration/host-app-integration.html">Host App Integration</a><a href="../integration/android-host-integration.html">Android Host Integration</a><a href="../integration/ios-host-integration.html">iOS Host Integration</a><a href="../integration/permissions-checklist.html">Permissions Checklist</a><a href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="validation-app-guide.html">Validation App Guide</a><a href="debug-app-validation-guide.html">Debug Validation Guide</a><a class="active" href="real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../api/api-reference.html">API Reference</a><a href="../internal/decisions.html">Decisions</a><a href="../internal/quality-gates.html">Quality Gates</a><a href="../internal/testing-strategy.html">Testing Strategy</a><a href="../internal/testability-notes.html">Testability Notes</a><a href="../internal/how-to-run-project.html">How to Run Project</a><a href="../internal/agents.html">AGENTS</a>
+    </aside>
+    <main class="content"><h1>Real Backend Validation Checklist</h1>
 <p>Use this checklist with the demo app validation console when validating the
 current SDK against a real backend. The app remains a thin host; all business
 and operational behavior should be observed through SDK diagnostics and runtime
 surfaces.</p>
+<p><a id="1-backend-environment-and-session-bootstrap"></a></p>
 <h2>1. Backend Environment And Session Bootstrap</h2>
 <ul>
 <li>In local debug builds, first-run validation defaults are prefilled with:<ul>
@@ -37,6 +56,7 @@ surfaces.</p>
 </ul>
 </li>
 </ul>
+<p><a id="2-mqtt-connectivity-and-topic-readiness"></a></p>
 <h2>2. MQTT Connectivity And Topic Readiness</h2>
 <ul>
 <li>Confirm the console shows:<ul>
@@ -58,6 +78,7 @@ surfaces.</p>
 </ul>
 </li>
 </ul>
+<p><a id="3-sos-trigger-ack-cancel"></a></p>
 <h2>3. SOS Trigger / ACK / Cancel</h2>
 <ul>
 <li>Trigger SOS from the validation console.</li>
@@ -78,6 +99,7 @@ active relay-origin SOS</li>
 <li>Cancel SOS and confirm final state reflects backend/runtime behavior, not only
 local button presses.</li>
 </ul>
+<p><a id="4-sos-rehydration-after-restart"></a></p>
 <h2>4. SOS Rehydration After Restart</h2>
 <ul>
 <li>Trigger or keep an SOS active in backend.</li>
@@ -90,6 +112,7 @@ behavior</li>
 </li>
 <li>Repeat with no active incident and confirm the SDK returns to <code>idle</code>.</li>
 </ul>
+<p><a id="5-tel-publish"></a></p>
 <h2>5. TEL Publish</h2>
 <ul>
 <li>Publish a manual telemetry sample from the validation console.</li>
@@ -105,6 +128,7 @@ behavior</li>
 </ul>
 </li>
 </ul>
+<p><a id="6-tel-aggregate-behavior"></a></p>
 <h2>6. TEL Aggregate Behavior</h2>
 <ul>
 <li>For supported aggregate-complete payloads:<ul>
@@ -124,6 +148,7 @@ telemetry contract</li>
 </ul>
 </li>
 </ul>
+<p><a id="7-reconnect-offline-behavior"></a></p>
 <h2>7. Reconnect / Offline Behavior</h2>
 <ul>
 <li>Drop MQTT connectivity while the app remains active.</li>
@@ -139,6 +164,7 @@ telemetry contract</li>
 </ul>
 </li>
 </ul>
+<p><a id="8-quick-failure-readout"></a></p>
 <h2>8. Quick Failure Readout</h2>
 <p>When something fails, capture these fields from the validation console first:</p>
 <ul>
@@ -155,4 +181,11 @@ telemetry contract</li>
 <li>last action error</li>
 <li>SOS rehydration note</li>
 </ul>
-</main></div><script src='../../assets/site.js'></script></body></html>
+</main>
+    <aside class="toc">
+      <div class="toc-title">On this page</div>
+      <a class="toc-level-2" href="#1-backend-environment-and-session-bootstrap">1. Backend Environment And Session Bootstrap</a><a class="toc-level-2" href="#2-mqtt-connectivity-and-topic-readiness">2. MQTT Connectivity And Topic Readiness</a><a class="toc-level-2" href="#3-sos-trigger-ack-cancel">3. SOS Trigger / ACK / Cancel</a><a class="toc-level-2" href="#4-sos-rehydration-after-restart">4. SOS Rehydration After Restart</a><a class="toc-level-2" href="#5-tel-publish">5. TEL Publish</a><a class="toc-level-2" href="#6-tel-aggregate-behavior">6. TEL Aggregate Behavior</a><a class="toc-level-2" href="#7-reconnect-offline-behavior">7. Reconnect / Offline Behavior</a><a class="toc-level-2" href="#8-quick-failure-readout">8. Quick Failure Readout</a>
+    </aside>
+  </div>
+</body>
+</html>

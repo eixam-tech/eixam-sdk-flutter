@@ -1,5 +1,24 @@
-<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Testability Notes</title><link rel='stylesheet' href='../../assets/style.css'></head><body><div class='layout'><aside class='sidebar'><div class='brand'>EIXAM Docs - full</div><nav><a class="" href="../index.html">Overview</a><a class="" href="../sdk/architecture.html">SDK Architecture</a><a class="" href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a class="" href="../sdk/backend-integration.html">Backend Integration</a><a class="" href="../api/public-api.html">Public API</a><a class="" href="../api/public-api-examples.html">Public API Examples</a><a class="" href="../protection/overview.html">Protection Overview</a><a class="" href="../protection/android-host-integration.html">Android Host Integration</a><a class="" href="../protection/ios-host-integration.html">iOS Host Integration</a><a class="" href="../integration/permissions-checklist.html">Permissions Checklist</a><a class="" href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a class="" href="../protocol/ble-protocol.html">BLE Protocol</a><a class="" href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a class="" href="../reference-app/debug-app-validation-guide.html">Reference App Validation Guide</a><a class="" href="../reference-app/real-backend-validation-checklist.html">Real Backend Validation Checklist</a><a class="" href="decisions.html">Decisions</a><a class="" href="quality-gates.html">Quality Gates</a><a class="" href="testing-strategy.html">Testing Strategy</a><a class="active" href="testability-notes.html">Testability Notes</a><a class="" href="roadmap.html">Roadmap</a><a class="" href="team-handoff-index.html">Team Handoff Index</a></nav></aside><main class='content'><h1>SDK Testability Notes</h1>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SDK Testability Notes</title>
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">EIXAM Connect SDK</div>
+    <div class="site-tag">full docs</div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Navigation</div>
+      <a href="../index.html">Home</a><a href="../sdk/overview.html">SDK Overview</a><a href="../sdk/architecture.html">SDK Architecture</a><a href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a href="../sdk/backend-integration.html">Backend Integration</a><a href="../sdk/public-api.html">Public API</a><a href="../sdk/public-api-examples.html">Method Examples</a><a href="../sdk/protection-mode.html">Protection Mode</a><a href="../sdk/realtime-status.html">Realtime Status</a><a href="../sdk/troubleshooting.html">SDK Troubleshooting</a><a href="../integration/flutter-installation.html">Flutter Installation</a><a href="../integration/flutter-integration.html">Flutter Integration</a><a href="../integration/host-app-integration.html">Host App Integration</a><a href="../integration/android-host-integration.html">Android Host Integration</a><a href="../integration/ios-host-integration.html">iOS Host Integration</a><a href="../integration/permissions-checklist.html">Permissions Checklist</a><a href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../api/api-reference.html">API Reference</a><a href="decisions.html">Decisions</a><a href="quality-gates.html">Quality Gates</a><a href="testing-strategy.html">Testing Strategy</a><a class="active" href="testability-notes.html">Testability Notes</a><a href="how-to-run-project.html">How to Run Project</a><a href="agents.html">AGENTS</a>
+    </aside>
+    <main class="content"><h1>SDK Testability Notes</h1>
 <p>This note captures the main SDK design seams that currently make automated testing harder than it should be.</p>
+<p><a id="main-gaps"></a></p>
 <h2>Main gaps</h2>
 <ul>
 <li><p>Time is still implicit in several runtime paths through <code>DateTime.now()</code>.</p>
@@ -33,6 +52,7 @@
 </ul>
 </li>
 </ul>
+<p><a id="apis-that-are-still-too-raw-for-consumers"></a></p>
 <h2>APIs that are still too raw for consumers</h2>
 <ul>
 <li>Realtime types are public concepts but are not consistently exported through the main core barrel.</li>
@@ -45,6 +65,7 @@
 </li>
 <li>Tracking exposes current state and positions, but there is no explicit SDK model for stale/healthy tracking summary.</li>
 </ul>
+<p><a id="recommended-refactors-before-guided-rescue-phase-1-expands"></a></p>
 <h2>Recommended refactors before Guided Rescue Phase 1 expands</h2>
 <ul>
 <li>Introduce small injectable seams for <code>Clock</code>, <code>IdGenerator</code>, and timer/scheduler behavior in the runtime layer.</li>
@@ -52,4 +73,11 @@
 <li>Export realtime types cleanly from <code>eixam_connect_core</code> so SDK-facing layers do not need internal imports.</li>
 <li>Add a richer tracking summary contract so stale logic is owned by the SDK-facing layer instead of repeated in consumers.</li>
 </ul>
-</main></div><script src='../../assets/site.js'></script></body></html>
+</main>
+    <aside class="toc">
+      <div class="toc-title">On this page</div>
+      <a class="toc-level-2" href="#main-gaps">Main gaps</a><a class="toc-level-2" href="#apis-that-are-still-too-raw-for-consumers">APIs that are still too raw for consumers</a><a class="toc-level-2" href="#recommended-refactors-before-guided-rescue-phase-1-expands">Recommended refactors before Guided Rescue Phase 1 expands</a>
+    </aside>
+  </div>
+</body>
+</html>

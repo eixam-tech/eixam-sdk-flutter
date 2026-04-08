@@ -1,102 +1,102 @@
 # Public API
 
-High-level reference of the current public `EixamConnectSdk` facade. See **API Examples** for code snippets.
+This page describes the recommended public surface exposed to partner host apps.
 
-## Initialization and session
-- `initialize`
-- `setSession`
-- `clearSession`
-- `getCurrentSession`
-- `refreshCanonicalIdentity`
+## Entry point
 
-## Operational diagnostics and protection
-- `getOperationalDiagnostics`
-- `watchOperationalDiagnostics`
-- `evaluateProtectionReadiness`
-- `enterProtectionMode`
-- `exitProtectionMode`
-- `getProtectionStatus`
-- `watchProtectionStatus`
-- `getProtectionDiagnostics`
-- `watchProtectionDiagnostics`
-- `rehydrateProtectionState`
-- `flushProtectionQueues`
+### `EixamConnectSdk.bootstrap(...)`
 
-## SOS
-- `triggerSos`
-- `getCurrentSosIncident`
-- `currentSosStateStream`
-- `lastSosEventStream`
-- `cancelSos`
-- `getSosState`
-- `watchSosState` _(legacy)_
+This is the recommended public entrypoint.
 
-## Contacts
-- `createEmergencyContact`
-- `deleteEmergencyContact`
-- `listEmergencyContacts`
-- `watchEmergencyContacts`
-- `addEmergencyContact` _(legacy)_
-- `updateEmergencyContact`
-- `removeEmergencyContact` _(legacy)_
+Use it to create an SDK instance, resolve the selected environment, validate the bootstrap configuration and optionally seed the initial signed session.
 
-## Permissions and notifications
-- `getPermissionState`
-- `requestLocationPermission`
-- `requestNotificationPermission`
-- `requestBluetoothPermission`
-- `initializeNotifications`
-- `showLocalNotification`
+## Session lifecycle
 
-## Local device runtime
-- `connectDevice`
-- `disconnectDevice`
+- `setSession(...)`
+- `clearSession()`
+- `getCurrentSession()`
+- `refreshCanonicalIdentity()`
+
+## Diagnostics and protection
+
+- `getOperationalDiagnostics()`
+- `watchOperationalDiagnostics()`
+- `evaluateProtectionReadiness()`
+- `enterProtectionMode(...)`
+- `exitProtectionMode()`
+- `getProtectionStatus()`
+- `watchProtectionStatus()`
+- `getProtectionDiagnostics()`
+- `watchProtectionDiagnostics()`
+- `rehydrateProtectionState()`
+- `flushProtectionQueues()`
+
+## Device runtime and backend device registry
+
+- `connectDevice(...)`
+- `disconnectDevice()`
 - `preferredDevice`
 - `deviceStatusStream`
-- `pairDevice` _(legacy)_
-- `activateDevice`
-- `getDeviceStatus`
-- `refreshDeviceStatus`
-- `unpairDevice` _(legacy)_
-- `watchDeviceStatus` _(legacy)_
-- `getDeviceSosStatus`
-- `watchDeviceSosStatus`
-- `triggerDeviceSos`
-- `confirmDeviceSos`
-- `cancelDeviceSos`
-- `acknowledgeDeviceSos`
-- `sendInetOkToDevice`
-- `sendInetLostToDevice`
-- `sendPositionConfirmedToDevice`
-- `sendSosAckRelayToDevice`
-- `sendShutdownToDevice`
-- `consumePendingBleNotificationNavigationRequest`
-- `watchBleNotificationNavigationRequests`
+- `listRegisteredDevices()`
+- `upsertRegisteredDevice(...)`
+- `deleteRegisteredDevice(...)`
 
-## Backend device registry
-- `listRegisteredDevices`
-- `upsertRegisteredDevice`
-- `deleteRegisteredDevice`
+## SOS
+
+- `triggerSos(...)`
+- `cancelSos()`
+- `getCurrentSosIncident()`
+- `getSosState()`
+- `currentSosStateStream`
+- `lastSosEventStream`
+- `watchEvents()`
+
+## Contacts
+
+- `listEmergencyContacts()`
+- `watchEmergencyContacts()`
+- `createEmergencyContact(...)`
+- `updateEmergencyContact(...)`
+- `deleteEmergencyContact(...)`
+
+## Permissions and notifications
+
+- `getPermissionState()`
+- `requestLocationPermission()`
+- `requestNotificationPermission()`
+- `requestBluetoothPermission()`
+- `initializeNotifications()`
+- `showLocalNotification(...)`
 
 ## Tracking and telemetry
-- `startTracking`
-- `stopTracking`
-- `publishTelemetry`
-- `getCurrentPosition`
-- `getTrackingState`
-- `watchPositions`
-- `watchTrackingState`
+
+- `startTracking()`
+- `stopTracking()`
+- `publishTelemetry(...)`
+- `getCurrentPosition()`
+- `getTrackingState()`
+- `watchPositions()`
+- `watchTrackingState()`
 
 ## Death Man
-- `scheduleDeathMan`
-- `getActiveDeathManPlan`
-- `confirmDeathManCheckIn`
-- `cancelDeathMan`
-- `watchDeathManPlans`
 
-## Events and realtime
-- `watchEvents`
-- `getRealtimeConnectionState`
-- `getLastRealtimeEvent`
-- `watchRealtimeConnectionState`
-- `watchRealtimeEvents`
+- `scheduleDeathMan(...)`
+- `getActiveDeathManPlan()`
+- `confirmDeathManCheckIn(...)`
+- `cancelDeathMan(...)`
+- `watchDeathManPlans()`
+
+## Realtime
+
+- `getRealtimeConnectionState()`
+- `getLastRealtimeEvent()`
+- `watchRealtimeConnectionState()`
+- `watchRealtimeEvents()`
+
+## Intentionally omitted from the partner path
+
+The current partner site does not present Guided Rescue Phase 1 as part of the public integration path.
+
+## Legacy / compatibility surfaces
+
+Some deprecated or compatibility methods still exist in the SDK contract for migration or internal validation purposes. They are documented in the full internal site.

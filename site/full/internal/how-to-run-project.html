@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EIXAM Connect SDK — How to Run the Project</title>
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">EIXAM Connect SDK</div>
+    <div class="site-tag">full docs</div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Navigation</div>
+      <a href="../index.html">Home</a><a href="../sdk/overview.html">SDK Overview</a><a href="../sdk/architecture.html">SDK Architecture</a><a href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a href="../sdk/backend-integration.html">Backend Integration</a><a href="../sdk/public-api.html">Public API</a><a href="../sdk/public-api-examples.html">Method Examples</a><a href="../sdk/protection-mode.html">Protection Mode</a><a href="../sdk/realtime-status.html">Realtime Status</a><a href="../sdk/troubleshooting.html">SDK Troubleshooting</a><a href="../integration/flutter-installation.html">Flutter Installation</a><a href="../integration/flutter-integration.html">Flutter Integration</a><a href="../integration/host-app-integration.html">Host App Integration</a><a href="../integration/android-host-integration.html">Android Host Integration</a><a href="../integration/ios-host-integration.html">iOS Host Integration</a><a href="../integration/permissions-checklist.html">Permissions Checklist</a><a href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../api/api-reference.html">API Reference</a><a href="decisions.html">Decisions</a><a href="quality-gates.html">Quality Gates</a><a href="testing-strategy.html">Testing Strategy</a><a href="testability-notes.html">Testability Notes</a><a class="active" href="how-to-run-project.html">How to Run Project</a><a href="agents.html">AGENTS</a>
+    </aside>
+    <main class="content"><h1>EIXAM Connect SDK — How to Run the Project</h1>
+<p><a id="purpose"></a></p>
+<h2>Purpose</h2>
+<p>This guide explains how to run the monorepo, launch the validation app, and keep a clean distinction between the <strong>public partner bootstrap flow</strong> and the <strong>internal validation app bootstrap flow</strong>.</p>
+<p><a id="repository-root"></a></p>
+<h2>Repository root</h2>
+<p>Always work from the monorepo root:</p>
+<pre><code class="language-text">C:\Users\roger\flutterdev\eixam_connect_sdk
+</code></pre>
+<p>Do not work from duplicated nested copies.</p>
+<p><a id="monorepo-structure"></a></p>
+<h2>Monorepo structure</h2>
+<ul>
+<li><code>apps/eixam_control_app</code> → Flutter validation host app</li>
+<li><code>packages/eixam_connect_core</code> → SDK contracts, entities, enums, domain models</li>
+<li><code>packages/eixam_connect_flutter</code> → Flutter runtime implementation, BLE, persistence, permissions, protection, MQTT</li>
+<li><code>packages/eixam_connect_ui</code> → reusable UI helpers</li>
+</ul>
+<p><a id="public-partner-flow-vs-validation-app-flow"></a></p>
+<h2>Public partner flow vs validation app flow</h2>
+<p><a id="public-partner-flow"></a></p>
+<h3>Public partner flow</h3>
+<p>Partner documentation should always present:</p>
+<pre><code class="language-dart">final sdk = await EixamConnectSdk.bootstrap(
+  const EixamBootstrapConfig(
+    appId: 'partner-app',
+    environment: EixamEnvironment.sandbox,
+    initialSession: EixamSession.signed(
+      appId: 'partner-app',
+      externalUserId: 'user-123',
+      userHash: 'signed-hash',
+    ),
+  ),
+);
+</code></pre>
+<p><a id="internal-validation-app-flow"></a></p>
+<h3>Internal validation app flow</h3>
+<p>The validation app may still use internal factory/bootstrap composition to support environment switching, diagnostics and local debug defaults. That internal flow is not the recommended partner integration path.</p>
+<p><a id="prerequisites"></a></p>
+<h2>Prerequisites</h2>
+<ul>
+<li>Flutter installed and available in <code>PATH</code></li>
+<li>Dart available through Flutter</li>
+<li>Android SDK installed</li>
+<li>Android Studio or VS Code</li>
+<li>at least one emulator or physical device visible in <code>flutter devices</code></li>
+</ul>
+<p>Recommended checks:</p>
+<pre><code class="language-bash">flutter doctor
+flutter devices
+</code></pre>
+<p><a id="recommended-command-sequence"></a></p>
+<h2>Recommended command sequence</h2>
+<p>From the repository root:</p>
+<pre><code class="language-bash">flutter clean
+flutter pub get
+flutter run -t apps/eixam_control_app/lib/main.dart
+</code></pre>
+<p><a id="running-the-validation-app"></a></p>
+<h2>Running the validation app</h2>
+<p><a id="android-studio"></a></p>
+<h3>Android Studio</h3>
+<ol>
+<li>Start an emulator or connect a device.</li>
+<li>From the repository root run:</li>
+</ol>
+<pre><code class="language-bash">flutter run -t apps/eixam_control_app/lib/main.dart
+</code></pre>
+<p><a id="terminal-only-workflow"></a></p>
+<h3>Terminal-only workflow</h3>
+<pre><code class="language-bash">flutter devices
+flutter run -t apps/eixam_control_app/lib/main.dart
+</code></pre>
+<p><a id="validation-app-behavior"></a></p>
+<h2>Validation app behavior</h2>
+<p>The validation app bootstraps an SDK instance, loads saved backend config, and then shows thin UI surfaces that consume SDK diagnostics, device state, protection state and SOS lifecycle.</p>
+<p><a id="local-package-dependency-model"></a></p>
+<h2>Local package dependency model</h2>
+<p>The reference app uses local path dependencies pointing to <code>../../packages/...</code>.</p>
+<p>Example:</p>
+<pre><code class="language-yaml">dependencies:
+  eixam_connect_core:
+    path: ../../packages/eixam_connect_core
+  eixam_connect_flutter:
+    path: ../../packages/eixam_connect_flutter
+  eixam_connect_ui:
+    path: ../../packages/eixam_connect_ui
+</code></pre>
+<p><a id="troubleshooting"></a></p>
+<h2>Troubleshooting</h2>
+<p><a id="wrong-repo-copy"></a></p>
+<h3>Wrong repo copy</h3>
+<p>If changes are not reflected, confirm you are running the top-level monorepo and not an older duplicate copy.</p>
+<p><a id="stale-state"></a></p>
+<h3>Stale state</h3>
+<p>If the app behaves inconsistently:</p>
+<pre><code class="language-bash">flutter clean
+flutter pub get
+</code></pre>
+<p>Also consider uninstalling the app from the emulator/device.</p>
+<p><a id="wrong-entrypoint"></a></p>
+<h3>Wrong entrypoint</h3>
+<p>Always prefer:</p>
+<pre><code class="language-bash">flutter run -t apps/eixam_control_app/lib/main.dart
+</code></pre>
+<p><a id="quality-checks"></a></p>
+<h2>Quality checks</h2>
+<p>Before merging meaningful changes:</p>
+<pre><code class="language-bash">dart format --set-exit-if-changed .
+flutter analyze --no-fatal-infos
+flutter test
+</code></pre>
+</main>
+    <aside class="toc">
+      <div class="toc-title">On this page</div>
+      <a class="toc-level-2" href="#purpose">Purpose</a><a class="toc-level-2" href="#repository-root">Repository root</a><a class="toc-level-2" href="#monorepo-structure">Monorepo structure</a><a class="toc-level-2" href="#public-partner-flow-vs-validation-app-flow">Public partner flow vs validation app flow</a><a class="toc-level-3" href="#public-partner-flow">Public partner flow</a><a class="toc-level-3" href="#internal-validation-app-flow">Internal validation app flow</a><a class="toc-level-2" href="#prerequisites">Prerequisites</a><a class="toc-level-2" href="#recommended-command-sequence">Recommended command sequence</a><a class="toc-level-2" href="#running-the-validation-app">Running the validation app</a><a class="toc-level-3" href="#android-studio">Android Studio</a><a class="toc-level-3" href="#terminal-only-workflow">Terminal-only workflow</a><a class="toc-level-2" href="#validation-app-behavior">Validation app behavior</a><a class="toc-level-2" href="#local-package-dependency-model">Local package dependency model</a><a class="toc-level-2" href="#troubleshooting">Troubleshooting</a><a class="toc-level-3" href="#wrong-repo-copy">Wrong repo copy</a><a class="toc-level-3" href="#stale-state">Stale state</a><a class="toc-level-3" href="#wrong-entrypoint">Wrong entrypoint</a><a class="toc-level-2" href="#quality-checks">Quality checks</a>
+    </aside>
+  </div>
+</body>
+</html>

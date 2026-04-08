@@ -1,49 +1,52 @@
-<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>iOS Integration</title><link rel='stylesheet' href='../assets/style.css'></head><body><div class='layout'><aside class='sidebar'><div class='brand'>EIXAM Docs - partner</div><nav><a class="" href="index.html">Overview</a><a class="" href="sdk-overview.html">SDK Overview</a><a class="" href="quickstart.html">Quickstart</a><a class="" href="public-api.html">Public API</a><a class="" href="public-api-examples.html">API Examples</a><a class="" href="core-concepts.html">Core Concepts</a><a class="" href="protection-mode.html">Protection Mode</a><a class="" href="flutter-integration.html">Flutter Integration</a><a class="" href="android-integration.html">Android Integration</a><a class="active" href="ios-integration.html">iOS Integration</a><a class="" href="permissions-checklist.html">Permissions Checklist</a><a class="" href="backend-integration.html">Backend Integration</a><a class="" href="api-reference.html">API Reference</a><a class="" href="troubleshooting.html">Troubleshooting</a></nav></aside><main class='content'><h1>iOS Host Integration</h1>
-<h2>Current State</h2>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>iOS Integration</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">EIXAM Connect SDK</div>
+    <div class="site-tag">partner docs</div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Navigation</div>
+      <a href="index.html">Home</a><a href="sdk-overview.html">SDK Overview</a><a href="quickstart.html">Quickstart</a><a href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a href="core-concepts.html">Core Concepts</a><a href="protection-mode.html">Protection Mode</a><a href="flutter-installation.html">Flutter Installation</a><a href="flutter-integration.html">Flutter Integration</a><a href="android-integration.html">Android Integration</a><a class="active" href="ios-integration.html">iOS Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a href="backend-integration.html">Backend Integration</a><a href="api-reference.html">API Reference</a><a href="troubleshooting.html">Troubleshooting</a>
+    </aside>
+    <main class="content"><h1>iOS Integration</h1>
+<p><a id="current-state"></a></p>
+<h2>Current state</h2>
+<p>The SDK includes an iOS Protection adapter and participates in the same Dart public contract, but iOS should still be treated honestly: background BLE ownership is not as mature as Android.</p>
+<p><a id="host-app-expectations"></a></p>
+<h2>Host app expectations</h2>
 <ul>
-<li>The SDK now includes an iOS Protection adapter and readiness/status/diagnostic participation.</li>
-<li>The implementation is intentionally honest: it is scaffolded, safe, non-crashing, and restoration-aware, but it does not claim full background BLE ownership yet.</li>
+<li>provide notification UX</li>
+<li>declare Bluetooth usage descriptions</li>
+<li>prepare <code>UIBackgroundModes</code> only when your product really needs background execution</li>
+<li>treat Protection Mode on iOS as capability-aware, not magically equivalent to Android</li>
 </ul>
-<h2>Host App Expectations</h2>
-<ul>
-<li>Configure notification permissions UX.</li>
-<li>Prepare <code>UIBackgroundModes</code> for future support, especially <code>bluetooth-central</code>.</li>
-<li>Be ready for restoration/state-preservation callbacks and lifecycle handoff wiring as the native runtime hardens.</li>
-</ul>
-<h2>What The SDK Owns Today</h2>
-<ul>
-<li>iOS Protection method/event channel contract</li>
-<li>Base status and diagnostics reporting</li>
-<li>Restoration-configured reporting and last-restoration event diagnostics</li>
-<li>Honest degradation reason strings</li>
-<li>Participation in the same Dart Protection API as Android</li>
-</ul>
-<h2>What Is Not Yet Implemented</h2>
-<ul>
-<li>Background BLE ownership while armed</li>
-<li>Restoration-backed BLE reconnect/runtime recovery</li>
-<li>Service-equivalent lifecycle ownership for critical SOS flows</li>
-<li>Production-ready iOS Protection queue processing</li>
-</ul>
-<h2>Readiness Interpretation</h2>
-<ul>
-<li><code>platformRuntimeConfigured=true</code><ul>
-<li>The host can talk to the iOS Protection adapter.</li>
-</ul>
-</li>
-<li><code>backgroundCapabilityState=unknown</code><ul>
-<li>The SDK cannot yet guarantee the host background BLE configuration is complete.</li>
-</ul>
-</li>
-<li><code>coverage=partial</code><ul>
-<li>The iOS base path is wired, but runtime ownership is not complete.</li>
-</ul>
-</li>
-</ul>
-<h2>Troubleshooting</h2>
-<ul>
-<li>If Protection Mode appears partial on iOS, that is expected with the current base implementation.</li>
-<li>If notifications or Bluetooth appear unavailable, inspect app permissions and capabilities first.</li>
-<li>Do not rely on iOS Protection Mode for background BLE ownership until the future runtime/restoration phase is implemented.</li>
-</ul>
-</main></div><script src='../assets/site.js'></script></body></html>
+<p><a id="recommended-integration-rule"></a></p>
+<h2>Recommended integration rule</h2>
+<p>Use the same public bootstrap path:</p>
+<pre><code class="language-dart">final sdk = await EixamConnectSdk.bootstrap(
+  const EixamBootstrapConfig(
+    appId: 'partner-app',
+    environment: EixamEnvironment.production,
+  ),
+);
+</code></pre>
+<p>Then request permissions and inspect readiness before arming Protection Mode.</p>
+<p><a id="troubleshooting-note"></a></p>
+<h2>Troubleshooting note</h2>
+<p>If iOS reports partial coverage or degraded readiness, inspect diagnostics first instead of assuming parity with Android runtime ownership.</p>
+</main>
+    <aside class="toc">
+      <div class="toc-title">On this page</div>
+      <a class="toc-level-2" href="#current-state">Current state</a><a class="toc-level-2" href="#host-app-expectations">Host app expectations</a><a class="toc-level-2" href="#recommended-integration-rule">Recommended integration rule</a><a class="toc-level-2" href="#troubleshooting-note">Troubleshooting note</a>
+    </aside>
+  </div>
+</body>
+</html>

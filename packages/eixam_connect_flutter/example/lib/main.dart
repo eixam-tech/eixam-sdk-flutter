@@ -31,19 +31,21 @@ class PartnerExampleHomePage extends StatefulWidget {
 }
 
 class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
-  final TextEditingController _apiBaseUrlController = TextEditingController(
-    text: 'https://api.example.eixam',
-  );
-  final TextEditingController _websocketUrlController = TextEditingController(
-    text: 'wss://mqtt.example.eixam/mqtt',
-  );
   final TextEditingController _appIdController = TextEditingController(
-    text: 'partner-app-id',
+    text: 'partner-app',
   );
   final TextEditingController _externalUserIdController =
-      TextEditingController(text: 'partner-user-001');
+      TextEditingController(text: 'partner-user-123');
   final TextEditingController _userHashController = TextEditingController(
-    text: 'signed-session-value',
+    text: 'signed-session-hash',
+  );
+  final TextEditingController _customApiBaseUrlController =
+      TextEditingController(
+    text: 'https://partner-api.example.com',
+  );
+  final TextEditingController _customWebsocketUrlController =
+      TextEditingController(
+    text: 'wss://partner-mqtt.example.com/mqtt',
   );
   final TextEditingController _pairingCodeController = TextEditingController(
     text: 'PAIR-CODE-001',
@@ -70,13 +72,16 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
   StreamSubscription<List<EmergencyContact>>? _contactsSubscription;
   StreamSubscription<SdkOperationalDiagnostics>? _diagnosticsSubscription;
 
-  bool _creatingSdk = false;
-  bool _settingSession = false;
+  EixamEnvironment _environment = EixamEnvironment.sandbox;
+  bool _includeInitialSession = true;
+
+  bool _bootstrapping = false;
   bool _requestingPermissions = false;
   bool _runningDeviceAction = false;
   bool _savingContact = false;
   bool _runningSosAction = false;
   bool _refreshingDiagnostics = false;
+  bool _clearingSession = false;
 
   String? _statusMessage;
   String? _errorMessage;
@@ -84,14 +89,15 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
   SosState _sosState = SosState.idle;
   DeviceStatus? _deviceStatus;
   PermissionState? _permissionState;
+  EixamSession? _session;
+  List<EmergencyContact> _contacts = const <EmergencyContact>[];
   SdkOperationalDiagnostics _diagnostics = const SdkOperationalDiagnostics(
     connectionState: RealtimeConnectionState.disconnected,
     bridge: SdkBridgeDiagnostics(),
   );
-  EixamSession? _session;
-  List<EmergencyContact> _contacts = const <EmergencyContact>[];
 
   bool get _hasSdk => _sdk != null;
+  bool get _isCustomEnvironment => _environment == EixamEnvironment.custom;
 
   @override
   void dispose() {
@@ -99,11 +105,11 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
     _deviceStatusSubscription?.cancel();
     _contactsSubscription?.cancel();
     _diagnosticsSubscription?.cancel();
-    _apiBaseUrlController.dispose();
-    _websocketUrlController.dispose();
     _appIdController.dispose();
     _externalUserIdController.dispose();
     _userHashController.dispose();
+    _customApiBaseUrlController.dispose();
+    _customWebsocketUrlController.dispose();
     _pairingCodeController.dispose();
     _activationCodeController.dispose();
     _contactNameController.dispose();
@@ -113,25 +119,41 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
     super.dispose();
   }
 
-  Future<void> _createSdk() async {
+  Future<void> _bootstrapSdk() async {
     setState(() {
-      _creatingSdk = true;
+      _bootstrapping = true;
       _errorMessage = null;
-      _statusMessage = 'Creating SDK...';
+      _statusMessage = 'Bootstrapping SDK...';
     });
 
     try {
-      // Partners typically start by creating the public SDK facade.
-      final sdk = await ApiSdkFactory.createHttpApi(
-        apiBaseUrl: _apiBaseUrlController.text.trim(),
-        websocketUrl: _websocketUrlController.text.trim(),
+      // Partners bootstrap the SDK in one call with app identity and target
+      // environment. The SDK handles internal endpoint resolution.
+      final sdk = await EixamConnectSdk.bootstrap(
+        EixamBootstrapConfig(
+          appId: _appIdController.text.trim(),
+          environment: _environment,
+          initialSession: _includeInitialSession
+              ? EixamSession.signed(
+                  appId: _appIdController.text.trim(),
+                  externalUserId: _externalUserIdController.text.trim(),
+                  userHash: _userHashController.text.trim(),
+                )
+              : null,
+          customEndpoints: _isCustomEnvironment
+              ? EixamCustomEndpoints(
+                  apiBaseUrl: _customApiBaseUrlController.text.trim(),
+                  websocketUrl: _customWebsocketUrlController.text.trim(),
+                )
+              : null,
+        ),
       );
 
       await _bindSdk(sdk);
       await _refreshSnapshot();
 
       setState(() {
-        _statusMessage = 'SDK created.';
+        _statusMessage = 'SDK ready.';
       });
     } catch (error) {
       setState(() {
@@ -140,7 +162,7 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
     } finally {
       if (mounted) {
         setState(() {
-          _creatingSdk = false;
+          _bootstrapping = false;
         });
       }
     }
@@ -154,7 +176,8 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
 
     _sdk = sdk;
 
-    // The host app listens to public SDK streams and renders the results.
+    // The host app listens to the public SDK streams and renders that state
+    // inside its own UI.
     _sosStateSubscription = sdk.currentSosStateStream.listen((state) {
       if (!mounted) return;
       setState(() {
@@ -186,29 +209,21 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
     });
   }
 
-  Future<void> _setSession() async {
+  Future<void> _clearSession() async {
     final sdk = _sdk;
     if (sdk == null) return;
 
     setState(() {
-      _settingSession = true;
+      _clearingSession = true;
       _errorMessage = null;
-      _statusMessage = 'Setting session...';
+      _statusMessage = 'Clearing session...';
     });
 
     try {
-      // The host app provides the signed session from its own backend flow.
-      await sdk.setSession(
-        EixamSession.signed(
-          appId: _appIdController.text.trim(),
-          externalUserId: _externalUserIdController.text.trim(),
-          userHash: _userHashController.text.trim(),
-        ),
-      );
+      await sdk.clearSession();
       await _refreshSnapshot();
-
       setState(() {
-        _statusMessage = 'Session applied.';
+        _statusMessage = 'Session cleared.';
       });
     } catch (error) {
       setState(() {
@@ -217,7 +232,7 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
     } finally {
       if (mounted) {
         setState(() {
-          _settingSession = false;
+          _clearingSession = false;
         });
       }
     }
@@ -234,11 +249,10 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
     });
 
     try {
-      // A partner app can request the runtime permissions through the SDK.
+      // The host UI can request the runtime permissions through the SDK.
       await sdk.requestLocationPermission();
       await sdk.requestNotificationPermission();
       _permissionState = await sdk.requestBluetoothPermission();
-
       setState(() {
         _statusMessage = 'Permissions updated.';
       });
@@ -266,12 +280,11 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
     });
 
     try {
-      // Connect the partner-selected device through the public device API.
+      // Device connection stays explicit and user-driven after bootstrap.
       _deviceStatus = await sdk.connectDevice(
         pairingCode: _pairingCodeController.text.trim(),
       );
       await _refreshSnapshot();
-
       setState(() {
         _statusMessage = 'Device connected.';
       });
@@ -299,12 +312,12 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
     });
 
     try {
-      // Activation remains a public SDK step when the product flow needs it.
+      // Activation remains an explicit public SDK call when the product flow
+      // requires it.
       _deviceStatus = await sdk.activateDevice(
         activationCode: _activationCodeController.text.trim(),
       );
       await _refreshSnapshot();
-
       setState(() {
         _statusMessage = 'Device activated.';
       });
@@ -332,14 +345,13 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
     });
 
     try {
-      // Emergency contacts are created and managed through the public facade.
+      // Emergency contacts are managed through the public facade.
       await sdk.createEmergencyContact(
         name: _contactNameController.text.trim(),
         phone: _contactPhoneController.text.trim(),
         email: _contactEmailController.text.trim(),
       );
       await _refreshSnapshot();
-
       setState(() {
         _statusMessage = 'Contact saved.';
       });
@@ -369,7 +381,6 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
     try {
       await sdk.deleteEmergencyContact(contactId);
       await _refreshSnapshot();
-
       setState(() {
         _statusMessage = 'Contact deleted.';
       });
@@ -397,7 +408,7 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
     });
 
     try {
-      // SOS actions should be triggered from the partner UI through the SDK.
+      // SOS is triggered from partner-owned UI through the public SDK facade.
       await sdk.triggerSos(
         SosTriggerPayload(
           message: _sosMessageController.text.trim(),
@@ -405,7 +416,6 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
         ),
       );
       await _refreshSnapshot();
-
       setState(() {
         _statusMessage = 'SOS triggered.';
       });
@@ -435,7 +445,6 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
     try {
       await sdk.cancelSos();
       await _refreshSnapshot();
-
       setState(() {
         _statusMessage = 'SOS cancelled.';
       });
@@ -474,7 +483,7 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
         _sosState = sosState;
       });
     } catch (_) {
-      // The example keeps refresh lightweight and lets action handlers show errors.
+      // Keep refresh lightweight and let action handlers surface errors.
     }
   }
 
@@ -509,62 +518,118 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
         padding: const EdgeInsets.all(16),
         children: [
           const Text(
-            'This example shows how a partner app can wire its own simple UI on top of the official EIXAM SDK facade.',
+            'This example is a minimal partner smoke-test app: bootstrap the SDK, request permissions, and then validate a core flow such as device connect, SOS, or diagnostics.',
+          ),
+          const SizedBox(height: 16),
+          const _JourneyBanner(
+            title: 'Primary Smoke-Test Path',
+            steps: <String>[
+              '1. Bootstrap the SDK',
+              '2. Confirm the signed session',
+              '3. Request permissions',
+              '4. Validate one core flow: diagnostics, device connect, or SOS',
+            ],
           ),
           const SizedBox(height: 16),
           _SectionCard(
-            title: '1. Initialize SDK',
+            title: '1. Bootstrap SDK',
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                TextField(
-                  controller: _apiBaseUrlController,
-                  decoration: const InputDecoration(labelText: 'API base URL'),
+                const Text(
+                  'Use the public bootstrap call with the EIXAM appId and environment assigned during onboarding.',
                 ),
                 const SizedBox(height: 12),
-                TextField(
-                  controller: _websocketUrlController,
-                  decoration:
-                      const InputDecoration(labelText: 'Realtime websocket URL'),
-                ),
-                const SizedBox(height: 12),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: FilledButton(
-                    onPressed: _creatingSdk ? null : _createSdk,
-                    child: Text(_creatingSdk ? 'Creating...' : 'Create SDK'),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          _SectionCard(
-            title: '2. Set Session',
-            child: Column(
-              children: [
                 TextField(
                   controller: _appIdController,
                   decoration: const InputDecoration(labelText: 'appId'),
                 ),
                 const SizedBox(height: 12),
-                TextField(
-                  controller: _externalUserIdController,
-                  decoration:
-                      const InputDecoration(labelText: 'externalUserId'),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _userHashController,
-                  decoration:
-                      const InputDecoration(labelText: 'signed session value'),
-                ),
-                const SizedBox(height: 12),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: FilledButton(
-                    onPressed: !_hasSdk || _settingSession ? null : _setSession,
-                    child:
-                        Text(_settingSession ? 'Applying...' : 'Apply Session'),
+                DropdownButtonFormField<EixamEnvironment>(
+                  initialValue: _environment,
+                  decoration: const InputDecoration(
+                    labelText: 'Environment',
                   ),
+                  items: EixamEnvironment.values
+                      .map(
+                        (environment) => DropdownMenuItem<EixamEnvironment>(
+                          value: environment,
+                          child: Text(environment.name),
+                        ),
+                      )
+                      .toList(growable: false),
+                  onChanged: (value) {
+                    if (value == null) return;
+                    setState(() {
+                      _environment = value;
+                    });
+                  },
+                ),
+                if (_isCustomEnvironment) ...[
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _customApiBaseUrlController,
+                    decoration: const InputDecoration(
+                      labelText: 'Custom API base URL',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _customWebsocketUrlController,
+                    decoration: const InputDecoration(
+                      labelText: 'Custom realtime websocket URL',
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: _includeInitialSession,
+                  title: const Text('Include initial signed session'),
+                  subtitle: const Text(
+                    'Disable this if your app bootstraps first and applies the session later.',
+                  ),
+                  onChanged: (value) {
+                    setState(() {
+                      _includeInitialSession = value;
+                    });
+                  },
+                ),
+                if (_includeInitialSession) ...[
+                  TextField(
+                    controller: _externalUserIdController,
+                    decoration: const InputDecoration(
+                      labelText: 'externalUserId',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _userHashController,
+                    decoration: const InputDecoration(
+                      labelText: 'Signed session value',
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: [
+                    FilledButton(
+                      onPressed: _bootstrapping ? null : _bootstrapSdk,
+                      child: Text(
+                        _bootstrapping ? 'Bootstrapping...' : 'Bootstrap SDK',
+                      ),
+                    ),
+                    OutlinedButton(
+                      onPressed: !_hasSdk || _clearingSession
+                          ? null
+                          : _clearSession,
+                      child: Text(
+                        _clearingSession ? 'Clearing...' : 'Clear Session',
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 8),
                 _InfoLine(
@@ -577,20 +642,18 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
             ),
           ),
           _SectionCard(
-            title: '3. Request Permissions',
+            title: '2. Request Permissions',
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: FilledButton(
-                    onPressed: !_hasSdk || _requestingPermissions
-                        ? null
-                        : _requestPermissions,
-                    child: Text(
-                      _requestingPermissions
-                          ? 'Requesting...'
-                          : 'Request Permissions',
-                    ),
+                FilledButton(
+                  onPressed: !_hasSdk || _requestingPermissions
+                      ? null
+                      : _requestPermissions,
+                  child: Text(
+                    _requestingPermissions
+                        ? 'Requesting...'
+                        : 'Request Permissions',
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -610,23 +673,69 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
             ),
           ),
           _SectionCard(
-            title: '4. Device',
+            title: '3. Core Flow: Diagnostics',
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Fastest smoke test after bootstrap: confirm the SDK is alive and streams are updating.',
+                ),
+                const SizedBox(height: 12),
+                OutlinedButton(
+                  onPressed: !_hasSdk || _refreshingDiagnostics
+                      ? null
+                      : _refreshDiagnostics,
+                  child: Text(
+                    _refreshingDiagnostics
+                        ? 'Refreshing...'
+                        : 'Refresh Diagnostics',
+                  ),
+                ),
+                const SizedBox(height: 8),
+                _InfoLine(
+                  label: 'Realtime',
+                  value: _diagnostics.connectionState.name,
+                ),
+                _InfoLine(
+                  label: 'Bridge active',
+                  value: _diagnostics.bridge.isActive.toString(),
+                ),
+                _InfoLine(
+                  label: 'Pending SOS',
+                  value: (_diagnostics.bridge.pendingSos != null).toString(),
+                ),
+                _InfoLine(
+                  label: 'Pending telemetry',
+                  value:
+                      (_diagnostics.bridge.pendingTelemetry != null).toString(),
+                ),
+                _InfoLine(
+                  label: 'Last bridge decision',
+                  value: _diagnostics.bridge.lastDecision ?? '-',
+                ),
+              ],
+            ),
+          ),
+          const _SectionLabel(
+            title: 'Advanced Public SDK Sections',
+            body:
+                'These sections remain available for broader manual validation, but they are not required for a minimal partner smoke test.',
+          ),
+          _SectionCard(
+            title: '4. Device Lifecycle',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 TextField(
                   controller: _pairingCodeController,
-                  decoration:
-                      const InputDecoration(labelText: 'Pairing code'),
+                  decoration: const InputDecoration(labelText: 'Pairing code'),
                 ),
                 const SizedBox(height: 12),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: FilledButton(
-                    onPressed:
-                        !_hasSdk || _runningDeviceAction ? null : _connectDevice,
-                    child: Text(
-                      _runningDeviceAction ? 'Working...' : 'Connect Device',
-                    ),
+                FilledButton(
+                  onPressed:
+                      !_hasSdk || _runningDeviceAction ? null : _connectDevice,
+                  child: Text(
+                    _runningDeviceAction ? 'Working...' : 'Connect Device',
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -636,14 +745,10 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
                       const InputDecoration(labelText: 'Activation code'),
                 ),
                 const SizedBox(height: 12),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: OutlinedButton(
-                    onPressed: !_hasSdk || _runningDeviceAction
-                        ? null
-                        : _activateDevice,
-                    child: const Text('Activate Device'),
-                  ),
+                OutlinedButton(
+                  onPressed:
+                      !_hasSdk || _runningDeviceAction ? null : _activateDevice,
+                  child: const Text('Activate Device'),
                 ),
                 const SizedBox(height: 8),
                 _InfoLine(
@@ -668,6 +773,7 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
           _SectionCard(
             title: '5. Emergency Contacts',
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 TextField(
                   controller: _contactNameController,
@@ -684,19 +790,13 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
                   decoration: const InputDecoration(labelText: 'Email'),
                 ),
                 const SizedBox(height: 12),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: FilledButton(
-                    onPressed: !_hasSdk || _savingContact ? null : _saveContact,
-                    child: Text(_savingContact ? 'Saving...' : 'Save Contact'),
-                  ),
+                FilledButton(
+                  onPressed: !_hasSdk || _savingContact ? null : _saveContact,
+                  child: Text(_savingContact ? 'Saving...' : 'Save Contact'),
                 ),
                 const SizedBox(height: 12),
                 if (_contacts.isEmpty)
-                  const Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text('No emergency contacts yet.'),
-                  )
+                  const Text('No emergency contacts yet.')
                 else
                   Column(
                     children: _contacts
@@ -705,7 +805,7 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
                             contentPadding: EdgeInsets.zero,
                             title: Text(contact.name),
                             subtitle:
-                                Text('${contact.phone} • ${contact.email}'),
+                                Text('${contact.phone} | ${contact.email}'),
                             trailing: TextButton(
                               onPressed: _savingContact
                                   ? null
@@ -722,6 +822,7 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
           _SectionCard(
             title: '6. SOS',
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 TextField(
                   controller: _sosMessageController,
@@ -754,17 +855,20 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
           _SectionCard(
             title: '7. Diagnostics and Streams',
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: OutlinedButton(
-                    onPressed:
-                        !_hasSdk || _refreshingDiagnostics ? null : _refreshDiagnostics,
-                    child: Text(
-                      _refreshingDiagnostics
-                          ? 'Refreshing...'
-                          : 'Refresh Diagnostics',
-                    ),
+                const Text(
+                  'Use this section when you want a broader view of operational state after the primary smoke test passes.',
+                ),
+                const SizedBox(height: 12),
+                OutlinedButton(
+                  onPressed: !_hasSdk || _refreshingDiagnostics
+                      ? null
+                      : _refreshDiagnostics,
+                  child: Text(
+                    _refreshingDiagnostics
+                        ? 'Refreshing...'
+                        : 'Refresh Diagnostics',
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -840,6 +944,70 @@ class _SectionCard extends StatelessWidget {
             child,
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _JourneyBanner extends StatelessWidget {
+  const _JourneyBanner({
+    required this.title,
+    required this.steps,
+  });
+
+  final String title;
+  final List<String> steps;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE8F4EE),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: 8),
+          ...steps.map((step) => Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Text(step),
+              )),
+        ],
+      ),
+    );
+  }
+}
+
+class _SectionLabel extends StatelessWidget {
+  const _SectionLabel({
+    required this.title,
+    required this.body,
+  });
+
+  final String title;
+  final String body;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: Theme.of(context).textTheme.titleSmall,
+          ),
+          const SizedBox(height: 4),
+          Text(body),
+        ],
       ),
     );
   }
