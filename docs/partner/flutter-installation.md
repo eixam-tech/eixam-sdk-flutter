@@ -2,12 +2,14 @@
 
 ## Add the package
 
+For the planned `0.1.0` release, use the agreed EIXAM release tag when it is provided during release handoff.
+
 ```yaml
 dependencies:
   eixam_connect_flutter:
     git:
       url: https://github.com/eixam-tech/eixam-sdk-flutter
-      ref: v0.3.0
+      ref: <agreed-0.1.0-release-tag>
       path: packages/eixam_connect_flutter
 ```
 

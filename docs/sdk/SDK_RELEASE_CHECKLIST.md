@@ -1,13 +1,13 @@
 # SDK Release Checklist
 
-Use this checklist before freezing a partner-ready SDK release such as `v0.3.0`.
+Use this checklist before freezing a partner-ready SDK release such as the planned `0.1.0` release.
 
 ## Release Gates
 
 ### 1. Version and Tag Ready
 
-- confirm the package version is final
-- confirm the release tag is final and matches the version being shipped
+- confirm the package version is aligned to the planned `0.1.0` release
+- confirm the release tag/version plan is agreed, without creating the final tag until backend validation is complete
 - confirm the release artifact set is the one intended for partners
 
 ### 2. Public API Ready

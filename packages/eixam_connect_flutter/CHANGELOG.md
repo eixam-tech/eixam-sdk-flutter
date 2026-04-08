@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0
+## 0.1.0
 
 - introduced a clean partner-facing public API boundary centered on `package:eixam_connect_flutter/eixam_connect_flutter.dart`
 - stopped exporting internal repositories, controllers, BLE/protocol packet helpers, platform adapters, and runtime/storage internals from the root barrel
