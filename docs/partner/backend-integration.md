@@ -29,7 +29,9 @@ The host app is expected to rely on a partner/backend service that provides:
 5. the SDK bootstraps with `appId` + `initialSession`, or receives the same signed session later through `setSession(...)`
 6. the SDK reuses that same identity for both HTTP and MQTT
 
-Partner production systems must implement the sign flow directly on their own backend.
+Partner production systems must implement the sign flow directly on their own backend. See [Identity Signing (JS)](./js-signing.md).
+
+
 
 ## Signed session contract
 
