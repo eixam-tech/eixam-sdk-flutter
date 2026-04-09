@@ -1,0 +1,8 @@
+{
+  "cleanUrls": true,
+  "trailingSlash": true,
+  "rewrites": [
+    { "source": "/full", "destination": "/full/index.html" },
+    { "source": "/partner", "destination": "/partner/index.html" }
+  ]
+}

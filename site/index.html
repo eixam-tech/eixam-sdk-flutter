@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EIXAM Connect SDK — Documentation Portal</title>
+  <link rel="stylesheet" href="assets/style.css" />
+  <style>
+    .portal-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 2rem;
+      margin-top: 3rem;
+    }
+    .portal-card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 2.5rem;
+      transition: all 0.3s ease;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      height: 100%;
+    }
+    .portal-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-4px);
+      box-shadow: 0 12px 24px rgba(0,0,0,0.3);
+    }
+    .portal-card h2 {
+      margin-top: 0;
+      color: white;
+      font-size: 1.75rem;
+    }
+    .portal-card p {
+      color: #dbe3fb;
+      line-height: 1.6;
+      margin-bottom: 2rem;
+      flex-grow: 1;
+    }
+    .btn {
+      display: inline-block;
+      padding: 0.75rem 1.5rem;
+      background: var(--accent);
+      color: var(--bg);
+      font-weight: 700;
+      border-radius: 8px;
+      text-align: center;
+      transition: opacity 0.2s;
+    }
+    .btn:hover {
+      opacity: 0.9;
+    }
+    .btn-secondary {
+      background: #162344;
+      color: white;
+      border: 1px solid var(--line);
+    }
+    .btn-secondary:hover {
+      background: #1c2b54;
+    }
+    header.hero {
+      text-align: center;
+      padding: 4rem 0 2rem;
+    }
+    header.hero h1 {
+      font-size: 3rem;
+      margin-bottom: 1rem;
+      background: linear-gradient(135deg, white 0%, #8dd8ff 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    header.hero p {
+      font-size: 1.25rem;
+      color: #c9d4f3;
+      max-width: 600px;
+      margin: 0 auto;
+    }
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 0 2rem 4rem;
+    }
+    footer {
+      text-align: center;
+      padding: 4rem 0;
+      border-top: 1px solid var(--line);
+      color: #6a7ba1;
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <h1>EIXAM Connect SDK</h1>
+    <p>The documentation portal for EIXAM's connected safety platform.</p>
+  </header>
+  
+  <main>
+    <div class="portal-grid">
+      <div class="portal-card">
+        <div>
+          <h2>Partner Portal</h2>
+          <p>Public documentation for external teams integrating EIXAM Connect SDK into their apps. Includes quickstart, API reference, and integration guides.</p>
+        </div>
+        <a href="partner/" class="btn">View Partner Docs</a>
+      </div>
+      
+      <div class="portal-card">
+        <div>
+          <h2>Full Technical Docs</h2>
+          <p>Internal documentation for EIXAM engineering. Includes architecture, BLE protocol specs, validation app guides, and development roadmap.</p>
+        </div>
+        <a href="full/" class="btn btn-secondary">View Full Docs</a>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    &copy; 2026 EIXAM. All rights reserved.
+  </footer>
+</body>
+</html>
