@@ -100,6 +100,8 @@ class EixamConnectSdkImpl
   String? _lastSosRehydrationNote;
   SdkBridgeDiagnostics _bridgeDiagnostics = const SdkBridgeDiagnostics();
   EixamSdkConfig? _sdkConfig;
+  bool _registeredDeviceAutoSyncInFlight = false;
+  String? _lastRegisteredDeviceAutoSyncFingerprint;
   late final BleAutoReconnectCoordinator _bleAutoReconnectCoordinator;
   late final BleOperationalRuntimeBridge _bleOperationalRuntimeBridge;
   late final ProtectionModeController _protectionModeController;
@@ -144,6 +146,10 @@ class EixamConnectSdkImpl
       sosRepository: sosRepository,
       deviceSosController: deviceSosController,
       sessionProvider: () => _session,
+      backendHardwareIdResolver: (runtimeDeviceId) =>
+          _loadBackendHardwareIdForOperationalPayloads(
+        runtimeStatus: _lastDeviceStatus,
+      ),
     );
     _protectionModeController = ProtectionModeController(
       platformAdapter: this.protectionPlatformAdapter,
@@ -154,6 +160,10 @@ class EixamConnectSdkImpl
       permissionStateProvider: permissionsRepository.getPermissionState,
       operationalDiagnosticsProvider: () async =>
           _buildOperationalDiagnostics(),
+      backendHardwareIdProvider: () =>
+          _loadBackendHardwareIdForOperationalPayloads(
+        runtimeStatus: _lastDeviceStatus,
+      ),
       onBleOwnershipChanged: _handleProtectionBleOwnershipChanged,
     );
     _bindSosStreams();
@@ -190,6 +200,10 @@ class EixamConnectSdkImpl
     await realtimeClient.connect();
     await _resumeDeathManMonitoringIfNeeded();
     await _bleAutoReconnectCoordinator.tryAutoConnectOnStartup();
+    _scheduleRegisteredDeviceAutoSync(
+      trigger: 'initialize',
+      status: _lastDeviceStatus,
+    );
   }
 
   void _bindGuidedRescueStreams() {
@@ -212,6 +226,10 @@ class EixamConnectSdkImpl
 
     _deviceStatusSub = deviceRepository.watchDeviceStatus().listen((status) {
       _lastDeviceStatus = status;
+      _scheduleRegisteredDeviceAutoSync(
+        trigger: 'device_status_stream',
+        status: status,
+      );
     });
 
     _deviceSosSub = deviceSosController.watchStatus().listen(
@@ -271,6 +289,10 @@ class EixamConnectSdkImpl
     await _rehydrateSosRuntimeState();
     await sessionStore?.save(_session!);
     _emitOperationalDiagnostics();
+    _scheduleRegisteredDeviceAutoSync(
+      trigger: 'set_session',
+      status: _lastDeviceStatus,
+    );
     final realtime = realtimeClient;
     if (realtime is OperationalRealtimeClient) {
       await realtime.reconnectIfSessionChanged(_session!);
@@ -299,6 +321,10 @@ class EixamConnectSdkImpl
     await _rehydrateSosRuntimeState();
     await sessionStore?.save(refreshed);
     _emitOperationalDiagnostics();
+    _scheduleRegisteredDeviceAutoSync(
+      trigger: 'refresh_identity',
+      status: _lastDeviceStatus,
+    );
     final realtime = realtimeClient;
     if (realtime is OperationalRealtimeClient) {
       await realtime.reconnectIfSessionChanged(refreshed);
@@ -1119,8 +1145,23 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Future<void> publishTelemetry(SdkTelemetryPayload payload) {
-    return telemetryRepository.publishTelemetry(payload);
+  Future<void> publishTelemetry(SdkTelemetryPayload payload) async {
+    final session = _session;
+    final backendHardwareId = await _loadBackendHardwareIdForOperationalPayloads(
+      runtimeStatus: _lastDeviceStatus,
+    );
+    final resolvedDeviceId = _resolveOperationalDeviceId(
+      backendHardwareId: backendHardwareId,
+    );
+
+    await telemetryRepository.publishTelemetry(
+      payload.copyWith(
+        userId: payload.userId ??
+            session?.canonicalExternalUserId ??
+            session?.externalUserId,
+        deviceId: resolvedDeviceId,
+      ),
+    );
   }
 
   @override
@@ -1150,11 +1191,15 @@ class EixamConnectSdkImpl
   @override
   Future<SosIncident> triggerSos(SosTriggerPayload payload) async {
     final positionSnapshot = await _loadPositionSnapshotForSos();
+    final deviceId = await _loadBackendHardwareIdForOperationalPayloads(
+      runtimeStatus: _lastDeviceStatus,
+    );
 
     final incident = await sosRepository.triggerSos(
       message: payload.message,
       triggerSource: payload.triggerSource,
       positionSnapshot: positionSnapshot,
+      deviceId: deviceId,
     );
     _publishSdkEvent(SOSTriggeredEvent(incident.id));
     return incident;
@@ -1174,14 +1219,136 @@ class EixamConnectSdkImpl
 
   Future<TrackingPosition?> _loadPositionSnapshotForSos() async {
     try {
-      final permissionState = await permissionsRepository.getPermissionState();
-      if (permissionState.hasLocationAccess) {
-        return await trackingRepository.getCurrentPosition();
-      }
+      return await trackingRepository.getCurrentPosition();
     } catch (_) {
       // Best-effort snapshot: SOS should continue even if location lookup fails.
     }
     return null;
+  }
+
+  Future<String?> _loadBackendHardwareIdForOperationalPayloads({
+    DeviceStatus? runtimeStatus,
+  }) async {
+    try {
+      final status =
+          runtimeStatus ?? _lastDeviceStatus ?? await deviceRepository.getDeviceStatus();
+      if (!status.paired && !status.connected && !status.activated) {
+        return null;
+      }
+      final hardwareId = status.canonicalHardwareId?.trim();
+      return hardwareId == null || hardwareId.isEmpty ? null : hardwareId;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool _hasSignedSessionIdentityReadyForDeviceRegistrySync() {
+    final session = _session;
+    if (session == null) {
+      return false;
+    }
+    final canonicalUserId =
+        (session.canonicalExternalUserId ?? session.externalUserId).trim();
+    return session.appId.trim().isNotEmpty &&
+        canonicalUserId.isNotEmpty &&
+        session.userHash.trim().isNotEmpty;
+  }
+
+  bool _isRegisteredDeviceAutoSyncEligible(DeviceStatus status) {
+    return status.paired && status.connected;
+  }
+
+  void _scheduleRegisteredDeviceAutoSync({
+    required String trigger,
+    DeviceStatus? status,
+  }) {
+    unawaited(
+      _maybeAutoSyncRegisteredDevice(
+        trigger: trigger,
+        runtimeStatus: status,
+      ),
+    );
+  }
+
+  Future<void> _maybeAutoSyncRegisteredDevice({
+    required String trigger,
+    DeviceStatus? runtimeStatus,
+  }) async {
+    if (_registeredDeviceAutoSyncInFlight) {
+      return;
+    }
+    final status =
+        runtimeStatus ?? _lastDeviceStatus ?? await deviceRepository.getDeviceStatus();
+    if (!_isRegisteredDeviceAutoSyncEligible(status) ||
+        !_hasSignedSessionIdentityReadyForDeviceRegistrySync()) {
+      return;
+    }
+
+    final hardwareId = status.canonicalHardwareId?.trim();
+    if (hardwareId == null || hardwareId.isEmpty) {
+      BleDebugRegistry.instance.recordEvent(
+        'Registered device auto-sync skipped -> reason=missing_canonical_hardware_id trigger=$trigger runtimeDeviceId=${status.deviceId}',
+      );
+      return;
+    }
+
+    BackendRegisteredDevice? existingDevice;
+    try {
+      final devices = await deviceRegistryRepository.listRegisteredDevices();
+      for (final device in devices) {
+        if (device.hardwareId.trim() == hardwareId) {
+          existingDevice = device;
+          break;
+        }
+      }
+    } catch (_) {
+      existingDevice = null;
+    }
+
+    final firmwareVersion =
+        (status.firmwareVersion?.trim().isNotEmpty == true)
+            ? status.firmwareVersion!.trim()
+            : existingDevice?.firmwareVersion ?? '';
+    final hardwareModel = (status.model?.trim().isNotEmpty == true)
+        ? status.model!.trim()
+        : existingDevice?.hardwareModel ?? '';
+    final session = _session!;
+    final canonicalUserId =
+        (session.canonicalExternalUserId ?? session.externalUserId).trim();
+    final fingerprint =
+        '$hardwareId|$firmwareVersion|$hardwareModel|${session.appId.trim()}|$canonicalUserId';
+    if (_lastRegisteredDeviceAutoSyncFingerprint == fingerprint) {
+      return;
+    }
+
+    _registeredDeviceAutoSyncInFlight = true;
+    try {
+      await deviceRegistryRepository.upsertRegisteredDevice(
+        hardwareId: hardwareId,
+        firmwareVersion: firmwareVersion,
+        hardwareModel: hardwareModel,
+        pairedAt: DateTime.now().toUtc(),
+      );
+      _lastRegisteredDeviceAutoSyncFingerprint = fingerprint;
+      BleDebugRegistry.instance.recordEvent(
+        'Registered device auto-sync succeeded -> trigger=$trigger hardwareId=$hardwareId',
+      );
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'Registered device auto-sync failed -> trigger=$trigger hardwareId=$hardwareId error=$error',
+      );
+    } finally {
+      _registeredDeviceAutoSyncInFlight = false;
+    }
+  }
+
+  String? _resolveOperationalDeviceId({
+    required String? backendHardwareId,
+  }) {
+    if (backendHardwareId == null || backendHardwareId.trim().isEmpty) {
+      return null;
+    }
+    return backendHardwareId;
   }
 
   Future<void> _ensureBackendSosForDeviceOriginatedCycle(
@@ -1210,15 +1377,28 @@ class EixamConnectSdkImpl
       return;
     }
 
-    final createdIncident = await sosRepository.triggerSos(
-      message: message,
+    final cycleKey = _deriveDeviceSosCycleKey(status) ??
+        'device-runtime:${status.lastPacketSignature ?? status.state.name}';
+    final created = await _bleOperationalRuntimeBridge.promoteDeviceOriginatedSos(
+      signature: 'device_sos:$cycleKey:$triggerSource',
       triggerSource: triggerSource,
+      message: message,
       positionSnapshot: positionSnapshot,
+      deviceId: await _loadBackendHardwareIdForOperationalPayloads(
+        runtimeStatus: _lastDeviceStatus,
+      ),
+      summary:
+          'device_runtime state=${status.state.name} origin=${status.triggerOrigin.name} cycle=${cycleKey}',
     );
-    _publishSdkEvent(SOSTriggeredEvent(createdIncident.id));
-    BleDebugRegistry.instance.recordEvent(
-      'Device SOS backend sync created incident -> incidentId=${createdIncident.id} triggerSource=$triggerSource',
-    );
+    if (created) {
+      final createdIncident = await sosRepository.getCurrentIncident();
+      if (createdIncident != null) {
+        _publishSdkEvent(SOSTriggeredEvent(createdIncident.id));
+        BleDebugRegistry.instance.recordEvent(
+          'Device SOS backend sync created incident -> incidentId=${createdIncident.id} triggerSource=$triggerSource',
+        );
+      }
+    }
   }
 
   Future<void> _cancelBackendSosForDeviceOriginatedCycle(
@@ -1534,6 +1714,10 @@ class EixamConnectSdkImpl
   ) async {
     final status = await future;
     _lastDeviceStatus = status;
+    _scheduleRegisteredDeviceAutoSync(
+      trigger: 'cache_device_status',
+      status: status,
+    );
     return status;
   }
 

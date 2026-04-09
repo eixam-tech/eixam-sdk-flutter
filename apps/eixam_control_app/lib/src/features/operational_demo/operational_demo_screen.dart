@@ -1072,31 +1072,19 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
           child: const Text('Refresh device registry'),
         ),
         ElevatedButton(
-          onPressed: _handleUpsertRegisteredDevice,
-          child: const Text('Upsert registered device'),
+          onPressed: _controller.retryBackendDeviceRegistryAutoSyncValidation,
+          child: const Text('Retry auto-sync'),
         ),
       ],
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          ValidationTextField(
-            controller: _deviceHardwareIdController,
-            label: 'hardware_id',
+          const Text(
+            'The SDK now retries backend paired-device sync automatically after a successful device connection when a signed session is present and a canonical backend hardware_id can be resolved safely.',
           ),
           const SizedBox(height: 8),
-          ValidationTextField(
-            controller: _deviceFirmwareController,
-            label: 'firmware_version',
-          ),
-          const SizedBox(height: 8),
-          ValidationTextField(
-            controller: _deviceModelController,
-            label: 'hardware_model',
-          ),
-          const SizedBox(height: 8),
-          ValidationTextField(
-            controller: _devicePairedAtController,
-            label: 'paired_at (ISO-8601)',
+          const Text(
+            'This card is for status and retry only. The advanced manual upsert remains available below for debug-only recovery paths.',
           ),
           const SizedBox(height: 12),
           if (_controller.registeredDevices.isEmpty)

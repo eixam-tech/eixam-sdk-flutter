@@ -1,6 +1,7 @@
 /// Lightweight scan result returned by a BLE client implementation.
 class BleScanResult {
   final String deviceId;
+  final String? canonicalHardwareId;
   final String name;
   final int rssi;
   final bool connectable;
@@ -9,6 +10,7 @@ class BleScanResult {
 
   const BleScanResult({
     required this.deviceId,
+    this.canonicalHardwareId,
     required this.name,
     required this.rssi,
     required this.connectable,

@@ -9,6 +9,7 @@ import '../enums/device_battery_source.dart';
 /// backend implementation detail.
 class DeviceStatus {
   final String deviceId;
+  final String? canonicalHardwareId;
   final String? deviceAlias;
   final String? model;
   final bool paired;
@@ -28,6 +29,7 @@ class DeviceStatus {
 
   const DeviceStatus({
     required this.deviceId,
+    this.canonicalHardwareId,
     this.deviceAlias,
     this.model,
     required this.paired,
@@ -56,6 +58,7 @@ class DeviceStatus {
 
   DeviceStatus copyWith({
     String? deviceId,
+    Object? canonicalHardwareId = _unset,
     String? deviceAlias,
     String? model,
     bool? paired,
@@ -74,6 +77,9 @@ class DeviceStatus {
   }) {
     return DeviceStatus(
       deviceId: deviceId ?? this.deviceId,
+      canonicalHardwareId: identical(canonicalHardwareId, _unset)
+          ? this.canonicalHardwareId
+          : canonicalHardwareId as String?,
       deviceAlias: deviceAlias ?? this.deviceAlias,
       model: model ?? this.model,
       paired: paired ?? this.paired,
@@ -93,3 +99,5 @@ class DeviceStatus {
     );
   }
 }
+
+const Object _unset = Object();

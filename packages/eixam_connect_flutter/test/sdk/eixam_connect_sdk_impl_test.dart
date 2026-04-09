@@ -157,10 +157,16 @@ void main() {
     });
 
     test(
-        'triggerSos attaches the current position when location access is granted',
+        'triggerSos attaches the current position and backend hardware id when available',
         () async {
-      permissionsRepository.permissionState = const PermissionState(
-        location: SdkPermissionStatus.granted,
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-device-123',
+          canonicalHardwareId: 'CF:82:11:22:33:44',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
       );
 
       await sdk.triggerSos(
@@ -175,17 +181,43 @@ void main() {
       expect(sosRepository.lastTriggerSource, 'button_ui');
       expect(sosRepository.lastPositionSnapshot, isNotNull);
       expect(sosRepository.lastPositionSnapshot!.latitude, 41.38);
+      expect(sosRepository.lastDeviceId, 'CF:82:11:22:33:44');
+      expect(sosRepository.lastDeviceId, isNot('ble-device-123'));
     });
 
     test(
-        'triggerSos continues without a position snapshot when permission lookup fails',
+        'triggerSos continues without a position snapshot when no current position is available',
         () async {
-      permissionsRepository.getPermissionStateError = StateError('boom');
+      final localTrackingRepository = FakeTrackingRepository();
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController();
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: localTrackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
 
-      await sdk.triggerSos(const SosTriggerPayload(message: 'Need help'));
+      try {
+        await localSdk
+            .triggerSos(const SosTriggerPayload(message: 'Need help'));
 
-      expect(sosRepository.triggerCallCount, 1);
-      expect(sosRepository.lastPositionSnapshot, isNull);
+        expect(sosRepository.triggerCallCount, 1);
+        expect(sosRepository.lastPositionSnapshot, isNull);
+        expect(sosRepository.lastDeviceId, isNull);
+      } finally {
+        await localSdk.dispose();
+        await localTrackingRepository.dispose();
+      }
     });
 
     test(
@@ -238,12 +270,29 @@ void main() {
     });
 
     test('publishTelemetry delegates to the telemetry repository', () async {
+      await sdk.setSession(
+        const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-123',
+          userHash: 'deadbeef',
+          canonicalExternalUserId: 'canonical-user',
+        ),
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-device-1',
+          canonicalHardwareId: 'CF:82:AA:BB:CC:DD',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
+      );
       final payload = SdkTelemetryPayload(
         timestamp: DateTime.utc(2026, 3, 31, 10),
         latitude: 41.38,
         longitude: 2.17,
         altitude: 8,
-        deviceId: 'device-1',
+        deviceId: 'ble-device-1',
       );
 
       await sdk.publishTelemetry(payload);
@@ -251,7 +300,84 @@ void main() {
       expect(telemetryRepository.publishedPayloads, hasLength(1));
       expect(
         telemetryRepository.publishedPayloads.single.deviceId,
-        'device-1',
+        'CF:82:AA:BB:CC:DD',
+      );
+      expect(
+        telemetryRepository.publishedPayloads.single.userId,
+        'canonical-user',
+      );
+      expect(await sdk.getSosState(), SosState.idle);
+    });
+
+    test(
+        'publishTelemetry omits a local BLE device id when backend hardware id is unavailable',
+        () async {
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-device-1',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
+      );
+
+      await sdk.publishTelemetry(
+        SdkTelemetryPayload(
+          timestamp: DateTime.utc(2026, 3, 31, 10),
+          latitude: 41.38,
+          longitude: 2.17,
+          altitude: 8,
+          deviceId: 'ble-device-1',
+        ),
+      );
+
+      expect(telemetryRepository.publishedPayloads, hasLength(1));
+      expect(telemetryRepository.publishedPayloads.single.deviceId, isNull);
+    });
+
+    test(
+        'publishTelemetry prefers canonical hardware id over local BLE id and friendly name',
+        () async {
+      await sdk.setSession(
+        const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-123',
+          userHash: 'deadbeef',
+          canonicalExternalUserId: 'canonical-user',
+        ),
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-local-runtime-id',
+          canonicalHardwareId: 'CF:82:12:34:56:78',
+          deviceAlias: 'Meshtastic_1aa8',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
+      );
+
+      await sdk.publishTelemetry(
+        SdkTelemetryPayload(
+          timestamp: DateTime.utc(2026, 3, 31, 10),
+          latitude: 41.38,
+          longitude: 2.17,
+          altitude: 8,
+          deviceId: 'Meshtastic_1aa8',
+        ),
+      );
+
+      expect(
+        telemetryRepository.publishedPayloads.single.deviceId,
+        'CF:82:12:34:56:78',
+      );
+      expect(
+        telemetryRepository.publishedPayloads.single.deviceId,
+        isNot('ble-local-runtime-id'),
+      );
+      expect(
+        telemetryRepository.publishedPayloads.single.deviceId,
+        isNot('Meshtastic_1aa8'),
       );
     });
 
@@ -340,6 +466,158 @@ void main() {
 
       await sdk.deleteRegisteredDevice(upserted.id);
       expect(await sdk.listRegisteredDevices(), isEmpty);
+    });
+
+    test(
+        'connectDevice automatically refreshes the matched backend registered device when session identity is ready',
+        () async {
+      await deviceRegistryRepository.upsertRegisteredDevice(
+        hardwareId: 'CF:82:10:20:30:40',
+        firmwareVersion: 'old-fw',
+        hardwareModel: 'Old model',
+        pairedAt: DateTime.utc(2026, 3, 1, 8),
+      );
+      deviceRegistryRepository.upsertCallCount = 0;
+      deviceRegistryRepository.lastHardwareId = null;
+      deviceRegistryRepository.lastFirmwareVersion = null;
+      deviceRegistryRepository.lastHardwareModel = null;
+      deviceRegistryRepository.lastPairedAt = null;
+
+      await sdk.setSession(
+        const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-123',
+          userHash: 'deadbeef',
+        ),
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-local-id-1',
+          canonicalHardwareId: 'CF:82:10:20:30:40',
+          paired: true,
+          connected: true,
+          activated: true,
+          model: 'EIXAM R1',
+          firmwareVersion: '2.7.21',
+        ),
+      );
+
+      await sdk.connectDevice(pairingCode: 'PAIR-001');
+      await Future<void>.delayed(Duration.zero);
+
+      expect(deviceRegistryRepository.upsertCallCount, 1);
+      expect(deviceRegistryRepository.lastHardwareId, 'CF:82:10:20:30:40');
+      expect(deviceRegistryRepository.lastFirmwareVersion, '2.7.21');
+      expect(deviceRegistryRepository.lastHardwareModel, 'EIXAM R1');
+      expect(deviceRegistryRepository.lastPairedAt, isNotNull);
+      expect(
+        deviceRegistryRepository.devices.single.hardwareId,
+        'CF:82:10:20:30:40',
+      );
+      expect(
+        deviceRegistryRepository.devices.single.firmwareVersion,
+        '2.7.21',
+      );
+      expect(
+        deviceRegistryRepository.devices.single.hardwareModel,
+        'EIXAM R1',
+      );
+    });
+
+    test(
+        'setSession backfills automatic backend registered device sync for an already connected known device',
+        () async {
+      await deviceRegistryRepository.upsertRegisteredDevice(
+        hardwareId: 'CF:82:55:66:77:88',
+        firmwareVersion: '1.0.0',
+        hardwareModel: 'EIXAM R1',
+        pairedAt: DateTime.utc(2026, 3, 1, 8),
+      );
+      deviceRegistryRepository.upsertCallCount = 0;
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-runtime-9',
+          canonicalHardwareId: 'CF:82:55:66:77:88',
+          paired: true,
+          connected: true,
+          activated: true,
+          model: 'EIXAM R1',
+          firmwareVersion: '3.1.4',
+        ),
+      );
+
+      await sdk.setSession(
+        const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-123',
+          userHash: 'deadbeef',
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(deviceRegistryRepository.upsertCallCount, 1);
+      expect(deviceRegistryRepository.lastHardwareId, 'CF:82:55:66:77:88');
+      expect(deviceRegistryRepository.lastFirmwareVersion, '3.1.4');
+      expect(deviceRegistryRepository.lastHardwareModel, 'EIXAM R1');
+    });
+
+    test(
+        'connectDevice skips automatic backend device registration when no canonical hardware id can be resolved',
+        () async {
+      await sdk.setSession(
+        const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-123',
+          userHash: 'deadbeef',
+        ),
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-local-only-id',
+          paired: true,
+          connected: true,
+          activated: true,
+          model: 'EIXAM R1',
+          firmwareVersion: '2.7.21',
+        ),
+      );
+
+      await sdk.connectDevice(pairingCode: 'PAIR-002');
+      await Future<void>.delayed(Duration.zero);
+
+      expect(deviceRegistryRepository.upsertCallCount, 0);
+      expect(deviceRegistryRepository.devices, isEmpty);
+    });
+
+    test(
+        'connectDevice auto-sync uses canonical hardware id instead of local BLE id or friendly name',
+        () async {
+      await sdk.setSession(
+        const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-123',
+          userHash: 'deadbeef',
+        ),
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-local-runtime-id',
+          canonicalHardwareId: 'CF:82:AB:CD:EF:01',
+          deviceAlias: 'Meshtastic_1aa8',
+          paired: true,
+          connected: true,
+          activated: true,
+          model: 'EIXAM R1',
+          firmwareVersion: '2.7.21',
+        ),
+      );
+
+      await sdk.connectDevice(pairingCode: 'PAIR-003');
+      await Future<void>.delayed(Duration.zero);
+
+      expect(deviceRegistryRepository.lastHardwareId, 'CF:82:AB:CD:EF:01');
+      expect(deviceRegistryRepository.lastHardwareId, isNot('ble-local-runtime-id'));
+      expect(deviceRegistryRepository.lastHardwareId, isNot('Meshtastic_1aa8'));
     });
 
     test('device facade delegates refresh and exposes the latest status',
@@ -461,11 +739,18 @@ void main() {
       deviceRepository.emitStatus(
         buildDeviceStatus(
           deviceId: 'device-armed',
+          canonicalHardwareId: 'CF:82:55:66:77:88',
           connected: true,
           paired: true,
           activated: true,
           lifecycleState: DeviceLifecycleState.ready,
         ),
+      );
+      await deviceRegistryRepository.upsertRegisteredDevice(
+        hardwareId: 'CF:82:55:66:77:88',
+        firmwareVersion: '1.2.3',
+        hardwareModel: 'EIXAM R1',
+        pairedAt: DateTime.utc(2026, 3, 31, 9),
       );
       final localRealtimeClient = FakeRealtimeClient()
         ..stateToEmitOnConnect = RealtimeConnectionState.connected;
@@ -541,6 +826,10 @@ void main() {
         expect(
             localAdapter.lastStartRequest?.apiBaseUrl, 'https://example.test');
         expect(localAdapter.lastStartRequest?.activeDeviceId, 'device-armed');
+        expect(
+          localAdapter.lastStartRequest?.backendHardwareId,
+          'CF:82:55:66:77:88',
+        );
         expect(exitedStatus.modeState, ProtectionModeState.off);
         expect(exitedStatus.runtimeState, ProtectionRuntimeState.inactive);
         expect(localAdapter.startCallCount, 1);
@@ -2518,18 +2807,63 @@ void main() {
             altitude: 8,
             timestamp: DateTime.utc(2026, 3, 30, 12),
           ),
+          deviceId: 'hw-1',
         );
 
         expect(incident.state, SosState.sent);
         expect(realtimeClient.publishedRequests, hasLength(1));
+        expect(realtimeClient.publishedRequests.single.deviceId, 'hw-1');
         final envelope = SdkMqttContract.buildOperationalSosEnvelope(
           realtimeClient.publishedRequests.single,
         );
         expect(envelope.topic, SdkMqttTopics.sosAlerts);
+        expect(envelope.payload, contains('"deviceId":"hw-1"'));
       } finally {
         await repository.dispose();
         await realtimeClient.dispose();
       }
+    });
+
+    test('http trigger path includes deviceId when paired hardware id exists',
+        () async {
+      late http.Request capturedRequest;
+      final dataSource = HttpSosRemoteDataSource(
+        transport: SdkHttpTransport(
+          client: _RecordingClient(
+            handler: (request) async {
+              capturedRequest = request;
+              return http.Response(
+                '{"incident":{"id":"sos-1","state":"sent","createdAt":"2026-03-30T12:00:00.000Z"}}',
+                200,
+              );
+            },
+          ),
+          config: const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
+          sessionContext: SdkSessionContext()
+            ..currentSession = const EixamSession.signed(
+              appId: 'app-demo',
+              externalUserId: 'external-123',
+              userHash: 'deadbeef',
+            ),
+        ),
+      );
+
+      await dataSource.triggerSos(
+        triggerSource: 'button_ui',
+        positionSnapshot: TrackingPosition(
+          latitude: 41.38,
+          longitude: 2.17,
+          altitude: 8,
+          timestamp: DateTime.utc(2026, 3, 30, 12),
+        ),
+        deviceId: 'hw-1',
+      );
+
+      expect(capturedRequest.method, 'POST');
+      expect(capturedRequest.url.toString(),
+          'https://api.example.test/v1/sdk/sos');
+      expect(capturedRequest.body, contains('"deviceId":"hw-1"'));
+      expect(capturedRequest.headers['Authorization'], 'Bearer deadbeef');
     });
 
     test('http cancel path posts to /v1/sdk/sos/cancel without a request body',
@@ -3139,7 +3473,9 @@ void main() {
 
         expect(telemetryRepository.publishedPayloads, hasLength(1));
         expect(
-            telemetryRepository.publishedPayloads.single.deviceId, 'device-1');
+          telemetryRepository.publishedPayloads.single.deviceId,
+          'CF:82:99:88:77:66',
+        );
       } finally {
         await bridge.dispose();
         await bleEvents.close();
@@ -3148,7 +3484,8 @@ void main() {
       }
     });
 
-    test('BLE bridge publishes telemetry from supported TEL aggregate payloads',
+    test(
+        'BLE bridge omits deviceId for TEL aggregate payloads when no backend hardware id is resolved',
         () async {
       final bleEvents = StreamController<BleIncomingEvent>.broadcast();
       final connectionStates =
@@ -3167,18 +3504,21 @@ void main() {
         sosRepository: sosRepository,
         deviceSosController: deviceSosController,
         sessionProvider: () => session,
+        backendHardwareIdResolver: (_) async => null,
       )..start();
 
       try {
         connectionStates.add(RealtimeConnectionState.connected);
-        bleEvents.add(_bridgeAggregateTelCompleteEvent(signature: 'agg-tel-1'));
+        bleEvents.add(
+          _bridgeAggregateTelCompleteEvent(
+            signature: 'agg-tel-1',
+            canonicalHardwareId: null,
+          ),
+        );
         await Future<void>.delayed(Duration.zero);
 
         expect(telemetryRepository.publishedPayloads, hasLength(1));
-        expect(
-          telemetryRepository.publishedPayloads.single.deviceId,
-          'device-1',
-        );
+        expect(telemetryRepository.publishedPayloads.single.deviceId, isNull);
       } finally {
         await bridge.dispose();
         await bleEvents.close();
@@ -3773,8 +4113,18 @@ void main() {
 
       try {
         connectionStates.add(RealtimeConnectionState.disconnected);
-        bleEvents.add(_bridgeTelEvent(signature: 'pending-tel-1'));
-        bleEvents.add(_bridgeTelEvent(signature: 'pending-tel-2'));
+        bleEvents.add(
+          _bridgeTelEvent(
+            signature: 'pending-tel-1',
+            canonicalHardwareId: null,
+          ),
+        );
+        bleEvents.add(
+          _bridgeTelEvent(
+            signature: 'pending-tel-2',
+            canonicalHardwareId: null,
+          ),
+        );
         await Future<void>.delayed(Duration.zero);
 
         expect(telemetryRepository.publishedPayloads, isEmpty);
@@ -3783,6 +4133,7 @@ void main() {
         await Future<void>.delayed(Duration.zero);
 
         expect(telemetryRepository.publishedPayloads, hasLength(1));
+        expect(telemetryRepository.publishedPayloads.single.deviceId, isNull);
         expect(
           telemetryRepository.publishedPayloads.single.timestamp,
           DateTime.utc(2026, 3, 31, 10),
@@ -4285,8 +4636,14 @@ void main() {
     test(
         'confirmDeviceSos creates backend incident for a device-originated SOS cycle when none exists yet',
         () async {
-      permissionsRepository.permissionState = const PermissionState(
-        location: SdkPermissionStatus.granted,
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-confirm-1',
+          canonicalHardwareId: 'CF:82:00:00:00:01',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
       );
       await deviceSosController.attach(
         commandWriter: (command) async {},
@@ -4302,6 +4659,80 @@ void main() {
       expect(sosRepository.triggerCallCount, 1);
       expect(sosRepository.lastTriggerSource, 'ble_device_runtime_confirm');
       expect(sosRepository.lastPositionSnapshot?.latitude, 41.38);
+      expect(sosRepository.lastDeviceId, 'CF:82:00:00:00:01');
+      expect(sosRepository.lastDeviceId, isNot('ble-confirm-1'));
+    });
+
+    test(
+        'device-originated SOS promotion buffers in bridge diagnostics when backend publish is temporarily unavailable',
+        () async {
+      final unavailableSosRepository = _AvailabilityAwareSosRepository();
+      final localDeviceRepository = FakeDeviceRepository(
+        initialStatus: buildDeviceStatus(
+          connected: false,
+          lifecycleState: DeviceLifecycleState.unpaired,
+          paired: false,
+          activated: false,
+        ),
+      );
+      final localDeviceRegistryRepository = FakeSdkDeviceRegistryRepository();
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController();
+      final localPreferredStore = PreferredBleDeviceStore(
+        localStore: MemorySharedPrefsSdkStore(),
+      );
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: unavailableSosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: localDeviceRepository,
+        deviceRegistryRepository: localDeviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: localPreferredStore,
+      );
+
+      try {
+        localDeviceRepository.emitStatus(
+          buildDeviceStatus(
+            deviceId: 'ble-confirm-1',
+            canonicalHardwareId: 'CF:82:00:00:00:02',
+            paired: true,
+            connected: true,
+            activated: true,
+          ),
+        );
+        await localSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await localDeviceSosController.attach(
+          commandWriter: (command) async {},
+        );
+
+        localDeviceSosController.handleIncomingSosPacket(
+          _deviceOriginPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+
+        await localSdk.confirmDeviceSos();
+        await Future<void>.delayed(Duration.zero);
+        final diagnostics = await localSdk.getOperationalDiagnostics();
+
+        expect(diagnostics.bridge.pendingSos, isNotNull);
+        expect(
+          diagnostics.bridge.lastDecision,
+          'SOS buffered after publish failure',
+        );
+      } finally {
+        await localSdk.dispose();
+        await unavailableSosRepository.dispose();
+        await localDeviceRepository.dispose();
+      }
     });
 
     test(
@@ -4656,6 +5087,7 @@ class _FakeCancelSosRemoteDataSource implements SosRemoteDataSource {
     String? message,
     required String triggerSource,
     TrackingPosition? positionSnapshot,
+    String? deviceId,
   }) async {
     activeIncident = SosIncidentDto(
       id: 'sos-1',
@@ -4674,6 +5106,7 @@ class _AvailabilityAwareSosRepository extends FakeSosRepository {
     String? message,
     required String triggerSource,
     TrackingPosition? positionSnapshot,
+    String? deviceId,
   }) async {
     if (!isAvailable) {
       throw const SosException(
@@ -4685,6 +5118,7 @@ class _AvailabilityAwareSosRepository extends FakeSosRepository {
       message: message,
       triggerSource: triggerSource,
       positionSnapshot: positionSnapshot,
+      deviceId: deviceId,
     );
   }
 }
@@ -4719,9 +5153,13 @@ EixamSosPacket _relayedSosPacket() {
   ])!;
 }
 
-BleIncomingEvent _bridgeTelEvent({required String signature}) {
+BleIncomingEvent _bridgeTelEvent({
+  required String signature,
+  String? canonicalHardwareId = 'CF:82:99:88:77:66',
+}) {
   return BleIncomingEvent(
     deviceId: 'device-1',
+    canonicalHardwareId: canonicalHardwareId,
     type: BleIncomingEventType.telPosition,
     channel: EixamBleChannel.tel,
     payload: const <int>[0x01],
@@ -4747,9 +5185,13 @@ BleIncomingEvent _bridgeTelEvent({required String signature}) {
   );
 }
 
-BleIncomingEvent _bridgeInvalidTelEvent({required String signature}) {
+BleIncomingEvent _bridgeInvalidTelEvent({
+  required String signature,
+  String? canonicalHardwareId = 'CF:82:99:88:77:66',
+}) {
   return BleIncomingEvent(
     deviceId: 'device-1',
+    canonicalHardwareId: canonicalHardwareId,
     type: BleIncomingEventType.telPosition,
     channel: EixamBleChannel.tel,
     payload: const <int>[0x01],
@@ -4775,9 +5217,13 @@ BleIncomingEvent _bridgeInvalidTelEvent({required String signature}) {
   );
 }
 
-BleIncomingEvent _bridgeSosEvent({required String signature}) {
+BleIncomingEvent _bridgeSosEvent({
+  required String signature,
+  String? canonicalHardwareId = 'CF:82:99:88:77:66',
+}) {
   return BleIncomingEvent(
     deviceId: 'device-1',
+    canonicalHardwareId: canonicalHardwareId,
     type: BleIncomingEventType.sosMeshPacket,
     channel: EixamBleChannel.sos,
     payload: const <int>[0x01],
@@ -4806,9 +5252,13 @@ BleIncomingEvent _bridgeSosEvent({required String signature}) {
   );
 }
 
-BleIncomingEvent _bridgeSosWithoutPositionEvent({required String signature}) {
+BleIncomingEvent _bridgeSosWithoutPositionEvent({
+  required String signature,
+  String? canonicalHardwareId = 'CF:82:99:88:77:66',
+}) {
   return BleIncomingEvent(
     deviceId: 'device-1',
+    canonicalHardwareId: canonicalHardwareId,
     type: BleIncomingEventType.sosMeshPacket,
     channel: EixamBleChannel.sos,
     payload: const <int>[0x01],
@@ -4833,9 +5283,13 @@ BleIncomingEvent _bridgeSosWithoutPositionEvent({required String signature}) {
   );
 }
 
-BleIncomingEvent _bridgeAggregateTelCompleteEvent({required String signature}) {
+BleIncomingEvent _bridgeAggregateTelCompleteEvent({
+  required String signature,
+  String? canonicalHardwareId = 'CF:82:99:88:77:66',
+}) {
   return BleIncomingEvent(
     deviceId: 'device-1',
+    canonicalHardwareId: canonicalHardwareId,
     type: BleIncomingEventType.telAggregateComplete,
     channel: EixamBleChannel.tel,
     payload: const <int>[0xD0, 0x0A, 0x00, 0x00, 0x00, 0x01],
@@ -4857,9 +5311,13 @@ BleIncomingEvent _bridgeAggregateTelCompleteEvent({required String signature}) {
   );
 }
 
-BleIncomingEvent _bridgeAggregateTelFragmentEvent({required String signature}) {
+BleIncomingEvent _bridgeAggregateTelFragmentEvent({
+  required String signature,
+  String? canonicalHardwareId = 'CF:82:99:88:77:66',
+}) {
   return BleIncomingEvent(
     deviceId: 'device-1',
+    canonicalHardwareId: canonicalHardwareId,
     type: BleIncomingEventType.telAggregateFragment,
     channel: EixamBleChannel.tel,
     payload: const <int>[0xD0, 0x14, 0x00, 0x00, 0x00, 0xAA],

@@ -106,11 +106,13 @@ internal class ProtectionRuntimeStore(context: Context) {
 
     fun markStartRequest(
         activeDeviceId: String?,
+        backendHardwareId: String?,
         apiBaseUrl: String?,
         enableStoreAndForward: Boolean,
     ) {
         preferences.edit()
             .putString(keyTargetDeviceId, activeDeviceId)
+            .putString(keyBackendHardwareId, backendHardwareId)
             .putString(keyApiBaseUrl, apiBaseUrl)
             .putBoolean(keyServiceRunning, true)
             .putBoolean(keyRuntimeActive, true)
@@ -160,6 +162,9 @@ internal class ProtectionRuntimeStore(context: Context) {
 
     fun currentTargetDeviceId(): String? =
         preferences.getString(keyTargetDeviceId, null)
+
+    fun currentBackendHardwareId(): String? =
+        preferences.getString(keyBackendHardwareId, null)
 
     fun reconnectBackoffMs(defaultValue: Long): Long =
         preferences.getLong(keyReconnectBackoffMs, defaultValue).takeIf { it > 0L } ?: defaultValue
@@ -523,6 +528,7 @@ internal class ProtectionRuntimeStore(context: Context) {
         private const val keyServiceBleConnected = "service_ble_connected"
         private const val keyServiceBleReady = "service_ble_ready"
         private const val keyTargetDeviceId = "target_device_id"
+        private const val keyBackendHardwareId = "backend_hardware_id"
         private const val keyStoreAndForwardEnabled = "store_and_forward_enabled"
         private const val keyPendingSosCount = "pending_sos_count"
         private const val keyPendingSosState = "pending_sos_state"

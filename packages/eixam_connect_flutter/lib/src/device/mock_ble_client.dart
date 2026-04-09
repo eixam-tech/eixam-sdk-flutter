@@ -22,6 +22,7 @@ class MockBleClient implements BleClient {
   final List<EixamDeviceCommand> writtenCommands = <EixamDeviceCommand>[];
 
   static const String demoDeviceId = 'ble-demo-r1';
+  static const String demoCanonicalHardwareId = 'CF:82:00:00:00:01';
 
   @override
   Future<void> initialize() async {
@@ -54,6 +55,7 @@ class MockBleClient implements BleClient {
     final results = <BleScanResult>[
       BleScanResult(
         deviceId: demoDeviceId,
+        canonicalHardwareId: demoCanonicalHardwareId,
         name: 'EIXAM R1 Demo',
         rssi: -42 - _random.nextInt(20),
         connectable: true,

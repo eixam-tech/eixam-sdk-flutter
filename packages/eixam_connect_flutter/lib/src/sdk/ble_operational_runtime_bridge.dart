@@ -21,12 +21,14 @@ class BleOperationalRuntimeBridge {
     required this.sosRepository,
     required this.deviceSosController,
     required EixamSession? Function() sessionProvider,
+    Future<String?> Function(String runtimeDeviceId)? backendHardwareIdResolver,
     DateTime Function()? now,
     Duration dedupWindow = const Duration(seconds: 3),
   })  : _bleIncomingEvents = bleIncomingEvents,
         _connectionStates = connectionStates,
         _realtimeEvents = realtimeEvents,
         _sessionProvider = sessionProvider,
+        _backendHardwareIdResolver = backendHardwareIdResolver,
         _now = now ?? DateTime.now,
         _dedupWindow = dedupWindow;
 
@@ -37,6 +39,7 @@ class BleOperationalRuntimeBridge {
   final SosRepository sosRepository;
   final DeviceSosController deviceSosController;
   final EixamSession? Function() _sessionProvider;
+  final Future<String?> Function(String runtimeDeviceId)? _backendHardwareIdResolver;
   final DateTime Function() _now;
   final Duration _dedupWindow;
 
@@ -125,6 +128,45 @@ class BleOperationalRuntimeBridge {
   void resetForSessionChange() {
     clearPendingOperationalItems();
     _flushInProgress = false;
+  }
+
+  Future<bool> promoteDeviceOriginatedSos({
+    required String signature,
+    required String triggerSource,
+    required String message,
+    required TrackingPosition positionSnapshot,
+    String? deviceId,
+    String? summary,
+  }) async {
+    if (!_registerSignature(_recentSosSignatures, signature)) {
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          lastDecision: 'SOS skipped: duplicate packet',
+        ),
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'BLE operational bridge skipped promoted SOS -> reason=duplicate signature=$signature',
+      );
+      return false;
+    }
+
+    if (summary != null && summary.trim().isNotEmpty) {
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          lastBleSosEventSummary: summary.trim(),
+        ),
+      );
+    }
+
+    return _publishSosPayload(
+      signature: signature,
+      triggerSource: triggerSource,
+      message: message,
+      positionSnapshot: positionSnapshot,
+      deviceId: deviceId,
+      allowPendingFallback: true,
+      relayCount: null,
+    );
   }
 
   Future<void> _handleBleIncomingEvent(BleIncomingEvent event) async {
@@ -244,7 +286,7 @@ class BleOperationalRuntimeBridge {
       latitude: packet.position.latitude,
       longitude: packet.position.longitude,
       altitude: packet.position.altitudeMeters.toDouble(),
-      deviceId: event.deviceId,
+      deviceId: await _resolveBackendHardwareId(event),
       deviceBattery: DeviceBatteryLevel.fromProtocolValue(packet.batteryLevel)
           ?.approximatePercentage
           .toDouble(),
@@ -533,8 +575,10 @@ class BleOperationalRuntimeBridge {
       if (pendingSos != null) {
         final published = await _publishSosPayload(
           signature: pendingSos.signature,
+          triggerSource: pendingSos.triggerSource,
           message: pendingSos.message,
           positionSnapshot: pendingSos.positionSnapshot,
+          deviceId: pendingSos.deviceId,
           allowPendingFallback: false,
           relayCount: null,
         );
@@ -622,16 +666,19 @@ class BleOperationalRuntimeBridge {
 
   Future<bool> _publishSosPayload({
     required String signature,
+    required String triggerSource,
     required String message,
     required TrackingPosition positionSnapshot,
+    required String? deviceId,
     required bool allowPendingFallback,
     required int? relayCount,
   }) async {
     try {
       await sosRepository.triggerSos(
         message: message,
-        triggerSource: 'ble_device_runtime',
+        triggerSource: triggerSource,
         positionSnapshot: positionSnapshot,
+        deviceId: deviceId,
       );
       _emitDiagnostics(
         _diagnostics.copyWith(
@@ -658,8 +705,10 @@ class BleOperationalRuntimeBridge {
       if (allowPendingFallback && _isOperationalAvailabilityError(error)) {
         _pendingSos = _PendingSosPublish(
           signature: signature,
+          triggerSource: triggerSource,
           message: message,
           positionSnapshot: positionSnapshot,
+          deviceId: deviceId,
         );
         _emitDiagnostics(
           _diagnostics.copyWith(
@@ -724,6 +773,26 @@ class BleOperationalRuntimeBridge {
     }
     return _IncomingSosRole.localOrigin;
   }
+
+  Future<String?> _resolveBackendHardwareId(BleIncomingEvent event) async {
+    final canonicalHardwareId = event.canonicalHardwareId?.trim();
+    if (canonicalHardwareId != null && canonicalHardwareId.isNotEmpty) {
+      return canonicalHardwareId;
+    }
+    final resolver = _backendHardwareIdResolver;
+    if (resolver == null) {
+      return null;
+    }
+    try {
+      final resolved = await resolver(event.deviceId);
+      if (resolved == null || resolved.trim().isEmpty) {
+        return null;
+      }
+      return resolved.trim();
+    } catch (_) {
+      return null;
+    }
+  }
 }
 
 enum _BleBackendConfirmationKind {
@@ -760,13 +829,17 @@ class _PendingTelemetryPublish {
 class _PendingSosPublish {
   const _PendingSosPublish({
     required this.signature,
+    required this.triggerSource,
     required this.message,
     required this.positionSnapshot,
+    required this.deviceId,
   });
 
   final String signature;
+  final String triggerSource;
   final String message;
   final TrackingPosition positionSnapshot;
+  final String? deviceId;
 }
 
 class _BleBackendConfirmation {

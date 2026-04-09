@@ -136,6 +136,21 @@ debugPrint('incident=${incident.id}');
 debugPrint('state=${incident.state.name}');
 ```
 
+When the SDK has a paired device hardware id, the operational SOS payload may include:
+
+```json
+{
+  "timestamp": "2026-03-30T12:00:00.000Z",
+  "latitude": 41.38,
+  "longitude": 2.17,
+  "altitude": 8.0,
+  "userId": "partner-user-123",
+  "deviceId": "hw-1"
+}
+```
+
+For hardware-originated SOS, `deviceId` should be the paired device `hardware_id`. If no paired device is available, the field may be omitted.
+
 ### `getCurrentSosIncident`
 
 Returns `Future<SosIncident?>`.

@@ -140,10 +140,15 @@ class BleAutoReconnectCoordinator {
   }
 
   void setAppForeground(bool isForeground) {
+    final wasForeground = _isAppForeground;
     _isAppForeground = isForeground;
     if (!isForeground) {
       _retryTimer?.cancel();
       _retryTimer = null;
+      return;
+    }
+    if (!wasForeground) {
+      unawaited(_tryAutoConnect(trigger: 'foreground'));
     }
   }
 

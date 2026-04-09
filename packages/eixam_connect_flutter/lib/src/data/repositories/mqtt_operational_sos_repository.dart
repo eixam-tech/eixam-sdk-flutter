@@ -72,6 +72,7 @@ class MqttOperationalSosRepository
     String? message,
     required String triggerSource,
     TrackingPosition? positionSnapshot,
+    String? deviceId,
   }) async {
     final current = _stateMachine.current;
     if (current != SosState.idle &&
@@ -108,6 +109,7 @@ class MqttOperationalSosRepository
         MqttOperationalSosRequest(
           timestamp: incident.createdAt,
           positionSnapshot: positionSnapshot,
+          deviceId: deviceId,
         ),
       );
       _activeIncident = incident;

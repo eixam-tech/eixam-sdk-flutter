@@ -12,6 +12,7 @@ abstract class SosRepository {
     String? message,
     required String triggerSource,
     TrackingPosition? positionSnapshot,
+    String? deviceId,
   });
 
   Future<SosIncident> cancelSos();

@@ -6,6 +6,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import 'ble_adapter_state.dart';
 import 'ble_client.dart';
+import 'canonical_hardware_id.dart';
 import 'ble_debug_registry.dart';
 import 'ble_scan_result.dart';
 import 'eixam_ble_command.dart';
@@ -108,6 +109,7 @@ class RealBleClient implements BleClient {
 
         deduped[id] = BleScanResult(
           deviceId: id,
+          canonicalHardwareId: normalizeCanonicalHardwareId(id),
           name: name,
           rssi: r.rssi,
           connectable: r.advertisementData.connectable,

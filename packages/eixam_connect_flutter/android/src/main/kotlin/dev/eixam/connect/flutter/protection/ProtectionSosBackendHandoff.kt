@@ -238,6 +238,10 @@ internal class ProtectionSosBackendHandoff(
             .put("latitude", position.latitude)
             .put("longitude", position.longitude)
             .put("altitude", position.altitude)
+        runtimeStore.currentBackendHardwareId()
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { payload.put("deviceId", it) }
         val response = sendRequest(
             method = "POST",
             url = normalizeUrl(apiBaseUrl, "/v1/sdk/sos"),

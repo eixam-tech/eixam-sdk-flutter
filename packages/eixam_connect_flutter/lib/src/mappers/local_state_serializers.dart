@@ -136,6 +136,7 @@ class LocalStateSerializers {
   static Map<String, dynamic> deviceStatusToJson(DeviceStatus status) {
     return {
       'deviceId': status.deviceId,
+      'canonicalHardwareId': status.canonicalHardwareId,
       'deviceAlias': status.deviceAlias,
       'model': status.model,
       'paired': status.paired,
@@ -177,6 +178,7 @@ class LocalStateSerializers {
 
     return DeviceStatus(
       deviceId: json['deviceId'] as String,
+      canonicalHardwareId: json['canonicalHardwareId'] as String?,
       deviceAlias: json['deviceAlias'] as String?,
       model: json['model'] as String?,
       paired: json['paired'] as bool? ?? false,

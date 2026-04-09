@@ -79,6 +79,7 @@ internal object ProtectionRuntimeBridge {
             "startProtectionRuntime" -> {
                 val arguments = call.arguments as? Map<*, *>
                 val activeDeviceId = arguments?.get("activeDeviceId") as? String
+                val backendHardwareId = arguments?.get("backendHardwareId") as? String
                 val enableStoreAndForward =
                     arguments?.get("enableStoreAndForward") as? Boolean ?: true
                 val reconnectBackoffMs =
@@ -89,6 +90,7 @@ internal object ProtectionRuntimeBridge {
                     )
                     store.markStartRequest(
                         activeDeviceId = activeDeviceId,
+                        backendHardwareId = backendHardwareId,
                         apiBaseUrl = arguments?.get("apiBaseUrl") as? String,
                         enableStoreAndForward = enableStoreAndForward,
                     )

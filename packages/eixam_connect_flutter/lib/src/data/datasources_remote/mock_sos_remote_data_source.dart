@@ -14,6 +14,7 @@ class MockSosRemoteDataSource implements SosRemoteDataSource {
     String? message,
     required String triggerSource,
     TrackingPosition? positionSnapshot,
+    String? deviceId,
   }) async {
     await Future<void>.delayed(const Duration(milliseconds: 300));
     _active = SosIncidentDto(

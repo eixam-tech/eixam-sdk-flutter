@@ -35,22 +35,26 @@ class MqttOperationalSosRequest {
     required this.timestamp,
     required this.positionSnapshot,
     this.sdkUserId,
+    this.deviceId,
   });
 
   final DateTime timestamp;
   final TrackingPosition positionSnapshot;
   final String? sdkUserId;
+  final String? deviceId;
 
   MqttOperationalSosRequest copyWith({
     DateTime? timestamp,
     TrackingPosition? positionSnapshot,
     Object? sdkUserId = _unset,
+    Object? deviceId = _unset,
   }) {
     return MqttOperationalSosRequest(
       timestamp: timestamp ?? this.timestamp,
       positionSnapshot: positionSnapshot ?? this.positionSnapshot,
       sdkUserId:
           identical(sdkUserId, _unset) ? this.sdkUserId : sdkUserId as String?,
+      deviceId: identical(deviceId, _unset) ? this.deviceId : deviceId as String?,
     );
   }
 
@@ -100,6 +104,8 @@ class SdkMqttContract {
       'altitude': request.positionSnapshot.altitude ?? 0.0,
       if (request.sdkUserId != null && request.sdkUserId!.trim().isNotEmpty)
         'userId': request.sdkUserId!.trim(),
+      if (request.deviceId != null && request.deviceId!.trim().isNotEmpty)
+        'deviceId': request.deviceId!.trim(),
     };
 
     return SdkMqttEnvelope(

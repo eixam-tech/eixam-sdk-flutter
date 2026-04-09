@@ -112,6 +112,13 @@ MQTT auth now uses:
 
 The runtime no longer depends on MQTT 5 User Properties for identity. Topics, payloads, QoS, retain behavior, reconnect behavior, and signed-session semantics stay the same.
 
+## SOS and telemetry device identity
+
+- telemetry payloads may include `deviceId = hardware_id` of the paired device
+- SOS operational payloads may also include `deviceId = hardware_id` when the SDK knows the paired device
+- hardware-originated SOS should send that `deviceId` when available so backend and web surfaces can show the originating hardware
+- if no paired hardware id is available, `deviceId` may remain omitted
+
 ## Internal note
 
 The validation app may still expose internal backend configuration controls, but those are not part of the partner happy path.

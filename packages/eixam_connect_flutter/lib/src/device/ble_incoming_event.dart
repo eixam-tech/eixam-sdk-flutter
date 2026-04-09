@@ -20,6 +20,7 @@ enum BleIncomingEventType {
 class BleIncomingEvent {
   const BleIncomingEvent({
     required this.deviceId,
+    this.canonicalHardwareId,
     required this.type,
     required this.channel,
     required this.payload,
@@ -36,6 +37,7 @@ class BleIncomingEvent {
   });
 
   final String deviceId;
+  final String? canonicalHardwareId;
   final String? deviceAlias;
   final BleIncomingEventType type;
   final EixamBleChannel channel;

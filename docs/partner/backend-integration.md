@@ -98,6 +98,13 @@ MQTT now uses broker username/password auth:
 
 The SDK keeps the current topics, payloads, QoS, retain behavior, and signed-session flow. The same signed identity is reused across HTTP and MQTT.
 
+## SOS and telemetry device identity
+
+- telemetry payloads may include `deviceId = hardware_id` of the paired device
+- SOS operational payloads may also include `deviceId = hardware_id` when the SDK knows the paired device
+- hardware-originated SOS should send that `deviceId` when available so backend and web surfaces can display the originating hardware
+- if no paired hardware id is available, `deviceId` may remain omitted
+
 ## Important note
 
 The SDK does not call partner auth or signing routes on its own and does not compute the signature locally.

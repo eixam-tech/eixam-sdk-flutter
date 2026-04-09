@@ -8,6 +8,7 @@ abstract class SosRemoteDataSource {
     String? message,
     required String triggerSource,
     TrackingPosition? positionSnapshot,
+    String? deviceId,
   });
 
   Future<SosIncidentDto?> cancelSos();

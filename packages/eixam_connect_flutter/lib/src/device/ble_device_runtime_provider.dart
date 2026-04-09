@@ -42,6 +42,7 @@ class BleDeviceRuntimeProvider
 
   String? _connectedDeviceId;
   String? _connectedDeviceAlias;
+  String? _connectedCanonicalHardwareId;
   StreamSubscription<EixamBleNotification>? _notificationSubscription;
   StreamSubscription<bool>? _connectionStateSubscription;
   DateTime? _lastAppCommandAt;
@@ -150,6 +151,7 @@ class BleDeviceRuntimeProvider
 
       _connectedDeviceId = candidate.deviceId;
       _connectedDeviceAlias = candidate.name;
+      _connectedCanonicalHardwareId = candidate.canonicalHardwareId;
       await _bindNotifications(candidate.deviceId);
       await _bindConnectionMonitor(candidate.deviceId);
       BleDebugRegistry.instance.recordEvent(
@@ -158,6 +160,7 @@ class BleDeviceRuntimeProvider
 
       final nextStatus = currentStatus.copyWith(
         deviceId: candidate.deviceId,
+        canonicalHardwareId: candidate.canonicalHardwareId,
         deviceAlias: candidate.name,
         model: 'EIXAM R1',
         paired: true,
@@ -278,6 +281,7 @@ class BleDeviceRuntimeProvider
     }
     final nextStatus = currentStatus.copyWith(
       connected: false,
+      canonicalHardwareId: currentStatus.canonicalHardwareId,
       lifecycleState: _resolveLifecycle(currentStatus, false),
       lastSyncedAt: DateTime.now(),
       provisioningError: 'Flutter BLE ownership released: $reason',
@@ -295,6 +299,7 @@ class BleDeviceRuntimeProvider
       return null;
     }
     final nextStatus = currentStatus.copyWith(
+      canonicalHardwareId: currentStatus.canonicalHardwareId,
       provisioningError: 'Flutter BLE ownership restored: $reason',
       lastSyncedAt: DateTime.now(),
     );
@@ -319,6 +324,7 @@ class BleDeviceRuntimeProvider
     );
     final nextStatus = currentStatus.copyWith(
       activated: true,
+      canonicalHardwareId: currentStatus.canonicalHardwareId,
       connected: await _resolveConnection(currentStatus.deviceId),
       lifecycleState: DeviceLifecycleState.ready,
       batteryLevel: _effectiveBatteryLevel(currentStatus),
@@ -357,6 +363,7 @@ class BleDeviceRuntimeProvider
     );
     final nextStatus = currentStatus.copyWith(
       connected: connected,
+      canonicalHardwareId: currentStatus.canonicalHardwareId,
       batteryLevel: connected
           ? _effectiveBatteryLevel(currentStatus)
           : currentStatus.batteryLevel,
@@ -400,6 +407,7 @@ class BleDeviceRuntimeProvider
     }
     _connectedDeviceId = null;
     _connectedDeviceAlias = null;
+    _connectedCanonicalHardwareId = null;
     _lastAppCommandAt = null;
     _lastTelBatteryLevel = null;
     _lastSosBatteryLevel = null;
@@ -413,6 +421,7 @@ class BleDeviceRuntimeProvider
 
     final nextStatus = DeviceStatus(
       deviceId: currentStatus.deviceId,
+      canonicalHardwareId: currentStatus.canonicalHardwareId,
       deviceAlias: currentStatus.deviceAlias,
       model: currentStatus.model,
       paired: false,
@@ -601,6 +610,7 @@ class BleDeviceRuntimeProvider
 
     final nextStatus = currentStatus.copyWith(
       connected: false,
+      canonicalHardwareId: currentStatus.canonicalHardwareId,
       lifecycleState: _resolveLifecycle(currentStatus, false),
       lastSyncedAt: DateTime.now(),
       provisioningError: 'Unexpected BLE disconnect',
@@ -652,6 +662,7 @@ class BleDeviceRuntimeProvider
       _incomingEventsController.add(
         BleIncomingEvent(
           deviceId: deviceId,
+          canonicalHardwareId: _connectedCanonicalHardwareId,
           deviceAlias: _connectedDeviceAlias,
           type: BleIncomingEventType.guidedRescueStatus,
           channel: notification.channel,
@@ -681,6 +692,7 @@ class BleDeviceRuntimeProvider
       _incomingEventsController.add(
         BleIncomingEvent(
           deviceId: deviceId,
+          canonicalHardwareId: _connectedCanonicalHardwareId,
           deviceAlias: _connectedDeviceAlias,
           type: BleIncomingEventType.telPosition,
           channel: notification.channel,
@@ -707,6 +719,7 @@ class BleDeviceRuntimeProvider
       _incomingEventsController.add(
         BleIncomingEvent(
           deviceId: deviceId,
+          canonicalHardwareId: _connectedCanonicalHardwareId,
           deviceAlias: _connectedDeviceAlias,
           type: BleIncomingEventType.telAggregateFragment,
           channel: notification.channel,
@@ -731,6 +744,7 @@ class BleDeviceRuntimeProvider
         _incomingEventsController.add(
           BleIncomingEvent(
             deviceId: deviceId,
+            canonicalHardwareId: _connectedCanonicalHardwareId,
             deviceAlias: _connectedDeviceAlias,
             type: BleIncomingEventType.telAggregateComplete,
             channel: notification.channel,
@@ -757,6 +771,7 @@ class BleDeviceRuntimeProvider
     _incomingEventsController.add(
       BleIncomingEvent(
         deviceId: deviceId,
+        canonicalHardwareId: _connectedCanonicalHardwareId,
         deviceAlias: _connectedDeviceAlias,
         type: BleIncomingEventType.unknownProtocolPacket,
         channel: notification.channel,
@@ -829,6 +844,7 @@ class BleDeviceRuntimeProvider
       _incomingEventsController.add(
         BleIncomingEvent(
           deviceId: deviceId,
+          canonicalHardwareId: _connectedCanonicalHardwareId,
           deviceAlias: _connectedDeviceAlias,
           type: BleIncomingEventType.sosDeviceEvent,
           channel: notification.channel,
@@ -871,6 +887,7 @@ class BleDeviceRuntimeProvider
       _incomingEventsController.add(
         BleIncomingEvent(
           deviceId: deviceId,
+          canonicalHardwareId: _connectedCanonicalHardwareId,
           deviceAlias: _connectedDeviceAlias,
           type: BleIncomingEventType.sosMeshPacket,
           channel: notification.channel,
@@ -895,6 +912,7 @@ class BleDeviceRuntimeProvider
     _incomingEventsController.add(
       BleIncomingEvent(
         deviceId: deviceId,
+        canonicalHardwareId: _connectedCanonicalHardwareId,
         deviceAlias: _connectedDeviceAlias,
         type: BleIncomingEventType.unknownProtocolPacket,
         channel: notification.channel,

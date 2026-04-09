@@ -37,6 +37,7 @@ class ProtectionPlatformStartRequest {
   const ProtectionPlatformStartRequest({
     required this.modeOptions,
     this.activeDeviceId,
+    this.backendHardwareId,
     this.apiBaseUrl,
     this.sessionReady = false,
     this.enableStoreAndForward = true,
@@ -44,6 +45,7 @@ class ProtectionPlatformStartRequest {
 
   final ProtectionModeOptions modeOptions;
   final String? activeDeviceId;
+  final String? backendHardwareId;
   final String? apiBaseUrl;
   final bool sessionReady;
   final bool enableStoreAndForward;

@@ -20,6 +20,7 @@ class FakeSosRepository implements SosRepository {
   String? lastMessage;
   String? lastTriggerSource;
   TrackingPosition? lastPositionSnapshot;
+  String? lastDeviceId;
   final StreamController<SosState> stateController =
       StreamController<SosState>.broadcast();
 
@@ -28,11 +29,13 @@ class FakeSosRepository implements SosRepository {
     String? message,
     required String triggerSource,
     TrackingPosition? positionSnapshot,
+    String? deviceId,
   }) async {
     triggerCallCount++;
     lastMessage = message;
     lastTriggerSource = triggerSource;
     lastPositionSnapshot = positionSnapshot;
+    lastDeviceId = deviceId;
     currentIncident = currentIncident.copyWith(
       state: SosState.sent,
       message: message,
@@ -209,6 +212,11 @@ class FakeContactsRepository implements ContactsRepository {
 
 class FakeSdkDeviceRegistryRepository implements SdkDeviceRegistryRepository {
   final List<BackendRegisteredDevice> devices = <BackendRegisteredDevice>[];
+  int upsertCallCount = 0;
+  String? lastHardwareId;
+  String? lastFirmwareVersion;
+  String? lastHardwareModel;
+  DateTime? lastPairedAt;
 
   @override
   Future<List<BackendRegisteredDevice>> listRegisteredDevices() async {
@@ -227,6 +235,11 @@ class FakeSdkDeviceRegistryRepository implements SdkDeviceRegistryRepository {
     required String hardwareModel,
     required DateTime pairedAt,
   }) async {
+    upsertCallCount++;
+    lastHardwareId = hardwareId;
+    lastFirmwareVersion = firmwareVersion;
+    lastHardwareModel = hardwareModel;
+    lastPairedAt = pairedAt;
     final existingIndex =
         devices.indexWhere((device) => device.hardwareId == hardwareId);
     final now = DateTime.utc(2026, 3, 31, 12);

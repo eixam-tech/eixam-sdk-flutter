@@ -99,6 +99,46 @@ class ValidationConsoleController extends ChangeNotifier {
   PermissionState? get permissionState => deviceDebugController.permissionState;
   BleDebugState get bleDebugState => deviceDebugController.bleDebugState;
   DeviceSosStatus get deviceSosStatus => deviceDebugController.deviceSosStatus;
+  bool get isSignedSessionIdentityReady {
+    final currentSession = session;
+    if (currentSession == null) {
+      return false;
+    }
+    final canonicalUserId = (currentSession.canonicalExternalUserId ??
+            currentSession.externalUserId)
+        .trim();
+    return currentSession.appId.trim().isNotEmpty &&
+        currentSession.userHash.trim().isNotEmpty &&
+        canonicalUserId.isNotEmpty;
+  }
+
+  bool get isRuntimeDeviceReadyForRegistrySync {
+    final status = deviceStatus;
+    return status != null && status.paired && status.connected;
+  }
+
+  String get backendDeviceRegistryAutoSyncStatus {
+    if (!isSignedSessionIdentityReady) {
+      return 'Waiting for signed session identity';
+    }
+    if (!isRuntimeDeviceReadyForRegistrySync) {
+      return 'Waiting for a paired and connected runtime device';
+    }
+    if (registeredDevices.isEmpty) {
+      return 'No backend registered device loaded yet; auto-sync will only run when the SDK can resolve a canonical hardware_id safely';
+    }
+    if (registeredDevices.length == 1) {
+      return 'Auto-sync can update the single backend registered device entry automatically';
+    }
+    return 'Multiple backend devices are loaded; the SDK will auto-sync only when one can be resolved unambiguously';
+  }
+
+  String get backendDeviceRegistryDraftHardwareId {
+    if (registeredDevices.length == 1) {
+      return registeredDevices.single.hardwareId;
+    }
+    return '-';
+  }
 
   String get ackRelayNodeIdDraft => _ackRelayNodeIdDraft;
 
@@ -704,6 +744,22 @@ class ValidationConsoleController extends ChangeNotifier {
       runningDiagnostic: 'Refreshing backend device registry...',
       action: () async {
         registeredDevices = await sdk.listRegisteredDevices();
+      },
+      evaluate: _buildBackendDeviceRegistryAlignmentResult,
+    );
+  }
+
+  Future<void> retryBackendDeviceRegistryAutoSyncValidation() async {
+    await _runBleCapabilityAction(
+      id: ValidationCapabilityId.backendDeviceRegistryAlignment,
+      runningDiagnostic:
+          'Refreshing device runtime so the SDK can retry automatic backend registry sync...',
+      action: () async {
+        deviceStatus = await sdk.refreshDeviceStatus();
+      },
+      onAfterAction: () async {
+        registeredDevices = await sdk.listRegisteredDevices();
+        preferredDevice = await sdk.preferredDevice;
       },
       evaluate: _buildBackendDeviceRegistryAlignmentResult,
     );
@@ -1589,25 +1645,31 @@ class ValidationConsoleController extends ChangeNotifier {
             'Validate backend device registry actions and compare runtime device state with registry data from one console.',
         expectation: const ValidationExpectation(
           expectedResult:
-              'Registry entries load correctly, registry actions succeed, and runtime device alignment can be inspected.',
+              'The SDK auto-syncs the connected paired device into the backend registry when it can resolve a canonical hardware_id, and the validation surface shows status plus retry options.',
           howToValidate:
-              'Refresh the registry, upsert or delete entries as needed, and compare the runtime device id against backend registry records.',
+              'Connect a known device with a signed session, refresh or retry auto-sync if needed, and inspect the loaded backend registry state without relying on manual form entry.',
         ),
         result: _buildBackendDeviceRegistryAlignmentResult(),
         currentState: <ValidationStateField>[
           ValidationStateField(
+              label: 'Signed session ready',
+              value: isSignedSessionIdentityReady ? 'Yes' : 'No'),
+          ValidationStateField(
+              label: 'Runtime ready for sync',
+              value: isRuntimeDeviceReadyForRegistrySync ? 'Yes' : 'No'),
+          ValidationStateField(
               label: 'Registry count',
               value: registeredDevices.length.toString()),
           ValidationStateField(
-              label: 'Runtime device id', value: status?.deviceId ?? '-'),
+              label: 'Runtime firmware', value: status?.firmwareVersion ?? '-'),
           ValidationStateField(
-              label: 'Selected registry hardware id',
-              value: registeredDevices.isEmpty
-                  ? '-'
-                  : registeredDevices.first.hardwareId),
+              label: 'Runtime hardware model', value: status?.model ?? '-'),
           ValidationStateField(
-              label: 'Aligned with runtime',
-              value: _registryAlignedWithRuntime ? 'Yes' : 'No / unknown'),
+              label: 'Resolved backend hardware_id draft',
+              value: backendDeviceRegistryDraftHardwareId),
+          ValidationStateField(
+              label: 'Auto-sync status',
+              value: backendDeviceRegistryAutoSyncStatus),
         ],
       ),
     ];
@@ -3688,36 +3750,46 @@ class ValidationConsoleController extends ChangeNotifier {
         lastExecutedAt: recorded.lastExecutedAt,
       );
     }
+    if (!isSignedSessionIdentityReady) {
+      return _mergeWithRecorded(
+        ValidationCapabilityId.backendDeviceRegistryAlignment,
+        const ValidationCapabilityResult(
+          status: ValidationRunStatus.warning,
+          diagnosticText:
+              'Set a signed session first so the SDK can auto-sync the paired device into the backend registry.',
+        ),
+      );
+    }
+    if (!isRuntimeDeviceReadyForRegistrySync) {
+      return _mergeWithRecorded(
+        ValidationCapabilityId.backendDeviceRegistryAlignment,
+        const ValidationCapabilityResult(
+          status: ValidationRunStatus.warning,
+          diagnosticText:
+              'Connect a paired device first. Backend registry auto-sync runs from the SDK runtime after a successful device connection.',
+        ),
+      );
+    }
     if (registeredDevices.isEmpty) {
       return _mergeWithRecorded(
         ValidationCapabilityId.backendDeviceRegistryAlignment,
         const ValidationCapabilityResult(
           status: ValidationRunStatus.warning,
           diagnosticText:
-              'Backend registry is reachable, but no registered devices are currently loaded.',
+              'No backend registered devices are currently loaded. The SDK will only auto-sync when it can resolve a canonical backend hardware_id safely.',
         ),
       );
     }
     return _mergeWithRecorded(
       ValidationCapabilityId.backendDeviceRegistryAlignment,
       ValidationCapabilityResult(
-        status: _registryAlignedWithRuntime
+        status: registeredDevices.length == 1
             ? ValidationRunStatus.ok
             : ValidationRunStatus.warning,
-        diagnosticText: _registryAlignedWithRuntime
-            ? 'Backend registry entries are loaded and one aligns with the current runtime device id.'
-            : 'Backend registry entries are loaded. Compare the runtime device against the registry draft before continuing.',
+        diagnosticText: registeredDevices.length == 1
+            ? 'A backend registered device is loaded, so the SDK can keep that entry auto-synced after successful pairing/connection.'
+            : 'Multiple backend registered devices are loaded. The SDK will only auto-sync when it can resolve one safely from backend data and runtime metadata.',
       ),
-    );
-  }
-
-  bool get _registryAlignedWithRuntime {
-    final runtimeDeviceId = deviceStatus?.deviceId.trim();
-    if (runtimeDeviceId == null || runtimeDeviceId.isEmpty) {
-      return false;
-    }
-    return registeredDevices.any(
-      (device) => device.hardwareId.trim() == runtimeDeviceId,
     );
   }
 
@@ -3739,7 +3811,8 @@ class ValidationConsoleController extends ChangeNotifier {
     if (value == null) {
       return 'null';
     }
-    final altitude = value.altitude == null ? 'n/a' : value.altitude!.toString();
+    final altitude =
+        value.altitude == null ? 'n/a' : value.altitude!.toString();
     return '${value.latitude.toStringAsFixed(5)}, '
         '${value.longitude.toStringAsFixed(5)} '
         '(alt=$altitude at ${_formatDateTime(value.timestamp)})';

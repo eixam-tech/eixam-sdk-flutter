@@ -49,6 +49,7 @@ class InMemorySosRepository implements SosRepository {
     String? message,
     required String triggerSource,
     TrackingPosition? positionSnapshot,
+    String? deviceId,
   }) async {
     final current = _stateMachine.current;
     if (current != SosState.idle &&

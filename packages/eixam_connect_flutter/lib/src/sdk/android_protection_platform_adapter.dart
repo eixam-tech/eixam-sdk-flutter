@@ -49,6 +49,7 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
       'startProtectionRuntime',
       <String, dynamic>{
         'activeDeviceId': request.activeDeviceId,
+        'backendHardwareId': request.backendHardwareId,
         'apiBaseUrl': request.apiBaseUrl,
         'sessionReady': request.sessionReady,
         'enableStoreAndForward': request.enableStoreAndForward,

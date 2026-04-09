@@ -19,6 +19,7 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     String? message,
     required String triggerSource,
     TrackingPosition? positionSnapshot,
+    String? deviceId,
   }) async {
     if (positionSnapshot == null) {
       throw const SosException(
@@ -34,6 +35,8 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
         'latitude': positionSnapshot.latitude,
         'longitude': positionSnapshot.longitude,
         'altitude': positionSnapshot.altitude,
+        if (deviceId != null && deviceId.trim().isNotEmpty)
+          'deviceId': deviceId.trim(),
       }),
     );
 

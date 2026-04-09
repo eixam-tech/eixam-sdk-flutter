@@ -74,6 +74,72 @@ void main() {
       expect(await store.readManualDisconnectRequested(), isTrue);
       await coordinator.dispose();
     });
+
+    test('tries auto-connect again when app returns to foreground', () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _FakeDeviceRepository();
+      final store = PreferredBleDeviceStore(
+        localStore: SharedPrefsSdkStore(),
+      );
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: 'ble-demo-r1',
+          displayName: 'EIXAM Demo',
+          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+        ),
+      );
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+      );
+
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+
+      coordinator.setAppForeground(false);
+      repository.setDisconnected();
+      coordinator.setAppForeground(true);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(repository.pairCallCount, 1);
+      expect(repository.lastPairingCode, 'AUTO-RECONNECT');
+      await coordinator.dispose();
+    });
+
+    test('tries resume auto-connect for a known preferred device', () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _FakeDeviceRepository();
+      final store = PreferredBleDeviceStore(
+        localStore: SharedPrefsSdkStore(),
+      );
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: 'ble-demo-r1',
+          displayName: 'EIXAM Demo',
+          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+        ),
+      );
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+      );
+
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+      repository.setDisconnected();
+
+      await coordinator.tryAutoConnectOnResume();
+
+      expect(repository.pairCallCount, 1);
+      expect(repository.lastPairingCode, 'AUTO-RECONNECT');
+      await coordinator.dispose();
+    });
   });
 }
 
@@ -92,6 +158,17 @@ class _FakeDeviceRepository implements DeviceRepository {
   );
 
   int pairCallCount = 0;
+  String? lastPairingCode;
+
+  void setDisconnected() {
+    _status = _status.copyWith(
+      paired: true,
+      connected: false,
+      lifecycleState: DeviceLifecycleState.paired,
+      clearProvisioningError: true,
+    );
+    _controller.add(_status);
+  }
 
   @override
   Future<DeviceStatus> activateDevice({required String activationCode}) async {
@@ -104,6 +181,7 @@ class _FakeDeviceRepository implements DeviceRepository {
   @override
   Future<DeviceStatus> pairDevice({required String pairingCode}) async {
     pairCallCount++;
+    lastPairingCode = pairingCode;
     _status = _status.copyWith(
       deviceId: 'ble-demo-r1',
       deviceAlias: 'EIXAM Demo',

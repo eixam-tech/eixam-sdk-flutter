@@ -70,6 +70,14 @@ MQTT auth now uses broker-compatible credentials instead of MQTT 5 User Properti
 
 This migration does not change the signed-session shape, MQTT topics, payloads, QoS, retain behavior, or the rule that the app secret stays on the backend only.
 
+## SOS payload note
+
+Operational SOS payloads may include optional `deviceId` when the SDK knows the paired device hardware id.
+
+- hardware-originated SOS should send `deviceId = hardware_id` when available
+- app-originated SOS without a paired device may omit `deviceId`
+- telemetry keeps using `deviceId = hardware_id` when available
+
 ## What bootstrap does not do
 
 - it does not request permissions
