@@ -1,9 +1,9 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Partner Integration Guide</title>
+  <title>SDK Partner Integration Guide</title>
   <link rel="stylesheet" href="../assets/style.css" />
 </head>
 <body>
@@ -14,89 +14,70 @@
   <div class="layout">
     <aside class="sidebar">
       <div class="sidebar-title">Navigation</div>
-      <a href="../index.html">Home</a>
-      <a href="overview.html">SDK Overview</a>
-      <a href="architecture.html">SDK Architecture</a>
-      <a class="active" href="partner-integration-guide.html">Partner Integration Guide</a>
-      <a href="backend-integration.html">Backend Integration</a>
-      <a href="public-api.html">Public API</a>
-      <a href="public-api-examples.html">Method Examples</a>
-      <a href="model-reference.html">Model Reference</a>
-      <a href="protection-mode.html">Protection Mode</a>
-      <a href="../protection/overview.html">Protection Overview</a>
-      <a href="../protection/android-host-integration.html">Android Protection Integration</a>
-      <a href="../protection/ios-host-integration.html">iOS Protection Integration</a>
-      <a href="../protection/limitations.html">Protection Limitations</a>
-      <a href="../protection/validation-checklist.html">Protection Validation Checklist</a>
-      <a href="realtime-status.html">Realtime Status</a>
-      <a href="troubleshooting.html">SDK Troubleshooting</a>
-      <a href="../integration/flutter-installation.html">Flutter Installation</a>
-      <a href="../integration/flutter-integration.html">Flutter Integration</a>
-      <a href="../integration/host-app-integration.html">Host App Integration</a>
-      <a href="../integration/android-host-integration.html">Android Host Integration</a>
-      <a href="../integration/ios-host-integration.html">iOS Host Integration</a>
-      <a href="../integration/permissions-checklist.html">Permissions Checklist</a>
-      <a href="../integration/ble-provider-integration.html">BLE Provider Integration</a>
-      <a href="../protocol/ble-protocol.html">BLE Protocol</a>
-      <a href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a>
-      <a href="../protocol/runtime-flow.html">BLE Runtime Flow</a>
-      <a href="../reference-app/validation-app-guide.html">Validation App Guide</a>
-      <a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a>
-      <a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a>
-      <a href="../reference-app/app-handoff-final.html">App Handoff Final</a>
-      <a href="../api/api-reference.html">API Reference</a>
-      <a href="../api/public-api.html">API Surface</a>
-      <a href="../api/public-api-examples.html">API Examples</a>
-      <a href="../internal/decisions.html">Decisions</a>
-      <a href="../internal/quality-gates.html">Quality Gates</a>
-      <a href="../internal/testing-strategy.html">Testing Strategy</a>
-      <a href="../internal/testability-notes.html">Testability Notes</a>
-      <a href="../internal/how-to-run-project.html">How to Run Project</a>
-      <a href="../internal/migration-map.html">Migration Map</a>
-      <a href="../internal/roadmap.html">Roadmap</a>
-      <a href="../internal/team-handoff-index.html">Team Handoff Index</a>
-      <a href="../internal/agents.html">AGENTS</a>
+      <a href="../index.html">Home</a><a href="overview.html">SDK Overview</a><a href="architecture.html">SDK Architecture</a><a class="active" href="partner-integration-guide.html">Partner Integration Guide</a><a href="backend-integration.html">Backend Integration</a><a href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a href="model-reference.html">Model Reference</a><a href="protection-mode.html">Protection Mode</a><a href="../protection/overview.html">Protection Overview</a><a href="../protection/android-host-integration.html">Android Protection Integration</a><a href="../protection/ios-host-integration.html">iOS Protection Integration</a><a href="../protection/limitations.html">Protection Limitations</a><a href="../protection/validation-checklist.html">Protection Validation Checklist</a><a href="realtime-status.html">Realtime Status</a><a href="troubleshooting.html">SDK Troubleshooting</a><a href="../integration/flutter-installation.html">Flutter Installation</a><a href="../integration/flutter-integration.html">Flutter Integration</a><a href="../integration/host-app-integration.html">Host App Integration</a><a href="../integration/android-host-integration.html">Android Host Integration</a><a href="../integration/ios-host-integration.html">iOS Host Integration</a><a href="../integration/permissions-checklist.html">Permissions Checklist</a><a href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../reference-app/app-handoff-final.html">App Handoff Final</a><a href="../api/api-reference.html">API Reference</a><a href="../api/public-api.html">API Surface</a><a href="../api/public-api-examples.html">API Examples</a><a href="../internal/decisions.html">Decisions</a><a href="../internal/quality-gates.html">Quality Gates</a><a href="../internal/testing-strategy.html">Testing Strategy</a><a href="../internal/testability-notes.html">Testability Notes</a><a href="../internal/how-to-run-project.html">How to Run Project</a><a href="../internal/migration-map.html">Migration Map</a><a href="../internal/roadmap.html">Roadmap</a><a href="../internal/team-handoff-index.html">Team Handoff Index</a><a href="../internal/agents.html">AGENTS</a>
     </aside>
     <main class="content"><h1>SDK Partner Integration Guide</h1>
 <p>This guide is the full internal version of the partner integration story.</p>
-<a id="public-recommendation"></a>
+<p><a id="public-recommendation"></a></p>
 <h2>Public recommendation</h2>
 <p>For partner integrations, the recommended entrypoint is:</p>
-<pre><code>final sdk = await EixamConnectSdk.bootstrap(
+<pre><code class="language-dart">final sdk = await EixamConnectSdk.bootstrap(
   const EixamBootstrapConfig(
-    appId: &#39;partner-app&#39;,
+    appId: 'partner-app',
     environment: EixamEnvironment.sandbox,
     initialSession: EixamSession.signed(
-      appId: &#39;partner-app&#39;,
-      externalUserId: &#39;partner-user-123&#39;,
-      userHash: &#39;signed-session-hash&#39;,
+      appId: 'partner-app',
+      externalUserId: 'partner-user-123',
+      userHash: 'signed-session-hash',
     ),
   ),
-);</code></pre>
-<a id="why-the-single-call-bootstrap-is-better"></a>
+);
+</code></pre>
+<p><a id="why-the-single-call-bootstrap-is-better"></a></p>
 <h2>Why the single-call bootstrap is better</h2>
 <p>It gives partners a cleaner happy path than exposing <code>createHttpApi + initialize + apply/setSession</code> as the main story.</p>
-<a id="signed-session-and-backend-responsibilities"></a>
+<p><a id="signed-session-and-backend-responsibilities"></a></p>
 <h2>Signed Session And Backend Responsibilities</h2>
-<ul><li>the partner backend stores the app secret</li><li>the app secret never belongs in the mobile client</li><li>the backend signs or obtains <code>userHash</code> for <code>appId</code> + <code>externalUserId</code></li><li><code>externalUserId</code> must be unique per app</li><li>the mobile app receives the signed session and passes it to bootstrap or <code>setSession(...)</code></li><li>the SDK then reuses the same identity for HTTP and MQTT/runtime transport</li><li>internal staging validation may use <code>/v1/auth/sign</code>, but partner production signing must stay on the backend</li></ul>
-<a id="validation-rules"></a>
+<ul>
+<li>the partner backend stores the app secret</li>
+<li>the app secret never belongs in the mobile client</li>
+<li>the backend signs or obtains <code>userHash</code> for <code>appId</code> + <code>externalUserId</code></li>
+<li><code>externalUserId</code> must be unique per app</li>
+<li>the mobile app receives the signed session and passes it to bootstrap or <code>setSession(...)</code></li>
+<li>the SDK then reuses the same identity for HTTP and MQTT/runtime transport</li>
+<li>internal staging validation may use <code>/v1/auth/sign</code>, but partner production signing must stay on the backend</li>
+</ul>
+<p>HTTP auth remains <code>X-App-ID</code>, <code>X-User-ID</code>, and <code>Authorization: Bearer &lt;userHash&gt;</code>.</p>
+<p>MQTT auth now uses <code>username = sdk:&lt;appId&gt;:&lt;externalUserId&gt;</code> and <code>password = &lt;userHash&gt;</code>, without a <code>Bearer</code> prefix.</p>
+<p><a id="validation-rules"></a></p>
 <h2>Validation rules</h2>
-<ul><li>standard environments resolve internally</li><li><code>custom</code> requires <code>EixamCustomEndpoints</code></li><li>non-custom environments reject <code>customEndpoints</code></li><li><code>initialSession.appId</code> must match the bootstrap <code>appId</code></li><li>bootstrap does not request permissions, pair devices, or trigger other UX-sensitive actions</li><li>the public <code>mqttUrl</code> / <code>websocketUrl</code> naming stays stable even when the broker URI is <code>ssl://</code>, <code>tls://</code>, <code>tcp://</code>, <code>ws://</code>, or <code>wss://</code></li></ul>
-<a id="session-lifecycle-after-bootstrap"></a>
+<ul>
+<li>standard environments resolve internally</li>
+<li><code>custom</code> requires <code>EixamCustomEndpoints</code></li>
+<li>non-custom environments reject <code>customEndpoints</code></li>
+<li><code>initialSession.appId</code> must match the bootstrap <code>appId</code></li>
+<li>bootstrap does not request permissions, pair devices, or trigger other UX-sensitive actions</li>
+<li>the public <code>mqttUrl</code> / <code>websocketUrl</code> naming stays stable even when the broker URI is <code>ssl://</code>, <code>tls://</code>, <code>tcp://</code>, <code>ws://</code>, or <code>wss://</code></li>
+</ul>
+<p><a id="session-lifecycle-after-bootstrap"></a></p>
 <h2>Session lifecycle after bootstrap</h2>
 <p>The recommended lifecycle surfaces remain:</p>
-<ul><li><code>setSession(...)</code></li><li><code>clearSession()</code></li><li><code>getCurrentSession()</code></li><li><code>refreshCanonicalIdentity()</code></li></ul>
-<a id="internal-distinction"></a>
+<ul>
+<li><code>setSession(...)</code></li>
+<li><code>clearSession()</code></li>
+<li><code>getCurrentSession()</code></li>
+<li><code>refreshCanonicalIdentity()</code></li>
+</ul>
+<p><a id="internal-distinction"></a></p>
 <h2>Internal distinction</h2>
-<ul><li>partner path &#226;†’ <code>EixamConnectSdk.bootstrap(...)</code></li><li>validation app path &#226;†’ internal bootstrapping composition and environment controls</li></ul></main>
+<ul>
+<li>partner path → <code>EixamConnectSdk.bootstrap(...)</code></li>
+<li>validation app path → internal bootstrapping composition and environment controls</li>
+</ul>
+</main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
-      <a class="toc-level-2" href="#public-recommendation">Public recommendation</a>
-      <a class="toc-level-2" href="#why-the-single-call-bootstrap-is-better">Why the single-call bootstrap is better</a>
-      <a class="toc-level-2" href="#signed-session-and-backend-responsibilities">Signed Session And Backend Responsibilities</a>
-      <a class="toc-level-2" href="#validation-rules">Validation rules</a>
-      <a class="toc-level-2" href="#session-lifecycle-after-bootstrap">Session lifecycle after bootstrap</a>
-      <a class="toc-level-2" href="#internal-distinction">Internal distinction</a>
+      <a class="toc-level-2" href="#public-recommendation">Public recommendation</a><a class="toc-level-2" href="#why-the-single-call-bootstrap-is-better">Why the single-call bootstrap is better</a><a class="toc-level-2" href="#signed-session-and-backend-responsibilities">Signed Session And Backend Responsibilities</a><a class="toc-level-2" href="#validation-rules">Validation rules</a><a class="toc-level-2" href="#session-lifecycle-after-bootstrap">Session lifecycle after bootstrap</a><a class="toc-level-2" href="#internal-distinction">Internal distinction</a>
     </aside>
   </div>
 </body>

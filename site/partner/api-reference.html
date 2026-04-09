@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -14,68 +14,81 @@
   <div class="layout">
     <aside class="sidebar">
       <div class="sidebar-title">Navigation</div>
-      <a href="index.html">Home</a>
-      <a href="sdk-overview.html">SDK Overview</a>
-      <a href="quickstart.html">Quickstart</a>
-      <a href="public-api.html">Public API</a>
-      <a href="public-api-examples.html">Method Examples</a>
-      <a href="model-reference.html">Model Reference</a>
-      <a href="core-concepts.html">Core Concepts</a>
-      <a href="protection-mode.html">Protection Mode</a>
-      <a href="flutter-installation.html">Flutter Installation</a>
-      <a href="flutter-integration.html">Flutter Integration</a>
-      <a href="android-integration.html">Android Integration</a>
-      <a href="ios-integration.html">iOS Integration</a>
-      <a href="permissions-checklist.html">Permissions Checklist</a>
-      <a href="backend-integration.html">Backend Integration</a>
-      <a class="active" href="api-reference.html">API Reference</a>
-      <a href="troubleshooting.html">Troubleshooting</a>
+      <a href="index.html">Home</a><a href="sdk-overview.html">SDK Overview</a><a href="quickstart.html">Quickstart</a><a href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a href="model-reference.html">Model Reference</a><a href="core-concepts.html">Core Concepts</a><a href="protection-mode.html">Protection Mode</a><a href="flutter-installation.html">Flutter Installation</a><a href="flutter-integration.html">Flutter Integration</a><a href="android-integration.html">Android Integration</a><a href="ios-integration.html">iOS Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a href="backend-integration.html">Backend Integration</a><a class="active" href="api-reference.html">API Reference</a><a href="troubleshooting.html">Troubleshooting</a>
     </aside>
     <main class="content"><h1>API Reference</h1>
 <p>This page summarizes the backend-facing contracts a partner integration should expect.</p>
-<a id="identity"></a>
+<p><a id="identity"></a></p>
 <h2>Identity</h2>
 <p>Partner auth/signing responsibility:</p>
-<ul><li>the partner backend stores the app secret</li><li>the backend returns a signed session to the mobile app</li><li>the SDK does not hold the app secret or call the partner signing flow by itself</li></ul>
-<a id="get-v1-sdk-me"></a>
+<ul>
+<li>the partner backend stores the app secret</li>
+<li>the backend returns a signed session to the mobile app</li>
+<li>the SDK does not hold the app secret or call the partner signing flow by itself</li>
+</ul>
+<p>HTTP auth stays:</p>
+<ul>
+<li><code>X-App-ID</code></li>
+<li><code>X-User-ID</code></li>
+<li><code>Authorization: Bearer &lt;userHash&gt;</code></li>
+</ul>
+<p>MQTT auth now stays broker-native:</p>
+<ul>
+<li><code>username = sdk:&lt;appId&gt;:&lt;externalUserId&gt;</code></li>
+<li><code>password = &lt;userHash&gt;</code></li>
+<li>no MQTT <code>Bearer</code> prefix</li>
+</ul>
+<p><a id="get-v1-sdk-me"></a></p>
 <h3><code>GET /v1/sdk/me</code></h3>
 <p>Used by the SDK to enrich the signed session with canonical backend identity.</p>
-<a id="sos"></a>
+<p><a id="sos"></a></p>
 <h2>SOS</h2>
-<a id="post-v1-sdk-sos-cancel"></a>
+<p><a id="post-v1-sdk-sos-cancel"></a></p>
 <h3><code>POST /v1/sdk/sos/cancel</code></h3>
 <p>Transactional cancel request.</p>
 <p>Notes:</p>
-<ul><li>no business meaning should be inferred from the HTTP response alone</li><li>final SOS lifecycle state still comes from the operational runtime lifecycle</li></ul>
-<a id="get-v1-sdk-sos"></a>
+<ul>
+<li>no business meaning should be inferred from the HTTP response alone</li>
+<li>final SOS lifecycle state still comes from the operational runtime lifecycle</li>
+</ul>
+<p><a id="get-v1-sdk-sos"></a></p>
 <h3><code>GET /v1/sdk/sos</code></h3>
 <p>Used for SOS rehydration on startup/bootstrap and identity refresh.</p>
-<a id="devices"></a>
+<p><a id="devices"></a></p>
 <h2>Devices</h2>
-<a id="v1-sdk-devices"></a>
+<p><a id="v1-sdk-devices"></a></p>
 <h3><code>/v1/sdk/devices</code></h3>
 <p>Backend device registry surface.</p>
 <p>Mapped public shape:</p>
-<ul><li><code>id</code></li><li><code>hardwareId</code></li><li><code>firmwareVersion</code></li><li><code>hardwareModel</code></li><li><code>pairedAt</code></li><li><code>createdAt</code></li><li><code>updatedAt</code></li></ul>
-<a id="contacts"></a>
+<ul>
+<li><code>id</code></li>
+<li><code>hardwareId</code></li>
+<li><code>firmwareVersion</code></li>
+<li><code>hardwareModel</code></li>
+<li><code>pairedAt</code></li>
+<li><code>createdAt</code></li>
+<li><code>updatedAt</code></li>
+</ul>
+<p><a id="contacts"></a></p>
 <h2>Contacts</h2>
 <p>Contacts are aligned 1:1 with the backend contract:</p>
-<ul><li><code>id</code></li><li><code>name</code></li><li><code>phone</code></li><li><code>email</code></li><li><code>priority</code></li><li><code>createdAt</code></li><li><code>updatedAt</code></li></ul>
-<a id="operational-transport"></a>
+<ul>
+<li><code>id</code></li>
+<li><code>name</code></li>
+<li><code>phone</code></li>
+<li><code>email</code></li>
+<li><code>priority</code></li>
+<li><code>createdAt</code></li>
+<li><code>updatedAt</code></li>
+</ul>
+<p><a id="operational-transport"></a></p>
 <h2>Operational transport</h2>
 <p>The SDK also relies on operational transport for SOS/telemetry flows. Topic naming and exact transport details should remain aligned with the backend contract, not hardcoded independently by the host app.</p>
-<p>The configured broker URI may use <code>ssl://</code>, <code>tls://</code>, <code>tcp://</code>, <code>ws://</code>, or <code>wss://</code> depending on the environment and runtime transport client.</p></main>
+<p>The configured broker URI may use <code>ssl://</code>, <code>tls://</code>, <code>tcp://</code>, <code>ws://</code>, or <code>wss://</code> depending on the environment and runtime transport client.</p>
+</main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
-      <a class="toc-level-2" href="#identity">Identity</a>
-      <a class="toc-level-3" href="#get-v1-sdk-me">`GET /v1/sdk/me`</a>
-      <a class="toc-level-2" href="#sos">SOS</a>
-      <a class="toc-level-3" href="#post-v1-sdk-sos-cancel">`POST /v1/sdk/sos/cancel`</a>
-      <a class="toc-level-3" href="#get-v1-sdk-sos">`GET /v1/sdk/sos`</a>
-      <a class="toc-level-2" href="#devices">Devices</a>
-      <a class="toc-level-3" href="#v1-sdk-devices">`/v1/sdk/devices`</a>
-      <a class="toc-level-2" href="#contacts">Contacts</a>
-      <a class="toc-level-2" href="#operational-transport">Operational transport</a>
+      <a class="toc-level-2" href="#identity">Identity</a><a class="toc-level-3" href="#get-v1-sdk-me">`GET /v1/sdk/me`</a><a class="toc-level-2" href="#sos">SOS</a><a class="toc-level-3" href="#post-v1-sdk-sos-cancel">`POST /v1/sdk/sos/cancel`</a><a class="toc-level-3" href="#get-v1-sdk-sos">`GET /v1/sdk/sos`</a><a class="toc-level-2" href="#devices">Devices</a><a class="toc-level-3" href="#v1-sdk-devices">`/v1/sdk/devices`</a><a class="toc-level-2" href="#contacts">Contacts</a><a class="toc-level-2" href="#operational-transport">Operational transport</a>
     </aside>
   </div>
 </body>

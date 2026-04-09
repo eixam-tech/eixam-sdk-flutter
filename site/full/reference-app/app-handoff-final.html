@@ -18,49 +18,100 @@
     </aside>
     <main class="content"><h1>Eixam — APP Handoff Final (Sprint 3)</h1>
 <p>Decisio de scope tancada:</p>
-<ul><li><code>EixamRoute</code> <strong>no</strong> s'implementa al firmware.</li><li>Rescue avancat (fase 2) <strong>no</strong> s'implementa al firmware.</li><li>Seguiment de ruta, desviacions i workflow avancat de rescat van a <strong>APP/BACKEND</strong>.</li></ul>
-<p>---</p>
-<a id="1-objectiu-de-l-app"></a>
+<ul>
+<li><code>EixamRoute</code> <strong>no</strong> s'implementa al firmware.</li>
+<li>Rescue avancat (fase 2) <strong>no</strong> s'implementa al firmware.</li>
+<li>Seguiment de ruta, desviacions i workflow avancat de rescat van a <strong>APP/BACKEND</strong>.</li>
+</ul>
+<hr />
+<p><a id="1-objectiu-de-l-app"></a></p>
 <h2>1) Objectiu de l'app</h2>
-<ul><li>Pont entre dispositiu i backend.</li><li>UX d'operacio (tracking, SOS, rescue).</li><li>Orquestrar comandes cap al dispositiu segons decisio backend.</li></ul>
-<p>---</p>
-<a id="2-quines-dades-rep-l-app-del-dispositiu"></a>
+<ul>
+<li>Pont entre dispositiu i backend.</li>
+<li>UX d'operacio (tracking, SOS, rescue).</li>
+<li>Orquestrar comandes cap al dispositiu segons decisio backend.</li>
+</ul>
+<hr />
+<p><a id="2-quines-dades-rep-l-app-del-dispositiu"></a></p>
 <h2>2) Quines dades rep l'app del dispositiu</h2>
-<a id="ble-notify-tel"></a>
+<p><a id="ble-notify-tel"></a></p>
 <h3>BLE Notify TEL</h3>
-<ul><li>Paquet de posicio Eixam de <strong>10 bytes</strong>.</li><li>També pot rebre fragments <code>0xD0</code> (payload gran, p. ex. agregats); cal reassemblar.</li></ul>
-<a id="ble-notify-sos"></a>
+<ul>
+<li>Paquet de posicio Eixam de <strong>10 bytes</strong>.</li>
+<li>També pot rebre fragments <code>0xD0</code> (payload gran, p. ex. agregats); cal reassemblar.</li>
+</ul>
+<p><a id="ble-notify-sos"></a></p>
 <h3>BLE Notify SOS</h3>
-<ul><li>SOS d'origen o relay (format 5B/10B segons cas).</li><li>Esdeveniments SOS de control (<code>0xE1</code>, <code>0xE2</code>) segons protocol.</li></ul>
-<a id="rescue-status-fase-1"></a>
+<ul>
+<li>SOS d'origen o relay (format 5B/10B segons cas).</li>
+<li>Esdeveniments SOS de control (<code>0xE1</code>, <code>0xE2</code>) segons protocol.</li>
+</ul>
+<p><a id="rescue-status-fase-1"></a></p>
 <h3>Rescue status (fase 1)</h3>
-<ul><li>En resposta a <code>STATUS_REQ</code>, el dispositiu emet <code>STATUS_RESP</code> (<code>0x85</code>, port 261).</li><li>Camps utiles per UI: <code>state</code>, bateria, qualitat GPS, retries, flags.</li></ul>
-<p>---</p>
-<a id="3-quines-comandes-envia-l-app-al-dispositiu"></a>
+<ul>
+<li>En resposta a <code>STATUS_REQ</code>, el dispositiu emet <code>STATUS_RESP</code> (<code>0x85</code>, port 261).</li>
+<li>Camps utiles per UI: <code>state</code>, bateria, qualitat GPS, retries, flags.</li>
+</ul>
+<hr />
+<p><a id="3-quines-comandes-envia-l-app-al-dispositiu"></a></p>
 <h2>3) Quines comandes envia l'app al dispositiu</h2>
-<a id="inet-cmd-ble-operacio-general"></a>
+<p><a id="inet-cmd-ble-operacio-general"></a></p>
 <h3>INET/CMD BLE (operacio general)</h3>
-<ul><li><code>INET_OK</code>, <code>INET_LOST</code></li><li><code>POS_CONFIRMED</code></li><li><code>SOS_CANCEL</code>, <code>SOS_CONFIRM</code>, <code>SOS_TRIGGER_APP</code></li><li><code>SOS_ACK</code>, <code>SOS_ACK_RELAY</code></li></ul>
-<a id="rescue-fase-1-control-de-camp"></a>
+<ul>
+<li><code>INET_OK</code>, <code>INET_LOST</code></li>
+<li><code>POS_CONFIRMED</code></li>
+<li><code>SOS_CANCEL</code>, <code>SOS_CONFIRM</code>, <code>SOS_TRIGGER_APP</code></li>
+<li><code>SOS_ACK</code>, <code>SOS_ACK_RELAY</code></li>
+</ul>
+<p><a id="rescue-fase-1-control-de-camp"></a></p>
 <h3>Rescue fase 1 (control de camp)</h3>
-<ul><li><code>REQUEST_POS</code></li><li><code>ACK_SOS</code></li><li><code>BUZZER_ON</code></li><li><code>BUZZER_OFF</code></li><li><code>STATUS_REQ</code></li></ul>
+<ul>
+<li><code>REQUEST_POS</code></li>
+<li><code>ACK_SOS</code></li>
+<li><code>BUZZER_ON</code></li>
+<li><code>BUZZER_OFF</code></li>
+<li><code>STATUS_REQ</code></li>
+</ul>
 <p>Nota: el dispositiu ja implementa aquestes primitives locals.</p>
-<p>---</p>
-<a id="4-ux-i-logica-que-son-de-l-app-backend-no-firmware"></a>
+<hr />
+<p><a id="4-ux-i-logica-que-son-de-l-app-backend-no-firmware"></a></p>
 <h2>4) UX i logica que son de l'app/backend (no firmware)</h2>
-<ul><li>Seguiment de ruta i desviacions.</li><li>Overdue i alertes contextuals.</li><li>Flux operatiu de rescat (estats, prioritzacio, assignacio, accions guiades).</li><li>Qualsevol logica de negoci de producte.</li></ul>
-<p>---</p>
-<a id="5-requisits-tecnics-d-implementacio-app"></a>
+<ul>
+<li>Seguiment de ruta i desviacions.</li>
+<li>Overdue i alertes contextuals.</li>
+<li>Flux operatiu de rescat (estats, prioritzacio, assignacio, accions guiades).</li>
+<li>Qualsevol logica de negoci de producte.</li>
+</ul>
+<hr />
+<p><a id="5-requisits-tecnics-d-implementacio-app"></a></p>
 <h2>5) Requisits tecnics d'implementacio app</h2>
-<ul><li>Reassemblar fragments <code>0xD0</code> de TEL.</li><li>Deduplicar TEL/SOS abans de pintar i abans d'enviar backend.</li><li>Tolerancia offline: cua local i reintent.</li><li>Integrar backlog sync BLE (quan apliqui) per pujada diferida.</li></ul>
-<p>---</p>
-<a id="6-expectatives-de-comportament-del-firmware-actual"></a>
+<ul>
+<li>Reassemblar fragments <code>0xD0</code> de TEL.</li>
+<li>Deduplicar TEL/SOS abans de pintar i abans d'enviar backend.</li>
+<li>Tolerancia offline: cua local i reintent.</li>
+<li>Integrar backlog sync BLE (quan apliqui) per pujada diferida.</li>
+</ul>
+<hr />
+<p><a id="6-expectatives-de-comportament-del-firmware-actual"></a></p>
 <h2>6) Expectatives de comportament del firmware actual</h2>
-<ul><li>Mostreig GPS intern adaptatiu per velocitat.</li><li>TX LoRa governat per interval/duty-cycle (no envia totes les mostres internes).</li><li>Persistencia local TEL en rolling buffer (64KB) per no perdre historial recent.</li><li>SOS amb retries/ACK/feedback local.</li><li>Rescue fase 1 funcional.</li></ul>
-<p>---</p>
-<a id="7-checklist-minim-app-per-tancar-integracio"></a>
+<ul>
+<li>Mostreig GPS intern adaptatiu per velocitat.</li>
+<li>TX LoRa governat per interval/duty-cycle (no envia totes les mostres internes).</li>
+<li>Persistencia local TEL en rolling buffer (64KB) per no perdre historial recent.</li>
+<li>SOS amb retries/ACK/feedback local.</li>
+<li>Rescue fase 1 funcional.</li>
+</ul>
+<hr />
+<p><a id="7-checklist-minim-app-per-tancar-integracio"></a></p>
 <h2>7) Checklist minim APP per tancar integracio</h2>
-<ul><li>Parse TEL 10B i SOS 5B/10B.</li><li>Reassemblatge <code>0xD0</code>.</li><li>Pipeline API backend robust (idempotent).</li><li>Pantalla SOS amb ACK backend -&gt; comanda corresponent a dispositiu.</li><li>Pantalla Rescue fase 1: <code>request pos</code>, <code>status</code>, <code>buzzer</code>, <code>ack</code>.</li></ul></main>
+<ul>
+<li>Parse TEL 10B i SOS 5B/10B.</li>
+<li>Reassemblatge <code>0xD0</code>.</li>
+<li>Pipeline API backend robust (idempotent).</li>
+<li>Pantalla SOS amb ACK backend -&gt; comanda corresponent a dispositiu.</li>
+<li>Pantalla Rescue fase 1: <code>request pos</code>, <code>status</code>, <code>buzzer</code>, <code>ack</code>.</li>
+</ul>
+</main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
       <a class="toc-level-2" href="#1-objectiu-de-l-app">1) Objectiu de l'app</a><a class="toc-level-2" href="#2-quines-dades-rep-l-app-del-dispositiu">2) Quines dades rep l'app del dispositiu</a><a class="toc-level-3" href="#ble-notify-tel">BLE Notify TEL</a><a class="toc-level-3" href="#ble-notify-sos">BLE Notify SOS</a><a class="toc-level-3" href="#rescue-status-fase-1">Rescue status (fase 1)</a><a class="toc-level-2" href="#3-quines-comandes-envia-l-app-al-dispositiu">3) Quines comandes envia l'app al dispositiu</a><a class="toc-level-3" href="#inet-cmd-ble-operacio-general">INET/CMD BLE (operacio general)</a><a class="toc-level-3" href="#rescue-fase-1-control-de-camp">Rescue fase 1 (control de camp)</a><a class="toc-level-2" href="#4-ux-i-logica-que-son-de-l-app-backend-no-firmware">4) UX i logica que son de l'app/backend (no firmware)</a><a class="toc-level-2" href="#5-requisits-tecnics-d-implementacio-app">5) Requisits tecnics d'implementacio app</a><a class="toc-level-2" href="#6-expectatives-de-comportament-del-firmware-actual">6) Expectatives de comportament del firmware actual</a><a class="toc-level-2" href="#7-checklist-minim-app-per-tancar-integracio">7) Checklist minim APP per tancar integracio</a>

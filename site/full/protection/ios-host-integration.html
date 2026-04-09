@@ -17,24 +17,60 @@
       <a href="../index.html">Home</a><a href="../sdk/overview.html">SDK Overview</a><a href="../sdk/architecture.html">SDK Architecture</a><a href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a href="../sdk/backend-integration.html">Backend Integration</a><a href="../sdk/public-api.html">Public API</a><a href="../sdk/public-api-examples.html">Method Examples</a><a href="../sdk/model-reference.html">Model Reference</a><a href="../sdk/protection-mode.html">Protection Mode</a><a href="overview.html">Protection Overview</a><a href="android-host-integration.html">Android Protection Integration</a><a class="active" href="ios-host-integration.html">iOS Protection Integration</a><a href="limitations.html">Protection Limitations</a><a href="validation-checklist.html">Protection Validation Checklist</a><a href="../sdk/realtime-status.html">Realtime Status</a><a href="../sdk/troubleshooting.html">SDK Troubleshooting</a><a href="../integration/flutter-installation.html">Flutter Installation</a><a href="../integration/flutter-integration.html">Flutter Integration</a><a href="../integration/host-app-integration.html">Host App Integration</a><a href="../integration/android-host-integration.html">Android Host Integration</a><a href="../integration/ios-host-integration.html">iOS Host Integration</a><a href="../integration/permissions-checklist.html">Permissions Checklist</a><a href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../reference-app/app-handoff-final.html">App Handoff Final</a><a href="../api/api-reference.html">API Reference</a><a href="../api/public-api.html">API Surface</a><a href="../api/public-api-examples.html">API Examples</a><a href="../internal/decisions.html">Decisions</a><a href="../internal/quality-gates.html">Quality Gates</a><a href="../internal/testing-strategy.html">Testing Strategy</a><a href="../internal/testability-notes.html">Testability Notes</a><a href="../internal/how-to-run-project.html">How to Run Project</a><a href="../internal/migration-map.html">Migration Map</a><a href="../internal/roadmap.html">Roadmap</a><a href="../internal/team-handoff-index.html">Team Handoff Index</a><a href="../internal/agents.html">AGENTS</a>
     </aside>
     <main class="content"><h1>iOS Host Integration</h1>
-<a id="current-state"></a>
+<p><a id="current-state"></a></p>
 <h2>Current State</h2>
-<ul><li>The SDK now includes an iOS Protection adapter and readiness/status/diagnostic participation.</li><li>The implementation is intentionally honest: it is scaffolded, safe, non-crashing, and restoration-aware, but it does not claim full background BLE ownership yet.</li></ul>
-<a id="host-app-expectations"></a>
+<ul>
+<li>The SDK now includes an iOS Protection adapter and readiness/status/diagnostic participation.</li>
+<li>The implementation is intentionally honest: it is scaffolded, safe, non-crashing, and restoration-aware, but it does not claim full background BLE ownership yet.</li>
+</ul>
+<p><a id="host-app-expectations"></a></p>
 <h2>Host App Expectations</h2>
-<ul><li>Configure notification permissions UX.</li><li>Prepare <code>UIBackgroundModes</code> for future support, especially <code>bluetooth-central</code>.</li><li>Be ready for restoration/state-preservation callbacks and lifecycle handoff wiring as the native runtime hardens.</li></ul>
-<a id="what-the-sdk-owns-today"></a>
+<ul>
+<li>Configure notification permissions UX.</li>
+<li>Prepare <code>UIBackgroundModes</code> for future support, especially <code>bluetooth-central</code>.</li>
+<li>Be ready for restoration/state-preservation callbacks and lifecycle handoff wiring as the native runtime hardens.</li>
+</ul>
+<p><a id="what-the-sdk-owns-today"></a></p>
 <h2>What The SDK Owns Today</h2>
-<ul><li>iOS Protection method/event channel contract</li><li>Base status and diagnostics reporting</li><li>Restoration-configured reporting and last-restoration event diagnostics</li><li>Honest degradation reason strings</li><li>Participation in the same Dart Protection API as Android</li></ul>
-<a id="what-is-not-yet-implemented"></a>
+<ul>
+<li>iOS Protection method/event channel contract</li>
+<li>Base status and diagnostics reporting</li>
+<li>Restoration-configured reporting and last-restoration event diagnostics</li>
+<li>Honest degradation reason strings</li>
+<li>Participation in the same Dart Protection API as Android</li>
+</ul>
+<p><a id="what-is-not-yet-implemented"></a></p>
 <h2>What Is Not Yet Implemented</h2>
-<ul><li>Background BLE ownership while armed</li><li>Restoration-backed BLE reconnect/runtime recovery</li><li>Service-equivalent lifecycle ownership for critical SOS flows</li><li>Production-ready iOS Protection queue processing</li></ul>
-<a id="readiness-interpretation"></a>
+<ul>
+<li>Background BLE ownership while armed</li>
+<li>Restoration-backed BLE reconnect/runtime recovery</li>
+<li>Service-equivalent lifecycle ownership for critical SOS flows</li>
+<li>Production-ready iOS Protection queue processing</li>
+</ul>
+<p><a id="readiness-interpretation"></a></p>
 <h2>Readiness Interpretation</h2>
-<ul><li><code>platformRuntimeConfigured=true</code></li><li>The host can talk to the iOS Protection adapter.</li><li><code>backgroundCapabilityState=unknown</code></li><li>The SDK cannot yet guarantee the host background BLE configuration is complete.</li><li><code>coverage=partial</code></li><li>The iOS base path is wired, but runtime ownership is not complete.</li></ul>
-<a id="troubleshooting"></a>
+<ul>
+<li><code>platformRuntimeConfigured=true</code><ul>
+<li>The host can talk to the iOS Protection adapter.</li>
+</ul>
+</li>
+<li><code>backgroundCapabilityState=unknown</code><ul>
+<li>The SDK cannot yet guarantee the host background BLE configuration is complete.</li>
+</ul>
+</li>
+<li><code>coverage=partial</code><ul>
+<li>The iOS base path is wired, but runtime ownership is not complete.</li>
+</ul>
+</li>
+</ul>
+<p><a id="troubleshooting"></a></p>
 <h2>Troubleshooting</h2>
-<ul><li>If Protection Mode appears partial on iOS, that is expected with the current base implementation.</li><li>If notifications or Bluetooth appear unavailable, inspect app permissions and capabilities first.</li><li>Do not rely on iOS Protection Mode for background BLE ownership until the future runtime/restoration phase is implemented.</li></ul></main>
+<ul>
+<li>If Protection Mode appears partial on iOS, that is expected with the current base implementation.</li>
+<li>If notifications or Bluetooth appear unavailable, inspect app permissions and capabilities first.</li>
+<li>Do not rely on iOS Protection Mode for background BLE ownership until the future runtime/restoration phase is implemented.</li>
+</ul>
+</main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
       <a class="toc-level-2" href="#current-state">Current State</a><a class="toc-level-2" href="#host-app-expectations">Host App Expectations</a><a class="toc-level-2" href="#what-the-sdk-owns-today">What The SDK Owns Today</a><a class="toc-level-2" href="#what-is-not-yet-implemented">What Is Not Yet Implemented</a><a class="toc-level-2" href="#readiness-interpretation">Readiness Interpretation</a><a class="toc-level-2" href="#troubleshooting">Troubleshooting</a>

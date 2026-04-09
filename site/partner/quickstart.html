@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -14,103 +14,114 @@
   <div class="layout">
     <aside class="sidebar">
       <div class="sidebar-title">Navigation</div>
-      <a href="index.html">Home</a>
-      <a href="sdk-overview.html">SDK Overview</a>
-      <a class="active" href="quickstart.html">Quickstart</a>
-      <a href="public-api.html">Public API</a>
-      <a href="public-api-examples.html">Method Examples</a>
-      <a href="model-reference.html">Model Reference</a>
-      <a href="core-concepts.html">Core Concepts</a>
-      <a href="protection-mode.html">Protection Mode</a>
-      <a href="flutter-installation.html">Flutter Installation</a>
-      <a href="flutter-integration.html">Flutter Integration</a>
-      <a href="android-integration.html">Android Integration</a>
-      <a href="ios-integration.html">iOS Integration</a>
-      <a href="permissions-checklist.html">Permissions Checklist</a>
-      <a href="backend-integration.html">Backend Integration</a>
-      <a href="api-reference.html">API Reference</a>
-      <a href="troubleshooting.html">Troubleshooting</a>
+      <a href="index.html">Home</a><a href="sdk-overview.html">SDK Overview</a><a class="active" href="quickstart.html">Quickstart</a><a href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a href="model-reference.html">Model Reference</a><a href="core-concepts.html">Core Concepts</a><a href="protection-mode.html">Protection Mode</a><a href="flutter-installation.html">Flutter Installation</a><a href="flutter-integration.html">Flutter Integration</a><a href="android-integration.html">Android Integration</a><a href="ios-integration.html">iOS Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a href="backend-integration.html">Backend Integration</a><a href="api-reference.html">API Reference</a><a href="troubleshooting.html">Troubleshooting</a>
     </aside>
     <main class="content"><h1>Quickstart</h1>
-<a id="1-add-the-dependency"></a>
+<p><a id="1-add-the-dependency"></a></p>
 <h2>1. Add the dependency</h2>
 <p>For the planned <code>0.1.0</code> release, use the agreed EIXAM release tag when it is provided during release handoff.</p>
-<pre><code>dependencies:
+<pre><code class="language-yaml">dependencies:
   eixam_connect_flutter:
     git:
       url: https://github.com/eixam-tech/eixam-sdk-flutter
       ref: &lt;agreed-0.1.0-release-tag&gt;
-      path: packages/eixam_connect_flutter</code></pre>
-<a id="2-import-the-package"></a>
+      path: packages/eixam_connect_flutter
+</code></pre>
+<p><a id="2-import-the-package"></a></p>
 <h2>2. Import the package</h2>
-<pre><code>import &#39;package:eixam_connect_flutter/eixam_connect_flutter.dart&#39;;</code></pre>
-<a id="3-bootstrap-the-sdk"></a>
+<pre><code class="language-dart">import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
+</code></pre>
+<p><a id="3-bootstrap-the-sdk"></a></p>
 <h2>3. Bootstrap the SDK</h2>
-<a id="signed-session-and-backend-responsibilities"></a>
+<p><a id="signed-session-and-backend-responsibilities"></a></p>
 <h2>Signed Session And Backend Responsibilities</h2>
-<ul><li>your partner backend stores the app secret</li><li>the app secret never belongs in the client</li><li>your backend generates or obtains <code>userHash</code> for <code>appId</code> + <code>externalUserId</code></li><li><code>externalUserId</code> must be unique per app</li><li>the mobile app receives a signed session and passes it to the SDK</li><li>the same signed identity is reused by the SDK for both HTTP and MQTT/runtime transport</li><li><code>/v1/auth/sign</code> is acceptable for internal EIXAM staging validation only; partner production flows must implement the server-side signing step in the partner backend</li></ul>
-<a id="standard-environment"></a>
+<ul>
+<li>your partner backend stores the app secret</li>
+<li>the app secret never belongs in the client</li>
+<li>your backend generates or obtains <code>userHash</code> for <code>appId</code> + <code>externalUserId</code></li>
+<li><code>externalUserId</code> must be unique per app</li>
+<li>the mobile app receives a signed session and passes it to the SDK</li>
+<li>the same signed identity is reused by the SDK for both HTTP and MQTT/runtime transport</li>
+<li>partner production flows must implement the server-side signing step securely within the partner backend</li>
+</ul>
+<p>HTTP auth remains:</p>
+<ul>
+<li><code>X-App-ID</code></li>
+<li><code>X-User-ID</code></li>
+<li><code>Authorization: Bearer &lt;userHash&gt;</code></li>
+</ul>
+<p>MQTT auth now uses:</p>
+<ul>
+<li><code>username = sdk:&lt;appId&gt;:&lt;externalUserId&gt;</code></li>
+<li><code>password = &lt;userHash&gt;</code></li>
+<li>no <code>Bearer</code> prefix in MQTT</li>
+</ul>
+<p><a id="standard-environment"></a></p>
 <h3>Standard environment</h3>
-<pre><code>final sdk = await EixamConnectSdk.bootstrap(
+<pre><code class="language-dart">final sdk = await EixamConnectSdk.bootstrap(
   const EixamBootstrapConfig(
-    appId: &#39;partner-app&#39;,
+    appId: 'partner-app',
     environment: EixamEnvironment.sandbox,
     initialSession: EixamSession.signed(
-      appId: &#39;partner-app&#39;,
-      externalUserId: &#39;partner-user-123&#39;,
-      userHash: &#39;signed-session-hash&#39;,
+      appId: 'partner-app',
+      externalUserId: 'partner-user-123',
+      userHash: 'signed-session-hash',
     ),
   ),
-);</code></pre>
-<a id="custom-environment"></a>
+);
+</code></pre>
+<p><a id="custom-environment"></a></p>
 <h3>Custom environment</h3>
-<pre><code>final sdk = await EixamConnectSdk.bootstrap(
+<pre><code class="language-dart">final sdk = await EixamConnectSdk.bootstrap(
   const EixamBootstrapConfig(
-    appId: &#39;partner-app&#39;,
+    appId: 'partner-app',
     environment: EixamEnvironment.custom,
     customEndpoints: EixamCustomEndpoints(
-      apiBaseUrl: &#39;https://partner-api.example.com&#39;,
-      mqttUrl: &#39;ssl://partner-mqtt.example.com:8883&#39;,
+      apiBaseUrl: 'https://partner-api.example.com',
+      mqttUrl: 'ssl://partner-mqtt.example.com:8883',
     ),
   ),
-);</code></pre>
+);
+</code></pre>
 <p>The <code>mqttUrl</code>/<code>websocketUrl</code> field name stays stable for now even when the actual broker URI uses <code>ssl://</code>, <code>tls://</code>, <code>tcp://</code>, <code>ws://</code>, or <code>wss://</code> depending on environment and transport support.</p>
-<a id="4-request-permissions-explicitly-from-your-host-app"></a>
+<p><a id="4-request-permissions-explicitly-from-your-host-app"></a></p>
 <h2>4. Request permissions explicitly from your host app</h2>
-<pre><code>await sdk.requestLocationPermission();
+<pre><code class="language-dart">await sdk.requestLocationPermission();
 await sdk.requestNotificationPermission();
-await sdk.requestBluetoothPermission();</code></pre>
-<a id="5-use-the-sdk"></a>
+await sdk.requestBluetoothPermission();
+</code></pre>
+<p><a id="5-use-the-sdk"></a></p>
 <h2>5. Use the SDK</h2>
 <p>Trigger SOS:</p>
-<pre><code>await sdk.triggerSos(
+<pre><code class="language-dart">await sdk.triggerSos(
   const SosTriggerPayload(
-    message: &#39;Need assistance&#39;,
-    triggerSource: &#39;button_ui&#39;,
+    message: 'Need assistance',
+    triggerSource: 'button_ui',
   ),
-);</code></pre>
+);
+</code></pre>
 <p>Connect a device:</p>
-<pre><code>await sdk.connectDevice(pairingCode: &#39;123456&#39;);</code></pre>
+<pre><code class="language-dart">await sdk.connectDevice(pairingCode: '123456');
+</code></pre>
 <p>Create an emergency contact:</p>
-<pre><code>await sdk.createEmergencyContact(
-  name: &#39;Mountain Rescue Desk&#39;,
-  phone: &#39;+34600000000&#39;,
-  email: &#39;rescue@example.com&#39;,
-);</code></pre>
-<a id="important-notes"></a>
+<pre><code class="language-dart">await sdk.createEmergencyContact(
+  name: 'Mountain Rescue Desk',
+  phone: '+34600000000',
+  email: 'rescue@example.com',
+);
+</code></pre>
+<p><a id="important-notes"></a></p>
 <h2>Important notes</h2>
-<ul><li><code>initialSession</code> is optional</li><li>if you provide <code>initialSession</code>, its <code>appId</code> must match the bootstrap <code>appId</code></li><li>do not pass <code>customEndpoints</code> to non-custom environments</li><li>bootstrap does not request permissions or trigger UX-sensitive actions for you</li></ul></main>
+<ul>
+<li><code>initialSession</code> is optional</li>
+<li>if you provide <code>initialSession</code>, its <code>appId</code> must match the bootstrap <code>appId</code></li>
+<li>do not pass <code>customEndpoints</code> to non-custom environments</li>
+<li>bootstrap does not request permissions or trigger UX-sensitive actions for you</li>
+</ul>
+</main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
-      <a class="toc-level-2" href="#1-add-the-dependency">1. Add the dependency</a>
-      <a class="toc-level-2" href="#2-import-the-package">2. Import the package</a>
-      <a class="toc-level-2" href="#3-bootstrap-the-sdk">3. Bootstrap the SDK</a>
-      <a class="toc-level-2" href="#signed-session-and-backend-responsibilities">Signed Session And Backend Responsibilities</a>
-      <a class="toc-level-3" href="#standard-environment">Standard environment</a>
-      <a class="toc-level-3" href="#custom-environment">Custom environment</a>
-      <a class="toc-level-2" href="#4-request-permissions-explicitly-from-your-host-app">4. Request permissions explicitly from your host app</a>
-      <a class="toc-level-2" href="#5-use-the-sdk">5. Use the SDK</a>
-      <a class="toc-level-2" href="#important-notes">Important notes</a>
+      <a class="toc-level-2" href="#1-add-the-dependency">1. Add the dependency</a><a class="toc-level-2" href="#2-import-the-package">2. Import the package</a><a class="toc-level-2" href="#3-bootstrap-the-sdk">3. Bootstrap the SDK</a><a class="toc-level-2" href="#signed-session-and-backend-responsibilities">Signed Session And Backend Responsibilities</a><a class="toc-level-3" href="#standard-environment">Standard environment</a><a class="toc-level-3" href="#custom-environment">Custom environment</a><a class="toc-level-2" href="#4-request-permissions-explicitly-from-your-host-app">4. Request permissions explicitly from your host app</a><a class="toc-level-2" href="#5-use-the-sdk">5. Use the SDK</a><a class="toc-level-2" href="#important-notes">Important notes</a>
     </aside>
   </div>
 </body>

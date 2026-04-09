@@ -9,13 +9,13 @@ The recommended public integration flow changed from a multi-step setup to a sin
 ```dart
 final sdk = await ApiSdkFactory.createHttpApi(
   apiBaseUrl: 'https://partner-api.example.com',
-  websocketUrl: 'ssl://partner-mqtt.example.com:8883',
+  websocketUrl: 'ssl://mqtt.staging.eixam.io:8883',
 );
 
 await sdk.initialize(
   const EixamSdkConfig(
     apiBaseUrl: 'https://partner-api.example.com',
-    websocketUrl: 'ssl://partner-mqtt.example.com:8883',
+    websocketUrl: 'ssl://mqtt.staging.eixam.io:8883',
   ),
 );
 
@@ -77,6 +77,11 @@ Operational SOS payloads may include optional `deviceId` when the SDK knows the 
 - hardware-originated SOS should send `deviceId = hardware_id` when available
 - app-originated SOS without a paired device may omit `deviceId`
 - telemetry keeps using `deviceId = hardware_id` when available
+
+**Note on canonical hardware_id**: The backend/mobile `hardware_id` source of truth is the canonical Meshtastic/node identifier like `CF:82...`.
+- this is **NOT** the local BLE/runtime transport id
+- this is **NOT** the friendly advertised BLE name such as `Meshtastic_1aa8`
+- if canonical hardware id cannot be resolved safely, we prefer omission rather than inventing a value.
 
 ## What bootstrap does not do
 

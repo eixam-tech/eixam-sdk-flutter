@@ -17,7 +17,7 @@ The partner-facing mental model is simple:
 - `externalUserId` must be unique per app
 - the mobile client receives that signed session and passes it into bootstrap or `setSession(...)`
 - the SDK reuses the same identity for HTTP requests and MQTT/runtime transport
-- internal EIXAM staging validation may use `/v1/auth/sign`, but partner integrations must implement the signing flow on their own backend
+- partner integrations must implement the signing flow securely on their own backend
 
 HTTP auth remains `X-App-ID`, `X-User-ID`, and `Authorization: Bearer <userHash>`.
 

@@ -18,14 +18,30 @@
     </aside>
     <main class="content"><h1>API Surface Appendix</h1>
 <p>Use the main SDK docs for the current practical reference:</p>
-<ul><li><a href="../sdk/public-api.html"><code>../sdk/public-api.md</code></a></li><li><a href="../sdk/public-api-examples.html"><code>../sdk/public-api-examples.md</code></a></li><li><a href="../sdk/model-reference.html"><code>../sdk/model-reference.md</code></a></li></ul>
+<ul>
+<li><a href="../sdk/public-api.html"><code>../sdk/public-api.md</code></a></li>
+<li><a href="../sdk/public-api-examples.html"><code>../sdk/public-api-examples.md</code></a></li>
+<li><a href="../sdk/model-reference.html"><code>../sdk/model-reference.md</code></a></li>
+</ul>
 <p>This appendix keeps the compatibility and migration-only public surfaces out of the main partner path while still documenting them for internal teams.</p>
-<a id="legacy-compatibility-methods"></a>
+<p><a id="legacy-compatibility-methods"></a></p>
 <h2>Legacy / compatibility methods</h2>
-<ul><li><code>initialize(EixamSdkConfig config)</code></li><li><code>pairDevice({required String pairingCode})</code></li><li><code>unpairDevice()</code></li><li><code>watchDeviceStatus()</code></li><li><code>watchSosState()</code></li><li><code>addEmergencyContact(...)</code></li><li><code>removeEmergencyContact(String contactId)</code></li></ul>
-<a id="notes"></a>
+<ul>
+<li><code>initialize(EixamSdkConfig config)</code></li>
+<li><code>pairDevice({required String pairingCode})</code></li>
+<li><code>unpairDevice()</code></li>
+<li><code>watchDeviceStatus()</code></li>
+<li><code>watchSosState()</code></li>
+<li><code>addEmergencyContact(...)</code></li>
+<li><code>removeEmergencyContact(String contactId)</code></li>
+</ul>
+<p><a id="notes"></a></p>
 <h2>Notes</h2>
-<ul><li>New partner integrations should use the methods documented under <code>docs/full/sdk/</code>.</li><li>Return-type guidance for the current SDK flow lives in the SDK model reference page, not in this appendix.</li></ul></main>
+<ul>
+<li>New partner integrations should use the methods documented under <code>docs/full/sdk/</code>.</li>
+<li>Return-type guidance for the current SDK flow lives in the SDK model reference page, not in this appendix.</li>
+</ul>
+</main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
       <a class="toc-level-2" href="#legacy-compatibility-methods">Legacy / compatibility methods</a><a class="toc-level-2" href="#notes">Notes</a>

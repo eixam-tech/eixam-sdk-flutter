@@ -121,7 +121,7 @@ Useful checks:
 
 - observe realtime connection state in the app validation surfaces
 - inspect MQTT connection logs
-- inspect that event subscriptions use `sos/events/{segment}`
+- inspect that event subscriptions use `sos/events/{external_user_id}`
 
 ## 4. Test SOS Trigger / Cancel / Events
 
@@ -158,7 +158,7 @@ Important:
 
 Verify:
 
-- SDK receives SOS lifecycle event on `sos/events/{segment}`
+- SDK receives SOS lifecycle event on `sos/events/{external_user_id}`
 - SOS state stream changes only after backend event
 - final cancelled/resolved/acknowledged state follows MQTT input
 
@@ -172,7 +172,7 @@ Use a surface that calls:
 
 Verify:
 
-- topic is `tel/{segment}/data`
+- topic is `tel/{external_user_id}/data`
 - canonical user identity is reflected in the topic segment
 - payload includes timestamp, latitude, longitude, altitude
 
@@ -208,6 +208,14 @@ Current expected contact fields:
 If UI or API expects fields like `active`, that is stale behavior and should be removed or isolated outside the public contract.
 
 ## 7. Test Backend Device Registry
+
+### Paired-device sync logic
+
+- after a known device is paired/connected and the signed-session identity is ready, the SDK/runtime may attempt backend paired-device sync.
+- the validation app registry card is a status/retry/debug surface, not the intended primary manual flow.
+- automatic sync uses `hardware_id`, `firmware_version`, `hardware_model`, and `paired_at`.
+- automatic sync is safe only when a canonical backend-compatible hardware id can be resolved.
+
 
 Use the device registry validation surface if available, or call the SDK facade directly.
 

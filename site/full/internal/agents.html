@@ -17,15 +17,27 @@
       <a href="../index.html">Home</a><a href="../sdk/overview.html">SDK Overview</a><a href="../sdk/architecture.html">SDK Architecture</a><a href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a href="../sdk/backend-integration.html">Backend Integration</a><a href="../sdk/public-api.html">Public API</a><a href="../sdk/public-api-examples.html">Method Examples</a><a href="../sdk/model-reference.html">Model Reference</a><a href="../sdk/protection-mode.html">Protection Mode</a><a href="../protection/overview.html">Protection Overview</a><a href="../protection/android-host-integration.html">Android Protection Integration</a><a href="../protection/ios-host-integration.html">iOS Protection Integration</a><a href="../protection/limitations.html">Protection Limitations</a><a href="../protection/validation-checklist.html">Protection Validation Checklist</a><a href="../sdk/realtime-status.html">Realtime Status</a><a href="../sdk/troubleshooting.html">SDK Troubleshooting</a><a href="../integration/flutter-installation.html">Flutter Installation</a><a href="../integration/flutter-integration.html">Flutter Integration</a><a href="../integration/host-app-integration.html">Host App Integration</a><a href="../integration/android-host-integration.html">Android Host Integration</a><a href="../integration/ios-host-integration.html">iOS Host Integration</a><a href="../integration/permissions-checklist.html">Permissions Checklist</a><a href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../reference-app/app-handoff-final.html">App Handoff Final</a><a href="../api/api-reference.html">API Reference</a><a href="../api/public-api.html">API Surface</a><a href="../api/public-api-examples.html">API Examples</a><a href="decisions.html">Decisions</a><a href="quality-gates.html">Quality Gates</a><a href="testing-strategy.html">Testing Strategy</a><a href="testability-notes.html">Testability Notes</a><a href="how-to-run-project.html">How to Run Project</a><a href="migration-map.html">Migration Map</a><a href="roadmap.html">Roadmap</a><a href="team-handoff-index.html">Team Handoff Index</a><a class="active" href="agents.html">AGENTS</a>
     </aside>
     <main class="content"><h1>AGENTS.md</h1>
-<a id="project-overview"></a>
+<p><a id="project-overview"></a></p>
 <h2>Project overview</h2>
 <p>EIXAM is being built as a <strong>connected safety platform</strong> with an SDK-first approach.</p>
 <p>The architecture is structured around:</p>
-<ul><li><strong>EIXAM SOS Core</strong></li><li><strong>EIXAM Connect SDK</strong></li><li><strong>EIXAM Control App</strong> (validation host)</li><li><strong>Safety Dashboard</strong> (future operational layer)</li></ul>
-<a id="product-rules"></a>
+<ul>
+<li><strong>EIXAM SOS Core</strong></li>
+<li><strong>EIXAM Connect SDK</strong></li>
+<li><strong>EIXAM Control App</strong> (validation host)</li>
+<li><strong>Safety Dashboard</strong> (future operational layer)</li>
+</ul>
+<p><a id="product-rules"></a></p>
 <h2>Product rules</h2>
-<ol><li>The SDK is the main product foundation.</li><li>The control app exists to validate and demonstrate the SDK.</li><li>Business-critical logic must live in the SDK/runtime layers.</li><li>The host app should remain thin.</li><li>UI decisions must not pollute SDK contracts.</li><li>BLE parsing, reconnect logic and protection orchestration belong in runtime layers.</li></ol>
-<a id="public-bootstrap-rule"></a>
+<ol>
+<li>The SDK is the main product foundation.</li>
+<li>The control app exists to validate and demonstrate the SDK.</li>
+<li>Business-critical logic must live in the SDK/runtime layers.</li>
+<li>The host app should remain thin.</li>
+<li>UI decisions must not pollute SDK contracts.</li>
+<li>BLE parsing, reconnect logic and protection orchestration belong in runtime layers.</li>
+</ol>
+<p><a id="public-bootstrap-rule"></a></p>
 <h2>Public bootstrap rule</h2>
 <p>For partner-facing integration, the recommended public entrypoint is:</p>
 <pre><code class="language-dart">final sdk = await EixamConnectSdk.bootstrap(
@@ -33,22 +45,43 @@
     appId: 'partner-app',
     environment: EixamEnvironment.production,
   ),
-);</code></pre>
+);
+</code></pre>
 <p>Additional bootstrap rules:</p>
-<ul><li><code>production</code>, <code>sandbox</code>, and <code>staging</code> resolve internally</li><li><code>custom</code> requires <code>EixamCustomEndpoints</code></li><li>non-custom environments must not receive <code>customEndpoints</code></li><li><code>initialSession</code> is optional</li><li>if <code>initialSession</code> is provided, its <code>appId</code> must match the bootstrap <code>appId</code></li><li><code>bootstrap(...)</code> does not request permissions or trigger UX-sensitive actions</li></ul>
-<a id="repository-source-of-truth"></a>
+<ul>
+<li><code>production</code>, <code>sandbox</code>, and <code>staging</code> resolve internally</li>
+<li><code>custom</code> requires <code>EixamCustomEndpoints</code></li>
+<li>non-custom environments must not receive <code>customEndpoints</code></li>
+<li><code>initialSession</code> is optional</li>
+<li>if <code>initialSession</code> is provided, its <code>appId</code> must match the bootstrap <code>appId</code></li>
+<li><code>bootstrap(...)</code> does not request permissions or trigger UX-sensitive actions</li>
+</ul>
+<p><a id="repository-source-of-truth"></a></p>
 <h2>Repository source of truth</h2>
 <p>Always work from the top-level monorepo root:</p>
-<pre><code class="language-text">C:\Users\roger\flutterdev\eixam_connect_sdk</code></pre>
-<a id="documentation-split"></a>
+<pre><code class="language-text">C:\Users\roger\flutterdev\eixam_connect_sdk
+</code></pre>
+<p><a id="documentation-split"></a></p>
 <h2>Documentation split</h2>
-<ul><li><code>docs/partner/</code> → partner-facing source Markdown</li><li><code>docs/full/</code> → full/internal source Markdown</li><li><code>site/partner/</code> → generated partner HTML portal</li><li><code>site/full/</code> → generated full/internal HTML portal</li></ul>
-<a id="ble-engineering-rules"></a>
+<ul>
+<li><code>docs/partner/</code> → partner-facing source Markdown</li>
+<li><code>docs/full/</code> → full/internal source Markdown</li>
+<li><code>site/partner/</code> → generated partner HTML portal</li>
+<li><code>site/full/</code> → generated full/internal HTML portal</li>
+</ul>
+<p><a id="ble-engineering-rules"></a></p>
 <h2>BLE engineering rules</h2>
-<ul><li>Do not validate compatibility by advertised BLE name alone.</li><li>Validate compatibility only after connect + service discovery.</li><li>TEL aggregate reassembly belongs in runtime/provider layers.</li><li>SOS packet semantics belong in protocol/runtime layers.</li><li>UI should render typed state, not decode raw byte arrays.</li></ul>
-<a id="realtime-rule"></a>
+<ul>
+<li>Do not validate compatibility by advertised BLE name alone.</li>
+<li>Validate compatibility only after connect + service discovery.</li>
+<li>TEL aggregate reassembly belongs in runtime/provider layers.</li>
+<li>SOS packet semantics belong in protocol/runtime layers.</li>
+<li>UI should render typed state, not decode raw byte arrays.</li>
+</ul>
+<p><a id="realtime-rule"></a></p>
 <h2>Realtime rule</h2>
-<p>Realtime remains transport-sensitive and backend-contract-sensitive. Do not hardcode a final production WebSocket model until the backend protocol is finalized.</p></main>
+<p>Realtime remains transport-sensitive and backend-contract-sensitive. Do not hardcode a final production WebSocket model until the backend protocol is finalized.</p>
+</main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
       <a class="toc-level-2" href="#project-overview">Project overview</a><a class="toc-level-2" href="#product-rules">Product rules</a><a class="toc-level-2" href="#public-bootstrap-rule">Public bootstrap rule</a><a class="toc-level-2" href="#repository-source-of-truth">Repository source of truth</a><a class="toc-level-2" href="#documentation-split">Documentation split</a><a class="toc-level-2" href="#ble-engineering-rules">BLE engineering rules</a><a class="toc-level-2" href="#realtime-rule">Realtime rule</a>

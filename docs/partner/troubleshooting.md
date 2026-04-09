@@ -21,7 +21,7 @@ Fix:
 - keep the app secret on the partner backend only
 - generate or obtain `userHash` on the backend for `appId` + `externalUserId`
 - pass the resulting signed session to the mobile app
-- use `/v1/auth/sign` only for internal staging validation, not for partner production architecture
+- perform all signing entirely within the partner production backend architecture
 
 ## Realtime URI looks non-websocket
 

@@ -39,7 +39,7 @@ For custom environments, a secure broker example currently looks like:
 ```dart
 const EixamCustomEndpoints(
   apiBaseUrl: 'https://partner-api.example.com',
-  mqttUrl: 'ssl://partner-mqtt.example.com:8883',
+  mqttUrl: 'ssl://mqtt.staging.eixam.io:8883',
 )
 ```
 
@@ -239,6 +239,8 @@ debugPrint('bluetoothReady=${state.canUseBluetooth}');
 
 ## Protection Mode
 
+Background continuity is far stronger on Android when Protection Mode/native foreground service owns the BLE transport. Plain Flutter-owned BLE provides no guaranteed full background runtime.
+
 ### `getProtectionStatus`
 
 Returns [`ProtectionStatus`](model-reference.md#protectionstatus).
@@ -264,6 +266,14 @@ debugPrint('result=${diagnostics.lastCommandResult}');
 ```
 
 ## Backend Device Registry
+
+### Paired-device sync logic
+
+- after a known device is paired/connected and the signed-session identity is ready, the SDK/runtime may attempt backend paired-device sync.
+- the validation app registry card is a status/retry/debug surface, not the intended primary manual flow.
+- automatic sync uses `hardware_id`, `firmware_version`, `hardware_model`, and `paired_at`.
+- automatic sync is safe only when a canonical backend-compatible hardware id can be resolved.
+
 
 ### `listRegisteredDevices`
 

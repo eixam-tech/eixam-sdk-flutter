@@ -18,8 +18,7 @@ The host app is expected to rely on a partner/backend service that provides:
 - `externalUserId` must be unique per app
 - the mobile app receives a signed session
 - the SDK reuses that same identity for both HTTP and MQTT/runtime transport
-- `/v1/auth/sign` is acceptable for internal staging validation only
-- real partner integrations must implement the server-side sign flow in the partner backend
+- partner integrations must implement the server-side sign flow locally inside the partner backend
 
 ## Authentication and signing flow for partners
 
@@ -30,7 +29,7 @@ The host app is expected to rely on a partner/backend service that provides:
 5. the SDK bootstraps with `appId` + `initialSession`, or receives the same signed session later through `setSession(...)`
 6. the SDK reuses that same identity for both HTTP and MQTT
 
-`/v1/auth/sign` is acceptable only for internal EIXAM staging validation. Partner production systems must implement the sign flow on their own backend.
+Partner production systems must implement the sign flow directly on their own backend.
 
 ## Signed session contract
 
@@ -102,8 +101,11 @@ The SDK keeps the current topics, payloads, QoS, retain behavior, and signed-ses
 
 - telemetry payloads may include `deviceId = hardware_id` of the paired device
 - SOS operational payloads may also include `deviceId = hardware_id` when the SDK knows the paired device
+- **Canonical hardware_id**: The backend/mobile `hardware_id` source of truth is the canonical Meshtastic/node identifier like `CF:82...`.
+  - this is **NOT** the local BLE/runtime transport id
+  - this is **NOT** the friendly advertised BLE name such as `Meshtastic_1aa8`
 - hardware-originated SOS should send that `deviceId` when available so backend and web surfaces can display the originating hardware
-- if no paired hardware id is available, `deviceId` may remain omitted
+- if no paired hardware id is available or if it cannot be resolved safely, `deviceId` may remain omitted
 
 ## Important note
 

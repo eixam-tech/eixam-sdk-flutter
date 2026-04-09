@@ -116,8 +116,11 @@ The runtime no longer depends on MQTT 5 User Properties for identity. Topics, pa
 
 - telemetry payloads may include `deviceId = hardware_id` of the paired device
 - SOS operational payloads may also include `deviceId = hardware_id` when the SDK knows the paired device
-- hardware-originated SOS should send that `deviceId` when available so backend and web surfaces can show the originating hardware
-- if no paired hardware id is available, `deviceId` may remain omitted
+- **Canonical hardware_id**: The backend/mobile `hardware_id` source of truth is the canonical Meshtastic/node identifier like `CF:82...`.
+  - this is **NOT** the local BLE/runtime transport id
+  - this is **NOT** the friendly advertised BLE name such as `Meshtastic_1aa8`
+- hardware-originated SOS should send that `deviceId` when available so backend and web surfaces can display the originating hardware
+- if no paired hardware id is available or if it cannot be resolved safely, `deviceId` may remain omitted
 
 ## Internal note
 

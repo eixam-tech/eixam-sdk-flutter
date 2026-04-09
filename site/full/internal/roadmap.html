@@ -17,7 +17,7 @@
       <a href="../index.html">Home</a><a href="../sdk/overview.html">SDK Overview</a><a href="../sdk/architecture.html">SDK Architecture</a><a href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a href="../sdk/backend-integration.html">Backend Integration</a><a href="../sdk/public-api.html">Public API</a><a href="../sdk/public-api-examples.html">Method Examples</a><a href="../sdk/model-reference.html">Model Reference</a><a href="../sdk/protection-mode.html">Protection Mode</a><a href="../protection/overview.html">Protection Overview</a><a href="../protection/android-host-integration.html">Android Protection Integration</a><a href="../protection/ios-host-integration.html">iOS Protection Integration</a><a href="../protection/limitations.html">Protection Limitations</a><a href="../protection/validation-checklist.html">Protection Validation Checklist</a><a href="../sdk/realtime-status.html">Realtime Status</a><a href="../sdk/troubleshooting.html">SDK Troubleshooting</a><a href="../integration/flutter-installation.html">Flutter Installation</a><a href="../integration/flutter-integration.html">Flutter Integration</a><a href="../integration/host-app-integration.html">Host App Integration</a><a href="../integration/android-host-integration.html">Android Host Integration</a><a href="../integration/ios-host-integration.html">iOS Host Integration</a><a href="../integration/permissions-checklist.html">Permissions Checklist</a><a href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../reference-app/app-handoff-final.html">App Handoff Final</a><a href="../api/api-reference.html">API Reference</a><a href="../api/public-api.html">API Surface</a><a href="../api/public-api-examples.html">API Examples</a><a href="decisions.html">Decisions</a><a href="quality-gates.html">Quality Gates</a><a href="testing-strategy.html">Testing Strategy</a><a href="testability-notes.html">Testability Notes</a><a href="how-to-run-project.html">How to Run Project</a><a href="migration-map.html">Migration Map</a><a class="active" href="roadmap.html">Roadmap</a><a href="team-handoff-index.html">Team Handoff Index</a><a href="agents.html">AGENTS</a>
     </aside>
     <main class="content"><h1>EIXAM FIRMWARE — Roadmap i Checklist</h1>
-<a id="timeline"></a>
+<p><a id="timeline"></a></p>
 <h2>Timeline</h2>
 <pre><code>Setmana 1-2:  SPRINT 1 — Posició 10B + BLE DynGW + SOS
               → Demo: SOS funcional amb botó, dual-route, app rep posicions
@@ -29,25 +29,88 @@ Setmana 5-6:  SPRINT 3 — SF adaptatiu + Rescue fase 1 + Smart sampling
               → Demo: Producte complet per pilot Baqueira
 
 Setmana 7+:   SPRINT 4 — Tuning de consum (GPS power policy + LIS2DH real)
-              → Demo: autonomia millorada i política GPS validada al maquinari</code></pre>
-<a id="checklist-per-sprint"></a>
+              → Demo: autonomia millorada i política GPS validada al maquinari
+</code></pre>
+<p><a id="checklist-per-sprint"></a></p>
 <h2>Checklist per Sprint</h2>
-<a id="sprint-1-setmanes-1-2"></a>
+<p><a id="sprint-1-setmanes-1-2"></a></p>
 <h3>SPRINT 1 ✦ Setmanes 1-2</h3>
 <p><strong>Codi base:</strong> completat (WisMesh Tag / <code>rak_wismeshtag</code> + <code>-DEIXAM_CLIENT</code>). <strong>Tests de validació:</strong> encara checklist més avall.</p>
-<ul><li>[x] Crear <code>src/modules/Eixam/</code> directory</li><li>[x] <code>EixamConfig.h</code> — constants i UUIDs (ports 258–261, canals SOS/TEL, BLE, cluster…)</li><li>[x] <code>EixamPositionCodec.h/.cpp</code> — encode/decode 10B</li><li>[x] <code>EixamTelModule.h/.cpp</code> — telemetria Eixam (interval configurable; port <code>EIXAM_TEL_APP</code>)</li><li>[x] <code>EixamBLEBridge.h/.cpp</code> — BLE Notify (TEL/SOS/INET/CMD), cues, fragments <code>0xD0</code></li><li>[x] <code>EixamSOSPacket.h/.cpp</code> — encode/decode 5B/10B</li><li>[x] <code>EixamFibonacciRetry.h/.cpp</code> — timer Fibonacci</li><li>[x] <code>EixamSOSModule.h/.cpp</code> — state machine SOS</li><li>[x] Modificar <code>portnums.pb.h</code> — 4 portnums Eixam (258–261)</li><li>[x] Modificar <code>main.cpp</code> / <code>Modules.cpp</code> — registrar mòduls, globals</li><li>[x] Modificar <code>PositionModule.cpp</code> — desactivar en mode Eixam (quan aplica)</li><li>[x] Variant + build: <code>rak_wismeshtag</code> (o equivalent) + <code>-DEIXAM_CLIENT=1</code></li><li>[ ] TEST: Posicions 10B volant entre 2 dispositius</li><li>[ ] TEST: BLE Notify funcional, INET_OK suprimeix LoRa</li><li>[ ] TEST: SOS pre-confirm + confirm + Fibonacci + dual-route</li><li>[ ] TEST: SOS ACK redueix retries</li></ul>
-<a id="sprint-2-setmanes-3-4"></a>
+<ul>
+<li>[x] Crear <code>src/modules/Eixam/</code> directory</li>
+<li>[x] <code>EixamConfig.h</code> — constants i UUIDs (ports 258–261, canals SOS/TEL, BLE, cluster…)</li>
+<li>[x] <code>EixamPositionCodec.h/.cpp</code> — encode/decode 10B</li>
+<li>[x] <code>EixamTelModule.h/.cpp</code> — telemetria Eixam (interval configurable; port <code>EIXAM_TEL_APP</code>)</li>
+<li>[x] <code>EixamBLEBridge.h/.cpp</code> — BLE Notify (TEL/SOS/INET/CMD), cues, fragments <code>0xD0</code></li>
+<li>[x] <code>EixamSOSPacket.h/.cpp</code> — encode/decode 5B/10B</li>
+<li>[x] <code>EixamFibonacciRetry.h/.cpp</code> — timer Fibonacci</li>
+<li>[x] <code>EixamSOSModule.h/.cpp</code> — state machine SOS</li>
+<li>[x] Modificar <code>portnums.pb.h</code> — 4 portnums Eixam (258–261)</li>
+<li>[x] Modificar <code>main.cpp</code> / <code>Modules.cpp</code> — registrar mòduls, globals</li>
+<li>[x] Modificar <code>PositionModule.cpp</code> — desactivar en mode Eixam (quan aplica)</li>
+<li>[x] Variant + build: <code>rak_wismeshtag</code> (o equivalent) + <code>-DEIXAM_CLIENT=1</code></li>
+<li>[ ] TEST: Posicions 10B volant entre 2 dispositius</li>
+<li>[ ] TEST: BLE Notify funcional, INET_OK suprimeix LoRa</li>
+<li>[ ] TEST: SOS pre-confirm + confirm + Fibonacci + dual-route</li>
+<li>[ ] TEST: SOS ACK redueix retries</li>
+</ul>
+<p><a id="sprint-2-setmanes-3-4"></a></p>
 <h3>SPRINT 2 ✦ Setmanes 3-4</h3>
 <p><strong>Abans de codificar:</strong> Llegir <code>06_SPRINT2_NVM_POSITIONS_COVERAGE.md</code> — definir què guardar, on i com; aprofitar-ho per <strong>mapejar cobertura</strong> durant excursions.</p>
-<ul><li>[x] <strong>NVM + config:</strong> <code>EixamNVM</code> — implementar <code>saveConfig</code>/<code>loadConfig</code> (LittleFS <code>/eixam/config.bin</code>), <code>EixamDeviceConfig</code> persistent <em>(febrer 2026: Opció A doc + codi)</em></li><li>[x] <strong>Posicions locals:</strong> Guardar paràmetres TEL (posició GPS + hora) de forma local (fitxer/buffer rotatiu a LittleFS) → <code>/eixam/tel_positions.bin</code>, <code>EixamTelPositionLog</code></li><li>[x] <strong>Rangetest / cobertura:</strong> Guardar posició pròpia + posicions rebudes dels veïns amb la senyal que tenim cap a ells (SNR/RSSI) — per mapar cobertura en excursions (veure <code>05_RANGETEST_COVERAGE_LOG.md</code> i <code>06_SPRINT2_NVM_POSITIONS_COVERAGE.md</code>) — millores opció A (WISMESH_TAG): <code>time_unix</code>, payload 60s amb posició, descàrrega RANGETEST per streaming</li><li>[x] <code>EixamScoring.h</code> / <code>.cpp</code> — càlcul score 8 bits (+ <code>LOG_DEBUG</code> des de <code>EixamTelModule</code> fins que arribi Heartbeat)</li><li>[x] <code>EixamHeartbeat.h/.cpp</code> — heartbeat 30s, taula veïns, cleanup <em>(registrat a <code>Modules.cpp</code>; wire 8B port 260; <code>memberCount</code> TX pendent EixamCluster)</em></li><li>[x] <code>EixamCluster.h/.cpp</code> — FREE/MEMBER/AGGREGATOR, POLL/REPORT, agregat MVP <em>(detall pendent: <code>08_SPRINT2_CLUSTER_PENDING.md</code>)</em></li><li>[x] Modificar <code>EixamTelModule</code> — <code>setClusterSuppressLoRaTel</code> (MEMBER/AGG)</li><li>[x] <strong>Estalvi MEMBER — fase 1 (tancada):</strong> <code>eixam/</code> + guard BLE (<code>isPhoneConnected</code>): <code>runOnce</code> MEMBER <strong>5 s</strong> sense app / <strong>1 s</strong> amb app; <code>EixamGpsCyclic</code> opt-in (defecte off, veure <code>08</code>). <strong>Fase 2 (posterior):</strong> duty-cycle BLE advertising, sleep SX126x entre POLLs, <code>PowerFSM</code> només si cal.</li><li>[ ] <strong>NodeDB / <code>NodeInfoLite</code> (camps Eixam)</strong> — <em>Diferit</em> fins que app/backend necessitin estat Eixam al NodeDB; <strong>no</strong> és requisit per tancar el pilot Sprint 2 al camp.</li><li>[ ] TEST: Heartbeats a &lt;200m, no a &gt;300m</li><li>[ ] TEST: Scoring correcte (INET_OK = 128+)</li><li>[ ] TEST: Cluster formation automàtica en &lt;120s</li><li>[ ] TEST: POLL/REPORT cicle funcional</li><li>[ ] TEST: Paquet agregat conté N posicions</li><li>[ ] TEST: INET node pren aggregador</li><li>[ ] TEST: Member sleep &lt;2mA</li><li>[ ] TEST: Split quan membre s'allunya</li></ul>
+<ul>
+<li>[x] <strong>NVM + config:</strong> <code>EixamNVM</code> — implementar <code>saveConfig</code>/<code>loadConfig</code> (LittleFS <code>/eixam/config.bin</code>), <code>EixamDeviceConfig</code> persistent <em>(febrer 2026: Opció A doc + codi)</em></li>
+<li>[x] <strong>Posicions locals:</strong> Guardar paràmetres TEL (posició GPS + hora) de forma local (fitxer/buffer rotatiu a LittleFS) → <code>/eixam/tel_positions.bin</code>, <code>EixamTelPositionLog</code></li>
+<li>[x] <strong>Rangetest / cobertura:</strong> Guardar posició pròpia + posicions rebudes dels veïns amb la senyal que tenim cap a ells (SNR/RSSI) — per mapar cobertura en excursions (veure <code>05_RANGETEST_COVERAGE_LOG.md</code> i <code>06_SPRINT2_NVM_POSITIONS_COVERAGE.md</code>) — millores opció A (WISMESH_TAG): <code>time_unix</code>, payload 60s amb posició, descàrrega RANGETEST per streaming</li>
+<li>[x] <code>EixamScoring.h</code> / <code>.cpp</code> — càlcul score 8 bits (+ <code>LOG_DEBUG</code> des de <code>EixamTelModule</code> fins que arribi Heartbeat)</li>
+<li>[x] <code>EixamHeartbeat.h/.cpp</code> — heartbeat 30s, taula veïns, cleanup <em>(registrat a <code>Modules.cpp</code>; wire 8B port 260; <code>memberCount</code> TX pendent EixamCluster)</em></li>
+<li>[x] <code>EixamCluster.h/.cpp</code> — FREE/MEMBER/AGGREGATOR, POLL/REPORT, agregat MVP <em>(detall pendent: <code>08_SPRINT2_CLUSTER_PENDING.md</code>)</em></li>
+<li>[x] Modificar <code>EixamTelModule</code> — <code>setClusterSuppressLoRaTel</code> (MEMBER/AGG)</li>
+<li>[x] <strong>Estalvi MEMBER — fase 1 (tancada):</strong> <code>eixam/</code> + guard BLE (<code>isPhoneConnected</code>): <code>runOnce</code> MEMBER <strong>5 s</strong> sense app / <strong>1 s</strong> amb app; <code>EixamGpsCyclic</code> opt-in (defecte off, veure <code>08</code>). <strong>Fase 2 (posterior):</strong> duty-cycle BLE advertising, sleep SX126x entre POLLs, <code>PowerFSM</code> només si cal.</li>
+<li>[ ] <strong>NodeDB / <code>NodeInfoLite</code> (camps Eixam)</strong> — <em>Diferit</em> fins que app/backend necessitin estat Eixam al NodeDB; <strong>no</strong> és requisit per tancar el pilot Sprint 2 al camp.</li>
+<li>[ ] TEST: Heartbeats a &lt;200m, no a &gt;300m</li>
+<li>[ ] TEST: Scoring correcte (INET_OK = 128+)</li>
+<li>[ ] TEST: Cluster formation automàtica en &lt;120s</li>
+<li>[ ] TEST: POLL/REPORT cicle funcional</li>
+<li>[ ] TEST: Paquet agregat conté N posicions</li>
+<li>[ ] TEST: INET node pren aggregador</li>
+<li>[ ] TEST: Member sleep &lt;2mA</li>
+<li>[ ] TEST: Split quan membre s'allunya</li>
+</ul>
 <p><strong>Pilot Sprint 2 al camp (feb. 2026):</strong> el <strong>codi</strong> del sprint (cluster, scoring, agregat, INET/BLE, 2 dBm intra-cluster, estalvi MEMBER fase 1) es considera <strong>llest per provar</strong>. Queden els <strong>TEST:</strong> de sobre (validació) i, si cal, repetir proves Sprint 1.</p>
-<a id="sprint-3-setmanes-5-6"></a>
+<p><a id="sprint-3-setmanes-5-6"></a></p>
 <h3>SPRINT 3 ✦ Setmanes 5-6</h3>
-<ul><li>[x] <code>EixamSFAdapter.h</code> — SF adaptatiu per veïns (header; lògica <code>calculateSF</code>)</li><li>[x] Integrar SF adapter a <code>EixamTelModule</code> + <code>SX126xInterface::eixamApplyMeshSpreadingFactor</code> (mesh SF 7–11)</li><li>[x] <code>EixamRescue.h/.cpp</code> — fase 1 integrada (port 261 separat; REQUEST_POS/ACK_SOS/BUZZER/STATUS)</li><li>[x] Integrar handlers CMD Rescue (port 261) fora de <code>EixamSOSModule</code> (delegació a <code>EixamRescue</code>)</li><li>[x] Smart position (mostreig GPS adaptatiu per velocitat derivada + persistència local)</li><li>[x] Log local TEL en <strong>rolling buffer 64KB</strong> (<code>/eixam/tel_positions.bin</code>) per sync diferit</li><li>[x] <strong>TEL (258) a potència mínima en context cluster</strong> — <code>EixamIntraClusterTx</code>: TX <strong>propis</strong> port <strong>258</strong> amb payload <strong>agregat <code>0xC2</code></strong> i <code>isClusterSuppressLoRaTel()</code> → 2 dBm (mateixa cua que 260).</li><li>[x] <strong>TEL RX → BLE cap a l’app</strong> — <code>EixamTelModule::handleReceived</code>: <strong>10 B</strong> veí, <code>sendTelNotify</code>, rate-limit, només si <strong>BLE connectat</strong> (<code>EIXAM_CLIENT</code>).</li><li>[ ] TEST: SF canvia amb nombre de veïns</li><li>[ ] TEST: REQUEST_POS → resposta amb posició</li><li>[ ] TEST: ACK_SOS → LED verd + slow retries</li><li>[ ] TEST: BUZZER activat remotament</li><li>[ ] TEST: Smart sampling (walk/run/bike/very-fast) + persistència local 64KB sense pèrdua global</li><li>[ ] TEST: Sync backlog (BLE) amb ingest backend idempotent</li></ul>
-<a id="sprint-4-tuning-de-consum-setmana-7"></a>
+<ul>
+<li>[x] <code>EixamSFAdapter.h</code> — SF adaptatiu per veïns (header; lògica <code>calculateSF</code>)</li>
+<li>[x] Integrar SF adapter a <code>EixamTelModule</code> + <code>SX126xInterface::eixamApplyMeshSpreadingFactor</code> (mesh SF 7–11)</li>
+<li>[x] <code>EixamRescue.h/.cpp</code> — fase 1 integrada (port 261 separat; REQUEST_POS/ACK_SOS/BUZZER/STATUS)</li>
+<li>[x] Integrar handlers CMD Rescue (port 261) fora de <code>EixamSOSModule</code> (delegació a <code>EixamRescue</code>)</li>
+<li>[x] Smart position (mostreig GPS adaptatiu per velocitat derivada + persistència local)</li>
+<li>[x] Log local TEL en <strong>rolling buffer 64KB</strong> (<code>/eixam/tel_positions.bin</code>) per sync diferit</li>
+<li>[x] <strong>TEL (258) a potència mínima en context cluster</strong> — <code>EixamIntraClusterTx</code>: TX <strong>propis</strong> port <strong>258</strong> amb payload <strong>agregat <code>0xC2</code></strong> i <code>isClusterSuppressLoRaTel()</code> → 2 dBm (mateixa cua que 260).</li>
+<li>[x] <strong>TEL RX → BLE cap a l’app</strong> — <code>EixamTelModule::handleReceived</code>: <strong>10 B</strong> veí, <code>sendTelNotify</code>, rate-limit, només si <strong>BLE connectat</strong> (<code>EIXAM_CLIENT</code>).</li>
+<li>[ ] TEST: SF canvia amb nombre de veïns</li>
+<li>[ ] TEST: REQUEST_POS → resposta amb posició</li>
+<li>[ ] TEST: ACK_SOS → LED verd + slow retries</li>
+<li>[ ] TEST: BUZZER activat remotament</li>
+<li>[ ] TEST: Smart sampling (walk/run/bike/very-fast) + persistència local 64KB sense pèrdua global</li>
+<li>[ ] TEST: Sync backlog (BLE) amb ingest backend idempotent</li>
+</ul>
+<p><a id="sprint-4-tuning-de-consum-setmana-7"></a></p>
 <h3>SPRINT 4 ✦ Tuning de consum (Setmana 7+)</h3>
-<ul><li>[ ] Definir pressupost d'autonomia objectiu (perfil: caminada, trail, esquí) i mètriques de consum</li><li>[ ] <code>EixamGpsPolicy.h/.cpp</code> — política GPS per activitat (quiet/moviment) amb estats explícits</li><li>[ ] Integrar lectura real LIS2DH a <code>EixamHardware</code> (<code>isMovementDetected()</code>, <code>lastActivityMs()</code>)</li><li>[ ] Integrar <code>EixamGpsPolicy</code> a <code>Modules.cpp</code> i <code>EixamTelModule</code> (sense regressió SOS/Rescue)</li><li>[ ] Definir constants de política a <code>EixamConfig.h</code> (temps quiet, mínim ON, hysteresis moviment)</li><li>[ ] Validar coexistència amb <code>EixamGpsCyclic</code> (fallback MEMBER sense app)</li><li>[ ] Estratègia fail-safe: en dubte de sensor, prioritzar GPS ON en SOS/Rescue</li><li>[ ] TEST: corrent mitjà en repòs i en moviment (comparativa S3 vs S4)</li><li>[ ] TEST: temps de reacquisició fix (TTFF) després de període quiet</li><li>[ ] TEST: no pèrdua de telemetria crítica en transicions ON/OFF GPS</li><li>[ ] TEST: SOS/Rescue mantenen prioritat i latència acceptable amb política activa</li></ul>
-<a id="fitxers-finals"></a>
+<ul>
+<li>[ ] Definir pressupost d'autonomia objectiu (perfil: caminada, trail, esquí) i mètriques de consum</li>
+<li>[ ] <code>EixamGpsPolicy.h/.cpp</code> — política GPS per activitat (quiet/moviment) amb estats explícits</li>
+<li>[ ] Integrar lectura real LIS2DH a <code>EixamHardware</code> (<code>isMovementDetected()</code>, <code>lastActivityMs()</code>)</li>
+<li>[ ] Integrar <code>EixamGpsPolicy</code> a <code>Modules.cpp</code> i <code>EixamTelModule</code> (sense regressió SOS/Rescue)</li>
+<li>[ ] Definir constants de política a <code>EixamConfig.h</code> (temps quiet, mínim ON, hysteresis moviment)</li>
+<li>[ ] Validar coexistència amb <code>EixamGpsCyclic</code> (fallback MEMBER sense app)</li>
+<li>[ ] Estratègia fail-safe: en dubte de sensor, prioritzar GPS ON en SOS/Rescue</li>
+<li>[ ] TEST: corrent mitjà en repòs i en moviment (comparativa S3 vs S4)</li>
+<li>[ ] TEST: temps de reacquisició fix (TTFF) després de període quiet</li>
+<li>[ ] TEST: no pèrdua de telemetria crítica en transicions ON/OFF GPS</li>
+<li>[ ] TEST: SOS/Rescue mantenen prioritat i latència acceptable amb política activa</li>
+</ul>
+<p><a id="fitxers-finals"></a></p>
 <h2>Fitxers finals</h2>
 <pre><code>src/modules/Eixam/          (12+ fitxers nous; creix amb Sprint 3)
 ├── EixamConfig.h           
@@ -71,8 +134,9 @@ Fitxers Meshtastic modificats:  (6 fitxers, canvis mínims)
 ├── PhoneAPI.cpp/h              +BLE characteristic
 ├── NodeDB.cpp/h                +camps Eixam (Sprint 2)
 ├── PowerFSM.cpp                +sleep state (Sprint 2)
-└── main.cpp                    +registre mòduls + globals</code></pre>
-<a id="docs-per-cursor"></a>
+└── main.cpp                    +registre mòduls + globals
+</code></pre>
+<p><a id="docs-per-cursor"></a></p>
 <h2>Docs per Cursor</h2>
 <pre><code>docs/eixam/
 ├── 00_CONTEXT.md                         ← Carregar SEMPRE primer
@@ -93,13 +157,26 @@ Fitxers Meshtastic modificats:  (6 fitxers, canvis mínims)
 ├── 15_BACKEND_ONE_PAGER.md               ← Backend quick-start (2 minuts)
 ├── 16_GUIDED_RESCUE_PHASE1.md            ← Guiatge rescat fase 1 (sense canvis SF/canal)
 ├── 17_APP_HANDOFF_FINAL.md               ← Handoff final APP (scope tancat)
-└── 18_BACKEND_HANDOFF_FINAL.md           ← Handoff final BACKEND (scope tancat)</code></pre>
-<a id="com-usar-amb-cursor"></a>
+└── 18_BACKEND_HANDOFF_FINAL.md           ← Handoff final BACKEND (scope tancat)
+</code></pre>
+<p><a id="com-usar-amb-cursor"></a></p>
 <h2>Com usar amb Cursor</h2>
-<ol><li>Obre el repo Meshtastic firmware al Cursor</li><li>Carrega <code>00_CONTEXT.md</code> com a context del projecte</li><li>Obre el document del sprint que toca (01, 02, 03)</li><li>Demana a Cursor que implementi pas a pas</li><li>Compila i testeja després de cada pas</li><li>Marca els checkboxes d'aquest document</li></ol>
-<a id="licensing"></a>
+<ol>
+<li>Obre el repo Meshtastic firmware al Cursor</li>
+<li>Carrega <code>00_CONTEXT.md</code> com a context del projecte</li>
+<li>Obre el document del sprint que toca (01, 02, 03)</li>
+<li>Demana a Cursor que implementi pas a pas</li>
+<li>Compila i testeja després de cada pas</li>
+<li>Marca els checkboxes d'aquest document</li>
+</ol>
+<p><a id="licensing"></a></p>
 <h2>Licensing</h2>
-<ul><li>Firmware: GPL-3.0 (repo públic <code>eixam-technologies/eixam-firmware</code>)</li><li>Backend/App/Hardware: Propietari (repos privats)</li><li>Model: Com Prusa, Arduino — firmware obert, valor al ecosistema complet</li></ul></main>
+<ul>
+<li>Firmware: GPL-3.0 (repo públic <code>eixam-technologies/eixam-firmware</code>)</li>
+<li>Backend/App/Hardware: Propietari (repos privats)</li>
+<li>Model: Com Prusa, Arduino — firmware obert, valor al ecosistema complet</li>
+</ul>
+</main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
       <a class="toc-level-2" href="#timeline">Timeline</a><a class="toc-level-2" href="#checklist-per-sprint">Checklist per Sprint</a><a class="toc-level-3" href="#sprint-1-setmanes-1-2">SPRINT 1 ✦ Setmanes 1-2</a><a class="toc-level-3" href="#sprint-2-setmanes-3-4">SPRINT 2 ✦ Setmanes 3-4</a><a class="toc-level-3" href="#sprint-3-setmanes-5-6">SPRINT 3 ✦ Setmanes 5-6</a><a class="toc-level-3" href="#sprint-4-tuning-de-consum-setmana-7">SPRINT 4 ✦ Tuning de consum (Setmana 7+)</a><a class="toc-level-2" href="#fitxers-finals">Fitxers finals</a><a class="toc-level-2" href="#docs-per-cursor">Docs per Cursor</a><a class="toc-level-2" href="#com-usar-amb-cursor">Com usar amb Cursor</a><a class="toc-level-2" href="#licensing">Licensing</a>

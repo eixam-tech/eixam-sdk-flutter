@@ -59,7 +59,7 @@ Example:
 ```dart
 const EixamCustomEndpoints(
   apiBaseUrl: 'https://partner-api.example.com',
-  mqttUrl: 'ssl://partner-mqtt.example.com:8883',
+  mqttUrl: 'ssl://mqtt.staging.eixam.io:8883',
 )
 ```
 

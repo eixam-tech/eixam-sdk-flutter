@@ -17,7 +17,7 @@
       <a href="../index.html">Home</a><a href="../sdk/overview.html">SDK Overview</a><a href="../sdk/architecture.html">SDK Architecture</a><a href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a href="../sdk/backend-integration.html">Backend Integration</a><a href="../sdk/public-api.html">Public API</a><a href="../sdk/public-api-examples.html">Method Examples</a><a href="../sdk/model-reference.html">Model Reference</a><a href="../sdk/protection-mode.html">Protection Mode</a><a href="../protection/overview.html">Protection Overview</a><a href="../protection/android-host-integration.html">Android Protection Integration</a><a href="../protection/ios-host-integration.html">iOS Protection Integration</a><a href="../protection/limitations.html">Protection Limitations</a><a href="../protection/validation-checklist.html">Protection Validation Checklist</a><a href="../sdk/realtime-status.html">Realtime Status</a><a href="../sdk/troubleshooting.html">SDK Troubleshooting</a><a class="active" href="flutter-installation.html">Flutter Installation</a><a href="flutter-integration.html">Flutter Integration</a><a href="host-app-integration.html">Host App Integration</a><a href="android-host-integration.html">Android Host Integration</a><a href="ios-host-integration.html">iOS Host Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a href="ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../reference-app/app-handoff-final.html">App Handoff Final</a><a href="../api/api-reference.html">API Reference</a><a href="../api/public-api.html">API Surface</a><a href="../api/public-api-examples.html">API Examples</a><a href="../internal/decisions.html">Decisions</a><a href="../internal/quality-gates.html">Quality Gates</a><a href="../internal/testing-strategy.html">Testing Strategy</a><a href="../internal/testability-notes.html">Testability Notes</a><a href="../internal/how-to-run-project.html">How to Run Project</a><a href="../internal/migration-map.html">Migration Map</a><a href="../internal/roadmap.html">Roadmap</a><a href="../internal/team-handoff-index.html">Team Handoff Index</a><a href="../internal/agents.html">AGENTS</a>
     </aside>
     <main class="content"><h1>Flutter Installation</h1>
-<a id="add-the-package"></a>
+<p><a id="add-the-package"></a></p>
 <h2>Add the package</h2>
 <p>For the planned <code>0.1.0</code> release, use the agreed EIXAM release tag when it is provided during release handoff.</p>
 <pre><code class="language-yaml">dependencies:
@@ -25,16 +25,19 @@
     git:
       url: https://github.com/eixam-tech/eixam-sdk-flutter
       ref: &lt;agreed-0.1.0-release-tag&gt;
-      path: packages/eixam_connect_flutter</code></pre>
-<a id="import"></a>
+      path: packages/eixam_connect_flutter
+</code></pre>
+<p><a id="import"></a></p>
 <h2>Import</h2>
-<pre><code class="language-dart">import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';</code></pre>
-<a id="recommended-package-boundary"></a>
+<pre><code class="language-dart">import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
+</code></pre>
+<p><a id="recommended-package-boundary"></a></p>
 <h2>Recommended package boundary</h2>
 <p>Partner apps should only need the public Flutter package surface. Do not build directly against internal runtime implementation classes unless you are working in a controlled internal validation scenario.</p>
-<a id="next-step"></a>
+<p><a id="next-step"></a></p>
 <h2>Next step</h2>
-<p>Continue with <a href="flutter-integration.html">Flutter Integration</a>.</p></main>
+<p>Continue with <a href="flutter-integration.html">Flutter Integration</a>.</p>
+</main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
       <a class="toc-level-2" href="#add-the-package">Add the package</a><a class="toc-level-2" href="#import">Import</a><a class="toc-level-2" href="#recommended-package-boundary">Recommended package boundary</a><a class="toc-level-2" href="#next-step">Next step</a>

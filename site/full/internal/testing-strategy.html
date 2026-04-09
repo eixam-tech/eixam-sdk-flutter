@@ -17,159 +17,328 @@
       <a href="../index.html">Home</a><a href="../sdk/overview.html">SDK Overview</a><a href="../sdk/architecture.html">SDK Architecture</a><a href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a href="../sdk/backend-integration.html">Backend Integration</a><a href="../sdk/public-api.html">Public API</a><a href="../sdk/public-api-examples.html">Method Examples</a><a href="../sdk/model-reference.html">Model Reference</a><a href="../sdk/protection-mode.html">Protection Mode</a><a href="../protection/overview.html">Protection Overview</a><a href="../protection/android-host-integration.html">Android Protection Integration</a><a href="../protection/ios-host-integration.html">iOS Protection Integration</a><a href="../protection/limitations.html">Protection Limitations</a><a href="../protection/validation-checklist.html">Protection Validation Checklist</a><a href="../sdk/realtime-status.html">Realtime Status</a><a href="../sdk/troubleshooting.html">SDK Troubleshooting</a><a href="../integration/flutter-installation.html">Flutter Installation</a><a href="../integration/flutter-integration.html">Flutter Integration</a><a href="../integration/host-app-integration.html">Host App Integration</a><a href="../integration/android-host-integration.html">Android Host Integration</a><a href="../integration/ios-host-integration.html">iOS Host Integration</a><a href="../integration/permissions-checklist.html">Permissions Checklist</a><a href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../reference-app/app-handoff-final.html">App Handoff Final</a><a href="../api/api-reference.html">API Reference</a><a href="../api/public-api.html">API Surface</a><a href="../api/public-api-examples.html">API Examples</a><a href="decisions.html">Decisions</a><a href="quality-gates.html">Quality Gates</a><a class="active" href="testing-strategy.html">Testing Strategy</a><a href="testability-notes.html">Testability Notes</a><a href="how-to-run-project.html">How to Run Project</a><a href="migration-map.html">Migration Map</a><a href="roadmap.html">Roadmap</a><a href="team-handoff-index.html">Team Handoff Index</a><a href="agents.html">AGENTS</a>
     </aside>
     <main class="content"><h1>EIXAM SDK — Testing Strategy</h1>
-<a id="purpose"></a>
+<p><a id="purpose"></a></p>
 <h2>Purpose</h2>
 <p>This document defines how automated testing should be approached in the EIXAM monorepo.</p>
-<p>The goal is not to maximize coverage for vanity metrics. The goal is to maximize confidence, regression safety, and SDK reusability.</p>
+<p>The goal is not to maximize coverage for vanity metrics.
+The goal is to maximize confidence, regression safety, and SDK reusability.</p>
 <p>Because EIXAM is SDK-first, testing priority must be centered on the SDK packages rather than on the reference host app.</p>
-<p>---</p>
-<a id="1-testing-principles"></a>
+<hr />
+<p><a id="1-testing-principles"></a></p>
 <h2>1. Testing principles</h2>
-<a id="1-1-sdk-first-testing"></a>
+<p><a id="1-1-sdk-first-testing"></a></p>
 <h3>1.1 SDK-first testing</h3>
-<p>The SDK is the product core. Therefore, the most important automated tests are the ones that protect:</p>
-<ul><li>domain behavior</li><li>public SDK contracts</li><li>state transitions</li><li>persistence behavior</li><li>integration boundaries inside the SDK</li></ul>
-<a id="1-2-prefer-behavior-over-implementation-details"></a>
+<p>The SDK is the product core.
+Therefore, the most important automated tests are the ones that protect:</p>
+<ul>
+<li>domain behavior</li>
+<li>public SDK contracts</li>
+<li>state transitions</li>
+<li>persistence behavior</li>
+<li>integration boundaries inside the SDK</li>
+</ul>
+<p><a id="1-2-prefer-behavior-over-implementation-details"></a></p>
 <h3>1.2 Prefer behavior over implementation details</h3>
 <p>Tests should validate:</p>
-<ul><li>what the SDK guarantees</li><li>what consumers can rely on</li><li>how state evolves</li><li>how public APIs behave</li></ul>
+<ul>
+<li>what the SDK guarantees</li>
+<li>what consumers can rely on</li>
+<li>how state evolves</li>
+<li>how public APIs behave</li>
+</ul>
 <p>Tests should avoid overfitting to private implementation details.</p>
-<a id="1-3-prefer-fakes-over-excessive-mocking"></a>
+<p><a id="1-3-prefer-fakes-over-excessive-mocking"></a></p>
 <h3>1.3 Prefer fakes over excessive mocking</h3>
 <p>When possible, prefer:</p>
-<ul><li>in-memory repositories</li><li>fake providers</li><li>fake clocks</li><li>fake ID generators</li><li>local stream helpers</li></ul>
+<ul>
+<li>in-memory repositories</li>
+<li>fake providers</li>
+<li>fake clocks</li>
+<li>fake ID generators</li>
+<li>local stream helpers</li>
+</ul>
 <p>This keeps tests more stable and easier to maintain.</p>
-<a id="1-4-app-host-is-not-the-main-coverage-target"></a>
+<p><a id="1-4-app-host-is-not-the-main-coverage-target"></a></p>
 <h3>1.4 App host is not the main coverage target</h3>
-<p><code>apps/eixam_control_app</code> is useful for smoke testing and manual validation, but it is not the main target for broad automated coverage.</p>
+<p><code>apps/eixam_control_app</code> is useful for smoke testing and manual validation,
+but it is not the main target for broad automated coverage.</p>
 <p>The main automated effort should go to:</p>
-<ul><li><code>packages/eixam_connect_core</code></li><li><code>packages/eixam_connect_flutter</code></li><li>selected reusable pieces in <code>packages/eixam_connect_ui</code></li></ul>
-<p>---</p>
-<a id="2-testing-pyramid-for-eixam"></a>
+<ul>
+<li><code>packages/eixam_connect_core</code></li>
+<li><code>packages/eixam_connect_flutter</code></li>
+<li>selected reusable pieces in <code>packages/eixam_connect_ui</code></li>
+</ul>
+<hr />
+<p><a id="2-testing-pyramid-for-eixam"></a></p>
 <h2>2. Testing pyramid for EIXAM</h2>
-<a id="2-1-base-layer-unit-tests"></a>
+<p><a id="2-1-base-layer-unit-tests"></a></p>
 <h3>2.1 Base layer — Unit tests</h3>
 <p>Highest priority.</p>
 <p>Focus on:</p>
-<ul><li>entities</li><li>value validation</li><li>enums / mappings</li><li>parsers / codecs</li><li>use cases</li><li>reducers / state machines</li><li>pure transformation logic</li></ul>
-<a id="2-2-middle-layer-contract-integration-tests"></a>
+<ul>
+<li>entities</li>
+<li>value validation</li>
+<li>enums / mappings</li>
+<li>parsers / codecs</li>
+<li>use cases</li>
+<li>reducers / state machines</li>
+<li>pure transformation logic</li>
+</ul>
+<p><a id="2-2-middle-layer-contract-integration-tests"></a></p>
 <h3>2.2 Middle layer — Contract / integration tests</h3>
 <p>Second priority.</p>
 <p>Focus on:</p>
-<ul><li>public SDK APIs</li><li>repositories</li><li>persistence behavior</li><li>controllers/services</li><li>adapters</li><li>observable streams</li><li>cross-module state behavior</li></ul>
-<a id="2-3-upper-layer-widget-tests"></a>
+<ul>
+<li>public SDK APIs</li>
+<li>repositories</li>
+<li>persistence behavior</li>
+<li>controllers/services</li>
+<li>adapters</li>
+<li>observable streams</li>
+<li>cross-module state behavior</li>
+</ul>
+<p><a id="2-3-upper-layer-widget-tests"></a></p>
 <h3>2.3 Upper layer — Widget tests</h3>
 <p>Selective priority.</p>
 <p>Focus on:</p>
-<ul><li>reusable SDK UI components</li><li>critical component states</li><li>loading / enabled / disabled / error rendering</li></ul>
-<a id="2-4-top-layer-host-app-smoke-tests-and-manual-testing"></a>
+<ul>
+<li>reusable SDK UI components</li>
+<li>critical component states</li>
+<li>loading / enabled / disabled / error rendering</li>
+</ul>
+<p><a id="2-4-top-layer-host-app-smoke-tests-and-manual-testing"></a></p>
 <h3>2.4 Top layer — Host app smoke tests and manual testing</h3>
 <p>Lowest automated priority.</p>
 <p>Focus on:</p>
-<ul><li>app boots correctly</li><li>main SDK wiring still works</li><li>no obvious integration regressions</li></ul>
+<ul>
+<li>app boots correctly</li>
+<li>main SDK wiring still works</li>
+<li>no obvious integration regressions</li>
+</ul>
 <p>Real device / BLE / field validation remains essential, but is not a substitute for SDK automated testing.</p>
-<p>---</p>
-<a id="3-package-by-package-strategy"></a>
+<hr />
+<p><a id="3-package-by-package-strategy"></a></p>
 <h2>3. Package-by-package strategy</h2>
-<a id="3-1-packages-eixam-connect-core"></a>
+<p><a id="3-1-packages-eixam-connect-core"></a></p>
 <h2>3.1 <code>packages/eixam_connect_core</code></h2>
 <p>This package should carry the strongest test density.</p>
 <p>Priority areas:</p>
-<ul><li>SOS state machine and use cases</li><li>Tracking state transitions</li><li>stale detection logic</li><li>Death Man logic</li><li>emergency contacts domain rules</li><li>device lifecycle/status modeling</li><li>public SDK interface contracts where defined</li><li>domain errors and defensive behavior</li></ul>
+<ul>
+<li>SOS state machine and use cases</li>
+<li>Tracking state transitions</li>
+<li>stale detection logic</li>
+<li>Death Man logic</li>
+<li>emergency contacts domain rules</li>
+<li>device lifecycle/status modeling</li>
+<li>public SDK interface contracts where defined</li>
+<li>domain errors and defensive behavior</li>
+</ul>
 <p>Expected test types:</p>
-<ul><li>unit tests</li><li>state transition tests</li><li>contract behavior tests</li></ul>
-<a id="3-2-packages-eixam-connect-flutter"></a>
+<ul>
+<li>unit tests</li>
+<li>state transition tests</li>
+<li>contract behavior tests</li>
+</ul>
+<p><a id="3-2-packages-eixam-connect-flutter"></a></p>
 <h2>3.2 <code>packages/eixam_connect_flutter</code></h2>
 <p>This package should focus on runtime behavior and integration boundaries.</p>
 <p>Priority areas:</p>
-<ul><li>repositories</li><li>persistence serializers / restore flows</li><li>permission adapters</li><li>notification integration boundaries</li><li>device runtime providers</li><li>SDK implementation behavior</li><li>latest-state caches / stream exposure</li></ul>
+<ul>
+<li>repositories</li>
+<li>persistence serializers / restore flows</li>
+<li>permission adapters</li>
+<li>notification integration boundaries</li>
+<li>device runtime providers</li>
+<li>SDK implementation behavior</li>
+<li>latest-state caches / stream exposure</li>
+</ul>
 <p>Expected test types:</p>
-<ul><li>contract tests</li><li>in-memory integration tests</li><li>persistence tests</li><li>defensive bootstrap tests</li></ul>
-<a id="3-3-packages-eixam-connect-ui"></a>
+<ul>
+<li>contract tests</li>
+<li>in-memory integration tests</li>
+<li>persistence tests</li>
+<li>defensive bootstrap tests</li>
+</ul>
+<p><a id="3-3-packages-eixam-connect-ui"></a></p>
 <h2>3.3 <code>packages/eixam_connect_ui</code></h2>
 <p>This package should be tested selectively.</p>
 <p>Priority areas:</p>
-<ul><li>reusable SOS UI</li><li>shared action components</li><li>localization surface where relevant</li><li>critical visual states</li></ul>
+<ul>
+<li>reusable SOS UI</li>
+<li>shared action components</li>
+<li>localization surface where relevant</li>
+<li>critical visual states</li>
+</ul>
 <p>Expected test types:</p>
-<ul><li>widget tests</li></ul>
-<a id="3-4-apps-eixam-control-app"></a>
+<ul>
+<li>widget tests</li>
+</ul>
+<p><a id="3-4-apps-eixam-control-app"></a></p>
 <h2>3.4 <code>apps/eixam_control_app</code></h2>
 <p>This app should not become the center of test effort.</p>
 <p>Recommended coverage:</p>
-<ul><li>minimal smoke tests</li><li>maybe one or two navigation/bootstrap sanity tests</li><li>mostly manual validation for integration scenarios</li></ul>
-<p>---</p>
-<a id="4-priority-order-for-current-project-phase"></a>
+<ul>
+<li>minimal smoke tests</li>
+<li>maybe one or two navigation/bootstrap sanity tests</li>
+<li>mostly manual validation for integration scenarios</li>
+</ul>
+<hr />
+<p><a id="4-priority-order-for-current-project-phase"></a></p>
 <h2>4. Priority order for current project phase</h2>
 <p>Given the current state of the project, the recommended testing order is:</p>
-<ol><li>SOS domain/state transitions</li><li>Death Man domain/state transitions</li><li>Tracking state transitions and stale logic</li><li>Device status/lifecycle contracts</li><li>Emergency contacts behavior and persistence</li><li>Public SDK façade contracts</li><li>Persistence restore/save behavior</li><li>Permission orchestration behavior</li><li>Realtime façade behavior</li><li>Reusable UI widget tests</li><li>Host app smoke tests</li></ol>
+<ol>
+<li>SOS domain/state transitions</li>
+<li>Death Man domain/state transitions</li>
+<li>Tracking state transitions and stale logic</li>
+<li>Device status/lifecycle contracts</li>
+<li>Emergency contacts behavior and persistence</li>
+<li>Public SDK façade contracts</li>
+<li>Persistence restore/save behavior</li>
+<li>Permission orchestration behavior</li>
+<li>Realtime façade behavior</li>
+<li>Reusable UI widget tests</li>
+<li>Host app smoke tests</li>
+</ol>
 <p>This order reflects the current architecture and the current maturity of the project.</p>
-<p>---</p>
-<a id="5-public-contract-testing"></a>
+<hr />
+<p><a id="5-public-contract-testing"></a></p>
 <h2>5. Public contract testing</h2>
 <p>Because the SDK is the reusable product, public contract tests are critical.</p>
 <p>These tests should verify what host apps can safely rely on, such as:</p>
-<ul><li>triggering SOS</li><li>cancelling SOS</li><li>monitoring SOS state</li><li>starting/stopping tracking</li><li>observing tracking state and positions</li><li>scheduling / confirming / cancelling Death Man flows</li><li>listing / adding / updating / removing emergency contacts</li><li>retrieving and observing device status</li><li>observing realtime state where exposed</li></ul>
+<ul>
+<li>triggering SOS</li>
+<li>cancelling SOS</li>
+<li>monitoring SOS state</li>
+<li>starting/stopping tracking</li>
+<li>observing tracking state and positions</li>
+<li>scheduling / confirming / cancelling Death Man flows</li>
+<li>listing / adding / updating / removing emergency contacts</li>
+<li>retrieving and observing device status</li>
+<li>observing realtime state where exposed</li>
+</ul>
 <p>Public contract tests are more valuable than testing many internal classes in isolation.</p>
-<p>---</p>
-<a id="6-persistence-testing"></a>
+<hr />
+<p><a id="6-persistence-testing"></a></p>
 <h2>6. Persistence testing</h2>
 <p>Persistence is already relevant in the project and should be treated as a first-class concern.</p>
 <p>At minimum, persistence tests should cover:</p>
-<ul><li>SOS persisted state restore</li><li>tracking restore behavior</li><li>Death Man restore behavior</li><li>emergency contacts restore behavior</li><li>device status restore behavior where applicable</li><li>defensive handling of invalid or transitional persisted data</li></ul>
+<ul>
+<li>SOS persisted state restore</li>
+<li>tracking restore behavior</li>
+<li>Death Man restore behavior</li>
+<li>emergency contacts restore behavior</li>
+<li>device status restore behavior where applicable</li>
+<li>defensive handling of invalid or transitional persisted data</li>
+</ul>
 <p>Prototype persistence is acceptable at this stage, but regressions in restore/bootstrap behavior are high-risk.</p>
-<p>---</p>
-<a id="7-ble-device-related-testing-stance"></a>
+<hr />
+<p><a id="7-ble-device-related-testing-stance"></a></p>
 <h2>7. BLE / device-related testing stance</h2>
 <p>BLE and device integration are architecturally important from day one.</p>
 <p>Testing should reflect that in two layers:</p>
-<a id="7-1-contract-level"></a>
+<p><a id="7-1-contract-level"></a></p>
 <h3>7.1 Contract level</h3>
 <p>Test:</p>
-<ul><li>device runtime boundaries</li><li>observable status behavior</li><li>activation / pairing / refresh expectations</li><li>defensive behavior when runtime data is incomplete</li></ul>
-<a id="7-2-real-environment-validation"></a>
+<ul>
+<li>device runtime boundaries</li>
+<li>observable status behavior</li>
+<li>activation / pairing / refresh expectations</li>
+<li>defensive behavior when runtime data is incomplete</li>
+</ul>
+<p><a id="7-2-real-environment-validation"></a></p>
 <h3>7.2 Real environment validation</h3>
 <p>Manual or dedicated integration validation should still happen for:</p>
-<ul><li>real BLE plugin behavior</li><li>real device interactions</li><li>notify/write timing</li><li>field behavior</li></ul>
+<ul>
+<li>real BLE plugin behavior</li>
+<li>real device interactions</li>
+<li>notify/write timing</li>
+<li>field behavior</li>
+</ul>
 <p>Automated SDK tests should protect contracts even before full real BLE runtime is finalized.</p>
-<p>---</p>
-<a id="8-app-ble-integration-minimums-to-protect"></a>
+<hr />
+<p><a id="8-app-ble-integration-minimums-to-protect"></a></p>
 <h2>8. APP/BLE integration minimums to protect</h2>
 <p>The app/BLE handoff establishes a minimum expected implementation surface for the app side:</p>
-<ul><li>TEL 10B parsing</li><li>SOS 5B/10B parsing</li><li><code>0xD0</code> TEL fragment reassembly</li><li>TEL/SOS deduplication</li><li>offline tolerance and retry queue</li><li>backlog sync support when applicable</li><li>Rescue Phase 1 support</li><li>robust backend pipeline behavior</li></ul>
+<ul>
+<li>TEL 10B parsing</li>
+<li>SOS 5B/10B parsing</li>
+<li><code>0xD0</code> TEL fragment reassembly</li>
+<li>TEL/SOS deduplication</li>
+<li>offline tolerance and retry queue</li>
+<li>backlog sync support when applicable</li>
+<li>Rescue Phase 1 support</li>
+<li>robust backend pipeline behavior</li>
+</ul>
 <p>Where these behaviors live inside the SDK or SDK-facing integration layer, they should become test targets.</p>
-<p>---</p>
-<a id="9-test-infrastructure-guidelines"></a>
+<hr />
+<p><a id="9-test-infrastructure-guidelines"></a></p>
 <h2>9. Test infrastructure guidelines</h2>
 <p>Recommended shared testing utilities:</p>
-<ul><li>builders / factories for domain entities</li><li>fake repositories</li><li>fake runtime providers</li><li>in-memory persistence</li><li>fake clock / time source</li><li>fake ID generator</li><li>stream expectation helpers</li><li>helper methods for repeated state setup</li></ul>
+<ul>
+<li>builders / factories for domain entities</li>
+<li>fake repositories</li>
+<li>fake runtime providers</li>
+<li>in-memory persistence</li>
+<li>fake clock / time source</li>
+<li>fake ID generator</li>
+<li>stream expectation helpers</li>
+<li>helper methods for repeated state setup</li>
+</ul>
 <p>Shared helpers should reduce duplication without becoming their own mini-framework.</p>
-<p>---</p>
-<a id="10-when-tests-reveal-architecture-problems"></a>
+<hr />
+<p><a id="10-when-tests-reveal-architecture-problems"></a></p>
 <h2>10. When tests reveal architecture problems</h2>
 <p>A difficult-to-test area is often a design signal.</p>
 <p>If a module is hard to test, document whether the problem is:</p>
-<ul><li>too much coupling</li><li>missing interface boundaries</li><li>raw state too hard for consumers</li><li>hidden side effects</li><li>mixed responsibilities</li><li>app-owned logic that should belong in the SDK</li></ul>
+<ul>
+<li>too much coupling</li>
+<li>missing interface boundaries</li>
+<li>raw state too hard for consumers</li>
+<li>hidden side effects</li>
+<li>mixed responsibilities</li>
+<li>app-owned logic that should belong in the SDK</li>
+</ul>
 <p>Do not hide poor architecture under brittle tests.</p>
-<p>---</p>
-<a id="11-definition-of-good-enough-for-a-module"></a>
+<hr />
+<p><a id="11-definition-of-good-enough-for-a-module"></a></p>
 <h2>11. Definition of “good enough” for a module</h2>
 <p>A module is not “good enough” just because the demo app seems to work.</p>
 <p>At minimum, a mature-enough SDK module should have:</p>
-<ul><li>clear public behavior</li><li>stable state transitions</li><li>defensive error handling</li><li>meaningful tests for the main paths</li><li>persistence coverage where applicable</li><li>no critical dependency on host app UI logic</li></ul>
-<p>---</p>
-<a id="12-current-practical-next-steps"></a>
+<ul>
+<li>clear public behavior</li>
+<li>stable state transitions</li>
+<li>defensive error handling</li>
+<li>meaningful tests for the main paths</li>
+<li>persistence coverage where applicable</li>
+<li>no critical dependency on host app UI logic</li>
+</ul>
+<hr />
+<p><a id="12-current-practical-next-steps"></a></p>
 <h2>12. Current practical next steps</h2>
 <p>For the current phase of the project, the recommended sequence is:</p>
-<ol><li>strengthen shared test infrastructure</li><li>harden core state transitions</li><li>harden public SDK contracts</li><li>harden persistence restore/save behavior</li><li>identify SDK testability gaps</li><li>only then expand toward Guided Rescue Phase 1 and backlog sync coverage</li></ol>
-<p>---</p>
-<a id="13-final-rule"></a>
+<ol>
+<li>strengthen shared test infrastructure</li>
+<li>harden core state transitions</li>
+<li>harden public SDK contracts</li>
+<li>harden persistence restore/save behavior</li>
+<li>identify SDK testability gaps</li>
+<li>only then expand toward Guided Rescue Phase 1 and backlog sync coverage</li>
+</ol>
+<hr />
+<p><a id="13-final-rule"></a></p>
 <h2>13. Final rule</h2>
 <p>We do not add tests just to say we have tests.</p>
 <p>We add tests that make the SDK:</p>
-<ul><li>safer to change</li><li>easier to integrate</li><li>harder to break</li><li>more trustworthy as a product</li></ul></main>
+<ul>
+<li>safer to change</li>
+<li>easier to integrate</li>
+<li>harder to break</li>
+<li>more trustworthy as a product</li>
+</ul>
+</main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
-      <a class="toc-level-2" href="#purpose">Purpose</a><a class="toc-level-2" href="#1-testing-principles">1. Testing principles</a><a class="toc-level-3" href="#1-1-sdk-first-testing">1.1 SDK-first testing</a><a class="toc-level-3" href="#1-2-prefer-behavior-over-implementation-details">1.2 Prefer behavior over implementation details</a><a class="toc-level-3" href="#1-3-prefer-fakes-over-excessive-mocking">1.3 Prefer fakes over excessive mocking</a><a class="toc-level-3" href="#1-4-app-host-is-not-the-main-coverage-target">1.4 App host is not the main coverage target</a><a class="toc-level-2" href="#2-testing-pyramid-for-eixam">2. Testing pyramid for EIXAM</a><a class="toc-level-3" href="#2-1-base-layer-unit-tests">2.1 Base layer — Unit tests</a><a class="toc-level-3" href="#2-2-middle-layer-contract-integration-tests">2.2 Middle layer — Contract / integration tests</a><a class="toc-level-3" href="#2-3-upper-layer-widget-tests">2.3 Upper layer — Widget tests</a><a class="toc-level-3" href="#2-4-top-layer-host-app-smoke-tests-and-manual-testing">2.4 Top layer — Host app smoke tests and manual testing</a><a class="toc-level-2" href="#3-package-by-package-strategy">3. Package-by-package strategy</a><a class="toc-level-2" href="#3-1-packages-eixam-connect-core">3.1 packages/eixam_connect_core</a><a class="toc-level-2" href="#3-2-packages-eixam-connect-flutter">3.2 packages/eixam_connect_flutter</a><a class="toc-level-2" href="#3-3-packages-eixam-connect-ui">3.3 packages/eixam_connect_ui</a><a class="toc-level-2" href="#3-4-apps-eixam-control-app">3.4 apps/eixam_control_app</a><a class="toc-level-2" href="#4-priority-order-for-current-project-phase">4. Priority order for current project phase</a><a class="toc-level-2" href="#5-public-contract-testing">5. Public contract testing</a><a class="toc-level-2" href="#6-persistence-testing">6. Persistence testing</a><a class="toc-level-2" href="#7-ble-device-related-testing-stance">7. BLE / device-related testing stance</a><a class="toc-level-3" href="#7-1-contract-level">7.1 Contract level</a><a class="toc-level-3" href="#7-2-real-environment-validation">7.2 Real environment validation</a><a class="toc-level-2" href="#8-app-ble-integration-minimums-to-protect">8. APP/BLE integration minimums to protect</a><a class="toc-level-2" href="#9-test-infrastructure-guidelines">9. Test infrastructure guidelines</a><a class="toc-level-2" href="#10-when-tests-reveal-architecture-problems">10. When tests reveal architecture problems</a><a class="toc-level-2" href="#11-definition-of-good-enough-for-a-module">11. Definition of “good enough” for a module</a><a class="toc-level-2" href="#12-current-practical-next-steps">12. Current practical next steps</a><a class="toc-level-2" href="#13-final-rule">13. Final rule</a>
+      <a class="toc-level-2" href="#purpose">Purpose</a><a class="toc-level-2" href="#1-testing-principles">1. Testing principles</a><a class="toc-level-3" href="#1-1-sdk-first-testing">1.1 SDK-first testing</a><a class="toc-level-3" href="#1-2-prefer-behavior-over-implementation-details">1.2 Prefer behavior over implementation details</a><a class="toc-level-3" href="#1-3-prefer-fakes-over-excessive-mocking">1.3 Prefer fakes over excessive mocking</a><a class="toc-level-3" href="#1-4-app-host-is-not-the-main-coverage-target">1.4 App host is not the main coverage target</a><a class="toc-level-2" href="#2-testing-pyramid-for-eixam">2. Testing pyramid for EIXAM</a><a class="toc-level-3" href="#2-1-base-layer-unit-tests">2.1 Base layer — Unit tests</a><a class="toc-level-3" href="#2-2-middle-layer-contract-integration-tests">2.2 Middle layer — Contract / integration tests</a><a class="toc-level-3" href="#2-3-upper-layer-widget-tests">2.3 Upper layer — Widget tests</a><a class="toc-level-3" href="#2-4-top-layer-host-app-smoke-tests-and-manual-testing">2.4 Top layer — Host app smoke tests and manual testing</a><a class="toc-level-2" href="#3-package-by-package-strategy">3. Package-by-package strategy</a><a class="toc-level-2" href="#3-1-packages-eixam-connect-core">3.1 `packages/eixam_connect_core`</a><a class="toc-level-2" href="#3-2-packages-eixam-connect-flutter">3.2 `packages/eixam_connect_flutter`</a><a class="toc-level-2" href="#3-3-packages-eixam-connect-ui">3.3 `packages/eixam_connect_ui`</a><a class="toc-level-2" href="#3-4-apps-eixam-control-app">3.4 `apps/eixam_control_app`</a><a class="toc-level-2" href="#4-priority-order-for-current-project-phase">4. Priority order for current project phase</a><a class="toc-level-2" href="#5-public-contract-testing">5. Public contract testing</a><a class="toc-level-2" href="#6-persistence-testing">6. Persistence testing</a><a class="toc-level-2" href="#7-ble-device-related-testing-stance">7. BLE / device-related testing stance</a><a class="toc-level-3" href="#7-1-contract-level">7.1 Contract level</a><a class="toc-level-3" href="#7-2-real-environment-validation">7.2 Real environment validation</a><a class="toc-level-2" href="#8-app-ble-integration-minimums-to-protect">8. APP/BLE integration minimums to protect</a><a class="toc-level-2" href="#9-test-infrastructure-guidelines">9. Test infrastructure guidelines</a><a class="toc-level-2" href="#10-when-tests-reveal-architecture-problems">10. When tests reveal architecture problems</a><a class="toc-level-2" href="#11-definition-of-good-enough-for-a-module">11. Definition of “good enough” for a module</a><a class="toc-level-2" href="#12-current-practical-next-steps">12. Current practical next steps</a><a class="toc-level-2" href="#13-final-rule">13. Final rule</a>
     </aside>
   </div>
 </body>

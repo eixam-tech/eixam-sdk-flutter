@@ -18,34 +18,47 @@
     </aside>
     <main class="content"><h1>Host App Integration Guide</h1>
 <p>This document explains the minimum native setup required by a Flutter host app that embeds the EIXAM Connect SDK.</p>
-<a id="permissions-overview"></a>
+<p><a id="permissions-overview"></a></p>
 <h2>Permissions overview</h2>
-<a id="local-storage"></a>
+<p><a id="local-storage"></a></p>
 <h3>Local storage</h3>
 <p>The SDK currently uses <code>shared_preferences</code> for lightweight local persistence.</p>
-<ul><li>Android: no extra Manifest permission required</li><li>iOS: no extra <code>Info.plist</code> key required</li></ul>
-<a id="location"></a>
+<ul>
+<li>Android: no extra Manifest permission required</li>
+<li>iOS: no extra <code>Info.plist</code> key required</li>
+</ul>
+<p><a id="location"></a></p>
 <h3>Location</h3>
 <p>Required if the host app wants real tracking or location snapshots attached to SOS incidents.</p>
-<a id="notifications"></a>
+<p><a id="notifications"></a></p>
 <h3>Notifications</h3>
 <p>Required for local notifications and later push support.</p>
-<a id="source-of-truth"></a>
+<p><a id="source-of-truth"></a></p>
 <h2>Source of truth</h2>
 <p>For the exact native keys and platform notes, always follow:</p>
-<ul><li><code>packages/eixam_connect_flutter/NATIVE_PERMISSIONS_CHECKLIST.md</code></li></ul>
-<a id="responsibilities-split"></a>
+<ul>
+<li><code>packages/eixam_connect_flutter/NATIVE_PERMISSIONS_CHECKLIST.md</code></li>
+</ul>
+<p><a id="responsibilities-split"></a></p>
 <h2>Responsibilities split</h2>
-<a id="sdk"></a>
+<p><a id="sdk"></a></p>
 <h3>SDK</h3>
-<ul><li>Requests runtime permissions through the Flutter APIs</li><li>Exposes tracking, notifications and SOS workflows</li></ul>
-<a id="host-app"></a>
+<ul>
+<li>Requests runtime permissions through the Flutter APIs</li>
+<li>Exposes tracking, notifications and SOS workflows</li>
+</ul>
+<p><a id="host-app"></a></p>
 <h3>Host app</h3>
-<ul><li>Adds native Manifest and <code>Info.plist</code> entries</li><li>Enables native capabilities when needed</li><li>Provides product-specific UI and permission education screens</li></ul>
-<a id="bluetooth-host-app-requirements"></a>
+<ul>
+<li>Adds native Manifest and <code>Info.plist</code> entries</li>
+<li>Enables native capabilities when needed</li>
+<li>Provides product-specific UI and permission education screens</li>
+</ul>
+<p><a id="bluetooth-host-app-requirements"></a></p>
 <h2>Bluetooth host-app requirements</h2>
 <p>If the host app uses the device module for BLE pairing or device communication, it must declare the Bluetooth permissions documented in <code>packages/eixam_connect_flutter/NATIVE_PERMISSIONS_CHECKLIST.md</code>.</p>
-<p>The SDK can request Bluetooth permission at runtime, but the native declarations remain the responsibility of the host app.</p></main>
+<p>The SDK can request Bluetooth permission at runtime, but the native declarations remain the responsibility of the host app.</p>
+</main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
       <a class="toc-level-2" href="#permissions-overview">Permissions overview</a><a class="toc-level-3" href="#local-storage">Local storage</a><a class="toc-level-3" href="#location">Location</a><a class="toc-level-3" href="#notifications">Notifications</a><a class="toc-level-2" href="#source-of-truth">Source of truth</a><a class="toc-level-2" href="#responsibilities-split">Responsibilities split</a><a class="toc-level-3" href="#sdk">SDK</a><a class="toc-level-3" href="#host-app">Host app</a><a class="toc-level-2" href="#bluetooth-host-app-requirements">Bluetooth host-app requirements</a>

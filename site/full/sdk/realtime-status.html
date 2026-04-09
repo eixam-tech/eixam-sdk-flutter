@@ -18,15 +18,21 @@
     </aside>
     <main class="content"><h1>Realtime Status</h1>
 <p>Realtime support exists as a public surface, but backend protocol maturity still matters.</p>
-<a id="current-public-surfaces"></a>
+<p><a id="current-public-surfaces"></a></p>
 <h2>Current public surfaces</h2>
-<ul><li><code>getRealtimeConnectionState()</code></li><li><code>getLastRealtimeEvent()</code></li><li><code>watchRealtimeConnectionState()</code></li><li><code>watchRealtimeEvents()</code></li></ul>
-<a id="integration-rule"></a>
+<ul>
+<li><code>getRealtimeConnectionState()</code></li>
+<li><code>getLastRealtimeEvent()</code></li>
+<li><code>watchRealtimeConnectionState()</code></li>
+<li><code>watchRealtimeEvents()</code></li>
+</ul>
+<p><a id="integration-rule"></a></p>
 <h2>Integration rule</h2>
 <p>Do not hardcode a final production transport contract blindly. Follow the current backend-agreed transport and topic semantics.</p>
-<a id="host-app-expectation"></a>
+<p><a id="host-app-expectation"></a></p>
 <h2>Host-app expectation</h2>
-<p>Render realtime as diagnostics/operational state, not as the only source of truth for every lifecycle transition unless the backend contract explicitly says so.</p></main>
+<p>Render realtime as diagnostics/operational state, not as the only source of truth for every lifecycle transition unless the backend contract explicitly says so.</p>
+</main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
       <a class="toc-level-2" href="#current-public-surfaces">Current public surfaces</a><a class="toc-level-2" href="#integration-rule">Integration rule</a><a class="toc-level-2" href="#host-app-expectation">Host-app expectation</a>

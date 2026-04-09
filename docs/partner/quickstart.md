@@ -29,7 +29,7 @@ import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
 - `externalUserId` must be unique per app
 - the mobile app receives a signed session and passes it to the SDK
 - the same signed identity is reused by the SDK for both HTTP and MQTT/runtime transport
-- `/v1/auth/sign` is acceptable for internal EIXAM staging validation only; partner production flows must implement the server-side signing step in the partner backend
+- partner production flows must implement the server-side signing step securely within the partner backend
 
 HTTP auth remains:
 

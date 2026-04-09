@@ -196,6 +196,8 @@ Common fields:
 
 ## Protection Mode
 
+Background continuity is far stronger on Android when Protection Mode/native foreground service owns the BLE transport. Plain Flutter-owned BLE provides no guaranteed full background runtime.
+
 ### `getProtectionStatus()`
 
 Returns:
@@ -224,6 +226,14 @@ Common fields:
 - `lastCommandError`
 
 ## Backend Device Registry
+
+### Paired-device sync logic
+
+- after a known device is paired/connected and the signed-session identity is ready, the SDK/runtime may attempt backend paired-device sync.
+- the validation app registry card is a status/retry/debug surface, not the intended primary manual flow.
+- automatic sync uses `hardware_id`, `firmware_version`, `hardware_model`, and `paired_at`.
+- automatic sync is safe only when a canonical backend-compatible hardware id can be resolved.
+
 
 ### `listRegisteredDevices()`
 

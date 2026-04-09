@@ -1,9 +1,9 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Method Examples</title>
+  <title>Public API - Practical Examples</title>
   <link rel="stylesheet" href="../assets/style.css" />
 </head>
 <body>
@@ -14,265 +14,245 @@
   <div class="layout">
     <aside class="sidebar">
       <div class="sidebar-title">Navigation</div>
-      <a href="../index.html">Home</a>
-      <a href="overview.html">SDK Overview</a>
-      <a href="architecture.html">SDK Architecture</a>
-      <a href="partner-integration-guide.html">Partner Integration Guide</a>
-      <a href="backend-integration.html">Backend Integration</a>
-      <a href="public-api.html">Public API</a>
-      <a class="active" href="public-api-examples.html">Method Examples</a>
-      <a href="model-reference.html">Model Reference</a>
-      <a href="protection-mode.html">Protection Mode</a>
-      <a href="../protection/overview.html">Protection Overview</a>
-      <a href="../protection/android-host-integration.html">Android Protection Integration</a>
-      <a href="../protection/ios-host-integration.html">iOS Protection Integration</a>
-      <a href="../protection/limitations.html">Protection Limitations</a>
-      <a href="../protection/validation-checklist.html">Protection Validation Checklist</a>
-      <a href="realtime-status.html">Realtime Status</a>
-      <a href="troubleshooting.html">SDK Troubleshooting</a>
-      <a href="../integration/flutter-installation.html">Flutter Installation</a>
-      <a href="../integration/flutter-integration.html">Flutter Integration</a>
-      <a href="../integration/host-app-integration.html">Host App Integration</a>
-      <a href="../integration/android-host-integration.html">Android Host Integration</a>
-      <a href="../integration/ios-host-integration.html">iOS Host Integration</a>
-      <a href="../integration/permissions-checklist.html">Permissions Checklist</a>
-      <a href="../integration/ble-provider-integration.html">BLE Provider Integration</a>
-      <a href="../protocol/ble-protocol.html">BLE Protocol</a>
-      <a href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a>
-      <a href="../protocol/runtime-flow.html">BLE Runtime Flow</a>
-      <a href="../reference-app/validation-app-guide.html">Validation App Guide</a>
-      <a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a>
-      <a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a>
-      <a href="../reference-app/app-handoff-final.html">App Handoff Final</a>
-      <a href="../api/api-reference.html">API Reference</a>
-      <a href="../api/public-api.html">API Surface</a>
-      <a href="../api/public-api-examples.html">API Examples</a>
-      <a href="../internal/decisions.html">Decisions</a>
-      <a href="../internal/quality-gates.html">Quality Gates</a>
-      <a href="../internal/testing-strategy.html">Testing Strategy</a>
-      <a href="../internal/testability-notes.html">Testability Notes</a>
-      <a href="../internal/how-to-run-project.html">How to Run Project</a>
-      <a href="../internal/migration-map.html">Migration Map</a>
-      <a href="../internal/roadmap.html">Roadmap</a>
-      <a href="../internal/team-handoff-index.html">Team Handoff Index</a>
-      <a href="../internal/agents.html">AGENTS</a>
+      <a href="../index.html">Home</a><a href="overview.html">SDK Overview</a><a href="architecture.html">SDK Architecture</a><a href="partner-integration-guide.html">Partner Integration Guide</a><a href="backend-integration.html">Backend Integration</a><a href="public-api.html">Public API</a><a class="active" href="public-api-examples.html">Method Examples</a><a href="model-reference.html">Model Reference</a><a href="protection-mode.html">Protection Mode</a><a href="../protection/overview.html">Protection Overview</a><a href="../protection/android-host-integration.html">Android Protection Integration</a><a href="../protection/ios-host-integration.html">iOS Protection Integration</a><a href="../protection/limitations.html">Protection Limitations</a><a href="../protection/validation-checklist.html">Protection Validation Checklist</a><a href="realtime-status.html">Realtime Status</a><a href="troubleshooting.html">SDK Troubleshooting</a><a href="../integration/flutter-installation.html">Flutter Installation</a><a href="../integration/flutter-integration.html">Flutter Integration</a><a href="../integration/host-app-integration.html">Host App Integration</a><a href="../integration/android-host-integration.html">Android Host Integration</a><a href="../integration/ios-host-integration.html">iOS Host Integration</a><a href="../integration/permissions-checklist.html">Permissions Checklist</a><a href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../reference-app/app-handoff-final.html">App Handoff Final</a><a href="../api/api-reference.html">API Reference</a><a href="../api/public-api.html">API Surface</a><a href="../api/public-api-examples.html">API Examples</a><a href="../internal/decisions.html">Decisions</a><a href="../internal/quality-gates.html">Quality Gates</a><a href="../internal/testing-strategy.html">Testing Strategy</a><a href="../internal/testability-notes.html">Testability Notes</a><a href="../internal/how-to-run-project.html">How to Run Project</a><a href="../internal/migration-map.html">Migration Map</a><a href="../internal/roadmap.html">Roadmap</a><a href="../internal/team-handoff-index.html">Team Handoff Index</a><a href="../internal/agents.html">AGENTS</a>
     </aside>
     <main class="content"><h1>Public API - Practical Examples</h1>
 <p>All examples below assume:</p>
-<pre><code>import &#39;package:flutter/foundation.dart&#39;;
-import &#39;package:eixam_connect_flutter/eixam_connect_flutter.dart&#39;;
+<pre><code class="language-dart">import 'package:flutter/foundation.dart';
+import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
 
-late final EixamConnectSdk sdk;</code></pre>
-<a id="bootstrap"></a>
+late final EixamConnectSdk sdk;
+</code></pre>
+<p><a id="bootstrap"></a></p>
 <h2>Bootstrap</h2>
 <p>These examples assume a backend-issued signed session. The client does not store the app secret or compute <code>userHash</code> locally.</p>
-<a id="bootstrap"></a>
+<p><a id="bootstrap"></a></p>
 <h3><code>bootstrap</code></h3>
-<pre><code>final sdk = await EixamConnectSdk.bootstrap(
+<pre><code class="language-dart">final sdk = await EixamConnectSdk.bootstrap(
   const EixamBootstrapConfig(
-    appId: &#39;partner-app&#39;,
+    appId: 'partner-app',
     environment: EixamEnvironment.sandbox,
     initialSession: EixamSession.signed(
-      appId: &#39;partner-app&#39;,
-      externalUserId: &#39;partner-user-123&#39;,
-      userHash: &#39;signed-session-hash&#39;,
+      appId: 'partner-app',
+      externalUserId: 'partner-user-123',
+      userHash: 'signed-session-hash',
     ),
   ),
-);</code></pre>
+);
+</code></pre>
 <p>Custom secure broker example:</p>
-<pre><code>const EixamCustomEndpoints(
-  apiBaseUrl: &#39;https://partner-api.example.com&#39;,
-  mqttUrl: &#39;ssl://partner-mqtt.example.com:8883&#39;,
-)</code></pre>
+<pre><code class="language-dart">const EixamCustomEndpoints(
+  apiBaseUrl: 'https://partner-api.example.com',
+  mqttUrl: 'ssl://mqtt.staging.eixam.io:8883',
+)
+</code></pre>
 <p>If a deployment still uses <code>ws://</code> or <code>wss://</code>, treat that as a transport-dependent alternative rather than the default staging pattern.</p>
-<a id="diagnostics"></a>
+<p>The same signed session is reused across both transports:</p>
+<ul>
+<li>HTTP uses <code>Authorization: Bearer &lt;userHash&gt;</code></li>
+<li>MQTT uses <code>username = sdk:&lt;appId&gt;:&lt;externalUserId&gt;</code> and <code>password = &lt;userHash&gt;</code></li>
+</ul>
+<p><a id="diagnostics"></a></p>
 <h2>Diagnostics</h2>
-<a id="getoperationaldiagnostics"></a>
+<p><a id="getoperationaldiagnostics"></a></p>
 <h3><code>getOperationalDiagnostics</code></h3>
 <p>Returns <a href="model-reference.md#sdkoperationaldiagnostics"><code>SdkOperationalDiagnostics</code></a>.</p>
-<pre><code>final diagnostics = await sdk.getOperationalDiagnostics();
-debugPrint(&#39;mqtt=${diagnostics.connectionState.name}&#39;);
-debugPrint(&#39;telTopic=${diagnostics.telemetryPublishTopic}&#39;);
-debugPrint(&#39;lastDecision=${diagnostics.bridge.lastDecision}&#39;);
-debugPrint(&#39;hasPendingSos=${diagnostics.bridge.pendingSos != null}&#39;);</code></pre>
-<a id="watchoperationaldiagnostics"></a>
+<pre><code class="language-dart">final diagnostics = await sdk.getOperationalDiagnostics();
+debugPrint('mqtt=${diagnostics.connectionState.name}');
+debugPrint('telTopic=${diagnostics.telemetryPublishTopic}');
+debugPrint('lastDecision=${diagnostics.bridge.lastDecision}');
+debugPrint('hasPendingSos=${diagnostics.bridge.pendingSos != null}');
+</code></pre>
+<p><a id="watchoperationaldiagnostics"></a></p>
 <h3><code>watchOperationalDiagnostics</code></h3>
 <p>Returns <code>Stream&lt;SdkOperationalDiagnostics&gt;</code>.</p>
-<pre><code>final sub = sdk.watchOperationalDiagnostics().listen((diagnostics) {
-  debugPrint(&#39;mqtt=${diagnostics.connectionState.name}&#39;);
-  debugPrint(&#39;bleTel=${diagnostics.bridge.lastBleTelemetryEventSummary}&#39;);
-  debugPrint(&#39;bleSos=${diagnostics.bridge.lastBleSosEventSummary}&#39;);
-});</code></pre>
-<a id="device-lifecycle"></a>
+<pre><code class="language-dart">final sub = sdk.watchOperationalDiagnostics().listen((diagnostics) {
+  debugPrint('mqtt=${diagnostics.connectionState.name}');
+  debugPrint('bleTel=${diagnostics.bridge.lastBleTelemetryEventSummary}');
+  debugPrint('bleSos=${diagnostics.bridge.lastBleSosEventSummary}');
+});
+</code></pre>
+<p><a id="device-lifecycle"></a></p>
 <h2>Device Lifecycle</h2>
-<a id="connectdevice"></a>
+<p><a id="connectdevice"></a></p>
 <h3><code>connectDevice</code></h3>
 <p>Returns <a href="model-reference.md#devicestatus"><code>DeviceStatus</code></a>.</p>
-<pre><code>final status = await sdk.connectDevice(pairingCode: &#39;123456&#39;);
-debugPrint(&#39;device=${status.deviceId}&#39;);
-debugPrint(&#39;lifecycle=${status.lifecycleState.name}&#39;);
-debugPrint(&#39;ready=${status.isReadyForSafety}&#39;);</code></pre>
-<a id="getdevicestatus"></a>
+<pre><code class="language-dart">final status = await sdk.connectDevice(pairingCode: '123456');
+debugPrint('device=${status.deviceId}');
+debugPrint('lifecycle=${status.lifecycleState.name}');
+debugPrint('ready=${status.isReadyForSafety}');
+</code></pre>
+<p><a id="getdevicestatus"></a></p>
 <h3><code>getDeviceStatus</code></h3>
 <p>Returns <a href="model-reference.md#devicestatus"><code>DeviceStatus</code></a>.</p>
-<pre><code>final status = await sdk.getDeviceStatus();
-debugPrint(&#39;connected=${status.connected}&#39;);
-debugPrint(&#39;firmware=${status.firmwareVersion}&#39;);
-debugPrint(&#39;battery=${status.approximateBatteryPercentage}&#39;);</code></pre>
-<a id="devicestatusstream"></a>
+<pre><code class="language-dart">final status = await sdk.getDeviceStatus();
+debugPrint('connected=${status.connected}');
+debugPrint('firmware=${status.firmwareVersion}');
+debugPrint('battery=${status.approximateBatteryPercentage}');
+</code></pre>
+<p><a id="devicestatusstream"></a></p>
 <h3><code>deviceStatusStream</code></h3>
 <p>Returns <code>Stream&lt;DeviceStatus&gt;</code>.</p>
-<pre><code>final sub = sdk.deviceStatusStream.listen((status) {
-  debugPrint(&#39;lifecycle=${status.lifecycleState.name}&#39;);
-  debugPrint(&#39;connected=${status.connected}&#39;);
-  debugPrint(&#39;signal=${status.signalQuality}&#39;);
-});</code></pre>
-<a id="getdevicesosstatus"></a>
+<pre><code class="language-dart">final sub = sdk.deviceStatusStream.listen((status) {
+  debugPrint('lifecycle=${status.lifecycleState.name}');
+  debugPrint('connected=${status.connected}');
+  debugPrint('signal=${status.signalQuality}');
+});
+</code></pre>
+<p><a id="getdevicesosstatus"></a></p>
 <h3><code>getDeviceSosStatus</code></h3>
 <p>Returns <a href="model-reference.md#devicesosstatus"><code>DeviceSosStatus</code></a>.</p>
-<pre><code>final status = await sdk.getDeviceSosStatus();
-debugPrint(&#39;state=${status.state.name}&#39;);
-debugPrint(&#39;event=${status.lastEvent}&#39;);
-debugPrint(&#39;countdown=${status.countdownRemainingSeconds}&#39;);</code></pre>
-<a id="sos"></a>
+<pre><code class="language-dart">final status = await sdk.getDeviceSosStatus();
+debugPrint('state=${status.state.name}');
+debugPrint('event=${status.lastEvent}');
+debugPrint('countdown=${status.countdownRemainingSeconds}');
+</code></pre>
+<p><a id="sos"></a></p>
 <h2>SOS</h2>
-<a id="triggersos"></a>
+<p><a id="triggersos"></a></p>
 <h3><code>triggerSos</code></h3>
 <p>Returns <a href="model-reference.md#sosincident"><code>SosIncident</code></a>.</p>
-<pre><code>final incident = await sdk.triggerSos(
+<pre><code class="language-dart">final incident = await sdk.triggerSos(
   const SosTriggerPayload(
-    message: &#39;Need assistance&#39;,
-    triggerSource: &#39;button_ui&#39;,
+    message: 'Need assistance',
+    triggerSource: 'button_ui',
   ),
 );
 
-debugPrint(&#39;incident=${incident.id}&#39;);
-debugPrint(&#39;state=${incident.state.name}&#39;);</code></pre>
-<a id="getcurrentsosincident"></a>
+debugPrint('incident=${incident.id}');
+debugPrint('state=${incident.state.name}');
+</code></pre>
+<p>When the SDK has a paired device hardware id, the operational SOS payload may include:</p>
+<pre><code class="language-json">{
+  &quot;timestamp&quot;: &quot;2026-03-30T12:00:00.000Z&quot;,
+  &quot;latitude&quot;: 41.38,
+  &quot;longitude&quot;: 2.17,
+  &quot;altitude&quot;: 8.0,
+  &quot;userId&quot;: &quot;partner-user-123&quot;,
+  &quot;deviceId&quot;: &quot;hw-1&quot;
+}
+</code></pre>
+<p>For hardware-originated SOS, <code>deviceId</code> should be the paired device <code>hardware_id</code>. If no paired device is available, the field may be omitted.</p>
+<p><a id="getcurrentsosincident"></a></p>
 <h3><code>getCurrentSosIncident</code></h3>
 <p>Returns <code>Future&lt;SosIncident?&gt;</code>.</p>
-<pre><code>final incident = await sdk.getCurrentSosIncident();
+<pre><code class="language-dart">final incident = await sdk.getCurrentSosIncident();
 if (incident != null) {
-  debugPrint(&#39;incident=${incident.id}&#39;);
-  debugPrint(&#39;state=${incident.state.name}&#39;);
-  debugPrint(&#39;hasPosition=${incident.positionSnapshot != null}&#39;);
-}</code></pre>
-<a id="getsosstate"></a>
+  debugPrint('incident=${incident.id}');
+  debugPrint('state=${incident.state.name}');
+  debugPrint('hasPosition=${incident.positionSnapshot != null}');
+}
+</code></pre>
+<p><a id="getsosstate"></a></p>
 <h3><code>getSosState</code></h3>
 <p>Returns <code>Future&lt;SosState&gt;</code>.</p>
-<pre><code>final state = await sdk.getSosState();
-debugPrint(&#39;sosState=${state.name}&#39;);</code></pre>
-<a id="contacts"></a>
+<pre><code class="language-dart">final state = await sdk.getSosState();
+debugPrint('sosState=${state.name}');
+</code></pre>
+<p><a id="contacts"></a></p>
 <h2>Contacts</h2>
-<a id="listemergencycontacts"></a>
+<p><a id="listemergencycontacts"></a></p>
 <h3><code>listEmergencyContacts</code></h3>
 <p>Returns <code>Future&lt;List&lt;EmergencyContact&gt;&gt;</code>.</p>
-<pre><code>final contacts = await sdk.listEmergencyContacts();
+<pre><code class="language-dart">final contacts = await sdk.listEmergencyContacts();
 for (final contact in contacts) {
-  debugPrint(&#39;${contact.priority}: ${contact.name} ${contact.phone}&#39;);
-}</code></pre>
-<a id="createemergencycontact"></a>
+  debugPrint('${contact.priority}: ${contact.name} ${contact.phone}');
+}
+</code></pre>
+<p><a id="createemergencycontact"></a></p>
 <h3><code>createEmergencyContact</code></h3>
 <p>Returns <a href="model-reference.md#emergencycontact"><code>EmergencyContact</code></a>.</p>
-<pre><code>final contact = await sdk.createEmergencyContact(
-  name: &#39;Mountain Rescue Desk&#39;,
-  phone: &#39;+34600000000&#39;,
-  email: &#39;rescue@example.com&#39;,
+<pre><code class="language-dart">final contact = await sdk.createEmergencyContact(
+  name: 'Mountain Rescue Desk',
+  phone: '+34600000000',
+  email: 'rescue@example.com',
   priority: 1,
 );
 
-debugPrint(&#39;contact=${contact.id}&#39;);
-debugPrint(&#39;phone=${contact.phone}&#39;);
-debugPrint(&#39;priority=${contact.priority}&#39;);</code></pre>
-<a id="updateemergencycontact"></a>
+debugPrint('contact=${contact.id}');
+debugPrint('phone=${contact.phone}');
+debugPrint('priority=${contact.priority}');
+</code></pre>
+<p><a id="updateemergencycontact"></a></p>
 <h3><code>updateEmergencyContact</code></h3>
 <p>Returns <a href="model-reference.md#emergencycontact"><code>EmergencyContact</code></a>.</p>
-<pre><code>final current = (await sdk.listEmergencyContacts()).first;
+<pre><code class="language-dart">final current = (await sdk.listEmergencyContacts()).first;
 final updated = await sdk.updateEmergencyContact(
-  current.copyWith(name: &#39;Mountain Rescue 24/7&#39;),
+  current.copyWith(name: 'Mountain Rescue 24/7'),
 );
 
-debugPrint(&#39;contact=${updated.id}&#39;);
-debugPrint(&#39;name=${updated.name}&#39;);
-debugPrint(&#39;updatedAt=${updated.updatedAt}&#39;);</code></pre>
-<a id="permissions"></a>
+debugPrint('contact=${updated.id}');
+debugPrint('name=${updated.name}');
+debugPrint('updatedAt=${updated.updatedAt}');
+</code></pre>
+<p><a id="permissions"></a></p>
 <h2>Permissions</h2>
-<a id="getpermissionstate"></a>
+<p><a id="getpermissionstate"></a></p>
 <h3><code>getPermissionState</code></h3>
 <p>Returns <a href="model-reference.md#permissionstate"><code>PermissionState</code></a>.</p>
-<pre><code>final state = await sdk.getPermissionState();
-debugPrint(&#39;location=${state.location.name}&#39;);
-debugPrint(&#39;notifications=${state.notifications.name}&#39;);
-debugPrint(&#39;bluetooth=${state.bluetooth.name}&#39;);
-debugPrint(&#39;bluetoothReady=${state.canUseBluetooth}&#39;);</code></pre>
-<a id="protection-mode"></a>
+<pre><code class="language-dart">final state = await sdk.getPermissionState();
+debugPrint('location=${state.location.name}');
+debugPrint('notifications=${state.notifications.name}');
+debugPrint('bluetooth=${state.bluetooth.name}');
+debugPrint('bluetoothReady=${state.canUseBluetooth}');
+</code></pre>
+<p><a id="protection-mode"></a></p>
 <h2>Protection Mode</h2>
-<a id="getprotectionstatus"></a>
+<p>Background continuity is far stronger on Android when Protection Mode/native foreground service owns the BLE transport. Plain Flutter-owned BLE provides no guaranteed full background runtime.</p>
+<p><a id="getprotectionstatus"></a></p>
 <h3><code>getProtectionStatus</code></h3>
 <p>Returns <a href="model-reference.md#protectionstatus"><code>ProtectionStatus</code></a>.</p>
-<pre><code>final status = await sdk.getProtectionStatus();
-debugPrint(&#39;mode=${status.modeState.name}&#39;);
-debugPrint(&#39;runtime=${status.runtimeState.name}&#39;);
-debugPrint(&#39;owner=${status.bleOwner.name}&#39;);
-debugPrint(&#39;protectedDevice=${status.protectedDeviceId}&#39;);</code></pre>
-<a id="getprotectiondiagnostics"></a>
+<pre><code class="language-dart">final status = await sdk.getProtectionStatus();
+debugPrint('mode=${status.modeState.name}');
+debugPrint('runtime=${status.runtimeState.name}');
+debugPrint('owner=${status.bleOwner.name}');
+debugPrint('protectedDevice=${status.protectedDeviceId}');
+</code></pre>
+<p><a id="getprotectiondiagnostics"></a></p>
 <h3><code>getProtectionDiagnostics</code></h3>
 <p>Returns <a href="model-reference.md#protectiondiagnostics"><code>ProtectionDiagnostics</code></a>.</p>
-<pre><code>final diagnostics = await sdk.getProtectionDiagnostics();
-debugPrint(&#39;wake=${diagnostics.lastWakeReason}&#39;);
-debugPrint(&#39;reconnects=${diagnostics.reconnectAttemptCount}&#39;);
-debugPrint(&#39;route=${diagnostics.lastCommandRoute}&#39;);
-debugPrint(&#39;result=${diagnostics.lastCommandResult}&#39;);</code></pre>
-<a id="backend-device-registry"></a>
+<pre><code class="language-dart">final diagnostics = await sdk.getProtectionDiagnostics();
+debugPrint('wake=${diagnostics.lastWakeReason}');
+debugPrint('reconnects=${diagnostics.reconnectAttemptCount}');
+debugPrint('route=${diagnostics.lastCommandRoute}');
+debugPrint('result=${diagnostics.lastCommandResult}');
+</code></pre>
+<p><a id="backend-device-registry"></a></p>
 <h2>Backend Device Registry</h2>
-<a id="listregistereddevices"></a>
+<p><a id="paired-device-sync-logic"></a></p>
+<h3>Paired-device sync logic</h3>
+<ul>
+<li>after a known device is paired/connected and the signed-session identity is ready, the SDK/runtime may attempt backend paired-device sync.</li>
+<li>the validation app registry card is a status/retry/debug surface, not the intended primary manual flow.</li>
+<li>automatic sync uses <code>hardware_id</code>, <code>firmware_version</code>, <code>hardware_model</code>, and <code>paired_at</code>.</li>
+<li>automatic sync is safe only when a canonical backend-compatible hardware id can be resolved.</li>
+</ul>
+<p><a id="listregistereddevices"></a></p>
 <h3><code>listRegisteredDevices</code></h3>
 <p>Returns <code>Future&lt;List&lt;BackendRegisteredDevice&gt;&gt;</code>.</p>
-<pre><code>final devices = await sdk.listRegisteredDevices();
+<pre><code class="language-dart">final devices = await sdk.listRegisteredDevices();
 for (final device in devices) {
-  debugPrint(&#39;${device.hardwareId} ${device.firmwareVersion}&#39;);
-}</code></pre>
-<a id="legacy-compatibility-examples"></a>
+  debugPrint('${device.hardwareId} ${device.firmwareVersion}');
+}
+</code></pre>
+<p><a id="legacy-compatibility-examples"></a></p>
 <h2>Legacy / compatibility examples</h2>
 <p>These methods still exist for migration, but they are not part of the partner onboarding path:</p>
-<pre><code>await sdk.pairDevice(pairingCode: &#39;123456&#39;);
+<pre><code class="language-dart">await sdk.pairDevice(pairingCode: '123456');
 await sdk.unpairDevice();
 final sub1 = sdk.watchDeviceStatus().listen((status) {});
 final sub2 = sdk.watchSosState().listen((state) {});
 await sdk.addEmergencyContact(
-  name: &#39;Legacy contact&#39;,
-  phone: &#39;+34123456789&#39;,
-  email: &#39;legacy@example.com&#39;,
+  name: 'Legacy contact',
+  phone: '+34123456789',
+  email: 'legacy@example.com',
 );
-await sdk.removeEmergencyContact(&#39;contact-id&#39;);</code></pre></main>
+await sdk.removeEmergencyContact('contact-id');
+</code></pre>
+</main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
-      <a class="toc-level-2" href="#bootstrap">Bootstrap</a>
-      <a class="toc-level-3" href="#bootstrap">`bootstrap`</a>
-      <a class="toc-level-2" href="#diagnostics">Diagnostics</a>
-      <a class="toc-level-3" href="#getoperationaldiagnostics">`getOperationalDiagnostics`</a>
-      <a class="toc-level-3" href="#watchoperationaldiagnostics">`watchOperationalDiagnostics`</a>
-      <a class="toc-level-2" href="#device-lifecycle">Device Lifecycle</a>
-      <a class="toc-level-3" href="#connectdevice">`connectDevice`</a>
-      <a class="toc-level-3" href="#getdevicestatus">`getDeviceStatus`</a>
-      <a class="toc-level-3" href="#devicestatusstream">`deviceStatusStream`</a>
-      <a class="toc-level-3" href="#getdevicesosstatus">`getDeviceSosStatus`</a>
-      <a class="toc-level-2" href="#sos">SOS</a>
-      <a class="toc-level-3" href="#triggersos">`triggerSos`</a>
-      <a class="toc-level-3" href="#getcurrentsosincident">`getCurrentSosIncident`</a>
-      <a class="toc-level-3" href="#getsosstate">`getSosState`</a>
-      <a class="toc-level-2" href="#contacts">Contacts</a>
-      <a class="toc-level-3" href="#listemergencycontacts">`listEmergencyContacts`</a>
-      <a class="toc-level-3" href="#createemergencycontact">`createEmergencyContact`</a>
-      <a class="toc-level-3" href="#updateemergencycontact">`updateEmergencyContact`</a>
-      <a class="toc-level-2" href="#permissions">Permissions</a>
-      <a class="toc-level-3" href="#getpermissionstate">`getPermissionState`</a>
-      <a class="toc-level-2" href="#protection-mode">Protection Mode</a>
-      <a class="toc-level-3" href="#getprotectionstatus">`getProtectionStatus`</a>
-      <a class="toc-level-3" href="#getprotectiondiagnostics">`getProtectionDiagnostics`</a>
-      <a class="toc-level-2" href="#backend-device-registry">Backend Device Registry</a>
-      <a class="toc-level-3" href="#listregistereddevices">`listRegisteredDevices`</a>
-      <a class="toc-level-2" href="#legacy-compatibility-examples">Legacy / compatibility examples</a>
+      <a class="toc-level-2" href="#bootstrap">Bootstrap</a><a class="toc-level-3" href="#bootstrap">`bootstrap`</a><a class="toc-level-2" href="#diagnostics">Diagnostics</a><a class="toc-level-3" href="#getoperationaldiagnostics">`getOperationalDiagnostics`</a><a class="toc-level-3" href="#watchoperationaldiagnostics">`watchOperationalDiagnostics`</a><a class="toc-level-2" href="#device-lifecycle">Device Lifecycle</a><a class="toc-level-3" href="#connectdevice">`connectDevice`</a><a class="toc-level-3" href="#getdevicestatus">`getDeviceStatus`</a><a class="toc-level-3" href="#devicestatusstream">`deviceStatusStream`</a><a class="toc-level-3" href="#getdevicesosstatus">`getDeviceSosStatus`</a><a class="toc-level-2" href="#sos">SOS</a><a class="toc-level-3" href="#triggersos">`triggerSos`</a><a class="toc-level-3" href="#getcurrentsosincident">`getCurrentSosIncident`</a><a class="toc-level-3" href="#getsosstate">`getSosState`</a><a class="toc-level-2" href="#contacts">Contacts</a><a class="toc-level-3" href="#listemergencycontacts">`listEmergencyContacts`</a><a class="toc-level-3" href="#createemergencycontact">`createEmergencyContact`</a><a class="toc-level-3" href="#updateemergencycontact">`updateEmergencyContact`</a><a class="toc-level-2" href="#permissions">Permissions</a><a class="toc-level-3" href="#getpermissionstate">`getPermissionState`</a><a class="toc-level-2" href="#protection-mode">Protection Mode</a><a class="toc-level-3" href="#getprotectionstatus">`getProtectionStatus`</a><a class="toc-level-3" href="#getprotectiondiagnostics">`getProtectionDiagnostics`</a><a class="toc-level-2" href="#backend-device-registry">Backend Device Registry</a><a class="toc-level-3" href="#paired-device-sync-logic">Paired-device sync logic</a><a class="toc-level-3" href="#listregistereddevices">`listRegisteredDevices`</a><a class="toc-level-2" href="#legacy-compatibility-examples">Legacy / compatibility examples</a>
     </aside>
   </div>
 </body>
