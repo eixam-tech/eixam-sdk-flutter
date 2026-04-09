@@ -56,6 +56,11 @@
     "docs/partner/backend-integration.md"
   ],
   [
+    "Identity Signing (JS)",
+    "docs/partner/js-signing.md"
+  ],
+
+  [
     "API Reference",
     "docs/partner/api-reference.md"
   ],

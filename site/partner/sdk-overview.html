@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SDK Overview</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">EIXAM Connect SDK</div>
+    <div class="site-tag">partner docs</div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Navigation</div>
+      <a href="index.html">Home</a><a class="active" href="sdk-overview.html">SDK Overview</a><a href="quickstart.html">Quickstart</a><a href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a href="model-reference.html">Model Reference</a><a href="core-concepts.html">Core Concepts</a><a href="protection-mode.html">Protection Mode</a><a href="flutter-installation.html">Flutter Installation</a><a href="flutter-integration.html">Flutter Integration</a><a href="android-integration.html">Android Integration</a><a href="ios-integration.html">iOS Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a href="backend-integration.html">Backend Integration</a><a href="js-signing.html">Identity Signing (JS)</a><a href="api-reference.html">API Reference</a><a href="troubleshooting.html">Troubleshooting</a>
+    </aside>
+    <main class="content"><h1>SDK Overview</h1>
+<p>EIXAM Connect SDK is the embeddable integration layer of EIXAM's connected safety platform.</p>
+<p>The partner-facing mental model is simple:</p>
+<ul>
+<li>bootstrap the SDK once</li>
+<li>provide a signed session from your backend</li>
+<li>request permissions from your own host-app UX when needed</li>
+<li>use SDK methods and streams to drive SOS, device, tracking and safety flows</li>
+</ul>
+<p><a id="signed-session-and-backend-responsibilities"></a></p>
+<h2>Signed Session And Backend Responsibilities</h2>
+<ul>
+<li>the partner backend stores the app secret</li>
+<li>the app secret never belongs in the mobile client</li>
+<li>the backend signs or obtains <code>userHash</code> for a specific <code>appId</code> + <code>externalUserId</code></li>
+<li><code>externalUserId</code> must be unique per app</li>
+<li>the mobile client receives that signed session and passes it into bootstrap or <code>setSession(...)</code></li>
+<li>the SDK reuses the same identity for HTTP requests and MQTT/runtime transport</li>
+<li>partner integrations must implement the signing flow securely on their own backend</li>
+</ul>
+<p>HTTP auth remains <code>X-App-ID</code>, <code>X-User-ID</code>, and <code>Authorization: Bearer &lt;userHash&gt;</code>.</p>
+<p>MQTT auth now uses <code>username = sdk:&lt;appId&gt;:&lt;externalUserId&gt;</code> and <code>password = &lt;userHash&gt;</code>, without a <code>Bearer</code> prefix.</p>
+<p><a id="happy-path"></a></p>
+<h2>Happy path</h2>
+<pre><code class="language-dart">final sdk = await EixamConnectSdk.bootstrap(
+  const EixamBootstrapConfig(
+    appId: 'partner-app',
+    environment: EixamEnvironment.sandbox,
+    initialSession: EixamSession.signed(
+      appId: 'partner-app',
+      externalUserId: 'partner-user-123',
+      userHash: 'signed-session-hash',
+    ),
+  ),
+);
+</code></pre>
+<p><a id="bootstrap-models"></a></p>
+<h2>Bootstrap models</h2>
+<p><a id="eixamenvironment"></a></p>
+<h3><code>EixamEnvironment</code></h3>
+<p>Supported values:</p>
+<ul>
+<li><code>production</code></li>
+<li><code>sandbox</code></li>
+<li><code>staging</code></li>
+<li><code>custom</code></li>
+</ul>
+<p><a id="eixamcustomendpoints"></a></p>
+<h3><code>EixamCustomEndpoints</code></h3>
+<p>Use this only with <code>EixamEnvironment.custom</code>.</p>
+<p>Example:</p>
+<pre><code class="language-dart">const EixamCustomEndpoints(
+  apiBaseUrl: 'https://partner-api.example.com',
+  mqttUrl: 'ssl://partner-mqtt.example.com:8883',
+)
+</code></pre>
+<p><code>mqttUrl</code> and <code>websocketUrl</code> remain the current public field names even though the broker URI may be <code>ssl://</code>, <code>tls://</code>, <code>tcp://</code>, <code>ws://</code>, or <code>wss://</code> depending on the environment and transport client in use.</p>
+<p><a id="eixambootstrapconfig"></a></p>
+<h3><code>EixamBootstrapConfig</code></h3>
+<p>Recommended minimum:</p>
+<ul>
+<li><code>appId</code></li>
+<li><code>environment</code></li>
+<li>optional <code>initialSession</code></li>
+</ul>
+<p>Advanced optional knobs:</p>
+<ul>
+<li><code>customEndpoints</code></li>
+<li><code>enableLogging</code></li>
+<li><code>networkTimeout</code></li>
+<li><code>defaultLocaleCode</code></li>
+</ul>
+<p><a id="bootstrap-guarantees"></a></p>
+<h2>Bootstrap guarantees</h2>
+<ul>
+<li>standard environments resolve internally</li>
+<li>custom endpoints are validated</li>
+<li>mismatched restored sessions are cleared</li>
+<li>the SDK keeps control of session lifecycle semantics</li>
+<li>bootstrap does not request runtime permissions or perform device pairing on its own</li>
+</ul>
+<p><a id="main-partner-capabilities"></a></p>
+<h2>Main partner capabilities</h2>
+<ul>
+<li>session lifecycle</li>
+<li>canonical identity refresh</li>
+<li>operational diagnostics</li>
+<li>Protection Mode</li>
+<li>device connection and BLE runtime</li>
+<li>backend device registry</li>
+<li>SOS lifecycle</li>
+<li>contacts</li>
+<li>permissions and local notifications</li>
+<li>tracking and telemetry</li>
+<li>Death Man</li>
+<li>realtime status and events</li>
+</ul>
+</main>
+    <aside class="toc">
+      <div class="toc-title">On this page</div>
+      <a class="toc-level-2" href="#signed-session-and-backend-responsibilities">Signed Session And Backend Responsibilities</a><a class="toc-level-2" href="#happy-path">Happy path</a><a class="toc-level-2" href="#bootstrap-models">Bootstrap models</a><a class="toc-level-3" href="#eixamenvironment">`EixamEnvironment`</a><a class="toc-level-3" href="#eixamcustomendpoints">`EixamCustomEndpoints`</a><a class="toc-level-3" href="#eixambootstrapconfig">`EixamBootstrapConfig`</a><a class="toc-level-2" href="#bootstrap-guarantees">Bootstrap guarantees</a><a class="toc-level-2" href="#main-partner-capabilities">Main partner capabilities</a>
+    </aside>
+  </div>
+</body>
+</html>

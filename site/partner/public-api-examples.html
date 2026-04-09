@@ -4,17 +4,17 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Public API - Practical Examples</title>
-  <link rel="stylesheet" href="../assets/style.css" />
+  <link rel="stylesheet" href="assets/style.css" />
 </head>
 <body>
   <header class="topbar">
     <div class="brand">EIXAM Connect SDK</div>
-    <div class="site-tag">full docs</div>
+    <div class="site-tag">partner docs</div>
   </header>
   <div class="layout">
     <aside class="sidebar">
       <div class="sidebar-title">Navigation</div>
-      <a href="../index.html">Home</a><a href="overview.html">SDK Overview</a><a href="architecture.html">SDK Architecture</a><a href="partner-integration-guide.html">Partner Integration Guide</a><a href="backend-integration.html">Backend Integration</a><a href="public-api.html">Public API</a><a class="active" href="public-api-examples.html">Method Examples</a><a href="model-reference.html">Model Reference</a><a href="protection-mode.html">Protection Mode</a><a href="../protection/overview.html">Protection Overview</a><a href="../protection/android-host-integration.html">Android Protection Integration</a><a href="../protection/ios-host-integration.html">iOS Protection Integration</a><a href="../protection/limitations.html">Protection Limitations</a><a href="../protection/validation-checklist.html">Protection Validation Checklist</a><a href="realtime-status.html">Realtime Status</a><a href="troubleshooting.html">SDK Troubleshooting</a><a href="../integration/flutter-installation.html">Flutter Installation</a><a href="../integration/flutter-integration.html">Flutter Integration</a><a href="../integration/host-app-integration.html">Host App Integration</a><a href="../integration/android-host-integration.html">Android Host Integration</a><a href="../integration/ios-host-integration.html">iOS Host Integration</a><a href="../integration/permissions-checklist.html">Permissions Checklist</a><a href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../reference-app/app-handoff-final.html">App Handoff Final</a><a href="../api/api-reference.html">API Reference</a><a href="../api/public-api.html">API Surface</a><a href="../api/public-api-examples.html">API Examples</a><a href="../internal/decisions.html">Decisions</a><a href="../internal/quality-gates.html">Quality Gates</a><a href="../internal/testing-strategy.html">Testing Strategy</a><a href="../internal/testability-notes.html">Testability Notes</a><a href="../internal/how-to-run-project.html">How to Run Project</a><a href="../internal/migration-map.html">Migration Map</a><a href="../internal/roadmap.html">Roadmap</a><a href="../internal/team-handoff-index.html">Team Handoff Index</a><a href="../internal/agents.html">AGENTS</a>
+      <a href="index.html">Home</a><a href="sdk-overview.html">SDK Overview</a><a href="quickstart.html">Quickstart</a><a href="public-api.html">Public API</a><a class="active" href="public-api-examples.html">Method Examples</a><a href="model-reference.html">Model Reference</a><a href="core-concepts.html">Core Concepts</a><a href="protection-mode.html">Protection Mode</a><a href="flutter-installation.html">Flutter Installation</a><a href="flutter-integration.html">Flutter Integration</a><a href="android-integration.html">Android Integration</a><a href="ios-integration.html">iOS Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a href="backend-integration.html">Backend Integration</a><a href="js-signing.html">Identity Signing (JS)</a><a href="api-reference.html">API Reference</a><a href="troubleshooting.html">Troubleshooting</a>
     </aside>
     <main class="content"><h1>Public API - Practical Examples</h1>
 <p>All examples below assume:</p>
@@ -23,9 +23,10 @@ import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
 
 late final EixamConnectSdk sdk;
 </code></pre>
+<p>These examples focus on the fields partner apps usually inspect in practice.</p>
 <p><a id="bootstrap"></a></p>
 <h2>Bootstrap</h2>
-<p>These examples assume a backend-issued signed session. The client does not store the app secret or compute <code>userHash</code> locally.</p>
+<p>These examples assume the signed session was created by the partner backend, not inside the mobile client.</p>
 <p><a id="bootstrap"></a></p>
 <h3><code>bootstrap</code></h3>
 <pre><code class="language-dart">final sdk = await EixamConnectSdk.bootstrap(
@@ -39,15 +40,18 @@ late final EixamConnectSdk sdk;
     ),
   ),
 );
+
+final session = await sdk.getCurrentSession();
+debugPrint('user=${session?.externalUserId}');
 </code></pre>
-<p>Custom secure broker example:</p>
+<p>For custom environments, a secure broker example currently looks like:</p>
 <pre><code class="language-dart">const EixamCustomEndpoints(
   apiBaseUrl: 'https://partner-api.example.com',
   mqttUrl: 'ssl://mqtt.staging.eixam.io:8883',
 )
 </code></pre>
-<p>If a deployment still uses <code>ws://</code> or <code>wss://</code>, treat that as a transport-dependent alternative rather than the default staging pattern.</p>
-<p>The same signed session is reused across both transports:</p>
+<p>If your environment uses <code>ws://</code> or <code>wss://</code> instead, treat that as a transport-dependent alternative rather than the default staging recommendation.</p>
+<p>The signed session is reused across both transports:</p>
 <ul>
 <li>HTTP uses <code>Authorization: Bearer &lt;userHash&gt;</code></li>
 <li>MQTT uses <code>username = sdk:&lt;appId&gt;:&lt;externalUserId&gt;</code> and <code>password = &lt;userHash&gt;</code></li>
@@ -235,24 +239,10 @@ for (final device in devices) {
   debugPrint('${device.hardwareId} ${device.firmwareVersion}');
 }
 </code></pre>
-<p><a id="legacy-compatibility-examples"></a></p>
-<h2>Legacy / compatibility examples</h2>
-<p>These methods still exist for migration, but they are not part of the partner onboarding path:</p>
-<pre><code class="language-dart">await sdk.pairDevice(pairingCode: '123456');
-await sdk.unpairDevice();
-final sub1 = sdk.watchDeviceStatus().listen((status) {});
-final sub2 = sdk.watchSosState().listen((state) {});
-await sdk.addEmergencyContact(
-  name: 'Legacy contact',
-  phone: '+34123456789',
-  email: 'legacy@example.com',
-);
-await sdk.removeEmergencyContact('contact-id');
-</code></pre>
 </main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
-      <a class="toc-level-2" href="#bootstrap">Bootstrap</a><a class="toc-level-3" href="#bootstrap">`bootstrap`</a><a class="toc-level-2" href="#diagnostics">Diagnostics</a><a class="toc-level-3" href="#getoperationaldiagnostics">`getOperationalDiagnostics`</a><a class="toc-level-3" href="#watchoperationaldiagnostics">`watchOperationalDiagnostics`</a><a class="toc-level-2" href="#device-lifecycle">Device Lifecycle</a><a class="toc-level-3" href="#connectdevice">`connectDevice`</a><a class="toc-level-3" href="#getdevicestatus">`getDeviceStatus`</a><a class="toc-level-3" href="#devicestatusstream">`deviceStatusStream`</a><a class="toc-level-3" href="#getdevicesosstatus">`getDeviceSosStatus`</a><a class="toc-level-2" href="#sos">SOS</a><a class="toc-level-3" href="#triggersos">`triggerSos`</a><a class="toc-level-3" href="#getcurrentsosincident">`getCurrentSosIncident`</a><a class="toc-level-3" href="#getsosstate">`getSosState`</a><a class="toc-level-2" href="#contacts">Contacts</a><a class="toc-level-3" href="#listemergencycontacts">`listEmergencyContacts`</a><a class="toc-level-3" href="#createemergencycontact">`createEmergencyContact`</a><a class="toc-level-3" href="#updateemergencycontact">`updateEmergencyContact`</a><a class="toc-level-2" href="#permissions">Permissions</a><a class="toc-level-3" href="#getpermissionstate">`getPermissionState`</a><a class="toc-level-2" href="#protection-mode">Protection Mode</a><a class="toc-level-3" href="#getprotectionstatus">`getProtectionStatus`</a><a class="toc-level-3" href="#getprotectiondiagnostics">`getProtectionDiagnostics`</a><a class="toc-level-2" href="#backend-device-registry">Backend Device Registry</a><a class="toc-level-3" href="#paired-device-sync-logic">Paired-device sync logic</a><a class="toc-level-3" href="#listregistereddevices">`listRegisteredDevices`</a><a class="toc-level-2" href="#legacy-compatibility-examples">Legacy / compatibility examples</a>
+      <a class="toc-level-2" href="#bootstrap">Bootstrap</a><a class="toc-level-3" href="#bootstrap">`bootstrap`</a><a class="toc-level-2" href="#diagnostics">Diagnostics</a><a class="toc-level-3" href="#getoperationaldiagnostics">`getOperationalDiagnostics`</a><a class="toc-level-3" href="#watchoperationaldiagnostics">`watchOperationalDiagnostics`</a><a class="toc-level-2" href="#device-lifecycle">Device Lifecycle</a><a class="toc-level-3" href="#connectdevice">`connectDevice`</a><a class="toc-level-3" href="#getdevicestatus">`getDeviceStatus`</a><a class="toc-level-3" href="#devicestatusstream">`deviceStatusStream`</a><a class="toc-level-3" href="#getdevicesosstatus">`getDeviceSosStatus`</a><a class="toc-level-2" href="#sos">SOS</a><a class="toc-level-3" href="#triggersos">`triggerSos`</a><a class="toc-level-3" href="#getcurrentsosincident">`getCurrentSosIncident`</a><a class="toc-level-3" href="#getsosstate">`getSosState`</a><a class="toc-level-2" href="#contacts">Contacts</a><a class="toc-level-3" href="#listemergencycontacts">`listEmergencyContacts`</a><a class="toc-level-3" href="#createemergencycontact">`createEmergencyContact`</a><a class="toc-level-3" href="#updateemergencycontact">`updateEmergencyContact`</a><a class="toc-level-2" href="#permissions">Permissions</a><a class="toc-level-3" href="#getpermissionstate">`getPermissionState`</a><a class="toc-level-2" href="#protection-mode">Protection Mode</a><a class="toc-level-3" href="#getprotectionstatus">`getProtectionStatus`</a><a class="toc-level-3" href="#getprotectiondiagnostics">`getProtectionDiagnostics`</a><a class="toc-level-2" href="#backend-device-registry">Backend Device Registry</a><a class="toc-level-3" href="#paired-device-sync-logic">Paired-device sync logic</a><a class="toc-level-3" href="#listregistereddevices">`listRegisteredDevices`</a>
     </aside>
   </div>
 </body>

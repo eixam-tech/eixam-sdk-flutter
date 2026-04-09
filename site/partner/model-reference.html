@@ -4,43 +4,51 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Model Reference</title>
-  <link rel="stylesheet" href="../assets/style.css" />
+  <link rel="stylesheet" href="assets/style.css" />
 </head>
 <body>
   <header class="topbar">
     <div class="brand">EIXAM Connect SDK</div>
-    <div class="site-tag">full docs</div>
+    <div class="site-tag">partner docs</div>
   </header>
   <div class="layout">
     <aside class="sidebar">
       <div class="sidebar-title">Navigation</div>
-      <a href="../index.html">Home</a><a href="overview.html">SDK Overview</a><a href="architecture.html">SDK Architecture</a><a href="partner-integration-guide.html">Partner Integration Guide</a><a href="backend-integration.html">Backend Integration</a><a href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a class="active" href="model-reference.html">Model Reference</a><a href="protection-mode.html">Protection Mode</a><a href="../protection/overview.html">Protection Overview</a><a href="../protection/android-host-integration.html">Android Protection Integration</a><a href="../protection/ios-host-integration.html">iOS Protection Integration</a><a href="../protection/limitations.html">Protection Limitations</a><a href="../protection/validation-checklist.html">Protection Validation Checklist</a><a href="realtime-status.html">Realtime Status</a><a href="troubleshooting.html">SDK Troubleshooting</a><a href="../integration/flutter-installation.html">Flutter Installation</a><a href="../integration/flutter-integration.html">Flutter Integration</a><a href="../integration/host-app-integration.html">Host App Integration</a><a href="../integration/android-host-integration.html">Android Host Integration</a><a href="../integration/ios-host-integration.html">iOS Host Integration</a><a href="../integration/permissions-checklist.html">Permissions Checklist</a><a href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="../reference-app/validation-app-guide.html">Validation App Guide</a><a href="../reference-app/debug-app-validation-guide.html">Debug Validation Guide</a><a href="../reference-app/real-backend-validation-checklist.html">Real Backend Checklist</a><a href="../reference-app/app-handoff-final.html">App Handoff Final</a><a href="../api/api-reference.html">API Reference</a><a href="../api/public-api.html">API Surface</a><a href="../api/public-api-examples.html">API Examples</a><a href="../internal/decisions.html">Decisions</a><a href="../internal/quality-gates.html">Quality Gates</a><a href="../internal/testing-strategy.html">Testing Strategy</a><a href="../internal/testability-notes.html">Testability Notes</a><a href="../internal/how-to-run-project.html">How to Run Project</a><a href="../internal/migration-map.html">Migration Map</a><a href="../internal/roadmap.html">Roadmap</a><a href="../internal/team-handoff-index.html">Team Handoff Index</a><a href="../internal/agents.html">AGENTS</a>
+      <a href="index.html">Home</a><a href="sdk-overview.html">SDK Overview</a><a href="quickstart.html">Quickstart</a><a href="public-api.html">Public API</a><a href="public-api-examples.html">Method Examples</a><a class="active" href="model-reference.html">Model Reference</a><a href="core-concepts.html">Core Concepts</a><a href="protection-mode.html">Protection Mode</a><a href="flutter-installation.html">Flutter Installation</a><a href="flutter-integration.html">Flutter Integration</a><a href="android-integration.html">Android Integration</a><a href="ios-integration.html">iOS Integration</a><a href="permissions-checklist.html">Permissions Checklist</a><a href="backend-integration.html">Backend Integration</a><a href="js-signing.html">Identity Signing (JS)</a><a href="api-reference.html">API Reference</a><a href="troubleshooting.html">Troubleshooting</a>
     </aside>
     <main class="content"><h1>Model Reference</h1>
-<p>This page summarizes the return types host apps most often inspect.</p>
+<p>This page summarizes the return types partner apps most often inspect.</p>
 <p><a id="sdkoperationaldiagnostics"></a></p>
 <h2><code>SdkOperationalDiagnostics</code></h2>
+<p>Purpose:</p>
+<ul>
+<li>snapshot of operational runtime health after bootstrap and session setup</li>
+</ul>
 <p>Common fields:</p>
 <ul>
-<li><code>connectionState</code></li>
-<li><code>session</code></li>
-<li><code>telemetryPublishTopic</code></li>
-<li><code>sosEventTopics</code></li>
-<li><code>sosRehydrationNote</code></li>
-<li><code>bridge.lastDecision</code></li>
-<li><code>bridge.pendingSos</code></li>
-<li><code>bridge.pendingTelemetry</code></li>
+<li><code>connectionState</code>: MQTT/realtime transport state</li>
+<li><code>session</code>: current signed session when present</li>
+<li><code>telemetryPublishTopic</code>: operational telemetry topic the SDK is using</li>
+<li><code>sosEventTopics</code>: SOS event topics currently bound for the signed user</li>
+<li><code>sosRehydrationNote</code>: explains fallback or rehydration behavior after startup</li>
+<li><code>bridge.lastDecision</code>: latest bridge/runtime decision worth surfacing in diagnostics</li>
+<li><code>bridge.pendingSos</code>: queued SOS handoff details when an SOS is buffered</li>
+<li><code>bridge.pendingTelemetry</code>: queued telemetry payload details when telemetry is buffered</li>
 </ul>
 <p><a id="devicestatus"></a></p>
 <h2><code>DeviceStatus</code></h2>
+<p>Purpose:</p>
+<ul>
+<li>high-level runtime view of the connected or remembered EIXAM device</li>
+</ul>
 <p>Common fields:</p>
 <ul>
-<li><code>deviceId</code></li>
-<li><code>lifecycleState</code></li>
+<li><code>deviceId</code>: stable device identifier used by the SDK</li>
+<li><code>lifecycleState</code>: <code>unpaired</code>, <code>paired</code>, <code>activating</code>, <code>ready</code>, or <code>error</code></li>
 <li><code>paired</code></li>
 <li><code>activated</code></li>
 <li><code>connected</code></li>
-<li><code>isReadyForSafety</code></li>
+<li><code>isReadyForSafety</code>: most useful single readiness flag for host UI</li>
 <li><code>approximateBatteryPercentage</code></li>
 <li><code>signalQuality</code></li>
 <li><code>firmwareVersion</code></li>
@@ -48,18 +56,26 @@
 </ul>
 <p><a id="devicesosstatus"></a></p>
 <h2><code>DeviceSosStatus</code></h2>
+<p>Purpose:</p>
+<ul>
+<li>device-side SOS state maintained by the runtime</li>
+</ul>
 <p>Common fields:</p>
 <ul>
-<li><code>state</code></li>
-<li><code>lastEvent</code></li>
-<li><code>transitionSource</code></li>
+<li><code>state</code>: <code>inactive</code>, <code>preConfirm</code>, <code>active</code>, <code>acknowledged</code>, or <code>resolved</code></li>
+<li><code>lastEvent</code>: most recent runtime explanation</li>
+<li><code>transitionSource</code>: where the current state came from</li>
 <li><code>updatedAt</code></li>
-<li><code>countdownRemainingSeconds</code></li>
-<li><code>lastPacketAt</code></li>
-<li><code>decoderNote</code></li>
+<li><code>countdownRemainingSeconds</code>: useful during pre-confirm countdowns</li>
+<li><code>lastPacketAt</code>: last BLE SOS packet time when relevant</li>
+<li><code>decoderNote</code>: runtime note when packet interpretation matters</li>
 </ul>
 <p><a id="emergencycontact"></a></p>
 <h2><code>EmergencyContact</code></h2>
+<p>Purpose:</p>
+<ul>
+<li>backend-synced emergency contact record</li>
+</ul>
 <p>Common fields:</p>
 <ul>
 <li><code>id</code></li>
@@ -71,6 +87,10 @@
 </ul>
 <p><a id="sosincident"></a></p>
 <h2><code>SosIncident</code></h2>
+<p>Purpose:</p>
+<ul>
+<li>app-originated SOS incident tracked by the SDK runtime</li>
+</ul>
 <p>Common fields:</p>
 <ul>
 <li><code>id</code></li>
@@ -82,6 +102,10 @@
 </ul>
 <p><a id="permissionstate"></a></p>
 <h2><code>PermissionState</code></h2>
+<p>Purpose:</p>
+<ul>
+<li>aggregated permission snapshot for partner UI and gating logic</li>
+</ul>
 <p>Common fields:</p>
 <ul>
 <li><code>location</code></li>
@@ -94,6 +118,10 @@
 </ul>
 <p><a id="protectionstatus"></a></p>
 <h2><code>ProtectionStatus</code></h2>
+<p>Purpose:</p>
+<ul>
+<li>current protection-mode runtime status, especially when native ownership is active</li>
+</ul>
 <p>Common fields:</p>
 <ul>
 <li><code>modeState</code></li>
@@ -113,6 +141,10 @@
 </ul>
 <p><a id="protectiondiagnostics"></a></p>
 <h2><code>ProtectionDiagnostics</code></h2>
+<p>Purpose:</p>
+<ul>
+<li>detailed diagnostics for wake events, reconnects, queueing, and native command routing</li>
+</ul>
 <p>Common fields:</p>
 <ul>
 <li><code>lastWakeReason</code></li>
@@ -130,6 +162,10 @@
 </ul>
 <p><a id="backendregistereddevice"></a></p>
 <h2><code>BackendRegisteredDevice</code></h2>
+<p>Purpose:</p>
+<ul>
+<li>backend registry record for a device associated with the signed user</li>
+</ul>
 <p>Common fields:</p>
 <ul>
 <li><code>id</code></li>
