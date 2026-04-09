@@ -23,6 +23,29 @@ void main() {
       );
     });
 
+    test('resolves staging endpoints internally with TLS MQTT transport', () {
+      final resolved = EixamBootstrapResolver.resolve(
+        const EixamBootstrapConfig(
+          appId: 'partner-app',
+          environment: EixamEnvironment.staging,
+        ),
+      );
+
+      expect(resolved.appId, 'partner-app');
+      expect(
+        resolved.sdkConfig.apiBaseUrl,
+        EixamBootstrapResolver.stagingApiBaseUrl,
+      );
+      expect(
+        resolved.sdkConfig.websocketUrl,
+        EixamBootstrapResolver.stagingWebsocketUrl,
+      );
+      expect(
+        resolved.sdkConfig.websocketUrl,
+        'ssl://mqtt.staging.eixam.io:8883',
+      );
+    });
+
     test('uses custom endpoints when custom environment is selected', () {
       final resolved = EixamBootstrapResolver.resolve(
         const EixamBootstrapConfig(

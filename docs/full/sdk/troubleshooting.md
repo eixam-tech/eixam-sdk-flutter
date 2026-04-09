@@ -12,6 +12,23 @@ Cause: the bootstrap `appId` and the provided signed session `appId` do not matc
 
 Fix: make both values identical.
 
+## Signing flow confusion
+
+Cause: the client is trying to store the app secret or compute `userHash` locally.
+
+Fix:
+
+- keep the app secret on the backend only
+- generate or obtain `userHash` on the backend for `appId` + `externalUserId`
+- deliver the signed session to the app
+- use `/v1/auth/sign` only for internal staging validation, not as the partner production architecture
+
+## Realtime URI looks non-websocket
+
+Cause: the public field name is still `websocketUrl`, but the actual broker transport is not websocket-based.
+
+Fix: this is expected. Depending on environment and client transport, the broker URI may be `ssl://`, `tls://`, `tcp://`, `ws://`, or `wss://`.
+
 ## Bootstrap did not request permissions
 
 Expected behavior. Permission requests remain explicit host-app actions.

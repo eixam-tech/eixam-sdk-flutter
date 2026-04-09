@@ -17,6 +17,12 @@ Purpose:
 Returns:
 - `Future<EixamConnectSdk>`
 
+Signed-session reminder:
+- backend-owned app secret only
+- mobile app receives a signed session from backend
+- the same signed identity is reused for HTTP and MQTT/runtime transport
+- `websocketUrl` naming stays stable even when the actual broker URI is not websocket-based
+
 ## Diagnostics
 
 ### `getOperationalDiagnostics()`

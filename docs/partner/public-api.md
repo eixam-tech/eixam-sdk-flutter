@@ -22,6 +22,11 @@ Most-used inputs:
 - `environment`
 - `initialSession`
 
+Signed-session reminder:
+- the partner backend owns the app secret and signs the session
+- the mobile app receives `appId`, `externalUserId`, and `userHash`
+- the same identity is reused across HTTP and MQTT/runtime transport
+
 ```dart
 final sdk = await EixamConnectSdk.bootstrap(
   const EixamBootstrapConfig(
@@ -38,6 +43,10 @@ final sdk = await EixamConnectSdk.bootstrap(
 final session = await sdk.getCurrentSession();
 debugPrint('session user=${session?.externalUserId}');
 ```
+
+Transport note:
+- `websocketUrl` naming stays stable for now
+- the configured broker URI may still be `ssl://`, `tls://`, `tcp://`, `ws://`, or `wss://`
 
 ## Diagnostics
 

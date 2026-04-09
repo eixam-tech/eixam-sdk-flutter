@@ -11,6 +11,8 @@ late final EixamConnectSdk sdk;
 
 ## Bootstrap
 
+These examples assume a backend-issued signed session. The client does not store the app secret or compute `userHash` locally.
+
 ### `bootstrap`
 
 ```dart
@@ -26,6 +28,17 @@ final sdk = await EixamConnectSdk.bootstrap(
   ),
 );
 ```
+
+Custom secure broker example:
+
+```dart
+const EixamCustomEndpoints(
+  apiBaseUrl: 'https://partner-api.example.com',
+  mqttUrl: 'ssl://partner-mqtt.example.com:8883',
+)
+```
+
+If a deployment still uses `ws://` or `wss://`, treat that as a transport-dependent alternative rather than the default staging pattern.
 
 ## Diagnostics
 

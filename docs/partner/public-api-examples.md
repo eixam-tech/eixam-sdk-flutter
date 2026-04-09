@@ -13,6 +13,8 @@ These examples focus on the fields partner apps usually inspect in practice.
 
 ## Bootstrap
 
+These examples assume the signed session was created by the partner backend, not inside the mobile client.
+
 ### `bootstrap`
 
 ```dart
@@ -31,6 +33,17 @@ final sdk = await EixamConnectSdk.bootstrap(
 final session = await sdk.getCurrentSession();
 debugPrint('user=${session?.externalUserId}');
 ```
+
+For custom environments, a secure broker example currently looks like:
+
+```dart
+const EixamCustomEndpoints(
+  apiBaseUrl: 'https://partner-api.example.com',
+  mqttUrl: 'ssl://partner-mqtt.example.com:8883',
+)
+```
+
+If your environment uses `ws://` or `wss://` instead, treat that as a transport-dependent alternative rather than the default staging recommendation.
 
 ## Diagnostics
 

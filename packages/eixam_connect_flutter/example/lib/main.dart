@@ -45,7 +45,7 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
   );
   final TextEditingController _customWebsocketUrlController =
       TextEditingController(
-    text: 'wss://partner-mqtt.example.com/mqtt',
+    text: 'ssl://partner-mqtt.example.com:8883',
   );
   final TextEditingController _pairingCodeController = TextEditingController(
     text: 'PAIR-CODE-001',
@@ -577,7 +577,7 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
                   TextField(
                     controller: _customWebsocketUrlController,
                     decoration: const InputDecoration(
-                      labelText: 'Custom realtime websocket URL',
+                      labelText: 'Custom realtime broker URI',
                     ),
                   ),
                 ],
@@ -587,7 +587,7 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
                   value: _includeInitialSession,
                   title: const Text('Include initial signed session'),
                   subtitle: const Text(
-                    'Disable this if your app bootstraps first and applies the session later.',
+                    'Disable this if your app bootstraps first and applies the session later. Keep app secrets on your backend and pass only the signed session to the app.',
                   ),
                   onChanged: (value) {
                     setState(() {

@@ -4,6 +4,12 @@ This page summarizes the backend-facing contracts a partner integration should e
 
 ## Identity
 
+Partner auth/signing responsibility:
+
+- the partner backend stores the app secret
+- the backend returns a signed session to the mobile app
+- the SDK does not hold the app secret or call the partner signing flow by itself
+
 ### `GET /v1/sdk/me`
 
 Used by the SDK to enrich the signed session with canonical backend identity.
@@ -54,3 +60,5 @@ Contacts are aligned 1:1 with the backend contract:
 ## Operational transport
 
 The SDK also relies on operational transport for SOS/telemetry flows. Topic naming and exact transport details should remain aligned with the backend contract, not hardcoded independently by the host app.
+
+The configured broker URI may use `ssl://`, `tls://`, `tcp://`, `ws://`, or `wss://` depending on the environment and runtime transport client.

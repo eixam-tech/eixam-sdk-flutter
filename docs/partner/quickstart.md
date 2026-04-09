@@ -21,6 +21,16 @@ import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
 
 ## 3. Bootstrap the SDK
 
+## Signed Session And Backend Responsibilities
+
+- your partner backend stores the app secret
+- the app secret never belongs in the client
+- your backend generates or obtains `userHash` for `appId` + `externalUserId`
+- `externalUserId` must be unique per app
+- the mobile app receives a signed session and passes it to the SDK
+- the same signed identity is reused by the SDK for both HTTP and MQTT/runtime transport
+- `/v1/auth/sign` is acceptable for internal EIXAM staging validation only; partner production flows must implement the server-side signing step in the partner backend
+
 ### Standard environment
 
 ```dart
@@ -45,12 +55,14 @@ final sdk = await EixamConnectSdk.bootstrap(
     appId: 'partner-app',
     environment: EixamEnvironment.custom,
     customEndpoints: EixamCustomEndpoints(
-      httpBaseUrl: 'https://partner-api.example.com',
-      mqttUrl: 'wss://partner-mqtt.example.com/mqtt',
+      apiBaseUrl: 'https://partner-api.example.com',
+      mqttUrl: 'ssl://partner-mqtt.example.com:8883',
     ),
   ),
 );
 ```
+
+The `mqttUrl`/`websocketUrl` field name stays stable for now even when the actual broker URI uses `ssl://`, `tls://`, `tcp://`, `ws://`, or `wss://` depending on environment and transport support.
 
 ## 4. Request permissions explicitly from your host app
 

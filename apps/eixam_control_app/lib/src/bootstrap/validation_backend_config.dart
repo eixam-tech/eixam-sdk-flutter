@@ -31,7 +31,7 @@ class ValidationBackendConfig {
     preset: ValidationBackendPreset.staging,
     label: 'Staging',
     apiBaseUrl: 'https://api.staging.eixam.io/',
-    mqttWebsocketUrl: 'ws://mqtt.staging.eixam.io:8080/ws',
+    mqttWebsocketUrl: 'ssl://mqtt.staging.eixam.io:8883',
   );
 
   static const ValidationBackendConfig customLocal = ValidationBackendConfig(

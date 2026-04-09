@@ -9,6 +9,16 @@ The partner-facing mental model is simple:
 - request permissions from your own host-app UX when needed
 - use SDK methods and streams to drive SOS, device, tracking and safety flows
 
+## Signed Session And Backend Responsibilities
+
+- the partner/backend service stores the app secret
+- the app secret never belongs in the mobile client
+- the backend signs or obtains `userHash` for `appId` + `externalUserId`
+- `externalUserId` must be unique per app
+- the mobile app receives a signed session and passes it into bootstrap or `setSession(...)`
+- the same identity is reused for HTTP and MQTT/runtime transport
+- `/v1/auth/sign` is acceptable for internal EIXAM staging validation only; partner production integrations must keep the signing step on their own backend
+
 ## Happy path
 
 ```dart
@@ -44,10 +54,12 @@ Example:
 
 ```dart
 const EixamCustomEndpoints(
-  httpBaseUrl: 'https://partner-api.example.com',
-  mqttUrl: 'wss://partner-mqtt.example.com/mqtt',
+  apiBaseUrl: 'https://partner-api.example.com',
+  mqttUrl: 'ssl://partner-mqtt.example.com:8883',
 )
 ```
+
+`mqttUrl` and `websocketUrl` remain the public field names for now, even when the actual broker URI is `ssl://`, `tls://`, `tcp://`, `ws://`, or `wss://`.
 
 ### `EixamBootstrapConfig`
 

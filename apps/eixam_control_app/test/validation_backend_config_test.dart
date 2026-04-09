@@ -26,6 +26,17 @@ void main() {
     );
   });
 
+  test('staging preset uses the validated TLS MQTT broker URI', () {
+    expect(
+      ValidationBackendConfig.staging.apiBaseUrl,
+      'https://api.staging.eixam.io/',
+    );
+    expect(
+      ValidationBackendConfig.staging.mqttWebsocketUrl,
+      'ssl://mqtt.staging.eixam.io:8883',
+    );
+  });
+
   test('saved backend config wins over local first-run defaults', () async {
     SharedPreferences.setMockInitialValues(<String, Object>{
       'validation_backend_preset': ValidationBackendPreset.custom.name,

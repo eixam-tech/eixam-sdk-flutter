@@ -9,13 +9,13 @@ The recommended public integration flow changed from a multi-step setup to a sin
 ```dart
 final sdk = await ApiSdkFactory.createHttpApi(
   apiBaseUrl: 'https://partner-api.example.com',
-  websocketUrl: 'wss://partner-mqtt.example.com/mqtt',
+  websocketUrl: 'ssl://partner-mqtt.example.com:8883',
 );
 
 await sdk.initialize(
   const EixamSdkConfig(
     apiBaseUrl: 'https://partner-api.example.com',
-    websocketUrl: 'wss://partner-mqtt.example.com/mqtt',
+    websocketUrl: 'ssl://partner-mqtt.example.com:8883',
   ),
 );
 
@@ -51,6 +51,7 @@ final sdk = await EixamConnectSdk.bootstrap(
 - use `custom` only with `EixamCustomEndpoints`
 - do not pass `customEndpoints` when using `production`, `sandbox`, or `staging`
 - if you pass `initialSession`, ensure the `appId` matches the bootstrap `appId`
+- the `websocketUrl` / `mqttUrl` field names stay stable for now even when the realtime URI is `ssl://`, `tls://`, `tcp://`, `ws://`, or `wss://`
 
 ## What bootstrap does not do
 

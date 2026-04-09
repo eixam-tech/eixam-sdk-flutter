@@ -23,6 +23,17 @@ Current signed identity fields:
 
 The SDK does not compute these values locally.
 
+## Signed Session And Backend Responsibilities
+
+- the partner/backend service stores the app secret
+- the app secret never belongs in the client
+- the backend generates or obtains `userHash` for `appId` + `externalUserId`
+- `externalUserId` must be unique per app
+- the mobile app receives the signed session and passes it into bootstrap or `setSession(...)`
+- the SDK reuses the same identity for HTTP and MQTT/runtime transport
+- `/v1/auth/sign` is acceptable for internal staging validation
+- partner production integrations must implement the signing flow on their own backend
+
 ## Bootstrap model
 
 The public Flutter bootstrap path is:
@@ -73,6 +84,7 @@ Backend-aligned CRUD surface for contacts.
 - SOS trigger uses operational transport
 - telemetry publish uses operational transport
 - host apps should not bypass SDK topic/transport conventions
+- the configured broker URI may be `ssl://`, `tls://`, `tcp://`, `ws://`, or `wss://` depending on environment/client transport
 
 ## Internal note
 

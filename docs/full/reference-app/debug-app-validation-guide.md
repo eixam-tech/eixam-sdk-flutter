@@ -43,6 +43,10 @@ Confirm:
 - reference app is using the current SDK packages from this monorepo
 - BLE test device is available if runtime device validation is needed
 
+For current staging validation, the working broker URI is:
+
+- `ssl://mqtt.staging.eixam.io:8883`
+
 ## 1. Validate Signed Session
 
 Expected host-side setup:
@@ -51,6 +55,13 @@ Expected host-side setup:
 - app obtains external user id
 - app obtains signed `userHash`
 - app calls `sdk.setSession(...)`
+
+Signing guidance:
+
+- the app secret must stay on the backend side
+- the validation app must not embed or store the app secret
+- internal staging validation may call `POST /v1/auth/sign` with `app_id` + `user_id`
+- real partner integrations must keep that signing step on their backend and only deliver the signed session to the app
 
 What to verify:
 
@@ -102,6 +113,7 @@ What to verify:
 
 - session setup causes MQTT connect attempt
 - active session uses current backend environment
+- staging currently validates against `ssl://mqtt.staging.eixam.io:8883`
 - reconnect occurs after temporary disconnect
 - `clearSession()` tears MQTT down cleanly
 

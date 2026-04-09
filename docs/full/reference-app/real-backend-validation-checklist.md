@@ -20,6 +20,8 @@ surfaces.
   - HTTP base URL
   - MQTT URL
   - selected preset / active backend readout
+- For staging, the validated MQTT transport is:
+  - `ssl://mqtt.staging.eixam.io:8883`
 - Run `setSession(...)` with a real signed session.
 - Confirm the console shows:
   - signed session status = configured
@@ -30,6 +32,13 @@ surfaces.
   - last identity/auth error
   - SOS rehydration note
   - last action error
+
+Signed-session guidance:
+
+- app secret stays on the backend side only
+- external user id must be unique per app
+- internal staging validation may use `/v1/auth/sign`
+- partner production flows must deliver a backend-signed session to the app instead of exposing the signing secret/client flow
 
 ## 2. MQTT Connectivity And Topic Readiness
 

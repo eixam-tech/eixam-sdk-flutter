@@ -1,9 +1,9 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Debug App Validation Guide</title>
+  <title>Debug Validation Guide</title>
   <link rel="stylesheet" href="../assets/style.css" />
 </head>
 <body>
@@ -14,7 +14,48 @@
   <div class="layout">
     <aside class="sidebar">
       <div class="sidebar-title">Navigation</div>
-      <a href="../index.html">Home</a><a href="../sdk/overview.html">SDK Overview</a><a href="../sdk/architecture.html">SDK Architecture</a><a href="../sdk/partner-integration-guide.html">Partner Integration Guide</a><a href="../sdk/backend-integration.html">Backend Integration</a><a href="../sdk/public-api.html">Public API</a><a href="../sdk/public-api-examples.html">Method Examples</a><a href="../sdk/model-reference.html">Model Reference</a><a href="../sdk/protection-mode.html">Protection Mode</a><a href="../protection/overview.html">Protection Overview</a><a href="../protection/android-host-integration.html">Android Protection Integration</a><a href="../protection/ios-host-integration.html">iOS Protection Integration</a><a href="../protection/limitations.html">Protection Limitations</a><a href="../protection/validation-checklist.html">Protection Validation Checklist</a><a href="../sdk/realtime-status.html">Realtime Status</a><a href="../sdk/troubleshooting.html">SDK Troubleshooting</a><a href="../integration/flutter-installation.html">Flutter Installation</a><a href="../integration/flutter-integration.html">Flutter Integration</a><a href="../integration/host-app-integration.html">Host App Integration</a><a href="../integration/android-host-integration.html">Android Host Integration</a><a href="../integration/ios-host-integration.html">iOS Host Integration</a><a href="../integration/permissions-checklist.html">Permissions Checklist</a><a href="../integration/ble-provider-integration.html">BLE Provider Integration</a><a href="../protocol/ble-protocol.html">BLE Protocol</a><a href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a><a href="../protocol/runtime-flow.html">BLE Runtime Flow</a><a href="validation-app-guide.html">Validation App Guide</a><a class="active" href="debug-app-validation-guide.html">Debug Validation Guide</a><a href="real-backend-validation-checklist.html">Real Backend Checklist</a><a href="app-handoff-final.html">App Handoff Final</a><a href="../api/api-reference.html">API Reference</a><a href="../api/public-api.html">API Surface</a><a href="../api/public-api-examples.html">API Examples</a><a href="../internal/decisions.html">Decisions</a><a href="../internal/quality-gates.html">Quality Gates</a><a href="../internal/testing-strategy.html">Testing Strategy</a><a href="../internal/testability-notes.html">Testability Notes</a><a href="../internal/how-to-run-project.html">How to Run Project</a><a href="../internal/migration-map.html">Migration Map</a><a href="../internal/roadmap.html">Roadmap</a><a href="../internal/team-handoff-index.html">Team Handoff Index</a><a href="../internal/agents.html">AGENTS</a>
+      <a href="../index.html">Home</a>
+      <a href="../sdk/overview.html">SDK Overview</a>
+      <a href="../sdk/architecture.html">SDK Architecture</a>
+      <a href="../sdk/partner-integration-guide.html">Partner Integration Guide</a>
+      <a href="../sdk/backend-integration.html">Backend Integration</a>
+      <a href="../sdk/public-api.html">Public API</a>
+      <a href="../sdk/public-api-examples.html">Method Examples</a>
+      <a href="../sdk/model-reference.html">Model Reference</a>
+      <a href="../sdk/protection-mode.html">Protection Mode</a>
+      <a href="../protection/overview.html">Protection Overview</a>
+      <a href="../protection/android-host-integration.html">Android Protection Integration</a>
+      <a href="../protection/ios-host-integration.html">iOS Protection Integration</a>
+      <a href="../protection/limitations.html">Protection Limitations</a>
+      <a href="../protection/validation-checklist.html">Protection Validation Checklist</a>
+      <a href="../sdk/realtime-status.html">Realtime Status</a>
+      <a href="../sdk/troubleshooting.html">SDK Troubleshooting</a>
+      <a href="../integration/flutter-installation.html">Flutter Installation</a>
+      <a href="../integration/flutter-integration.html">Flutter Integration</a>
+      <a href="../integration/host-app-integration.html">Host App Integration</a>
+      <a href="../integration/android-host-integration.html">Android Host Integration</a>
+      <a href="../integration/ios-host-integration.html">iOS Host Integration</a>
+      <a href="../integration/permissions-checklist.html">Permissions Checklist</a>
+      <a href="../integration/ble-provider-integration.html">BLE Provider Integration</a>
+      <a href="../protocol/ble-protocol.html">BLE Protocol</a>
+      <a href="../protocol/ble-runtime-flow.html">BLE Runtime Flow</a>
+      <a href="../protocol/runtime-flow.html">BLE Runtime Flow</a>
+      <a href="validation-app-guide.html">Validation App Guide</a>
+      <a class="active" href="debug-app-validation-guide.html">Debug Validation Guide</a>
+      <a href="real-backend-validation-checklist.html">Real Backend Checklist</a>
+      <a href="app-handoff-final.html">App Handoff Final</a>
+      <a href="../api/api-reference.html">API Reference</a>
+      <a href="../api/public-api.html">API Surface</a>
+      <a href="../api/public-api-examples.html">API Examples</a>
+      <a href="../internal/decisions.html">Decisions</a>
+      <a href="../internal/quality-gates.html">Quality Gates</a>
+      <a href="../internal/testing-strategy.html">Testing Strategy</a>
+      <a href="../internal/testability-notes.html">Testability Notes</a>
+      <a href="../internal/how-to-run-project.html">How to Run Project</a>
+      <a href="../internal/migration-map.html">Migration Map</a>
+      <a href="../internal/roadmap.html">Roadmap</a>
+      <a href="../internal/team-handoff-index.html">Team Handoff Index</a>
+      <a href="../internal/agents.html">AGENTS</a>
     </aside>
     <main class="content"><h1>Debug App Validation Guide</h1>
 <p>For a shorter operator-facing real backend runbook, see <code>docs/app_ble/REAL_BACKEND_VALIDATION_CHECKLIST.md</code>.</p>
@@ -33,10 +74,14 @@
 <h2>Before You Start</h2>
 <p>Confirm:</p>
 <ul><li>backend environment is available</li><li>MQTT endpoint is reachable</li><li>test account can receive a signed SDK session</li><li>reference app is using the current SDK packages from this monorepo</li><li>BLE test device is available if runtime device validation is needed</li></ul>
+<p>For current staging validation, the working broker URI is:</p>
+<ul><li><code>ssl://mqtt.staging.eixam.io:8883</code></li></ul>
 <a id="1-validate-signed-session"></a>
 <h2>1. Validate Signed Session</h2>
 <p>Expected host-side setup:</p>
 <ul><li>app obtains <code>appId</code></li><li>app obtains external user id</li><li>app obtains signed <code>userHash</code></li><li>app calls <code>sdk.setSession(...)</code></li></ul>
+<p>Signing guidance:</p>
+<ul><li>the app secret must stay on the backend side</li><li>the validation app must not embed or store the app secret</li><li>internal staging validation may call <code>POST /v1/auth/sign</code> with <code>app_id</code> + <code>user_id</code></li><li>real partner integrations must keep that signing step on their backend and only deliver the signed session to the app</li></ul>
 <p>What to verify:</p>
 <ul><li>no <code>E_SDK_SESSION_REQUIRED</code> errors</li><li>realtime state begins moving out of fully idle/disconnected after session setup</li><li>session-dependent surfaces become usable</li></ul>
 <p>If session setup fails:</p>
@@ -56,7 +101,7 @@
 <p>The SDK currently tracks:</p>
 <ul><li><code>connecting</code></li><li><code>connected</code></li><li><code>reconnecting</code></li><li><code>disconnected</code></li><li><code>error</code></li></ul>
 <p>What to verify:</p>
-<ul><li>session setup causes MQTT connect attempt</li><li>active session uses current backend environment</li><li>reconnect occurs after temporary disconnect</li><li><code>clearSession()</code> tears MQTT down cleanly</li></ul>
+<ul><li>session setup causes MQTT connect attempt</li><li>active session uses current backend environment</li><li>staging currently validates against <code>ssl://mqtt.staging.eixam.io:8883</code></li><li>reconnect occurs after temporary disconnect</li><li><code>clearSession()</code> tears MQTT down cleanly</li></ul>
 <p>Useful checks:</p>
 <ul><li>observe realtime connection state in the app validation surfaces</li><li>inspect MQTT connection logs</li><li>inspect that event subscriptions use <code>sos/events/{segment}</code></li></ul>
 <a id="4-test-sos-trigger-cancel-events"></a>
@@ -163,7 +208,34 @@
 <p>These are known product/runtime limits, not random bugs.</p></main>
     <aside class="toc">
       <div class="toc-title">On this page</div>
-      <a class="toc-level-2" href="#purpose">Purpose</a><a class="toc-level-2" href="#validation-scope">Validation Scope</a><a class="toc-level-2" href="#before-you-start">Before You Start</a><a class="toc-level-2" href="#1-validate-signed-session">1. Validate Signed Session</a><a class="toc-level-2" href="#2-validate-v1-sdk-me">2. Validate /v1/sdk/me</a><a class="toc-level-2" href="#3-verify-mqtt-connectivity">3. Verify MQTT Connectivity</a><a class="toc-level-2" href="#4-test-sos-trigger-cancel-events">4. Test SOS Trigger / Cancel / Events</a><a class="toc-level-3" href="#app-initiated-sos">App-initiated SOS</a><a class="toc-level-3" href="#cancel">Cancel</a><a class="toc-level-3" href="#mqtt-lifecycle-events">MQTT lifecycle events</a><a class="toc-level-2" href="#5-test-telemetry-publish">5. Test Telemetry Publish</a><a class="toc-level-3" href="#app-initiated-telemetry">App-initiated telemetry</a><a class="toc-level-3" href="#ble-originated-telemetry">BLE-originated telemetry</a><a class="toc-level-2" href="#6-test-contacts">6. Test Contacts</a><a class="toc-level-2" href="#7-test-backend-device-registry">7. Test Backend Device Registry</a><a class="toc-level-2" href="#8-test-runtime-device-status">8. Test Runtime Device Status</a><a class="toc-level-2" href="#9-test-ble-runtime-to-backend-bridge">9. Test BLE Runtime To Backend Bridge</a><a class="toc-level-3" href="#tel">TEL</a><a class="toc-level-3" href="#sos">SOS</a><a class="toc-level-3" href="#device-confirmations">Device confirmations</a><a class="toc-level-2" href="#10-failure-debugging-checklist">10. Failure Debugging Checklist</a><a class="toc-level-2" href="#useful-signals-to-inspect">Useful Signals To Inspect</a><a class="toc-level-3" href="#identity-issues">Identity issues</a><a class="toc-level-3" href="#mqtt-issues">MQTT issues</a><a class="toc-level-3" href="#ble-issues">BLE issues</a><a class="toc-level-3" href="#bridge-issues">Bridge issues</a><a class="toc-level-3" href="#device-confirmation-issues">Device confirmation issues</a><a class="toc-level-2" href="#known-current-limitations">Known Current Limitations</a>
+      <a class="toc-level-2" href="#purpose">Purpose</a>
+      <a class="toc-level-2" href="#validation-scope">Validation Scope</a>
+      <a class="toc-level-2" href="#before-you-start">Before You Start</a>
+      <a class="toc-level-2" href="#1-validate-signed-session">1. Validate Signed Session</a>
+      <a class="toc-level-2" href="#2-validate-v1-sdk-me">2. Validate `/v1/sdk/me`</a>
+      <a class="toc-level-2" href="#3-verify-mqtt-connectivity">3. Verify MQTT Connectivity</a>
+      <a class="toc-level-2" href="#4-test-sos-trigger-cancel-events">4. Test SOS Trigger / Cancel / Events</a>
+      <a class="toc-level-3" href="#app-initiated-sos">App-initiated SOS</a>
+      <a class="toc-level-3" href="#cancel">Cancel</a>
+      <a class="toc-level-3" href="#mqtt-lifecycle-events">MQTT lifecycle events</a>
+      <a class="toc-level-2" href="#5-test-telemetry-publish">5. Test Telemetry Publish</a>
+      <a class="toc-level-3" href="#app-initiated-telemetry">App-initiated telemetry</a>
+      <a class="toc-level-3" href="#ble-originated-telemetry">BLE-originated telemetry</a>
+      <a class="toc-level-2" href="#6-test-contacts">6. Test Contacts</a>
+      <a class="toc-level-2" href="#7-test-backend-device-registry">7. Test Backend Device Registry</a>
+      <a class="toc-level-2" href="#8-test-runtime-device-status">8. Test Runtime Device Status</a>
+      <a class="toc-level-2" href="#9-test-ble-runtime-to-backend-bridge">9. Test BLE Runtime To Backend Bridge</a>
+      <a class="toc-level-3" href="#tel">TEL</a>
+      <a class="toc-level-3" href="#sos">SOS</a>
+      <a class="toc-level-3" href="#device-confirmations">Device confirmations</a>
+      <a class="toc-level-2" href="#10-failure-debugging-checklist">10. Failure Debugging Checklist</a>
+      <a class="toc-level-2" href="#useful-signals-to-inspect">Useful Signals To Inspect</a>
+      <a class="toc-level-3" href="#identity-issues">Identity issues</a>
+      <a class="toc-level-3" href="#mqtt-issues">MQTT issues</a>
+      <a class="toc-level-3" href="#ble-issues">BLE issues</a>
+      <a class="toc-level-3" href="#bridge-issues">Bridge issues</a>
+      <a class="toc-level-3" href="#device-confirmation-issues">Device confirmation issues</a>
+      <a class="toc-level-2" href="#known-current-limitations">Known Current Limitations</a>
     </aside>
   </div>
 </body>

@@ -24,6 +24,16 @@ final sdk = await EixamConnectSdk.bootstrap(
 
 It gives partners a cleaner happy path than exposing `createHttpApi + initialize + apply/setSession` as the main story.
 
+## Signed Session And Backend Responsibilities
+
+- the partner backend stores the app secret
+- the app secret never belongs in the mobile client
+- the backend signs or obtains `userHash` for `appId` + `externalUserId`
+- `externalUserId` must be unique per app
+- the mobile app receives the signed session and passes it to bootstrap or `setSession(...)`
+- the SDK then reuses the same identity for HTTP and MQTT/runtime transport
+- internal staging validation may use `/v1/auth/sign`, but partner production signing must stay on the backend
+
 ## Validation rules
 
 - standard environments resolve internally
@@ -31,6 +41,7 @@ It gives partners a cleaner happy path than exposing `createHttpApi + initialize
 - non-custom environments reject `customEndpoints`
 - `initialSession.appId` must match the bootstrap `appId`
 - bootstrap does not request permissions, pair devices, or trigger other UX-sensitive actions
+- the public `mqttUrl` / `websocketUrl` naming stays stable even when the broker URI is `ssl://`, `tls://`, `tcp://`, `ws://`, or `wss://`
 
 ## Session lifecycle after bootstrap
 
