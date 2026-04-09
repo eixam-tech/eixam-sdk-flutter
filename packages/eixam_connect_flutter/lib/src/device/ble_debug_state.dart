@@ -21,6 +21,13 @@ class BleDebugState {
     this.lastWriteAt,
     this.lastWriteError,
     this.lastPacketReceived,
+    this.lastRawNotificationChannel,
+    this.lastRawNotificationCharacteristic,
+    this.lastRawNotificationPayloadHex,
+    this.lastRawNotificationAt,
+    this.lastDecodedIncomingEventType,
+    this.lastDecodeOutcome,
+    this.lastDecodedIncomingAt,
     this.discoveredServices = const <String>[],
     this.scanResults = const <BleScanResult>[],
     this.isScanning = false,
@@ -45,6 +52,13 @@ class BleDebugState {
   final DateTime? lastWriteAt;
   final String? lastWriteError;
   final String? lastPacketReceived;
+  final String? lastRawNotificationChannel;
+  final String? lastRawNotificationCharacteristic;
+  final String? lastRawNotificationPayloadHex;
+  final DateTime? lastRawNotificationAt;
+  final String? lastDecodedIncomingEventType;
+  final String? lastDecodeOutcome;
+  final DateTime? lastDecodedIncomingAt;
   final List<String> discoveredServices;
   final List<BleScanResult> scanResults;
   final bool isScanning;
@@ -69,6 +83,13 @@ class BleDebugState {
     DateTime? lastWriteAt,
     String? lastWriteError,
     String? lastPacketReceived,
+    String? lastRawNotificationChannel,
+    String? lastRawNotificationCharacteristic,
+    String? lastRawNotificationPayloadHex,
+    DateTime? lastRawNotificationAt,
+    String? lastDecodedIncomingEventType,
+    String? lastDecodeOutcome,
+    DateTime? lastDecodedIncomingAt,
     List<String>? discoveredServices,
     List<BleScanResult>? scanResults,
     bool? isScanning,
@@ -94,6 +115,19 @@ class BleDebugState {
       lastWriteAt: lastWriteAt ?? this.lastWriteAt,
       lastWriteError: lastWriteError ?? this.lastWriteError,
       lastPacketReceived: lastPacketReceived ?? this.lastPacketReceived,
+      lastRawNotificationChannel:
+          lastRawNotificationChannel ?? this.lastRawNotificationChannel,
+      lastRawNotificationCharacteristic: lastRawNotificationCharacteristic ??
+          this.lastRawNotificationCharacteristic,
+      lastRawNotificationPayloadHex:
+          lastRawNotificationPayloadHex ?? this.lastRawNotificationPayloadHex,
+      lastRawNotificationAt:
+          lastRawNotificationAt ?? this.lastRawNotificationAt,
+      lastDecodedIncomingEventType:
+          lastDecodedIncomingEventType ?? this.lastDecodedIncomingEventType,
+      lastDecodeOutcome: lastDecodeOutcome ?? this.lastDecodeOutcome,
+      lastDecodedIncomingAt:
+          lastDecodedIncomingAt ?? this.lastDecodedIncomingAt,
       discoveredServices: discoveredServices ?? this.discoveredServices,
       scanResults: scanResults ?? this.scanResults,
       isScanning: isScanning ?? this.isScanning,

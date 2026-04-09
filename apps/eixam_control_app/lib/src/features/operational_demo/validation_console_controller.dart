@@ -29,6 +29,8 @@ class ValidationConsoleController extends ChangeNotifier {
   SosState sosState = SosState.idle;
   EixamSdkEvent? lastSosEvent;
   SosIncident? lastSosIncident;
+  SosIncident? currentSosIncident;
+  TrackingPosition? currentPositionSnapshot;
   SdkTelemetryPayload? lastPublishedTelemetrySample;
   List<EmergencyContact> contacts = const <EmergencyContact>[];
   List<BackendRegisteredDevice> registeredDevices =
@@ -78,6 +80,8 @@ class ValidationConsoleController extends ChangeNotifier {
   bool loadingDeviceRegistry = false;
   bool loadingDeviceRuntime = false;
   bool loadingProtection = false;
+  bool _refreshingDeviceSosObservability = false;
+  bool _pendingDeviceSosObservabilityRefresh = false;
 
   final Map<ValidationCapabilityId, ValidationCapabilityResult>
       _capabilityRuns = <ValidationCapabilityId, ValidationCapabilityResult>{};
@@ -167,7 +171,10 @@ class ValidationConsoleController extends ChangeNotifier {
       },
       onError: _handleActionError,
     );
-    _deviceDebugListener ??= () => notifyListeners();
+    _deviceDebugListener ??= () {
+      notifyListeners();
+      _requestDeviceSosObservabilityRefresh();
+    };
     deviceDebugController.addListener(_deviceDebugListener!);
   }
 
@@ -177,6 +184,8 @@ class ValidationConsoleController extends ChangeNotifier {
       operationalDiagnostics = await sdk.getOperationalDiagnostics();
       lastRealtimeEvent = await sdk.getLastRealtimeEvent();
       sosState = await sdk.getSosState();
+      currentSosIncident = await sdk.getCurrentSosIncident();
+      currentPositionSnapshot = await sdk.getCurrentPosition();
       contacts = await sdk.listEmergencyContacts();
       registeredDevices = await sdk.listRegisteredDevices();
       deviceStatus = await sdk.getDeviceStatus();
@@ -628,9 +637,21 @@ class ValidationConsoleController extends ChangeNotifier {
       action: action,
       onAfterAction: () async {
         await deviceDebugController.refreshAll();
+        await refreshDeviceSosObservability();
       },
       evaluate: _buildDeviceSosResult,
     );
+  }
+
+  Future<void> refreshDeviceSosObservability() async {
+    try {
+      operationalDiagnostics = await sdk.getOperationalDiagnostics();
+      currentSosIncident = await sdk.getCurrentSosIncident();
+      currentPositionSnapshot = await sdk.getCurrentPosition();
+      notifyListeners();
+    } catch (error) {
+      _handleActionError(error);
+    }
   }
 
   Future<void> refreshCommandChannelReadiness() async {
@@ -1384,8 +1405,52 @@ class ValidationConsoleController extends ChangeNotifier {
                 : _formatDateTime(deviceSosStatus.lastPacketAt),
           ),
           ValidationStateField(
+            label: 'Latest BLE event type',
+            value: bleState.lastDecodedIncomingEventType ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Raw BLE channel',
+            value: bleState.lastRawNotificationChannel ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Characteristic',
+            value: bleState.lastRawNotificationCharacteristic ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Payload hex',
+            value: bleState.lastRawNotificationPayloadHex ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Decoded as',
+            value: bleState.lastDecodeOutcome ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Last raw BLE notify',
+            value: bleState.lastRawNotificationAt == null
+                ? '-'
+                : _formatDateTime(bleState.lastRawNotificationAt),
+          ),
+          ValidationStateField(
             label: 'Bridge SOS visibility',
             value: operationalDiagnostics.bridge.lastBleSosEventSummary ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Bridge last decision',
+            value: operationalDiagnostics.bridge.lastDecision ?? '-',
+          ),
+          ValidationStateField(
+            label: 'Current position snapshot',
+            value: _formatPositionSnapshot(currentPositionSnapshot),
+          ),
+          ValidationStateField(
+            label: 'Current SOS incident',
+            value: _formatSosIncident(currentSosIncident),
+          ),
+          ValidationStateField(
+            label: 'Bridge pending SOS',
+            value: operationalDiagnostics.bridge.pendingSos == null
+                ? 'None'
+                : operationalDiagnostics.bridge.pendingSos!.signature,
           ),
         ],
       ),
@@ -3668,6 +3733,48 @@ class ValidationConsoleController extends ChangeNotifier {
     final minute = local.minute.toString().padLeft(2, '0');
     final second = local.second.toString().padLeft(2, '0');
     return '$year-$month-$day $hour:$minute:$second';
+  }
+
+  String _formatPositionSnapshot(TrackingPosition? value) {
+    if (value == null) {
+      return 'null';
+    }
+    final altitude = value.altitude == null ? 'n/a' : value.altitude!.toString();
+    return '${value.latitude.toStringAsFixed(5)}, '
+        '${value.longitude.toStringAsFixed(5)} '
+        '(alt=$altitude at ${_formatDateTime(value.timestamp)})';
+  }
+
+  String _formatSosIncident(SosIncident? incident) {
+    if (incident == null) {
+      return 'null';
+    }
+    return '${incident.id} (${incident.state.name})';
+  }
+
+  void _requestDeviceSosObservabilityRefresh() {
+    if (_refreshingDeviceSosObservability) {
+      _pendingDeviceSosObservabilityRefresh = true;
+      return;
+    }
+    unawaited(_drainDeviceSosObservabilityRefreshQueue());
+  }
+
+  Future<void> _drainDeviceSosObservabilityRefreshQueue() async {
+    do {
+      _pendingDeviceSosObservabilityRefresh = false;
+      _refreshingDeviceSosObservability = true;
+      try {
+        operationalDiagnostics = await sdk.getOperationalDiagnostics();
+        currentSosIncident = await sdk.getCurrentSosIncident();
+        currentPositionSnapshot = await sdk.getCurrentPosition();
+      } catch (_) {
+        // Best-effort diagnostics refresh for validation UI only.
+      } finally {
+        _refreshingDeviceSosObservability = false;
+      }
+    } while (_pendingDeviceSosObservabilityRefresh);
+    notifyListeners();
   }
 
   Future<void> _runBleCapabilityAction({

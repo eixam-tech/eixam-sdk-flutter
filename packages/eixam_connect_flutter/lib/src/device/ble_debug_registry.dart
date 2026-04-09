@@ -50,6 +50,13 @@ class BleDebugRegistry {
     DateTime? lastWriteAt,
     String? lastWriteError,
     String? lastPacketReceived,
+    String? lastRawNotificationChannel,
+    String? lastRawNotificationCharacteristic,
+    String? lastRawNotificationPayloadHex,
+    DateTime? lastRawNotificationAt,
+    String? lastDecodedIncomingEventType,
+    String? lastDecodeOutcome,
+    DateTime? lastDecodedIncomingAt,
     List<String>? discoveredServices,
     List<BleScanResult>? scanResults,
     bool? isScanning,
@@ -73,6 +80,13 @@ class BleDebugRegistry {
       lastWriteAt: lastWriteAt,
       lastWriteError: lastWriteError,
       lastPacketReceived: lastPacketReceived,
+      lastRawNotificationChannel: lastRawNotificationChannel,
+      lastRawNotificationCharacteristic: lastRawNotificationCharacteristic,
+      lastRawNotificationPayloadHex: lastRawNotificationPayloadHex,
+      lastRawNotificationAt: lastRawNotificationAt,
+      lastDecodedIncomingEventType: lastDecodedIncomingEventType,
+      lastDecodeOutcome: lastDecodeOutcome,
+      lastDecodedIncomingAt: lastDecodedIncomingAt,
       discoveredServices: discoveredServices,
       scanResults: scanResults,
       isScanning: isScanning,
@@ -89,6 +103,35 @@ class BleDebugRegistry {
       events.removeRange(0, events.length - 30);
     }
     _state = _state.copyWith(events: events);
+    _controller.add(_state);
+  }
+
+  void recordIncomingNotification({
+    required String channel,
+    required String characteristic,
+    required String payloadHex,
+    required DateTime receivedAt,
+  }) {
+    _state = _state.copyWith(
+      lastPacketReceived: payloadHex,
+      lastRawNotificationChannel: channel,
+      lastRawNotificationCharacteristic: characteristic,
+      lastRawNotificationPayloadHex: payloadHex,
+      lastRawNotificationAt: receivedAt,
+    );
+    _controller.add(_state);
+  }
+
+  void recordDecodedIncomingEvent({
+    required String eventType,
+    required String outcome,
+    required DateTime receivedAt,
+  }) {
+    _state = _state.copyWith(
+      lastDecodedIncomingEventType: eventType,
+      lastDecodeOutcome: outcome,
+      lastDecodedIncomingAt: receivedAt,
+    );
     _controller.add(_state);
   }
 

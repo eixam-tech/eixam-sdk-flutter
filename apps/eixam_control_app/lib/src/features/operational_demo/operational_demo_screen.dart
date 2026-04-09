@@ -953,6 +953,10 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
     return ValidationCapabilityCard(
       viewModel: card,
       actions: <Widget>[
+        OutlinedButton(
+          onPressed: _controller.refreshDeviceSosObservability,
+          child: const Text('Refresh SOS debug'),
+        ),
         ElevatedButton(
           onPressed: () => _controller.runDeviceSosValidation(
             actionLabel: 'Trigger SOS',

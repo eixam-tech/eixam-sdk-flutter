@@ -453,7 +453,25 @@ void main() {
         connectionState: RealtimeConnectionState.disconnected,
         bridge: SdkBridgeDiagnostics(
           lastBleSosEventSummary: 'BLE SOS packet seen',
+          lastDecision: 'pending promotion decision',
         ),
+      );
+      controller.currentPositionSnapshot = TrackingPosition(
+        latitude: 41.4,
+        longitude: 2.1,
+        altitude: 12,
+        timestamp: DateTime.utc(2026, 4, 5, 10),
+      );
+      controller.currentSosIncident = _incident(
+        'incident-device-sos',
+        SosState.sent,
+      );
+      controller.deviceDebugController.bleDebugState = const BleDebugState(
+        lastRawNotificationChannel: 'sos',
+        lastRawNotificationCharacteristic: 'ea02',
+        lastRawNotificationPayloadHex: 'A1B2C3',
+        lastDecodedIncomingEventType: 'sosMeshPacket',
+        lastDecodeOutcome: 'sosMeshPacket',
       );
 
       final card =
@@ -466,6 +484,43 @@ void main() {
       expect(card.description, contains('runtime'));
       expect(card.expectation.expectedResult, contains('does not by itself'));
       expect(currentState['Bridge SOS visibility'], 'BLE SOS packet seen');
+      expect(currentState['Bridge last decision'], 'pending promotion decision');
+      expect(currentState['Latest BLE event type'], 'sosMeshPacket');
+      expect(currentState['Characteristic'], 'ea02');
+      expect(currentState['Payload hex'], 'A1B2C3');
+      expect(currentState['Decoded as'], 'sosMeshPacket');
+      expect(currentState['Current position snapshot'], contains('41.40000'));
+      expect(
+        currentState['Current SOS incident'],
+        'incident-device-sos (sent)',
+      );
+    });
+
+    test(
+        'refreshDeviceSosObservability refreshes bridge, incident, and position',
+        () async {
+      sdk.currentDiagnostics = const SdkOperationalDiagnostics(
+        connectionState: RealtimeConnectionState.connected,
+        bridge: SdkBridgeDiagnostics(
+          lastBleSosEventSummary: 'decoded sos packet',
+          lastDecision: 'promoted to backend',
+        ),
+      );
+      sdk.currentIncident = _incident('incident-observe', SosState.sent);
+      sdk.currentPosition = TrackingPosition(
+        latitude: 40.1,
+        longitude: 3.2,
+        timestamp: DateTime.utc(2026, 4, 6, 9),
+      );
+
+      await controller.refreshDeviceSosObservability();
+
+      expect(
+        controller.operationalDiagnostics.bridge.lastBleSosEventSummary,
+        'decoded sos packet',
+      );
+      expect(controller.currentSosIncident?.id, 'incident-observe');
+      expect(controller.currentPositionSnapshot?.latitude, 40.1);
     });
 
     test('protection readiness reports default blockers without changing mode',
@@ -857,6 +912,7 @@ class _FakeValidationSdk implements EixamConnectSdk {
   SosIncident cancelIncident = _incident('cancel-default', SosState.idle);
   SosIncident? currentIncident;
   SosIncident? refreshedCurrentIncident;
+  TrackingPosition? currentPosition;
   int getCurrentSosIncidentCallCount = 0;
   DeviceStatus deviceStatus = const DeviceStatus(
     deviceId: '',
@@ -936,6 +992,9 @@ class _FakeValidationSdk implements EixamConnectSdk {
     }
     return refreshedCurrentIncident ?? currentIncident;
   }
+
+  @override
+  Future<TrackingPosition?> getCurrentPosition() async => currentPosition;
 
   @override
   Future<void> publishTelemetry(SdkTelemetryPayload payload) async {

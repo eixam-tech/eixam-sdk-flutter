@@ -564,6 +564,15 @@ class BleDeviceRuntimeProvider
     return '0x${normalized.toRadixString(16).padLeft(4, '0')}';
   }
 
+  String _characteristicLabelForChannel(EixamBleChannel channel) {
+    switch (channel) {
+      case EixamBleChannel.tel:
+        return 'ea01';
+      case EixamBleChannel.sos:
+        return 'ea02';
+    }
+  }
+
   Future<void> _handleUnexpectedDisconnect(String deviceId) async {
     if (_ownershipSuspended) {
       BleDebugRegistry.instance.recordEvent(
@@ -610,6 +619,12 @@ class BleDeviceRuntimeProvider
     String deviceId,
     EixamBleNotification notification,
   ) {
+    BleDebugRegistry.instance.recordIncomingNotification(
+      channel: notification.channel.name,
+      characteristic: _characteristicLabelForChannel(notification.channel),
+      payloadHex: notification.payloadHex,
+      receivedAt: notification.receivedAt,
+    );
     BleDebugRegistry.instance.recordEvent(
       'TEL raw payload (ea01) -> ${notification.payloadHex}',
     );
@@ -627,6 +642,11 @@ class BleDeviceRuntimeProvider
     if (rescueStatusPacket != null) {
       BleDebugRegistry.instance.recordEvent(
         'Guided rescue status decoded -> rescueId=${_formatNodeId(rescueStatusPacket.rescueNodeId)} victimId=${_formatNodeId(rescueStatusPacket.victimNodeId)} state=${rescueStatusPacket.targetState.name}',
+      );
+      BleDebugRegistry.instance.recordDecodedIncomingEvent(
+        eventType: BleIncomingEventType.guidedRescueStatus.name,
+        outcome: BleIncomingEventType.guidedRescueStatus.name,
+        receivedAt: notification.receivedAt,
       );
       _handleGuidedRescueStatusPacket(rescueStatusPacket);
       _incomingEventsController.add(
@@ -651,6 +671,11 @@ class BleDeviceRuntimeProvider
       BleDebugRegistry.instance.recordEvent(
         'TEL packet decoded -> nodeId=${_formatNodeId(telPacket.nodeId)} packetId=${telPacket.packetId} batt=${telPacket.batteryLevel} gps=${telPacket.gpsQuality}',
       );
+      BleDebugRegistry.instance.recordDecodedIncomingEvent(
+        eventType: BleIncomingEventType.telPosition.name,
+        outcome: BleIncomingEventType.telPosition.name,
+        receivedAt: notification.receivedAt,
+      );
       _handleTelBatteryUpdate(telPacket);
       _handleGuidedRescueTelPacket(telPacket, notification.receivedAt);
       _incomingEventsController.add(
@@ -674,6 +699,11 @@ class BleDeviceRuntimeProvider
       BleDebugRegistry.instance.recordEvent(
         'TEL aggregate fragment decoded -> totalLen=${telFragment.totalLength} offset=${telFragment.offset} fragmentLen=${telFragment.fragmentLength}',
       );
+      BleDebugRegistry.instance.recordDecodedIncomingEvent(
+        eventType: BleIncomingEventType.telAggregateFragment.name,
+        outcome: BleIncomingEventType.telAggregateFragment.name,
+        receivedAt: notification.receivedAt,
+      );
       _incomingEventsController.add(
         BleIncomingEvent(
           deviceId: deviceId,
@@ -692,6 +722,11 @@ class BleDeviceRuntimeProvider
       if (completedPayload != null) {
         BleDebugRegistry.instance.recordEvent(
           'TEL aggregate completed -> totalLen=${completedPayload.length}',
+        );
+        BleDebugRegistry.instance.recordDecodedIncomingEvent(
+          eventType: BleIncomingEventType.telAggregateComplete.name,
+          outcome: BleIncomingEventType.telAggregateComplete.name,
+          receivedAt: notification.receivedAt,
         );
         _incomingEventsController.add(
           BleIncomingEvent(
@@ -713,6 +748,11 @@ class BleDeviceRuntimeProvider
 
     BleDebugRegistry.instance.recordEvent(
       'TEL packet rejected -> len=${notification.payload.length} payload=${notification.payloadHex}',
+    );
+    BleDebugRegistry.instance.recordDecodedIncomingEvent(
+      eventType: BleIncomingEventType.unknownProtocolPacket.name,
+      outcome: 'rejected',
+      receivedAt: notification.receivedAt,
     );
     _incomingEventsController.add(
       BleIncomingEvent(
@@ -750,6 +790,12 @@ class BleDeviceRuntimeProvider
     EixamBleNotification notification,
   ) {
     final source = _inferPacketSource();
+    BleDebugRegistry.instance.recordIncomingNotification(
+      channel: notification.channel.name,
+      characteristic: _characteristicLabelForChannel(notification.channel),
+      payloadHex: notification.payloadHex,
+      receivedAt: notification.receivedAt,
+    );
     BleDebugRegistry.instance.recordEvent(
       'SOS raw payload (ea02) -> ${notification.payloadHex}',
     );
@@ -760,6 +806,11 @@ class BleDeviceRuntimeProvider
     if (sosEventPacket != null) {
       BleDebugRegistry.instance.recordEvent(
         'SOS device event decoded -> nodeId=${_formatNodeId(sosEventPacket.nodeId)} opcode=0x${sosEventPacket.opcode.toRadixString(16).padLeft(2, '0')} subcode=0x${sosEventPacket.subcode.toRadixString(16).padLeft(2, '0')}',
+      );
+      BleDebugRegistry.instance.recordDecodedIncomingEvent(
+        eventType: BleIncomingEventType.sosDeviceEvent.name,
+        outcome: BleIncomingEventType.sosDeviceEvent.name,
+        receivedAt: notification.receivedAt,
       );
       if (_shouldProcessSosPacket(
         nodeId: sosEventPacket.nodeId,
@@ -796,6 +847,11 @@ class BleDeviceRuntimeProvider
       BleDebugRegistry.instance.recordEvent(
         'SOS packet decoded -> nodeId=${_formatNodeId(sosPacket.nodeId)} sosType=${sosPacket.sosType} packetId=${sosPacket.packetId} relayCount=${sosPacket.relayCount}',
       );
+      BleDebugRegistry.instance.recordDecodedIncomingEvent(
+        eventType: BleIncomingEventType.sosMeshPacket.name,
+        outcome: BleIncomingEventType.sosMeshPacket.name,
+        receivedAt: notification.receivedAt,
+      );
       _handleSosBatteryUpdate(sosPacket);
       _handleGuidedRescueSosPacket(sosPacket, notification.receivedAt);
       if (_shouldProcessSosPacket(
@@ -830,6 +886,11 @@ class BleDeviceRuntimeProvider
 
     BleDebugRegistry.instance.recordEvent(
       'SOS packet rejected -> len=${notification.payload.length} payload=${notification.payloadHex}',
+    );
+    BleDebugRegistry.instance.recordDecodedIncomingEvent(
+      eventType: BleIncomingEventType.unknownProtocolPacket.name,
+      outcome: 'rejected',
+      receivedAt: notification.receivedAt,
     );
     _incomingEventsController.add(
       BleIncomingEvent(
