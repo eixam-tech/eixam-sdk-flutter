@@ -30,11 +30,12 @@ def render_markdown(text: str):
 
 def build_one(site_name: str, nav_file: str):
     nav = json.loads((ROOT / 'config' / nav_file).read_text(encoding='utf-8'))
-    site_root = ROOT / 'site' / site_name
+    site_root = ROOT / 'site' if site_name == 'partner' else ROOT / 'site' / site_name
     site_root.mkdir(parents=True, exist_ok=True)
     asset_dir = site_root / 'assets'
     asset_dir.mkdir(parents=True, exist_ok=True)
     (asset_dir / 'style.css').write_text((ROOT / 'tools' / 'style.css').read_text(encoding='utf-8'), encoding='utf-8')
+
     pages = []
     for label, src in nav:
         src_path = ROOT / src
