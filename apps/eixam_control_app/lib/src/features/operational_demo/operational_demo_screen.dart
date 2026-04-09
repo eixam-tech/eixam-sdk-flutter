@@ -8,6 +8,8 @@ import 'operational_demo_sections.dart';
 import 'validation_capability_card.dart';
 import 'validation_console_controller.dart';
 import 'validation_models.dart';
+import 'validation_session_preset.dart';
+import 'validation_session_signer.dart';
 import 'validation_summary_card.dart';
 
 class OperationalDemoScreen extends StatefulWidget {
@@ -33,6 +35,7 @@ class OperationalDemoScreen extends StatefulWidget {
 
 class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
   late final ValidationConsoleController _controller;
+  late final ValidationSessionSigner _sessionSigner;
   late final TextEditingController _sessionAppIdController;
   late final TextEditingController _sessionExternalUserIdController;
   late final TextEditingController _sessionUserHashController;
@@ -60,6 +63,7 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
   late final TextEditingController _mqttUrlController;
   late ValidationBackendPreset _selectedBackendPreset;
   bool _applyingBackendConfig = false;
+  bool _generatingSessionUserHash = false;
 
   @override
   void initState() {
@@ -79,6 +83,7 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
           ? ValidationLocalDebugDefaults.userHash
           : '',
     );
+    _sessionSigner = ValidationSessionSigner();
     _controller = ValidationConsoleController(sdk: widget.sdk);
     _selectedBackendPreset = widget.backendConfig.preset;
     _apiBaseUrlController =
@@ -489,6 +494,21 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
     return ValidationCapabilityCard(
       viewModel: card,
       actions: <Widget>[
+        OutlinedButton(
+          onPressed: _loadEixamStagingDraft,
+          child: const Text('Load EIXAM staging draft'),
+        ),
+        if (_selectedBackendPreset == ValidationBackendPreset.staging)
+          OutlinedButton(
+            onPressed: _controller.loadingSession || _generatingSessionUserHash
+                ? null
+                : _handleGenerateSessionUserHash,
+            child: Text(
+              _generatingSessionUserHash
+                  ? 'Generating userHash...'
+                  : 'Generate userHash',
+            ),
+          ),
         ElevatedButton(
           onPressed: _controller.loadingSession ? null : _handleSetSession,
           child: const Text('Apply session'),
@@ -511,6 +531,7 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
           ),
       ],
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           ValidationTextField(
             controller: _sessionAppIdController,
@@ -525,6 +546,23 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
           ValidationTextField(
             controller: _sessionUserHashController,
             label: 'userHash',
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            'Helper notes for staging validation:',
+            style: TextStyle(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'externalUserId must be unique per app. Use a fresh draft when validating staging users.',
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'userHash comes from the /v1/auth/sign flow. This screen can request it for staging-only validation drafts.',
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'The app secret never belongs in the client. Keep signing authority on a trusted backend or internal staging helper.',
           ),
         ],
       ),
@@ -1264,6 +1302,37 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
     );
   }
 
+  Future<void> _handleGenerateSessionUserHash() async {
+    final apiBaseUrl = _apiBaseUrlController.text.trim();
+    final appId = _sessionAppIdController.text.trim();
+    final externalUserId = _sessionExternalUserIdController.text.trim();
+
+    setState(() {
+      _generatingSessionUserHash = true;
+    });
+    try {
+      final userHash = await _sessionSigner.generateUserHash(
+        apiBaseUrl: apiBaseUrl,
+        appId: appId,
+        externalUserId: externalUserId,
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _sessionUserHashController.text = userHash;
+      });
+    } catch (error) {
+      _controller.reportActionError(error);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _generatingSessionUserHash = false;
+        });
+      }
+    }
+  }
+
   Future<void> _handleTriggerSosValidation() async {
     await _controller.runTriggerSosValidation(
       message: _sosMessageController.text,
@@ -1516,6 +1585,23 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
           ValidationLocalDebugDefaults.externalUserId;
       _sessionUserHashController.text = ValidationLocalDebugDefaults.userHash;
     }
+  }
+
+  void _loadEixamStagingDraft() {
+    _applySessionPreset(ValidationSessionPreset.eixamStaging.createDraft());
+  }
+
+  void _applySessionPreset(ValidationSessionDraft draft) {
+    final backendConfig =
+        ValidationBackendConfig.presetFor(draft.backendPreset);
+    setState(() {
+      _selectedBackendPreset = draft.backendPreset;
+      _apiBaseUrlController.text = backendConfig.apiBaseUrl;
+      _mqttUrlController.text = backendConfig.mqttWebsocketUrl;
+      _sessionAppIdController.text = draft.appId;
+      _sessionExternalUserIdController.text = draft.externalUserId;
+      _sessionUserHashController.text = draft.userHash;
+    });
   }
 
   void _loadLocalDebugDefaults() {
