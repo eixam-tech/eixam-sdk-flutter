@@ -3,122 +3,44 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>EIXAM Connect SDK — Documentation Portal</title>
-  <link rel="stylesheet" href="assets/style.css" />
-  <style>
-    .portal-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 2rem;
-      margin-top: 3rem;
-    }
-    .portal-card {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      padding: 2.5rem;
-      transition: all 0.3s ease;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-      height: 100%;
-    }
-    .portal-card:hover {
-      border-color: var(--accent);
-      transform: translateY(-4px);
-      box-shadow: 0 12px 24px rgba(0,0,0,0.3);
-    }
-    .portal-card h2 {
-      margin-top: 0;
-      color: white;
-      font-size: 1.75rem;
-    }
-    .portal-card p {
-      color: #dbe3fb;
-      line-height: 1.6;
-      margin-bottom: 2rem;
-      flex-grow: 1;
-    }
-    .btn {
-      display: inline-block;
-      padding: 0.75rem 1.5rem;
-      background: var(--accent);
-      color: var(--bg);
-      font-weight: 700;
-      border-radius: 8px;
-      text-align: center;
-      transition: opacity 0.2s;
-    }
-    .btn:hover {
-      opacity: 0.9;
-    }
-    .btn-secondary {
-      background: #162344;
-      color: white;
-      border: 1px solid var(--line);
-    }
-    .btn-secondary:hover {
-      background: #1c2b54;
-    }
-    header.hero {
-      text-align: center;
-      padding: 4rem 0 2rem;
-    }
-    header.hero h1 {
-      font-size: 3rem;
-      margin-bottom: 1rem;
-      background: linear-gradient(135deg, white 0%, #8dd8ff 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-    }
-    header.hero p {
-      font-size: 1.25rem;
-      color: #c9d4f3;
-      max-width: 600px;
-      margin: 0 auto;
-    }
-    main {
-      max-width: 1100px;
-      margin: 0 auto;
-      padding: 0 2rem 4rem;
-    }
-    footer {
-      text-align: center;
-      padding: 4rem 0;
-      border-top: 1px solid var(--line);
-      color: #6a7ba1;
-      font-size: 0.9rem;
-    }
-  </style>
+  <title>EIXAM Connect SDK — Partner Documentation</title>
+  <link rel="stylesheet" href="/assets/style.css" />
 </head>
 <body>
-  <header class="hero">
-    <h1>EIXAM Connect SDK</h1>
-    <p>The documentation portal for EIXAM's connected safety platform.</p>
+  <header class="topbar">
+    <a href="/index.html" class="brand" style="text-decoration:none; color:inherit; display:block;">EIXAM Connect SDK</a>
+    <div class="site-tag">partner docs</div>
   </header>
-  
-  <main>
-    <div class="portal-grid">
-      <div class="portal-card">
-        <div>
-          <h2>Partner Portal</h2>
-          <p>Public documentation for external teams integrating EIXAM Connect SDK into their apps. Includes quickstart, API reference, and integration guides.</p>
-        </div>
-        <a href="partner/" class="btn">View Partner Docs</a>
-      </div>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Navigation</div>
       
-      <div class="portal-card">
-        <div>
-          <h2>Full Technical Docs</h2>
-          <p>Internal documentation for EIXAM engineering. Includes architecture, BLE protocol specs, validation app guides, and development roadmap.</p>
-        </div>
-        <a href="full/" class="btn btn-secondary">View Full Docs</a>
-      </div>
-    </div>
-  </main>
-
-  <footer>
-    &copy; 2026 EIXAM. All rights reserved.
-  </footer>
+      <a class="active" href="/">Home</a><a href="/sdk-overview">SDK Overview</a><a href="/quickstart">Quickstart</a><a href="/public-api">Public API</a><a href="/public-api-examples">Method Examples</a><a href="/model-reference">Model Reference</a><a href="/core-concepts">Core Concepts</a><a href="/protection-mode">Protection Mode</a><a href="/flutter-installation">Flutter Installation</a><a href="/flutter-integration">Flutter Integration</a><a href="/android-integration">Android Integration</a><a href="/ios-integration">iOS Integration</a><a href="/permissions-checklist">Permissions Checklist</a><a href="/backend-integration">Backend Integration</a><a href="/api-reference">API Reference</a><a href="/troubleshooting">Troubleshooting</a>
+    </aside>
+    <main class="content"><h1>EIXAM Connect SDK — Partner Documentation</h1>
+<p>This site is the partner-facing integration portal for EIXAM Connect SDK.</p>
+<p>It is intentionally narrower than the full internal documentation set. It focuses on what a partner team actually needs to integrate the SDK into a Flutter host app and complete the required Android/iOS setup.</p>
+<p><a id="recommended-reading-order"></a></p>
+<h2>Recommended reading order</h2>
+<ol>
+<li><a href="/sdk-overview">SDK Overview</a></li>
+<li><a href="/quickstart">Quickstart</a></li>
+<li><a href="/public-api">Public API</a></li>
+<li><a href="/public-api-examples">Method Examples</a></li>
+<li><a href="/flutter-integration">Flutter Integration</a></li>
+<li><a href="/android-integration">Android Integration</a></li>
+<li><a href="/ios-integration">iOS Integration</a></li>
+<li><a href="/backend-integration">Backend Integration</a></li>
+</ol>
+<p><a id="what-is-intentionally-out-of-scope-here"></a></p>
+<h2>What is intentionally out of scope here</h2>
+<p>This partner site does <strong>not</strong> expose internal validation workflows, handoff notes, or experimental surfaces such as Guided Rescue Phase 1.</p>
+<p>Use the <a href="/full/index.html">full site</a> for internal engineering material.</p>
+</main>
+    <aside class="toc">
+      <div class="toc-title">On this page</div>
+      <a class="toc-level-2" href="#recommended-reading-order">Recommended reading order</a><a class="toc-level-2" href="#what-is-intentionally-out-of-scope-here">What is intentionally out of scope here</a>
+    </aside>
+  </div>
 </body>
 </html>

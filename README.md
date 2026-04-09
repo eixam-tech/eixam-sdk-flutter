@@ -25,7 +25,7 @@ This documentation set is aligned to the **single-call bootstrap flow**:
 
 Open the generated partner portal at:
 
-- `site/partner/index.html`
+- `site/index.html`
 
 Source Markdown lives under:
 
