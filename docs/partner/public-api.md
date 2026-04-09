@@ -26,6 +26,8 @@ Signed-session reminder:
 - the partner backend owns the app secret and signs the session
 - the mobile app receives `appId`, `externalUserId`, and `userHash`
 - the same identity is reused across HTTP and MQTT/runtime transport
+- HTTP keeps `Authorization: Bearer <userHash>`
+- MQTT uses `username = sdk:<appId>:<externalUserId>` and `password = <userHash>`
 
 ```dart
 final sdk = await EixamConnectSdk.bootstrap(

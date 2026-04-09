@@ -45,6 +45,11 @@ const EixamCustomEndpoints(
 
 If your environment uses `ws://` or `wss://` instead, treat that as a transport-dependent alternative rather than the default staging recommendation.
 
+The signed session is reused across both transports:
+
+- HTTP uses `Authorization: Bearer <userHash>`
+- MQTT uses `username = sdk:<appId>:<externalUserId>` and `password = <userHash>`
+
 ## Diagnostics
 
 ### `getOperationalDiagnostics`

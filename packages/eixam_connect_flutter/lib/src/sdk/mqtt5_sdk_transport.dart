@@ -45,19 +45,14 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
       );
     };
     client.onBadCertificate = (_) => false;
-    client.connectionMessage = MqttConnectMessage()
-        .withClientIdentifier(request.clientIdentifier)
-        .startClean()
+    var connectMessage =
+        MqttConnectMessage().withClientIdentifier(request.clientIdentifier);
+    if (request.cleanSession) {
+      connectMessage = connectMessage.startClean();
+    }
+    client.connectionMessage = connectMessage
         .keepAliveFor(30)
-        .withUserProperties(
-          request.userProperties.entries
-              .map(
-                (entry) => MqttUserProperty()
-                  ..pairName = entry.key
-                  ..pairValue = entry.value,
-              )
-              .toList(growable: false),
-        );
+        .authenticateAs(request.username, request.password);
 
     try {
       await client.connect();

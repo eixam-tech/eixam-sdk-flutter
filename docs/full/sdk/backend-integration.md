@@ -34,6 +34,17 @@ The SDK does not compute these values locally.
 - `/v1/auth/sign` is acceptable for internal staging validation
 - partner production integrations must implement the signing flow on their own backend
 
+## Authentication and signing flow for partners
+
+1. the partner/backend service stores the app secret
+2. the backend signs or obtains `userHash` for `appId` + `externalUserId`
+3. `externalUserId` must be unique per app
+4. the mobile app receives a signed session containing `appId`, `externalUserId`, and `userHash`
+5. the SDK bootstraps with `appId` + `initialSession`, or receives the same session later through `setSession(...)`
+6. the SDK reuses that identity for both HTTP and MQTT/runtime transport
+
+Internal EIXAM staging validation may use `/v1/auth/sign`, but partner production deployments must keep the signing step on their own backend.
+
 ## Bootstrap model
 
 The public Flutter bootstrap path is:
@@ -79,12 +90,27 @@ Backend registry surface for devices.
 
 Backend-aligned CRUD surface for contacts.
 
+HTTP auth remains:
+
+- `X-App-ID: <appId>`
+- `X-User-ID: <externalUserId>`
+- `Authorization: Bearer <userHash>`
+
 ## Operational transport
 
 - SOS trigger uses operational transport
 - telemetry publish uses operational transport
 - host apps should not bypass SDK topic/transport conventions
 - the configured broker URI may be `ssl://`, `tls://`, `tcp://`, `ws://`, or `wss://` depending on environment/client transport
+
+MQTT auth now uses:
+
+- `username = sdk:<appId>:<externalUserId>`
+- `password = <userHash>`
+- no `Bearer` prefix in MQTT
+- clean session enabled
+
+The runtime no longer depends on MQTT 5 User Properties for identity. Topics, payloads, QoS, retain behavior, reconnect behavior, and signed-session semantics stay the same.
 
 ## Internal note
 

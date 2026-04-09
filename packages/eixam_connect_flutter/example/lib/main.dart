@@ -587,7 +587,7 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
                   value: _includeInitialSession,
                   title: const Text('Include initial signed session'),
                   subtitle: const Text(
-                    'Disable this if your app bootstraps first and applies the session later. Keep app secrets on your backend and pass only the signed session to the app.',
+                    'Disable this if your app bootstraps first and applies the session later. Keep app secrets on your backend and pass only the signed session to the app. HTTP still uses Bearer userHash, while MQTT reuses the same signed session as broker username/password.',
                   ),
                   onChanged: (value) {
                     setState(() {
@@ -606,7 +606,7 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
                   TextField(
                     controller: _userHashController,
                     decoration: const InputDecoration(
-                      labelText: 'Signed session value',
+                      labelText: 'Signed session userHash',
                     ),
                   ),
                 ],

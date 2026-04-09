@@ -53,6 +53,23 @@ final sdk = await EixamConnectSdk.bootstrap(
 - if you pass `initialSession`, ensure the `appId` matches the bootstrap `appId`
 - the `websocketUrl` / `mqttUrl` field names stay stable for now even when the realtime URI is `ssl://`, `tls://`, `tcp://`, `ws://`, or `wss://`
 
+## MQTT auth migration
+
+HTTP auth is unchanged:
+
+- `X-App-ID: <appId>`
+- `X-User-ID: <externalUserId>`
+- `Authorization: Bearer <userHash>`
+
+MQTT auth now uses broker-compatible credentials instead of MQTT 5 User Properties:
+
+- `username = sdk:<appId>:<externalUserId>`
+- `password = <userHash>`
+- no `Bearer` prefix in the MQTT password
+- clean session remains enabled
+
+This migration does not change the signed-session shape, MQTT topics, payloads, QoS, retain behavior, or the rule that the app secret stays on the backend only.
+
 ## What bootstrap does not do
 
 - it does not request permissions

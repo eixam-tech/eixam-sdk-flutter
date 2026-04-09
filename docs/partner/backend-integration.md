@@ -21,6 +21,17 @@ The host app is expected to rely on a partner/backend service that provides:
 - `/v1/auth/sign` is acceptable for internal staging validation only
 - real partner integrations must implement the server-side sign flow in the partner backend
 
+## Authentication and signing flow for partners
+
+1. the partner backend stores the app secret
+2. the backend signs or obtains `userHash` for `appId` + `externalUserId`
+3. `externalUserId` must be unique per app
+4. the mobile app receives a signed session containing `appId`, `externalUserId`, and `userHash`
+5. the SDK bootstraps with `appId` + `initialSession`, or receives the same signed session later through `setSession(...)`
+6. the SDK reuses that same identity for both HTTP and MQTT
+
+`/v1/auth/sign` is acceptable only for internal EIXAM staging validation. Partner production systems must implement the sign flow on their own backend.
+
 ## Signed session contract
 
 Minimum fields:
@@ -69,6 +80,23 @@ final sdk = await EixamConnectSdk.bootstrap(
 - active SOS rehydration: `GET /v1/sdk/sos`
 - telemetry: operational transport
 - registered devices and contacts: HTTP surfaces
+
+## HTTP auth vs MQTT auth
+
+HTTP remains unchanged:
+
+- `X-App-ID: <appId>`
+- `X-User-ID: <externalUserId>`
+- `Authorization: Bearer <userHash>`
+
+MQTT now uses broker username/password auth:
+
+- `username = sdk:<appId>:<externalUserId>`
+- `password = <userHash>`
+- no `Bearer` prefix in MQTT
+- clean session is enabled
+
+The SDK keeps the current topics, payloads, QoS, retain behavior, and signed-session flow. The same signed identity is reused across HTTP and MQTT.
 
 ## Important note
 

@@ -2393,7 +2393,7 @@ void main() {
     });
 
     test(
-        'mqtt realtime composes connect properties and canonical encoded event topics',
+        'mqtt realtime composes username/password auth and canonical encoded event topics',
         () async {
       final sessionContext = SdkSessionContext()
         ..currentSession = const EixamSession.signed(
@@ -2421,11 +2421,9 @@ void main() {
       try {
         await mqttClient.connect();
 
-        expect(capturedRequest.userProperties, <String, String>{
-          'x_app_id': 'app-demo',
-          'x_user_id': 'external-123',
-          'authorization': 'Bearer deadbeef',
-        });
+        expect(capturedRequest.username, 'sdk:app-demo:external-123');
+        expect(capturedRequest.password, 'deadbeef');
+        expect(capturedRequest.cleanSession, isTrue);
         expect(
           transport.subscriptions,
           <String>['sos/events/partner%2Fuser%2042'],

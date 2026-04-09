@@ -8,12 +8,16 @@ class SdkMqttConnectRequest {
   const SdkMqttConnectRequest({
     required this.brokerUri,
     required this.clientIdentifier,
-    required this.userProperties,
+    required this.username,
+    required this.password,
+    required this.cleanSession,
   });
 
   final Uri brokerUri;
   final String clientIdentifier;
-  final Map<String, String> userProperties;
+  final String username;
+  final String password;
+  final bool cleanSession;
 }
 
 class SdkMqttEnvelope {
@@ -80,11 +84,9 @@ class SdkMqttContract {
     return SdkMqttConnectRequest(
       brokerUri: brokerUri,
       clientIdentifier: _clientIdentifierFor(session),
-      userProperties: <String, String>{
-        'x_app_id': session.appId,
-        'x_user_id': session.externalUserId,
-        'authorization': 'Bearer ${session.userHash}',
-      },
+      username: 'sdk:${session.appId}:${session.externalUserId}',
+      password: session.userHash,
+      cleanSession: true,
     );
   }
 

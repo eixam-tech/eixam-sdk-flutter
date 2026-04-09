@@ -31,6 +31,18 @@ import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
 - the same signed identity is reused by the SDK for both HTTP and MQTT/runtime transport
 - `/v1/auth/sign` is acceptable for internal EIXAM staging validation only; partner production flows must implement the server-side signing step in the partner backend
 
+HTTP auth remains:
+
+- `X-App-ID`
+- `X-User-ID`
+- `Authorization: Bearer <userHash>`
+
+MQTT auth now uses:
+
+- `username = sdk:<appId>:<externalUserId>`
+- `password = <userHash>`
+- no `Bearer` prefix in MQTT
+
 ### Standard environment
 
 ```dart

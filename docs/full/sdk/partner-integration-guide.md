@@ -34,6 +34,10 @@ It gives partners a cleaner happy path than exposing `createHttpApi + initialize
 - the SDK then reuses the same identity for HTTP and MQTT/runtime transport
 - internal staging validation may use `/v1/auth/sign`, but partner production signing must stay on the backend
 
+HTTP auth remains `X-App-ID`, `X-User-ID`, and `Authorization: Bearer <userHash>`.
+
+MQTT auth now uses `username = sdk:<appId>:<externalUserId>` and `password = <userHash>`, without a `Bearer` prefix.
+
 ## Validation rules
 
 - standard environments resolve internally

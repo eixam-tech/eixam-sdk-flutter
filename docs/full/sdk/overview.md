@@ -19,6 +19,10 @@ The partner-facing mental model is simple:
 - the same identity is reused for HTTP and MQTT/runtime transport
 - `/v1/auth/sign` is acceptable for internal EIXAM staging validation only; partner production integrations must keep the signing step on their own backend
 
+HTTP auth remains `X-App-ID`, `X-User-ID`, and `Authorization: Bearer <userHash>`.
+
+MQTT auth now uses `username = sdk:<appId>:<externalUserId>` and `password = <userHash>`, without a `Bearer` prefix.
+
 ## Happy path
 
 ```dart

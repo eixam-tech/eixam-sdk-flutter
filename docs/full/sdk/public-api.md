@@ -21,6 +21,8 @@ Signed-session reminder:
 - backend-owned app secret only
 - mobile app receives a signed session from backend
 - the same signed identity is reused for HTTP and MQTT/runtime transport
+- HTTP keeps `Authorization: Bearer <userHash>`
+- MQTT uses `username = sdk:<appId>:<externalUserId>` and `password = <userHash>`
 - `websocketUrl` naming stays stable even when the actual broker URI is not websocket-based
 
 ## Diagnostics

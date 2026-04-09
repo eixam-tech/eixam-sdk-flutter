@@ -11,6 +11,18 @@ Partner/backend signing responsibility:
 - the SDK does not compute `userHash` locally or own the app secret
 - internal staging validation may use `/v1/auth/sign`, but partner production signing belongs on the backend
 
+HTTP auth stays:
+
+- `X-App-ID`
+- `X-User-ID`
+- `Authorization: Bearer <userHash>`
+
+MQTT auth now stays broker-native:
+
+- `username = sdk:<appId>:<externalUserId>`
+- `password = <userHash>`
+- no MQTT `Bearer` prefix
+
 ### `GET /v1/sdk/me`
 
 Used by the SDK to enrich the signed session with canonical backend identity.

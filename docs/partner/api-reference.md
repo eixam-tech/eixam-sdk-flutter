@@ -10,6 +10,18 @@ Partner auth/signing responsibility:
 - the backend returns a signed session to the mobile app
 - the SDK does not hold the app secret or call the partner signing flow by itself
 
+HTTP auth stays:
+
+- `X-App-ID`
+- `X-User-ID`
+- `Authorization: Bearer <userHash>`
+
+MQTT auth now stays broker-native:
+
+- `username = sdk:<appId>:<externalUserId>`
+- `password = <userHash>`
+- no MQTT `Bearer` prefix
+
 ### `GET /v1/sdk/me`
 
 Used by the SDK to enrich the signed session with canonical backend identity.

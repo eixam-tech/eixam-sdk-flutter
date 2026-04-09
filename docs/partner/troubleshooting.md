@@ -55,3 +55,14 @@ This can be expected depending on current iOS runtime ownership support.
 ## Realtime appears incomplete
 
 Current realtime may still depend on backend protocol maturity. Use runtime diagnostics and current agreed backend transport behavior as the source of truth.
+
+## MQTT auth fails after copying HTTP headers
+
+Cause: the client or backend guidance is still treating MQTT auth like HTTP auth or old MQTT 5 User Properties.
+
+Fix:
+
+- keep HTTP as `Authorization: Bearer <userHash>`
+- use MQTT `username = sdk:<appId>:<externalUserId>`
+- use MQTT `password = <userHash>`
+- do not send a `Bearer` prefix in MQTT
