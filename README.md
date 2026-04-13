@@ -1,81 +1,111 @@
-# EIXAM Connect SDK
+# EIXAM Connect Flutter SDK
 
-EIXAM Connect SDK is the partner-facing integration layer of EIXAM's connected safety platform.
+EIXAM Connect is the partner-facing integration layer of EIXAM's connected safety platform.
 
-This monorepo is **SDK-first**:
-
-- the SDK is the product foundation
-- host apps stay thin and consume SDK contracts
-- `apps/eixam_control_app` is a validation host, not the final partner UX
-- critical safety logic belongs in the SDK/runtime layers, not in app widgets
-
-## What changed in this documentation set
-
-This documentation set is aligned to the **single-call bootstrap flow**:
-
-- `EixamConnectSdk.bootstrap(...)` is the recommended public entrypoint
-- `production`, `sandbox`, and `staging` are resolved internally
-- `custom` requires `EixamCustomEndpoints`
-- `initialSession` is optional, but when provided it must match the bootstrap `appId`
-- `bootstrap(...)` does **not** request permissions, pair devices, or trigger UX-sensitive actions
-
-## Documentation entrypoints
-
-### Partner docs
-
-Open the generated partner portal at:
-
-- `site/index.html`
-
-Source Markdown lives under:
-
-- `docs/partner/`
-
-### Full / internal docs
-
-Open the full technical portal at:
-
-- `site/full/index.html`
-
-Source Markdown lives under:
-
-- `docs/full/`
+This monorepo is **SDK-first**: the SDK is the product, the validation app is a thin host to exercise it.
 
 ## Repository structure
 
-- `apps/eixam_control_app` — reference/validation host app
-- `packages/eixam_connect_core` — public contracts, entities, enums, state models
-- `packages/eixam_connect_flutter` — runtime implementation, persistence, BLE, protection, MQTT, permissions
-- `packages/eixam_connect_ui` — reusable UI helpers
-- `docs/` — Markdown source of truth for partner and full portals
-- `site/` — generated HTML output
+| Path | Role |
+|------|------|
+| `apps/eixam_control_app` | Validation host app — exercises SDK flows, not a partner UX |
+| `packages/eixam_connect_core` | Public contracts, entities, enums, state models |
+| `packages/eixam_connect_flutter` | Runtime implementation — BLE, persistence, protection, MQTT, permissions |
+| `packages/eixam_connect_ui` | Reusable UI helpers |
 
-## Best place to start
+## Prerequisites
 
-- Partner integration: `docs/partner/quickstart.md`
-- Public SDK surface: `docs/partner/public-api.md`
-- Exhaustive method examples: `docs/partner/public-api-examples.md`
-- Internal architecture: `docs/full/sdk/architecture.md`
+- Flutter installed and available in `PATH`
+- Android SDK installed (Android Studio or VS Code)
+- At least one emulator or physical device visible in `flutter devices`
 
-## Release artifacts
+```bash
+flutter doctor
+flutter devices
+```
 
-A partner-ready SDK release should include:
+## Running the validation app
 
-- a versioned SDK tag
-- `docs/partner/`
-- `docs/full/`
-- `site/partner/`
-- `site/full/`
-- onboarding and integration notes as applicable
+From the **repository root**:
 
-Use these artifacts together so partners receive the SDK version, the
-partner-facing guidance, and the deeper technical reference in one release
-package.
+```bash
+flutter clean
+flutter pub get
+flutter run -t apps/eixam_control_app/lib/main.dart
+```
 
-For the wider release readiness checklist, see `docs/sdk/SDK_RELEASE_CHECKLIST.md`.
+> Always run from the monorepo root. Do not work from nested copies.
 
-## Developer onboarding
+## Partner integration
 
-- project runbook: `HOW_TO_RUN_PROJECT.md`
-- internal engineering contract: `AGENTS.md`
-- package docs: `packages/eixam_connect_flutter/README.md`
+Bootstrap the SDK with a single call:
+
+```dart
+import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
+
+final sdk = await EixamConnectSdk.bootstrap(
+  const EixamBootstrapConfig(
+    appId: 'partner-app',
+    environment: EixamEnvironment.production,
+    initialSession: EixamSession.signed(
+      appId: 'partner-app',
+      externalUserId: 'partner-user-123',
+      userHash: 'signed-session-hash',
+    ),
+  ),
+);
+```
+
+- `production`, `sandbox`, and `staging` are resolved internally
+- `custom` requires `EixamCustomEndpoints`
+- `initialSession` is optional; when provided its `appId` must match bootstrap `appId`
+- Bootstrap does not request permissions, pair devices, or trigger UX-sensitive actions
+
+## Local package dependency model
+
+The validation app uses local path dependencies:
+
+```yaml
+dependencies:
+  eixam_connect_core:
+    path: ../../packages/eixam_connect_core
+  eixam_connect_flutter:
+    path: ../../packages/eixam_connect_flutter
+  eixam_connect_ui:
+    path: ../../packages/eixam_connect_ui
+```
+
+## Quality checks
+
+Before merging:
+
+```bash
+dart format --set-exit-if-changed .
+flutter analyze --no-fatal-infos
+flutter test
+```
+
+## Troubleshooting
+
+**Stale state** — if the app behaves inconsistently:
+
+```bash
+flutter clean
+flutter pub get
+```
+
+Also uninstall the app from the emulator or device.
+
+**Wrong entrypoint** — always use:
+
+```bash
+flutter run -t apps/eixam_control_app/lib/main.dart
+```
+
+## Key references
+
+- Engineering contract: [`AGENTS.md`](AGENTS.md)
+- Package API: [`packages/eixam_connect_flutter/README.md`](packages/eixam_connect_flutter/README.md)
+- Public API surface: [`packages/eixam_connect_flutter/PUBLIC_API.md`](packages/eixam_connect_flutter/PUBLIC_API.md)
+- Native permissions: [`packages/eixam_connect_flutter/NATIVE_PERMISSIONS_CHECKLIST.md`](packages/eixam_connect_flutter/NATIVE_PERMISSIONS_CHECKLIST.md)
+- Migration guide: [`packages/eixam_connect_flutter/MIGRATION.md`](packages/eixam_connect_flutter/MIGRATION.md)
