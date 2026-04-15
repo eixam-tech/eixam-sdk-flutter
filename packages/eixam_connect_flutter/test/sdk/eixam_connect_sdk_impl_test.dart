@@ -2947,6 +2947,32 @@ void main() {
       expect(capturedRequest.headers['Authorization'], 'Bearer deadbeef');
     });
 
+    test('http resolve path propagates backend failure', () async {
+      final dataSource = HttpSosRemoteDataSource(
+        transport: SdkHttpTransport(
+          client: _RecordingClient(
+            handler: (_) async => http.Response('backend exploded', 500),
+          ),
+          config: const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
+          sessionContext: SdkSessionContext()
+            ..currentSession = const EixamSession.signed(
+              appId: 'app-demo',
+              externalUserId: 'external-123',
+              userHash: 'deadbeef',
+            ),
+        ),
+      );
+
+      await expectLater(
+        dataSource.resolveSos(),
+        throwsA(
+          isA<SosException>()
+              .having((error) => error.code, 'code', 'E_HTTP_SOS_RESOLVE_FAILED')
+              .having((error) => error.message, 'message', 'backend exploded'),
+        ),
+      );
+    });
+
     test('mqtt incoming SOS events map into lifecycle states', () async {
       final realtimeClient = _FakeOperationalRealtimeClient();
       final repository = MqttOperationalSosRepository(
