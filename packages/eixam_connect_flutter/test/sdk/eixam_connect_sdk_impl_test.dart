@@ -3154,6 +3154,84 @@ void main() {
     });
 
     test(
+        'mqtt resolve settles from backend rehydration when resolve returns null',
+        () async {
+      final realtimeClient = _FakeOperationalRealtimeClient();
+      final cancelDataSource = _FakeCancelSosRemoteDataSource()
+        ..activeAfterResolveResult = SosIncidentDto(
+          id: 'sos-1',
+          state: 'resolved',
+          createdAt: '2026-03-30T12:00:00.000Z',
+        );
+      final repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        cancelRemoteDataSource: cancelDataSource,
+      );
+
+      try {
+        await repository.triggerSos(
+          message: 'Need help',
+          triggerSource: 'button_ui',
+          positionSnapshot: TrackingPosition(
+            latitude: 41.38,
+            longitude: 2.17,
+            altitude: 8,
+            timestamp: DateTime.utc(2026, 3, 30, 12),
+          ),
+        );
+
+        final resolved = await repository.resolveSos();
+
+        expect(cancelDataSource.resolveCallCount, 1);
+        expect(cancelDataSource.getActiveCallCount, 1);
+        expect(resolved.state, SosState.resolved);
+        expect(await repository.getSosState(), SosState.resolved);
+      } finally {
+        await repository.dispose();
+        await realtimeClient.dispose();
+      }
+    });
+
+    test(
+        'mqtt resolve keeps backend-active state when resolve does not persist remotely',
+        () async {
+      final realtimeClient = _FakeOperationalRealtimeClient();
+      final cancelDataSource = _FakeCancelSosRemoteDataSource()
+        ..activeAfterResolveResult = SosIncidentDto(
+          id: 'sos-1',
+          state: 'sent',
+          createdAt: '2026-03-30T12:00:00.000Z',
+        );
+      final repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        cancelRemoteDataSource: cancelDataSource,
+      );
+
+      try {
+        await repository.triggerSos(
+          message: 'Need help',
+          triggerSource: 'button_ui',
+          positionSnapshot: TrackingPosition(
+            latitude: 41.38,
+            longitude: 2.17,
+            altitude: 8,
+            timestamp: DateTime.utc(2026, 3, 30, 12),
+          ),
+        );
+
+        final resolved = await repository.resolveSos();
+
+        expect(cancelDataSource.resolveCallCount, 1);
+        expect(cancelDataSource.getActiveCallCount, 1);
+        expect(resolved.state, SosState.sent);
+        expect(await repository.getSosState(), SosState.sent);
+      } finally {
+        await repository.dispose();
+        await realtimeClient.dispose();
+      }
+    });
+
+    test(
         'mqtt SOS keeps a recent local incident when backend is briefly inconsistent after trigger',
         () async {
       final realtimeClient = _FakeOperationalRealtimeClient();
@@ -4569,6 +4647,44 @@ void main() {
       }
     });
 
+    test('mqtt telemetry publish surfaces transport failures', () async {
+      final sessionContext = SdkSessionContext()
+        ..currentSession = const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-123',
+          userHash: 'deadbeef',
+          sdkUserId: 'sdk-user-42',
+          canonicalExternalUserId: 'partner/user 42',
+        );
+      final mqttClient = MqttRealtimeClient(
+        config: const EixamSdkConfig(
+          apiBaseUrl: 'https://api.example.test',
+          websocketUrl: 'wss://mqtt.example.test/mqtt',
+        ),
+        sessionContext: sessionContext,
+        transportFactory: (_) => _FakeSdkMqttTransport(
+          publishError: StateError('publish failed'),
+        ),
+      );
+
+      try {
+        await expectLater(
+          mqttClient.publishTelemetry(
+            SdkTelemetryPayload(
+              timestamp: DateTime.utc(2026, 3, 31, 10, 15),
+              latitude: 41.38,
+              longitude: 2.17,
+              altitude: 8,
+              deviceId: 'device-1',
+            ),
+          ),
+          throwsA(isA<StateError>()),
+        );
+      } finally {
+        await mqttClient.dispose();
+      }
+    });
+
     test(
         'scheduleDeathMan transitions the repository to monitoring and emits an event',
         () async {
@@ -5001,9 +5117,10 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
 }
 
 class _FakeSdkMqttTransport implements SdkMqttTransport {
-  _FakeSdkMqttTransport({this.connectCompleter});
+  _FakeSdkMqttTransport({this.connectCompleter, this.publishError});
 
   final Completer<void>? connectCompleter;
+  final Object? publishError;
   final StreamController<SdkMqttIncomingMessage> _messageController =
       StreamController<SdkMqttIncomingMessage>.broadcast();
   final StreamController<SdkMqttDisconnectEvent> _disconnectController =
@@ -5047,6 +5164,9 @@ class _FakeSdkMqttTransport implements SdkMqttTransport {
     SdkMqttQos qos = SdkMqttQos.atLeastOnce,
     bool retain = false,
   }) async {
+    if (publishError != null) {
+      throw publishError!;
+    }
     publications.add(
       _PublishedMqttMessage(
         topic: topic,
@@ -5133,6 +5253,7 @@ class _FakeCancelSosRemoteDataSource implements SosRemoteDataSource {
   SosIncidentDto? cancelResult;
   SosIncidentDto? resolveResult;
   SosIncidentDto? activeAfterCancelResult;
+  SosIncidentDto? activeAfterResolveResult;
   int backendLagAfterTriggerReads = 0;
   SosIncidentDto? activeIncident = SosIncidentDto(
     id: 'sos-1',
@@ -5161,7 +5282,7 @@ class _FakeCancelSosRemoteDataSource implements SosRemoteDataSource {
       backendLagAfterTriggerReads--;
       return null;
     }
-    return activeAfterCancelResult ?? activeIncident;
+    return activeAfterCancelResult ?? activeAfterResolveResult ?? activeIncident;
   }
 
   @override

@@ -6,6 +6,7 @@ import 'package:eixam_connect_core/src/events/realtime_event.dart';
 import 'package:eixam_connect_core/src/interfaces/realtime_client.dart';
 
 import '../data/datasources_remote/sdk_session_context.dart';
+import '../device/ble_debug_registry.dart';
 import 'operational_realtime_client.dart';
 import 'sdk_mqtt_contract.dart';
 import 'sdk_mqtt_transport.dart';
@@ -138,12 +139,25 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
             session.externalUserId,
       ),
     );
-    await transport.publish(
-      topic: envelope.topic,
-      payload: envelope.payload,
-      qos: SdkMqttQos.atLeastOnce,
-      retain: false,
+    BleDebugRegistry.instance.recordEvent(
+      'Telemetry publish start -> transport=MQTT method=PUBLISH topic=${envelope.topic} payload=${envelope.payload}',
     );
+    try {
+      await transport.publish(
+        topic: envelope.topic,
+        payload: envelope.payload,
+        qos: SdkMqttQos.atLeastOnce,
+        retain: false,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'Telemetry publish success -> transport=MQTT topic=${envelope.topic} qos=1 retain=false backendHttpResponse=<not_applicable>',
+      );
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'Telemetry publish failure -> transport=MQTT topic=${envelope.topic} error=$error',
+      );
+      rethrow;
+    }
   }
 
   @override
