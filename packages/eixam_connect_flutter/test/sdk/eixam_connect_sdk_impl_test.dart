@@ -2210,6 +2210,19 @@ void main() {
       expect((event as SOSCancelledEvent).incidentId, incident.id);
     });
 
+    test('resolveSos delegates through the public SDK seam', () async {
+      sosRepository.currentIncident = SosIncident(
+        id: 'sos-1',
+        state: SosState.sent,
+        createdAt: DateTime.utc(2026, 1, 1),
+      );
+
+      await sdk.resolveSos();
+
+      expect(sosRepository.resolveCallCount, 1);
+      expect(sosRepository.currentIncident.state, SosState.resolved);
+    });
+
     test(
         'mqtt-backed cancel settles immediately from backend cancel response and emits cancelled event',
         () async {
@@ -2893,6 +2906,40 @@ void main() {
       expect(
         capturedRequest.url.toString(),
         'https://api.example.test/v1/sdk/sos/cancel',
+      );
+      expect(capturedRequest.body, isEmpty);
+      expect(capturedRequest.headers['X-App-ID'], 'app-demo');
+      expect(capturedRequest.headers['X-User-ID'], 'external-123');
+      expect(capturedRequest.headers['Authorization'], 'Bearer deadbeef');
+    });
+
+    test('http resolve path posts to /v1/sdk/sos/resolve without a request body',
+        () async {
+      late http.Request capturedRequest;
+      final dataSource = HttpSosRemoteDataSource(
+        transport: SdkHttpTransport(
+          client: _RecordingClient(
+            handler: (request) async {
+              capturedRequest = request;
+              return http.Response('{"incident":null}', 200);
+            },
+          ),
+          config: const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
+          sessionContext: SdkSessionContext()
+            ..currentSession = const EixamSession.signed(
+              appId: 'app-demo',
+              externalUserId: 'external-123',
+              userHash: 'deadbeef',
+            ),
+        ),
+      );
+
+      await dataSource.resolveSos();
+
+      expect(capturedRequest.method, 'POST');
+      expect(
+        capturedRequest.url.toString(),
+        'https://api.example.test/v1/sdk/sos/resolve',
       );
       expect(capturedRequest.body, isEmpty);
       expect(capturedRequest.headers['X-App-ID'], 'app-demo');
@@ -5055,8 +5102,10 @@ class _FakeOperationalRealtimeClient implements OperationalRealtimeClient {
 
 class _FakeCancelSosRemoteDataSource implements SosRemoteDataSource {
   int cancelCallCount = 0;
+  int resolveCallCount = 0;
   int getActiveCallCount = 0;
   SosIncidentDto? cancelResult;
+  SosIncidentDto? resolveResult;
   SosIncidentDto? activeAfterCancelResult;
   int backendLagAfterTriggerReads = 0;
   SosIncidentDto? activeIncident = SosIncidentDto(
@@ -5070,6 +5119,13 @@ class _FakeCancelSosRemoteDataSource implements SosRemoteDataSource {
     cancelCallCount++;
     activeIncident = cancelResult;
     return cancelResult;
+  }
+
+  @override
+  Future<SosIncidentDto?> resolveSos() async {
+    resolveCallCount++;
+    activeIncident = resolveResult;
+    return resolveResult;
   }
 
   @override

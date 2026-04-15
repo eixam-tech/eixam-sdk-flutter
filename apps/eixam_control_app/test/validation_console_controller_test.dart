@@ -985,6 +985,12 @@ class _FakeValidationSdk implements EixamConnectSdk {
   }
 
   @override
+  Future<void> resolveSos() async {
+    currentIncident =
+        (currentIncident ?? cancelIncident).copyWith(state: SosState.resolved);
+  }
+
+  @override
   Future<SosIncident?> getCurrentSosIncident() async {
     getCurrentSosIncidentCallCount++;
     if (queuedCurrentIncidents.isNotEmpty) {

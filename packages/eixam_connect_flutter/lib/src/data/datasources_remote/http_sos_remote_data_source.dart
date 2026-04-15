@@ -81,6 +81,30 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
   }
 
   @override
+  Future<SosIncidentDto?> resolveSos() async {
+    final response = await transport.post(
+      '/v1/sdk/sos/resolve',
+    );
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw SosException('E_HTTP_SOS_RESOLVE_FAILED', response.body);
+    }
+
+    final payload = jsonDecode(response.body) as Map<String, dynamic>;
+    final incident = payload['incident'];
+    if (incident == null) {
+      return null;
+    }
+    if (incident is! Map<String, dynamic>) {
+      throw const SosException(
+        'E_HTTP_SOS_RESOLVE_FAILED',
+        'The backend returned an invalid incident payload.',
+      );
+    }
+    return SosIncidentDto.fromJson(incident);
+  }
+
+  @override
   Future<SosIncidentDto?> getActiveSos() async {
     final response = await transport.get('/v1/sdk/sos');
     if (response.statusCode < 200 || response.statusCode >= 300) {

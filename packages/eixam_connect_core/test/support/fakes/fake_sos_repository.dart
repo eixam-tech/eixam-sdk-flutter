@@ -18,12 +18,14 @@ class FakeSosRepository implements SosRepository {
 
   SosIncident? _triggerResult;
   SosIncident? _cancelResult;
+  SosIncident? _resolveResult;
   SosState _state;
   String? lastTriggerMessage;
   String? lastTriggerSource;
   TrackingPosition? lastTriggerPositionSnapshot;
   set triggerResult(SosIncident value) => _triggerResult = value;
   set cancelResult(SosIncident value) => _cancelResult = value;
+  set resolveResult(SosIncident value) => _resolveResult = value;
 
   @override
   Future<SosIncident> triggerSos({
@@ -43,6 +45,14 @@ class FakeSosRepository implements SosRepository {
   @override
   Future<SosIncident> cancelSos() async {
     final result = _cancelResult!;
+    _state = result.state;
+    _controller.add(_state);
+    return result;
+  }
+
+  @override
+  Future<SosIncident> resolveSos() async {
+    final result = _resolveResult ?? _cancelResult!;
     _state = result.state;
     _controller.add(_state);
     return result;

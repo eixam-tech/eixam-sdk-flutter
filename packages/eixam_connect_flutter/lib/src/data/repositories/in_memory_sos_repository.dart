@@ -96,6 +96,22 @@ class InMemorySosRepository implements SosRepository {
   }
 
   @override
+  Future<SosIncident> resolveSos() async {
+    final current = _stateMachine.current;
+    if ({SosState.idle, SosState.cancelled, SosState.resolved}
+            .contains(current) ||
+        _activeIncident == null) {
+      throw const SosException(
+          'E_SOS_RESOLVE_NOT_ALLOWED', 'There is no active SOS to resolve');
+    }
+
+    _activeIncident = _activeIncident!.copyWith(state: SosState.resolved);
+    _emit(_activeIncident!.state);
+    await _persistState();
+    return _activeIncident!;
+  }
+
+  @override
   Future<SosIncident?> getCurrentIncident() async => _activeIncident;
 
   @override

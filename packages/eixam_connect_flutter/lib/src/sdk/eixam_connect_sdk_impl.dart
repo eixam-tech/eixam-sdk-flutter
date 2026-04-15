@@ -1217,6 +1217,11 @@ class EixamConnectSdkImpl
     return incident;
   }
 
+  @override
+  Future<void> resolveSos() async {
+    await sosRepository.resolveSos();
+  }
+
   Future<TrackingPosition?> _loadPositionSnapshotForSos() async {
     try {
       return await trackingRepository.getCurrentPosition();

@@ -169,6 +169,39 @@ class MqttOperationalSosRepository
     }
   }
 
+  @override
+  Future<SosIncident> resolveSos() async {
+    if (!await _ensureActiveIncidentForCancellation()) {
+      throw const SosException(
+        'E_SOS_RESOLVE_NOT_ALLOWED',
+        'There is no active SOS to resolve',
+      );
+    }
+
+    final remoteDataSource = cancelRemoteDataSource;
+    if (remoteDataSource == null) {
+      throw const SosException(
+        'E_SOS_RESOLVE_HTTP_UNAVAILABLE',
+        'SOS resolve requires an HTTP remote data source.',
+      );
+    }
+
+    try {
+      final resolved = await remoteDataSource.resolveSos();
+      final settledIncident = await _settleResolvedIncident(
+        remoteDataSource: remoteDataSource,
+        resolvedDto: resolved,
+      );
+      await _persistState();
+      return settledIncident;
+    } catch (error) {
+      if (error is EixamSdkException) {
+        rethrow;
+      }
+      throw SosException('E_SOS_RESOLVE_FAILED', error.toString());
+    }
+  }
+
   Future<SosIncident> _settleCancelledIncident({
     required SosRemoteDataSource remoteDataSource,
     required SosIncidentDto? cancelledDto,
@@ -184,6 +217,24 @@ class MqttOperationalSosRepository
 
     _activeIncident = _activeIncident!.copyWith(state: SosState.cancelled);
     _setState(SosState.cancelled);
+    return _activeIncident!;
+  }
+
+  Future<SosIncident> _settleResolvedIncident({
+    required SosRemoteDataSource remoteDataSource,
+    required SosIncidentDto? resolvedDto,
+  }) async {
+    if (resolvedDto != null) {
+      return _applyBackendIncident(resolvedDto);
+    }
+
+    final activeAfterResolve = await remoteDataSource.getActiveSos();
+    if (activeAfterResolve != null) {
+      return _applyBackendIncident(activeAfterResolve);
+    }
+
+    _activeIncident = _activeIncident!.copyWith(state: SosState.resolved);
+    _setState(SosState.resolved);
     return _activeIncident!;
   }
 

@@ -51,6 +51,17 @@ class MockSosRemoteDataSource implements SosRemoteDataSource {
   }
 
   @override
+  Future<SosIncidentDto?> resolveSos() async {
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    if (_active == null) {
+      throw const SosException(
+          'E_SOS_NOT_FOUND', 'Active SOS incident not found');
+    }
+    _active = _active!.copyWith(state: SosState.resolved.name);
+    return _active!;
+  }
+
+  @override
   Future<SosIncidentDto?> getActiveSos() async {
     await Future<void>.delayed(const Duration(milliseconds: 100));
     return _active;

@@ -164,6 +164,7 @@ abstract class EixamConnectSdk {
   Stream<TrackingState> watchTrackingState();
 
   Future<SosIncident> cancelSos();
+  Future<void> resolveSos();
   Future<SosState> getSosState();
   @Deprecated('Use currentSosStateStream instead.')
   Stream<SosState> watchSosState();

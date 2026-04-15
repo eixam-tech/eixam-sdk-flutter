@@ -122,6 +122,34 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
   }
 
   @override
+  Future<SosIncident> resolveSos() async {
+    final current = _stateMachine.current;
+    if ({SosState.idle, SosState.cancelled, SosState.resolved}
+            .contains(current) ||
+        _activeIncident == null) {
+      throw const SosException(
+          'E_SOS_RESOLVE_NOT_ALLOWED', 'There is no active SOS to resolve');
+    }
+
+    try {
+      final dto = await remoteDataSource.resolveSos();
+      if (dto == null) {
+        _activeIncident = _activeIncident!.copyWith(state: SosState.resolved);
+      } else {
+        _activeIncident = mapper.toDomain(dto);
+      }
+      _emit(_activeIncident!.state);
+      await _persistState();
+      return _activeIncident!;
+    } catch (e) {
+      _emit(SosState.failed);
+      await _persistState();
+      if (e is EixamSdkException) rethrow;
+      throw SosException('E_SOS_RESOLVE_FAILED', e.toString());
+    }
+  }
+
+  @override
   Future<SosIncident?> getCurrentIncident() async {
     try {
       await rehydrateRuntimeStateFromBackend();

@@ -12,5 +12,6 @@ abstract class SosRemoteDataSource {
   });
 
   Future<SosIncidentDto?> cancelSos();
+  Future<SosIncidentDto?> resolveSos();
   Future<SosIncidentDto?> getActiveSos();
 }
