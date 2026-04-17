@@ -3627,6 +3627,22 @@ void main() {
           telemetryRepository.publishedPayloads.single.deviceId,
           'CF:82:99:88:77:66',
         );
+        expect(
+          telemetryRepository.publishedPayloads.single.deviceBattery,
+          isNull,
+        );
+        expect(
+          telemetryRepository.publishedPayloads.single.deviceCoverage,
+          isNull,
+        );
+        expect(
+          telemetryRepository.publishedPayloads.single.mobileBattery,
+          isNull,
+        );
+        expect(
+          telemetryRepository.publishedPayloads.single.mobileCoverage,
+          isNull,
+        );
       } finally {
         await bridge.dispose();
         await bleEvents.close();
@@ -3670,6 +3686,10 @@ void main() {
 
         expect(telemetryRepository.publishedPayloads, hasLength(1));
         expect(telemetryRepository.publishedPayloads.single.deviceId, isNull);
+        expect(
+          telemetryRepository.publishedPayloads.single.deviceBattery,
+          isNull,
+        );
       } finally {
         await bridge.dispose();
         await bleEvents.close();
@@ -4285,6 +4305,10 @@ void main() {
 
         expect(telemetryRepository.publishedPayloads, hasLength(1));
         expect(telemetryRepository.publishedPayloads.single.deviceId, isNull);
+        expect(
+          telemetryRepository.publishedPayloads.single.deviceBattery,
+          isNull,
+        );
         expect(
           telemetryRepository.publishedPayloads.single.timestamp,
           DateTime.utc(2026, 3, 31, 10),

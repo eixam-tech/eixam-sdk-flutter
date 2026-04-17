@@ -281,15 +281,9 @@ class BleOperationalRuntimeBridge {
       ),
     );
 
-    final payload = SdkTelemetryPayload(
-      timestamp: event.receivedAt.toUtc(),
-      latitude: packet.position.latitude,
-      longitude: packet.position.longitude,
-      altitude: packet.position.altitudeMeters.toDouble(),
-      deviceId: await _resolveBackendHardwareId(event),
-      deviceBattery: DeviceBatteryLevel.fromProtocolValue(packet.batteryLevel)
-          ?.approximatePercentage
-          .toDouble(),
+    final payload = await _buildBackendSafeBleTelemetryPayload(
+      event: event,
+      packet: packet,
     );
     if (!_hasMinimumTelemetry(payload)) {
       _emitDiagnostics(
@@ -338,6 +332,24 @@ class BleOperationalRuntimeBridge {
       payload: payload,
       signature: signature,
       allowPendingFallback: true,
+    );
+  }
+
+  Future<SdkTelemetryPayload> _buildBackendSafeBleTelemetryPayload({
+    required BleIncomingEvent event,
+    required EixamTelPacket packet,
+  }) async {
+    // BLE-originated telemetry is intentionally limited to the backend-safe
+    // minimum contract for now. The shared SDK payload still exposes richer
+    // scalar enrichment fields, but sending them from BLE currently causes
+    // backend contract mismatches and blocks ingestion. Unblock ingestion first;
+    // revisit enrichment after the SDK and backend payload shapes are aligned.
+    return SdkTelemetryPayload(
+      timestamp: event.receivedAt.toUtc(),
+      latitude: packet.position.latitude,
+      longitude: packet.position.longitude,
+      altitude: packet.position.altitudeMeters.toDouble(),
+      deviceId: await _resolveBackendHardwareId(event),
     );
   }
 
