@@ -2711,37 +2711,41 @@ void main() {
     });
 
     test(
-        'getOperationalDiagnostics recomputes current SOS capability from live runtime truth when cached connectivity is stale',
+        'getOperationalDiagnostics stays passive and does not trigger device-status emissions when nothing changed',
         () async {
-      final disconnected = buildDeviceStatus(
-        deviceId: 'ble-stale-1',
-        canonicalHardwareId: 'CF:82:11:22:33:55',
-        paired: true,
-        connected: false,
-        activated: true,
-        lifecycleState: DeviceLifecycleState.activated,
-      );
-      final connected = disconnected.copyWith(
-        connected: true,
-        lifecycleState: DeviceLifecycleState.ready,
+      final emittedStatuses = <DeviceStatus>[];
+      final subscription =
+          deviceRepository.watchDeviceStatus().listen(emittedStatuses.add);
+
+      try {
+        await sdk.getOperationalDiagnostics();
+        await sdk.getOperationalDiagnostics();
+        await Future<void>.delayed(Duration.zero);
+
+        expect(deviceRepository.refreshCallCount, 0);
+        expect(emittedStatuses, isEmpty);
+      } finally {
+        await subscription.cancel();
+      }
+    });
+
+    test('watchOperationalDiagnostics does not trigger a refresh loop',
+        () async {
+      final diagnosticsQueue = StreamQueue<SdkOperationalDiagnostics>(
+        sdk.watchOperationalDiagnostics(),
       );
 
-      deviceRepository.emitStatus(disconnected);
-      await Future<void>.delayed(Duration.zero);
-      deviceRepository.setCurrentStatusSilently(connected);
-      await deviceSosController.attach(
-        commandWriter: (command) async {},
-      );
-      await Future<void>.delayed(Duration.zero);
+      try {
+        final initial = await diagnosticsQueue.next;
 
-      final diagnostics = await sdk.getOperationalDiagnostics();
+        expect(initial.deviceSosAvailable, isFalse);
+        expect(deviceRepository.refreshCallCount, 0);
 
-      expect(deviceRepository.refreshCallCount, greaterThanOrEqualTo(1));
-      expect(diagnostics.deviceSosAvailable, isTrue);
-      expect(
-        diagnostics.currentSosCapabilityChannel,
-        SosDeliveryChannel.backendAndDevice,
-      );
+        await Future<void>.delayed(Duration.zero);
+        expect(deviceRepository.refreshCallCount, 0);
+      } finally {
+        await diagnosticsQueue.cancel();
+      }
     });
 
     test(

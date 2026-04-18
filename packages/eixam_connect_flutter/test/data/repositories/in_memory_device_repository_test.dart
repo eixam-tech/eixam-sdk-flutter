@@ -115,5 +115,44 @@ void main() {
       expect(status, isNot(isA<BackendRegisteredDevice>()));
       await runtimeProvider.dispose();
     });
+
+    test('refreshDeviceStatus does not emit when effective status is unchanged',
+        () async {
+      final runtimeProvider = FakeDeviceRuntimeProvider()
+        ..refreshResult = const DeviceStatus(
+          deviceId: 'demo-device',
+          deviceAlias: 'Demo Beacon',
+          model: 'EIXAM R1',
+          paired: false,
+          activated: false,
+          connected: false,
+          batteryLevel: null,
+          batteryState: null,
+          batterySource: null,
+          firmwareVersion: '0.1.0-demo',
+          lifecycleState: DeviceLifecycleState.unpaired,
+        ).copyWith(
+          lastSyncedAt: DateTime.utc(2026, 1, 1, 12),
+        );
+      final repository = InMemoryDeviceRepository(
+        runtimeProvider: runtimeProvider,
+        localStore: MemorySharedPrefsSdkStore(),
+      );
+      final emittedStatuses = <DeviceStatus>[];
+      final subscription =
+          repository.watchDeviceStatus().listen(emittedStatuses.add);
+
+      try {
+        final refreshed = await repository.refreshDeviceStatus();
+        await Future<void>.delayed(Duration.zero);
+
+        expect(runtimeProvider.refreshCallCount, 1);
+        expect(refreshed.lastSyncedAt, DateTime.utc(2026, 1, 1, 12));
+        expect(emittedStatuses, isEmpty);
+      } finally {
+        await subscription.cancel();
+        await runtimeProvider.dispose();
+      }
+    });
   });
 }

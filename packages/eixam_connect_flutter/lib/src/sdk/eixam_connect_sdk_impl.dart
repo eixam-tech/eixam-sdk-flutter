@@ -114,6 +114,7 @@ class EixamConnectSdkImpl
   EixamSdkConfig? _sdkConfig;
   bool _registeredDeviceAutoSyncInFlight = false;
   String? _lastRegisteredDeviceAutoSyncFingerprint;
+  bool _lastDeviceSosCommandPathAvailable = false;
   late final BleAutoReconnectCoordinator _bleAutoReconnectCoordinator;
   late final BleOperationalRuntimeBridge _bleOperationalRuntimeBridge;
   late final ProtectionModeController _protectionModeController;
@@ -237,6 +238,7 @@ class EixamConnectSdkImpl
     _deviceStatusSub?.cancel();
     _deviceSosSub?.cancel();
     _deviceSosCommandPathSub?.cancel();
+    _lastDeviceSosCommandPathAvailable = deviceSosController.hasSosCommandPath;
 
     _deviceStatusSub = deviceRepository.watchDeviceStatus().listen((status) {
       final previousStatus = _lastDeviceStatus;
@@ -265,12 +267,20 @@ class EixamConnectSdkImpl
     _deviceSosCommandPathSub =
         deviceSosController.watchCommandPathAvailability().listen(
       (available) async {
+        final previous = _lastDeviceSosCommandPathAvailable;
+        _lastDeviceSosCommandPathAvailable = available;
         BleDebugRegistry.instance.recordEvent(
-          'SOS command path availability changed -> available=$available connected=${_lastDeviceStatus?.connected} deviceId=${_lastDeviceStatus?.deviceId ?? "-"}',
+          'SOS command path availability changed -> available=$available previous=$previous connected=${_lastDeviceStatus?.connected} deviceId=${_lastDeviceStatus?.deviceId ?? "-"}',
         );
+        if (available == previous) {
+          BleDebugRegistry.instance.recordEvent(
+            'device_sos_command_path_changed -> diagnostics_refresh_skipped reason=no_effective_change',
+          );
+          return;
+        }
         await _refreshOperationalDiagnostics(
           trigger: 'device_sos_command_path_changed',
-          refreshRuntimeStatus: true,
+          refreshRuntimeStatus: false,
         );
       },
       onError: (Object error) {
@@ -1535,6 +1545,11 @@ class EixamConnectSdkImpl
     bool refreshRuntimeStatus = false,
   }) async {
     try {
+      if (refreshRuntimeStatus) {
+        BleDebugRegistry.instance.recordEvent(
+          'Public SOS device sync live re-evaluation -> action=$action reason=execution_time_channel_decision',
+        );
+      }
       final status = await _resolveDeviceStatusForCapability(
         trigger: 'public_sos_$action',
         refreshRuntimeStatus: refreshRuntimeStatus,
@@ -1941,9 +1956,12 @@ class EixamConnectSdkImpl
 
   @override
   Future<SosState> getSosState() async {
+    BleDebugRegistry.instance.recordEvent(
+      'getSosState() -> passive diagnostics snapshot requested; live refresh skipped',
+    );
     await _refreshOperationalDiagnostics(
       trigger: 'getSosState',
-      refreshRuntimeStatus: true,
+      refreshRuntimeStatus: false,
       emit: false,
     );
     if (_publicSosFallbackIncident != null) {
@@ -2119,18 +2137,24 @@ class EixamConnectSdkImpl
 
   @override
   Future<SdkOperationalDiagnostics> getOperationalDiagnostics() async {
+    BleDebugRegistry.instance.recordEvent(
+      'getOperationalDiagnostics() -> passive diagnostics snapshot requested; live refresh skipped',
+    );
     return _refreshOperationalDiagnostics(
       trigger: 'getOperationalDiagnostics',
-      refreshRuntimeStatus: true,
+      refreshRuntimeStatus: false,
       emit: false,
     );
   }
 
   @override
   Stream<SdkOperationalDiagnostics> watchOperationalDiagnostics() async* {
+    BleDebugRegistry.instance.recordEvent(
+      'watchOperationalDiagnostics.initial -> passive diagnostics snapshot requested; live refresh skipped',
+    );
     yield await _refreshOperationalDiagnostics(
       trigger: 'watchOperationalDiagnostics.initial',
-      refreshRuntimeStatus: true,
+      refreshRuntimeStatus: false,
       emit: false,
     );
     yield* _operationalDiagnosticsController.stream;
@@ -2497,6 +2521,11 @@ class EixamConnectSdkImpl
     required String trigger,
     bool refreshRuntimeStatus = false,
   }) async {
+    if (!refreshRuntimeStatus) {
+      BleDebugRegistry.instance.recordEvent(
+        '$trigger device status resolution -> using cached snapshot without live refresh',
+      );
+    }
     final status = refreshRuntimeStatus
         ? await deviceRepository.refreshDeviceStatus()
         : await deviceRepository.getDeviceStatus();

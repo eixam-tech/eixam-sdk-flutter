@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import '../../device/ble_debug_registry.dart';
 import '../../device/device_runtime_provider.dart';
 import '../../device/ble_device_runtime_provider.dart';
 import '../datasources_local/shared_prefs_sdk_store.dart';
@@ -20,8 +21,12 @@ class InMemoryDeviceRepository implements DeviceRepository {
         _localStore = localStore {
     _runtimeStatusSub =
         _runtimeProvider.watchRuntimeStatus().listen((status) async {
+      final previous = _status;
       _status = status;
-      await _persistAndEmit();
+      await _persistAndEmitIfChanged(
+        previous: previous,
+        source: 'runtime_status',
+      );
     });
   }
 
@@ -94,8 +99,12 @@ class InMemoryDeviceRepository implements DeviceRepository {
 
   @override
   Future<DeviceStatus> refreshDeviceStatus() async {
+    final previous = _status;
     _status = await _runtimeProvider.refresh(_status);
-    await _persistAndEmit();
+    await _persistAndEmitIfChanged(
+      previous: previous,
+      source: 'refresh_device_status',
+    );
     return _status;
   }
 
@@ -119,8 +128,12 @@ class InMemoryDeviceRepository implements DeviceRepository {
     final runtimeStatus =
         await runtimeProvider.suspendOwnership(reason: reason);
     if (runtimeStatus != null) {
+      final previous = _status;
       _status = runtimeStatus;
-      await _persistAndEmit();
+      await _persistAndEmitIfChanged(
+        previous: previous,
+        source: 'release_ble_ownership',
+      );
     }
     return _status;
   }
@@ -134,8 +147,12 @@ class InMemoryDeviceRepository implements DeviceRepository {
     }
     final runtimeStatus = await runtimeProvider.resumeOwnership(reason: reason);
     if (runtimeStatus != null) {
+      final previous = _status;
       _status = runtimeStatus;
-      await _persistAndEmit();
+      await _persistAndEmitIfChanged(
+        previous: previous,
+        source: 'reclaim_ble_ownership',
+      );
     }
     return _status;
   }
@@ -194,8 +211,12 @@ class InMemoryDeviceRepository implements DeviceRepository {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
       if (!_status.connected) return;
+      final previous = _status;
       _status = await _runtimeProvider.refresh(_status);
-      await _persistAndEmit();
+      await _persistAndEmitIfChanged(
+        previous: previous,
+        source: 'heartbeat',
+      );
     });
   }
 
@@ -228,6 +249,45 @@ class InMemoryDeviceRepository implements DeviceRepository {
       LocalStateSerializers.deviceStatusToJson(_status),
     );
     _controller.add(_status);
+  }
+
+  Future<void> _persistAndEmitIfChanged({
+    required DeviceStatus previous,
+    required String source,
+  }) async {
+    await _localStore?.saveJson(
+      SharedPrefsSdkStore.deviceStatusKey,
+      LocalStateSerializers.deviceStatusToJson(_status),
+    );
+
+    if (_hasEffectiveStatusChange(previous, _status)) {
+      BleDebugRegistry.instance.recordEvent(
+        'InMemoryDeviceRepository.$source -> effective_change=true connected=${_status.connected} previousConnected=${previous.connected} lifecycle=${_status.lifecycleState.name} deviceId=${_status.deviceId}',
+      );
+      _controller.add(_status);
+      return;
+    }
+
+    BleDebugRegistry.instance.recordEvent(
+      'InMemoryDeviceRepository.$source -> effective_change=false emit_skipped deviceId=${_status.deviceId} connected=${_status.connected} lifecycle=${_status.lifecycleState.name}',
+    );
+  }
+
+  bool _hasEffectiveStatusChange(DeviceStatus previous, DeviceStatus next) {
+    return previous.deviceId != next.deviceId ||
+        previous.canonicalHardwareId != next.canonicalHardwareId ||
+        previous.deviceAlias != next.deviceAlias ||
+        previous.model != next.model ||
+        previous.paired != next.paired ||
+        previous.activated != next.activated ||
+        previous.connected != next.connected ||
+        previous.batteryLevel != next.batteryLevel ||
+        previous.effectiveBatteryState != next.effectiveBatteryState ||
+        previous.batterySource != next.batterySource ||
+        previous.firmwareVersion != next.firmwareVersion ||
+        previous.signalQuality != next.signalQuality ||
+        previous.lifecycleState != next.lifecycleState ||
+        previous.provisioningError != next.provisioningError;
   }
 
   /// TODO: promote disposal to a shared repository lifecycle contract if more
