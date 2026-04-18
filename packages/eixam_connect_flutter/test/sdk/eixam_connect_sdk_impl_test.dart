@@ -2749,6 +2749,141 @@ void main() {
     });
 
     test(
+        'passive SOS capability reads keep the last live connected device capability instead of rebuilding from a stale repository snapshot',
+        () async {
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-passive-capability-1',
+          canonicalHardwareId: 'CF:82:11:22:33:90',
+          paired: true,
+          connected: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      await deviceSosController.attach(
+        commandWriter: (command) async {},
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final liveDiagnostics = await sdk.getOperationalDiagnostics();
+      expect(
+        liveDiagnostics.currentSosCapabilityChannel,
+        SosDeliveryChannel.backendAndDevice,
+      );
+
+      deviceRepository.setCurrentStatusSilently(
+        buildDeviceStatus(
+          deviceId: 'ble-passive-capability-1',
+          canonicalHardwareId: 'CF:82:11:22:33:90',
+          paired: true,
+          connected: false,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.activated,
+        ),
+      );
+
+      final passiveDiagnostics = await sdk.getOperationalDiagnostics();
+      final passiveSosState = await sdk.getSosState();
+      final watchedDiagnostics = await sdk.watchOperationalDiagnostics().first;
+
+      expect(
+        passiveDiagnostics.currentSosCapabilityChannel,
+        SosDeliveryChannel.backendAndDevice,
+      );
+      expect(
+        watchedDiagnostics.currentSosCapabilityChannel,
+        SosDeliveryChannel.backendAndDevice,
+      );
+      expect(passiveSosState, SosState.idle);
+      expect(deviceRepository.refreshCallCount, 0);
+    });
+
+    test(
+        'operational diagnostics keep backend and device capability stable while the native protection runtime owns BLE',
+        () async {
+      final localRealtimeClient = FakeRealtimeClient()
+        ..stateToEmitOnConnect = RealtimeConnectionState.connected;
+      final localDeviceRepository = FakeDeviceRepository(
+        initialStatus: buildDeviceStatus(
+          deviceId: 'ble-native-owner-1',
+          canonicalHardwareId: 'CF:82:11:22:33:91',
+          paired: true,
+          connected: false,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.activated,
+        ),
+      );
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          serviceBleConnected: true,
+          serviceBleReady: true,
+          coverageLevel: ProtectionCoverageLevel.full,
+          runtimeState: ProtectionRuntimeState.active,
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+      );
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: localDeviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: DeviceSosController(),
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: localAdapter,
+      );
+
+      try {
+        permissionsRepository.permissionState = const PermissionState(
+          location: SdkPermissionStatus.granted,
+          notifications: SdkPermissionStatus.granted,
+        );
+        await localSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await localSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+          ),
+        );
+        final enterResult = await localSdk.enterProtectionMode();
+        final initialDiagnostics = await localSdk.getOperationalDiagnostics();
+        final watchedDiagnostics =
+            await localSdk.watchOperationalDiagnostics().first;
+
+        expect(enterResult.success, isTrue);
+        expect(
+          initialDiagnostics.currentSosCapabilityChannel,
+          SosDeliveryChannel.backendAndDevice,
+        );
+        expect(
+          watchedDiagnostics.currentSosCapabilityChannel,
+          SosDeliveryChannel.backendAndDevice,
+        );
+        expect(initialDiagnostics.deviceSosAvailable, isTrue);
+        expect(localDeviceRepository.refreshCallCount, 0);
+      } finally {
+        await localSdk.dispose();
+        await localRealtimeClient.dispose();
+        await localDeviceRepository.dispose();
+      }
+    });
+
+    test(
         'triggerSos re-evaluates live device availability before choosing delivery channel',
         () async {
       await sdk.setSession(
