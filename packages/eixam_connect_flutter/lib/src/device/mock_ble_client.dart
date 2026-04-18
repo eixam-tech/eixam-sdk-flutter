@@ -20,6 +20,20 @@ class MockBleClient implements BleClient {
   BleAdapterState _adapterState = BleAdapterState.poweredOn;
   final Set<String> _connectedDeviceIds = <String>{};
   final List<EixamDeviceCommand> writtenCommands = <EixamDeviceCommand>[];
+  List<int> runtimeStatusPayload = <int>[
+    0xE9,
+    0x78,
+    0x01,
+    0x02,
+    0x03,
+    0x07,
+    0x1F,
+    0x34,
+    0x12,
+    88,
+    0x3C,
+    0x00,
+  ];
 
   static const String demoDeviceId = 'ble-demo-r1';
   static const String demoCanonicalHardwareId = 'CF:82:00:00:00:01';
@@ -331,6 +345,9 @@ class MockBleClient implements BleClient {
           0x01,
           0x40,
         ]);
+        return;
+      case 0x23:
+        emit(EixamBleChannel.tel, runtimeStatusPayload);
         return;
       default:
         return;

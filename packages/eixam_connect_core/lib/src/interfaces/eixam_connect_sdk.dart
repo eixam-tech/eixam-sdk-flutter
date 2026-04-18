@@ -6,6 +6,7 @@ import '../entities/ble_notification_navigation_request.dart';
 import '../entities/backend_registered_device.dart';
 import '../entities/device_sos_status.dart';
 import '../entities/device_status.dart';
+import '../entities/device_runtime_status.dart';
 import '../entities/emergency_contact.dart';
 import '../entities/guided_rescue_state.dart';
 import '../entities/permission_state.dart';
@@ -126,6 +127,10 @@ abstract class EixamConnectSdk {
   Future<void> sendPositionConfirmedToDevice();
   Future<void> sendSosAckRelayToDevice({required int nodeId});
   Future<void> sendShutdownToDevice();
+  Future<void> setDeviceNotificationVolume(int volume);
+  Future<void> setDeviceSosVolume(int volume);
+  Future<DeviceRuntimeStatus> getDeviceRuntimeStatus();
+  Future<void> rebootDevice();
   Future<BleNotificationNavigationRequest?>
       consumePendingBleNotificationNavigationRequest();
   Stream<BleNotificationNavigationRequest>

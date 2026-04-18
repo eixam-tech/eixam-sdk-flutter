@@ -39,7 +39,8 @@ class BleOperationalRuntimeBridge {
   final SosRepository sosRepository;
   final DeviceSosController deviceSosController;
   final EixamSession? Function() _sessionProvider;
-  final Future<String?> Function(String runtimeDeviceId)? _backendHardwareIdResolver;
+  final Future<String?> Function(String runtimeDeviceId)?
+      _backendHardwareIdResolver;
   final DateTime Function() _now;
   final Duration _dedupWindow;
 
@@ -171,6 +172,8 @@ class BleOperationalRuntimeBridge {
 
   Future<void> _handleBleIncomingEvent(BleIncomingEvent event) async {
     switch (event.type) {
+      case BleIncomingEventType.deviceRuntimeStatus:
+        return;
       case BleIncomingEventType.telPosition:
         await _publishTelemetryIfValid(event);
         return;
@@ -186,6 +189,8 @@ class BleOperationalRuntimeBridge {
         return;
       case BleIncomingEventType.telAggregateComplete:
         await _publishAggregateTelemetryIfMappable(event);
+        return;
+      case BleIncomingEventType.telRelayRx:
         return;
       case BleIncomingEventType.sosMeshPacket:
         _observeSosIfValid(event);

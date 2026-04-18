@@ -7,6 +7,8 @@ export 'src/config/eixam_custom_endpoints.dart';
 export 'src/config/eixam_bootstrap_config.dart';
 export 'src/entities/device_status.dart';
 export 'src/entities/device_runtime.dart';
+export 'src/entities/device_runtime_status.dart';
+export 'src/entities/device_tel_relay_rx.dart';
 export 'src/entities/backend_registered_device.dart';
 export 'src/entities/preferred_device.dart';
 export 'src/entities/device_sos_status.dart';

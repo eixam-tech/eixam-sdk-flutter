@@ -108,5 +108,6 @@ flutter run -t apps/eixam_control_app/lib/main.dart
 - Package API: [`packages/eixam_connect_flutter/README.md`](packages/eixam_connect_flutter/README.md)
 - Public API surface: [`packages/eixam_connect_flutter/PUBLIC_API.md`](packages/eixam_connect_flutter/PUBLIC_API.md)
 - SOS orchestration: [`packages/eixam_connect_flutter/SOS_ORCHESTRATION.md`](packages/eixam_connect_flutter/SOS_ORCHESTRATION.md)
+- BLE device contract: [`packages/eixam_connect_flutter/BLE_DEVICE_CONTRACT.md`](packages/eixam_connect_flutter/BLE_DEVICE_CONTRACT.md)
 - Native permissions: [`packages/eixam_connect_flutter/NATIVE_PERMISSIONS_CHECKLIST.md`](packages/eixam_connect_flutter/NATIVE_PERMISSIONS_CHECKLIST.md)
 - Migration guide: [`packages/eixam_connect_flutter/MIGRATION.md`](packages/eixam_connect_flutter/MIGRATION.md)

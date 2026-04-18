@@ -1,4 +1,5 @@
 import '../config/eixam_session.dart';
+import 'device_tel_relay_rx.dart';
 import '../enums/realtime_connection_state.dart';
 import '../enums/sos_delivery_channel.dart';
 import 'sdk_bridge_diagnostics.dart';
@@ -14,6 +15,7 @@ class SdkOperationalDiagnostics {
     this.backendSosAvailable = false,
     this.deviceSosAvailable = false,
     this.lastPublicSosDeliveryChannel,
+    this.lastTelRelayRx,
   });
 
   final EixamSession? session;
@@ -24,6 +26,7 @@ class SdkOperationalDiagnostics {
   final bool backendSosAvailable;
   final bool deviceSosAvailable;
   final SosDeliveryChannel? lastPublicSosDeliveryChannel;
+  final DeviceTelRelayRx? lastTelRelayRx;
   final SdkBridgeDiagnostics bridge;
 
   bool get hasActiveSession => session != null;
@@ -42,6 +45,7 @@ class SdkOperationalDiagnostics {
     bool? backendSosAvailable,
     bool? deviceSosAvailable,
     Object? lastPublicSosDeliveryChannel = _unset,
+    Object? lastTelRelayRx = _unset,
     SdkBridgeDiagnostics? bridge,
   }) {
     return SdkOperationalDiagnostics(
@@ -61,6 +65,9 @@ class SdkOperationalDiagnostics {
           identical(lastPublicSosDeliveryChannel, _unset)
               ? this.lastPublicSosDeliveryChannel
               : lastPublicSosDeliveryChannel as SosDeliveryChannel?,
+      lastTelRelayRx: identical(lastTelRelayRx, _unset)
+          ? this.lastTelRelayRx
+          : lastTelRelayRx as DeviceTelRelayRx?,
       bridge: bridge ?? this.bridge,
     );
   }

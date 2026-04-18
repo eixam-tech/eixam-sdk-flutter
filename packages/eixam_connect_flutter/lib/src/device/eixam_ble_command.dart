@@ -69,6 +69,38 @@ class EixamDeviceCommand {
         bytes: <int>[0x10],
       );
 
+  factory EixamDeviceCommand.notificationVolume(int volume) {
+    return EixamDeviceCommand._(
+      opcode: 0x11,
+      label: 'BUZZER NOTIFY VOL',
+      bytes: <int>[0x11, volume & 0xFF],
+      forceCmdCharacteristic: true,
+    );
+  }
+
+  factory EixamDeviceCommand.sosVolume(int volume) {
+    return EixamDeviceCommand._(
+      opcode: 0x12,
+      label: 'BUZZER SOS VOL',
+      bytes: <int>[0x12, volume & 0xFF],
+      forceCmdCharacteristic: true,
+    );
+  }
+
+  factory EixamDeviceCommand.reboot() => const EixamDeviceCommand._(
+        opcode: 0x22,
+        label: 'REBOOT',
+        bytes: <int>[0x22],
+        forceCmdCharacteristic: true,
+      );
+
+  factory EixamDeviceCommand.getDeviceStatus() => const EixamDeviceCommand._(
+        opcode: 0x23,
+        label: 'GET DEVICE STATUS',
+        bytes: <int>[0x23],
+        forceCmdCharacteristic: true,
+      );
+
   factory EixamDeviceCommand.guidedRescue({
     required int targetNodeId,
     required int rescueNodeId,

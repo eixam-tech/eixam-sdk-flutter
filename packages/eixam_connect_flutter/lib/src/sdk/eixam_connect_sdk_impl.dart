@@ -84,6 +84,7 @@ class EixamConnectSdkImpl
   StreamSubscription<GuidedRescueState>? _guidedRescueSub;
   StreamSubscription<SosState>? _sosStateSub;
   StreamSubscription<SdkBridgeDiagnostics>? _bridgeDiagnosticsSub;
+  StreamSubscription<BleIncomingEvent>? _bleIncomingEventDiagnosticsSub;
 
   Timer? _deathManTimer;
   bool _deathManCheckInNotified = false;
@@ -107,6 +108,7 @@ class EixamConnectSdkImpl
   SosIncident? _publicSosFallbackIncident;
   String? _lastPublicSosIncidentId;
   SosDeliveryChannel? _lastPublicSosDeliveryChannel;
+  DeviceTelRelayRx? _lastTelRelayRx;
   bool _publicSosActionInFlight = false;
   EixamSdkConfig? _sdkConfig;
   bool _registeredDeviceAutoSyncInFlight = false;
@@ -287,6 +289,21 @@ class EixamConnectSdkImpl
       _bridgeDiagnostics = diagnostics;
       _emitOperationalDiagnostics();
     });
+    _bleIncomingEventDiagnosticsSub?.cancel();
+    _bleIncomingEventDiagnosticsSub = bleIncomingEvents.listen(
+      (event) {
+        if (event.telRelayRxPacket == null) {
+          return;
+        }
+        _lastTelRelayRx = event.telRelayRxPacket!.relay;
+        _emitOperationalDiagnostics();
+      },
+      onError: (Object error) {
+        BleDebugRegistry.instance.recordEvent(
+          'BLE diagnostics relay-event monitor error: $error',
+        );
+      },
+    );
   }
 
   @override
@@ -589,6 +606,27 @@ class EixamConnectSdkImpl
       return;
     }
     return deviceSosController.sendShutdown();
+  }
+
+  @override
+  Future<void> setDeviceNotificationVolume(int volume) async {
+    await _requireCommandCapableDeviceRepository()
+        .setNotificationVolume(volume);
+  }
+
+  @override
+  Future<void> setDeviceSosVolume(int volume) async {
+    await _requireCommandCapableDeviceRepository().setSosVolume(volume);
+  }
+
+  @override
+  Future<DeviceRuntimeStatus> getDeviceRuntimeStatus() async {
+    return _requireCommandCapableDeviceRepository().getDeviceRuntimeStatus();
+  }
+
+  @override
+  Future<void> rebootDevice() async {
+    await _requireCommandCapableDeviceRepository().rebootDevice();
   }
 
   @override
@@ -2335,6 +2373,18 @@ class EixamConnectSdkImpl
         deviceSosController.hasCommandChannel;
   }
 
+  InMemoryDeviceRepository _requireCommandCapableDeviceRepository() {
+    final repository = deviceRepository;
+    if (repository is! InMemoryDeviceRepository ||
+        !repository.hasCommandCapableBleRuntime) {
+      throw const DeviceException(
+        'E_DEVICE_COMMAND_NOT_READY',
+        'A connected command-capable device is required for this SDK action.',
+      );
+    }
+    return repository;
+  }
+
   SdkOperationalDiagnostics _buildOperationalDiagnostics() {
     final session = _session;
     String? telemetryPublishTopic;
@@ -2359,6 +2409,7 @@ class EixamConnectSdkImpl
       backendSosAvailable: _isBackendSosChannelAvailable(),
       deviceSosAvailable: _isDeviceSosChannelAvailable(),
       lastPublicSosDeliveryChannel: _lastPublicSosDeliveryChannel,
+      lastTelRelayRx: _lastTelRelayRx,
       bridge: _bridgeDiagnostics,
     );
   }
@@ -2380,6 +2431,7 @@ class EixamConnectSdkImpl
     await _guidedRescueSub?.cancel();
     await _sosStateSub?.cancel();
     await _bridgeDiagnosticsSub?.cancel();
+    await _bleIncomingEventDiagnosticsSub?.cancel();
     await _bleOperationalRuntimeBridge.dispose();
     await _protectionModeController.dispose();
     await deviceSosController.dispose();

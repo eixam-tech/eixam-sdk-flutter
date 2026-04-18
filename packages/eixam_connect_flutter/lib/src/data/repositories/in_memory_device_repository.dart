@@ -140,6 +140,56 @@ class InMemoryDeviceRepository implements DeviceRepository {
     return _status;
   }
 
+  bool get hasCommandCapableBleRuntime {
+    final runtimeProvider = _runtimeProvider;
+    return runtimeProvider is BleDeviceRuntimeProvider &&
+        runtimeProvider.hasCommandChannel;
+  }
+
+  Future<void> setNotificationVolume(int volume) async {
+    final runtimeProvider = _runtimeProvider;
+    if (runtimeProvider is! BleDeviceRuntimeProvider) {
+      throw const DeviceException(
+        'E_DEVICE_COMMAND_NOT_READY',
+        'A command-capable BLE runtime is not available.',
+      );
+    }
+    await runtimeProvider.setNotificationVolume(volume);
+  }
+
+  Future<void> setSosVolume(int volume) async {
+    final runtimeProvider = _runtimeProvider;
+    if (runtimeProvider is! BleDeviceRuntimeProvider) {
+      throw const DeviceException(
+        'E_DEVICE_COMMAND_NOT_READY',
+        'A command-capable BLE runtime is not available.',
+      );
+    }
+    await runtimeProvider.setSosVolume(volume);
+  }
+
+  Future<DeviceRuntimeStatus> getDeviceRuntimeStatus() async {
+    final runtimeProvider = _runtimeProvider;
+    if (runtimeProvider is! BleDeviceRuntimeProvider) {
+      throw const DeviceException(
+        'E_DEVICE_COMMAND_NOT_READY',
+        'A command-capable BLE runtime is not available.',
+      );
+    }
+    return runtimeProvider.requestDeviceRuntimeStatus();
+  }
+
+  Future<void> rebootDevice() async {
+    final runtimeProvider = _runtimeProvider;
+    if (runtimeProvider is! BleDeviceRuntimeProvider) {
+      throw const DeviceException(
+        'E_DEVICE_COMMAND_NOT_READY',
+        'A command-capable BLE runtime is not available.',
+      );
+    }
+    await runtimeProvider.rebootDevice();
+  }
+
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (_) async {

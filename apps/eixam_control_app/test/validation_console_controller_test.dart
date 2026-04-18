@@ -484,7 +484,8 @@ void main() {
       expect(card.description, contains('runtime'));
       expect(card.expectation.expectedResult, contains('does not by itself'));
       expect(currentState['Bridge SOS visibility'], 'BLE SOS packet seen');
-      expect(currentState['Bridge last decision'], 'pending promotion decision');
+      expect(
+          currentState['Bridge last decision'], 'pending promotion decision');
       expect(currentState['Latest BLE event type'], 'sosMeshPacket');
       expect(currentState['Characteristic'], 'ea02');
       expect(currentState['Payload hex'], 'A1B2C3');
@@ -1112,6 +1113,32 @@ class _FakeValidationSdk implements EixamConnectSdk {
 
   @override
   Future<void> sendShutdownToDevice() async {}
+
+  @override
+  Future<void> setDeviceNotificationVolume(int volume) async {}
+
+  @override
+  Future<void> setDeviceSosVolume(int volume) async {}
+
+  @override
+  Future<DeviceRuntimeStatus> getDeviceRuntimeStatus() async {
+    return const DeviceRuntimeStatus(
+      region: 0,
+      modemPreset: 0,
+      meshSpreadingFactor: 0,
+      isProvisioned: false,
+      usePreset: false,
+      txEnabled: false,
+      inetOk: false,
+      positionConfirmed: false,
+      nodeId: 0,
+      batteryPercent: 0,
+      telIntervalSeconds: 0,
+    );
+  }
+
+  @override
+  Future<void> rebootDevice() async {}
 
   @override
   Stream<DeviceStatus> get deviceStatusStream =>
