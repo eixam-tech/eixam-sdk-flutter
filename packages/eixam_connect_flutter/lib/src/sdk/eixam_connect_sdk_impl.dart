@@ -584,12 +584,18 @@ class EixamConnectSdkImpl
 
   @override
   Future<DeviceSosStatus> triggerDeviceSos() {
-    return deviceSosController.triggerSos();
+    return deviceSosController.triggerSos(
+      commandWriterOverride: _sendDeviceCommandThroughActiveOwner,
+      commandRouteLabel: _currentDeviceCommandOwnerRoute,
+    );
   }
 
   @override
   Future<DeviceSosStatus> confirmDeviceSos() async {
-    final status = await deviceSosController.confirmSos();
+    final status = await deviceSosController.confirmSos(
+      commandWriterOverride: _sendDeviceCommandThroughActiveOwner,
+      commandRouteLabel: _currentDeviceCommandOwnerRoute,
+    );
     await _ensureBackendSosForDeviceOriginatedCycle(
       status,
       triggerSource: 'ble_device_runtime_confirm',
@@ -601,14 +607,20 @@ class EixamConnectSdkImpl
 
   @override
   Future<DeviceSosStatus> cancelDeviceSos() async {
-    final status = await deviceSosController.cancelSos();
+    final status = await deviceSosController.cancelSos(
+      commandWriterOverride: _sendDeviceCommandThroughActiveOwner,
+      commandRouteLabel: _currentDeviceCommandOwnerRoute,
+    );
     await _cancelBackendSosForDeviceOriginatedCycle(status);
     return status;
   }
 
   @override
   Future<DeviceSosStatus> acknowledgeDeviceSos() {
-    return deviceSosController.acknowledgeSos();
+    return deviceSosController.acknowledgeSos(
+      commandWriterOverride: _sendDeviceCommandThroughActiveOwner,
+      commandRouteLabel: _currentDeviceCommandOwnerRoute,
+    );
   }
 
   @override
@@ -633,25 +645,10 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> sendShutdownToDevice() async {
-    if (_isProtectionPlatformOwningBle) {
-      final command = EixamDeviceCommand.shutdown();
-      final result = await protectionPlatformAdapter.sendProtectionCommand(
-        request: ProtectionPlatformCommandRequest(
-          label: command.label,
-          bytes: command.encode(),
-          forceCmdCharacteristic: command.usesCmdCharacteristic,
-        ),
-      );
-      await _protectionModeController.rehydrate();
-      if (!result.success) {
-        throw StateError(
-          result.error ??
-              'Protection Mode native BLE owner could not send shutdown.',
-        );
-      }
-      return;
-    }
-    return deviceSosController.sendShutdown();
+    return deviceSosController.sendShutdown(
+      commandWriterOverride: _sendDeviceCommandThroughActiveOwner,
+      commandRouteLabel: _currentDeviceCommandOwnerRoute,
+    );
   }
 
   @override
@@ -1301,8 +1298,11 @@ class EixamConnectSdkImpl
       final deviceId = await _loadBackendHardwareIdForOperationalPayloads(
         runtimeStatus: _lastDeviceStatus,
       );
+      final capabilitySnapshot = _computeCurrentSosCapabilitySnapshot(
+        reason: 'trigger_sos_start',
+      );
       BleDebugRegistry.instance.recordEvent(
-        'triggerSos() start -> backendAvailable=${_isBackendSosChannelAvailable()} cachedDeviceConnected=${_lastDeviceStatus?.connected} commandPath=${deviceSosController.hasSosCommandPath}',
+        'triggerSos() start -> backendAvailable=${capabilitySnapshot.backendAvailable} cachedDeviceConnected=${_lastDeviceStatus?.connected} commandPath=${capabilitySnapshot.hasSosCommandPath} currentCapability=${capabilitySnapshot.capability?.name ?? "unavailable"} activeOwner=$_currentDeviceCommandOwnerRoute',
       );
       final deviceSync = await _attemptPublicSosDeviceAction(
         action: 'trigger',
@@ -1332,7 +1332,7 @@ class EixamConnectSdkImpl
         deviceSucceeded: deviceSync.succeeded,
       );
       BleDebugRegistry.instance.recordEvent(
-        'triggerSos() channel decision -> backendSucceeded=${backendIncident != null} deviceAvailable=${deviceSync.available} deviceAttempted=${deviceSync.attempted} deviceSucceeded=${deviceSync.succeeded} delivery=${deliveryChannel?.name ?? "-"}',
+        'triggerSos() channel decision -> backendSucceeded=${backendIncident != null} deviceAvailable=${deviceSync.available} deviceAttempted=${deviceSync.attempted} deviceSucceeded=${deviceSync.succeeded} activeOwner=$_currentDeviceCommandOwnerRoute delivery=${deliveryChannel?.name ?? "-"}',
       );
       if (deliveryChannel == null) {
         _throwTriggerSosFailure(
@@ -1565,17 +1565,21 @@ class EixamConnectSdkImpl
         trigger: 'public_sos_$action',
         refreshRuntimeStatus: refreshRuntimeStatus,
       );
+      final capabilitySnapshot = _computeCurrentSosCapabilitySnapshot(
+        reason: 'public_sos_${action}_execution',
+        statusOverride: status,
+      );
 
-      if (!status.connected) {
+      if (!capabilitySnapshot.deviceConnected) {
         BleDebugRegistry.instance.recordEvent(
-          'Public SOS device sync skipped -> action=$action reason=device_not_connected lifecycle=${status.lifecycleState.name} connected=${status.connected} paired=${status.paired} activated=${status.activated}',
+          'Public SOS device sync skipped -> action=$action reason=device_not_connected lifecycle=${status.lifecycleState.name} flutterConnected=${status.connected} protectionConnected=${capabilitySnapshot.serviceBleConnected ?? false} protectionReady=${capabilitySnapshot.serviceBleReady ?? false} paired=${status.paired} activated=${status.activated}',
         );
         return null;
       }
 
-      if (!_hasDeviceSosCommandPath(status: status)) {
+      if (!capabilitySnapshot.hasSosCommandPath) {
         BleDebugRegistry.instance.recordEvent(
-          'Public SOS device sync skipped -> action=$action reason=sos_command_path_unavailable deviceId=${status.deviceId}',
+          'Public SOS device sync skipped -> action=$action reason=sos_command_path_unavailable deviceId=${status.deviceId} activeOwner=$_currentDeviceCommandOwnerRoute',
         );
         return null;
       }
@@ -2261,6 +2265,62 @@ class EixamConnectSdkImpl
     final status = _protectionModeController.currentStatus;
     return status.modeState != ProtectionModeState.off &&
         status.bleOwner != ProtectionBleOwner.flutter;
+  }
+
+  String get _currentDeviceCommandOwnerRoute =>
+      _isProtectionPlatformOwningBle ? 'native_protection' : 'flutter_writer';
+
+  Future<void> _sendDeviceCommandThroughActiveOwner(
+    EixamDeviceCommand command,
+  ) async {
+    final ownerRoute = _currentDeviceCommandOwnerRoute;
+    BleDebugRegistry.instance.recordEvent(
+      'Device leg owner chosen -> owner=$ownerRoute command=${command.label}',
+    );
+    if (_isProtectionPlatformOwningBle) {
+      final result = await protectionPlatformAdapter.sendProtectionCommand(
+        request: ProtectionPlatformCommandRequest(
+          label: command.label,
+          bytes: command.encode(),
+          forceCmdCharacteristic: command.usesCmdCharacteristic,
+        ),
+      );
+      await _protectionModeController.rehydrate();
+      if (!result.success) {
+        BleDebugRegistry.instance.recordEvent(
+          'Native owner command rejected -> owner=$ownerRoute command=${command.label} route=${result.route ?? "-"} error=${result.error ?? result.result ?? "-"}',
+        );
+        throw StateError(
+          result.error ??
+              'Protection Mode native BLE owner could not send ${command.label}.',
+        );
+      }
+      BleDebugRegistry.instance.recordEvent(
+        'Native owner command accepted -> owner=$ownerRoute command=${command.label} route=${result.route ?? "-"} result=${result.result ?? "-"}',
+      );
+      return;
+    }
+
+    if (!deviceSosController.hasSosCommandPath) {
+      BleDebugRegistry.instance.recordEvent(
+        'Flutter writer command rejected -> owner=$ownerRoute command=${command.label} reason=writer_unavailable',
+      );
+      throw StateError(
+        'Flutter BLE command writer is not ready for ${command.label}.',
+      );
+    }
+
+    try {
+      await deviceSosController.sendAttachedCommand(command);
+      BleDebugRegistry.instance.recordEvent(
+        'Flutter writer command accepted -> owner=$ownerRoute command=${command.label}',
+      );
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'Flutter writer command rejected -> owner=$ownerRoute command=${command.label} error=$error',
+      );
+      rethrow;
+    }
   }
 
   Future<void> _handleProtectionBleOwnershipChanged(

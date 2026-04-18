@@ -2667,6 +2667,282 @@ void main() {
       }
     });
 
+    test(
+        'android protection triggerSos routes the device leg through the native owner',
+        () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+        notifications: SdkPermissionStatus.granted,
+        bluetooth: SdkPermissionStatus.granted,
+        bluetoothEnabled: true,
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-native-trigger',
+          connected: false,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.activated,
+        ),
+      );
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          protectedDeviceId: 'device-native-trigger',
+          activeDeviceId: 'device-native-trigger',
+          runtimeActive: true,
+          serviceRunning: true,
+          serviceBleConnected: true,
+          serviceBleReady: true,
+          coverageLevel: ProtectionCoverageLevel.full,
+          runtimeState: ProtectionRuntimeState.active,
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+        commandResult: const ProtectionPlatformCommandResult(
+          success: true,
+          route: 'androidService',
+          result: 'SOS TRIGGER APP native write succeeded via androidService.',
+        ),
+      );
+      final localRealtimeClient = FakeRealtimeClient()
+        ..stateToEmitOnConnect = RealtimeConnectionState.connected;
+      final runtimeSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: DeviceSosController(),
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: localAdapter,
+      );
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+            canonicalExternalUserId: 'canonical-user',
+          ),
+        );
+        await runtimeSdk.enterProtectionMode();
+
+        final incident = await runtimeSdk.triggerSos(
+          const SosTriggerPayload(message: 'Need help'),
+        );
+
+        expect(incident.deliveryChannel, SosDeliveryChannel.backendAndDevice);
+        expect(localAdapter.sendCommandCallCount, 1);
+        expect(
+          localAdapter.commandRequests.map((request) => request.label),
+          <String>['SOS TRIGGER APP'],
+        );
+        expect(localAdapter.lastCommandRequest?.bytes, <int>[0x06]);
+        expect(
+          (await runtimeSdk.getDeviceSosStatus()).state,
+          DeviceSosState.preConfirm,
+        );
+      } finally {
+        await runtimeSdk.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test(
+        'android native-owner triggerSos falls back to backend-only when the native command is rejected',
+        () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+        notifications: SdkPermissionStatus.granted,
+        bluetooth: SdkPermissionStatus.granted,
+        bluetoothEnabled: true,
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-native-trigger-fail',
+          connected: false,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.activated,
+        ),
+      );
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          protectedDeviceId: 'device-native-trigger-fail',
+          activeDeviceId: 'device-native-trigger-fail',
+          runtimeActive: true,
+          serviceRunning: true,
+          serviceBleConnected: true,
+          serviceBleReady: true,
+          coverageLevel: ProtectionCoverageLevel.full,
+          runtimeState: ProtectionRuntimeState.active,
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+        commandResult: const ProtectionPlatformCommandResult(
+          success: false,
+          route: 'androidService',
+          error: 'native write rejected',
+        ),
+      );
+      final localRealtimeClient = FakeRealtimeClient()
+        ..stateToEmitOnConnect = RealtimeConnectionState.connected;
+      final runtimeSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: DeviceSosController(),
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: localAdapter,
+      );
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+            canonicalExternalUserId: 'canonical-user',
+          ),
+        );
+        await runtimeSdk.enterProtectionMode();
+
+        final incident = await runtimeSdk.triggerSos(
+          const SosTriggerPayload(message: 'Need help'),
+        );
+
+        expect(incident.deliveryChannel, SosDeliveryChannel.backendOnly);
+        expect(localAdapter.sendCommandCallCount, 1);
+        expect(localAdapter.lastCommandRequest?.label, 'SOS TRIGGER APP');
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) => event.message.contains(
+              'Native owner command rejected -> owner=native_protection command=SOS TRIGGER APP',
+            ),
+          ),
+          isTrue,
+        );
+      } finally {
+        await runtimeSdk.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test(
+        'android native owner routes trigger confirm acknowledge and cancel through protection commands',
+        () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+        notifications: SdkPermissionStatus.granted,
+        bluetooth: SdkPermissionStatus.granted,
+        bluetoothEnabled: true,
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-native-sequence',
+          connected: false,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.activated,
+        ),
+      );
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          protectedDeviceId: 'device-native-sequence',
+          activeDeviceId: 'device-native-sequence',
+          runtimeActive: true,
+          serviceRunning: true,
+          serviceBleConnected: true,
+          serviceBleReady: true,
+          coverageLevel: ProtectionCoverageLevel.full,
+          runtimeState: ProtectionRuntimeState.active,
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+      );
+      final localRealtimeClient = FakeRealtimeClient()
+        ..stateToEmitOnConnect = RealtimeConnectionState.connected;
+      final runtimeSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: DeviceSosController(),
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: localAdapter,
+      );
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+            canonicalExternalUserId: 'canonical-user',
+          ),
+        );
+        await runtimeSdk.enterProtectionMode();
+
+        await runtimeSdk.triggerDeviceSos();
+        await runtimeSdk.confirmDeviceSos();
+        await runtimeSdk.acknowledgeDeviceSos();
+        await runtimeSdk.cancelDeviceSos();
+
+        expect(
+          localAdapter.commandRequests.map((request) => request.label),
+          <String>[
+            'SOS TRIGGER APP',
+            'SOS CONFIRM',
+            'SOS ACK',
+            'SOS CANCEL',
+          ],
+        );
+      } finally {
+        await runtimeSdk.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
     test('operational diagnostics refresh when device connectivity and command path change',
         () async {
       final disconnectedDiagnostics = await sdk.getOperationalDiagnostics();
@@ -2849,6 +3125,8 @@ void main() {
         permissionsRepository.permissionState = const PermissionState(
           location: SdkPermissionStatus.granted,
           notifications: SdkPermissionStatus.granted,
+          bluetooth: SdkPermissionStatus.granted,
+          bluetoothEnabled: true,
         );
         await localSdk.initialize(
           const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
@@ -5828,6 +6106,8 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   int ensureActiveCallCount = 0;
   int flushCallCount = 0;
   int sendCommandCallCount = 0;
+  final List<ProtectionPlatformCommandRequest> commandRequests =
+      <ProtectionPlatformCommandRequest>[];
   ProtectionPlatformStartRequest? lastStartRequest;
   String? lastEnsureActiveReason;
   ProtectionPlatformCommandRequest? lastCommandRequest;
@@ -5872,6 +6152,7 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }) async {
     sendCommandCallCount++;
     lastCommandRequest = request;
+    commandRequests.add(request);
     return commandResult;
   }
 

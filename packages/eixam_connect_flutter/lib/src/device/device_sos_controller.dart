@@ -80,16 +80,24 @@ class DeviceSosController {
 
   Stream<DeviceSosStatus> watchStatus() => _controller.stream;
 
-  Future<DeviceSosStatus> triggerSos() {
+  Future<DeviceSosStatus> triggerSos({
+    DeviceCommandWriter? commandWriterOverride,
+    String commandRouteLabel = 'attached_writer',
+  }) {
     return _sendCommand(
       command: EixamDeviceCommand.sosTriggerApp(),
       optimisticState: DeviceSosState.preConfirm,
       optimisticEvent: 'App triggered SOS on device',
       failureEvent: 'SOS trigger write failed',
+      commandWriterOverride: commandWriterOverride,
+      commandRouteLabel: commandRouteLabel,
     );
   }
 
-  Future<DeviceSosStatus> confirmSos() {
+  Future<DeviceSosStatus> confirmSos({
+    DeviceCommandWriter? commandWriterOverride,
+    String commandRouteLabel = 'attached_writer',
+  }) {
     if (_status.state != DeviceSosState.preConfirm) {
       return Future<DeviceSosStatus>.value(
         _status.copyWith(
@@ -104,10 +112,15 @@ class DeviceSosController {
       optimisticState: DeviceSosState.active,
       optimisticEvent: 'App confirmed SOS on device',
       failureEvent: 'SOS confirm write failed',
+      commandWriterOverride: commandWriterOverride,
+      commandRouteLabel: commandRouteLabel,
     );
   }
 
-  Future<DeviceSosStatus> cancelSos() {
+  Future<DeviceSosStatus> cancelSos({
+    DeviceCommandWriter? commandWriterOverride,
+    String commandRouteLabel = 'attached_writer',
+  }) {
     final nextState = switch (_status.state) {
       DeviceSosState.preConfirm => DeviceSosState.inactive,
       DeviceSosState.active => DeviceSosState.resolved,
@@ -121,10 +134,15 @@ class DeviceSosController {
       optimisticState: nextState,
       optimisticEvent: 'App cancelled SOS on device',
       failureEvent: 'SOS cancel write failed',
+      commandWriterOverride: commandWriterOverride,
+      commandRouteLabel: commandRouteLabel,
     );
   }
 
-  Future<DeviceSosStatus> acknowledgeSos() {
+  Future<DeviceSosStatus> acknowledgeSos({
+    DeviceCommandWriter? commandWriterOverride,
+    String commandRouteLabel = 'attached_writer',
+  }) {
     if (_status.state != DeviceSosState.active) {
       return Future<DeviceSosStatus>.value(
         _status.copyWith(
@@ -139,31 +157,72 @@ class DeviceSosController {
       optimisticState: DeviceSosState.acknowledged,
       optimisticEvent: 'App sent backend acknowledgment to device',
       failureEvent: 'Backend acknowledgment write failed',
+      commandWriterOverride: commandWriterOverride,
+      commandRouteLabel: commandRouteLabel,
     );
   }
 
-  Future<void> sendInetOk() => _sendNonSosCommand(EixamDeviceCommand.inetOk());
+  Future<void> sendInetOk({
+    DeviceCommandWriter? commandWriterOverride,
+    String commandRouteLabel = 'attached_writer',
+  }) => _sendNonSosCommand(
+        EixamDeviceCommand.inetOk(),
+        commandWriterOverride: commandWriterOverride,
+        commandRouteLabel: commandRouteLabel,
+      );
 
-  Future<void> sendInetLost() =>
-      _sendNonSosCommand(EixamDeviceCommand.inetLost());
+  Future<void> sendInetLost({
+    DeviceCommandWriter? commandWriterOverride,
+    String commandRouteLabel = 'attached_writer',
+  }) => _sendNonSosCommand(
+        EixamDeviceCommand.inetLost(),
+        commandWriterOverride: commandWriterOverride,
+        commandRouteLabel: commandRouteLabel,
+      );
 
-  Future<void> sendPositionConfirmed() =>
-      _sendNonSosCommand(EixamDeviceCommand.positionConfirmed());
+  Future<void> sendPositionConfirmed({
+    DeviceCommandWriter? commandWriterOverride,
+    String commandRouteLabel = 'attached_writer',
+  }) => _sendNonSosCommand(
+        EixamDeviceCommand.positionConfirmed(),
+        commandWriterOverride: commandWriterOverride,
+        commandRouteLabel: commandRouteLabel,
+      );
 
-  Future<void> sendAckRelay({required int nodeId}) {
-    return _sendNonSosCommand(EixamDeviceCommand.sosAckRelay(nodeId: nodeId));
+  Future<void> sendAckRelay({
+    required int nodeId,
+    DeviceCommandWriter? commandWriterOverride,
+    String commandRouteLabel = 'attached_writer',
+  }) {
+    return _sendNonSosCommand(
+      EixamDeviceCommand.sosAckRelay(nodeId: nodeId),
+      commandWriterOverride: commandWriterOverride,
+      commandRouteLabel: commandRouteLabel,
+    );
   }
 
-  Future<void> sendShutdown() =>
-      _sendNonSosCommand(EixamDeviceCommand.shutdown());
+  Future<void> sendShutdown({
+    DeviceCommandWriter? commandWriterOverride,
+    String commandRouteLabel = 'attached_writer',
+  }) => _sendNonSosCommand(
+        EixamDeviceCommand.shutdown(),
+        commandWriterOverride: commandWriterOverride,
+        commandRouteLabel: commandRouteLabel,
+      );
+
+  Future<void> sendAttachedCommand(EixamDeviceCommand command) {
+    return _sendNonSosCommand(command);
+  }
 
   Future<DeviceSosStatus> _sendCommand({
     required EixamDeviceCommand command,
     required DeviceSosState optimisticState,
     required String optimisticEvent,
     required String failureEvent,
+    DeviceCommandWriter? commandWriterOverride,
+    required String commandRouteLabel,
   }) async {
-    final writer = _commandWriter;
+    final writer = commandWriterOverride ?? _commandWriter;
     if (writer == null) {
       throw StateError('Device SOS command channel is not ready.');
     }
@@ -207,9 +266,12 @@ class DeviceSosController {
     }
 
     try {
+      BleDebugRegistry.instance.recordEvent(
+        'Device SOS command dispatch -> route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
+      );
       await writer(command);
       BleDebugRegistry.instance.recordEvent(
-        'Device SOS command sent: ${command.label} previousState=${previous.state.name}',
+        'Device SOS command sent -> route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
       );
       return _status;
     } catch (error, stackTrace) {
@@ -224,7 +286,7 @@ class DeviceSosController {
         ),
       );
       BleDebugRegistry.instance.recordEvent(
-        'Device SOS command failed: ${command.label} error=$error',
+        'Device SOS command failed -> route=$commandRouteLabel command=${command.label} error=$error',
       );
       debugPrint(
         'Device SOS command failed -> opcode=${command.opcode} error=$error',
@@ -234,12 +296,22 @@ class DeviceSosController {
     }
   }
 
-  Future<void> _sendNonSosCommand(EixamDeviceCommand command) async {
-    final writer = _commandWriter;
+  Future<void> _sendNonSosCommand(
+    EixamDeviceCommand command, {
+    DeviceCommandWriter? commandWriterOverride,
+    String commandRouteLabel = 'attached_writer',
+  }) async {
+    final writer = commandWriterOverride ?? _commandWriter;
     if (writer == null) {
       throw StateError('Device command channel is not ready.');
     }
+    BleDebugRegistry.instance.recordEvent(
+      'Device command dispatch -> route=$commandRouteLabel command=${command.label}',
+    );
     await writer(command);
+    BleDebugRegistry.instance.recordEvent(
+      'Device command sent -> route=$commandRouteLabel command=${command.label}',
+    );
   }
 
   void handleIncomingSosPacket(
