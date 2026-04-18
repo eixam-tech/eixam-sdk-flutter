@@ -11,6 +11,8 @@ Host apps can read SOS channel readiness and the most recent public delivery pat
 - `backendSosAvailable`
 - `deviceSosAvailable`
 - `canActivateSos`
+- `currentSosCapabilityChannel`
+- `currentSosCapabilityLabel`
 - `lastPublicSosDeliveryChannel`
 
 The actual incident channel is also exposed on `SosIncident.deliveryChannel`.
@@ -22,6 +24,11 @@ Possible delivery values:
 - `backendAndDevice`
 
 This keeps SOS routing explicit for host UX, incident history, and support diagnostics.
+
+Capability and delivery are intentionally separate:
+
+- capability answers what the SDK can use right now
+- delivery answers what the SDK actually used for the active or last public SOS request
 
 ## Public Device Control APIs
 

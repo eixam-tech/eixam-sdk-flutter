@@ -238,6 +238,7 @@ class EixamConnectSdkImpl
 
     _deviceStatusSub = deviceRepository.watchDeviceStatus().listen((status) {
       _lastDeviceStatus = status;
+      _emitOperationalDiagnostics();
       _scheduleRegisteredDeviceAutoSync(
         trigger: 'device_status_stream',
         status: status,
@@ -798,6 +799,7 @@ class EixamConnectSdkImpl
   }
 
   Future<void> _handleDeviceSosStatus(DeviceSosStatus status) async {
+    _emitOperationalDiagnostics();
     final cycleKey = _deriveDeviceSosCycleKey(status);
     final isDeviceTimeoutPromotion = !status.derivedFromBlePacket &&
         status.state == DeviceSosState.active &&
@@ -1258,6 +1260,7 @@ class EixamConnectSdkImpl
         action: 'trigger',
         shouldRun: _canTriggerDeviceSosForPublicSos,
         operation: triggerDeviceSos,
+        refreshRuntimeStatus: true,
       );
 
       SosIncident? backendIncident;
@@ -1324,6 +1327,7 @@ class EixamConnectSdkImpl
         action: 'cancel',
         shouldRun: _canCloseDeviceSosForPublicSos,
         operation: cancelDeviceSos,
+        refreshRuntimeStatus: true,
       );
 
       SosIncident? backendIncident;
@@ -1377,6 +1381,7 @@ class EixamConnectSdkImpl
         action: 'resolve',
         shouldRun: _canCloseDeviceSosForPublicSos,
         operation: cancelDeviceSos,
+        refreshRuntimeStatus: true,
       );
 
       SosIncident? backendIncident;
@@ -1450,9 +1455,11 @@ class EixamConnectSdkImpl
     required String action,
     required bool Function(DeviceSosStatus status) shouldRun,
     required Future<DeviceSosStatus> Function() operation,
+    bool refreshRuntimeStatus = false,
   }) async {
     final runtimeStatus = await _loadRuntimeReadyDeviceStatusForSosSync(
       action: action,
+      refreshRuntimeStatus: refreshRuntimeStatus,
     );
     if (runtimeStatus == null) {
       return const _PublicSosDeviceAttempt(
@@ -1495,15 +1502,17 @@ class EixamConnectSdkImpl
 
   Future<DeviceStatus?> _loadRuntimeReadyDeviceStatusForSosSync({
     required String action,
+    bool refreshRuntimeStatus = false,
   }) async {
     try {
-      final status =
-          _lastDeviceStatus ?? await deviceRepository.getDeviceStatus();
+      final status = refreshRuntimeStatus
+          ? await deviceRepository.getDeviceStatus()
+          : (_lastDeviceStatus ?? await deviceRepository.getDeviceStatus());
       _lastDeviceStatus = status;
 
-      if (!status.isReadyForSafety) {
+      if (!status.connected) {
         BleDebugRegistry.instance.recordEvent(
-          'Public SOS device sync skipped -> action=$action reason=device_not_ready lifecycle=${status.lifecycleState.name} connected=${status.connected} paired=${status.paired} activated=${status.activated}',
+          'Public SOS device sync skipped -> action=$action reason=device_not_connected lifecycle=${status.lifecycleState.name} connected=${status.connected} paired=${status.paired} activated=${status.activated}',
         );
         return null;
       }
@@ -2368,9 +2377,7 @@ class EixamConnectSdkImpl
 
   bool _isDeviceSosChannelAvailable() {
     final status = _lastDeviceStatus;
-    return status != null &&
-        status.isReadyForSafety &&
-        deviceSosController.hasCommandChannel;
+    return status != null && status.connected && deviceSosController.hasCommandChannel;
   }
 
   InMemoryDeviceRepository _requireCommandCapableDeviceRepository() {

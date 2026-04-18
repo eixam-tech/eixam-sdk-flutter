@@ -36,6 +36,12 @@ class DeviceSosController {
 
   Future<void> attach({required DeviceCommandWriter commandWriter}) async {
     _commandWriter = commandWriter;
+    _emit(
+      _status.copyWith(
+        lastEvent: 'Device SOS command channel attached',
+        updatedAt: _now(),
+      ),
+    );
   }
 
   Future<void> detach() async {

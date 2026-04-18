@@ -10,6 +10,13 @@ The orchestration rule is:
 
 SOS must only be blocked when both channels are unavailable.
 
+The SDK keeps two different truths separate:
+
+- current SOS capability:
+  what the SDK can use right now if the host app asks to trigger SOS
+- effective delivery channel:
+  what the SDK actually used for the active or last public SOS operation
+
 ## Public SOS Behavior
 
 The public methods `triggerSos(...)`, `cancelSos()`, and `resolveSos()` now orchestrate both channels from the SDK layer.
@@ -21,12 +28,16 @@ The public methods `triggerSos(...)`, `cancelSos()`, and `resolveSos()` now orch
 
 ### `triggerSos(...)`
 
+- The SDK re-evaluates device availability at execution time before choosing channels.
 - Backend available + device available:
   backend SOS is triggered and the device is triggered too.
+  Effective delivery is `backendAndDevice`.
 - Backend available + no device:
   backend SOS is triggered only.
+  Effective delivery is `backendOnly`.
 - Backend unavailable + device available:
   device SOS is triggered only and the SDK still treats the request as success.
+  Effective delivery is `deviceOnly`.
 - Backend unavailable + no device:
   the call fails with `E_SOS_NOT_AVAILABLE`.
 
@@ -61,11 +72,15 @@ For trigger flows, backend failures such as missing operational transport or mis
 
 ### Device SOS availability
 
-Device SOS is available only when all of the following are true:
+Device SOS capability is evaluated from the live runtime command path, not only from the last cached diagnostics snapshot.
 
-- the current `DeviceStatus` is `isReadyForSafety`
-- the BLE/runtime command writer is attached
+For public SOS orchestration, device SOS is available only when all of the following are true:
+
+- the current runtime reports the device as connected
+- the BLE/runtime command writer is attached and command-capable
 - the requested public action would not duplicate an already-converged device SOS state
+
+The SDK does not require broader readiness conditions that are unrelated to app-to-device SOS command delivery.
 
 ## Fallback Matrix
 
@@ -98,6 +113,15 @@ Host apps can also inspect availability through:
 - `SdkOperationalDiagnostics.backendSosAvailable`
 - `SdkOperationalDiagnostics.deviceSosAvailable`
 - `SdkOperationalDiagnostics.canActivateSos`
+- `SdkOperationalDiagnostics.currentSosCapabilityChannel`
+- `SdkOperationalDiagnostics.currentSosCapabilityLabel`
+
+This means host apps can render both:
+
+- current capability:
+  backend only, device only, backend + device, or unavailable
+- actual delivery:
+  backendOnly, deviceOnly, or backendAndDevice for the active or last public SOS cycle
 
 ## Failure Semantics
 
@@ -116,5 +140,6 @@ Host apps can also inspect availability through:
 
 - The orchestration lives in `EixamConnectSdkImpl`, not in host widgets.
 - Device synchronization reuses `DeviceSosController` through the existing public device SOS methods.
+- Public SOS execution refreshes device capability from the live runtime before choosing channels, so stale cached status does not incorrectly downgrade a connected command-capable device.
 - The SDK keeps a small public SOS overlay so device-only success is reflected in SDK-facing state and incident reads even when the backend repository could not create an incident.
 - Device-originated SOS behavior is preserved; the new orchestration only extends public app-origin SOS behavior.

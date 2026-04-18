@@ -2216,6 +2216,42 @@ void main() {
       expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.preConfirm);
     });
 
+    test(
+        'triggerSos uses the live command-capable device path even when isReadyForSafety is false',
+        () async {
+      final commands = <String>[];
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-sos-live-1',
+          canonicalHardwareId: 'CF:82:11:22:33:45',
+          paired: true,
+          connected: true,
+          activated: false,
+          lifecycleState: DeviceLifecycleState.paired,
+        ),
+      );
+      await deviceSosController.attach(
+        commandWriter: (command) async {
+          commands.add(command.label);
+        },
+      );
+
+      final incident = await sdk.triggerSos(
+        const SosTriggerPayload(message: 'Need help'),
+      );
+      final diagnostics = await sdk.getOperationalDiagnostics();
+
+      expect(sosRepository.triggerCallCount, 1);
+      expect(commands, contains('SOS TRIGGER APP'));
+      expect(incident.deliveryChannel, SosDeliveryChannel.backendAndDevice);
+      expect(diagnostics.deviceSosAvailable, isTrue);
+      expect(
+        diagnostics.currentSosCapabilityChannel,
+        SosDeliveryChannel.backendAndDevice,
+      );
+      expect(diagnostics.currentSosCapabilityLabel, 'backend + device');
+    });
+
     test('currentSosStateStream exposes the facade SOS state stream', () async {
       sosRepository.currentIncident = sosRepository.currentIncident.copyWith(
         state: SosState.sent,
@@ -2628,6 +2664,49 @@ void main() {
         await localSosRepository.dispose();
         await localRealtimeClient.dispose();
       }
+    });
+
+    test('operational diagnostics refresh when device connectivity and command path change',
+        () async {
+      final disconnectedDiagnostics = await sdk.getOperationalDiagnostics();
+      expect(disconnectedDiagnostics.deviceSosAvailable, isFalse);
+      expect(disconnectedDiagnostics.currentSosCapabilityLabel, 'backend only');
+
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-diag-1',
+          canonicalHardwareId: 'CF:82:11:22:33:99',
+          paired: true,
+          connected: true,
+          activated: false,
+          lifecycleState: DeviceLifecycleState.paired,
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      await sdk.getDeviceStatus();
+
+      final connectedWithoutCommand = await sdk.getOperationalDiagnostics();
+      expect(connectedWithoutCommand.deviceSosAvailable, isFalse);
+      expect(
+        connectedWithoutCommand.currentSosCapabilityChannel,
+        SosDeliveryChannel.backendOnly,
+      );
+
+      await deviceSosController.attach(
+        commandWriter: (command) async {},
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final connectedWithCommand = await sdk.getOperationalDiagnostics();
+      expect(connectedWithCommand.deviceSosAvailable, isTrue);
+      expect(
+        connectedWithCommand.currentSosCapabilityChannel,
+        SosDeliveryChannel.backendAndDevice,
+      );
+      expect(
+        connectedWithCommand.currentSosCapabilityLabel,
+        'backend + device',
+      );
     });
 
     test(

@@ -36,6 +36,28 @@ class SdkOperationalDiagnostics {
 
   bool get canActivateSos => backendSosAvailable || deviceSosAvailable;
 
+  SosDeliveryChannel? get currentSosCapabilityChannel {
+    if (backendSosAvailable && deviceSosAvailable) {
+      return SosDeliveryChannel.backendAndDevice;
+    }
+    if (backendSosAvailable) {
+      return SosDeliveryChannel.backendOnly;
+    }
+    if (deviceSosAvailable) {
+      return SosDeliveryChannel.deviceOnly;
+    }
+    return null;
+  }
+
+  String get currentSosCapabilityLabel {
+    return switch (currentSosCapabilityChannel) {
+      SosDeliveryChannel.backendAndDevice => 'backend + device',
+      SosDeliveryChannel.backendOnly => 'backend only',
+      SosDeliveryChannel.deviceOnly => 'device only',
+      null => 'unavailable',
+    };
+  }
+
   SdkOperationalDiagnostics copyWith({
     Object? session = _unset,
     RealtimeConnectionState? connectionState,
