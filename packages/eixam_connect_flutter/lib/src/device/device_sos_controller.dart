@@ -23,6 +23,8 @@ class DeviceSosController {
 
   final StreamController<DeviceSosStatus> _controller =
       StreamController<DeviceSosStatus>.broadcast();
+  final StreamController<bool> _commandPathController =
+      StreamController<bool>.broadcast();
 
   DeviceCommandWriter? _commandWriter;
   DeviceSosStatus _status = DeviceSosStatus.initial();
@@ -34,9 +36,18 @@ class DeviceSosController {
   DeviceSosStatus get currentStatus => _status;
   bool get hasSosCommandPath => _commandWriter != null;
   bool get hasCommandChannel => hasSosCommandPath;
+  Stream<bool> watchCommandPathAvailability() async* {
+    yield hasSosCommandPath;
+    yield* _commandPathController.stream;
+  }
 
   Future<void> attach({required DeviceCommandWriter commandWriter}) async {
+    final previousAvailability = hasSosCommandPath;
     _commandWriter = commandWriter;
+    BleDebugRegistry.instance.recordEvent(
+      'Device SOS command path attached -> available=$hasSosCommandPath previous=$previousAvailability',
+    );
+    _emitCommandPathAvailabilityIfChanged(previousAvailability);
     _emit(
       _status.copyWith(
         lastEvent: 'Device SOS command channel attached',
@@ -46,7 +57,12 @@ class DeviceSosController {
   }
 
   Future<void> detach() async {
+    final previousAvailability = hasSosCommandPath;
     _commandWriter = null;
+    BleDebugRegistry.instance.recordEvent(
+      'Device SOS command path detached -> available=$hasSosCommandPath previous=$previousAvailability',
+    );
+    _emitCommandPathAvailabilityIfChanged(previousAvailability);
     _cancelCountdownTimer();
     _emit(
       DeviceSosStatus(
@@ -612,8 +628,17 @@ class DeviceSosController {
     _controller.add(next);
   }
 
+  void _emitCommandPathAvailabilityIfChanged(bool previousAvailability) {
+    if (previousAvailability == hasSosCommandPath ||
+        _commandPathController.isClosed) {
+      return;
+    }
+    _commandPathController.add(hasSosCommandPath);
+  }
+
   Future<void> dispose() async {
     _cancelCountdownTimer();
+    await _commandPathController.close();
     await _controller.close();
   }
 }

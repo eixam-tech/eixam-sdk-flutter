@@ -318,6 +318,10 @@ class FakeDeviceRepository implements DeviceRepository {
     _controller.add(status);
   }
 
+  void setCurrentStatusSilently(DeviceStatus status) {
+    _status = status;
+  }
+
   Future<void> dispose() async {
     await _controller.close();
   }

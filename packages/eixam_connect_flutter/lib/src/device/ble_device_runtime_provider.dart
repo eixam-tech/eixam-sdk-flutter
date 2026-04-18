@@ -247,7 +247,13 @@ class BleDeviceRuntimeProvider
       return _bleClient.writeDeviceCommand(deviceId, command);
     };
     BleDebugRegistry.instance.registerCommandWriter(commandWriter);
+    BleDebugRegistry.instance.recordEvent(
+      'BLE SOS runtime attach requested -> deviceId=$deviceId inetAvailable=${BleDebugRegistry.instance.currentState.inetFound} cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound}',
+    );
     await _deviceSosController.attach(commandWriter: commandWriter);
+    BleDebugRegistry.instance.recordEvent(
+      'BLE SOS runtime attached -> deviceId=$deviceId inetAvailable=${BleDebugRegistry.instance.currentState.inetFound} cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound}',
+    );
 
     final stream = await _bleClient.subscribeEixamNotifications(deviceId);
     _notificationSubscription = stream.listen(
@@ -278,6 +284,9 @@ class BleDeviceRuntimeProvider
     await _connectionStateSubscription?.cancel();
     _connectionStateSubscription = null;
     BleDebugRegistry.instance.clearCommandWriter();
+    BleDebugRegistry.instance.recordEvent(
+      'BLE SOS runtime detach requested -> deviceId=${_connectedDeviceId ?? "-"} inetAvailable=${BleDebugRegistry.instance.currentState.inetFound} cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound}',
+    );
     await _deviceSosController.detach();
     final deviceId = _connectedDeviceId;
     if (deviceId != null) {
@@ -411,6 +420,9 @@ class BleDeviceRuntimeProvider
     _connectionStateSubscription = null;
     await _notificationSubscription?.cancel();
     _notificationSubscription = null;
+    BleDebugRegistry.instance.recordEvent(
+      'BLE SOS runtime detach requested -> deviceId=${_connectedDeviceId ?? "-"} reason=unpair inetAvailable=${BleDebugRegistry.instance.currentState.inetFound} cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound}',
+    );
     await _deviceSosController.detach();
     if (_connectedDeviceId != null) {
       await _bleClient.disconnect(_connectedDeviceId!);

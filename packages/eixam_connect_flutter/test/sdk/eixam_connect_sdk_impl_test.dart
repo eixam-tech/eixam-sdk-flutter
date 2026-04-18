@@ -2711,6 +2711,83 @@ void main() {
     });
 
     test(
+        'getOperationalDiagnostics recomputes current SOS capability from live runtime truth when cached connectivity is stale',
+        () async {
+      final disconnected = buildDeviceStatus(
+        deviceId: 'ble-stale-1',
+        canonicalHardwareId: 'CF:82:11:22:33:55',
+        paired: true,
+        connected: false,
+        activated: true,
+        lifecycleState: DeviceLifecycleState.activated,
+      );
+      final connected = disconnected.copyWith(
+        connected: true,
+        lifecycleState: DeviceLifecycleState.ready,
+      );
+
+      deviceRepository.emitStatus(disconnected);
+      await Future<void>.delayed(Duration.zero);
+      deviceRepository.setCurrentStatusSilently(connected);
+      await deviceSosController.attach(
+        commandWriter: (command) async {},
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final diagnostics = await sdk.getOperationalDiagnostics();
+
+      expect(deviceRepository.refreshCallCount, greaterThanOrEqualTo(1));
+      expect(diagnostics.deviceSosAvailable, isTrue);
+      expect(
+        diagnostics.currentSosCapabilityChannel,
+        SosDeliveryChannel.backendAndDevice,
+      );
+    });
+
+    test(
+        'triggerSos re-evaluates live device availability before choosing delivery channel',
+        () async {
+      await sdk.setSession(
+        const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-123',
+          userHash: 'deadbeef',
+        ),
+      );
+      final disconnected = buildDeviceStatus(
+        deviceId: 'ble-stale-trigger-1',
+        canonicalHardwareId: 'CF:82:11:22:33:56',
+        paired: true,
+        connected: false,
+        activated: true,
+        lifecycleState: DeviceLifecycleState.activated,
+      );
+      final connected = disconnected.copyWith(
+        connected: true,
+        lifecycleState: DeviceLifecycleState.ready,
+      );
+      final commands = <String>[];
+
+      deviceRepository.emitStatus(disconnected);
+      await Future<void>.delayed(Duration.zero);
+      deviceRepository.setCurrentStatusSilently(connected);
+      await deviceSosController.attach(
+        commandWriter: (command) async {
+          commands.add(command.label);
+        },
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final incident = await sdk.triggerSos(
+        const SosTriggerPayload(message: 'Need help'),
+      );
+
+      expect(deviceRepository.refreshCallCount, greaterThanOrEqualTo(1));
+      expect(commands, contains('SOS TRIGGER APP'));
+      expect(incident.deliveryChannel, SosDeliveryChannel.backendAndDevice);
+    });
+
+    test(
         'historical SOS delivery channel remains separate from current capability',
         () async {
       await sdk.setSession(

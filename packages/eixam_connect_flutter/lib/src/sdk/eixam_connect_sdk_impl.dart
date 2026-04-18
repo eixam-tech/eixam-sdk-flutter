@@ -81,6 +81,7 @@ class EixamConnectSdkImpl
   StreamSubscription<RealtimeEvent>? _realtimeEventsSub;
   StreamSubscription<DeviceStatus>? _deviceStatusSub;
   StreamSubscription<DeviceSosStatus>? _deviceSosSub;
+  StreamSubscription<bool>? _deviceSosCommandPathSub;
   StreamSubscription<GuidedRescueState>? _guidedRescueSub;
   StreamSubscription<SosState>? _sosStateSub;
   StreamSubscription<SdkBridgeDiagnostics>? _bridgeDiagnosticsSub;
@@ -235,9 +236,14 @@ class EixamConnectSdkImpl
   void _bindDeviceStreams() {
     _deviceStatusSub?.cancel();
     _deviceSosSub?.cancel();
+    _deviceSosCommandPathSub?.cancel();
 
     _deviceStatusSub = deviceRepository.watchDeviceStatus().listen((status) {
+      final previousStatus = _lastDeviceStatus;
       _lastDeviceStatus = status;
+      BleDebugRegistry.instance.recordEvent(
+        'Device connectivity changed -> connected=${status.connected} previous=${previousStatus?.connected} deviceId=${status.deviceId} lifecycle=${status.lifecycleState.name}',
+      );
       _emitOperationalDiagnostics();
       _scheduleRegisteredDeviceAutoSync(
         trigger: 'device_status_stream',
@@ -252,6 +258,24 @@ class EixamConnectSdkImpl
       onError: (Object error) {
         BleDebugRegistry.instance.recordEvent(
           'BLE SOS notification monitor error: $error',
+        );
+      },
+    );
+
+    _deviceSosCommandPathSub =
+        deviceSosController.watchCommandPathAvailability().listen(
+      (available) async {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS command path availability changed -> available=$available connected=${_lastDeviceStatus?.connected} deviceId=${_lastDeviceStatus?.deviceId ?? "-"}',
+        );
+        await _refreshOperationalDiagnostics(
+          trigger: 'device_sos_command_path_changed',
+          refreshRuntimeStatus: true,
+        );
+      },
+      onError: (Object error) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS command path monitor error: $error',
         );
       },
     );
@@ -1256,6 +1280,9 @@ class EixamConnectSdkImpl
       final deviceId = await _loadBackendHardwareIdForOperationalPayloads(
         runtimeStatus: _lastDeviceStatus,
       );
+      BleDebugRegistry.instance.recordEvent(
+        'triggerSos() start -> backendAvailable=${_isBackendSosChannelAvailable()} cachedDeviceConnected=${_lastDeviceStatus?.connected} commandPath=${deviceSosController.hasSosCommandPath}',
+      );
       final deviceSync = await _attemptPublicSosDeviceAction(
         action: 'trigger',
         shouldRun: _canTriggerDeviceSosForPublicSos,
@@ -1282,6 +1309,9 @@ class EixamConnectSdkImpl
       final deliveryChannel = _resolveSuccessfulSosDeliveryChannel(
         backendSucceeded: backendIncident != null,
         deviceSucceeded: deviceSync.succeeded,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'triggerSos() channel decision -> backendSucceeded=${backendIncident != null} deviceAvailable=${deviceSync.available} deviceAttempted=${deviceSync.attempted} deviceSucceeded=${deviceSync.succeeded} delivery=${deliveryChannel?.name ?? "-"}',
       );
       if (deliveryChannel == null) {
         _throwTriggerSosFailure(
@@ -1505,10 +1535,10 @@ class EixamConnectSdkImpl
     bool refreshRuntimeStatus = false,
   }) async {
     try {
-      final status = refreshRuntimeStatus
-          ? await deviceRepository.getDeviceStatus()
-          : (_lastDeviceStatus ?? await deviceRepository.getDeviceStatus());
-      _lastDeviceStatus = status;
+      final status = await _resolveDeviceStatusForCapability(
+        trigger: 'public_sos_$action',
+        refreshRuntimeStatus: refreshRuntimeStatus,
+      );
 
       if (!status.connected) {
         BleDebugRegistry.instance.recordEvent(
@@ -1911,11 +1941,22 @@ class EixamConnectSdkImpl
 
   @override
   Future<SosState> getSosState() async {
+    await _refreshOperationalDiagnostics(
+      trigger: 'getSosState',
+      refreshRuntimeStatus: true,
+      emit: false,
+    );
     if (_publicSosFallbackIncident != null) {
+      BleDebugRegistry.instance.recordEvent(
+        'getSosState() -> fallbackState=${_publicSosState.name}',
+      );
       return _publicSosState;
     }
     final repositoryState = await sosRepository.getSosState();
     _publicSosState = repositoryState;
+    BleDebugRegistry.instance.recordEvent(
+      'getSosState() -> repositoryState=${repositoryState.name}',
+    );
     return repositoryState;
   }
 
@@ -2078,12 +2119,20 @@ class EixamConnectSdkImpl
 
   @override
   Future<SdkOperationalDiagnostics> getOperationalDiagnostics() async {
-    return _buildOperationalDiagnostics();
+    return _refreshOperationalDiagnostics(
+      trigger: 'getOperationalDiagnostics',
+      refreshRuntimeStatus: true,
+      emit: false,
+    );
   }
 
   @override
   Stream<SdkOperationalDiagnostics> watchOperationalDiagnostics() async* {
-    yield _buildOperationalDiagnostics();
+    yield await _refreshOperationalDiagnostics(
+      trigger: 'watchOperationalDiagnostics.initial',
+      refreshRuntimeStatus: true,
+      emit: false,
+    );
     yield* _operationalDiagnosticsController.stream;
   }
 
@@ -2375,15 +2424,22 @@ class EixamConnectSdkImpl
     return true;
   }
 
-  bool _hasDeviceSosCommandPath({DeviceStatus? status}) {
+  bool _hasDeviceSosCommandPath({
+    DeviceStatus? status,
+    String trigger = 'unspecified',
+  }) {
     final runtimeStatus = status ?? _lastDeviceStatus;
-    return runtimeStatus != null &&
+    final available = runtimeStatus != null &&
         runtimeStatus.connected &&
         deviceSosController.hasSosCommandPath;
+    BleDebugRegistry.instance.recordEvent(
+      '_hasDeviceSosCommandPath($trigger) -> $available connected=${runtimeStatus?.connected} deviceId=${runtimeStatus?.deviceId ?? "-"} commandPath=${deviceSosController.hasSosCommandPath}',
+    );
+    return available;
   }
 
   bool _isDeviceSosChannelAvailable() {
-    return _hasDeviceSosCommandPath();
+    return _hasDeviceSosCommandPath(trigger: 'isDeviceSosChannelAvailable');
   }
 
   InMemoryDeviceRepository _requireCommandCapableDeviceRepository() {
@@ -2429,8 +2485,52 @@ class EixamConnectSdkImpl
 
   void _emitOperationalDiagnostics() {
     if (!_operationalDiagnosticsController.isClosed) {
-      _operationalDiagnosticsController.add(_buildOperationalDiagnostics());
+      final diagnostics = _buildOperationalDiagnostics();
+      BleDebugRegistry.instance.recordEvent(
+        'diagnostics recomputation -> backend=${diagnostics.backendSosAvailable} device=${diagnostics.deviceSosAvailable} current=${diagnostics.currentSosCapabilityLabel} lastDelivery=${diagnostics.lastPublicSosDeliveryChannel?.name ?? "-"}',
+      );
+      _operationalDiagnosticsController.add(diagnostics);
     }
+  }
+
+  Future<DeviceStatus> _resolveDeviceStatusForCapability({
+    required String trigger,
+    bool refreshRuntimeStatus = false,
+  }) async {
+    final status = refreshRuntimeStatus
+        ? await deviceRepository.refreshDeviceStatus()
+        : await deviceRepository.getDeviceStatus();
+    final previous = _lastDeviceStatus;
+    _lastDeviceStatus = status;
+    BleDebugRegistry.instance.recordEvent(
+      '$trigger device status resolved -> connected=${status.connected} previous=${previous?.connected} deviceId=${status.deviceId} lifecycle=${status.lifecycleState.name} refreshed=$refreshRuntimeStatus',
+    );
+    return status;
+  }
+
+  Future<SdkOperationalDiagnostics> _refreshOperationalDiagnostics({
+    required String trigger,
+    bool refreshRuntimeStatus = false,
+    bool emit = true,
+  }) async {
+    try {
+      await _resolveDeviceStatusForCapability(
+        trigger: trigger,
+        refreshRuntimeStatus: refreshRuntimeStatus,
+      );
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        '$trigger device status refresh failed -> error=$error',
+      );
+    }
+    final diagnostics = _buildOperationalDiagnostics();
+    BleDebugRegistry.instance.recordEvent(
+      '$trigger -> getOperationalDiagnostics() backend=${diagnostics.backendSosAvailable} device=${diagnostics.deviceSosAvailable} current=${diagnostics.currentSosCapabilityLabel} lastDelivery=${diagnostics.lastPublicSosDeliveryChannel?.name ?? "-"}',
+    );
+    if (emit && !_operationalDiagnosticsController.isClosed) {
+      _operationalDiagnosticsController.add(diagnostics);
+    }
+    return diagnostics;
   }
 
   Future<void> dispose() async {
@@ -2441,6 +2541,7 @@ class EixamConnectSdkImpl
     await _realtimeEventsSub?.cancel();
     await _deviceStatusSub?.cancel();
     await _deviceSosSub?.cancel();
+    await _deviceSosCommandPathSub?.cancel();
     await _guidedRescueSub?.cancel();
     await _sosStateSub?.cancel();
     await _bridgeDiagnosticsSub?.cancel();
