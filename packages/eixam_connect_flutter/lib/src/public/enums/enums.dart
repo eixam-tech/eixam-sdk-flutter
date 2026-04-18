@@ -10,5 +10,6 @@ export 'package:eixam_connect_core/src/enums/guided_rescue_action.dart';
 export 'package:eixam_connect_core/src/enums/guided_rescue_target_state.dart';
 export 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
 export 'package:eixam_connect_core/src/enums/sdk_permission_status.dart';
+export 'package:eixam_connect_core/src/enums/sos_delivery_channel.dart';
 export 'package:eixam_connect_core/src/enums/sos_state.dart';
 export 'package:eixam_connect_core/src/enums/tracking_state.dart';

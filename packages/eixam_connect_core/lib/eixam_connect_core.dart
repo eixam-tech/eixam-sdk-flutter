@@ -36,6 +36,7 @@ export 'src/enums/guided_rescue_action.dart';
 export 'src/enums/guided_rescue_target_state.dart';
 export 'src/enums/realtime_connection_state.dart';
 export 'src/enums/sdk_permission_status.dart';
+export 'src/enums/sos_delivery_channel.dart';
 export 'src/errors/eixam_sdk_exception.dart';
 export 'src/events/eixam_sdk_event.dart';
 export 'src/events/realtime_event.dart';

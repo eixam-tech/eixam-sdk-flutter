@@ -1,5 +1,6 @@
 import '../config/eixam_session.dart';
 import '../enums/realtime_connection_state.dart';
+import '../enums/sos_delivery_channel.dart';
 import 'sdk_bridge_diagnostics.dart';
 
 class SdkOperationalDiagnostics {
@@ -10,6 +11,9 @@ class SdkOperationalDiagnostics {
     this.telemetryPublishTopic,
     this.sosEventTopics = const <String>[],
     this.sosRehydrationNote,
+    this.backendSosAvailable = false,
+    this.deviceSosAvailable = false,
+    this.lastPublicSosDeliveryChannel,
   });
 
   final EixamSession? session;
@@ -17,6 +21,9 @@ class SdkOperationalDiagnostics {
   final String? telemetryPublishTopic;
   final List<String> sosEventTopics;
   final String? sosRehydrationNote;
+  final bool backendSosAvailable;
+  final bool deviceSosAvailable;
+  final SosDeliveryChannel? lastPublicSosDeliveryChannel;
   final SdkBridgeDiagnostics bridge;
 
   bool get hasActiveSession => session != null;
@@ -24,12 +31,17 @@ class SdkOperationalDiagnostics {
   bool get canPublishOperationally =>
       hasActiveSession && connectionState == RealtimeConnectionState.connected;
 
+  bool get canActivateSos => backendSosAvailable || deviceSosAvailable;
+
   SdkOperationalDiagnostics copyWith({
     Object? session = _unset,
     RealtimeConnectionState? connectionState,
     Object? telemetryPublishTopic = _unset,
     List<String>? sosEventTopics,
     Object? sosRehydrationNote = _unset,
+    bool? backendSosAvailable,
+    bool? deviceSosAvailable,
+    Object? lastPublicSosDeliveryChannel = _unset,
     SdkBridgeDiagnostics? bridge,
   }) {
     return SdkOperationalDiagnostics(
@@ -43,6 +55,12 @@ class SdkOperationalDiagnostics {
       sosRehydrationNote: identical(sosRehydrationNote, _unset)
           ? this.sosRehydrationNote
           : sosRehydrationNote as String?,
+      backendSosAvailable: backendSosAvailable ?? this.backendSosAvailable,
+      deviceSosAvailable: deviceSosAvailable ?? this.deviceSosAvailable,
+      lastPublicSosDeliveryChannel:
+          identical(lastPublicSosDeliveryChannel, _unset)
+              ? this.lastPublicSosDeliveryChannel
+              : lastPublicSosDeliveryChannel as SosDeliveryChannel?,
       bridge: bridge ?? this.bridge,
     );
   }

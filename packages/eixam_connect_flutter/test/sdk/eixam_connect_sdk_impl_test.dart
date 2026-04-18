@@ -23,6 +23,7 @@ import 'package:eixam_connect_flutter/src/mappers/sdk_device_registry_mapper.dar
 import 'package:eixam_connect_flutter/src/data/repositories/mqtt_telemetry_repository.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/mqtt_operational_sos_repository.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/sos_runtime_rehydration_support.dart';
+import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
@@ -70,6 +71,7 @@ void main() {
     late EixamConnectSdkImpl sdk;
 
     setUp(() {
+      BleDebugRegistry.instance.reset();
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(protectionMethodChannel, (call) async {
         switch (call.method) {
@@ -616,7 +618,8 @@ void main() {
       await Future<void>.delayed(Duration.zero);
 
       expect(deviceRegistryRepository.lastHardwareId, 'CF:82:AB:CD:EF:01');
-      expect(deviceRegistryRepository.lastHardwareId, isNot('ble-local-runtime-id'));
+      expect(deviceRegistryRepository.lastHardwareId,
+          isNot('ble-local-runtime-id'));
       expect(deviceRegistryRepository.lastHardwareId, isNot('Meshtastic_1aa8'));
     });
 
@@ -2177,6 +2180,42 @@ void main() {
       expect((event as SOSTriggeredEvent).incidentId, incident.id);
     });
 
+    test('triggerSos without a connected device keeps backend-only behavior',
+        () async {
+      final incident = await sdk.triggerSos(
+        const SosTriggerPayload(message: 'Need help'),
+      );
+
+      expect(incident.state, SosState.sent);
+      expect(sosRepository.triggerCallCount, 1);
+      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.inactive);
+    });
+
+    test('triggerSos with a connected device also triggers device SOS',
+        () async {
+      final commands = <String>[];
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-sos-1',
+          canonicalHardwareId: 'CF:82:11:22:33:44',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
+      );
+      await deviceSosController.attach(
+        commandWriter: (command) async {
+          commands.add(command.label);
+        },
+      );
+
+      await sdk.triggerSos(const SosTriggerPayload(message: 'Need help'));
+
+      expect(sosRepository.triggerCallCount, 1);
+      expect(commands, contains('SOS TRIGGER APP'));
+      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.preConfirm);
+    });
+
     test('currentSosStateStream exposes the facade SOS state stream', () async {
       sosRepository.currentIncident = sosRepository.currentIncident.copyWith(
         state: SosState.sent,
@@ -2210,6 +2249,47 @@ void main() {
       expect((event as SOSCancelledEvent).incidentId, incident.id);
     });
 
+    test('cancelSos without a connected device keeps current behavior',
+        () async {
+      sosRepository.currentIncident = SosIncident(
+        id: 'sos-1',
+        state: SosState.sent,
+        createdAt: DateTime.utc(2026, 1, 1),
+      );
+
+      final incident = await sdk.cancelSos();
+
+      expect(incident.state, SosState.cancelled);
+      expect(sosRepository.cancelCallCount, 1);
+      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.inactive);
+    });
+
+    test('cancelSos with a connected device also cancels device SOS', () async {
+      final commands = <String>[];
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-sos-1',
+          canonicalHardwareId: 'CF:82:11:22:33:44',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
+      );
+      await deviceSosController.attach(
+        commandWriter: (command) async {
+          commands.add(command.label);
+        },
+      );
+
+      await sdk.triggerSos(const SosTriggerPayload(message: 'Need help'));
+      final incident = await sdk.cancelSos();
+
+      expect(incident.state, SosState.cancelled);
+      expect(sosRepository.cancelCallCount, 1);
+      expect(commands, contains('SOS CANCEL'));
+      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.inactive);
+    });
+
     test('resolveSos delegates through the public SDK seam', () async {
       sosRepository.currentIncident = SosIncident(
         id: 'sos-1',
@@ -2221,6 +2301,333 @@ void main() {
 
       expect(sosRepository.resolveCallCount, 1);
       expect(sosRepository.currentIncident.state, SosState.resolved);
+    });
+
+    test('resolveSos with a connected device propagates terminal device state',
+        () async {
+      final commands = <String>[];
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-sos-1',
+          canonicalHardwareId: 'CF:82:11:22:33:44',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
+      );
+      await deviceSosController.attach(
+        commandWriter: (command) async {
+          commands.add(command.label);
+        },
+      );
+
+      await sdk.triggerSos(const SosTriggerPayload(message: 'Need help'));
+      await sdk.confirmDeviceSos();
+      await sdk.resolveSos();
+
+      expect(sosRepository.resolveCallCount, 1);
+      expect(commands, contains('SOS CANCEL'));
+      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.resolved);
+    });
+
+    test('device sync failure does not break backend SOS success', () async {
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-sos-1',
+          canonicalHardwareId: 'CF:82:11:22:33:44',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
+      );
+      await deviceSosController.attach(
+        commandWriter: (command) async {
+          throw StateError('write failed');
+        },
+      );
+
+      final incident = await sdk.triggerSos(
+        const SosTriggerPayload(message: 'Need help'),
+      );
+
+      expect(incident.state, SosState.sent);
+      expect(sosRepository.triggerCallCount, 1);
+      expect(
+        BleDebugRegistry.instance.currentState.events.any(
+          (event) => event.message.contains(
+            'Public SOS device sync failed -> action=trigger',
+          ),
+        ),
+        isTrue,
+      );
+    });
+
+    test(
+        'triggerSos with backend unavailable but device available succeeds through device only',
+        () async {
+      final unavailableSosRepository = _AvailabilityAwareSosRepository();
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController();
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: unavailableSosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        deviceRepository.emitStatus(
+          buildDeviceStatus(
+            deviceId: 'ble-fallback-1',
+            canonicalHardwareId: 'CF:82:55:66:77:88',
+            paired: true,
+            connected: true,
+            activated: true,
+          ),
+        );
+        await localDeviceSosController.attach(
+          commandWriter: (command) async {},
+        );
+
+        final incident = await localSdk.triggerSos(
+          const SosTriggerPayload(message: 'Need help'),
+        );
+        final diagnostics = await localSdk.getOperationalDiagnostics();
+
+        expect(unavailableSosRepository.triggerCallCount, 0);
+        expect(incident.state, SosState.sent);
+        expect(incident.deliveryChannel, SosDeliveryChannel.deviceOnly);
+        expect(await localSdk.getSosState(), SosState.sent);
+        expect(
+          (await localSdk.getCurrentSosIncident())?.deliveryChannel,
+          SosDeliveryChannel.deviceOnly,
+        );
+        expect(
+          diagnostics.lastPublicSosDeliveryChannel,
+          SosDeliveryChannel.deviceOnly,
+        );
+      } finally {
+        await localSdk.dispose();
+        await unavailableSosRepository.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test('triggerSos with backend unavailable and no device fails clearly',
+        () async {
+      final unavailableSosRepository = _AvailabilityAwareSosRepository();
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController();
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: unavailableSosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        await expectLater(
+          localSdk.triggerSos(const SosTriggerPayload(message: 'Need help')),
+          throwsA(
+            isA<SosException>().having(
+              (error) => error.code,
+              'code',
+              'E_SOS_NOT_AVAILABLE',
+            ),
+          ),
+        );
+      } finally {
+        await localSdk.dispose();
+        await unavailableSosRepository.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test('backend failure does not break device-only SOS success', () async {
+      final unavailableSosRepository = _AvailabilityAwareSosRepository()
+        ..currentIncident = SosIncident(
+          id: 'device-fallback-1',
+          state: SosState.sent,
+          createdAt: DateTime.utc(2026, 1, 1),
+          deliveryChannel: SosDeliveryChannel.deviceOnly,
+        );
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController();
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: unavailableSosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        deviceRepository.emitStatus(
+          buildDeviceStatus(
+            deviceId: 'ble-fallback-1',
+            canonicalHardwareId: 'CF:82:55:66:77:88',
+            paired: true,
+            connected: true,
+            activated: true,
+          ),
+        );
+        await localDeviceSosController.attach(
+          commandWriter: (command) async {},
+        );
+        await localSdk.triggerSos(
+          const SosTriggerPayload(message: 'Need help'),
+        );
+
+        final cancelled = await localSdk.cancelSos();
+        final diagnostics = await localSdk.getOperationalDiagnostics();
+
+        expect(cancelled.state, SosState.cancelled);
+        expect(cancelled.deliveryChannel, SosDeliveryChannel.deviceOnly);
+        expect(diagnostics.lastPublicSosDeliveryChannel,
+            SosDeliveryChannel.deviceOnly);
+      } finally {
+        await localSdk.dispose();
+        await unavailableSosRepository.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test(
+        'public triggerSos device sync does not introduce duplicate backend transitions',
+        () async {
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-sos-1',
+          canonicalHardwareId: 'CF:82:11:22:33:44',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
+      );
+      await deviceSosController.attach(
+        commandWriter: (command) async {},
+      );
+
+      await sdk.triggerSos(const SosTriggerPayload(message: 'Need help'));
+      await sdk.confirmDeviceSos();
+
+      expect(sosRepository.triggerCallCount, 1);
+      expect(sosRepository.cancelCallCount, 0);
+      expect(sosRepository.resolveCallCount, 0);
+    });
+
+    test(
+        'exposed SOS delivery channel reports backend_only and backend_and_device',
+        () async {
+      await sdk.setSession(
+        const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-123',
+          userHash: 'deadbeef',
+        ),
+      );
+
+      final backendOnlyIncident = await sdk.triggerSos(
+        const SosTriggerPayload(message: 'Need help'),
+      );
+      final backendOnlyDiagnostics = await sdk.getOperationalDiagnostics();
+
+      expect(
+          backendOnlyIncident.deliveryChannel, SosDeliveryChannel.backendOnly);
+      expect(
+        backendOnlyDiagnostics.lastPublicSosDeliveryChannel,
+        SosDeliveryChannel.backendOnly,
+      );
+      expect(backendOnlyDiagnostics.backendSosAvailable, isTrue);
+      expect(backendOnlyDiagnostics.deviceSosAvailable, isFalse);
+      expect(backendOnlyDiagnostics.canActivateSos, isTrue);
+
+      final localSosRepository = FakeSosRepository();
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController();
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: localSosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        await localSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+          ),
+        );
+        deviceRepository.emitStatus(
+          buildDeviceStatus(
+            deviceId: 'ble-sos-1',
+            canonicalHardwareId: 'CF:82:11:22:33:44',
+            paired: true,
+            connected: true,
+            activated: true,
+          ),
+        );
+        await localDeviceSosController.attach(
+          commandWriter: (command) async {},
+        );
+
+        final bothIncident = await localSdk.triggerSos(
+          const SosTriggerPayload(message: 'Need help again'),
+        );
+        final bothDiagnostics = await localSdk.getOperationalDiagnostics();
+
+        expect(
+          bothIncident.deliveryChannel,
+          SosDeliveryChannel.backendAndDevice,
+        );
+        expect(
+          bothDiagnostics.lastPublicSosDeliveryChannel,
+          SosDeliveryChannel.backendAndDevice,
+        );
+        expect(bothDiagnostics.deviceSosAvailable, isTrue);
+        expect(bothDiagnostics.canActivateSos, isTrue);
+      } finally {
+        await localSdk.dispose();
+        await localSosRepository.dispose();
+        await localRealtimeClient.dispose();
+      }
     });
 
     test(
@@ -2913,7 +3320,8 @@ void main() {
       expect(capturedRequest.headers['Authorization'], 'Bearer deadbeef');
     });
 
-    test('http resolve path posts to /v1/sdk/sos/resolve without a request body',
+    test(
+        'http resolve path posts to /v1/sdk/sos/resolve without a request body',
         () async {
       late http.Request capturedRequest;
       final dataSource = HttpSosRemoteDataSource(
@@ -2967,7 +3375,8 @@ void main() {
         dataSource.resolveSos(),
         throwsA(
           isA<SosException>()
-              .having((error) => error.code, 'code', 'E_HTTP_SOS_RESOLVE_FAILED')
+              .having(
+                  (error) => error.code, 'code', 'E_HTTP_SOS_RESOLVE_FAILED')
               .having((error) => error.message, 'message', 'backend exploded'),
         ),
       );
@@ -4352,7 +4761,7 @@ void main() {
 
         expect(unavailableSosRepository.triggerCallCount, 0);
 
-        unavailableSosRepository.isAvailable = true;
+        unavailableSosRepository.isTriggerAvailable = true;
         connectionStates.add(RealtimeConnectionState.connected);
         await Future<void>.delayed(Duration.zero);
 
@@ -4445,7 +4854,7 @@ void main() {
           externalUserId: 'external-999',
           userHash: 'beadfeed',
         );
-        unavailableSosRepository.isAvailable = true;
+        unavailableSosRepository.isTriggerAvailable = true;
         bleEvents.add(_bridgeSosEvent(signature: 'new-session-sos'));
         connectionStates.add(RealtimeConnectionState.connected);
         await Future<void>.delayed(Duration.zero);
@@ -5306,7 +5715,9 @@ class _FakeCancelSosRemoteDataSource implements SosRemoteDataSource {
       backendLagAfterTriggerReads--;
       return null;
     }
-    return activeAfterCancelResult ?? activeAfterResolveResult ?? activeIncident;
+    return activeAfterCancelResult ??
+        activeAfterResolveResult ??
+        activeIncident;
   }
 
   @override
@@ -5326,7 +5737,9 @@ class _FakeCancelSosRemoteDataSource implements SosRemoteDataSource {
 }
 
 class _AvailabilityAwareSosRepository extends FakeSosRepository {
-  bool isAvailable = false;
+  bool isTriggerAvailable = false;
+  bool isCancelAvailable = false;
+  bool isResolveAvailable = false;
 
   @override
   Future<SosIncident> triggerSos({
@@ -5335,7 +5748,7 @@ class _AvailabilityAwareSosRepository extends FakeSosRepository {
     TrackingPosition? positionSnapshot,
     String? deviceId,
   }) async {
-    if (!isAvailable) {
+    if (!isTriggerAvailable) {
       throw const SosException(
         'E_MQTT_NOT_CONNECTED',
         'Operational SOS transport is not connected yet.',
@@ -5347,6 +5760,28 @@ class _AvailabilityAwareSosRepository extends FakeSosRepository {
       positionSnapshot: positionSnapshot,
       deviceId: deviceId,
     );
+  }
+
+  @override
+  Future<SosIncident> cancelSos() async {
+    if (!isCancelAvailable) {
+      throw const SosException(
+        'E_SOS_CANCEL_HTTP_UNAVAILABLE',
+        'SOS cancellation requires an HTTP remote data source.',
+      );
+    }
+    return super.cancelSos();
+  }
+
+  @override
+  Future<SosIncident> resolveSos() async {
+    if (!isResolveAvailable) {
+      throw const SosException(
+        'E_SOS_RESOLVE_HTTP_UNAVAILABLE',
+        'SOS resolve requires an HTTP remote data source.',
+      );
+    }
+    return super.resolveSos();
   }
 }
 

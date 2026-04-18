@@ -85,6 +85,7 @@ class LocalStateSerializers {
       'createdAt': incident.createdAt.toIso8601String(),
       'triggerSource': incident.triggerSource,
       'message': incident.message,
+      'deliveryChannel': incident.deliveryChannel?.name,
       'positionSnapshot': incident.positionSnapshot == null
           ? null
           : trackingPositionToJson(incident.positionSnapshot!),
@@ -93,6 +94,7 @@ class LocalStateSerializers {
 
   static SosIncident sosIncidentFromJson(Map<String, dynamic> json) {
     final snapshot = json['positionSnapshot'];
+    final deliveryChannelName = json['deliveryChannel'] as String?;
     return SosIncident(
       id: json['id'] as String,
       state: SosState.values.firstWhere(
@@ -102,6 +104,12 @@ class LocalStateSerializers {
       createdAt: DateTime.parse(json['createdAt'] as String),
       triggerSource: json['triggerSource'] as String?,
       message: json['message'] as String?,
+      deliveryChannel: deliveryChannelName == null
+          ? null
+          : SosDeliveryChannel.values.firstWhere(
+              (value) => value.name == deliveryChannelName,
+              orElse: () => SosDeliveryChannel.backendOnly,
+            ),
       positionSnapshot: snapshot is Map<String, dynamic>
           ? trackingPositionFromJson(snapshot)
           : null,
