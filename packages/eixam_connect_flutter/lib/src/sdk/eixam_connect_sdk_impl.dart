@@ -1517,9 +1517,9 @@ class EixamConnectSdkImpl
         return null;
       }
 
-      if (!deviceSosController.hasCommandChannel) {
+      if (!_hasDeviceSosCommandPath(status: status)) {
         BleDebugRegistry.instance.recordEvent(
-          'Public SOS device sync skipped -> action=$action reason=command_channel_unavailable deviceId=${status.deviceId}',
+          'Public SOS device sync skipped -> action=$action reason=sos_command_path_unavailable deviceId=${status.deviceId}',
         );
         return null;
       }
@@ -2375,9 +2375,15 @@ class EixamConnectSdkImpl
     return true;
   }
 
+  bool _hasDeviceSosCommandPath({DeviceStatus? status}) {
+    final runtimeStatus = status ?? _lastDeviceStatus;
+    return runtimeStatus != null &&
+        runtimeStatus.connected &&
+        deviceSosController.hasSosCommandPath;
+  }
+
   bool _isDeviceSosChannelAvailable() {
-    final status = _lastDeviceStatus;
-    return status != null && status.connected && deviceSosController.hasCommandChannel;
+    return _hasDeviceSosCommandPath();
   }
 
   InMemoryDeviceRepository _requireCommandCapableDeviceRepository() {

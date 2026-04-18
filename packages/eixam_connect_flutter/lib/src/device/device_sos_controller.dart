@@ -32,7 +32,8 @@ class DeviceSosController {
   Timer? _countdownTimer;
 
   DeviceSosStatus get currentStatus => _status;
-  bool get hasCommandChannel => _commandWriter != null;
+  bool get hasSosCommandPath => _commandWriter != null;
+  bool get hasCommandChannel => hasSosCommandPath;
 
   Future<void> attach({required DeviceCommandWriter commandWriter}) async {
     _commandWriter = commandWriter;

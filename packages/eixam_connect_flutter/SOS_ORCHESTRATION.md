@@ -72,15 +72,27 @@ For trigger flows, backend failures such as missing operational transport or mis
 
 ### Device SOS availability
 
-Device SOS capability is evaluated from the live runtime command path, not only from the last cached diagnostics snapshot.
+Device SOS capability is evaluated from the live runtime SOS command path, not
+from generic device readiness and not only from the last historical delivery.
 
 For public SOS orchestration, device SOS is available only when all of the following are true:
 
 - the current runtime reports the device as connected
-- the BLE/runtime command writer is attached and command-capable
+- the connected device is EIXAM-compatible
+- the BLE/runtime has a live SOS command write path
 - the requested public action would not duplicate an already-converged device SOS state
 
-The SDK does not require broader readiness conditions that are unrelated to app-to-device SOS command delivery.
+The SDK does not require broader readiness conditions that are unrelated to
+app-to-device SOS command delivery.
+
+The SOS command path is defined by the same route used during execution for:
+
+- `0x06 SOS_TRIGGER_APP`
+- `0x04 SOS_CANCEL`
+- `0x05 SOS_CONFIRM`
+
+If those commands are writable through INET, the SDK treats the device SOS path
+as available even if CMD is not required for that operation.
 
 ## Fallback Matrix
 
@@ -123,6 +135,10 @@ This means host apps can render both:
 - actual delivery:
   backendOnly, deviceOnly, or backendAndDevice for the active or last public SOS cycle
 
+`lastPublicSosDeliveryChannel` remains historical only. It must not be used as
+the current capability truth for whether the next SOS action can use backend,
+device, or both.
+
 ## Failure Semantics
 
 - If one channel succeeds, the public SOS operation counts as success.
@@ -140,6 +156,7 @@ This means host apps can render both:
 
 - The orchestration lives in `EixamConnectSdkImpl`, not in host widgets.
 - Device synchronization reuses `DeviceSosController` through the existing public device SOS methods.
+- The SDK uses one internal device SOS-path helper for public execution and diagnostics so capability and execution cannot drift apart.
 - Public SOS execution refreshes device capability from the live runtime before choosing channels, so stale cached status does not incorrectly downgrade a connected command-capable device.
 - The SDK keeps a small public SOS overlay so device-only success is reflected in SDK-facing state and incident reads even when the backend repository could not create an incident.
 - Device-originated SOS behavior is preserved; the new orchestration only extends public app-origin SOS behavior.

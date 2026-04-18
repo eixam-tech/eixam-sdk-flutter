@@ -2451,6 +2451,7 @@ void main() {
           diagnostics.lastPublicSosDeliveryChannel,
           SosDeliveryChannel.deviceOnly,
         );
+        expect(diagnostics.deviceSosAvailable, isTrue);
       } finally {
         await localSdk.dispose();
         await unavailableSosRepository.dispose();
@@ -2706,6 +2707,52 @@ void main() {
       expect(
         connectedWithCommand.currentSosCapabilityLabel,
         'backend + device',
+      );
+    });
+
+    test(
+        'historical SOS delivery channel remains separate from current capability',
+        () async {
+      await sdk.setSession(
+        const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-123',
+          userHash: 'deadbeef',
+        ),
+      );
+
+      final backendOnlyIncident = await sdk.triggerSos(
+        const SosTriggerPayload(message: 'Need help'),
+      );
+      expect(
+        backendOnlyIncident.deliveryChannel,
+        SosDeliveryChannel.backendOnly,
+      );
+
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-history-1',
+          canonicalHardwareId: 'CF:82:11:22:33:AA',
+          paired: true,
+          connected: true,
+          activated: false,
+          lifecycleState: DeviceLifecycleState.paired,
+        ),
+      );
+      await sdk.getDeviceStatus();
+      await deviceSosController.attach(
+        commandWriter: (command) async {},
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final diagnostics = await sdk.getOperationalDiagnostics();
+      expect(
+        diagnostics.currentSosCapabilityChannel,
+        SosDeliveryChannel.backendAndDevice,
+      );
+      expect(
+        diagnostics.lastPublicSosDeliveryChannel,
+        SosDeliveryChannel.backendOnly,
       );
     });
 

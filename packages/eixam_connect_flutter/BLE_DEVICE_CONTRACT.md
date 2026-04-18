@@ -30,6 +30,10 @@ Capability and delivery are intentionally separate:
 - capability answers what the SDK can use right now
 - delivery answers what the SDK actually used for the active or last public SOS request
 
+For SOS specifically, `deviceSosAvailable` means the SDK currently has a real
+device command path for SOS writes. It is not the same as generic device
+readiness such as `DeviceStatus.isReadyForSafety`.
+
 ## Public Device Control APIs
 
 The SDK now exposes the following typed BLE-backed controls:
@@ -47,6 +51,30 @@ The SDK now exposes the following typed BLE-backed controls:
 - `0` is valid and can be used as mute
 - calls fail with `E_DEVICE_COMMAND_NOT_READY` when no connected command-capable device exists
 - invalid values fail with `E_DEVICE_INVALID_VOLUME`
+
+## Device SOS Command Path
+
+The SDK treats the device SOS path as available only when all of the following
+are true:
+
+- the device is currently connected
+- the device is EIXAM-compatible
+- the runtime has a live SOS command write path
+
+That SOS write path is defined by the actual BLE command route used for SOS
+commands:
+
+- `0x06 SOS_TRIGGER_APP`
+- `0x04 SOS_CANCEL`
+- `0x05 SOS_CONFIRM`
+
+These commands use the normal EIXAM write path selected by the SDK runtime.
+Because they are single-byte commands, they may be writable through INET and do
+not require CMD when INET is sufficient.
+
+This means host apps should trust `SdkOperationalDiagnostics.deviceSosAvailable`
+and `currentSosCapabilityChannel` as the current SOS capability truth exposed by
+the SDK.
 
 ### Reboot
 
