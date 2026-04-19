@@ -85,7 +85,10 @@ class LocalNotificationsRepository implements NotificationsRepository {
       settings,
       onDidReceiveNotificationResponse: _handleNotificationResponse,
     );
-    if (ok != true) {
+    // iOS returns `false` when no permission types are requested (all
+    // request*Permission flags false). Categories and delegate are still
+    // configured; only `null` means the platform plugin is missing.
+    if (ok == null) {
       throw const DeviceException(
         'E_NOTIFICATIONS_INIT_FAILED',
         'Unable to initialize local notifications',

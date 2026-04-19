@@ -3,7 +3,7 @@ import Flutter
 import UIKit
 import UserNotifications
 
-final class ProtectionRuntimeBridge: NSObject, FlutterStreamHandler {
+final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandler {
   private static let methodChannelName = "dev.eixam.connect_flutter/protection_runtime/methods"
   private static let eventChannelName = "dev.eixam.connect_flutter/protection_runtime/events"
   private static let prefsName = "eixam_protection_runtime_ios"
@@ -59,7 +59,7 @@ final class ProtectionRuntimeBridge: NSObject, FlutterStreamHandler {
   private var servicesDiscovered = false
   private var restoredLastLaunch = false
 
-  static func register(with registrar: FlutterPluginRegistrar) {
+  @objc static func register(with registrar: FlutterPluginRegistrar) {
     let instance = ProtectionRuntimeBridge()
     let methodChannel = FlutterMethodChannel(
       name: methodChannelName,
