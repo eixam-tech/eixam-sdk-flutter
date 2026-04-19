@@ -61,6 +61,55 @@ void main() {
       expect(active.countdownRemainingSeconds, isNull);
     });
 
+    test('app activate helper sends trigger then confirm and becomes active',
+        () async {
+      final commands = <EixamDeviceCommand>[];
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 40),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      addTearDown(controller.dispose);
+      await controller.attach(
+        commandWriter: (command) async {
+          commands.add(command);
+        },
+      );
+
+      final active = await controller.activateSosFromApp();
+
+      expect(commands.map((command) => command.opcode), <int>[0x06, 0x05]);
+      expect(active.state, DeviceSosState.active);
+      expect(active.previousState, DeviceSosState.preConfirm);
+      expect(active.triggerOrigin, DeviceSosTransitionSource.app);
+    });
+
+    test(
+        'app activate helper logs incomplete activation when confirm fails after trigger',
+        () async {
+      final commands = <EixamDeviceCommand>[];
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 40),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      addTearDown(controller.dispose);
+      await controller.attach(
+        commandWriter: (command) async {
+          commands.add(command);
+          if (command.opcode == 0x05) {
+            throw StateError('confirm failed');
+          }
+        },
+      );
+
+      await expectLater(
+        controller.activateSosFromApp(),
+        throwsA(isA<StateError>()),
+      );
+
+      expect(commands.map((command) => command.opcode), <int>[0x06, 0x05]);
+      expect(controller.currentStatus.state, DeviceSosState.preConfirm);
+    });
+
     test('app trigger -> preConfirm -> timeout -> active', () async {
       final controller = DeviceSosController(
         countdownDuration: const Duration(milliseconds: 35),

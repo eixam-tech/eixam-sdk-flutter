@@ -94,6 +94,31 @@ class DeviceSosController {
     );
   }
 
+  Future<DeviceSosStatus> activateSosFromApp({
+    DeviceCommandWriter? commandWriterOverride,
+    String commandRouteLabel = 'attached_writer',
+  }) async {
+    await triggerSos(
+      commandWriterOverride: commandWriterOverride,
+      commandRouteLabel: commandRouteLabel,
+    );
+    try {
+      final active = await confirmSos(
+        commandWriterOverride: commandWriterOverride,
+        commandRouteLabel: commandRouteLabel,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'App SOS device activation completed -> route=$commandRouteLabel state=${active.state.name}',
+      );
+      return active;
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'App SOS device activation incomplete -> route=$commandRouteLabel state=${_status.state.name} error=$error note=device_stayed_in_pre_sos',
+      );
+      rethrow;
+    }
+  }
+
   Future<DeviceSosStatus> confirmSos({
     DeviceCommandWriter? commandWriterOverride,
     String commandRouteLabel = 'attached_writer',

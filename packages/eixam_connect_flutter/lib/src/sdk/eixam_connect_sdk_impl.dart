@@ -590,6 +590,13 @@ class EixamConnectSdkImpl
     );
   }
 
+  Future<DeviceSosStatus> _activateActiveSosOnDeviceFromApp() {
+    return deviceSosController.activateSosFromApp(
+      commandWriterOverride: _sendDeviceCommandThroughActiveOwner,
+      commandRouteLabel: _currentDeviceCommandOwnerRoute,
+    );
+  }
+
   @override
   Future<DeviceSosStatus> confirmDeviceSos() async {
     final status = await deviceSosController.confirmSos(
@@ -1307,7 +1314,7 @@ class EixamConnectSdkImpl
       final deviceSync = await _attemptPublicSosDeviceAction(
         action: 'trigger',
         shouldRun: _canTriggerDeviceSosForPublicSos,
-        operation: triggerDeviceSos,
+        operation: _activateActiveSosOnDeviceFromApp,
         refreshRuntimeStatus: true,
       );
 

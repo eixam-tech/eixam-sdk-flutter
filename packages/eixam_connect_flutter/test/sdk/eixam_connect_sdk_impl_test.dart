@@ -2212,8 +2212,8 @@ void main() {
       await sdk.triggerSos(const SosTriggerPayload(message: 'Need help'));
 
       expect(sosRepository.triggerCallCount, 1);
-      expect(commands, contains('SOS TRIGGER APP'));
-      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.preConfirm);
+      expect(commands, <String>['SOS TRIGGER APP', 'SOS CONFIRM']);
+      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.active);
     });
 
     test(
@@ -2242,7 +2242,7 @@ void main() {
       final diagnostics = await sdk.getOperationalDiagnostics();
 
       expect(sosRepository.triggerCallCount, 1);
-      expect(commands, contains('SOS TRIGGER APP'));
+      expect(commands, <String>['SOS TRIGGER APP', 'SOS CONFIRM']);
       expect(incident.deliveryChannel, SosDeliveryChannel.backendAndDevice);
       expect(diagnostics.deviceSosAvailable, isTrue);
       expect(
@@ -2323,7 +2323,7 @@ void main() {
       expect(incident.state, SosState.cancelled);
       expect(sosRepository.cancelCallCount, 1);
       expect(commands, contains('SOS CANCEL'));
-      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.inactive);
+      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.resolved);
     });
 
     test('resolveSos delegates through the public SDK seam', () async {
@@ -2366,7 +2366,10 @@ void main() {
       expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.resolved);
     });
 
-    test('device sync failure does not break backend SOS success', () async {
+    test(
+        'device activation partial failure does not claim device delivery and keeps backend SOS success',
+        () async {
+      final commands = <String>[];
       deviceRepository.emitStatus(
         buildDeviceStatus(
           deviceId: 'ble-sos-1',
@@ -2378,7 +2381,10 @@ void main() {
       );
       await deviceSosController.attach(
         commandWriter: (command) async {
-          throw StateError('write failed');
+          commands.add(command.label);
+          if (command.label == 'SOS CONFIRM') {
+            throw StateError('confirm failed');
+          }
         },
       );
 
@@ -2387,12 +2393,24 @@ void main() {
       );
 
       expect(incident.state, SosState.sent);
+      expect(incident.deliveryChannel, SosDeliveryChannel.backendOnly);
       expect(sosRepository.triggerCallCount, 1);
+      expect(commands, <String>['SOS TRIGGER APP', 'SOS CONFIRM']);
+      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.preConfirm);
       expect(
         BleDebugRegistry.instance.currentState.events.any(
           (event) => event.message.contains(
             'Public SOS device sync failed -> action=trigger',
           ),
+        ),
+        isTrue,
+      );
+      expect(
+        BleDebugRegistry.instance.currentState.events.any(
+          (event) => event.message.contains(
+                'App SOS device activation incomplete',
+              ) &&
+              event.message.contains('device_stayed_in_pre_sos'),
         ),
         isTrue,
       );
@@ -2745,15 +2763,16 @@ void main() {
         );
 
         expect(incident.deliveryChannel, SosDeliveryChannel.backendAndDevice);
-        expect(localAdapter.sendCommandCallCount, 1);
+        expect(localAdapter.sendCommandCallCount, 2);
         expect(
           localAdapter.commandRequests.map((request) => request.label),
-          <String>['SOS TRIGGER APP'],
+          <String>['SOS TRIGGER APP', 'SOS CONFIRM'],
         );
-        expect(localAdapter.lastCommandRequest?.bytes, <int>[0x06]);
+        expect(localAdapter.commandRequests.first.bytes, <int>[0x06]);
+        expect(localAdapter.commandRequests.last.bytes, <int>[0x05]);
         expect(
           (await runtimeSdk.getDeviceSosStatus()).state,
-          DeviceSosState.preConfirm,
+          DeviceSosState.active,
         );
       } finally {
         await runtimeSdk.dispose();
@@ -2795,11 +2814,18 @@ void main() {
           runtimeState: ProtectionRuntimeState.active,
         ),
         startResult: const ProtectionPlatformStartResult(success: true),
-        commandResult: const ProtectionPlatformCommandResult(
-          success: false,
-          route: 'androidService',
-          error: 'native write rejected',
-        ),
+        queuedCommandResults: <ProtectionPlatformCommandResult>[
+          const ProtectionPlatformCommandResult(
+            success: true,
+            route: 'androidService',
+            result: 'SOS TRIGGER APP native write succeeded via androidService.',
+          ),
+          const ProtectionPlatformCommandResult(
+            success: false,
+            route: 'androidService',
+            error: 'native write rejected',
+          ),
+        ],
       );
       final localRealtimeClient = FakeRealtimeClient()
         ..stateToEmitOnConnect = RealtimeConnectionState.connected;
@@ -2839,13 +2865,25 @@ void main() {
         );
 
         expect(incident.deliveryChannel, SosDeliveryChannel.backendOnly);
-        expect(localAdapter.sendCommandCallCount, 1);
-        expect(localAdapter.lastCommandRequest?.label, 'SOS TRIGGER APP');
+        expect(localAdapter.sendCommandCallCount, 2);
+        expect(
+          localAdapter.commandRequests.map((request) => request.label),
+          <String>['SOS TRIGGER APP', 'SOS CONFIRM'],
+        );
         expect(
           BleDebugRegistry.instance.currentState.events.any(
             (event) => event.message.contains(
-              'Native owner command rejected -> owner=native_protection command=SOS TRIGGER APP',
+              'Native owner command rejected -> owner=native_protection command=SOS CONFIRM',
             ),
+          ),
+          isTrue,
+        );
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) => event.message.contains(
+                  'App SOS device activation incomplete',
+                ) &&
+                event.message.contains('device_stayed_in_pre_sos'),
           ),
           isTrue,
         );
@@ -6095,12 +6133,14 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     required this.startResult,
     this.platformEvents = const Stream<ProtectionPlatformEvent>.empty(),
     this.commandResult = const ProtectionPlatformCommandResult(success: true),
-  });
+    List<ProtectionPlatformCommandResult>? queuedCommandResults,
+  }) : queuedCommandResults = queuedCommandResults ?? <ProtectionPlatformCommandResult>[];
 
   ProtectionPlatformSnapshot snapshot;
   final ProtectionPlatformStartResult startResult;
   final Stream<ProtectionPlatformEvent> platformEvents;
   ProtectionPlatformCommandResult commandResult;
+  final List<ProtectionPlatformCommandResult> queuedCommandResults;
   int startCallCount = 0;
   int stopCallCount = 0;
   int ensureActiveCallCount = 0;
@@ -6153,6 +6193,9 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     sendCommandCallCount++;
     lastCommandRequest = request;
     commandRequests.add(request);
+    if (queuedCommandResults.isNotEmpty) {
+      return queuedCommandResults.removeAt(0);
+    }
     return commandResult;
   }
 
