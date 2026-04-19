@@ -110,6 +110,7 @@ class EixamConnectSdkImpl
   SosIncident? _publicSosFallbackIncident;
   String? _lastPublicSosIncidentId;
   SosDeliveryChannel? _lastPublicSosDeliveryChannel;
+  _AppTriggeredSosBridge? _pendingAppTriggeredSosBridge;
   SosDeliveryChannel? _lastPublishedCurrentSosCapabilityChannel;
   DeviceTelRelayRx? _lastTelRelayRx;
   bool _publicSosActionInFlight = false;
@@ -126,6 +127,8 @@ class EixamConnectSdkImpl
   static const String _resolveSosActionId = 'resolve_sos';
   static const String _confirmSosActionId = 'confirm_sos';
   static const String _confirmDeadManSafeActionId = 'confirm_dead_man_safe';
+  static const Duration _appTriggeredSosBridgeWindow =
+      Duration(seconds: 15);
 
   EixamConnectSdkImpl({
     required this.sosRepository,
@@ -361,6 +364,7 @@ class EixamConnectSdkImpl
     }
     await _rehydrateSosRuntimeState();
     _publicSosFallbackIncident = null;
+    _pendingAppTriggeredSosBridge = null;
     _publicSosState = await sosRepository.getSosState();
     await sessionStore?.save(_session!);
     _emitOperationalDiagnostics();
@@ -395,6 +399,7 @@ class EixamConnectSdkImpl
     }
     await _rehydrateSosRuntimeState();
     _publicSosFallbackIncident = null;
+    _pendingAppTriggeredSosBridge = null;
     _publicSosState = await sosRepository.getSosState();
     await sessionStore?.save(refreshed);
     _emitOperationalDiagnostics();
@@ -453,6 +458,7 @@ class EixamConnectSdkImpl
     _publicSosFallbackIncident = null;
     _lastPublicSosIncidentId = null;
     _lastPublicSosDeliveryChannel = null;
+    _pendingAppTriggeredSosBridge = null;
     _emitPublicSosState(SosState.idle);
     if (sessionContext != null) {
       sessionContext!.currentSession = null;
@@ -849,6 +855,7 @@ class EixamConnectSdkImpl
 
   Future<void> _handleDeviceSosStatus(DeviceSosStatus status) async {
     _emitOperationalDiagnostics();
+    _consumePendingAppTriggeredSosBridge(status);
     final cycleKey = _deriveDeviceSosCycleKey(status);
     final isDeviceTimeoutPromotion = !status.derivedFromBlePacket &&
         status.state == DeviceSosState.active &&
@@ -866,7 +873,13 @@ class EixamConnectSdkImpl
       'SOS cycle evaluated -> key=${cycleKey ?? '-'} activeCycle=${_activeDeviceSosCycleKey ?? '-'} notifiedCycle=${_notifiedDeviceSosCycleKey ?? '-'} notifiedState=${_notifiedDeviceSosState?.name ?? '-'}',
     );
 
-    await _synchronizeDeviceOriginatedBackendLifecycle(status);
+    if (_isCorrelatedAppTriggeredSosStatus(status)) {
+      BleDebugRegistry.instance.recordEvent(
+        'App-triggered SOS bridge matched -> incidentId=${_pendingAppTriggeredSosBridge?.incidentId ?? "-"} nodeId=${_formatNodeId(status.nodeId)} state=${status.state.name}',
+      );
+    } else {
+      await _synchronizeDeviceOriginatedBackendLifecycle(status);
+    }
 
     if (_isSosCycleClosed(status.state)) {
       BleDebugRegistry.instance.recordEvent(
@@ -875,6 +888,7 @@ class EixamConnectSdkImpl
       _activeDeviceSosCycleKey = null;
       _notifiedDeviceSosCycleKey = null;
       _notifiedDeviceSosState = null;
+      _pendingAppTriggeredSosBridge = null;
     }
 
     if (!status.derivedFromBlePacket && !isDeviceTimeoutPromotion) {
@@ -1361,6 +1375,11 @@ class EixamConnectSdkImpl
         deliveryChannel: deliveryChannel,
         fallbackState: backendIncident == null ? SosState.sent : null,
       );
+      if (deviceSync.succeeded) {
+        _registerPendingAppTriggeredSosBridge(incident);
+      } else {
+        _pendingAppTriggeredSosBridge = null;
+      }
       _publishSdkEvent(SOSTriggeredEvent(incident.id));
       return incident;
     } finally {
@@ -1424,6 +1443,7 @@ class EixamConnectSdkImpl
         deliveryChannel: deliveryChannel,
         fallbackState: backendIncident == null ? SosState.cancelled : null,
       );
+      _pendingAppTriggeredSosBridge = null;
       _publishCancelledSosEventIfNeeded(incident);
       return incident;
     } finally {
@@ -1478,6 +1498,7 @@ class EixamConnectSdkImpl
         deliveryChannel: deliveryChannel,
         fallbackState: backendIncident == null ? SosState.resolved : null,
       );
+      _pendingAppTriggeredSosBridge = null;
     } finally {
       _publicSosActionInFlight = false;
     }
@@ -1667,6 +1688,86 @@ class EixamConnectSdkImpl
       _emitPublicSosState(incident.state);
     }
     _emitOperationalDiagnostics();
+  }
+
+  void _registerPendingAppTriggeredSosBridge(SosIncident incident) {
+    final now = DateTime.now();
+    _pendingAppTriggeredSosBridge = _AppTriggeredSosBridge(
+      incidentId: incident.id,
+      deviceId: _lastDeviceStatus?.deviceId.trim(),
+      createdAt: now,
+      expiresAt: now.add(_appTriggeredSosBridgeWindow),
+    );
+  }
+
+  void _consumePendingAppTriggeredSosBridge(DeviceSosStatus status) {
+    final bridge = _pendingAppTriggeredSosBridge;
+    if (bridge == null) {
+      return;
+    }
+    final now = DateTime.now();
+    if (now.isAfter(bridge.expiresAt)) {
+      _pendingAppTriggeredSosBridge = null;
+      return;
+    }
+    if (!_isSosCycleNotifiable(status.state)) {
+      return;
+    }
+    final bridgeDeviceId = bridge.deviceId;
+    final currentDeviceId = _lastDeviceStatus?.deviceId.trim();
+    if (bridgeDeviceId != null &&
+        bridgeDeviceId.isNotEmpty &&
+        currentDeviceId != null &&
+        currentDeviceId.isNotEmpty &&
+        bridgeDeviceId != currentDeviceId) {
+      return;
+    }
+    final bridgeNodeId = bridge.nodeId;
+    final statusNodeId = status.nodeId;
+    if (bridgeNodeId != null &&
+        statusNodeId != null &&
+        bridgeNodeId != statusNodeId) {
+      return;
+    }
+    _pendingAppTriggeredSosBridge = bridge.copyWith(
+      nodeId: statusNodeId ?? bridge.nodeId,
+      matchedAt: now,
+      expiresAt: now.add(_appTriggeredSosBridgeWindow),
+    );
+  }
+
+  bool _isCorrelatedAppTriggeredSosStatus(DeviceSosStatus status) {
+    final bridge = _pendingAppTriggeredSosBridge;
+    if (bridge == null) {
+      return false;
+    }
+    final now = DateTime.now();
+    if (now.isAfter(bridge.expiresAt)) {
+      _pendingAppTriggeredSosBridge = null;
+      return false;
+    }
+    if (status.triggerOrigin == DeviceSosTransitionSource.app) {
+      return true;
+    }
+    if (!_isSosCycleNotifiable(status.state)) {
+      return false;
+    }
+    final bridgeDeviceId = bridge.deviceId;
+    final currentDeviceId = _lastDeviceStatus?.deviceId.trim();
+    if (bridgeDeviceId != null &&
+        bridgeDeviceId.isNotEmpty &&
+        currentDeviceId != null &&
+        currentDeviceId.isNotEmpty &&
+        bridgeDeviceId != currentDeviceId) {
+      return false;
+    }
+    final bridgeNodeId = bridge.nodeId;
+    if (bridgeNodeId != null &&
+        status.nodeId != null &&
+        bridgeNodeId != status.nodeId) {
+      return false;
+    }
+    return true;
   }
 
   void _emitPublicSosState(SosState state) {
@@ -2775,6 +2876,42 @@ class _PublicSosDeviceAttempt {
   final bool available;
   final bool attempted;
   final bool succeeded;
+}
+
+class _AppTriggeredSosBridge {
+  const _AppTriggeredSosBridge({
+    required this.incidentId,
+    required this.createdAt,
+    required this.expiresAt,
+    this.deviceId,
+    this.nodeId,
+    this.matchedAt,
+  });
+
+  final String incidentId;
+  final String? deviceId;
+  final int? nodeId;
+  final DateTime createdAt;
+  final DateTime expiresAt;
+  final DateTime? matchedAt;
+
+  _AppTriggeredSosBridge copyWith({
+    String? incidentId,
+    String? deviceId,
+    int? nodeId,
+    DateTime? createdAt,
+    DateTime? expiresAt,
+    DateTime? matchedAt,
+  }) {
+    return _AppTriggeredSosBridge(
+      incidentId: incidentId ?? this.incidentId,
+      deviceId: deviceId ?? this.deviceId,
+      nodeId: nodeId ?? this.nodeId,
+      createdAt: createdAt ?? this.createdAt,
+      expiresAt: expiresAt ?? this.expiresAt,
+      matchedAt: matchedAt ?? this.matchedAt,
+    );
+  }
 }
 
 class _CurrentSosCapabilitySnapshot {

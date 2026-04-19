@@ -2217,6 +2217,50 @@ void main() {
     });
 
     test(
+        'device SOS packets after app-triggered SOS stay correlated to the existing public incident',
+        () async {
+      final commands = <String>[];
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-sos-correlated-1',
+          canonicalHardwareId: 'CF:82:11:22:33:46',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
+      );
+      await deviceSosController.attach(
+        commandWriter: (command) async {
+          commands.add(command.label);
+        },
+      );
+
+      final incident = await sdk.triggerSos(
+        const SosTriggerPayload(message: 'Need help'),
+      );
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginPacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final statusAfterPacket = await sdk.getDeviceSosStatus();
+      expect(statusAfterPacket.state, DeviceSosState.active);
+      expect(statusAfterPacket.triggerOrigin, DeviceSosTransitionSource.app);
+      expect(sosRepository.triggerCallCount, 1);
+      expect((await sdk.getCurrentSosIncident())?.id, incident.id);
+
+      final cancelled = await sdk.cancelSos();
+
+      expect(cancelled.id, incident.id);
+      expect(cancelled.state, SosState.cancelled);
+      expect(sosRepository.cancelCallCount, 1);
+      expect(commands, contains('SOS CANCEL'));
+      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.resolved);
+    });
+
+    test(
         'triggerSos uses the live command-capable device path even when isReadyForSafety is false',
         () async {
       final commands = <String>[];

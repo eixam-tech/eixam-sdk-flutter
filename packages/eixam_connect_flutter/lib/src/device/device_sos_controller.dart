@@ -396,7 +396,10 @@ class DeviceSosController {
         state: nextState,
         previousState: previous,
         transitionSource: source,
-        triggerOrigin: _resolveTriggerOrigin(source),
+        triggerOrigin: _resolveObservedTriggerOrigin(
+          source,
+          nodeId: packet.nodeId,
+        ),
         lastEvent: event,
         updatedAt: now,
         optimistic: false,
@@ -457,7 +460,10 @@ class DeviceSosController {
         triggerOrigin: nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
             ? _status.triggerOrigin
-            : _resolveTriggerOrigin(source),
+            : _resolveObservedTriggerOrigin(
+                source,
+                nodeId: packet.nodeId,
+              ),
         lastEvent: event,
         updatedAt: now,
         optimistic: false,
@@ -713,6 +719,22 @@ class DeviceSosController {
       return source;
     }
     return _status.triggerOrigin;
+  }
+
+  DeviceSosTransitionSource _resolveObservedTriggerOrigin(
+    DeviceSosTransitionSource source, {
+    int? nodeId,
+  }) {
+    final currentOrigin = _status.triggerOrigin;
+    final currentNodeId = _status.nodeId;
+    final keepsExistingAppCycle = currentOrigin == DeviceSosTransitionSource.app &&
+        _status.state != DeviceSosState.inactive &&
+        _status.state != DeviceSosState.resolved &&
+        (currentNodeId == null || nodeId == null || currentNodeId == nodeId);
+    if (keepsExistingAppCycle) {
+      return DeviceSosTransitionSource.app;
+    }
+    return _resolveTriggerOrigin(source);
   }
 
   void _cancelCountdownTimer() {

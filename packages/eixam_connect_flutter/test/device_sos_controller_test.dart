@@ -131,6 +131,30 @@ void main() {
       expect(status.decoderNote, contains('20-second countdown'));
     });
 
+    test(
+        'app-originated cycle keeps app trigger origin when later BLE SOS packets arrive',
+        () async {
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 40),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      addTearDown(controller.dispose);
+      await controller.attach(commandWriter: (_) async {});
+
+      await controller.activateSosFromApp();
+
+      controller.handleIncomingSosPacket(
+        _activePacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+
+      final status = controller.currentStatus;
+      expect(status.state, DeviceSosState.active);
+      expect(status.transitionSource, DeviceSosTransitionSource.device);
+      expect(status.triggerOrigin, DeviceSosTransitionSource.app);
+      expect(status.nodeId, 0x1234);
+    });
+
     test('device trigger -> preConfirm -> cancel -> inactive', () {
       final controller = DeviceSosController(
         countdownDuration: const Duration(milliseconds: 40),
