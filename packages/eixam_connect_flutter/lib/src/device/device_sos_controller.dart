@@ -14,9 +14,11 @@ class DeviceSosController {
   DeviceSosController({
     Duration countdownDuration = const Duration(seconds: 20),
     Duration countdownTick = const Duration(seconds: 1),
+    Duration appActivationObservationTimeout = const Duration(seconds: 3),
     DateTime Function()? now,
   })  : _countdownDuration = countdownDuration,
         _countdownTick = countdownTick,
+        _appActivationObservationTimeout = appActivationObservationTimeout,
         _now = now ?? DateTime.now {
     _controller.add(_status);
   }
@@ -30,8 +32,10 @@ class DeviceSosController {
   DeviceSosStatus _status = DeviceSosStatus.initial();
   final Duration _countdownDuration;
   final Duration _countdownTick;
+  final Duration _appActivationObservationTimeout;
   final DateTime Function() _now;
   Timer? _countdownTimer;
+  bool _awaitingObservedAppActivation = false;
 
   DeviceSosStatus get currentStatus => _status;
   bool get hasSosCommandPath => _commandWriter != null;
@@ -59,6 +63,7 @@ class DeviceSosController {
   Future<void> detach() async {
     final previousAvailability = hasSosCommandPath;
     _commandWriter = null;
+    _awaitingObservedAppActivation = false;
     BleDebugRegistry.instance.recordEvent(
       'Device SOS command path detached -> available=$hasSosCommandPath previous=$previousAvailability',
     );
@@ -98,20 +103,30 @@ class DeviceSosController {
     DeviceCommandWriter? commandWriterOverride,
     String commandRouteLabel = 'attached_writer',
   }) async {
-    await triggerSos(
-      commandWriterOverride: commandWriterOverride,
-      commandRouteLabel: commandRouteLabel,
-    );
     try {
-      final active = await confirmSos(
+      _awaitingObservedAppActivation = false;
+      await triggerSos(
         commandWriterOverride: commandWriterOverride,
         commandRouteLabel: commandRouteLabel,
+      );
+      await _waitForStatus(
+        description: 'observed device pre-confirm countdown',
+        predicate: _isObservedPreConfirmForAppActivation,
+      );
+      await _sendAppConfirmCommand(
+        commandWriterOverride: commandWriterOverride,
+        commandRouteLabel: commandRouteLabel,
+      );
+      final active = await _waitForStatus(
+        description: 'observed device active SOS after confirm',
+        predicate: _isObservedActiveForAppActivation,
       );
       BleDebugRegistry.instance.recordEvent(
         'App SOS device activation completed -> route=$commandRouteLabel state=${active.state.name}',
       );
       return active;
     } catch (error) {
+      _awaitingObservedAppActivation = false;
       BleDebugRegistry.instance.recordEvent(
         'App SOS device activation incomplete -> route=$commandRouteLabel state=${_status.state.name} error=$error note=device_stayed_in_pre_sos',
       );
@@ -145,22 +160,22 @@ class DeviceSosController {
   Future<DeviceSosStatus> cancelSos({
     DeviceCommandWriter? commandWriterOverride,
     String commandRouteLabel = 'attached_writer',
-  }) {
-    final nextState = switch (_status.state) {
-      DeviceSosState.preConfirm => DeviceSosState.inactive,
-      DeviceSosState.active => DeviceSosState.resolved,
-      DeviceSosState.acknowledged => DeviceSosState.resolved,
-      DeviceSosState.resolved => DeviceSosState.resolved,
-      _ => DeviceSosState.inactive,
-    };
-
-    return _sendCommand(
+  }) async {
+    final writer = commandWriterOverride ?? _commandWriter;
+    if (writer == null) {
+      throw StateError('Device SOS command channel is not ready.');
+    }
+    final previous = _status;
+    await _dispatchCommand(
+      writer: writer,
       command: EixamDeviceCommand.sosCancel(),
-      optimisticState: nextState,
-      optimisticEvent: 'App cancelled SOS on device',
+      previous: previous,
       failureEvent: 'SOS cancel write failed',
-      commandWriterOverride: commandWriterOverride,
       commandRouteLabel: commandRouteLabel,
+    );
+    return _waitForStatus(
+      description: 'observed device close acknowledgement after cancel',
+      predicate: _isObservedClosedAfterCancel,
     );
   }
 
@@ -290,6 +305,23 @@ class DeviceSosController {
       );
     }
 
+    await _dispatchCommand(
+      writer: writer,
+      command: command,
+      previous: previous,
+      failureEvent: failureEvent,
+      commandRouteLabel: commandRouteLabel,
+    );
+    return _status;
+  }
+
+  Future<void> _dispatchCommand({
+    required DeviceCommandWriter writer,
+    required EixamDeviceCommand command,
+    required DeviceSosStatus previous,
+    required String failureEvent,
+    required String commandRouteLabel,
+  }) async {
     try {
       BleDebugRegistry.instance.recordEvent(
         'Device SOS command dispatch -> route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
@@ -298,7 +330,7 @@ class DeviceSosController {
       BleDebugRegistry.instance.recordEvent(
         'Device SOS command sent -> route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
       );
-      return _status;
+      return;
     } catch (error, stackTrace) {
       _emit(
         previous.copyWith(
@@ -319,6 +351,30 @@ class DeviceSosController {
       debugPrintStack(stackTrace: stackTrace);
       rethrow;
     }
+  }
+
+  Future<void> _sendAppConfirmCommand({
+    DeviceCommandWriter? commandWriterOverride,
+    required String commandRouteLabel,
+  }) async {
+    if (_status.state != DeviceSosState.preConfirm) {
+      throw StateError(
+        'Device SOS confirm requires an observed pre-confirm state.',
+      );
+    }
+    final writer = commandWriterOverride ?? _commandWriter;
+    if (writer == null) {
+      throw StateError('Device SOS command channel is not ready.');
+    }
+    final previous = _status;
+    _awaitingObservedAppActivation = true;
+    await _dispatchCommand(
+      writer: writer,
+      command: EixamDeviceCommand.sosConfirm(),
+      previous: previous,
+      failureEvent: 'SOS confirm write failed',
+      commandRouteLabel: commandRouteLabel,
+    );
   }
 
   Future<void> _sendNonSosCommand(
@@ -365,6 +421,10 @@ class DeviceSosController {
         at: now,
         optimistic: false,
         derivedFromBlePacket: true,
+        triggerOriginOverride: _resolveObservedTriggerOrigin(
+          source,
+          nodeId: packet.nodeId,
+        ),
         lastPacketHex: packet.rawHex,
         lastPacketLength: packet.rawBytes.length,
         lastPacketAt: now,
@@ -390,6 +450,9 @@ class DeviceSosController {
         _status.state == DeviceSosState.preConfirm;
     if (nextState != DeviceSosState.preConfirm) {
       _cancelCountdownTimer();
+    }
+    if (nextState == DeviceSosState.active) {
+      _awaitingObservedAppActivation = false;
     }
     _emit(
       _status.copyWith(
@@ -451,6 +514,7 @@ class DeviceSosController {
     if (nextState == DeviceSosState.inactive ||
         nextState == DeviceSosState.resolved) {
       _cancelCountdownTimer();
+      _awaitingObservedAppActivation = false;
     }
     _emit(
       _status.copyWith(
@@ -508,6 +572,11 @@ class DeviceSosController {
     }
 
     if (_status.state == DeviceSosState.active) {
+      return DeviceSosState.active;
+    }
+
+    if (_awaitingObservedAppActivation &&
+        _status.state == DeviceSosState.preConfirm) {
       return DeviceSosState.active;
     }
 
@@ -589,6 +658,7 @@ class DeviceSosController {
     required DateTime at,
     required bool optimistic,
     required bool derivedFromBlePacket,
+    DeviceSosTransitionSource? triggerOriginOverride,
     int? lastOpcode,
     String? lastPacketHex,
     int? lastPacketLength,
@@ -614,7 +684,8 @@ class DeviceSosController {
     final expectedActivationAt = isExistingCountdown
         ? _status.expectedActivationAt!
         : at.add(_countdownDuration);
-    final triggerOrigin = _resolveTriggerOrigin(source);
+    final triggerOrigin =
+        triggerOriginOverride ?? _resolveTriggerOrigin(source);
     if (!isExistingCountdown) {
       _cancelCountdownTimer();
     }
@@ -742,6 +813,51 @@ class DeviceSosController {
     _countdownTimer = null;
   }
 
+  bool _isObservedPreConfirmForAppActivation(DeviceSosStatus status) {
+    return status.state == DeviceSosState.preConfirm &&
+        !status.optimistic &&
+        status.derivedFromBlePacket;
+  }
+
+  bool _isObservedActiveForAppActivation(DeviceSosStatus status) {
+    return status.state == DeviceSosState.active &&
+        !status.optimistic &&
+        status.derivedFromBlePacket;
+  }
+
+  bool _isObservedClosedAfterCancel(DeviceSosStatus status) {
+    return (status.state == DeviceSosState.inactive ||
+            status.state == DeviceSosState.resolved) &&
+        !status.optimistic &&
+        status.derivedFromBlePacket;
+  }
+
+  Future<DeviceSosStatus> _waitForStatus({
+    required String description,
+    required bool Function(DeviceSosStatus status) predicate,
+  }) async {
+    if (predicate(_status)) {
+      return _status;
+    }
+    final completer = Completer<DeviceSosStatus>();
+    late final StreamSubscription<DeviceSosStatus> subscription;
+    subscription = _controller.stream.listen((status) {
+      if (predicate(status) && !completer.isCompleted) {
+        completer.complete(status);
+      }
+    });
+    try {
+      return await completer.future.timeout(
+        _appActivationObservationTimeout,
+        onTimeout: () => throw StateError(
+          'Timed out waiting for $description; last_state=${_status.state.name} optimistic=${_status.optimistic} derivedFromBle=${_status.derivedFromBlePacket}.',
+        ),
+      );
+    } finally {
+      await subscription.cancel();
+    }
+  }
+
   void _emit(DeviceSosStatus next) {
     _status = next;
     _controller.add(next);
@@ -756,6 +872,7 @@ class DeviceSosController {
   }
 
   Future<void> dispose() async {
+    _awaitingObservedAppActivation = false;
     _cancelCountdownTimer();
     await _commandPathController.close();
     await _controller.close();

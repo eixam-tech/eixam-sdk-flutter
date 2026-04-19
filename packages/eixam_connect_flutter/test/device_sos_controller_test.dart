@@ -12,11 +12,20 @@ void main() {
       final controller = DeviceSosController(
         countdownDuration: const Duration(milliseconds: 40),
         countdownTick: const Duration(milliseconds: 5),
+        appActivationObservationTimeout: const Duration(milliseconds: 60),
       );
       addTearDown(controller.dispose);
       await controller.attach(
         commandWriter: (command) async {
           commands.add(command);
+          if (command.opcode == 0x04) {
+            Future<void>.delayed(const Duration(milliseconds: 5), () {
+              controller.handleIncomingSosEventPacket(
+                EixamSosEventPacket.tryParse(<int>[0xE1, 0x01, 0x34, 0x12])!,
+                source: DeviceSosTransitionSource.device,
+              );
+            });
+          }
         },
       );
 
@@ -34,6 +43,37 @@ void main() {
       expect(inactive.countdownStartedAt, isNull);
       expect(inactive.expectedActivationAt, isNull);
       expect(inactive.countdownRemainingSeconds, isNull);
+    });
+
+    test('app cancel waits for observed close acknowledgement', () async {
+      final commands = <EixamDeviceCommand>[];
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 40),
+        countdownTick: const Duration(milliseconds: 5),
+        appActivationObservationTimeout: const Duration(milliseconds: 60),
+      );
+      addTearDown(controller.dispose);
+      await controller.attach(
+        commandWriter: (command) async {
+          commands.add(command);
+        },
+      );
+
+      await controller.triggerSos();
+
+      await expectLater(
+        controller.cancelSos(),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            contains('observed device close acknowledgement after cancel'),
+          ),
+        ),
+      );
+
+      expect(commands.map((command) => command.opcode), <int>[0x06, 0x04]);
+      expect(controller.currentStatus.state, DeviceSosState.preConfirm);
     });
 
     test('app trigger -> preConfirm -> confirm -> active', () async {
@@ -67,11 +107,28 @@ void main() {
       final controller = DeviceSosController(
         countdownDuration: const Duration(milliseconds: 40),
         countdownTick: const Duration(milliseconds: 5),
+        appActivationObservationTimeout: const Duration(milliseconds: 60),
       );
       addTearDown(controller.dispose);
       await controller.attach(
         commandWriter: (command) async {
           commands.add(command);
+          if (command.opcode == 0x06) {
+            Future<void>.delayed(const Duration(milliseconds: 5), () {
+              controller.handleIncomingSosPacket(
+                _countdownPacket(),
+                source: DeviceSosTransitionSource.device,
+              );
+            });
+          }
+          if (command.opcode == 0x05) {
+            Future<void>.delayed(const Duration(milliseconds: 5), () {
+              controller.handleIncomingSosPacket(
+                _activePacket(),
+                source: DeviceSosTransitionSource.device,
+              );
+            });
+          }
         },
       );
 
@@ -84,30 +141,111 @@ void main() {
     });
 
     test(
-        'app activate helper logs incomplete activation when confirm fails after trigger',
+        'app activate helper waits for observed preConfirm before confirm to avoid early confirm race',
         () async {
       final commands = <EixamDeviceCommand>[];
       final controller = DeviceSosController(
         countdownDuration: const Duration(milliseconds: 40),
         countdownTick: const Duration(milliseconds: 5),
+        appActivationObservationTimeout: const Duration(milliseconds: 60),
       );
       addTearDown(controller.dispose);
       await controller.attach(
         commandWriter: (command) async {
           commands.add(command);
           if (command.opcode == 0x05) {
-            throw StateError('confirm failed');
+            expect(
+              controller.currentStatus.state,
+              DeviceSosState.preConfirm,
+            );
+            expect(controller.currentStatus.derivedFromBlePacket, isTrue);
+            Future<void>.delayed(const Duration(milliseconds: 5), () {
+              controller.handleIncomingSosPacket(
+                _activePacket(),
+                source: DeviceSosTransitionSource.device,
+              );
+            });
+          }
+          if (command.opcode == 0x06) {
+            Future<void>.delayed(const Duration(milliseconds: 5), () {
+              controller.handleIncomingSosPacket(
+                _countdownPacket(),
+                source: DeviceSosTransitionSource.device,
+              );
+            });
+          }
+        },
+      );
+
+      final active = await controller.activateSosFromApp();
+
+      expect(commands.map((command) => command.opcode), <int>[0x06, 0x05]);
+      expect(active.state, DeviceSosState.active);
+      expect(active.optimistic, isFalse);
+      expect(active.derivedFromBlePacket, isTrue);
+    });
+
+    test(
+        'first observed BLE preConfirm preserves app trigger origin for app-triggered SOS',
+        () async {
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 80),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      addTearDown(controller.dispose);
+      await controller.attach(commandWriter: (_) async {});
+
+      await controller.triggerSos();
+      controller.handleIncomingSosPacket(
+        _countdownPacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+
+      final status = controller.currentStatus;
+      expect(status.state, DeviceSosState.preConfirm);
+      expect(status.transitionSource, DeviceSosTransitionSource.device);
+      expect(status.triggerOrigin, DeviceSosTransitionSource.app);
+      expect(status.derivedFromBlePacket, isTrue);
+    });
+
+    test(
+        'app activate helper fails when no observed active transition arrives after confirm',
+        () async {
+      final commands = <EixamDeviceCommand>[];
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 80),
+        countdownTick: const Duration(milliseconds: 5),
+        appActivationObservationTimeout: const Duration(milliseconds: 40),
+      );
+      addTearDown(controller.dispose);
+      await controller.attach(
+        commandWriter: (command) async {
+          commands.add(command);
+          if (command.opcode == 0x06) {
+            Future<void>.delayed(const Duration(milliseconds: 5), () {
+              controller.handleIncomingSosPacket(
+                _countdownPacket(),
+                source: DeviceSosTransitionSource.device,
+              );
+            });
           }
         },
       );
 
       await expectLater(
         controller.activateSosFromApp(),
-        throwsA(isA<StateError>()),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            contains('observed device active SOS after confirm'),
+          ),
+        ),
       );
 
       expect(commands.map((command) => command.opcode), <int>[0x06, 0x05]);
       expect(controller.currentStatus.state, DeviceSosState.preConfirm);
+      expect(controller.currentStatus.derivedFromBlePacket, isTrue);
     });
 
     test('app trigger -> preConfirm -> timeout -> active', () async {
@@ -137,9 +275,29 @@ void main() {
       final controller = DeviceSosController(
         countdownDuration: const Duration(milliseconds: 40),
         countdownTick: const Duration(milliseconds: 5),
+        appActivationObservationTimeout: const Duration(milliseconds: 60),
       );
       addTearDown(controller.dispose);
-      await controller.attach(commandWriter: (_) async {});
+      await controller.attach(
+        commandWriter: (command) async {
+          if (command.opcode == 0x06) {
+            Future<void>.delayed(const Duration(milliseconds: 5), () {
+              controller.handleIncomingSosPacket(
+                _countdownPacket(),
+                source: DeviceSosTransitionSource.device,
+              );
+            });
+          }
+          if (command.opcode == 0x05) {
+            Future<void>.delayed(const Duration(milliseconds: 5), () {
+              controller.handleIncomingSosPacket(
+                _activePacket(),
+                source: DeviceSosTransitionSource.device,
+              );
+            });
+          }
+        },
+      );
 
       await controller.activateSosFromApp();
 

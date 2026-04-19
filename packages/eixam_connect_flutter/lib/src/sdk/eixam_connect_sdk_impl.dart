@@ -16,6 +16,8 @@ import '../device/ble_incoming_event.dart';
 import '../device/device_sos_controller.dart';
 import '../device/ble_debug_registry.dart';
 import '../device/eixam_ble_command.dart';
+import '../device/eixam_sos_event_packet.dart';
+import '../device/eixam_sos_packet.dart';
 import '../data/datasources_remote/sdk_session_context.dart';
 import '../data/repositories/telemetry_repository.dart';
 import '../data/repositories/sos_runtime_rehydration_support.dart';
@@ -87,6 +89,7 @@ class EixamConnectSdkImpl
   StreamSubscription<SdkBridgeDiagnostics>? _bridgeDiagnosticsSub;
   StreamSubscription<BleIncomingEvent>? _bleIncomingEventDiagnosticsSub;
   StreamSubscription<ProtectionStatus>? _protectionStatusSub;
+  StreamSubscription<ProtectionPlatformEvent>? _protectionRawSosEventsSub;
 
   Timer? _deathManTimer;
   bool _deathManCheckInNotified = false;
@@ -353,6 +356,18 @@ class EixamConnectSdkImpl
       onError: (Object error) {
         BleDebugRegistry.instance.recordEvent(
           'BLE diagnostics relay-event monitor error: $error',
+        );
+      },
+    );
+    _protectionRawSosEventsSub?.cancel();
+    _protectionRawSosEventsSub =
+        protectionPlatformAdapter.watchPlatformEvents().listen(
+      (event) {
+        _handleProtectionPlatformSosEvent(event);
+      },
+      onError: (Object error) {
+        BleDebugRegistry.instance.recordEvent(
+          'Protection platform SOS event monitor error: $error',
         );
       },
     );
@@ -859,6 +874,8 @@ class EixamConnectSdkImpl
   Future<void> _handleDeviceSosStatus(DeviceSosStatus status) async {
     _emitOperationalDiagnostics();
     _consumePendingAppTriggeredSosBridge(status);
+    final isCorrelatedAppTriggeredStatus =
+        _isCorrelatedAppTriggeredSosStatus(status);
     final cycleKey = _deriveDeviceSosCycleKey(status);
     final isDeviceTimeoutPromotion = !status.derivedFromBlePacket &&
         status.state == DeviceSosState.active &&
@@ -878,9 +895,9 @@ class EixamConnectSdkImpl
 
     final isAppOriginatedStatus =
         status.triggerOrigin == DeviceSosTransitionSource.app;
-    if (isAppOriginatedStatus) {
+    if (isAppOriginatedStatus || isCorrelatedAppTriggeredStatus) {
       BleDebugRegistry.instance.recordEvent(
-        _isCorrelatedAppTriggeredSosStatus(status)
+        isCorrelatedAppTriggeredStatus
             ? 'App-triggered SOS correlation preserved -> incidentId=${_pendingAppTriggeredSosBridge?.incidentId ?? "-"} nodeId=${_formatNodeId(status.nodeId)} state=${status.state.name}'
             : 'App-triggered SOS origin preserved without pending bridge -> nodeId=${_formatNodeId(status.nodeId)} state=${status.state.name}',
       );
@@ -2479,6 +2496,74 @@ class EixamConnectSdkImpl
     _bleAutoReconnectCoordinator.setAppForeground(true);
   }
 
+  void _handleProtectionPlatformSosEvent(ProtectionPlatformEvent event) {
+    if (event.type != ProtectionPlatformEventType.sosEventReceived ||
+        !_isProtectionPlatformOwningBle) {
+      return;
+    }
+    final rawHex = event.reason?.trim();
+    if (rawHex == null || rawHex.isEmpty) {
+      BleDebugRegistry.instance.recordEvent(
+        'Protection SOS payload ignored -> reason=missing_hex_payload',
+      );
+      return;
+    }
+    final bytes = _tryDecodeHexPayload(rawHex);
+    if (bytes == null || bytes.isEmpty) {
+      BleDebugRegistry.instance.recordEvent(
+        'Protection SOS payload ignored -> reason=invalid_hex_payload payload=$rawHex',
+      );
+      return;
+    }
+
+    final sosEventPacket = EixamSosEventPacket.tryParse(bytes);
+    if (sosEventPacket != null) {
+      BleDebugRegistry.instance.recordEvent(
+        'Protection SOS payload forwarded -> type=sosDeviceEvent payload=${sosEventPacket.rawHex}',
+      );
+      deviceSosController.handleIncomingSosEventPacket(
+        sosEventPacket,
+        source: DeviceSosTransitionSource.device,
+      );
+      return;
+    }
+
+    final sosPacket = EixamSosPacket.tryParse(bytes);
+    if (sosPacket != null) {
+      BleDebugRegistry.instance.recordEvent(
+        'Protection SOS payload forwarded -> type=sosMeshPacket payload=${sosPacket.rawHex}',
+      );
+      deviceSosController.handleIncomingSosPacket(
+        sosPacket,
+        source: DeviceSosTransitionSource.device,
+      );
+      return;
+    }
+
+    BleDebugRegistry.instance.recordEvent(
+      'Protection SOS payload ignored -> reason=unrecognized_payload payload=$rawHex len=${bytes.length}',
+    );
+  }
+
+  List<int>? _tryDecodeHexPayload(String rawHex) {
+    final normalized = rawHex.replaceAll(RegExp(r'\s+'), '');
+    if (normalized.length.isOdd) {
+      return null;
+    }
+    final bytes = <int>[];
+    for (var index = 0; index < normalized.length; index += 2) {
+      final value = int.tryParse(
+        normalized.substring(index, index + 2),
+        radix: 16,
+      );
+      if (value == null) {
+        return null;
+      }
+      bytes.add(value);
+    }
+    return bytes;
+  }
+
   Future<void> _evaluateDeathManPlan(String planId) async {
     var plan = await deathManRepository.getActiveDeathManPlan();
     if (plan == null || plan.id != planId) {
@@ -2879,6 +2964,7 @@ class EixamConnectSdkImpl
     await _bridgeDiagnosticsSub?.cancel();
     await _bleIncomingEventDiagnosticsSub?.cancel();
     await _protectionStatusSub?.cancel();
+    await _protectionRawSosEventsSub?.cancel();
     await _bleOperationalRuntimeBridge.dispose();
     await _protectionModeController.dispose();
     await deviceSosController.dispose();

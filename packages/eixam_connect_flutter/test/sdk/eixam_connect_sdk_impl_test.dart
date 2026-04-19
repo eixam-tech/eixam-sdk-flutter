@@ -2203,10 +2203,10 @@ void main() {
           activated: true,
         ),
       );
-      await deviceSosController.attach(
-        commandWriter: (command) async {
-          commands.add(command.label);
-        },
+      await _attachObservedAppActivationWriter(
+        deviceSosController,
+        commandLabels: commands,
+        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12],
       );
 
       await sdk.triggerSos(const SosTriggerPayload(message: 'Need help'));
@@ -2229,10 +2229,10 @@ void main() {
           activated: true,
         ),
       );
-      await deviceSosController.attach(
-        commandWriter: (command) async {
-          commands.add(command.label);
-        },
+      await _attachObservedAppActivationWriter(
+        deviceSosController,
+        commandLabels: commands,
+        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12],
       );
 
       final incident = await sdk.triggerSos(
@@ -2250,6 +2250,14 @@ void main() {
       expect(statusAfterPacket.triggerOrigin, DeviceSosTransitionSource.app);
       expect(sosRepository.triggerCallCount, 1);
       expect((await sdk.getCurrentSosIncident())?.id, incident.id);
+      expect(
+        BleDebugRegistry.instance.currentState.events.any(
+          (event) => event.message.contains(
+            'Device SOS backend sync created incident',
+          ),
+        ),
+        isFalse,
+      );
 
       final cancelled = await sdk.cancelSos();
 
@@ -2273,10 +2281,10 @@ void main() {
           activated: true,
         ),
       );
-      await deviceSosController.attach(
-        commandWriter: (command) async {
-          commands.add(command.label);
-        },
+      await _attachObservedAppActivationWriter(
+        deviceSosController,
+        commandLabels: commands,
+        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12],
       );
 
       final incident = await sdk.triggerSos(
@@ -2295,6 +2303,14 @@ void main() {
       expect(sosRepository.triggerCallCount, 1);
       expect((await sdk.getCurrentSosIncident())?.id, incident.id);
       expect(sosRepository.currentIncident.state, SosState.resolved);
+      expect(
+        BleDebugRegistry.instance.currentState.events.any(
+          (event) => event.message.contains(
+            'Device SOS backend sync created incident',
+          ),
+        ),
+        isFalse,
+      );
       expect(commands, contains('SOS CANCEL'));
       expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.resolved);
     });
@@ -2343,9 +2359,7 @@ void main() {
         await localSdk.initialize(
           const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
         );
-        await localDeviceSosController.attach(
-          commandWriter: (_) async {},
-        );
+        await _attachObservedAppActivationWriter(localDeviceSosController);
 
         final incident = await localSdk.triggerSos(
           const SosTriggerPayload(message: 'Need help'),
@@ -2392,10 +2406,10 @@ void main() {
           lifecycleState: DeviceLifecycleState.paired,
         ),
       );
-      await deviceSosController.attach(
-        commandWriter: (command) async {
-          commands.add(command.label);
-        },
+      await _attachObservedAppActivationWriter(
+        deviceSosController,
+        commandLabels: commands,
+        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12],
       );
 
       final incident = await sdk.triggerSos(
@@ -2473,10 +2487,10 @@ void main() {
           activated: true,
         ),
       );
-      await deviceSosController.attach(
-        commandWriter: (command) async {
-          commands.add(command.label);
-        },
+      await _attachObservedAppActivationWriter(
+        deviceSosController,
+        commandLabels: commands,
+        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12],
       );
 
       await sdk.triggerSos(const SosTriggerPayload(message: 'Need help'));
@@ -2486,6 +2500,72 @@ void main() {
       expect(sosRepository.cancelCallCount, 1);
       expect(commands, contains('SOS CANCEL'));
       expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.resolved);
+    });
+
+    test(
+        'cancelSos does not claim device delivery when no observed close acknowledgement arrives',
+        () async {
+      final commands = <String>[];
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController(
+        appActivationObservationTimeout: const Duration(milliseconds: 40),
+      );
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        deviceRepository.emitStatus(
+          buildDeviceStatus(
+            deviceId: 'ble-sos-cancel-timeout-1',
+            canonicalHardwareId: 'CF:82:11:22:33:49',
+            paired: true,
+            connected: true,
+            activated: true,
+          ),
+        );
+        await _attachObservedAppActivationWriter(
+          localDeviceSosController,
+          commandLabels: commands,
+        );
+
+        final incident = await localSdk.triggerSos(
+          const SosTriggerPayload(message: 'Need help'),
+        );
+        final cancelled = await localSdk.cancelSos();
+
+        expect(incident.deliveryChannel, SosDeliveryChannel.backendAndDevice);
+        expect(cancelled.deliveryChannel, SosDeliveryChannel.backendOnly);
+        expect(cancelled.id, incident.id);
+        expect(commands, contains('SOS CANCEL'));
+        expect(
+          (await localSdk.getDeviceSosStatus()).state,
+          DeviceSosState.active,
+        );
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) => event.message.contains(
+              'Public SOS device sync failed -> action=cancel',
+            ),
+          ),
+          isTrue,
+        );
+      } finally {
+        await localSdk.dispose();
+        await localRealtimeClient.dispose();
+      }
     });
 
     test('resolveSos delegates through the public SDK seam', () async {
@@ -2513,10 +2593,10 @@ void main() {
           activated: true,
         ),
       );
-      await deviceSosController.attach(
-        commandWriter: (command) async {
-          commands.add(command.label);
-        },
+      await _attachObservedAppActivationWriter(
+        deviceSosController,
+        commandLabels: commands,
+        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12],
       );
 
       await sdk.triggerSos(const SosTriggerPayload(message: 'Need help'));
@@ -2544,6 +2624,14 @@ void main() {
       await deviceSosController.attach(
         commandWriter: (command) async {
           commands.add(command.label);
+          if (command.label == 'SOS TRIGGER APP') {
+            Future<void>.delayed(const Duration(milliseconds: 5), () {
+              deviceSosController.handleIncomingSosPacket(
+                _deviceOriginPacket(),
+                source: DeviceSosTransitionSource.device,
+              );
+            });
+          }
           if (command.label == 'SOS CONFIRM') {
             throw StateError('confirm failed');
           }
@@ -2589,6 +2677,85 @@ void main() {
     });
 
     test(
+        'device activation handshake timeout does not falsely report backendAndDevice',
+        () async {
+      final commands = <String>[];
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 80),
+        countdownTick: const Duration(milliseconds: 5),
+        appActivationObservationTimeout: const Duration(milliseconds: 40),
+      );
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        deviceRepository.emitStatus(
+          buildDeviceStatus(
+            deviceId: 'ble-sos-2',
+            canonicalHardwareId: 'CF:82:55:66:77:88',
+            paired: true,
+            connected: true,
+            activated: true,
+          ),
+        );
+        await localDeviceSosController.attach(
+          commandWriter: (command) async {
+            commands.add(command.label);
+            if (command.label == 'SOS TRIGGER APP') {
+              Future<void>.delayed(const Duration(milliseconds: 5), () {
+                localDeviceSosController.handleIncomingSosPacket(
+                  _deviceOriginPacket(),
+                  source: DeviceSosTransitionSource.device,
+                );
+              });
+            }
+          },
+        );
+
+        final incident = await localSdk.triggerSos(
+          const SosTriggerPayload(message: 'Need help'),
+        );
+
+        expect(incident.state, SosState.sent);
+        expect(incident.deliveryChannel, SosDeliveryChannel.backendOnly);
+        expect(commands, <String>['SOS TRIGGER APP', 'SOS CONFIRM']);
+        expect(
+          (await localSdk.getDeviceSosStatus()).state,
+          DeviceSosState.preConfirm,
+        );
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) =>
+                event.message.contains(
+                  'App SOS device activation incomplete',
+                ) &&
+                event.message.contains(
+                  'observed device active SOS after confirm',
+                ),
+          ),
+          isTrue,
+        );
+      } finally {
+        await localSdk.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test(
         'triggerSos with backend unavailable but device available succeeds through device only',
         () async {
       final unavailableSosRepository = _AvailabilityAwareSosRepository();
@@ -2620,9 +2787,7 @@ void main() {
             activated: true,
           ),
         );
-        await localDeviceSosController.attach(
-          commandWriter: (command) async {},
-        );
+        await _attachObservedAppActivationWriter(localDeviceSosController);
 
         final incident = await localSdk.triggerSos(
           const SosTriggerPayload(message: 'Need help'),
@@ -2724,9 +2889,7 @@ void main() {
             activated: true,
           ),
         );
-        await localDeviceSosController.attach(
-          commandWriter: (command) async {},
-        );
+        await _attachObservedAppActivationWriter(localDeviceSosController);
         await localSdk.triggerSos(
           const SosTriggerPayload(message: 'Need help'),
         );
@@ -2757,9 +2920,7 @@ void main() {
           activated: true,
         ),
       );
-      await deviceSosController.attach(
-        commandWriter: (command) async {},
-      );
+      await _attachObservedAppActivationWriter(deviceSosController);
 
       await sdk.triggerSos(const SosTriggerPayload(message: 'Need help'));
       await sdk.confirmDeviceSos();
@@ -2831,9 +2992,7 @@ void main() {
             activated: true,
           ),
         );
-        await localDeviceSosController.attach(
-          commandWriter: (command) async {},
-        );
+        await _attachObservedAppActivationWriter(localDeviceSosController);
 
         final bothIncident = await localSdk.triggerSos(
           const SosTriggerPayload(message: 'Need help again'),
@@ -2858,7 +3017,7 @@ void main() {
     });
 
     test(
-        'android protection triggerSos routes the device leg through the native owner',
+        'android native owner app-triggered SOS reaches observed preConfirm and active through forwarded packets',
         () async {
       permissionsRepository.permissionState = const PermissionState(
         location: SdkPermissionStatus.granted,
@@ -2875,6 +3034,7 @@ void main() {
           lifecycleState: DeviceLifecycleState.activated,
         ),
       );
+      final events = StreamController<ProtectionPlatformEvent>.broadcast();
       final localAdapter = _FakeProtectionPlatformAdapter(
         snapshot: const ProtectionPlatformSnapshot(
           backgroundCapabilityReady: true,
@@ -2891,11 +3051,36 @@ void main() {
           runtimeState: ProtectionRuntimeState.active,
         ),
         startResult: const ProtectionPlatformStartResult(success: true),
+        platformEvents: events.stream,
         commandResult: const ProtectionPlatformCommandResult(
           success: true,
           route: 'androidService',
           result: 'SOS TRIGGER APP native write succeeded via androidService.',
         ),
+        onSendCommand: (request) {
+          if (request.label == 'SOS TRIGGER APP') {
+            Future<void>.delayed(const Duration(milliseconds: 5), () {
+              events.add(
+                ProtectionPlatformEvent(
+                  type: ProtectionPlatformEventType.sosEventReceived,
+                  timestamp: DateTime.utc(2026, 4, 19, 10, 0, 0),
+                  reason: '34120000000000000040',
+                ),
+              );
+            });
+          }
+          if (request.label == 'SOS CONFIRM') {
+            Future<void>.delayed(const Duration(milliseconds: 5), () {
+              events.add(
+                ProtectionPlatformEvent(
+                  type: ProtectionPlatformEventType.sosEventReceived,
+                  timestamp: DateTime.utc(2026, 4, 19, 10, 0, 1),
+                  reason: _deviceOriginPacket().rawHex,
+                ),
+              );
+            });
+          }
+        },
       );
       final localRealtimeClient = FakeRealtimeClient()
         ..stateToEmitOnConnect = RealtimeConnectionState.connected;
@@ -2910,7 +3095,9 @@ void main() {
         permissionsRepository: permissionsRepository,
         notificationsRepository: notificationsRepository,
         realtimeClient: localRealtimeClient,
-        deviceSosController: DeviceSosController(),
+        deviceSosController: DeviceSosController(
+          appActivationObservationTimeout: const Duration(milliseconds: 80),
+        ),
         bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
         preferredBleDeviceStore: preferredDeviceStore,
         protectionPlatformAdapter: localAdapter,
@@ -2946,7 +3133,16 @@ void main() {
           (await runtimeSdk.getDeviceSosStatus()).state,
           DeviceSosState.active,
         );
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) => event.message.contains(
+              'Protection SOS payload forwarded -> type=sosMeshPacket',
+            ),
+          ),
+          isTrue,
+        );
       } finally {
+        await events.close();
         await runtimeSdk.dispose();
         await localRealtimeClient.dispose();
       }
@@ -3068,6 +3264,242 @@ void main() {
     });
 
     test(
+        'android native owner cancel and resolve reach observed close ack through forwarded packets',
+        () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+        notifications: SdkPermissionStatus.granted,
+        bluetooth: SdkPermissionStatus.granted,
+        bluetoothEnabled: true,
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-native-close',
+          connected: false,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.activated,
+        ),
+      );
+      final events = StreamController<ProtectionPlatformEvent>.broadcast();
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          protectedDeviceId: 'device-native-close',
+          activeDeviceId: 'device-native-close',
+          runtimeActive: true,
+          serviceRunning: true,
+          serviceBleConnected: true,
+          serviceBleReady: true,
+          coverageLevel: ProtectionCoverageLevel.full,
+          runtimeState: ProtectionRuntimeState.active,
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+        platformEvents: events.stream,
+        onSendCommand: (request) {
+          if (request.label == 'SOS TRIGGER APP') {
+            Future<void>.delayed(const Duration(milliseconds: 5), () {
+              events.add(
+                ProtectionPlatformEvent(
+                  type: ProtectionPlatformEventType.sosEventReceived,
+                  timestamp: DateTime.utc(2026, 4, 19, 10, 1, 0),
+                  reason: '34120000000000000040',
+                ),
+              );
+            });
+          }
+          if (request.label == 'SOS CONFIRM') {
+            Future<void>.delayed(const Duration(milliseconds: 5), () {
+              events.add(
+                ProtectionPlatformEvent(
+                  type: ProtectionPlatformEventType.sosEventReceived,
+                  timestamp: DateTime.utc(2026, 4, 19, 10, 1, 1),
+                  reason: _deviceOriginPacket().rawHex,
+                ),
+              );
+            });
+          }
+          if (request.label == 'SOS CANCEL') {
+            Future<void>.delayed(const Duration(milliseconds: 5), () {
+              events.add(
+                ProtectionPlatformEvent(
+                  type: ProtectionPlatformEventType.sosEventReceived,
+                  timestamp: DateTime.utc(2026, 4, 19, 10, 1, 2),
+                  reason: 'e1023412',
+                ),
+              );
+            });
+          }
+        },
+      );
+      final localRealtimeClient = FakeRealtimeClient()
+        ..stateToEmitOnConnect = RealtimeConnectionState.connected;
+      final runtimeSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: DeviceSosController(
+          appActivationObservationTimeout: const Duration(milliseconds: 80),
+        ),
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: localAdapter,
+      );
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+            canonicalExternalUserId: 'canonical-user',
+          ),
+        );
+        await runtimeSdk.enterProtectionMode();
+
+        final incident = await runtimeSdk.triggerSos(
+          const SosTriggerPayload(message: 'Need help'),
+        );
+        final cancelled = await runtimeSdk.cancelSos();
+
+        expect(cancelled.id, incident.id);
+        expect(cancelled.deliveryChannel, SosDeliveryChannel.backendAndDevice);
+        expect((await runtimeSdk.getDeviceSosStatus()).state,
+            DeviceSosState.resolved);
+
+        await runtimeSdk.triggerSos(
+          const SosTriggerPayload(message: 'Need help again'),
+        );
+        await runtimeSdk.resolveSos();
+
+        expect(sosRepository.resolveCallCount, 1);
+        expect((await runtimeSdk.getDeviceSosStatus()).state,
+            DeviceSosState.resolved);
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) => event.message.contains(
+              'Protection SOS payload forwarded -> type=sosDeviceEvent',
+            ),
+          ),
+          isTrue,
+        );
+      } finally {
+        await events.close();
+        await runtimeSdk.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test(
+        'android native owner unrecognized SOS payload is logged and ignored safely',
+        () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+        notifications: SdkPermissionStatus.granted,
+        bluetooth: SdkPermissionStatus.granted,
+        bluetoothEnabled: true,
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-native-unrecognized',
+          connected: false,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.activated,
+        ),
+      );
+      final events = StreamController<ProtectionPlatformEvent>.broadcast();
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          protectedDeviceId: 'device-native-unrecognized',
+          activeDeviceId: 'device-native-unrecognized',
+          runtimeActive: true,
+          serviceRunning: true,
+          serviceBleConnected: true,
+          serviceBleReady: true,
+          coverageLevel: ProtectionCoverageLevel.full,
+          runtimeState: ProtectionRuntimeState.active,
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+        platformEvents: events.stream,
+      );
+      final localRealtimeClient = FakeRealtimeClient()
+        ..stateToEmitOnConnect = RealtimeConnectionState.connected;
+      final runtimeSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: DeviceSosController(),
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: localAdapter,
+      );
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+            canonicalExternalUserId: 'canonical-user',
+          ),
+        );
+        await runtimeSdk.enterProtectionMode();
+
+        events.add(
+          ProtectionPlatformEvent(
+            type: ProtectionPlatformEventType.sosEventReceived,
+            timestamp: DateTime.utc(2026, 4, 19, 10, 2, 0),
+            reason: '010203040506',
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect((await runtimeSdk.getDeviceSosStatus()).state,
+            DeviceSosState.inactive);
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) => event.message.contains(
+              'Protection SOS payload ignored -> reason=unrecognized_payload',
+            ),
+          ),
+          isTrue,
+        );
+      } finally {
+        await events.close();
+        await runtimeSdk.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test(
         'android native owner routes trigger confirm acknowledge and cancel through protection commands',
         () async {
       permissionsRepository.permissionState = const PermissionState(
@@ -3085,6 +3517,7 @@ void main() {
           lifecycleState: DeviceLifecycleState.activated,
         ),
       );
+      final events = StreamController<ProtectionPlatformEvent>.broadcast();
       final localAdapter = _FakeProtectionPlatformAdapter(
         snapshot: const ProtectionPlatformSnapshot(
           backgroundCapabilityReady: true,
@@ -3101,6 +3534,42 @@ void main() {
           runtimeState: ProtectionRuntimeState.active,
         ),
         startResult: const ProtectionPlatformStartResult(success: true),
+        platformEvents: events.stream,
+        onSendCommand: (request) {
+          if (request.label == 'SOS TRIGGER APP') {
+            Future<void>.delayed(const Duration(milliseconds: 5), () {
+              events.add(
+                ProtectionPlatformEvent(
+                  type: ProtectionPlatformEventType.sosEventReceived,
+                  timestamp: DateTime.utc(2026, 4, 19, 10, 3, 0),
+                  reason: '34120000000000000040',
+                ),
+              );
+            });
+          }
+          if (request.label == 'SOS CONFIRM') {
+            Future<void>.delayed(const Duration(milliseconds: 5), () {
+              events.add(
+                ProtectionPlatformEvent(
+                  type: ProtectionPlatformEventType.sosEventReceived,
+                  timestamp: DateTime.utc(2026, 4, 19, 10, 3, 1),
+                  reason: _deviceOriginPacket().rawHex,
+                ),
+              );
+            });
+          }
+          if (request.label == 'SOS CANCEL') {
+            Future<void>.delayed(const Duration(milliseconds: 5), () {
+              events.add(
+                ProtectionPlatformEvent(
+                  type: ProtectionPlatformEventType.sosEventReceived,
+                  timestamp: DateTime.utc(2026, 4, 19, 10, 3, 2),
+                  reason: 'e1023412',
+                ),
+              );
+            });
+          }
+        },
       );
       final localRealtimeClient = FakeRealtimeClient()
         ..stateToEmitOnConnect = RealtimeConnectionState.connected;
@@ -3150,6 +3619,7 @@ void main() {
           ],
         );
       } finally {
+        await events.close();
         await runtimeSdk.dispose();
         await localRealtimeClient.dispose();
       }
@@ -3401,10 +3871,9 @@ void main() {
       deviceRepository.emitStatus(disconnected);
       await Future<void>.delayed(Duration.zero);
       deviceRepository.setCurrentStatusSilently(connected);
-      await deviceSosController.attach(
-        commandWriter: (command) async {
-          commands.add(command.label);
-        },
+      await _attachObservedAppActivationWriter(
+        deviceSosController,
+        commandLabels: commands,
       );
       await Future<void>.delayed(Duration.zero);
 
@@ -6309,6 +6778,7 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     this.platformEvents = const Stream<ProtectionPlatformEvent>.empty(),
     this.commandResult = const ProtectionPlatformCommandResult(success: true),
     List<ProtectionPlatformCommandResult>? queuedCommandResults,
+    this.onSendCommand,
   }) : queuedCommandResults =
             queuedCommandResults ?? <ProtectionPlatformCommandResult>[];
 
@@ -6317,6 +6787,8 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   final Stream<ProtectionPlatformEvent> platformEvents;
   ProtectionPlatformCommandResult commandResult;
   final List<ProtectionPlatformCommandResult> queuedCommandResults;
+  final FutureOr<void> Function(ProtectionPlatformCommandRequest request)?
+      onSendCommand;
   int startCallCount = 0;
   int stopCallCount = 0;
   int ensureActiveCallCount = 0;
@@ -6369,6 +6841,7 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     sendCommandCallCount++;
     lastCommandRequest = request;
     commandRequests.add(request);
+    await onSendCommand?.call(request);
     if (queuedCommandResults.isNotEmpty) {
       return queuedCommandResults.removeAt(0);
     }
@@ -6389,6 +6862,42 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
 
   @override
   Stream<ProtectionPlatformEvent> watchPlatformEvents() => platformEvents;
+}
+
+Future<void> _attachObservedAppActivationWriter(
+  DeviceSosController controller, {
+  List<String>? commandLabels,
+  List<int>? closeAckPacket,
+}) {
+  return controller.attach(
+    commandWriter: (command) async {
+      commandLabels?.add(command.label);
+      if (command.opcode == 0x06) {
+        Future<void>.delayed(const Duration(milliseconds: 5), () {
+          controller.handleIncomingSosPacket(
+            _deviceOriginPacket(),
+            source: DeviceSosTransitionSource.device,
+          );
+        });
+      }
+      if (command.opcode == 0x05) {
+        Future<void>.delayed(const Duration(milliseconds: 5), () {
+          controller.handleIncomingSosPacket(
+            _deviceOriginPacket(),
+            source: DeviceSosTransitionSource.device,
+          );
+        });
+      }
+      if (command.opcode == 0x04 && closeAckPacket != null) {
+        Future<void>.delayed(const Duration(milliseconds: 5), () {
+          controller.handleIncomingSosEventPacket(
+            EixamSosEventPacket.tryParse(closeAckPacket)!,
+            source: DeviceSosTransitionSource.device,
+          );
+        });
+      }
+    },
+  );
 }
 
 class _FakeSdkMqttTransport implements SdkMqttTransport {
