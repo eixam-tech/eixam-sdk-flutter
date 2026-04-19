@@ -121,13 +121,14 @@ class EixamConnectSdkImpl
   late final BleAutoReconnectCoordinator _bleAutoReconnectCoordinator;
   late final BleOperationalRuntimeBridge _bleOperationalRuntimeBridge;
   late final ProtectionModeController _protectionModeController;
+  final Duration _appTriggeredSosBridgeWindow;
 
   static const String _openAppActionId = 'open_app';
   static const String _cancelSosActionId = 'cancel_sos';
   static const String _resolveSosActionId = 'resolve_sos';
   static const String _confirmSosActionId = 'confirm_sos';
   static const String _confirmDeadManSafeActionId = 'confirm_dead_man_safe';
-  static const Duration _appTriggeredSosBridgeWindow =
+  static const Duration _defaultAppTriggeredSosBridgeWindow =
       Duration(seconds: 15);
 
   EixamConnectSdkImpl({
@@ -149,8 +150,10 @@ class EixamConnectSdkImpl
     this.sessionContext,
     this.identityRemoteDataSource,
     ProtectionPlatformAdapter? protectionPlatformAdapter,
+    Duration appTriggeredSosBridgeWindow = _defaultAppTriggeredSosBridgeWindow,
     this.disposeCallback,
-  }) : protectionPlatformAdapter = protectionPlatformAdapter ??
+  })  : _appTriggeredSosBridgeWindow = appTriggeredSosBridgeWindow,
+        protectionPlatformAdapter = protectionPlatformAdapter ??
             buildDefaultProtectionPlatformAdapter() {
     _bleAutoReconnectCoordinator = BleAutoReconnectCoordinator(
       deviceRepository: deviceRepository,
@@ -364,7 +367,7 @@ class EixamConnectSdkImpl
     }
     await _rehydrateSosRuntimeState();
     _publicSosFallbackIncident = null;
-    _pendingAppTriggeredSosBridge = null;
+    _clearPendingAppTriggeredSosBridge(reason: 'session_replaced');
     _publicSosState = await sosRepository.getSosState();
     await sessionStore?.save(_session!);
     _emitOperationalDiagnostics();
@@ -399,7 +402,7 @@ class EixamConnectSdkImpl
     }
     await _rehydrateSosRuntimeState();
     _publicSosFallbackIncident = null;
-    _pendingAppTriggeredSosBridge = null;
+    _clearPendingAppTriggeredSosBridge(reason: 'identity_refreshed');
     _publicSosState = await sosRepository.getSosState();
     await sessionStore?.save(refreshed);
     _emitOperationalDiagnostics();
@@ -458,7 +461,7 @@ class EixamConnectSdkImpl
     _publicSosFallbackIncident = null;
     _lastPublicSosIncidentId = null;
     _lastPublicSosDeliveryChannel = null;
-    _pendingAppTriggeredSosBridge = null;
+    _clearPendingAppTriggeredSosBridge(reason: 'session_cleared');
     _emitPublicSosState(SosState.idle);
     if (sessionContext != null) {
       sessionContext!.currentSession = null;
@@ -873,9 +876,13 @@ class EixamConnectSdkImpl
       'SOS cycle evaluated -> key=${cycleKey ?? '-'} activeCycle=${_activeDeviceSosCycleKey ?? '-'} notifiedCycle=${_notifiedDeviceSosCycleKey ?? '-'} notifiedState=${_notifiedDeviceSosState?.name ?? '-'}',
     );
 
-    if (_isCorrelatedAppTriggeredSosStatus(status)) {
+    final isAppOriginatedStatus =
+        status.triggerOrigin == DeviceSosTransitionSource.app;
+    if (isAppOriginatedStatus) {
       BleDebugRegistry.instance.recordEvent(
-        'App-triggered SOS bridge matched -> incidentId=${_pendingAppTriggeredSosBridge?.incidentId ?? "-"} nodeId=${_formatNodeId(status.nodeId)} state=${status.state.name}',
+        _isCorrelatedAppTriggeredSosStatus(status)
+            ? 'App-triggered SOS correlation preserved -> incidentId=${_pendingAppTriggeredSosBridge?.incidentId ?? "-"} nodeId=${_formatNodeId(status.nodeId)} state=${status.state.name}'
+            : 'App-triggered SOS origin preserved without pending bridge -> nodeId=${_formatNodeId(status.nodeId)} state=${status.state.name}',
       );
     } else {
       await _synchronizeDeviceOriginatedBackendLifecycle(status);
@@ -888,7 +895,7 @@ class EixamConnectSdkImpl
       _activeDeviceSosCycleKey = null;
       _notifiedDeviceSosCycleKey = null;
       _notifiedDeviceSosState = null;
-      _pendingAppTriggeredSosBridge = null;
+      _clearPendingAppTriggeredSosBridge(reason: 'device_cycle_closed');
     }
 
     if (!status.derivedFromBlePacket && !isDeviceTimeoutPromotion) {
@@ -1378,7 +1385,9 @@ class EixamConnectSdkImpl
       if (deviceSync.succeeded) {
         _registerPendingAppTriggeredSosBridge(incident);
       } else {
-        _pendingAppTriggeredSosBridge = null;
+        _clearPendingAppTriggeredSosBridge(
+          reason: 'public_trigger_device_sync_not_completed',
+        );
       }
       _publishSdkEvent(SOSTriggeredEvent(incident.id));
       return incident;
@@ -1443,7 +1452,7 @@ class EixamConnectSdkImpl
         deliveryChannel: deliveryChannel,
         fallbackState: backendIncident == null ? SosState.cancelled : null,
       );
-      _pendingAppTriggeredSosBridge = null;
+      _clearPendingAppTriggeredSosBridge(reason: 'public_cancel_completed');
       _publishCancelledSosEventIfNeeded(incident);
       return incident;
     } finally {
@@ -1498,7 +1507,7 @@ class EixamConnectSdkImpl
         deliveryChannel: deliveryChannel,
         fallbackState: backendIncident == null ? SosState.resolved : null,
       );
-      _pendingAppTriggeredSosBridge = null;
+      _clearPendingAppTriggeredSosBridge(reason: 'public_resolve_completed');
     } finally {
       _publicSosActionInFlight = false;
     }
@@ -1698,6 +1707,9 @@ class EixamConnectSdkImpl
       createdAt: now,
       expiresAt: now.add(_appTriggeredSosBridgeWindow),
     );
+    BleDebugRegistry.instance.recordEvent(
+      'App-triggered SOS bridge registered -> incidentId=${incident.id} deviceId=${_lastDeviceStatus?.deviceId ?? "-"} expiresInMs=${_appTriggeredSosBridgeWindow.inMilliseconds}',
+    );
   }
 
   void _consumePendingAppTriggeredSosBridge(DeviceSosStatus status) {
@@ -1707,7 +1719,7 @@ class EixamConnectSdkImpl
     }
     final now = DateTime.now();
     if (now.isAfter(bridge.expiresAt)) {
-      _pendingAppTriggeredSosBridge = null;
+      _clearPendingAppTriggeredSosBridge(reason: 'expired');
       return;
     }
     if (!_isSosCycleNotifiable(status.state)) {
@@ -1734,6 +1746,9 @@ class EixamConnectSdkImpl
       matchedAt: now,
       expiresAt: now.add(_appTriggeredSosBridgeWindow),
     );
+    BleDebugRegistry.instance.recordEvent(
+      'App-triggered SOS bridge refreshed -> incidentId=${bridge.incidentId} nodeId=${_formatNodeId(statusNodeId ?? bridge.nodeId)} state=${status.state.name}',
+    );
   }
 
   bool _isCorrelatedAppTriggeredSosStatus(DeviceSosStatus status) {
@@ -1743,7 +1758,7 @@ class EixamConnectSdkImpl
     }
     final now = DateTime.now();
     if (now.isAfter(bridge.expiresAt)) {
-      _pendingAppTriggeredSosBridge = null;
+      _clearPendingAppTriggeredSosBridge(reason: 'expired');
       return false;
     }
     if (status.triggerOrigin == DeviceSosTransitionSource.app) {
@@ -1768,6 +1783,19 @@ class EixamConnectSdkImpl
       return false;
     }
     return true;
+  }
+
+  void _clearPendingAppTriggeredSosBridge({
+    required String reason,
+  }) {
+    final bridge = _pendingAppTriggeredSosBridge;
+    if (bridge == null) {
+      return;
+    }
+    _pendingAppTriggeredSosBridge = null;
+    BleDebugRegistry.instance.recordEvent(
+      'App-triggered SOS bridge cleared -> incidentId=${bridge.incidentId} reason=$reason matched=${bridge.matchedAt != null} nodeId=${_formatNodeId(bridge.nodeId)}',
+    );
   }
 
   void _emitPublicSosState(SosState state) {

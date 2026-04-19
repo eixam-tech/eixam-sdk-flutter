@@ -2261,6 +2261,124 @@ void main() {
     });
 
     test(
+        'app-triggered SOS resolve converges backend and device after correlated BLE status',
+        () async {
+      final commands = <String>[];
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-sos-resolve-1',
+          canonicalHardwareId: 'CF:82:11:22:33:47',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
+      );
+      await deviceSosController.attach(
+        commandWriter: (command) async {
+          commands.add(command.label);
+        },
+      );
+
+      final incident = await sdk.triggerSos(
+        const SosTriggerPayload(message: 'Need help'),
+      );
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginPacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      await sdk.resolveSos();
+
+      expect(sosRepository.resolveCallCount, 1);
+      expect(sosRepository.triggerCallCount, 1);
+      expect((await sdk.getCurrentSosIncident())?.id, incident.id);
+      expect(sosRepository.currentIncident.state, SosState.resolved);
+      expect(commands, contains('SOS CANCEL'));
+      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.resolved);
+    });
+
+    test(
+        'app-triggered SOS bridge expiration is cleaned up and late BLE status still stays on the same incident',
+        () async {
+      final localSosRepository = FakeSosRepository();
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceRepository = FakeDeviceRepository(
+        initialStatus: buildDeviceStatus(
+          connected: false,
+          lifecycleState: DeviceLifecycleState.unpaired,
+          paired: false,
+          activated: false,
+        ),
+      );
+      final localDeviceSosController = DeviceSosController();
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: localSosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: localDeviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        appTriggeredSosBridgeWindow: const Duration(milliseconds: 10),
+      );
+
+      try {
+        localDeviceRepository.emitStatus(
+          buildDeviceStatus(
+            deviceId: 'ble-sos-expiry-1',
+            canonicalHardwareId: 'CF:82:11:22:33:48',
+            paired: true,
+            connected: true,
+            activated: true,
+          ),
+        );
+        await localSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await localDeviceSosController.attach(
+          commandWriter: (_) async {},
+        );
+
+        final incident = await localSdk.triggerSos(
+          const SosTriggerPayload(message: 'Need help'),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+
+        localDeviceSosController.handleIncomingSosPacket(
+          _deviceOriginPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        final status = await localSdk.getDeviceSosStatus();
+        expect(status.triggerOrigin, DeviceSosTransitionSource.app);
+        expect(localSosRepository.triggerCallCount, 1);
+        expect((await localSdk.getCurrentSosIncident())?.id, incident.id);
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) => event.message.contains(
+              'App-triggered SOS bridge cleared -> incidentId=${incident.id} reason=expired',
+            ),
+          ),
+          isTrue,
+        );
+      } finally {
+        await localSdk.dispose();
+        await localSosRepository.dispose();
+        await localRealtimeClient.dispose();
+        await localDeviceRepository.dispose();
+      }
+    });
+
+    test(
         'triggerSos uses the live command-capable device path even when isReadyForSafety is false',
         () async {
       final commands = <String>[];
@@ -2451,13 +2569,23 @@ void main() {
       );
       expect(
         BleDebugRegistry.instance.currentState.events.any(
-          (event) => event.message.contains(
+          (event) =>
+              event.message.contains(
                 'App SOS device activation incomplete',
               ) &&
               event.message.contains('device_stayed_in_pre_sos'),
         ),
         isTrue,
       );
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginPacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(sosRepository.triggerCallCount, 1);
+      expect((await sdk.getCurrentSosIncident())?.id, incident.id);
     });
 
     test(
@@ -2862,7 +2990,8 @@ void main() {
           const ProtectionPlatformCommandResult(
             success: true,
             route: 'androidService',
-            result: 'SOS TRIGGER APP native write succeeded via androidService.',
+            result:
+                'SOS TRIGGER APP native write succeeded via androidService.',
           ),
           const ProtectionPlatformCommandResult(
             success: false,
@@ -2924,7 +3053,8 @@ void main() {
         );
         expect(
           BleDebugRegistry.instance.currentState.events.any(
-            (event) => event.message.contains(
+            (event) =>
+                event.message.contains(
                   'App SOS device activation incomplete',
                 ) &&
                 event.message.contains('device_stayed_in_pre_sos'),
@@ -3025,7 +3155,8 @@ void main() {
       }
     });
 
-    test('operational diagnostics refresh when device connectivity and command path change',
+    test(
+        'operational diagnostics refresh when device connectivity and command path change',
         () async {
       final disconnectedDiagnostics = await sdk.getOperationalDiagnostics();
       expect(disconnectedDiagnostics.deviceSosAvailable, isFalse);
@@ -6178,7 +6309,8 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     this.platformEvents = const Stream<ProtectionPlatformEvent>.empty(),
     this.commandResult = const ProtectionPlatformCommandResult(success: true),
     List<ProtectionPlatformCommandResult>? queuedCommandResults,
-  }) : queuedCommandResults = queuedCommandResults ?? <ProtectionPlatformCommandResult>[];
+  }) : queuedCommandResults =
+            queuedCommandResults ?? <ProtectionPlatformCommandResult>[];
 
   ProtectionPlatformSnapshot snapshot;
   final ProtectionPlatformStartResult startResult;
