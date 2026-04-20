@@ -25,6 +25,7 @@ export 'src/entities/death_man_plan.dart';
 export 'src/entities/permission_state.dart';
 export 'src/entities/guided_rescue_state.dart';
 export 'src/entities/guided_rescue_status_snapshot.dart';
+export 'src/entities/public_pre_sos_status.dart';
 export 'src/enums/sos_state.dart';
 export 'src/enums/tracking_state.dart';
 export 'src/enums/device_lifecycle_state.dart';

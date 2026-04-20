@@ -12,6 +12,7 @@ import '../entities/guided_rescue_state.dart';
 import '../entities/permission_state.dart';
 import '../entities/preferred_device.dart';
 import '../entities/protection_mode_models.dart';
+import '../entities/public_pre_sos_status.dart';
 import '../entities/sdk_operational_diagnostics.dart';
 import '../entities/sdk_telemetry_payload.dart';
 import '../entities/sos_incident.dart';
@@ -94,6 +95,13 @@ abstract class EixamConnectSdk {
   });
   Future<void> deleteRegisteredDevice(String deviceId);
 
+  Future<void> startPreSos({
+    Duration countdown = const Duration(seconds: 20),
+  });
+  Future<SosIncident> confirmPreSos(SosTriggerPayload payload);
+  Future<void> cancelPreSos();
+  Future<PublicPreSosStatus?> getPreSosStatus();
+  Stream<PublicPreSosStatus?> watchPreSosStatus();
   Future<SosIncident> triggerSos(SosTriggerPayload payload);
   Future<SosIncident?> getCurrentSosIncident();
   Stream<SosState> get currentSosStateStream;

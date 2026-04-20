@@ -6558,6 +6558,194 @@ void main() {
     });
 
     test(
+        'startPreSos with connected device enters preConfirm without backend trigger and exposes arming',
+        () async {
+      final commands = <String>[];
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-pre-sos-1',
+          canonicalHardwareId: 'CF:82:10:10:10:10',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
+      );
+      await deviceSosController.attach(
+        commandWriter: (command) async {
+          commands.add(command.label);
+        },
+      );
+
+      await sdk.startPreSos();
+
+      final status = await sdk.getPreSosStatus();
+      expect(commands, <String>['SOS TRIGGER APP']);
+      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.preConfirm);
+      expect(await sdk.getSosState(), SosState.arming);
+      expect(sosRepository.triggerCallCount, 0);
+      expect(status, isNotNull);
+      expect(status!.mirroredOnDevice, isTrue);
+      expect(status.origin, DeviceSosTransitionSource.app);
+      expect(status.active, isTrue);
+    });
+
+    test('cancelPreSos during arming returns idle and does not touch backend',
+        () async {
+      final commands = <String>[];
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-pre-sos-2',
+          canonicalHardwareId: 'CF:82:10:10:10:11',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
+      );
+      await deviceSosController.attach(
+        commandWriter: (command) async {
+          commands.add(command.label);
+          if (command.label == 'SOS CANCEL') {
+            Future<void>.delayed(Duration.zero, () {
+              deviceSosController.handleIncomingSosEventPacket(
+                EixamSosEventPacket.tryParse(<int>[0xE1, 0x02, 0x34, 0x12])!,
+                source: DeviceSosTransitionSource.device,
+              );
+            });
+          }
+        },
+      );
+
+      await sdk.startPreSos();
+      await sdk.cancelPreSos();
+
+      expect(commands, <String>['SOS TRIGGER APP', 'SOS CANCEL']);
+      expect(await sdk.getSosState(), SosState.idle);
+      expect(await sdk.getPreSosStatus(), isNull);
+      expect(sosRepository.triggerCallCount, 0);
+      expect(sosRepository.cancelCallCount, 0);
+    });
+
+    test(
+        'app-originated PRE-SOS timeout confirms once and activates a single public SOS',
+        () async {
+      final localDeviceSosController = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 35),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      final localRealtimeClient = FakeRealtimeClient();
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        deviceRepository.emitStatus(
+          buildDeviceStatus(
+            deviceId: 'ble-pre-sos-3',
+            canonicalHardwareId: 'CF:82:10:10:10:12',
+            paired: true,
+            connected: true,
+            activated: true,
+          ),
+        );
+        await localDeviceSosController.attach(
+          commandWriter: (command) async {},
+        );
+
+        await localSdk.startPreSos(
+          countdown: const Duration(milliseconds: 35),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+
+        expect(sosRepository.triggerCallCount, 1);
+        expect((await localSdk.getDeviceSosStatus()).state, DeviceSosState.active);
+        expect(await localSdk.getSosState(), SosState.sent);
+        expect((await localSdk.getCurrentSosIncident())?.deliveryChannel,
+            SosDeliveryChannel.backendAndDevice);
+      } finally {
+        await localSdk.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test('device-originated PRE-SOS is exposed publicly as arming', () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+      );
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+      );
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginPacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      final preSosStatus = await sdk.getPreSosStatus();
+      expect(await sdk.getSosState(), SosState.arming);
+      expect(preSosStatus, isNotNull);
+      expect(preSosStatus!.mirroredOnDevice, isTrue);
+      expect(preSosStatus.origin, DeviceSosTransitionSource.device);
+      expect(preSosStatus.remainingSeconds, greaterThan(0));
+    });
+
+    test('confirming device-originated PRE-SOS creates backend exactly once',
+        () async {
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-pre-sos-4',
+          canonicalHardwareId: 'CF:82:10:10:10:13',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
+      );
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+      );
+      await deviceSosController.attach(
+        commandWriter: (command) async {},
+      );
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginPacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      final incident = await sdk.confirmPreSos(
+        const SosTriggerPayload(message: 'Need help'),
+      );
+
+      expect(sosRepository.triggerCallCount, 1);
+      expect(incident.deliveryChannel, SosDeliveryChannel.backendAndDevice);
+      expect(await sdk.getPreSosStatus(), isNull);
+    });
+
+    test('getSosState returns arming while a local PRE-SOS session exists',
+        () async {
+      await sdk.startPreSos(
+        countdown: const Duration(seconds: 5),
+      );
+
+      expect(await sdk.getSosState(), SosState.arming);
+      expect(await sdk.getPreSosStatus(), isNotNull);
+      expect(sosRepository.triggerCallCount, 0);
+    });
+
+    test(
         'confirmDeviceSos creates backend incident for a device-originated SOS cycle when none exists yet',
         () async {
       deviceRepository.emitStatus(
