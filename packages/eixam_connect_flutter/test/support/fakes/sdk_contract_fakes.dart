@@ -18,6 +18,7 @@ class FakeSosRepository implements SosRepository {
   int triggerCallCount = 0;
   int cancelCallCount = 0;
   int resolveCallCount = 0;
+  final List<String> terminalOperations = <String>[];
   String? lastMessage;
   String? lastTriggerSource;
   TrackingPosition? lastPositionSnapshot;
@@ -54,6 +55,7 @@ class FakeSosRepository implements SosRepository {
   @override
   Future<SosIncident> cancelSos() async {
     cancelCallCount++;
+    terminalOperations.add('cancel:${currentIncident.id}');
     currentIncident = currentIncident.copyWith(state: SosState.cancelled);
     stateController.add(currentIncident.state);
     return currentIncident;
@@ -62,6 +64,7 @@ class FakeSosRepository implements SosRepository {
   @override
   Future<SosIncident> resolveSos() async {
     resolveCallCount++;
+    terminalOperations.add('resolve:${currentIncident.id}');
     currentIncident = currentIncident.copyWith(state: SosState.resolved);
     stateController.add(currentIncident.state);
     return currentIncident;

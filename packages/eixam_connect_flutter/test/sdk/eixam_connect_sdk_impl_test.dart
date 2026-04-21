@@ -2579,7 +2579,9 @@ void main() {
       await sdk.resolveSos();
 
       expect(sosRepository.resolveCallCount, 1);
+      expect(sosRepository.cancelCallCount, 0);
       expect(sosRepository.currentIncident.state, SosState.resolved);
+      expect(sosRepository.terminalOperations, <String>['resolve:sos-1']);
     });
 
     test('resolveSos with a connected device propagates terminal device state',
@@ -2605,6 +2607,87 @@ void main() {
       await sdk.resolveSos();
 
       expect(sosRepository.resolveCallCount, 1);
+      expect(sosRepository.cancelCallCount, 0);
+      expect(sosRepository.terminalOperations, <String>['resolve:sos-1']);
+      expect(commands, contains('SOS CANCEL'));
+      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.resolved);
+    });
+
+    test(
+        'resolveSos keeps resolved backend semantics for a device-originated active SOS cycle',
+        () async {
+      final commands = <String>[];
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-device-origin-resolve-1',
+          canonicalHardwareId: 'CF:82:11:22:33:58',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
+      );
+      await _attachObservedAppActivationWriter(
+        deviceSosController,
+        commandLabels: commands,
+        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12],
+      );
+      sosRepository.currentIncident = sosRepository.currentIncident.copyWith(
+        state: SosState.sent,
+        triggerSource: 'ble_device_runtime_status',
+      );
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginPacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      await sdk.resolveSos();
+
+      expect(sosRepository.resolveCallCount, 1);
+      expect(sosRepository.cancelCallCount, 0);
+      expect(sosRepository.currentIncident.state, SosState.resolved);
+      expect(sosRepository.terminalOperations, <String>['resolve:sos-1']);
+      expect(commands, contains('SOS CANCEL'));
+      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.resolved);
+    });
+
+    test(
+        'cancelSos keeps cancelled backend semantics for a device-originated active SOS cycle',
+        () async {
+      final commands = <String>[];
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-device-origin-cancel-1',
+          canonicalHardwareId: 'CF:82:11:22:33:59',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
+      );
+      await _attachObservedAppActivationWriter(
+        deviceSosController,
+        commandLabels: commands,
+        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12],
+      );
+      sosRepository.currentIncident = sosRepository.currentIncident.copyWith(
+        state: SosState.sent,
+        triggerSource: 'ble_device_runtime_status',
+      );
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginPacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final incident = await sdk.cancelSos();
+
+      expect(incident.state, SosState.cancelled);
+      expect(sosRepository.cancelCallCount, 1);
+      expect(sosRepository.resolveCallCount, 0);
+      expect(sosRepository.currentIncident.state, SosState.cancelled);
+      expect(sosRepository.terminalOperations, <String>['cancel:sos-1']);
       expect(commands, contains('SOS CANCEL'));
       expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.resolved);
     });

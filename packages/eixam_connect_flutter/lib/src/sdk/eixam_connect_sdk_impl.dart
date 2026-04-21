@@ -125,6 +125,9 @@ class EixamConnectSdkImpl
   DeviceTelRelayRx? _lastTelRelayRx;
   final Map<String, _ObservedRelaySosContext> _observedRelaySosBySignature =
       <String, _ObservedRelaySosContext>{};
+  final Map<String, _SosClosureIntent>
+      _deviceOriginatedClosureIntentByIncidentId =
+      <String, _SosClosureIntent>{};
   bool _publicSosActionInFlight = false;
   Future<SosIncident>? _pendingPreSosConfirmation;
   final Set<String> _deviceOriginatedBackendSyncInFlight = <String>{};
@@ -726,6 +729,13 @@ class EixamConnectSdkImpl
 
   @override
   Future<DeviceSosStatus> cancelDeviceSos() async {
+    return _closeDeviceSos(intent: _SosClosureIntent.cancel);
+  }
+
+  Future<DeviceSosStatus> _closeDeviceSos({
+    required _SosClosureIntent intent,
+    bool syncBackendForDeviceOriginatedCycle = true,
+  }) async {
     final currentStatus = await deviceSosController.getStatus();
     late final DeviceSosStatus status;
     try {
@@ -752,7 +762,12 @@ class EixamConnectSdkImpl
         countdownRemainingSeconds: null,
       );
     }
-    await _cancelBackendSosForDeviceOriginatedCycle(status);
+    if (syncBackendForDeviceOriginatedCycle) {
+      await _applyBackendClosureForDeviceOriginatedCycle(
+        status,
+        fallbackIntent: intent,
+      );
+    }
     return status;
   }
 
@@ -1334,8 +1349,10 @@ class EixamConnectSdkImpl
       );
       switch (actionId) {
         case _cancelSosActionId:
+          await _closeDeviceSos(intent: _SosClosureIntent.cancel);
+          return;
         case _resolveSosActionId:
-          await cancelDeviceSos();
+          await _closeDeviceSos(intent: _SosClosureIntent.resolve);
           return;
         case _confirmSosActionId:
           await confirmDeviceSos();
@@ -1767,12 +1784,20 @@ class EixamConnectSdkImpl
   Future<SosIncident> cancelSos() async {
     _publicSosActionInFlight = true;
     try {
+      final activeIncident = await sosRepository.getCurrentIncident();
+      _rememberDeviceOriginatedClosureIntent(
+        incident: activeIncident,
+        intent: _SosClosureIntent.cancel,
+      );
       final fallbackDeliveryChannel =
           _publicSosFallbackIncident?.deliveryChannel;
       final deviceSync = await _attemptPublicSosDeviceAction(
         action: 'cancel',
         shouldRun: _canCloseDeviceSosForPublicSos,
-        operation: cancelDeviceSos,
+        operation: () => _closeDeviceSos(
+          intent: _SosClosureIntent.cancel,
+          syncBackendForDeviceOriginatedCycle: false,
+        ),
         refreshRuntimeStatus: true,
       );
 
@@ -1817,6 +1842,9 @@ class EixamConnectSdkImpl
         deliveryChannel: deliveryChannel,
         fallbackState: backendIncident == null ? SosState.cancelled : null,
       );
+      _clearRememberedDeviceOriginatedClosureIntent(
+        backendIncident?.id ?? activeIncident?.id,
+      );
       _clearPendingAppTriggeredSosBridge(reason: 'public_cancel_completed');
       _publishCancelledSosEventIfNeeded(incident);
       return incident;
@@ -1829,10 +1857,18 @@ class EixamConnectSdkImpl
   Future<void> resolveSos() async {
     _publicSosActionInFlight = true;
     try {
+      final activeIncident = await sosRepository.getCurrentIncident();
+      _rememberDeviceOriginatedClosureIntent(
+        incident: activeIncident,
+        intent: _SosClosureIntent.resolve,
+      );
       final deviceSync = await _attemptPublicSosDeviceAction(
         action: 'resolve',
         shouldRun: _canCloseDeviceSosForPublicSos,
-        operation: cancelDeviceSos,
+        operation: () => _closeDeviceSos(
+          intent: _SosClosureIntent.resolve,
+          syncBackendForDeviceOriginatedCycle: false,
+        ),
         refreshRuntimeStatus: true,
       );
 
@@ -1871,6 +1907,9 @@ class EixamConnectSdkImpl
         incident: incident,
         deliveryChannel: deliveryChannel,
         fallbackState: backendIncident == null ? SosState.resolved : null,
+      );
+      _clearRememberedDeviceOriginatedClosureIntent(
+        backendIncident?.id ?? activeIncident?.id,
       );
       _clearPendingAppTriggeredSosBridge(reason: 'public_resolve_completed');
     } finally {
@@ -2560,9 +2599,10 @@ class EixamConnectSdkImpl
     }
   }
 
-  Future<void> _cancelBackendSosForDeviceOriginatedCycle(
-    DeviceSosStatus status,
-  ) async {
+  Future<void> _applyBackendClosureForDeviceOriginatedCycle(
+    DeviceSosStatus status, {
+    _SosClosureIntent? fallbackIntent,
+  }) async {
     if (status.triggerOrigin != DeviceSosTransitionSource.device ||
         !_isDeviceSosCycleClosed(status.state)) {
       return;
@@ -2570,17 +2610,58 @@ class EixamConnectSdkImpl
 
     final incident = await sosRepository.getCurrentIncident();
     if (!_hasBackendVisibleSosIncident(incident)) {
+      if (incident != null) {
+        _clearRememberedDeviceOriginatedClosureIntent(incident.id);
+      }
       BleDebugRegistry.instance.recordEvent(
-        'Device SOS backend cancel skipped -> reason=no_active_backend_incident',
+        'Device SOS backend closure skipped -> reason=no_active_backend_incident',
       );
       return;
     }
 
-    final cancelledIncident = await sosRepository.cancelSos();
-    _publishCancelledSosEventIfNeeded(cancelledIncident);
+    final rememberedIntent =
+        _deviceOriginatedClosureIntentByIncidentId[incident!.id];
+    if (_publicSosActionInFlight && rememberedIntent != null) {
+      BleDebugRegistry.instance.recordEvent(
+        'Device SOS backend closure deferred -> incidentId=${incident.id} intent=${rememberedIntent.name} reason=public_sos_action_in_flight',
+      );
+      return;
+    }
+
+    final intent =
+        rememberedIntent ?? fallbackIntent ?? _SosClosureIntent.cancel;
+    late final SosIncident terminalIncident;
+    switch (intent) {
+      case _SosClosureIntent.cancel:
+        terminalIncident = await sosRepository.cancelSos();
+        _publishCancelledSosEventIfNeeded(terminalIncident);
+        break;
+      case _SosClosureIntent.resolve:
+        terminalIncident = await sosRepository.resolveSos();
+        break;
+    }
+    _clearRememberedDeviceOriginatedClosureIntent(incident.id);
     BleDebugRegistry.instance.recordEvent(
-      'Device SOS backend cancel applied -> incidentId=${cancelledIncident.id}',
+      'Device SOS backend ${intent.name} applied -> '
+      'incidentId=${terminalIncident.id}',
     );
+  }
+
+  void _rememberDeviceOriginatedClosureIntent({
+    required SosIncident? incident,
+    required _SosClosureIntent intent,
+  }) {
+    if (!_hasBackendVisibleSosIncident(incident) || incident == null) {
+      return;
+    }
+    _deviceOriginatedClosureIntentByIncidentId[incident.id] = intent;
+  }
+
+  void _clearRememberedDeviceOriginatedClosureIntent(String? incidentId) {
+    if (incidentId == null) {
+      return;
+    }
+    _deviceOriginatedClosureIntentByIncidentId.remove(incidentId);
   }
 
   bool _isBackendSyncRelevantDeviceSosState(DeviceSosState state) {
@@ -2632,7 +2713,7 @@ class EixamConnectSdkImpl
     }
 
     if (_isDeviceSosCycleClosed(status.state)) {
-      await _cancelBackendSosForDeviceOriginatedCycle(status);
+      await _applyBackendClosureForDeviceOriginatedCycle(status);
     }
   }
 
@@ -3624,6 +3705,8 @@ class _CurrentSosCapabilitySnapshot {
   final bool deviceSosAvailable;
   final SosDeliveryChannel? capability;
 }
+
+enum _SosClosureIntent { cancel, resolve }
 
 class _ObservedRelaySosContext {
   const _ObservedRelaySosContext({
