@@ -110,6 +110,88 @@ void main() {
       expect(status.telIntervalSeconds, 60);
     });
 
+    test('public SDK replays the current backlog sync state', () async {
+      final state = await sdk.watchBacklogSyncState().first;
+
+      expect(state.phase, BacklogSyncPhase.idle);
+      expect(state.isActive, isFalse);
+      expect(state.isTerminal, isFalse);
+      expect(state.completionFraction, isNull);
+    });
+
+    test('public SDK exposes backlog sync state and completion progress',
+        () async {
+      await _connectDemoDevice(sdk);
+      bleClient.backlogSyncStartNotifications = <List<int>>[
+        <int>[
+          0xD1,
+          0x01,
+          0x07,
+          0x01,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x01,
+          0x00,
+          0x00,
+          0x00
+        ],
+        <int>[
+          0xD1,
+          0x02,
+          0x07,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x01,
+          0xA0,
+          0xBB,
+          0xF0,
+          0x65,
+          0xA8,
+          0x1A,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x01,
+          0x21,
+        ],
+      ];
+      bleClient.backlogSyncAckNotifications[1] = <List<int>>[
+        <int>[0xD1, 0x03, 0x07, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00],
+      ];
+
+      final started = await sdk.startBacklogSync(maxEvents: 1);
+      var completed = await sdk.getBacklogSyncState();
+      for (var i = 0;
+          i < 20 &&
+              completed.confirmedEvents < 1 &&
+              completed.phase != BacklogSyncPhase.completed;
+          i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        completed = await sdk.getBacklogSyncState();
+      }
+
+      expect(started.phase, BacklogSyncPhase.starting);
+      expect(completed.confirmedEvents, 1);
+      expect(
+        completed.phase,
+        isIn(<BacklogSyncPhase>[
+          BacklogSyncPhase.syncing,
+          BacklogSyncPhase.completed,
+        ]),
+      );
+      expect(telemetryRepository.publishedPayloads, hasLength(1));
+      expect(bleClient.writtenCommands.map((command) => command.opcode),
+          containsAll(<int>[0x30, 0x31]));
+    });
+
     test('public SDK reboot sends the expected BLE command', () async {
       await _connectDemoDevice(sdk);
 
@@ -251,6 +333,7 @@ void main() {
       expect(diagnostics.lastTelRelayRx, isNotNull);
       expect(diagnostics.lastTelRelayRx!.rxSnr, -10);
       expect(diagnostics.lastTelRelayRx!.rxRssi, -60);
+      expect(diagnostics.lastTelRelayRx!.remoteDeviceId, isNull);
     });
   });
 }

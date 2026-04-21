@@ -4,6 +4,7 @@ import '../config/eixam_session.dart';
 import '../entities/death_man_plan.dart';
 import '../entities/ble_notification_navigation_request.dart';
 import '../entities/backend_registered_device.dart';
+import '../entities/backlog_sync_state.dart';
 import '../entities/device_sos_status.dart';
 import '../entities/device_status.dart';
 import '../entities/device_runtime_status.dart';
@@ -167,6 +168,27 @@ abstract class EixamConnectSdk {
   Future<void> enableGuidedRescueBuzzer();
   Future<void> disableGuidedRescueBuzzer();
   Future<void> requestGuidedRescueStatus();
+
+  /// Returns the last known BLE backlog sync state owned by the SDK.
+  Future<BacklogSyncState> getBacklogSyncState();
+
+  /// Emits backlog sync state changes.
+  ///
+  /// Host apps should treat this as coarse progress visibility only; the
+  /// protocol/session state machine remains inside the SDK.
+  Stream<BacklogSyncState> watchBacklogSyncState();
+
+  /// Starts a BLE backlog sync session using the currently connected device.
+  ///
+  /// `since` is optional. When omitted, the SDK requests backlog data from the
+  /// device default starting point.
+  Future<BacklogSyncState> startBacklogSync({
+    DateTime? since,
+    int maxEvents = 100,
+  });
+
+  /// Cancels the active BLE backlog sync session if one exists.
+  Future<void> cancelBacklogSync();
 
   Future<void> startTracking();
   Future<void> stopTracking();

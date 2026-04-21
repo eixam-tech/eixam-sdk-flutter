@@ -11,6 +11,8 @@ import '../device/device_sos_controller.dart';
 import '../device/eixam_ble_protocol.dart';
 import '../device/eixam_sos_packet.dart';
 import '../device/eixam_tel_packet.dart';
+import '../device/eixam_tel_relay_cluster_packet.dart';
+import 'relay_ingest_context.dart';
 
 class BleOperationalRuntimeBridge {
   BleOperationalRuntimeBridge({
@@ -137,6 +139,7 @@ class BleOperationalRuntimeBridge {
     required String message,
     required TrackingPosition positionSnapshot,
     String? deviceId,
+    RelayIngestContext? relayContext,
     String? summary,
   }) async {
     if (!_registerSignature(_recentSosSignatures, signature)) {
@@ -166,7 +169,7 @@ class BleOperationalRuntimeBridge {
       positionSnapshot: positionSnapshot,
       deviceId: deviceId,
       allowPendingFallback: true,
-      relayCount: null,
+      relayContext: relayContext,
     );
   }
 
@@ -191,6 +194,9 @@ class BleOperationalRuntimeBridge {
         await _publishAggregateTelemetryIfMappable(event);
         return;
       case BleIncomingEventType.telRelayRx:
+        await _publishRelayTelemetryIfValid(event);
+        return;
+      case BleIncomingEventType.backlogSyncFrame:
         return;
       case BleIncomingEventType.sosMeshPacket:
         _observeSosIfValid(event);
@@ -216,6 +222,40 @@ class BleOperationalRuntimeBridge {
     );
   }
 
+  Future<void> _publishRelayTelemetryIfValid(BleIncomingEvent event) async {
+    final relayPacket = event.telRelayRxPacket;
+    final remoteDeviceId = relayPacket?.relay.remoteDeviceId?.trim();
+    if (relayPacket == null ||
+        remoteDeviceId == null ||
+        remoteDeviceId.isEmpty) {
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          lastDecision: 'Relay telemetry skipped: remote deviceId missing',
+        ),
+      );
+      return;
+    }
+
+    final relayContext = RelayIngestContext(
+      kind: RelayIngestKind.telemetry,
+      remoteDeviceId: remoteDeviceId,
+      gatewayRuntimeDeviceId: event.deviceId,
+      gatewayCanonicalHardwareId: event.canonicalHardwareId,
+      payloadSignature: relayPacket.peerPacket.rawHex,
+    );
+
+    await _publishTelemetryPacket(
+      event: event,
+      packet: relayPacket.peerPacket,
+      signature:
+          'relay-tel:${event.deviceId}:$remoteDeviceId:${relayPacket.peerPacket.rawHex}',
+      summary:
+          'gateway=${event.deviceId} remote=$remoteDeviceId lat=${relayPacket.peerPacket.position.latitude} lng=${relayPacket.peerPacket.position.longitude} raw=${relayPacket.peerPacket.rawHex}',
+      relayContext: relayContext,
+      overrideDeviceId: remoteDeviceId,
+    );
+  }
+
   Future<void> _publishAggregateTelemetryIfMappable(
       BleIncomingEvent event) async {
     final aggregatePayload = event.aggregatePayload;
@@ -238,6 +278,30 @@ class BleOperationalRuntimeBridge {
             'device=${event.deviceId} aggregateLen=${aggregatePayload.length} raw=$aggregateHex',
       ),
     );
+
+    final relayCluster = EixamTelRelayClusterPacket.tryParse(aggregatePayload);
+    if (relayCluster != null) {
+      for (final member in relayCluster.members) {
+        final relayContext = RelayIngestContext(
+          kind: RelayIngestKind.telemetry,
+          remoteDeviceId: member.remoteDeviceId,
+          gatewayRuntimeDeviceId: event.deviceId,
+          gatewayCanonicalHardwareId: event.canonicalHardwareId,
+          payloadSignature: member.packet.rawHex,
+        );
+        await _publishTelemetryPacket(
+          event: event,
+          packet: member.packet,
+          signature:
+              'relay-cluster:${event.deviceId}:${member.remoteDeviceId}:${member.packet.rawHex}',
+          summary:
+              'gateway=${event.deviceId} remote=${member.remoteDeviceId} aggregateLen=${aggregatePayload.length} lat=${member.packet.position.latitude} lng=${member.packet.position.longitude} raw=${member.packet.rawHex}',
+          relayContext: relayContext,
+          overrideDeviceId: member.remoteDeviceId,
+        );
+      }
+      return;
+    }
 
     if (aggregatePayload.length != EixamBleProtocol.telPacketLength) {
       _emitDiagnostics(
@@ -279,6 +343,8 @@ class BleOperationalRuntimeBridge {
     required EixamTelPacket packet,
     required String signature,
     required String summary,
+    RelayIngestContext? relayContext,
+    String? overrideDeviceId,
   }) async {
     _emitDiagnostics(
       _diagnostics.copyWith(
@@ -289,6 +355,7 @@ class BleOperationalRuntimeBridge {
     final payload = await _buildBackendSafeBleTelemetryPayload(
       event: event,
       packet: packet,
+      overrideDeviceId: overrideDeviceId,
     );
     if (!_hasMinimumTelemetry(payload)) {
       _emitDiagnostics(
@@ -317,6 +384,7 @@ class BleOperationalRuntimeBridge {
       _pendingTelemetry = _PendingTelemetryPublish(
         signature: signature,
         payload: payload,
+        relayContext: relayContext,
       );
       _emitDiagnostics(
         _diagnostics.copyWith(
@@ -337,12 +405,14 @@ class BleOperationalRuntimeBridge {
       payload: payload,
       signature: signature,
       allowPendingFallback: true,
+      relayContext: relayContext,
     );
   }
 
   Future<SdkTelemetryPayload> _buildBackendSafeBleTelemetryPayload({
     required BleIncomingEvent event,
     required EixamTelPacket packet,
+    String? overrideDeviceId,
   }) async {
     // BLE-originated telemetry is intentionally limited to the backend-safe
     // minimum contract for now. The shared SDK payload still exposes richer
@@ -354,7 +424,7 @@ class BleOperationalRuntimeBridge {
       latitude: packet.position.latitude,
       longitude: packet.position.longitude,
       altitude: packet.position.altitudeMeters.toDouble(),
-      deviceId: await _resolveBackendHardwareId(event),
+      deviceId: overrideDeviceId ?? await _resolveBackendHardwareId(event),
     );
   }
 
@@ -362,10 +432,15 @@ class BleOperationalRuntimeBridge {
     final packet = event.sosPacket;
     if (packet != null) {
       final role = _incomingSosRoleFrom(packet);
+      final remoteDeviceId = packet.remoteDeviceId?.trim();
       _emitDiagnostics(
         _diagnostics.copyWith(
           lastBleSosEventSummary:
               'device=${event.deviceId} role=${role.label} nodeId=${_formatNodeId(packet.nodeId)} relayCount=${packet.relayCount} raw=${packet.rawHex}',
+          lastRelayRemoteDeviceId:
+              remoteDeviceId == null || remoteDeviceId.isEmpty
+                  ? _diagnostics.lastRelayRemoteDeviceId
+                  : remoteDeviceId,
         ),
       );
     }
@@ -597,7 +672,7 @@ class BleOperationalRuntimeBridge {
           positionSnapshot: pendingSos.positionSnapshot,
           deviceId: pendingSos.deviceId,
           allowPendingFallback: false,
-          relayCount: null,
+          relayContext: pendingSos.relayContext,
         );
         if (published) {
           _pendingSos = null;
@@ -611,6 +686,7 @@ class BleOperationalRuntimeBridge {
           payload: pendingTelemetry.payload,
           signature: pendingTelemetry.signature,
           allowPendingFallback: false,
+          relayContext: pendingTelemetry.relayContext,
         );
         if (published) {
           _pendingTelemetry = null;
@@ -626,12 +702,21 @@ class BleOperationalRuntimeBridge {
     required SdkTelemetryPayload payload,
     required String signature,
     required bool allowPendingFallback,
+    RelayIngestContext? relayContext,
   }) async {
+    _recordRelayAttempt(
+      relayContext: relayContext,
+      summary:
+          'remote=${relayContext?.remoteDeviceId ?? "-"} signature=$signature',
+    );
     try {
       await telemetryRepository.publishTelemetry(payload);
       _emitDiagnostics(
         _diagnostics.copyWith(
           pendingTelemetry: null,
+          lastRelayTelemetryPublishResult: relayContext == null
+              ? _diagnostics.lastRelayTelemetryPublishResult
+              : 'published remote=${relayContext.remoteDeviceId}',
           lastDecision: 'Telemetry published',
         ),
       );
@@ -640,10 +725,22 @@ class BleOperationalRuntimeBridge {
       );
       return true;
     } on EixamSdkException catch (error) {
+      if (relayContext != null && _isRelayTerminalError(error)) {
+        _recordRelayTerminalError(relayContext: relayContext, error: error);
+        _emitDiagnostics(
+          _diagnostics.copyWith(
+            lastRelayTelemetryPublishResult:
+                'terminal_failure remote=${relayContext.remoteDeviceId}',
+            lastDecision: 'Relay telemetry rejected: ${error.code}',
+          ),
+        );
+        return false;
+      }
       if (allowPendingFallback && _isOperationalAvailabilityError(error)) {
         _pendingTelemetry = _PendingTelemetryPublish(
           signature: signature,
           payload: payload,
+          relayContext: relayContext,
         );
         _emitDiagnostics(
           _diagnostics.copyWith(
@@ -661,6 +758,9 @@ class BleOperationalRuntimeBridge {
       }
       _emitDiagnostics(
         _diagnostics.copyWith(
+          lastRelayTelemetryPublishResult: relayContext == null
+              ? _diagnostics.lastRelayTelemetryPublishResult
+              : 'rejected remote=${relayContext.remoteDeviceId} code=${error.code}',
           lastDecision: 'Telemetry rejected: ${error.code}',
         ),
       );
@@ -671,6 +771,9 @@ class BleOperationalRuntimeBridge {
     } catch (error) {
       _emitDiagnostics(
         _diagnostics.copyWith(
+          lastRelayTelemetryPublishResult: relayContext == null
+              ? _diagnostics.lastRelayTelemetryPublishResult
+              : 'failed remote=${relayContext.remoteDeviceId} error=$error',
           lastDecision: 'Telemetry publish failed: $error',
         ),
       );
@@ -688,8 +791,13 @@ class BleOperationalRuntimeBridge {
     required TrackingPosition positionSnapshot,
     required String? deviceId,
     required bool allowPendingFallback,
-    required int? relayCount,
+    RelayIngestContext? relayContext,
   }) async {
+    _recordRelayAttempt(
+      relayContext: relayContext,
+      summary:
+          'remote=${relayContext?.remoteDeviceId ?? "-"} signature=$signature',
+    );
     try {
       await sosRepository.triggerSos(
         message: message,
@@ -700,11 +808,14 @@ class BleOperationalRuntimeBridge {
       _emitDiagnostics(
         _diagnostics.copyWith(
           pendingSos: null,
+          lastRelaySosPublishResult: relayContext == null
+              ? _diagnostics.lastRelaySosPublishResult
+              : 'published remote=${relayContext.remoteDeviceId}',
           lastDecision: 'SOS published',
         ),
       );
       BleDebugRegistry.instance.recordEvent(
-        'BLE operational bridge published SOS -> signature=$signature relayCount=${relayCount?.toString() ?? "-"}',
+        'BLE operational bridge published SOS -> signature=$signature relayCount=${relayContext?.relayCount?.toString() ?? "-"}',
       );
       return true;
     } on SosException catch (error) {
@@ -719,6 +830,17 @@ class BleOperationalRuntimeBridge {
         );
         return false;
       }
+      if (relayContext != null && _isRelayTerminalError(error)) {
+        _recordRelayTerminalError(relayContext: relayContext, error: error);
+        _emitDiagnostics(
+          _diagnostics.copyWith(
+            lastRelaySosPublishResult:
+                'terminal_failure remote=${relayContext.remoteDeviceId}',
+            lastDecision: 'Relay SOS rejected: ${error.code}',
+          ),
+        );
+        return false;
+      }
       if (allowPendingFallback && _isOperationalAvailabilityError(error)) {
         _pendingSos = _PendingSosPublish(
           signature: signature,
@@ -726,6 +848,7 @@ class BleOperationalRuntimeBridge {
           message: message,
           positionSnapshot: positionSnapshot,
           deviceId: deviceId,
+          relayContext: relayContext,
         );
         _emitDiagnostics(
           _diagnostics.copyWith(
@@ -744,6 +867,9 @@ class BleOperationalRuntimeBridge {
       }
       _emitDiagnostics(
         _diagnostics.copyWith(
+          lastRelaySosPublishResult: relayContext == null
+              ? _diagnostics.lastRelaySosPublishResult
+              : 'rejected remote=${relayContext.remoteDeviceId} code=${error.code}',
           lastDecision: 'SOS rejected: ${error.code}',
         ),
       );
@@ -754,6 +880,9 @@ class BleOperationalRuntimeBridge {
     } catch (error) {
       _emitDiagnostics(
         _diagnostics.copyWith(
+          lastRelaySosPublishResult: relayContext == null
+              ? _diagnostics.lastRelaySosPublishResult
+              : 'failed remote=${relayContext.remoteDeviceId} error=$error',
           lastDecision: 'SOS publish failed: $error',
         ),
       );
@@ -770,6 +899,51 @@ class BleOperationalRuntimeBridge {
         error.code == 'E_MQTT_NOT_CONNECTED' ||
         error.code == 'E_SDK_SESSION_REQUIRED' ||
         error.code == 'E_SOS_TRIGGER_FAILED';
+  }
+
+  bool _isRelayTerminalError(EixamSdkException error) {
+    final code = error.code.toUpperCase();
+    final message = error.message.toUpperCase();
+    return code.contains('422') ||
+        message.contains('422') ||
+        code.contains('UNPROCESSABLE') ||
+        message.contains('UNPROCESSABLE');
+  }
+
+  void _recordRelayAttempt({
+    required RelayIngestContext? relayContext,
+    required String summary,
+  }) {
+    if (relayContext == null) {
+      return;
+    }
+    _emitDiagnostics(
+      _diagnostics.copyWith(
+        lastRelayRemoteDeviceId: relayContext.remoteDeviceId,
+        lastRelayTelemetryPublishAttempt:
+            relayContext.kind == RelayIngestKind.telemetry
+                ? summary
+                : _diagnostics.lastRelayTelemetryPublishAttempt,
+        lastRelaySosPublishAttempt: relayContext.kind == RelayIngestKind.sos
+            ? summary
+            : _diagnostics.lastRelaySosPublishAttempt,
+        lastRelayTerminalErrorCode: null,
+        lastRelayTerminalErrorMessage: null,
+      ),
+    );
+  }
+
+  void _recordRelayTerminalError({
+    required RelayIngestContext relayContext,
+    required EixamSdkException error,
+  }) {
+    _emitDiagnostics(
+      _diagnostics.copyWith(
+        lastRelayRemoteDeviceId: relayContext.remoteDeviceId,
+        lastRelayTerminalErrorCode: error.code,
+        lastRelayTerminalErrorMessage: error.message,
+      ),
+    );
   }
 
   void _emitDiagnostics(SdkBridgeDiagnostics diagnostics) {
@@ -837,10 +1011,12 @@ class _PendingTelemetryPublish {
   const _PendingTelemetryPublish({
     required this.signature,
     required this.payload,
+    this.relayContext,
   });
 
   final String signature;
   final SdkTelemetryPayload payload;
+  final RelayIngestContext? relayContext;
 }
 
 class _PendingSosPublish {
@@ -850,6 +1026,7 @@ class _PendingSosPublish {
     required this.message,
     required this.positionSnapshot,
     required this.deviceId,
+    this.relayContext,
   });
 
   final String signature;
@@ -857,6 +1034,7 @@ class _PendingSosPublish {
   final String message;
   final TrackingPosition positionSnapshot;
   final String? deviceId;
+  final RelayIngestContext? relayContext;
 }
 
 class _BleBackendConfirmation {

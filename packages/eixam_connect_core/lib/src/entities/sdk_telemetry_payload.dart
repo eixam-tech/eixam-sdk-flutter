@@ -4,6 +4,7 @@ class SdkTelemetryPayload {
     required this.latitude,
     required this.longitude,
     required this.altitude,
+    this.eventId,
     this.userId,
     this.deviceId,
     this.deviceBattery,
@@ -16,6 +17,7 @@ class SdkTelemetryPayload {
   final double latitude;
   final double longitude;
   final double altitude;
+  final String? eventId;
   final String? userId;
   final String? deviceId;
   final double? deviceBattery;
@@ -29,6 +31,7 @@ class SdkTelemetryPayload {
       'latitude': latitude,
       'longitude': longitude,
       'altitude': altitude,
+      if (_hasText(eventId)) 'eventId': eventId!.trim(),
       if (_hasText(userId)) 'userId': userId!.trim(),
       if (_hasText(deviceId)) 'deviceId': deviceId!.trim(),
       if (deviceBattery != null) 'deviceBattery': deviceBattery,
@@ -43,6 +46,7 @@ class SdkTelemetryPayload {
     double? latitude,
     double? longitude,
     double? altitude,
+    Object? eventId = _unset,
     Object? userId = _unset,
     Object? deviceId = _unset,
     Object? deviceBattery = _unset,
@@ -55,6 +59,7 @@ class SdkTelemetryPayload {
       latitude: latitude ?? this.latitude,
       longitude: longitude ?? this.longitude,
       altitude: altitude ?? this.altitude,
+      eventId: identical(eventId, _unset) ? this.eventId : eventId as String?,
       userId: identical(userId, _unset) ? this.userId : userId as String?,
       deviceId:
           identical(deviceId, _unset) ? this.deviceId : deviceId as String?,

@@ -1,6 +1,7 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import 'eixam_ble_protocol.dart';
+import 'eixam_backlog_sync_frame.dart';
 import 'eixam_device_runtime_status_packet.dart';
 import 'eixam_guided_rescue_status_packet.dart';
 import 'eixam_sos_event_packet.dart';
@@ -15,6 +16,7 @@ enum BleIncomingEventType {
   telAggregateFragment,
   telAggregateComplete,
   telRelayRx,
+  backlogSyncFrame,
   guidedRescueStatus,
   sosMeshPacket,
   sosDeviceEvent,
@@ -38,6 +40,7 @@ class BleIncomingEvent {
     this.guidedRescueStatusPacket,
     this.deviceRuntimeStatusPacket,
     this.telRelayRxPacket,
+    this.backlogSyncFrame,
     this.sosPacket,
     this.sosEventPacket,
   });
@@ -57,6 +60,7 @@ class BleIncomingEvent {
   final EixamGuidedRescueStatusPacket? guidedRescueStatusPacket;
   final EixamDeviceRuntimeStatusPacket? deviceRuntimeStatusPacket;
   final EixamTelRelayRxPacket? telRelayRxPacket;
+  final EixamBacklogSyncFrame? backlogSyncFrame;
   final EixamSosPacket? sosPacket;
   final EixamSosEventPacket? sosEventPacket;
 

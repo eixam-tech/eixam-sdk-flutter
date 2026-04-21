@@ -9,4 +9,13 @@ class InMemoryTelemetryRepository implements TelemetryRepository {
   Future<void> publishTelemetry(SdkTelemetryPayload payload) async {
     publishedPayloads.add(payload);
   }
+
+  @override
+  Future<void> publishTelemetryBatch(
+    Iterable<SdkTelemetryPayload> payloads,
+  ) async {
+    for (final payload in payloads) {
+      await publishTelemetry(payload);
+    }
+  }
 }

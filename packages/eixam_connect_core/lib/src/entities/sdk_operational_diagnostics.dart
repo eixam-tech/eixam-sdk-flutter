@@ -1,9 +1,10 @@
 import '../config/eixam_session.dart';
-import 'device_tel_relay_rx.dart';
 import '../enums/realtime_connection_state.dart';
 import '../enums/sos_delivery_channel.dart';
+import 'device_tel_relay_rx.dart';
 import 'sdk_bridge_diagnostics.dart';
 
+/// Partner-facing runtime snapshot for capability, relay, and bridge status.
 class SdkOperationalDiagnostics {
   const SdkOperationalDiagnostics({
     required this.connectionState,
@@ -26,6 +27,8 @@ class SdkOperationalDiagnostics {
   final bool backendSosAvailable;
   final bool deviceSosAvailable;
   final SosDeliveryChannel? lastPublicSosDeliveryChannel;
+  /// Most recent typed BLE relay sample observed by the SDK when the payload
+  /// matched a stable relay contract.
   final DeviceTelRelayRx? lastTelRelayRx;
   final SdkBridgeDiagnostics bridge;
 

@@ -42,7 +42,12 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     );
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw SosException('E_HTTP_SOS_TRIGGER_FAILED', response.body);
+      throw SosException(
+        response.statusCode == 422
+            ? 'E_HTTP_SOS_TRIGGER_422'
+            : 'E_HTTP_SOS_TRIGGER_FAILED',
+        response.body,
+      );
     }
 
     final payload = jsonDecode(response.body) as Map<String, dynamic>;
@@ -67,7 +72,8 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     final response = await transport.post(
       '/v1/sdk/sos/cancel',
     );
-    _logResponse(action: 'cancel', statusCode: response.statusCode, body: response.body);
+    _logResponse(
+        action: 'cancel', statusCode: response.statusCode, body: response.body);
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
       _logError(
@@ -96,7 +102,8 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
       );
     }
     final dto = SosIncidentDto.fromJson(incident);
-    _logParsed(action: 'cancel', result: 'incidentId=${dto.id} state=${dto.state}');
+    _logParsed(
+        action: 'cancel', result: 'incidentId=${dto.id} state=${dto.state}');
     return dto;
   }
 
@@ -110,7 +117,10 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     final response = await transport.post(
       '/v1/sdk/sos/resolve',
     );
-    _logResponse(action: 'resolve', statusCode: response.statusCode, body: response.body);
+    _logResponse(
+        action: 'resolve',
+        statusCode: response.statusCode,
+        body: response.body);
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
       _logError(
@@ -139,7 +149,8 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
       );
     }
     final dto = SosIncidentDto.fromJson(incident);
-    _logParsed(action: 'resolve', result: 'incidentId=${dto.id} state=${dto.state}');
+    _logParsed(
+        action: 'resolve', result: 'incidentId=${dto.id} state=${dto.state}');
     return dto;
   }
 

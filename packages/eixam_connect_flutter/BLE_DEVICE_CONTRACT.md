@@ -4,6 +4,12 @@
 
 The Flutter SDK is responsible for hiding the EIXAM BLE protocol from host apps. Host apps should call typed SDK APIs for SOS, device control, runtime inspection, and typed relay telemetry instead of sending raw BLE commands or decoding packets themselves.
 
+For relay ingest and backlog sync specifically:
+
+- host apps consume typed SDK state and diagnostics
+- the SDK owns backend routing, terminal handling, and BLE sync progress ACKs
+- host apps must not implement their own relay or backlog protocol state machines
+
 ## Public SOS Diagnostics And Availability
 
 Host apps can read SOS channel readiness and the most recent public delivery path from `SdkOperationalDiagnostics`:
@@ -124,6 +130,55 @@ The latest typed relay sample is exposed through:
 - `SdkOperationalDiagnostics.lastTelRelayRx`
 
 This preserves the existing aggregate path while giving host apps a stable typed view when the payload is known.
+
+### Relay Ingest Routing
+
+When the relay payload includes a stable remote device identity, the SDK uses
+that remote `deviceId` for backend ingest.
+
+The local BLE gateway device remains diagnostics context only.
+
+For integrators this means:
+
+- partner apps do not map relay BLE packets to backend device ids themselves
+- relay publish attempts and results are exposed through `SdkOperationalDiagnostics.bridge`
+
+### Relay `422` Handling
+
+Relay-origin telemetry and SOS publishes treat backend `422`/unprocessable
+responses as terminal for that publish attempt.
+
+The SDK records that outcome in bridge diagnostics:
+
+- `lastRelayTerminalErrorCode`
+- `lastRelayTerminalErrorMessage`
+
+Partner apps may display or log that information, but should not retry relay
+ingest independently from the app layer.
+
+## BLE Backlog Sync
+
+The SDK now exposes a minimal BLE backlog sync API:
+
+- `startBacklogSync(...)`
+- `cancelBacklogSync()`
+- `getBacklogSyncState()`
+- `watchBacklogSyncState()`
+
+The BLE protocol details remain internal to the runtime.
+
+Integration expectations:
+
+- backlog sync commands are sent by the SDK over CMD
+- backlog frames are parsed by the SDK from `0xD1` TEL notify payloads
+- chunk records are uploaded in SDK-managed backend batches
+- the SDK only sends `BACKLOG_SYNC_ACK` after backend persistence succeeds
+- reconnect recovery is SDK-owned and restarts with a new sync start request
+
+Host apps are responsible only for:
+
+- deciding when to start or cancel sync
+- showing coarse progress and error state from `BacklogSyncState`
 
 ## Safety Notes
 

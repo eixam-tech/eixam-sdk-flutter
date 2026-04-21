@@ -44,6 +44,45 @@ void main() {
       expect(packet.relay.receivedAt, receivedAt);
     });
 
+    test('parses remote deviceId from the extended D2 relay contract', () {
+      final packet = EixamTelRelayRxPacket.tryParse(
+        const <int>[
+          0xD2,
+          0xA8,
+          0x1A,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x01,
+          0x21,
+          0xF6,
+          0xC4,
+          0xB0,
+          0x1B,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x01,
+          0x21,
+          0xCF,
+          0x82,
+          0x10,
+          0x20,
+          0x30,
+          0x40,
+        ],
+      );
+
+      expect(packet, isNotNull);
+      expect(packet!.relay.remoteDeviceId, 'CF:82:10:20:30:40');
+    });
+
     test('rejects payloads that do not match the D2 relay contract', () {
       expect(
         EixamTelRelayRxPacket.tryParse(

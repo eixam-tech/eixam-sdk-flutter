@@ -146,6 +146,21 @@ device, or both.
 - If backend fails and device succeeds, the SDK returns a successful device-only public result.
 - If both channels fail or are unavailable, the public call fails.
 
+### Relay `422` Terminal Behavior
+
+Relay-origin operational publishes are handled slightly differently from local
+app-origin requests.
+
+If the backend rejects relay telemetry or relay SOS with a `422`/unprocessable
+response, the SDK treats that publish attempt as terminal:
+
+- the SDK records terminal relay diagnostics
+- the relay payload is not retained as a transient pending retry item
+- host apps should not add app-side retry logic for that same relay payload
+
+This keeps terminal contract errors visible without moving relay ingest policy
+out of the SDK.
+
 ## Backward Compatibility
 
 - Phone-only/backend-only flows still work without any device requirement.

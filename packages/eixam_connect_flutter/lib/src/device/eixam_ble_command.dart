@@ -101,6 +101,68 @@ class EixamDeviceCommand {
         forceCmdCharacteristic: true,
       );
 
+  factory EixamDeviceCommand.backlogSyncStart({
+    required int sinceUnix,
+    required int maxEvents,
+  }) {
+    return EixamDeviceCommand._(
+      opcode: 0x30,
+      label: 'BACKLOG SYNC START',
+      bytes: <int>[
+        0x30,
+        sinceUnix & 0xFF,
+        (sinceUnix >> 8) & 0xFF,
+        (sinceUnix >> 16) & 0xFF,
+        (sinceUnix >> 24) & 0xFF,
+        maxEvents & 0xFF,
+        (maxEvents >> 8) & 0xFF,
+      ],
+      forceCmdCharacteristic: true,
+    );
+  }
+
+  factory EixamDeviceCommand.backlogSyncAck({
+    required int sessionId,
+    required int nextOffset,
+  }) {
+    return EixamDeviceCommand._(
+      opcode: 0x31,
+      label: 'BACKLOG SYNC ACK',
+      bytes: <int>[
+        0x31,
+        sessionId & 0xFF,
+        nextOffset & 0xFF,
+        (nextOffset >> 8) & 0xFF,
+        (nextOffset >> 16) & 0xFF,
+        (nextOffset >> 24) & 0xFF,
+      ],
+      forceCmdCharacteristic: true,
+    );
+  }
+
+  factory EixamDeviceCommand.backlogSyncAbort({
+    required int sessionId,
+    required int reason,
+  }) {
+    return EixamDeviceCommand._(
+      opcode: 0x32,
+      label: 'BACKLOG SYNC ABORT',
+      bytes: <int>[0x32, sessionId & 0xFF, reason & 0xFF],
+      forceCmdCharacteristic: true,
+    );
+  }
+
+  factory EixamDeviceCommand.backlogSyncStatusRequest({
+    required int sessionId,
+  }) {
+    return EixamDeviceCommand._(
+      opcode: 0x33,
+      label: 'BACKLOG SYNC STATUS REQ',
+      bytes: <int>[0x33, sessionId & 0xFF],
+      forceCmdCharacteristic: true,
+    );
+  }
+
   factory EixamDeviceCommand.guidedRescue({
     required int targetNodeId,
     required int rescueNodeId,

@@ -13,8 +13,10 @@ class EixamBleProtocol {
 
   static const int telPacketLength = 10;
   static const int telAggregateFragmentOpcode = 0xD0;
+  static const int backlogSyncOpcode = 0xD1;
   static const int telAggregateFragmentHeaderLength = 5;
   static const int telAggregateFragmentMaxPayloadLength = 15;
+  static const int backlogSyncRecordLength = 14;
   static const int sosPacketLengthWithPosition = 10;
   static const int sosPacketLengthMinimal = 5;
   static const int sosEventUserDeactivatedOpcode = 0xE1;

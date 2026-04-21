@@ -23,5 +23,30 @@ void main() {
     test('rejects invalid packet lengths', () {
       expect(EixamSosPacket.tryParse(<int>[0x01, 0x02, 0x03]), isNull);
     });
+
+    test('parses remote deviceId from the extended SOS relay contract', () {
+      final packet = EixamSosPacket.tryParse(<int>[
+        0x34,
+        0x12,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x54,
+        0xCF,
+        0x82,
+        0x10,
+        0x20,
+        0x30,
+        0x41,
+      ]);
+
+      expect(packet, isNotNull);
+      expect(packet!.relayCount, 1);
+      expect(packet.remoteDeviceId, 'CF:82:10:20:30:41');
+    });
   });
 }

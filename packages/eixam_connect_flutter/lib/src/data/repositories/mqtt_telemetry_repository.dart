@@ -16,6 +16,15 @@ class MqttTelemetryRepository implements TelemetryRepository {
     return realtimeClient.publishTelemetry(payload);
   }
 
+  @override
+  Future<void> publishTelemetryBatch(
+    Iterable<SdkTelemetryPayload> payloads,
+  ) async {
+    for (final payload in payloads) {
+      await publishTelemetry(payload);
+    }
+  }
+
   void _validate(SdkTelemetryPayload payload) {
     if (!_isFinite(payload.latitude) ||
         payload.latitude < -90 ||

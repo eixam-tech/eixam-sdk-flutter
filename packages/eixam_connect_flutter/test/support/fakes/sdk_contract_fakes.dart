@@ -22,6 +22,7 @@ class FakeSosRepository implements SosRepository {
   String? lastTriggerSource;
   TrackingPosition? lastPositionSnapshot;
   String? lastDeviceId;
+  Object? triggerError;
   final StreamController<SosState> stateController =
       StreamController<SosState>.broadcast();
 
@@ -32,6 +33,9 @@ class FakeSosRepository implements SosRepository {
     TrackingPosition? positionSnapshot,
     String? deviceId,
   }) async {
+    if (triggerError != null) {
+      throw triggerError!;
+    }
     triggerCallCount++;
     lastMessage = message;
     lastTriggerSource = triggerSource;
@@ -156,10 +160,25 @@ class FakeTrackingRepository implements TrackingRepository {
 
 class FakeTelemetryRepository implements TelemetryRepository {
   final List<SdkTelemetryPayload> publishedPayloads = <SdkTelemetryPayload>[];
+  int publishCallCount = 0;
+  Object? publishError;
 
   @override
   Future<void> publishTelemetry(SdkTelemetryPayload payload) async {
+    publishCallCount++;
+    if (publishError != null) {
+      throw publishError!;
+    }
     publishedPayloads.add(payload);
+  }
+
+  @override
+  Future<void> publishTelemetryBatch(
+    Iterable<SdkTelemetryPayload> payloads,
+  ) async {
+    for (final payload in payloads) {
+      await publishTelemetry(payload);
+    }
   }
 }
 

@@ -12,6 +12,7 @@ import 'ble_incoming_event.dart';
 import 'ble_scan_result.dart';
 import 'device_runtime_provider.dart';
 import 'device_sos_controller.dart';
+import 'eixam_backlog_sync_frame.dart';
 import 'eixam_ble_command.dart';
 import 'eixam_ble_notification.dart';
 import 'eixam_ble_protocol.dart';
@@ -827,6 +828,34 @@ class BleDeviceRuntimeProvider
           source: DeviceSosTransitionSource.device,
           receivedAt: notification.receivedAt,
           telPacket: telPacket,
+        ),
+      );
+      return;
+    }
+
+    final backlogSyncFrame =
+        EixamBacklogSyncFrame.tryParse(notification.payload);
+    if (backlogSyncFrame != null) {
+      BleDebugRegistry.instance.recordEvent(
+        'Backlog sync frame decoded -> type=${backlogSyncFrame.messageType.name} sessionId=${backlogSyncFrame.sessionId}',
+      );
+      BleDebugRegistry.instance.recordDecodedIncomingEvent(
+        eventType: BleIncomingEventType.backlogSyncFrame.name,
+        outcome: BleIncomingEventType.backlogSyncFrame.name,
+        receivedAt: notification.receivedAt,
+      );
+      _incomingEventsController.add(
+        BleIncomingEvent(
+          deviceId: deviceId,
+          canonicalHardwareId: _connectedCanonicalHardwareId,
+          deviceAlias: _connectedDeviceAlias,
+          type: BleIncomingEventType.backlogSyncFrame,
+          channel: notification.channel,
+          payload: List<int>.unmodifiable(notification.payload),
+          payloadHex: notification.payloadHex,
+          source: DeviceSosTransitionSource.device,
+          receivedAt: notification.receivedAt,
+          backlogSyncFrame: backlogSyncFrame,
         ),
       );
       return;

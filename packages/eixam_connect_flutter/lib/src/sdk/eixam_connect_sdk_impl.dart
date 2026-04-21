@@ -21,6 +21,7 @@ import '../device/eixam_sos_packet.dart';
 import '../data/datasources_remote/sdk_session_context.dart';
 import '../data/repositories/telemetry_repository.dart';
 import '../data/repositories/sos_runtime_rehydration_support.dart';
+import 'backlog_sync_controller.dart';
 import 'ble_operational_runtime_bridge.dart';
 import 'ble_auto_reconnect_coordinator.dart';
 import 'ble_sos_notification_payload.dart';
@@ -29,6 +30,7 @@ import 'operational_realtime_client.dart';
 import 'protection_mode_controller.dart';
 import 'protection_platform_adapter.dart';
 import 'protection_platform_adapter_factory.dart';
+import 'relay_ingest_context.dart';
 import 'sdk_mqtt_contract.dart';
 
 /// Main SDK orchestrator used by host apps.
@@ -87,6 +89,7 @@ class EixamConnectSdkImpl
   StreamSubscription<DeviceSosStatus>? _deviceSosSub;
   StreamSubscription<bool>? _deviceSosCommandPathSub;
   StreamSubscription<GuidedRescueState>? _guidedRescueSub;
+  StreamSubscription<BacklogSyncState>? _backlogSyncSub;
   StreamSubscription<SosState>? _sosStateSub;
   StreamSubscription<SdkBridgeDiagnostics>? _bridgeDiagnosticsSub;
   StreamSubscription<BleIncomingEvent>? _bleIncomingEventDiagnosticsSub;
@@ -102,6 +105,7 @@ class EixamConnectSdkImpl
   RealtimeEvent? _lastRealtimeEvent;
   DeviceStatus? _lastDeviceStatus;
   GuidedRescueState _guidedRescueState = const GuidedRescueState.unsupported();
+  BacklogSyncState _backlogSyncState = const BacklogSyncState.idle();
   BleNotificationNavigationRequest? _pendingBleNotificationNavigationRequest;
   String? _activeDeviceSosCycleKey;
   String? _notifiedDeviceSosCycleKey;
@@ -119,6 +123,8 @@ class EixamConnectSdkImpl
   _PreSosSession? _preSosSession;
   SosDeliveryChannel? _lastPublishedCurrentSosCapabilityChannel;
   DeviceTelRelayRx? _lastTelRelayRx;
+  final Map<String, _ObservedRelaySosContext> _observedRelaySosBySignature =
+      <String, _ObservedRelaySosContext>{};
   bool _publicSosActionInFlight = false;
   Future<SosIncident>? _pendingPreSosConfirmation;
   final Set<String> _deviceOriginatedBackendSyncInFlight = <String>{};
@@ -127,6 +133,7 @@ class EixamConnectSdkImpl
   String? _lastRegisteredDeviceAutoSyncFingerprint;
   bool _lastDeviceSosCommandPathAvailable = false;
   late final BleAutoReconnectCoordinator _bleAutoReconnectCoordinator;
+  late final BacklogSyncController _backlogSyncController;
   late final BleOperationalRuntimeBridge _bleOperationalRuntimeBridge;
   late final ProtectionModeController _protectionModeController;
   final Duration _appTriggeredSosBridgeWindow;
@@ -181,6 +188,15 @@ class EixamConnectSdkImpl
         runtimeStatus: _lastDeviceStatus,
       ),
     );
+    _backlogSyncController = BacklogSyncController(
+      bleIncomingEvents: bleIncomingEvents,
+      telemetryRepository: telemetryRepository,
+      commandSender: _sendDeviceCommandThroughActiveOwner,
+      backendHardwareIdResolver: () =>
+          _loadBackendHardwareIdForOperationalPayloads(
+        runtimeStatus: _lastDeviceStatus,
+      ),
+    );
     _protectionModeController = ProtectionModeController(
       platformAdapter: this.protectionPlatformAdapter,
       sessionProvider: () async => _session,
@@ -223,6 +239,7 @@ class EixamConnectSdkImpl
     );
     _bindDeviceStreams();
     _bindGuidedRescueStreams();
+    _bindBacklogSyncStreams();
     await notificationsRepository.initialize(
       onAction: _handleNotificationAction,
     );
@@ -269,6 +286,12 @@ class EixamConnectSdkImpl
       _scheduleRegisteredDeviceAutoSync(
         trigger: 'device_status_stream',
         status: status,
+      );
+      unawaited(
+        _backlogSyncController.onDeviceStatusChanged(
+          previous: previousStatus,
+          current: status,
+        ),
       );
     });
 
@@ -354,11 +377,26 @@ class EixamConnectSdkImpl
     _bleIncomingEventDiagnosticsSub?.cancel();
     _bleIncomingEventDiagnosticsSub = bleIncomingEvents.listen(
       (event) {
-        if (event.telRelayRxPacket == null) {
-          return;
+        final relayPacket = event.telRelayRxPacket;
+        if (relayPacket != null) {
+          _lastTelRelayRx = relayPacket.relay;
+          _emitOperationalDiagnostics(reason: 'ble_tel_relay_rx');
         }
-        _lastTelRelayRx = event.telRelayRxPacket!.relay;
-        _emitOperationalDiagnostics(reason: 'ble_tel_relay_rx');
+        final sosPacket = event.sosPacket;
+        final remoteDeviceId = sosPacket?.remoteDeviceId?.trim();
+        if (sosPacket != null &&
+            (sosPacket.relayCount > 0) &&
+            remoteDeviceId != null &&
+            remoteDeviceId.isNotEmpty) {
+          final signature =
+              '${sosPacket.nodeId}:${sosPacket.packetId}:${sosPacket.rawHex}';
+          _observedRelaySosBySignature[signature] = _ObservedRelaySosContext(
+            remoteDeviceId: remoteDeviceId,
+            nodeId: sosPacket.nodeId,
+            relayCount: sosPacket.relayCount,
+            packetSignature: signature,
+          );
+        }
       },
       onError: (Object error) {
         BleDebugRegistry.instance.recordEvent(
@@ -378,6 +416,14 @@ class EixamConnectSdkImpl
         );
       },
     );
+  }
+
+  void _bindBacklogSyncStreams() {
+    _backlogSyncSub?.cancel();
+    _backlogSyncState = _backlogSyncController.currentState;
+    _backlogSyncSub = _backlogSyncController.watchState().listen((state) {
+      _backlogSyncState = state;
+    });
   }
 
   @override
@@ -933,6 +979,34 @@ class EixamConnectSdkImpl
   @override
   Future<void> requestGuidedRescueStatus() {
     return _runGuidedRescueCommand(GuidedRescueAction.requestStatus);
+  }
+
+  @override
+  Future<BacklogSyncState> getBacklogSyncState() async =>
+      _backlogSyncController.currentState;
+
+  @override
+  Stream<BacklogSyncState> watchBacklogSyncState() async* {
+    yield _backlogSyncController.currentState;
+    yield* _backlogSyncController.watchState();
+  }
+
+  @override
+  Future<BacklogSyncState> startBacklogSync({
+    DateTime? since,
+    int maxEvents = 100,
+  }) async {
+    _backlogSyncState = await _backlogSyncController.start(
+      since: since,
+      maxEvents: maxEvents,
+    );
+    return _backlogSyncController.currentState;
+  }
+
+  @override
+  Future<void> cancelBacklogSync() async {
+    await _backlogSyncController.cancel();
+    _backlogSyncState = _backlogSyncController.currentState;
   }
 
   Future<void> _handleDeviceSosStatus(DeviceSosStatus status) async {
@@ -1602,12 +1676,10 @@ class EixamConnectSdkImpl
     final devicePreConfirm = deviceStatus.state == DeviceSosState.preConfirm;
     final deviceAlreadyActive = deviceStatus.state == DeviceSosState.active ||
         deviceStatus.state == DeviceSosState.acknowledged;
-    final deviceOriginatedPreConfirm =
-        devicePreConfirm &&
-            deviceStatus.triggerOrigin == DeviceSosTransitionSource.device;
-    final appMirroredPreConfirm =
-        devicePreConfirm &&
-            deviceStatus.triggerOrigin == DeviceSosTransitionSource.app;
+    final deviceOriginatedPreConfirm = devicePreConfirm &&
+        deviceStatus.triggerOrigin == DeviceSosTransitionSource.device;
+    final appMirroredPreConfirm = devicePreConfirm &&
+        deviceStatus.triggerOrigin == DeviceSosTransitionSource.app;
 
     if (!hasLocalSession && !devicePreConfirm) {
       return _activatePublicSos(payload);
@@ -1695,7 +1767,8 @@ class EixamConnectSdkImpl
   Future<SosIncident> cancelSos() async {
     _publicSosActionInFlight = true;
     try {
-      final fallbackDeliveryChannel = _publicSosFallbackIncident?.deliveryChannel;
+      final fallbackDeliveryChannel =
+          _publicSosFallbackIncident?.deliveryChannel;
       final deviceSync = await _attemptPublicSosDeviceAction(
         action: 'cancel',
         shouldRun: _canCloseDeviceSosForPublicSos,
@@ -1715,9 +1788,9 @@ class EixamConnectSdkImpl
       }
 
       final deliveryChannel = _resolveSuccessfulSosDeliveryChannel(
-        backendSucceeded: backendIncident != null,
-        deviceSucceeded: deviceSync.succeeded,
-      ) ??
+            backendSucceeded: backendIncident != null,
+            deviceSucceeded: deviceSync.succeeded,
+          ) ??
           (backendIncident == null &&
                   backendError != null &&
                   fallbackDeliveryChannel == SosDeliveryChannel.deviceOnly
@@ -1829,6 +1902,39 @@ class EixamConnectSdkImpl
     } catch (_) {
       return null;
     }
+  }
+
+  Future<String?> _resolveOperationalSosDeviceId(DeviceSosStatus status) async {
+    final relayContext = _relayContextFrom(status);
+    if (relayContext != null) {
+      return relayContext.remoteDeviceId;
+    }
+    return _loadBackendHardwareIdForOperationalPayloads(
+      runtimeStatus: _lastDeviceStatus,
+    );
+  }
+
+  RelayIngestContext? _relayContextFrom(DeviceSosStatus status) {
+    final relayCount = status.relayCount ?? 0;
+    if (relayCount <= 0) {
+      return null;
+    }
+    final signature = status.lastPacketSignature;
+    if (signature == null) {
+      return null;
+    }
+    final observed = _observedRelaySosBySignature[signature];
+    if (observed == null) {
+      return null;
+    }
+    return RelayIngestContext(
+      kind: RelayIngestKind.sos,
+      remoteDeviceId: observed.remoteDeviceId,
+      gatewayRuntimeDeviceId: _lastDeviceStatus?.deviceId ?? 'unknown',
+      gatewayCanonicalHardwareId: _lastDeviceStatus?.canonicalHardwareId,
+      payloadSignature: observed.packetSignature,
+      relayCount: observed.relayCount,
+    );
   }
 
   Future<_PublicSosDeviceAttempt> _attemptPublicSosDeviceAction({
@@ -2103,8 +2209,8 @@ class EixamConnectSdkImpl
       return;
     }
     final startedAt = status.countdownStartedAt ?? DateTime.now();
-    final expectedActivationAt =
-        status.expectedActivationAt ?? startedAt.add(const Duration(seconds: 20));
+    final expectedActivationAt = status.expectedActivationAt ??
+        startedAt.add(const Duration(seconds: 20));
     _syncPreSosSession(
       startedAt: startedAt,
       expectedActivationAt: expectedActivationAt,
@@ -2435,9 +2541,8 @@ class EixamConnectSdkImpl
         triggerSource: triggerSource,
         message: message,
         positionSnapshot: positionSnapshot,
-        deviceId: await _loadBackendHardwareIdForOperationalPayloads(
-          runtimeStatus: _lastDeviceStatus,
-        ),
+        deviceId: await _resolveOperationalSosDeviceId(status),
+        relayContext: _relayContextFrom(status),
         summary:
             'device_runtime state=${status.state.name} origin=${status.triggerOrigin.name} cycle=${cycleKey}',
       );
@@ -3391,12 +3496,14 @@ class EixamConnectSdkImpl
     await _deviceSosSub?.cancel();
     await _deviceSosCommandPathSub?.cancel();
     await _guidedRescueSub?.cancel();
+    await _backlogSyncSub?.cancel();
     await _sosStateSub?.cancel();
     await _bridgeDiagnosticsSub?.cancel();
     await _bleIncomingEventDiagnosticsSub?.cancel();
     await _protectionStatusSub?.cancel();
     await _protectionRawSosEventsSub?.cancel();
     await _bleOperationalRuntimeBridge.dispose();
+    await _backlogSyncController.dispose();
     await _protectionModeController.dispose();
     await deviceSosController.dispose();
     await realtimeClient.disconnect();
@@ -3516,6 +3623,20 @@ class _CurrentSosCapabilitySnapshot {
   final bool hasSosCommandPath;
   final bool deviceSosAvailable;
   final SosDeliveryChannel? capability;
+}
+
+class _ObservedRelaySosContext {
+  const _ObservedRelaySosContext({
+    required this.remoteDeviceId,
+    required this.nodeId,
+    required this.relayCount,
+    required this.packetSignature,
+  });
+
+  final String remoteDeviceId;
+  final int nodeId;
+  final int relayCount;
+  final String packetSignature;
 }
 
 class _DeathManNotificationPayload {

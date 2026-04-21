@@ -1,24 +1,32 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import 'canonical_hardware_id.dart';
 import 'eixam_tel_packet.dart';
 
 class EixamTelRelayRxPacket {
   const EixamTelRelayRxPacket({
     required this.payload,
     required this.relay,
+    required this.peerPacket,
+    required this.selfPacket,
   });
 
   static const int opcode = 0xD2;
-  static const int payloadLength = 23;
+  static const int legacyPayloadLength = 23;
+  static const int extendedPayloadLength = 29;
 
   final List<int> payload;
   final DeviceTelRelayRx relay;
+  final EixamTelPacket peerPacket;
+  final EixamTelPacket selfPacket;
 
   static EixamTelRelayRxPacket? tryParse(
     List<int> bytes, {
     DateTime? receivedAt,
   }) {
-    if (bytes.length != payloadLength || bytes.first != opcode) {
+    if ((bytes.length != legacyPayloadLength &&
+            bytes.length != extendedPayloadLength) ||
+        bytes.first != opcode) {
       return null;
     }
 
@@ -36,9 +44,14 @@ class EixamTelRelayRxPacket {
     if (selfPacket == null) {
       return null;
     }
+    final remoteDeviceId = bytes.length == extendedPayloadLength
+        ? _canonicalHardwareIdFrom(bytes.sublist(23, 29))
+        : null;
 
     return EixamTelRelayRxPacket(
       payload: List<int>.unmodifiable(bytes),
+      peerPacket: peerPacket,
+      selfPacket: selfPacket,
       relay: DeviceTelRelayRx(
         peerPayload: peerPayload,
         peerPosition: TrackingPosition(
@@ -58,8 +71,19 @@ class EixamTelRelayRxPacket {
           timestamp: receivedAt ?? DateTime.now(),
           source: DeliveryMode.mesh,
         ),
+        remoteDeviceId: remoteDeviceId,
         receivedAt: receivedAt,
       ),
     );
+  }
+
+  static String? _canonicalHardwareIdFrom(List<int> bytes) {
+    if (bytes.length != 6) {
+      return null;
+    }
+    final candidate = bytes
+        .map((byte) => byte.toRadixString(16).padLeft(2, '0').toUpperCase())
+        .join(':');
+    return normalizeCanonicalHardwareId(candidate);
   }
 }

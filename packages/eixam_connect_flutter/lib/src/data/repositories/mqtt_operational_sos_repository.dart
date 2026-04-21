@@ -19,8 +19,7 @@ class MqttOperationalSosRepository
     SosRemoteDataSource? remoteDataSource,
     this.cancelRemoteDataSource,
     SharedPrefsSdkStore? localStore,
-    Duration destructiveRehydrationGracePeriod =
-        const Duration(seconds: 5),
+    Duration destructiveRehydrationGracePeriod = const Duration(seconds: 5),
     DateTime Function()? nowProvider,
   })  : remoteDataSource = remoteDataSource ?? cancelRemoteDataSource,
         _localStore = localStore,

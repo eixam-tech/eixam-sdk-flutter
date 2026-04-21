@@ -205,7 +205,8 @@ class DeviceSosController {
   Future<void> sendInetOk({
     DeviceCommandWriter? commandWriterOverride,
     String commandRouteLabel = 'attached_writer',
-  }) => _sendNonSosCommand(
+  }) =>
+      _sendNonSosCommand(
         EixamDeviceCommand.inetOk(),
         commandWriterOverride: commandWriterOverride,
         commandRouteLabel: commandRouteLabel,
@@ -214,7 +215,8 @@ class DeviceSosController {
   Future<void> sendInetLost({
     DeviceCommandWriter? commandWriterOverride,
     String commandRouteLabel = 'attached_writer',
-  }) => _sendNonSosCommand(
+  }) =>
+      _sendNonSosCommand(
         EixamDeviceCommand.inetLost(),
         commandWriterOverride: commandWriterOverride,
         commandRouteLabel: commandRouteLabel,
@@ -223,7 +225,8 @@ class DeviceSosController {
   Future<void> sendPositionConfirmed({
     DeviceCommandWriter? commandWriterOverride,
     String commandRouteLabel = 'attached_writer',
-  }) => _sendNonSosCommand(
+  }) =>
+      _sendNonSosCommand(
         EixamDeviceCommand.positionConfirmed(),
         commandWriterOverride: commandWriterOverride,
         commandRouteLabel: commandRouteLabel,
@@ -244,7 +247,8 @@ class DeviceSosController {
   Future<void> sendShutdown({
     DeviceCommandWriter? commandWriterOverride,
     String commandRouteLabel = 'attached_writer',
-  }) => _sendNonSosCommand(
+  }) =>
+      _sendNonSosCommand(
         EixamDeviceCommand.shutdown(),
         commandWriterOverride: commandWriterOverride,
         commandRouteLabel: commandRouteLabel,
@@ -798,7 +802,8 @@ class DeviceSosController {
   }) {
     final currentOrigin = _status.triggerOrigin;
     final currentNodeId = _status.nodeId;
-    final keepsExistingAppCycle = currentOrigin == DeviceSosTransitionSource.app &&
+    final keepsExistingAppCycle = currentOrigin ==
+            DeviceSosTransitionSource.app &&
         _status.state != DeviceSosState.inactive &&
         _status.state != DeviceSosState.resolved &&
         (currentNodeId == null || nodeId == null || currentNodeId == nodeId);

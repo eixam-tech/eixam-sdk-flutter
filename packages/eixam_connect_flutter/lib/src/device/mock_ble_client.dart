@@ -20,6 +20,11 @@ class MockBleClient implements BleClient {
   BleAdapterState _adapterState = BleAdapterState.poweredOn;
   final Set<String> _connectedDeviceIds = <String>{};
   final List<EixamDeviceCommand> writtenCommands = <EixamDeviceCommand>[];
+  List<List<int>> backlogSyncStartNotifications = <List<int>>[];
+  final Map<int, List<List<int>>> backlogSyncAckNotifications =
+      <int, List<List<int>>>{};
+  final Map<int, List<List<int>>> backlogSyncStatusNotifications =
+      <int, List<List<int>>>{};
   List<int> runtimeStatusPayload = <int>[
     0xE9,
     0x78,
@@ -241,15 +246,8 @@ class MockBleClient implements BleClient {
       return;
     }
 
-    void emit(EixamBleChannel channel, List<int> payload) {
-      controller.add(
-        EixamBleNotification(
-          channel: channel,
-          payload: payload,
-          receivedAt: DateTime.now(),
-        ),
-      );
-    }
+    void emit(EixamBleChannel channel, List<int> payload) =>
+        emitNotification(deviceId, channel: channel, payload: payload);
 
     switch (command.opcode) {
       case 0x01:
@@ -349,8 +347,48 @@ class MockBleClient implements BleClient {
       case 0x23:
         emit(EixamBleChannel.tel, runtimeStatusPayload);
         return;
+      case 0x30:
+        for (final payload in backlogSyncStartNotifications) {
+          emit(EixamBleChannel.tel, payload);
+        }
+        return;
+      case 0x31:
+        final nextOffset = command.bytes[2] |
+            (command.bytes[3] << 8) |
+            (command.bytes[4] << 16) |
+            (command.bytes[5] << 24);
+        for (final payload
+            in backlogSyncAckNotifications[nextOffset] ?? const <List<int>>[]) {
+          emit(EixamBleChannel.tel, payload);
+        }
+        return;
+      case 0x33:
+        final sessionId = command.bytes[1];
+        for (final payload in backlogSyncStatusNotifications[sessionId] ??
+            const <List<int>>[]) {
+          emit(EixamBleChannel.tel, payload);
+        }
+        return;
       default:
         return;
     }
+  }
+
+  void emitNotification(
+    String deviceId, {
+    required EixamBleChannel channel,
+    required List<int> payload,
+  }) {
+    final controller = _notifyControllers[deviceId];
+    if (controller == null || controller.isClosed) {
+      return;
+    }
+    controller.add(
+      EixamBleNotification(
+        channel: channel,
+        payload: payload,
+        receivedAt: DateTime.now(),
+      ),
+    );
   }
 }

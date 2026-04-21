@@ -54,7 +54,8 @@ class MqttOperationalSosRequest {
       positionSnapshot: positionSnapshot ?? this.positionSnapshot,
       sdkUserId:
           identical(sdkUserId, _unset) ? this.sdkUserId : sdkUserId as String?,
-      deviceId: identical(deviceId, _unset) ? this.deviceId : deviceId as String?,
+      deviceId:
+          identical(deviceId, _unset) ? this.deviceId : deviceId as String?,
     );
   }
 

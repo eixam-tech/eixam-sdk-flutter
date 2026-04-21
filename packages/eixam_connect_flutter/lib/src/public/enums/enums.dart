@@ -1,5 +1,6 @@
 // Public SDK enums exposed to partner applications.
 export 'package:eixam_connect_core/src/enums/death_man_status.dart';
+export 'package:eixam_connect_core/src/enums/backlog_sync_phase.dart';
 export 'package:eixam_connect_core/src/enums/delivery_mode.dart';
 export 'package:eixam_connect_core/src/enums/device_battery_level.dart';
 export 'package:eixam_connect_core/src/enums/device_battery_source.dart';

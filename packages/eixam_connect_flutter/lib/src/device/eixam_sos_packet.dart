@@ -1,4 +1,5 @@
 import 'eixam_ble_protocol.dart';
+import 'canonical_hardware_id.dart';
 import 'eixam_position_data.dart';
 
 class EixamSosPacket {
@@ -17,6 +18,7 @@ class EixamSosPacket {
     required this.hasPosition,
     this.sequence,
     this.position,
+    this.remoteDeviceId,
   });
 
   final List<int> rawBytes;
@@ -33,16 +35,21 @@ class EixamSosPacket {
   final bool hasPosition;
   final int? sequence;
   final EixamPositionData? position;
+  final String? remoteDeviceId;
 
   static EixamSosPacket? tryParse(List<int> bytes) {
     // Mesh SOS packets remain the classic 10-byte or 5-byte payloads.
-    if (bytes.length != EixamBleProtocol.sosPacketLengthWithPosition &&
-        bytes.length != EixamBleProtocol.sosPacketLengthMinimal) {
+    final hasRemoteDeviceId =
+        bytes.length == EixamBleProtocol.sosPacketLengthWithPosition + 6 ||
+            bytes.length == EixamBleProtocol.sosPacketLengthMinimal + 6;
+    final packetLength = hasRemoteDeviceId ? bytes.length - 6 : bytes.length;
+    if (packetLength != EixamBleProtocol.sosPacketLengthWithPosition &&
+        packetLength != EixamBleProtocol.sosPacketLengthMinimal) {
       return null;
     }
 
     final hasPosition =
-        bytes.length == EixamBleProtocol.sosPacketLengthWithPosition;
+        packetLength == EixamBleProtocol.sosPacketLengthWithPosition;
     final flagsOffset = hasPosition ? 8 : 2;
     final flagsWord = bytes[flagsOffset] | (bytes[flagsOffset + 1] << 8);
 
@@ -61,6 +68,19 @@ class EixamSosPacket {
       hasPosition: hasPosition,
       sequence: hasPosition ? null : bytes[4],
       position: hasPosition ? EixamPositionData.decode(bytes, offset: 2) : null,
+      remoteDeviceId: hasRemoteDeviceId
+          ? _canonicalHardwareIdFrom(bytes.sublist(packetLength, bytes.length))
+          : null,
     );
+  }
+
+  static String? _canonicalHardwareIdFrom(List<int> bytes) {
+    if (bytes.length != 6) {
+      return null;
+    }
+    final candidate = bytes
+        .map((byte) => byte.toRadixString(16).padLeft(2, '0').toUpperCase())
+        .join(':');
+    return normalizeCanonicalHardwareId(candidate);
   }
 }

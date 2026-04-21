@@ -33,6 +33,7 @@ import 'package:eixam_connect_flutter/src/device/eixam_sos_event_packet.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_sos_packet.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_tel_fragment.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_tel_packet.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_tel_relay_rx_packet.dart';
 import 'package:eixam_connect_flutter/src/sdk/ble_operational_runtime_bridge.dart';
 import 'package:eixam_connect_flutter/src/sdk/mqtt_realtime_client.dart';
 import 'package:eixam_connect_flutter/src/sdk/operational_realtime_client.dart';
@@ -6557,6 +6558,140 @@ void main() {
       }
     });
 
+    test('BLE bridge publishes relay telemetry with the remote deviceId',
+        () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final connectionStates =
+          StreamController<RealtimeConnectionState>.broadcast();
+      final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      EixamSession? session = const EixamSession.signed(
+        appId: 'app-demo',
+        externalUserId: 'external-123',
+        userHash: 'deadbeef',
+      );
+      final bridge = BleOperationalRuntimeBridge(
+        bleIncomingEvents: bleEvents.stream,
+        connectionStates: connectionStates.stream,
+        realtimeEvents: realtimeEvents.stream,
+        telemetryRepository: telemetryRepository,
+        sosRepository: sosRepository,
+        deviceSosController: deviceSosController,
+        sessionProvider: () => session,
+      )..start();
+
+      try {
+        connectionStates.add(RealtimeConnectionState.connected);
+        bleEvents.add(_bridgeRelayTelEvent(signature: 'relay-tel-1'));
+        await Future<void>.delayed(Duration.zero);
+
+        expect(telemetryRepository.publishedPayloads, hasLength(1));
+        expect(
+          telemetryRepository.publishedPayloads.single.deviceId,
+          'CF:82:10:20:30:40',
+        );
+        expect(
+          bridge.currentDiagnostics.lastRelayRemoteDeviceId,
+          'CF:82:10:20:30:40',
+        );
+      } finally {
+        await bridge.dispose();
+        await bleEvents.close();
+        await connectionStates.close();
+        await realtimeEvents.close();
+      }
+    });
+
+    test('BLE bridge fans out C2 aggregate relay telemetry per member',
+        () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final connectionStates =
+          StreamController<RealtimeConnectionState>.broadcast();
+      final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      EixamSession? session = const EixamSession.signed(
+        appId: 'app-demo',
+        externalUserId: 'external-123',
+        userHash: 'deadbeef',
+      );
+      final bridge = BleOperationalRuntimeBridge(
+        bleIncomingEvents: bleEvents.stream,
+        connectionStates: connectionStates.stream,
+        realtimeEvents: realtimeEvents.stream,
+        telemetryRepository: telemetryRepository,
+        sosRepository: sosRepository,
+        deviceSosController: deviceSosController,
+        sessionProvider: () => session,
+      )..start();
+
+      try {
+        connectionStates.add(RealtimeConnectionState.connected);
+        bleEvents.add(
+          _bridgeRelayClusterAggregateTelCompleteEvent(signature: 'agg-c2-1'),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(telemetryRepository.publishedPayloads, hasLength(2));
+        expect(
+          telemetryRepository.publishedPayloads
+              .map((payload) => payload.deviceId)
+              .toList(),
+          <String?>['CF:82:10:20:30:40', 'CF:82:10:20:30:41'],
+        );
+      } finally {
+        await bridge.dispose();
+        await bleEvents.close();
+        await connectionStates.close();
+        await realtimeEvents.close();
+      }
+    });
+
+    test('BLE bridge treats relay telemetry 422 as terminal and does not retry',
+        () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final connectionStates =
+          StreamController<RealtimeConnectionState>.broadcast();
+      final realtimeEvents = StreamController<RealtimeEvent>.broadcast();
+      telemetryRepository.publishError = const TrackingException(
+        'E_HTTP_422_TERMINAL',
+        'HTTP 422 relay rejected',
+      );
+      EixamSession? session = const EixamSession.signed(
+        appId: 'app-demo',
+        externalUserId: 'external-123',
+        userHash: 'deadbeef',
+      );
+      final bridge = BleOperationalRuntimeBridge(
+        bleIncomingEvents: bleEvents.stream,
+        connectionStates: connectionStates.stream,
+        realtimeEvents: realtimeEvents.stream,
+        telemetryRepository: telemetryRepository,
+        sosRepository: sosRepository,
+        deviceSosController: deviceSosController,
+        sessionProvider: () => session,
+      )..start();
+
+      try {
+        connectionStates.add(RealtimeConnectionState.connected);
+        bleEvents.add(_bridgeRelayTelEvent(signature: 'relay-tel-422'));
+        await Future<void>.delayed(Duration.zero);
+        connectionStates.add(RealtimeConnectionState.reconnecting);
+        connectionStates.add(RealtimeConnectionState.connected);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(telemetryRepository.publishCallCount, 1);
+        expect(bridge.currentDiagnostics.pendingTelemetry, isNull);
+        expect(
+          bridge.currentDiagnostics.lastRelayTerminalErrorCode,
+          'E_HTTP_422_TERMINAL',
+        );
+      } finally {
+        await bridge.dispose();
+        telemetryRepository.publishError = null;
+        await bleEvents.close();
+        await connectionStates.close();
+        await realtimeEvents.close();
+      }
+    });
+
     test(
         'startPreSos with connected device enters preConfirm without backend trigger and exposes arming',
         () async {
@@ -6669,7 +6804,8 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 120));
 
         expect(sosRepository.triggerCallCount, 1);
-        expect((await localSdk.getDeviceSosStatus()).state, DeviceSosState.active);
+        expect(
+            (await localSdk.getDeviceSosStatus()).state, DeviceSosState.active);
         expect(await localSdk.getSosState(), SosState.sent);
         expect((await localSdk.getCurrentSosIncident())?.deliveryChannel,
             SosDeliveryChannel.backendAndDevice);
@@ -6773,6 +6909,74 @@ void main() {
       expect(sosRepository.lastPositionSnapshot?.latitude, 41.38);
       expect(sosRepository.lastDeviceId, 'CF:82:00:00:00:01');
       expect(sosRepository.lastDeviceId, isNot('ble-confirm-1'));
+    });
+
+    test('confirmDeviceSos publishes relayed SOS with the remote deviceId',
+        () async {
+      final relayBleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final localDeviceRepository = FakeDeviceRepository(
+        initialStatus: buildDeviceStatus(
+          deviceId: 'ble-confirm-relay',
+          canonicalHardwareId: 'CF:82:00:00:00:05',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
+      );
+      final localDeviceSosController = DeviceSosController();
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: localDeviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: realtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: relayBleEvents.stream,
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        await localSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await localDeviceSosController.attach(
+          commandWriter: (command) async {},
+        );
+
+        final relayPacket = _relayedSosPacket();
+        relayBleEvents.add(
+          BleIncomingEvent(
+            deviceId: 'ble-confirm-relay',
+            canonicalHardwareId: 'CF:82:00:00:00:05',
+            type: BleIncomingEventType.sosMeshPacket,
+            channel: EixamBleChannel.sos,
+            payload: relayPacket.rawBytes,
+            payloadHex: relayPacket.rawHex,
+            source: DeviceSosTransitionSource.device,
+            receivedAt: DateTime.utc(2026, 3, 31, 10, 1),
+            sosPacket: relayPacket,
+          ),
+        );
+        localDeviceSosController.handleIncomingSosPacket(
+          relayPacket,
+          source: DeviceSosTransitionSource.device,
+        );
+
+        await localSdk.confirmDeviceSos();
+
+        expect(sosRepository.triggerCallCount, 1);
+        expect(sosRepository.lastDeviceId, 'CF:82:10:20:30:41');
+        expect(sosRepository.lastDeviceId, isNot('CF:82:00:00:00:05'));
+      } finally {
+        await localSdk.dispose();
+        await relayBleEvents.close();
+        await localDeviceRepository.dispose();
+      }
     });
 
     test(
@@ -7351,6 +7555,12 @@ EixamSosPacket _relayedSosPacket() {
     0x00,
     0x00,
     0x54,
+    0xCF,
+    0x82,
+    0x10,
+    0x20,
+    0x30,
+    0x41,
   ])!;
 }
 
@@ -7512,6 +7722,57 @@ BleIncomingEvent _bridgeAggregateTelCompleteEvent({
   );
 }
 
+BleIncomingEvent _bridgeRelayTelEvent({
+  required String signature,
+  String? canonicalHardwareId = 'CF:82:99:88:77:66',
+}) {
+  final relayPacket = EixamTelRelayRxPacket.tryParse(
+    const <int>[
+      0xD2,
+      0x34,
+      0x12,
+      0x01,
+      0x02,
+      0x03,
+      0x04,
+      0x05,
+      0x06,
+      0x87,
+      0x65,
+      0xF6,
+      0xC4,
+      0x35,
+      0x12,
+      0x01,
+      0x02,
+      0x03,
+      0x04,
+      0x05,
+      0x06,
+      0x87,
+      0x65,
+      0xCF,
+      0x82,
+      0x10,
+      0x20,
+      0x30,
+      0x40,
+    ],
+  )!;
+  return BleIncomingEvent(
+    deviceId: 'device-1',
+    canonicalHardwareId: canonicalHardwareId,
+    type: BleIncomingEventType.telRelayRx,
+    channel: EixamBleChannel.tel,
+    payload: relayPacket.payload,
+    payloadHex: signature,
+    source: DeviceSosTransitionSource.device,
+    receivedAt: DateTime.utc(2026, 3, 31, 10),
+    aggregatePayload: relayPacket.payload,
+    telRelayRxPacket: relayPacket,
+  );
+}
+
 BleIncomingEvent _bridgeAggregateTelFragmentEvent({
   required String signature,
   String? canonicalHardwareId = 'CF:82:99:88:77:66',
@@ -7543,6 +7804,58 @@ BleIncomingEvent _bridgeUnsupportedAggregateTelCompleteEvent({
     source: DeviceSosTransitionSource.device,
     receivedAt: DateTime.utc(2026, 3, 31, 10),
     aggregatePayload: List<int>.generate(21, (index) => index),
+  );
+}
+
+BleIncomingEvent _bridgeRelayClusterAggregateTelCompleteEvent({
+  required String signature,
+  String? canonicalHardwareId = 'CF:82:99:88:77:66',
+}) {
+  return BleIncomingEvent(
+    deviceId: 'device-1',
+    canonicalHardwareId: canonicalHardwareId,
+    type: BleIncomingEventType.telAggregateComplete,
+    channel: EixamBleChannel.tel,
+    payload: const <int>[0xD0, 0x22, 0x00, 0x00, 0x00, 0x01],
+    payloadHex: signature,
+    source: DeviceSosTransitionSource.device,
+    receivedAt: DateTime.utc(2026, 3, 31, 10),
+    aggregatePayload: const <int>[
+      0xC2,
+      0x02,
+      0xCF,
+      0x82,
+      0x10,
+      0x20,
+      0x30,
+      0x40,
+      0x34,
+      0x12,
+      0x01,
+      0x02,
+      0x03,
+      0x04,
+      0x05,
+      0x06,
+      0x87,
+      0x65,
+      0xCF,
+      0x82,
+      0x10,
+      0x20,
+      0x30,
+      0x41,
+      0x35,
+      0x12,
+      0x01,
+      0x02,
+      0x03,
+      0x04,
+      0x05,
+      0x06,
+      0x87,
+      0x65,
+    ],
   );
 }
 
