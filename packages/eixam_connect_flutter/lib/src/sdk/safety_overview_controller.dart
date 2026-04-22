@@ -413,7 +413,7 @@ class SafetyOverviewController extends ChangeNotifier {
     final parsed = value.toLowerCase().startsWith('0x')
         ? int.tryParse(value.substring(2), radix: 16)
         : int.tryParse(value);
-    if (parsed == null || parsed < 0 || parsed > 0xFFFF) {
+    if (parsed == null || parsed < 0 || parsed > 0xFFFFFFFF) {
       throw RescueException(
         'E_RESCUE_INVALID_NODE_ID',
         'Enter a valid $fieldLabel node id in decimal or 0x hex format.',

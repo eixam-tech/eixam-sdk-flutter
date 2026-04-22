@@ -11,10 +11,15 @@ import 'canonical_hardware_id.dart';
 import 'ble_debug_registry.dart';
 import 'ble_scan_result.dart';
 import 'eixam_ble_command.dart';
+import 'eixam_ble_mesh_port_inference.dart';
 import 'eixam_ble_notification.dart';
 import 'eixam_ble_protocol.dart';
 
 class RealBleClient implements BleClient {
+  RealBleClient({
+    int? Function(EixamBleChannel channel, List<int> payload)? meshPortResolver,
+  }) : _meshPortResolver = meshPortResolver;
+
   static const Duration _connectTimeout = Duration(seconds: 10);
   static const Duration _postConnectStabilizationDelay =
       Duration(milliseconds: 350);
@@ -24,6 +29,8 @@ class RealBleClient implements BleClient {
   final Map<String, BluetoothDevice> _devices = {};
   final Map<String, List<BluetoothService>> _servicesCache = {};
   StreamSubscription<BluetoothAdapterState>? _adapterStateSub;
+  final int? Function(EixamBleChannel channel, List<int> payload)?
+      _meshPortResolver;
 
   static final Guid eixamServiceUuid = Guid(EixamBleProtocol.serviceUuid);
   static final Guid telNotifyCharUuid =
@@ -49,6 +56,7 @@ class RealBleClient implements BleClient {
   );
 
   bool _initialized = false;
+  bool _reportedAmbiguousTelMeshPort = false;
 
   @override
   Future<void> initialize() async {
@@ -461,18 +469,32 @@ class RealBleClient implements BleClient {
     );
 
     final telStream = tel.lastValueStream.map(
-      (v) => EixamBleNotification(
-        channel: EixamBleChannel.tel,
-        payload: v.toList(),
-        receivedAt: DateTime.now(),
-      ),
+      (v) {
+        final payload = v.toList();
+        return EixamBleNotification(
+          channel: EixamBleChannel.tel,
+          payload: payload,
+          receivedAt: DateTime.now(),
+          meshPort: _meshPortForLiveNotification(
+            channel: EixamBleChannel.tel,
+            payload: payload,
+          ),
+        );
+      },
     );
     final sosStream = sos.lastValueStream.map(
-      (v) => EixamBleNotification(
-        channel: EixamBleChannel.sos,
-        payload: v.toList(),
-        receivedAt: DateTime.now(),
-      ),
+      (v) {
+        final payload = v.toList();
+        return EixamBleNotification(
+          channel: EixamBleChannel.sos,
+          payload: payload,
+          receivedAt: DateTime.now(),
+          meshPort: _meshPortForLiveNotification(
+            channel: EixamBleChannel.sos,
+            payload: payload,
+          ),
+        );
+      },
     );
 
     return StreamGroup.merge([telStream, sosStream]).map((notification) {
@@ -480,13 +502,36 @@ class RealBleClient implements BleClient {
         lastPacketReceived: notification.payloadHex,
       );
       BleDebugRegistry.instance.recordEvent(
-        'Notify packet received from $deviceId channel=${notification.channel.name} (${notification.payload.length} bytes)',
+        'Notify packet received from $deviceId channel=${notification.channel.name} meshPort=${notification.meshPort?.toString() ?? "-"} (${notification.payload.length} bytes)',
       );
       _log(
-        'BLE notify packet -> deviceId=$deviceId channel=${notification.channel.name} payload=${notification.payloadHex}',
+        'BLE notify packet -> deviceId=$deviceId channel=${notification.channel.name} meshPort=${notification.meshPort?.toString() ?? "-"} payload=${notification.payloadHex}',
       );
       return notification;
     });
+  }
+
+  int? _meshPortForLiveNotification({
+    required EixamBleChannel channel,
+    required List<int> payload,
+  }) {
+    final explicitMeshPort = _meshPortResolver?.call(channel, payload);
+    final inferredMeshPort = inferMeshPortForLiveNotification(
+      channel: channel,
+      payload: payload,
+      explicitMeshPort: explicitMeshPort,
+    );
+    if (channel == EixamBleChannel.tel &&
+        inferredMeshPort == null &&
+        explicitMeshPort == null &&
+        payload.length == EixamBleProtocol.telPacketLength &&
+        !_reportedAmbiguousTelMeshPort) {
+      _reportedAmbiguousTelMeshPort = true;
+      BleDebugRegistry.instance.recordEvent(
+        'BLE live TEL notify has no mesh port metadata; leaving ambiguous 12-byte payload untagged to avoid unsafe TEL-vs-heartbeat inference',
+      );
+    }
+    return inferredMeshPort;
   }
 
   @override

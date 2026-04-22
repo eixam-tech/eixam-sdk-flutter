@@ -16,6 +16,7 @@ void main() {
           0x00,
           0x00,
           0x00,
+          0x00,
           0x01,
           0x21,
           0xF6,
@@ -28,8 +29,11 @@ void main() {
           0x00,
           0x00,
           0x00,
+          0x00,
           0x01,
           0x21,
+          0x87,
+          0x65,
         ],
         receivedAt: receivedAt,
       );
@@ -37,50 +41,12 @@ void main() {
       expect(packet, isNotNull);
       expect(packet!.relay.rxSnr, -10);
       expect(packet.relay.rxRssi, -60);
-      expect(packet.relay.peerPayload, hasLength(10));
-      expect(packet.relay.selfPayload, hasLength(10));
+      expect(packet.relay.peerPayload, hasLength(12));
+      expect(packet.relay.selfPayload, hasLength(12));
       expect(packet.relay.peerPosition.source.name, 'mesh');
       expect(packet.relay.selfPosition.source.name, 'mesh');
       expect(packet.relay.receivedAt, receivedAt);
-    });
-
-    test('parses remote deviceId from the extended D2 relay contract', () {
-      final packet = EixamTelRelayRxPacket.tryParse(
-        const <int>[
-          0xD2,
-          0xA8,
-          0x1A,
-          0x00,
-          0x00,
-          0x00,
-          0x00,
-          0x00,
-          0x00,
-          0x01,
-          0x21,
-          0xF6,
-          0xC4,
-          0xB0,
-          0x1B,
-          0x00,
-          0x00,
-          0x00,
-          0x00,
-          0x00,
-          0x00,
-          0x01,
-          0x21,
-          0xCF,
-          0x82,
-          0x10,
-          0x20,
-          0x30,
-          0x40,
-        ],
-      );
-
-      expect(packet, isNotNull);
-      expect(packet!.relay.remoteDeviceId, 'CF:82:10:20:30:40');
+      expect(packet.relay.remoteDeviceId, isNull);
     });
 
     test('rejects payloads that do not match the D2 relay contract', () {
@@ -102,6 +68,7 @@ void main() {
             0x00,
             0x00,
             0x00,
+            0x00,
             0x01,
             0x21,
             0xF6,
@@ -114,8 +81,11 @@ void main() {
             0x00,
             0x00,
             0x00,
+            0x00,
             0x01,
             0x21,
+            0x87,
+            0x65,
           ],
         ),
         isNull,

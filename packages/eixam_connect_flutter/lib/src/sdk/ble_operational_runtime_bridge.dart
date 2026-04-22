@@ -9,6 +9,7 @@ import '../device/ble_debug_registry.dart';
 import '../device/ble_incoming_event.dart';
 import '../device/device_sos_controller.dart';
 import '../device/eixam_ble_protocol.dart';
+import '../device/eixam_cluster_heartbeat_packet.dart';
 import '../device/eixam_sos_packet.dart';
 import '../device/eixam_tel_packet.dart';
 import '../device/eixam_tel_relay_cluster_packet.dart';
@@ -196,6 +197,9 @@ class BleOperationalRuntimeBridge {
       case BleIncomingEventType.telRelayRx:
         await _publishRelayTelemetryIfValid(event);
         return;
+      case BleIncomingEventType.clusterHeartbeat:
+        await _publishHeartbeatIfValid(event);
+        return;
       case BleIncomingEventType.backlogSyncFrame:
         return;
       case BleIncomingEventType.sosMeshPacket:
@@ -281,25 +285,15 @@ class BleOperationalRuntimeBridge {
 
     final relayCluster = EixamTelRelayClusterPacket.tryParse(aggregatePayload);
     if (relayCluster != null) {
-      for (final member in relayCluster.members) {
-        final relayContext = RelayIngestContext(
-          kind: RelayIngestKind.telemetry,
-          remoteDeviceId: member.remoteDeviceId,
-          gatewayRuntimeDeviceId: event.deviceId,
-          gatewayCanonicalHardwareId: event.canonicalHardwareId,
-          payloadSignature: member.packet.rawHex,
-        );
-        await _publishTelemetryPacket(
-          event: event,
-          packet: member.packet,
-          signature:
-              'relay-cluster:${event.deviceId}:${member.remoteDeviceId}:${member.packet.rawHex}',
-          summary:
-              'gateway=${event.deviceId} remote=${member.remoteDeviceId} aggregateLen=${aggregatePayload.length} lat=${member.packet.position.latitude} lng=${member.packet.position.longitude} raw=${member.packet.rawHex}',
-          relayContext: relayContext,
-          overrideDeviceId: member.remoteDeviceId,
-        );
-      }
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          lastDecision:
+              'Cluster aggregate parsed but not published: v2 aggregate members do not carry backend-safe remote device ids',
+        ),
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'BLE operational bridge observed cluster aggregate -> clusterId=${relayCluster.clusterId} members=${relayCluster.members.length} publish=skipped_missing_remote_device_ids',
+      );
       return;
     }
 
@@ -335,6 +329,76 @@ class BleOperationalRuntimeBridge {
       signature: 'tel-aggregate:${event.deviceId}:${packet.rawHex}',
       summary:
           'device=${event.deviceId} aggregateLen=${aggregatePayload.length} lat=${packet.position.latitude} lng=${packet.position.longitude} raw=${packet.rawHex}',
+    );
+  }
+
+  Future<void> _publishHeartbeatIfValid(BleIncomingEvent event) async {
+    final packet = event.clusterHeartbeatPacket;
+    if (packet == null) {
+      return;
+    }
+
+    final summary =
+        'device=${event.deviceId} heartbeat nodeId=${_formatNodeId(packet.nodeId)} clusterId=${packet.clusterId} aggId=0x${packet.aggId.toRadixString(16).padLeft(8, '0')} score=${packet.score} members=${packet.memberCount} aggSf=${packet.aggSpreadingFactor} raw=${packet.rawHex}';
+    _emitDiagnostics(
+      _diagnostics.copyWith(
+        lastBleTelemetryEventSummary: summary,
+      ),
+    );
+
+    final payload = await _buildBackendSafeBleHeartbeatPayload(
+      event: event,
+      packet: packet,
+    );
+    if (!_hasMinimumTelemetry(payload)) {
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          lastDecision: 'Heartbeat skipped: minimum fields missing',
+        ),
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'BLE operational bridge skipped heartbeat publish -> reason=minimum_fields_missing deviceId=${event.deviceId}',
+      );
+      return;
+    }
+
+    final signature = 'heartbeat:${event.deviceId}:${packet.rawHex}';
+    if (!_registerSignature(_recentTelemetrySignatures, signature)) {
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          lastDecision: 'Heartbeat skipped: duplicate packet',
+        ),
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'BLE operational bridge skipped heartbeat publish -> reason=duplicate signature=$signature',
+      );
+      return;
+    }
+
+    if (!_canPublishOperationally) {
+      _pendingTelemetry = _PendingTelemetryPublish(
+        signature: signature,
+        payload: payload,
+      );
+      _emitDiagnostics(
+        _diagnostics.copyWith(
+          pendingTelemetry: PendingTelemetryDiagnostics(
+            signature: signature,
+            payload: payload,
+          ),
+          lastDecision: 'Heartbeat buffered: latest sample wins',
+        ),
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'BLE operational bridge retained pending heartbeat -> latest_sample_wins signature=$signature',
+      );
+      return;
+    }
+
+    await _publishTelemetryPayload(
+      payload: payload,
+      signature: signature,
+      allowPendingFallback: true,
     );
   }
 
@@ -425,6 +489,26 @@ class BleOperationalRuntimeBridge {
       longitude: packet.position.longitude,
       altitude: packet.position.altitudeMeters.toDouble(),
       deviceId: overrideDeviceId ?? await _resolveBackendHardwareId(event),
+    );
+  }
+
+  Future<SdkTelemetryPayload> _buildBackendSafeBleHeartbeatPayload({
+    required BleIncomingEvent event,
+    required EixamClusterHeartbeatPacket packet,
+  }) async {
+    return SdkTelemetryPayload(
+      timestamp: event.receivedAt.toUtc(),
+      latitude: 0,
+      longitude: 0,
+      altitude: 0,
+      kind: 'HEARTBEAT',
+      nodeId: packet.nodeId,
+      clusterId: packet.clusterId,
+      aggId: packet.aggId,
+      score: packet.score,
+      memberCount: packet.memberCount,
+      aggSpreadingFactor: packet.aggSpreadingFactor,
+      deviceId: await _resolveBackendHardwareId(event),
     );
   }
 
@@ -626,6 +710,14 @@ class BleOperationalRuntimeBridge {
   }
 
   bool _hasMinimumTelemetry(SdkTelemetryPayload payload) {
+    if (payload.kind == 'HEARTBEAT') {
+      return payload.nodeId != null &&
+          payload.clusterId != null &&
+          payload.aggId != null &&
+          payload.score != null &&
+          payload.memberCount != null &&
+          payload.aggSpreadingFactor != null;
+    }
     return payload.latitude.isFinite &&
         payload.latitude >= -90 &&
         payload.latitude <= 90 &&
@@ -954,8 +1046,8 @@ class BleOperationalRuntimeBridge {
   }
 
   String _formatNodeId(int nodeId) {
-    final normalized = nodeId & 0xFFFF;
-    return '0x${normalized.toRadixString(16).padLeft(4, '0')}';
+    final normalized = nodeId & 0xFFFFFFFF;
+    return '0x${normalized.toRadixString(16).padLeft(8, '0')} ($nodeId)';
   }
 
   _IncomingSosRole _incomingSosRoleFrom(EixamSosPacket packet) {

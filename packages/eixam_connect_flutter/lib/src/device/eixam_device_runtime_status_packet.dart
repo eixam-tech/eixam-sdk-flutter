@@ -7,8 +7,8 @@ class EixamDeviceRuntimeStatusPacket {
 
   final DeviceRuntimeStatus status;
 
-  static const int packetLength = 12;
-  static const List<int> header = <int>[0xE9, 0x78, 0x01];
+  static const int packetLength = 14;
+  static const List<int> header = <int>[0xE9, 0x78, 0x02];
 
   static EixamDeviceRuntimeStatusPacket? tryParse(
     List<int> bytes, {
@@ -34,12 +34,19 @@ class EixamDeviceRuntimeStatusPacket {
         txEnabled: (flags & 0x04) != 0,
         inetOk: (flags & 0x08) != 0,
         positionConfirmed: (flags & 0x10) != 0,
-        nodeId: bytes[7] | (bytes[8] << 8),
-        batteryPercent: bytes[9],
-        telIntervalSeconds: bytes[10] | (bytes[11] << 8),
+        nodeId: _readU32(bytes, 7),
+        batteryPercent: bytes[11],
+        telIntervalSeconds: bytes[12] | (bytes[13] << 8),
         receivedAt: receivedAt,
         rawBytes: List<int>.unmodifiable(bytes),
       ),
     );
+  }
+
+  static int _readU32(List<int> bytes, int offset) {
+    return bytes[offset] |
+        (bytes[offset + 1] << 8) |
+        (bytes[offset + 2] << 16) |
+        (bytes[offset + 3] << 24);
   }
 }

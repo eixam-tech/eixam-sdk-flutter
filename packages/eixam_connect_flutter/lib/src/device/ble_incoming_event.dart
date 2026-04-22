@@ -2,6 +2,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import 'eixam_ble_protocol.dart';
 import 'eixam_backlog_sync_frame.dart';
+import 'eixam_cluster_heartbeat_packet.dart';
 import 'eixam_device_runtime_status_packet.dart';
 import 'eixam_guided_rescue_status_packet.dart';
 import 'eixam_sos_event_packet.dart';
@@ -16,6 +17,7 @@ enum BleIncomingEventType {
   telAggregateFragment,
   telAggregateComplete,
   telRelayRx,
+  clusterHeartbeat,
   backlogSyncFrame,
   guidedRescueStatus,
   sosMeshPacket,
@@ -33,10 +35,12 @@ class BleIncomingEvent {
     required this.payloadHex,
     required this.source,
     required this.receivedAt,
+    this.meshPort,
     this.deviceAlias,
     this.telPacket,
     this.telFragment,
     this.aggregatePayload,
+    this.clusterHeartbeatPacket,
     this.guidedRescueStatusPacket,
     this.deviceRuntimeStatusPacket,
     this.telRelayRxPacket,
@@ -54,9 +58,11 @@ class BleIncomingEvent {
   final String payloadHex;
   final DeviceSosTransitionSource source;
   final DateTime receivedAt;
+  final int? meshPort;
   final EixamTelPacket? telPacket;
   final EixamTelFragment? telFragment;
   final List<int>? aggregatePayload;
+  final EixamClusterHeartbeatPacket? clusterHeartbeatPacket;
   final EixamGuidedRescueStatusPacket? guidedRescueStatusPacket;
   final EixamDeviceRuntimeStatusPacket? deviceRuntimeStatusPacket;
   final EixamTelRelayRxPacket? telRelayRxPacket;

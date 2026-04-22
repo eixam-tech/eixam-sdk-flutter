@@ -5,10 +5,12 @@ class EixamBleNotification {
     required this.channel,
     required this.payload,
     required this.receivedAt,
+    this.meshPort,
   }) : payloadHex = EixamBleProtocol.hex(payload);
 
   final EixamBleChannel channel;
   final List<int> payload;
   final String payloadHex;
   final DateTime receivedAt;
+  final int? meshPort;
 }

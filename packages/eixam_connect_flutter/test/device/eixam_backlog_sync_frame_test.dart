@@ -54,6 +54,8 @@ void main() {
           0x00,
           0x01,
           0x21,
+          0x87,
+          0x65,
           0xA1,
           0xBB,
           0xF0,
@@ -68,6 +70,8 @@ void main() {
           0x00,
           0x01,
           0x21,
+          0x87,
+          0x65,
         ],
       ) as EixamBacklogSyncChunkFrame?;
 

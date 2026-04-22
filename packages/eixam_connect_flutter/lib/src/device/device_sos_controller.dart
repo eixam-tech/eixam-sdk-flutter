@@ -652,8 +652,8 @@ class DeviceSosController {
   }
 
   String _formatNodeId(int nodeId) {
-    final normalized = nodeId & 0xFFFF;
-    return '0x${normalized.toRadixString(16).padLeft(4, '0')}';
+    final normalized = nodeId & 0xFFFFFFFF;
+    return '0x${normalized.toRadixString(16).padLeft(8, '0')} ($nodeId)';
   }
 
   void _enterPreConfirm({

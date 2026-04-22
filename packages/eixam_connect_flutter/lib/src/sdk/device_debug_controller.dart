@@ -225,9 +225,9 @@ class DeviceDebugController extends ChangeNotifier {
           StateError('Invalid nodeId. Use decimal or hex like 0x1AA8.'));
       return;
     }
-    if (nodeId < 0 || nodeId > 0xFFFF) {
+    if (nodeId < 0 || nodeId > 0xFFFFFFFF) {
       _handleError(
-        StateError('SOS_ACK_RELAY expects a 16-bit nodeId (0 to 65535).'),
+        StateError('SOS_ACK_RELAY expects a uint32 nodeId (0 to 4294967295).'),
       );
       return;
     }

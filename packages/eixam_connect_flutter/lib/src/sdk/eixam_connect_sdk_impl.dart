@@ -126,8 +126,7 @@ class EixamConnectSdkImpl
   final Map<String, _ObservedRelaySosContext> _observedRelaySosBySignature =
       <String, _ObservedRelaySosContext>{};
   final Map<String, _SosClosureIntent>
-      _deviceOriginatedClosureIntentByCycleKey =
-      <String, _SosClosureIntent>{};
+      _deviceOriginatedClosureIntentByCycleKey = <String, _SosClosureIntent>{};
   final Map<String, _SosClosureIntent>
       _deviceOriginatedClosureIntentByIncidentId =
       <String, _SosClosureIntent>{};
@@ -1441,8 +1440,8 @@ class EixamConnectSdkImpl
     if (nodeId == null) {
       return '-';
     }
-    final normalized = nodeId & 0xFFFF;
-    return '0x${normalized.toRadixString(16).padLeft(4, '0')}';
+    final normalized = nodeId & 0xFFFFFFFF;
+    return '0x${normalized.toRadixString(16).padLeft(8, '0')} ($nodeId)';
   }
 
   int _nextBleNotificationId() {
@@ -2609,7 +2608,8 @@ class EixamConnectSdkImpl
     }
 
     final cycleKey = _deviceOriginatedClosureCycleKeyFor(status);
-    final incident = currentIncident ?? await sosRepository.getCurrentIncident();
+    final incident =
+        currentIncident ?? await sosRepository.getCurrentIncident();
     final rememberedIntent = incident == null
         ? _lookupRememberedDeviceOriginatedClosureIntent(cycleKey: cycleKey)
         : _lookupRememberedDeviceOriginatedClosureIntent(

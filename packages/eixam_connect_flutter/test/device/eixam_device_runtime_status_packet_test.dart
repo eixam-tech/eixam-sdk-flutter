@@ -3,19 +3,21 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('EixamDeviceRuntimeStatusPacket', () {
-    test('parses a valid 12-byte runtime status payload', () {
+    test('parses a valid 14-byte runtime status payload', () {
       final receivedAt = DateTime.utc(2026, 4, 18, 10);
       final packet = EixamDeviceRuntimeStatusPacket.tryParse(
         const <int>[
           0xE9,
           0x78,
-          0x01,
+          0x02,
           0x02,
           0x03,
           0x07,
           0x1F,
           0x34,
           0x12,
+          0x00,
+          0x00,
           88,
           0x3C,
           0x00,
@@ -41,7 +43,7 @@ void main() {
     test('rejects packets with an unexpected header or length', () {
       expect(
         EixamDeviceRuntimeStatusPacket.tryParse(
-          const <int>[0xE9, 0x78, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+          const <int>[0xE9, 0x78, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         ),
         isNull,
       );

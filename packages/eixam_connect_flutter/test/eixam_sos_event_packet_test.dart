@@ -4,8 +4,9 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   group('EixamSosEventPacket.tryParse', () {
     test('parses valid SOS device events', () {
-      final packet =
-          EixamSosEventPacket.tryParse(<int>[0xE1, 0x02, 0x34, 0x12]);
+      final packet = EixamSosEventPacket.tryParse(
+        <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
+      );
 
       expect(packet, isNotNull);
       expect(packet!.opcode, 0xE1);
@@ -18,7 +19,7 @@ void main() {
     test('rejects packets with invalid size or opcode', () {
       expect(EixamSosEventPacket.tryParse(<int>[0xE1, 0x01, 0x34]), isNull);
       expect(
-        EixamSosEventPacket.tryParse(<int>[0xE3, 0x01, 0x34, 0x12]),
+        EixamSosEventPacket.tryParse(<int>[0xE3, 0x01, 0x34, 0x12, 0x00, 0x00]),
         isNull,
       );
     });

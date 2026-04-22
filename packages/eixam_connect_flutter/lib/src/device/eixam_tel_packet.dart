@@ -27,22 +27,29 @@ class EixamTelPacket {
   final int headingBucket;
 
   static EixamTelPacket? tryParse(List<int> bytes) {
-    // Classic TEL packets are fixed-width 10-byte payloads.
     if (bytes.length != EixamBleProtocol.telPacketLength) {
       return null;
     }
 
+    final metaOffset = 10;
     return EixamTelPacket(
       rawBytes: List<int>.unmodifiable(bytes),
       rawHex: EixamBleProtocol.hex(bytes),
-      nodeId: bytes[0] | (bytes[1] << 8),
-      position: EixamPositionData.decode(bytes, offset: 2),
-      metaWord: bytes[8] | (bytes[9] << 8),
-      batteryLevel: (bytes[8] >> 6) & 0x03,
-      gpsQuality: (bytes[8] >> 4) & 0x03,
-      packetId: bytes[8] & 0x0F,
-      speedBucket: (bytes[9] >> 4) & 0x0F,
-      headingBucket: bytes[9] & 0x0F,
+      nodeId: _readU32(bytes, 0),
+      position: EixamPositionData.decode(bytes, offset: 4),
+      metaWord: bytes[metaOffset] | (bytes[metaOffset + 1] << 8),
+      batteryLevel: (bytes[metaOffset] >> 6) & 0x03,
+      gpsQuality: (bytes[metaOffset] >> 4) & 0x03,
+      packetId: bytes[metaOffset] & 0x0F,
+      speedBucket: (bytes[metaOffset + 1] >> 4) & 0x0F,
+      headingBucket: bytes[metaOffset + 1] & 0x0F,
     );
+  }
+
+  static int _readU32(List<int> bytes, int offset) {
+    return bytes[offset] |
+        (bytes[offset + 1] << 8) |
+        (bytes[offset + 2] << 16) |
+        (bytes[offset + 3] << 24);
   }
 }

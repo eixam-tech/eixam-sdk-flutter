@@ -28,13 +28,15 @@ class MockBleClient implements BleClient {
   List<int> runtimeStatusPayload = <int>[
     0xE9,
     0x78,
-    0x01,
+    0x02,
     0x02,
     0x03,
     0x07,
     0x1F,
     0x34,
     0x12,
+    0x00,
+    0x00,
     88,
     0x3C,
     0x00,
@@ -251,11 +253,13 @@ class MockBleClient implements BleClient {
 
     switch (command.opcode) {
       case 0x01:
-        if (command.bytes.length == 5) {
-          final targetNodeId = command.bytes[0] | (command.bytes[1] << 8);
+        if (command.bytes.length == 9) {
+          final targetNodeId = _readU32(command.bytes, 0);
           emit(EixamBleChannel.tel, <int>[
             targetNodeId & 0xFF,
             (targetNodeId >> 8) & 0xFF,
+            (targetNodeId >> 16) & 0xFF,
+            (targetNodeId >> 24) & 0xFF,
             0x00,
             0x00,
             0x00,
@@ -281,14 +285,18 @@ class MockBleClient implements BleClient {
         ]);
         return;
       case 0x05:
-        if (command.bytes.length == 5) {
-          final targetNodeId = command.bytes[0] | (command.bytes[1] << 8);
-          final rescueNodeId = command.bytes[2] | (command.bytes[3] << 8);
+        if (command.bytes.length == 9) {
+          final targetNodeId = _readU32(command.bytes, 0);
+          final rescueNodeId = _readU32(command.bytes, 4);
           emit(EixamBleChannel.tel, <int>[
             rescueNodeId & 0xFF,
             (rescueNodeId >> 8) & 0xFF,
+            (rescueNodeId >> 16) & 0xFF,
+            (rescueNodeId >> 24) & 0xFF,
             targetNodeId & 0xFF,
             (targetNodeId >> 8) & 0xFF,
+            (targetNodeId >> 16) & 0xFF,
+            (targetNodeId >> 24) & 0xFF,
             0x85,
             0x02,
             0x03,
@@ -314,7 +322,7 @@ class MockBleClient implements BleClient {
       case 0x02:
       case 0x03:
       case 0x04:
-        if (command.bytes.length == 5) {
+        if (command.bytes.length == 9) {
           return;
         }
         emit(EixamBleChannel.tel, <int>[
@@ -374,10 +382,18 @@ class MockBleClient implements BleClient {
     }
   }
 
+  int _readU32(List<int> bytes, int offset) {
+    return bytes[offset] |
+        (bytes[offset + 1] << 8) |
+        (bytes[offset + 2] << 16) |
+        (bytes[offset + 3] << 24);
+  }
+
   void emitNotification(
     String deviceId, {
     required EixamBleChannel channel,
     required List<int> payload,
+    int? meshPort,
   }) {
     final controller = _notifyControllers[deviceId];
     if (controller == null || controller.isClosed) {
@@ -388,6 +404,7 @@ class MockBleClient implements BleClient {
         channel: channel,
         payload: payload,
         receivedAt: DateTime.now(),
+        meshPort: meshPort,
       ),
     );
   }

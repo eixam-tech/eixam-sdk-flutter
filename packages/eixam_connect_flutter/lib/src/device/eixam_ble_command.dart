@@ -59,7 +59,13 @@ class EixamDeviceCommand {
     return EixamDeviceCommand._(
       opcode: 0x08,
       label: 'SOS ACK RELAY',
-      bytes: <int>[0x08, nodeId & 0xFF, (nodeId >> 8) & 0xFF],
+      bytes: <int>[
+        0x08,
+        nodeId & 0xFF,
+        (nodeId >> 8) & 0xFF,
+        (nodeId >> 16) & 0xFF,
+        (nodeId >> 24) & 0xFF,
+      ],
     );
   }
 
@@ -175,8 +181,12 @@ class EixamDeviceCommand {
       bytes: <int>[
         targetNodeId & 0xFF,
         (targetNodeId >> 8) & 0xFF,
+        (targetNodeId >> 16) & 0xFF,
+        (targetNodeId >> 24) & 0xFF,
         rescueNodeId & 0xFF,
         (rescueNodeId >> 8) & 0xFF,
+        (rescueNodeId >> 16) & 0xFF,
+        (rescueNodeId >> 24) & 0xFF,
         commandCode,
       ],
       forceCmdCharacteristic: true,

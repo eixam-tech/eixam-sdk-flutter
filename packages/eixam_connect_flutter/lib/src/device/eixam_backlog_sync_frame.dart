@@ -122,7 +122,7 @@ class EixamBacklogSyncChunkFrame extends EixamBacklogSyncFrame {
     for (var i = 0; i < count; i++) {
       final timeUnix = _readU32(bytes, cursor);
       final wirePayload =
-          List<int>.unmodifiable(bytes.sublist(cursor + 4, cursor + 14));
+          List<int>.unmodifiable(bytes.sublist(cursor + 4, cursor + 16));
       final telPacket = EixamTelPacket.tryParse(wirePayload);
       if (telPacket == null) {
         return null;

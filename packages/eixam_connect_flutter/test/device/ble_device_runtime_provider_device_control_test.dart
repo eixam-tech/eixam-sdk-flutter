@@ -90,7 +90,7 @@ void main() {
 
     test('handles malformed runtime status responses safely', () async {
       await _pairDemoDevice(runtimeProvider);
-      bleClient.runtimeStatusPayload = <int>[0xE9, 0x78, 0x01, 0x02];
+      bleClient.runtimeStatusPayload = <int>[0xE9, 0x78, 0x02, 0x02];
 
       await expectLater(
         runtimeProvider.requestDeviceRuntimeStatus(

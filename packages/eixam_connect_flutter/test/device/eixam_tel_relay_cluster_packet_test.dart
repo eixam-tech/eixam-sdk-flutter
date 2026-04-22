@@ -3,19 +3,17 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('EixamTelRelayClusterPacket', () {
-    test('fans out one telemetry member per remote device in a C2 payload', () {
+    test('parses a v2 C2 aggregate with 12-byte TEL members', () {
       final packet = EixamTelRelayClusterPacket.tryParse(
         const <int>[
           0xC2,
           0x02,
-          0xCF,
-          0x82,
-          0x10,
-          0x20,
-          0x30,
-          0x40,
+          0x01,
+          0x02,
           0x34,
           0x12,
+          0x00,
+          0x00,
           0x01,
           0x02,
           0x03,
@@ -24,14 +22,10 @@ void main() {
           0x06,
           0x87,
           0x65,
-          0xCF,
-          0x82,
-          0x10,
-          0x20,
-          0x30,
-          0x41,
           0x35,
           0x12,
+          0x00,
+          0x00,
           0x01,
           0x02,
           0x03,
@@ -44,9 +38,10 @@ void main() {
       );
 
       expect(packet, isNotNull);
-      expect(packet!.members, hasLength(2));
-      expect(packet.members.first.remoteDeviceId, 'CF:82:10:20:30:40');
-      expect(packet.members.last.remoteDeviceId, 'CF:82:10:20:30:41');
+      expect(packet!.clusterId, 0x0102);
+      expect(packet.members, hasLength(2));
+      expect(packet.members.first.packet.nodeId, 0x1234);
+      expect(packet.members.last.packet.nodeId, 0x1235);
     });
   });
 }

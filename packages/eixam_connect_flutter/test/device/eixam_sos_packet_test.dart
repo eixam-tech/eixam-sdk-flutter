@@ -3,10 +3,12 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('EixamSosPacket.tryParse', () {
-    test('parses a minimal 5-byte SOS packet', () {
+    test('parses a minimal 7-byte SOS packet', () {
       final packet = EixamSosPacket.tryParse(<int>[
         0x34,
         0x12,
+        0x00,
+        0x00,
         0xA5,
         0xB1,
         0x09,
@@ -28,6 +30,8 @@ void main() {
       final packet = EixamSosPacket.tryParse(<int>[
         0x34,
         0x12,
+        0x00,
+        0x00,
         0x00,
         0x00,
         0x00,

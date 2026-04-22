@@ -77,6 +77,7 @@ class RescueViewState {
     if (nodeId == null) {
       return '-';
     }
-    return '0x${(nodeId & 0xFFFF).toRadixString(16).padLeft(4, '0')}';
+    final normalized = nodeId & 0xFFFFFFFF;
+    return '0x${normalized.toRadixString(16).padLeft(8, '0')} ($nodeId)';
   }
 }

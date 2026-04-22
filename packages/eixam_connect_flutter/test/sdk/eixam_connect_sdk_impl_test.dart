@@ -2207,7 +2207,7 @@ void main() {
       await _attachObservedAppActivationWriter(
         deviceSosController,
         commandLabels: commands,
-        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12],
+        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
       );
 
       await sdk.triggerSos(const SosTriggerPayload(message: 'Need help'));
@@ -2233,7 +2233,7 @@ void main() {
       await _attachObservedAppActivationWriter(
         deviceSosController,
         commandLabels: commands,
-        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12],
+        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
       );
 
       final incident = await sdk.triggerSos(
@@ -2285,7 +2285,7 @@ void main() {
       await _attachObservedAppActivationWriter(
         deviceSosController,
         commandLabels: commands,
-        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12],
+        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
       );
 
       final incident = await sdk.triggerSos(
@@ -2410,7 +2410,7 @@ void main() {
       await _attachObservedAppActivationWriter(
         deviceSosController,
         commandLabels: commands,
-        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12],
+        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
       );
 
       final incident = await sdk.triggerSos(
@@ -2491,7 +2491,7 @@ void main() {
       await _attachObservedAppActivationWriter(
         deviceSosController,
         commandLabels: commands,
-        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12],
+        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
       );
 
       await sdk.triggerSos(const SosTriggerPayload(message: 'Need help'));
@@ -2599,7 +2599,7 @@ void main() {
       await _attachObservedAppActivationWriter(
         deviceSosController,
         commandLabels: commands,
-        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12],
+        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
       );
 
       await sdk.triggerSos(const SosTriggerPayload(message: 'Need help'));
@@ -2629,7 +2629,7 @@ void main() {
       await _attachObservedAppActivationWriter(
         deviceSosController,
         commandLabels: commands,
-        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12],
+        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
       );
       sosRepository.currentIncident = sosRepository.currentIncident.copyWith(
         state: SosState.sent,
@@ -2707,7 +2707,9 @@ void main() {
       await delayedSosRepository.resolveStarted.future;
 
       deviceSosController.handleIncomingSosEventPacket(
-        EixamSosEventPacket.tryParse(<int>[0xE1, 0x02, 0x34, 0x12])!,
+        EixamSosEventPacket.tryParse(
+          <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
+        )!,
         source: DeviceSosTransitionSource.device,
       );
       await Future<void>.delayed(Duration.zero);
@@ -2716,7 +2718,9 @@ void main() {
       await resolveFuture;
 
       deviceSosController.handleIncomingSosEventPacket(
-        EixamSosEventPacket.tryParse(<int>[0xE1, 0x02, 0x34, 0x12])!,
+        EixamSosEventPacket.tryParse(
+          <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
+        )!,
         source: DeviceSosTransitionSource.device,
       );
       await Future<void>.delayed(Duration.zero);
@@ -2747,7 +2751,7 @@ void main() {
       await _attachObservedAppActivationWriter(
         deviceSosController,
         commandLabels: commands,
-        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12],
+        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
       );
       sosRepository.currentIncident = sosRepository.currentIncident.copyWith(
         state: SosState.sent,
@@ -5886,7 +5890,7 @@ void main() {
         expect(commands.map((command) => command.opcode), contains(0x08));
         expect(
           commands.where((command) => command.opcode == 0x08).single.bytes,
-          <int>[0x08, 0x34, 0x12],
+          <int>[0x08, 0x34, 0x12, 0x00, 0x00],
         );
         expect(
           bridge.currentDiagnostics.lastDecision,
@@ -6904,7 +6908,9 @@ void main() {
           if (command.label == 'SOS CANCEL') {
             Future<void>.delayed(Duration.zero, () {
               deviceSosController.handleIncomingSosEventPacket(
-                EixamSosEventPacket.tryParse(<int>[0xE1, 0x02, 0x34, 0x12])!,
+                EixamSosEventPacket.tryParse(
+                  <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
+                )!,
                 source: DeviceSosTransitionSource.device,
               );
             });
@@ -7256,7 +7262,9 @@ void main() {
         source: DeviceSosTransitionSource.device,
       );
       deviceSosController.handleIncomingSosEventPacket(
-        EixamSosEventPacket.tryParse(<int>[0xE1, 0x02, 0x34, 0x12])!,
+        EixamSosEventPacket.tryParse(
+          <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
+        )!,
         source: DeviceSosTransitionSource.device,
       );
       await Future<void>.delayed(Duration.zero);
@@ -7725,7 +7733,9 @@ EixamSosPacket _deviceOriginPacket() {
     0x00,
     0x00,
     0x00,
-    0x50,
+    0x00,
+    0x00,
+    0x40,
   ])!;
 }
 
@@ -7733,6 +7743,7 @@ EixamSosPacket _relayedSosPacket() {
   return EixamSosPacket.tryParse(<int>[
     0x34,
     0x12,
+    0x00,
     0x00,
     0x00,
     0x00,
@@ -7896,6 +7907,8 @@ BleIncomingEvent _bridgeAggregateTelCompleteEvent({
     aggregatePayload: const <int>[
       0x34,
       0x12,
+      0x00,
+      0x00,
       0x01,
       0x02,
       0x03,
@@ -7917,6 +7930,8 @@ BleIncomingEvent _bridgeRelayTelEvent({
       0xD2,
       0x34,
       0x12,
+      0x00,
+      0x00,
       0x01,
       0x02,
       0x03,
@@ -7929,6 +7944,8 @@ BleIncomingEvent _bridgeRelayTelEvent({
       0xC4,
       0x35,
       0x12,
+      0x00,
+      0x00,
       0x01,
       0x02,
       0x03,
@@ -7937,12 +7954,6 @@ BleIncomingEvent _bridgeRelayTelEvent({
       0x06,
       0x87,
       0x65,
-      0xCF,
-      0x82,
-      0x10,
-      0x20,
-      0x30,
-      0x40,
     ],
   )!;
   return BleIncomingEvent(
@@ -8009,14 +8020,12 @@ BleIncomingEvent _bridgeRelayClusterAggregateTelCompleteEvent({
     aggregatePayload: const <int>[
       0xC2,
       0x02,
-      0xCF,
-      0x82,
-      0x10,
-      0x20,
-      0x30,
-      0x40,
+      0x01,
+      0x02,
       0x34,
       0x12,
+      0x00,
+      0x00,
       0x01,
       0x02,
       0x03,
@@ -8025,14 +8034,10 @@ BleIncomingEvent _bridgeRelayClusterAggregateTelCompleteEvent({
       0x06,
       0x87,
       0x65,
-      0xCF,
-      0x82,
-      0x10,
-      0x20,
-      0x30,
-      0x41,
       0x35,
       0x12,
+      0x00,
+      0x00,
       0x01,
       0x02,
       0x03,

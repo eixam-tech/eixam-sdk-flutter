@@ -1,6 +1,5 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
-import 'canonical_hardware_id.dart';
 import 'eixam_tel_packet.dart';
 
 class EixamTelRelayRxPacket {
@@ -12,8 +11,7 @@ class EixamTelRelayRxPacket {
   });
 
   static const int opcode = 0xD2;
-  static const int legacyPayloadLength = 23;
-  static const int extendedPayloadLength = 29;
+  static const int payloadLength = 27;
 
   final List<int> payload;
   final DeviceTelRelayRx relay;
@@ -24,29 +22,24 @@ class EixamTelRelayRxPacket {
     List<int> bytes, {
     DateTime? receivedAt,
   }) {
-    if ((bytes.length != legacyPayloadLength &&
-            bytes.length != extendedPayloadLength) ||
-        bytes.first != opcode) {
+    if (bytes.length != payloadLength || bytes.first != opcode) {
       return null;
     }
 
-    final peerPayload = List<int>.unmodifiable(bytes.sublist(1, 11));
+    final peerPayload = List<int>.unmodifiable(bytes.sublist(1, 13));
     final peerPacket = EixamTelPacket.tryParse(peerPayload);
     if (peerPacket == null) {
       return null;
     }
 
-    final rxSnr = bytes[11] >= 0x80 ? bytes[11] - 0x100 : bytes[11];
-    final rxRssi = bytes[12] >= 0x80 ? bytes[12] - 0x100 : bytes[12];
+    final rxSnr = bytes[13] >= 0x80 ? bytes[13] - 0x100 : bytes[13];
+    final rxRssi = bytes[14] >= 0x80 ? bytes[14] - 0x100 : bytes[14];
 
-    final selfPayload = List<int>.unmodifiable(bytes.sublist(13, 23));
+    final selfPayload = List<int>.unmodifiable(bytes.sublist(15, 27));
     final selfPacket = EixamTelPacket.tryParse(selfPayload);
     if (selfPacket == null) {
       return null;
     }
-    final remoteDeviceId = bytes.length == extendedPayloadLength
-        ? _canonicalHardwareIdFrom(bytes.sublist(23, 29))
-        : null;
 
     return EixamTelRelayRxPacket(
       payload: List<int>.unmodifiable(bytes),
@@ -71,19 +64,8 @@ class EixamTelRelayRxPacket {
           timestamp: receivedAt ?? DateTime.now(),
           source: DeliveryMode.mesh,
         ),
-        remoteDeviceId: remoteDeviceId,
         receivedAt: receivedAt,
       ),
     );
-  }
-
-  static String? _canonicalHardwareIdFrom(List<int> bytes) {
-    if (bytes.length != 6) {
-      return null;
-    }
-    final candidate = bytes
-        .map((byte) => byte.toRadixString(16).padLeft(2, '0').toUpperCase())
-        .join(':');
-    return normalizeCanonicalHardwareId(candidate);
   }
 }

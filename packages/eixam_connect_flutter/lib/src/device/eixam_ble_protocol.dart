@@ -11,14 +11,19 @@ class EixamBleProtocol {
   static const String cmdWriteCharacteristicUuid =
       '6ba1b218-15a8-461f-9fa8-5dcae273ea04';
 
-  static const int telPacketLength = 10;
+  static const int telPacketLength = 12;
+  static const int telMeshPort = 258;
+  static const int sosMeshPort = 259;
+  static const int clusterMeshPort = 260;
+  static const int rescueMeshPort = 261;
   static const int telAggregateFragmentOpcode = 0xD0;
   static const int backlogSyncOpcode = 0xD1;
   static const int telAggregateFragmentHeaderLength = 5;
   static const int telAggregateFragmentMaxPayloadLength = 15;
-  static const int backlogSyncRecordLength = 14;
-  static const int sosPacketLengthWithPosition = 10;
-  static const int sosPacketLengthMinimal = 5;
+  static const int backlogSyncRecordLength = 16;
+  static const int clusterHeartbeatPacketLength = 12;
+  static const int sosPacketLengthWithPosition = 12;
+  static const int sosPacketLengthMinimal = 7;
   static const int sosEventUserDeactivatedOpcode = 0xE1;
   static const int sosEventAppCancelAckOpcode = 0xE2;
   static const int inetMaxPayloadLength = 4;

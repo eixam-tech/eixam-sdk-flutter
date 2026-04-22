@@ -161,6 +161,8 @@ void main() {
           0x00,
           0x01,
           0x21,
+          0x87,
+          0x65,
         ],
       ];
       bleClient.backlogSyncAckNotifications[1] = <List<int>>[
@@ -298,6 +300,8 @@ void main() {
           0x00,
           0x01,
           0x21,
+          0x87,
+          0x65,
           0xF6,
           0xC4,
           0xB0,
@@ -310,6 +314,8 @@ void main() {
           0x00,
           0x01,
           0x21,
+          0x87,
+          0x65,
         ],
         receivedAt: DateTime.utc(2026, 4, 18, 12),
       )!;

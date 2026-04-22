@@ -38,7 +38,6 @@ class EixamSosPacket {
   final String? remoteDeviceId;
 
   static EixamSosPacket? tryParse(List<int> bytes) {
-    // Mesh SOS packets remain the classic 10-byte or 5-byte payloads.
     final hasRemoteDeviceId =
         bytes.length == EixamBleProtocol.sosPacketLengthWithPosition + 6 ||
             bytes.length == EixamBleProtocol.sosPacketLengthMinimal + 6;
@@ -50,15 +49,16 @@ class EixamSosPacket {
 
     final hasPosition =
         packetLength == EixamBleProtocol.sosPacketLengthWithPosition;
-    final flagsOffset = hasPosition ? 8 : 2;
+    final flagsOffset = hasPosition ? 10 : 4;
     final flagsWord = bytes[flagsOffset] | (bytes[flagsOffset + 1] << 8);
+    final sosType = (flagsWord >> 14) & 0x03;
 
     return EixamSosPacket(
       rawBytes: List<int>.unmodifiable(bytes),
       rawHex: EixamBleProtocol.hex(bytes),
-      nodeId: bytes[0] | (bytes[1] << 8),
+      nodeId: _readU32(bytes, 0),
       flagsWord: flagsWord,
-      sosType: (flagsWord >> 14) & 0x03,
+      sosType: sosType,
       retryCount: (flagsWord >> 12) & 0x03,
       relayCount: (flagsWord >> 10) & 0x03,
       batteryLevel: (flagsWord >> 8) & 0x03,
@@ -66,8 +66,8 @@ class EixamSosPacket {
       speedEstimate: (flagsWord >> 4) & 0x03,
       packetId: flagsWord & 0x0F,
       hasPosition: hasPosition,
-      sequence: hasPosition ? null : bytes[4],
-      position: hasPosition ? EixamPositionData.decode(bytes, offset: 2) : null,
+      sequence: hasPosition ? null : bytes[6],
+      position: hasPosition ? EixamPositionData.decode(bytes, offset: 4) : null,
       remoteDeviceId: hasRemoteDeviceId
           ? _canonicalHardwareIdFrom(bytes.sublist(packetLength, bytes.length))
           : null,
@@ -82,5 +82,12 @@ class EixamSosPacket {
         .map((byte) => byte.toRadixString(16).padLeft(2, '0').toUpperCase())
         .join(':');
     return normalizeCanonicalHardwareId(candidate);
+  }
+
+  static int _readU32(List<int> bytes, int offset) {
+    return bytes[offset] |
+        (bytes[offset + 1] << 8) |
+        (bytes[offset + 2] << 16) |
+        (bytes[offset + 3] << 24);
   }
 }

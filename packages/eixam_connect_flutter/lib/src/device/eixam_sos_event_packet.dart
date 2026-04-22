@@ -22,7 +22,7 @@ class EixamSosEventPacket {
       opcode == EixamBleProtocol.sosEventAppCancelAckOpcode;
 
   static EixamSosEventPacket? tryParse(List<int> bytes) {
-    if (bytes.length != 4) {
+    if (bytes.length != 6) {
       return null;
     }
 
@@ -37,7 +37,7 @@ class EixamSosEventPacket {
       rawHex: EixamBleProtocol.hex(bytes),
       opcode: opcode,
       subcode: bytes[1],
-      nodeId: bytes[2] | (bytes[3] << 8),
+      nodeId: bytes[2] | (bytes[3] << 8) | (bytes[4] << 16) | (bytes[5] << 24),
     );
   }
 }
