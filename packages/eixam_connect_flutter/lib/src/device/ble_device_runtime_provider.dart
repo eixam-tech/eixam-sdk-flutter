@@ -214,6 +214,7 @@ class BleDeviceRuntimeProvider
         'BLE pair failed -> deviceId=${candidate.deviceId} error=$error',
       );
       debugPrintStack(stackTrace: stackTrace);
+      await _resetFailedPairingAttempt(candidate.deviceId);
       try {
         await _bleClient.disconnect(candidate.deviceId);
       } catch (_) {}
@@ -274,6 +275,31 @@ class BleDeviceRuntimeProvider
         );
       },
     );
+  }
+
+  Future<void> _resetFailedPairingAttempt(String deviceId) async {
+    if (_connectedDeviceId != deviceId) {
+      return;
+    }
+    await _notificationSubscription?.cancel();
+    _notificationSubscription = null;
+    await _connectionStateSubscription?.cancel();
+    _connectionStateSubscription = null;
+    BleDebugRegistry.instance.clearCommandWriter();
+    BleDebugRegistry.instance.update(
+      telNotifySubscribed: false,
+      sosNotifySubscribed: false,
+      commandWriterReady: false,
+    );
+    await _deviceSosController.detach();
+    _connectedDeviceId = null;
+    _connectedDeviceAlias = null;
+    _connectedCanonicalHardwareId = null;
+    _lastAppCommandAt = null;
+    _lastTelBatteryLevel = null;
+    _lastSosBatteryLevel = null;
+    _recentSosPacketSignatures.clear();
+    _telReassembler.reset();
   }
 
   Future<DeviceStatus?> suspendOwnership({

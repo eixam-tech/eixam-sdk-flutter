@@ -140,6 +140,86 @@ void main() {
       expect(repository.lastPairingCode, 'AUTO-RECONNECT');
       await coordinator.dispose();
     });
+
+    test('retries manual connect once for transient disconnect failures',
+        () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _FakeDeviceRepository()
+        ..pairErrors = <Object>[
+          Exception(
+              'PlatformException(deviceDisconnected, deviceDisconnected)'),
+        ];
+      final store = PreferredBleDeviceStore(
+        localStore: SharedPrefsSdkStore(),
+      );
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+      );
+
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+
+      final status = await coordinator.pairDeviceManually(pairingCode: '1234');
+
+      expect(status.connected, isTrue);
+      expect(repository.pairCallCount, 2);
+      expect(
+        BleDebugRegistry.instance.currentState.events
+            .map((event) => event.message),
+        contains('manual_connect_retry_start'),
+      );
+      expect(
+        BleDebugRegistry.instance.currentState.events
+            .map((event) => event.message),
+        contains('manual_connect_retry_success'),
+      );
+      await coordinator.dispose();
+    });
+
+    test('does not retry auto-connect for transient disconnect failures',
+        () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _FakeDeviceRepository()
+        ..pairErrors = <Object>[
+          Exception(
+              'PlatformException(deviceDisconnected, deviceDisconnected)'),
+        ];
+      final store = PreferredBleDeviceStore(
+        localStore: SharedPrefsSdkStore(),
+      );
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: 'ble-demo-r1',
+          displayName: 'EIXAM Demo',
+          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+        ),
+      );
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+      );
+
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+
+      await coordinator.tryAutoConnectOnStartup();
+
+      expect(repository.pairCallCount, 1);
+      expect(
+        BleDebugRegistry.instance.currentState.events
+            .map((event) => event.message)
+            .where((message) => message == 'manual_connect_retry_start'),
+        isEmpty,
+      );
+      await coordinator.dispose();
+    });
   });
 }
 
@@ -159,6 +239,7 @@ class _FakeDeviceRepository implements DeviceRepository {
 
   int pairCallCount = 0;
   String? lastPairingCode;
+  List<Object> pairErrors = <Object>[];
 
   void setDisconnected() {
     _status = _status.copyWith(
@@ -182,6 +263,9 @@ class _FakeDeviceRepository implements DeviceRepository {
   Future<DeviceStatus> pairDevice({required String pairingCode}) async {
     pairCallCount++;
     lastPairingCode = pairingCode;
+    if (pairErrors.isNotEmpty) {
+      throw pairErrors.removeAt(0);
+    }
     _status = _status.copyWith(
       deviceId: 'ble-demo-r1',
       deviceAlias: 'EIXAM Demo',

@@ -51,6 +51,7 @@ class BleAutoReconnectCoordinator {
       reason: 'manual_connect',
       status: BleConnectionStatus.connecting,
       action: () => _deviceRepository.pairDevice(pairingCode: pairingCode),
+      allowSingleTransientDisconnectRetry: true,
     );
   }
 
@@ -217,6 +218,7 @@ class BleAutoReconnectCoordinator {
     required String reason,
     required BleConnectionStatus status,
     required Future<DeviceStatus> Function() action,
+    bool allowSingleTransientDisconnectRetry = false,
   }) async {
     if (_isConnectionAttemptInProgress) {
       throw StateError('BLE connection attempt already in progress.');
@@ -228,7 +230,28 @@ class BleAutoReconnectCoordinator {
       connectionError: null,
     );
     try {
-      final result = await action();
+      DeviceStatus result;
+      try {
+        result = await action();
+      } catch (error) {
+        if (!allowSingleTransientDisconnectRetry ||
+            !_isTransientDisconnectError(error)) {
+          rethrow;
+        }
+        BleDebugRegistry.instance.recordEvent(
+          'manual_connect_transient_disconnect_detected error=$error',
+        );
+        BleDebugRegistry.instance.recordEvent('manual_connect_retry_start');
+        try {
+          result = await action();
+        } catch (retryError) {
+          BleDebugRegistry.instance.recordEvent(
+            'manual_connect_retry_failed error=$retryError',
+          );
+          rethrow;
+        }
+        BleDebugRegistry.instance.recordEvent('manual_connect_retry_success');
+      }
       _retryAttempt = 0;
       _retryTimer?.cancel();
       _retryTimer = null;
@@ -242,6 +265,14 @@ class BleAutoReconnectCoordinator {
     } finally {
       _isConnectionAttemptInProgress = false;
     }
+  }
+
+  bool _isTransientDisconnectError(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('devicedisconnected') ||
+        text.contains('device disconnected') ||
+        text.contains('platformexception(deviceDisconnected'.toLowerCase()) ||
+        text.contains('platformexception(devicedisconnected');
   }
 
   Future<void> _handleDeviceStatus(DeviceStatus status) async {

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:async/async.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:flutter/services.dart';
 
 import 'ble_adapter_state.dart';
 import 'ble_client.dart';
@@ -14,6 +15,12 @@ import 'eixam_ble_notification.dart';
 import 'eixam_ble_protocol.dart';
 
 class RealBleClient implements BleClient {
+  static const Duration _connectTimeout = Duration(seconds: 10);
+  static const Duration _postConnectStabilizationDelay =
+      Duration(milliseconds: 350);
+  static const Duration _connectedStateConfirmationTimeout =
+      Duration(seconds: 2);
+
   final Map<String, BluetoothDevice> _devices = {};
   final Map<String, List<BluetoothService>> _servicesCache = {};
   StreamSubscription<BluetoothAdapterState>? _adapterStateSub;
@@ -149,6 +156,9 @@ class RealBleClient implements BleClient {
 
     final device = _devices[deviceId];
     if (device == null) {
+      BleDebugRegistry.instance.recordEvent(
+        'BLE connect selected device missing -> deviceId=$deviceId',
+      );
       throw Exception('Dispositiu no trobat: $deviceId');
     }
     BleDebugRegistry.instance.update(
@@ -157,16 +167,70 @@ class RealBleClient implements BleClient {
       sosNotifySubscribed: false,
     );
     BleDebugRegistry.instance.recordEvent('Connecting to $deviceId');
+    BleDebugRegistry.instance.recordEvent(
+      'BLE connect selected device found -> deviceId=$deviceId platformName="${device.platformName}"',
+    );
 
     try {
-      final connectionState = await device.connectionState.first;
-      if (connectionState != BluetoothConnectionState.connected) {
-        await device.connect(timeout: const Duration(seconds: 10));
+      final initialConnectionState = await _readConnectionState(device);
+      BleDebugRegistry.instance.recordEvent(
+        'BLE connect initial connectionState -> deviceId=$deviceId state=${initialConnectionState.name}',
+      );
+      _log(
+        'BLE connect initial connectionState -> deviceId=$deviceId state=${initialConnectionState.name}',
+      );
+
+      if (initialConnectionState != BluetoothConnectionState.connected) {
+        BleDebugRegistry.instance.recordEvent(
+          'BLE connect() start -> deviceId=$deviceId',
+        );
+        _log('BLE connect() start -> deviceId=$deviceId');
+        try {
+          await device.connect(timeout: _connectTimeout);
+          BleDebugRegistry.instance.recordEvent(
+            'BLE connect() success -> deviceId=$deviceId',
+          );
+          _log('BLE connect() success -> deviceId=$deviceId');
+        } catch (error) {
+          BleDebugRegistry.instance.recordEvent(
+            'BLE connect() failure -> deviceId=$deviceId error=$error',
+          );
+          _log('BLE connect() failure -> deviceId=$deviceId error=$error');
+          rethrow;
+        }
+      } else {
+        BleDebugRegistry.instance.recordEvent(
+          'BLE connect() success -> deviceId=$deviceId skipped=already_connected',
+        );
+        _log(
+          'BLE connect() success -> deviceId=$deviceId skipped=already_connected',
+        );
       }
 
+      final postConnectState = await _waitForStableConnectedState(
+        device,
+        deviceId: deviceId,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'BLE connect post-connect connectionState -> deviceId=$deviceId state=${postConnectState.name}',
+      );
+      _log(
+        'BLE connect post-connect connectionState -> deviceId=$deviceId state=${postConnectState.name}',
+      );
       BleDebugRegistry.instance.recordEvent('Connected to $deviceId');
 
+      _servicesCache.remove(deviceId);
+      BleDebugRegistry.instance.recordEvent(
+        'BLE discoverServices() start -> deviceId=$deviceId',
+      );
+      _log('BLE discoverServices() start -> deviceId=$deviceId');
       final services = await device.discoverServices();
+      BleDebugRegistry.instance.recordEvent(
+        'BLE discoverServices() success -> deviceId=$deviceId services=${services.length}',
+      );
+      _log(
+        'BLE discoverServices() success -> deviceId=$deviceId services=${services.length}',
+      );
       _servicesCache[deviceId] = services;
 
       BleDebugRegistry.instance.update(
@@ -189,6 +253,17 @@ class RealBleClient implements BleClient {
         }
       }
     } catch (error, stackTrace) {
+      final transientDisconnect = _isTransientDisconnectError(error);
+      if (transientDisconnect) {
+        BleDebugRegistry.instance.recordEvent(
+          'BLE connect/discover transient disconnect -> deviceId=$deviceId error=$error',
+        );
+      } else {
+        BleDebugRegistry.instance.recordEvent(
+          'BLE connect/discover generic failure -> deviceId=$deviceId error=$error',
+        );
+      }
+      await _clearTransientConnectionState(deviceId, device);
       BleDebugRegistry.instance.recordEvent(
         'Connection/discoverServices failed for $deviceId: $error',
       );
@@ -487,6 +562,69 @@ class RealBleClient implements BleClient {
     final services = await device.discoverServices();
     _servicesCache[deviceId] = services;
     return services;
+  }
+
+  Future<BluetoothConnectionState> _readConnectionState(
+    BluetoothDevice device,
+  ) async {
+    return device.connectionState.first.timeout(
+      _connectedStateConfirmationTimeout,
+      onTimeout: () => BluetoothConnectionState.disconnected,
+    );
+  }
+
+  Future<BluetoothConnectionState> _waitForStableConnectedState(
+    BluetoothDevice device, {
+    required String deviceId,
+  }) async {
+    await Future.delayed(_postConnectStabilizationDelay);
+    final state = await _readConnectionState(device);
+    if (state != BluetoothConnectionState.connected) {
+      final error = PlatformException(
+        code: 'deviceDisconnected',
+        message:
+            'deviceDisconnected while waiting for a stable BLE connection before discoverServices',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'BLE connect stabilization failed -> deviceId=$deviceId state=${state.name} error=$error',
+      );
+      throw error;
+    }
+    return state;
+  }
+
+  Future<void> _clearTransientConnectionState(
+    String deviceId,
+    BluetoothDevice device,
+  ) async {
+    _servicesCache.remove(deviceId);
+    BleDebugRegistry.instance.clearCommandWriter();
+    BleDebugRegistry.instance.update(
+      telNotifySubscribed: false,
+      sosNotifySubscribed: false,
+      commandWriterReady: false,
+      discoveredServices: const <String>[],
+    );
+    try {
+      await device.disconnect();
+    } catch (_) {}
+  }
+
+  bool _isTransientDisconnectError(Object error) {
+    if (error is PlatformException) {
+      final code = error.code.toLowerCase();
+      final message = (error.message ?? '').toLowerCase();
+      if (code.contains('devicedisconnected') ||
+          message.contains('devicedisconnected')) {
+        return true;
+      }
+    }
+
+    final text = error.toString().toLowerCase();
+    return text.contains('devicedisconnected') ||
+        text.contains('device disconnected') ||
+        text.contains('disconnected during discoverservices') ||
+        text.contains('disconnected during connection');
   }
 
   Future<BluetoothCharacteristic?> _findCharacteristic(
