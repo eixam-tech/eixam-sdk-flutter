@@ -2653,6 +2653,85 @@ void main() {
     });
 
     test(
+        'late automatic closure keeps resolved backend semantics for a device-originated SOS cycle',
+        () async {
+      final delayedSosRepository = _DelayedTerminalFakeSosRepository();
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: delayedSosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: realtimeClient,
+        deviceSosController: deviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+      addTearDown(() async {
+        await localSdk.dispose();
+        await delayedSosRepository.dispose();
+      });
+
+      final commands = <String>[];
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-device-origin-resolve-race-1',
+          canonicalHardwareId: 'CF:82:11:22:33:5A',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
+      );
+      await deviceSosController.attach(
+        commandWriter: (command) async {
+          commands.add(command.label);
+        },
+      );
+      delayedSosRepository.currentIncident =
+          delayedSosRepository.currentIncident.copyWith(
+        state: SosState.sent,
+        triggerSource: 'ble_device_runtime_status',
+      );
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginPacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final resolveFuture = localSdk.resolveSos();
+      await delayedSosRepository.resolveStarted.future;
+
+      deviceSosController.handleIncomingSosEventPacket(
+        EixamSosEventPacket.tryParse(<int>[0xE1, 0x02, 0x34, 0x12])!,
+        source: DeviceSosTransitionSource.device,
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      delayedSosRepository.completeResolve();
+      await resolveFuture;
+
+      deviceSosController.handleIncomingSosEventPacket(
+        EixamSosEventPacket.tryParse(<int>[0xE1, 0x02, 0x34, 0x12])!,
+        source: DeviceSosTransitionSource.device,
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(delayedSosRepository.resolveCallCount, 1);
+      expect(delayedSosRepository.cancelCallCount, 0);
+      expect(delayedSosRepository.currentIncident.state, SosState.resolved);
+      expect(
+        delayedSosRepository.terminalOperations,
+        <String>['resolve:sos-1'],
+      );
+      expect(commands, contains('SOS CANCEL'));
+    });
+
+    test(
         'cancelSos keeps cancelled backend semantics for a device-originated active SOS cycle',
         () async {
       final commands = <String>[];
@@ -7608,6 +7687,30 @@ class _AvailabilityAwareSosRepository extends FakeSosRepository {
       );
     }
     return super.resolveSos();
+  }
+}
+
+class _DelayedTerminalFakeSosRepository extends FakeSosRepository {
+  final Completer<void> resolveStarted = Completer<void>();
+  final Completer<void> _resolveGate = Completer<void>();
+
+  void completeResolve() {
+    if (!_resolveGate.isCompleted) {
+      _resolveGate.complete();
+    }
+  }
+
+  @override
+  Future<SosIncident> resolveSos() async {
+    if (!resolveStarted.isCompleted) {
+      resolveStarted.complete();
+    }
+    resolveCallCount++;
+    terminalOperations.add('resolve:${currentIncident.id}');
+    await _resolveGate.future;
+    currentIncident = currentIncident.copyWith(state: SosState.resolved);
+    stateController.add(currentIncident.state);
+    return currentIncident;
   }
 }
 

@@ -126,6 +126,9 @@ class EixamConnectSdkImpl
   final Map<String, _ObservedRelaySosContext> _observedRelaySosBySignature =
       <String, _ObservedRelaySosContext>{};
   final Map<String, _SosClosureIntent>
+      _deviceOriginatedClosureIntentByCycleKey =
+      <String, _SosClosureIntent>{};
+  final Map<String, _SosClosureIntent>
       _deviceOriginatedClosureIntentByIncidentId =
       <String, _SosClosureIntent>{};
   bool _publicSosActionInFlight = false;
@@ -1068,12 +1071,14 @@ class EixamConnectSdkImpl
     }
 
     if (_isSosCycleClosed(status.state)) {
+      final closedCycleKey = _activeDeviceSosCycleKey;
       BleDebugRegistry.instance.recordEvent(
         'SOS notification suppression reset -> reason=cycle_closed clearedCycle=${_activeDeviceSosCycleKey ?? "-"}',
       );
       _activeDeviceSosCycleKey = null;
       _notifiedDeviceSosCycleKey = null;
       _notifiedDeviceSosState = null;
+      _clearRememberedDeviceOriginatedClosureIntent(cycleKey: closedCycleKey);
       _clearPendingAppTriggeredSosBridge(reason: 'device_cycle_closed');
     }
 
@@ -1842,9 +1847,6 @@ class EixamConnectSdkImpl
         deliveryChannel: deliveryChannel,
         fallbackState: backendIncident == null ? SosState.cancelled : null,
       );
-      _clearRememberedDeviceOriginatedClosureIntent(
-        backendIncident?.id ?? activeIncident?.id,
-      );
       _clearPendingAppTriggeredSosBridge(reason: 'public_cancel_completed');
       _publishCancelledSosEventIfNeeded(incident);
       return incident;
@@ -1907,9 +1909,6 @@ class EixamConnectSdkImpl
         incident: incident,
         deliveryChannel: deliveryChannel,
         fallbackState: backendIncident == null ? SosState.resolved : null,
-      );
-      _clearRememberedDeviceOriginatedClosureIntent(
-        backendIncident?.id ?? activeIncident?.id,
       );
       _clearPendingAppTriggeredSosBridge(reason: 'public_resolve_completed');
     } finally {
@@ -2602,28 +2601,47 @@ class EixamConnectSdkImpl
   Future<void> _applyBackendClosureForDeviceOriginatedCycle(
     DeviceSosStatus status, {
     _SosClosureIntent? fallbackIntent,
+    SosIncident? currentIncident,
   }) async {
     if (status.triggerOrigin != DeviceSosTransitionSource.device ||
         !_isDeviceSosCycleClosed(status.state)) {
       return;
     }
 
-    final incident = await sosRepository.getCurrentIncident();
+    final cycleKey = _deviceOriginatedClosureCycleKeyFor(status);
+    final incident = currentIncident ?? await sosRepository.getCurrentIncident();
+    final rememberedIntent = incident == null
+        ? _lookupRememberedDeviceOriginatedClosureIntent(cycleKey: cycleKey)
+        : _lookupRememberedDeviceOriginatedClosureIntent(
+            incident: incident,
+            cycleKey: cycleKey,
+          );
+    if (_isTerminalBackendSosIncident(incident)) {
+      _recordLateAutomaticClosureSkippedForTerminalIncident(
+        incident: incident!,
+        cycleKey: cycleKey,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'Device SOS backend closure skipped because incident already terminal -> '
+        'incidentId=${incident.id} state=${incident.state.name} cycleKey=${cycleKey ?? "-"}',
+      );
+      return;
+    }
+
     if (!_hasBackendVisibleSosIncident(incident)) {
-      if (incident != null) {
-        _clearRememberedDeviceOriginatedClosureIntent(incident.id);
-      }
+      _clearRememberedDeviceOriginatedClosureIntent(
+        incidentId: incident?.id,
+        cycleKey: cycleKey,
+      );
       BleDebugRegistry.instance.recordEvent(
         'Device SOS backend closure skipped -> reason=no_active_backend_incident',
       );
       return;
     }
 
-    final rememberedIntent =
-        _deviceOriginatedClosureIntentByIncidentId[incident!.id];
     if (_publicSosActionInFlight && rememberedIntent != null) {
       BleDebugRegistry.instance.recordEvent(
-        'Device SOS backend closure deferred -> incidentId=${incident.id} intent=${rememberedIntent.name} reason=public_sos_action_in_flight',
+        'Device SOS backend closure deferred -> incidentId=${incident?.id ?? "-"} intent=${rememberedIntent.name} reason=public_sos_action_in_flight',
       );
       return;
     }
@@ -2640,7 +2658,6 @@ class EixamConnectSdkImpl
         terminalIncident = await sosRepository.resolveSos();
         break;
     }
-    _clearRememberedDeviceOriginatedClosureIntent(incident.id);
     BleDebugRegistry.instance.recordEvent(
       'Device SOS backend ${intent.name} applied -> '
       'incidentId=${terminalIncident.id}',
@@ -2654,14 +2671,46 @@ class EixamConnectSdkImpl
     if (!_hasBackendVisibleSosIncident(incident) || incident == null) {
       return;
     }
+    final cycleKey = _activeDeviceSosCycleKey;
+    if (cycleKey != null && cycleKey.isNotEmpty) {
+      _deviceOriginatedClosureIntentByCycleKey[cycleKey] = intent;
+    }
     _deviceOriginatedClosureIntentByIncidentId[incident.id] = intent;
+    BleDebugRegistry.instance.recordEvent(
+      'Device SOS explicit ${intent.name} intent recorded for cycle -> '
+      'incidentId=${incident.id} cycleKey=${cycleKey ?? "-"}',
+    );
   }
 
-  void _clearRememberedDeviceOriginatedClosureIntent(String? incidentId) {
-    if (incidentId == null) {
+  _SosClosureIntent? _lookupRememberedDeviceOriginatedClosureIntent({
+    SosIncident? incident,
+    String? cycleKey,
+  }) {
+    if (cycleKey != null && cycleKey.isNotEmpty) {
+      final cycleIntent = _deviceOriginatedClosureIntentByCycleKey[cycleKey];
+      if (cycleIntent != null) {
+        return cycleIntent;
+      }
+    }
+    if (incident == null) {
+      return null;
+    }
+    return _deviceOriginatedClosureIntentByIncidentId[incident.id];
+  }
+
+  void _clearRememberedDeviceOriginatedClosureIntent({
+    String? incidentId,
+    String? cycleKey,
+  }) {
+    if (incidentId == null && cycleKey == null) {
       return;
     }
-    _deviceOriginatedClosureIntentByIncidentId.remove(incidentId);
+    if (incidentId != null) {
+      _deviceOriginatedClosureIntentByIncidentId.remove(incidentId);
+    }
+    if (cycleKey != null && cycleKey.isNotEmpty) {
+      _deviceOriginatedClosureIntentByCycleKey.remove(cycleKey);
+    }
   }
 
   bool _isBackendSyncRelevantDeviceSosState(DeviceSosState state) {
@@ -2695,6 +2744,31 @@ class EixamConnectSdkImpl
         incident.state != SosState.failed;
   }
 
+  bool _isTerminalBackendSosIncident(SosIncident? incident) {
+    if (incident == null) {
+      return false;
+    }
+    return incident.state == SosState.resolved ||
+        incident.state == SosState.cancelled;
+  }
+
+  String? _deviceOriginatedClosureCycleKeyFor(DeviceSosStatus status) {
+    return _activeDeviceSosCycleKey ?? _deriveDeviceSosCycleKey(status);
+  }
+
+  void _recordLateAutomaticClosureSkippedForTerminalIncident({
+    required SosIncident incident,
+    required String? cycleKey,
+  }) {
+    if (!_isTerminalBackendSosIncident(incident)) {
+      return;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'Device SOS late automatic closure skipped because cycle already terminal=${incident.state.name} -> '
+      'incidentId=${incident.id} cycleKey=${cycleKey ?? "-"}',
+    );
+  }
+
   Future<void> _synchronizeDeviceOriginatedBackendLifecycle(
     DeviceSosStatus status,
   ) async {
@@ -2713,7 +2787,23 @@ class EixamConnectSdkImpl
     }
 
     if (_isDeviceSosCycleClosed(status.state)) {
-      await _applyBackendClosureForDeviceOriginatedCycle(status);
+      final incident = await sosRepository.getCurrentIncident();
+      final cycleKey = _deviceOriginatedClosureCycleKeyFor(status);
+      if (_isTerminalBackendSosIncident(incident)) {
+        _recordLateAutomaticClosureSkippedForTerminalIncident(
+          incident: incident!,
+          cycleKey: cycleKey,
+        );
+        BleDebugRegistry.instance.recordEvent(
+          'Device SOS backend closure skipped because incident already terminal -> '
+          'incidentId=${incident.id} state=${incident.state.name} cycleKey=${cycleKey ?? "-"}',
+        );
+        return;
+      }
+      await _applyBackendClosureForDeviceOriginatedCycle(
+        status,
+        currentIncident: incident,
+      );
     }
   }
 
