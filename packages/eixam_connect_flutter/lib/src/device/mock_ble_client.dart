@@ -5,6 +5,7 @@ import 'ble_adapter_state.dart';
 import 'ble_client.dart';
 import 'ble_debug_registry.dart';
 import 'ble_scan_result.dart';
+import 'ble_scan_result_brand_classifier.dart';
 import 'eixam_ble_command.dart';
 import 'eixam_ble_notification.dart';
 import 'eixam_ble_protocol.dart';
@@ -81,6 +82,10 @@ class MockBleClient implements BleClient {
         rssi: -42 - _random.nextInt(20),
         connectable: true,
         advertisedServiceUuids: const <String>[EixamBleProtocol.serviceUuid],
+        brandClassification: classifyBleDiscoveredDeviceBrand(
+          name: 'EIXAM R1 Demo',
+          advertisedServiceUuids: const <String>[EixamBleProtocol.serviceUuid],
+        ),
         discoveredAt: DateTime.now(),
       ),
     ];

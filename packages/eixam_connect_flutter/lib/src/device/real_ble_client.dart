@@ -10,6 +10,7 @@ import 'ble_client.dart';
 import 'canonical_hardware_id.dart';
 import 'ble_debug_registry.dart';
 import 'ble_scan_result.dart';
+import 'ble_scan_result_brand_classifier.dart';
 import 'eixam_ble_command.dart';
 import 'eixam_ble_mesh_port_inference.dart';
 import 'eixam_ble_notification.dart';
@@ -129,6 +130,10 @@ class RealBleClient implements BleClient {
           rssi: r.rssi,
           connectable: r.advertisementData.connectable,
           advertisedServiceUuids: advertisedServiceUuids,
+          brandClassification: classifyBleDiscoveredDeviceBrand(
+            name: name,
+            advertisedServiceUuids: advertisedServiceUuids,
+          ),
           discoveredAt: DateTime.now(),
         );
         BleDebugRegistry.instance.update(
