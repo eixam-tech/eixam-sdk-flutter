@@ -462,6 +462,7 @@ class NotificationRecord {
 class FakeNotificationsRepository implements NotificationsRepository {
   int initializeCallCount = 0;
   int requestPermissionCallCount = 0;
+  int clearSosNotificationsCallCount = 0;
   final List<NotificationRecord> notifications = <NotificationRecord>[];
   NotificationActionHandler? lastOnAction;
 
@@ -474,6 +475,11 @@ class FakeNotificationsRepository implements NotificationsRepository {
   @override
   Future<void> requestPermission() async {
     requestPermissionCallCount++;
+  }
+
+  @override
+  Future<void> clearSosNotifications() async {
+    clearSosNotificationsCallCount++;
   }
 
   @override

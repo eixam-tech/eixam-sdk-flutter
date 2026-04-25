@@ -510,8 +510,13 @@ class EixamConnectSdkImpl
 
   void _bindSosStreams() {
     _sosStateSub?.cancel();
-    _sosStateSub = sosRepository.watchSosState().listen((state) {
+    _sosStateSub = sosRepository.watchSosState().listen((state) async {
       _syncPublicSosStateFromRepository(state);
+      if (state == SosState.cancelled || state == SosState.resolved) {
+        await _clearSosNotificationsSafely(
+          reason: 'public_state_stream:${state.name}',
+        );
+      }
       final incidentId = _pendingCancelledIncidentId;
       if (state == SosState.cancelled && incidentId != null) {
         _pendingCancelledIncidentId = null;
@@ -1074,6 +1079,9 @@ class EixamConnectSdkImpl
       BleDebugRegistry.instance.recordEvent(
         'SOS notification suppression reset -> reason=cycle_closed clearedCycle=${_activeDeviceSosCycleKey ?? "-"}',
       );
+      await _clearSosNotificationsSafely(
+        reason: 'device_cycle_closed:${status.state.name}',
+      );
       _activeDeviceSosCycleKey = null;
       _notifiedDeviceSosCycleKey = null;
       _notifiedDeviceSosState = null;
@@ -1139,7 +1147,6 @@ class EixamConnectSdkImpl
 
     final title = _notificationTitleForSosState(status.state);
     final body = _notificationBodyForSosState(status.state);
-    final actions = _notificationActionsForSosState(status.state);
     final payload = BleSosNotificationPayload(
       kind: 'sos_received',
       state: status.state,
@@ -1159,7 +1166,7 @@ class EixamConnectSdkImpl
         title: title,
         body: body,
         payload: payload.toJsonString(),
-        actions: actions,
+        actions: const <LocalNotificationAction>[],
       );
     } catch (error, stackTrace) {
       BleDebugRegistry.instance.recordEvent(
@@ -1212,79 +1219,9 @@ class EixamConnectSdkImpl
 
   String _notificationBodyForSosState(DeviceSosState state) {
     if (state == DeviceSosState.preConfirm) {
-      return 'Pending confirmation. You can cancel it or confirm it now.';
+      return 'Pending confirmation. Tap to open the app and review it.';
     }
-    return 'Emergency protocol is now active. You can cancel or resolve the SOS.';
-  }
-
-  List<LocalNotificationAction> _notificationActionsForSosState(
-    DeviceSosState state,
-  ) {
-    final actions = <LocalNotificationAction>[
-      const LocalNotificationAction(
-        id: _openAppActionId,
-        title: 'Open app',
-        foreground: true,
-      ),
-    ];
-
-    if (state == DeviceSosState.preConfirm) {
-      actions.add(
-        const LocalNotificationAction(
-          id: _cancelSosActionId,
-          title: 'Cancel SOS',
-          foreground: true,
-          destructive: true,
-        ),
-      );
-      actions.add(
-        const LocalNotificationAction(
-          id: _confirmSosActionId,
-          title: 'Confirm SOS',
-          foreground: true,
-        ),
-      );
-    }
-
-    if (state == DeviceSosState.active) {
-      actions.add(
-        const LocalNotificationAction(
-          id: _cancelSosActionId,
-          title: 'Cancel SOS',
-          foreground: true,
-          destructive: true,
-        ),
-      );
-      actions.add(
-        const LocalNotificationAction(
-          id: _resolveSosActionId,
-          title: 'Resolve SOS',
-          foreground: true,
-          destructive: true,
-        ),
-      );
-    }
-
-    if (state == DeviceSosState.acknowledged) {
-      actions.add(
-        const LocalNotificationAction(
-          id: _cancelSosActionId,
-          title: 'Cancel SOS',
-          foreground: true,
-          destructive: true,
-        ),
-      );
-      actions.add(
-        const LocalNotificationAction(
-          id: _resolveSosActionId,
-          title: 'Resolve SOS',
-          foreground: true,
-          destructive: true,
-        ),
-      );
-    }
-
-    return actions;
+    return 'Emergency protocol is now active. Tap to open the app and review it.';
   }
 
   Future<void> _handleNotificationAction(
@@ -1841,6 +1778,7 @@ class EixamConnectSdkImpl
               state: SosState.cancelled,
               deliveryChannel: deliveryChannel,
             );
+      await _clearSosNotificationsSafely(reason: 'public_cancel_completed');
       _recordPublicSosResult(
         incident: incident,
         deliveryChannel: deliveryChannel,
@@ -1904,6 +1842,7 @@ class EixamConnectSdkImpl
               state: SosState.resolved,
               deliveryChannel: deliveryChannel,
             );
+      await _clearSosNotificationsSafely(reason: 'public_resolve_completed');
       _recordPublicSosResult(
         incident: incident,
         deliveryChannel: deliveryChannel,
@@ -2336,6 +2275,20 @@ class EixamConnectSdkImpl
     }
     if (status != null && _publicSosState != SosState.arming) {
       _emitPublicSosState(SosState.arming);
+    }
+  }
+
+  Future<void> _clearSosNotificationsSafely({
+    required String reason,
+  }) async {
+    try {
+      await notificationsRepository.clearSosNotifications();
+    } catch (error, stackTrace) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS notification cleanup failed -> reason=$reason error=$error',
+      );
+      debugPrint('SOS notification cleanup failed: $error');
+      debugPrintStack(stackTrace: stackTrace);
     }
   }
 

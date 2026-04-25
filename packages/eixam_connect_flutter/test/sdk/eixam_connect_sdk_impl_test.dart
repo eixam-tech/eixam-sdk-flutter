@@ -2474,6 +2474,10 @@ void main() {
 
       expect(incident.state, SosState.cancelled);
       expect(sosRepository.cancelCallCount, 1);
+      expect(
+        notificationsRepository.clearSosNotificationsCallCount,
+        greaterThanOrEqualTo(1),
+      );
       expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.inactive);
     });
 
@@ -2580,6 +2584,10 @@ void main() {
 
       expect(sosRepository.resolveCallCount, 1);
       expect(sosRepository.cancelCallCount, 0);
+      expect(
+        notificationsRepository.clearSosNotificationsCallCount,
+        greaterThanOrEqualTo(1),
+      );
       expect(sosRepository.currentIncident.state, SosState.resolved);
       expect(sosRepository.terminalOperations, <String>['resolve:sos-1']);
     });
@@ -6693,13 +6701,10 @@ void main() {
         );
         expect(
           localNotificationsRepository.notifications.first.body,
-          'Pending confirmation. You can cancel it or confirm it now.',
+          'Pending confirmation. Tap to open the app and review it.',
         );
         expect(
-          localNotificationsRepository.notifications.first.actions
-              .map((action) => action.title),
-          containsAll(<String>['Cancel SOS', 'Confirm SOS']),
-        );
+            localNotificationsRepository.notifications.first.actions, isEmpty);
 
         await Future<void>.delayed(const Duration(milliseconds: 70));
 
@@ -6712,13 +6717,108 @@ void main() {
         );
         expect(
           localNotificationsRepository.notifications.last.body,
-          'Emergency protocol is now active. You can cancel or resolve the SOS.',
+          'Emergency protocol is now active. Tap to open the app and review it.',
         );
         expect(
-          localNotificationsRepository.notifications.last.actions
-              .map((action) => action.title),
-          containsAll(<String>['Cancel SOS', 'Resolve SOS']),
+            localNotificationsRepository.notifications.last.actions, isEmpty);
+      } finally {
+        await localSdk.dispose();
+      }
+    });
+
+    test('tapping a SOS notification still queues BLE navigation with open_app',
+        () async {
+      final navigationQueue = StreamQueue<BleNotificationNavigationRequest>(
+        sdk.watchBleNotificationNavigationRequests(),
+      );
+
+      try {
+        permissionsRepository.permissionState = const PermissionState(
+          location: SdkPermissionStatus.granted,
         );
+        await sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+
+        deviceSosController.handleIncomingSosPacket(
+          _deviceOriginPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        final notification = notificationsRepository.notifications.single;
+        await notificationsRepository.lastOnAction!(
+          NotificationActionInvocation(
+            actionId: 'open_app',
+            payload: notification.payload,
+          ),
+        );
+
+        final request = await navigationQueue.next;
+        expect(request.actionId, 'open_app');
+        expect(request.state, DeviceSosState.preConfirm);
+        expect(
+          (await sdk.consumePendingBleNotificationNavigationRequest())
+              ?.actionId,
+          'open_app',
+        );
+        expect(
+          await sdk.consumePendingBleNotificationNavigationRequest(),
+          isNull,
+        );
+      } finally {
+        await navigationQueue.cancel();
+      }
+    });
+
+    test('device-originated SOS closure clears related notifications',
+        () async {
+      final localNotificationsRepository = FakeNotificationsRepository();
+      final localDeviceSosController = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 35),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: localNotificationsRepository,
+        realtimeClient: realtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        permissionsRepository.permissionState = const PermissionState(
+          location: SdkPermissionStatus.granted,
+        );
+        await localSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+
+        localDeviceSosController.handleIncomingSosPacket(
+          _deviceOriginPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        expect(localNotificationsRepository.notifications, isNotEmpty);
+
+        localDeviceSosController.handleIncomingSosEventPacket(
+          EixamSosEventPacket.tryParse(
+            <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
+          )!,
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(localNotificationsRepository.clearSosNotificationsCallCount, 1);
       } finally {
         await localSdk.dispose();
       }

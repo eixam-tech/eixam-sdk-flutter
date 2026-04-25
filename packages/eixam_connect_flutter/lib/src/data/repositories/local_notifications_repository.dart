@@ -13,6 +13,26 @@ class LocalNotificationsRepository implements NotificationsRepository {
 
   static const String _bleSosCategoryId = 'eixam_ble_sos_actions';
   static const String _defaultTapActionId = 'open_app';
+  static const String _defaultChannelId = 'eixam_local_alerts';
+  static const String _sosChannelId = 'eixam_sos_alerts';
+  static const List<String> _sosKeywords = <String>[
+    'sos',
+    'pre-sos',
+    'presos',
+    'preventive sos',
+    'emergency',
+    'incident',
+    'countdown',
+    'cancelled',
+    'canceled',
+    'resolved',
+  ];
+  static const List<String> _nonSosKeywords = <String>[
+    'death man',
+    'safety check',
+    'check-in',
+    'i\'m ok',
+  ];
 
   @override
   Future<void> initialize({NotificationActionHandler? onAction}) async {
@@ -129,12 +149,23 @@ class LocalNotificationsRepository implements NotificationsRepository {
       await initialize();
     }
 
+    final isSosNotification = _looksLikeSosNotification(
+      title: title,
+      body: body,
+      payload: payload,
+    );
+    final channelId = isSosNotification ? _sosChannelId : _defaultChannelId;
+    final channelName =
+        isSosNotification ? 'EIXAM SOS Alerts' : 'EIXAM Local Alerts';
+    final channelDescription = isSosNotification
+        ? 'Local alerts for EIXAM BLE SOS and pre-SOS events'
+        : 'Local alerts for tracking and Death Man checks';
+
     final details = NotificationDetails(
       android: AndroidNotificationDetails(
-        'eixam_local_alerts',
-        'EIXAM Local Alerts',
-        channelDescription:
-            'Local alerts for SOS, tracking and Death Man checks',
+        channelId,
+        channelName,
+        channelDescription: channelDescription,
         importance: Importance.max,
         priority: Priority.high,
         actions: actions
@@ -163,6 +194,65 @@ class LocalNotificationsRepository implements NotificationsRepository {
       details,
       payload: payload,
     );
+  }
+
+  @override
+  Future<void> clearSosNotifications() async {
+    if (!_initialized) {
+      try {
+        await initialize();
+      } catch (_) {
+        return;
+      }
+    }
+
+    final notificationIds = <int>{};
+
+    try {
+      final activeNotifications = await _plugin.getActiveNotifications();
+      for (final notification in activeNotifications) {
+        if (_matchesSosNotification(
+          channelId: notification.channelId,
+          title: notification.title,
+          body: notification.body,
+          payload: notification.payload,
+        )) {
+          final id = notification.id;
+          if (id != null) {
+            notificationIds.add(id);
+          }
+        }
+      }
+    } on UnimplementedError {
+      // Best effort: some platforms do not support active notification listing.
+    } catch (_) {
+      // Keep SOS state transitions resilient if notification cleanup fails.
+    }
+
+    try {
+      final pendingNotifications = await _plugin.pendingNotificationRequests();
+      for (final notification in pendingNotifications) {
+        if (_matchesSosNotification(
+          title: notification.title,
+          body: notification.body,
+          payload: notification.payload,
+        )) {
+          notificationIds.add(notification.id);
+        }
+      }
+    } on UnimplementedError {
+      // Best effort: pending notification listing may not be implemented.
+    } catch (_) {
+      // Keep SOS state transitions resilient if notification cleanup fails.
+    }
+
+    for (final id in notificationIds) {
+      try {
+        await _plugin.cancel(id);
+      } catch (_) {
+        // Keep cancelling the rest even if one cancellation fails.
+      }
+    }
   }
 
   Future<void> _dispatchLaunchActionIfNeeded() async {
@@ -216,6 +306,48 @@ class LocalNotificationsRepository implements NotificationsRepository {
       return _defaultTapActionId;
     }
     return normalized;
+  }
+
+  bool _matchesSosNotification({
+    String? channelId,
+    String? title,
+    String? body,
+    String? payload,
+  }) {
+    if (channelId == _sosChannelId) {
+      return true;
+    }
+    return _looksLikeSosNotification(
+      title: title,
+      body: body,
+      payload: payload,
+    );
+  }
+
+  bool _looksLikeSosNotification({
+    String? title,
+    String? body,
+    String? payload,
+  }) {
+    final haystack = <String?>[title, body, payload]
+        .whereType<String>()
+        .map((value) => value.toLowerCase())
+        .join(' ');
+    if (haystack.isEmpty) {
+      return false;
+    }
+    if (payload != null && payload.startsWith('death_man:')) {
+      return false;
+    }
+    if (_nonSosKeywords.any(haystack.contains)) {
+      return false;
+    }
+    if (payload != null &&
+        (payload.contains('"kind":"sos_received"') ||
+            payload.contains('"kind": "sos_received"'))) {
+      return true;
+    }
+    return _sosKeywords.any(haystack.contains);
   }
 
   int _nextNotificationId() {

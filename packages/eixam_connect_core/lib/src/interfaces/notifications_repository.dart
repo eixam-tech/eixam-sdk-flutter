@@ -37,4 +37,5 @@ abstract class NotificationsRepository {
     String? payload,
     List<LocalNotificationAction> actions = const <LocalNotificationAction>[],
   });
+  Future<void> clearSosNotifications();
 }
