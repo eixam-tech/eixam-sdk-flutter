@@ -394,7 +394,7 @@ void main() {
       expect(status.state, isNot(DeviceSosState.preConfirm));
     });
 
-    test('device packet with retry metadata still starts in preConfirm', () {
+    test('device active packet as first observed packet becomes active', () {
       final controller = DeviceSosController(
         countdownDuration: const Duration(milliseconds: 40),
         countdownTick: const Duration(milliseconds: 5),
@@ -407,19 +407,45 @@ void main() {
       );
 
       final status = controller.currentStatus;
-      expect(status.state, DeviceSosState.preConfirm);
+      expect(status.state, DeviceSosState.active);
       expect(status.previousState, DeviceSosState.inactive);
       expect(status.triggerOrigin, DeviceSosTransitionSource.device);
-      expect(status.countdownStartedAt, isNotNull);
-      expect(status.expectedActivationAt, isNotNull);
-      expect(status.countdownRemainingSeconds, greaterThan(0));
-      expect(status.state, isNot(DeviceSosState.active));
+      expect(status.countdownStartedAt, isNull);
+      expect(status.expectedActivationAt, isNull);
+      expect(status.countdownRemainingSeconds, isNull);
       expect(
         status.decoderNote,
-        allOf(
-          contains('treats the first SOS packet in a new cycle as preConfirm'),
-          contains('owns the 20-second timeout locally'),
-        ),
+        contains('represents an active device-originated SOS'),
+      );
+    });
+
+    test(
+        'later PRE-SOS-like packet for the same active cycle is ignored as a downgrade',
+        () async {
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 40),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      addTearDown(controller.dispose);
+
+      controller.handleIncomingSosPacket(
+        _activePacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+
+      controller.handleIncomingSosPacket(
+        _countdownPacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+
+      final status = controller.currentStatus;
+      expect(status.state, DeviceSosState.active);
+      expect(status.previousState, DeviceSosState.active);
+      expect(status.countdownStartedAt, isNull);
+      expect(status.countdownRemainingSeconds, isNull);
+      expect(
+        status.decoderNote,
+        contains('Suppressed a PRE-SOS downgrade'),
       );
     });
 

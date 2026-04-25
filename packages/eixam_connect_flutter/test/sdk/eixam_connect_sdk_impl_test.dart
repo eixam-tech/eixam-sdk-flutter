@@ -6655,7 +6655,7 @@ void main() {
     });
 
     test(
-        'device-originated SOS notifies preConfirm first and active only after timeout',
+        'device-originated SOS notifies preConfirm once, then active, and never re-notifies PRE-SOS for the same cycle',
         () async {
       final localNotificationsRepository = FakeNotificationsRepository();
       final localDeviceSosController = DeviceSosController(
@@ -6721,6 +6721,66 @@ void main() {
         );
         expect(
             localNotificationsRepository.notifications.last.actions, isEmpty);
+
+        localDeviceSosController.handleIncomingSosPacket(
+          _deviceOriginPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(localNotificationsRepository.notifications, hasLength(2));
+      } finally {
+        await localSdk.dispose();
+      }
+    });
+
+    test(
+        'device-originated active packet after resume notifies active immediately instead of PRE-SOS',
+        () async {
+      final localNotificationsRepository = FakeNotificationsRepository();
+      final localDeviceSosController = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 35),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: localNotificationsRepository,
+        realtimeClient: realtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        permissionsRepository.permissionState = const PermissionState(
+          location: SdkPermissionStatus.granted,
+        );
+        await localSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+
+        localDeviceSosController.handleIncomingSosPacket(
+          _deviceOriginActivePacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        expect(
+            (await localSdk.getDeviceSosStatus()).state, DeviceSosState.active);
+        expect(localNotificationsRepository.notifications, hasLength(1));
+        expect(localNotificationsRepository.notifications.single.title,
+            'SOS activated');
+        expect(
+          localNotificationsRepository.notifications.single.body,
+          'Emergency protocol is now active. Tap to open the app and review it.',
+        );
       } finally {
         await localSdk.dispose();
       }
@@ -7266,6 +7326,63 @@ void main() {
         await unavailableSosRepository.dispose();
         await localRealtimeClient.dispose();
       }
+    });
+
+    test('backend idle does not downgrade an active device-originated SOS',
+        () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+      );
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+      );
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginActivePacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      sosRepository.currentIncident = sosRepository.currentIncident.copyWith(
+        state: SosState.idle,
+      );
+      sosRepository.stateController.add(SosState.idle);
+      await Future<void>.delayed(Duration.zero);
+
+      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.active);
+      expect(await sdk.getSosState(), SosState.sent);
+    });
+
+    test(
+        'device SOS cycle key stays stable across PRE-SOS and active phases of the same cycle',
+        () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+      );
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+      );
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginPacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      final preConfirmStatus = await sdk.getDeviceSosStatus();
+      final preConfirmKey = sdk.debugDeriveDeviceSosCycleKey(preConfirmStatus);
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginActivePacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+      await Future<void>.delayed(Duration.zero);
+      final activeStatus = await sdk.getDeviceSosStatus();
+      final activeKey = sdk.debugDeriveDeviceSosCycleKey(activeStatus);
+
+      expect(preConfirmStatus.state, DeviceSosState.preConfirm);
+      expect(activeStatus.state, DeviceSosState.active);
+      expect(preConfirmKey, isNotNull);
+      expect(activeKey, preConfirmKey);
     });
 
     test(
@@ -8058,6 +8175,23 @@ EixamSosPacket _deviceOriginPacket() {
     0x00,
     0x00,
     0x40,
+  ])!;
+}
+
+EixamSosPacket _deviceOriginActivePacket() {
+  return EixamSosPacket.tryParse(<int>[
+    0x34,
+    0x12,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x50,
   ])!;
 }
 

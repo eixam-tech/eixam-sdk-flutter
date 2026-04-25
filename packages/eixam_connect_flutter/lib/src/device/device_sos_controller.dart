@@ -403,9 +403,14 @@ class DeviceSosController {
     EixamSosPacket packet, {
     required DeviceSosTransitionSource source,
   }) {
-    final previous = _status.state;
+    final previousStatus = _status;
+    final previous = previousStatus.state;
     final now = _now();
-    final nextState = _resolveMeshPacketState(packet, source: source);
+    final resolution = _resolveMeshPacketState(
+      packet,
+      currentStatus: previousStatus,
+    );
+    final nextState = resolution.resolvedState;
     final event =
         'SOS notify decoded -> nodeId=${_formatNodeId(packet.nodeId)} '
         'sosType=${packet.sosType} '
@@ -416,6 +421,18 @@ class DeviceSosController {
     BleDebugRegistry.instance.recordEvent(event);
     BleDebugRegistry.instance.recordEvent(
       'SOS transition -> ${previous.name} -> ${nextState.name}',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      '[DEVICE_SOS_STATE] raw=${packet.rawHex} '
+      'nodeId=${_formatNodeId(packet.nodeId)} '
+      'packetId=${packet.packetId} '
+      'sosType=${packet.sosType} '
+      'retryCount=${packet.retryCount} '
+      'previous=${previous.name} '
+      'protocol=${resolution.protocolState.name} '
+      'resolved=${nextState.name} '
+      'cycleKey=${resolution.cycleKey ?? "-"} '
+      'downgradeSuppressed=${resolution.downgradeSuppressed}',
     );
 
     if (nextState == DeviceSosState.preConfirm) {
@@ -444,8 +461,7 @@ class DeviceSosController {
         gpsQuality: packet.gpsQuality,
         packetId: packet.packetId,
         hasLocation: packet.hasPosition,
-        decoderNote:
-            'The BLE SOS notify packet does not expose a distinct countdown-vs-active bit. The SDK treats the first SOS packet in a new cycle as preConfirm and owns the 20-second timeout locally unless a later cancel/confirm/active signal overrides it.',
+        decoderNote: resolution.decoderNote,
       );
       return;
     }
@@ -486,9 +502,7 @@ class DeviceSosController {
         gpsQuality: packet.gpsQuality,
         packetId: packet.packetId,
         hasLocation: packet.hasPosition,
-        decoderNote: nextState == DeviceSosState.active
-            ? 'Decoded SOS mesh packet from the SOS characteristic and kept the SOS active because this cycle had already advanced beyond the local countdown window.'
-            : 'Decoded SOS mesh packet from the SOS characteristic and mapped it to preConfirm while the local 20-second countdown is pending.',
+        decoderNote: resolution.decoderNote,
         countdownStartedAt:
             keepCountdownMetadata ? _status.countdownStartedAt : null,
         expectedActivationAt:
@@ -563,47 +577,138 @@ class DeviceSosController {
     );
   }
 
-  DeviceSosState _resolveMeshPacketState(
+  _MeshPacketResolution _resolveMeshPacketState(
     EixamSosPacket packet, {
-    required DeviceSosTransitionSource source,
+    required DeviceSosStatus currentStatus,
   }) {
-    if (packet.sosType == 0) {
-      return _status.state;
+    final protocolState = _resolveProtocolSosPacketState(packet);
+    final cycleKey = _deriveDeviceSosCycleKey(
+      nodeId: packet.nodeId,
+      packetId: packet.packetId,
+    );
+    final currentCycleKey = _deriveDeviceSosCycleKey(
+      nodeId: currentStatus.nodeId,
+      packetId: currentStatus.packetId,
+    );
+    final sameCycle = cycleKey != null &&
+        currentCycleKey != null &&
+        cycleKey == currentCycleKey;
+
+    if (protocolState == DeviceSosState.inactive) {
+      return _MeshPacketResolution(
+        protocolState: protocolState,
+        resolvedState: currentStatus.state,
+        cycleKey: cycleKey,
+        downgradeSuppressed: false,
+        decoderNote:
+            'Ignored SOS mesh packet because the protocol state resolved to inactive and no explicit close event was observed.',
+      );
     }
 
-    if (_status.state == DeviceSosState.acknowledged) {
-      return DeviceSosState.acknowledged;
+    if ((currentStatus.state == DeviceSosState.active ||
+            currentStatus.state == DeviceSosState.acknowledged) &&
+        sameCycle &&
+        protocolState == DeviceSosState.preConfirm) {
+      return _MeshPacketResolution(
+        protocolState: protocolState,
+        resolvedState: currentStatus.state,
+        cycleKey: cycleKey,
+        downgradeSuppressed: true,
+        decoderNote:
+            'Suppressed a PRE-SOS downgrade for an already-open device SOS cycle because active or acknowledged state is authoritative for the same node/packet cycle.',
+      );
     }
 
-    if (_status.state == DeviceSosState.active) {
-      return DeviceSosState.active;
+    if (currentStatus.state == DeviceSosState.acknowledged) {
+      return _MeshPacketResolution(
+        protocolState: protocolState,
+        resolvedState: DeviceSosState.acknowledged,
+        cycleKey: cycleKey,
+        downgradeSuppressed: protocolState == DeviceSosState.preConfirm,
+        decoderNote:
+            'Kept the device SOS acknowledged because only an explicit close event may end an acknowledged cycle.',
+      );
     }
 
     if (_awaitingObservedAppActivation &&
-        _status.state == DeviceSosState.preConfirm) {
-      return DeviceSosState.active;
+        currentStatus.state == DeviceSosState.preConfirm &&
+        protocolState == DeviceSosState.active) {
+      return _MeshPacketResolution(
+        protocolState: protocolState,
+        resolvedState: DeviceSosState.active,
+        cycleKey: cycleKey,
+        downgradeSuppressed: false,
+        decoderNote:
+            'Mapped the observed SOS mesh packet to active while app-triggered activation was awaiting a device-confirmed active transition.',
+      );
     }
 
-    if (_status.state == DeviceSosState.preConfirm &&
-        _status.expectedActivationAt != null &&
-        _now().isBefore(_status.expectedActivationAt!)) {
-      return DeviceSosState.preConfirm;
+    if (currentStatus.state == DeviceSosState.preConfirm &&
+        currentStatus.expectedActivationAt != null &&
+        _now().isBefore(currentStatus.expectedActivationAt!)) {
+      return _MeshPacketResolution(
+        protocolState: protocolState,
+        resolvedState: protocolState == DeviceSosState.active
+            ? DeviceSosState.active
+            : DeviceSosState.preConfirm,
+        cycleKey: cycleKey,
+        downgradeSuppressed: false,
+        decoderNote: protocolState == DeviceSosState.active
+            ? 'Mapped the SOS mesh packet to active immediately because the packet itself represents an active device-originated SOS.'
+            : 'Mapped the SOS mesh packet to preConfirm and kept the local countdown running for the current device-originated SOS cycle.',
+      );
     }
 
-    if (_status.state == DeviceSosState.preConfirm) {
-      return DeviceSosState.active;
+    if (currentStatus.state == DeviceSosState.preConfirm && sameCycle) {
+      return _MeshPacketResolution(
+        protocolState: protocolState,
+        resolvedState: DeviceSosState.active,
+        cycleKey: cycleKey,
+        downgradeSuppressed: protocolState == DeviceSosState.preConfirm,
+        decoderNote: protocolState == DeviceSosState.active
+            ? 'Mapped the SOS mesh packet to active immediately because the packet itself represents an active device-originated SOS.'
+            : 'Kept the SOS cycle active because the local countdown for this node/packet cycle had already elapsed and PRE-SOS must not restart.',
+      );
     }
 
-    if (source == DeviceSosTransitionSource.device ||
-        source == DeviceSosTransitionSource.app) {
-      // The BLE protocol does not emit a dedicated device-countdown packet.
-      // For a new SOS cycle, the first mesh packet is therefore treated as a
-      // pre-confirm/preventive state and only promoted later by confirm or the
-      // local countdown timeout.
-      return DeviceSosState.preConfirm;
-    }
+    return _MeshPacketResolution(
+      protocolState: protocolState,
+      resolvedState: protocolState,
+      cycleKey: cycleKey,
+      downgradeSuppressed: false,
+      decoderNote: protocolState == DeviceSosState.active
+          ? 'Mapped the SOS mesh packet to active immediately because the packet itself represents an active device-originated SOS.'
+          : 'Mapped the SOS mesh packet to preConfirm and started a local countdown for a newly observed device-originated SOS cycle.',
+    );
+  }
 
-    return DeviceSosState.active;
+  DeviceSosState _resolveProtocolSosPacketState(EixamSosPacket packet) {
+    switch (packet.sosType) {
+      case 0:
+        return DeviceSosState.inactive;
+      case 2:
+      case 3:
+        return DeviceSosState.active;
+      case 1:
+        // Current firmware differentiates the first PRE-SOS packet from a
+        // later active packet within the same cycle by incrementing retry
+        // metadata while keeping the same node/packet identity.
+        return packet.retryCount > 0
+            ? DeviceSosState.active
+            : DeviceSosState.preConfirm;
+      default:
+        return DeviceSosState.preConfirm;
+    }
+  }
+
+  String? _deriveDeviceSosCycleKey({
+    required int? nodeId,
+    required int? packetId,
+  }) {
+    if (nodeId == null || packetId == null) {
+      return null;
+    }
+    return '$nodeId:$packetId';
   }
 
   DeviceSosState _resolveEventState(
@@ -882,4 +987,20 @@ class DeviceSosController {
     await _commandPathController.close();
     await _controller.close();
   }
+}
+
+class _MeshPacketResolution {
+  const _MeshPacketResolution({
+    required this.protocolState,
+    required this.resolvedState,
+    required this.cycleKey,
+    required this.downgradeSuppressed,
+    required this.decoderNote,
+  });
+
+  final DeviceSosState protocolState;
+  final DeviceSosState resolvedState;
+  final String? cycleKey;
+  final bool downgradeSuppressed;
+  final String decoderNote;
 }

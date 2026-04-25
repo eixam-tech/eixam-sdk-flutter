@@ -1206,14 +1206,18 @@ class EixamConnectSdkImpl
         deviceId.isNotEmpty &&
         nodeId != null &&
         packetId != null) {
-      return '$deviceId:$nodeId:$packetId:${status.sosType ?? -1}';
+      return '$deviceId:$nodeId:$packetId';
     }
 
     if (nodeId != null && packetId != null) {
-      return 'node:$nodeId:packet:$packetId:${status.sosType ?? -1}';
+      return 'node:$nodeId:packet:$packetId';
     }
 
     return status.lastPacketSignature;
+  }
+
+  String? debugDeriveDeviceSosCycleKey(DeviceSosStatus status) {
+    return _deriveDeviceSosCycleKey(status);
   }
 
   String _notificationTitleForSosState(DeviceSosState state) {
