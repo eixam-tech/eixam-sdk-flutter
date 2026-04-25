@@ -21,7 +21,9 @@ void main() {
           if (command.opcode == 0x04) {
             Future<void>.delayed(const Duration(milliseconds: 5), () {
               controller.handleIncomingSosEventPacket(
-                EixamSosEventPacket.tryParse(<int>[0xE1, 0x01, 0x34, 0x12])!,
+                EixamSosEventPacket.tryParse(
+                  <int>[0xE1, 0x01, 0x34, 0x12, 0x00, 0x00],
+                )!,
                 source: DeviceSosTransitionSource.device,
               );
             });
@@ -73,7 +75,7 @@ void main() {
       );
 
       expect(commands.map((command) => command.opcode), <int>[0x06, 0x04]);
-      expect(controller.currentStatus.state, DeviceSosState.preConfirm);
+      expect(controller.currentStatus.state, DeviceSosState.active);
     });
 
     test('app trigger -> preConfirm -> confirm -> active', () async {
@@ -325,7 +327,9 @@ void main() {
         source: DeviceSosTransitionSource.device,
       );
       controller.handleIncomingSosEventPacket(
-        EixamSosEventPacket.tryParse(<int>[0xE1, 0x01, 0x34, 0x12])!,
+        EixamSosEventPacket.tryParse(
+          <int>[0xE1, 0x01, 0x34, 0x12, 0x00, 0x00],
+        )!,
         source: DeviceSosTransitionSource.device,
       );
 
@@ -361,6 +365,33 @@ void main() {
         status.decoderNote,
         contains('countdown-finished BLE packet was observed'),
       );
+    });
+
+    test(
+        'device packet received after countdown expiry stays active instead of restarting preConfirm',
+        () async {
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 35),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      addTearDown(controller.dispose);
+
+      controller.handleIncomingSosPacket(
+        _countdownPacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 70));
+
+      controller.handleIncomingSosPacket(
+        _activePacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+
+      final status = controller.currentStatus;
+      expect(status.state, DeviceSosState.active);
+      expect(status.previousState, DeviceSosState.active);
+      expect(status.triggerOrigin, DeviceSosTransitionSource.device);
+      expect(status.state, isNot(DeviceSosState.preConfirm));
     });
 
     test('device packet with retry metadata still starts in preConfirm', () {
@@ -427,11 +458,8 @@ EixamSosPacket _countdownPacket() {
     0x00,
     0x00,
     0x00,
-    0x00,
-    0x00,
-    0x00,
-    0x00,
     0x40,
+    0x00,
   ])!;
 }
 
@@ -442,10 +470,7 @@ EixamSosPacket _activePacket() {
     0x00,
     0x00,
     0x00,
-    0x00,
-    0x00,
-    0x00,
-    0x00,
     0x50,
+    0x00,
   ])!;
 }

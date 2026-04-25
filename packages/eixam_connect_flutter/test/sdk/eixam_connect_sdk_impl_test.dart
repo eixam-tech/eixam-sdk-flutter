@@ -7105,6 +7105,228 @@ void main() {
       expect(preSosStatus.remainingSeconds, greaterThan(0));
     });
 
+    test(
+        'device-originated PRE-SOS can be queried later and still rehydrates public countdown state',
+        () async {
+      final unavailableSosRepository = _AvailabilityAwareSosRepository();
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 80),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: unavailableSosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        permissionsRepository.permissionState = const PermissionState(
+          location: SdkPermissionStatus.granted,
+        );
+        await localSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+
+        localDeviceSosController.handleIncomingSosPacket(
+          _deviceOriginPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        final preSosStatus = await localSdk.getPreSosStatus();
+
+        expect(preSosStatus, isNotNull);
+        expect(preSosStatus!.mirroredOnDevice, isTrue);
+        expect(preSosStatus.origin, DeviceSosTransitionSource.device);
+        expect(preSosStatus.remainingSeconds, greaterThan(0));
+        expect(await localSdk.getSosState(), SosState.arming);
+      } finally {
+        await localSdk.dispose();
+        await unavailableSosRepository.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test(
+        'device-originated PRE-SOS expiry rehydrates as active public SOS even when backend is unavailable',
+        () async {
+      final unavailableSosRepository = _AvailabilityAwareSosRepository();
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 35),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: unavailableSosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        permissionsRepository.permissionState = const PermissionState(
+          location: SdkPermissionStatus.granted,
+        );
+        await localSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+
+        localDeviceSosController.handleIncomingSosPacket(
+          _deviceOriginPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 70));
+
+        final incident = await localSdk.getCurrentSosIncident();
+
+        expect(await localSdk.getPreSosStatus(), isNull);
+        expect(await localSdk.getSosState(), SosState.sent);
+        expect(incident, isNotNull);
+        expect(incident!.state, SosState.sent);
+        expect(incident.deliveryChannel, SosDeliveryChannel.deviceOnly);
+        expect(unavailableSosRepository.currentIncident.state, SosState.idle);
+      } finally {
+        await localSdk.dispose();
+        await unavailableSosRepository.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test(
+        'device-originated active packet after PRE-SOS expiry remains active publicly',
+        () async {
+      final unavailableSosRepository = _AvailabilityAwareSosRepository();
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 35),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: unavailableSosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        permissionsRepository.permissionState = const PermissionState(
+          location: SdkPermissionStatus.granted,
+        );
+        await localSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+
+        localDeviceSosController.handleIncomingSosPacket(
+          _deviceOriginPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 70));
+
+        localDeviceSosController.handleIncomingSosPacket(
+          _deviceOriginPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(
+            (await localSdk.getDeviceSosStatus()).state, DeviceSosState.active);
+        expect(await localSdk.getPreSosStatus(), isNull);
+        expect(await localSdk.getSosState(), SosState.sent);
+      } finally {
+        await localSdk.dispose();
+        await unavailableSosRepository.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test(
+        'device-originated closure clears rehydrated public PRE-SOS and notifications',
+        () async {
+      final unavailableSosRepository = _AvailabilityAwareSosRepository();
+      final localNotificationsRepository = FakeNotificationsRepository();
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 80),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: unavailableSosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: localNotificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        permissionsRepository.permissionState = const PermissionState(
+          location: SdkPermissionStatus.granted,
+        );
+        await localSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+
+        localDeviceSosController.handleIncomingSosPacket(
+          _deviceOriginPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect(await localSdk.getPreSosStatus(), isNotNull);
+
+        localDeviceSosController.handleIncomingSosEventPacket(
+          EixamSosEventPacket.tryParse(
+            <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
+          )!,
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(await localSdk.getPreSosStatus(), isNull);
+        expect(await localSdk.getSosState(), SosState.idle);
+        expect(localNotificationsRepository.clearSosNotificationsCallCount, 1);
+      } finally {
+        await localSdk.dispose();
+        await unavailableSosRepository.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
     test('confirming device-originated PRE-SOS creates backend exactly once',
         () async {
       deviceRepository.emitStatus(

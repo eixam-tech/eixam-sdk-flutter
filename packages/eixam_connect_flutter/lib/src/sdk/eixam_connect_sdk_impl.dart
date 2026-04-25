@@ -511,7 +511,7 @@ class EixamConnectSdkImpl
   void _bindSosStreams() {
     _sosStateSub?.cancel();
     _sosStateSub = sosRepository.watchSosState().listen((state) async {
-      _syncPublicSosStateFromRepository(state);
+      await _syncPublicSosStateFromRepository(state);
       if (state == SosState.cancelled || state == SosState.resolved) {
         await _clearSosNotificationsSafely(
           reason: 'public_state_stream:${state.name}',
@@ -633,6 +633,12 @@ class EixamConnectSdkImpl
     switch (state) {
       case AppLifecycleState.resumed:
         _bleAutoReconnectCoordinator.setAppForeground(true);
+        unawaited(
+          _rehydrateDeviceSosPublicState(
+            trigger: 'app_resumed',
+            emitResolvedState: true,
+          ),
+        );
         if (_isProtectionPlatformOwningBle) {
           unawaited(
             protectionPlatformAdapter.ensureProtectionRuntimeActive(
@@ -1512,15 +1518,12 @@ class EixamConnectSdkImpl
 
   @override
   Future<PublicPreSosStatus?> getPreSosStatus() async {
-    final current = _buildCurrentPreSosStatus();
-    if (current != null) {
-      return current;
-    }
     final deviceStatus = await deviceSosController.getStatus();
-    if (deviceStatus.state != DeviceSosState.preConfirm) {
-      return null;
-    }
-    _syncPreSosSessionFromDeviceStatus(deviceStatus);
+    await _rehydrateDeviceSosPublicState(
+      trigger: 'getPreSosStatus',
+      deviceStatus: deviceStatus,
+      emitResolvedState: false,
+    );
     return _buildCurrentPreSosStatus();
   }
 
@@ -1717,8 +1720,22 @@ class EixamConnectSdkImpl
     if (_publicSosFallbackIncident != null) {
       return _publicSosFallbackIncident;
     }
-    final incident = await sosRepository.getCurrentIncident();
-    return _decorateIncidentWithPublicDeliveryChannel(incident);
+    final deviceStatus = await deviceSosController.getStatus();
+    await _rehydrateDeviceSosPublicState(
+      trigger: 'getCurrentSosIncident',
+      deviceStatus: deviceStatus,
+      emitResolvedState: false,
+    );
+    final incident = _decorateIncidentWithPublicDeliveryChannel(
+      await sosRepository.getCurrentIncident(),
+    );
+    final deviceDerivedIncident =
+        _buildDeviceRuntimePublicSosIncident(deviceStatus);
+    if (deviceDerivedIncident != null &&
+        !_hasBackendVisibleSosIncident(incident)) {
+      return deviceDerivedIncident;
+    }
+    return incident;
   }
 
   @override
@@ -2230,6 +2247,17 @@ class EixamConnectSdkImpl
     if (session == null) {
       return;
     }
+    if (_isPreSosSessionExpired(session)) {
+      if (session.origin == DeviceSosTransitionSource.device) {
+        _clearPreSosSession(
+          reason: 'device_pre_sos_countdown_expired',
+          emitIdleState: false,
+        );
+      } else if (_pendingPreSosConfirmation == null) {
+        await confirmPreSos(const SosTriggerPayload());
+      }
+      return;
+    }
     final status = _buildCurrentPreSosStatus();
     _publishPreSosStatus(status);
     if (status == null ||
@@ -2244,6 +2272,9 @@ class EixamConnectSdkImpl
   PublicPreSosStatus? _buildCurrentPreSosStatus() {
     final session = _preSosSession;
     if (session == null) {
+      return null;
+    }
+    if (_isPreSosSessionExpired(session)) {
       return null;
     }
     final remainingSeconds = _computeRemainingSeconds(
@@ -2267,6 +2298,10 @@ class EixamConnectSdkImpl
       return 0;
     }
     return remaining.inSeconds + (remaining.inMilliseconds % 1000 == 0 ? 0 : 1);
+  }
+
+  bool _isPreSosSessionExpired(_PreSosSession session) {
+    return !DateTime.now().isBefore(session.expectedActivationAt);
   }
 
   void _publishPreSosStatus(PublicPreSosStatus? status) {
@@ -2321,15 +2356,92 @@ class EixamConnectSdkImpl
     }
   }
 
-  void _syncPublicSosStateFromRepository(SosState state) {
-    if (_hasActivePreSosSession) {
-      _emitPublicSosState(SosState.arming);
+  Future<void> _syncPublicSosStateFromRepository(SosState state) async {
+    final deviceOverride = await _rehydrateDeviceSosPublicState(
+      trigger: 'repository_stream:${state.name}',
+      emitResolvedState: false,
+    );
+    if (deviceOverride != null) {
+      _emitPublicSosState(deviceOverride);
       return;
     }
     if (_publicSosFallbackIncident != null || _publicSosActionInFlight) {
       return;
     }
     _emitPublicSosState(state);
+  }
+
+  Future<SosState?> _rehydrateDeviceSosPublicState({
+    required String trigger,
+    DeviceSosStatus? deviceStatus,
+    required bool emitResolvedState,
+  }) async {
+    final status = deviceStatus ?? await deviceSosController.getStatus();
+    final session = _preSosSession;
+    final sessionExpired = session != null && _isPreSosSessionExpired(session);
+    final deviceCountdownExpired = status.expectedActivationAt != null &&
+        !DateTime.now().isBefore(status.expectedActivationAt!);
+    SosState? chosenPublicState;
+
+    if (status.state == DeviceSosState.preConfirm && !deviceCountdownExpired) {
+      _syncPreSosSessionFromDeviceStatus(status);
+      chosenPublicState = SosState.arming;
+    } else {
+      if (session != null &&
+          (status.state != DeviceSosState.preConfirm || sessionExpired)) {
+        _clearPreSosSession(
+          reason: 'device_rehydrate:${status.state.name}',
+          emitIdleState: false,
+        );
+      }
+      chosenPublicState = status.state == DeviceSosState.preConfirm
+          ? SosState.sent
+          : _mapDeviceStatusToPublicSosState(status);
+    }
+
+    BleDebugRegistry.instance.recordEvent(
+      '[DEVICE_SOS_REHYDRATE] trigger=$trigger device=${status.state.name} previous=${status.previousState?.name ?? "-"} origin=${status.triggerOrigin.name} remaining=${status.countdownRemainingSeconds?.toString() ?? "-"} expectedActivationAt=${status.expectedActivationAt?.toIso8601String() ?? "-"} sessionExpired=$sessionExpired deviceCountdownExpired=$deviceCountdownExpired chosen=${chosenPublicState?.name ?? "-"}',
+    );
+
+    if (emitResolvedState && chosenPublicState != null) {
+      _emitPublicSosState(chosenPublicState);
+    }
+
+    return chosenPublicState;
+  }
+
+  SosState? _mapDeviceStatusToPublicSosState(DeviceSosStatus status) {
+    return switch (status.state) {
+      DeviceSosState.preConfirm => SosState.arming,
+      DeviceSosState.active => SosState.sent,
+      DeviceSosState.acknowledged => SosState.acknowledged,
+      DeviceSosState.inactive ||
+      DeviceSosState.resolved ||
+      DeviceSosState.unknown =>
+        null,
+    };
+  }
+
+  SosIncident? _buildDeviceRuntimePublicSosIncident(DeviceSosStatus status) {
+    final deviceCountdownExpired = status.expectedActivationAt != null &&
+        !DateTime.now().isBefore(status.expectedActivationAt!);
+    final publicState =
+        status.state == DeviceSosState.preConfirm && deviceCountdownExpired
+            ? SosState.sent
+            : _mapDeviceStatusToPublicSosState(status);
+    if (publicState == null || publicState == SosState.arming) {
+      return null;
+    }
+    final cycleKey = _deriveDeviceSosCycleKey(status) ??
+        status.lastPacketSignature ??
+        'device-runtime-${status.updatedAt.microsecondsSinceEpoch}';
+    return SosIncident(
+      id: 'device-runtime-$cycleKey',
+      state: publicState,
+      createdAt: (status.countdownStartedAt ?? status.updatedAt).toUtc(),
+      triggerSource: 'ble_device_runtime_status',
+      deliveryChannel: SosDeliveryChannel.deviceOnly,
+    );
   }
 
   SosIncident? _decorateIncidentWithPublicDeliveryChannel(
@@ -2780,16 +2892,17 @@ class EixamConnectSdkImpl
       emit: false,
     );
     final deviceSosStatus = await deviceSosController.getStatus();
-    if (_hasActivePreSosSession ||
-        deviceSosStatus.state == DeviceSosState.preConfirm) {
-      if (deviceSosStatus.state == DeviceSosState.preConfirm) {
-        _syncPreSosSessionFromDeviceStatus(deviceSosStatus);
-      }
-      _publicSosState = SosState.arming;
+    final deviceOverride = await _rehydrateDeviceSosPublicState(
+      trigger: 'getSosState',
+      deviceStatus: deviceSosStatus,
+      emitResolvedState: false,
+    );
+    if (deviceOverride != null) {
+      _publicSosState = deviceOverride;
       BleDebugRegistry.instance.recordEvent(
-        'getSosState() -> repositoryState=${SosState.arming.name}',
+        'getSosState() -> deviceOverride=${deviceOverride.name}',
       );
-      return SosState.arming;
+      return deviceOverride;
     }
     if (_publicSosFallbackIncident != null) {
       BleDebugRegistry.instance.recordEvent(
