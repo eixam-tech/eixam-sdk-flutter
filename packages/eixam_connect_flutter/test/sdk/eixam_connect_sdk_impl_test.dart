@@ -1438,6 +1438,259 @@ void main() {
     });
 
     test(
+        'android protection exits after disconnect grace when native runtime stays disconnected',
+        () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+        notifications: SdkPermissionStatus.granted,
+        bluetooth: SdkPermissionStatus.granted,
+        bluetoothEnabled: true,
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-disconnect-exit',
+          connected: true,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        ),
+      );
+      final events = StreamController<ProtectionPlatformEvent>.broadcast();
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          foregroundServiceConfigured: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          protectedDeviceId: 'device-disconnect-exit',
+          activeDeviceId: 'device-disconnect-exit',
+          runtimeActive: true,
+          serviceRunning: true,
+          serviceBleConnected: true,
+          serviceBleReady: true,
+          coverageLevel: ProtectionCoverageLevel.full,
+          runtimeState: ProtectionRuntimeState.active,
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+        platformEvents: events.stream,
+      );
+      final runtimeSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: FakeRealtimeClient(),
+        deviceSosController: DeviceSosController(),
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: localAdapter,
+      );
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+            canonicalExternalUserId: 'canonical-user',
+          ),
+        );
+        await runtimeSdk.enterProtectionMode(
+          options: const ProtectionModeOptions(
+            healthCheckInterval: Duration(milliseconds: 20),
+          ),
+        );
+
+        localAdapter.snapshot = const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          foregroundServiceConfigured: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          protectedDeviceId: 'device-disconnect-exit',
+          activeDeviceId: 'device-disconnect-exit',
+          runtimeActive: true,
+          serviceRunning: true,
+          serviceBleConnected: false,
+          serviceBleReady: false,
+          coverageLevel: ProtectionCoverageLevel.partial,
+          runtimeState: ProtectionRuntimeState.active,
+          degradationReason:
+              'Android foreground service is reconnecting to the protected BLE device.',
+        );
+        events.add(
+          ProtectionPlatformEvent(
+            type: ProtectionPlatformEventType.deviceDisconnected,
+            timestamp: DateTime.utc(2026, 4, 26, 21),
+            reason: 'gatt_disconnected',
+          ),
+        );
+
+        await Future<void>.delayed(const Duration(milliseconds: 60));
+
+        final status = await runtimeSdk.getProtectionStatus();
+        expect(localAdapter.stopCallCount, 1);
+        expect(status.modeState, ProtectionModeState.off);
+        expect(status.runtimeState, ProtectionRuntimeState.inactive);
+        expect(status.foregroundServiceRunning, isFalse);
+        expect(status.protectionRuntimeActive, isFalse);
+        expect(status.bleOwner, ProtectionBleOwner.flutter);
+      } finally {
+        await events.close();
+        await runtimeSdk.dispose();
+      }
+    });
+
+    test(
+        'android protection stays active when native runtime reconnects before disconnect grace expires',
+        () async {
+      permissionsRepository.permissionState = const PermissionState(
+        location: SdkPermissionStatus.granted,
+        notifications: SdkPermissionStatus.granted,
+        bluetooth: SdkPermissionStatus.granted,
+        bluetoothEnabled: true,
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-disconnect-reconnect',
+          connected: true,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        ),
+      );
+      final events = StreamController<ProtectionPlatformEvent>.broadcast();
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          foregroundServiceConfigured: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          protectedDeviceId: 'device-disconnect-reconnect',
+          activeDeviceId: 'device-disconnect-reconnect',
+          runtimeActive: true,
+          serviceRunning: true,
+          serviceBleConnected: true,
+          serviceBleReady: true,
+          coverageLevel: ProtectionCoverageLevel.full,
+          runtimeState: ProtectionRuntimeState.active,
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+        platformEvents: events.stream,
+      );
+      final runtimeSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: FakeRealtimeClient(),
+        deviceSosController: DeviceSosController(),
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: localAdapter,
+      );
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+            canonicalExternalUserId: 'canonical-user',
+          ),
+        );
+        await runtimeSdk.enterProtectionMode(
+          options: const ProtectionModeOptions(
+            healthCheckInterval: Duration(milliseconds: 40),
+          ),
+        );
+
+        localAdapter.snapshot = const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          foregroundServiceConfigured: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          protectedDeviceId: 'device-disconnect-reconnect',
+          activeDeviceId: 'device-disconnect-reconnect',
+          runtimeActive: true,
+          serviceRunning: true,
+          serviceBleConnected: false,
+          serviceBleReady: false,
+          coverageLevel: ProtectionCoverageLevel.partial,
+          runtimeState: ProtectionRuntimeState.active,
+          degradationReason:
+              'Android foreground service is reconnecting to the protected BLE device.',
+        );
+        events.add(
+          ProtectionPlatformEvent(
+            type: ProtectionPlatformEventType.deviceDisconnected,
+            timestamp: DateTime.utc(2026, 4, 26, 22),
+            reason: 'gatt_disconnected',
+          ),
+        );
+
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        localAdapter.snapshot = const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          foregroundServiceConfigured: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          protectedDeviceId: 'device-disconnect-reconnect',
+          activeDeviceId: 'device-disconnect-reconnect',
+          runtimeActive: true,
+          serviceRunning: true,
+          serviceBleConnected: true,
+          serviceBleReady: true,
+          coverageLevel: ProtectionCoverageLevel.full,
+          runtimeState: ProtectionRuntimeState.active,
+        );
+        events.add(
+          ProtectionPlatformEvent(
+            type: ProtectionPlatformEventType.deviceConnected,
+            timestamp: DateTime.utc(2026, 4, 26, 22, 0, 1),
+            reason: 'gatt_connected',
+          ),
+        );
+
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+
+        final status = await runtimeSdk.getProtectionStatus();
+        expect(localAdapter.stopCallCount, 0);
+        expect(
+          status.modeState,
+          anyOf(ProtectionModeState.armed, ProtectionModeState.degraded),
+        );
+        expect(status.deviceConnected, isTrue);
+        expect(status.protectionRuntimeActive, isTrue);
+        expect(status.bleOwner, ProtectionBleOwner.androidService);
+      } finally {
+        await events.close();
+        await runtimeSdk.dispose();
+      }
+    });
+
+    test(
         'ios protection adapter reports plugin-owned degraded runtime honestly',
         () async {
       permissionsRepository.permissionState = const PermissionState(
@@ -7941,6 +8194,7 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   @override
   Future<void> stopProtectionRuntime() async {
     stopCallCount++;
+    snapshot = _stoppedProtectionPlatformSnapshot(snapshot);
   }
 
   @override
@@ -7985,6 +8239,60 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
 
   @override
   Stream<ProtectionPlatformEvent> watchPlatformEvents() => platformEvents;
+}
+
+ProtectionPlatformSnapshot _stoppedProtectionPlatformSnapshot(
+  ProtectionPlatformSnapshot current,
+) {
+  return ProtectionPlatformSnapshot(
+    backgroundCapabilityReady: current.backgroundCapabilityReady,
+    platformRuntimeConfigured: current.platformRuntimeConfigured,
+    foregroundServiceConfigured: current.foregroundServiceConfigured,
+    serviceRunning: false,
+    runtimeActive: false,
+    bluetoothEnabled: current.bluetoothEnabled,
+    notificationsGranted: current.notificationsGranted,
+    lastFailureReason: current.lastFailureReason,
+    lastPlatformEvent: current.lastPlatformEvent,
+    lastPlatformEventAt: current.lastPlatformEventAt,
+    runtimeState: ProtectionRuntimeState.inactive,
+    coverageLevel: ProtectionCoverageLevel.none,
+    lastWakeAt: current.lastWakeAt,
+    lastWakeReason: current.lastWakeReason,
+    platform: current.platform,
+    backgroundCapabilityState: current.backgroundCapabilityState,
+    restorationConfigured: current.restorationConfigured,
+    bleOwner: ProtectionBleOwner.flutter,
+    serviceBleConnected: false,
+    serviceBleReady: false,
+    pendingSosCount: current.pendingSosCount,
+    pendingTelemetryCount: current.pendingTelemetryCount,
+    pendingNativeSosCreateCount: current.pendingNativeSosCreateCount,
+    pendingNativeSosCancelCount: current.pendingNativeSosCancelCount,
+    lastRestorationEvent: current.lastRestorationEvent,
+    lastRestorationEventAt: current.lastRestorationEventAt,
+    lastBleServiceEvent: current.lastBleServiceEvent,
+    lastBleServiceEventAt: current.lastBleServiceEventAt,
+    reconnectAttemptCount: current.reconnectAttemptCount,
+    lastReconnectAttemptAt: current.lastReconnectAttemptAt,
+    lastNativeBackendHandoffResult: current.lastNativeBackendHandoffResult,
+    lastNativeBackendHandoffError: current.lastNativeBackendHandoffError,
+    protectedDeviceId: current.protectedDeviceId,
+    activeDeviceId: current.activeDeviceId,
+    degradationReason: null,
+    expectedBleServiceUuid: current.expectedBleServiceUuid,
+    expectedBleCharacteristicUuids: current.expectedBleCharacteristicUuids,
+    discoveredBleServicesSummary: current.discoveredBleServicesSummary,
+    readinessFailureReason: current.readinessFailureReason,
+    nativeBackendBaseUrl: current.nativeBackendBaseUrl,
+    nativeBackendConfigValid: current.nativeBackendConfigValid,
+    nativeBackendConfigIssue: current.nativeBackendConfigIssue,
+    debugLocalhostBackendAllowed: current.debugLocalhostBackendAllowed,
+    debugCleartextBackendAllowed: current.debugCleartextBackendAllowed,
+    lastCommandRoute: current.lastCommandRoute,
+    lastCommandResult: current.lastCommandResult,
+    lastCommandError: current.lastCommandError,
+  );
 }
 
 Future<void> _attachObservedAppActivationWriter(

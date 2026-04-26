@@ -73,6 +73,8 @@ class ProtectionModeController {
   );
 
   ProtectionStatus get currentStatus => _status;
+  Duration get currentDisconnectGracePeriod =>
+      (_activeOptions ?? const ProtectionModeOptions()).healthCheckInterval;
 
   Future<ProtectionReadinessReport> evaluateReadiness({
     ProtectionModeOptions options = const ProtectionModeOptions(),
@@ -633,15 +635,11 @@ class ProtectionModeController {
     ProtectionStatus status,
     ProtectionPlatformSnapshot platformSnapshot,
   ) {
-    if (status.deviceConnected) {
-      return true;
+    if (_isPlatformBleOwner(platformSnapshot.bleOwner)) {
+      return platformSnapshot.serviceBleConnected ||
+          platformSnapshot.serviceBleReady;
     }
-    if (_isPlatformBleOwner(platformSnapshot.bleOwner) &&
-        (platformSnapshot.serviceBleConnected ||
-            platformSnapshot.serviceBleReady)) {
-      return true;
-    }
-    return false;
+    return status.deviceConnected;
   }
 
   void _handlePlatformEvent(ProtectionPlatformEvent event) {

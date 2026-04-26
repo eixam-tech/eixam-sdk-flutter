@@ -95,6 +95,8 @@ class EixamConnectSdkImpl
   StreamSubscription<BleIncomingEvent>? _bleIncomingEventDiagnosticsSub;
   StreamSubscription<ProtectionStatus>? _protectionStatusSub;
   StreamSubscription<ProtectionPlatformEvent>? _protectionRawSosEventsSub;
+  Timer? _protectionDisconnectGraceTimer;
+  bool _lastProtectionDeviceConnected = false;
 
   Timer? _deathManTimer;
   bool _deathManCheckInNotified = false;
@@ -374,6 +376,12 @@ class EixamConnectSdkImpl
     _protectionStatusSub?.cancel();
     _protectionStatusSub =
         _protectionModeController.watchStatus().listen((status) {
+      final previousConnected = _lastProtectionDeviceConnected;
+      _lastProtectionDeviceConnected = status.deviceConnected;
+      _reconcileProtectionDisconnectLifecycle(
+        previousConnected: previousConnected,
+        status: status,
+      );
       _emitOperationalDiagnostics(
         reason:
             'protection_status:${status.bleOwner.name}:${status.serviceBleConnected}:${status.serviceBleReady}:${status.deviceConnected}',
@@ -421,6 +429,64 @@ class EixamConnectSdkImpl
         );
       },
     );
+  }
+
+  void _reconcileProtectionDisconnectLifecycle({
+    required bool previousConnected,
+    required ProtectionStatus status,
+  }) {
+    if (!_canExitProtectionAfterDisconnect(status)) {
+      _cancelProtectionDisconnectGraceTimer();
+      return;
+    }
+    if (status.deviceConnected) {
+      _cancelProtectionDisconnectGraceTimer();
+      return;
+    }
+    if (_protectionDisconnectGraceTimer != null) {
+      return;
+    }
+    if (!previousConnected) {
+      return;
+    }
+    final gracePeriod = _currentProtectionDisconnectGracePeriod;
+    _protectionDisconnectGraceTimer = Timer(gracePeriod, () async {
+      _protectionDisconnectGraceTimer = null;
+      final currentStatus = await _protectionModeController.getStatus();
+      if (!_canExitProtectionAfterDisconnect(currentStatus) ||
+          currentStatus.deviceConnected) {
+        return;
+      }
+      BleDebugRegistry.instance.recordEvent(
+        'Protection disconnect grace expired -> exiting protection mode owner=${currentStatus.bleOwner.name} graceMs=${gracePeriod.inMilliseconds}',
+      );
+      await _protectionModeController.exit();
+      await _refreshOperationalDiagnostics(
+        trigger: 'protection_disconnect_grace_expired',
+        refreshRuntimeStatus: false,
+      );
+    });
+  }
+
+  bool _canExitProtectionAfterDisconnect(ProtectionStatus status) {
+    if (!_isPlatformBleOwner(status.bleOwner)) {
+      return false;
+    }
+    if (status.modeState == ProtectionModeState.off ||
+        status.modeState == ProtectionModeState.stopping ||
+        status.modeState == ProtectionModeState.error) {
+      return false;
+    }
+    return true;
+  }
+
+  Duration get _currentProtectionDisconnectGracePeriod {
+    return _protectionModeController.currentDisconnectGracePeriod;
+  }
+
+  void _cancelProtectionDisconnectGraceTimer() {
+    _protectionDisconnectGraceTimer?.cancel();
+    _protectionDisconnectGraceTimer = null;
   }
 
   void _bindBacklogSyncStreams() {
@@ -3727,6 +3793,7 @@ class EixamConnectSdkImpl
   }
 
   Future<void> dispose() async {
+    _cancelProtectionDisconnectGraceTimer();
     WidgetsBinding.instance.removeObserver(this);
     _deathManTimer?.cancel();
     _preSosSession?.timer.cancel();
