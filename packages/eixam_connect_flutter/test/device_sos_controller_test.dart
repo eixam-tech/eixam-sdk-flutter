@@ -420,6 +420,70 @@ void main() {
     });
 
     test(
+        'realistic PRE-SOS packet then active packet in the same cycle transitions preConfirm to active',
+        () {
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 40),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      addTearDown(controller.dispose);
+
+      controller.handleIncomingSosPacket(
+        _countdownPacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+      final preConfirm = controller.currentStatus;
+
+      controller.handleIncomingSosPacket(
+        _activePacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+      final active = controller.currentStatus;
+
+      expect(preConfirm.state, DeviceSosState.preConfirm);
+      expect(active.state, DeviceSosState.active);
+      expect(active.previousState, DeviceSosState.preConfirm);
+      expect(active.packetId, preConfirm.packetId);
+      expect(active.nodeId, preConfirm.nodeId);
+    });
+
+    test('sosType 1 with retryCount > 0 maps to preConfirm', () {
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 40),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      addTearDown(controller.dispose);
+
+      controller.handleIncomingSosPacket(
+        _countdownPacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+
+      final status = controller.currentStatus;
+      expect(status.state, DeviceSosState.preConfirm);
+      expect(status.retryCount, greaterThan(0));
+      expect(status.sosType, 1);
+    });
+
+    test('sosType 1 with retryCount == 0 maps to active', () {
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 40),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      addTearDown(controller.dispose);
+
+      controller.handleIncomingSosPacket(
+        _activePacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+
+      final status = controller.currentStatus;
+      expect(status.state, DeviceSosState.active);
+      expect(status.retryCount, 0);
+      expect(status.sosType, 1);
+    });
+
+    test(
         'later PRE-SOS-like packet for the same active cycle is ignored as a downgrade',
         () async {
       final controller = DeviceSosController(
@@ -484,7 +548,7 @@ EixamSosPacket _countdownPacket() {
     0x00,
     0x00,
     0x00,
-    0x40,
+    0x50,
     0x00,
   ])!;
 }
@@ -496,7 +560,7 @@ EixamSosPacket _activePacket() {
     0x00,
     0x00,
     0x00,
-    0x50,
+    0x40,
     0x00,
   ])!;
 }

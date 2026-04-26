@@ -690,12 +690,12 @@ class DeviceSosController {
       case 3:
         return DeviceSosState.active;
       case 1:
-        // Current firmware differentiates the first PRE-SOS packet from a
-        // later active packet within the same cycle by incrementing retry
-        // metadata while keeping the same node/packet identity.
+        // Real-device validation shows firmware keeps the same node/packet
+        // identity across the PRE-SOS to active transition and flips retry
+        // metadata in the opposite direction from the earlier assumption.
         return packet.retryCount > 0
-            ? DeviceSosState.active
-            : DeviceSosState.preConfirm;
+            ? DeviceSosState.preConfirm
+            : DeviceSosState.active;
       default:
         return DeviceSosState.preConfirm;
     }
