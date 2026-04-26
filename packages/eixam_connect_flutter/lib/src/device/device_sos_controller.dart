@@ -423,16 +423,18 @@ class DeviceSosController {
       'SOS transition -> ${previous.name} -> ${nextState.name}',
     );
     BleDebugRegistry.instance.recordEvent(
-      '[DEVICE_SOS_STATE] raw=${packet.rawHex} '
+      '[DEVICE_SOS_STATE_DECISION] '
+      'rawHex=${packet.rawHex} '
       'nodeId=${_formatNodeId(packet.nodeId)} '
       'packetId=${packet.packetId} '
       'sosType=${packet.sosType} '
       'retryCount=${packet.retryCount} '
-      'previous=${previous.name} '
-      'protocol=${resolution.protocolState.name} '
-      'resolved=${nextState.name} '
-      'cycleKey=${resolution.cycleKey ?? "-"} '
-      'downgradeSuppressed=${resolution.downgradeSuppressed}',
+      'flagsWord=0x${packet.flagsWord.toRadixString(16).padLeft(4, '0')} '
+      'previousState=${previous.name} '
+      'protocolResolvedState=${resolution.protocolState.name} '
+      'finalResolvedState=${nextState.name} '
+      'reason=${resolution.reason} '
+      'cycleKey=${resolution.cycleKey ?? "-"}',
     );
 
     if (nextState == DeviceSosState.preConfirm) {
@@ -600,6 +602,8 @@ class DeviceSosController {
         resolvedState: currentStatus.state,
         cycleKey: cycleKey,
         downgradeSuppressed: false,
+        reason:
+            'Ignored SOS mesh packet because the protocol state resolved to inactive and no explicit close event was observed.',
         decoderNote:
             'Ignored SOS mesh packet because the protocol state resolved to inactive and no explicit close event was observed.',
       );
@@ -614,6 +618,8 @@ class DeviceSosController {
         resolvedState: currentStatus.state,
         cycleKey: cycleKey,
         downgradeSuppressed: true,
+        reason:
+            'Suppressed a PRE-SOS downgrade for an already-open device SOS cycle because active or acknowledged state is authoritative for the same node/packet cycle.',
         decoderNote:
             'Suppressed a PRE-SOS downgrade for an already-open device SOS cycle because active or acknowledged state is authoritative for the same node/packet cycle.',
       );
@@ -625,6 +631,8 @@ class DeviceSosController {
         resolvedState: DeviceSosState.acknowledged,
         cycleKey: cycleKey,
         downgradeSuppressed: protocolState == DeviceSosState.preConfirm,
+        reason:
+            'Kept the device SOS acknowledged because only an explicit close event may end an acknowledged cycle.',
         decoderNote:
             'Kept the device SOS acknowledged because only an explicit close event may end an acknowledged cycle.',
       );
@@ -638,6 +646,8 @@ class DeviceSosController {
         resolvedState: DeviceSosState.active,
         cycleKey: cycleKey,
         downgradeSuppressed: false,
+        reason:
+            'Mapped the observed SOS mesh packet to active while app-triggered activation was awaiting a device-confirmed active transition.',
         decoderNote:
             'Mapped the observed SOS mesh packet to active while app-triggered activation was awaiting a device-confirmed active transition.',
       );
@@ -653,8 +663,11 @@ class DeviceSosController {
             : DeviceSosState.preConfirm,
         cycleKey: cycleKey,
         downgradeSuppressed: false,
+        reason: protocolState == DeviceSosState.active
+            ? 'Mapped the SOS mesh packet to active immediately because the packet itself explicitly encodes an active SOS state.'
+            : 'Mapped the SOS mesh packet to preConfirm and kept the local countdown running for the current device-originated SOS cycle.',
         decoderNote: protocolState == DeviceSosState.active
-            ? 'Mapped the SOS mesh packet to active immediately because the packet itself represents an active device-originated SOS.'
+            ? 'Mapped the SOS mesh packet to active immediately because the packet itself explicitly encodes an active SOS state.'
             : 'Mapped the SOS mesh packet to preConfirm and kept the local countdown running for the current device-originated SOS cycle.',
       );
     }
@@ -665,8 +678,11 @@ class DeviceSosController {
         resolvedState: DeviceSosState.active,
         cycleKey: cycleKey,
         downgradeSuppressed: protocolState == DeviceSosState.preConfirm,
+        reason: protocolState == DeviceSosState.active
+            ? 'Mapped the SOS mesh packet to active immediately because the packet itself explicitly encodes an active SOS state.'
+            : 'Kept the SOS cycle active because the local countdown for this node/packet cycle had already elapsed and PRE-SOS must not restart.',
         decoderNote: protocolState == DeviceSosState.active
-            ? 'Mapped the SOS mesh packet to active immediately because the packet itself represents an active device-originated SOS.'
+            ? 'Mapped the SOS mesh packet to active immediately because the packet itself explicitly encodes an active SOS state.'
             : 'Kept the SOS cycle active because the local countdown for this node/packet cycle had already elapsed and PRE-SOS must not restart.',
       );
     }
@@ -676,8 +692,11 @@ class DeviceSosController {
       resolvedState: protocolState,
       cycleKey: cycleKey,
       downgradeSuppressed: false,
+      reason: protocolState == DeviceSosState.active
+          ? 'Mapped the SOS mesh packet to active immediately because the packet itself explicitly encodes an active SOS state.'
+          : 'Mapped the SOS mesh packet to preConfirm and started a local countdown for a newly observed device-originated SOS cycle.',
       decoderNote: protocolState == DeviceSosState.active
-          ? 'Mapped the SOS mesh packet to active immediately because the packet itself represents an active device-originated SOS.'
+          ? 'Mapped the SOS mesh packet to active immediately because the packet itself explicitly encodes an active SOS state.'
           : 'Mapped the SOS mesh packet to preConfirm and started a local countdown for a newly observed device-originated SOS cycle.',
     );
   }
@@ -690,12 +709,7 @@ class DeviceSosController {
       case 3:
         return DeviceSosState.active;
       case 1:
-        // Real-device validation shows firmware keeps the same node/packet
-        // identity across the PRE-SOS to active transition and flips retry
-        // metadata in the opposite direction from the earlier assumption.
-        return packet.retryCount > 0
-            ? DeviceSosState.preConfirm
-            : DeviceSosState.active;
+        return DeviceSosState.preConfirm;
       default:
         return DeviceSosState.preConfirm;
     }
@@ -995,6 +1009,7 @@ class _MeshPacketResolution {
     required this.resolvedState,
     required this.cycleKey,
     required this.downgradeSuppressed,
+    required this.reason,
     required this.decoderNote,
   });
 
@@ -1002,5 +1017,6 @@ class _MeshPacketResolution {
   final DeviceSosState resolvedState;
   final String? cycleKey;
   final bool downgradeSuppressed;
+  final String reason;
   final String decoderNote;
 }

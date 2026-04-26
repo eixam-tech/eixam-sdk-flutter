@@ -8173,7 +8173,6 @@ EixamSosPacket _deviceOriginPacket() {
     0x00,
     0x00,
     0x00,
-    0x00,
     0x50,
   ])!;
 }
@@ -8191,7 +8190,7 @@ EixamSosPacket _deviceOriginActivePacket() {
     0x00,
     0x00,
     0x00,
-    0x40,
+    0x80,
   ])!;
 }
 

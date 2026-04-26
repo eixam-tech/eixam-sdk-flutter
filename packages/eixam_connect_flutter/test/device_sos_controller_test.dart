@@ -415,7 +415,7 @@ void main() {
       expect(status.countdownRemainingSeconds, isNull);
       expect(
         status.decoderNote,
-        contains('represents an active device-originated SOS'),
+        contains('explicitly encodes an active SOS state'),
       );
     });
 
@@ -447,7 +447,8 @@ void main() {
       expect(active.nodeId, preConfirm.nodeId);
     });
 
-    test('sosType 1 with retryCount > 0 maps to preConfirm', () {
+    test('sosType 1 countdown packet maps to preConfirm without retryCount guess',
+        () {
       final controller = DeviceSosController(
         countdownDuration: const Duration(milliseconds: 40),
         countdownTick: const Duration(milliseconds: 5),
@@ -465,7 +466,33 @@ void main() {
       expect(status.sosType, 1);
     });
 
-    test('sosType 1 with retryCount == 0 maps to active', () {
+    test(
+        'app-triggered PRE-SOS is not upgraded by first device notify',
+        () async {
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 80),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      addTearDown(controller.dispose);
+      await controller.attach(commandWriter: (_) async {});
+
+      await controller.triggerSos();
+      controller.handleIncomingSosPacket(
+        _countdownPacket(retryCountBits: 0),
+        source: DeviceSosTransitionSource.device,
+      );
+
+      final status = controller.currentStatus;
+      expect(status.state, DeviceSosState.preConfirm);
+      expect(status.triggerOrigin, DeviceSosTransitionSource.app);
+      expect(status.derivedFromBlePacket, isTrue);
+      expect(
+        status.decoderNote,
+        contains('kept the local countdown running'),
+      );
+    });
+
+    test('explicit active sosType maps to active', () {
       final controller = DeviceSosController(
         countdownDuration: const Duration(milliseconds: 40),
         countdownTick: const Duration(milliseconds: 5),
@@ -479,8 +506,7 @@ void main() {
 
       final status = controller.currentStatus;
       expect(status.state, DeviceSosState.active);
-      expect(status.retryCount, 0);
-      expect(status.sosType, 1);
+      expect(status.sosType, 2);
     });
 
     test(
@@ -541,14 +567,15 @@ void main() {
   });
 }
 
-EixamSosPacket _countdownPacket() {
+EixamSosPacket _countdownPacket({int retryCountBits = 1}) {
+  final flagsWord = 0x4000 | ((retryCountBits & 0x03) << 12);
   return EixamSosPacket.tryParse(<int>[
     0x34,
     0x12,
     0x00,
     0x00,
-    0x00,
-    0x50,
+    flagsWord & 0xFF,
+    (flagsWord >> 8) & 0xFF,
     0x00,
   ])!;
 }
@@ -560,7 +587,7 @@ EixamSosPacket _activePacket() {
     0x00,
     0x00,
     0x00,
-    0x40,
+    0x80,
     0x00,
   ])!;
 }
