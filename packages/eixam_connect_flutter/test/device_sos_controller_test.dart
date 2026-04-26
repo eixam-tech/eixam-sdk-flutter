@@ -343,6 +343,80 @@ void main() {
       expect(status.countdownRemainingSeconds, isNull);
     });
 
+    test(
+        'active SOS + incoming device cancel packet keeps terminal cancelled and does not reopen preConfirm',
+        () {
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 40),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      addTearDown(controller.dispose);
+
+      controller.handleIncomingSosPacket(
+        _activePacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+      controller.handleIncomingSosEventPacket(
+        EixamSosEventPacket.tryParse(
+          <int>[0xE1, 0x01, 0x34, 0x12, 0x00, 0x00],
+        )!,
+        source: DeviceSosTransitionSource.device,
+      );
+
+      controller.handleIncomingSosPacket(
+        _countdownPacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+
+      final status = controller.currentStatus;
+      expect(status.state, DeviceSosState.inactive);
+      expect(status.packetId, 0);
+      expect(status.countdownStartedAt, isNull);
+      expect(status.expectedActivationAt, isNull);
+      expect(status.countdownRemainingSeconds, isNull);
+      expect(
+        status.decoderNote,
+        contains('already emitted a terminal close event'),
+      );
+    });
+
+    test(
+        'active SOS + incoming device resolve packet keeps terminal resolved and does not reopen preConfirm',
+        () {
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 40),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      addTearDown(controller.dispose);
+
+      controller.handleIncomingSosPacket(
+        _activePacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+      controller.handleIncomingSosEventPacket(
+        EixamSosEventPacket.tryParse(
+          <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
+        )!,
+        source: DeviceSosTransitionSource.device,
+      );
+
+      controller.handleIncomingSosPacket(
+        _countdownPacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+
+      final status = controller.currentStatus;
+      expect(status.state, DeviceSosState.resolved);
+      expect(status.packetId, 0);
+      expect(status.countdownStartedAt, isNull);
+      expect(status.expectedActivationAt, isNull);
+      expect(status.countdownRemainingSeconds, isNull);
+      expect(
+        status.decoderNote,
+        contains('already emitted a terminal close event'),
+      );
+    });
+
     test('device trigger -> preConfirm -> timeout -> active', () async {
       final controller = DeviceSosController(
         countdownDuration: const Duration(milliseconds: 35),
@@ -464,6 +538,7 @@ void main() {
       expect(status.state, DeviceSosState.preConfirm);
       expect(status.retryCount, greaterThan(0));
       expect(status.sosType, 1);
+      expect(status.decoderNote, contains('started a local countdown'));
     });
 
     test(

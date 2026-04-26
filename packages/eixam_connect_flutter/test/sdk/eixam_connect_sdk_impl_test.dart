@@ -6884,6 +6884,128 @@ void main() {
       }
     });
 
+    test(
+        'active SOS + incoming device cancel packet stays terminal and never re-emits PRE-SOS notification or arming',
+        () async {
+      final localNotificationsRepository = FakeNotificationsRepository();
+      final localDeviceSosController = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 35),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: localNotificationsRepository,
+        realtimeClient: realtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        permissionsRepository.permissionState = const PermissionState(
+          location: SdkPermissionStatus.granted,
+        );
+        await localSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+
+        localDeviceSosController.handleIncomingSosPacket(
+          _deviceOriginActivePacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect(localNotificationsRepository.notifications, hasLength(1));
+
+        localDeviceSosController.handleIncomingSosEventPacket(
+          EixamSosEventPacket.tryParse(
+            <int>[0xE1, 0x01, 0x34, 0x12, 0x00, 0x00],
+          )!,
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(await localSdk.getSosState(), isNot(SosState.arming));
+
+        localDeviceSosController.handleIncomingSosPacket(
+          _deviceOriginPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        expect(await localSdk.getSosState(), isNot(SosState.arming));
+        expect(localNotificationsRepository.notifications, hasLength(1));
+      } finally {
+        await localSdk.dispose();
+      }
+    });
+
+    test(
+        'active SOS + incoming device resolve packet stays terminal and never re-emits PRE-SOS notification or arming',
+        () async {
+      final localNotificationsRepository = FakeNotificationsRepository();
+      final localDeviceSosController = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 35),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: localNotificationsRepository,
+        realtimeClient: realtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        permissionsRepository.permissionState = const PermissionState(
+          location: SdkPermissionStatus.granted,
+        );
+        await localSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+
+        localDeviceSosController.handleIncomingSosPacket(
+          _deviceOriginActivePacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect(localNotificationsRepository.notifications, hasLength(1));
+
+        localDeviceSosController.handleIncomingSosEventPacket(
+          EixamSosEventPacket.tryParse(
+            <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
+          )!,
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(await localSdk.getSosState(), isNot(SosState.arming));
+
+        localDeviceSosController.handleIncomingSosPacket(
+          _deviceOriginPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        expect(await localSdk.getSosState(), isNot(SosState.arming));
+        expect(localNotificationsRepository.notifications, hasLength(1));
+      } finally {
+        await localSdk.dispose();
+      }
+    });
+
     test('BLE bridge publishes relay telemetry with the remote deviceId',
         () async {
       final bleEvents = StreamController<BleIncomingEvent>.broadcast();
@@ -8173,6 +8295,7 @@ EixamSosPacket _deviceOriginPacket() {
     0x00,
     0x00,
     0x00,
+    0x00,
     0x50,
   ])!;
 }
@@ -8207,6 +8330,7 @@ EixamSosPacket _relayedSosPacket() {
     0x00,
     0x00,
     0x54,
+    0x00,
     0xCF,
     0x82,
     0x10,

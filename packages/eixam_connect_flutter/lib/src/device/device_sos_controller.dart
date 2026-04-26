@@ -37,6 +37,9 @@ class DeviceSosController {
   Timer? _countdownTimer;
   bool _awaitingObservedAppActivation = false;
 
+  static const Duration _terminalCycleSuppressionWindow =
+      Duration(seconds: 5);
+
   DeviceSosStatus get currentStatus => _status;
   bool get hasSosCommandPath => _commandWriter != null;
   bool get hasCommandChannel => hasSosCommandPath;
@@ -436,6 +439,12 @@ class DeviceSosController {
       'reason=${resolution.reason} '
       'cycleKey=${resolution.cycleKey ?? "-"}',
     );
+    BleDebugRegistry.instance.recordEvent(
+      '[SDK_SOS_CLASSIFY] '
+      'packet=${packet.rawHex} '
+      'decision=${resolution.classificationDecision} '
+      'reason=${resolution.classificationReason}',
+    );
 
     if (nextState == DeviceSosState.preConfirm) {
       _enterPreConfirm(
@@ -521,6 +530,7 @@ class DeviceSosController {
     final now = _now();
     final previous = _status.state;
     final nextState = _resolveEventState(packet, previous);
+    final classification = _classifyEventPacket(packet, nextState);
     final controlEventLabel = _describeEventPacket(packet);
     final event = 'SOS device event decoded -> $controlEventLabel '
         'nodeId=${_formatNodeId(packet.nodeId)} '
@@ -529,6 +539,12 @@ class DeviceSosController {
     BleDebugRegistry.instance.recordEvent(event);
     BleDebugRegistry.instance.recordEvent(
       'SOS transition -> ${previous.name} -> ${nextState.name}',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      '[SDK_SOS_CLASSIFY] '
+      'packet=${packet.rawHex} '
+      'decision=${classification.decision} '
+      'reason=${classification.reason}',
     );
 
     if (nextState == DeviceSosState.inactive ||
@@ -559,8 +575,42 @@ class DeviceSosController {
         lastPacketSignature:
             '${packet.nodeId}:${packet.opcode}:${packet.subcode}:${packet.rawHex}',
         nodeId: packet.nodeId,
-        packetId: null,
-        hasLocation: false,
+        packetId: nextState == DeviceSosState.inactive ||
+                nextState == DeviceSosState.resolved
+            ? _status.packetId
+            : null,
+        hasLocation: nextState == DeviceSosState.inactive ||
+                nextState == DeviceSosState.resolved
+            ? _status.hasLocation
+            : false,
+        flags: nextState == DeviceSosState.inactive ||
+                nextState == DeviceSosState.resolved
+            ? _status.flags
+            : null,
+        sosType: nextState == DeviceSosState.inactive ||
+                nextState == DeviceSosState.resolved
+            ? _status.sosType
+            : null,
+        retryCount: nextState == DeviceSosState.inactive ||
+                nextState == DeviceSosState.resolved
+            ? _status.retryCount
+            : null,
+        relayCount: nextState == DeviceSosState.inactive ||
+                nextState == DeviceSosState.resolved
+            ? _status.relayCount
+            : null,
+        batteryLevel: nextState == DeviceSosState.inactive ||
+                nextState == DeviceSosState.resolved
+            ? _status.batteryLevel
+            : null,
+        batteryState: nextState == DeviceSosState.inactive ||
+                nextState == DeviceSosState.resolved
+            ? _status.batteryState
+            : null,
+        gpsQuality: nextState == DeviceSosState.inactive ||
+                nextState == DeviceSosState.resolved
+            ? _status.gpsQuality
+            : null,
         decoderNote:
             'Decoded SOS device control event ($controlEventLabel) from the SOS characteristic.',
         countdownStartedAt: nextState == DeviceSosState.inactive ||
@@ -602,10 +652,37 @@ class DeviceSosController {
         resolvedState: currentStatus.state,
         cycleKey: cycleKey,
         downgradeSuppressed: false,
+        classificationDecision: 'ignored_inactive',
+        classificationReason: 'protocol_inactive_without_explicit_close',
         reason:
             'Ignored SOS mesh packet because the protocol state resolved to inactive and no explicit close event was observed.',
         decoderNote:
             'Ignored SOS mesh packet because the protocol state resolved to inactive and no explicit close event was observed.',
+      );
+    }
+
+    final recentlyClosedSameCycle = sameCycle &&
+        _isClosedState(currentStatus.state) &&
+        _now().difference(currentStatus.updatedAt) <=
+            _terminalCycleSuppressionWindow;
+    if (recentlyClosedSameCycle) {
+      final closedDecision = currentStatus.state == DeviceSosState.inactive
+          ? 'terminal_cancelled'
+          : 'terminal_resolved';
+      final closedReason = currentStatus.state == DeviceSosState.inactive
+          ? 'device_cancel'
+          : 'device_resolve';
+      return _MeshPacketResolution(
+        protocolState: protocolState,
+        resolvedState: currentStatus.state,
+        cycleKey: cycleKey,
+        downgradeSuppressed: true,
+        classificationDecision: closedDecision,
+        classificationReason: closedReason,
+        reason:
+            'Suppressed a same-cycle SOS reopen because the device had already emitted a terminal close event for this node/packet cycle.',
+        decoderNote:
+            'Suppressed a same-cycle SOS reopen because the device had already emitted a terminal close event for this node/packet cycle.',
       );
     }
 
@@ -618,6 +695,8 @@ class DeviceSosController {
         resolvedState: currentStatus.state,
         cycleKey: cycleKey,
         downgradeSuppressed: true,
+        classificationDecision: 'active_sos',
+        classificationReason: 'same_cycle_downgrade_suppressed',
         reason:
             'Suppressed a PRE-SOS downgrade for an already-open device SOS cycle because active or acknowledged state is authoritative for the same node/packet cycle.',
         decoderNote:
@@ -631,6 +710,8 @@ class DeviceSosController {
         resolvedState: DeviceSosState.acknowledged,
         cycleKey: cycleKey,
         downgradeSuppressed: protocolState == DeviceSosState.preConfirm,
+        classificationDecision: 'acknowledged_sos',
+        classificationReason: 'acknowledged_cycle_authoritative',
         reason:
             'Kept the device SOS acknowledged because only an explicit close event may end an acknowledged cycle.',
         decoderNote:
@@ -646,6 +727,8 @@ class DeviceSosController {
         resolvedState: DeviceSosState.active,
         cycleKey: cycleKey,
         downgradeSuppressed: false,
+        classificationDecision: 'active_sos',
+        classificationReason: 'app_activation_confirmed',
         reason:
             'Mapped the observed SOS mesh packet to active while app-triggered activation was awaiting a device-confirmed active transition.',
         decoderNote:
@@ -663,6 +746,12 @@ class DeviceSosController {
             : DeviceSosState.preConfirm,
         cycleKey: cycleKey,
         downgradeSuppressed: false,
+        classificationDecision: protocolState == DeviceSosState.active
+            ? 'active_sos'
+            : 'pre_sos',
+        classificationReason: protocolState == DeviceSosState.active
+            ? 'countdown_promoted_to_active'
+            : 'remote_emergency_trigger',
         reason: protocolState == DeviceSosState.active
             ? 'Mapped the SOS mesh packet to active immediately because the packet itself explicitly encodes an active SOS state.'
             : 'Mapped the SOS mesh packet to preConfirm and kept the local countdown running for the current device-originated SOS cycle.',
@@ -678,6 +767,10 @@ class DeviceSosController {
         resolvedState: DeviceSosState.active,
         cycleKey: cycleKey,
         downgradeSuppressed: protocolState == DeviceSosState.preConfirm,
+        classificationDecision: 'active_sos',
+        classificationReason: protocolState == DeviceSosState.active
+            ? 'explicit_active_packet'
+            : 'same_cycle_pre_sos_ignored',
         reason: protocolState == DeviceSosState.active
             ? 'Mapped the SOS mesh packet to active immediately because the packet itself explicitly encodes an active SOS state.'
             : 'Kept the SOS cycle active because the local countdown for this node/packet cycle had already elapsed and PRE-SOS must not restart.',
@@ -692,6 +785,11 @@ class DeviceSosController {
       resolvedState: protocolState,
       cycleKey: cycleKey,
       downgradeSuppressed: false,
+      classificationDecision:
+          protocolState == DeviceSosState.active ? 'active_sos' : 'pre_sos',
+      classificationReason: protocolState == DeviceSosState.active
+          ? 'explicit_active_packet'
+          : 'remote_emergency_trigger',
       reason: protocolState == DeviceSosState.active
           ? 'Mapped the SOS mesh packet to active immediately because the packet itself explicitly encodes an active SOS state.'
           : 'Mapped the SOS mesh packet to preConfirm and started a local countdown for a newly observed device-originated SOS cycle.',
@@ -751,6 +849,53 @@ class DeviceSosController {
     }
   }
 
+  _EventPacketClassification _classifyEventPacket(
+    EixamSosEventPacket packet,
+    DeviceSosState nextState,
+  ) {
+    switch (packet.opcode) {
+      case 0xE1:
+        if (packet.subcode == 0x01 || nextState == DeviceSosState.inactive) {
+          return const _EventPacketClassification(
+            decision: 'terminal_cancelled',
+            reason: 'device_cancel',
+          );
+        }
+        if (packet.subcode == 0x02 || nextState == DeviceSosState.resolved) {
+          return const _EventPacketClassification(
+            decision: 'terminal_resolved',
+            reason: 'device_resolve',
+          );
+        }
+        return const _EventPacketClassification(
+          decision: 'terminal_closed',
+          reason: 'device_terminal_event',
+        );
+      case 0xE2:
+        if (packet.subcode == 0x01) {
+          return const _EventPacketClassification(
+            decision: 'terminal_cancelled',
+            reason: 'cancel_ack',
+          );
+        }
+        if (packet.subcode == 0x02 || packet.subcode == 0x03) {
+          return const _EventPacketClassification(
+            decision: 'terminal_resolved',
+            reason: 'resolve_ack',
+          );
+        }
+        return const _EventPacketClassification(
+          decision: 'terminal_closed',
+          reason: 'app_terminal_ack',
+        );
+      default:
+        return const _EventPacketClassification(
+          decision: 'ignored_event',
+          reason: 'unknown_event_packet',
+        );
+    }
+  }
+
   String _describeEventPacket(EixamSosEventPacket packet) {
     if (packet.isUserDeactivated) {
       return switch (packet.subcode) {
@@ -773,6 +918,10 @@ class DeviceSosController {
   String _formatNodeId(int nodeId) {
     final normalized = nodeId & 0xFFFFFFFF;
     return '0x${normalized.toRadixString(16).padLeft(8, '0')} ($nodeId)';
+  }
+
+  bool _isClosedState(DeviceSosState state) {
+    return state == DeviceSosState.inactive || state == DeviceSosState.resolved;
   }
 
   void _enterPreConfirm({
@@ -1009,6 +1158,8 @@ class _MeshPacketResolution {
     required this.resolvedState,
     required this.cycleKey,
     required this.downgradeSuppressed,
+    required this.classificationDecision,
+    required this.classificationReason,
     required this.reason,
     required this.decoderNote,
   });
@@ -1017,6 +1168,18 @@ class _MeshPacketResolution {
   final DeviceSosState resolvedState;
   final String? cycleKey;
   final bool downgradeSuppressed;
+  final String classificationDecision;
+  final String classificationReason;
   final String reason;
   final String decoderNote;
+}
+
+class _EventPacketClassification {
+  const _EventPacketClassification({
+    required this.decision,
+    required this.reason,
+  });
+
+  final String decision;
+  final String reason;
 }
