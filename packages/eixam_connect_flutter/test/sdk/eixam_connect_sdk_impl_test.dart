@@ -2434,6 +2434,73 @@ void main() {
       expect((event as SOSTriggeredEvent).incidentId, incident.id);
     });
 
+    test('remote relay SOS snapshots are exposed through public SDK events',
+        () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final localRealtimeClient = FakeRealtimeClient();
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: deviceSosController,
+        bleIncomingEvents: bleEvents.stream,
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        await localSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        final eventFuture = takeNextFromStream(localSdk.watchEvents());
+
+        bleEvents.add(
+          BleIncomingEvent(
+            deviceId: 'ble-device-123',
+            canonicalHardwareId: 'CF:82:11:22:33:44',
+            type: BleIncomingEventType.sosMeshPacket,
+            channel: EixamBleChannel.sos,
+            payload: const <int>[0x78, 0x56, 0x34, 0x12, 0x00, 0x40, 0x09],
+            payloadHex: '78563412004009',
+            source: DeviceSosTransitionSource.device,
+            receivedAt: DateTime.utc(2026, 4, 27, 10),
+            classification: const BleIncomingPayloadClassification(
+              kind: BleIncomingPayloadKind.remoteRelaySos,
+            ),
+            remoteRelaySosSnapshot: const RemoteRelaySosSnapshot(
+              kind: RemoteRelaySosKind.sos,
+              originatorNodeId: 0x12345678,
+              relayNodeId: 0x1234,
+              source: RemoteRelaySosSource.sosNotify,
+              sosType: 1,
+              receivedAt: DateTime.utc(2026, 4, 27, 10),
+              rawPayload: <int>[0x78, 0x56, 0x34, 0x12, 0x00, 0x40, 0x09],
+              payloadHex: '78563412004009',
+            ),
+          ),
+        );
+
+        final event = await eventFuture;
+        expect(event, isA<RemoteRelaySosObservedEvent>());
+        expect(
+          (event as RemoteRelaySosObservedEvent).snapshot.originatorNodeId,
+          0x12345678,
+        );
+        expect(event.snapshot.relayNodeId, 0x1234);
+        expect(event.snapshot.source, RemoteRelaySosSource.sosNotify);
+      } finally {
+        await localSdk.dispose();
+        await bleEvents.close();
+        await localRealtimeClient.dispose();
+      }
+    });
+
     test('triggerSos without a connected device keeps backend-only behavior',
         () async {
       final incident = await sdk.triggerSos(

@@ -27,6 +27,7 @@ void main() {
     });
 
     test('classifies a 12-byte TEL notify as SOS when SOS decode is valid', () async {
+      await runtimeProvider.requestDeviceRuntimeStatus();
       final nextEvent = _nextIncomingEvent(runtimeProvider);
 
       bleClient.emitNotification(
@@ -50,7 +51,105 @@ void main() {
 
       final event = await nextEvent;
       expect(event.type, BleIncomingEventType.sosMeshPacket);
+      expect(event.classification.kind, BleIncomingPayloadKind.ownDeviceSos);
       expect(event.sosPacket?.nodeId, 0x1234);
+      expect(
+        (await runtimeProvider.deviceSosController.getStatus()).state,
+        isNot(DeviceSosState.inactive),
+      );
+    });
+
+    test(
+        'classifies a 12-byte TEL SOS from another node as remote relay and keeps local SOS inactive',
+        () async {
+      await runtimeProvider.requestDeviceRuntimeStatus();
+      final nextEvent = _nextIncomingEvent(runtimeProvider);
+
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.tel,
+        payload: const <int>[
+          0x78,
+          0x56,
+          0x34,
+          0x12,
+          0x48,
+          0xCD,
+          0x1B,
+          0x34,
+          0x44,
+          0x28,
+          0x00,
+          0x40,
+        ],
+      );
+
+      final event = await nextEvent;
+      expect(event.type, BleIncomingEventType.sosMeshPacket);
+      expect(event.classification.kind, BleIncomingPayloadKind.remoteRelaySos);
+      expect(event.remoteRelaySosSnapshot, isNotNull);
+      expect(event.remoteRelaySosSnapshot!.originatorNodeId, 0x12345678);
+      expect(event.remoteRelaySosSnapshot!.relayNodeId, 0x1234);
+      expect(
+        (await runtimeProvider.deviceSosController.getStatus()).state,
+        DeviceSosState.inactive,
+      );
+    });
+
+    test(
+        'classifies a 7-byte SOS notify from another node as remote relay without location',
+        () async {
+      await runtimeProvider.requestDeviceRuntimeStatus();
+      final nextEvent = _nextIncomingEvent(runtimeProvider);
+
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.sos,
+        payload: const <int>[
+          0x78,
+          0x56,
+          0x34,
+          0x12,
+          0x00,
+          0x40,
+          0x09,
+        ],
+      );
+
+      final event = await nextEvent;
+      expect(event.type, BleIncomingEventType.sosMeshPacket);
+      expect(event.classification.kind, BleIncomingPayloadKind.remoteRelaySos);
+      expect(event.remoteRelaySosSnapshot, isNotNull);
+      expect(event.remoteRelaySosSnapshot!.location, isNull);
+      expect(
+        (await runtimeProvider.deviceSosController.getStatus()).state,
+        DeviceSosState.inactive,
+      );
+    });
+
+    test(
+        'classifies an SOS notify E1 02 for another node as a remote clear event',
+        () async {
+      await runtimeProvider.requestDeviceRuntimeStatus();
+      final nextEvent = _nextIncomingEvent(runtimeProvider);
+
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.sos,
+        payload: const <int>[0xE1, 0x02, 0x78, 0x56, 0x34, 0x12],
+      );
+
+      final event = await nextEvent;
+      expect(event.type, BleIncomingEventType.sosDeviceEvent);
+      expect(event.classification.kind, BleIncomingPayloadKind.sosClear);
+      expect(event.remoteRelaySosSnapshot, isNotNull);
+      expect(event.remoteRelaySosSnapshot!.kind, RemoteRelaySosKind.clear);
+      expect(event.remoteRelaySosSnapshot!.originatorNodeId, 0x12345678);
+      expect(event.remoteRelaySosSnapshot!.relayNodeId, 0x1234);
+      expect(
+        (await runtimeProvider.deviceSosController.getStatus()).state,
+        DeviceSosState.inactive,
+      );
     });
 
     test('classifies a 12-byte TEL notify as TEL when SOS decode is not valid', () async {

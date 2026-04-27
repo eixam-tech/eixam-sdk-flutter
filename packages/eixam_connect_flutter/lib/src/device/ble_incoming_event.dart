@@ -11,6 +11,32 @@ import 'eixam_tel_fragment.dart';
 import 'eixam_tel_packet.dart';
 import 'eixam_tel_relay_rx_packet.dart';
 
+enum BleIncomingPayloadKind {
+  ownDeviceSos,
+  remoteRelaySos,
+  sosClear,
+  sosCancel,
+  telPosition,
+  telRelayRx,
+  unknown,
+}
+
+class BleIncomingPayloadClassification {
+  const BleIncomingPayloadClassification({
+    required this.kind,
+    this.sosPacket,
+    this.sosEventPacket,
+    this.telPacket,
+    this.remoteRelaySosSnapshot,
+  });
+
+  final BleIncomingPayloadKind kind;
+  final EixamSosPacket? sosPacket;
+  final EixamSosEventPacket? sosEventPacket;
+  final EixamTelPacket? telPacket;
+  final RemoteRelaySosSnapshot? remoteRelaySosSnapshot;
+}
+
 enum BleIncomingEventType {
   deviceRuntimeStatus,
   telPosition,
@@ -47,6 +73,10 @@ class BleIncomingEvent {
     this.backlogSyncFrame,
     this.sosPacket,
     this.sosEventPacket,
+    this.classification = const BleIncomingPayloadClassification(
+      kind: BleIncomingPayloadKind.unknown,
+    ),
+    this.remoteRelaySosSnapshot,
   });
 
   final String deviceId;
@@ -69,6 +99,8 @@ class BleIncomingEvent {
   final EixamBacklogSyncFrame? backlogSyncFrame;
   final EixamSosPacket? sosPacket;
   final EixamSosEventPacket? sosEventPacket;
+  final BleIncomingPayloadClassification classification;
+  final RemoteRelaySosSnapshot? remoteRelaySosSnapshot;
 
   String get eventType => type.name;
 }

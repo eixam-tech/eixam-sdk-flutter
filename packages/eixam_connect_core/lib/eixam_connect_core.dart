@@ -13,6 +13,7 @@ export 'src/entities/backend_registered_device.dart';
 export 'src/entities/backlog_sync_state.dart';
 export 'src/entities/preferred_device.dart';
 export 'src/entities/device_sos_status.dart';
+export 'src/entities/remote_relay_sos_snapshot.dart';
 export 'src/entities/ble_notification_navigation_request.dart';
 export 'src/entities/protection_mode_models.dart';
 export 'src/entities/sdk_telemetry_payload.dart';

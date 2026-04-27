@@ -9,6 +9,7 @@ import 'ble_client.dart';
 import 'ble_connection_status.dart';
 import 'ble_debug_registry.dart';
 import 'ble_incoming_event.dart';
+import 'ble_incoming_payload_classifier.dart';
 import 'ble_scan_result.dart';
 import 'device_runtime_provider.dart';
 import 'device_sos_controller.dart';
@@ -44,6 +45,8 @@ class BleDeviceRuntimeProvider
   final StreamController<GuidedRescueState> _guidedRescueStateController =
       StreamController<GuidedRescueState>.broadcast();
   final EixamTelReassembler _telReassembler = EixamTelReassembler();
+  final BleIncomingPayloadClassifier _payloadClassifier =
+      const BleIncomingPayloadClassifier();
 
   String? _connectedDeviceId;
   String? _connectedDeviceAlias;
@@ -60,6 +63,7 @@ class BleDeviceRuntimeProvider
   );
   int? _lastTelBatteryLevel;
   int? _lastSosBatteryLevel;
+  int? _connectedBleTagNodeId;
   final Map<String, DateTime> _recentSosPacketSignatures = <String, DateTime>{};
   bool _ownershipSuspended = false;
   Completer<DeviceRuntimeStatus>? _pendingRuntimeStatusRequest;
@@ -300,6 +304,7 @@ class BleDeviceRuntimeProvider
     _lastAppCommandAt = null;
     _lastTelBatteryLevel = null;
     _lastSosBatteryLevel = null;
+    _connectedBleTagNodeId = null;
     _recentSosPacketSignatures.clear();
     _telReassembler.reset();
   }
@@ -462,6 +467,7 @@ class BleDeviceRuntimeProvider
     _lastAppCommandAt = null;
     _lastTelBatteryLevel = null;
     _lastSosBatteryLevel = null;
+    _connectedBleTagNodeId = null;
     _recentSosPacketSignatures.clear();
     _telReassembler.reset();
     BleDebugRegistry.instance.update(
@@ -860,6 +866,7 @@ class BleDeviceRuntimeProvider
       receivedAt: notification.receivedAt,
     );
     if (runtimeStatusPacket != null) {
+      _connectedBleTagNodeId = runtimeStatusPacket.status.nodeId;
       BleDebugRegistry.instance.recordEvent(
         'TEL classified -> type=device_status len=${payload.length} nodeId=${_formatNodeId(runtimeStatusPacket.status.nodeId)} battery=${runtimeStatusPacket.status.batteryPercent} telInterval=${runtimeStatusPacket.status.telIntervalSeconds}',
       );
@@ -935,6 +942,9 @@ class BleDeviceRuntimeProvider
       BleDebugRegistry.instance.recordEvent(
         'TEL classified -> type=relay len=${payload.length} peerType=${_classifyEmbeddedWireType(peerPayload)} selfType=${_classifyEmbeddedWireType(selfPayload)} peerNode=${_nodeIdForEmbeddedWire(peerPayload) ?? "-"} selfNode=${_nodeIdForEmbeddedWire(selfPayload) ?? "-"}',
       );
+      if (relayPacket != null) {
+        _connectedBleTagNodeId ??= relayPacket.selfPacket.nodeId;
+      }
       BleDebugRegistry.instance.recordDecodedIncomingEvent(
         eventType: BleIncomingEventType.telRelayRx.name,
         outcome: BleIncomingEventType.telRelayRx.name,
@@ -955,6 +965,9 @@ class BleDeviceRuntimeProvider
           telFragment: telFragment,
           aggregatePayload: aggregatePayload,
           telRelayRxPacket: relayPacket,
+          classification: const BleIncomingPayloadClassification(
+            kind: BleIncomingPayloadKind.telRelayRx,
+          ),
         ),
       );
       return;
@@ -1022,35 +1035,48 @@ class BleDeviceRuntimeProvider
       }
     }
 
-    final sosPacket =
-        (payload.length == EixamBleProtocol.sosPacketLengthMinimal ||
-                payload.length == EixamBleProtocol.sosPacketLengthWithPosition)
-            ? EixamSosPacket.tryParse(payload)
-            : null;
-    if (sosPacket != null && sosPacket.sosType != 0) {
+    final classification = _payloadClassifier.classifySosPayload(
+      payload: payload,
+      payloadHex: payloadHex,
+      receivedAt: notification.receivedAt,
+      source: source,
+      channel: notification.channel,
+      connectedBleTagNodeId: _connectedBleTagNodeId,
+      fallbackOnUnknownConnectedNode: const BleIncomingPayloadClassification(
+        kind: BleIncomingPayloadKind.remoteRelaySos,
+      ),
+    );
+    if (classification.kind == BleIncomingPayloadKind.ownDeviceSos ||
+        classification.kind == BleIncomingPayloadKind.remoteRelaySos) {
+      final sosPacket = classification.sosPacket!;
+      if (classification.kind == BleIncomingPayloadKind.ownDeviceSos) {
+        _connectedBleTagNodeId ??= sosPacket.nodeId;
+      }
       BleDebugRegistry.instance.recordEvent(
-        'TEL classified -> type=sos len=${payload.length} nodeId=${_formatNodeId(sosPacket.nodeId)} sosType=${sosPacket.sosType} packetId=${sosPacket.packetId} relayCount=${sosPacket.relayCount}',
+        'TEL classified -> type=sos role=${classification.kind.name} len=${payload.length} nodeId=${_formatNodeId(sosPacket.nodeId)} sosType=${sosPacket.sosType} packetId=${sosPacket.packetId} relayCount=${sosPacket.relayCount}',
       );
       BleDebugRegistry.instance.recordDecodedIncomingEvent(
         eventType: BleIncomingEventType.sosMeshPacket.name,
         outcome: BleIncomingEventType.sosMeshPacket.name,
         receivedAt: notification.receivedAt,
       );
-      _handleSosBatteryUpdate(sosPacket);
       _handleGuidedRescueSosPacket(sosPacket, notification.receivedAt);
-      if (_shouldProcessSosPacket(
-        nodeId: sosPacket.nodeId,
-        packetId: sosPacket.packetId,
-        rawHex: sosPacket.rawHex,
-      )) {
-        _deviceSosController.handleIncomingSosPacket(
-          sosPacket,
-          source: source,
-        );
-      } else {
-        BleDebugRegistry.instance.recordEvent(
-          'SOS duplicate suppressed -> ${sosPacket.rawHex}',
-        );
+      if (classification.kind == BleIncomingPayloadKind.ownDeviceSos) {
+        _handleSosBatteryUpdate(sosPacket);
+        if (_shouldProcessSosPacket(
+          nodeId: sosPacket.nodeId,
+          packetId: sosPacket.packetId,
+          rawHex: sosPacket.rawHex,
+        )) {
+          _deviceSosController.handleIncomingSosPacket(
+            sosPacket,
+            source: source,
+          );
+        } else {
+          BleDebugRegistry.instance.recordEvent(
+            'SOS duplicate suppressed -> ${sosPacket.rawHex}',
+          );
+        }
       }
       _incomingEventsController.add(
         BleIncomingEvent(
@@ -1067,15 +1093,16 @@ class BleDeviceRuntimeProvider
           telFragment: telFragment,
           aggregatePayload: aggregatePayload,
           sosPacket: sosPacket,
+          classification: classification,
+          remoteRelaySosSnapshot: classification.remoteRelaySosSnapshot,
         ),
       );
       return;
     }
 
-    final telPacket = payload.length == EixamBleProtocol.telPacketLength
-        ? EixamTelPacket.tryParse(payload)
-        : null;
+    final telPacket = classification.telPacket;
     if (telPacket != null) {
+      _connectedBleTagNodeId ??= telPacket.nodeId;
       BleDebugRegistry.instance.recordEvent(
         'TEL classified -> type=tel len=${payload.length} nodeId=${_formatNodeId(telPacket.nodeId)} packetId=${telPacket.packetId} batt=${telPacket.batteryLevel} gps=${telPacket.gpsQuality}',
       );
@@ -1101,6 +1128,7 @@ class BleDeviceRuntimeProvider
           telFragment: telFragment,
           aggregatePayload: aggregatePayload,
           telPacket: telPacket,
+          classification: classification,
         ),
       );
       return;
@@ -1188,30 +1216,50 @@ class BleDeviceRuntimeProvider
     );
 
     final sosEventPacket = notification.payload.length == 6
-        ? EixamSosEventPacket.tryParse(notification.payload)
+        ? _payloadClassifier.classifySosPayload(
+            payload: notification.payload,
+            payloadHex: notification.payloadHex,
+            receivedAt: notification.receivedAt,
+            source: source,
+            channel: notification.channel,
+            connectedBleTagNodeId: _connectedBleTagNodeId,
+            fallbackOnUnknownConnectedNode:
+                const BleIncomingPayloadClassification(
+              kind: BleIncomingPayloadKind.remoteRelaySos,
+            ),
+          )
         : null;
-    if (sosEventPacket != null) {
+    if (sosEventPacket?.sosEventPacket != null) {
+      final packet = sosEventPacket!.sosEventPacket!;
+      final isLocalEvent = packet.nodeId == _connectedBleTagNodeId ||
+          (_connectedBleTagNodeId == null &&
+              source == DeviceSosTransitionSource.app);
+      if (isLocalEvent) {
+        _connectedBleTagNodeId ??= packet.nodeId;
+      }
       BleDebugRegistry.instance.recordEvent(
-        'SOS device event decoded -> nodeId=${_formatNodeId(sosEventPacket.nodeId)} opcode=0x${sosEventPacket.opcode.toRadixString(16).padLeft(2, '0')} subcode=0x${sosEventPacket.subcode.toRadixString(16).padLeft(2, '0')}',
+        'SOS device event decoded -> role=${isLocalEvent ? "connected_tag" : "remote_relay"} nodeId=${_formatNodeId(packet.nodeId)} opcode=0x${packet.opcode.toRadixString(16).padLeft(2, '0')} subcode=0x${packet.subcode.toRadixString(16).padLeft(2, '0')}',
       );
       BleDebugRegistry.instance.recordDecodedIncomingEvent(
         eventType: BleIncomingEventType.sosDeviceEvent.name,
         outcome: BleIncomingEventType.sosDeviceEvent.name,
         receivedAt: notification.receivedAt,
       );
-      if (_shouldProcessSosPacket(
-        nodeId: sosEventPacket.nodeId,
-        packetId: null,
-        rawHex: sosEventPacket.rawHex,
-      )) {
-        _deviceSosController.handleIncomingSosEventPacket(
-          sosEventPacket,
-          source: source,
-        );
-      } else {
-        BleDebugRegistry.instance.recordEvent(
-          'SOS duplicate suppressed -> ${sosEventPacket.rawHex}',
-        );
+      if (isLocalEvent) {
+        if (_shouldProcessSosPacket(
+          nodeId: packet.nodeId,
+          packetId: null,
+          rawHex: packet.rawHex,
+        )) {
+          _deviceSosController.handleIncomingSosEventPacket(
+            packet,
+            source: source,
+          );
+        } else {
+          BleDebugRegistry.instance.recordEvent(
+            'SOS duplicate suppressed -> ${packet.rawHex}',
+          );
+        }
       }
       _incomingEventsController.add(
         BleIncomingEvent(
@@ -1225,37 +1273,55 @@ class BleDeviceRuntimeProvider
           source: source,
           receivedAt: notification.receivedAt,
           meshPort: notification.meshPort,
-          sosEventPacket: sosEventPacket,
+          sosEventPacket: packet,
+          classification: sosEventPacket,
+          remoteRelaySosSnapshot: sosEventPacket.remoteRelaySosSnapshot,
         ),
       );
       return;
     }
 
-    final sosPacket = EixamSosPacket.tryParse(notification.payload);
-    if (sosPacket != null) {
+    final sosClassification = _payloadClassifier.classifySosPayload(
+      payload: notification.payload,
+      payloadHex: notification.payloadHex,
+      receivedAt: notification.receivedAt,
+      source: source,
+      channel: notification.channel,
+      connectedBleTagNodeId: _connectedBleTagNodeId,
+      fallbackOnUnknownConnectedNode: const BleIncomingPayloadClassification(
+        kind: BleIncomingPayloadKind.remoteRelaySos,
+      ),
+    );
+    if (sosClassification.sosPacket != null) {
+      final sosPacket = sosClassification.sosPacket!;
+      if (sosClassification.kind == BleIncomingPayloadKind.ownDeviceSos) {
+        _connectedBleTagNodeId ??= sosPacket.nodeId;
+      }
       BleDebugRegistry.instance.recordEvent(
-        'SOS packet decoded -> nodeId=${_formatNodeId(sosPacket.nodeId)} sosType=${sosPacket.sosType} packetId=${sosPacket.packetId} relayCount=${sosPacket.relayCount}',
+        'SOS packet decoded -> role=${sosClassification.kind.name} nodeId=${_formatNodeId(sosPacket.nodeId)} sosType=${sosPacket.sosType} packetId=${sosPacket.packetId} relayCount=${sosPacket.relayCount}',
       );
       BleDebugRegistry.instance.recordDecodedIncomingEvent(
         eventType: BleIncomingEventType.sosMeshPacket.name,
         outcome: BleIncomingEventType.sosMeshPacket.name,
         receivedAt: notification.receivedAt,
       );
-      _handleSosBatteryUpdate(sosPacket);
       _handleGuidedRescueSosPacket(sosPacket, notification.receivedAt);
-      if (_shouldProcessSosPacket(
-        nodeId: sosPacket.nodeId,
-        packetId: sosPacket.packetId,
-        rawHex: sosPacket.rawHex,
-      )) {
-        _deviceSosController.handleIncomingSosPacket(
-          sosPacket,
-          source: source,
-        );
-      } else {
-        BleDebugRegistry.instance.recordEvent(
-          'SOS duplicate suppressed -> ${sosPacket.rawHex}',
-        );
+      if (sosClassification.kind == BleIncomingPayloadKind.ownDeviceSos) {
+        _handleSosBatteryUpdate(sosPacket);
+        if (_shouldProcessSosPacket(
+          nodeId: sosPacket.nodeId,
+          packetId: sosPacket.packetId,
+          rawHex: sosPacket.rawHex,
+        )) {
+          _deviceSosController.handleIncomingSosPacket(
+            sosPacket,
+            source: source,
+          );
+        } else {
+          BleDebugRegistry.instance.recordEvent(
+            'SOS duplicate suppressed -> ${sosPacket.rawHex}',
+          );
+        }
       }
       _incomingEventsController.add(
         BleIncomingEvent(
@@ -1270,6 +1336,8 @@ class BleDeviceRuntimeProvider
           receivedAt: notification.receivedAt,
           meshPort: notification.meshPort,
           sosPacket: sosPacket,
+          classification: sosClassification,
+          remoteRelaySosSnapshot: sosClassification.remoteRelaySosSnapshot,
         ),
       );
       return;

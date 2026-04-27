@@ -395,6 +395,14 @@ class EixamConnectSdkImpl
           _lastTelRelayRx = relayPacket.relay;
           _emitOperationalDiagnostics(reason: 'ble_tel_relay_rx');
         }
+        final remoteRelaySnapshot = event.remoteRelaySosSnapshot;
+        if (remoteRelaySnapshot != null) {
+          // Safety-critical distinction: a relayed SOS belongs to the
+          // originator node, not to the connected BLE tag. Surface a typed
+          // event to the host until the backend contract for originator/relay
+          // metadata is explicit enough to automate this path end-to-end.
+          _publishSdkEvent(RemoteRelaySosObservedEvent(remoteRelaySnapshot));
+        }
         final sosPacket = event.sosPacket;
         final remoteDeviceId = sosPacket?.remoteDeviceId?.trim();
         if (sosPacket != null &&
@@ -3568,7 +3576,9 @@ class EixamConnectSdkImpl
   }
 
   bool _isSosSdkEvent(EixamSdkEvent event) {
-    return event is SOSTriggeredEvent || event is SOSCancelledEvent;
+    return event is SOSTriggeredEvent ||
+        event is SOSCancelledEvent ||
+        event is RemoteRelaySosObservedEvent;
   }
 
   bool _isBackendSosChannelAvailable() {

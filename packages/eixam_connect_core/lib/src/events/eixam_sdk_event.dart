@@ -1,3 +1,5 @@
+import '../entities/remote_relay_sos_snapshot.dart';
+
 sealed class EixamSdkEvent {
   final DateTime timestamp;
   EixamSdkEvent({DateTime? timestamp})
@@ -37,4 +39,9 @@ class DeathManStatusChangedEvent extends EixamSdkEvent {
 class DeathManEscalatedEvent extends EixamSdkEvent {
   final String planId;
   DeathManEscalatedEvent(this.planId);
+}
+
+class RemoteRelaySosObservedEvent extends EixamSdkEvent {
+  final RemoteRelaySosSnapshot snapshot;
+  RemoteRelaySosObservedEvent(this.snapshot);
 }
