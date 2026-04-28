@@ -1,4 +1,5 @@
 import '../entities/sos_incident.dart';
+import '../entities/sdk_telemetry_payload.dart';
 import '../entities/tracking_position.dart';
 import '../enums/sos_state.dart';
 
@@ -13,6 +14,10 @@ abstract class SosRepository {
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
+    SdkDeviceBatterySnapshot? deviceBattery,
+    SdkCoverageSnapshot? deviceCoverage,
+    int? mobileBattery,
+    SdkCoverageSnapshot? mobileCoverage,
   });
 
   Future<SosIncident> cancelSos();

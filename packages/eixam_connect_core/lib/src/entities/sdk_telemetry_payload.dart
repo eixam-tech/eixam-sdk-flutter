@@ -1,3 +1,59 @@
+import '../enums/device_battery_level.dart';
+
+class SdkDeviceBatterySnapshot {
+  const SdkDeviceBatterySnapshot({
+    required this.rawValue,
+    required this.range,
+  });
+
+  factory SdkDeviceBatterySnapshot.fromLevel(DeviceBatteryLevel level) {
+    return SdkDeviceBatterySnapshot(
+      rawValue: level.protocolValue,
+      range: level.name,
+    );
+  }
+
+  factory SdkDeviceBatterySnapshot.fromRawValue(num rawValue) {
+    final normalized = rawValue.round().clamp(0, 3);
+    final level = DeviceBatteryLevel.fromProtocolValue(normalized) ??
+        DeviceBatteryLevel.critical;
+    return SdkDeviceBatterySnapshot(
+      rawValue: normalized,
+      range: level.name,
+    );
+  }
+
+  final int rawValue;
+  final String range;
+
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{
+      'rawValue': rawValue,
+      'range': range,
+    };
+  }
+}
+
+class SdkCoverageSnapshot {
+  const SdkCoverageSnapshot({
+    required this.signalStrength,
+    required this.networkType,
+    required this.isConnected,
+  });
+
+  final int signalStrength;
+  final String networkType;
+  final bool isConnected;
+
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{
+      'signalStrength': signalStrength,
+      'networkType': networkType,
+      'isConnected': isConnected,
+    };
+  }
+}
+
 class SdkTelemetryPayload {
   const SdkTelemetryPayload({
     required this.timestamp,
@@ -15,9 +71,12 @@ class SdkTelemetryPayload {
     this.userId,
     this.deviceId,
     this.deviceBattery,
+    this.deviceBatterySnapshot,
     this.deviceCoverage,
+    this.deviceCoverageSnapshot,
     this.mobileBattery,
     this.mobileCoverage,
+    this.mobileCoverageSnapshot,
   });
 
   final DateTime timestamp;
@@ -35,9 +94,12 @@ class SdkTelemetryPayload {
   final String? userId;
   final String? deviceId;
   final double? deviceBattery;
+  final SdkDeviceBatterySnapshot? deviceBatterySnapshot;
   final int? deviceCoverage;
+  final SdkCoverageSnapshot? deviceCoverageSnapshot;
   final double? mobileBattery;
   final int? mobileCoverage;
+  final SdkCoverageSnapshot? mobileCoverageSnapshot;
 
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
@@ -51,15 +113,18 @@ class SdkTelemetryPayload {
       if (aggId != null) 'aggId': aggId,
       if (score != null) 'score': score,
       if (memberCount != null) 'memberCount': memberCount,
-      if (aggSpreadingFactor != null)
-        'aggSpreadingFactor': aggSpreadingFactor,
+      if (aggSpreadingFactor != null) 'aggSpreadingFactor': aggSpreadingFactor,
       if (_hasText(eventId)) 'eventId': eventId!.trim(),
       if (_hasText(userId)) 'userId': userId!.trim(),
       if (_hasText(deviceId)) 'deviceId': deviceId!.trim(),
-      if (deviceBattery != null) 'deviceBattery': deviceBattery,
-      if (deviceCoverage != null) 'deviceCoverage': deviceCoverage,
-      if (mobileBattery != null) 'mobileBattery': mobileBattery,
-      if (mobileCoverage != null) 'mobileCoverage': mobileCoverage,
+      if (_resolvedDeviceBattery != null)
+        'deviceBattery': _resolvedDeviceBattery!.toJson(),
+      if (_resolvedDeviceCoverage != null)
+        'deviceCoverage': _resolvedDeviceCoverage!.toJson(),
+      if (mobileBattery != null)
+        'mobileBattery': mobileBattery!.round().clamp(0, 100),
+      if (_resolvedMobileCoverage != null)
+        'mobileCoverage': _resolvedMobileCoverage!.toJson(),
     };
   }
 
@@ -79,9 +144,12 @@ class SdkTelemetryPayload {
     Object? userId = _unset,
     Object? deviceId = _unset,
     Object? deviceBattery = _unset,
+    Object? deviceBatterySnapshot = _unset,
     Object? deviceCoverage = _unset,
+    Object? deviceCoverageSnapshot = _unset,
     Object? mobileBattery = _unset,
     Object? mobileCoverage = _unset,
+    Object? mobileCoverageSnapshot = _unset,
   }) {
     return SdkTelemetryPayload(
       timestamp: timestamp ?? this.timestamp,
@@ -90,9 +158,8 @@ class SdkTelemetryPayload {
       altitude: altitude ?? this.altitude,
       kind: identical(kind, _unset) ? this.kind : kind as String?,
       nodeId: identical(nodeId, _unset) ? this.nodeId : nodeId as int?,
-      clusterId: identical(clusterId, _unset)
-          ? this.clusterId
-          : clusterId as int?,
+      clusterId:
+          identical(clusterId, _unset) ? this.clusterId : clusterId as int?,
       aggId: identical(aggId, _unset) ? this.aggId : aggId as int?,
       score: identical(score, _unset) ? this.score : score as int?,
       memberCount: identical(memberCount, _unset)
@@ -108,15 +175,68 @@ class SdkTelemetryPayload {
       deviceBattery: identical(deviceBattery, _unset)
           ? this.deviceBattery
           : deviceBattery as double?,
+      deviceBatterySnapshot: identical(deviceBatterySnapshot, _unset)
+          ? this.deviceBatterySnapshot
+          : deviceBatterySnapshot as SdkDeviceBatterySnapshot?,
       deviceCoverage: identical(deviceCoverage, _unset)
           ? this.deviceCoverage
           : deviceCoverage as int?,
+      deviceCoverageSnapshot: identical(deviceCoverageSnapshot, _unset)
+          ? this.deviceCoverageSnapshot
+          : deviceCoverageSnapshot as SdkCoverageSnapshot?,
       mobileBattery: identical(mobileBattery, _unset)
           ? this.mobileBattery
           : mobileBattery as double?,
       mobileCoverage: identical(mobileCoverage, _unset)
           ? this.mobileCoverage
           : mobileCoverage as int?,
+      mobileCoverageSnapshot: identical(mobileCoverageSnapshot, _unset)
+          ? this.mobileCoverageSnapshot
+          : mobileCoverageSnapshot as SdkCoverageSnapshot?,
+    );
+  }
+
+  SdkDeviceBatterySnapshot? get _resolvedDeviceBattery {
+    final snapshot = deviceBatterySnapshot;
+    if (snapshot != null) {
+      return snapshot;
+    }
+    final raw = deviceBattery;
+    if (raw == null || !raw.isFinite) {
+      return null;
+    }
+    return SdkDeviceBatterySnapshot.fromRawValue(raw);
+  }
+
+  SdkCoverageSnapshot? get _resolvedDeviceCoverage {
+    final snapshot = deviceCoverageSnapshot;
+    if (snapshot != null) {
+      return snapshot;
+    }
+    final signalStrength = deviceCoverage;
+    if (signalStrength == null) {
+      return null;
+    }
+    return SdkCoverageSnapshot(
+      signalStrength: signalStrength,
+      networkType: 'ble',
+      isConnected: true,
+    );
+  }
+
+  SdkCoverageSnapshot? get _resolvedMobileCoverage {
+    final snapshot = mobileCoverageSnapshot;
+    if (snapshot != null) {
+      return snapshot;
+    }
+    final signalStrength = mobileCoverage;
+    if (signalStrength == null) {
+      return null;
+    }
+    return SdkCoverageSnapshot(
+      signalStrength: signalStrength,
+      networkType: 'mobile',
+      isConnected: true,
     );
   }
 

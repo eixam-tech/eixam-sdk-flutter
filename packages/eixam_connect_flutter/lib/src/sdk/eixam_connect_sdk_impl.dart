@@ -1531,22 +1531,8 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> publishTelemetry(SdkTelemetryPayload payload) async {
-    final session = _session;
-    final backendHardwareId =
-        await _loadBackendHardwareIdForOperationalPayloads(
-      runtimeStatus: _lastDeviceStatus,
-    );
-    final resolvedDeviceId = _resolveOperationalDeviceId(
-      backendHardwareId: backendHardwareId,
-    );
-
     await telemetryRepository.publishTelemetry(
-      payload.copyWith(
-        userId: payload.userId ??
-            session?.canonicalExternalUserId ??
-            session?.externalUserId,
-        deviceId: resolvedDeviceId,
-      ),
+      await _enrichOperationalTelemetryPayload(payload),
     );
   }
 
@@ -1682,6 +1668,7 @@ class EixamConnectSdkImpl
       final deviceId = await _loadBackendHardwareIdForOperationalPayloads(
         runtimeStatus: _lastDeviceStatus,
       );
+      final metadata = _buildOperationalSosMetadata();
       final capabilitySnapshot = _computeCurrentSosCapabilitySnapshot(
         reason: 'trigger_sos_start',
       );
@@ -1709,6 +1696,10 @@ class EixamConnectSdkImpl
           triggerSource: payload.triggerSource,
           positionSnapshot: positionSnapshot,
           deviceId: deviceId,
+          deviceBattery: metadata.deviceBattery,
+          deviceCoverage: metadata.deviceCoverage,
+          mobileBattery: metadata.mobileBattery,
+          mobileCoverage: metadata.mobileCoverage,
         );
       } catch (error) {
         backendError = error;
@@ -2015,6 +2006,7 @@ class EixamConnectSdkImpl
       final status = runtimeStatus ??
           _lastDeviceStatus ??
           await deviceRepository.getDeviceStatus();
+      _lastDeviceStatus = status;
       if (!status.paired && !status.connected && !status.activated) {
         return null;
       }
@@ -2022,6 +2014,86 @@ class EixamConnectSdkImpl
       return hardwareId == null || hardwareId.isEmpty ? null : hardwareId;
     } catch (_) {
       return null;
+    }
+  }
+
+  SdkDeviceBatterySnapshot? _buildDeviceBatterySnapshot(
+    DeviceStatus? status,
+  ) {
+    try {
+      if (status == null) {
+        return null;
+      }
+      final batteryState = status.effectiveBatteryState;
+      if (batteryState != null) {
+        return SdkDeviceBatterySnapshot.fromLevel(batteryState);
+      }
+      final batteryLevel = status.batteryLevel;
+      if (batteryLevel == null) {
+        return null;
+      }
+      return SdkDeviceBatterySnapshot.fromRawValue(batteryLevel);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  SdkCoverageSnapshot? _buildDeviceCoverageSnapshot(DeviceStatus? status) {
+    try {
+      final signalQuality = status?.signalQuality;
+      if (status == null || signalQuality == null) {
+        return null;
+      }
+      return SdkCoverageSnapshot(
+        signalStrength: signalQuality,
+        networkType: 'ble',
+        isConnected: status.connected,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<SdkTelemetryPayload> _enrichOperationalTelemetryPayload(
+    SdkTelemetryPayload payload,
+  ) async {
+    final session = _session;
+    var status = _lastDeviceStatus;
+    final backendHardwareId =
+        await _loadBackendHardwareIdForOperationalPayloads(
+      runtimeStatus: status,
+    );
+    status = _lastDeviceStatus;
+    final resolvedDeviceId = _resolveOperationalDeviceId(
+      backendHardwareId: backendHardwareId,
+    );
+
+    return payload.copyWith(
+      userId: payload.userId ??
+          session?.canonicalExternalUserId ??
+          session?.externalUserId,
+      deviceId: resolvedDeviceId,
+      deviceBatterySnapshot:
+          payload.deviceBatterySnapshot ?? _buildDeviceBatterySnapshot(status),
+      deviceCoverageSnapshot: payload.deviceCoverageSnapshot ??
+          _buildDeviceCoverageSnapshot(status),
+    );
+  }
+
+  _OperationalSosMetadata _buildOperationalSosMetadata() {
+    try {
+      final status = _lastDeviceStatus;
+      return _OperationalSosMetadata(
+        deviceBattery: _buildDeviceBatterySnapshot(status),
+        deviceCoverage: _buildDeviceCoverageSnapshot(status),
+        mobileBattery: null,
+        mobileCoverage: null,
+      );
+    } catch (_) {
+      return const _OperationalSosMetadata(
+        mobileBattery: null,
+        mobileCoverage: null,
+      );
     }
   }
 
@@ -4408,6 +4480,20 @@ class _ObservedRelaySosContext {
   final int nodeId;
   final int relayCount;
   final String packetSignature;
+}
+
+class _OperationalSosMetadata {
+  const _OperationalSosMetadata({
+    this.deviceBattery,
+    this.deviceCoverage,
+    this.mobileBattery,
+    this.mobileCoverage,
+  });
+
+  final SdkDeviceBatterySnapshot? deviceBattery;
+  final SdkCoverageSnapshot? deviceCoverage;
+  final int? mobileBattery;
+  final SdkCoverageSnapshot? mobileCoverage;
 }
 
 class _DeathManNotificationPayload {

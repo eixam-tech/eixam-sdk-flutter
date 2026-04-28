@@ -32,6 +32,11 @@ class FakeSosRepository implements SosRepository {
     String? message,
     required String triggerSource,
     TrackingPosition? positionSnapshot,
+    String? deviceId,
+    SdkDeviceBatterySnapshot? deviceBattery,
+    SdkCoverageSnapshot? deviceCoverage,
+    int? mobileBattery,
+    SdkCoverageSnapshot? mobileCoverage,
   }) async {
     lastTriggerMessage = message;
     lastTriggerSource = triggerSource;

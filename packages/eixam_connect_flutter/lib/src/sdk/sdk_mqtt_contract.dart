@@ -36,18 +36,30 @@ class MqttOperationalSosRequest {
     required this.positionSnapshot,
     this.sdkUserId,
     this.deviceId,
+    this.deviceBattery,
+    this.deviceCoverage,
+    this.mobileBattery,
+    this.mobileCoverage,
   });
 
   final DateTime timestamp;
   final TrackingPosition positionSnapshot;
   final String? sdkUserId;
   final String? deviceId;
+  final SdkDeviceBatterySnapshot? deviceBattery;
+  final SdkCoverageSnapshot? deviceCoverage;
+  final int? mobileBattery;
+  final SdkCoverageSnapshot? mobileCoverage;
 
   MqttOperationalSosRequest copyWith({
     DateTime? timestamp,
     TrackingPosition? positionSnapshot,
     Object? sdkUserId = _unset,
     Object? deviceId = _unset,
+    Object? deviceBattery = _unset,
+    Object? deviceCoverage = _unset,
+    Object? mobileBattery = _unset,
+    Object? mobileCoverage = _unset,
   }) {
     return MqttOperationalSosRequest(
       timestamp: timestamp ?? this.timestamp,
@@ -56,6 +68,18 @@ class MqttOperationalSosRequest {
           identical(sdkUserId, _unset) ? this.sdkUserId : sdkUserId as String?,
       deviceId:
           identical(deviceId, _unset) ? this.deviceId : deviceId as String?,
+      deviceBattery: identical(deviceBattery, _unset)
+          ? this.deviceBattery
+          : deviceBattery as SdkDeviceBatterySnapshot?,
+      deviceCoverage: identical(deviceCoverage, _unset)
+          ? this.deviceCoverage
+          : deviceCoverage as SdkCoverageSnapshot?,
+      mobileBattery: identical(mobileBattery, _unset)
+          ? this.mobileBattery
+          : mobileBattery as int?,
+      mobileCoverage: identical(mobileCoverage, _unset)
+          ? this.mobileCoverage
+          : mobileCoverage as SdkCoverageSnapshot?,
     );
   }
 
@@ -107,6 +131,14 @@ class SdkMqttContract {
         'userId': request.sdkUserId!.trim(),
       if (request.deviceId != null && request.deviceId!.trim().isNotEmpty)
         'deviceId': request.deviceId!.trim(),
+      if (request.deviceBattery != null)
+        'deviceBattery': request.deviceBattery!.toJson(),
+      if (request.deviceCoverage != null)
+        'deviceCoverage': request.deviceCoverage!.toJson(),
+      if (request.mobileBattery != null)
+        'mobileBattery': request.mobileBattery!.clamp(0, 100),
+      if (request.mobileCoverage != null)
+        'mobileCoverage': request.mobileCoverage!.toJson(),
     };
 
     return SdkMqttEnvelope(
@@ -167,7 +199,7 @@ class SdkMqttContract {
   static String _clientIdentifierFor(EixamSession session) {
     final appPart = _sanitizeIdentifier(session.appId);
     final userPart = _sanitizeIdentifier(session.externalUserId);
-    final raw = 'eixam_$appPart\_$userPart';
+    final raw = 'eixam_${appPart}_$userPart';
     return raw.length <= 64 ? raw : raw.substring(0, 64);
   }
 

@@ -23,6 +23,10 @@ class FakeSosRepository implements SosRepository {
   String? lastTriggerSource;
   TrackingPosition? lastPositionSnapshot;
   String? lastDeviceId;
+  SdkDeviceBatterySnapshot? lastDeviceBattery;
+  SdkCoverageSnapshot? lastDeviceCoverage;
+  int? lastMobileBattery;
+  SdkCoverageSnapshot? lastMobileCoverage;
   Object? triggerError;
   final StreamController<SosState> stateController =
       StreamController<SosState>.broadcast();
@@ -33,6 +37,10 @@ class FakeSosRepository implements SosRepository {
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
+    SdkDeviceBatterySnapshot? deviceBattery,
+    SdkCoverageSnapshot? deviceCoverage,
+    int? mobileBattery,
+    SdkCoverageSnapshot? mobileCoverage,
   }) async {
     if (triggerError != null) {
       throw triggerError!;
@@ -42,6 +50,10 @@ class FakeSosRepository implements SosRepository {
     lastTriggerSource = triggerSource;
     lastPositionSnapshot = positionSnapshot;
     lastDeviceId = deviceId;
+    lastDeviceBattery = deviceBattery;
+    lastDeviceCoverage = deviceCoverage;
+    lastMobileBattery = mobileBattery;
+    lastMobileCoverage = mobileCoverage;
     currentIncident = currentIncident.copyWith(
       state: SosState.sent,
       message: message,

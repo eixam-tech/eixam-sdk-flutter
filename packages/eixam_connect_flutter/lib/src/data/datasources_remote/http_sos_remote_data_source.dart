@@ -21,6 +21,10 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
+    SdkDeviceBatterySnapshot? deviceBattery,
+    SdkCoverageSnapshot? deviceCoverage,
+    int? mobileBattery,
+    SdkCoverageSnapshot? mobileCoverage,
   }) async {
     if (positionSnapshot == null) {
       throw const SosException(
@@ -38,6 +42,10 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
         'altitude': positionSnapshot.altitude,
         if (deviceId != null && deviceId.trim().isNotEmpty)
           'deviceId': deviceId.trim(),
+        if (deviceBattery != null) 'deviceBattery': deviceBattery.toJson(),
+        if (deviceCoverage != null) 'deviceCoverage': deviceCoverage.toJson(),
+        if (mobileBattery != null) 'mobileBattery': mobileBattery.clamp(0, 100),
+        if (mobileCoverage != null) 'mobileCoverage': mobileCoverage.toJson(),
       }),
     );
 

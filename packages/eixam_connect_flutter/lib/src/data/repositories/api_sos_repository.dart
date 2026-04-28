@@ -58,6 +58,10 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
+    SdkDeviceBatterySnapshot? deviceBattery,
+    SdkCoverageSnapshot? deviceCoverage,
+    int? mobileBattery,
+    SdkCoverageSnapshot? mobileCoverage,
   }) async {
     final current = _stateMachine.current;
     if (current != SosState.idle &&
@@ -78,6 +82,10 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
         triggerSource: triggerSource,
         positionSnapshot: positionSnapshot,
         deviceId: deviceId,
+        deviceBattery: deviceBattery,
+        deviceCoverage: deviceCoverage,
+        mobileBattery: mobileBattery,
+        mobileCoverage: mobileCoverage,
       );
       _activeIncident = mapper.toDomain(dto);
       _emit(_activeIncident!.state);

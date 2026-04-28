@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:async/async.dart';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
@@ -169,6 +170,9 @@ void main() {
           paired: true,
           connected: true,
           activated: true,
+          batteryLevel: 1,
+          batteryState: DeviceBatteryLevel.low,
+          signalQuality: 3,
         ),
       );
 
@@ -186,6 +190,18 @@ void main() {
       expect(sosRepository.lastPositionSnapshot!.latitude, 41.38);
       expect(sosRepository.lastDeviceId, 'CF:82:11:22:33:44');
       expect(sosRepository.lastDeviceId, isNot('ble-device-123'));
+      expect(
+        sosRepository.lastDeviceBattery?.toJson(),
+        <String, dynamic>{'rawValue': 1, 'range': 'low'},
+      );
+      expect(
+        sosRepository.lastDeviceCoverage?.toJson(),
+        <String, dynamic>{
+          'signalStrength': 3,
+          'networkType': 'ble',
+          'isConnected': true,
+        },
+      );
     });
 
     test(
@@ -288,6 +304,9 @@ void main() {
           paired: true,
           connected: true,
           activated: true,
+          batteryLevel: 2,
+          batteryState: DeviceBatteryLevel.medium,
+          signalQuality: 4,
         ),
       );
       final payload = SdkTelemetryPayload(
@@ -308,6 +327,20 @@ void main() {
       expect(
         telemetryRepository.publishedPayloads.single.userId,
         'canonical-user',
+      );
+      expect(
+        telemetryRepository.publishedPayloads.single.deviceBatterySnapshot
+            ?.toJson(),
+        <String, dynamic>{'rawValue': 2, 'range': 'medium'},
+      );
+      expect(
+        telemetryRepository.publishedPayloads.single.deviceCoverageSnapshot
+            ?.toJson(),
+        <String, dynamic>{
+          'signalStrength': 4,
+          'networkType': 'ble',
+          'isConnected': true,
+        },
       );
       expect(await sdk.getSosState(), SosState.idle);
     });
@@ -5049,6 +5082,68 @@ void main() {
       }
     });
 
+    test('operational SOS envelope includes provided operational metadata', () {
+      final envelope = SdkMqttContract.buildOperationalSosEnvelope(
+        MqttOperationalSosRequest(
+          timestamp: DateTime.utc(2026, 3, 30, 12),
+          positionSnapshot: TrackingPosition(
+            latitude: 41.38,
+            longitude: 2.17,
+            altitude: 8,
+            timestamp: DateTime.utc(2026, 3, 30, 12),
+          ),
+          deviceId: 'hw-1',
+          deviceBattery:
+              SdkDeviceBatterySnapshot.fromLevel(DeviceBatteryLevel.low),
+          deviceCoverage: const SdkCoverageSnapshot(
+            signalStrength: 3,
+            networkType: 'ble',
+            isConnected: true,
+          ),
+        ),
+      );
+
+      expect(jsonDecode(envelope.payload), containsPair('deviceId', 'hw-1'));
+      expect(
+        jsonDecode(envelope.payload),
+        containsPair(
+          'deviceBattery',
+          <String, dynamic>{'rawValue': 1, 'range': 'low'},
+        ),
+      );
+      expect(
+        jsonDecode(envelope.payload),
+        containsPair(
+          'deviceCoverage',
+          <String, dynamic>{
+            'signalStrength': 3,
+            'networkType': 'ble',
+            'isConnected': true,
+          },
+        ),
+      );
+    });
+
+    test('operational SOS envelope omits null operational metadata', () {
+      final envelope = SdkMqttContract.buildOperationalSosEnvelope(
+        MqttOperationalSosRequest(
+          timestamp: DateTime.utc(2026, 3, 30, 12),
+          positionSnapshot: TrackingPosition(
+            latitude: 41.38,
+            longitude: 2.17,
+            altitude: 8,
+            timestamp: DateTime.utc(2026, 3, 30, 12),
+          ),
+        ),
+      );
+
+      final payload = jsonDecode(envelope.payload) as Map<String, dynamic>;
+      expect(payload.containsKey('deviceBattery'), isFalse);
+      expect(payload.containsKey('deviceCoverage'), isFalse);
+      expect(payload.containsKey('mobileBattery'), isFalse);
+      expect(payload.containsKey('mobileCoverage'), isFalse);
+    });
+
     test('http trigger path includes deviceId when paired hardware id exists',
         () async {
       late http.Request capturedRequest;
@@ -5082,12 +5177,25 @@ void main() {
           timestamp: DateTime.utc(2026, 3, 30, 12),
         ),
         deviceId: 'hw-1',
+        deviceBattery:
+            SdkDeviceBatterySnapshot.fromLevel(DeviceBatteryLevel.critical),
+        deviceCoverage: const SdkCoverageSnapshot(
+          signalStrength: 2,
+          networkType: 'ble',
+          isConnected: true,
+        ),
       );
 
       expect(capturedRequest.method, 'POST');
       expect(capturedRequest.url.toString(),
           'https://api.example.test/v1/sdk/sos');
       expect(capturedRequest.body, contains('"deviceId":"hw-1"'));
+      expect(capturedRequest.body,
+          contains('"deviceBattery":{"rawValue":0,"range":"critical"}'));
+      expect(
+          capturedRequest.body,
+          contains(
+              '"deviceCoverage":{"signalStrength":2,"networkType":"ble","isConnected":true}'));
       expect(capturedRequest.headers['Authorization'], 'Bearer deadbeef');
     });
 
@@ -5685,8 +5793,29 @@ void main() {
       );
 
       expect(envelope.topic, 'tel/partner%2Fuser%2042/data');
-      expect(envelope.payload,
-          '{"timestamp":"2026-03-31T10:15:00.000Z","latitude":41.38,"longitude":2.17,"altitude":8.0,"userId":"sdk-user-42","deviceId":"device-1","deviceBattery":77.5,"deviceCoverage":4,"mobileBattery":61.0,"mobileCoverage":3}');
+      expect(jsonDecode(envelope.payload), <String, dynamic>{
+        'timestamp': '2026-03-31T10:15:00.000Z',
+        'latitude': 41.38,
+        'longitude': 2.17,
+        'altitude': 8.0,
+        'userId': 'sdk-user-42',
+        'deviceId': 'device-1',
+        'deviceBattery': <String, dynamic>{
+          'rawValue': 3,
+          'range': 'ok',
+        },
+        'deviceCoverage': <String, dynamic>{
+          'signalStrength': 4,
+          'networkType': 'ble',
+          'isConnected': true,
+        },
+        'mobileBattery': 61,
+        'mobileCoverage': <String, dynamic>{
+          'signalStrength': 3,
+          'networkType': 'mobile',
+          'isConnected': true,
+        },
+      });
     });
 
     test('telemetry repository validates required coordinates before publish',
@@ -8881,6 +9010,10 @@ class _FakeCancelSosRemoteDataSource implements SosRemoteDataSource {
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
+    SdkDeviceBatterySnapshot? deviceBattery,
+    SdkCoverageSnapshot? deviceCoverage,
+    int? mobileBattery,
+    SdkCoverageSnapshot? mobileCoverage,
   }) async {
     activeIncident = SosIncidentDto(
       id: 'sos-1',
@@ -8902,6 +9035,10 @@ class _AvailabilityAwareSosRepository extends FakeSosRepository {
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
+    SdkDeviceBatterySnapshot? deviceBattery,
+    SdkCoverageSnapshot? deviceCoverage,
+    int? mobileBattery,
+    SdkCoverageSnapshot? mobileCoverage,
   }) async {
     if (!isTriggerAvailable) {
       throw const SosException(
@@ -8914,6 +9051,10 @@ class _AvailabilityAwareSosRepository extends FakeSosRepository {
       triggerSource: triggerSource,
       positionSnapshot: positionSnapshot,
       deviceId: deviceId,
+      deviceBattery: deviceBattery,
+      deviceCoverage: deviceCoverage,
+      mobileBattery: mobileBattery,
+      mobileCoverage: mobileCoverage,
     );
   }
 
