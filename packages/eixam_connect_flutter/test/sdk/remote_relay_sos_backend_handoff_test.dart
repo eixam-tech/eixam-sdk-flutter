@@ -8,6 +8,9 @@ import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/preferred_ble_device_store.dart';
+import 'package:eixam_connect_flutter/src/data/datasources_remote/sos_remote_data_source.dart';
+import 'package:eixam_connect_flutter/src/data/dtos/sos_incident_dto.dart';
+import 'package:eixam_connect_flutter/src/data/repositories/mqtt_operational_sos_repository.dart';
 import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
 import 'package:eixam_connect_flutter/src/sdk/operational_realtime_client.dart';
 import 'package:eixam_connect_flutter/src/sdk/sdk_mqtt_contract.dart';
@@ -231,6 +234,166 @@ void main() {
       expect(sosRepository.lastMessage, 'local SOS');
       expect(realtimeClient.publishedSos, isEmpty);
     });
+
+    group('remote relay cancel handoff', () {
+      late _FakeCancelRemoteDataSource cancelDataSource;
+
+      Future<void> useSdkWithCancelDataSource() async {
+        await sdk.dispose();
+        deviceSosController = DeviceSosController();
+        deviceCommands = <EixamDeviceCommand>[];
+        await deviceSosController.attach(
+          commandWriter: (command) async {
+            deviceCommands.add(command);
+          },
+        );
+        cancelDataSource = _FakeCancelRemoteDataSource();
+        sdk = EixamConnectSdkImpl(
+          sosRepository: MqttOperationalSosRepository(
+            realtimeClient: realtimeClient,
+            cancelRemoteDataSource: cancelDataSource,
+          ),
+          trackingRepository: trackingRepository,
+          telemetryRepository: telemetryRepository,
+          contactsRepository: contactsRepository,
+          deviceRepository: deviceRepository,
+          deviceRegistryRepository: deviceRegistryRepository,
+          deathManRepository: deathManRepository,
+          permissionsRepository: permissionsRepository,
+          notificationsRepository: notificationsRepository,
+          realtimeClient: realtimeClient,
+          deviceSosController: deviceSosController,
+          bleIncomingEvents: bleEvents.stream,
+          preferredBleDeviceStore: preferredDeviceStore,
+        );
+        await sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+      }
+
+      setUp(() {
+        cancelDataSource = _FakeCancelRemoteDataSource();
+      });
+
+      test('remote 0xE1/0x02 cancel posts cancel with originator node deviceId',
+          () async {
+        await useSdkWithCancelDataSource();
+        final events = <EixamSdkEvent>[];
+        final subscription = sdk.watchEvents().listen(events.add);
+
+        bleEvents.add(
+          _remoteRelayEvent(
+            snapshot: _cancelSnapshot(
+              originatorNodeId: 1234,
+              relayNodeId: 9999,
+            ),
+          ),
+        );
+        await _eventually(() => cancelDataSource.cancelDeviceIds.length == 1);
+
+        expect(cancelDataSource.cancelDeviceIds.single, '1234');
+        expect(cancelDataSource.cancelDeviceIds.single, isNot('9999'));
+        expect(cancelDataSource.sentCancelWithoutDeviceId, isFalse);
+        expect(sosRepository.cancelCallCount, 0);
+        expect(await sdk.getSosState(), SosState.idle);
+        expect((await deviceSosController.getStatus()).state,
+            DeviceSosState.inactive);
+        final result =
+            events.whereType<RemoteRelaySosCancelHandoffResultEvent>().single;
+        expect(result.status, RemoteRelaySosBackendHandoffStatus.submitted);
+        expect(result.deviceId, '1234');
+        expect(result.originatorNodeId, 1234);
+        expect(result.relayNodeId, 9999);
+
+        await subscription.cancel();
+      });
+
+      test('remote cancel backend 409 emits failed conflict result', () async {
+        await useSdkWithCancelDataSource();
+        cancelDataSource.cancelError = const SosHttpException(
+          'E_HTTP_SOS_CANCEL_CONFLICT',
+          'conflict',
+          statusCode: 409,
+        );
+        final events = <EixamSdkEvent>[];
+        final subscription = sdk.watchEvents().listen(events.add);
+
+        bleEvents.add(_remoteRelayEvent(snapshot: _cancelSnapshot()));
+        await _eventually(
+          () => events.whereType<RemoteRelaySosCancelHandoffResultEvent>().any(
+                (event) =>
+                    event.status == RemoteRelaySosBackendHandoffStatus.failed,
+              ),
+        );
+
+        final result =
+            events.whereType<RemoteRelaySosCancelHandoffResultEvent>().single;
+        expect(result.reason, 'conflict_not_associated');
+        expect(cancelDataSource.cancelDeviceIds.single, '16909060');
+
+        await subscription.cancel();
+      });
+
+      test('remote cancel backend 422 emits failed unknown_device result',
+          () async {
+        await useSdkWithCancelDataSource();
+        cancelDataSource.cancelError = const SosHttpException(
+          'E_HTTP_SOS_CANCEL_UNKNOWN_DEVICE',
+          'unknown device',
+          statusCode: 422,
+        );
+        final events = <EixamSdkEvent>[];
+        final subscription = sdk.watchEvents().listen(events.add);
+
+        bleEvents.add(_remoteRelayEvent(snapshot: _cancelSnapshot()));
+        await _eventually(
+          () => events.whereType<RemoteRelaySosCancelHandoffResultEvent>().any(
+                (event) =>
+                    event.status == RemoteRelaySosBackendHandoffStatus.failed,
+              ),
+        );
+
+        final result =
+            events.whereType<RemoteRelaySosCancelHandoffResultEvent>().single;
+        expect(result.reason, 'unknown_device');
+
+        await subscription.cancel();
+      });
+
+      test('remote cancel backend exception emits failed event without crash',
+          () async {
+        await useSdkWithCancelDataSource();
+        cancelDataSource.cancelError =
+            const NetworkException('E_NETWORK', 'offline');
+        final events = <EixamSdkEvent>[];
+        final subscription = sdk.watchEvents().listen(events.add);
+
+        bleEvents.add(_remoteRelayEvent(snapshot: _cancelSnapshot()));
+        await _eventually(
+          () => events.whereType<RemoteRelaySosCancelHandoffResultEvent>().any(
+                (event) =>
+                    event.status == RemoteRelaySosBackendHandoffStatus.failed,
+              ),
+        );
+
+        final result =
+            events.whereType<RemoteRelaySosCancelHandoffResultEvent>().single;
+        expect(result.reason, 'network_error');
+        expect(await sdk.getSosState(), SosState.idle);
+        expect(sosRepository.cancelCallCount, 0);
+
+        await subscription.cancel();
+      });
+
+      test('own-device cancel behavior remains unchanged', () async {
+        await sdk.triggerSos(const SosTriggerPayload(message: 'local SOS'));
+
+        await sdk.cancelSos();
+
+        expect(sosRepository.cancelCallCount, 1);
+        expect(sosRepository.currentIncident.state, SosState.cancelled);
+      });
+    });
   });
 }
 
@@ -247,9 +410,43 @@ BleIncomingEvent _remoteRelayEvent({RemoteRelaySosSnapshot? snapshot}) {
     receivedAt: resolvedSnapshot.receivedAt,
     remoteRelaySosSnapshot: resolvedSnapshot,
     classification: BleIncomingPayloadClassification(
-      kind: BleIncomingPayloadKind.remoteRelaySos,
+      kind: resolvedSnapshot.kind == RemoteRelaySosKind.sos
+          ? BleIncomingPayloadKind.remoteRelaySos
+          : BleIncomingPayloadKind.sosCancel,
       remoteRelaySosSnapshot: resolvedSnapshot,
     ),
+  );
+}
+
+RemoteRelaySosSnapshot _cancelSnapshot({
+  int originatorNodeId = 0x01020304,
+  int? relayNodeId = 0x0A0B0C0D,
+}) {
+  return RemoteRelaySosSnapshot(
+    kind: RemoteRelaySosKind.clear,
+    originatorNodeId: originatorNodeId,
+    relayNodeId: relayNodeId,
+    source: RemoteRelaySosSource.sosNotify,
+    sosType: 0,
+    receivedAt: DateTime.utc(2026, 4, 28, 10, 20),
+    rawPayload: <int>[
+      0xE1,
+      0x02,
+      originatorNodeId & 0xFF,
+      (originatorNodeId >> 8) & 0xFF,
+      (originatorNodeId >> 16) & 0xFF,
+      (originatorNodeId >> 24) & 0xFF,
+    ],
+    payloadHex: EixamBleProtocol.hex(<int>[
+      0xE1,
+      0x02,
+      originatorNodeId & 0xFF,
+      (originatorNodeId >> 8) & 0xFF,
+      (originatorNodeId >> 16) & 0xFF,
+      (originatorNodeId >> 24) & 0xFF,
+    ]),
+    eventOpcode: 0xE1,
+    eventSubcode: 0x02,
   );
 }
 
@@ -278,6 +475,40 @@ RemoteRelaySosSnapshot _snapshot({
         'aabb${(originatorNodeId & 0xFF).toRadixString(16).padLeft(2, '0')}',
     location: resolvedLocation,
   );
+}
+
+class _FakeCancelRemoteDataSource implements SosRemoteDataSource {
+  final List<String?> cancelDeviceIds = <String?>[];
+  Object? cancelError;
+
+  bool get sentCancelWithoutDeviceId =>
+      cancelDeviceIds.any((deviceId) => deviceId == null || deviceId.isEmpty);
+
+  @override
+  Future<SosIncidentDto> triggerSos({
+    String? message,
+    required String triggerSource,
+    TrackingPosition? positionSnapshot,
+    String? deviceId,
+  }) async {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<SosIncidentDto?> cancelSos({String? deviceId}) async {
+    cancelDeviceIds.add(deviceId);
+    final error = cancelError;
+    if (error != null) {
+      throw error;
+    }
+    return null;
+  }
+
+  @override
+  Future<SosIncidentDto?> resolveSos() async => null;
+
+  @override
+  Future<SosIncidentDto?> getActiveSos() async => null;
 }
 
 const Object _defaultRemoteRelayLocation = Object();

@@ -11,7 +11,7 @@ abstract class SosRemoteDataSource {
     String? deviceId,
   });
 
-  Future<SosIncidentDto?> cancelSos();
+  Future<SosIncidentDto?> cancelSos({String? deviceId});
   Future<SosIncidentDto?> resolveSos();
   Future<SosIncidentDto?> getActiveSos();
 }

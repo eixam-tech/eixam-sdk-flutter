@@ -5125,6 +5125,36 @@ void main() {
       expect(capturedRequest.headers['Authorization'], 'Bearer deadbeef');
     });
 
+    test('http cancel path posts deviceId when provided', () async {
+      late http.Request capturedRequest;
+      final dataSource = HttpSosRemoteDataSource(
+        transport: SdkHttpTransport(
+          client: _RecordingClient(
+            handler: (request) async {
+              capturedRequest = request;
+              return http.Response('', 200);
+            },
+          ),
+          config: const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
+          sessionContext: SdkSessionContext()
+            ..currentSession = const EixamSession.signed(
+              appId: 'app-demo',
+              externalUserId: 'external-123',
+              userHash: 'deadbeef',
+            ),
+        ),
+      );
+
+      await dataSource.cancelSos(deviceId: ' 16909060 ');
+
+      expect(capturedRequest.method, 'POST');
+      expect(
+        capturedRequest.url.toString(),
+        'https://api.example.test/v1/sdk/sos/cancel',
+      );
+      expect(capturedRequest.body, '{"deviceId":"16909060"}');
+    });
+
     test(
         'http resolve path posts to /v1/sdk/sos/resolve without a request body',
         () async {
@@ -8552,7 +8582,7 @@ class _FakeCancelSosRemoteDataSource implements SosRemoteDataSource {
   );
 
   @override
-  Future<SosIncidentDto?> cancelSos() async {
+  Future<SosIncidentDto?> cancelSos({String? deviceId}) async {
     cancelCallCount++;
     activeIncident = cancelResult;
     return cancelResult;

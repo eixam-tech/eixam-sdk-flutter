@@ -8,6 +8,7 @@ import 'package:flutter/widgets.dart';
 
 import '../data/datasources_local/preferred_ble_device_store.dart';
 import '../data/datasources_local/sdk_session_store.dart';
+import '../data/datasources_remote/sos_remote_data_source.dart';
 import '../data/repositories/in_memory_device_repository.dart';
 import '../data/repositories/api_sos_repository.dart';
 import '../data/repositories/mqtt_operational_sos_repository.dart';
@@ -400,12 +401,20 @@ class EixamConnectSdkImpl
         }
         final remoteRelaySnapshot = event.remoteRelaySosSnapshot;
         if (remoteRelaySnapshot != null) {
-          BleDebugRegistry.instance.recordEvent(
-            '[REMOTE_RELAY_SOS] observed '
-            'originatorNodeId=${remoteRelaySnapshot.originatorNodeId} '
-            'relayNodeId=${remoteRelaySnapshot.relayNodeId ?? "-"} '
-            'hasLocation=${remoteRelaySnapshot.location != null}',
-          );
+          if (remoteRelaySnapshot.kind == RemoteRelaySosKind.sos) {
+            BleDebugRegistry.instance.recordEvent(
+              '[REMOTE_RELAY_SOS] observed '
+              'originatorNodeId=${remoteRelaySnapshot.originatorNodeId} '
+              'relayNodeId=${remoteRelaySnapshot.relayNodeId ?? "-"} '
+              'hasLocation=${remoteRelaySnapshot.location != null}',
+            );
+          } else {
+            BleDebugRegistry.instance.recordEvent(
+              '[REMOTE_RELAY_SOS] remote_cancel_observed '
+              'originatorNodeId=${remoteRelaySnapshot.originatorNodeId} '
+              'relayNodeId=${remoteRelaySnapshot.relayNodeId ?? "-"}',
+            );
+          }
           _publishSdkEvent(RemoteRelaySosObservedEvent(remoteRelaySnapshot));
           unawaited(
             _handleRemoteRelaySosBackendHandoff(remoteRelaySnapshot),
@@ -3580,6 +3589,9 @@ class EixamConnectSdkImpl
     RemoteRelaySosSnapshot snapshot,
   ) async {
     if (snapshot.kind != RemoteRelaySosKind.sos) {
+      if (_isRemoteRelayCancelSnapshot(snapshot)) {
+        await _handleRemoteRelaySosCancelBackendHandoff(snapshot);
+      }
       return;
     }
 
@@ -3675,6 +3687,133 @@ class EixamConnectSdkImpl
         ),
       );
     }
+  }
+
+  bool _isRemoteRelayCancelSnapshot(RemoteRelaySosSnapshot snapshot) {
+    return snapshot.kind == RemoteRelaySosKind.cancel ||
+        snapshot.kind == RemoteRelaySosKind.clear;
+  }
+
+  Future<void> _handleRemoteRelaySosCancelBackendHandoff(
+    RemoteRelaySosSnapshot snapshot,
+  ) async {
+    final deviceId = snapshot.originatorNodeId.toString();
+    if (deviceId.trim().isEmpty) {
+      BleDebugRegistry.instance.recordEvent(
+        '[REMOTE_RELAY_SOS] remote_cancel_handoff_skipped '
+        'reason=missing_device_id '
+        'originatorNodeId=${snapshot.originatorNodeId}',
+      );
+      _publishRemoteRelaySosCancelHandoffResult(
+        snapshot: snapshot,
+        deviceId: deviceId,
+        status: RemoteRelaySosBackendHandoffStatus.skipped,
+        reason: 'missing_device_id',
+      );
+      return;
+    }
+
+    final dataSource = _remoteRelaySosCancelRemoteDataSource();
+    if (dataSource == null) {
+      BleDebugRegistry.instance.recordEvent(
+        '[REMOTE_RELAY_SOS] remote_cancel_handoff_skipped '
+        'reason=backend_transport_unavailable '
+        'originatorNodeId=${snapshot.originatorNodeId}',
+      );
+      _publishRemoteRelaySosCancelHandoffResult(
+        snapshot: snapshot,
+        deviceId: deviceId,
+        status: RemoteRelaySosBackendHandoffStatus.skipped,
+        reason: 'backend_transport_unavailable',
+      );
+      return;
+    }
+
+    BleDebugRegistry.instance.recordEvent(
+      '[REMOTE_RELAY_SOS] remote_cancel_handoff_start '
+      'originatorNodeId=${snapshot.originatorNodeId} '
+      'deviceId=$deviceId',
+    );
+
+    try {
+      await dataSource.cancelSos(deviceId: deviceId);
+      BleDebugRegistry.instance.recordEvent(
+        '[REMOTE_RELAY_SOS] remote_cancel_handoff_success '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'deviceId=$deviceId',
+      );
+      _publishRemoteRelaySosCancelHandoffResult(
+        snapshot: snapshot,
+        deviceId: deviceId,
+        status: RemoteRelaySosBackendHandoffStatus.submitted,
+      );
+    } catch (error) {
+      final reason = _remoteRelaySosCancelFailureReason(error);
+      final statusCode = error is SosHttpException ? error.statusCode : null;
+      BleDebugRegistry.instance.recordEvent(
+        '[REMOTE_RELAY_SOS] remote_cancel_handoff_failed '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'statusCode=${statusCode ?? "-"} '
+        'error=$error',
+      );
+      _publishRemoteRelaySosCancelHandoffResult(
+        snapshot: snapshot,
+        deviceId: deviceId,
+        status: RemoteRelaySosBackendHandoffStatus.failed,
+        reason: reason,
+        errorMessage: error.toString(),
+      );
+    }
+  }
+
+  SosRemoteDataSource? _remoteRelaySosCancelRemoteDataSource() {
+    final repository = sosRepository;
+    if (repository is ApiSosRepository) {
+      return repository.remoteDataSource;
+    }
+    if (repository is MqttOperationalSosRepository) {
+      return repository.cancelRemoteDataSource ?? repository.remoteDataSource;
+    }
+    return null;
+  }
+
+  String _remoteRelaySosCancelFailureReason(Object error) {
+    if (error is SosHttpException) {
+      return switch (error.statusCode) {
+        400 => 'invalid_request',
+        401 => 'missing_or_invalid_sdk_identity',
+        409 => 'conflict_not_associated',
+        422 => 'unknown_device',
+        _ => 'backend_error',
+      };
+    }
+    if (error is AuthException) {
+      return 'missing_or_invalid_sdk_identity';
+    }
+    if (error is NetworkException) {
+      return 'network_error';
+    }
+    return 'backend_error';
+  }
+
+  void _publishRemoteRelaySosCancelHandoffResult({
+    required RemoteRelaySosSnapshot snapshot,
+    required String deviceId,
+    required RemoteRelaySosBackendHandoffStatus status,
+    String? reason,
+    String? errorMessage,
+  }) {
+    _publishSdkEvent(
+      RemoteRelaySosCancelHandoffResultEvent(
+        originatorNodeId: snapshot.originatorNodeId,
+        relayNodeId: snapshot.relayNodeId,
+        deviceId: deviceId,
+        status: status,
+        reason: reason,
+        errorMessage: errorMessage,
+        receivedAt: snapshot.receivedAt,
+      ),
+    );
   }
 
   Future<void> _submitRemoteRelaySosToBackend({
@@ -3773,7 +3912,8 @@ class EixamConnectSdkImpl
     return event is SOSTriggeredEvent ||
         event is SOSCancelledEvent ||
         event is RemoteRelaySosObservedEvent ||
-        event is RemoteRelaySosBackendHandoffResultEvent;
+        event is RemoteRelaySosBackendHandoffResultEvent ||
+        event is RemoteRelaySosCancelHandoffResultEvent;
   }
 
   bool _isBackendSosChannelAvailable() {

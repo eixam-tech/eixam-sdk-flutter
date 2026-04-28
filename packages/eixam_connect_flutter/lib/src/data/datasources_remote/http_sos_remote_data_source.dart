@@ -63,14 +63,19 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
   }
 
   @override
-  Future<SosIncidentDto?> cancelSos() async {
+  Future<SosIncidentDto?> cancelSos({String? deviceId}) async {
+    final normalizedDeviceId = deviceId?.trim();
+    final body = normalizedDeviceId == null || normalizedDeviceId.isEmpty
+        ? null
+        : jsonEncode({'deviceId': normalizedDeviceId});
     _logRequest(
       action: 'cancel',
       path: '/v1/sdk/sos/cancel',
-      body: null,
+      body: body,
     );
     final response = await transport.post(
       '/v1/sdk/sos/cancel',
+      body: body,
     );
     _logResponse(
         action: 'cancel', statusCode: response.statusCode, body: response.body);
@@ -78,12 +83,20 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     if (response.statusCode < 200 || response.statusCode >= 300) {
       _logError(
         action: 'cancel',
-        code: 'E_HTTP_SOS_CANCEL_FAILED',
+        code: _cancelErrorCodeForStatus(response.statusCode),
         message: response.body,
       );
-      throw SosException('E_HTTP_SOS_CANCEL_FAILED', response.body);
+      throw SosHttpException(
+        _cancelErrorCodeForStatus(response.statusCode),
+        response.body,
+        statusCode: response.statusCode,
+      );
     }
 
+    if (response.body.trim().isEmpty) {
+      _logParsed(action: 'cancel', result: 'incident=null');
+      return null;
+    }
     final payload = jsonDecode(response.body) as Map<String, dynamic>;
     final incident = payload['incident'];
     if (incident == null) {
@@ -105,6 +118,16 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     _logParsed(
         action: 'cancel', result: 'incidentId=${dto.id} state=${dto.state}');
     return dto;
+  }
+
+  String _cancelErrorCodeForStatus(int statusCode) {
+    return switch (statusCode) {
+      400 => 'E_HTTP_SOS_CANCEL_INVALID_REQUEST',
+      401 => 'E_HTTP_SOS_CANCEL_UNAUTHORIZED',
+      409 => 'E_HTTP_SOS_CANCEL_CONFLICT',
+      422 => 'E_HTTP_SOS_CANCEL_UNKNOWN_DEVICE',
+      _ => 'E_HTTP_SOS_CANCEL_FAILED',
+    };
   }
 
   @override

@@ -20,6 +20,16 @@ class SosException extends EixamSdkException {
   const SosException(super.code, super.message);
 }
 
+class SosHttpException extends SosException {
+  final int statusCode;
+
+  const SosHttpException(
+    super.code,
+    super.message, {
+    required this.statusCode,
+  });
+}
+
 class TrackingException extends EixamSdkException {
   const TrackingException(super.code, super.message);
 }
