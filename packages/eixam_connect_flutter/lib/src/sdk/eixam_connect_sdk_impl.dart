@@ -28,6 +28,7 @@ import 'ble_operational_runtime_bridge.dart';
 import 'ble_auto_reconnect_coordinator.dart';
 import 'ble_sos_notification_payload.dart';
 import 'guided_rescue_runtime.dart';
+import 'operational_telemetry_coordinator.dart';
 import 'operational_realtime_client.dart';
 import 'protection_mode_controller.dart';
 import 'protection_platform_adapter.dart';
@@ -148,6 +149,7 @@ class EixamConnectSdkImpl
   late final BacklogSyncController _backlogSyncController;
   late final BleOperationalRuntimeBridge _bleOperationalRuntimeBridge;
   late final ProtectionModeController _protectionModeController;
+  late final OperationalTelemetryCoordinator _operationalTelemetryCoordinator;
   final Duration _appTriggeredSosBridgeWindow;
 
   static const String _openAppActionId = 'open_app';
@@ -225,6 +227,12 @@ class EixamConnectSdkImpl
       ),
       onBleOwnershipChanged: _handleProtectionBleOwnershipChanged,
     );
+    _operationalTelemetryCoordinator = OperationalTelemetryCoordinator(
+      trackingRepository: trackingRepository,
+      sosStateStream: _publicSosStateController.stream,
+      sessionProvider: () => _session,
+      publishTelemetry: publishTelemetry,
+    );
     _bindSosStreams();
   }
 
@@ -259,6 +267,7 @@ class EixamConnectSdkImpl
     _bindOperationalDiagnostics();
     _bleOperationalRuntimeBridge.start();
     _emitOperationalDiagnostics();
+    _operationalTelemetryCoordinator.start(initialSosState: _publicSosState);
     await realtimeClient.connect();
     await _resumeDeathManMonitoringIfNeeded();
     await _bleAutoReconnectCoordinator.tryAutoConnectOnStartup();
@@ -536,6 +545,7 @@ class EixamConnectSdkImpl
     _publicSosState = await sosRepository.getSosState();
     await sessionStore?.save(_session!);
     _emitOperationalDiagnostics();
+    _operationalTelemetryCoordinator.start(initialSosState: _publicSosState);
     _scheduleRegisteredDeviceAutoSync(
       trigger: 'set_session',
       status: _lastDeviceStatus,
@@ -571,6 +581,7 @@ class EixamConnectSdkImpl
     _publicSosState = await sosRepository.getSosState();
     await sessionStore?.save(refreshed);
     _emitOperationalDiagnostics();
+    _operationalTelemetryCoordinator.start(initialSosState: _publicSosState);
     _scheduleRegisteredDeviceAutoSync(
       trigger: 'refresh_identity',
       status: _lastDeviceStatus,
@@ -625,6 +636,7 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> clearSession() async {
+    await _operationalTelemetryCoordinator.stop();
     _bleOperationalRuntimeBridge.clearPendingOperationalItems();
     _session = null;
     _lastSosRehydrationNote = null;
@@ -4346,6 +4358,7 @@ class EixamConnectSdkImpl
     await _bleOperationalRuntimeBridge.dispose();
     await _backlogSyncController.dispose();
     await _protectionModeController.dispose();
+    await _operationalTelemetryCoordinator.stop();
     await deviceSosController.dispose();
     await realtimeClient.disconnect();
     await disposeCallback?.call();
