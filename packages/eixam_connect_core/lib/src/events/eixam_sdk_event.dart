@@ -45,3 +45,23 @@ class RemoteRelaySosObservedEvent extends EixamSdkEvent {
   final RemoteRelaySosSnapshot snapshot;
   RemoteRelaySosObservedEvent(this.snapshot);
 }
+
+enum RemoteRelaySosBackendHandoffStatus { submitted, skipped, failed }
+
+class RemoteRelaySosBackendHandoffResultEvent extends EixamSdkEvent {
+  final RemoteRelaySosSnapshot snapshot;
+  final RemoteRelaySosBackendHandoffStatus status;
+  final String? reason;
+  final String? errorMessage;
+  final bool ackRelaySent;
+  final String? ackRelayErrorMessage;
+
+  RemoteRelaySosBackendHandoffResultEvent({
+    required this.snapshot,
+    required this.status,
+    this.reason,
+    this.errorMessage,
+    this.ackRelaySent = false,
+    this.ackRelayErrorMessage,
+  });
+}

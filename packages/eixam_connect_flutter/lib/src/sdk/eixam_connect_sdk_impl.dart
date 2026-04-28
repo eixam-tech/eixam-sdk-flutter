@@ -16,6 +16,7 @@ import '../device/ble_incoming_event.dart';
 import '../device/device_sos_controller.dart';
 import '../device/ble_debug_registry.dart';
 import '../device/eixam_ble_command.dart';
+import '../device/eixam_ble_protocol.dart';
 import '../device/eixam_sos_event_packet.dart';
 import '../device/eixam_sos_packet.dart';
 import '../data/datasources_remote/sdk_session_context.dart';
@@ -127,6 +128,8 @@ class EixamConnectSdkImpl
   DeviceTelRelayRx? _lastTelRelayRx;
   final Map<String, _ObservedRelaySosContext> _observedRelaySosBySignature =
       <String, _ObservedRelaySosContext>{};
+  final Map<String, DateTime> _remoteRelaySosBackendHandoffBySignature =
+      <String, DateTime>{};
   final Map<String, _SosClosureIntent>
       _deviceOriginatedClosureIntentByCycleKey = <String, _SosClosureIntent>{};
   final Map<String, _SosClosureIntent>
@@ -397,11 +400,16 @@ class EixamConnectSdkImpl
         }
         final remoteRelaySnapshot = event.remoteRelaySosSnapshot;
         if (remoteRelaySnapshot != null) {
-          // Safety-critical distinction: a relayed SOS belongs to the
-          // originator node, not to the connected BLE tag. Surface a typed
-          // event to the host until the backend contract for originator/relay
-          // metadata is explicit enough to automate this path end-to-end.
+          BleDebugRegistry.instance.recordEvent(
+            '[REMOTE_RELAY_SOS] observed '
+            'originatorNodeId=${remoteRelaySnapshot.originatorNodeId} '
+            'relayNodeId=${remoteRelaySnapshot.relayNodeId ?? "-"} '
+            'hasLocation=${remoteRelaySnapshot.location != null}',
+          );
           _publishSdkEvent(RemoteRelaySosObservedEvent(remoteRelaySnapshot));
+          unawaited(
+            _handleRemoteRelaySosBackendHandoff(remoteRelaySnapshot),
+          );
         }
         final sosPacket = event.sosPacket;
         final remoteDeviceId = sosPacket?.remoteDeviceId?.trim();
@@ -3568,6 +3576,192 @@ class EixamConnectSdkImpl
     );
   }
 
+  Future<void> _handleRemoteRelaySosBackendHandoff(
+    RemoteRelaySosSnapshot snapshot,
+  ) async {
+    if (snapshot.kind != RemoteRelaySosKind.sos) {
+      return;
+    }
+
+    final signature = _remoteRelaySosBackendHandoffSignature(snapshot);
+    final now = DateTime.now().toUtc();
+    _remoteRelaySosBackendHandoffBySignature.removeWhere(
+      (_, seenAt) => now.difference(seenAt) > const Duration(minutes: 5),
+    );
+    if (_remoteRelaySosBackendHandoffBySignature.containsKey(signature)) {
+      return;
+    }
+    _remoteRelaySosBackendHandoffBySignature[signature] = now;
+
+    final location = snapshot.location;
+    if (!_hasValidRemoteRelayLocation(location)) {
+      BleDebugRegistry.instance.recordEvent(
+        '[REMOTE_RELAY_SOS] backend_handoff_skipped '
+        'reason=missing_remote_position '
+        'originatorNodeId=${snapshot.originatorNodeId}',
+      );
+      _publishSdkEvent(
+        RemoteRelaySosBackendHandoffResultEvent(
+          snapshot: snapshot,
+          status: RemoteRelaySosBackendHandoffStatus.skipped,
+          reason: 'missing_remote_position',
+        ),
+      );
+      return;
+    }
+
+    final deviceId = snapshot.originatorNodeId.toString();
+    final positionSnapshot = _remoteRelayBackendPosition(
+      location: location!,
+      receivedAt: snapshot.receivedAt,
+    );
+    BleDebugRegistry.instance.recordEvent(
+      '[REMOTE_RELAY_SOS] backend_handoff_start '
+      'originatorNodeId=${snapshot.originatorNodeId} '
+      'deviceId=$deviceId',
+    );
+
+    try {
+      await _submitRemoteRelaySosToBackend(
+        snapshot: snapshot,
+        positionSnapshot: positionSnapshot,
+        deviceId: deviceId,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        '[REMOTE_RELAY_SOS] backend_handoff_success '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'deviceId=$deviceId',
+      );
+
+      var ackRelaySent = false;
+      String? ackRelayErrorMessage;
+      try {
+        await deviceSosController.sendAckRelay(
+          nodeId: snapshot.originatorNodeId,
+        );
+        ackRelaySent = true;
+        BleDebugRegistry.instance.recordEvent(
+          '[REMOTE_RELAY_SOS] ack_relay_sent '
+          'originatorNodeId=${snapshot.originatorNodeId}',
+        );
+      } catch (error) {
+        ackRelayErrorMessage = error.toString();
+        BleDebugRegistry.instance.recordEvent(
+          '[REMOTE_RELAY_SOS] ack_relay_failed '
+          'originatorNodeId=${snapshot.originatorNodeId} '
+          'error=$error',
+        );
+      }
+
+      _publishSdkEvent(
+        RemoteRelaySosBackendHandoffResultEvent(
+          snapshot: snapshot,
+          status: RemoteRelaySosBackendHandoffStatus.submitted,
+          ackRelaySent: ackRelaySent,
+          ackRelayErrorMessage: ackRelayErrorMessage,
+        ),
+      );
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        '[REMOTE_RELAY_SOS] backend_handoff_failed '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'error=$error',
+      );
+      _publishSdkEvent(
+        RemoteRelaySosBackendHandoffResultEvent(
+          snapshot: snapshot,
+          status: RemoteRelaySosBackendHandoffStatus.failed,
+          errorMessage: error.toString(),
+        ),
+      );
+    }
+  }
+
+  Future<void> _submitRemoteRelaySosToBackend({
+    required RemoteRelaySosSnapshot snapshot,
+    required TrackingPosition positionSnapshot,
+    required String deviceId,
+  }) async {
+    final operationalClient = _remoteRelayOperationalRealtimeClient();
+    if (operationalClient != null) {
+      await operationalClient.publishOperationalSos(
+        MqttOperationalSosRequest(
+          timestamp: snapshot.receivedAt.toUtc(),
+          positionSnapshot: positionSnapshot,
+          deviceId: deviceId,
+        ),
+      );
+      return;
+    }
+
+    final repository = sosRepository;
+    if (repository is ApiSosRepository) {
+      await repository.remoteDataSource.triggerSos(
+        triggerSource: 'remote_lora_relay',
+        positionSnapshot: positionSnapshot,
+        deviceId: deviceId,
+      );
+      return;
+    }
+
+    throw const SosException(
+      'E_REMOTE_RELAY_SOS_BACKEND_TRANSPORT_UNAVAILABLE',
+      'No backend SOS transport is available for remote relay SOS handoff.',
+    );
+  }
+
+  OperationalRealtimeClient? _remoteRelayOperationalRealtimeClient() {
+    final client = realtimeClient;
+    if (client is OperationalRealtimeClient) {
+      return client;
+    }
+    final repository = sosRepository;
+    if (repository is MqttOperationalSosRepository) {
+      return repository.realtimeClient;
+    }
+    return null;
+  }
+
+  bool _hasValidRemoteRelayLocation(TrackingPosition? location) {
+    if (location == null) {
+      return false;
+    }
+    return location.latitude.isFinite &&
+        location.latitude >= -90 &&
+        location.latitude <= 90 &&
+        location.longitude.isFinite &&
+        location.longitude >= -180 &&
+        location.longitude <= 180 &&
+        !(location.latitude == 0 && location.longitude == 0);
+  }
+
+  TrackingPosition _remoteRelayBackendPosition({
+    required TrackingPosition location,
+    required DateTime receivedAt,
+  }) {
+    return TrackingPosition(
+      latitude: location.latitude,
+      longitude: location.longitude,
+      altitude: location.altitude,
+      accuracy: location.accuracy,
+      speed: location.speed,
+      heading: location.heading,
+      source: location.source,
+      timestamp: receivedAt.toUtc(),
+    );
+  }
+
+  String _remoteRelaySosBackendHandoffSignature(
+    RemoteRelaySosSnapshot snapshot,
+  ) {
+    final rawPayloadHex = EixamBleProtocol.hex(snapshot.rawPayload);
+    final payloadToken = snapshot.payloadHex ?? rawPayloadHex;
+    return '${snapshot.originatorNodeId}:'
+        '${snapshot.sosType}:'
+        '${snapshot.receivedAt.toUtc().microsecondsSinceEpoch}:'
+        '$payloadToken';
+  }
+
   void _publishSdkEvent(EixamSdkEvent event) {
     if (_isSosSdkEvent(event)) {
       _lastSosEvent = event;
@@ -3578,7 +3772,8 @@ class EixamConnectSdkImpl
   bool _isSosSdkEvent(EixamSdkEvent event) {
     return event is SOSTriggeredEvent ||
         event is SOSCancelledEvent ||
-        event is RemoteRelaySosObservedEvent;
+        event is RemoteRelaySosObservedEvent ||
+        event is RemoteRelaySosBackendHandoffResultEvent;
   }
 
   bool _isBackendSosChannelAvailable() {

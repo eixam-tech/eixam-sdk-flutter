@@ -2473,14 +2473,22 @@ void main() {
             classification: const BleIncomingPayloadClassification(
               kind: BleIncomingPayloadKind.remoteRelaySos,
             ),
-            remoteRelaySosSnapshot: const RemoteRelaySosSnapshot(
+            remoteRelaySosSnapshot: RemoteRelaySosSnapshot(
               kind: RemoteRelaySosKind.sos,
               originatorNodeId: 0x12345678,
               relayNodeId: 0x1234,
               source: RemoteRelaySosSource.sosNotify,
               sosType: 1,
               receivedAt: DateTime.utc(2026, 4, 27, 10),
-              rawPayload: <int>[0x78, 0x56, 0x34, 0x12, 0x00, 0x40, 0x09],
+              rawPayload: const <int>[
+                0x78,
+                0x56,
+                0x34,
+                0x12,
+                0x00,
+                0x40,
+                0x09,
+              ],
               payloadHex: '78563412004009',
             ),
           ),
