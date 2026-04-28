@@ -7288,7 +7288,7 @@ void main() {
           source: DeviceSosTransitionSource.device,
         );
         await Future<void>.delayed(Duration.zero);
-        expect(await localSdk.getSosState(), isNot(SosState.arming));
+        expect(await localSdk.getSosState(), SosState.cancelled);
 
         localDeviceSosController.handleIncomingSosPacket(
           _deviceOriginPacket(),
@@ -7296,7 +7296,7 @@ void main() {
         );
         await Future<void>.delayed(const Duration(milliseconds: 10));
 
-        expect(await localSdk.getSosState(), isNot(SosState.arming));
+        expect(await localSdk.getSosState(), SosState.cancelled);
         expect(localNotificationsRepository.notifications, hasLength(1));
       } finally {
         await localSdk.dispose();
@@ -7349,7 +7349,7 @@ void main() {
           source: DeviceSosTransitionSource.device,
         );
         await Future<void>.delayed(Duration.zero);
-        expect(await localSdk.getSosState(), isNot(SosState.arming));
+        expect(await localSdk.getSosState(), SosState.resolved);
 
         localDeviceSosController.handleIncomingSosPacket(
           _deviceOriginPacket(),
@@ -7357,7 +7357,275 @@ void main() {
         );
         await Future<void>.delayed(const Duration(milliseconds: 10));
 
-        expect(await localSdk.getSosState(), isNot(SosState.arming));
+        expect(await localSdk.getSosState(), SosState.resolved);
+        expect(localNotificationsRepository.notifications, hasLength(1));
+      } finally {
+        await localSdk.dispose();
+      }
+    });
+
+    test('app-started SOS closed by device cancel emits cancelled publicly',
+        () async {
+      final states = <SosState>[];
+      final subscription = sdk.watchSosState().listen(states.add);
+      try {
+        deviceRepository.emitStatus(
+          buildDeviceStatus(
+            deviceId: 'ble-app-sos-1',
+            canonicalHardwareId: 'CF:82:10:10:10:21',
+            paired: true,
+            connected: true,
+            activated: true,
+          ),
+        );
+        await sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await deviceSosController.attach(commandWriter: (command) async {
+          if (command.label == 'SOS TRIGGER APP') {
+            Future<void>.delayed(Duration.zero, () {
+              deviceSosController.handleIncomingSosPacket(
+                _deviceOriginActivePacket(),
+                source: DeviceSosTransitionSource.device,
+              );
+            });
+          }
+        });
+
+        await sdk.triggerSos(const SosTriggerPayload(message: 'Need help'));
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        deviceSosController.handleIncomingSosEventPacket(
+          EixamSosEventPacket.tryParse(
+            <int>[0xE1, 0x01, 0x34, 0x12, 0x00, 0x00],
+          )!,
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(await sdk.getSosState(), SosState.cancelled);
+        expect(states, contains(SosState.cancelled));
+        expect(states.last, isNot(SosState.idle));
+      } finally {
+        await subscription.cancel();
+      }
+    });
+
+    test('device-started PRE-SOS closed by cancel emits cancelled publicly',
+        () async {
+      final states = <SosState>[];
+      final subscription = sdk.watchSosState().listen(states.add);
+      try {
+        permissionsRepository.permissionState = const PermissionState(
+          location: SdkPermissionStatus.granted,
+        );
+        await sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+
+        deviceSosController.handleIncomingSosPacket(
+          _deviceOriginPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        deviceSosController.handleIncomingSosEventPacket(
+          EixamSosEventPacket.tryParse(
+            <int>[0xE1, 0x01, 0x34, 0x12, 0x00, 0x00],
+          )!,
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(await sdk.getPreSosStatus(), isNull);
+        expect(await sdk.getSosState(), SosState.cancelled);
+        expect(states, contains(SosState.cancelled));
+        expect(states.last, isNot(SosState.idle));
+      } finally {
+        await subscription.cancel();
+      }
+    });
+
+    test('device resolve event emits resolved publicly', () async {
+      final states = <SosState>[];
+      final subscription = sdk.watchSosState().listen(states.add);
+      try {
+        permissionsRepository.permissionState = const PermissionState(
+          location: SdkPermissionStatus.granted,
+        );
+        await sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+
+        deviceSosController.handleIncomingSosPacket(
+          _deviceOriginActivePacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        deviceSosController.handleIncomingSosEventPacket(
+          EixamSosEventPacket.tryParse(
+            <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
+          )!,
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(await sdk.getSosState(), SosState.resolved);
+        expect(states, contains(SosState.resolved));
+        expect(states.last, isNot(SosState.idle));
+      } finally {
+        await subscription.cancel();
+      }
+    });
+
+    test('same node device SOS notification is suppressed as self node',
+        () async {
+      final localNotificationsRepository = FakeNotificationsRepository();
+      final localDeviceSosController = DeviceSosController();
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: localNotificationsRepository,
+        realtimeClient: realtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        deviceRepository.emitStatus(
+          buildDeviceStatus(
+            deviceId: 'ble-self-node-1',
+            canonicalHardwareId: 'CF:82:10:10:10:22',
+            paired: true,
+            connected: true,
+            activated: true,
+          ),
+        );
+        await localSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await localDeviceSosController.attach(commandWriter: (command) async {
+          if (command.label == 'SOS TRIGGER APP') {
+            Future<void>.delayed(Duration.zero, () {
+              localDeviceSosController.handleIncomingSosPacket(
+                _deviceOriginActivePacket(),
+                source: DeviceSosTransitionSource.device,
+              );
+            });
+          }
+        });
+
+        await localSdk.triggerSos(const SosTriggerPayload());
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        expect(localNotificationsRepository.notifications, isEmpty);
+      } finally {
+        await localSdk.dispose();
+      }
+    });
+
+    test('different node device SOS notification is emitted as external node',
+        () async {
+      final localNotificationsRepository = FakeNotificationsRepository();
+      final localDeviceSosController = DeviceSosController();
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: localNotificationsRepository,
+        realtimeClient: realtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        deviceRepository.emitStatus(
+          buildDeviceStatus(
+            deviceId: 'ble-self-node-2',
+            canonicalHardwareId: 'CF:82:10:10:10:23',
+            paired: true,
+            connected: true,
+            activated: true,
+          ),
+        );
+        await localSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await localDeviceSosController.attach(commandWriter: (command) async {
+          if (command.label == 'SOS TRIGGER APP') {
+            Future<void>.delayed(Duration.zero, () {
+              localDeviceSosController.handleIncomingSosPacket(
+                _deviceOriginActivePacket(),
+                source: DeviceSosTransitionSource.device,
+              );
+            });
+          }
+        });
+
+        await localSdk.triggerSos(const SosTriggerPayload());
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        localDeviceSosController.handleIncomingSosPacket(
+          _deviceOriginActivePacketForNode(0x5678),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(localNotificationsRepository.notifications, hasLength(1));
+        expect(
+          localNotificationsRepository.notifications.single.title,
+          'SOS activated',
+        );
+      } finally {
+        await localSdk.dispose();
+      }
+    });
+
+    test(
+        'missing local node keeps conservative external SOS notification behavior',
+        () async {
+      final localNotificationsRepository = FakeNotificationsRepository();
+      final localDeviceSosController = DeviceSosController();
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: localNotificationsRepository,
+        realtimeClient: realtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        await localSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+
+        localDeviceSosController.handleIncomingSosPacket(
+          _deviceOriginActivePacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(Duration.zero);
+
         expect(localNotificationsRepository.notifications, hasLength(1));
       } finally {
         await localSdk.dispose();
@@ -7915,7 +8183,7 @@ void main() {
         await Future<void>.delayed(Duration.zero);
 
         expect(await localSdk.getPreSosStatus(), isNull);
-        expect(await localSdk.getSosState(), SosState.idle);
+        expect(await localSdk.getSosState(), SosState.resolved);
         expect(localNotificationsRepository.clearSosNotificationsCallCount, 1);
       } finally {
         await localSdk.dispose();
@@ -8714,11 +8982,15 @@ EixamSosPacket _deviceOriginPacket() {
 }
 
 EixamSosPacket _deviceOriginActivePacket() {
+  return _deviceOriginActivePacketForNode(0x1234);
+}
+
+EixamSosPacket _deviceOriginActivePacketForNode(int nodeId) {
   return EixamSosPacket.tryParse(<int>[
-    0x34,
-    0x12,
-    0x00,
-    0x00,
+    nodeId & 0xFF,
+    (nodeId >> 8) & 0xFF,
+    (nodeId >> 16) & 0xFF,
+    (nodeId >> 24) & 0xFF,
     0x00,
     0x00,
     0x00,

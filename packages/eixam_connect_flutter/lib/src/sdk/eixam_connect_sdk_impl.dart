@@ -125,6 +125,7 @@ class EixamConnectSdkImpl
   SosDeliveryChannel? _lastPublicSosDeliveryChannel;
   _AppTriggeredSosBridge? _pendingAppTriggeredSosBridge;
   _PreSosSession? _preSosSession;
+  int? _knownLocalDeviceNodeId;
   SosDeliveryChannel? _lastPublishedCurrentSosCapabilityChannel;
   DeviceTelRelayRx? _lastTelRelayRx;
   final Map<String, _ObservedRelaySosContext> _observedRelaySosBySignature =
@@ -1136,8 +1137,7 @@ class EixamConnectSdkImpl
     } else if (status.previousState == DeviceSosState.preConfirm) {
       _clearPreSosSession(
         reason: 'device_left_pre_confirm:${status.state.name}',
-        emitIdleState: status.state == DeviceSosState.inactive ||
-            status.state == DeviceSosState.resolved,
+        emitIdleState: false,
       );
     }
     final isCorrelatedAppTriggeredStatus =
@@ -1162,6 +1162,9 @@ class EixamConnectSdkImpl
     final isAppOriginatedStatus =
         status.triggerOrigin == DeviceSosTransitionSource.app;
     if (isAppOriginatedStatus || isCorrelatedAppTriggeredStatus) {
+      if (status.nodeId != null) {
+        _knownLocalDeviceNodeId = status.nodeId;
+      }
       BleDebugRegistry.instance.recordEvent(
         isCorrelatedAppTriggeredStatus
             ? 'App-triggered SOS correlation preserved -> incidentId=${_pendingAppTriggeredSosBridge?.incidentId ?? "-"} nodeId=${_formatNodeId(status.nodeId)} state=${status.state.name}'
@@ -1170,6 +1173,12 @@ class EixamConnectSdkImpl
     } else {
       await _synchronizeDeviceOriginatedBackendLifecycle(status);
     }
+
+    await _rehydrateDeviceSosPublicState(
+      trigger: 'device_sos_status:${status.state.name}',
+      deviceStatus: status,
+      emitResolvedState: true,
+    );
 
     if (_isSosCycleClosed(status.state)) {
       final closedCycleKey = _activeDeviceSosCycleKey;
@@ -1214,6 +1223,13 @@ class EixamConnectSdkImpl
       return;
     }
 
+    if (_shouldSuppressExternalSosNotificationForSelfNode(status)) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS notification skipped -> reason=self_node nodeId=${_formatNodeId(status.nodeId)}',
+      );
+      return;
+    }
+
     final previousActiveCycleKey = _activeDeviceSosCycleKey;
     if (previousActiveCycleKey == null) {
       _activeDeviceSosCycleKey = cycleKey;
@@ -1254,7 +1270,7 @@ class EixamConnectSdkImpl
     );
 
     BleDebugRegistry.instance.recordEvent(
-      'SOS notification emitted -> cycleKey=$cycleKey source=${status.transitionSource.name}',
+      'SOS notification emitted -> reason=external_node nodeId=${_formatNodeId(status.nodeId)} cycleKey=$cycleKey source=${status.transitionSource.name}',
     );
 
     try {
@@ -1282,6 +1298,23 @@ class EixamConnectSdkImpl
 
   bool _isSosCycleClosed(DeviceSosState state) {
     return state == DeviceSosState.inactive || state == DeviceSosState.resolved;
+  }
+
+  bool _shouldSuppressExternalSosNotificationForSelfNode(
+    DeviceSosStatus status,
+  ) {
+    final nodeId = status.nodeId;
+    if (nodeId == null) {
+      return false;
+    }
+    if (_knownLocalDeviceNodeId == nodeId) {
+      return true;
+    }
+    final bridge = _pendingAppTriggeredSosBridge;
+    return bridge != null &&
+        bridge.nodeId == nodeId &&
+        (status.triggerOrigin == DeviceSosTransitionSource.app ||
+            _isCorrelatedAppTriggeredSosStatus(status));
   }
 
   String? _deriveDeviceSosCycleKey(DeviceSosStatus status) {
@@ -2238,6 +2271,9 @@ class EixamConnectSdkImpl
       matchedAt: now,
       expiresAt: now.add(_appTriggeredSosBridgeWindow),
     );
+    if (statusNodeId != null) {
+      _knownLocalDeviceNodeId = statusNodeId;
+    }
     BleDebugRegistry.instance.recordEvent(
       'App-triggered SOS bridge refreshed -> incidentId=${bridge.incidentId} nodeId=${_formatNodeId(statusNodeId ?? bridge.nodeId)} state=${status.state.name}',
     );
@@ -2478,11 +2514,18 @@ class EixamConnectSdkImpl
         !DateTime.now().isBefore(status.expectedActivationAt!);
     SosState? chosenPublicState;
 
-    if (status.state == DeviceSosState.preConfirm && !deviceCountdownExpired) {
+    if (session != null &&
+        !sessionExpired &&
+        !session.mirroredOnDevice &&
+        !status.derivedFromBlePacket) {
+      chosenPublicState = SosState.arming;
+    } else if (status.state == DeviceSosState.preConfirm &&
+        !deviceCountdownExpired) {
       _syncPreSosSessionFromDeviceStatus(status);
       chosenPublicState = SosState.arming;
     } else {
       if (session != null &&
+          (session.mirroredOnDevice || status.derivedFromBlePacket) &&
           (status.state != DeviceSosState.preConfirm || sessionExpired)) {
         _clearPreSosSession(
           reason: 'device_rehydrate:${status.state.name}',
@@ -2506,6 +2549,10 @@ class EixamConnectSdkImpl
   }
 
   SosState? _mapDeviceStatusToPublicSosState(DeviceSosStatus status) {
+    final terminalState = _mapTerminalDeviceStatusToPublicSosState(status);
+    if (terminalState != null) {
+      return terminalState;
+    }
     return switch (status.state) {
       DeviceSosState.preConfirm => SosState.arming,
       DeviceSosState.active => SosState.sent,
@@ -2515,6 +2562,75 @@ class EixamConnectSdkImpl
       DeviceSosState.unknown =>
         null,
     };
+  }
+
+  SosState? _mapTerminalDeviceStatusToPublicSosState(DeviceSosStatus status) {
+    if (status.state != DeviceSosState.inactive &&
+        status.state != DeviceSosState.resolved) {
+      return null;
+    }
+    if (!_isBleTerminalSosEventStatus(status)) {
+      return null;
+    }
+    if (status.triggerOrigin == DeviceSosTransitionSource.app &&
+        status.previousState == DeviceSosState.preConfirm) {
+      return null;
+    }
+    final eventBytes = _parseHexBytes(status.lastPacketHex);
+    if (eventBytes == null || eventBytes.length < 2) {
+      return status.state == DeviceSosState.resolved
+          ? SosState.resolved
+          : SosState.cancelled;
+    }
+    final opcode = eventBytes[0];
+    final subcode = eventBytes[1];
+    if (opcode == EixamBleProtocol.sosEventUserDeactivatedOpcode) {
+      return subcode == 0x02 ? SosState.resolved : SosState.cancelled;
+    }
+    if (opcode == EixamBleProtocol.sosEventAppCancelAckOpcode) {
+      return subcode == 0x02 || subcode == 0x03
+          ? SosState.resolved
+          : SosState.cancelled;
+    }
+    return status.state == DeviceSosState.resolved
+        ? SosState.resolved
+        : SosState.cancelled;
+  }
+
+  bool _isBleTerminalSosEventStatus(DeviceSosStatus status) {
+    if (!status.derivedFromBlePacket) {
+      return false;
+    }
+    final opcode = status.lastOpcode;
+    if (opcode == EixamBleProtocol.sosEventUserDeactivatedOpcode ||
+        opcode == EixamBleProtocol.sosEventAppCancelAckOpcode) {
+      return true;
+    }
+    final eventBytes = _parseHexBytes(status.lastPacketHex);
+    if (eventBytes == null || eventBytes.isEmpty) {
+      return false;
+    }
+    return eventBytes.first == EixamBleProtocol.sosEventUserDeactivatedOpcode ||
+        eventBytes.first == EixamBleProtocol.sosEventAppCancelAckOpcode;
+  }
+
+  List<int>? _parseHexBytes(String? hex) {
+    if (hex == null) {
+      return null;
+    }
+    final normalized = hex.replaceAll(RegExp(r'\s+'), '');
+    if (normalized.isEmpty || normalized.length.isOdd) {
+      return null;
+    }
+    final bytes = <int>[];
+    for (var i = 0; i < normalized.length; i += 2) {
+      final value = int.tryParse(normalized.substring(i, i + 2), radix: 16);
+      if (value == null) {
+        return null;
+      }
+      bytes.add(value);
+    }
+    return bytes;
   }
 
   SosIncident? _buildDeviceRuntimePublicSosIncident(DeviceSosStatus status) {
@@ -2741,7 +2857,7 @@ class EixamConnectSdkImpl
         deviceId: await _resolveOperationalSosDeviceId(status),
         relayContext: _relayContextFrom(status),
         summary:
-            'device_runtime state=${status.state.name} origin=${status.triggerOrigin.name} cycle=${cycleKey}',
+            'device_runtime state=${status.state.name} origin=${status.triggerOrigin.name} cycle=$cycleKey',
       );
       if (created) {
         final createdIncident = await sosRepository.getCurrentIncident();
