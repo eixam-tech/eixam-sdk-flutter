@@ -70,6 +70,11 @@ abstract class EixamConnectSdk {
 
   Future<SdkOperationalDiagnostics> getOperationalDiagnostics();
   Stream<SdkOperationalDiagnostics> watchOperationalDiagnostics();
+  Future<void> enableBackgroundTelemetry({
+    String? notificationTitle,
+    String? notificationBody,
+  });
+  Future<void> disableBackgroundTelemetry();
   Future<ProtectionReadinessReport> evaluateProtectionReadiness();
   Future<EnterProtectionModeResult> enterProtectionMode({
     ProtectionModeOptions options = const ProtectionModeOptions(),

@@ -49,10 +49,21 @@ class OperationalTelemetryCoordinator {
   Timer? _timer;
   bool _started = false;
   bool _sosOpen = false;
+  bool _intervalPublishingEnabled = true;
   bool _publishInFlight = false;
   TrackingPosition? _lastPublishedSosPosition;
 
   bool get isRunning => _started;
+
+  void setIntervalPublishingEnabled(bool enabled) {
+    if (_intervalPublishingEnabled == enabled) {
+      return;
+    }
+    _intervalPublishingEnabled = enabled;
+    if (_started) {
+      _startTimerForCurrentMode();
+    }
+  }
 
   void start({required SosState initialSosState}) {
     if (_started) {
@@ -154,6 +165,12 @@ class OperationalTelemetryCoordinator {
 
   void _startTimerForCurrentMode() {
     _timer?.cancel();
+    _timer = null;
+    if (!_intervalPublishingEnabled) {
+      _logger(
+          '[SDK_TELEMETRY_LOOP] action=pause reason=native_background_owner');
+      return;
+    }
     if (_sosOpen) {
       _logger(
         '[SDK_TELEMETRY_LOOP] action=start mode=sos '

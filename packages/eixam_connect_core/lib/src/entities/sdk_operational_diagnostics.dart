@@ -17,6 +17,11 @@ class SdkOperationalDiagnostics {
     this.deviceSosAvailable = false,
     this.lastPublicSosDeliveryChannel,
     this.lastTelRelayRx,
+    this.backgroundTelemetryEnabled = false,
+    this.androidForegroundServiceRunning = false,
+    this.backgroundPermissionStatus = 'unknown',
+    this.lastBackgroundTelemetryAt,
+    this.lastBackgroundTelemetryError,
   });
 
   final EixamSession? session;
@@ -27,9 +32,15 @@ class SdkOperationalDiagnostics {
   final bool backendSosAvailable;
   final bool deviceSosAvailable;
   final SosDeliveryChannel? lastPublicSosDeliveryChannel;
+
   /// Most recent typed BLE relay sample observed by the SDK when the payload
   /// matched a stable relay contract.
   final DeviceTelRelayRx? lastTelRelayRx;
+  final bool backgroundTelemetryEnabled;
+  final bool androidForegroundServiceRunning;
+  final String backgroundPermissionStatus;
+  final DateTime? lastBackgroundTelemetryAt;
+  final String? lastBackgroundTelemetryError;
   final SdkBridgeDiagnostics bridge;
 
   bool get hasActiveSession => session != null;
@@ -71,6 +82,11 @@ class SdkOperationalDiagnostics {
     bool? deviceSosAvailable,
     Object? lastPublicSosDeliveryChannel = _unset,
     Object? lastTelRelayRx = _unset,
+    bool? backgroundTelemetryEnabled,
+    bool? androidForegroundServiceRunning,
+    String? backgroundPermissionStatus,
+    Object? lastBackgroundTelemetryAt = _unset,
+    Object? lastBackgroundTelemetryError = _unset,
     SdkBridgeDiagnostics? bridge,
   }) {
     return SdkOperationalDiagnostics(
@@ -93,6 +109,19 @@ class SdkOperationalDiagnostics {
       lastTelRelayRx: identical(lastTelRelayRx, _unset)
           ? this.lastTelRelayRx
           : lastTelRelayRx as DeviceTelRelayRx?,
+      backgroundTelemetryEnabled:
+          backgroundTelemetryEnabled ?? this.backgroundTelemetryEnabled,
+      androidForegroundServiceRunning: androidForegroundServiceRunning ??
+          this.androidForegroundServiceRunning,
+      backgroundPermissionStatus:
+          backgroundPermissionStatus ?? this.backgroundPermissionStatus,
+      lastBackgroundTelemetryAt: identical(lastBackgroundTelemetryAt, _unset)
+          ? this.lastBackgroundTelemetryAt
+          : lastBackgroundTelemetryAt as DateTime?,
+      lastBackgroundTelemetryError:
+          identical(lastBackgroundTelemetryError, _unset)
+              ? this.lastBackgroundTelemetryError
+              : lastBackgroundTelemetryError as String?,
       bridge: bridge ?? this.bridge,
     );
   }

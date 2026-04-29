@@ -24,6 +24,8 @@ import '../data/datasources_remote/sdk_session_context.dart';
 import '../data/repositories/telemetry_repository.dart';
 import '../data/repositories/sos_runtime_rehydration_support.dart';
 import 'backlog_sync_controller.dart';
+import 'background_telemetry_platform_adapter.dart';
+import 'background_telemetry_platform_adapter_factory.dart';
 import 'ble_operational_runtime_bridge.dart';
 import 'ble_auto_reconnect_coordinator.dart';
 import 'ble_sos_notification_payload.dart';
@@ -62,6 +64,7 @@ class EixamConnectSdkImpl
   final SdkSessionContext? sessionContext;
   final SdkIdentityRemoteDataSource? identityRemoteDataSource;
   final ProtectionPlatformAdapter protectionPlatformAdapter;
+  final BackgroundTelemetryPlatformAdapter backgroundTelemetryPlatformAdapter;
   final Future<void> Function()? disposeCallback;
 
   final StreamController<EixamSdkEvent> _eventsController =
@@ -151,6 +154,13 @@ class EixamConnectSdkImpl
   late final ProtectionModeController _protectionModeController;
   late final OperationalTelemetryCoordinator _operationalTelemetryCoordinator;
   final Duration _appTriggeredSosBridgeWindow;
+  bool _backgroundTelemetryEnabled = true;
+  bool _backgroundTelemetryStarted = false;
+  String? _backgroundTelemetryStartFingerprint;
+  String? _backgroundTelemetryNotificationTitle;
+  String? _backgroundTelemetryNotificationBody;
+  BackgroundTelemetryDiagnostics _backgroundTelemetryDiagnostics =
+      const BackgroundTelemetryDiagnostics();
 
   static const String _openAppActionId = 'open_app';
   static const String _cancelSosActionId = 'cancel_sos';
@@ -180,11 +190,15 @@ class EixamConnectSdkImpl
     this.sessionContext,
     this.identityRemoteDataSource,
     ProtectionPlatformAdapter? protectionPlatformAdapter,
+    BackgroundTelemetryPlatformAdapter? backgroundTelemetryPlatformAdapter,
     Duration appTriggeredSosBridgeWindow = _defaultAppTriggeredSosBridgeWindow,
     this.disposeCallback,
   })  : _appTriggeredSosBridgeWindow = appTriggeredSosBridgeWindow,
         protectionPlatformAdapter = protectionPlatformAdapter ??
-            buildDefaultProtectionPlatformAdapter() {
+            buildDefaultProtectionPlatformAdapter(),
+        backgroundTelemetryPlatformAdapter =
+            backgroundTelemetryPlatformAdapter ??
+                buildDefaultBackgroundTelemetryPlatformAdapter() {
     _bleAutoReconnectCoordinator = BleAutoReconnectCoordinator(
       deviceRepository: deviceRepository,
       preferredDeviceStore: preferredBleDeviceStore,
@@ -268,6 +282,7 @@ class EixamConnectSdkImpl
     _bleOperationalRuntimeBridge.start();
     _emitOperationalDiagnostics();
     _operationalTelemetryCoordinator.start(initialSosState: _publicSosState);
+    await _reconcileBackgroundTelemetry(reason: 'initialize');
     await realtimeClient.connect();
     await _resumeDeathManMonitoringIfNeeded();
     await _bleAutoReconnectCoordinator.tryAutoConnectOnStartup();
@@ -304,6 +319,9 @@ class EixamConnectSdkImpl
         'Device connectivity changed -> connected=${status.connected} previous=${previousStatus?.connected} deviceId=${status.deviceId} lifecycle=${status.lifecycleState.name}',
       );
       _emitOperationalDiagnostics();
+      unawaited(
+        _updateBackgroundTelemetryState(reason: 'device_status_stream'),
+      );
       _scheduleRegisteredDeviceAutoSync(
         trigger: 'device_status_stream',
         status: status,
@@ -546,6 +564,7 @@ class EixamConnectSdkImpl
     await sessionStore?.save(_session!);
     _emitOperationalDiagnostics();
     _operationalTelemetryCoordinator.start(initialSosState: _publicSosState);
+    await _reconcileBackgroundTelemetry(reason: 'set_session');
     _scheduleRegisteredDeviceAutoSync(
       trigger: 'set_session',
       status: _lastDeviceStatus,
@@ -582,6 +601,7 @@ class EixamConnectSdkImpl
     await sessionStore?.save(refreshed);
     _emitOperationalDiagnostics();
     _operationalTelemetryCoordinator.start(initialSosState: _publicSosState);
+    await _reconcileBackgroundTelemetry(reason: 'refresh_identity');
     _scheduleRegisteredDeviceAutoSync(
       trigger: 'refresh_identity',
       status: _lastDeviceStatus,
@@ -636,6 +656,7 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> clearSession() async {
+    await _stopBackgroundTelemetry(reason: 'clear_session');
     await _operationalTelemetryCoordinator.stop();
     _bleOperationalRuntimeBridge.clearPendingOperationalItems();
     _session = null;
@@ -655,6 +676,26 @@ class EixamConnectSdkImpl
     await sessionStore?.clear();
     _emitOperationalDiagnostics();
     await realtimeClient.disconnect();
+  }
+
+  @override
+  Future<void> enableBackgroundTelemetry({
+    String? notificationTitle,
+    String? notificationBody,
+  }) async {
+    _backgroundTelemetryEnabled = true;
+    _backgroundTelemetryNotificationTitle = notificationTitle;
+    _backgroundTelemetryNotificationBody = notificationBody;
+    await _reconcileBackgroundTelemetry(reason: 'enable_background_telemetry');
+    _emitOperationalDiagnostics();
+  }
+
+  @override
+  Future<void> disableBackgroundTelemetry() async {
+    _backgroundTelemetryEnabled = false;
+    await _stopBackgroundTelemetry(reason: 'disable_background_telemetry');
+    _operationalTelemetryCoordinator.setIntervalPublishingEnabled(true);
+    _emitOperationalDiagnostics();
   }
 
   Future<void> _rehydrateSosRuntimeState() async {
@@ -681,6 +722,166 @@ class EixamConnectSdkImpl
 
   @override
   Future<EixamSession?> getCurrentSession() async => _session;
+
+  Future<void> _reconcileBackgroundTelemetry({
+    required String reason,
+  }) async {
+    final session = _session;
+    final config = _sdkConfig;
+    if (!_backgroundTelemetryEnabled || session == null || config == null) {
+      await _stopBackgroundTelemetry(reason: reason);
+      _operationalTelemetryCoordinator.setIntervalPublishingEnabled(true);
+      return;
+    }
+
+    final status = _lastDeviceStatus;
+    final deviceId = _resolveOperationalDeviceId(
+      backendHardwareId: await _loadBackendHardwareIdForOperationalPayloads(
+        runtimeStatus: status,
+      ),
+    );
+    final fingerprint = _backgroundTelemetryFingerprint(
+      apiBaseUrl: config.apiBaseUrl,
+      session: session,
+    );
+    if (_backgroundTelemetryStarted &&
+        _backgroundTelemetryStartFingerprint == fingerprint) {
+      await _updateBackgroundTelemetryState(reason: reason);
+      _operationalTelemetryCoordinator.setIntervalPublishingEnabled(false);
+      return;
+    }
+    try {
+      await backgroundTelemetryPlatformAdapter.startBackgroundTelemetry(
+        BackgroundTelemetryStartRequest(
+          apiBaseUrl: config.apiBaseUrl,
+          session: session,
+          sosOpen: _isOpenSosState(_publicSosState),
+          deviceId: deviceId,
+          deviceBattery: _buildDeviceBatterySnapshot(status),
+          deviceCoverage: _buildDeviceCoverageSnapshot(status),
+          notificationTitle: _backgroundTelemetryNotificationTitle,
+          notificationBody: _backgroundTelemetryNotificationBody,
+        ),
+      );
+      _backgroundTelemetryStarted = true;
+      _backgroundTelemetryStartFingerprint = fingerprint;
+      _operationalTelemetryCoordinator.setIntervalPublishingEnabled(false);
+      await _refreshBackgroundTelemetryDiagnostics();
+      BleDebugRegistry.instance.recordEvent(
+        '[SDK_BACKGROUND_TELEMETRY] action=start reason=$reason',
+      );
+    } catch (error) {
+      _backgroundTelemetryStarted = false;
+      _backgroundTelemetryStartFingerprint = null;
+      _operationalTelemetryCoordinator.setIntervalPublishingEnabled(true);
+      _backgroundTelemetryDiagnostics = BackgroundTelemetryDiagnostics(
+        enabled: _backgroundTelemetryEnabled,
+        serviceRunning: false,
+        permissionStatus: 'unknown',
+        lastTelemetryAt: _backgroundTelemetryDiagnostics.lastTelemetryAt,
+        lastTelemetryError: error.toString(),
+      );
+      BleDebugRegistry.instance.recordEvent(
+        '[SDK_BACKGROUND_TELEMETRY] action=start_failed reason=$reason error=$error',
+      );
+    }
+  }
+
+  Future<void> _updateBackgroundTelemetryState({
+    required String reason,
+  }) async {
+    if (!_backgroundTelemetryEnabled || !_backgroundTelemetryStarted) {
+      return;
+    }
+    final status = _lastDeviceStatus;
+    try {
+      await backgroundTelemetryPlatformAdapter.updateBackgroundTelemetry(
+        sosOpen: _isOpenSosState(_publicSosState),
+        deviceId: _resolveOperationalDeviceId(
+          backendHardwareId: await _loadBackendHardwareIdForOperationalPayloads(
+            runtimeStatus: status,
+          ),
+        ),
+        deviceBattery: _buildDeviceBatterySnapshot(status),
+        deviceCoverage: _buildDeviceCoverageSnapshot(status),
+      );
+      await _refreshBackgroundTelemetryDiagnostics();
+    } catch (error) {
+      _backgroundTelemetryDiagnostics = BackgroundTelemetryDiagnostics(
+        enabled: _backgroundTelemetryEnabled,
+        serviceRunning: _backgroundTelemetryDiagnostics.serviceRunning,
+        permissionStatus: _backgroundTelemetryDiagnostics.permissionStatus,
+        lastTelemetryAt: _backgroundTelemetryDiagnostics.lastTelemetryAt,
+        lastTelemetryError: error.toString(),
+      );
+      BleDebugRegistry.instance.recordEvent(
+        '[SDK_BACKGROUND_TELEMETRY] action=update_failed reason=$reason error=$error',
+      );
+    }
+  }
+
+  Future<void> _stopBackgroundTelemetry({required String reason}) async {
+    if (!_backgroundTelemetryStarted && !_backgroundTelemetryEnabled) {
+      return;
+    }
+    try {
+      await backgroundTelemetryPlatformAdapter.stopBackgroundTelemetry();
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        '[SDK_BACKGROUND_TELEMETRY] action=stop_failed reason=$reason error=$error',
+      );
+    }
+    _backgroundTelemetryStarted = false;
+    _backgroundTelemetryStartFingerprint = null;
+    await _refreshBackgroundTelemetryDiagnostics();
+  }
+
+  String _backgroundTelemetryFingerprint({
+    required String apiBaseUrl,
+    required EixamSession session,
+  }) {
+    return [
+      apiBaseUrl,
+      session.appId,
+      session.externalUserId,
+      session.userHash,
+      session.canonicalExternalUserId ?? '',
+      session.sdkUserId ?? '',
+    ].join('|');
+  }
+
+  Future<void> _refreshBackgroundTelemetryDiagnostics() async {
+    try {
+      _backgroundTelemetryDiagnostics = await backgroundTelemetryPlatformAdapter
+          .getBackgroundTelemetryDiagnostics();
+    } catch (_) {
+      _backgroundTelemetryDiagnostics = BackgroundTelemetryDiagnostics(
+        enabled: _backgroundTelemetryEnabled,
+        serviceRunning: _backgroundTelemetryStarted,
+        permissionStatus: 'unknown',
+        lastTelemetryAt: _backgroundTelemetryDiagnostics.lastTelemetryAt,
+        lastTelemetryError: _backgroundTelemetryDiagnostics.lastTelemetryError,
+      );
+    }
+  }
+
+  bool _isOpenSosState(SosState state) {
+    return switch (state) {
+      SosState.arming ||
+      SosState.triggerRequested ||
+      SosState.triggeredLocal ||
+      SosState.sending ||
+      SosState.sent ||
+      SosState.acknowledged ||
+      SosState.cancelRequested =>
+        true,
+      SosState.idle ||
+      SosState.cancelled ||
+      SosState.resolved ||
+      SosState.failed =>
+        false,
+    };
+  }
 
   @override
   Future<DeviceStatus> connectDevice({required String pairingCode}) {
@@ -2569,6 +2770,8 @@ class EixamConnectSdkImpl
     if (!_publicSosStateController.isClosed) {
       _publicSosStateController.add(state);
     }
+    unawaited(
+        _updateBackgroundTelemetryState(reason: 'sos_state:${state.name}'));
   }
 
   Future<void> _syncPublicSosStateFromRepository(SosState state) async {
@@ -4263,6 +4466,15 @@ class EixamConnectSdkImpl
       deviceSosAvailable: capabilitySnapshot.deviceSosAvailable,
       lastPublicSosDeliveryChannel: _lastPublicSosDeliveryChannel,
       lastTelRelayRx: _lastTelRelayRx,
+      backgroundTelemetryEnabled: _backgroundTelemetryEnabled,
+      androidForegroundServiceRunning:
+          _backgroundTelemetryDiagnostics.serviceRunning,
+      backgroundPermissionStatus:
+          _backgroundTelemetryDiagnostics.permissionStatus,
+      lastBackgroundTelemetryAt:
+          _backgroundTelemetryDiagnostics.lastTelemetryAt,
+      lastBackgroundTelemetryError:
+          _backgroundTelemetryDiagnostics.lastTelemetryError,
       bridge: _bridgeDiagnostics,
     );
   }
@@ -4326,6 +4538,7 @@ class EixamConnectSdkImpl
         '$trigger device status refresh failed -> error=$error',
       );
     }
+    await _refreshBackgroundTelemetryDiagnostics();
     final diagnostics = _buildOperationalDiagnostics(reason: trigger);
     if (emit && !_operationalDiagnosticsController.isClosed) {
       _logCurrentSosCapabilityPublication(
@@ -4338,6 +4551,7 @@ class EixamConnectSdkImpl
   }
 
   Future<void> dispose() async {
+    await _stopBackgroundTelemetry(reason: 'dispose');
     _cancelProtectionDisconnectGraceTimer();
     WidgetsBinding.instance.removeObserver(this);
     _deathManTimer?.cancel();

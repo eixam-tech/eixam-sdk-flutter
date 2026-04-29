@@ -1,6 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <application>
         <service
@@ -8,6 +11,12 @@
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="connectedDevice"
+            android:stopWithTask="false" />
+        <service
+            android:name="dev.eixam.connect.flutter.telemetry.EixamTelemetryForegroundService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="location"
             android:stopWithTask="false" />
     </application>
 </manifest>
