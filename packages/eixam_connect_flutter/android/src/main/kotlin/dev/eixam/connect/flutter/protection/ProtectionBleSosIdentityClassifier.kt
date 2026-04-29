@@ -14,14 +14,19 @@ internal object ProtectionBleSosIdentityClassifier {
     fun classify(
         payload: List<Int>,
         connectedNodeId: Int?,
+        boundNodeId: Int? = null,
         source: ProtectionBleSosRelaySource,
     ): ProtectionBleSosIdentityClassification {
+        val trustedLocalNodeId = connectedNodeId ?: boundNodeId
         val eventPacket = tryParseEventPacket(payload)
         if (eventPacket != null) {
-            if (connectedNodeId != null && eventPacket.nodeId != connectedNodeId) {
+            if (trustedLocalNodeId == null) {
+                return ProtectionBleSosIdentityClassification.Unknown
+            }
+            if (eventPacket.nodeId != trustedLocalNodeId) {
                 return ProtectionBleSosIdentityClassification.RemoteEvent(
                     originatorNodeId = eventPacket.nodeId,
-                    relayNodeId = connectedNodeId,
+                    relayNodeId = trustedLocalNodeId,
                     source = source,
                     rawPayload = payload,
                 )
@@ -33,7 +38,7 @@ internal object ProtectionBleSosIdentityClassifier {
         if (sosPacket.sosType == 0) {
             return ProtectionBleSosIdentityClassification.Unknown
         }
-        if (connectedNodeId == null) {
+        if (trustedLocalNodeId == null) {
             return ProtectionBleSosIdentityClassification.UnknownOriginSos(
                 originatorNodeId = sosPacket.nodeId,
                 source = source,
@@ -42,12 +47,12 @@ internal object ProtectionBleSosIdentityClassifier {
                 position = sosPacket.position,
             )
         }
-        if (sosPacket.nodeId == connectedNodeId) {
+        if (sosPacket.nodeId == trustedLocalNodeId) {
             return ProtectionBleSosIdentityClassification.OwnSos
         }
         return ProtectionBleSosIdentityClassification.RemoteSos(
             originatorNodeId = sosPacket.nodeId,
-            relayNodeId = connectedNodeId,
+            relayNodeId = trustedLocalNodeId,
             source = source,
             rawPayload = payload,
             sosType = sosPacket.sosType,

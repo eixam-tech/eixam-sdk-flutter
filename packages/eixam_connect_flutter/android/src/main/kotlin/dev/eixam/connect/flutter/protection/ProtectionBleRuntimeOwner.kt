@@ -42,6 +42,8 @@ internal class ProtectionBleRuntimeOwner(
     private var connectionInFlight = false
     private var pendingCommandResult: PendingCommandResult? = null
     private var connectedBleNodeId: Int? = null
+    private var boundDeviceId: String? = null
+    private var boundNodeId: Int? = null
     private val backendHandoff =
         ProtectionSosBackendHandoff(
             context = context,
@@ -51,11 +53,13 @@ internal class ProtectionBleRuntimeOwner(
 
     fun start(
         deviceId: String,
+        backendHardwareId: String?,
         reconnectBackoffMs: Long,
         restored: Boolean,
     ) {
         if (runtimeActive && targetDeviceId == deviceId) {
             this.reconnectBackoffMs = reconnectBackoffMs.coerceAtLeast(1000L)
+            bindDeviceIdentity(deviceId, backendHardwareId)
             ensureConnectedOrReconnect(
                 reason = if (restored) "restored_runtime_reconnect" else "runtime_reconnect",
             )
@@ -63,6 +67,7 @@ internal class ProtectionBleRuntimeOwner(
         }
         targetDeviceId = deviceId
         connectedBleNodeId = null
+        bindDeviceIdentity(deviceId, backendHardwareId)
         this.reconnectBackoffMs = reconnectBackoffMs.coerceAtLeast(1000L)
         isStopping = false
         runtimeActive = true
@@ -251,6 +256,7 @@ internal class ProtectionBleRuntimeOwner(
         reconnectRunnable = null
         connectionInFlight = true
         connectedBleNodeId = null
+        bindDeviceIdentity(deviceId, runtimeStore.currentBackendHardwareId())
         clearCharacteristicRefs()
         subscriptionStep = SubscriptionStep.idle
         runtimeStore.recordReadinessFailureReason(
@@ -462,6 +468,43 @@ internal class ProtectionBleRuntimeOwner(
         cmdWriteCharacteristic = null
     }
 
+    private fun bindDeviceIdentity(
+        deviceId: String?,
+        backendHardwareId: String?,
+        learnedNodeId: Int? = null,
+    ) {
+        boundDeviceId = deviceId
+        boundNodeId = learnedNodeId
+            ?: nodeIdFromTrustedMac(backendHardwareId)
+            ?: nodeIdFromTrustedMac(deviceId)
+            ?: runtimeStore.currentBoundNodeId()
+        runtimeStore.saveBoundDeviceIdentity(boundDeviceId, boundNodeId)
+    }
+
+    private fun fallbackNodeIdFor(payload: List<Int>): Int? {
+        val fallback = if (connectedBleNodeId == null) boundNodeId else null
+        val originatorNodeId = readPacketOriginatorNodeId(payload)
+        val result = when {
+            connectedBleNodeId != null -> "no_match" to "connected_node_available"
+            fallback == null -> "no_match" to "bound_node_unavailable"
+            originatorNodeId == null -> "no_match" to "originator_unavailable"
+            originatorNodeId == fallback -> "matched_bound_device" to "originator_matches_bound_node"
+            else -> "no_match" to "originator_differs_from_bound_node"
+        }
+        logSosTrace(
+            "native_identity_fallback result=${result.first} reason=${result.second}",
+        )
+        return fallback
+    }
+
+    private fun logIdentityState(sourceLabel: String) {
+        logSosTrace(
+            "native_identity_state connectedBleNodeId=${connectedBleNodeId ?: "none"} " +
+                "boundDeviceId=${boundDeviceId ?: "none"} boundNodeId=${boundNodeId ?: "none"} " +
+                "cmdReady=${cmdWriteCharacteristic != null} source=$sourceLabel",
+        )
+    }
+
     private fun handleIncomingPacket(
         characteristic: BluetoothGattCharacteristic,
         rawBytes: ByteArray,
@@ -480,6 +523,7 @@ internal class ProtectionBleRuntimeOwner(
             "native_raw_notify source=$sourceLabel payloadLen=${payload.size} " +
                 "payloadHex=${payloadHex(payload)} connectedBleNodeId=${connectedBleNodeId ?: "none"}",
         )
+        logIdentityState(sourceLabel)
         runtimeStore.recordPacket(payload)
         ProtectionRuntimeBridge.recordBleEvent(
             context = context,
@@ -490,6 +534,7 @@ internal class ProtectionBleRuntimeOwner(
         if (characteristic.uuid == telNotifyUuid) {
             ProtectionBleSosIdentityClassifier.tryParseDeviceRuntimeNodeId(payload)?.let { nodeId ->
                 connectedBleNodeId = nodeId
+                bindDeviceIdentity(targetDeviceId, runtimeStore.currentBackendHardwareId(), nodeId)
                 ProtectionRuntimeBridge.recordBleEvent(
                     context = context,
                     type = "deviceRuntimeStatusReceived",
@@ -499,11 +544,17 @@ internal class ProtectionBleRuntimeOwner(
             if (payload.size == 27 && payload.firstOrNull() == 0xD2) {
                 val peerPayload = payload.subList(1, 13).toList()
                 val selfPayload = payload.subList(15, 27).toList()
-                connectedBleNodeId = connectedBleNodeId ?: readU32OrNull(selfPayload, 0)
+                if (connectedBleNodeId == null) {
+                    readU32OrNull(selfPayload, 0)?.let { selfNodeId ->
+                        connectedBleNodeId = selfNodeId
+                        bindDeviceIdentity(targetDeviceId, runtimeStore.currentBackendHardwareId(), selfNodeId)
+                    }
+                }
                 when (
                     val classification = ProtectionBleSosIdentityClassifier.classify(
                         payload = peerPayload,
                         connectedNodeId = connectedBleNodeId,
+                        boundNodeId = fallbackNodeIdFor(peerPayload),
                         source = ProtectionBleSosRelaySource.d2,
                     )
                 ) {
@@ -524,6 +575,7 @@ internal class ProtectionBleRuntimeOwner(
                 val classification = ProtectionBleSosIdentityClassifier.classify(
                     payload = payload,
                     connectedNodeId = connectedBleNodeId,
+                    boundNodeId = fallbackNodeIdFor(payload),
                     source = ProtectionBleSosRelaySource.tel,
                 )
             ) {
@@ -545,7 +597,7 @@ internal class ProtectionBleRuntimeOwner(
                     )
                     logSosTrace(
                         "native_lifecycle_gate classification=ownDeviceSos " +
-                            "action=enter_local_lifecycle observeSosLifecycle_called=true",
+                            "action=observe_local_lifecycle observeSosLifecycle_called=true",
                     )
                     ProtectionRuntimeBridge.recordBleEvent(
                         context = context,
@@ -569,6 +621,7 @@ internal class ProtectionBleRuntimeOwner(
             val classification = ProtectionBleSosIdentityClassifier.classify(
                 payload = payload,
                 connectedNodeId = connectedBleNodeId,
+                boundNodeId = fallbackNodeIdFor(payload),
                 source = ProtectionBleSosRelaySource.sos,
             )
             when (classification) {
@@ -601,6 +654,12 @@ internal class ProtectionBleRuntimeOwner(
                         "notSos"
                     },
             )
+            if (classification != ProtectionBleSosIdentityClassification.OwnSos &&
+                classification != ProtectionBleSosIdentityClassification.OwnEvent &&
+                readPacketOriginatorNodeId(payload) != null
+            ) {
+                return
+            }
             ProtectionRuntimeBridge.recordBleEvent(
                 context = context,
                 type = "sosEventReceived",
@@ -608,7 +667,7 @@ internal class ProtectionBleRuntimeOwner(
             )
             logSosTrace(
                 "native_lifecycle_gate classification=ownDeviceSos " +
-                    "action=enter_local_lifecycle observeSosLifecycle_called=true",
+                    "action=observe_local_lifecycle observeSosLifecycle_called=true",
             )
             observeSosLifecycle(payload)
         }
@@ -619,7 +678,8 @@ internal class ProtectionBleRuntimeOwner(
     ) {
         logSosTrace(
             "native_sos_decode originatorNodeId=${classification.originatorNodeId} " +
-                "connectedBleNodeId=${connectedBleNodeId ?: "none"} sosType=${classification.sosType} " +
+                "connectedBleNodeId=${connectedBleNodeId ?: "none"} boundNodeId=${boundNodeId ?: "none"} " +
+                "sosType=${classification.sosType} " +
                 "classification=unknownOriginSos hasLocation=${classification.position != null} " +
                 "lat=${classification.position?.latitude ?: "none"} lon=${classification.position?.longitude ?: "none"} " +
                 "alt=${classification.position?.altitude ?: "none"} source=${classification.source.name} " +
@@ -654,7 +714,8 @@ internal class ProtectionBleRuntimeOwner(
     ) {
         logSosTrace(
             "native_sos_decode originatorNodeId=${classification.originatorNodeId} " +
-                "connectedBleNodeId=${connectedBleNodeId ?: "none"} sosType=${classification.sosType} " +
+                "connectedBleNodeId=${connectedBleNodeId ?: "none"} boundNodeId=${boundNodeId ?: "none"} " +
+                "sosType=${classification.sosType} " +
                 "classification=remoteRelaySos hasLocation=${classification.position != null} " +
                 "lat=${classification.position?.latitude ?: "none"} lon=${classification.position?.longitude ?: "none"} " +
                 "alt=${classification.position?.altitude ?: "none"} source=${classification.source.name} " +
@@ -709,6 +770,16 @@ internal class ProtectionBleRuntimeOwner(
     private fun payloadHex(payload: List<Int>): String =
         payload.joinToString(separator = "") { byte -> "%02x".format(byte) }
 
+    private fun readPacketOriginatorNodeId(payload: List<Int>): Int? {
+        if (payload.size == 6 && (payload[0] == 0xE1 || payload[0] == 0xE2)) {
+            return readU32OrNull(payload, 2)
+        }
+        if (payload.size == 7 || payload.size == 12) {
+            return readU32OrNull(payload, 0)
+        }
+        return null
+    }
+
     private fun logSosPacketDecodeForTrace(
         payload: List<Int>,
         source: ProtectionBleSosRelaySource,
@@ -718,7 +789,8 @@ internal class ProtectionBleRuntimeOwner(
             if (classificationLabel == "notSos") {
                 logSosTrace(
                     "native_sos_decode originatorNodeId=none " +
-                        "connectedBleNodeId=${connectedBleNodeId ?: "none"} sosType=none " +
+                        "connectedBleNodeId=${connectedBleNodeId ?: "none"} boundNodeId=${boundNodeId ?: "none"} " +
+                        "sosType=none " +
                         "classification=notSos hasLocation=false lat=none lon=none alt=none " +
                         "source=${source.name} payloadLen=${payload.size} payloadHex=${payloadHex(payload)}",
                 )
@@ -731,7 +803,8 @@ internal class ProtectionBleRuntimeOwner(
         val position = if (payload.size == 12) decodePositionForTrace(payload, 4) else null
         logSosTrace(
             "native_sos_decode originatorNodeId=${readU32OrNull(payload, 0) ?: "none"} " +
-                "connectedBleNodeId=${connectedBleNodeId ?: "none"} sosType=$sosType " +
+                "connectedBleNodeId=${connectedBleNodeId ?: "none"} boundNodeId=${boundNodeId ?: "none"} " +
+                "sosType=$sosType " +
                 "classification=$classificationLabel hasLocation=${position != null} " +
                 "lat=${position?.latitude ?: "none"} lon=${position?.longitude ?: "none"} " +
                 "alt=${position?.altitude ?: "none"} source=${source.name} " +
@@ -771,6 +844,18 @@ internal class ProtectionBleRuntimeOwner(
             ((payload[offset + 1] and 0xFF) shl 8) or
             ((payload[offset + 2] and 0xFF) shl 16) or
             ((payload[offset + 3] and 0xFF) shl 24)
+    }
+
+    private fun nodeIdFromTrustedMac(value: String?): Int? {
+        val normalized = value?.trim()?.uppercase(Locale.US) ?: return null
+        if (!macAddressPattern.matches(normalized)) {
+            return null
+        }
+        val parts = normalized.split(":")
+        return (parts[2].toInt(16) shl 24) or
+            (parts[3].toInt(16) shl 16) or
+            (parts[4].toInt(16) shl 8) or
+            parts[5].toInt(16)
     }
 
     private fun logSosTrace(message: String) {
@@ -1003,6 +1088,8 @@ internal class ProtectionBleRuntimeOwner(
         private val cmdWriteUuid: UUID = UUID.fromString("6ba1b218-15a8-461f-9fa8-5dcae273ea04")
         private val clientCharacteristicConfigUuid: UUID =
             UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+        private val macAddressPattern =
+            Regex("^([0-9A-F]{2}:){5}[0-9A-F]{2}$")
     }
 
     private fun commandResult(

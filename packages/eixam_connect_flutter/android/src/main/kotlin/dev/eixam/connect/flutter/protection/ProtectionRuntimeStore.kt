@@ -39,6 +39,8 @@ internal class ProtectionRuntimeStore(context: Context) {
             "protectedDeviceId" to preferences.getString(keyTargetDeviceId, null),
             "activeDeviceId" to preferences.getString(keyTargetDeviceId, null),
             "targetDeviceId" to preferences.getString(keyTargetDeviceId, null),
+            "boundDeviceId" to preferences.getString(keyBoundDeviceId, null),
+            "boundNodeId" to preferences.getIntOrNull(keyBoundNodeId),
             "expectedBleServiceUuid" to preferences.getString(keyExpectedBleServiceUuid, null),
             "expectedBleCharacteristicUuids" to
                 (preferences.getString(keyExpectedBleCharacteristicUuids, null)
@@ -113,6 +115,8 @@ internal class ProtectionRuntimeStore(context: Context) {
         preferences.edit()
             .putString(keyTargetDeviceId, activeDeviceId)
             .putString(keyBackendHardwareId, backendHardwareId)
+            .putString(keyBoundDeviceId, activeDeviceId)
+            .remove(keyBoundNodeId)
             .putString(keyApiBaseUrl, apiBaseUrl)
             .putBoolean(keyServiceRunning, true)
             .putBoolean(keyRuntimeActive, true)
@@ -165,6 +169,23 @@ internal class ProtectionRuntimeStore(context: Context) {
 
     fun currentBackendHardwareId(): String? =
         preferences.getString(keyBackendHardwareId, null)
+
+    fun saveBoundDeviceIdentity(
+        boundDeviceId: String?,
+        boundNodeId: Int?,
+    ) {
+        val editor = preferences.edit()
+            .putString(keyBoundDeviceId, boundDeviceId)
+        if (boundNodeId == null) {
+            editor.remove(keyBoundNodeId)
+        } else {
+            editor.putInt(keyBoundNodeId, boundNodeId)
+        }
+        editor.apply()
+    }
+
+    fun currentBoundNodeId(): Int? =
+        preferences.getIntOrNull(keyBoundNodeId)
 
     fun reconnectBackoffMs(defaultValue: Long): Long =
         preferences.getLong(keyReconnectBackoffMs, defaultValue).takeIf { it > 0L } ?: defaultValue
@@ -529,6 +550,8 @@ internal class ProtectionRuntimeStore(context: Context) {
         private const val keyServiceBleReady = "service_ble_ready"
         private const val keyTargetDeviceId = "target_device_id"
         private const val keyBackendHardwareId = "backend_hardware_id"
+        private const val keyBoundDeviceId = "bound_device_id"
+        private const val keyBoundNodeId = "bound_node_id"
         private const val keyStoreAndForwardEnabled = "store_and_forward_enabled"
         private const val keyPendingSosCount = "pending_sos_count"
         private const val keyPendingSosState = "pending_sos_state"
@@ -577,3 +600,6 @@ internal class ProtectionRuntimeStore(context: Context) {
         )
     }
 }
+
+private fun android.content.SharedPreferences.getIntOrNull(key: String): Int? =
+    if (contains(key)) getInt(key, 0) else null

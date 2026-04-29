@@ -164,6 +164,7 @@ internal class ProtectionForegroundService : Service() {
         if (!runtimeOwner.isRunningFor(protectedDeviceId)) {
             runtimeOwner.start(
                 deviceId = protectedDeviceId,
+                backendHardwareId = runtimeStore.currentBackendHardwareId(),
                 reconnectBackoffMs = runtimeStore.reconnectBackoffMs(defaultReconnectBackoffMs),
                 restored = restored,
             )

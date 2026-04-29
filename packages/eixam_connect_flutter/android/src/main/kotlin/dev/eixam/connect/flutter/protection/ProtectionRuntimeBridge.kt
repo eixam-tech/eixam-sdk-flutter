@@ -106,6 +106,7 @@ internal object ProtectionRuntimeBridge {
                         deviceId = activeDeviceId
                             ?: store.currentTargetDeviceId()
                             ?: throw IllegalStateException("Protection Mode requires a protected device identifier."),
+                        backendHardwareId = backendHardwareId,
                         reconnectBackoffMs = reconnectBackoffMs,
                         restored = false,
                     )

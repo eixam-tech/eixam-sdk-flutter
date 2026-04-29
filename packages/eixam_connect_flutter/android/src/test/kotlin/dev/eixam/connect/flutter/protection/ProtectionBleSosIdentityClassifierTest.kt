@@ -46,6 +46,47 @@ class ProtectionBleSosIdentityClassifierTest {
     }
 
     @Test
+    fun `own-device SOS uses bound node fallback when connected node is unavailable`() {
+        val classification = ProtectionBleSosIdentityClassifier.classify(
+            payload = listOf(0x78, 0x56, 0x34, 0x12, 0x00, 0x40, 0x09),
+            connectedNodeId = null,
+            boundNodeId = 0x12345678,
+            source = ProtectionBleSosRelaySource.sos,
+        )
+
+        assertEquals(ProtectionBleSosIdentityClassification.OwnSos, classification)
+    }
+
+    @Test
+    fun `unknown LoRa SOS stays unknown when no connected or bound node matches`() {
+        val classification = ProtectionBleSosIdentityClassifier.classify(
+            payload = listOf(0x78, 0x56, 0x34, 0x12, 0x00, 0x40, 0x09),
+            connectedNodeId = null,
+            boundNodeId = null,
+            source = ProtectionBleSosRelaySource.sos,
+        )
+
+        assertTrue(classification is ProtectionBleSosIdentityClassification.UnknownOriginSos)
+        val unknown = classification as ProtectionBleSosIdentityClassification.UnknownOriginSos
+        assertEquals(0x12345678, unknown.originatorNodeId)
+    }
+
+    @Test
+    fun `remote relay SOS still uses relay path when bound node differs`() {
+        val classification = ProtectionBleSosIdentityClassifier.classify(
+            payload = listOf(0x78, 0x56, 0x34, 0x12, 0x00, 0x40, 0x09),
+            connectedNodeId = null,
+            boundNodeId = 0x1234,
+            source = ProtectionBleSosRelaySource.sos,
+        )
+
+        assertTrue(classification is ProtectionBleSosIdentityClassification.RemoteSos)
+        val remote = classification as ProtectionBleSosIdentityClassification.RemoteSos
+        assertEquals(0x12345678, remote.originatorNodeId)
+        assertEquals(0x1234, remote.relayNodeId)
+    }
+
+    @Test
     fun `valid TEL SOS with unknown connected node is not classified as TEL or own-device`() {
         val classification = ProtectionBleSosIdentityClassifier.classify(
             payload = listOf(
@@ -123,6 +164,30 @@ class ProtectionBleSosIdentityClassifierTest {
         )
 
         assertEquals(ProtectionBleSosIdentityClassification.OwnEvent, classification)
+    }
+
+    @Test
+    fun `local E1 02 event uses bound node fallback`() {
+        val classification = ProtectionBleSosIdentityClassifier.classify(
+            payload = listOf(0xE1, 0x02, 0x78, 0x56, 0x34, 0x12),
+            connectedNodeId = null,
+            boundNodeId = 0x12345678,
+            source = ProtectionBleSosRelaySource.sos,
+        )
+
+        assertEquals(ProtectionBleSosIdentityClassification.OwnEvent, classification)
+    }
+
+    @Test
+    fun `E1 02 event without identity does not activate local lifecycle`() {
+        val classification = ProtectionBleSosIdentityClassifier.classify(
+            payload = listOf(0xE1, 0x02, 0x78, 0x56, 0x34, 0x12),
+            connectedNodeId = null,
+            boundNodeId = null,
+            source = ProtectionBleSosRelaySource.sos,
+        )
+
+        assertEquals(ProtectionBleSosIdentityClassification.Unknown, classification)
     }
 
     @Test
