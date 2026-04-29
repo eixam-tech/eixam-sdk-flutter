@@ -433,6 +433,18 @@ class EixamConnectSdkImpl
         final remoteRelaySnapshot = event.remoteRelaySosSnapshot;
         if (remoteRelaySnapshot != null) {
           if (remoteRelaySnapshot.kind == RemoteRelaySosKind.sos) {
+            _logSosTrace(
+              'dart_sdk_remote_relay_received '
+              'originatorNodeId=${remoteRelaySnapshot.originatorNodeId} '
+              'relayNodeId=${remoteRelaySnapshot.relayNodeId ?? "none"} '
+              'source=${remoteRelaySnapshot.source.name} '
+              'payloadLen=${remoteRelaySnapshot.rawPayload.length} '
+              'payloadHex=${remoteRelaySnapshot.payloadHex ?? "-"} '
+              'hasLocation=${remoteRelaySnapshot.location != null} '
+              'lat=${remoteRelaySnapshot.location?.latitude ?? "none"} '
+              'lon=${remoteRelaySnapshot.location?.longitude ?? "none"} '
+              'alt=${remoteRelaySnapshot.location?.altitude ?? "none"}',
+            );
             BleDebugRegistry.instance.recordEvent(
               '[REMOTE_RELAY_SOS] observed '
               'originatorNodeId=${remoteRelaySnapshot.originatorNodeId} '
@@ -3806,6 +3818,16 @@ class EixamConnectSdkImpl
     );
     final remoteRelaySnapshot = remoteClassification.remoteRelaySosSnapshot;
     if (remoteRelaySnapshot != null) {
+      _logSosTrace(
+        'dart_platform_event type=${event.type.name} '
+        'originatorNodeId=${remoteRelaySnapshot.originatorNodeId} '
+        'relayNodeId=${remoteRelaySnapshot.relayNodeId ?? "none"} '
+        'hasLocation=${remoteRelaySnapshot.location != null} '
+        'lat=${remoteRelaySnapshot.location?.latitude ?? "none"} '
+        'lon=${remoteRelaySnapshot.location?.longitude ?? "none"} '
+        'alt=${remoteRelaySnapshot.location?.altitude ?? "none"} '
+        'payloadHex=${remoteRelaySnapshot.payloadHex ?? rawHex}',
+      );
       BleDebugRegistry.instance.recordEvent(
         '[REMOTE_RELAY_SOS] protection_platform_observed '
         'originatorNodeId=${remoteRelaySnapshot.originatorNodeId} '
@@ -4055,6 +4077,19 @@ class EixamConnectSdkImpl
             receivedAt: snapshot.receivedAt,
           )
         : null;
+    final locationSource = positionSnapshot != null
+        ? (snapshot.rawPayload.length ==
+                EixamBleProtocol.sosPacketLengthWithPosition
+            ? 'packet_12b'
+            : 'last_known')
+        : 'none';
+    _logSosTrace(
+      'remote_backend_handoff_decision '
+      'originatorNodeId=${snapshot.originatorNodeId} '
+      'relayNodeId=${snapshot.relayNodeId ?? "none"} '
+      'hasLocation=${positionSnapshot != null} '
+      'locationSource=$locationSource willAttemptBackend=true skipReason=none',
+    );
     BleDebugRegistry.instance.recordEvent(
       '[REMOTE_RELAY_SOS] backend_handoff_start '
       'originatorNodeId=${snapshot.originatorNodeId} '
@@ -4068,6 +4103,12 @@ class EixamConnectSdkImpl
         positionSnapshot: positionSnapshot,
         deviceId: deviceId,
       );
+      _logSosTrace(
+        'backend_result originatorNodeId=${snapshot.originatorNodeId} '
+        'relayNodeId=${snapshot.relayNodeId ?? "none"} '
+        'hasLocation=${positionSnapshot != null} statusCode=none '
+        'success=true error=none',
+      );
       BleDebugRegistry.instance.recordEvent(
         '[REMOTE_RELAY_SOS] backend_handoff_success '
         'originatorNodeId=${snapshot.originatorNodeId} '
@@ -4077,16 +4118,38 @@ class EixamConnectSdkImpl
       var ackRelaySent = false;
       String? ackRelayErrorMessage;
       try {
+        final ackBytes = EixamDeviceCommand.sosAckRelay(
+          nodeId: snapshot.originatorNodeId,
+        ).bytes;
+        _logSosTrace(
+          'ack_relay_write_attempt '
+          'originatorNodeId=${snapshot.originatorNodeId} '
+          'relayNodeId=${snapshot.relayNodeId ?? "none"} '
+          'bytesHex=${EixamBleProtocol.hex(ackBytes)}',
+        );
         await deviceSosController.sendAckRelay(
           nodeId: snapshot.originatorNodeId,
         );
         ackRelaySent = true;
+        _logSosTrace(
+          'ack_relay_write_result '
+          'originatorNodeId=${snapshot.originatorNodeId} '
+          'relayNodeId=${snapshot.relayNodeId ?? "none"} '
+          'bytesHex=${EixamBleProtocol.hex(ackBytes)} success=true error=none',
+        );
         BleDebugRegistry.instance.recordEvent(
           '[REMOTE_RELAY_SOS] ack_relay_sent '
           'originatorNodeId=${snapshot.originatorNodeId}',
         );
       } catch (error) {
         ackRelayErrorMessage = error.toString();
+        _logSosTrace(
+          'ack_relay_write_result '
+          'originatorNodeId=${snapshot.originatorNodeId} '
+          'relayNodeId=${snapshot.relayNodeId ?? "none"} '
+          'bytesHex=${EixamBleProtocol.hex(EixamDeviceCommand.sosAckRelay(nodeId: snapshot.originatorNodeId).bytes)} '
+          'success=false error=$error',
+        );
         BleDebugRegistry.instance.recordEvent(
           '[REMOTE_RELAY_SOS] ack_relay_failed '
           'originatorNodeId=${snapshot.originatorNodeId} '
@@ -4103,6 +4166,13 @@ class EixamConnectSdkImpl
         ),
       );
     } catch (error) {
+      _logSosTrace(
+        'backend_result originatorNodeId=${snapshot.originatorNodeId} '
+        'relayNodeId=${snapshot.relayNodeId ?? "none"} '
+        'hasLocation=${positionSnapshot != null} '
+        'statusCode=${_statusCodeForError(error) ?? "none"} '
+        'success=false error=$error',
+      );
       BleDebugRegistry.instance.recordEvent(
         '[REMOTE_RELAY_SOS] backend_handoff_failed '
         'originatorNodeId=${snapshot.originatorNodeId} '
@@ -4520,22 +4590,26 @@ class EixamConnectSdkImpl
     if (parts.length == 4 && parts[0] == 'remote') {
       return _ProtectionSosPayloadReason(
         payloadHex: parts[3],
-        source: parts[1] == 'tel'
-            ? RemoteRelaySosSource.telRelay
-            : RemoteRelaySosSource.sosNotify,
+        source: _remoteRelaySourceFromPlatform(parts[1]),
         relayNodeId: int.tryParse(parts[2]),
       );
     }
     if (parts.length == 3 && parts[0] == 'unknown') {
       return _ProtectionSosPayloadReason(
         payloadHex: parts[2],
-        source: parts[1] == 'tel'
-            ? RemoteRelaySosSource.telRelay
-            : RemoteRelaySosSource.sosNotify,
+        source: _remoteRelaySourceFromPlatform(parts[1]),
         identityUnknown: true,
       );
     }
     return _ProtectionSosPayloadReason(payloadHex: rawReason);
+  }
+
+  RemoteRelaySosSource _remoteRelaySourceFromPlatform(String source) {
+    return switch (source) {
+      'tel' => RemoteRelaySosSource.telRelay,
+      'd2' => RemoteRelaySosSource.d2Relay,
+      _ => RemoteRelaySosSource.sosNotify,
+    };
   }
 
   BleIncomingPayloadClassification _classifyProtectionPlatformRemoteSos({
@@ -4560,6 +4634,19 @@ class EixamConnectSdkImpl
         kind: BleIncomingPayloadKind.unknownOriginSos,
       ),
     );
+  }
+
+  int? _statusCodeForError(Object error) {
+    final dynamic dynamicError = error;
+    try {
+      return dynamicError.statusCode as int?;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _logSosTrace(String message) {
+    debugPrint('SOS_TRACE $message');
   }
 
   void _emitOperationalDiagnostics({

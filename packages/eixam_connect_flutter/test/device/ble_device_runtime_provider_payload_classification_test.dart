@@ -165,6 +165,65 @@ void main() {
     });
 
     test(
+        'classifies a D2 embedded 12-byte SOS as remote relay with packet location',
+        () async {
+      await runtimeProvider.requestDeviceRuntimeStatus();
+      final nextEvent = _nextIncomingEvent(runtimeProvider);
+
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.tel,
+        payload: const <int>[
+          0xD2,
+          0x78,
+          0x56,
+          0x34,
+          0x12,
+          0x48,
+          0xCD,
+          0x1B,
+          0x34,
+          0x44,
+          0x28,
+          0x00,
+          0x40,
+          0xF6,
+          0xC4,
+          0x34,
+          0x12,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x87,
+          0x25,
+        ],
+      );
+
+      final event = await nextEvent;
+      expect(event.type, BleIncomingEventType.telRelayRx);
+      expect(event.classification.kind, BleIncomingPayloadKind.remoteRelaySos);
+      expect(event.remoteRelaySosSnapshot, isNotNull);
+      expect(
+          event.remoteRelaySosSnapshot!.source, RemoteRelaySosSource.d2Relay);
+      expect(event.remoteRelaySosSnapshot!.originatorNodeId, 0x12345678);
+      expect(event.remoteRelaySosSnapshot!.relayNodeId, 0x1234);
+      expect(event.remoteRelaySosSnapshot!.location, isNotNull);
+      expect(
+        event.remoteRelaySosSnapshot!.payloadHex,
+        '78 56 34 12 48 cd 1b 34 44 28 00 40',
+      );
+      expect(
+        (await runtimeProvider.deviceSosController.getStatus()).state,
+        DeviceSosState.inactive,
+      );
+    });
+
+    test(
         'classifies a 7-byte SOS notify from another node as remote relay without location',
         () async {
       await runtimeProvider.requestDeviceRuntimeStatus();

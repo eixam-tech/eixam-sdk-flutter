@@ -521,7 +521,8 @@ void main() {
       expect(active.nodeId, preConfirm.nodeId);
     });
 
-    test('sosType 1 countdown packet maps to preConfirm without retryCount guess',
+    test(
+        'sosType 1 countdown packet maps to preConfirm without retryCount guess',
         () {
       final controller = DeviceSosController(
         countdownDuration: const Duration(milliseconds: 40),
@@ -541,8 +542,7 @@ void main() {
       expect(status.decoderNote, contains('started a local countdown'));
     });
 
-    test(
-        'app-triggered PRE-SOS is not upgraded by first device notify',
+    test('app-triggered PRE-SOS is not upgraded by first device notify',
         () async {
       final controller = DeviceSosController(
         countdownDuration: const Duration(milliseconds: 80),

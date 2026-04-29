@@ -59,8 +59,7 @@ void main() {
       await sosRepository.dispose();
     });
 
-    test(
-        'publishes cluster heartbeat events through the telemetry repository',
+    test('publishes cluster heartbeat events through the telemetry repository',
         () async {
       final packet = EixamClusterHeartbeatPacket.tryParse(
         const <int>[
@@ -115,7 +114,8 @@ void main() {
       );
     });
 
-    test('mqtt telemetry envelope preserves heartbeat metadata for backend ingest',
+    test(
+        'mqtt telemetry envelope preserves heartbeat metadata for backend ingest',
         () {
       final envelope = SdkMqttContract.buildTelemetryEnvelope(
         session: const EixamSession.signed(

@@ -128,10 +128,9 @@ class SdkOperationalDiagnostics {
           identical(lastBackgroundTelemetryError, _unset)
               ? this.lastBackgroundTelemetryError
               : lastBackgroundTelemetryError as String?,
-      lastBackgroundLocationMode:
-          identical(lastBackgroundLocationMode, _unset)
-              ? this.lastBackgroundLocationMode
-              : lastBackgroundLocationMode as String?,
+      lastBackgroundLocationMode: identical(lastBackgroundLocationMode, _unset)
+          ? this.lastBackgroundLocationMode
+          : lastBackgroundLocationMode as String?,
       activeBackgroundLocationRequest: activeBackgroundLocationRequest ??
           this.activeBackgroundLocationRequest,
       bridge: bridge ?? this.bridge,

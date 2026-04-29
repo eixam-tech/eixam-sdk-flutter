@@ -79,7 +79,8 @@ void main() {
       );
     });
 
-    test('does not guess a mesh port for ambiguous 12-byte TEL notifications', () {
+    test('does not guess a mesh port for ambiguous 12-byte TEL notifications',
+        () {
       expect(
         inferMeshPortForLiveNotification(
           channel: EixamBleChannel.tel,

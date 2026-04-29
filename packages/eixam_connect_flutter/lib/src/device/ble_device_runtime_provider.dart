@@ -939,12 +939,20 @@ class BleDeviceRuntimeProvider
       );
       final peerPayload = payload.sublist(1, 13);
       final selfPayload = payload.sublist(15, 27);
+      final selfTelPacket = EixamTelPacket.tryParse(selfPayload);
       BleDebugRegistry.instance.recordEvent(
         'TEL classified -> type=relay len=${payload.length} peerType=${_classifyEmbeddedWireType(peerPayload)} selfType=${_classifyEmbeddedWireType(selfPayload)} peerNode=${_nodeIdForEmbeddedWire(peerPayload) ?? "-"} selfNode=${_nodeIdForEmbeddedWire(selfPayload) ?? "-"}',
       );
       if (relayPacket != null) {
         _connectedBleTagNodeId ??= relayPacket.selfPacket.nodeId;
+      } else if (selfTelPacket != null) {
+        _connectedBleTagNodeId ??= selfTelPacket.nodeId;
       }
+      final d2RelayClassification = _classifyD2RelayPeerPayload(
+        payload: peerPayload,
+        payloadHex: EixamBleProtocol.hex(peerPayload),
+        receivedAt: notification.receivedAt,
+      );
       BleDebugRegistry.instance.recordDecodedIncomingEvent(
         eventType: BleIncomingEventType.telRelayRx.name,
         outcome: BleIncomingEventType.telRelayRx.name,
@@ -965,9 +973,8 @@ class BleDeviceRuntimeProvider
           telFragment: telFragment,
           aggregatePayload: aggregatePayload,
           telRelayRxPacket: relayPacket,
-          classification: const BleIncomingPayloadClassification(
-            kind: BleIncomingPayloadKind.telRelayRx,
-          ),
+          classification: d2RelayClassification,
+          remoteRelaySosSnapshot: d2RelayClassification.remoteRelaySosSnapshot,
         ),
       );
       return;
@@ -1182,6 +1189,52 @@ class BleDeviceRuntimeProvider
       return _formatNodeId(telPacket.nodeId);
     }
     return null;
+  }
+
+  BleIncomingPayloadClassification _classifyD2RelayPeerPayload({
+    required List<int> payload,
+    required String payloadHex,
+    required DateTime receivedAt,
+  }) {
+    final sosPacket = EixamSosPacket.tryParse(payload);
+    if (sosPacket == null || sosPacket.sosType == 0) {
+      return const BleIncomingPayloadClassification(
+        kind: BleIncomingPayloadKind.telRelayRx,
+      );
+    }
+    final connectedNodeId = _connectedBleTagNodeId;
+    final kind = connectedNodeId == null
+        ? BleIncomingPayloadKind.unknownOriginSos
+        : sosPacket.nodeId == connectedNodeId
+            ? BleIncomingPayloadKind.ownDeviceSos
+            : BleIncomingPayloadKind.remoteRelaySos;
+    if (kind != BleIncomingPayloadKind.remoteRelaySos) {
+      return BleIncomingPayloadClassification(kind: kind, sosPacket: sosPacket);
+    }
+    return BleIncomingPayloadClassification(
+      kind: BleIncomingPayloadKind.remoteRelaySos,
+      sosPacket: sosPacket,
+      remoteRelaySosSnapshot: RemoteRelaySosSnapshot(
+        kind: RemoteRelaySosKind.sos,
+        originatorNodeId: sosPacket.nodeId,
+        relayNodeId: connectedNodeId,
+        source: RemoteRelaySosSource.d2Relay,
+        sosType: sosPacket.sosType,
+        location: sosPacket.position == null
+            ? null
+            : TrackingPosition(
+                latitude: sosPacket.position!.latitude,
+                longitude: sosPacket.position!.longitude,
+                altitude: sosPacket.position!.altitudeMeters.toDouble(),
+                timestamp: receivedAt,
+                source: DeliveryMode.mesh,
+              ),
+        receivedAt: receivedAt,
+        rawPayload: List<int>.unmodifiable(payload),
+        payloadHex: payloadHex,
+        relayCount: sosPacket.relayCount,
+      ),
+    );
   }
 
   Future<void> _bindConnectionMonitor(String deviceId) async {

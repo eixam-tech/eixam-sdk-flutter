@@ -63,7 +63,8 @@ class BacklogSyncState {
   }) {
     return BacklogSyncState(
       phase: phase ?? this.phase,
-      sessionId: identical(sessionId, _unset) ? this.sessionId : sessionId as int?,
+      sessionId:
+          identical(sessionId, _unset) ? this.sessionId : sessionId as int?,
       totalEvents: identical(totalEvents, _unset)
           ? this.totalEvents
           : totalEvents as int?,

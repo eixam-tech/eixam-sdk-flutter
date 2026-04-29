@@ -6,6 +6,7 @@ enum RemoteRelaySosSource {
   bleRelay,
   telRelay,
   sosNotify,
+  d2Relay,
 }
 
 class RemoteRelaySosSnapshot {

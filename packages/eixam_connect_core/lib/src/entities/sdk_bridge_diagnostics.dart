@@ -55,6 +55,7 @@ class SdkBridgeDiagnostics {
   final String? lastRelayTelemetryPublishResult;
   final String? lastRelaySosPublishAttempt;
   final String? lastRelaySosPublishResult;
+
   /// Terminal relay ingest rejection remembered by the SDK, typically caused
   /// by a backend `422`/unprocessable response.
   final String? lastRelayTerminalErrorCode;
@@ -100,17 +101,15 @@ class SdkBridgeDiagnostics {
           identical(lastRelayTelemetryPublishResult, _unset)
               ? this.lastRelayTelemetryPublishResult
               : lastRelayTelemetryPublishResult as String?,
-      lastRelaySosPublishAttempt:
-          identical(lastRelaySosPublishAttempt, _unset)
-              ? this.lastRelaySosPublishAttempt
-              : lastRelaySosPublishAttempt as String?,
+      lastRelaySosPublishAttempt: identical(lastRelaySosPublishAttempt, _unset)
+          ? this.lastRelaySosPublishAttempt
+          : lastRelaySosPublishAttempt as String?,
       lastRelaySosPublishResult: identical(lastRelaySosPublishResult, _unset)
           ? this.lastRelaySosPublishResult
           : lastRelaySosPublishResult as String?,
-      lastRelayTerminalErrorCode:
-          identical(lastRelayTerminalErrorCode, _unset)
-              ? this.lastRelayTerminalErrorCode
-              : lastRelayTerminalErrorCode as String?,
+      lastRelayTerminalErrorCode: identical(lastRelayTerminalErrorCode, _unset)
+          ? this.lastRelayTerminalErrorCode
+          : lastRelayTerminalErrorCode as String?,
       lastRelayTerminalErrorMessage:
           identical(lastRelayTerminalErrorMessage, _unset)
               ? this.lastRelayTerminalErrorMessage

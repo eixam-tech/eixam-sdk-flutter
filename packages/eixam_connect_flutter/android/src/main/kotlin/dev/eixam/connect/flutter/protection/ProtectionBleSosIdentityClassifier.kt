@@ -38,6 +38,8 @@ internal object ProtectionBleSosIdentityClassifier {
                 originatorNodeId = sosPacket.nodeId,
                 source = source,
                 rawPayload = payload,
+                sosType = sosPacket.sosType,
+                position = sosPacket.position,
             )
         }
         if (sosPacket.nodeId == connectedNodeId) {
@@ -48,6 +50,8 @@ internal object ProtectionBleSosIdentityClassifier {
             relayNodeId = connectedNodeId,
             source = source,
             rawPayload = payload,
+            sosType = sosPacket.sosType,
+            position = sosPacket.position,
         )
     }
 
@@ -60,6 +64,7 @@ internal object ProtectionBleSosIdentityClassifier {
         return SosPacket(
             nodeId = readU32(payload, 0),
             sosType = (flagsWord shr 14) and 0x03,
+            position = if (payload.size == 12) decodePosition(payload, 4) else null,
         )
     }
 
@@ -84,9 +89,34 @@ internal object ProtectionBleSosIdentityClassifier {
             ((payload[offset + 2] and 0xFF) shl 16) or
             ((payload[offset + 3] and 0xFF) shl 24)
 
+    private fun decodePosition(payload: List<Int>, offset: Int): SosPosition {
+        val packed =
+            ((payload[offset] and 0xFF).toLong()) or
+                ((payload[offset + 1] and 0xFF).toLong() shl 8) or
+                ((payload[offset + 2] and 0xFF).toLong() shl 16) or
+                ((payload[offset + 3] and 0xFF).toLong() shl 24) or
+                ((payload[offset + 4] and 0xFF).toLong() shl 32) or
+                ((payload[offset + 5] and 0xFF).toLong() shl 40)
+        val latEnc = packed and 0xFFFFF
+        val lonEnc = (packed shr 20) and 0x1FFFFF
+        val altEnc = (packed shr 41) and 0x7F
+        return SosPosition(
+            latitude = (latEnc * 180.0 / 1048576.0) - 90.0,
+            longitude = (lonEnc * 360.0 / 2097152.0) - 180.0,
+            altitude = (altEnc * 40).toDouble(),
+        )
+    }
+
     private data class SosPacket(
         val nodeId: Int,
         val sosType: Int,
+        val position: ProtectionBleSosIdentityClassifier.SosPosition?,
+    )
+
+    data class SosPosition(
+        val latitude: Double,
+        val longitude: Double,
+        val altitude: Double,
     )
 
     private data class EventPacket(
@@ -97,6 +127,7 @@ internal object ProtectionBleSosIdentityClassifier {
 internal enum class ProtectionBleSosRelaySource {
     sos,
     tel,
+    d2,
 }
 
 internal sealed class ProtectionBleSosIdentityClassification {
@@ -108,6 +139,8 @@ internal sealed class ProtectionBleSosIdentityClassification {
         val originatorNodeId: Int,
         val source: ProtectionBleSosRelaySource,
         val rawPayload: List<Int>,
+        val sosType: Int,
+        val position: ProtectionBleSosIdentityClassifier.SosPosition?,
     ) : ProtectionBleSosIdentityClassification()
 
     data class RemoteSos(
@@ -115,6 +148,8 @@ internal sealed class ProtectionBleSosIdentityClassification {
         val relayNodeId: Int,
         val source: ProtectionBleSosRelaySource,
         val rawPayload: List<Int>,
+        val sosType: Int,
+        val position: SosPosition?,
     ) : ProtectionBleSosIdentityClassification()
 
     data class RemoteEvent(

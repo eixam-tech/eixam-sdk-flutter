@@ -37,8 +37,7 @@ class DeviceSosController {
   Timer? _countdownTimer;
   bool _awaitingObservedAppActivation = false;
 
-  static const Duration _terminalCycleSuppressionWindow =
-      Duration(seconds: 5);
+  static const Duration _terminalCycleSuppressionWindow = Duration(seconds: 5);
 
   DeviceSosStatus get currentStatus => _status;
   bool get hasSosCommandPath => _commandWriter != null;
@@ -746,9 +745,8 @@ class DeviceSosController {
             : DeviceSosState.preConfirm,
         cycleKey: cycleKey,
         downgradeSuppressed: false,
-        classificationDecision: protocolState == DeviceSosState.active
-            ? 'active_sos'
-            : 'pre_sos',
+        classificationDecision:
+            protocolState == DeviceSosState.active ? 'active_sos' : 'pre_sos',
         classificationReason: protocolState == DeviceSosState.active
             ? 'countdown_promoted_to_active'
             : 'remote_emergency_trigger',

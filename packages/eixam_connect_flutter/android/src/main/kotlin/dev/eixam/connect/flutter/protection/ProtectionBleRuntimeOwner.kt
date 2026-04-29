@@ -12,6 +12,7 @@ import android.content.Context
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import java.util.Locale
 import java.util.UUID
 
@@ -466,6 +467,15 @@ internal class ProtectionBleRuntimeOwner(
         rawBytes: ByteArray,
     ) {
         val payload = rawBytes.map { byte -> byte.toInt() and 0xFF }
+        val sourceLabel = when (characteristic.uuid) {
+            sosNotifyUuid -> "sos_notify"
+            telNotifyUuid -> if (payload.firstOrNull() == 0xD2) "d2_relay" else "tel_notify"
+            else -> "unknown"
+        }
+        logSosTrace(
+            "native_raw_notify source=$sourceLabel payloadLen=${payload.size} " +
+                "payloadHex=${payloadHex(payload)} connectedBleNodeId=${connectedBleNodeId ?: "none"}",
+        )
         runtimeStore.recordPacket(payload)
         ProtectionRuntimeBridge.recordBleEvent(
             context = context,
@@ -481,6 +491,30 @@ internal class ProtectionBleRuntimeOwner(
                     type = "deviceRuntimeStatusReceived",
                     reason = "nodeId=$nodeId",
                 )
+            }
+            if (payload.size == 27 && payload.firstOrNull() == 0xD2) {
+                val peerPayload = payload.subList(1, 13).toList()
+                val selfPayload = payload.subList(15, 27).toList()
+                connectedBleNodeId = connectedBleNodeId ?: readU32OrNull(selfPayload, 0)
+                when (
+                    val classification = ProtectionBleSosIdentityClassifier.classify(
+                        payload = peerPayload,
+                        connectedNodeId = connectedBleNodeId,
+                        source = ProtectionBleSosRelaySource.d2,
+                    )
+                ) {
+                    is ProtectionBleSosIdentityClassification.RemoteSos -> {
+                        recordRemoteRelaySosPayload(classification)
+                        return
+                    }
+
+                    is ProtectionBleSosIdentityClassification.UnknownOriginSos -> {
+                        recordUnknownOriginSosPayload(classification)
+                        return
+                    }
+
+                    else -> Unit
+                }
             }
             when (
                 val classification = ProtectionBleSosIdentityClassifier.classify(
@@ -500,6 +534,10 @@ internal class ProtectionBleRuntimeOwner(
                 }
 
                 ProtectionBleSosIdentityClassification.OwnSos -> {
+                    logSosTrace(
+                        "native_lifecycle_gate classification=ownDeviceSos " +
+                            "action=enter_local_lifecycle observeSosLifecycle_called=true",
+                    )
                     ProtectionRuntimeBridge.recordBleEvent(
                         context = context,
                         type = "telDerivedSosReceived",
@@ -543,6 +581,10 @@ internal class ProtectionBleRuntimeOwner(
                 type = "sosEventReceived",
                 reason = payloadHex(payload),
             )
+            logSosTrace(
+                "native_lifecycle_gate classification=ownDeviceSos " +
+                    "action=enter_local_lifecycle observeSosLifecycle_called=true",
+            )
             observeSosLifecycle(payload)
         }
     }
@@ -550,11 +592,29 @@ internal class ProtectionBleRuntimeOwner(
     private fun recordUnknownOriginSosPayload(
         classification: ProtectionBleSosIdentityClassification.UnknownOriginSos,
     ) {
+        logSosTrace(
+            "native_sos_decode originatorNodeId=${classification.originatorNodeId} " +
+                "connectedBleNodeId=${connectedBleNodeId ?: "none"} sosType=${classification.sosType} " +
+                "classification=unknownOriginSos hasLocation=${classification.position != null} " +
+                "lat=${classification.position?.latitude ?: "none"} lon=${classification.position?.longitude ?: "none"} " +
+                "alt=${classification.position?.altitude ?: "none"} source=${classification.source.name} " +
+                "payloadLen=${classification.rawPayload.size} payloadHex=${payloadHex(classification.rawPayload)}",
+        )
         ProtectionRuntimeBridge.recordBleEvent(
             context = context,
             type = "unknownOriginSosReceived",
             reason =
                 "originatorNodeId=${classification.originatorNodeId};source=${classification.source.name}",
+        )
+        logSosTrace(
+            "native_lifecycle_gate classification=unknownOriginSos " +
+                "action=skip_unknown_identity observeSosLifecycle_called=false",
+        )
+        logSosTrace(
+            "platform_event type=sosEventReceived originatorNodeId=${classification.originatorNodeId} " +
+                "relayNodeId=none hasLocation=${classification.position != null} " +
+                "lat=${classification.position?.latitude ?: "none"} lon=${classification.position?.longitude ?: "none"} " +
+                "alt=${classification.position?.altitude ?: "none"} payloadHex=${payloadHex(classification.rawPayload)}",
         )
         ProtectionRuntimeBridge.recordPlatformEvent(
             context = context,
@@ -567,11 +627,29 @@ internal class ProtectionBleRuntimeOwner(
     private fun recordRemoteRelaySosPayload(
         classification: ProtectionBleSosIdentityClassification.RemoteSos,
     ) {
+        logSosTrace(
+            "native_sos_decode originatorNodeId=${classification.originatorNodeId} " +
+                "connectedBleNodeId=${connectedBleNodeId ?: "none"} sosType=${classification.sosType} " +
+                "classification=remoteRelaySos hasLocation=${classification.position != null} " +
+                "lat=${classification.position?.latitude ?: "none"} lon=${classification.position?.longitude ?: "none"} " +
+                "alt=${classification.position?.altitude ?: "none"} source=${classification.source.name} " +
+                "payloadLen=${classification.rawPayload.size} payloadHex=${payloadHex(classification.rawPayload)}",
+        )
+        logSosTrace(
+            "native_lifecycle_gate classification=remoteRelaySos " +
+                "action=emit_remote_relay observeSosLifecycle_called=false",
+        )
         ProtectionRuntimeBridge.recordBleEvent(
             context = context,
             type = "remoteRelaySosReceived",
             reason =
                 "originatorNodeId=${classification.originatorNodeId};relayNodeId=${classification.relayNodeId};source=${classification.source.name}",
+        )
+        logSosTrace(
+            "platform_event type=sosEventReceived originatorNodeId=${classification.originatorNodeId} " +
+                "relayNodeId=${classification.relayNodeId} hasLocation=${classification.position != null} " +
+                "lat=${classification.position?.latitude ?: "none"} lon=${classification.position?.longitude ?: "none"} " +
+                "alt=${classification.position?.altitude ?: "none"} payloadHex=${payloadHex(classification.rawPayload)}",
         )
         ProtectionRuntimeBridge.recordPlatformEvent(
             context = context,
@@ -600,6 +678,20 @@ internal class ProtectionBleRuntimeOwner(
 
     private fun payloadHex(payload: List<Int>): String =
         payload.joinToString(separator = "") { byte -> "%02x".format(byte) }
+
+    private fun readU32OrNull(payload: List<Int>, offset: Int): Int? {
+        if (payload.size < offset + 4) {
+            return null
+        }
+        return (payload[offset] and 0xFF) or
+            ((payload[offset + 1] and 0xFF) shl 8) or
+            ((payload[offset + 2] and 0xFF) shl 16) or
+            ((payload[offset + 3] and 0xFF) shl 24)
+    }
+
+    private fun logSosTrace(message: String) {
+        Log.d("SOS_TRACE", "SOS_TRACE $message")
+    }
 
     private fun observeSosLifecycle(payload: List<Int>) {
         if (payload.isEmpty()) {

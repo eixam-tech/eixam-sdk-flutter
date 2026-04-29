@@ -22,8 +22,10 @@ class DeviceTelRelayRx {
   final int rxRssi;
   final List<int> selfPayload;
   final TrackingPosition selfPosition;
+
   /// Backend-safe identity for the relayed remote device when present.
   final String? remoteDeviceId;
+
   /// Local decode timestamp recorded by the SDK.
   final DateTime? receivedAt;
 }
