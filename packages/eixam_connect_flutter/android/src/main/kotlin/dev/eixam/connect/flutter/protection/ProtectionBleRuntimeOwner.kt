@@ -178,16 +178,22 @@ internal class ProtectionBleRuntimeOwner(
             )
         }
 
+        val requiresLongCommandPath =
+            forceCmdCharacteristic || payload.size > inetMaxPayloadLength
         val characteristic =
-            if (forceCmdCharacteristic || payload.size > inetMaxPayloadLength) {
-                cmdWriteCharacteristic ?: inetWriteCharacteristic
+            if (requiresLongCommandPath) {
+                cmdWriteCharacteristic
             } else {
                 inetWriteCharacteristic ?: cmdWriteCharacteristic
             }
 
         if (characteristic == null) {
             val error =
-                "Protection Mode native BLE owner does not have a writable command characteristic ready."
+                if (requiresLongCommandPath) {
+                    "Protection Mode native BLE owner does not have CMD/EA04 ready for long command $label."
+                } else {
+                    "Protection Mode native BLE owner does not have a writable short command characteristic ready."
+                }
             runtimeStore.recordCommandError(error)
             return commandResult(
                 success = false,
@@ -1082,7 +1088,7 @@ internal class ProtectionBleRuntimeOwner(
 
     companion object {
         private const val defaultReconnectBackoffMs = 5000L
-        private const val inetMaxPayloadLength = 20
+        private const val inetMaxPayloadLength = 4
         private const val sosActivationDelayMs = 20_000L
 
         private val serviceUuid: UUID = UUID.fromString("6ba1b218-15a8-461f-9fa8-5dcae273ea00")

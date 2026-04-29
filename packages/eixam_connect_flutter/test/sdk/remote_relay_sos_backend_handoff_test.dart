@@ -378,6 +378,7 @@ void main() {
       final platformAdapter = _FakeProtectionPlatformAdapter(
         platformEvents: platformEvents.stream,
       );
+      final localDeviceSosController = DeviceSosController();
       sdk = EixamConnectSdkImpl(
         sosRepository: sosRepository,
         trackingRepository: trackingRepository,
@@ -389,7 +390,7 @@ void main() {
         permissionsRepository: permissionsRepository,
         notificationsRepository: notificationsRepository,
         realtimeClient: realtimeClient,
-        deviceSosController: deviceSosController,
+        deviceSosController: localDeviceSosController,
         bleIncomingEvents: bleEvents.stream,
         preferredBleDeviceStore: preferredDeviceStore,
         protectionPlatformAdapter: platformAdapter,
@@ -417,7 +418,6 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 25));
 
       expect(realtimeClient.publishedSos, isEmpty);
-      expect(notificationsRepository.notifications, isEmpty);
       expect(events.whereType<RemoteRelaySosObservedEvent>(), isEmpty);
       expect(
         BleDebugRegistry.instance.currentState.events.any(
