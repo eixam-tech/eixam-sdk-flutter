@@ -40,6 +40,7 @@ internal class ProtectionBleRuntimeOwner(
     private var backendRetryRunnable: Runnable? = null
     private var connectionInFlight = false
     private var pendingCommandResult: PendingCommandResult? = null
+    private var connectedBleNodeId: Int? = null
     private val backendHandoff =
         ProtectionSosBackendHandoff(
             context = context,
@@ -90,6 +91,7 @@ internal class ProtectionBleRuntimeOwner(
         sosActivationRunnable = null
         subscriptionStep = SubscriptionStep.idle
         pendingSosLifecycleState = ProtectionSosLifecycleState.idle
+        connectedBleNodeId = null
         clearCharacteristicRefs()
         bluetoothGatt?.close()
         bluetoothGatt = null
@@ -469,17 +471,106 @@ internal class ProtectionBleRuntimeOwner(
             reason = "${characteristic.uuid}:${payload.size}",
         )
 
+        if (characteristic.uuid == telNotifyUuid) {
+            ProtectionBleSosIdentityClassifier.tryParseDeviceRuntimeNodeId(payload)?.let { nodeId ->
+                connectedBleNodeId = nodeId
+                ProtectionRuntimeBridge.recordBleEvent(
+                    context = context,
+                    type = "deviceRuntimeStatusReceived",
+                    reason = "nodeId=$nodeId",
+                )
+            }
+            when (
+                val classification = ProtectionBleSosIdentityClassifier.classify(
+                    payload = payload,
+                    connectedNodeId = connectedBleNodeId,
+                    source = ProtectionBleSosRelaySource.tel,
+                )
+            ) {
+                is ProtectionBleSosIdentityClassification.RemoteSos -> {
+                    recordRemoteRelaySosPayload(classification)
+                    return
+                }
+
+                ProtectionBleSosIdentityClassification.OwnSos -> {
+                    ProtectionRuntimeBridge.recordBleEvent(
+                        context = context,
+                        type = "telDerivedSosReceived",
+                        reason = payloadHex(payload),
+                    )
+                    observeSosLifecycle(payload)
+                    return
+                }
+
+                else -> Unit
+            }
+        }
+
         if (characteristic.uuid == sosNotifyUuid) {
+            when (
+                val classification = ProtectionBleSosIdentityClassifier.classify(
+                    payload = payload,
+                    connectedNodeId = connectedBleNodeId,
+                    source = ProtectionBleSosRelaySource.sos,
+                )
+            ) {
+                is ProtectionBleSosIdentityClassification.RemoteSos -> {
+                    recordRemoteRelaySosPayload(classification)
+                    return
+                }
+
+                is ProtectionBleSosIdentityClassification.RemoteEvent -> {
+                    recordRemoteRelayEventPayload(classification)
+                    return
+                }
+
+                else -> Unit
+            }
             ProtectionRuntimeBridge.recordBleEvent(
                 context = context,
                 type = "sosEventReceived",
-                reason = payload.joinToString(separator = "") { byte ->
-                    "%02x".format(byte)
-                },
+                reason = payloadHex(payload),
             )
             observeSosLifecycle(payload)
         }
     }
+
+    private fun recordRemoteRelaySosPayload(
+        classification: ProtectionBleSosIdentityClassification.RemoteSos,
+    ) {
+        ProtectionRuntimeBridge.recordBleEvent(
+            context = context,
+            type = "remoteRelaySosReceived",
+            reason =
+                "originatorNodeId=${classification.originatorNodeId};relayNodeId=${classification.relayNodeId};source=${classification.source.name}",
+        )
+        ProtectionRuntimeBridge.recordPlatformEvent(
+            context = context,
+            type = "sosEventReceived",
+            reason =
+                "remote:${classification.source.name}:${classification.relayNodeId}:${payloadHex(classification.rawPayload)}",
+        )
+    }
+
+    private fun recordRemoteRelayEventPayload(
+        classification: ProtectionBleSosIdentityClassification.RemoteEvent,
+    ) {
+        ProtectionRuntimeBridge.recordBleEvent(
+            context = context,
+            type = "remoteRelaySosCancelReceived",
+            reason =
+                "originatorNodeId=${classification.originatorNodeId};relayNodeId=${classification.relayNodeId};source=${classification.source.name}",
+        )
+        ProtectionRuntimeBridge.recordPlatformEvent(
+            context = context,
+            type = "sosEventReceived",
+            reason =
+                "remote:${classification.source.name}:${classification.relayNodeId}:${payloadHex(classification.rawPayload)}",
+        )
+    }
+
+    private fun payloadHex(payload: List<Int>): String =
+        payload.joinToString(separator = "") { byte -> "%02x".format(byte) }
 
     private fun observeSosLifecycle(payload: List<Int>) {
         if (payload.isEmpty()) {
@@ -487,7 +578,7 @@ internal class ProtectionBleRuntimeOwner(
         }
 
         when (payload.size) {
-            4 -> {
+            4, 6 -> {
                 val opcode = payload[0] and 0xFF
                 val subcode = payload[1] and 0xFF
                 val closed = (opcode == 0xE1 && (subcode == 0x01 || subcode == 0x02)) ||
@@ -504,7 +595,7 @@ internal class ProtectionBleRuntimeOwner(
                 }
             }
 
-            5, 10 -> {
+            5, 7, 10, 12 -> {
                 val nextState = ProtectionSosLifecycleLogic.onMeshPacket(pendingSosLifecycleState)
                 if (nextState == ProtectionSosLifecycleState.preConfirmSeen &&
                     pendingSosLifecycleState != ProtectionSosLifecycleState.preConfirmSeen

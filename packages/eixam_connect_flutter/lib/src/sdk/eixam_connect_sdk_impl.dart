@@ -14,6 +14,7 @@ import '../data/repositories/api_sos_repository.dart';
 import '../data/repositories/mqtt_operational_sos_repository.dart';
 import '../data/datasources_remote/sdk_identity_remote_data_source.dart';
 import '../device/ble_incoming_event.dart';
+import '../device/ble_incoming_payload_classifier.dart';
 import '../device/device_sos_controller.dart';
 import '../device/ble_debug_registry.dart';
 import '../device/eixam_ble_command.dart';
@@ -88,6 +89,8 @@ class EixamConnectSdkImpl
       StreamController<SosState>.broadcast();
   final StreamController<PublicPreSosStatus?> _publicPreSosStatusController =
       StreamController<PublicPreSosStatus?>.broadcast();
+  final BleIncomingPayloadClassifier _protectionSosPayloadClassifier =
+      const BleIncomingPayloadClassifier();
 
   StreamSubscription<RealtimeConnectionState>? _realtimeConnectionSub;
   StreamSubscription<RealtimeEvent>? _realtimeEventsSub;
@@ -3778,7 +3781,8 @@ class EixamConnectSdkImpl
         !_isProtectionPlatformOwningBle) {
       return;
     }
-    final rawHex = event.reason?.trim();
+    final payloadReason = _parseProtectionSosPayloadReason(event.reason);
+    final rawHex = payloadReason.payloadHex;
     if (rawHex == null || rawHex.isEmpty) {
       BleDebugRegistry.instance.recordEvent(
         'Protection SOS payload ignored -> reason=missing_hex_payload',
@@ -3789,6 +3793,27 @@ class EixamConnectSdkImpl
     if (bytes == null || bytes.isEmpty) {
       BleDebugRegistry.instance.recordEvent(
         'Protection SOS payload ignored -> reason=invalid_hex_payload payload=$rawHex',
+      );
+      return;
+    }
+
+    final remoteClassification = _classifyProtectionPlatformRemoteSos(
+      bytes: bytes,
+      rawHex: rawHex,
+      source: payloadReason.source,
+      relayNodeId: payloadReason.relayNodeId,
+    );
+    final remoteRelaySnapshot = remoteClassification.remoteRelaySosSnapshot;
+    if (remoteRelaySnapshot != null) {
+      BleDebugRegistry.instance.recordEvent(
+        '[REMOTE_RELAY_SOS] protection_platform_observed '
+        'originatorNodeId=${remoteRelaySnapshot.originatorNodeId} '
+        'relayNodeId=${remoteRelaySnapshot.relayNodeId ?? "-"} '
+        'kind=${remoteRelaySnapshot.kind.name}',
+      );
+      _publishSdkEvent(RemoteRelaySosObservedEvent(remoteRelaySnapshot));
+      unawaited(
+        _handleRemoteRelaySosBackendHandoff(remoteRelaySnapshot),
       );
       return;
     }
@@ -4490,6 +4515,48 @@ class EixamConnectSdkImpl
     );
   }
 
+  _ProtectionSosPayloadReason _parseProtectionSosPayloadReason(
+    String? reason,
+  ) {
+    final rawReason = reason?.trim();
+    if (rawReason == null || rawReason.isEmpty) {
+      return const _ProtectionSosPayloadReason();
+    }
+    final parts = rawReason.split(':');
+    if (parts.length == 4 && parts[0] == 'remote') {
+      return _ProtectionSosPayloadReason(
+        payloadHex: parts[3],
+        source: parts[1] == 'tel'
+            ? RemoteRelaySosSource.telRelay
+            : RemoteRelaySosSource.sosNotify,
+        relayNodeId: int.tryParse(parts[2]),
+      );
+    }
+    return _ProtectionSosPayloadReason(payloadHex: rawReason);
+  }
+
+  BleIncomingPayloadClassification _classifyProtectionPlatformRemoteSos({
+    required List<int> bytes,
+    required String rawHex,
+    required RemoteRelaySosSource? source,
+    required int? relayNodeId,
+  }) {
+    final channel = source == RemoteRelaySosSource.telRelay
+        ? EixamBleChannel.tel
+        : EixamBleChannel.sos;
+    return _protectionSosPayloadClassifier.classifySosPayload(
+      payload: bytes,
+      payloadHex: rawHex,
+      receivedAt: DateTime.now().toUtc(),
+      source: DeviceSosTransitionSource.device,
+      channel: channel,
+      connectedBleTagNodeId: relayNodeId ?? _knownLocalDeviceNodeId,
+      fallbackOnUnknownConnectedNode: const BleIncomingPayloadClassification(
+        kind: BleIncomingPayloadKind.ownDeviceSos,
+      ),
+    );
+  }
+
   void _emitOperationalDiagnostics({
     String reason = 'emit',
   }) {
@@ -4718,6 +4785,18 @@ class _ObservedRelaySosContext {
   final int nodeId;
   final int relayCount;
   final String packetSignature;
+}
+
+class _ProtectionSosPayloadReason {
+  const _ProtectionSosPayloadReason({
+    this.payloadHex,
+    this.source,
+    this.relayNodeId,
+  });
+
+  final String? payloadHex;
+  final RemoteRelaySosSource? source;
+  final int? relayNodeId;
 }
 
 class _OperationalSosMetadata {
