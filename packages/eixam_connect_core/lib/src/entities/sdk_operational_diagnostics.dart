@@ -15,6 +15,8 @@ class SdkOperationalDiagnostics {
     this.sosRehydrationNote,
     this.backendSosAvailable = false,
     this.deviceSosAvailable = false,
+    this.shortCommandAvailable = false,
+    this.longCommandAvailable = false,
     this.lastPublicSosDeliveryChannel,
     this.lastTelRelayRx,
     this.backgroundTelemetryEnabled = false,
@@ -33,7 +35,12 @@ class SdkOperationalDiagnostics {
   final String? sosRehydrationNote;
   final bool backendSosAvailable;
   final bool deviceSosAvailable;
+  final bool shortCommandAvailable;
+  final bool longCommandAvailable;
   final SosDeliveryChannel? lastPublicSosDeliveryChannel;
+
+  bool get shortControlAvailable => shortCommandAvailable;
+  bool get cmdAvailable => longCommandAvailable;
 
   /// Most recent typed BLE relay sample observed by the SDK when the payload
   /// matched a stable relay contract.
@@ -84,6 +91,8 @@ class SdkOperationalDiagnostics {
     Object? sosRehydrationNote = _unset,
     bool? backendSosAvailable,
     bool? deviceSosAvailable,
+    bool? shortCommandAvailable,
+    bool? longCommandAvailable,
     Object? lastPublicSosDeliveryChannel = _unset,
     Object? lastTelRelayRx = _unset,
     bool? backgroundTelemetryEnabled,
@@ -108,6 +117,9 @@ class SdkOperationalDiagnostics {
           : sosRehydrationNote as String?,
       backendSosAvailable: backendSosAvailable ?? this.backendSosAvailable,
       deviceSosAvailable: deviceSosAvailable ?? this.deviceSosAvailable,
+      shortCommandAvailable:
+          shortCommandAvailable ?? this.shortCommandAvailable,
+      longCommandAvailable: longCommandAvailable ?? this.longCommandAvailable,
       lastPublicSosDeliveryChannel:
           identical(lastPublicSosDeliveryChannel, _unset)
               ? this.lastPublicSosDeliveryChannel

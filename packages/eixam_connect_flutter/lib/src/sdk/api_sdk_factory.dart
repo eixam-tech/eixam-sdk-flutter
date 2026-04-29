@@ -117,6 +117,8 @@ class ApiSdkFactory {
     required String apiBaseUrl,
     required String websocketUrl,
     ProtectionPlatformAdapter? protectionPlatformAdapter,
+    EixamNotificationPolicy notificationPolicy =
+        EixamNotificationPolicy.sdkManaged,
     bool enableLogging = false,
   }) async {
     BleDebugRegistry.instance.reset();
@@ -210,6 +212,7 @@ class ApiSdkFactory {
       identityRemoteDataSource: HttpSdkIdentityRemoteDataSource(
         transport: httpTransport,
       ),
+      notificationPolicy: notificationPolicy,
       protectionPlatformAdapter:
           protectionPlatformAdapter ?? buildDefaultProtectionPlatformAdapter(),
       disposeCallback: () async {
@@ -230,6 +233,7 @@ class ApiSdkFactory {
     final sdk = await createHttpApi(
       apiBaseUrl: resolved.sdkConfig.apiBaseUrl,
       websocketUrl: resolved.sdkConfig.websocketUrl ?? '',
+      notificationPolicy: config.notificationPolicy,
       enableLogging: resolved.sdkConfig.enableLogging,
     );
 

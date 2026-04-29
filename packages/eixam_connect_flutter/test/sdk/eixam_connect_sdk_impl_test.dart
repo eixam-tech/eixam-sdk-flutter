@@ -7222,6 +7222,73 @@ void main() {
     });
 
     test(
+        'host-managed notification policy suppresses SDK SOS notifications while keeping lifecycle state streams',
+        () async {
+      final localNotificationsRepository = FakeNotificationsRepository();
+      final localDeviceSosController = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 35),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: localNotificationsRepository,
+        realtimeClient: realtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        notificationPolicy: EixamNotificationPolicy.hostAppManaged,
+      );
+      final preSosQueue = StreamQueue<PublicPreSosStatus?>(
+        localSdk.watchPreSosStatus(),
+      );
+      final deviceSosQueue = StreamQueue<DeviceSosStatus>(
+        localSdk.watchDeviceSosStatus(),
+      );
+
+      try {
+        permissionsRepository.permissionState = const PermissionState(
+          location: SdkPermissionStatus.granted,
+        );
+        await localSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+
+        localDeviceSosController.handleIncomingSosPacket(
+          _deviceOriginPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        final deviceStatus = await deviceSosQueue.next;
+        final firstPreSosStatus = await preSosQueue.next;
+        final preSosStatus = firstPreSosStatus ?? await preSosQueue.next;
+
+        expect(deviceStatus.triggerOrigin, DeviceSosTransitionSource.device);
+        expect(preSosStatus!.mirroredOnDevice, isTrue);
+        expect(preSosStatus.origin, DeviceSosTransitionSource.device);
+        expect(await localSdk.getSosState(), SosState.arming);
+        expect(localNotificationsRepository.notifications, isEmpty);
+
+        await Future<void>.delayed(const Duration(milliseconds: 70));
+
+        expect(await localSdk.getSosState(), SosState.sent);
+        expect(sosRepository.triggerCallCount, 1);
+        expect(localNotificationsRepository.notifications, isEmpty);
+      } finally {
+        await preSosQueue.cancel();
+        await deviceSosQueue.cancel();
+        await localSdk.dispose();
+      }
+    });
+
+    test(
         'device-originated active packet after resume notifies active immediately instead of PRE-SOS',
         () async {
       final localNotificationsRepository = FakeNotificationsRepository();
@@ -7316,6 +7383,36 @@ void main() {
       } finally {
         await navigationQueue.cancel();
       }
+    });
+
+    test(
+        'operational diagnostics separate short command readiness from long CMD readiness',
+        () async {
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          paired: true,
+          activated: true,
+          connected: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        ),
+      );
+      await deviceSosController.attach(
+        shortCommandAvailable: true,
+        longCommandAvailable: false,
+        commandWriter: (_) async {},
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final diagnostics = await sdk.getOperationalDiagnostics();
+
+      expect(diagnostics.shortCommandAvailable, isTrue);
+      expect(diagnostics.shortControlAvailable, isTrue);
+      expect(diagnostics.longCommandAvailable, isFalse);
+      expect(diagnostics.cmdAvailable, isFalse);
+      expect(diagnostics.deviceSosAvailable, isTrue);
     });
 
     test('device-originated SOS closure clears related notifications',

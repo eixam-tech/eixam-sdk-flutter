@@ -20,7 +20,6 @@ import 'eixam_ble_protocol.dart';
 import 'eixam_cluster_heartbeat_packet.dart';
 import 'eixam_device_runtime_status_packet.dart';
 import 'eixam_guided_rescue_status_packet.dart';
-import 'eixam_sos_event_packet.dart';
 import 'eixam_sos_packet.dart';
 import 'eixam_tel_fragment.dart';
 import 'eixam_tel_packet.dart';
@@ -85,6 +84,9 @@ class BleDeviceRuntimeProvider
   bool get hasCommandChannel =>
       _connectedDeviceId != null &&
       BleDebugRegistry.instance.currentState.cmdFound;
+  bool get hasShortCommandChannel =>
+      _connectedDeviceId != null &&
+      BleDebugRegistry.instance.currentState.inetFound;
 
   @override
   Future<DeviceStatus> pair({
@@ -258,7 +260,11 @@ class BleDeviceRuntimeProvider
     BleDebugRegistry.instance.recordEvent(
       'BLE SOS runtime attach requested -> deviceId=$deviceId inetAvailable=${BleDebugRegistry.instance.currentState.inetFound} cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound}',
     );
-    await _deviceSosController.attach(commandWriter: commandWriter);
+    await _deviceSosController.attach(
+      commandWriter: commandWriter,
+      shortCommandAvailable: BleDebugRegistry.instance.currentState.inetFound,
+      longCommandAvailable: BleDebugRegistry.instance.currentState.cmdFound,
+    );
     BleDebugRegistry.instance.recordEvent(
       'BLE SOS runtime attached -> deviceId=$deviceId inetAvailable=${BleDebugRegistry.instance.currentState.inetFound} cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound}',
     );

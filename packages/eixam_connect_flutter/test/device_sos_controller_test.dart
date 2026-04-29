@@ -78,6 +78,69 @@ void main() {
       expect(controller.currentStatus.state, DeviceSosState.active);
     });
 
+    test('short command path allows SOS cancel without long CMD', () async {
+      final commands = <EixamDeviceCommand>[];
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 40),
+        countdownTick: const Duration(milliseconds: 5),
+        appActivationObservationTimeout: const Duration(milliseconds: 60),
+      );
+      addTearDown(controller.dispose);
+      await controller.attach(
+        shortCommandAvailable: true,
+        longCommandAvailable: false,
+        commandWriter: (command) async {
+          commands.add(command);
+          if (command.opcode == 0x04) {
+            Future<void>.delayed(const Duration(milliseconds: 5), () {
+              controller.handleIncomingSosEventPacket(
+                EixamSosEventPacket.tryParse(
+                  <int>[0xE1, 0x01, 0x34, 0x12, 0x00, 0x00],
+                )!,
+                source: DeviceSosTransitionSource.device,
+              );
+            });
+          }
+        },
+      );
+
+      await controller.triggerSos();
+      final inactive = await controller.cancelSos();
+
+      expect(controller.shortCommandAvailable, isTrue);
+      expect(controller.longCommandAvailable, isFalse);
+      expect(commands.map((command) => command.opcode), <int>[0x06, 0x04]);
+      expect(commands.last.usesCmdCharacteristic, isFalse);
+      expect(inactive.state, DeviceSosState.inactive);
+    });
+
+    test('SOS ACK relay remains long-command only', () async {
+      final commands = <EixamDeviceCommand>[];
+      final controller = DeviceSosController();
+      addTearDown(controller.dispose);
+      await controller.attach(
+        shortCommandAvailable: true,
+        longCommandAvailable: false,
+        commandWriter: (command) async => commands.add(command),
+      );
+
+      await expectLater(
+        controller.sendAckRelay(nodeId: 0x1234),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            contains('longCommandAvailable=false'),
+          ),
+        ),
+      );
+
+      expect(
+          EixamDeviceCommand.sosAckRelay(nodeId: 0x1234).usesCmdCharacteristic,
+          isTrue);
+      expect(commands, isEmpty);
+    });
+
     test('app trigger -> preConfirm -> confirm -> active', () async {
       final commands = <EixamDeviceCommand>[];
       final controller = DeviceSosController(

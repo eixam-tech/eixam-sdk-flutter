@@ -64,6 +64,7 @@ class EixamConnectSdkImpl
   final SdkSessionStore? sessionStore;
   final SdkSessionContext? sessionContext;
   final SdkIdentityRemoteDataSource? identityRemoteDataSource;
+  final EixamNotificationPolicy notificationPolicy;
   final ProtectionPlatformAdapter protectionPlatformAdapter;
   final BackgroundTelemetryPlatformAdapter backgroundTelemetryPlatformAdapter;
   final Future<void> Function()? disposeCallback;
@@ -192,6 +193,7 @@ class EixamConnectSdkImpl
     this.sessionStore,
     this.sessionContext,
     this.identityRemoteDataSource,
+    this.notificationPolicy = EixamNotificationPolicy.sdkManaged,
     ProtectionPlatformAdapter? protectionPlatformAdapter,
     BackgroundTelemetryPlatformAdapter? backgroundTelemetryPlatformAdapter,
     Duration appTriggeredSosBridgeWindow = _defaultAppTriggeredSosBridgeWindow,
@@ -1121,22 +1123,35 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> sendInetOkToDevice() {
-    return deviceSosController.sendInetOk();
+    return deviceSosController.sendInetOk(
+      commandWriterOverride: _sendDeviceCommandThroughActiveOwner,
+      commandRouteLabel: _currentDeviceCommandOwnerRoute,
+    );
   }
 
   @override
   Future<void> sendInetLostToDevice() {
-    return deviceSosController.sendInetLost();
+    return deviceSosController.sendInetLost(
+      commandWriterOverride: _sendDeviceCommandThroughActiveOwner,
+      commandRouteLabel: _currentDeviceCommandOwnerRoute,
+    );
   }
 
   @override
   Future<void> sendPositionConfirmedToDevice() {
-    return deviceSosController.sendPositionConfirmed();
+    return deviceSosController.sendPositionConfirmed(
+      commandWriterOverride: _sendDeviceCommandThroughActiveOwner,
+      commandRouteLabel: _currentDeviceCommandOwnerRoute,
+    );
   }
 
   @override
   Future<void> sendSosAckRelayToDevice({required int nodeId}) {
-    return deviceSosController.sendAckRelay(nodeId: nodeId);
+    return deviceSosController.sendAckRelay(
+      nodeId: nodeId,
+      commandWriterOverride: _sendDeviceCommandThroughActiveOwner,
+      commandRouteLabel: _currentDeviceCommandOwnerRoute,
+    );
   }
 
   @override
@@ -1458,6 +1473,13 @@ class EixamConnectSdkImpl
       return;
     }
 
+    if (!_sdkSosNotificationsEnabled) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS notification skipped -> reason=host_app_managed cycleKey=$cycleKey state=${status.state.name}',
+      );
+      return;
+    }
+
     if (_shouldSuppressExternalSosNotificationForSelfNode(status)) {
       BleDebugRegistry.instance.recordEvent(
         'SOS notification skipped -> reason=self_node nodeId=${_formatNodeId(status.nodeId)}',
@@ -1534,6 +1556,9 @@ class EixamConnectSdkImpl
   bool _isSosCycleClosed(DeviceSosState state) {
     return state == DeviceSosState.inactive || state == DeviceSosState.resolved;
   }
+
+  bool get _sdkSosNotificationsEnabled =>
+      notificationPolicy != EixamNotificationPolicy.hostAppManaged;
 
   bool _shouldSuppressExternalSosNotificationForSelfNode(
     DeviceSosStatus status,
@@ -1908,7 +1933,7 @@ class EixamConnectSdkImpl
         reason: 'trigger_sos_start',
       );
       BleDebugRegistry.instance.recordEvent(
-        'triggerSos() start -> backendAvailable=${capabilitySnapshot.backendAvailable} cachedDeviceConnected=${_lastDeviceStatus?.connected} commandPath=${capabilitySnapshot.hasSosCommandPath} currentCapability=${capabilitySnapshot.capability?.name ?? "unavailable"} activeOwner=$_currentDeviceCommandOwnerRoute',
+        'triggerSos() start -> backendAvailable=${capabilitySnapshot.backendAvailable} cachedDeviceConnected=${_lastDeviceStatus?.connected} shortCommandAvailable=${capabilitySnapshot.shortCommandAvailable} longCommandAvailable=${capabilitySnapshot.longCommandAvailable} currentCapability=${capabilitySnapshot.capability?.name ?? "unavailable"} activeOwner=$_currentDeviceCommandOwnerRoute',
       );
       final deviceSync = skipDeviceAction
           ? _PublicSosDeviceAttempt(
@@ -2446,7 +2471,7 @@ class EixamConnectSdkImpl
         return null;
       }
 
-      if (!capabilitySnapshot.hasSosCommandPath) {
+      if (!capabilitySnapshot.shortCommandAvailable) {
         BleDebugRegistry.instance.recordEvent(
           'Public SOS device sync skipped -> action=$action reason=sos_command_path_unavailable deviceId=${status.deviceId} activeOwner=$_currentDeviceCommandOwnerRoute',
         );
@@ -3746,7 +3771,8 @@ class EixamConnectSdkImpl
       return;
     }
 
-    if (!deviceSosController.hasSosCommandPath) {
+    if (!deviceSosController.shortCommandAvailable &&
+        !deviceSosController.longCommandAvailable) {
       BleDebugRegistry.instance.recordEvent(
         'Flutter writer command rejected -> owner=$ownerRoute command=${command.label} reason=writer_unavailable',
       );
@@ -4239,9 +4265,9 @@ class EixamConnectSdkImpl
 
       var ackRelaySent = false;
       String? ackRelayErrorMessage;
-      if (!deviceSosController.hasSosCommandPath) {
+      if (!deviceSosController.longCommandAvailable) {
         _logSosTrace(
-          'ack_relay_pending_no_command_path '
+          'ack_relay_pending_no_long_command_path '
           'originatorNodeId=${snapshot.originatorNodeId} '
           'relayNodeId=${snapshot.relayNodeId ?? "none"}',
         );
@@ -4321,6 +4347,14 @@ class EixamConnectSdkImpl
   Future<void> _showRemoteRelaySosNotification(
     RemoteRelaySosSnapshot snapshot,
   ) async {
+    if (!_sdkSosNotificationsEnabled) {
+      BleDebugRegistry.instance.recordEvent(
+        '[REMOTE_RELAY_SOS] notification_skipped '
+        'originatorNodeId=${snapshot.originatorNodeId} reason=host_app_managed',
+      );
+      return;
+    }
+
     PermissionState? permissionState;
     Object? permissionError;
     try {
@@ -4630,7 +4664,8 @@ class EixamConnectSdkImpl
     final platformOwnsBle = _isPlatformBleOwner(protectionStatus.bleOwner);
     final chosenConnected =
         statusOverride?.connected ?? _lastDeviceStatus?.connected;
-    final flutterCommandPath = deviceSosController.hasSosCommandPath;
+    final flutterShortCommandPath = deviceSosController.shortCommandAvailable;
+    final flutterLongCommandPath = deviceSosController.longCommandAvailable;
     final serviceBleConnected =
         platformOwnsBle ? protectionStatus.serviceBleConnected : null;
     final serviceBleReady =
@@ -4639,11 +4674,16 @@ class EixamConnectSdkImpl
         ? protectionStatus.deviceConnected ||
             protectionStatus.serviceBleConnected ||
             protectionStatus.serviceBleReady
-        : (chosenConnected ?? false) || flutterCommandPath;
-    final hasSosCommandPath = platformOwnsBle
-        ? protectionStatus.serviceBleReady || flutterCommandPath
-        : flutterCommandPath;
-    final deviceSosAvailable = deviceConnected && hasSosCommandPath;
+        : (chosenConnected ?? false) ||
+            flutterShortCommandPath ||
+            flutterLongCommandPath;
+    final shortCommandAvailable = platformOwnsBle
+        ? protectionStatus.serviceBleReady || flutterShortCommandPath
+        : flutterShortCommandPath;
+    final longCommandAvailable = platformOwnsBle
+        ? protectionStatus.serviceBleReady || flutterLongCommandPath
+        : flutterLongCommandPath;
+    final deviceSosAvailable = deviceConnected && shortCommandAvailable;
     final capability = backendAvailable
         ? (deviceSosAvailable
             ? SosDeliveryChannel.backendAndDevice
@@ -4657,7 +4697,8 @@ class EixamConnectSdkImpl
       'chosenConnected=${chosenConnected ?? false} '
       'serviceBleConnected=${serviceBleConnected ?? false} '
       'serviceBleReady=${serviceBleReady ?? false} '
-      'hasSosCommandPath=$hasSosCommandPath '
+      'shortCommandAvailable=$shortCommandAvailable '
+      'longCommandAvailable=$longCommandAvailable '
       'result=${capability?.name ?? "unavailable"}',
     );
 
@@ -4667,7 +4708,8 @@ class EixamConnectSdkImpl
       chosenConnected: chosenConnected ?? false,
       serviceBleConnected: serviceBleConnected,
       serviceBleReady: serviceBleReady,
-      hasSosCommandPath: hasSosCommandPath,
+      shortCommandAvailable: shortCommandAvailable,
+      longCommandAvailable: longCommandAvailable,
       deviceSosAvailable: deviceSosAvailable,
       capability: capability,
     );
@@ -4703,16 +4745,6 @@ class EixamConnectSdkImpl
 
   bool _isPlatformBleOwner(ProtectionBleOwner owner) {
     return owner != ProtectionBleOwner.flutter;
-  }
-
-  bool _hasDeviceSosCommandPath({
-    DeviceStatus? status,
-    String trigger = 'unspecified',
-  }) {
-    return _computeCurrentSosCapabilitySnapshot(
-      reason: trigger,
-      statusOverride: status,
-    ).hasSosCommandPath;
   }
 
   InMemoryDeviceRepository _requireCommandCapableDeviceRepository() {
@@ -4755,6 +4787,8 @@ class EixamConnectSdkImpl
       sosRehydrationNote: _lastSosRehydrationNote,
       backendSosAvailable: capabilitySnapshot.backendAvailable,
       deviceSosAvailable: capabilitySnapshot.deviceSosAvailable,
+      shortCommandAvailable: capabilitySnapshot.shortCommandAvailable,
+      longCommandAvailable: capabilitySnapshot.longCommandAvailable,
       lastPublicSosDeliveryChannel: _lastPublicSosDeliveryChannel,
       lastTelRelayRx: _lastTelRelayRx,
       backgroundTelemetryEnabled: _backgroundTelemetryEnabled,
@@ -5082,7 +5116,8 @@ class _CurrentSosCapabilitySnapshot {
     required this.chosenConnected,
     required this.serviceBleConnected,
     required this.serviceBleReady,
-    required this.hasSosCommandPath,
+    required this.shortCommandAvailable,
+    required this.longCommandAvailable,
     required this.deviceSosAvailable,
     required this.capability,
   });
@@ -5092,7 +5127,8 @@ class _CurrentSosCapabilitySnapshot {
   final bool chosenConnected;
   final bool? serviceBleConnected;
   final bool? serviceBleReady;
-  final bool hasSosCommandPath;
+  final bool shortCommandAvailable;
+  final bool longCommandAvailable;
   final bool deviceSosAvailable;
   final SosDeliveryChannel? capability;
 }

@@ -29,6 +29,8 @@ class DeviceSosController {
       StreamController<bool>.broadcast();
 
   DeviceCommandWriter? _commandWriter;
+  bool _shortCommandAvailable = false;
+  bool _longCommandAvailable = false;
   DeviceSosStatus _status = DeviceSosStatus.initial();
   final Duration _countdownDuration;
   final Duration _countdownTick;
@@ -40,18 +42,28 @@ class DeviceSosController {
   static const Duration _terminalCycleSuppressionWindow = Duration(seconds: 5);
 
   DeviceSosStatus get currentStatus => _status;
-  bool get hasSosCommandPath => _commandWriter != null;
-  bool get hasCommandChannel => hasSosCommandPath;
+  bool get shortCommandAvailable =>
+      _commandWriter != null && _shortCommandAvailable;
+  bool get longCommandAvailable =>
+      _commandWriter != null && _longCommandAvailable;
+  bool get hasSosCommandPath => shortCommandAvailable;
+  bool get hasCommandChannel => longCommandAvailable;
   Stream<bool> watchCommandPathAvailability() async* {
     yield hasSosCommandPath;
     yield* _commandPathController.stream;
   }
 
-  Future<void> attach({required DeviceCommandWriter commandWriter}) async {
+  Future<void> attach({
+    required DeviceCommandWriter commandWriter,
+    bool shortCommandAvailable = true,
+    bool longCommandAvailable = true,
+  }) async {
     final previousAvailability = hasSosCommandPath;
     _commandWriter = commandWriter;
+    _shortCommandAvailable = shortCommandAvailable;
+    _longCommandAvailable = longCommandAvailable;
     BleDebugRegistry.instance.recordEvent(
-      'Device SOS command path attached -> available=$hasSosCommandPath previous=$previousAvailability',
+      'Device SOS command path attached -> available=$hasSosCommandPath previous=$previousAvailability shortCommandAvailable=${this.shortCommandAvailable} longCommandAvailable=${this.longCommandAvailable}',
     );
     _emitCommandPathAvailabilityIfChanged(previousAvailability);
     _emit(
@@ -65,6 +77,8 @@ class DeviceSosController {
   Future<void> detach() async {
     final previousAvailability = hasSosCommandPath;
     _commandWriter = null;
+    _shortCommandAvailable = false;
+    _longCommandAvailable = false;
     _awaitingObservedAppActivation = false;
     BleDebugRegistry.instance.recordEvent(
       'Device SOS command path detached -> available=$hasSosCommandPath previous=$previousAvailability',
@@ -167,10 +181,14 @@ class DeviceSosController {
     if (writer == null) {
       throw StateError('Device SOS command channel is not ready.');
     }
+    final command = EixamDeviceCommand.sosCancel();
+    if (commandWriterOverride == null) {
+      _ensureCommandAvailable(command: command);
+    }
     final previous = _status;
     await _dispatchCommand(
       writer: writer,
-      command: EixamDeviceCommand.sosCancel(),
+      command: command,
       previous: previous,
       failureEvent: 'SOS cancel write failed',
       commandRouteLabel: commandRouteLabel,
@@ -272,6 +290,9 @@ class DeviceSosController {
     if (writer == null) {
       throw StateError('Device SOS command channel is not ready.');
     }
+    if (commandWriterOverride == null) {
+      _ensureCommandAvailable(command: command);
+    }
 
     final previous = _status;
     final now = _now();
@@ -372,11 +393,15 @@ class DeviceSosController {
     if (writer == null) {
       throw StateError('Device SOS command channel is not ready.');
     }
+    final command = EixamDeviceCommand.sosConfirm();
+    if (commandWriterOverride == null) {
+      _ensureCommandAvailable(command: command);
+    }
     final previous = _status;
     _awaitingObservedAppActivation = true;
     await _dispatchCommand(
       writer: writer,
-      command: EixamDeviceCommand.sosConfirm(),
+      command: command,
       previous: previous,
       failureEvent: 'SOS confirm write failed',
       commandRouteLabel: commandRouteLabel,
@@ -392,12 +417,30 @@ class DeviceSosController {
     if (writer == null) {
       throw StateError('Device command channel is not ready.');
     }
+    if (commandWriterOverride == null) {
+      _ensureCommandAvailable(command: command);
+    }
     BleDebugRegistry.instance.recordEvent(
       'Device command dispatch -> route=$commandRouteLabel command=${command.label}',
     );
     await writer(command);
     BleDebugRegistry.instance.recordEvent(
       'Device command sent -> route=$commandRouteLabel command=${command.label}',
+    );
+  }
+
+  void _ensureCommandAvailable({required EixamDeviceCommand command}) {
+    final available = command.usesCmdCharacteristic
+        ? longCommandAvailable
+        : shortCommandAvailable;
+    if (available) {
+      return;
+    }
+    final readiness = command.usesCmdCharacteristic
+        ? 'longCommandAvailable=$longCommandAvailable'
+        : 'shortCommandAvailable=$shortCommandAvailable';
+    throw StateError(
+      '${command.label} is unavailable because the required BLE command path is not ready ($readiness).',
     );
   }
 
