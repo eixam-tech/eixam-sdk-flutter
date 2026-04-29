@@ -13,6 +13,7 @@ import 'package:eixam_connect_flutter/src/data/dtos/sos_incident_dto.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/mqtt_operational_sos_repository.dart';
 import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
 import 'package:eixam_connect_flutter/src/sdk/operational_realtime_client.dart';
+import 'package:eixam_connect_flutter/src/sdk/protection_platform_adapter.dart';
 import 'package:eixam_connect_flutter/src/sdk/sdk_mqtt_contract.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -112,9 +113,9 @@ void main() {
       final request = realtimeClient.publishedSos.single;
       expect(request.deviceId, '16909060');
       expect(request.timestamp, DateTime.utc(2026, 4, 28, 10, 15));
-      expect(request.positionSnapshot.latitude, 41.3874);
-      expect(request.positionSnapshot.longitude, 2.1686);
-      expect(request.positionSnapshot.altitude, 42.5);
+      expect(request.positionSnapshot!.latitude, 41.3874);
+      expect(request.positionSnapshot!.longitude, 2.1686);
+      expect(request.positionSnapshot!.altitude, 42.5);
       expect(events.whereType<RemoteRelaySosObservedEvent>(), isNotEmpty);
       expect(
         events
@@ -140,24 +141,23 @@ void main() {
       expect(realtimeClient.publishedSos.single.deviceId, isNot('9999'));
     });
 
-    test('without location skips backend publish and does not send zeroes',
+    test('without location still publishes backend SOS and sends ACK_RELAY',
         () async {
       final events = <EixamSdkEvent>[];
       final subscription = sdk.watchEvents().listen(events.add);
 
       bleEvents.add(_remoteRelayEvent(snapshot: _snapshot(location: null)));
-      await _eventually(
-        () => events
-            .whereType<RemoteRelaySosBackendHandoffResultEvent>()
-            .isNotEmpty,
-      );
+      await _eventually(() => realtimeClient.publishedSos.length == 1);
+      await _eventually(() => deviceCommands.length == 1);
 
-      expect(realtimeClient.publishedSos, isEmpty);
-      expect(deviceCommands, isEmpty);
+      final request = realtimeClient.publishedSos.single;
+      expect(request.deviceId, '16909060');
+      expect(request.positionSnapshot, isNull);
+      expect(deviceCommands.single.bytes, <int>[0x08, 0x04, 0x03, 0x02, 0x01]);
       final result =
           events.whereType<RemoteRelaySosBackendHandoffResultEvent>().single;
-      expect(result.status, RemoteRelaySosBackendHandoffStatus.skipped);
-      expect(result.reason, 'missing_remote_position');
+      expect(result.status, RemoteRelaySosBackendHandoffStatus.submitted);
+      expect(result.ackRelaySent, isTrue);
 
       await subscription.cancel();
     });
@@ -233,6 +233,62 @@ void main() {
       expect(sosRepository.triggerCallCount, 1);
       expect(sosRepository.lastMessage, 'local SOS');
       expect(realtimeClient.publishedSos, isEmpty);
+    });
+
+    test('platform unknown-origin SOS does not enter deviceSosController',
+        () async {
+      await sdk.dispose();
+      final platformEvents =
+          StreamController<ProtectionPlatformEvent>.broadcast();
+      final platformAdapter = _FakeProtectionPlatformAdapter(
+        platformEvents: platformEvents.stream,
+      );
+      deviceSosController = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 40),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      deviceCommands = <EixamDeviceCommand>[];
+      await deviceSosController.attach(
+        commandWriter: (command) async {
+          deviceCommands.add(command);
+        },
+      );
+      sdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: realtimeClient,
+        deviceSosController: deviceSosController,
+        bleIncomingEvents: bleEvents.stream,
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: platformAdapter,
+      );
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+      );
+      await sdk.enterProtectionMode();
+
+      platformEvents.add(
+        ProtectionPlatformEvent(
+          type: ProtectionPlatformEventType.sosEventReceived,
+          timestamp: DateTime.utc(2026, 4, 28, 10, 30),
+          reason: '78563412004009',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+
+      expect((await deviceSosController.getStatus()).state,
+          DeviceSosState.inactive);
+      expect(await sdk.getPreSosStatus(), isNull);
+      expect(deviceCommands, isEmpty);
+
+      await platformEvents.close();
     });
 
     group('remote relay cancel handoff', () {
@@ -513,6 +569,78 @@ class _FakeCancelRemoteDataSource implements SosRemoteDataSource {
 
   @override
   Future<SosIncidentDto?> getActiveSos() async => null;
+}
+
+class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
+  _FakeProtectionPlatformAdapter({
+    required this.platformEvents,
+  });
+
+  final Stream<ProtectionPlatformEvent> platformEvents;
+
+  @override
+  ProtectionPlatform get platform => ProtectionPlatform.android;
+
+  @override
+  Future<ProtectionPlatformSnapshot> getPlatformSnapshot() async {
+    return const ProtectionPlatformSnapshot(
+      backgroundCapabilityReady: true,
+      platformRuntimeConfigured: true,
+      foregroundServiceConfigured: true,
+      serviceRunning: true,
+      runtimeActive: true,
+      platform: ProtectionPlatform.android,
+      bleOwner: ProtectionBleOwner.androidService,
+      serviceBleConnected: true,
+      serviceBleReady: true,
+      runtimeState: ProtectionRuntimeState.active,
+      coverageLevel: ProtectionCoverageLevel.full,
+      protectedDeviceId: 'relay-tag',
+      activeDeviceId: 'relay-tag',
+    );
+  }
+
+  @override
+  Future<ProtectionPlatformStartResult> startProtectionRuntime({
+    required ProtectionPlatformStartRequest request,
+  }) async {
+    return const ProtectionPlatformStartResult(success: true);
+  }
+
+  @override
+  Future<void> stopProtectionRuntime() async {}
+
+  @override
+  Future<void> ensureProtectionRuntimeActive({
+    String reason = 'app_foreground_resume',
+  }) async {}
+
+  @override
+  Future<ProtectionPlatformFlushResult> flushProtectionQueues() async {
+    return const ProtectionPlatformFlushResult();
+  }
+
+  @override
+  Future<ProtectionPlatformCommandResult> sendProtectionCommand({
+    required ProtectionPlatformCommandRequest request,
+  }) async {
+    return const ProtectionPlatformCommandResult(success: true);
+  }
+
+  @override
+  Future<ProtectionPermissionResult> requestProtectionPermissions() async {
+    return const ProtectionPermissionResult(
+      locationGranted: true,
+      notificationsGranted: true,
+      bluetoothGranted: true,
+    );
+  }
+
+  @override
+  Future<void> openProtectionSettings() async {}
+
+  @override
+  Stream<ProtectionPlatformEvent> watchPlatformEvents() => platformEvents;
 }
 
 const Object _defaultRemoteRelayLocation = Object();

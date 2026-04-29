@@ -33,7 +33,7 @@ class SdkMqttEnvelope {
 class MqttOperationalSosRequest {
   const MqttOperationalSosRequest({
     required this.timestamp,
-    required this.positionSnapshot,
+    this.positionSnapshot,
     this.sdkUserId,
     this.deviceId,
     this.deviceBattery,
@@ -43,7 +43,7 @@ class MqttOperationalSosRequest {
   });
 
   final DateTime timestamp;
-  final TrackingPosition positionSnapshot;
+  final TrackingPosition? positionSnapshot;
   final String? sdkUserId;
   final String? deviceId;
   final SdkDeviceBatterySnapshot? deviceBattery;
@@ -124,9 +124,11 @@ class SdkMqttContract {
   ) {
     final payload = <String, dynamic>{
       'timestamp': request.timestamp.toUtc().toIso8601String(),
-      'latitude': request.positionSnapshot.latitude,
-      'longitude': request.positionSnapshot.longitude,
-      'altitude': request.positionSnapshot.altitude ?? 0.0,
+      if (request.positionSnapshot != null) ...{
+        'latitude': request.positionSnapshot!.latitude,
+        'longitude': request.positionSnapshot!.longitude,
+        'altitude': request.positionSnapshot!.altitude ?? 0.0,
+      },
       if (request.sdkUserId != null && request.sdkUserId!.trim().isNotEmpty)
         'userId': request.sdkUserId!.trim(),
       if (request.deviceId != null && request.deviceId!.trim().isNotEmpty)

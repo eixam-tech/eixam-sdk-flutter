@@ -33,7 +33,14 @@ internal object ProtectionBleSosIdentityClassifier {
         if (sosPacket.sosType == 0) {
             return ProtectionBleSosIdentityClassification.Unknown
         }
-        if (connectedNodeId == null || sosPacket.nodeId == connectedNodeId) {
+        if (connectedNodeId == null) {
+            return ProtectionBleSosIdentityClassification.UnknownOriginSos(
+                originatorNodeId = sosPacket.nodeId,
+                source = source,
+                rawPayload = payload,
+            )
+        }
+        if (sosPacket.nodeId == connectedNodeId) {
             return ProtectionBleSosIdentityClassification.OwnSos
         }
         return ProtectionBleSosIdentityClassification.RemoteSos(
@@ -96,6 +103,12 @@ internal sealed class ProtectionBleSosIdentityClassification {
     data object Unknown : ProtectionBleSosIdentityClassification()
     data object OwnSos : ProtectionBleSosIdentityClassification()
     data object OwnEvent : ProtectionBleSosIdentityClassification()
+
+    data class UnknownOriginSos(
+        val originatorNodeId: Int,
+        val source: ProtectionBleSosRelaySource,
+        val rawPayload: List<Int>,
+    ) : ProtectionBleSosIdentityClassification()
 
     data class RemoteSos(
         val originatorNodeId: Int,

@@ -26,7 +26,8 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     int? mobileBattery,
     SdkCoverageSnapshot? mobileCoverage,
   }) async {
-    if (positionSnapshot == null) {
+    final allowsMissingPosition = triggerSource == 'remote_lora_relay';
+    if (positionSnapshot == null && !allowsMissingPosition) {
       throw const SosException(
         'E_HTTP_SOS_POSITION_REQUIRED',
         'The production SOS HTTP endpoint requires a position snapshot.',
@@ -36,10 +37,13 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     final response = await transport.post(
       '/v1/sdk/sos',
       body: jsonEncode({
-        'timestamp': positionSnapshot.timestamp.toIso8601String(),
-        'latitude': positionSnapshot.latitude,
-        'longitude': positionSnapshot.longitude,
-        'altitude': positionSnapshot.altitude,
+        'timestamp': (positionSnapshot?.timestamp ?? DateTime.now().toUtc())
+            .toIso8601String(),
+        if (positionSnapshot != null) ...{
+          'latitude': positionSnapshot.latitude,
+          'longitude': positionSnapshot.longitude,
+          'altitude': positionSnapshot.altitude,
+        },
         if (deviceId != null && deviceId.trim().isNotEmpty)
           'deviceId': deviceId.trim(),
         if (deviceBattery != null) 'deviceBattery': deviceBattery.toJson(),

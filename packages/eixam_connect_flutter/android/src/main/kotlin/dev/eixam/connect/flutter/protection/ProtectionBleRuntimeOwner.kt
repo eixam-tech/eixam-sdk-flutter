@@ -61,6 +61,7 @@ internal class ProtectionBleRuntimeOwner(
             return
         }
         targetDeviceId = deviceId
+        connectedBleNodeId = null
         this.reconnectBackoffMs = reconnectBackoffMs.coerceAtLeast(1000L)
         isStopping = false
         runtimeActive = true
@@ -248,6 +249,7 @@ internal class ProtectionBleRuntimeOwner(
         reconnectRunnable?.let(mainHandler::removeCallbacks)
         reconnectRunnable = null
         connectionInFlight = true
+        connectedBleNodeId = null
         clearCharacteristicRefs()
         subscriptionStep = SubscriptionStep.idle
         runtimeStore.recordReadinessFailureReason(
@@ -492,6 +494,11 @@ internal class ProtectionBleRuntimeOwner(
                     return
                 }
 
+                is ProtectionBleSosIdentityClassification.UnknownOriginSos -> {
+                    recordUnknownOriginSosPayload(classification)
+                    return
+                }
+
                 ProtectionBleSosIdentityClassification.OwnSos -> {
                     ProtectionRuntimeBridge.recordBleEvent(
                         context = context,
@@ -519,6 +526,11 @@ internal class ProtectionBleRuntimeOwner(
                     return
                 }
 
+                is ProtectionBleSosIdentityClassification.UnknownOriginSos -> {
+                    recordUnknownOriginSosPayload(classification)
+                    return
+                }
+
                 is ProtectionBleSosIdentityClassification.RemoteEvent -> {
                     recordRemoteRelayEventPayload(classification)
                     return
@@ -533,6 +545,23 @@ internal class ProtectionBleRuntimeOwner(
             )
             observeSosLifecycle(payload)
         }
+    }
+
+    private fun recordUnknownOriginSosPayload(
+        classification: ProtectionBleSosIdentityClassification.UnknownOriginSos,
+    ) {
+        ProtectionRuntimeBridge.recordBleEvent(
+            context = context,
+            type = "unknownOriginSosReceived",
+            reason =
+                "originatorNodeId=${classification.originatorNodeId};source=${classification.source.name}",
+        )
+        ProtectionRuntimeBridge.recordPlatformEvent(
+            context = context,
+            type = "sosEventReceived",
+            reason =
+                "unknown:${classification.source.name}:${payloadHex(classification.rawPayload)}",
+        )
     }
 
     private fun recordRemoteRelaySosPayload(

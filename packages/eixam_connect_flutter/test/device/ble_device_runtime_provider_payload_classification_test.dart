@@ -26,7 +26,8 @@ void main() {
       await bleClient.dispose();
     });
 
-    test('classifies a 12-byte TEL notify as SOS when SOS decode is valid', () async {
+    test('classifies a 12-byte TEL notify as SOS when SOS decode is valid',
+        () async {
       await runtimeProvider.requestDeviceRuntimeStatus();
       final nextEvent = _nextIncomingEvent(runtimeProvider);
 
@@ -56,6 +57,73 @@ void main() {
       expect(
         (await runtimeProvider.deviceSosController.getStatus()).state,
         isNot(DeviceSosState.inactive),
+      );
+    });
+
+    test(
+        'classifies valid SOS notify with unknown connected node as unknown origin and keeps local SOS inactive',
+        () async {
+      final nextEvent = _nextIncomingEvent(runtimeProvider);
+
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.sos,
+        payload: const <int>[
+          0x78,
+          0x56,
+          0x34,
+          0x12,
+          0x00,
+          0x40,
+          0x09,
+        ],
+      );
+
+      final event = await nextEvent;
+      expect(event.type, BleIncomingEventType.sosMeshPacket);
+      expect(
+          event.classification.kind, BleIncomingPayloadKind.unknownOriginSos);
+      expect(event.sosPacket?.nodeId, 0x12345678);
+      expect(event.remoteRelaySosSnapshot, isNull);
+      expect(
+        (await runtimeProvider.deviceSosController.getStatus()).state,
+        DeviceSosState.inactive,
+      );
+    });
+
+    test(
+        'classifies valid TEL SOS with unknown connected node as unknown origin instead of TEL or own SOS',
+        () async {
+      final nextEvent = _nextIncomingEvent(runtimeProvider);
+
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.tel,
+        payload: const <int>[
+          0x78,
+          0x56,
+          0x34,
+          0x12,
+          0x48,
+          0xCD,
+          0x1B,
+          0x34,
+          0x44,
+          0x28,
+          0x00,
+          0x40,
+        ],
+      );
+
+      final event = await nextEvent;
+      expect(event.type, BleIncomingEventType.unknownProtocolPacket);
+      expect(
+          event.classification.kind, BleIncomingPayloadKind.unknownOriginSos);
+      expect(event.telPacket, isNull);
+      expect(event.sosPacket, isNull);
+      expect(
+        (await runtimeProvider.deviceSosController.getStatus()).state,
+        DeviceSosState.inactive,
       );
     });
 
@@ -152,7 +220,8 @@ void main() {
       );
     });
 
-    test('classifies a 12-byte TEL notify as TEL when SOS decode is not valid', () async {
+    test('classifies a 12-byte TEL notify as TEL when SOS decode is not valid',
+        () async {
       final nextEvent = _nextIncomingEvent(runtimeProvider);
 
       bleClient.emitNotification(
@@ -170,7 +239,7 @@ void main() {
           0x05,
           0x06,
           0x87,
-          0x65,
+          0x25,
         ],
       );
 
@@ -179,7 +248,8 @@ void main() {
       expect(event.telPacket?.nodeId, 0x12345678);
     });
 
-    test('classifies a port 260 12-byte TEL notify as cluster heartbeat', () async {
+    test('classifies a port 260 12-byte TEL notify as cluster heartbeat',
+        () async {
       final nextEvent = _nextIncomingEvent(runtimeProvider);
 
       bleClient.emitNotification(

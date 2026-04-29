@@ -3802,6 +3802,7 @@ class EixamConnectSdkImpl
       rawHex: rawHex,
       source: payloadReason.source,
       relayNodeId: payloadReason.relayNodeId,
+      forceUnknownIdentity: payloadReason.identityUnknown,
     );
     final remoteRelaySnapshot = remoteClassification.remoteRelaySosSnapshot;
     if (remoteRelaySnapshot != null) {
@@ -3814,6 +3815,12 @@ class EixamConnectSdkImpl
       _publishSdkEvent(RemoteRelaySosObservedEvent(remoteRelaySnapshot));
       unawaited(
         _handleRemoteRelaySosBackendHandoff(remoteRelaySnapshot),
+      );
+      return;
+    }
+    if (remoteClassification.kind == BleIncomingPayloadKind.unknownOriginSos) {
+      BleDebugRegistry.instance.recordEvent(
+        'Protection SOS payload held -> reason=unknown_connected_node_identity payload=$rawHex',
       );
       return;
     }
@@ -4040,32 +4047,19 @@ class EixamConnectSdkImpl
     }
     _remoteRelaySosBackendHandoffBySignature[signature] = now;
 
-    final location = snapshot.location;
-    if (!_hasValidRemoteRelayLocation(location)) {
-      BleDebugRegistry.instance.recordEvent(
-        '[REMOTE_RELAY_SOS] backend_handoff_skipped '
-        'reason=missing_remote_position '
-        'originatorNodeId=${snapshot.originatorNodeId}',
-      );
-      _publishSdkEvent(
-        RemoteRelaySosBackendHandoffResultEvent(
-          snapshot: snapshot,
-          status: RemoteRelaySosBackendHandoffStatus.skipped,
-          reason: 'missing_remote_position',
-        ),
-      );
-      return;
-    }
-
     final deviceId = snapshot.originatorNodeId.toString();
-    final positionSnapshot = _remoteRelayBackendPosition(
-      location: location!,
-      receivedAt: snapshot.receivedAt,
-    );
+    final location = snapshot.location;
+    final positionSnapshot = _hasValidRemoteRelayLocation(location)
+        ? _remoteRelayBackendPosition(
+            location: location!,
+            receivedAt: snapshot.receivedAt,
+          )
+        : null;
     BleDebugRegistry.instance.recordEvent(
       '[REMOTE_RELAY_SOS] backend_handoff_start '
       'originatorNodeId=${snapshot.originatorNodeId} '
-      'deviceId=$deviceId',
+      'deviceId=$deviceId '
+      'hasLocation=${positionSnapshot != null}',
     );
 
     try {
@@ -4253,7 +4247,7 @@ class EixamConnectSdkImpl
 
   Future<void> _submitRemoteRelaySosToBackend({
     required RemoteRelaySosSnapshot snapshot,
-    required TrackingPosition positionSnapshot,
+    required TrackingPosition? positionSnapshot,
     required String deviceId,
   }) async {
     final operationalClient = _remoteRelayOperationalRealtimeClient();
@@ -4532,6 +4526,15 @@ class EixamConnectSdkImpl
         relayNodeId: int.tryParse(parts[2]),
       );
     }
+    if (parts.length == 3 && parts[0] == 'unknown') {
+      return _ProtectionSosPayloadReason(
+        payloadHex: parts[2],
+        source: parts[1] == 'tel'
+            ? RemoteRelaySosSource.telRelay
+            : RemoteRelaySosSource.sosNotify,
+        identityUnknown: true,
+      );
+    }
     return _ProtectionSosPayloadReason(payloadHex: rawReason);
   }
 
@@ -4540,6 +4543,7 @@ class EixamConnectSdkImpl
     required String rawHex,
     required RemoteRelaySosSource? source,
     required int? relayNodeId,
+    required bool forceUnknownIdentity,
   }) {
     final channel = source == RemoteRelaySosSource.telRelay
         ? EixamBleChannel.tel
@@ -4550,9 +4554,10 @@ class EixamConnectSdkImpl
       receivedAt: DateTime.now().toUtc(),
       source: DeviceSosTransitionSource.device,
       channel: channel,
-      connectedBleTagNodeId: relayNodeId ?? _knownLocalDeviceNodeId,
+      connectedBleTagNodeId:
+          forceUnknownIdentity ? null : relayNodeId ?? _knownLocalDeviceNodeId,
       fallbackOnUnknownConnectedNode: const BleIncomingPayloadClassification(
-        kind: BleIncomingPayloadKind.ownDeviceSos,
+        kind: BleIncomingPayloadKind.unknownOriginSos,
       ),
     );
   }
@@ -4792,11 +4797,13 @@ class _ProtectionSosPayloadReason {
     this.payloadHex,
     this.source,
     this.relayNodeId,
+    this.identityUnknown = false,
   });
 
   final String? payloadHex;
   final RemoteRelaySosSource? source;
   final int? relayNodeId;
+  final bool identityUnknown;
 }
 
 class _OperationalSosMetadata {

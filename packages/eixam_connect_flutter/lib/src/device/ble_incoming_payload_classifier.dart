@@ -30,23 +30,23 @@ class BleIncomingPayloadClassifier {
       return BleIncomingPayloadClassification(
         kind: classification,
         sosEventPacket: eventPacket,
-        remoteRelaySosSnapshot:
-            _isRemoteTerminalEvent(classification, eventPacket, connectedBleTagNodeId)
-                ? RemoteRelaySosSnapshot(
-                    kind: classification == BleIncomingPayloadKind.sosClear
-                        ? RemoteRelaySosKind.clear
-                        : RemoteRelaySosKind.cancel,
-                    originatorNodeId: eventPacket.nodeId,
-                    relayNodeId: connectedBleTagNodeId,
-                    source: _remoteSourceFor(channel),
-                    sosType: 0,
-                    receivedAt: receivedAt,
-                    rawPayload: List<int>.unmodifiable(payload),
-                    payloadHex: payloadHex,
-                    eventOpcode: eventPacket.opcode,
-                    eventSubcode: eventPacket.subcode,
-                  )
-                : null,
+        remoteRelaySosSnapshot: _isRemoteTerminalEvent(
+                classification, eventPacket, connectedBleTagNodeId)
+            ? RemoteRelaySosSnapshot(
+                kind: classification == BleIncomingPayloadKind.sosClear
+                    ? RemoteRelaySosKind.clear
+                    : RemoteRelaySosKind.cancel,
+                originatorNodeId: eventPacket.nodeId,
+                relayNodeId: connectedBleTagNodeId,
+                source: _remoteSourceFor(channel),
+                sosType: 0,
+                receivedAt: receivedAt,
+                rawPayload: List<int>.unmodifiable(payload),
+                payloadHex: payloadHex,
+                eventOpcode: eventPacket.opcode,
+                eventSubcode: eventPacket.subcode,
+              )
+            : null,
       );
     }
 
@@ -64,7 +64,8 @@ class BleIncomingPayloadClassifier {
       return BleIncomingPayloadClassification(
         kind: classification,
         sosPacket: sosPacket,
-        remoteRelaySosSnapshot: classification == BleIncomingPayloadKind.remoteRelaySos
+        remoteRelaySosSnapshot: classification ==
+                BleIncomingPayloadKind.remoteRelaySos
             ? RemoteRelaySosSnapshot(
                 kind: RemoteRelaySosKind.sos,
                 originatorNodeId: sosPacket.nodeId,
@@ -118,7 +119,7 @@ class BleIncomingPayloadClassifier {
     if (source == DeviceSosTransitionSource.app) {
       return BleIncomingPayloadKind.ownDeviceSos;
     }
-    return fallbackOnUnknownConnectedNode.kind;
+    return BleIncomingPayloadKind.unknownOriginSos;
   }
 
   BleIncomingPayloadKind _classifySosEvent({
@@ -138,7 +139,8 @@ class BleIncomingPayloadClassifier {
     if (source == DeviceSosTransitionSource.app) {
       return terminalKind;
     }
-    return fallbackOnUnknownConnectedNode.kind == BleIncomingPayloadKind.ownDeviceSos
+    return fallbackOnUnknownConnectedNode.kind ==
+            BleIncomingPayloadKind.ownDeviceSos
         ? terminalKind
         : terminalKind;
   }
@@ -152,7 +154,8 @@ class BleIncomingPayloadClassifier {
         classification != BleIncomingPayloadKind.sosCancel) {
       return false;
     }
-    return connectedBleTagNodeId == null || packet.nodeId != connectedBleTagNodeId;
+    return connectedBleTagNodeId == null ||
+        packet.nodeId != connectedBleTagNodeId;
   }
 
   RemoteRelaySosSource _remoteSourceFor(EixamBleChannel channel) {

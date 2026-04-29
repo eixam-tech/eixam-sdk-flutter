@@ -1156,6 +1156,7 @@ class BleDeviceRuntimeProvider
         meshPort: notification.meshPort,
         telFragment: telFragment,
         aggregatePayload: aggregatePayload,
+        classification: classification,
       ),
     );
   }

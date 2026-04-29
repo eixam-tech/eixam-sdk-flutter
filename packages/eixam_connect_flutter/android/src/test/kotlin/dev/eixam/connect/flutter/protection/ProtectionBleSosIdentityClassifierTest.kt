@@ -32,6 +32,47 @@ class ProtectionBleSosIdentityClassifierTest {
     }
 
     @Test
+    fun `valid SOS with unknown connected node is not classified as own-device`() {
+        val classification = ProtectionBleSosIdentityClassifier.classify(
+            payload = listOf(0x78, 0x56, 0x34, 0x12, 0x00, 0x40, 0x09),
+            connectedNodeId = null,
+            source = ProtectionBleSosRelaySource.sos,
+        )
+
+        assertTrue(classification is ProtectionBleSosIdentityClassification.UnknownOriginSos)
+        val unknown = classification as ProtectionBleSosIdentityClassification.UnknownOriginSos
+        assertEquals(0x12345678, unknown.originatorNodeId)
+        assertEquals(ProtectionBleSosRelaySource.sos, unknown.source)
+    }
+
+    @Test
+    fun `valid TEL SOS with unknown connected node is not classified as TEL or own-device`() {
+        val classification = ProtectionBleSosIdentityClassifier.classify(
+            payload = listOf(
+                0x78,
+                0x56,
+                0x34,
+                0x12,
+                0x48,
+                0xCD,
+                0x1B,
+                0x34,
+                0x44,
+                0x28,
+                0x00,
+                0x40,
+            ),
+            connectedNodeId = null,
+            source = ProtectionBleSosRelaySource.tel,
+        )
+
+        assertTrue(classification is ProtectionBleSosIdentityClassification.UnknownOriginSos)
+        val unknown = classification as ProtectionBleSosIdentityClassification.UnknownOriginSos
+        assertEquals(0x12345678, unknown.originatorNodeId)
+        assertEquals(ProtectionBleSosRelaySource.tel, unknown.source)
+    }
+
+    @Test
     fun `remote 12-byte TEL SOS is classified as relay before TEL position`() {
         val classification = ProtectionBleSosIdentityClassifier.classify(
             payload = listOf(

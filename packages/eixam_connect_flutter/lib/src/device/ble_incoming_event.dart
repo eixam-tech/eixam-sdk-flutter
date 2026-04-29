@@ -14,6 +14,7 @@ import 'eixam_tel_relay_rx_packet.dart';
 enum BleIncomingPayloadKind {
   ownDeviceSos,
   remoteRelaySos,
+  unknownOriginSos,
   sosClear,
   sosCancel,
   telPosition,
