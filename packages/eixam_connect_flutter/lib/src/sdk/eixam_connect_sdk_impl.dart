@@ -4065,6 +4065,13 @@ class EixamConnectSdkImpl
       (_, seenAt) => now.difference(seenAt) > const Duration(minutes: 5),
     );
     if (_remoteRelaySosBackendHandoffBySignature.containsKey(signature)) {
+      _logSosTrace(
+        'remote_backend_handoff_decision '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'relayNodeId=${snapshot.relayNodeId ?? "none"} '
+        'hasLocation=${snapshot.location != null} '
+        'locationSource=none willAttemptBackend=false skipReason=duplicate',
+      );
       return;
     }
     _remoteRelaySosBackendHandoffBySignature[signature] = now;
@@ -4098,6 +4105,7 @@ class EixamConnectSdkImpl
     );
 
     try {
+      await _showRemoteRelaySosNotification(snapshot);
       await _submitRemoteRelaySosToBackend(
         snapshot: snapshot,
         positionSnapshot: positionSnapshot,
@@ -4185,6 +4193,71 @@ class EixamConnectSdkImpl
           errorMessage: error.toString(),
         ),
       );
+    }
+  }
+
+  Future<void> _showRemoteRelaySosNotification(
+    RemoteRelaySosSnapshot snapshot,
+  ) async {
+    PermissionState? permissionState;
+    Object? permissionError;
+    try {
+      permissionState = await permissionsRepository.getPermissionState();
+    } catch (error) {
+      permissionError = error;
+    }
+    final permissionLabel = permissionState?.notifications.name ?? 'unknown';
+    final appLifecycle =
+        WidgetsBinding.instance.lifecycleState?.name ?? 'unknown';
+    final hasLocation = snapshot.location != null;
+    _logSosTrace(
+      'remote_notification_decision '
+      'originatorNodeId=${snapshot.originatorNodeId} '
+      'hasLocation=$hasLocation permission=$permissionLabel '
+      'appLifecycle=$appLifecycle willShow=true skipReason=none',
+    );
+    if (permissionError != null) {
+      BleDebugRegistry.instance.recordEvent(
+        '[REMOTE_RELAY_SOS] notification_permission_snapshot_failed '
+        'originatorNodeId=${snapshot.originatorNodeId} error=$permissionError',
+      );
+    }
+
+    try {
+      await notificationsRepository.showLocalNotification(
+        notificationId: _nextBleNotificationId(),
+        title: 'Remote SOS received',
+        body: hasLocation
+            ? 'Relay SOS from node ${snapshot.originatorNodeId} with location.'
+            : 'Relay SOS from node ${snapshot.originatorNodeId}.',
+        payload: BleSosNotificationPayload(
+          kind: 'sos_received',
+          state: DeviceSosState.active,
+          transitionSource: DeviceSosTransitionSource.device,
+          deviceId: snapshot.relayNodeId?.toString(),
+          nodeId: snapshot.originatorNodeId,
+        ).toJsonString(),
+        actions: const <LocalNotificationAction>[],
+      );
+      _logSosTrace(
+        'remote_notification_result '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'hasLocation=$hasLocation permission=$permissionLabel '
+        'appLifecycle=$appLifecycle shown=true error=none',
+      );
+    } catch (error, stackTrace) {
+      _logSosTrace(
+        'remote_notification_result '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'hasLocation=$hasLocation permission=$permissionLabel '
+        'appLifecycle=$appLifecycle shown=false error=$error',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        '[REMOTE_RELAY_SOS] notification_failed '
+        'originatorNodeId=${snapshot.originatorNodeId} error=$error',
+      );
+      debugPrint('Remote relay SOS notification failed: $error');
+      debugPrintStack(stackTrace: stackTrace);
     }
   }
 

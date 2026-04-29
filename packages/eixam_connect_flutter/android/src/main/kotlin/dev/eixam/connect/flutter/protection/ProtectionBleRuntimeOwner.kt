@@ -469,7 +469,11 @@ internal class ProtectionBleRuntimeOwner(
         val payload = rawBytes.map { byte -> byte.toInt() and 0xFF }
         val sourceLabel = when (characteristic.uuid) {
             sosNotifyUuid -> "sos_notify"
-            telNotifyUuid -> if (payload.firstOrNull() == 0xD2) "d2_relay" else "tel_notify"
+            telNotifyUuid -> when (payload.firstOrNull()) {
+                0xD0 -> "tel_fragment"
+                0xD2 -> "d2_relay"
+                else -> "tel_notify"
+            }
             else -> "unknown"
         }
         logSosTrace(
@@ -534,6 +538,11 @@ internal class ProtectionBleRuntimeOwner(
                 }
 
                 ProtectionBleSosIdentityClassification.OwnSos -> {
+                    logSosPacketDecodeForTrace(
+                        payload = payload,
+                        source = ProtectionBleSosRelaySource.tel,
+                        classificationLabel = "ownDeviceSos",
+                    )
                     logSosTrace(
                         "native_lifecycle_gate classification=ownDeviceSos " +
                             "action=enter_local_lifecycle observeSosLifecycle_called=true",
@@ -549,16 +558,20 @@ internal class ProtectionBleRuntimeOwner(
 
                 else -> Unit
             }
+            logSosPacketDecodeForTrace(
+                payload = payload,
+                source = ProtectionBleSosRelaySource.tel,
+                classificationLabel = "notSos",
+            )
         }
 
         if (characteristic.uuid == sosNotifyUuid) {
-            when (
-                val classification = ProtectionBleSosIdentityClassifier.classify(
-                    payload = payload,
-                    connectedNodeId = connectedBleNodeId,
-                    source = ProtectionBleSosRelaySource.sos,
-                )
-            ) {
+            val classification = ProtectionBleSosIdentityClassifier.classify(
+                payload = payload,
+                connectedNodeId = connectedBleNodeId,
+                source = ProtectionBleSosRelaySource.sos,
+            )
+            when (classification) {
                 is ProtectionBleSosIdentityClassification.RemoteSos -> {
                     recordRemoteRelaySosPayload(classification)
                     return
@@ -576,6 +589,18 @@ internal class ProtectionBleRuntimeOwner(
 
                 else -> Unit
             }
+            logSosPacketDecodeForTrace(
+                payload = payload,
+                source = ProtectionBleSosRelaySource.sos,
+                classificationLabel =
+                    if (classification == ProtectionBleSosIdentityClassification.OwnSos ||
+                        classification == ProtectionBleSosIdentityClassification.OwnEvent
+                    ) {
+                        "ownDeviceSos"
+                    } else {
+                        "notSos"
+                    },
+            )
             ProtectionRuntimeBridge.recordBleEvent(
                 context = context,
                 type = "sosEventReceived",
@@ -662,6 +687,11 @@ internal class ProtectionBleRuntimeOwner(
     private fun recordRemoteRelayEventPayload(
         classification: ProtectionBleSosIdentityClassification.RemoteEvent,
     ) {
+        logSosTrace(
+            "platform_event type=sosEventReceived originatorNodeId=${classification.originatorNodeId} " +
+                "relayNodeId=${classification.relayNodeId} hasLocation=false " +
+                "lat=none lon=none alt=none payloadHex=${payloadHex(classification.rawPayload)}",
+        )
         ProtectionRuntimeBridge.recordBleEvent(
             context = context,
             type = "remoteRelaySosCancelReceived",
@@ -678,6 +708,60 @@ internal class ProtectionBleRuntimeOwner(
 
     private fun payloadHex(payload: List<Int>): String =
         payload.joinToString(separator = "") { byte -> "%02x".format(byte) }
+
+    private fun logSosPacketDecodeForTrace(
+        payload: List<Int>,
+        source: ProtectionBleSosRelaySource,
+        classificationLabel: String,
+    ) {
+        if (payload.size != 7 && payload.size != 12) {
+            if (classificationLabel == "notSos") {
+                logSosTrace(
+                    "native_sos_decode originatorNodeId=none " +
+                        "connectedBleNodeId=${connectedBleNodeId ?: "none"} sosType=none " +
+                        "classification=notSos hasLocation=false lat=none lon=none alt=none " +
+                        "source=${source.name} payloadLen=${payload.size} payloadHex=${payloadHex(payload)}",
+                )
+            }
+            return
+        }
+        val flagsOffset = if (payload.size == 12) 10 else 4
+        val flagsWord = payload[flagsOffset] or (payload[flagsOffset + 1] shl 8)
+        val sosType = (flagsWord shr 14) and 0x03
+        val position = if (payload.size == 12) decodePositionForTrace(payload, 4) else null
+        logSosTrace(
+            "native_sos_decode originatorNodeId=${readU32OrNull(payload, 0) ?: "none"} " +
+                "connectedBleNodeId=${connectedBleNodeId ?: "none"} sosType=$sosType " +
+                "classification=$classificationLabel hasLocation=${position != null} " +
+                "lat=${position?.latitude ?: "none"} lon=${position?.longitude ?: "none"} " +
+                "alt=${position?.altitude ?: "none"} source=${source.name} " +
+                "payloadLen=${payload.size} payloadHex=${payloadHex(payload)}",
+        )
+    }
+
+    private fun decodePositionForTrace(payload: List<Int>, offset: Int): TracePosition {
+        val packed =
+            ((payload[offset] and 0xFF).toLong()) or
+                ((payload[offset + 1] and 0xFF).toLong() shl 8) or
+                ((payload[offset + 2] and 0xFF).toLong() shl 16) or
+                ((payload[offset + 3] and 0xFF).toLong() shl 24) or
+                ((payload[offset + 4] and 0xFF).toLong() shl 32) or
+                ((payload[offset + 5] and 0xFF).toLong() shl 40)
+        val latEnc = packed and 0xFFFFF
+        val lonEnc = (packed shr 20) and 0x1FFFFF
+        val altEnc = (packed shr 41) and 0x7F
+        return TracePosition(
+            latitude = (latEnc * 180.0 / 1048576.0) - 90.0,
+            longitude = (lonEnc * 360.0 / 2097152.0) - 180.0,
+            altitude = (altEnc * 40).toDouble(),
+        )
+    }
+
+    private data class TracePosition(
+        val latitude: Double,
+        val longitude: Double,
+        val altitude: Double,
+    )
 
     private fun readU32OrNull(payload: List<Int>, offset: Int): Int? {
         if (payload.size < offset + 4) {

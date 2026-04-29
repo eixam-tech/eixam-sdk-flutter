@@ -158,10 +158,54 @@ void main() {
       expect(event.remoteRelaySosSnapshot, isNotNull);
       expect(event.remoteRelaySosSnapshot!.originatorNodeId, 0x12345678);
       expect(event.remoteRelaySosSnapshot!.relayNodeId, 0x1234);
+      expect(event.remoteRelaySosSnapshot!.location, isNotNull);
+      expect(event.remoteRelaySosSnapshot!.location!.latitude,
+          closeTo(42.7711486816406, 0.000001));
+      expect(event.remoteRelaySosSnapshot!.location!.longitude,
+          closeTo(-132.044506072998, 0.000001));
+      expect(event.remoteRelaySosSnapshot!.location!.altitude, 800);
       expect(
         (await runtimeProvider.deviceSosController.getStatus()).state,
         DeviceSosState.inactive,
       );
+    });
+
+    test('classifies a 12-byte SOS notify as remote relay with packet location',
+        () async {
+      await runtimeProvider.requestDeviceRuntimeStatus();
+      final nextEvent = _nextIncomingEvent(runtimeProvider);
+
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.sos,
+        payload: const <int>[
+          0x78,
+          0x56,
+          0x34,
+          0x12,
+          0x48,
+          0xCD,
+          0x1B,
+          0x34,
+          0x44,
+          0x28,
+          0x00,
+          0x40,
+        ],
+      );
+
+      final event = await nextEvent;
+      final snapshot = event.remoteRelaySosSnapshot;
+      expect(event.type, BleIncomingEventType.sosMeshPacket);
+      expect(event.classification.kind, BleIncomingPayloadKind.remoteRelaySos);
+      expect(snapshot, isNotNull);
+      expect(snapshot!.originatorNodeId, 0x12345678);
+      expect(snapshot.relayNodeId, 0x1234);
+      expect(snapshot.location, isNotNull);
+      expect(snapshot.location!.latitude, closeTo(42.7711486816406, 0.000001));
+      expect(
+          snapshot.location!.longitude, closeTo(-132.044506072998, 0.000001));
+      expect(snapshot.location!.altitude, 800);
     });
 
     test(

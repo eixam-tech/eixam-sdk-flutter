@@ -4,6 +4,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
 import 'package:eixam_connect_core/src/events/realtime_event.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
+import 'package:eixam_connect_flutter/src/device/ble_incoming_payload_classifier.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
@@ -103,19 +104,26 @@ void main() {
       await sosRepository.dispose();
     });
 
-    test('publishes backend SOS with originator node id as deviceId', () async {
+    test('12-byte remote relay SOS backend handoff includes packet location',
+        () async {
       final events = <EixamSdkEvent>[];
       final subscription = sdk.watchEvents().listen(events.add);
 
-      bleEvents.add(_remoteRelayEvent());
+      bleEvents.add(_remoteRelayEventFromPayload());
       await _eventually(() => realtimeClient.publishedSos.length == 1);
 
       final request = realtimeClient.publishedSos.single;
       expect(request.deviceId, '16909060');
       expect(request.timestamp, DateTime.utc(2026, 4, 28, 10, 15));
-      expect(request.positionSnapshot!.latitude, 41.3874);
-      expect(request.positionSnapshot!.longitude, 2.1686);
-      expect(request.positionSnapshot!.altitude, 42.5);
+      expect(
+        request.positionSnapshot!.latitude,
+        closeTo(42.7711486816406, 0.000001),
+      );
+      expect(
+        request.positionSnapshot!.longitude,
+        closeTo(-132.044506072998, 0.000001),
+      );
+      expect(request.positionSnapshot!.altitude, 800);
       expect(events.whereType<RemoteRelaySosObservedEvent>(), isNotEmpty);
       expect(
         events
@@ -124,6 +132,26 @@ void main() {
             .status,
         RemoteRelaySosBackendHandoffStatus.submitted,
       );
+
+      await subscription.cancel();
+    });
+
+    test('12-byte remote relay SOS propagates location to SDK event', () async {
+      final events = <EixamSdkEvent>[];
+      final subscription = sdk.watchEvents().listen(events.add);
+
+      bleEvents.add(_remoteRelayEventFromPayload());
+      await _eventually(
+        () => events.whereType<RemoteRelaySosObservedEvent>().isNotEmpty,
+      );
+
+      final snapshot =
+          events.whereType<RemoteRelaySosObservedEvent>().single.snapshot;
+      expect(snapshot.location, isNotNull);
+      expect(snapshot.location!.latitude, closeTo(42.7711486816406, 0.000001));
+      expect(
+          snapshot.location!.longitude, closeTo(-132.044506072998, 0.000001));
+      expect(snapshot.location!.altitude, 800);
 
       await subscription.cancel();
     });
@@ -141,12 +169,17 @@ void main() {
       expect(realtimeClient.publishedSos.single.deviceId, isNot('9999'));
     });
 
-    test('without location still publishes backend SOS and sends ACK_RELAY',
+    test(
+        '7-byte remote relay SOS without location still publishes backend SOS and sends ACK_RELAY',
         () async {
       final events = <EixamSdkEvent>[];
       final subscription = sdk.watchEvents().listen(events.add);
 
-      bleEvents.add(_remoteRelayEvent(snapshot: _snapshot(location: null)));
+      bleEvents.add(
+        _remoteRelayEventFromPayload(
+          payload: const <int>[0x04, 0x03, 0x02, 0x01, 0x00, 0x80, 0x09],
+        ),
+      );
       await _eventually(() => realtimeClient.publishedSos.length == 1);
       await _eventually(() => deviceCommands.length == 1);
 
@@ -160,6 +193,21 @@ void main() {
       expect(result.ackRelaySent, isTrue);
 
       await subscription.cancel();
+    });
+
+    test('remote relay notification is independent of local pre-SOS', () async {
+      bleEvents.add(_remoteRelayEventFromPayload());
+      await _eventually(
+          () => notificationsRepository.notifications.length == 1);
+
+      final notification = notificationsRepository.notifications.single;
+      expect(notification.title, 'Remote SOS received');
+      expect(notification.payload, contains('"kind":"sos_received"'));
+      expect(await sdk.getPreSosStatus(), isNull);
+      expect(
+        (await deviceSosController.getStatus()).state,
+        DeviceSosState.inactive,
+      );
     });
 
     test('backend success sends SOS_ACK_RELAY 0x08 to originator node',
@@ -471,6 +519,51 @@ BleIncomingEvent _remoteRelayEvent({RemoteRelaySosSnapshot? snapshot}) {
           : BleIncomingPayloadKind.sosCancel,
       remoteRelaySosSnapshot: resolvedSnapshot,
     ),
+  );
+}
+
+BleIncomingEvent _remoteRelayEventFromPayload({
+  List<int> payload = const <int>[
+    0x04,
+    0x03,
+    0x02,
+    0x01,
+    0x48,
+    0xCD,
+    0x1B,
+    0x34,
+    0x44,
+    0x28,
+    0x00,
+    0x80,
+  ],
+}) {
+  final payloadHex = EixamBleProtocol.hex(payload);
+  final classification =
+      const BleIncomingPayloadClassifier().classifySosPayload(
+    payload: payload,
+    payloadHex: payloadHex,
+    receivedAt: DateTime.utc(2026, 4, 28, 10, 15),
+    source: DeviceSosTransitionSource.device,
+    channel: EixamBleChannel.sos,
+    connectedBleTagNodeId: 0x0A0B0C0D,
+    fallbackOnUnknownConnectedNode: const BleIncomingPayloadClassification(
+      kind: BleIncomingPayloadKind.unknownOriginSos,
+    ),
+  );
+  final snapshot = classification.remoteRelaySosSnapshot!;
+  return BleIncomingEvent(
+    deviceId: 'relay-tag',
+    canonicalHardwareId: 'relay-node',
+    type: BleIncomingEventType.sosMeshPacket,
+    channel: EixamBleChannel.sos,
+    payload: snapshot.rawPayload,
+    payloadHex: payloadHex,
+    source: DeviceSosTransitionSource.device,
+    receivedAt: snapshot.receivedAt,
+    sosPacket: classification.sosPacket,
+    remoteRelaySosSnapshot: snapshot,
+    classification: classification,
   );
 }
 

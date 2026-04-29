@@ -149,7 +149,7 @@ internal sealed class ProtectionBleSosIdentityClassification {
         val source: ProtectionBleSosRelaySource,
         val rawPayload: List<Int>,
         val sosType: Int,
-        val position: SosPosition?,
+        val position: ProtectionBleSosIdentityClassifier.SosPosition?,
     ) : ProtectionBleSosIdentityClassification()
 
     data class RemoteEvent(
