@@ -77,6 +77,8 @@ void main() {
         'backgroundPermissionStatus': 'location_missing',
         'lastBackgroundTelemetryAt': null,
         'lastBackgroundTelemetryError': 'location_permission_missing',
+        'lastBackgroundLocationMode': 'timeout',
+        'activeLocationRequest': true,
       };
     });
 
@@ -89,5 +91,7 @@ void main() {
     expect(diagnostics.serviceRunning, isFalse);
     expect(diagnostics.permissionStatus, 'location_missing');
     expect(diagnostics.lastTelemetryError, 'location_permission_missing');
+    expect(diagnostics.lastLocationMode, 'timeout');
+    expect(diagnostics.activeLocationRequest, isTrue);
   });
 }

@@ -780,6 +780,9 @@ class EixamConnectSdkImpl
         permissionStatus: 'unknown',
         lastTelemetryAt: _backgroundTelemetryDiagnostics.lastTelemetryAt,
         lastTelemetryError: error.toString(),
+        lastLocationMode: _backgroundTelemetryDiagnostics.lastLocationMode,
+        activeLocationRequest:
+            _backgroundTelemetryDiagnostics.activeLocationRequest,
       );
       BleDebugRegistry.instance.recordEvent(
         '[SDK_BACKGROUND_TELEMETRY] action=start_failed reason=$reason error=$error',
@@ -813,6 +816,9 @@ class EixamConnectSdkImpl
         permissionStatus: _backgroundTelemetryDiagnostics.permissionStatus,
         lastTelemetryAt: _backgroundTelemetryDiagnostics.lastTelemetryAt,
         lastTelemetryError: error.toString(),
+        lastLocationMode: _backgroundTelemetryDiagnostics.lastLocationMode,
+        activeLocationRequest:
+            _backgroundTelemetryDiagnostics.activeLocationRequest,
       );
       BleDebugRegistry.instance.recordEvent(
         '[SDK_BACKGROUND_TELEMETRY] action=update_failed reason=$reason error=$error',
@@ -861,6 +867,9 @@ class EixamConnectSdkImpl
         permissionStatus: 'unknown',
         lastTelemetryAt: _backgroundTelemetryDiagnostics.lastTelemetryAt,
         lastTelemetryError: _backgroundTelemetryDiagnostics.lastTelemetryError,
+        lastLocationMode: _backgroundTelemetryDiagnostics.lastLocationMode,
+        activeLocationRequest:
+            _backgroundTelemetryDiagnostics.activeLocationRequest,
       );
     }
   }
@@ -4475,6 +4484,10 @@ class EixamConnectSdkImpl
           _backgroundTelemetryDiagnostics.lastTelemetryAt,
       lastBackgroundTelemetryError:
           _backgroundTelemetryDiagnostics.lastTelemetryError,
+      lastBackgroundLocationMode:
+          _backgroundTelemetryDiagnostics.lastLocationMode,
+      activeBackgroundLocationRequest:
+          _backgroundTelemetryDiagnostics.activeLocationRequest,
       bridge: _bridgeDiagnostics,
     );
   }

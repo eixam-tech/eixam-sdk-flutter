@@ -23,6 +23,7 @@ internal class BackgroundTelemetryStore(context: Context) {
             .putBoolean(keySosOpen, arguments["sosOpen"] as? Boolean ?: false)
             .putString(keyNotificationTitle, arguments["notificationTitle"] as? String)
             .putString(keyNotificationBody, arguments["notificationBody"] as? String)
+            .putBoolean(keyActiveLocationRequest, false)
             .remove(keyLastError)
             .apply()
     }
@@ -44,6 +45,7 @@ internal class BackgroundTelemetryStore(context: Context) {
         preferences.edit()
             .putBoolean(keyServiceRunning, false)
             .putBoolean(keyEnabled, false)
+            .putBoolean(keyActiveLocationRequest, false)
             .apply()
     }
 
@@ -58,6 +60,14 @@ internal class BackgroundTelemetryStore(context: Context) {
         preferences.edit().putString(keyLastError, error).apply()
     }
 
+    fun markLocationMode(mode: String) {
+        preferences.edit().putString(keyLastLocationMode, mode).apply()
+    }
+
+    fun markActiveLocationRequest(value: Boolean) {
+        preferences.edit().putBoolean(keyActiveLocationRequest, value).apply()
+    }
+
     fun snapshot(context: Context): Map<String, Any?> {
         return mapOf(
             "backgroundTelemetryEnabled" to preferences.getBoolean(keyEnabled, false),
@@ -66,6 +76,8 @@ internal class BackgroundTelemetryStore(context: Context) {
             "lastBackgroundTelemetryAt" to
                 preferences.getLong(keyLastTelemetryAt, 0L).takeIf { it > 0L },
             "lastBackgroundTelemetryError" to preferences.getString(keyLastError, null),
+            "lastBackgroundLocationMode" to preferences.getString(keyLastLocationMode, null),
+            "activeLocationRequest" to preferences.getBoolean(keyActiveLocationRequest, false),
         )
     }
 
@@ -127,5 +139,7 @@ internal class BackgroundTelemetryStore(context: Context) {
         private const val keyNotificationBody = "notification_body"
         private const val keyLastTelemetryAt = "last_telemetry_at"
         private const val keyLastError = "last_error"
+        private const val keyLastLocationMode = "last_location_mode"
+        private const val keyActiveLocationRequest = "active_location_request"
     }
 }

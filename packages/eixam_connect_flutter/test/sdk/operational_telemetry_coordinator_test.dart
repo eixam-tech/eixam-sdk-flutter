@@ -149,6 +149,25 @@ void main() {
       });
     });
 
+    test('foreground interval resumes after native owner pause is cleared', () {
+      fakeAsync((async) {
+        final harness = _Harness();
+        harness.start();
+        harness.coordinator.setIntervalPublishingEnabled(false);
+
+        async.elapse(const Duration(seconds: 60));
+        async.flushMicrotasks();
+
+        expect(harness.publishedPayloads, isEmpty);
+
+        harness.coordinator.setIntervalPublishingEnabled(true);
+        async.elapse(const Duration(seconds: 60));
+        async.flushMicrotasks();
+
+        expect(harness.publishedPayloads, hasLength(1));
+      });
+    });
+
     test('dispose stops timers', () {
       fakeAsync((async) {
         final harness = _Harness();

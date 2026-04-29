@@ -22,6 +22,8 @@ class SdkOperationalDiagnostics {
     this.backgroundPermissionStatus = 'unknown',
     this.lastBackgroundTelemetryAt,
     this.lastBackgroundTelemetryError,
+    this.lastBackgroundLocationMode,
+    this.activeBackgroundLocationRequest = false,
   });
 
   final EixamSession? session;
@@ -41,6 +43,8 @@ class SdkOperationalDiagnostics {
   final String backgroundPermissionStatus;
   final DateTime? lastBackgroundTelemetryAt;
   final String? lastBackgroundTelemetryError;
+  final String? lastBackgroundLocationMode;
+  final bool activeBackgroundLocationRequest;
   final SdkBridgeDiagnostics bridge;
 
   bool get hasActiveSession => session != null;
@@ -87,6 +91,8 @@ class SdkOperationalDiagnostics {
     String? backgroundPermissionStatus,
     Object? lastBackgroundTelemetryAt = _unset,
     Object? lastBackgroundTelemetryError = _unset,
+    Object? lastBackgroundLocationMode = _unset,
+    bool? activeBackgroundLocationRequest,
     SdkBridgeDiagnostics? bridge,
   }) {
     return SdkOperationalDiagnostics(
@@ -122,6 +128,12 @@ class SdkOperationalDiagnostics {
           identical(lastBackgroundTelemetryError, _unset)
               ? this.lastBackgroundTelemetryError
               : lastBackgroundTelemetryError as String?,
+      lastBackgroundLocationMode:
+          identical(lastBackgroundLocationMode, _unset)
+              ? this.lastBackgroundLocationMode
+              : lastBackgroundLocationMode as String?,
+      activeBackgroundLocationRequest: activeBackgroundLocationRequest ??
+          this.activeBackgroundLocationRequest,
       bridge: bridge ?? this.bridge,
     );
   }

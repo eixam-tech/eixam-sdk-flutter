@@ -43,6 +43,8 @@ class BackgroundTelemetryDiagnostics {
     this.permissionStatus = 'unknown',
     this.lastTelemetryAt,
     this.lastTelemetryError,
+    this.lastLocationMode,
+    this.activeLocationRequest = false,
   });
 
   factory BackgroundTelemetryDiagnostics.fromJson(Map<dynamic, dynamic> json) {
@@ -59,6 +61,8 @@ class BackgroundTelemetryDiagnostics {
             )
           : null,
       lastTelemetryError: json['lastBackgroundTelemetryError'] as String?,
+      lastLocationMode: json['lastBackgroundLocationMode'] as String?,
+      activeLocationRequest: json['activeLocationRequest'] == true,
     );
   }
 
@@ -67,6 +71,8 @@ class BackgroundTelemetryDiagnostics {
   final String permissionStatus;
   final DateTime? lastTelemetryAt;
   final String? lastTelemetryError;
+  final String? lastLocationMode;
+  final bool activeLocationRequest;
 }
 
 abstract class BackgroundTelemetryPlatformAdapter {

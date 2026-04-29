@@ -16,6 +16,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -37,6 +38,9 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
     private var foregroundStarted = false
     private var lastLocation: Location? = null
     private var lastPublishedSosLocation: Location? = null
+    private var singleLocationListener: LocationListener? = null
+    private var singleLocationTimeout: Runnable? = null
+    private var sosLocationUpdatesActive = false
 
     private val tick = object : Runnable {
         override fun run() {
@@ -76,7 +80,7 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             return START_NOT_STICKY
         }
         store.markServiceRunning(true)
-        startLocationUpdates()
+        reconcileSosLocationUpdates()
         if (intent?.action == actionUpdate) {
             scheduleNext()
             return START_STICKY
@@ -88,7 +92,8 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
 
     override fun onDestroy() {
         handler.removeCallbacks(tick)
-        stopLocationUpdates()
+        cancelSingleLocationRequest(markTimeout = false)
+        stopSosLocationUpdates()
         store.markServiceRunning(false)
         super.onDestroy()
     }
@@ -128,11 +133,6 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         if (publishInFlight || !store.isEnabled()) {
             return
         }
-        val location = latestValidLocation()
-        if (location == null) {
-            store.markError("no_valid_location")
-            return
-        }
         val apiBaseUrl = store.apiBaseUrl()?.trim()
         val appId = store.appId()?.trim()
         val externalUserId = store.externalUserId()?.trim()
@@ -144,23 +144,37 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             return
         }
         publishInFlight = true
-        thread(name = "eixam-bg-telemetry") {
-            try {
-                postTelemetry(
-                    apiBaseUrl = apiBaseUrl,
-                    appId = appId,
-                    externalUserId = externalUserId,
-                    userHash = userHash,
-                    body = buildPayload(location),
-                )
-                if (store.isSosOpen()) {
-                    lastPublishedSosLocation = location
-                }
-                store.markPublished()
-            } catch (error: Exception) {
-                store.markError("${reason}: ${error.message ?: error.javaClass.simpleName}")
-            } finally {
+        val mode = if (store.isSosOpen()) "sos" else "normal"
+        Log.i(logTag, "$logPrefix tick mode=$mode reason=$reason")
+        getBestEffortLocationForTick(locationTimeoutMs) { location, locationMode ->
+            if (location == null) {
+                store.markError("no_valid_location")
+                store.markLocationMode(locationMode)
                 publishInFlight = false
+                return@getBestEffortLocationForTick
+            }
+            thread(name = "eixam-bg-telemetry") {
+                try {
+                    postTelemetry(
+                        apiBaseUrl = apiBaseUrl,
+                        appId = appId,
+                        externalUserId = externalUserId,
+                        userHash = userHash,
+                        body = buildPayload(location),
+                    )
+                    if (store.isSosOpen()) {
+                        lastPublishedSosLocation = location
+                    }
+                    store.markLocationMode(locationMode)
+                    store.markPublished()
+                    Log.i(logTag, "$logPrefix publish result=success")
+                } catch (error: Exception) {
+                    val message = "${reason}: ${error.message ?: error.javaClass.simpleName}"
+                    store.markError(message)
+                    Log.w(logTag, "$logPrefix publish result=failed error=$message")
+                } finally {
+                    publishInFlight = false
+                }
             }
         }
     }
@@ -222,49 +236,186 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         return formatter.format(Date())
     }
 
-    private fun latestValidLocation(): Location? {
-        val current = lastLocation
-        if (isValid(current)) {
-            return current
-        }
+    private fun getBestEffortLocationForTick(
+        timeoutMs: Long,
+        onComplete: (Location?, String) -> Unit,
+    ) {
         if (!hasLocationPermission()) {
-            return null
+            store.markError("location_permission_missing")
+            onComplete(null, "permission_missing")
+            return
         }
         val manager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        return manager.getProviders(true)
-            .mapNotNull { provider ->
-                try {
-                    manager.getLastKnownLocation(provider)
-                } catch (_: SecurityException) {
-                    null
-                }
+        val cached = freshestKnownLocation(manager)
+        val maxAgeMs = if (store.isSosOpen()) sosCachedLocationMaxAgeMs else normalCachedLocationMaxAgeMs
+        if (isValid(cached)) {
+            val ageMs = locationAgeMs(cached!!)
+            if (ageMs <= maxAgeMs) {
+                lastLocation = cached
+                store.markLocationMode("cached")
+                Log.i(logTag, "$logPrefix location action=use_cached ageMs=$ageMs")
+                onComplete(cached, "cached")
+                return
             }
-            .firstOrNull { isValid(it) }
-            ?.also { lastLocation = it }
+        }
+        if (store.isSosOpen() && sosLocationUpdatesActive) {
+            store.markLocationMode("timeout")
+            Log.i(logTag, "$logPrefix location action=timeout")
+            onComplete(null, "timeout")
+            return
+        }
+        requestSingleLocation(manager, timeoutMs, onComplete)
     }
 
-    private fun startLocationUpdates() {
+    private fun requestSingleLocation(
+        manager: LocationManager,
+        timeoutMs: Long,
+        onComplete: (Location?, String) -> Unit,
+    ) {
+        if (singleLocationListener != null) {
+            Log.i(logTag, "$logPrefix location action=request_single_skipped reason=active")
+            onComplete(null, "active")
+            return
+        }
+        val provider = bestProvider(manager)
+        if (provider == null) {
+            store.markError("no_location_provider")
+            onComplete(null, "provider_missing")
+            return
+        }
+        Log.i(logTag, "$logPrefix location action=request_single")
+        store.markActiveLocationRequest(true)
+        val listener = object : LocationListener {
+            override fun onLocationChanged(location: Location) {
+                if (!isValid(location)) {
+                    return
+                }
+                lastLocation = location
+                Log.i(logTag, "$logPrefix location action=received")
+                cancelSingleLocationRequest(markTimeout = false)
+                onComplete(location, "current")
+            }
+
+            @Deprecated("Deprecated Android platform callback")
+            override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+        }
+        singleLocationListener = listener
+        val timeout = Runnable {
+            Log.i(logTag, "$logPrefix location action=timeout")
+            cancelSingleLocationRequest(markTimeout = true)
+            onComplete(null, "timeout")
+        }
+        singleLocationTimeout = timeout
+        try {
+            manager.requestLocationUpdates(provider, 0L, 0f, listener, Looper.getMainLooper())
+            handler.postDelayed(timeout, timeoutMs)
+        } catch (_: SecurityException) {
+            cancelSingleLocationRequest(markTimeout = false)
+            store.markError("location_permission_missing")
+            onComplete(null, "permission_missing")
+        } catch (_: IllegalArgumentException) {
+            cancelSingleLocationRequest(markTimeout = false)
+            store.markError("no_location_provider")
+            onComplete(null, "provider_missing")
+        }
+    }
+
+    private fun cancelSingleLocationRequest(markTimeout: Boolean) {
+        val listener = singleLocationListener
+        val timeout = singleLocationTimeout
+        singleLocationListener = null
+        singleLocationTimeout = null
+        if (timeout != null) {
+            handler.removeCallbacks(timeout)
+        }
+        if (listener != null) {
+            val manager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            try {
+                manager.removeUpdates(listener)
+            } catch (_: SecurityException) {
+            }
+            store.markActiveLocationRequest(false)
+            store.markLocationMode(if (markTimeout) "timeout" else "current")
+            Log.i(logTag, "$logPrefix location action=remove_updates")
+        }
+    }
+
+    private fun reconcileSosLocationUpdates() {
+        if (store.isSosOpen()) {
+            startSosLocationUpdates()
+        } else {
+            stopSosLocationUpdates()
+        }
+    }
+
+    private fun startSosLocationUpdates() {
+        if (sosLocationUpdatesActive) {
+            return
+        }
         if (!hasLocationPermission()) {
             store.markError("location_permission_missing")
             return
         }
         val manager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        for (provider in manager.getProviders(true)) {
-            try {
-                manager.requestLocationUpdates(provider, 10000L, 3f, this)
-            } catch (_: SecurityException) {
-                store.markError("location_permission_missing")
-            } catch (_: IllegalArgumentException) {
-                // Provider disappeared; another provider may still work.
-            }
+        val provider = bestProvider(manager) ?: run {
+            store.markError("no_location_provider")
+            return
+        }
+        try {
+            manager.requestLocationUpdates(provider, sosIntervalMs, sosMovementThresholdMeters, this)
+            sosLocationUpdatesActive = true
+            Log.i(logTag, "$logPrefix location action=start_sos_updates intervalMs=$sosIntervalMs")
+        } catch (_: SecurityException) {
+            store.markError("location_permission_missing")
+        } catch (_: IllegalArgumentException) {
+            store.markError("no_location_provider")
         }
     }
 
-    private fun stopLocationUpdates() {
+    private fun stopSosLocationUpdates() {
+        if (!sosLocationUpdatesActive) {
+            return
+        }
         val manager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         try {
             manager.removeUpdates(this)
         } catch (_: SecurityException) {
+        }
+        sosLocationUpdatesActive = false
+        Log.i(logTag, "$logPrefix location action=remove_updates")
+    }
+
+    private fun freshestKnownLocation(manager: LocationManager): Location? {
+        return (manager.getProviders(true)
+            .mapNotNull { provider ->
+                try {
+                    manager.getLastKnownLocation(provider)
+                } catch (_: SecurityException) {
+                    null
+                } catch (_: IllegalArgumentException) {
+                    null
+                }
+            }
+            .plus(listOfNotNull(lastLocation)))
+            .filter { isValid(it) }
+            .minByOrNull { locationAgeMs(it) }
+    }
+
+    private fun bestProvider(manager: LocationManager): String? {
+        val providers = manager.getProviders(true)
+        return when {
+            providers.contains(LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
+            providers.contains(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
+            else -> providers.firstOrNull()
+        }
+    }
+
+    private fun locationAgeMs(location: Location): Long {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+            ((SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos) / 1_000_000L)
+                .coerceAtLeast(0L)
+        } else {
+            (System.currentTimeMillis() - location.time).coerceAtLeast(0L)
         }
     }
 
@@ -408,7 +559,8 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
 
     private fun stopSelfSafely() {
         handler.removeCallbacks(tick)
-        stopLocationUpdates()
+        cancelSingleLocationRequest(markTimeout = false)
+        stopSosLocationUpdates()
         store.markStopped()
         if (foregroundStarted) {
             ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
@@ -419,7 +571,7 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
 
     companion object {
         private const val logTag = "EixamTelemetryService"
-        private const val logPrefix = "[SDK_TELEMETRY_BACKGROUND]"
+        private const val logPrefix = "[SDK_BG_TELEMETRY]"
         private const val notificationChannelId = "eixam_background_telemetry"
         private const val notificationId = 6031
         private const val defaultNotificationTitle = "EIXAM protection active"
@@ -429,6 +581,9 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         private const val actionStop = "dev.eixam.connect.flutter.action.TELEMETRY_STOP"
         private const val normalIntervalMs = 60000L
         private const val sosIntervalMs = 20000L
+        private const val locationTimeoutMs = 8000L
+        private const val normalCachedLocationMaxAgeMs = 45000L
+        private const val sosCachedLocationMaxAgeMs = 15000L
         private const val sosMovementThresholdMeters = 7f
 
         fun start(context: Context) {
