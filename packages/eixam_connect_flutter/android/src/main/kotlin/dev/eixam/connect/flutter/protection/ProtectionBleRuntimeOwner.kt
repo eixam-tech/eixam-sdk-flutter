@@ -660,10 +660,14 @@ internal class ProtectionBleRuntimeOwner(
             ) {
                 return
             }
+            val nativeRoute = ProtectionBleSosNativeRouting.route(classification)
+            if (!nativeRoute.observeLocalLifecycle) {
+                return
+            }
             ProtectionRuntimeBridge.recordBleEvent(
                 context = context,
-                type = "sosEventReceived",
-                reason = payloadHex(payload),
+                type = nativeRoute.diagnosticEventType ?: "ownDeviceSosLifecycleObserved",
+                reason = "own:${ProtectionBleSosRelaySource.sos.name}:${payloadHex(payload)}",
             )
             logSosTrace(
                 "native_lifecycle_gate classification=ownDeviceSos " +

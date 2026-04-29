@@ -167,6 +167,50 @@ class ProtectionBleSosIdentityClassifierTest {
     }
 
     @Test
+    fun `own-device SOS observes local lifecycle without emitting sosEventReceived`() {
+        val classification = ProtectionBleSosIdentityClassifier.classify(
+            payload = listOf(0x34, 0x12, 0x00, 0x00, 0x00, 0x80, 0x09),
+            connectedNodeId = 0x1234,
+            source = ProtectionBleSosRelaySource.sos,
+        )
+        val route = ProtectionBleSosNativeRouting.route(classification)
+
+        assertEquals(ProtectionBleSosIdentityClassification.OwnSos, classification)
+        assertTrue(route.observeLocalLifecycle)
+        assertFalse(route.emitSosEventReceived)
+        assertEquals("ownDeviceSosLifecycleObserved", route.diagnosticEventType)
+    }
+
+    @Test
+    fun `remote relay SOS still emits sosEventReceived`() {
+        val classification = ProtectionBleSosIdentityClassifier.classify(
+            payload = listOf(0x78, 0x56, 0x34, 0x12, 0x00, 0x80, 0x09),
+            connectedNodeId = 0x1234,
+            source = ProtectionBleSosRelaySource.sos,
+        )
+        val route = ProtectionBleSosNativeRouting.route(classification)
+
+        assertTrue(classification is ProtectionBleSosIdentityClassification.RemoteSos)
+        assertFalse(route.observeLocalLifecycle)
+        assertTrue(route.emitSosEventReceived)
+    }
+
+    @Test
+    fun `unknown origin SOS still emits sosEventReceived`() {
+        val classification = ProtectionBleSosIdentityClassifier.classify(
+            payload = listOf(0x78, 0x56, 0x34, 0x12, 0x00, 0x80, 0x09),
+            connectedNodeId = null,
+            boundNodeId = null,
+            source = ProtectionBleSosRelaySource.sos,
+        )
+        val route = ProtectionBleSosNativeRouting.route(classification)
+
+        assertTrue(classification is ProtectionBleSosIdentityClassification.UnknownOriginSos)
+        assertFalse(route.observeLocalLifecycle)
+        assertTrue(route.emitSosEventReceived)
+    }
+
+    @Test
     fun `local E1 02 event uses bound node fallback`() {
         val classification = ProtectionBleSosIdentityClassifier.classify(
             payload = listOf(0xE1, 0x02, 0x78, 0x56, 0x34, 0x12),

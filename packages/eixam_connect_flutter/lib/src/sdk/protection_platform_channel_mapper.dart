@@ -300,6 +300,8 @@ ProtectionPlatformEventType parseAndroidProtectionPlatformEventType(
       return ProtectionPlatformEventType.packetReceived;
     case 'sosEventReceived':
       return ProtectionPlatformEventType.sosEventReceived;
+    case 'ownDeviceSosLifecycleObserved':
+      return ProtectionPlatformEventType.ownDeviceSosLifecycleObserved;
     case 'runtimeError':
       return ProtectionPlatformEventType.runtimeError;
     case 'restorationDetected':

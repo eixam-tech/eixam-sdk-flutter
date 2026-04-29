@@ -23,6 +23,7 @@ enum ProtectionPlatformEventType {
   subscriptionsActive,
   packetReceived,
   sosEventReceived,
+  ownDeviceSosLifecycleObserved,
   runtimeError,
   restorationDetected,
   restorationRehydrated,

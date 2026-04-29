@@ -779,6 +779,7 @@ class ProtectionModeController {
       case ProtectionPlatformEventType.subscriptionsActive:
       case ProtectionPlatformEventType.packetReceived:
       case ProtectionPlatformEventType.sosEventReceived:
+      case ProtectionPlatformEventType.ownDeviceSosLifecycleObserved:
         _status = _status.copyWith(
           bleOwner: nativeOwner,
           deviceConnected: true,

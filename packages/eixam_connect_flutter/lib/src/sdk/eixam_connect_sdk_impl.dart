@@ -3803,6 +3803,22 @@ class EixamConnectSdkImpl
       );
       return;
     }
+    if (payloadReason.identityOwn) {
+      _logSosTrace(
+        'dart_platform_event_parse_result originatorNodeId=none '
+        'relayNodeId=none classification=ownDeviceSos hasLocation=false',
+      );
+      _logSosTrace(
+        'dart_platform_event_route route=ignored reason=native_own_device_sos',
+      );
+      _logSosTrace(
+        'dart_platform_event_ignored reason=native_own_device_sos',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'Protection SOS payload ignored -> reason=native_own_device_sos',
+      );
+      return;
+    }
     final rawHex = payloadReason.payloadHex;
     if (rawHex == null || rawHex.isEmpty) {
       _logSosTrace(
@@ -4772,6 +4788,13 @@ class EixamConnectSdkImpl
         identityUnknown: true,
       );
     }
+    if (parts.length == 3 && parts[0] == 'own') {
+      return _ProtectionSosPayloadReason(
+        payloadHex: parts[2],
+        source: _remoteRelaySourceFromPlatform(parts[1]),
+        identityOwn: true,
+      );
+    }
     return _ProtectionSosPayloadReason(payloadHex: rawReason);
   }
 
@@ -5088,12 +5111,14 @@ class _ProtectionSosPayloadReason {
     this.source,
     this.relayNodeId,
     this.identityUnknown = false,
+    this.identityOwn = false,
   });
 
   final String? payloadHex;
   final RemoteRelaySosSource? source;
   final int? relayNodeId;
   final bool identityUnknown;
+  final bool identityOwn;
 
   String get debugPayloadKeys {
     final keys = <String>[];
@@ -5107,6 +5132,9 @@ class _ProtectionSosPayloadReason {
       keys.add('relayNodeId');
     }
     if (identityUnknown) {
+      keys.add('classification');
+    }
+    if (identityOwn) {
       keys.add('classification');
     }
     return keys.isEmpty ? 'none' : keys.join(',');

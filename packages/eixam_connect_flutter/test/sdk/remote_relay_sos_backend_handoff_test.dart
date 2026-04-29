@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
 import 'package:eixam_connect_core/src/events/realtime_event.dart';
+import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_payload_classifier.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
@@ -363,6 +364,67 @@ void main() {
       final result =
           events.whereType<RemoteRelaySosBackendHandoffResultEvent>().single;
       expect(result.ackRelaySent, isFalse);
+
+      await subscription.cancel();
+      await platformEvents.close();
+    });
+
+    test('platform own-device SOS does not route as external relay', () async {
+      await sdk.dispose();
+      BleDebugRegistry.instance.reset();
+      final events = <EixamSdkEvent>[];
+      final platformEvents =
+          StreamController<ProtectionPlatformEvent>.broadcast();
+      final platformAdapter = _FakeProtectionPlatformAdapter(
+        platformEvents: platformEvents.stream,
+      );
+      sdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: realtimeClient,
+        deviceSosController: deviceSosController,
+        bleIncomingEvents: bleEvents.stream,
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: platformAdapter,
+      );
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+      );
+      final subscription = sdk.watchEvents().listen(events.add);
+      await sdk.enterProtectionMode();
+
+      platformEvents.add(
+        ProtectionPlatformEvent(
+          type: ProtectionPlatformEventType.ownDeviceSosLifecycleObserved,
+          timestamp: DateTime.utc(2026, 4, 28, 10, 31),
+          reason: 'own:sos:34120000008009',
+        ),
+      );
+      platformEvents.add(
+        ProtectionPlatformEvent(
+          type: ProtectionPlatformEventType.sosEventReceived,
+          timestamp: DateTime.utc(2026, 4, 28, 10, 31, 1),
+          reason: 'own:sos:34120000008009',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+
+      expect(realtimeClient.publishedSos, isEmpty);
+      expect(notificationsRepository.notifications, isEmpty);
+      expect(events.whereType<RemoteRelaySosObservedEvent>(), isEmpty);
+      expect(
+        BleDebugRegistry.instance.currentState.events.any(
+          (event) => event.message.contains('native_own_device_sos'),
+        ),
+        isTrue,
+      );
 
       await subscription.cancel();
       await platformEvents.close();
