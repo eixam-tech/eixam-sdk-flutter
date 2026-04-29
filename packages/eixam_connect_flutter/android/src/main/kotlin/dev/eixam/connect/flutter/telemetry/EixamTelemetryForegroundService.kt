@@ -16,7 +16,9 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
@@ -32,6 +34,7 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
     private lateinit var store: BackgroundTelemetryStore
     private val handler = Handler(Looper.getMainLooper())
     private var publishInFlight = false
+    private var foregroundStarted = false
     private var lastLocation: Location? = null
     private var lastPublishedSosLocation: Location? = null
 
@@ -44,23 +47,36 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
 
     override fun onCreate() {
         super.onCreate()
+        Log.i(logTag, "$logPrefix action=service_on_create")
         store = BackgroundTelemetryStore(applicationContext)
-        createNotificationChannel()
-        startLocationUpdates()
+        ensureForegroundStarted(buildForegroundNotification())
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!foregroundStarted && !ensureForegroundStarted(buildForegroundNotification())) {
+            return START_NOT_STICKY
+        }
         if (intent?.action == actionStop) {
             stopSelfSafely()
             return START_NOT_STICKY
         }
         if (!hasLocationPermission()) {
             store.markError("location_permission_missing")
-            stopSelf()
+            logStop("missing_permission")
+            stopSelfSafely()
             return START_NOT_STICKY
         }
-        startForeground(notificationId, buildNotification())
+        if (!hasRequiredTelemetryConfig()) {
+            store.markError("missing_session_or_backend_config")
+            logStop("missing_config")
+            stopSelfSafely()
+            return START_NOT_STICKY
+        }
+        if (!updateForegroundNotification()) {
+            return START_NOT_STICKY
+        }
         store.markServiceRunning(true)
+        startLocationUpdates()
         if (intent?.action == actionUpdate) {
             scheduleNext()
             return START_STICKY
@@ -273,19 +289,95 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
     }
 
     private fun buildNotification(): Notification {
+        return buildForegroundNotification(
+            title = store.notificationTitle() ?: defaultNotificationTitle,
+            body = store.notificationBody() ?: defaultNotificationBody,
+        )
+    }
+
+    private fun buildForegroundNotification(
+        title: String = defaultNotificationTitle,
+        body: String = defaultNotificationBody,
+    ): Notification {
         return NotificationCompat.Builder(this, notificationChannelId)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle(store.notificationTitle() ?: "EIXAM protection active")
-            .setContentText(
-                store.notificationBody() ?: "Sharing safety telemetry in the background",
-            )
+            .setContentTitle(title)
+            .setContentText(body)
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .build()
     }
 
-    private fun createNotificationChannel() {
+    private fun ensureForegroundStarted(notification: Notification): Boolean {
+        if (foregroundStarted) {
+            return true
+        }
+        return try {
+            ensureNotificationChannel()
+            ServiceCompat.startForeground(
+                this,
+                notificationId,
+                notification,
+                foregroundServiceType(),
+            )
+            foregroundStarted = true
+            Log.i(logTag, "$logPrefix action=foreground_started")
+            true
+        } catch (error: SecurityException) {
+            store.markError("foreground_start_failed: ${error.message ?: error.javaClass.simpleName}")
+            Log.e(
+                logTag,
+                "$logPrefix action=foreground_start_failed error=${error.message ?: error.javaClass.simpleName}",
+            )
+            store.markStopped()
+            stopSelf()
+            false
+        } catch (error: Exception) {
+            store.markError("foreground_start_failed: ${error.message ?: error.javaClass.simpleName}")
+            Log.e(
+                logTag,
+                "$logPrefix action=foreground_start_failed error=${error.message ?: error.javaClass.simpleName}",
+            )
+            store.markStopped()
+            stopSelf()
+            false
+        }
+    }
+
+    private fun updateForegroundNotification(): Boolean {
+        if (!foregroundStarted) {
+            return false
+        }
+        return try {
+            ServiceCompat.startForeground(
+                this,
+                notificationId,
+                buildNotification(),
+                foregroundServiceType(),
+            )
+            true
+        } catch (error: SecurityException) {
+            store.markError("foreground_update_failed: ${error.message ?: error.javaClass.simpleName}")
+            logStop("missing_permission")
+            stopSelfSafely()
+            false
+        } catch (error: Exception) {
+            store.markError("foreground_update_failed: ${error.message ?: error.javaClass.simpleName}")
+            logStop("foreground_update_failed")
+            stopSelfSafely()
+            false
+        }
+    }
+
+    private fun foregroundServiceType(): Int {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            return 0
+        }
+        return android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+    }
+
+    private fun ensureNotificationChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             return
         }
@@ -299,16 +391,39 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
+    private fun hasRequiredTelemetryConfig(): Boolean {
+        val apiBaseUrl = store.apiBaseUrl()?.trim()
+        val appId = store.appId()?.trim()
+        val externalUserId = store.externalUserId()?.trim()
+        val userHash = store.userHash()?.trim()
+        return !apiBaseUrl.isNullOrEmpty() &&
+            !appId.isNullOrEmpty() &&
+            !externalUserId.isNullOrEmpty() &&
+            !userHash.isNullOrEmpty()
+    }
+
+    private fun logStop(reason: String) {
+        Log.i(logTag, "$logPrefix action=stop reason=$reason")
+    }
+
     private fun stopSelfSafely() {
         handler.removeCallbacks(tick)
+        stopLocationUpdates()
         store.markStopped()
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        if (foregroundStarted) {
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            foregroundStarted = false
+        }
         stopSelf()
     }
 
     companion object {
+        private const val logTag = "EixamTelemetryService"
+        private const val logPrefix = "[SDK_TELEMETRY_BACKGROUND]"
         private const val notificationChannelId = "eixam_background_telemetry"
         private const val notificationId = 6031
+        private const val defaultNotificationTitle = "EIXAM protection active"
+        private const val defaultNotificationBody = "Sharing safety telemetry in the background"
         private const val actionStart = "dev.eixam.connect.flutter.action.TELEMETRY_START"
         private const val actionUpdate = "dev.eixam.connect.flutter.action.TELEMETRY_UPDATE"
         private const val actionStop = "dev.eixam.connect.flutter.action.TELEMETRY_STOP"
