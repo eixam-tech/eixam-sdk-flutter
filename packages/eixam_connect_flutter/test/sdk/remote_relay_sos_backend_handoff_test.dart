@@ -283,9 +283,10 @@ void main() {
       expect(realtimeClient.publishedSos, isEmpty);
     });
 
-    test('platform unknown-origin SOS does not enter deviceSosController',
+    test('platform unknown-origin SOS routes to remote candidate handoff',
         () async {
       await sdk.dispose();
+      final events = <EixamSdkEvent>[];
       final platformEvents =
           StreamController<ProtectionPlatformEvent>.broadcast();
       final platformAdapter = _FakeProtectionPlatformAdapter(
@@ -296,11 +297,6 @@ void main() {
         countdownTick: const Duration(milliseconds: 5),
       );
       deviceCommands = <EixamDeviceCommand>[];
-      await deviceSosController.attach(
-        commandWriter: (command) async {
-          deviceCommands.add(command);
-        },
-      );
       sdk = EixamConnectSdkImpl(
         sosRepository: sosRepository,
         trackingRepository: trackingRepository,
@@ -320,22 +316,55 @@ void main() {
       await sdk.initialize(
         const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
       );
+      final subscription = sdk.watchEvents().listen(events.add);
       await sdk.enterProtectionMode();
 
       platformEvents.add(
         ProtectionPlatformEvent(
           type: ProtectionPlatformEventType.sosEventReceived,
           timestamp: DateTime.utc(2026, 4, 28, 10, 30),
-          reason: '78563412004009',
+          reason: 'unknown:SOS_NOTIFY:77dee60dbb8d681a071f8043',
         ),
       );
-      await Future<void>.delayed(const Duration(milliseconds: 80));
+      await _eventually(() => realtimeClient.publishedSos.length == 1);
+      await _eventually(
+        () => events.whereType<RemoteRelaySosBackendHandoffResultEvent>().any(
+              (event) =>
+                  event.status == RemoteRelaySosBackendHandoffStatus.submitted,
+            ),
+      );
 
+      final request = realtimeClient.publishedSos.single;
+      expect(request.deviceId, '233234039');
+      expect(request.positionSnapshot, isNotNull);
+      expect(
+        request.positionSnapshot!.latitude,
+        closeTo(6.228389739990234, 0.000001),
+      );
+      expect(
+        request.positionSnapshot!.longitude,
+        closeTo(4.994316101074219, 0.000001),
+      );
+      expect(request.positionSnapshot!.altitude, 600);
+      expect(notificationsRepository.notifications, hasLength(1));
+      expect(
+        events.whereType<RemoteRelaySosObservedEvent>().single.snapshot,
+        isA<RemoteRelaySosSnapshot>()
+            .having((snapshot) => snapshot.originatorNodeId, 'originatorNodeId',
+                233234039)
+            .having((snapshot) => snapshot.relayNodeId, 'relayNodeId', isNull)
+            .having((snapshot) => snapshot.location, 'location', isNotNull),
+      );
       expect((await deviceSosController.getStatus()).state,
           DeviceSosState.inactive);
       expect(await sdk.getPreSosStatus(), isNull);
       expect(deviceCommands, isEmpty);
+      expect(deviceCommands.any((command) => command.opcode == 0x07), isFalse);
+      final result =
+          events.whereType<RemoteRelaySosBackendHandoffResultEvent>().single;
+      expect(result.ackRelaySent, isFalse);
 
+      await subscription.cancel();
       await platformEvents.close();
     });
 

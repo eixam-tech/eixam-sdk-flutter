@@ -3789,13 +3789,32 @@ class EixamConnectSdkImpl
   }
 
   void _handleProtectionPlatformSosEvent(ProtectionPlatformEvent event) {
-    if (event.type != ProtectionPlatformEventType.sosEventReceived ||
-        !_isProtectionPlatformOwningBle) {
+    final payloadReason = _parseProtectionSosPayloadReason(event.reason);
+    _logSosTrace(
+      'dart_platform_event_raw type=${event.type.name} '
+      'payloadKeys=${payloadReason.debugPayloadKeys}',
+    );
+    if (event.type != ProtectionPlatformEventType.sosEventReceived) {
+      _logSosTrace(
+        'dart_platform_event_route route=ignored reason=not_sos_event_type',
+      );
+      _logSosTrace(
+        'dart_platform_event_ignored reason=not_sos_event_type',
+      );
       return;
     }
-    final payloadReason = _parseProtectionSosPayloadReason(event.reason);
     final rawHex = payloadReason.payloadHex;
     if (rawHex == null || rawHex.isEmpty) {
+      _logSosTrace(
+        'dart_platform_event_parse_result originatorNodeId=none '
+        'relayNodeId=none classification=missingPayload hasLocation=false',
+      );
+      _logSosTrace(
+        'dart_platform_event_route route=ignored reason=missing_hex_payload',
+      );
+      _logSosTrace(
+        'dart_platform_event_ignored reason=missing_hex_payload',
+      );
       BleDebugRegistry.instance.recordEvent(
         'Protection SOS payload ignored -> reason=missing_hex_payload',
       );
@@ -3803,6 +3822,17 @@ class EixamConnectSdkImpl
     }
     final bytes = _tryDecodeHexPayload(rawHex);
     if (bytes == null || bytes.isEmpty) {
+      _logSosTrace(
+        'dart_platform_event_parse_result originatorNodeId=none '
+        'relayNodeId=${payloadReason.relayNodeId ?? "none"} '
+        'classification=invalidPayload hasLocation=false',
+      );
+      _logSosTrace(
+        'dart_platform_event_route route=ignored reason=invalid_hex_payload',
+      );
+      _logSosTrace(
+        'dart_platform_event_ignored reason=invalid_hex_payload',
+      );
       BleDebugRegistry.instance.recordEvent(
         'Protection SOS payload ignored -> reason=invalid_hex_payload payload=$rawHex',
       );
@@ -3816,8 +3846,30 @@ class EixamConnectSdkImpl
       relayNodeId: payloadReason.relayNodeId,
       forceUnknownIdentity: payloadReason.identityUnknown,
     );
-    final remoteRelaySnapshot = remoteClassification.remoteRelaySosSnapshot;
+    final unknownRemoteRelaySnapshot =
+        remoteClassification.kind == BleIncomingPayloadKind.unknownOriginSos
+            ? _unknownOriginRemoteSosSnapshotFromPlatform(
+                bytes: bytes,
+                rawHex: rawHex,
+                source: payloadReason.source,
+              )
+            : null;
+    final remoteRelaySnapshot = remoteClassification.remoteRelaySosSnapshot ??
+        unknownRemoteRelaySnapshot;
+    _logSosTrace(
+      'dart_platform_event_parse_result '
+      'originatorNodeId=${remoteRelaySnapshot?.originatorNodeId ?? "none"} '
+      'relayNodeId=${remoteRelaySnapshot?.relayNodeId ?? payloadReason.relayNodeId ?? "none"} '
+      'classification=${remoteClassification.kind.name} '
+      'hasLocation=${remoteRelaySnapshot?.location != null}',
+    );
     if (remoteRelaySnapshot != null) {
+      final route = unknownRemoteRelaySnapshot != null
+          ? 'unknown_remote_candidate'
+          : 'remote_relay';
+      _logSosTrace(
+        'dart_platform_event_route route=$route reason=remote_sos_candidate',
+      );
       _logSosTrace(
         'dart_platform_event type=${event.type.name} '
         'originatorNodeId=${remoteRelaySnapshot.originatorNodeId} '
@@ -3834,6 +3886,13 @@ class EixamConnectSdkImpl
         'relayNodeId=${remoteRelaySnapshot.relayNodeId ?? "-"} '
         'kind=${remoteRelaySnapshot.kind.name}',
       );
+      _logSosTrace(
+        'dart_sdk_remote_relay_received '
+        'originatorNodeId=${remoteRelaySnapshot.originatorNodeId} '
+        'relayNodeId=${remoteRelaySnapshot.relayNodeId ?? "none"} '
+        'classification=${remoteClassification.kind.name} '
+        'hasLocation=${remoteRelaySnapshot.location != null}',
+      );
       _publishSdkEvent(RemoteRelaySosObservedEvent(remoteRelaySnapshot));
       unawaited(
         _handleRemoteRelaySosBackendHandoff(remoteRelaySnapshot),
@@ -3841,6 +3900,12 @@ class EixamConnectSdkImpl
       return;
     }
     if (remoteClassification.kind == BleIncomingPayloadKind.unknownOriginSos) {
+      _logSosTrace(
+        'dart_platform_event_route route=ignored reason=unknown_origin_without_sos_packet',
+      );
+      _logSosTrace(
+        'dart_platform_event_ignored reason=unknown_origin_without_sos_packet',
+      );
       BleDebugRegistry.instance.recordEvent(
         'Protection SOS payload held -> reason=unknown_connected_node_identity payload=$rawHex',
       );
@@ -3849,6 +3914,9 @@ class EixamConnectSdkImpl
 
     final sosEventPacket = EixamSosEventPacket.tryParse(bytes);
     if (sosEventPacket != null) {
+      _logSosTrace(
+        'dart_platform_event_route route=local_sos reason=sos_event_packet',
+      );
       BleDebugRegistry.instance.recordEvent(
         'Protection SOS payload forwarded -> type=sosDeviceEvent payload=${sosEventPacket.rawHex}',
       );
@@ -3861,6 +3929,9 @@ class EixamConnectSdkImpl
 
     final sosPacket = EixamSosPacket.tryParse(bytes);
     if (sosPacket != null) {
+      _logSosTrace(
+        'dart_platform_event_route route=local_sos reason=sos_mesh_packet',
+      );
       BleDebugRegistry.instance.recordEvent(
         'Protection SOS payload forwarded -> type=sosMeshPacket payload=${sosPacket.rawHex}',
       );
@@ -3871,6 +3942,12 @@ class EixamConnectSdkImpl
       return;
     }
 
+    _logSosTrace(
+      'dart_platform_event_route route=ignored reason=unrecognized_payload',
+    );
+    _logSosTrace(
+      'dart_platform_event_ignored reason=unrecognized_payload',
+    );
     BleDebugRegistry.instance.recordEvent(
       'Protection SOS payload ignored -> reason=unrecognized_payload payload=$rawHex len=${bytes.length}',
     );
@@ -4097,6 +4174,13 @@ class EixamConnectSdkImpl
       'hasLocation=${positionSnapshot != null} '
       'locationSource=$locationSource willAttemptBackend=true skipReason=none',
     );
+    _logSosTrace(
+      'remote_handoff_decision '
+      'originatorNodeId=${snapshot.originatorNodeId} '
+      'relayNodeId=${snapshot.relayNodeId ?? "none"} '
+      'hasLocation=${positionSnapshot != null} '
+      'locationSource=$locationSource willAttemptBackend=true skipReason=none',
+    );
     BleDebugRegistry.instance.recordEvent(
       '[REMOTE_RELAY_SOS] backend_handoff_start '
       'originatorNodeId=${snapshot.originatorNodeId} '
@@ -4106,6 +4190,12 @@ class EixamConnectSdkImpl
 
     try {
       await _showRemoteRelaySosNotification(snapshot);
+      _logSosTrace(
+        'backend_create_attempt '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'relayNodeId=${snapshot.relayNodeId ?? "none"} '
+        'hasLocation=${positionSnapshot != null}',
+      );
       await _submitRemoteRelaySosToBackend(
         snapshot: snapshot,
         positionSnapshot: positionSnapshot,
@@ -4125,44 +4215,52 @@ class EixamConnectSdkImpl
 
       var ackRelaySent = false;
       String? ackRelayErrorMessage;
-      try {
-        final ackBytes = EixamDeviceCommand.sosAckRelay(
-          nodeId: snapshot.originatorNodeId,
-        ).bytes;
+      if (!deviceSosController.hasSosCommandPath) {
         _logSosTrace(
-          'ack_relay_write_attempt '
+          'ack_relay_pending_no_command_path '
           'originatorNodeId=${snapshot.originatorNodeId} '
-          'relayNodeId=${snapshot.relayNodeId ?? "none"} '
-          'bytesHex=${EixamBleProtocol.hex(ackBytes)}',
+          'relayNodeId=${snapshot.relayNodeId ?? "none"}',
         );
-        await deviceSosController.sendAckRelay(
-          nodeId: snapshot.originatorNodeId,
-        );
-        ackRelaySent = true;
-        _logSosTrace(
-          'ack_relay_write_result '
-          'originatorNodeId=${snapshot.originatorNodeId} '
-          'relayNodeId=${snapshot.relayNodeId ?? "none"} '
-          'bytesHex=${EixamBleProtocol.hex(ackBytes)} success=true error=none',
-        );
-        BleDebugRegistry.instance.recordEvent(
-          '[REMOTE_RELAY_SOS] ack_relay_sent '
-          'originatorNodeId=${snapshot.originatorNodeId}',
-        );
-      } catch (error) {
-        ackRelayErrorMessage = error.toString();
-        _logSosTrace(
-          'ack_relay_write_result '
-          'originatorNodeId=${snapshot.originatorNodeId} '
-          'relayNodeId=${snapshot.relayNodeId ?? "none"} '
-          'bytesHex=${EixamBleProtocol.hex(EixamDeviceCommand.sosAckRelay(nodeId: snapshot.originatorNodeId).bytes)} '
-          'success=false error=$error',
-        );
-        BleDebugRegistry.instance.recordEvent(
-          '[REMOTE_RELAY_SOS] ack_relay_failed '
-          'originatorNodeId=${snapshot.originatorNodeId} '
-          'error=$error',
-        );
+      } else {
+        try {
+          final ackBytes = EixamDeviceCommand.sosAckRelay(
+            nodeId: snapshot.originatorNodeId,
+          ).bytes;
+          _logSosTrace(
+            'ack_relay_write_attempt '
+            'originatorNodeId=${snapshot.originatorNodeId} '
+            'relayNodeId=${snapshot.relayNodeId ?? "none"} '
+            'bytesHex=${EixamBleProtocol.hex(ackBytes)}',
+          );
+          await deviceSosController.sendAckRelay(
+            nodeId: snapshot.originatorNodeId,
+          );
+          ackRelaySent = true;
+          _logSosTrace(
+            'ack_relay_write_result '
+            'originatorNodeId=${snapshot.originatorNodeId} '
+            'relayNodeId=${snapshot.relayNodeId ?? "none"} '
+            'bytesHex=${EixamBleProtocol.hex(ackBytes)} success=true error=none',
+          );
+          BleDebugRegistry.instance.recordEvent(
+            '[REMOTE_RELAY_SOS] ack_relay_sent '
+            'originatorNodeId=${snapshot.originatorNodeId}',
+          );
+        } catch (error) {
+          ackRelayErrorMessage = error.toString();
+          _logSosTrace(
+            'ack_relay_write_result '
+            'originatorNodeId=${snapshot.originatorNodeId} '
+            'relayNodeId=${snapshot.relayNodeId ?? "none"} '
+            'bytesHex=${EixamBleProtocol.hex(EixamDeviceCommand.sosAckRelay(nodeId: snapshot.originatorNodeId).bytes)} '
+            'success=false error=$error',
+          );
+          BleDebugRegistry.instance.recordEvent(
+            '[REMOTE_RELAY_SOS] ack_relay_failed '
+            'originatorNodeId=${snapshot.originatorNodeId} '
+            'error=$error',
+          );
+        }
       }
 
       _publishSdkEvent(
@@ -4709,6 +4807,38 @@ class EixamConnectSdkImpl
     );
   }
 
+  RemoteRelaySosSnapshot? _unknownOriginRemoteSosSnapshotFromPlatform({
+    required List<int> bytes,
+    required String rawHex,
+    required RemoteRelaySosSource? source,
+  }) {
+    final sosPacket = EixamSosPacket.tryParse(bytes);
+    if (sosPacket == null || sosPacket.sosType == 0) {
+      return null;
+    }
+    final receivedAt = DateTime.now().toUtc();
+    return RemoteRelaySosSnapshot(
+      kind: RemoteRelaySosKind.sos,
+      originatorNodeId: sosPacket.nodeId,
+      relayNodeId: null,
+      source: source ?? RemoteRelaySosSource.sosNotify,
+      sosType: sosPacket.sosType,
+      location: sosPacket.position == null
+          ? null
+          : TrackingPosition(
+              latitude: sosPacket.position!.latitude,
+              longitude: sosPacket.position!.longitude,
+              altitude: sosPacket.position!.altitudeMeters.toDouble(),
+              timestamp: receivedAt,
+              source: DeliveryMode.mesh,
+            ),
+      receivedAt: receivedAt,
+      rawPayload: List<int>.unmodifiable(bytes),
+      payloadHex: rawHex,
+      relayCount: sosPacket.relayCount,
+    );
+  }
+
   int? _statusCodeForError(Object error) {
     final dynamic dynamicError = error;
     try {
@@ -4964,6 +5094,23 @@ class _ProtectionSosPayloadReason {
   final RemoteRelaySosSource? source;
   final int? relayNodeId;
   final bool identityUnknown;
+
+  String get debugPayloadKeys {
+    final keys = <String>[];
+    if (payloadHex != null) {
+      keys.add('payloadHex');
+    }
+    if (source != null) {
+      keys.add('source');
+    }
+    if (relayNodeId != null) {
+      keys.add('relayNodeId');
+    }
+    if (identityUnknown) {
+      keys.add('classification');
+    }
+    return keys.isEmpty ? 'none' : keys.join(',');
+  }
 }
 
 class _OperationalSosMetadata {
