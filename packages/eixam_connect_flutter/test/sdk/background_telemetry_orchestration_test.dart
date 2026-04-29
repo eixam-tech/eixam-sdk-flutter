@@ -1,5 +1,6 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/preferred_ble_device_store.dart';
+import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
 import 'package:eixam_connect_flutter/src/sdk/background_telemetry_platform_adapter.dart';
@@ -126,6 +127,36 @@ void main() {
 
       expect(backgroundAdapter.stopCallCount, greaterThanOrEqualTo(1));
       expect(backgroundAdapter.running, isFalse);
+    });
+
+    test('foreground interval is not paused after native background start',
+        () async {
+      BleDebugRegistry.instance.reset();
+
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
+      );
+      await sdk.setSession(
+        const EixamSession.signed(
+          appId: 'partner-app',
+          externalUserId: 'user-1',
+          userHash: 'hash-1',
+        ),
+      );
+
+      final debugMessages = BleDebugRegistry.instance.currentState.events
+          .map((event) => event.message)
+          .toList();
+
+      expect(backgroundAdapter.running, isTrue);
+      expect(
+        debugMessages,
+        isNot(
+          contains(
+            '[SDK_TELEMETRY_LOOP] action=pause reason=native_background_owner',
+          ),
+        ),
+      );
     });
   });
 }

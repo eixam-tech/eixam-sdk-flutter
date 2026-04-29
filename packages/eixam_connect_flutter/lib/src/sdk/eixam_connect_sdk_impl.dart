@@ -747,7 +747,6 @@ class EixamConnectSdkImpl
     if (_backgroundTelemetryStarted &&
         _backgroundTelemetryStartFingerprint == fingerprint) {
       await _updateBackgroundTelemetryState(reason: reason);
-      _operationalTelemetryCoordinator.setIntervalPublishingEnabled(false);
       return;
     }
     try {
@@ -765,7 +764,6 @@ class EixamConnectSdkImpl
       );
       _backgroundTelemetryStarted = true;
       _backgroundTelemetryStartFingerprint = fingerprint;
-      _operationalTelemetryCoordinator.setIntervalPublishingEnabled(false);
       await _refreshBackgroundTelemetryDiagnostics();
       BleDebugRegistry.instance.recordEvent(
         '[SDK_BACKGROUND_TELEMETRY] action=start reason=$reason',

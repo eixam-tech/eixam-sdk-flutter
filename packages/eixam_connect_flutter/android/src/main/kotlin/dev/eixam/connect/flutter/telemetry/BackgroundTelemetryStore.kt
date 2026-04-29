@@ -64,6 +64,29 @@ internal class BackgroundTelemetryStore(context: Context) {
         preferences.edit().putString(keyLastLocationMode, mode).apply()
     }
 
+    fun markPublishAttempt(reason: String, locationMode: String? = null) {
+        preferences.edit()
+            .putString(keyLastPublishReason, reason)
+            .apply {
+                if (locationMode != null) {
+                    putString(keyLastLocationMode, locationMode)
+                }
+            }
+            .apply()
+    }
+
+    fun markHttpStatusCode(statusCode: Int?) {
+        preferences.edit()
+            .apply {
+                if (statusCode == null) {
+                    remove(keyLastHttpStatusCode)
+                } else {
+                    putInt(keyLastHttpStatusCode, statusCode)
+                }
+            }
+            .apply()
+    }
+
     fun markActiveLocationRequest(value: Boolean) {
         preferences.edit().putBoolean(keyActiveLocationRequest, value).apply()
     }
@@ -77,6 +100,10 @@ internal class BackgroundTelemetryStore(context: Context) {
                 preferences.getLong(keyLastTelemetryAt, 0L).takeIf { it > 0L },
             "lastBackgroundTelemetryError" to preferences.getString(keyLastError, null),
             "lastBackgroundLocationMode" to preferences.getString(keyLastLocationMode, null),
+            "lastBackgroundTelemetryHttpStatusCode" to
+                preferences.getInt(keyLastHttpStatusCode, 0).takeIf { it > 0 },
+            "lastBackgroundTelemetryReason" to
+                preferences.getString(keyLastPublishReason, null),
             "activeLocationRequest" to preferences.getBoolean(keyActiveLocationRequest, false),
         )
     }
@@ -140,6 +167,8 @@ internal class BackgroundTelemetryStore(context: Context) {
         private const val keyLastTelemetryAt = "last_telemetry_at"
         private const val keyLastError = "last_error"
         private const val keyLastLocationMode = "last_location_mode"
+        private const val keyLastHttpStatusCode = "last_http_status_code"
+        private const val keyLastPublishReason = "last_publish_reason"
         private const val keyActiveLocationRequest = "active_location_request"
     }
 }

@@ -38,7 +38,7 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
     private var foregroundStarted = false
     private var lastLocation: Location? = null
     private var lastPublishedSosLocation: Location? = null
-    private var singleLocationListener: LocationListener? = null
+    private val singleLocationListeners = mutableListOf<Pair<String, LocationListener>>()
     private var singleLocationTimeout: Runnable? = null
     private var sosLocationUpdatesActive = false
 
@@ -146,10 +146,21 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         publishInFlight = true
         val mode = if (store.isSosOpen()) "sos" else "normal"
         Log.i(logTag, "$logPrefix tick mode=$mode reason=$reason")
+        store.markPublishAttempt(reason)
         getBestEffortLocationForTick(locationTimeoutMs) { location, locationMode ->
             if (location == null) {
-                store.markError("no_valid_location")
+                val skipReason = when (locationMode) {
+                    "timeout" -> "location_timeout"
+                    "permission_missing" -> "location_permission_missing"
+                    "provider_missing" -> "no_location_provider"
+                    else -> "no_valid_location"
+                }
+                store.markError(skipReason)
                 store.markLocationMode(locationMode)
+                Log.i(
+                    logTag,
+                    "$logPrefix skip reason=$skipReason locationMode=$locationMode",
+                )
                 publishInFlight = false
                 return@getBestEffortLocationForTick
             }
@@ -165,13 +176,17 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
                     if (store.isSosOpen()) {
                         lastPublishedSosLocation = location
                     }
-                    store.markLocationMode(locationMode)
+                    store.markPublishAttempt(reason, locationMode)
                     store.markPublished()
-                    Log.i(logTag, "$logPrefix publish result=success")
+                    store.markHttpStatusCode(null)
+                    Log.i(
+                        logTag,
+                        "$logPrefix publish result=success locationMode=$locationMode",
+                    )
                 } catch (error: Exception) {
-                    val message = "${reason}: ${error.message ?: error.javaClass.simpleName}"
+                    val message = error.message ?: error.javaClass.simpleName
                     store.markError(message)
-                    Log.w(logTag, "$logPrefix publish result=failed error=$message")
+                    Log.w(logTag, "$logPrefix publish result=failed reason=$reason error=$message")
                 } finally {
                     publishInFlight = false
                 }
@@ -211,23 +226,37 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
     ) {
         val base = apiBaseUrl.trimEnd('/')
         val connection = URL("$base/v1/sdk/telemetry").openConnection() as HttpURLConnection
-        connection.requestMethod = "POST"
-        connection.connectTimeout = 15000
-        connection.readTimeout = 15000
-        connection.doOutput = true
-        connection.setRequestProperty("Content-Type", "application/json")
-        connection.setRequestProperty("Accept", "application/json")
-        connection.setRequestProperty("X-App-ID", appId)
-        connection.setRequestProperty("X-User-ID", externalUserId)
-        connection.setRequestProperty("Authorization", "Bearer $userHash")
-        OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use {
-            it.write(body.toString())
+        try {
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 15000
+            connection.readTimeout = 15000
+            connection.doOutput = true
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("X-App-ID", appId)
+            connection.setRequestProperty("X-User-ID", externalUserId)
+            connection.setRequestProperty("Authorization", "Bearer $userHash")
+            OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use {
+                it.write(body.toString())
+            }
+            val code = connection.responseCode
+            store.markHttpStatusCode(code)
+            if (code !in 200..299) {
+                val errorBody = try {
+                    connection.errorStream?.bufferedReader()?.use { it.readText() }
+                } catch (_: Exception) {
+                    null
+                }
+                Log.w(
+                    logTag,
+                    "$logPrefix publish result=failed httpStatus=$code body=${errorBody ?: "-"}",
+                )
+                throw IllegalStateException("http_$code")
+            }
+            Log.i(logTag, "$logPrefix publish httpStatus=$code")
+        } finally {
+            connection.disconnect()
         }
-        val code = connection.responseCode
-        if (code !in 200..299) {
-            throw IllegalStateException("http_$code")
-        }
-        connection.disconnect()
     }
 
     private fun isoNow(): String {
@@ -253,7 +282,10 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             if (ageMs <= maxAgeMs) {
                 lastLocation = cached
                 store.markLocationMode("cached")
-                Log.i(logTag, "$logPrefix location action=use_cached ageMs=$ageMs")
+                Log.i(
+                    logTag,
+                    "$logPrefix location action=use_cached ageMs=$ageMs provider=${cached.provider}",
+                )
                 onComplete(cached, "cached")
                 return
             }
@@ -272,42 +304,84 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         timeoutMs: Long,
         onComplete: (Location?, String) -> Unit,
     ) {
-        if (singleLocationListener != null) {
+        if (singleLocationListeners.isNotEmpty()) {
             Log.i(logTag, "$logPrefix location action=request_single_skipped reason=active")
             onComplete(null, "active")
             return
         }
-        val provider = bestProvider(manager)
-        if (provider == null) {
+        val providers = eligibleProviders(manager)
+        if (providers.isEmpty()) {
+            val fallback = relaxedNormalFallbackLocation(manager)
+            if (fallback != null) {
+                lastLocation = fallback
+                store.markLocationMode("stale_fallback")
+                Log.i(
+                    logTag,
+                    "$logPrefix location action=use_stale_fallback reason=no_provider " +
+                        "ageMs=${locationAgeMs(fallback)} provider=${fallback.provider}",
+                )
+                onComplete(fallback, "stale_fallback")
+                return
+            }
             store.markError("no_location_provider")
             onComplete(null, "provider_missing")
             return
         }
-        Log.i(logTag, "$logPrefix location action=request_single")
+        Log.i(
+            logTag,
+            "$logPrefix location action=request_single providers=${providers.joinToString(",")}",
+        )
         store.markActiveLocationRequest(true)
-        val listener = object : LocationListener {
-            override fun onLocationChanged(location: Location) {
-                if (!isValid(location)) {
-                    return
-                }
-                lastLocation = location
-                Log.i(logTag, "$logPrefix location action=received")
-                cancelSingleLocationRequest(markTimeout = false)
-                onComplete(location, "current")
+        var completed = false
+        fun complete(location: Location?, mode: String) {
+            if (completed) {
+                return
             }
-
-            @Deprecated("Deprecated Android platform callback")
-            override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+            completed = true
+            cancelSingleLocationRequest(markTimeout = mode == "timeout")
+            onComplete(location, mode)
         }
-        singleLocationListener = listener
         val timeout = Runnable {
-            Log.i(logTag, "$logPrefix location action=timeout")
-            cancelSingleLocationRequest(markTimeout = true)
-            onComplete(null, "timeout")
+            val fallback = relaxedNormalFallbackLocation(manager)
+            if (fallback != null) {
+                lastLocation = fallback
+                Log.i(
+                    logTag,
+                    "$logPrefix location action=use_stale_fallback reason=timeout " +
+                        "ageMs=${locationAgeMs(fallback)} provider=${fallback.provider}",
+                )
+                complete(fallback, "stale_fallback")
+            } else {
+                Log.i(logTag, "$logPrefix location action=timeout")
+                complete(null, "timeout")
+            }
         }
         singleLocationTimeout = timeout
         try {
-            manager.requestLocationUpdates(provider, 0L, 0f, listener, Looper.getMainLooper())
+            providers.forEach { provider ->
+                val listener = object : LocationListener {
+                    override fun onLocationChanged(location: Location) {
+                        if (!isValid(location)) {
+                            return
+                        }
+                        lastLocation = location
+                        Log.i(
+                            logTag,
+                            "$logPrefix location action=received provider=${location.provider ?: provider}",
+                        )
+                        complete(location, "current:${location.provider ?: provider}")
+                    }
+
+                    @Deprecated("Deprecated Android platform callback")
+                    override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+
+                    override fun onProviderDisabled(provider: String) {
+                        Log.i(logTag, "$logPrefix location provider_disabled provider=$provider")
+                    }
+                }
+                manager.requestLocationUpdates(provider, 0L, 0f, listener, Looper.getMainLooper())
+                singleLocationListeners.add(provider to listener)
+            }
             handler.postDelayed(timeout, timeoutMs)
         } catch (_: SecurityException) {
             cancelSingleLocationRequest(markTimeout = false)
@@ -321,22 +395,26 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
     }
 
     private fun cancelSingleLocationRequest(markTimeout: Boolean) {
-        val listener = singleLocationListener
+        val listeners = singleLocationListeners.toList()
         val timeout = singleLocationTimeout
-        singleLocationListener = null
+        singleLocationListeners.clear()
         singleLocationTimeout = null
         if (timeout != null) {
             handler.removeCallbacks(timeout)
         }
-        if (listener != null) {
+        if (listeners.isNotEmpty()) {
             val manager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-            try {
-                manager.removeUpdates(listener)
-            } catch (_: SecurityException) {
+            listeners.forEach { (provider, listener) ->
+                try {
+                    manager.removeUpdates(listener)
+                } catch (_: SecurityException) {
+                }
+                Log.i(logTag, "$logPrefix location action=remove_single_update provider=$provider")
             }
             store.markActiveLocationRequest(false)
-            store.markLocationMode(if (markTimeout) "timeout" else "current")
-            Log.i(logTag, "$logPrefix location action=remove_updates")
+            if (markTimeout) {
+                store.markLocationMode("timeout")
+            }
         }
     }
 
@@ -386,7 +464,7 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
     }
 
     private fun freshestKnownLocation(manager: LocationManager): Location? {
-        return (manager.getProviders(true)
+        return (eligibleProviders(manager)
             .mapNotNull { provider ->
                 try {
                     manager.getLastKnownLocation(provider)
@@ -401,12 +479,36 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             .minByOrNull { locationAgeMs(it) }
     }
 
+    private fun freshestKnownLocationWithin(manager: LocationManager, maxAgeMs: Long): Location? {
+        return freshestKnownLocation(manager)
+            ?.takeIf { locationAgeMs(it) <= maxAgeMs }
+    }
+
+    private fun relaxedNormalFallbackLocation(manager: LocationManager): Location? {
+        if (store.isSosOpen()) {
+            return null
+        }
+        return freshestKnownLocationWithin(manager, normalStaleFallbackMaxAgeMs)
+    }
+
     private fun bestProvider(manager: LocationManager): String? {
-        val providers = manager.getProviders(true)
+        val providers = eligibleProviders(manager)
         return when {
             providers.contains(LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
             providers.contains(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
             else -> providers.firstOrNull()
+        }
+    }
+
+    private fun eligibleProviders(manager: LocationManager): List<String> {
+        val fine = hasFineLocationPermission()
+        val coarse = hasCoarseLocationPermission()
+        return manager.getProviders(true).filter { provider ->
+            when (provider) {
+                LocationManager.GPS_PROVIDER -> fine
+                LocationManager.NETWORK_PROVIDER -> fine || coarse
+                else -> fine
+            }
         }
     }
 
@@ -420,15 +522,21 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
     }
 
     private fun hasLocationPermission(): Boolean {
-        val fine = ContextCompat.checkSelfPermission(
+        return hasFineLocationPermission() || hasCoarseLocationPermission()
+    }
+
+    private fun hasFineLocationPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(
             this,
             Manifest.permission.ACCESS_FINE_LOCATION,
         ) == PackageManager.PERMISSION_GRANTED
-        val coarse = ContextCompat.checkSelfPermission(
+    }
+
+    private fun hasCoarseLocationPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(
             this,
             Manifest.permission.ACCESS_COARSE_LOCATION,
         ) == PackageManager.PERMISSION_GRANTED
-        return fine || coarse
     }
 
     private fun isValid(location: Location?): Boolean {
@@ -584,6 +692,7 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         private const val locationTimeoutMs = 8000L
         private const val normalCachedLocationMaxAgeMs = 45000L
         private const val sosCachedLocationMaxAgeMs = 15000L
+        private const val normalStaleFallbackMaxAgeMs = 600000L
         private const val sosMovementThresholdMeters = 7f
 
         fun start(context: Context) {
