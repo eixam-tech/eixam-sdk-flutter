@@ -369,6 +369,80 @@ void main() {
       await platformEvents.close();
     });
 
+    test(
+      'platform event mislabeled as own-device routes by payload originator identity',
+      () async {
+        await sdk.dispose();
+        BleDebugRegistry.instance.reset();
+        final events = <EixamSdkEvent>[];
+        final platformEvents =
+            StreamController<ProtectionPlatformEvent>.broadcast();
+        final platformAdapter = _FakeProtectionPlatformAdapter(
+          platformEvents: platformEvents.stream,
+        );
+        final localDeviceSosController = DeviceSosController(
+          countdownDuration: const Duration(milliseconds: 40),
+          countdownTick: const Duration(milliseconds: 5),
+        );
+        sdk = EixamConnectSdkImpl(
+          sosRepository: sosRepository,
+          trackingRepository: trackingRepository,
+          telemetryRepository: telemetryRepository,
+          contactsRepository: contactsRepository,
+          deviceRepository: deviceRepository,
+          deviceRegistryRepository: deviceRegistryRepository,
+          deathManRepository: deathManRepository,
+          permissionsRepository: permissionsRepository,
+          notificationsRepository: notificationsRepository,
+          realtimeClient: realtimeClient,
+          deviceSosController: localDeviceSosController,
+          bleIncomingEvents: bleEvents.stream,
+          preferredBleDeviceStore: preferredDeviceStore,
+          protectionPlatformAdapter: platformAdapter,
+        );
+        await sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        final subscription = sdk.watchEvents().listen(events.add);
+        await sdk.enterProtectionMode();
+
+        platformEvents.add(
+          ProtectionPlatformEvent(
+            type: ProtectionPlatformEventType.ownDeviceSosLifecycleObserved,
+            timestamp: DateTime.utc(2026, 4, 28, 10, 31),
+            reason: 'remote:sos:168496141:04030201008009',
+          ),
+        );
+        await _eventually(() => realtimeClient.publishedSos.length == 1);
+        await _eventually(
+          () => events.whereType<RemoteRelaySosObservedEvent>().isNotEmpty,
+        );
+
+        final observed = events.whereType<RemoteRelaySosObservedEvent>().single;
+        expect(observed.snapshot.originatorNodeId, 0x01020304);
+        expect(observed.snapshot.relayNodeId, 0x0A0B0C0D);
+        expect(await sdk.getPreSosStatus(), isNull);
+        expect(
+          (await localDeviceSosController.getStatus()).state,
+          DeviceSosState.inactive,
+        );
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) =>
+                event.message.contains('sos_identity_decision') &&
+                event.message.contains('decision=remote_relay') &&
+                event.message.contains(
+                  'platformEventType=ownDeviceSosLifecycleObserved',
+                ),
+          ),
+          isTrue,
+        );
+
+        await subscription.cancel();
+        await platformEvents.close();
+      },
+    );
+
     test('platform own-device SOS does not route as external relay', () async {
       await sdk.dispose();
       BleDebugRegistry.instance.reset();

@@ -3872,22 +3872,6 @@ class EixamConnectSdkImpl
       );
       return;
     }
-    if (payloadReason.identityOwn && !isOwnDeviceSosLifecycleEvent) {
-      _logSosTrace(
-        'dart_platform_event_parse_result originatorNodeId=none '
-        'relayNodeId=none classification=ownDeviceSos hasLocation=false',
-      );
-      _logSosTrace(
-        'dart_platform_event_route route=ignored reason=native_own_device_sos',
-      );
-      _logSosTrace(
-        'dart_platform_event_ignored reason=native_own_device_sos',
-      );
-      BleDebugRegistry.instance.recordEvent(
-        'Protection SOS payload ignored -> reason=native_own_device_sos',
-      );
-      return;
-    }
     final rawHex = payloadReason.payloadHex;
     if (rawHex == null || rawHex.isEmpty) {
       _logSosTrace(
@@ -3924,27 +3908,66 @@ class EixamConnectSdkImpl
       return;
     }
 
-    final remoteClassification = isOwnDeviceSosLifecycleEvent
-        ? const BleIncomingPayloadClassification(
-            kind: BleIncomingPayloadKind.ownDeviceSos,
-          )
-        : _classifyProtectionPlatformRemoteSos(
-            bytes: bytes,
-            rawHex: rawHex,
-            source: payloadReason.source,
-            relayNodeId: payloadReason.relayNodeId,
-            forceUnknownIdentity: payloadReason.identityUnknown,
-          );
+    final remoteClassification = _classifyProtectionPlatformRemoteSos(
+      bytes: bytes,
+      rawHex: rawHex,
+      source: payloadReason.source,
+      relayNodeId: payloadReason.relayNodeId,
+      forceUnknownIdentity: payloadReason.identityUnknown,
+    );
+    final isUnknownOriginSos =
+        remoteClassification.kind == BleIncomingPayloadKind.unknownOriginSos;
+    final platformConnectedBleNodeId = payloadReason.identityUnknown
+        ? null
+        : payloadReason.relayNodeId ?? _knownLocalDeviceNodeId;
+    final hasTrustedPlatformConnectedNode =
+        platformConnectedBleNodeId != null && !payloadReason.identityUnknown;
     final unknownRemoteRelaySnapshot =
-        remoteClassification.kind == BleIncomingPayloadKind.unknownOriginSos
+        !payloadReason.identityOwn && isUnknownOriginSos
             ? _unknownOriginRemoteSosSnapshotFromPlatform(
                 bytes: bytes,
                 rawHex: rawHex,
                 source: payloadReason.source,
               )
             : null;
-    final remoteRelaySnapshot = remoteClassification.remoteRelaySosSnapshot ??
-        unknownRemoteRelaySnapshot;
+    final classifiedRemoteRelaySnapshot =
+        payloadReason.identityOwn && !hasTrustedPlatformConnectedNode
+            ? null
+            : remoteClassification.remoteRelaySosSnapshot;
+    final remoteRelaySnapshot =
+        classifiedRemoteRelaySnapshot ?? unknownRemoteRelaySnapshot;
+    final originatorNodeId = remoteRelaySnapshot?.originatorNodeId ??
+        remoteClassification.sosPacket?.nodeId ??
+        remoteClassification.sosEventPacket?.nodeId ??
+        EixamSosPacket.tryParse(bytes)?.nodeId ??
+        EixamSosEventPacket.tryParse(bytes)?.nodeId;
+    final isLocalPlatformSosClassification =
+        hasTrustedPlatformConnectedNode &&
+            (remoteClassification.kind == BleIncomingPayloadKind.ownDeviceSos ||
+                remoteClassification.kind == BleIncomingPayloadKind.sosClear ||
+                remoteClassification.kind == BleIncomingPayloadKind.sosCancel);
+    _logProtectionSosIdentityDecision(
+      originatorNodeId: originatorNodeId,
+      connectedBleNodeId: platformConnectedBleNodeId,
+      relayNodeId: payloadReason.relayNodeId,
+      sourceChannel: (payloadReason.source ?? RemoteRelaySosSource.sosNotify)
+          .name,
+      platformEventType: event.type.name,
+      decision: remoteRelaySnapshot != null
+          ? unknownRemoteRelaySnapshot != null
+              ? 'unknown_hold'
+              : 'remote_relay'
+          : isLocalPlatformSosClassification
+              ? 'own_device'
+              : 'unknown_hold',
+      reason: remoteRelaySnapshot != null
+          ? unknownRemoteRelaySnapshot != null
+              ? 'connected_ble_node_unknown'
+              : 'originator_differs_from_connected_ble_node'
+          : isLocalPlatformSosClassification
+              ? 'originator_matches_connected_ble_node'
+              : 'connected_ble_node_unknown',
+    );
     _logSosTrace(
       'dart_platform_event_parse_result '
       'originatorNodeId=${remoteRelaySnapshot?.originatorNodeId ?? "none"} '
@@ -3988,12 +4011,36 @@ class EixamConnectSdkImpl
       );
       return;
     }
+    if (payloadReason.identityOwn && !isOwnDeviceSosLifecycleEvent) {
+      _logSosTrace(
+        'dart_platform_event_route route=ignored reason=native_own_device_sos',
+      );
+      _logSosTrace(
+        'dart_platform_event_ignored reason=native_own_device_sos',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'Protection SOS payload ignored -> reason=native_own_device_sos',
+      );
+      return;
+    }
     if (remoteClassification.kind == BleIncomingPayloadKind.unknownOriginSos) {
       _logSosTrace(
         'dart_platform_event_route route=ignored reason=unknown_origin_without_sos_packet',
       );
       _logSosTrace(
         'dart_platform_event_ignored reason=unknown_origin_without_sos_packet',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'Protection SOS payload held -> reason=unknown_connected_node_identity payload=$rawHex',
+      );
+      return;
+    }
+    if (!hasTrustedPlatformConnectedNode && originatorNodeId != null) {
+      _logSosTrace(
+        'dart_platform_event_route route=ignored reason=unknown_connected_node_identity',
+      );
+      _logSosTrace(
+        'dart_platform_event_ignored reason=unknown_connected_node_identity',
       );
       BleDebugRegistry.instance.recordEvent(
         'Protection SOS payload held -> reason=unknown_connected_node_identity payload=$rawHex',
@@ -4954,6 +5001,27 @@ class EixamConnectSdkImpl
 
   void _logSosTrace(String message) {
     debugPrint('SOS_TRACE $message');
+  }
+
+  void _logProtectionSosIdentityDecision({
+    required int? originatorNodeId,
+    required int? connectedBleNodeId,
+    required int? relayNodeId,
+    required String sourceChannel,
+    required String platformEventType,
+    required String decision,
+    required String reason,
+  }) {
+    BleDebugRegistry.instance.recordEvent(
+      'sos_identity_decision '
+      'originatorNodeId=${originatorNodeId?.toString() ?? "-"} '
+      'connectedBleNodeId=${connectedBleNodeId?.toString() ?? "-"} '
+      'relayNodeId=${relayNodeId?.toString() ?? "-"} '
+      'sourceChannel=$sourceChannel '
+      'platformEventType=$platformEventType '
+      'decision=$decision '
+      'reason=$reason',
+    );
   }
 
   void _emitOperationalDiagnostics({

@@ -596,6 +596,14 @@ internal class ProtectionBleRuntimeOwner(
                 }
 
                 ProtectionBleSosIdentityClassification.OwnSos -> {
+                    recordSosIdentityDecision(
+                        originatorNodeId = readPacketOriginatorNodeId(payload),
+                        relayNodeId = connectedBleNodeId,
+                        source = ProtectionBleSosRelaySource.tel,
+                        platformEventType = null,
+                        decision = "own_device",
+                        reason = "originator_matches_connected_ble_node",
+                    )
                     logSosPacketDecodeForTrace(
                         payload = payload,
                         source = ProtectionBleSosRelaySource.tel,
@@ -675,6 +683,14 @@ internal class ProtectionBleRuntimeOwner(
                 type = nativeRoute.diagnosticEventType ?: "ownDeviceSosLifecycleObserved",
                 reason = "own:${ProtectionBleSosRelaySource.sos.name}:${payloadHex(payload)}",
             )
+            recordSosIdentityDecision(
+                originatorNodeId = readPacketOriginatorNodeId(payload),
+                relayNodeId = connectedBleNodeId,
+                source = ProtectionBleSosRelaySource.sos,
+                platformEventType = nativeRoute.diagnosticEventType ?: "ownDeviceSosLifecycleObserved",
+                decision = "own_device",
+                reason = "originator_matches_connected_ble_node",
+            )
             logSosTrace(
                 "native_lifecycle_gate classification=ownDeviceSos " +
                     "action=observe_local_lifecycle observeSosLifecycle_called=true",
@@ -686,6 +702,14 @@ internal class ProtectionBleRuntimeOwner(
     private fun recordUnknownOriginSosPayload(
         classification: ProtectionBleSosIdentityClassification.UnknownOriginSos,
     ) {
+        recordSosIdentityDecision(
+            originatorNodeId = classification.originatorNodeId,
+            relayNodeId = null,
+            source = classification.source,
+            platformEventType = "sosEventReceived",
+            decision = "unknown_hold",
+            reason = "connected_ble_node_unknown",
+        )
         logSosTrace(
             "native_sos_decode originatorNodeId=${classification.originatorNodeId} " +
                 "connectedBleNodeId=${connectedBleNodeId ?: "none"} boundNodeId=${boundNodeId ?: "none"} " +
@@ -722,6 +746,14 @@ internal class ProtectionBleRuntimeOwner(
     private fun recordRemoteRelaySosPayload(
         classification: ProtectionBleSosIdentityClassification.RemoteSos,
     ) {
+        recordSosIdentityDecision(
+            originatorNodeId = classification.originatorNodeId,
+            relayNodeId = classification.relayNodeId,
+            source = classification.source,
+            platformEventType = "sosEventReceived",
+            decision = "remote_relay",
+            reason = "originator_differs_from_connected_ble_node",
+        )
         logSosTrace(
             "native_sos_decode originatorNodeId=${classification.originatorNodeId} " +
                 "connectedBleNodeId=${connectedBleNodeId ?: "none"} boundNodeId=${boundNodeId ?: "none"} " +
@@ -758,6 +790,14 @@ internal class ProtectionBleRuntimeOwner(
     private fun recordRemoteRelayEventPayload(
         classification: ProtectionBleSosIdentityClassification.RemoteEvent,
     ) {
+        recordSosIdentityDecision(
+            originatorNodeId = classification.originatorNodeId,
+            relayNodeId = classification.relayNodeId,
+            source = classification.source,
+            platformEventType = "sosEventReceived",
+            decision = "remote_relay",
+            reason = "originator_differs_from_connected_ble_node",
+        )
         logSosTrace(
             "platform_event type=sosEventReceived originatorNodeId=${classification.originatorNodeId} " +
                 "relayNodeId=${classification.relayNodeId} hasLocation=false " +
@@ -779,6 +819,23 @@ internal class ProtectionBleRuntimeOwner(
 
     private fun payloadHex(payload: List<Int>): String =
         payload.joinToString(separator = "") { byte -> "%02x".format(byte) }
+
+    private fun recordSosIdentityDecision(
+        originatorNodeId: Int?,
+        relayNodeId: Int?,
+        source: ProtectionBleSosRelaySource,
+        platformEventType: String?,
+        decision: String,
+        reason: String,
+    ) {
+        logSosTrace(
+            "sos_identity_decision originatorNodeId=${originatorNodeId ?: "none"} " +
+                "connectedBleNodeId=${connectedBleNodeId ?: "none"} " +
+                "relayNodeId=${relayNodeId ?: "none"} sourceChannel=${source.name} " +
+                "platformEventType=${platformEventType ?: "none"} " +
+                "decision=$decision reason=$reason",
+        )
+    }
 
     private fun readPacketOriginatorNodeId(payload: List<Int>): Int? {
         if (payload.size == 6 && (payload[0] == 0xE1 || payload[0] == 0xE2)) {

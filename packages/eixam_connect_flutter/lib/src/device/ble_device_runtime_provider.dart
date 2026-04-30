@@ -959,6 +959,29 @@ class BleDeviceRuntimeProvider
         payloadHex: EixamBleProtocol.hex(peerPayload),
         receivedAt: notification.receivedAt,
       );
+      final d2SosPacket = d2RelayClassification.sosPacket;
+      if (d2SosPacket != null) {
+        _logSosIdentityDecision(
+          originatorNodeId: d2SosPacket.nodeId,
+          connectedBleNodeId: _connectedBleTagNodeId,
+          relayNodeId: _connectedBleTagNodeId,
+          sourceChannel: 'd2Relay',
+          platformEventType: null,
+          decision: d2RelayClassification.kind ==
+                  BleIncomingPayloadKind.ownDeviceSos
+              ? 'own_device'
+              : d2RelayClassification.kind ==
+                      BleIncomingPayloadKind.remoteRelaySos
+                  ? 'remote_relay'
+                  : 'unknown_hold',
+          reason: d2RelayClassification.kind ==
+                  BleIncomingPayloadKind.ownDeviceSos
+              ? 'originator_matches_connected_ble_node'
+              : _connectedBleTagNodeId == null
+                  ? 'connected_ble_node_unknown'
+                  : 'originator_differs_from_connected_ble_node',
+        );
+      }
       BleDebugRegistry.instance.recordDecodedIncomingEvent(
         eventType: BleIncomingEventType.telRelayRx.name,
         outcome: BleIncomingEventType.telRelayRx.name,
@@ -1062,9 +1085,19 @@ class BleDeviceRuntimeProvider
     if (classification.kind == BleIncomingPayloadKind.ownDeviceSos ||
         classification.kind == BleIncomingPayloadKind.remoteRelaySos) {
       final sosPacket = classification.sosPacket!;
-      if (classification.kind == BleIncomingPayloadKind.ownDeviceSos) {
-        _connectedBleTagNodeId ??= sosPacket.nodeId;
-      }
+      _logSosIdentityDecision(
+        originatorNodeId: sosPacket.nodeId,
+        connectedBleNodeId: _connectedBleTagNodeId,
+        relayNodeId: _connectedBleTagNodeId,
+        sourceChannel: notification.channel.name,
+        platformEventType: null,
+        decision: classification.kind == BleIncomingPayloadKind.ownDeviceSos
+            ? 'own_device'
+            : 'remote_relay',
+        reason: classification.kind == BleIncomingPayloadKind.ownDeviceSos
+            ? 'originator_matches_connected_ble_node'
+            : 'originator_differs_from_connected_ble_node',
+      );
       BleDebugRegistry.instance.recordEvent(
         'TEL classified -> type=sos role=${classification.kind.name} len=${payload.length} nodeId=${_formatNodeId(sosPacket.nodeId)} sosType=${sosPacket.sosType} packetId=${sosPacket.packetId} relayCount=${sosPacket.relayCount}',
       );
@@ -1113,9 +1146,22 @@ class BleDeviceRuntimeProvider
       return;
     }
 
+    final unknownOriginSosPacket = classification.sosPacket;
+    if (classification.kind == BleIncomingPayloadKind.unknownOriginSos &&
+        unknownOriginSosPacket != null) {
+      _logSosIdentityDecision(
+        originatorNodeId: unknownOriginSosPacket.nodeId,
+        connectedBleNodeId: _connectedBleTagNodeId,
+        relayNodeId: _connectedBleTagNodeId,
+        sourceChannel: notification.channel.name,
+        platformEventType: null,
+        decision: 'unknown_hold',
+        reason: 'connected_ble_node_unknown',
+      );
+    }
+
     final telPacket = classification.telPacket;
     if (telPacket != null) {
-      _connectedBleTagNodeId ??= telPacket.nodeId;
       BleDebugRegistry.instance.recordEvent(
         'TEL classified -> type=tel len=${payload.length} nodeId=${_formatNodeId(telPacket.nodeId)} packetId=${telPacket.packetId} batt=${telPacket.batteryLevel} gps=${telPacket.gpsQuality}',
       );
@@ -1291,12 +1337,24 @@ class BleDeviceRuntimeProvider
         : null;
     if (sosEventPacket?.sosEventPacket != null) {
       final packet = sosEventPacket!.sosEventPacket!;
-      final isLocalEvent = packet.nodeId == _connectedBleTagNodeId ||
-          (_connectedBleTagNodeId == null &&
-              source == DeviceSosTransitionSource.app);
-      if (isLocalEvent) {
-        _connectedBleTagNodeId ??= packet.nodeId;
-      }
+      final isLocalEvent = packet.nodeId == _connectedBleTagNodeId;
+      _logSosIdentityDecision(
+        originatorNodeId: packet.nodeId,
+        connectedBleNodeId: _connectedBleTagNodeId,
+        relayNodeId: _connectedBleTagNodeId,
+        sourceChannel: notification.channel.name,
+        platformEventType: null,
+        decision: isLocalEvent
+            ? 'own_device'
+            : _connectedBleTagNodeId == null
+                ? 'unknown_hold'
+                : 'remote_relay',
+        reason: isLocalEvent
+            ? 'originator_matches_connected_ble_node'
+            : _connectedBleTagNodeId == null
+                ? 'connected_ble_node_unknown'
+                : 'originator_differs_from_connected_ble_node',
+      );
       BleDebugRegistry.instance.recordEvent(
         'SOS device event decoded -> role=${isLocalEvent ? "connected_tag" : "remote_relay"} nodeId=${_formatNodeId(packet.nodeId)} opcode=0x${packet.opcode.toRadixString(16).padLeft(2, '0')} subcode=0x${packet.subcode.toRadixString(16).padLeft(2, '0')}',
       );
@@ -1354,9 +1412,23 @@ class BleDeviceRuntimeProvider
     );
     if (sosClassification.sosPacket != null) {
       final sosPacket = sosClassification.sosPacket!;
-      if (sosClassification.kind == BleIncomingPayloadKind.ownDeviceSos) {
-        _connectedBleTagNodeId ??= sosPacket.nodeId;
-      }
+      _logSosIdentityDecision(
+        originatorNodeId: sosPacket.nodeId,
+        connectedBleNodeId: _connectedBleTagNodeId,
+        relayNodeId: _connectedBleTagNodeId,
+        sourceChannel: notification.channel.name,
+        platformEventType: null,
+        decision: sosClassification.kind == BleIncomingPayloadKind.ownDeviceSos
+            ? 'own_device'
+            : sosClassification.kind == BleIncomingPayloadKind.remoteRelaySos
+                ? 'remote_relay'
+                : 'unknown_hold',
+        reason: sosClassification.kind == BleIncomingPayloadKind.ownDeviceSos
+            ? 'originator_matches_connected_ble_node'
+            : _connectedBleTagNodeId == null
+                ? 'connected_ble_node_unknown'
+                : 'originator_differs_from_connected_ble_node',
+      );
       BleDebugRegistry.instance.recordEvent(
         'SOS packet decoded -> role=${sosClassification.kind.name} nodeId=${_formatNodeId(sosPacket.nodeId)} sosType=${sosPacket.sosType} packetId=${sosPacket.packetId} relayCount=${sosPacket.relayCount}',
       );
@@ -1446,6 +1518,27 @@ class BleDeviceRuntimeProvider
 
     _recentSosPacketSignatures[signature] = now;
     return true;
+  }
+
+  void _logSosIdentityDecision({
+    required int originatorNodeId,
+    required int? connectedBleNodeId,
+    required int? relayNodeId,
+    required String sourceChannel,
+    required String? platformEventType,
+    required String decision,
+    required String reason,
+  }) {
+    BleDebugRegistry.instance.recordEvent(
+      'sos_identity_decision '
+      'originatorNodeId=${_formatNodeId(originatorNodeId)} '
+      'connectedBleNodeId=${connectedBleNodeId == null ? "-" : _formatNodeId(connectedBleNodeId)} '
+      'relayNodeId=${relayNodeId == null ? "-" : _formatNodeId(relayNodeId)} '
+      'sourceChannel=$sourceChannel '
+      'platformEventType=${platformEventType ?? "-"} '
+      'decision=$decision '
+      'reason=$reason',
+    );
   }
 
   DeviceLifecycleState _resolveLifecycle(

@@ -116,9 +116,6 @@ class BleIncomingPayloadClassifier {
           ? BleIncomingPayloadKind.ownDeviceSos
           : BleIncomingPayloadKind.remoteRelaySos;
     }
-    if (source == DeviceSosTransitionSource.app) {
-      return BleIncomingPayloadKind.ownDeviceSos;
-    }
     return BleIncomingPayloadKind.unknownOriginSos;
   }
 
