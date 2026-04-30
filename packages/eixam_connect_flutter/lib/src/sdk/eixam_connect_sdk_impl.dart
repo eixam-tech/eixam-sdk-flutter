@@ -2130,7 +2130,10 @@ class EixamConnectSdkImpl
           _publicSosFallbackIncident?.deliveryChannel;
       final deviceSync = await _attemptPublicSosDeviceAction(
         action: 'cancel',
-        shouldRun: _canCloseDeviceSosForPublicSos,
+        shouldRun: (status) => _shouldCloseDeviceForPublicSos(
+          status,
+          activeIncident: activeIncident,
+        ),
         operation: () => _closeDeviceSos(
           intent: _SosClosureIntent.cancel,
           syncBackendForDeviceOriginatedCycle: false,
@@ -2199,7 +2202,10 @@ class EixamConnectSdkImpl
       );
       final deviceSync = await _attemptPublicSosDeviceAction(
         action: 'resolve',
-        shouldRun: _canCloseDeviceSosForPublicSos,
+        shouldRun: (status) => _shouldCloseDeviceForPublicSos(
+          status,
+          activeIncident: activeIncident,
+        ),
         operation: () => _closeDeviceSos(
           intent: _SosClosureIntent.resolve,
           syncBackendForDeviceOriginatedCycle: false,
@@ -2409,9 +2415,12 @@ class EixamConnectSdkImpl
     }
 
     final deviceSosStatus = await deviceSosController.getStatus();
+    BleDebugRegistry.instance.recordEvent(
+      'Public SOS device sync evaluated -> action=$action commandPathAvailable=true deviceId=${runtimeStatus.deviceId} state=${deviceSosStatus.state.name} origin=${deviceSosStatus.triggerOrigin.name} optimistic=${deviceSosStatus.optimistic} derivedFromBle=${deviceSosStatus.derivedFromBlePacket}',
+    );
     if (!shouldRun(deviceSosStatus)) {
       BleDebugRegistry.instance.recordEvent(
-        'Public SOS device sync skipped -> action=$action reason=state_already_converged state=${deviceSosStatus.state.name} origin=${deviceSosStatus.triggerOrigin.name} deviceId=${runtimeStatus.deviceId}',
+        'Public SOS device sync skipped -> action=$action reason=state_already_converged state=${deviceSosStatus.state.name} origin=${deviceSosStatus.triggerOrigin.name} deviceId=${runtimeStatus.deviceId} commandPathAvailable=true',
       );
       return const _PublicSosDeviceAttempt(
         available: true,
@@ -2421,7 +2430,13 @@ class EixamConnectSdkImpl
     }
 
     try {
+      BleDebugRegistry.instance.recordEvent(
+        'Public SOS device sync attempting -> action=$action deviceId=${runtimeStatus.deviceId} route=$_currentDeviceCommandOwnerRoute state=${deviceSosStatus.state.name} commandPathAvailable=true',
+      );
       await operation();
+      BleDebugRegistry.instance.recordEvent(
+        'Public SOS device sync succeeded -> action=$action deviceId=${runtimeStatus.deviceId} route=$_currentDeviceCommandOwnerRoute',
+      );
       return const _PublicSosDeviceAttempt(
         available: true,
         attempted: true,
@@ -2435,7 +2450,7 @@ class EixamConnectSdkImpl
         );
       }
       BleDebugRegistry.instance.recordEvent(
-        'Public SOS device sync failed -> action=$action error=$error deviceId=${runtimeStatus.deviceId}',
+        'Public SOS device sync failed -> action=$action error=$error deviceId=${runtimeStatus.deviceId} route=$_currentDeviceCommandOwnerRoute',
       );
       return const _PublicSosDeviceAttempt(
         available: true,
@@ -2463,17 +2478,21 @@ class EixamConnectSdkImpl
         reason: 'public_sos_${action}_execution',
         statusOverride: status,
       );
+      final deviceSosStatus = await deviceSosController.getStatus();
+      BleDebugRegistry.instance.recordEvent(
+        'Public SOS device sync command path availability -> action=$action deviceConnected=${capabilitySnapshot.deviceConnected} shortCommandAvailable=${capabilitySnapshot.shortCommandAvailable} longCommandAvailable=${capabilitySnapshot.longCommandAvailable} activeOwner=$_currentDeviceCommandOwnerRoute cachedDeviceSosState=${deviceSosStatus.state.name} cachedDeviceSosOrigin=${deviceSosStatus.triggerOrigin.name}',
+      );
 
       if (!capabilitySnapshot.deviceConnected) {
         BleDebugRegistry.instance.recordEvent(
-          'Public SOS device sync skipped -> action=$action reason=device_not_connected lifecycle=${status.lifecycleState.name} flutterConnected=${status.connected} protectionConnected=${capabilitySnapshot.serviceBleConnected ?? false} protectionReady=${capabilitySnapshot.serviceBleReady ?? false} paired=${status.paired} activated=${status.activated}',
+          'Public SOS device sync skipped -> action=$action reason=device_not_connected lifecycle=${status.lifecycleState.name} flutterConnected=${status.connected} protectionConnected=${capabilitySnapshot.serviceBleConnected ?? false} protectionReady=${capabilitySnapshot.serviceBleReady ?? false} paired=${status.paired} activated=${status.activated} cachedDeviceSosState=${deviceSosStatus.state.name}',
         );
         return null;
       }
 
       if (!capabilitySnapshot.shortCommandAvailable) {
         BleDebugRegistry.instance.recordEvent(
-          'Public SOS device sync skipped -> action=$action reason=sos_command_path_unavailable deviceId=${status.deviceId} activeOwner=$_currentDeviceCommandOwnerRoute',
+          'Public SOS device sync skipped -> action=$action reason=sos_command_path_unavailable deviceId=${status.deviceId} activeOwner=$_currentDeviceCommandOwnerRoute cachedDeviceSosState=${deviceSosStatus.state.name}',
         );
         return null;
       }
@@ -3338,6 +3357,26 @@ class EixamConnectSdkImpl
     return status.state == DeviceSosState.preConfirm ||
         status.state == DeviceSosState.active ||
         status.state == DeviceSosState.acknowledged;
+  }
+
+  bool _shouldCloseDeviceForPublicSos(
+    DeviceSosStatus status, {
+    required SosIncident? activeIncident,
+  }) {
+    final backendOrAppSosActive = _hasBackendVisibleSosIncident(
+          activeIncident,
+        ) ||
+        _hasBackendVisibleSosIncident(_publicSosFallbackIncident) ||
+        (_publicSosState != SosState.idle &&
+            _publicSosState != SosState.cancelled &&
+            _publicSosState != SosState.resolved &&
+            _publicSosState != SosState.failed);
+    final statusAllowsClose = _canCloseDeviceSosForPublicSos(status);
+    final shouldClose = backendOrAppSosActive || statusAllowsClose;
+    BleDebugRegistry.instance.recordEvent(
+      'Public SOS device close decision -> shouldClose=$shouldClose backendOrAppSosActive=$backendOrAppSosActive statusAllowsClose=$statusAllowsClose state=${status.state.name} origin=${status.triggerOrigin.name} incidentId=${activeIncident?.id ?? _publicSosFallbackIncident?.id ?? "-"}',
+    );
+    return shouldClose;
   }
 
   bool _isDeviceSosCycleClosed(DeviceSosState state) {

@@ -2983,6 +2983,116 @@ void main() {
     });
 
     test(
+        'resolveSos attempts device close when backend SOS is active even with stale inactive device status',
+        () async {
+      final commands = <String>[];
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-stale-resolve-1',
+          canonicalHardwareId: 'CF:82:11:22:33:60',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
+      );
+      await _attachObservedAppActivationWriter(
+        deviceSosController,
+        commandLabels: commands,
+        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
+      );
+      sosRepository.currentIncident = SosIncident(
+        id: 'sos-stale-resolve-1',
+        state: SosState.sent,
+        createdAt: DateTime.utc(2026, 1, 1),
+      );
+
+      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.inactive);
+
+      await sdk.resolveSos();
+
+      expect(sosRepository.resolveCallCount, 1);
+      expect(commands, contains('SOS CANCEL'));
+      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.resolved);
+      expect(
+        (await sdk.getOperationalDiagnostics()).lastPublicSosDeliveryChannel,
+        SosDeliveryChannel.backendAndDevice,
+      );
+    });
+
+    test(
+        'cancelSos attempts device close when backend SOS is active even with stale inactive device status',
+        () async {
+      final commands = <String>[];
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-stale-cancel-1',
+          canonicalHardwareId: 'CF:82:11:22:33:61',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
+      );
+      await _attachObservedAppActivationWriter(
+        deviceSosController,
+        commandLabels: commands,
+        closeAckPacket: <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
+      );
+      sosRepository.currentIncident = SosIncident(
+        id: 'sos-stale-cancel-1',
+        state: SosState.sent,
+        createdAt: DateTime.utc(2026, 1, 1),
+      );
+
+      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.inactive);
+
+      final incident = await sdk.cancelSos();
+
+      expect(incident.state, SosState.cancelled);
+      expect(sosRepository.cancelCallCount, 1);
+      expect(commands, contains('SOS CANCEL'));
+      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.resolved);
+      expect(
+        (await sdk.getOperationalDiagnostics()).lastPublicSosDeliveryChannel,
+        SosDeliveryChannel.backendAndDevice,
+      );
+    });
+
+    test(
+        'resolveSos reports backend-only alignment when device close is skipped',
+        () async {
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-resolve-no-command-1',
+          canonicalHardwareId: 'CF:82:11:22:33:62',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
+      );
+      sosRepository.currentIncident = SosIncident(
+        id: 'sos-resolve-no-command-1',
+        state: SosState.sent,
+        createdAt: DateTime.utc(2026, 1, 1),
+      );
+
+      await sdk.resolveSos();
+
+      expect(sosRepository.resolveCallCount, 1);
+      expect(
+        (await sdk.getOperationalDiagnostics()).lastPublicSosDeliveryChannel,
+        SosDeliveryChannel.backendOnly,
+      );
+      expect(
+        BleDebugRegistry.instance.currentState.events.any(
+          (event) => event.message.contains(
+            'Public SOS device sync skipped -> action=resolve reason=sos_command_path_unavailable',
+          ),
+        ),
+        isTrue,
+      );
+    });
+
+    test(
         'resolveSos keeps resolved backend semantics for a device-originated active SOS cycle',
         () async {
       final commands = <String>[];

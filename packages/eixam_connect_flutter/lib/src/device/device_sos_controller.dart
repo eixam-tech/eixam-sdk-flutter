@@ -193,10 +193,21 @@ class DeviceSosController {
       failureEvent: 'SOS cancel write failed',
       commandRouteLabel: commandRouteLabel,
     );
-    return _waitForStatus(
-      description: 'observed device close acknowledgement after cancel',
-      predicate: _isObservedClosedAfterCancel,
-    );
+    try {
+      final closed = await _waitForStatus(
+        description: 'observed device close acknowledgement after cancel',
+        predicate: _isObservedClosedAfterCancel,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'Device SOS close command acknowledged -> route=$commandRouteLabel state=${closed.state.name} previousState=${previous.state.name}',
+      );
+      return closed;
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'Device SOS close command timed out or failed -> route=$commandRouteLabel lastState=${_status.state.name} previousState=${previous.state.name} error=$error',
+      );
+      rethrow;
+    }
   }
 
   Future<DeviceSosStatus> acknowledgeSos({
