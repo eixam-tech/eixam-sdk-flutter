@@ -14,7 +14,8 @@ internal object ProtectionBleSosNativeRouting {
 
             is ProtectionBleSosIdentityClassification.RemoteSos,
             is ProtectionBleSosIdentityClassification.RemoteEvent,
-            is ProtectionBleSosIdentityClassification.UnknownOriginSos -> ProtectionBleSosNativeRoute(
+            is ProtectionBleSosIdentityClassification.UnknownOriginSos,
+            is ProtectionBleSosIdentityClassification.UnknownOriginEvent -> ProtectionBleSosNativeRoute(
                 observeLocalLifecycle = false,
                 diagnosticEventType = null,
                 emitSosEventReceived = true,

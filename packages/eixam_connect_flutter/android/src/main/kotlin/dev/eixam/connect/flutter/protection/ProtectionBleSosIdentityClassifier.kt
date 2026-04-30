@@ -14,19 +14,23 @@ internal object ProtectionBleSosIdentityClassifier {
     fun classify(
         payload: List<Int>,
         connectedNodeId: Int?,
+        // Metadata only. Local ownership is proven exclusively by connectedNodeId.
         boundNodeId: Int? = null,
         source: ProtectionBleSosRelaySource,
     ): ProtectionBleSosIdentityClassification {
-        val trustedLocalNodeId = connectedNodeId ?: boundNodeId
         val eventPacket = tryParseEventPacket(payload)
         if (eventPacket != null) {
-            if (trustedLocalNodeId == null) {
-                return ProtectionBleSosIdentityClassification.Unknown
+            if (connectedNodeId == null) {
+                return ProtectionBleSosIdentityClassification.UnknownOriginEvent(
+                    originatorNodeId = eventPacket.nodeId,
+                    source = source,
+                    rawPayload = payload,
+                )
             }
-            if (eventPacket.nodeId != trustedLocalNodeId) {
+            if (eventPacket.nodeId != connectedNodeId) {
                 return ProtectionBleSosIdentityClassification.RemoteEvent(
                     originatorNodeId = eventPacket.nodeId,
-                    relayNodeId = trustedLocalNodeId,
+                    relayNodeId = connectedNodeId,
                     source = source,
                     rawPayload = payload,
                 )
@@ -38,7 +42,7 @@ internal object ProtectionBleSosIdentityClassifier {
         if (sosPacket.sosType == 0) {
             return ProtectionBleSosIdentityClassification.Unknown
         }
-        if (trustedLocalNodeId == null) {
+        if (connectedNodeId == null) {
             return ProtectionBleSosIdentityClassification.UnknownOriginSos(
                 originatorNodeId = sosPacket.nodeId,
                 source = source,
@@ -47,12 +51,12 @@ internal object ProtectionBleSosIdentityClassifier {
                 position = sosPacket.position,
             )
         }
-        if (sosPacket.nodeId == trustedLocalNodeId) {
+        if (sosPacket.nodeId == connectedNodeId) {
             return ProtectionBleSosIdentityClassification.OwnSos
         }
         return ProtectionBleSosIdentityClassification.RemoteSos(
             originatorNodeId = sosPacket.nodeId,
-            relayNodeId = trustedLocalNodeId,
+            relayNodeId = connectedNodeId,
             source = source,
             rawPayload = payload,
             sosType = sosPacket.sosType,
@@ -146,6 +150,12 @@ internal sealed class ProtectionBleSosIdentityClassification {
         val rawPayload: List<Int>,
         val sosType: Int,
         val position: ProtectionBleSosIdentityClassifier.SosPosition?,
+    ) : ProtectionBleSosIdentityClassification()
+
+    data class UnknownOriginEvent(
+        val originatorNodeId: Int,
+        val source: ProtectionBleSosRelaySource,
+        val rawPayload: List<Int>,
     ) : ProtectionBleSosIdentityClassification()
 
     data class RemoteSos(

@@ -500,6 +500,13 @@ internal class ProtectionBleRuntimeOwner(
         logSosTrace(
             "native_identity_fallback result=${result.first} reason=${result.second}",
         )
+        if (connectedBleNodeId == null && originatorNodeId != null) {
+            logSosTrace(
+                "native_identity_fallback proof=metadata_only " +
+                    "originatorNodeId=$originatorNodeId boundNodeId=${boundNodeId ?: "none"} " +
+                    "reason=connected_identity_unknown_fail_closed",
+            )
+        }
         return fallback
     }
 
@@ -556,11 +563,12 @@ internal class ProtectionBleRuntimeOwner(
                         bindDeviceIdentity(targetDeviceId, runtimeStore.currentBackendHardwareId(), selfNodeId)
                     }
                 }
+                fallbackNodeIdFor(peerPayload)
                 when (
                     val classification = ProtectionBleSosIdentityClassifier.classify(
                         payload = peerPayload,
                         connectedNodeId = connectedBleNodeId,
-                        boundNodeId = fallbackNodeIdFor(peerPayload),
+                        boundNodeId = boundNodeId,
                         source = ProtectionBleSosRelaySource.d2,
                     )
                 ) {
@@ -574,14 +582,20 @@ internal class ProtectionBleRuntimeOwner(
                         return
                     }
 
+                    is ProtectionBleSosIdentityClassification.UnknownOriginEvent -> {
+                        recordUnknownOriginEventPayload(classification)
+                        return
+                    }
+
                     else -> Unit
                 }
             }
+            fallbackNodeIdFor(payload)
             when (
                 val classification = ProtectionBleSosIdentityClassifier.classify(
                     payload = payload,
                     connectedNodeId = connectedBleNodeId,
-                    boundNodeId = fallbackNodeIdFor(payload),
+                    boundNodeId = boundNodeId,
                     source = ProtectionBleSosRelaySource.tel,
                 )
             ) {
@@ -592,6 +606,11 @@ internal class ProtectionBleRuntimeOwner(
 
                 is ProtectionBleSosIdentityClassification.UnknownOriginSos -> {
                     recordUnknownOriginSosPayload(classification)
+                    return
+                }
+
+                is ProtectionBleSosIdentityClassification.UnknownOriginEvent -> {
+                    recordUnknownOriginEventPayload(classification)
                     return
                 }
 
@@ -632,10 +651,11 @@ internal class ProtectionBleRuntimeOwner(
         }
 
         if (characteristic.uuid == sosNotifyUuid) {
+            fallbackNodeIdFor(payload)
             val classification = ProtectionBleSosIdentityClassifier.classify(
                 payload = payload,
                 connectedNodeId = connectedBleNodeId,
-                boundNodeId = fallbackNodeIdFor(payload),
+                boundNodeId = boundNodeId,
                 source = ProtectionBleSosRelaySource.sos,
             )
             when (classification) {
@@ -646,6 +666,11 @@ internal class ProtectionBleRuntimeOwner(
 
                 is ProtectionBleSosIdentityClassification.UnknownOriginSos -> {
                     recordUnknownOriginSosPayload(classification)
+                    return
+                }
+
+                is ProtectionBleSosIdentityClassification.UnknownOriginEvent -> {
+                    recordUnknownOriginEventPayload(classification)
                     return
                 }
 
@@ -708,11 +733,11 @@ internal class ProtectionBleRuntimeOwner(
             source = classification.source,
             platformEventType = "sosEventReceived",
             decision = "unknown_hold",
-            reason = "connected_ble_node_unknown",
+            reason = "connected_identity_unknown_fail_closed",
         )
         logSosTrace(
             "native_sos_decode originatorNodeId=${classification.originatorNodeId} " +
-                "connectedBleNodeId=${connectedBleNodeId ?: "none"} boundNodeId=${boundNodeId ?: "none"} " +
+                "strictConnectedBleNodeId=${connectedBleNodeId ?: "none"} boundNodeId=${boundNodeId ?: "none"} " +
                 "sosType=${classification.sosType} " +
                 "classification=unknownOriginSos hasLocation=${classification.position != null} " +
                 "lat=${classification.position?.latitude ?: "none"} lon=${classification.position?.longitude ?: "none"} " +
@@ -734,6 +759,46 @@ internal class ProtectionBleRuntimeOwner(
                 "relayNodeId=none hasLocation=${classification.position != null} " +
                 "lat=${classification.position?.latitude ?: "none"} lon=${classification.position?.longitude ?: "none"} " +
                 "alt=${classification.position?.altitude ?: "none"} payloadHex=${payloadHex(classification.rawPayload)}",
+        )
+        ProtectionRuntimeBridge.recordPlatformEvent(
+            context = context,
+            type = "sosEventReceived",
+            reason =
+                "unknown:${classification.source.name}:${payloadHex(classification.rawPayload)}",
+        )
+    }
+
+    private fun recordUnknownOriginEventPayload(
+        classification: ProtectionBleSosIdentityClassification.UnknownOriginEvent,
+    ) {
+        recordSosIdentityDecision(
+            originatorNodeId = classification.originatorNodeId,
+            relayNodeId = null,
+            source = classification.source,
+            platformEventType = "sosEventReceived",
+            decision = "unknown_hold",
+            reason = "connected_identity_unknown_fail_closed",
+        )
+        logSosTrace(
+            "native_sos_event_decode originatorNodeId=${classification.originatorNodeId} " +
+                "strictConnectedBleNodeId=${connectedBleNodeId ?: "none"} boundNodeId=${boundNodeId ?: "none"} " +
+                "classification=unknownOriginEvent source=${classification.source.name} " +
+                "payloadLen=${classification.rawPayload.size} payloadHex=${payloadHex(classification.rawPayload)}",
+        )
+        ProtectionRuntimeBridge.recordBleEvent(
+            context = context,
+            type = "unknownOriginSosEventReceived",
+            reason =
+                "originatorNodeId=${classification.originatorNodeId};source=${classification.source.name}",
+        )
+        logSosTrace(
+            "native_lifecycle_gate classification=unknownOriginEvent " +
+                "action=skip_unknown_identity observeSosLifecycle_called=false",
+        )
+        logSosTrace(
+            "platform_event type=sosEventReceived originatorNodeId=${classification.originatorNodeId} " +
+                "relayNodeId=none hasLocation=false lat=none lon=none alt=none " +
+                "payloadHex=${payloadHex(classification.rawPayload)}",
         )
         ProtectionRuntimeBridge.recordPlatformEvent(
             context = context,
@@ -830,7 +895,8 @@ internal class ProtectionBleRuntimeOwner(
     ) {
         logSosTrace(
             "sos_identity_decision originatorNodeId=${originatorNodeId ?: "none"} " +
-                "connectedBleNodeId=${connectedBleNodeId ?: "none"} " +
+                "strictConnectedBleNodeId=${connectedBleNodeId ?: "none"} " +
+                "boundNodeId=${boundNodeId ?: "none"} " +
                 "relayNodeId=${relayNodeId ?: "none"} sourceChannel=${source.name} " +
                 "platformEventType=${platformEventType ?: "none"} " +
                 "decision=$decision reason=$reason",
