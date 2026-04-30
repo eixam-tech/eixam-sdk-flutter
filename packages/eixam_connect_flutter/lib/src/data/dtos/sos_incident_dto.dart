@@ -8,6 +8,7 @@ class SosIncidentDto {
   final String? triggerSource;
   final String? message;
   final Map<String, dynamic>? positionSnapshot;
+  final int? statusCode;
 
   const SosIncidentDto({
     required this.id,
@@ -16,6 +17,7 @@ class SosIncidentDto {
     this.triggerSource,
     this.message,
     this.positionSnapshot,
+    this.statusCode,
   });
 
   factory SosIncidentDto.fromJson(Map<String, dynamic> json) {
@@ -42,6 +44,7 @@ class SosIncidentDto {
     String? triggerSource,
     String? message,
     Map<String, dynamic>? positionSnapshot,
+    int? statusCode,
   }) {
     return SosIncidentDto(
       id: id ?? this.id,
@@ -50,6 +53,7 @@ class SosIncidentDto {
       triggerSource: triggerSource ?? this.triggerSource,
       message: message ?? this.message,
       positionSnapshot: positionSnapshot ?? this.positionSnapshot,
+      statusCode: statusCode ?? this.statusCode,
     );
   }
 

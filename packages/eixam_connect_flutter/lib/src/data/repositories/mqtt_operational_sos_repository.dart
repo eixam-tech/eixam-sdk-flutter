@@ -72,6 +72,11 @@ class MqttOperationalSosRepository
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
+    int? originatorNodeId,
+    int? relayNodeId,
+    String? relayDeviceId,
+    String? relayHardwareId,
+    String? relaySource,
     SdkDeviceBatterySnapshot? deviceBattery,
     SdkCoverageSnapshot? deviceCoverage,
     int? mobileBattery,
@@ -108,16 +113,19 @@ class MqttOperationalSosRepository
     );
 
     try {
-      await realtimeClient.publishOperationalSos(
-        MqttOperationalSosRequest(
-          timestamp: incident.createdAt,
-          positionSnapshot: positionSnapshot,
-          deviceId: deviceId,
-          deviceBattery: deviceBattery,
-          deviceCoverage: deviceCoverage,
-          mobileBattery: mobileBattery,
-          mobileCoverage: mobileCoverage,
-        ),
+      await submitSosToBackend(
+        timestamp: incident.createdAt,
+        positionSnapshot: positionSnapshot,
+        deviceId: deviceId,
+        originatorNodeId: originatorNodeId,
+        relayNodeId: relayNodeId,
+        relayDeviceId: relayDeviceId,
+        relayHardwareId: relayHardwareId,
+        relaySource: relaySource,
+        deviceBattery: deviceBattery,
+        deviceCoverage: deviceCoverage,
+        mobileBattery: mobileBattery,
+        mobileCoverage: mobileCoverage,
       );
       _activeIncident = incident;
       _rememberActiveLikeState();
@@ -132,6 +140,38 @@ class MqttOperationalSosRepository
       }
       throw SosException('E_SOS_TRIGGER_FAILED', error.toString());
     }
+  }
+
+  Future<void> submitSosToBackend({
+    required DateTime timestamp,
+    required TrackingPosition? positionSnapshot,
+    String? deviceId,
+    int? originatorNodeId,
+    int? relayNodeId,
+    String? relayDeviceId,
+    String? relayHardwareId,
+    String? relaySource,
+    SdkDeviceBatterySnapshot? deviceBattery,
+    SdkCoverageSnapshot? deviceCoverage,
+    int? mobileBattery,
+    SdkCoverageSnapshot? mobileCoverage,
+  }) {
+    return realtimeClient.publishOperationalSos(
+      MqttOperationalSosRequest(
+        timestamp: timestamp,
+        positionSnapshot: positionSnapshot,
+        deviceId: deviceId,
+        originatorNodeId: originatorNodeId,
+        relayNodeId: relayNodeId,
+        relayDeviceId: relayDeviceId,
+        relayHardwareId: relayHardwareId,
+        source: relaySource,
+        deviceBattery: deviceBattery,
+        deviceCoverage: deviceCoverage,
+        mobileBattery: mobileBattery,
+        mobileCoverage: mobileCoverage,
+      ),
+    );
   }
 
   @override

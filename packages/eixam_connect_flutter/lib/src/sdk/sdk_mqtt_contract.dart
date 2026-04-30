@@ -36,6 +36,11 @@ class MqttOperationalSosRequest {
     this.positionSnapshot,
     this.sdkUserId,
     this.deviceId,
+    this.originatorNodeId,
+    this.relayNodeId,
+    this.relayDeviceId,
+    this.relayHardwareId,
+    this.source,
     this.deviceBattery,
     this.deviceCoverage,
     this.mobileBattery,
@@ -46,6 +51,11 @@ class MqttOperationalSosRequest {
   final TrackingPosition? positionSnapshot;
   final String? sdkUserId;
   final String? deviceId;
+  final int? originatorNodeId;
+  final int? relayNodeId;
+  final String? relayDeviceId;
+  final String? relayHardwareId;
+  final String? source;
   final SdkDeviceBatterySnapshot? deviceBattery;
   final SdkCoverageSnapshot? deviceCoverage;
   final int? mobileBattery;
@@ -56,6 +66,11 @@ class MqttOperationalSosRequest {
     TrackingPosition? positionSnapshot,
     Object? sdkUserId = _unset,
     Object? deviceId = _unset,
+    Object? originatorNodeId = _unset,
+    Object? relayNodeId = _unset,
+    Object? relayDeviceId = _unset,
+    Object? relayHardwareId = _unset,
+    Object? source = _unset,
     Object? deviceBattery = _unset,
     Object? deviceCoverage = _unset,
     Object? mobileBattery = _unset,
@@ -68,6 +83,19 @@ class MqttOperationalSosRequest {
           identical(sdkUserId, _unset) ? this.sdkUserId : sdkUserId as String?,
       deviceId:
           identical(deviceId, _unset) ? this.deviceId : deviceId as String?,
+      originatorNodeId: identical(originatorNodeId, _unset)
+          ? this.originatorNodeId
+          : originatorNodeId as int?,
+      relayNodeId: identical(relayNodeId, _unset)
+          ? this.relayNodeId
+          : relayNodeId as int?,
+      relayDeviceId: identical(relayDeviceId, _unset)
+          ? this.relayDeviceId
+          : relayDeviceId as String?,
+      relayHardwareId: identical(relayHardwareId, _unset)
+          ? this.relayHardwareId
+          : relayHardwareId as String?,
+      source: identical(source, _unset) ? this.source : source as String?,
       deviceBattery: identical(deviceBattery, _unset)
           ? this.deviceBattery
           : deviceBattery as SdkDeviceBatterySnapshot?,
@@ -133,6 +161,17 @@ class SdkMqttContract {
         'userId': request.sdkUserId!.trim(),
       if (request.deviceId != null && request.deviceId!.trim().isNotEmpty)
         'deviceId': request.deviceId!.trim(),
+      if (request.originatorNodeId != null)
+        'originatorNodeId': request.originatorNodeId,
+      if (request.relayNodeId != null) 'relayNodeId': request.relayNodeId,
+      if (request.relayDeviceId != null &&
+          request.relayDeviceId!.trim().isNotEmpty)
+        'relayDeviceId': request.relayDeviceId!.trim(),
+      if (request.relayHardwareId != null &&
+          request.relayHardwareId!.trim().isNotEmpty)
+        'relayHardwareId': request.relayHardwareId!.trim(),
+      if (request.source != null && request.source!.trim().isNotEmpty)
+        'source': request.source!.trim(),
       if (request.deviceBattery != null)
         'deviceBattery': request.deviceBattery!.toJson(),
       if (request.deviceCoverage != null)

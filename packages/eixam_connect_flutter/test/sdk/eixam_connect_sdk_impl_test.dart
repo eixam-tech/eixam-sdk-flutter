@@ -5186,6 +5186,8 @@ void main() {
         );
         expect(envelope.topic, SdkMqttTopics.sosAlerts);
         expect(envelope.payload, contains('"deviceId":"hw-1"'));
+        expect(envelope.payload, isNot(contains('originatorNodeId')));
+        expect(envelope.payload, isNot(contains('relayNodeId')));
       } finally {
         await repository.dispose();
         await realtimeClient.dispose();
@@ -9217,6 +9219,11 @@ class _FakeCancelSosRemoteDataSource implements SosRemoteDataSource {
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
+    int? originatorNodeId,
+    int? relayNodeId,
+    String? relayDeviceId,
+    String? relayHardwareId,
+    String? relaySource,
     SdkDeviceBatterySnapshot? deviceBattery,
     SdkCoverageSnapshot? deviceCoverage,
     int? mobileBattery,
@@ -9242,6 +9249,11 @@ class _AvailabilityAwareSosRepository extends FakeSosRepository {
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
+    int? originatorNodeId,
+    int? relayNodeId,
+    String? relayDeviceId,
+    String? relayHardwareId,
+    String? relaySource,
     SdkDeviceBatterySnapshot? deviceBattery,
     SdkCoverageSnapshot? deviceCoverage,
     int? mobileBattery,
@@ -9258,6 +9270,11 @@ class _AvailabilityAwareSosRepository extends FakeSosRepository {
       triggerSource: triggerSource,
       positionSnapshot: positionSnapshot,
       deviceId: deviceId,
+      originatorNodeId: originatorNodeId,
+      relayNodeId: relayNodeId,
+      relayDeviceId: relayDeviceId,
+      relayHardwareId: relayHardwareId,
+      relaySource: relaySource,
       deviceBattery: deviceBattery,
       deviceCoverage: deviceCoverage,
       mobileBattery: mobileBattery,

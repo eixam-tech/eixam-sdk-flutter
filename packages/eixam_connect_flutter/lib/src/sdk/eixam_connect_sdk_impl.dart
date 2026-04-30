@@ -4314,7 +4314,9 @@ class EixamConnectSdkImpl
     }
     _remoteRelaySosBackendHandoffBySignature[signature] = now;
 
-    final deviceId = snapshot.originatorNodeId.toString();
+    final deviceId = _remoteRelayOriginatorDeviceId();
+    final relayDeviceId = _lastDeviceStatus?.deviceId;
+    final relayHardwareId = _lastDeviceStatus?.canonicalHardwareId;
     final location = snapshot.location;
     final positionSnapshot = _hasValidRemoteRelayLocation(location)
         ? _remoteRelayBackendPosition(
@@ -4345,28 +4347,47 @@ class EixamConnectSdkImpl
     BleDebugRegistry.instance.recordEvent(
       '[REMOTE_RELAY_SOS] backend_handoff_start '
       'originatorNodeId=${snapshot.originatorNodeId} '
-      'deviceId=$deviceId '
+      'deviceId=${deviceId ?? "-"} '
       'hasLocation=${positionSnapshot != null}',
     );
 
     try {
       await _showRemoteRelaySosNotification(snapshot);
       _logSosTrace(
+        'backend_submit_path path=${_remoteRelaySosBackendSubmitPath()}',
+      );
+      _logSosTrace(
+        'backend_submit_payload '
+        'deviceId=${deviceId ?? "none"} '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'relayNodeId=${snapshot.relayNodeId ?? "none"} '
+        'relayDeviceId=${relayDeviceId ?? "none"} '
+        'relayHardwareId=${relayHardwareId ?? "none"} '
+        'source=${snapshot.source.name} '
+        'hasLocation=${positionSnapshot != null}',
+      );
+      _logSosTrace(
         'backend_create_attempt '
         'originatorNodeId=${snapshot.originatorNodeId} '
         'relayNodeId=${snapshot.relayNodeId ?? "none"} '
         'hasLocation=${positionSnapshot != null}',
       );
-      await _submitRemoteRelaySosToBackend(
+      final backendResult = await _submitRemoteRelaySosToBackend(
         snapshot: snapshot,
         positionSnapshot: positionSnapshot,
         deviceId: deviceId,
+        relayDeviceId: relayDeviceId,
+        relayHardwareId: relayHardwareId,
       );
       _logSosTrace(
         'backend_result originatorNodeId=${snapshot.originatorNodeId} '
         'relayNodeId=${snapshot.relayNodeId ?? "none"} '
-        'hasLocation=${positionSnapshot != null} statusCode=none '
-        'success=true error=none',
+        'submittedToBackend=true '
+        'path=${backendResult.submitPath} '
+        'hasLocation=${positionSnapshot != null} '
+        'statusCode=${backendResult.statusCode ?? "none"} '
+        'incidentId=${backendResult.incidentId ?? "none"} '
+        'success=true error=none skipReason=none',
       );
       BleDebugRegistry.instance.recordEvent(
         '[REMOTE_RELAY_SOS] backend_handoff_success '
@@ -4428,6 +4449,9 @@ class EixamConnectSdkImpl
         RemoteRelaySosBackendHandoffResultEvent(
           snapshot: snapshot,
           status: RemoteRelaySosBackendHandoffStatus.submitted,
+          deviceId: deviceId,
+          statusCode: backendResult.statusCode,
+          incidentId: backendResult.incidentId,
           ackRelaySent: ackRelaySent,
           ackRelayErrorMessage: ackRelayErrorMessage,
         ),
@@ -4437,8 +4461,9 @@ class EixamConnectSdkImpl
         'backend_result originatorNodeId=${snapshot.originatorNodeId} '
         'relayNodeId=${snapshot.relayNodeId ?? "none"} '
         'hasLocation=${positionSnapshot != null} '
+        'submittedToBackend=false '
         'statusCode=${_statusCodeForError(error) ?? "none"} '
-        'success=false error=$error',
+        'incidentId=none success=false error=$error skipReason=none',
       );
       BleDebugRegistry.instance.recordEvent(
         '[REMOTE_RELAY_SOS] backend_handoff_failed '
@@ -4449,6 +4474,8 @@ class EixamConnectSdkImpl
         RemoteRelaySosBackendHandoffResultEvent(
           snapshot: snapshot,
           status: RemoteRelaySosBackendHandoffStatus.failed,
+          deviceId: deviceId,
+          statusCode: _statusCodeForError(error),
           errorMessage: error.toString(),
         ),
       );
@@ -4655,11 +4682,47 @@ class EixamConnectSdkImpl
     );
   }
 
-  Future<void> _submitRemoteRelaySosToBackend({
+  Future<_RemoteRelayBackendSubmissionResult> _submitRemoteRelaySosToBackend({
     required RemoteRelaySosSnapshot snapshot,
     required TrackingPosition? positionSnapshot,
-    required String deviceId,
+    required String? deviceId,
+    required String? relayDeviceId,
+    required String? relayHardwareId,
   }) async {
+    final repository = sosRepository;
+    if (repository is MqttOperationalSosRepository) {
+      await repository.submitSosToBackend(
+        timestamp: snapshot.receivedAt.toUtc(),
+        positionSnapshot: positionSnapshot,
+        deviceId: deviceId,
+        originatorNodeId: snapshot.originatorNodeId,
+        relayNodeId: snapshot.relayNodeId,
+        relayDeviceId: relayDeviceId,
+        relayHardwareId: relayHardwareId,
+        relaySource: snapshot.source.name,
+      );
+      return const _RemoteRelayBackendSubmissionResult(
+        submitPath: 'local_sos_method',
+      );
+    }
+    if (repository is ApiSosRepository) {
+      final dto = await repository.remoteDataSource.triggerSos(
+        triggerSource: 'remote_lora_relay',
+        positionSnapshot: positionSnapshot,
+        deviceId: deviceId,
+        originatorNodeId: snapshot.originatorNodeId,
+        relayNodeId: snapshot.relayNodeId,
+        relayDeviceId: relayDeviceId,
+        relayHardwareId: relayHardwareId,
+        relaySource: snapshot.source.name,
+      );
+      return _RemoteRelayBackendSubmissionResult(
+        submitPath: 'local_sos_method',
+        incidentId: dto.id,
+        statusCode: dto.statusCode,
+      );
+    }
+
     final operationalClient = _remoteRelayOperationalRealtimeClient();
     if (operationalClient != null) {
       await operationalClient.publishOperationalSos(
@@ -4667,19 +4730,16 @@ class EixamConnectSdkImpl
           timestamp: snapshot.receivedAt.toUtc(),
           positionSnapshot: positionSnapshot,
           deviceId: deviceId,
+          originatorNodeId: snapshot.originatorNodeId,
+          relayNodeId: snapshot.relayNodeId,
+          relayDeviceId: relayDeviceId,
+          relayHardwareId: relayHardwareId,
+          source: snapshot.source.name,
         ),
       );
-      return;
-    }
-
-    final repository = sosRepository;
-    if (repository is ApiSosRepository) {
-      await repository.remoteDataSource.triggerSos(
-        triggerSource: 'remote_lora_relay',
-        positionSnapshot: positionSnapshot,
-        deviceId: deviceId,
+      return const _RemoteRelayBackendSubmissionResult(
+        submitPath: 'remote_special',
       );
-      return;
     }
 
     throw const SosException(
@@ -4697,6 +4757,25 @@ class EixamConnectSdkImpl
     if (repository is MqttOperationalSosRepository) {
       return repository.realtimeClient;
     }
+    return null;
+  }
+
+  String _remoteRelaySosBackendSubmitPath() {
+    final repository = sosRepository;
+    if (repository is MqttOperationalSosRepository ||
+        repository is ApiSosRepository) {
+      return 'local_sos_method';
+    }
+    if (_remoteRelayOperationalRealtimeClient() != null) {
+      return 'remote_special';
+    }
+    return 'none';
+  }
+
+  String? _remoteRelayOriginatorDeviceId() {
+    // The local SOS path uses the backend hardware id as deviceId. The SDK
+    // cannot safely derive that id from a LoRa node id yet, so remote relay SOS
+    // sends originatorNodeId explicitly and leaves deviceId unset.
     return null;
   }
 
@@ -5342,6 +5421,18 @@ class _ProtectionSosPayloadReason {
     }
     return keys.isEmpty ? 'none' : keys.join(',');
   }
+}
+
+class _RemoteRelayBackendSubmissionResult {
+  const _RemoteRelayBackendSubmissionResult({
+    required this.submitPath,
+    this.statusCode,
+    this.incidentId,
+  });
+
+  final String submitPath;
+  final int? statusCode;
+  final String? incidentId;
 }
 
 class _OperationalSosMetadata {

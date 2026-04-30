@@ -51,6 +51,9 @@ enum RemoteRelaySosBackendHandoffStatus { submitted, skipped, failed }
 class RemoteRelaySosBackendHandoffResultEvent extends EixamSdkEvent {
   final RemoteRelaySosSnapshot snapshot;
   final RemoteRelaySosBackendHandoffStatus status;
+  final String? deviceId;
+  final int? statusCode;
+  final String? incidentId;
   final String? reason;
   final String? errorMessage;
   final bool ackRelaySent;
@@ -59,6 +62,9 @@ class RemoteRelaySosBackendHandoffResultEvent extends EixamSdkEvent {
   RemoteRelaySosBackendHandoffResultEvent({
     required this.snapshot,
     required this.status,
+    this.deviceId,
+    this.statusCode,
+    this.incidentId,
     this.reason,
     this.errorMessage,
     this.ackRelaySent = false,

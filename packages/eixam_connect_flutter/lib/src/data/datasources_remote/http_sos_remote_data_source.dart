@@ -21,6 +21,11 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
+    int? originatorNodeId,
+    int? relayNodeId,
+    String? relayDeviceId,
+    String? relayHardwareId,
+    String? relaySource,
     SdkDeviceBatterySnapshot? deviceBattery,
     SdkCoverageSnapshot? deviceCoverage,
     int? mobileBattery,
@@ -46,6 +51,14 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
         },
         if (deviceId != null && deviceId.trim().isNotEmpty)
           'deviceId': deviceId.trim(),
+        if (originatorNodeId != null) 'originatorNodeId': originatorNodeId,
+        if (relayNodeId != null) 'relayNodeId': relayNodeId,
+        if (relayDeviceId != null && relayDeviceId.trim().isNotEmpty)
+          'relayDeviceId': relayDeviceId.trim(),
+        if (relayHardwareId != null && relayHardwareId.trim().isNotEmpty)
+          'relayHardwareId': relayHardwareId.trim(),
+        if (relaySource != null && relaySource.trim().isNotEmpty)
+          'source': relaySource.trim(),
         if (deviceBattery != null) 'deviceBattery': deviceBattery.toJson(),
         if (deviceCoverage != null) 'deviceCoverage': deviceCoverage.toJson(),
         if (mobileBattery != null) 'mobileBattery': mobileBattery.clamp(0, 100),
@@ -54,11 +67,12 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     );
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw SosException(
+      throw SosHttpException(
         response.statusCode == 422
             ? 'E_HTTP_SOS_TRIGGER_422'
             : 'E_HTTP_SOS_TRIGGER_FAILED',
         response.body,
+        statusCode: response.statusCode,
       );
     }
 
@@ -71,7 +85,9 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
       );
     }
 
-    return SosIncidentDto.fromJson(incident);
+    return SosIncidentDto.fromJson(incident).copyWith(
+      statusCode: response.statusCode,
+    );
   }
 
   @override
