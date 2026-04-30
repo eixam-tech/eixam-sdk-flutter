@@ -405,6 +405,249 @@ void main() {
         await realtimeClient.dispose();
       }
     });
+
+    test('late own-device packet after backend cancel does not restart Pre-SOS',
+        () async {
+      sosRepository.currentIncident = SosIncident(
+        id: 'sos-1',
+        state: SosState.sent,
+        createdAt: DateTime.utc(2026, 1, 1),
+      );
+      final events = StreamController<ProtectionPlatformEvent>.broadcast();
+      final adapter = _FakeProtectionPlatformAdapter(
+        serviceBleReady: false,
+        platformEvents: events.stream,
+      );
+      final realtimeClient = FakeRealtimeClient();
+      final sdk = buildSdk(
+        events: events.stream,
+        realtimeClient: realtimeClient,
+        deviceSosController: DeviceSosController(),
+        adapter: adapter,
+      );
+
+      try {
+        await sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await sdk.setSession(_testSession);
+        events.add(_ownEvent(_ownActivePacket().rawHex));
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.active);
+
+        await sdk.cancelSos();
+        events.add(_ownEvent(_ownPreSosPacket().rawHex));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.active);
+        expect(await sdk.getPreSosStatus(), isNull);
+        expect(
+          (await sdk.watchOperationalDiagnostics().first).bridge.pendingSos,
+          isNull,
+        );
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) =>
+                event.message.contains('recent_terminal_action') &&
+                event.message.contains('Protection SOS payload suppressed'),
+          ),
+          isTrue,
+        );
+      } finally {
+        await events.close();
+        await sdk.dispose();
+        await realtimeClient.dispose();
+      }
+    });
+
+    test('late own-device packet after backend resolve does not restart Pre-SOS',
+        () async {
+      sosRepository.currentIncident = SosIncident(
+        id: 'sos-1',
+        state: SosState.sent,
+        createdAt: DateTime.utc(2026, 1, 1),
+      );
+      final events = StreamController<ProtectionPlatformEvent>.broadcast();
+      final adapter = _FakeProtectionPlatformAdapter(
+        serviceBleReady: false,
+        platformEvents: events.stream,
+      );
+      final realtimeClient = FakeRealtimeClient();
+      final sdk = buildSdk(
+        events: events.stream,
+        realtimeClient: realtimeClient,
+        deviceSosController: DeviceSosController(),
+        adapter: adapter,
+      );
+
+      try {
+        await sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await sdk.setSession(_testSession);
+        events.add(_ownEvent(_ownActivePacket().rawHex));
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.active);
+
+        await sdk.resolveSos();
+        events.add(_ownEvent(_ownPreSosPacket().rawHex));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.active);
+        expect(await sdk.getPreSosStatus(), isNull);
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) =>
+                event.message.contains('recent_terminal_action') &&
+                event.message.contains('Protection SOS payload suppressed'),
+          ),
+          isTrue,
+        );
+      } finally {
+        await events.close();
+        await sdk.dispose();
+        await realtimeClient.dispose();
+      }
+    });
+
+    test('terminal suppression is scoped to the same own-device node',
+        () async {
+      sosRepository.currentIncident = SosIncident(
+        id: 'sos-1',
+        state: SosState.sent,
+        createdAt: DateTime.utc(2026, 1, 1),
+      );
+      final events = StreamController<ProtectionPlatformEvent>.broadcast();
+      final adapter = _FakeProtectionPlatformAdapter(
+        serviceBleReady: false,
+        platformEvents: events.stream,
+      );
+      final realtimeClient = FakeRealtimeClient();
+      final sdk = buildSdk(
+        events: events.stream,
+        realtimeClient: realtimeClient,
+        deviceSosController: DeviceSosController(),
+        adapter: adapter,
+      );
+
+      try {
+        await sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await sdk.setSession(_testSession);
+        events.add(_ownEvent(_ownActivePacket().rawHex));
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        await sdk.resolveSos();
+
+        events.add(_ownStructuredEvent(_preSosPacketForNode(0x5678).rawHex));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        final status = await sdk.getDeviceSosStatus();
+        expect(status.state, DeviceSosState.preConfirm);
+        expect(status.nodeId, 0x5678);
+        expect(await sdk.getPreSosStatus(), isNotNull);
+      } finally {
+        await events.close();
+        await sdk.dispose();
+        await realtimeClient.dispose();
+      }
+    });
+
+    test('remote relay SOS is still accepted during terminal suppression',
+        () async {
+      sosRepository.currentIncident = SosIncident(
+        id: 'sos-1',
+        state: SosState.sent,
+        createdAt: DateTime.utc(2026, 1, 1),
+      );
+      final events = StreamController<ProtectionPlatformEvent>.broadcast();
+      final adapter = _FakeProtectionPlatformAdapter(
+        serviceBleReady: false,
+        platformEvents: events.stream,
+      );
+      final realtimeClient = FakeRealtimeClient();
+      final sdkEvents = <EixamSdkEvent>[];
+      final sdk = buildSdk(
+        events: events.stream,
+        realtimeClient: realtimeClient,
+        deviceSosController: DeviceSosController(),
+        adapter: adapter,
+      );
+
+      try {
+        await sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await sdk.setSession(_testSession);
+        final subscription = sdk.watchEvents().listen(sdkEvents.add);
+        events.add(_ownEvent(_ownActivePacket().rawHex));
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        await sdk.resolveSos();
+
+        events.add(
+          ProtectionPlatformEvent(
+            type: ProtectionPlatformEventType.sosEventReceived,
+            timestamp: DateTime.utc(2026, 4, 29, 10),
+            reason: 'remote:sos:168496141:04030201008009',
+          ),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        expect(sdkEvents.whereType<RemoteRelaySosObservedEvent>(), isNotEmpty);
+        await subscription.cancel();
+      } finally {
+        await events.close();
+        await sdk.dispose();
+        await realtimeClient.dispose();
+      }
+    });
+
+    test('unknown-origin SOS is not treated as own-device during suppression',
+        () async {
+      sosRepository.currentIncident = SosIncident(
+        id: 'sos-1',
+        state: SosState.sent,
+        createdAt: DateTime.utc(2026, 1, 1),
+      );
+      final events = StreamController<ProtectionPlatformEvent>.broadcast();
+      final adapter = _FakeProtectionPlatformAdapter(
+        serviceBleReady: false,
+        platformEvents: events.stream,
+      );
+      final realtimeClient = FakeRealtimeClient();
+      final sdk = buildSdk(
+        events: events.stream,
+        realtimeClient: realtimeClient,
+        deviceSosController: DeviceSosController(),
+        adapter: adapter,
+      );
+
+      try {
+        await sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await sdk.setSession(_testSession);
+        events.add(_ownEvent(_ownActivePacket().rawHex));
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        await sdk.resolveSos();
+
+        events.add(
+          ProtectionPlatformEvent(
+            type: ProtectionPlatformEventType.sosEventReceived,
+            timestamp: DateTime.utc(2026, 4, 29, 10),
+            reason: 'unknown:sos:34120000005009',
+          ),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.active);
+        expect(await sdk.getPreSosStatus(), isNull);
+      } finally {
+        await events.close();
+        await sdk.dispose();
+        await realtimeClient.dispose();
+      }
+    });
   });
 }
 
@@ -427,8 +670,25 @@ ProtectionPlatformEvent _ownStructuredEvent(String payloadHex) {
 }
 
 EixamSosPacket _ownPreSosPacket() {
+  return _preSosPacketForNode(0x1234);
+}
+
+EixamSosPacket _preSosPacketForNode(int nodeId) {
   return EixamSosPacket.tryParse(
-    <int>[0x34, 0x12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x50],
+    <int>[
+      nodeId & 0xFF,
+      (nodeId >> 8) & 0xFF,
+      (nodeId >> 16) & 0xFF,
+      (nodeId >> 24) & 0xFF,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0x50,
+    ],
   )!;
 }
 

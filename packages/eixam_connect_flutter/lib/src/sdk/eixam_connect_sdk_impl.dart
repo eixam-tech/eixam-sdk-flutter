@@ -140,6 +140,8 @@ class EixamConnectSdkImpl
       <String, _ObservedRelaySosContext>{};
   final Map<String, DateTime> _remoteRelaySosBackendHandoffBySignature =
       <String, DateTime>{};
+  final Map<String, _TerminalSosSuppression> _terminalSosSuppressionByKey =
+      <String, _TerminalSosSuppression>{};
   final Map<String, _SosClosureIntent>
       _deviceOriginatedClosureIntentByCycleKey = <String, _SosClosureIntent>{};
   final Map<String, _SosClosureIntent>
@@ -174,6 +176,7 @@ class EixamConnectSdkImpl
   static const Duration _defaultAppTriggeredSosBridgeWindow =
       Duration(seconds: 15);
   static const Duration _preSosTickInterval = Duration(milliseconds: 50);
+  static const Duration _terminalSosSuppressionWindow = Duration(seconds: 10);
 
   EixamConnectSdkImpl({
     required this.sosRepository,
@@ -653,6 +656,9 @@ class EixamConnectSdkImpl
     _sosStateSub = sosRepository.watchSosState().listen((state) async {
       await _syncPublicSosStateFromRepository(state);
       if (state == SosState.cancelled || state == SosState.resolved) {
+        _applyTerminalSosSuppression(
+          reason: 'backend_terminal_state:${state.name}',
+        );
         await _clearSosNotificationsSafely(
           reason: 'public_state_stream:${state.name}',
         );
@@ -1103,6 +1109,10 @@ class EixamConnectSdkImpl
         expectedActivationAt: null,
         countdownRemainingSeconds: null,
       );
+      _applyTerminalSosSuppression(
+        reason: 'device_close_command_without_ack:${intent.name}',
+        nodeId: status.nodeId,
+      );
     }
     if (syncBackendForDeviceOriginatedCycle) {
       await _applyBackendClosureForDeviceOriginatedCycle(
@@ -1447,6 +1457,10 @@ class EixamConnectSdkImpl
     );
 
     if (_isSosCycleClosed(status.state)) {
+      _applyTerminalSosSuppression(
+        reason: 'device_terminal_event:${status.state.name}',
+        nodeId: status.nodeId,
+      );
       final closedCycleKey = _activeDeviceSosCycleKey;
       BleDebugRegistry.instance.recordEvent(
         'SOS notification suppression reset -> reason=cycle_closed clearedCycle=${_activeDeviceSosCycleKey ?? "-"}',
@@ -2193,6 +2207,7 @@ class EixamConnectSdkImpl
               state: SosState.cancelled,
               deliveryChannel: deliveryChannel,
             );
+      _applyTerminalSosSuppression(reason: 'public_cancel_completed');
       await _clearSosNotificationsSafely(reason: 'public_cancel_completed');
       _recordPublicSosResult(
         incident: incident,
@@ -2260,6 +2275,7 @@ class EixamConnectSdkImpl
               state: SosState.resolved,
               deliveryChannel: deliveryChannel,
             );
+      _applyTerminalSosSuppression(reason: 'public_resolve_completed');
       await _clearSosNotificationsSafely(reason: 'public_resolve_completed');
       _recordPublicSosResult(
         incident: incident,
@@ -3959,6 +3975,13 @@ class EixamConnectSdkImpl
         remoteClassification.sosEventPacket?.nodeId ??
         EixamSosPacket.tryParse(bytes)?.nodeId ??
         EixamSosEventPacket.tryParse(bytes)?.nodeId;
+    if (isNativeApprovedOwnLifecycle &&
+        _shouldSuppressRecentTerminalOwnSosPacket(
+          originatorNodeId: originatorNodeId,
+          rawHex: rawHex,
+        )) {
+      return;
+    }
     final effectiveClassificationKind = isNativeApprovedOwnLifecycle
         ? BleIncomingPayloadKind.ownDeviceSos
         : remoteClassification.kind;
@@ -4085,6 +4108,12 @@ class EixamConnectSdkImpl
         sosEventPacket,
         source: DeviceSosTransitionSource.device,
       );
+      if (_isTerminalSosEventPacket(sosEventPacket)) {
+        _applyTerminalSosSuppression(
+          reason: 'own_device_terminal_packet',
+          nodeId: sosEventPacket.nodeId,
+        );
+      }
       return;
     }
 
@@ -4131,6 +4160,108 @@ class EixamConnectSdkImpl
       bytes.add(value);
     }
     return bytes;
+  }
+
+  void _applyTerminalSosSuppression({
+    required String reason,
+    int? nodeId,
+  }) {
+    final now = DateTime.now();
+    _pruneTerminalSosSuppressions(now);
+    final boundDeviceId = _lastDeviceStatus?.deviceId.trim();
+    final status = deviceSosController.currentStatus;
+    final effectiveNodeId = nodeId ?? status.nodeId ?? _knownLocalDeviceNodeId;
+    final keys = _terminalSosSuppressionKeys(
+      originatorNodeId: effectiveNodeId,
+      boundDeviceId: boundDeviceId,
+    );
+    if (keys.isEmpty) {
+      return;
+    }
+    final suppression = _TerminalSosSuppression(
+      originatorNodeId: effectiveNodeId,
+      boundDeviceId: boundDeviceId?.isEmpty == true ? null : boundDeviceId,
+      expiresAt: now.add(_terminalSosSuppressionWindow),
+      reason: reason,
+    );
+    for (final key in keys) {
+      _terminalSosSuppressionByKey[key] = suppression;
+    }
+    _logSosTrace(
+      'terminal_suppression_applied '
+      'reason=$reason '
+      'originatorNodeId=${effectiveNodeId?.toString() ?? "none"} '
+      'boundDeviceId=${boundDeviceId?.isNotEmpty == true ? boundDeviceId : "none"}',
+    );
+  }
+
+  bool _shouldSuppressRecentTerminalOwnSosPacket({
+    required int? originatorNodeId,
+    required String rawHex,
+  }) {
+    final now = DateTime.now();
+    _pruneTerminalSosSuppressions(now);
+    final boundDeviceId = _lastDeviceStatus?.deviceId.trim();
+    final keys = _terminalSosSuppressionKeys(
+      originatorNodeId: originatorNodeId,
+      boundDeviceId: boundDeviceId,
+    );
+    for (final key in keys) {
+      final suppression = _terminalSosSuppressionByKey[key];
+      if (suppression == null || now.isAfter(suppression.expiresAt)) {
+        continue;
+      }
+      _logSosTrace(
+        'terminal_suppression_applied '
+        'reason=recent_terminal_action '
+        'originatorNodeId=${originatorNodeId?.toString() ?? "none"} '
+        'boundDeviceId=${boundDeviceId?.isNotEmpty == true ? boundDeviceId : "none"} '
+        'suppressionReason=${suppression.reason}',
+      );
+      _logSosTrace(
+        'dart_platform_event_route route=ignored reason=recent_terminal_action',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'Protection SOS payload suppressed -> reason=recent_terminal_action '
+        'originatorNodeId=${originatorNodeId?.toString() ?? "-"} '
+        'boundDeviceId=${boundDeviceId?.isNotEmpty == true ? boundDeviceId : "-"} '
+        'payload=$rawHex',
+      );
+      return true;
+    }
+    return false;
+  }
+
+  Iterable<String> _terminalSosSuppressionKeys({
+    required int? originatorNodeId,
+    required String? boundDeviceId,
+  }) sync* {
+    if (originatorNodeId != null) {
+      yield 'node:$originatorNodeId';
+      return;
+    }
+    final deviceId = boundDeviceId?.trim();
+    if (deviceId != null && deviceId.isNotEmpty) {
+      yield 'device:$deviceId';
+    }
+  }
+
+  void _pruneTerminalSosSuppressions(DateTime now) {
+    _terminalSosSuppressionByKey.removeWhere(
+      (_, suppression) => now.isAfter(suppression.expiresAt),
+    );
+  }
+
+  bool _isTerminalSosEventPacket(EixamSosEventPacket packet) {
+    if (packet.opcode == EixamBleProtocol.sosEventUserDeactivatedOpcode) {
+      return packet.subcode == 0x01 || packet.subcode == 0x02;
+    }
+    if (packet.opcode == EixamBleProtocol.sosEventAppCancelAckOpcode) {
+      return packet.subcode == 0x01 ||
+          packet.subcode == 0x02 ||
+          packet.subcode == 0x03;
+    }
+    return false;
   }
 
   Future<void> _evaluateDeathManPlan(String planId) async {
@@ -5369,6 +5500,20 @@ class _CurrentSosCapabilitySnapshot {
   final bool longCommandAvailable;
   final bool deviceSosAvailable;
   final SosDeliveryChannel? capability;
+}
+
+class _TerminalSosSuppression {
+  const _TerminalSosSuppression({
+    required this.originatorNodeId,
+    required this.boundDeviceId,
+    required this.expiresAt,
+    required this.reason,
+  });
+
+  final int? originatorNodeId;
+  final String? boundDeviceId;
+  final DateTime expiresAt;
+  final String reason;
 }
 
 enum _SosClosureIntent { cancel, resolve }
