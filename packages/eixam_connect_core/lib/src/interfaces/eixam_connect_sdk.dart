@@ -14,6 +14,7 @@ import '../entities/permission_state.dart';
 import '../entities/preferred_device.dart';
 import '../entities/protection_mode_models.dart';
 import '../entities/public_pre_sos_status.dart';
+import '../entities/runtime_identity_snapshot.dart';
 import '../entities/sdk_operational_diagnostics.dart';
 import '../entities/sdk_telemetry_payload.dart';
 import '../entities/sos_incident.dart';
@@ -144,6 +145,7 @@ abstract class EixamConnectSdk {
   Future<void> setDeviceNotificationVolume(int volume);
   Future<void> setDeviceSosVolume(int volume);
   Future<DeviceRuntimeStatus> getDeviceRuntimeStatus();
+  Future<RuntimeIdentitySnapshot> getRuntimeIdentitySnapshot();
   Future<void> rebootDevice();
   Future<BleNotificationNavigationRequest?>
       consumePendingBleNotificationNavigationRequest();

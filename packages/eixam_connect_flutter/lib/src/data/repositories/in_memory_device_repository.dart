@@ -118,6 +118,11 @@ class InMemoryDeviceRepository implements DeviceRepository {
   @override
   Stream<DeviceStatus> watchDeviceStatus() => _controller.stream;
 
+  @override
+  Future<RuntimeIdentitySnapshot> getRuntimeIdentitySnapshot() async {
+    return _runtimeProvider.getRuntimeIdentitySnapshot(_status);
+  }
+
   Future<DeviceStatus> releaseBleOwnershipToProtectionMode({
     required String reason,
   }) async {

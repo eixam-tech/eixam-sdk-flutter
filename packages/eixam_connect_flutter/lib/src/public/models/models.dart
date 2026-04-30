@@ -15,6 +15,7 @@ export 'package:eixam_connect_core/src/entities/permission_state.dart';
 export 'package:eixam_connect_core/src/entities/preferred_device.dart';
 export 'package:eixam_connect_core/src/entities/protection_mode_models.dart';
 export 'package:eixam_connect_core/src/entities/public_pre_sos_status.dart';
+export 'package:eixam_connect_core/src/entities/runtime_identity_snapshot.dart';
 export 'package:eixam_connect_core/src/entities/sdk_bridge_diagnostics.dart';
 export 'package:eixam_connect_core/src/entities/sdk_operational_diagnostics.dart';
 export 'package:eixam_connect_core/src/entities/sdk_telemetry_payload.dart';

@@ -89,6 +89,36 @@ class BleDeviceRuntimeProvider
       BleDebugRegistry.instance.currentState.inetFound;
 
   @override
+  Future<RuntimeIdentitySnapshot> getRuntimeIdentitySnapshot(
+    DeviceStatus currentStatus,
+  ) async {
+    final deviceId = _connectedDeviceId ??
+        (currentStatus.connected ? currentStatus.deviceId : null);
+    final serviceBleConnected = deviceId != null;
+    final commandCapable = hasCommandChannel;
+    final connectedBleNodeId =
+        serviceBleConnected ? _connectedBleTagNodeId : null;
+    final readinessReason = !serviceBleConnected
+        ? RuntimeIdentityReadinessReason.noConnectedDevice
+        : connectedBleNodeId == null
+            ? RuntimeIdentityReadinessReason.connectedIdentityUnknown
+            : commandCapable
+                ? RuntimeIdentityReadinessReason.ready
+                : RuntimeIdentityReadinessReason.commandPathNotReady;
+
+    return RuntimeIdentitySnapshot(
+      connectedBleNodeId: connectedBleNodeId,
+      deviceId: deviceId,
+      serviceBleConnected: serviceBleConnected,
+      commandCapable: commandCapable,
+      readinessReason: readinessReason,
+      lastUpdatedAt: _lastRuntimeStatus?.lastSyncedAt ??
+          currentStatus.lastSyncedAt ??
+          currentStatus.lastSeen,
+    );
+  }
+
+  @override
   Future<DeviceStatus> pair({
     required DeviceStatus currentStatus,
     required String pairingCode,

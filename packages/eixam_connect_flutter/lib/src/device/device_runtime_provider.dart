@@ -11,5 +11,8 @@ abstract class DeviceRuntimeProvider {
   Future<DeviceStatus> activate(
       {required DeviceStatus currentStatus, required String activationCode});
   Future<DeviceStatus> refresh(DeviceStatus currentStatus);
+  Future<RuntimeIdentitySnapshot> getRuntimeIdentitySnapshot(
+    DeviceStatus currentStatus,
+  );
   Future<DeviceStatus> unpair(DeviceStatus currentStatus);
 }

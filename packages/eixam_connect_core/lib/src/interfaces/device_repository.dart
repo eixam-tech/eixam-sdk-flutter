@@ -1,4 +1,5 @@
 import '../entities/device_status.dart';
+import '../entities/runtime_identity_snapshot.dart';
 
 /// Abstraction for device pairing, activation and runtime status.
 abstract class DeviceRepository {
@@ -6,6 +7,7 @@ abstract class DeviceRepository {
   Future<DeviceStatus> activateDevice({required String activationCode});
   Future<DeviceStatus> getDeviceStatus();
   Future<DeviceStatus> refreshDeviceStatus();
+  Future<RuntimeIdentitySnapshot> getRuntimeIdentitySnapshot();
   Future<void> unpairDevice();
   Stream<DeviceStatus> watchDeviceStatus();
 }

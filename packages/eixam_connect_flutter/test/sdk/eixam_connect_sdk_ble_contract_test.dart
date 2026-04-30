@@ -110,6 +110,42 @@ void main() {
       expect(status.telIntervalSeconds, 60);
     });
 
+    test('public SDK exposes safe runtime identity while disconnected',
+        () async {
+      final snapshot = await sdk.getRuntimeIdentitySnapshot();
+
+      expect(snapshot.connectedBleNodeId, isNull);
+      expect(snapshot.deviceId, isNull);
+      expect(snapshot.serviceBleConnected, isFalse);
+      expect(snapshot.commandCapable, isFalse);
+      expect(
+        snapshot.readinessReason,
+        RuntimeIdentityReadinessReason.noConnectedDevice,
+      );
+      expect(
+        BleDebugRegistry.instance.currentState.events.any(
+          (event) =>
+              event.message.contains('[RUNTIME_IDENTITY_SNAPSHOT]') &&
+              event.message.contains('reason=no_connected_device'),
+        ),
+        isTrue,
+      );
+    });
+
+    test('public SDK exposes connected runtime identity without strict command',
+        () async {
+      await _connectDemoDevice(sdk);
+      await sdk.getDeviceRuntimeStatus();
+
+      final snapshot = await sdk.getRuntimeIdentitySnapshot();
+
+      expect(snapshot.connectedBleNodeId, 0x1234);
+      expect(snapshot.deviceId, MockBleClient.demoDeviceId);
+      expect(snapshot.serviceBleConnected, isTrue);
+      expect(snapshot.commandCapable, isTrue);
+      expect(snapshot.readinessReason, RuntimeIdentityReadinessReason.ready);
+    });
+
     test('public SDK replays the current backlog sync state', () async {
       final state = await sdk.watchBacklogSyncState().first;
 
@@ -206,6 +242,16 @@ void main() {
         () async {
       await expectLater(
         sdk.setDeviceNotificationVolume(10),
+        throwsA(
+          isA<DeviceException>().having(
+            (error) => error.code,
+            'code',
+            'E_DEVICE_COMMAND_NOT_READY',
+          ),
+        ),
+      );
+      await expectLater(
+        sdk.getDeviceRuntimeStatus(),
         throwsA(
           isA<DeviceException>().having(
             (error) => error.code,

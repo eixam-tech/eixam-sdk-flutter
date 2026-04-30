@@ -51,6 +51,22 @@ class FakeDeviceRuntimeProvider implements DeviceRuntimeProvider {
   }
 
   @override
+  Future<RuntimeIdentitySnapshot> getRuntimeIdentitySnapshot(
+    DeviceStatus currentStatus,
+  ) async {
+    return RuntimeIdentitySnapshot(
+      connectedBleNodeId: null,
+      deviceId: currentStatus.connected ? currentStatus.deviceId : null,
+      serviceBleConnected: currentStatus.connected,
+      commandCapable: false,
+      readinessReason: currentStatus.connected
+          ? RuntimeIdentityReadinessReason.commandPathNotReady
+          : RuntimeIdentityReadinessReason.noConnectedDevice,
+      lastUpdatedAt: currentStatus.lastSyncedAt ?? currentStatus.lastSeen,
+    );
+  }
+
+  @override
   Future<DeviceStatus> unpair(DeviceStatus currentStatus) async {
     return unpairResult ??
         currentStatus.copyWith(

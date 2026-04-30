@@ -340,6 +340,20 @@ class FakeDeviceRepository implements DeviceRepository {
   }
 
   @override
+  Future<RuntimeIdentitySnapshot> getRuntimeIdentitySnapshot() async {
+    return RuntimeIdentitySnapshot(
+      connectedBleNodeId: null,
+      deviceId: _status.connected ? _status.deviceId : null,
+      serviceBleConnected: _status.connected,
+      commandCapable: false,
+      readinessReason: _status.connected
+          ? RuntimeIdentityReadinessReason.commandPathNotReady
+          : RuntimeIdentityReadinessReason.noConnectedDevice,
+      lastUpdatedAt: _status.lastSyncedAt ?? _status.lastSeen,
+    );
+  }
+
+  @override
   Future<void> unpairDevice() async {
     unpairCallCount++;
   }

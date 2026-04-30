@@ -282,6 +282,20 @@ class _FakeDeviceRepository implements DeviceRepository {
   Future<DeviceStatus> refreshDeviceStatus() async => _status;
 
   @override
+  Future<RuntimeIdentitySnapshot> getRuntimeIdentitySnapshot() async {
+    return RuntimeIdentitySnapshot(
+      connectedBleNodeId: null,
+      deviceId: _status.connected ? _status.deviceId : null,
+      serviceBleConnected: _status.connected,
+      commandCapable: false,
+      readinessReason: _status.connected
+          ? RuntimeIdentityReadinessReason.commandPathNotReady
+          : RuntimeIdentityReadinessReason.noConnectedDevice,
+      lastUpdatedAt: _status.lastSyncedAt ?? _status.lastSeen,
+    );
+  }
+
+  @override
   Future<void> unpairDevice() async {
     _status = _status.copyWith(
       paired: false,

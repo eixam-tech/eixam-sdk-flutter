@@ -1138,6 +1138,20 @@ class _FakeValidationSdk implements EixamConnectSdk {
   }
 
   @override
+  Future<RuntimeIdentitySnapshot> getRuntimeIdentitySnapshot() async {
+    return RuntimeIdentitySnapshot(
+      connectedBleNodeId: deviceStatus.connected ? 0 : null,
+      deviceId: deviceStatus.connected ? deviceStatus.deviceId : null,
+      serviceBleConnected: deviceStatus.connected,
+      commandCapable: deviceStatus.connected,
+      readinessReason: deviceStatus.connected
+          ? RuntimeIdentityReadinessReason.ready
+          : RuntimeIdentityReadinessReason.noConnectedDevice,
+      lastUpdatedAt: deviceStatus.lastSyncedAt ?? deviceStatus.lastSeen,
+    );
+  }
+
+  @override
   Future<void> rebootDevice() async {}
 
   @override

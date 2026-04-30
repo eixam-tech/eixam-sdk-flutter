@@ -1179,6 +1179,22 @@ class EixamConnectSdkImpl
   }
 
   @override
+  Future<RuntimeIdentitySnapshot> getRuntimeIdentitySnapshot() async {
+    final snapshot = await deviceRepository.getRuntimeIdentitySnapshot();
+    if (snapshot.readinessReason != RuntimeIdentityReadinessReason.ready) {
+      BleDebugRegistry.instance.recordEvent(
+        '[RUNTIME_IDENTITY_SNAPSHOT] unavailable '
+        'reason=${snapshot.readinessReason.diagnosticName} '
+        'serviceBleConnected=${snapshot.serviceBleConnected} '
+        'commandCapable=${snapshot.commandCapable} '
+        'connectedBleNodeId=${snapshot.connectedBleNodeId ?? "-"} '
+        'deviceId=${snapshot.deviceId ?? "-"}',
+      );
+    }
+    return snapshot;
+  }
+
+  @override
   Future<void> rebootDevice() async {
     await _requireCommandCapableDeviceRepository().rebootDevice();
   }
