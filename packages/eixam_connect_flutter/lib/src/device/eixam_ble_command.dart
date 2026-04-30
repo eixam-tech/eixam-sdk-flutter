@@ -31,10 +31,14 @@ class EixamDeviceCommand {
         bytes: <int>[0x03],
       );
 
-  factory EixamDeviceCommand.sosCancel() => const EixamDeviceCommand._(
+  factory EixamDeviceCommand.sosCancel({
+    bool forceCmdCharacteristic = false,
+  }) =>
+      EixamDeviceCommand._(
         opcode: 0x04,
         label: 'SOS CANCEL',
         bytes: <int>[0x04],
+        forceCmdCharacteristic: forceCmdCharacteristic,
       );
 
   factory EixamDeviceCommand.sosConfirm() => const EixamDeviceCommand._(

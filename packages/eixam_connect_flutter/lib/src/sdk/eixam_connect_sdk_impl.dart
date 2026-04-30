@@ -1086,10 +1086,14 @@ class EixamConnectSdkImpl
   }) async {
     final currentStatus = await deviceSosController.getStatus();
     late final DeviceSosStatus status;
+    _logSosTrace(
+      'device_terminal_command_requested action=${intent.name}',
+    );
     try {
       status = await deviceSosController.cancelSos(
         commandWriterOverride: _sendDeviceCommandThroughActiveOwner,
         commandRouteLabel: _currentDeviceCommandOwnerRoute,
+        terminalAction: intent.name,
       );
     } catch (error) {
       if (currentStatus.triggerOrigin != DeviceSosTransitionSource.device ||
@@ -2522,11 +2526,18 @@ class EixamConnectSdkImpl
         return null;
       }
 
-      if (!capabilitySnapshot.shortCommandAvailable) {
+      final terminalAction = action == 'cancel' || action == 'resolve';
+      if (!capabilitySnapshot.shortCommandAvailable && !terminalAction) {
         BleDebugRegistry.instance.recordEvent(
           'Public SOS device sync skipped -> action=$action reason=sos_command_path_unavailable deviceId=${status.deviceId} activeOwner=$_currentDeviceCommandOwnerRoute cachedDeviceSosState=${deviceSosStatus.state.name}',
         );
         return null;
+      }
+      if (!capabilitySnapshot.shortCommandAvailable &&
+          !capabilitySnapshot.longCommandAvailable) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_TRACE device_terminal_command_queued reason=no_command_characteristic_ready',
+        );
       }
 
       return status;
@@ -3975,7 +3986,10 @@ class EixamConnectSdkImpl
         remoteClassification.sosEventPacket?.nodeId ??
         EixamSosPacket.tryParse(bytes)?.nodeId ??
         EixamSosEventPacket.tryParse(bytes)?.nodeId;
+    final platformSosEventPacket = EixamSosEventPacket.tryParse(bytes);
     if (isNativeApprovedOwnLifecycle &&
+        platformSosEventPacket?.opcode !=
+            EixamBleProtocol.sosEventAppCancelAckOpcode &&
         _shouldSuppressRecentTerminalOwnSosPacket(
           originatorNodeId: originatorNodeId,
           rawHex: rawHex,
@@ -4096,7 +4110,7 @@ class EixamConnectSdkImpl
       return;
     }
 
-    final sosEventPacket = EixamSosEventPacket.tryParse(bytes);
+    final sosEventPacket = platformSosEventPacket;
     if (sosEventPacket != null) {
       _logSosTrace(
         'dart_platform_event_route route=local_sos reason=sos_event_packet',

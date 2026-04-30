@@ -385,9 +385,19 @@ class RealBleClient implements BleClient {
       throw Exception('Command payload cannot be empty');
     }
 
-    final targetUuid =
+    var targetUuid =
         command.usesCmdCharacteristic ? cmdWriteCharUuid : inetWriteCharUuid;
-    final c = await _findCharacteristic(deviceId, eixamServiceUuid, targetUuid);
+    var c = await _findCharacteristic(deviceId, eixamServiceUuid, targetUuid);
+    if (c == null &&
+        command.opcode == 0x04 &&
+        command.usesCmdCharacteristic &&
+        data.length <= EixamBleProtocol.inetMaxPayloadLength) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_TRACE device_terminal_command_fallback channel=inet reason=cmd_not_ready',
+      );
+      targetUuid = inetWriteCharUuid;
+      c = await _findCharacteristic(deviceId, eixamServiceUuid, targetUuid);
+    }
 
     if (c == null) {
       if (!command.usesCmdCharacteristic) {
@@ -439,6 +449,12 @@ class RealBleClient implements BleClient {
     BleDebugRegistry.instance.recordEvent(
       'Command written to $deviceId (${command.label}) target=${targetUuid.str}',
     );
+    if (command.opcode == 0x04) {
+      final channel = targetUuid == cmdWriteCharUuid ? 'cmd' : 'inet';
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_TRACE device_terminal_command_sent opcode=0x04 channel=$channel',
+      );
+    }
   }
 
   @override

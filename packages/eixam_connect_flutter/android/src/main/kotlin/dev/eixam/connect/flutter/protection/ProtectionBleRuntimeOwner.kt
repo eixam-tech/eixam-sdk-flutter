@@ -190,11 +190,26 @@ internal class ProtectionBleRuntimeOwner(
 
         val requiresLongCommandPath =
             forceCmdCharacteristic || payload.size > inetMaxPayloadLength
-        val characteristic =
+        val preferredCharacteristic =
             if (requiresLongCommandPath) {
                 cmdWriteCharacteristic
             } else {
                 inetWriteCharacteristic ?: cmdWriteCharacteristic
+            }
+        val characteristic =
+            if (
+                preferredCharacteristic == null &&
+                forceCmdCharacteristic &&
+                payload.size <= inetMaxPayloadLength &&
+                payload.firstOrNull() == 0x04
+            ) {
+                Log.i(
+                    logTag,
+                    "$logPrefix SOS_TRACE device_terminal_command_fallback channel=inet reason=cmd_not_ready",
+                )
+                inetWriteCharacteristic
+            } else {
+                preferredCharacteristic
             }
 
         if (characteristic == null) {
@@ -238,6 +253,14 @@ internal class ProtectionBleRuntimeOwner(
                 route = route,
                 result = null,
                 error = error,
+            )
+        }
+        if (payload.firstOrNull() == 0x04) {
+            val terminalChannel =
+                if (characteristic.uuid == cmdWriteUuid) "cmd" else "inet"
+            Log.i(
+                logTag,
+                "$logPrefix SOS_TRACE device_terminal_command_sent opcode=0x04 channel=$terminalChannel",
             )
         }
         val result = "$label native write accepted via androidService."
