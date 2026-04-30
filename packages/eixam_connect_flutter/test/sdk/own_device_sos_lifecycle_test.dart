@@ -134,6 +134,124 @@ void main() {
       }
     });
 
+    test('structured native own-device 12-byte SOS lifecycle routes locally',
+        () async {
+      final events = StreamController<ProtectionPlatformEvent>.broadcast();
+      final realtimeClient = FakeRealtimeClient();
+      final sdkEvents = <EixamSdkEvent>[];
+      final sdk = buildSdk(
+        events: events.stream,
+        realtimeClient: realtimeClient,
+        deviceSosController: DeviceSosController(),
+      );
+
+      try {
+        await sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        final subscription = sdk.watchEvents().listen(sdkEvents.add);
+        events.add(_ownStructuredEvent(_ownPreSosPacket().rawHex));
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+
+        final status = await sdk.getDeviceSosStatus();
+        expect(status.state, DeviceSosState.preConfirm);
+        expect(status.nodeId, 0x1234);
+        expect(realtimeClient.publishedSos, isEmpty);
+        expect(sdkEvents.whereType<RemoteRelaySosObservedEvent>(), isEmpty);
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) =>
+                event.message.contains('sos_identity_decision') &&
+                event.message.contains('decision=own_device'),
+          ),
+          isTrue,
+        );
+        await subscription.cancel();
+      } finally {
+        await events.close();
+        await sdk.dispose();
+        await realtimeClient.dispose();
+      }
+    });
+
+    test('structured native own-device 7-byte SOS lifecycle routes locally',
+        () async {
+      final events = StreamController<ProtectionPlatformEvent>.broadcast();
+      final realtimeClient = FakeRealtimeClient();
+      final sdkEvents = <EixamSdkEvent>[];
+      final sdk = buildSdk(
+        events: events.stream,
+        realtimeClient: realtimeClient,
+        deviceSosController: DeviceSosController(),
+      );
+
+      try {
+        await sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        final subscription = sdk.watchEvents().listen(sdkEvents.add);
+        events.add(_ownStructuredEvent('34120000004009'));
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+
+        final status = await sdk.getDeviceSosStatus();
+        expect(status.state, DeviceSosState.preConfirm);
+        expect(status.nodeId, 0x1234);
+        expect(realtimeClient.publishedSos, isEmpty);
+        expect(sdkEvents.whereType<RemoteRelaySosObservedEvent>(), isEmpty);
+        await subscription.cancel();
+      } finally {
+        await events.close();
+        await sdk.dispose();
+        await realtimeClient.dispose();
+      }
+    });
+
+    test('structured native own-device lifecycle without payload safe-ignores',
+        () async {
+      final events = StreamController<ProtectionPlatformEvent>.broadcast();
+      final realtimeClient = FakeRealtimeClient();
+      final sdkEvents = <EixamSdkEvent>[];
+      final sdk = buildSdk(
+        events: events.stream,
+        realtimeClient: realtimeClient,
+        deviceSosController: DeviceSosController(),
+      );
+
+      try {
+        await sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        final subscription = sdk.watchEvents().listen(sdkEvents.add);
+        events.add(
+          ProtectionPlatformEvent(
+            type: ProtectionPlatformEventType.ownDeviceSosLifecycleObserved,
+            timestamp: DateTime.utc(2026, 4, 29, 10),
+            source: 'sos',
+            classification: 'ownDeviceSos',
+          ),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+
+        expect(
+          (await sdk.getDeviceSosStatus()).state,
+          DeviceSosState.inactive,
+        );
+        expect(realtimeClient.publishedSos, isEmpty);
+        expect(sdkEvents.whereType<RemoteRelaySosObservedEvent>(), isEmpty);
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) => event.message.contains('missing_hex_payload'),
+          ),
+          isTrue,
+        );
+        await subscription.cancel();
+      } finally {
+        await events.close();
+        await sdk.dispose();
+        await realtimeClient.dispose();
+      }
+    });
+
     test('own-device E1 01 terminal packet cancels pre-SOS locally', () async {
       final events = StreamController<ProtectionPlatformEvent>.broadcast();
       final realtimeClient = FakeRealtimeClient();
@@ -295,6 +413,16 @@ ProtectionPlatformEvent _ownEvent(String payloadHex) {
     type: ProtectionPlatformEventType.ownDeviceSosLifecycleObserved,
     timestamp: DateTime.utc(2026, 4, 29, 10),
     reason: 'own:sos:$payloadHex',
+  );
+}
+
+ProtectionPlatformEvent _ownStructuredEvent(String payloadHex) {
+  return ProtectionPlatformEvent(
+    type: ProtectionPlatformEventType.ownDeviceSosLifecycleObserved,
+    timestamp: DateTime.utc(2026, 4, 29, 10),
+    payloadHex: payloadHex,
+    source: 'sos',
+    classification: 'ownDeviceSos',
   );
 }
 

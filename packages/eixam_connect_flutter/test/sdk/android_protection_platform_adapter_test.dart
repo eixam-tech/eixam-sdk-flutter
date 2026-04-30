@@ -147,5 +147,23 @@ void main() {
       expect(event.type, ProtectionPlatformEventType.runtimeRestarted);
       expect(event.reason, 'system_restart');
     });
+
+    test('maps structured native SOS lifecycle payload fields', () {
+      final event = mapAndroidProtectionPlatformEvent(<Object?, Object?>{
+        'type': 'ownDeviceSosLifecycleObserved',
+        'timestamp': DateTime.utc(2026, 4, 29, 10).millisecondsSinceEpoch,
+        'payloadHex': '341200000000000000000050',
+        'source': 'sos',
+        'classification': 'ownDeviceSos',
+      });
+
+      expect(
+        event.type,
+        ProtectionPlatformEventType.ownDeviceSosLifecycleObserved,
+      );
+      expect(event.payloadHex, '341200000000000000000050');
+      expect(event.source, 'sos');
+      expect(event.classification, 'ownDeviceSos');
+    });
   });
 }

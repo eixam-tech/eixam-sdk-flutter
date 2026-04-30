@@ -3870,7 +3870,7 @@ class EixamConnectSdkImpl
   }
 
   void _handleProtectionPlatformSosEvent(ProtectionPlatformEvent event) {
-    final payloadReason = _parseProtectionSosPayloadReason(event.reason);
+    final payloadReason = _protectionSosPayloadReasonFromPlatformEvent(event);
     _logSosTrace(
       'dart_platform_event_raw type=${event.type.name} '
       'payloadKeys=${payloadReason.debugPayloadKeys}',
@@ -3879,6 +3879,8 @@ class EixamConnectSdkImpl
         event.type == ProtectionPlatformEventType.sosEventReceived;
     final isOwnDeviceSosLifecycleEvent =
         event.type == ProtectionPlatformEventType.ownDeviceSosLifecycleObserved;
+    final isNativeApprovedOwnLifecycle =
+        isOwnDeviceSosLifecycleEvent && payloadReason.identityOwn;
     if (!isRemoteSosEvent && !isOwnDeviceSosLifecycleEvent) {
       _logSosTrace(
         'dart_platform_event_route route=ignored reason=not_sos_event_type',
@@ -3957,7 +3959,11 @@ class EixamConnectSdkImpl
         remoteClassification.sosEventPacket?.nodeId ??
         EixamSosPacket.tryParse(bytes)?.nodeId ??
         EixamSosEventPacket.tryParse(bytes)?.nodeId;
+    final effectiveClassificationKind = isNativeApprovedOwnLifecycle
+        ? BleIncomingPayloadKind.ownDeviceSos
+        : remoteClassification.kind;
     final isLocalPlatformSosClassification =
+        isNativeApprovedOwnLifecycle ||
         hasTrustedPlatformConnectedNode &&
             (remoteClassification.kind == BleIncomingPayloadKind.ownDeviceSos ||
                 remoteClassification.kind == BleIncomingPayloadKind.sosClear ||
@@ -3986,9 +3992,9 @@ class EixamConnectSdkImpl
     );
     _logSosTrace(
       'dart_platform_event_parse_result '
-      'originatorNodeId=${remoteRelaySnapshot?.originatorNodeId ?? "none"} '
+      'originatorNodeId=${originatorNodeId?.toString() ?? "none"} '
       'relayNodeId=${remoteRelaySnapshot?.relayNodeId ?? payloadReason.relayNodeId ?? "none"} '
-      'classification=${remoteClassification.kind.name} '
+      'classification=${effectiveClassificationKind.name} '
       'hasLocation=${remoteRelaySnapshot?.location != null}',
     );
     if (remoteRelaySnapshot != null) {
@@ -4018,7 +4024,7 @@ class EixamConnectSdkImpl
         'dart_sdk_remote_relay_received '
         'originatorNodeId=${remoteRelaySnapshot.originatorNodeId} '
         'relayNodeId=${remoteRelaySnapshot.relayNodeId ?? "none"} '
-        'classification=${remoteClassification.kind.name} '
+        'classification=${effectiveClassificationKind.name} '
         'hasLocation=${remoteRelaySnapshot.location != null}',
       );
       _publishSdkEvent(RemoteRelaySosObservedEvent(remoteRelaySnapshot));
@@ -4039,7 +4045,8 @@ class EixamConnectSdkImpl
       );
       return;
     }
-    if (remoteClassification.kind == BleIncomingPayloadKind.unknownOriginSos) {
+    if (remoteClassification.kind == BleIncomingPayloadKind.unknownOriginSos &&
+        !isNativeApprovedOwnLifecycle) {
       _logSosTrace(
         'dart_platform_event_route route=ignored reason=unknown_origin_without_sos_packet',
       );
@@ -4051,7 +4058,9 @@ class EixamConnectSdkImpl
       );
       return;
     }
-    if (!hasTrustedPlatformConnectedNode && originatorNodeId != null) {
+    if (!hasTrustedPlatformConnectedNode &&
+        !isNativeApprovedOwnLifecycle &&
+        originatorNodeId != null) {
       _logSosTrace(
         'dart_platform_event_route route=ignored reason=unknown_connected_node_identity',
       );
@@ -4907,6 +4916,33 @@ class EixamConnectSdkImpl
       activeBackgroundLocationRequest:
           _backgroundTelemetryDiagnostics.activeLocationRequest,
       bridge: _bridgeDiagnostics,
+    );
+  }
+
+  _ProtectionSosPayloadReason _protectionSosPayloadReasonFromPlatformEvent(
+    ProtectionPlatformEvent event,
+  ) {
+    final reason = _parseProtectionSosPayloadReason(event.reason);
+    final payloadHex = reason.payloadHex ?? event.payloadHex?.trim();
+    final source = reason.source ??
+        (event.source == null
+            ? null
+            : _remoteRelaySourceFromPlatform(event.source!.trim()));
+    final allowNativeOwnClassification =
+        event.type == ProtectionPlatformEventType.ownDeviceSosLifecycleObserved;
+    final identityOwn = reason.identityOwn ||
+        allowNativeOwnClassification &&
+            (event.classification == 'ownDeviceSos' ||
+                event.classification == 'own_device');
+    final identityUnknown = reason.identityUnknown ||
+        event.classification == 'unknownOriginSos' ||
+        event.classification == 'unknown_origin';
+    return _ProtectionSosPayloadReason(
+      payloadHex: payloadHex == null || payloadHex.isEmpty ? null : payloadHex,
+      source: source,
+      relayNodeId: reason.relayNodeId,
+      identityOwn: identityOwn,
+      identityUnknown: identityUnknown && !identityOwn,
     );
   }
 

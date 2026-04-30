@@ -223,11 +223,17 @@ class ProtectionPlatformEvent {
     required this.type,
     required this.timestamp,
     this.reason,
+    this.payloadHex,
+    this.source,
+    this.classification,
   });
 
   final ProtectionPlatformEventType type;
   final DateTime timestamp;
   final String? reason;
+  final String? payloadHex;
+  final String? source;
+  final String? classification;
 }
 
 abstract class ProtectionPlatformAdapter {

@@ -200,6 +200,9 @@ ProtectionPlatformEvent mapIosProtectionPlatformEvent(
     timestamp: readProtectionPlatformDateTime(data['timestamp']) ??
         DateTime.now().toUtc(),
     reason: data['reason'] as String?,
+    payloadHex: data['payloadHex'] as String?,
+    source: data['source'] as String?,
+    classification: data['classification'] as String?,
   );
 }
 
@@ -211,6 +214,9 @@ ProtectionPlatformEvent mapAndroidProtectionPlatformEvent(
     timestamp: readProtectionPlatformDateTime(data['timestamp']) ??
         DateTime.now().toUtc(),
     reason: data['reason'] as String?,
+    payloadHex: data['payloadHex'] as String?,
+    source: data['source'] as String?,
+    classification: data['classification'] as String?,
   );
 }
 
