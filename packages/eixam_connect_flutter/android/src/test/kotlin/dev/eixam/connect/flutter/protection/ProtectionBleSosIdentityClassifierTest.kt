@@ -14,7 +14,8 @@ class ProtectionBleSosIdentityClassifierTest {
             source = ProtectionBleSosRelaySource.sos,
         )
 
-        assertEquals(ProtectionBleSosIdentityClassification.OwnSos, classification)
+        assertTrue(classification is ProtectionBleSosIdentityClassification.OwnSos)
+        assertEquals(IdentityProof.StrictConnectedNode, classification.identityProof)
     }
 
     @Test
@@ -56,8 +57,8 @@ class ProtectionBleSosIdentityClassifierTest {
         )
         val route = ProtectionBleSosNativeRouting.route(classification)
 
-        assertFalse(classification == ProtectionBleSosIdentityClassification.OwnSos)
-        assertFalse(classification == ProtectionBleSosIdentityClassification.OwnEvent)
+        assertFalse(classification is ProtectionBleSosIdentityClassification.OwnSos)
+        assertFalse(classification is ProtectionBleSosIdentityClassification.OwnEvent)
         assertTrue(classification is ProtectionBleSosIdentityClassification.UnknownOriginSos)
         assertFalse(route.observeLocalLifecycle)
     }
@@ -167,7 +168,8 @@ class ProtectionBleSosIdentityClassifierTest {
             source = ProtectionBleSosRelaySource.sos,
         )
 
-        assertEquals(ProtectionBleSosIdentityClassification.OwnEvent, classification)
+        assertTrue(classification is ProtectionBleSosIdentityClassification.OwnEvent)
+        assertEquals(IdentityProof.StrictConnectedNode, classification.identityProof)
     }
 
     @Test
@@ -179,7 +181,8 @@ class ProtectionBleSosIdentityClassifierTest {
         )
         val route = ProtectionBleSosNativeRouting.route(classification)
 
-        assertEquals(ProtectionBleSosIdentityClassification.OwnSos, classification)
+        assertTrue(classification is ProtectionBleSosIdentityClassification.OwnSos)
+        assertEquals(IdentityProof.StrictConnectedNode, classification.identityProof)
         assertTrue(route.observeLocalLifecycle)
         assertFalse(route.emitSosEventReceived)
         assertEquals("ownDeviceSosLifecycleObserved", route.diagnosticEventType)
@@ -224,8 +227,8 @@ class ProtectionBleSosIdentityClassifierTest {
         )
         val route = ProtectionBleSosNativeRouting.route(classification)
 
-        assertFalse(classification == ProtectionBleSosIdentityClassification.OwnSos)
-        assertFalse(classification == ProtectionBleSosIdentityClassification.OwnEvent)
+        assertFalse(classification is ProtectionBleSosIdentityClassification.OwnSos)
+        assertFalse(classification is ProtectionBleSosIdentityClassification.OwnEvent)
         assertTrue(classification is ProtectionBleSosIdentityClassification.UnknownOriginEvent)
         assertFalse(route.observeLocalLifecycle)
     }
@@ -255,7 +258,8 @@ class ProtectionBleSosIdentityClassifierTest {
         )
         val route = ProtectionBleSosNativeRouting.route(classification)
 
-        assertEquals(ProtectionBleSosIdentityClassification.OwnSos, classification)
+        assertTrue(classification is ProtectionBleSosIdentityClassification.OwnSos)
+        assertEquals(IdentityProof.StrictConnectedNode, classification.identityProof)
         assertTrue(route.observeLocalLifecycle)
     }
 
@@ -289,6 +293,165 @@ class ProtectionBleSosIdentityClassifierTest {
         assertTrue(classification is ProtectionBleSosIdentityClassification.UnknownOriginEvent)
         assertFalse(route.observeLocalLifecycle)
         assertTrue(route.emitSosEventReceived)
+    }
+
+    @Test
+    fun `own BLE SOS notify while CMD not ready uses active hardware proof`() {
+        val classification = ProtectionBleSosIdentityClassifier.classify(
+            payload = listOf(
+                0xA8,
+                0x1A,
+                0x4B,
+                0x59,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x40,
+            ),
+            connectedNodeId = null,
+            boundNodeId = 1498094248,
+            boundDeviceId = "CF:82:59:4B:1A:A8",
+            activeBleHardwareId = "CF:82:59:4B:1A:A8",
+            activeRuntimeDeviceId = "CF:82:59:4B:1A:A8",
+            bleLinkActive = true,
+            cmdReady = false,
+            source = ProtectionBleSosRelaySource.sos,
+        )
+        val route = ProtectionBleSosNativeRouting.route(classification)
+
+        assertTrue(classification is ProtectionBleSosIdentityClassification.OwnSos)
+        assertEquals(IdentityProof.ActiveBleHardwareId, classification.identityProof)
+        assertEquals(
+            "active_ble_hardware_originator_matches_bound_node",
+            classification.reason,
+        )
+        assertTrue(route.observeLocalLifecycle)
+    }
+
+    @Test
+    fun `metadata-only bound node cannot prove own SOS`() {
+        val classification = ProtectionBleSosIdentityClassifier.classify(
+            payload = listOf(0x78, 0x56, 0x34, 0x12, 0x00, 0x80, 0x09),
+            connectedNodeId = null,
+            boundNodeId = 0x12345678,
+            boundDeviceId = "CF:82:59:4B:1A:A8",
+            activeBleHardwareId = null,
+            bleLinkActive = true,
+            cmdReady = false,
+            source = ProtectionBleSosRelaySource.sos,
+        )
+        val route = ProtectionBleSosNativeRouting.route(classification)
+
+        assertTrue(classification is ProtectionBleSosIdentityClassification.UnknownOriginSos)
+        assertEquals(IdentityProof.MetadataOnly, classification.identityProof)
+        assertFalse(route.observeLocalLifecycle)
+    }
+
+    @Test
+    fun `remote relay through active BLE hardware remains remote when originator differs`() {
+        val classification = ProtectionBleSosIdentityClassifier.classify(
+            payload = listOf(0x78, 0x56, 0x34, 0x12, 0x00, 0x80, 0x09),
+            connectedNodeId = null,
+            boundNodeId = 0x1234,
+            boundDeviceId = "CF:82:00:00:12:34",
+            activeBleHardwareId = "CF:82:00:00:12:34",
+            activeRuntimeDeviceId = "CF:82:00:00:12:34",
+            bleLinkActive = true,
+            cmdReady = false,
+            source = ProtectionBleSosRelaySource.sos,
+        )
+        val route = ProtectionBleSosNativeRouting.route(classification)
+
+        assertTrue(classification is ProtectionBleSosIdentityClassification.RemoteSos)
+        val remote = classification as ProtectionBleSosIdentityClassification.RemoteSos
+        assertEquals(0x12345678, remote.originatorNodeId)
+        assertEquals(0x1234, remote.relayNodeId)
+        assertEquals(IdentityProof.ActiveBleHardwareId, remote.identityProof)
+        assertFalse(route.observeLocalLifecycle)
+        assertTrue(route.emitSosEventReceived)
+    }
+
+    @Test
+    fun `unknown SOS remains unknown without strict or active hardware proof`() {
+        val classification = ProtectionBleSosIdentityClassifier.classify(
+            payload = listOf(0x78, 0x56, 0x34, 0x12, 0x00, 0x80, 0x09),
+            connectedNodeId = null,
+            boundNodeId = null,
+            activeBleHardwareId = null,
+            bleLinkActive = false,
+            source = ProtectionBleSosRelaySource.sos,
+        )
+        val route = ProtectionBleSosNativeRouting.route(classification)
+
+        assertTrue(classification is ProtectionBleSosIdentityClassification.UnknownOriginSos)
+        assertEquals(IdentityProof.None, classification.identityProof)
+        assertFalse(route.observeLocalLifecycle)
+    }
+
+    @Test
+    fun `terminal event uses active hardware proof for local originator`() {
+        val classification = ProtectionBleSosIdentityClassifier.classify(
+            payload = listOf(0xE1, 0x02, 0x78, 0x56, 0x34, 0x12),
+            connectedNodeId = null,
+            boundNodeId = 0x12345678,
+            boundDeviceId = "CF:82:00:00:12:34",
+            activeBleHardwareId = "CF:82:00:00:12:34",
+            activeRuntimeDeviceId = "CF:82:00:00:12:34",
+            bleLinkActive = true,
+            cmdReady = false,
+            source = ProtectionBleSosRelaySource.sos,
+        )
+        val route = ProtectionBleSosNativeRouting.route(classification)
+
+        assertTrue(classification is ProtectionBleSosIdentityClassification.OwnEvent)
+        assertEquals(IdentityProof.ActiveBleHardwareId, classification.identityProof)
+        assertTrue(route.observeLocalLifecycle)
+    }
+
+    @Test
+    fun `terminal event through active BLE hardware is remote for foreign originator`() {
+        val classification = ProtectionBleSosIdentityClassifier.classify(
+            payload = listOf(0xE2, 0x03, 0x78, 0x56, 0x34, 0x12),
+            connectedNodeId = null,
+            boundNodeId = 0x1234,
+            boundDeviceId = "CF:82:00:00:12:34",
+            activeBleHardwareId = "CF:82:00:00:12:34",
+            activeRuntimeDeviceId = "CF:82:00:00:12:34",
+            bleLinkActive = true,
+            cmdReady = false,
+            source = ProtectionBleSosRelaySource.sos,
+        )
+        val route = ProtectionBleSosNativeRouting.route(classification)
+
+        assertTrue(classification is ProtectionBleSosIdentityClassification.RemoteEvent)
+        val remote = classification as ProtectionBleSosIdentityClassification.RemoteEvent
+        assertEquals(0x12345678, remote.originatorNodeId)
+        assertEquals(0x1234, remote.relayNodeId)
+        assertEquals(IdentityProof.ActiveBleHardwareId, remote.identityProof)
+        assertFalse(route.observeLocalLifecycle)
+    }
+
+    @Test
+    fun `terminal event metadata-only remains unknown`() {
+        val classification = ProtectionBleSosIdentityClassifier.classify(
+            payload = listOf(0xE1, 0x02, 0x78, 0x56, 0x34, 0x12),
+            connectedNodeId = null,
+            boundNodeId = 0x12345678,
+            boundDeviceId = "CF:82:00:00:12:34",
+            activeBleHardwareId = "CF:82:00:00:12:35",
+            activeRuntimeDeviceId = "CF:82:00:00:12:35",
+            bleLinkActive = true,
+            source = ProtectionBleSosRelaySource.sos,
+        )
+        val route = ProtectionBleSosNativeRouting.route(classification)
+
+        assertTrue(classification is ProtectionBleSosIdentityClassification.UnknownOriginEvent)
+        assertEquals(IdentityProof.MetadataOnly, classification.identityProof)
+        assertFalse(route.observeLocalLifecycle)
     }
 
     @Test

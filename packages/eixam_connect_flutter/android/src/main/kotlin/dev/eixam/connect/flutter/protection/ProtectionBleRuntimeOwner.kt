@@ -510,19 +510,32 @@ internal class ProtectionBleRuntimeOwner(
         return fallback
     }
 
-    private fun logIdentityState(sourceLabel: String) {
+    private fun logIdentityState(
+        sourceLabel: String,
+        activeBleHardwareId: String?,
+        bleLinkActive: Boolean,
+    ) {
         logSosTrace(
             "native_identity_state connectedBleNodeId=${connectedBleNodeId ?: "none"} " +
                 "boundDeviceId=${boundDeviceId ?: "none"} boundNodeId=${boundNodeId ?: "none"} " +
-                "cmdReady=${cmdWriteCharacteristic != null} source=$sourceLabel",
+                "activeBleHardwareId=${activeBleHardwareId ?: "none"} " +
+                "bleLinkActive=$bleLinkActive cmdReady=${cmdWriteCharacteristic != null} " +
+                "source=$sourceLabel",
         )
     }
 
+    @SuppressLint("MissingPermission")
     private fun handleIncomingPacket(
+        gatt: BluetoothGatt,
         characteristic: BluetoothGattCharacteristic,
         rawBytes: ByteArray,
     ) {
         val payload = rawBytes.map { byte -> byte.toInt() and 0xFF }
+        val activeBleHardwareId = gatt.device?.address
+        val bleLinkActive = runtimeActive &&
+            !isStopping &&
+            bluetoothGatt === gatt &&
+            runtimeStore.snapshot()["serviceBleConnected"] == true
         val sourceLabel = when (characteristic.uuid) {
             sosNotifyUuid -> "sos_notify"
             telNotifyUuid -> when (payload.firstOrNull()) {
@@ -536,7 +549,7 @@ internal class ProtectionBleRuntimeOwner(
             "native_raw_notify source=$sourceLabel payloadLen=${payload.size} " +
                 "payloadHex=${payloadHex(payload)} connectedBleNodeId=${connectedBleNodeId ?: "none"}",
         )
-        logIdentityState(sourceLabel)
+        logIdentityState(sourceLabel, activeBleHardwareId, bleLinkActive)
         runtimeStore.recordPacket(payload)
         ProtectionRuntimeBridge.recordBleEvent(
             context = context,
@@ -569,21 +582,26 @@ internal class ProtectionBleRuntimeOwner(
                         payload = peerPayload,
                         connectedNodeId = connectedBleNodeId,
                         boundNodeId = boundNodeId,
+                        boundDeviceId = boundDeviceId,
+                        activeBleHardwareId = activeBleHardwareId,
+                        activeRuntimeDeviceId = targetDeviceId,
+                        bleLinkActive = bleLinkActive,
+                        cmdReady = cmdWriteCharacteristic != null,
                         source = ProtectionBleSosRelaySource.d2,
                     )
                 ) {
                     is ProtectionBleSosIdentityClassification.RemoteSos -> {
-                        recordRemoteRelaySosPayload(classification)
+                        recordRemoteRelaySosPayload(classification, activeBleHardwareId, bleLinkActive)
                         return
                     }
 
                     is ProtectionBleSosIdentityClassification.UnknownOriginSos -> {
-                        recordUnknownOriginSosPayload(classification)
+                        recordUnknownOriginSosPayload(classification, activeBleHardwareId, bleLinkActive)
                         return
                     }
 
                     is ProtectionBleSosIdentityClassification.UnknownOriginEvent -> {
-                        recordUnknownOriginEventPayload(classification)
+                        recordUnknownOriginEventPayload(classification, activeBleHardwareId, bleLinkActive)
                         return
                     }
 
@@ -596,32 +614,45 @@ internal class ProtectionBleRuntimeOwner(
                     payload = payload,
                     connectedNodeId = connectedBleNodeId,
                     boundNodeId = boundNodeId,
+                    boundDeviceId = boundDeviceId,
+                    activeBleHardwareId = activeBleHardwareId,
+                    activeRuntimeDeviceId = targetDeviceId,
+                    bleLinkActive = bleLinkActive,
+                    cmdReady = cmdWriteCharacteristic != null,
                     source = ProtectionBleSosRelaySource.tel,
                 )
             ) {
                 is ProtectionBleSosIdentityClassification.RemoteSos -> {
-                    recordRemoteRelaySosPayload(classification)
+                    recordRemoteRelaySosPayload(classification, activeBleHardwareId, bleLinkActive)
                     return
                 }
 
                 is ProtectionBleSosIdentityClassification.UnknownOriginSos -> {
-                    recordUnknownOriginSosPayload(classification)
+                    recordUnknownOriginSosPayload(classification, activeBleHardwareId, bleLinkActive)
                     return
                 }
 
                 is ProtectionBleSosIdentityClassification.UnknownOriginEvent -> {
-                    recordUnknownOriginEventPayload(classification)
+                    recordUnknownOriginEventPayload(classification, activeBleHardwareId, bleLinkActive)
                     return
                 }
 
-                ProtectionBleSosIdentityClassification.OwnSos -> {
+                is ProtectionBleSosIdentityClassification.RemoteEvent -> {
+                    recordRemoteRelayEventPayload(classification, activeBleHardwareId, bleLinkActive)
+                    return
+                }
+
+                is ProtectionBleSosIdentityClassification.OwnSos -> {
                     recordSosIdentityDecision(
                         originatorNodeId = readPacketOriginatorNodeId(payload),
                         relayNodeId = connectedBleNodeId,
                         source = ProtectionBleSosRelaySource.tel,
                         platformEventType = null,
                         decision = "own_device",
-                        reason = "originator_matches_connected_ble_node",
+                        reason = classification.reason,
+                        activeBleHardwareId = activeBleHardwareId,
+                        bleLinkActive = bleLinkActive,
+                        identityProof = classification.identityProof,
                     )
                     logSosPacketDecodeForTrace(
                         payload = payload,
@@ -636,6 +667,26 @@ internal class ProtectionBleRuntimeOwner(
                         context = context,
                         type = "telDerivedSosReceived",
                         reason = payloadHex(payload),
+                    )
+                    observeSosLifecycle(payload)
+                    return
+                }
+
+                is ProtectionBleSosIdentityClassification.OwnEvent -> {
+                    recordSosIdentityDecision(
+                        originatorNodeId = readPacketOriginatorNodeId(payload),
+                        relayNodeId = connectedBleNodeId,
+                        source = ProtectionBleSosRelaySource.tel,
+                        platformEventType = null,
+                        decision = "own_device",
+                        reason = classification.reason,
+                        activeBleHardwareId = activeBleHardwareId,
+                        bleLinkActive = bleLinkActive,
+                        identityProof = classification.identityProof,
+                    )
+                    logSosTrace(
+                        "native_lifecycle_gate classification=ownDeviceSos " +
+                            "action=observe_local_lifecycle observeSosLifecycle_called=true",
                     )
                     observeSosLifecycle(payload)
                     return
@@ -656,26 +707,31 @@ internal class ProtectionBleRuntimeOwner(
                 payload = payload,
                 connectedNodeId = connectedBleNodeId,
                 boundNodeId = boundNodeId,
+                boundDeviceId = boundDeviceId,
+                activeBleHardwareId = activeBleHardwareId,
+                activeRuntimeDeviceId = targetDeviceId,
+                bleLinkActive = bleLinkActive,
+                cmdReady = cmdWriteCharacteristic != null,
                 source = ProtectionBleSosRelaySource.sos,
             )
             when (classification) {
                 is ProtectionBleSosIdentityClassification.RemoteSos -> {
-                    recordRemoteRelaySosPayload(classification)
+                    recordRemoteRelaySosPayload(classification, activeBleHardwareId, bleLinkActive)
                     return
                 }
 
                 is ProtectionBleSosIdentityClassification.UnknownOriginSos -> {
-                    recordUnknownOriginSosPayload(classification)
+                    recordUnknownOriginSosPayload(classification, activeBleHardwareId, bleLinkActive)
                     return
                 }
 
                 is ProtectionBleSosIdentityClassification.UnknownOriginEvent -> {
-                    recordUnknownOriginEventPayload(classification)
+                    recordUnknownOriginEventPayload(classification, activeBleHardwareId, bleLinkActive)
                     return
                 }
 
                 is ProtectionBleSosIdentityClassification.RemoteEvent -> {
-                    recordRemoteRelayEventPayload(classification)
+                    recordRemoteRelayEventPayload(classification, activeBleHardwareId, bleLinkActive)
                     return
                 }
 
@@ -685,16 +741,16 @@ internal class ProtectionBleRuntimeOwner(
                 payload = payload,
                 source = ProtectionBleSosRelaySource.sos,
                 classificationLabel =
-                    if (classification == ProtectionBleSosIdentityClassification.OwnSos ||
-                        classification == ProtectionBleSosIdentityClassification.OwnEvent
+                    if (classification is ProtectionBleSosIdentityClassification.OwnSos ||
+                        classification is ProtectionBleSosIdentityClassification.OwnEvent
                     ) {
                         "ownDeviceSos"
                     } else {
                         "notSos"
                     },
             )
-            if (classification != ProtectionBleSosIdentityClassification.OwnSos &&
-                classification != ProtectionBleSosIdentityClassification.OwnEvent &&
+            if (classification !is ProtectionBleSosIdentityClassification.OwnSos &&
+                classification !is ProtectionBleSosIdentityClassification.OwnEvent &&
                 readPacketOriginatorNodeId(payload) != null
             ) {
                 return
@@ -714,7 +770,10 @@ internal class ProtectionBleRuntimeOwner(
                 source = ProtectionBleSosRelaySource.sos,
                 platformEventType = nativeRoute.diagnosticEventType ?: "ownDeviceSosLifecycleObserved",
                 decision = "own_device",
-                reason = "originator_matches_connected_ble_node",
+                reason = classification.reason,
+                activeBleHardwareId = activeBleHardwareId,
+                bleLinkActive = bleLinkActive,
+                identityProof = classification.identityProof,
             )
             logSosTrace(
                 "native_lifecycle_gate classification=ownDeviceSos " +
@@ -726,6 +785,8 @@ internal class ProtectionBleRuntimeOwner(
 
     private fun recordUnknownOriginSosPayload(
         classification: ProtectionBleSosIdentityClassification.UnknownOriginSos,
+        activeBleHardwareId: String?,
+        bleLinkActive: Boolean,
     ) {
         recordSosIdentityDecision(
             originatorNodeId = classification.originatorNodeId,
@@ -733,7 +794,10 @@ internal class ProtectionBleRuntimeOwner(
             source = classification.source,
             platformEventType = "sosEventReceived",
             decision = "unknown_hold",
-            reason = "connected_identity_unknown_fail_closed",
+            reason = classification.reason,
+            activeBleHardwareId = activeBleHardwareId,
+            bleLinkActive = bleLinkActive,
+            identityProof = classification.identityProof,
         )
         logSosTrace(
             "native_sos_decode originatorNodeId=${classification.originatorNodeId} " +
@@ -770,6 +834,8 @@ internal class ProtectionBleRuntimeOwner(
 
     private fun recordUnknownOriginEventPayload(
         classification: ProtectionBleSosIdentityClassification.UnknownOriginEvent,
+        activeBleHardwareId: String?,
+        bleLinkActive: Boolean,
     ) {
         recordSosIdentityDecision(
             originatorNodeId = classification.originatorNodeId,
@@ -777,7 +843,10 @@ internal class ProtectionBleRuntimeOwner(
             source = classification.source,
             platformEventType = "sosEventReceived",
             decision = "unknown_hold",
-            reason = "connected_identity_unknown_fail_closed",
+            reason = classification.reason,
+            activeBleHardwareId = activeBleHardwareId,
+            bleLinkActive = bleLinkActive,
+            identityProof = classification.identityProof,
         )
         logSosTrace(
             "native_sos_event_decode originatorNodeId=${classification.originatorNodeId} " +
@@ -810,6 +879,8 @@ internal class ProtectionBleRuntimeOwner(
 
     private fun recordRemoteRelaySosPayload(
         classification: ProtectionBleSosIdentityClassification.RemoteSos,
+        activeBleHardwareId: String?,
+        bleLinkActive: Boolean,
     ) {
         recordSosIdentityDecision(
             originatorNodeId = classification.originatorNodeId,
@@ -817,7 +888,10 @@ internal class ProtectionBleRuntimeOwner(
             source = classification.source,
             platformEventType = "sosEventReceived",
             decision = "remote_relay",
-            reason = "originator_differs_from_connected_ble_node",
+            reason = classification.reason,
+            activeBleHardwareId = activeBleHardwareId,
+            bleLinkActive = bleLinkActive,
+            identityProof = classification.identityProof,
         )
         logSosTrace(
             "native_sos_decode originatorNodeId=${classification.originatorNodeId} " +
@@ -854,6 +928,8 @@ internal class ProtectionBleRuntimeOwner(
 
     private fun recordRemoteRelayEventPayload(
         classification: ProtectionBleSosIdentityClassification.RemoteEvent,
+        activeBleHardwareId: String?,
+        bleLinkActive: Boolean,
     ) {
         recordSosIdentityDecision(
             originatorNodeId = classification.originatorNodeId,
@@ -861,7 +937,10 @@ internal class ProtectionBleRuntimeOwner(
             source = classification.source,
             platformEventType = "sosEventReceived",
             decision = "remote_relay",
-            reason = "originator_differs_from_connected_ble_node",
+            reason = classification.reason,
+            activeBleHardwareId = activeBleHardwareId,
+            bleLinkActive = bleLinkActive,
+            identityProof = classification.identityProof,
         )
         logSosTrace(
             "platform_event type=sosEventReceived originatorNodeId=${classification.originatorNodeId} " +
@@ -892,14 +971,23 @@ internal class ProtectionBleRuntimeOwner(
         platformEventType: String?,
         decision: String,
         reason: String,
+        activeBleHardwareId: String? = null,
+        bleLinkActive: Boolean =
+            runtimeActive &&
+                !isStopping &&
+                runtimeStore.snapshot()["serviceBleConnected"] == true,
+        identityProof: IdentityProof = IdentityProof.None,
     ) {
         logSosTrace(
             "sos_identity_decision originatorNodeId=${originatorNodeId ?: "none"} " +
                 "strictConnectedBleNodeId=${connectedBleNodeId ?: "none"} " +
                 "boundNodeId=${boundNodeId ?: "none"} " +
+                "boundDeviceId=${boundDeviceId ?: "none"} " +
+                "activeBleHardwareId=${activeBleHardwareId ?: "none"} " +
+                "bleLinkActive=$bleLinkActive cmdReady=${cmdWriteCharacteristic != null} " +
                 "relayNodeId=${relayNodeId ?: "none"} sourceChannel=${source.name} " +
                 "platformEventType=${platformEventType ?: "none"} " +
-                "decision=$decision reason=$reason",
+                "decision=$decision reason=$reason identityProof=${identityProof.logValue}",
         )
     }
 
@@ -1190,7 +1278,7 @@ internal class ProtectionBleRuntimeOwner(
                 characteristic: BluetoothGattCharacteristic,
                 value: ByteArray,
             ) {
-                handleIncomingPacket(characteristic, value)
+                handleIncomingPacket(gatt, characteristic, value)
             }
 
             @Deprecated("Deprecated in Java")
@@ -1198,7 +1286,7 @@ internal class ProtectionBleRuntimeOwner(
                 gatt: BluetoothGatt,
                 characteristic: BluetoothGattCharacteristic,
             ) {
-                handleIncomingPacket(characteristic, characteristic.value ?: ByteArray(0))
+                handleIncomingPacket(gatt, characteristic, characteristic.value ?: ByteArray(0))
             }
         }
 

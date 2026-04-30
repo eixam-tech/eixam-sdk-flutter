@@ -5,8 +5,8 @@ internal object ProtectionBleSosNativeRouting {
         classification: ProtectionBleSosIdentityClassification,
     ): ProtectionBleSosNativeRoute =
         when (classification) {
-            ProtectionBleSosIdentityClassification.OwnSos,
-            ProtectionBleSosIdentityClassification.OwnEvent -> ProtectionBleSosNativeRoute(
+            is ProtectionBleSosIdentityClassification.OwnSos,
+            is ProtectionBleSosIdentityClassification.OwnEvent -> ProtectionBleSosNativeRoute(
                 observeLocalLifecycle = true,
                 diagnosticEventType = "ownDeviceSosLifecycleObserved",
                 emitSosEventReceived = false,
