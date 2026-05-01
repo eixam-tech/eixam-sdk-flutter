@@ -21,6 +21,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import dev.eixam.connect.flutter.NotificationLaunchIntents
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
@@ -562,6 +563,7 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle(title)
             .setContentText(body)
+            .setContentIntent(NotificationLaunchIntents.contentIntentForLaunchingApp(this))
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)

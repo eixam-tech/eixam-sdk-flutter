@@ -7,6 +7,7 @@ import '../data/datasources_local/sdk_session_store.dart';
 import '../data/datasources_remote/http_sos_remote_data_source.dart';
 import '../data/datasources_remote/mock_sos_remote_data_source.dart';
 import '../data/datasources_remote/sdk_identity_remote_data_source.dart';
+import '../data/datasources_remote/sdk_profile_remote_data_source.dart';
 import '../data/datasources_remote/sdk_session_context.dart';
 import '../data/datasources_remote/sdk_contacts_remote_data_source.dart';
 import '../data/datasources_remote/sdk_devices_remote_data_source.dart';
@@ -15,7 +16,6 @@ import '../data/repositories/api_sos_repository.dart';
 import '../data/repositories/api_contacts_repository.dart';
 import '../data/repositories/api_sdk_device_registry_repository.dart';
 import '../data/repositories/geolocator_tracking_repository.dart';
-import '../data/repositories/in_memory_contacts_repository.dart';
 import '../data/repositories/in_memory_death_man_repository.dart';
 import '../data/repositories/in_memory_device_repository.dart';
 import '../data/repositories/in_memory_sdk_device_registry_repository.dart';
@@ -63,7 +63,21 @@ class ApiSdkFactory {
 
     final deathManRepository = InMemoryDeathManRepository(localStore: store);
 
-    final contactsRepository = InMemoryContactsRepository(localStore: store);
+    final config = EixamSdkConfig(
+      apiBaseUrl: 'https://demo.eixam.local',
+      websocketUrl: 'wss://demo.eixam.local/ws',
+    );
+    final httpClient = http.Client();
+    final httpTransport = SdkHttpTransport(
+      client: httpClient,
+      config: config,
+      sessionContext: sessionContext,
+    );
+    final contactsRepository = ApiContactsRepository(
+      remoteDataSource: HttpSdkContactsRemoteDataSource(
+        transport: httpTransport,
+      ),
+    );
 
     final bleClient = MockBleClient();
     await bleClient.initialize();
@@ -80,7 +94,6 @@ class ApiSdkFactory {
     await sosRepository.restoreState();
     await trackingRepository.restoreState();
     await deathManRepository.restoreState();
-    await contactsRepository.restoreState();
     await deviceRepository.restoreState();
 
     final sdk = EixamConnectSdkImpl(
@@ -101,6 +114,11 @@ class ApiSdkFactory {
       sessionStore: sessionStore,
       sessionContext: sessionContext,
       protectionPlatformAdapter: buildDefaultProtectionPlatformAdapter(),
+      disposeCallback: () async {
+        httpClient.close();
+        await contactsRepository.dispose();
+        await realtimeClient.dispose();
+      },
     );
 
     await sdk.initialize(
@@ -139,6 +157,8 @@ class ApiSdkFactory {
       config: config,
       sessionContext: sessionContext,
     );
+    final profileRemoteDataSource =
+        HttpSdkProfileRemoteDataSource(transport: httpTransport);
     final realtimeClient = MqttRealtimeClient(
       config: config,
       sessionContext: sessionContext,
@@ -184,15 +204,17 @@ class ApiSdkFactory {
     await deathManRepository.restoreState();
     await deviceRepository.restoreState();
 
+    final contactsRepository = ApiContactsRepository(
+      remoteDataSource: HttpSdkContactsRemoteDataSource(
+        transport: httpTransport,
+      ),
+    );
+
     final sdk = EixamConnectSdkImpl(
       sosRepository: sosRepository,
       trackingRepository: trackingRepository,
       telemetryRepository: telemetryRepository,
-      contactsRepository: ApiContactsRepository(
-        remoteDataSource: HttpSdkContactsRemoteDataSource(
-          transport: httpTransport,
-        ),
-      ),
+      contactsRepository: contactsRepository,
       deviceRepository: deviceRepository,
       deviceRegistryRepository: ApiSdkDeviceRegistryRepository(
         remoteDataSource: HttpSdkDevicesRemoteDataSource(
@@ -212,11 +234,13 @@ class ApiSdkFactory {
       identityRemoteDataSource: HttpSdkIdentityRemoteDataSource(
         transport: httpTransport,
       ),
+      profileRemoteDataSource: profileRemoteDataSource,
       notificationPolicy: notificationPolicy,
       protectionPlatformAdapter:
           protectionPlatformAdapter ?? buildDefaultProtectionPlatformAdapter(),
       disposeCallback: () async {
         httpClient.close();
+        await contactsRepository.dispose();
         await sosRepository.dispose();
         await realtimeClient.dispose();
       },

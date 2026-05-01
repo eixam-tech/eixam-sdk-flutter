@@ -1,8 +1,10 @@
 import 'dart:convert';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:http/http.dart' as http;
 
 import '../dtos/sdk_contact_dto.dart';
+import 'sdk_contacts_http_support.dart';
 import 'sdk_http_transport.dart';
 
 abstract class SdkContactsRemoteDataSource {
@@ -12,6 +14,7 @@ abstract class SdkContactsRemoteDataSource {
     required String phone,
     required String email,
     required int priority,
+    String language = 'en',
   });
   Future<SdkContactDto> replaceContact({
     required String id,
@@ -19,8 +22,10 @@ abstract class SdkContactsRemoteDataSource {
     required String phone,
     required String email,
     required int priority,
+    String language = 'en',
   });
   Future<void> deleteContact(String id);
+  Future<void> reorderContacts(List<String> orderedIds);
 }
 
 class HttpSdkContactsRemoteDataSource implements SdkContactsRemoteDataSource {
@@ -30,10 +35,15 @@ class HttpSdkContactsRemoteDataSource implements SdkContactsRemoteDataSource {
 
   @override
   Future<List<SdkContactDto>> listContacts() async {
-    final response = await transport.get('/v1/sdk/contacts');
-    if (response.statusCode != 200) {
-      throw ContactsException('E_HTTP_CONTACTS_LIST_FAILED', response.body);
-    }
+    final response = await transport.get(
+      '/v1/sdk/contacts',
+      headers: const {'Accept': 'application/json'},
+    );
+    _ensureStatus(
+      response,
+      expectedStatusCode: 200,
+      defaultCode: 'E_HTTP_CONTACTS_LIST_FAILED',
+    );
     final payload =
         _decode(response.body, errorCode: 'E_HTTP_CONTACTS_LIST_FAILED');
     final contacts = payload['contacts'];
@@ -43,10 +53,16 @@ class HttpSdkContactsRemoteDataSource implements SdkContactsRemoteDataSource {
         'The backend did not return a valid contacts list.',
       );
     }
-    return contacts
-        .whereType<Map<String, dynamic>>()
-        .map(SdkContactDto.fromJson)
-        .toList(growable: false);
+    return [
+      for (final contact in contacts)
+        if (contact is Map<String, dynamic>)
+          SdkContactDto.fromJson(contact)
+        else
+          throw const ContactsException(
+            'E_HTTP_CONTACTS_LIST_FAILED',
+            'The backend returned an invalid contact payload.',
+          ),
+    ];
   }
 
   @override
@@ -55,19 +71,24 @@ class HttpSdkContactsRemoteDataSource implements SdkContactsRemoteDataSource {
     required String phone,
     required String email,
     required int priority,
+    String language = 'en',
   }) async {
     final response = await transport.post(
       '/v1/sdk/contacts',
+      headers: const {'Accept': 'application/json'},
       body: jsonEncode(_bodyFor(
         name: name,
         phone: phone,
         email: email,
         priority: priority,
+        language: language,
       )),
     );
-    if (response.statusCode != 201) {
-      throw ContactsException('E_HTTP_CONTACT_CREATE_FAILED', response.body);
-    }
+    _ensureStatus(
+      response,
+      expectedStatusCode: 201,
+      defaultCode: 'E_HTTP_CONTACT_CREATE_FAILED',
+    );
     return _contactFromResponse(
       response.body,
       errorCode: 'E_HTTP_CONTACT_CREATE_FAILED',
@@ -81,20 +102,24 @@ class HttpSdkContactsRemoteDataSource implements SdkContactsRemoteDataSource {
     required String phone,
     required String email,
     required int priority,
+    String language = 'en',
   }) async {
-    final response = await transport.client.put(
-      Uri.parse('${transport.config.apiBaseUrl}/v1/sdk/contacts/$id'),
-      headers: transport.headersForCurrentSession(),
+    final response = await transport.put(
+      '/v1/sdk/contacts/$id',
+      headers: const {'Accept': 'application/json'},
       body: jsonEncode(_bodyFor(
         name: name,
         phone: phone,
         email: email,
         priority: priority,
+        language: language,
       )),
     );
-    if (response.statusCode != 200) {
-      throw ContactsException('E_HTTP_CONTACT_UPDATE_FAILED', response.body);
-    }
+    _ensureStatus(
+      response,
+      expectedStatusCode: 200,
+      defaultCode: 'E_HTTP_CONTACT_UPDATE_FAILED',
+    );
     return _contactFromResponse(
       response.body,
       errorCode: 'E_HTTP_CONTACT_UPDATE_FAILED',
@@ -103,13 +128,26 @@ class HttpSdkContactsRemoteDataSource implements SdkContactsRemoteDataSource {
 
   @override
   Future<void> deleteContact(String id) async {
-    final response = await transport.client.delete(
-      Uri.parse('${transport.config.apiBaseUrl}/v1/sdk/contacts/$id'),
-      headers: transport.headersForCurrentSession(),
+    final response = await transport.delete('/v1/sdk/contacts/$id');
+    _ensureStatus(
+      response,
+      expectedStatusCode: 204,
+      defaultCode: 'E_HTTP_CONTACT_DELETE_FAILED',
     );
-    if (response.statusCode != 204) {
-      throw ContactsException('E_HTTP_CONTACT_DELETE_FAILED', response.body);
-    }
+  }
+
+  @override
+  Future<void> reorderContacts(List<String> orderedIds) async {
+    final response = await transport.put(
+      '/v1/sdk/contacts/reorder',
+      headers: const {'Accept': 'application/json'},
+      body: jsonEncode(<String, dynamic>{'order': orderedIds}),
+    );
+    _ensureStatus(
+      response,
+      expectedStatusCode: 204,
+      defaultCode: 'E_HTTP_CONTACTS_REORDER_FAILED',
+    );
   }
 
   Map<String, dynamic> _bodyFor({
@@ -117,12 +155,14 @@ class HttpSdkContactsRemoteDataSource implements SdkContactsRemoteDataSource {
     required String phone,
     required String email,
     required int priority,
+    String language = 'en',
   }) {
     return <String, dynamic>{
       'name': name,
       'phone': phone,
       'email': email,
       'priority': priority,
+      'language': language,
     };
   }
 
@@ -145,12 +185,32 @@ class HttpSdkContactsRemoteDataSource implements SdkContactsRemoteDataSource {
     String body, {
     required String errorCode,
   }) {
+    late final dynamic decoded;
     try {
-      final decoded = jsonDecode(body);
-      if (decoded is Map<String, dynamic>) {
-        return decoded;
-      }
-    } catch (_) {}
+      decoded = jsonDecode(body);
+    } on FormatException {
+      throw ContactsException(errorCode, 'The backend returned invalid JSON.');
+    }
+    if (decoded is Map<String, dynamic>) {
+      return decoded;
+    }
     throw ContactsException(errorCode, 'The backend returned invalid JSON.');
+  }
+
+  void _ensureStatus(
+    http.Response response, {
+    required int expectedStatusCode,
+    required String defaultCode,
+  }) {
+    final err = SdkContactsHttpSupport.tryMapHttpFailure(
+      response,
+      defaultCode: defaultCode,
+    );
+    if (err != null) {
+      throw err;
+    }
+    if (response.statusCode != expectedStatusCode) {
+      throw ContactsException(defaultCode, response.body);
+    }
   }
 }

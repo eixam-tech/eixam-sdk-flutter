@@ -13,6 +13,7 @@ import '../data/repositories/in_memory_device_repository.dart';
 import '../data/repositories/api_sos_repository.dart';
 import '../data/repositories/mqtt_operational_sos_repository.dart';
 import '../data/datasources_remote/sdk_identity_remote_data_source.dart';
+import '../data/datasources_remote/sdk_profile_remote_data_source.dart';
 import '../device/ble_incoming_event.dart';
 import '../device/ble_incoming_payload_classifier.dart';
 import '../device/device_sos_controller.dart';
@@ -64,6 +65,7 @@ class EixamConnectSdkImpl
   final SdkSessionStore? sessionStore;
   final SdkSessionContext? sessionContext;
   final SdkIdentityRemoteDataSource? identityRemoteDataSource;
+  final SdkProfileRemoteDataSource? profileRemoteDataSource;
   final EixamNotificationPolicy notificationPolicy;
   final ProtectionPlatformAdapter protectionPlatformAdapter;
   final BackgroundTelemetryPlatformAdapter backgroundTelemetryPlatformAdapter;
@@ -196,6 +198,7 @@ class EixamConnectSdkImpl
     this.sessionStore,
     this.sessionContext,
     this.identityRemoteDataSource,
+    this.profileRemoteDataSource,
     this.notificationPolicy = EixamNotificationPolicy.sdkManaged,
     ProtectionPlatformAdapter? protectionPlatformAdapter,
     BackgroundTelemetryPlatformAdapter? backgroundTelemetryPlatformAdapter,
@@ -633,6 +636,44 @@ class EixamConnectSdkImpl
       await realtime.connect();
     }
     return refreshed;
+  }
+
+  @override
+  Future<SdkUserProfile> fetchSdkUserProfile() async {
+    final ds = profileRemoteDataSource;
+    if (ds == null) {
+      throw const AuthException(
+        'E_SDK_PROFILE_HTTP_UNAVAILABLE',
+        'SDK profile HTTP API is not configured for this runtime.',
+      );
+    }
+    final session = _session;
+    if (session == null) {
+      throw const AuthException(
+        'E_SDK_SESSION_REQUIRED',
+        'An SDK session must be configured before fetching profile.',
+      );
+    }
+    return ds.fetchProfile(sessionOverride: session);
+  }
+
+  @override
+  Future<SdkUserProfile> updateSdkUserProfile(SdkUserProfileUpdate update) async {
+    final ds = profileRemoteDataSource;
+    if (ds == null) {
+      throw const AuthException(
+        'E_SDK_PROFILE_HTTP_UNAVAILABLE',
+        'SDK profile HTTP API is not configured for this runtime.',
+      );
+    }
+    final session = _session;
+    if (session == null) {
+      throw const AuthException(
+        'E_SDK_SESSION_REQUIRED',
+        'An SDK session must be configured before updating profile.',
+      );
+    }
+    return ds.updateProfile(update, sessionOverride: session);
   }
 
   Future<EixamSession?> _bootstrapSessionIfNeeded(EixamSession? session) async {
@@ -3606,12 +3647,14 @@ class EixamConnectSdkImpl
     required String phone,
     required String email,
     int priority = 1,
+    String language = 'en',
   }) {
     return addEmergencyContact(
       name: name,
       phone: phone,
       email: email,
       priority: priority,
+      language: language,
     );
   }
 
@@ -3621,12 +3664,14 @@ class EixamConnectSdkImpl
     required String phone,
     required String email,
     int priority = 1,
+    String language = 'en',
   }) {
     return contactsRepository.addEmergencyContact(
       name: name,
       phone: phone,
       email: email,
       priority: priority,
+      language: language,
     );
   }
 
@@ -3643,6 +3688,11 @@ class EixamConnectSdkImpl
   @override
   Future<void> removeEmergencyContact(String contactId) {
     return contactsRepository.removeEmergencyContact(contactId);
+  }
+
+  @override
+  Future<void> reorderEmergencyContacts(List<String> orderedContactIds) {
+    return contactsRepository.reorderEmergencyContacts(orderedContactIds);
   }
 
   @override

@@ -12,15 +12,26 @@ class SdkContactMapper {
       phone: dto.phone,
       email: dto.email,
       priority: dto.priority,
-      createdAt: DateTime.parse(
-        dto.createdAt ??
-            DateTime.fromMillisecondsSinceEpoch(0).toIso8601String(),
-      ).toUtc(),
-      updatedAt: DateTime.parse(
-        dto.updatedAt ??
-            dto.createdAt ??
-            DateTime.fromMillisecondsSinceEpoch(0).toIso8601String(),
-      ).toUtc(),
+      language: dto.language,
+      createdAt: _parseRequiredTimestamp(dto.createdAt, field: 'createdAt'),
+      updatedAt: _parseRequiredTimestamp(dto.updatedAt, field: 'updatedAt'),
     );
+  }
+
+  DateTime _parseRequiredTimestamp(String? value, {required String field}) {
+    if (value == null || value.trim().isEmpty) {
+      throw ContactsException(
+        'E_HTTP_CONTACTS_INVALID_PAYLOAD',
+        'The backend contact payload is missing $field.',
+      );
+    }
+    try {
+      return DateTime.parse(value).toUtc();
+    } on FormatException {
+      throw ContactsException(
+        'E_HTTP_CONTACTS_INVALID_PAYLOAD',
+        'The backend contact payload contains an invalid $field.',
+      );
+    }
   }
 }

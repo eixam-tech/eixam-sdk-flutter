@@ -8,6 +8,9 @@ class EmergencyContact {
   final String phone;
   final String email;
   final int priority;
+
+  /// ISO 639-1 language code for cascade notifications (default `en`).
+  final String language;
   final DateTime createdAt;
   final DateTime updatedAt;
 
@@ -17,6 +20,7 @@ class EmergencyContact {
     required this.phone,
     required this.email,
     this.priority = 1,
+    this.language = 'en',
     required this.createdAt,
     required this.updatedAt,
   });
@@ -27,6 +31,7 @@ class EmergencyContact {
     String? phone,
     String? email,
     int? priority,
+    String? language,
     DateTime? createdAt,
     DateTime? updatedAt,
   }) {
@@ -36,6 +41,7 @@ class EmergencyContact {
       phone: phone ?? this.phone,
       email: email ?? this.email,
       priority: priority ?? this.priority,
+      language: language ?? this.language,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
     );

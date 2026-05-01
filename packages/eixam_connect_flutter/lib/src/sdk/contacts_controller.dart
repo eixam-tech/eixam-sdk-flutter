@@ -17,6 +17,8 @@ class ContactsController extends ChangeNotifier {
 
   /// Loads the initial contact list and keeps it in sync with the SDK stream.
   Future<void> initialize() async {
+    await _contactsSubscription?.cancel();
+    _contactsSubscription = null;
     contacts = await sdk.listEmergencyContacts();
     notifyListeners();
     _contactsSubscription = sdk.watchEmergencyContacts().listen((items) {
@@ -31,13 +33,20 @@ class ContactsController extends ChangeNotifier {
     required String phone,
     required String email,
     int priority = 1,
+    String language = 'en',
   }) async {
     await _run(() => sdk.createEmergencyContact(
           name: name,
           phone: phone,
           email: email,
           priority: priority,
+          language: language,
         ));
+  }
+
+  /// Reorders contacts; [orderedContactIds] must list every id exactly once.
+  Future<void> reorder(List<String> orderedContactIds) async {
+    await _run(() => sdk.reorderEmergencyContacts(orderedContactIds));
   }
 
   /// Removes an emergency contact from the SDK store.

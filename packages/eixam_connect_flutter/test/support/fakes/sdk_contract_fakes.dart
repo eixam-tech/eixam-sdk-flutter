@@ -213,6 +213,7 @@ class FakeContactsRepository implements ContactsRepository {
     required String phone,
     required String email,
     int priority = 1,
+    String language = 'en',
   }) async {
     final contact = EmergencyContact(
       id: 'contact-${contacts.length + 1}',
@@ -220,6 +221,7 @@ class FakeContactsRepository implements ContactsRepository {
       phone: phone,
       email: email,
       priority: priority,
+      language: language,
       createdAt: DateTime.utc(2026, 1, 1, 12),
       updatedAt: DateTime.utc(2026, 1, 1, 12),
     );
@@ -242,9 +244,27 @@ class FakeContactsRepository implements ContactsRepository {
   Future<EmergencyContact> updateEmergencyContact(
       EmergencyContact contact) async {
     final index = contacts.indexWhere((item) => item.id == contact.id);
+    if (index < 0) {
+      throw StateError('Emergency contact not found: ${contact.id}');
+    }
     contacts[index] = contact;
     _controller.add(List<EmergencyContact>.unmodifiable(contacts));
     return contact;
+  }
+
+  @override
+  Future<void> reorderEmergencyContacts(List<String> orderedContactIds) async {
+    final byId = {for (final c in contacts) c.id: c};
+    for (var i = 0; i < orderedContactIds.length; i++) {
+      final id = orderedContactIds[i];
+      final existing = byId[id]!;
+      byId[id] = existing.copyWith(priority: i + 1);
+    }
+    contacts
+      ..clear()
+      ..addAll(byId.values);
+    contacts.sort((a, b) => a.priority.compareTo(b.priority));
+    _controller.add(List<EmergencyContact>.unmodifiable(contacts));
   }
 
   @override

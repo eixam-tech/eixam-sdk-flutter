@@ -14,6 +14,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import dev.eixam.connect.flutter.NotificationLaunchIntents
 
 internal class ProtectionForegroundService : Service() {
     private var bluetoothReceiver: BroadcastReceiver? = null
@@ -121,6 +122,7 @@ internal class ProtectionForegroundService : Service() {
             .setContentText(
                 "Protection Mode is armed. The Android foreground service owns the runtime while coverage is active.",
             )
+            .setContentIntent(NotificationLaunchIntents.contentIntentForLaunchingApp(this))
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
@@ -245,6 +247,7 @@ internal class ProtectionForegroundService : Service() {
                 .setSmallIcon(android.R.drawable.stat_notify_sync)
                 .setContentTitle(title)
                 .setContentText(body)
+                .setContentIntent(NotificationLaunchIntents.contentIntentForLaunchingApp(context))
                 .setAutoCancel(true)
                 .setCategory(NotificationCompat.CATEGORY_ALARM)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)

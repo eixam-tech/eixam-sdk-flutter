@@ -9,9 +9,15 @@ abstract class ContactsRepository {
     required String name,
     required String phone,
     required String email,
-    int priority,
+    int priority = 1,
+    String language = 'en',
   });
 
   Future<EmergencyContact> updateEmergencyContact(EmergencyContact contact);
   Future<void> removeEmergencyContact(String contactId);
+
+  /// Sets priorities from the ordered list of contact ids (index + 1).
+  ///
+  /// Backend requires every contact id exactly once.
+  Future<void> reorderEmergencyContacts(List<String> orderedContactIds);
 }

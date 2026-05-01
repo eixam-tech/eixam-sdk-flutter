@@ -3,14 +3,12 @@ import 'dart:convert';
 
 import 'package:async/async.dart';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
-import 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
-import 'package:eixam_connect_core/src/events/realtime_event.dart';
-import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/preferred_ble_device_store.dart';
 import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/sdk_session_store.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/http_sos_remote_data_source.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_contacts_remote_data_source.dart';
+import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_contacts_http_support.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_devices_remote_data_source.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_http_transport.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_identity_remote_data_source.dart';
@@ -19,6 +17,7 @@ import 'package:eixam_connect_flutter/src/data/datasources_remote/sos_remote_dat
 import 'package:eixam_connect_flutter/src/data/dtos/sdk_contact_dto.dart';
 import 'package:eixam_connect_flutter/src/data/dtos/sdk_device_dto.dart';
 import 'package:eixam_connect_flutter/src/data/dtos/sos_incident_dto.dart';
+import 'package:eixam_connect_flutter/src/data/repositories/api_contacts_repository.dart';
 import 'package:eixam_connect_flutter/src/mappers/sdk_contact_mapper.dart';
 import 'package:eixam_connect_flutter/src/mappers/sdk_device_registry_mapper.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/mqtt_telemetry_repository.dart';
@@ -469,7 +468,7 @@ void main() {
       expect(position.longitude, 2.17);
     });
 
-    test('contacts facade delegates create, update, and delete flows',
+    test('contacts facade delegates create, update, delete, and reorder flows',
         () async {
       final contact = await sdk.createEmergencyContact(
         name: 'Alice',
@@ -483,6 +482,9 @@ void main() {
       expect(contact.name, 'Alice');
       expect(updated.priority, 2);
       expect((await sdk.listEmergencyContacts()).single.id, contact.id);
+
+      await sdk.reorderEmergencyContacts([contact.id]);
+      expect((await sdk.listEmergencyContacts()).single.priority, 1);
 
       await sdk.deleteEmergencyContact(contact.id);
       expect(await sdk.listEmergencyContacts(), isEmpty);
@@ -7005,6 +7007,34 @@ void main() {
       expect(listed.single.firmwareVersion, '1.2.3');
     });
 
+    test('device HTTP datasource rejects malformed list entries', () async {
+      final dataSource = HttpSdkDevicesRemoteDataSource(
+        transport: SdkHttpTransport(
+          client: _RecordingClient(
+            handler: (_) async => http.Response('{"devices":[42]}', 200),
+          ),
+          config: const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
+          sessionContext: SdkSessionContext()
+            ..currentSession = const EixamSession.signed(
+              appId: 'app-demo',
+              externalUserId: 'external-123',
+              userHash: 'deadbeef',
+            ),
+        ),
+      );
+
+      await expectLater(
+        dataSource.listDevices(),
+        throwsA(
+          isA<DeviceException>().having(
+            (error) => error.code,
+            'code',
+            'E_HTTP_DEVICE_LIST_FAILED',
+          ),
+        ),
+      );
+    });
+
     test(
         'device registry mapper keeps backend records separate from runtime status',
         () {
@@ -7037,19 +7067,23 @@ void main() {
               requests.add(request);
               if (request.method == 'GET') {
                 return http.Response(
-                  '{"contacts":[{"id":"contact-1","name":"Alice","phone":"+34123456789","email":"alice@example.com","priority":1,"createdAt":"2026-03-31T09:00:00.000Z","updatedAt":"2026-03-31T09:05:00.000Z"}]}',
+                  '{"contacts":[{"id":"contact-1","name":"Alice","phone":"+34123456789","email":"alice@example.com","priority":1,"language":"en","createdAt":"2026-03-31T09:00:00.000Z","updatedAt":"2026-03-31T09:05:00.000Z"}]}',
                   200,
                 );
               }
               if (request.method == 'POST') {
                 return http.Response(
-                  '{"contact":{"id":"contact-1","name":"Alice","phone":"+34123456789","email":"alice@example.com","priority":1,"createdAt":"2026-03-31T09:00:00.000Z","updatedAt":"2026-03-31T09:05:00.000Z"}}',
+                  '{"contact":{"id":"contact-1","name":"Alice","phone":"+34123456789","email":"alice@example.com","priority":1,"language":"en","createdAt":"2026-03-31T09:00:00.000Z","updatedAt":"2026-03-31T09:05:00.000Z"}}',
                   201,
                 );
               }
+              if (request.method == 'PUT' &&
+                  request.url.path.contains('/reorder')) {
+                return http.Response('', 204);
+              }
               if (request.method == 'PUT') {
                 return http.Response(
-                  '{"contact":{"id":"contact-1","name":"Alice Updated","phone":"+34123456789","email":"alice@example.com","priority":2,"createdAt":"2026-03-31T09:00:00.000Z","updatedAt":"2026-03-31T09:10:00.000Z"}}',
+                  '{"contact":{"id":"contact-1","name":"Alice Updated","phone":"+34123456789","email":"alice@example.com","priority":2,"language":"ca","createdAt":"2026-03-31T09:00:00.000Z","updatedAt":"2026-03-31T09:10:00.000Z"}}',
                   200,
                 );
               }
@@ -7082,22 +7116,185 @@ void main() {
         phone: '+34123456789',
         email: 'alice@example.com',
         priority: 2,
+        language: 'ca',
       );
+      await dataSource.reorderContacts(['contact-1']);
       await dataSource.deleteContact('contact-1');
 
       expect(requests[0].url.toString(),
           'https://api.example.test/v1/sdk/contacts');
-      expect(requests[1].body,
-          '{"name":"Alice","phone":"+34123456789","email":"alice@example.com","priority":1}');
+      expect(
+        requests[1].body,
+        '{"name":"Alice","phone":"+34123456789","email":"alice@example.com","priority":1,"language":"en"}',
+      );
       expect(requests[2].url.toString(),
           'https://api.example.test/v1/sdk/contacts/contact-1');
-      expect(requests[2].body,
-          '{"name":"Alice Updated","phone":"+34123456789","email":"alice@example.com","priority":2}');
+      expect(
+        requests[2].body,
+        '{"name":"Alice Updated","phone":"+34123456789","email":"alice@example.com","priority":2,"language":"ca"}',
+      );
       expect(requests[3].url.toString(),
+          'https://api.example.test/v1/sdk/contacts/reorder');
+      expect(requests[3].body, '{"order":["contact-1"]}');
+      expect(requests[4].url.toString(),
           'https://api.example.test/v1/sdk/contacts/contact-1');
       expect(listed.single.name, 'Alice');
       expect(created.email, 'alice@example.com');
       expect(updated.priority, 2);
+      expect(updated.language, 'ca');
+    });
+
+    test('contacts HTTP datasource rejects malformed list entries', () async {
+      final dataSource = HttpSdkContactsRemoteDataSource(
+        transport: SdkHttpTransport(
+          client: _RecordingClient(
+            handler: (_) async => http.Response('{"contacts":[42]}', 200),
+          ),
+          config: const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
+          sessionContext: SdkSessionContext()
+            ..currentSession = const EixamSession.signed(
+              appId: 'app-demo',
+              externalUserId: 'external-123',
+              userHash: 'deadbeef',
+            ),
+        ),
+      );
+
+      await expectLater(
+        dataSource.listContacts(),
+        throwsA(
+          isA<ContactsException>().having(
+            (error) => error.code,
+            'code',
+            'E_HTTP_CONTACTS_LIST_FAILED',
+          ),
+        ),
+      );
+    });
+
+    test('contact DTO parses numeric priority and snake_case timestamps', () {
+      final dto = SdkContactDto.fromJson(<String, dynamic>{
+        'id': 'contact-1',
+        'name': 'Alice',
+        'phone': '+34123456789',
+        'email': 'alice@example.com',
+        'priority': 2.0,
+        'language': ' ca ',
+        'created_at': '2026-03-31T09:00:00.000Z',
+        'updated_at': '2026-03-31T09:05:00.000Z',
+      });
+
+      expect(dto.priority, 2);
+      expect(dto.language, 'ca');
+      expect(dto.createdAt, '2026-03-31T09:00:00.000Z');
+      expect(dto.updatedAt, '2026-03-31T09:05:00.000Z');
+    });
+
+    test('contact DTO maps invalid payload fields to ContactsException', () {
+      expect(
+        () => SdkContactDto.fromJson(<String, dynamic>{
+          'id': 'contact-1',
+          'name': 'Alice',
+          'phone': '+34123456789',
+          'email': 'alice@example.com',
+          'priority': 2.5,
+        }),
+        throwsA(
+          isA<ContactsException>().having(
+            (error) => error.code,
+            'code',
+            'E_HTTP_CONTACTS_INVALID_PAYLOAD',
+          ),
+        ),
+      );
+    });
+
+    test('contacts HTTP exception string includes HTTP and API codes', () {
+      final error = SdkContactsHttpSupport.tryMapHttpFailure(
+        http.Response(
+          '{"error":{"code":"contact_missing","message":"missing contact"}}',
+          404,
+        ),
+        defaultCode: 'E_HTTP_CONTACTS_UPDATE_FAILED',
+      );
+
+      expect(error, isNotNull);
+      expect(error.toString(), contains('statusCode: 404'));
+      expect(error.toString(), contains('apiErrorCode: contact_missing'));
+    });
+
+    test('contacts HTTP datasource rejects unexpected success status codes',
+        () async {
+      final dataSource = HttpSdkContactsRemoteDataSource(
+        transport: SdkHttpTransport(
+          client: _RecordingClient(
+            handler: (_) async => http.Response('{"ok":true}', 200),
+          ),
+          config: const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
+          sessionContext: SdkSessionContext()
+            ..currentSession = const EixamSession.signed(
+              appId: 'app-demo',
+              externalUserId: 'external-123',
+              userHash: 'deadbeef',
+            ),
+        ),
+      );
+
+      await expectLater(
+        dataSource.deleteContact('contact-1'),
+        throwsA(
+          isA<ContactsException>().having(
+            (error) => error.code,
+            'code',
+            'E_HTTP_CONTACT_DELETE_FAILED',
+          ),
+        ),
+      );
+    });
+
+    test('API contacts reorder uses cached contacts without a refetch',
+        () async {
+      final remote = _FakeContactsRemoteDataSource(
+        initialContacts: const <SdkContactDto>[
+          SdkContactDto(
+            id: 'contact-1',
+            name: 'Alice',
+            phone: '+34123456789',
+            email: 'alice@example.com',
+            priority: 1,
+            language: 'en',
+            createdAt: '2026-03-31T09:00:00.000Z',
+            updatedAt: '2026-03-31T09:05:00.000Z',
+          ),
+          SdkContactDto(
+            id: 'contact-2',
+            name: 'Bruno',
+            phone: '+34999999999',
+            email: 'bruno@example.com',
+            priority: 2,
+            language: 'ca',
+            createdAt: '2026-03-31T10:00:00.000Z',
+            updatedAt: '2026-03-31T10:05:00.000Z',
+          ),
+        ],
+      );
+      final repository = ApiContactsRepository(remoteDataSource: remote);
+
+      await repository.listEmergencyContacts();
+      await repository.reorderEmergencyContacts(<String>[
+        'contact-2',
+        'contact-1',
+      ]);
+      final reordered = await repository.watchEmergencyContacts().first;
+
+      expect(remote.listCallCount, 1);
+      expect(remote.lastReorderIds, <String>['contact-2', 'contact-1']);
+      expect(reordered.map((contact) => contact.id), <String>[
+        'contact-2',
+        'contact-1',
+      ]);
+      expect(reordered.map((contact) => contact.priority), <int>[1, 2]);
+      await repository.dispose();
     });
 
     test('contact mapper matches backend schema exactly', () {
@@ -7107,6 +7304,7 @@ void main() {
         phone: '+34123456789',
         email: 'alice@example.com',
         priority: 1,
+        language: 'en',
         createdAt: '2026-03-31T09:00:00.000Z',
         updatedAt: '2026-03-31T09:05:00.000Z',
       );
@@ -7118,6 +7316,7 @@ void main() {
       expect(mapped.phone, '+34123456789');
       expect(mapped.email, 'alice@example.com');
       expect(mapped.priority, 1);
+      expect(mapped.language, 'en');
       expect(mapped.createdAt, DateTime.utc(2026, 3, 31, 9));
       expect(mapped.updatedAt, DateTime.utc(2026, 3, 31, 9, 5));
     });
@@ -8855,6 +9054,54 @@ class _RecordingClient extends http.BaseClient {
       headers: response.headers,
       request: request,
     );
+  }
+}
+
+class _FakeContactsRemoteDataSource implements SdkContactsRemoteDataSource {
+  _FakeContactsRemoteDataSource({required List<SdkContactDto> initialContacts})
+      : contacts = List<SdkContactDto>.of(initialContacts);
+
+  final List<SdkContactDto> contacts;
+  int listCallCount = 0;
+  List<String>? lastReorderIds;
+
+  @override
+  Future<List<SdkContactDto>> listContacts() async {
+    listCallCount++;
+    return List<SdkContactDto>.unmodifiable(contacts);
+  }
+
+  @override
+  Future<void> reorderContacts(List<String> orderedIds) async {
+    lastReorderIds = List<String>.of(orderedIds);
+  }
+
+  @override
+  Future<SdkContactDto> createContact({
+    required String name,
+    required String phone,
+    required String email,
+    required int priority,
+    String language = 'en',
+  }) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<void> deleteContact(String id) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<SdkContactDto> replaceContact({
+    required String id,
+    required String name,
+    required String phone,
+    required String email,
+    required int priority,
+    String language = 'en',
+  }) {
+    throw UnimplementedError();
   }
 }
 

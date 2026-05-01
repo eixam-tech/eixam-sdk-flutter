@@ -82,6 +82,58 @@ class SdkHttpTransport {
     }
   }
 
+  Future<Map<String, dynamic>> putJson(
+    String path, {
+    Map<String, dynamic>? body,
+    EixamSession? sessionOverride,
+  }) async {
+    final response = await put(
+      path,
+      sessionOverride: sessionOverride,
+      headers: const <String, String>{'Accept': 'application/json'},
+      body: body == null ? null : jsonEncode(body),
+    );
+    return _decodeJson(response);
+  }
+
+  Future<http.Response> put(
+    String path, {
+    Map<String, String>? headers,
+    Object? body,
+    EixamSession? sessionOverride,
+  }) async {
+    final session = _resolveSession(sessionOverride);
+    try {
+      return await client.put(
+        _resolveUri(path),
+        headers: _headersFor(session, extra: headers),
+        body: body,
+      );
+    } on SocketException catch (error) {
+      throw NetworkException('E_SDK_HTTP_PUT_FAILED', error.message);
+    } on http.ClientException catch (error) {
+      throw NetworkException('E_SDK_HTTP_PUT_FAILED', error.message);
+    }
+  }
+
+  Future<http.Response> delete(
+    String path, {
+    Map<String, String>? headers,
+    EixamSession? sessionOverride,
+  }) async {
+    final session = _resolveSession(sessionOverride);
+    try {
+      return await client.delete(
+        _resolveUri(path),
+        headers: _headersFor(session, extra: headers),
+      );
+    } on SocketException catch (error) {
+      throw NetworkException('E_SDK_HTTP_DELETE_FAILED', error.message);
+    } on http.ClientException catch (error) {
+      throw NetworkException('E_SDK_HTTP_DELETE_FAILED', error.message);
+    }
+  }
+
   Uri _resolveUri(String path) {
     final normalizedPath = path.startsWith('/') ? path : '/$path';
     return Uri.parse('${config.apiBaseUrl}$normalizedPath');

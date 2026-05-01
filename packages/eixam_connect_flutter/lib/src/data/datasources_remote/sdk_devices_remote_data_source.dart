@@ -68,10 +68,16 @@ class HttpSdkDevicesRemoteDataSource implements SdkDevicesRemoteDataSource {
         'The backend did not return a valid device list.',
       );
     }
-    return devices
-        .whereType<Map<String, dynamic>>()
-        .map(SdkDeviceDto.fromJson)
-        .toList(growable: false);
+    return [
+      for (final device in devices)
+        if (device is Map<String, dynamic>)
+          SdkDeviceDto.fromJson(device)
+        else
+          throw const DeviceException(
+            'E_HTTP_DEVICE_LIST_FAILED',
+            'The backend returned an invalid device payload.',
+          ),
+    ];
   }
 
   @override
@@ -89,12 +95,15 @@ class HttpSdkDevicesRemoteDataSource implements SdkDevicesRemoteDataSource {
     String body, {
     required String errorCode,
   }) {
+    final Object decoded;
     try {
-      final decoded = jsonDecode(body);
-      if (decoded is Map<String, dynamic>) {
-        return decoded;
-      }
-    } catch (_) {}
+      decoded = jsonDecode(body);
+    } on FormatException {
+      throw DeviceException(errorCode, 'The backend returned invalid JSON.');
+    }
+    if (decoded is Map<String, dynamic>) {
+      return decoded;
+    }
     throw DeviceException(errorCode, 'The backend returned invalid JSON.');
   }
 }

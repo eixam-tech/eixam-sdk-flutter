@@ -24,13 +24,16 @@ class ApiContactsRepository implements ContactsRepository {
     required String phone,
     required String email,
     int priority = 1,
+    String language = 'en',
   }) async {
+    final normalizedLanguage = _normalizeLanguage(language);
     final created = mapper.toDomain(
       await remoteDataSource.createContact(
-        name: name,
-        phone: phone,
-        email: email,
+        name: name.trim(),
+        phone: phone.trim(),
+        email: email.trim(),
         priority: priority,
+        language: normalizedLanguage,
       ),
     );
     _contacts = _merge(created);
@@ -58,18 +61,37 @@ class ApiContactsRepository implements ContactsRepository {
   @override
   Future<EmergencyContact> updateEmergencyContact(
       EmergencyContact contact) async {
+    final normalizedLanguage = _normalizeLanguage(contact.language);
     final updated = mapper.toDomain(
       await remoteDataSource.replaceContact(
         id: contact.id,
-        name: contact.name,
-        phone: contact.phone,
-        email: contact.email,
+        name: contact.name.trim(),
+        phone: contact.phone.trim(),
+        email: contact.email.trim(),
         priority: contact.priority,
+        language: normalizedLanguage,
       ),
     );
     _contacts = _merge(updated);
     _emit();
     return updated;
+  }
+
+  @override
+  Future<void> reorderEmergencyContacts(List<String> orderedContactIds) async {
+    await remoteDataSource.reorderContacts(orderedContactIds);
+    final byId = {for (final contact in _contacts) contact.id: contact};
+    final canApplyLocally = byId.length == orderedContactIds.length &&
+        orderedContactIds.every(byId.containsKey);
+    if (!canApplyLocally) {
+      await listEmergencyContacts();
+      return;
+    }
+    _contacts = List<EmergencyContact>.unmodifiable([
+      for (var index = 0; index < orderedContactIds.length; index++)
+        byId[orderedContactIds[index]]!.copyWith(priority: index + 1),
+    ]);
+    _emit();
   }
 
   @override
@@ -88,10 +110,23 @@ class ApiContactsRepository implements ContactsRepository {
         if (existing.id != contact.id) existing,
       contact,
     ];
-    next.sort((a, b) => a.priority.compareTo(b.priority));
+    next.sort(_compareByPriorityThenName);
     return List<EmergencyContact>.unmodifiable(next);
   }
 
   void _emit() =>
       _controller.add(List<EmergencyContact>.unmodifiable(_contacts));
+
+  String _normalizeLanguage(String language) {
+    final trimmed = language.trim();
+    return trimmed.isEmpty ? 'en' : trimmed;
+  }
+
+  int _compareByPriorityThenName(EmergencyContact a, EmergencyContact b) {
+    final byPriority = a.priority.compareTo(b.priority);
+    if (byPriority != 0) {
+      return byPriority;
+    }
+    return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+  }
 }

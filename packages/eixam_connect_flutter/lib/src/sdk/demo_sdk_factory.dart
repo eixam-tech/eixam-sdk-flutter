@@ -1,9 +1,14 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:http/http.dart' as http;
 
 import '../data/datasources_local/shared_prefs_sdk_store.dart';
 import '../data/datasources_local/preferred_ble_device_store.dart';
+import '../data/datasources_local/sdk_session_store.dart';
+import '../data/datasources_remote/sdk_contacts_remote_data_source.dart';
+import '../data/datasources_remote/sdk_http_transport.dart';
+import '../data/datasources_remote/sdk_session_context.dart';
+import '../data/repositories/api_contacts_repository.dart';
 import '../data/repositories/geolocator_tracking_repository.dart';
-import '../data/repositories/in_memory_contacts_repository.dart';
 import '../data/repositories/in_memory_death_man_repository.dart';
 import '../data/repositories/in_memory_device_repository.dart';
 import '../data/repositories/in_memory_sdk_device_registry_repository.dart';
@@ -17,7 +22,10 @@ import '../device/real_ble_client.dart';
 import 'eixam_connect_sdk_impl.dart';
 import 'mock_realtime_client.dart';
 
-/// Factory that wires a fully local SDK instance for demos and development.
+/// Factory that wires a mostly local SDK instance for demos and development.
+///
+/// Emergency contacts are loaded from the backend SDK HTTP API when a
+/// session is configured.
 ///
 /// Important:
 /// For now, demo bootstrap always starts with a clean SOS persisted state.
@@ -28,6 +36,8 @@ class DemoSdkFactory {
     BleDebugRegistry.instance.reset();
 
     final store = SharedPrefsSdkStore();
+    final sessionStore = SdkSessionStore(localStore: store);
+    final sessionContext = SdkSessionContext();
     final preferredBleDeviceStore = PreferredBleDeviceStore(localStore: store);
     final permissionsRepository = PlatformPermissionsRepository();
 
@@ -46,7 +56,21 @@ class DemoSdkFactory {
 
     final deathManRepository = InMemoryDeathManRepository(localStore: store);
 
-    final contactsRepository = InMemoryContactsRepository(localStore: store);
+    final config = const EixamSdkConfig(
+      apiBaseUrl: 'https://demo.eixam.local',
+      websocketUrl: 'wss://demo.eixam.local/ws',
+    );
+    final httpClient = http.Client();
+    final httpTransport = SdkHttpTransport(
+      client: httpClient,
+      config: config,
+      sessionContext: sessionContext,
+    );
+    final contactsRepository = ApiContactsRepository(
+      remoteDataSource: HttpSdkContactsRemoteDataSource(
+        transport: httpTransport,
+      ),
+    );
 
     final bleClient = RealBleClient();
     try {
@@ -66,7 +90,6 @@ class DemoSdkFactory {
 
     await trackingRepository.restoreState();
     await deathManRepository.restoreState();
-    await contactsRepository.restoreState();
     await deviceRepository.restoreState();
 
     final sdk = EixamConnectSdkImpl(
@@ -84,14 +107,11 @@ class DemoSdkFactory {
       deviceSosController: deviceRuntimeProvider.deviceSosController,
       bleIncomingEvents: deviceRuntimeProvider.watchIncomingEvents(),
       preferredBleDeviceStore: preferredBleDeviceStore,
+      sessionStore: sessionStore,
+      sessionContext: sessionContext,
     );
 
-    await sdk.initialize(
-      const EixamSdkConfig(
-        apiBaseUrl: 'https://demo.eixam.local',
-        websocketUrl: 'wss://demo.eixam.local/ws',
-      ),
-    );
+    await sdk.initialize(config);
 
     return sdk;
   }

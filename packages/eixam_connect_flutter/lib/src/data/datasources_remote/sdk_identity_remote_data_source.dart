@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import 'sdk_http_transport.dart';
@@ -28,54 +26,25 @@ class HttpSdkIdentityRemoteDataSource implements SdkIdentityRemoteDataSource {
     if (response.statusCode == 401) {
       throw AuthException('E_SDK_ME_UNAUTHORIZED', response.body);
     }
+    if (response.statusCode == 429) {
+      throw NetworkException('E_SDK_ME_RATE_LIMITED', response.body);
+    }
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw NetworkException('E_SDK_ME_FAILED', response.body);
     }
 
-    final Object decoded;
     try {
-      decoded = jsonDecode(response.body);
-    } catch (_) {
-      throw const AuthException(
+      final payload = SdkMeResponseParser.decodePayload(response.body);
+      final ids = SdkMeResponseParser.readIdentityIds(payload);
+      return session.copyWith(
+        sdkUserId: ids.sdkUserId,
+        canonicalExternalUserId: ids.canonicalExternalUserId,
+      );
+    } on FormatException catch (e) {
+      throw AuthException(
         'E_SDK_ME_INVALID_RESPONSE',
-        'The backend did not return valid JSON for the SDK user payload.',
+        e.message,
       );
     }
-    if (decoded is! Map<String, dynamic>) {
-      throw const AuthException(
-        'E_SDK_ME_INVALID_RESPONSE',
-        'The backend did not return a valid SDK user payload.',
-      );
-    }
-    final payload = decoded;
-    final user = payload['user'];
-    if (user is! Map<String, dynamic>) {
-      throw const AuthException(
-        'E_SDK_ME_INVALID_RESPONSE',
-        'The backend did not return a valid SDK user payload.',
-      );
-    }
-
-    final sdkUserId = user['id'];
-    if (sdkUserId is! String || sdkUserId.trim().isEmpty) {
-      throw const AuthException(
-        'E_SDK_ME_INVALID_RESPONSE',
-        'The backend did not return a valid SDK user id.',
-      );
-    }
-
-    final canonicalExternalUserId = user['external_user_id'];
-    if (canonicalExternalUserId is! String ||
-        canonicalExternalUserId.trim().isEmpty) {
-      throw const AuthException(
-        'E_SDK_ME_INVALID_RESPONSE',
-        'The backend did not return a valid canonical external user id.',
-      );
-    }
-
-    return session.copyWith(
-      sdkUserId: sdkUserId.trim(),
-      canonicalExternalUserId: canonicalExternalUserId.trim(),
-    );
   }
 }

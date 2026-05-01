@@ -16,6 +16,7 @@ import '../entities/protection_mode_models.dart';
 import '../entities/public_pre_sos_status.dart';
 import '../entities/runtime_identity_snapshot.dart';
 import '../entities/sdk_operational_diagnostics.dart';
+import '../entities/sdk_user_profile.dart';
 import '../entities/sdk_telemetry_payload.dart';
 import '../entities/sos_incident.dart';
 import '../entities/sos_trigger_payload.dart';
@@ -69,6 +70,14 @@ abstract class EixamConnectSdk {
   /// Re-fetches the canonical SDK identity from `/v1/sdk/me`.
   Future<EixamSession> refreshCanonicalIdentity();
 
+  /// Loads the authenticated SDK user's profile from `GET /v1/sdk/me`.
+  ///
+  /// Requires an HTTP-backed SDK runtime with profile routes enabled.
+  Future<SdkUserProfile> fetchSdkUserProfile();
+
+  /// Updates the authenticated SDK user's profile via `PUT /v1/sdk/me`.
+  Future<SdkUserProfile> updateSdkUserProfile(SdkUserProfileUpdate update);
+
   Future<SdkOperationalDiagnostics> getOperationalDiagnostics();
   Stream<SdkOperationalDiagnostics> watchOperationalDiagnostics();
   Future<void> enableBackgroundTelemetry({
@@ -119,8 +128,12 @@ abstract class EixamConnectSdk {
     required String phone,
     required String email,
     int priority = 1,
+    String language = 'en',
   });
   Future<void> deleteEmergencyContact(String contactId);
+
+  /// Reorders contacts by id; backend assigns priority from list order.
+  Future<void> reorderEmergencyContacts(List<String> orderedContactIds);
 
   @Deprecated('Use connectDevice instead.')
   Future<DeviceStatus> pairDevice({required String pairingCode});
@@ -219,6 +232,7 @@ abstract class EixamConnectSdk {
     required String phone,
     required String email,
     int priority = 1,
+    String language = 'en',
   });
   Future<EmergencyContact> updateEmergencyContact(EmergencyContact contact);
   @Deprecated('Use deleteEmergencyContact instead.')

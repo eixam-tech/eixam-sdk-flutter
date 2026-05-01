@@ -1,8 +1,10 @@
+import '../profile/sdk_profile_validation.dart';
+
 sealed class EixamSdkException implements Exception {
+  const EixamSdkException(this.code, this.message);
+
   final String code;
   final String message;
-
-  const EixamSdkException(this.code, this.message);
 
   @override
   String toString() => 'EixamSdkException(code: $code, message: $message)';
@@ -21,13 +23,13 @@ class SosException extends EixamSdkException {
 }
 
 class SosHttpException extends SosException {
-  final int statusCode;
-
   const SosHttpException(
     super.code,
     super.message, {
     required this.statusCode,
   });
+
+  final int statusCode;
 }
 
 class TrackingException extends EixamSdkException {
@@ -57,8 +59,55 @@ class ContactsException extends EixamSdkException {
   const ContactsException(super.code, super.message);
 }
 
+/// HTTP failures for `/v1/sdk/contacts` routes with optional parsed API error.
+class ContactsHttpException extends ContactsException {
+  const ContactsHttpException(
+    super.code,
+    super.message, {
+    required this.statusCode,
+    this.rawBody,
+    this.apiErrorCode,
+    this.apiErrorMessage,
+  });
+
+  final int statusCode;
+  final String? rawBody;
+  final String? apiErrorCode;
+  final String? apiErrorMessage;
+
+  @override
+  String toString() {
+    final apiPart = apiErrorCode == null ? '' : ', apiErrorCode: $apiErrorCode';
+    return 'ContactsHttpException('
+        'code: $code, '
+        'statusCode: $statusCode'
+        '$apiPart, '
+        'message: $message'
+        ')';
+  }
+}
+
 class DeathManException extends EixamSdkException {
   const DeathManException(super.code, super.message);
+}
+
+/// HTTP failures for `GET`/`PUT /v1/sdk/me` with optional parsed API error envelope.
+class ProfileHttpException extends EixamSdkException {
+  const ProfileHttpException(
+    super.code,
+    super.message, {
+    required this.statusCode,
+    this.rawBody,
+    this.apiErrorCode,
+    this.apiErrorMessage,
+    this.fieldHints = const [],
+  });
+
+  final int statusCode;
+  final String? rawBody;
+  final String? apiErrorCode;
+  final String? apiErrorMessage;
+  final List<SdkProfileApiFieldHint> fieldHints;
 }
 
 class RescueException extends EixamSdkException {

@@ -6,6 +6,7 @@ EmergencyContact buildEmergencyContact({
   String phone = '+34123456789',
   String email = 'alice@example.com',
   int priority = 1,
+  String language = 'en',
   DateTime? createdAt,
   DateTime? updatedAt,
 }) {
@@ -15,6 +16,7 @@ EmergencyContact buildEmergencyContact({
     phone: phone,
     email: email,
     priority: priority,
+    language: language,
     createdAt: createdAt ?? DateTime.utc(2026, 1, 1, 12),
     updatedAt: updatedAt ?? DateTime.utc(2026, 1, 1, 12),
   );
