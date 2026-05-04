@@ -9,6 +9,8 @@ class SosIncidentDto {
   final String? message;
   final Map<String, dynamic>? positionSnapshot;
   final int? statusCode;
+  /// References the telemetry row inserted when this incident was first opened.
+  final String? creationTelemetryId;
 
   const SosIncidentDto({
     required this.id,
@@ -18,6 +20,7 @@ class SosIncidentDto {
     this.message,
     this.positionSnapshot,
     this.statusCode,
+    this.creationTelemetryId,
   });
 
   factory SosIncidentDto.fromJson(Map<String, dynamic> json) {
@@ -34,6 +37,8 @@ class SosIncidentDto {
           json['triggerSource'] as String? ?? json['trigger_source'] as String?,
       message: json['message'] as String?,
       positionSnapshot: _positionSnapshotFromJson(json),
+      creationTelemetryId: json['creationTelemetryId'] as String? ??
+          json['creation_telemetry_id'] as String?,
     );
   }
 
@@ -45,6 +50,7 @@ class SosIncidentDto {
     String? message,
     Map<String, dynamic>? positionSnapshot,
     int? statusCode,
+    String? creationTelemetryId,
   }) {
     return SosIncidentDto(
       id: id ?? this.id,
@@ -54,6 +60,7 @@ class SosIncidentDto {
       message: message ?? this.message,
       positionSnapshot: positionSnapshot ?? this.positionSnapshot,
       statusCode: statusCode ?? this.statusCode,
+      creationTelemetryId: creationTelemetryId ?? this.creationTelemetryId,
     );
   }
 
