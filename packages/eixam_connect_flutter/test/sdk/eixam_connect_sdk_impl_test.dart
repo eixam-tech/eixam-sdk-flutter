@@ -159,6 +159,27 @@ void main() {
       await realtimeClient.dispose();
     });
 
+    EixamConnectSdkImpl buildSdkWithProtectionAdapter(
+      ProtectionPlatformAdapter adapter,
+    ) {
+      return EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: realtimeClient,
+        deviceSosController: DeviceSosController(),
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: adapter,
+      );
+    }
+
     test(
         'triggerSos attaches the current position and backend hardware id when available',
         () async {
@@ -876,6 +897,339 @@ void main() {
       } finally {
         await runtimeSdk.dispose();
         await localRealtimeClient.dispose();
+      }
+    });
+
+    test('getDeviceStatus bridges native protection BLE connection', () async {
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-native-owned',
+          canonicalHardwareId: 'CF:82:AA:BB:CC:DD',
+          connected: false,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.activated,
+        ),
+      );
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          serviceRunning: true,
+          runtimeActive: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          serviceBleConnected: true,
+          activeDeviceId: 'device-native-owned',
+          runtimeState: ProtectionRuntimeState.active,
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+      );
+      final runtimeSdk = buildSdkWithProtectionAdapter(localAdapter);
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.rehydrateProtectionState();
+
+        final status = await runtimeSdk.getDeviceStatus();
+
+        expect(status.connected, isTrue);
+        expect(status.lifecycleState, DeviceLifecycleState.ready);
+        expect(status.deviceId, 'device-native-owned');
+      } finally {
+        await runtimeSdk.dispose();
+      }
+    });
+
+    test('refreshDeviceStatus bridges native protection BLE connection',
+        () async {
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-native-refresh',
+          canonicalHardwareId: 'CF:82:AA:BB:CC:EE',
+          connected: false,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.activated,
+        ),
+      );
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          serviceRunning: true,
+          runtimeActive: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          serviceBleConnected: true,
+          protectedDeviceId: 'CF:82:AA:BB:CC:EE',
+          runtimeState: ProtectionRuntimeState.active,
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+      );
+      final runtimeSdk = buildSdkWithProtectionAdapter(localAdapter);
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.rehydrateProtectionState();
+
+        final status = await runtimeSdk.refreshDeviceStatus();
+
+        expect(status.connected, isTrue);
+        expect(deviceRepository.refreshCallCount, greaterThanOrEqualTo(1));
+      } finally {
+        await runtimeSdk.dispose();
+      }
+    });
+
+    test('watchDeviceStatus emits connected when protection status changes',
+        () async {
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-watch-native',
+          connected: false,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.activated,
+        ),
+      );
+      final platformEvents = StreamController<ProtectionPlatformEvent>();
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          serviceRunning: true,
+          runtimeActive: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          runtimeState: ProtectionRuntimeState.active,
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+        platformEvents: platformEvents.stream,
+      );
+      final runtimeSdk = buildSdkWithProtectionAdapter(localAdapter);
+      StreamSubscription<DeviceStatus>? statusSub;
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.rehydrateProtectionState();
+        final statuses = <DeviceStatus>[];
+        statusSub = runtimeSdk.watchDeviceStatus().listen(statuses.add);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(statuses.last.connected, isFalse);
+
+        localAdapter.snapshot = const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          serviceRunning: true,
+          runtimeActive: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          serviceBleConnected: true,
+          activeDeviceId: 'device-watch-native',
+          runtimeState: ProtectionRuntimeState.active,
+        );
+        platformEvents.add(
+          ProtectionPlatformEvent(
+            type: ProtectionPlatformEventType.deviceConnected,
+            timestamp: DateTime.utc(2026, 5, 4, 10),
+          ),
+        );
+        for (var i = 0; i < 20 && !statuses.any((s) => s.connected); i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+
+        expect(statuses.any((status) => status.connected), isTrue);
+      } finally {
+        await statusSub?.cancel();
+        await platformEvents.close();
+        await runtimeSdk.dispose();
+      }
+    });
+
+    test('raw disconnected and protection disconnected remains disconnected',
+        () async {
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-no-bridge',
+          connected: false,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.activated,
+        ),
+      );
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          serviceRunning: true,
+          runtimeActive: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          runtimeState: ProtectionRuntimeState.active,
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+      );
+      final runtimeSdk = buildSdkWithProtectionAdapter(localAdapter);
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.rehydrateProtectionState();
+
+        final status = await runtimeSdk.getDeviceStatus();
+
+        expect(status.connected, isFalse);
+      } finally {
+        await runtimeSdk.dispose();
+      }
+    });
+
+    test('unpaired device does not become connected through protection bridge',
+        () async {
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-unpaired',
+          canonicalHardwareId: 'CF:82:00:00:00:01',
+          connected: false,
+          paired: false,
+          activated: false,
+          lifecycleState: DeviceLifecycleState.unpaired,
+        ),
+      );
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          serviceRunning: true,
+          runtimeActive: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          serviceBleConnected: true,
+          activeDeviceId: 'device-unpaired',
+          runtimeState: ProtectionRuntimeState.active,
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+      );
+      final runtimeSdk = buildSdkWithProtectionAdapter(localAdapter);
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.rehydrateProtectionState();
+
+        final status = await runtimeSdk.getDeviceStatus();
+
+        expect(status.connected, isFalse);
+      } finally {
+        await runtimeSdk.dispose();
+      }
+    });
+
+    test('backend registered-only device does not become connected', () async {
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'backend-device-id',
+          canonicalHardwareId: 'CF:82:00:00:00:02',
+          connected: false,
+          paired: false,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.unpaired,
+        ),
+      );
+      await deviceRegistryRepository.upsertRegisteredDevice(
+        hardwareId: 'CF:82:00:00:00:02',
+        firmwareVersion: '1.0.0',
+        hardwareModel: 'EIXAM R1',
+        pairedAt: DateTime.utc(2026, 5, 4),
+      );
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          serviceRunning: true,
+          runtimeActive: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          serviceBleReady: true,
+          protectedDeviceId: 'CF:82:00:00:00:02',
+          runtimeState: ProtectionRuntimeState.active,
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+      );
+      final runtimeSdk = buildSdkWithProtectionAdapter(localAdapter);
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.rehydrateProtectionState();
+
+        final status = await runtimeSdk.getDeviceStatus();
+
+        expect(status.connected, isFalse);
+      } finally {
+        await runtimeSdk.dispose();
+      }
+    });
+
+    test('protection connection does not make Flutter command APIs available',
+        () async {
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'device-command-unavailable',
+          connected: false,
+          paired: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.activated,
+        ),
+      );
+      final localAdapter = _FakeProtectionPlatformAdapter(
+        snapshot: const ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          platformRuntimeConfigured: true,
+          serviceRunning: true,
+          runtimeActive: true,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          serviceBleReady: true,
+          activeDeviceId: 'device-command-unavailable',
+          runtimeState: ProtectionRuntimeState.active,
+        ),
+        startResult: const ProtectionPlatformStartResult(success: true),
+      );
+      final runtimeSdk = buildSdkWithProtectionAdapter(localAdapter);
+
+      try {
+        await runtimeSdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await runtimeSdk.rehydrateProtectionState();
+
+        final status = await runtimeSdk.getDeviceStatus();
+
+        expect(status.connected, isTrue);
+        await expectLater(
+          runtimeSdk.setDeviceNotificationVolume(50),
+          throwsA(
+            isA<DeviceException>().having(
+              (error) => error.code,
+              'code',
+              'E_DEVICE_COMMAND_NOT_READY',
+            ),
+          ),
+        );
+      } finally {
+        await runtimeSdk.dispose();
       }
     });
 

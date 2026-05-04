@@ -88,6 +88,8 @@ class EixamConnectSdkImpl
   final StreamController<BleNotificationNavigationRequest>
       _bleNotificationNavigationController =
       StreamController<BleNotificationNavigationRequest>.broadcast();
+  final StreamController<DeviceStatus> _publicDeviceStatusController =
+      StreamController<DeviceStatus>.broadcast();
   final StreamController<SosState> _publicSosStateController =
       StreamController<SosState>.broadcast();
   final StreamController<PublicPreSosStatus?> _publicPreSosStatusController =
@@ -118,6 +120,7 @@ class EixamConnectSdkImpl
       RealtimeConnectionState.disconnected;
   RealtimeEvent? _lastRealtimeEvent;
   DeviceStatus? _lastDeviceStatus;
+  DeviceStatus? _lastPublicDeviceStatus;
   GuidedRescueState _guidedRescueState = const GuidedRescueState.unsupported();
   BacklogSyncState _backlogSyncState = const BacklogSyncState.idle();
   BleNotificationNavigationRequest? _pendingBleNotificationNavigationRequest;
@@ -326,6 +329,10 @@ class EixamConnectSdkImpl
     _deviceStatusSub = deviceRepository.watchDeviceStatus().listen((status) {
       final previousStatus = _lastDeviceStatus;
       _lastDeviceStatus = status;
+      _publishPublicDeviceStatus(
+        rawStatus: status,
+        reason: 'device_status_stream',
+      );
       BleDebugRegistry.instance.recordEvent(
         'Device connectivity changed -> connected=${status.connected} previous=${previousStatus?.connected} deviceId=${status.deviceId} lifecycle=${status.lifecycleState.name}',
       );
@@ -429,6 +436,13 @@ class EixamConnectSdkImpl
         reason:
             'protection_status:${status.bleOwner.name}:${status.serviceBleConnected}:${status.serviceBleReady}:${status.deviceConnected}',
       );
+      final rawStatus = _lastDeviceStatus;
+      if (rawStatus != null) {
+        _publishPublicDeviceStatus(
+          rawStatus: rawStatus,
+          reason: 'protection_status_stream',
+        );
+      }
     });
     _bleIncomingEventDiagnosticsSub?.cancel();
     _bleIncomingEventDiagnosticsSub = bleIncomingEvents.listen(
@@ -658,7 +672,8 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Future<SdkUserProfile> updateSdkUserProfile(SdkUserProfileUpdate update) async {
+  Future<SdkUserProfile> updateSdkUserProfile(
+      SdkUserProfileUpdate update) async {
     final ds = profileRemoteDataSource;
     if (ds == null) {
       throw const AuthException(
@@ -976,16 +991,26 @@ class EixamConnectSdkImpl
   Future<DeviceStatus> activateDevice({required String activationCode}) {
     return _cacheDeviceStatus(
       deviceRepository.activateDevice(activationCode: activationCode),
+      reason: 'activate_device',
     );
   }
 
   @override
-  Future<DeviceStatus> getDeviceStatus() =>
-      _cacheDeviceStatus(deviceRepository.getDeviceStatus());
+  Future<DeviceStatus> getDeviceStatus() {
+    return _cacheDeviceStatus(
+      deviceRepository.getDeviceStatus(),
+      reason: 'get_device_status',
+      emitPublicStatus: false,
+    );
+  }
 
   @override
-  Future<DeviceStatus> refreshDeviceStatus() =>
-      _cacheDeviceStatus(deviceRepository.refreshDeviceStatus());
+  Future<DeviceStatus> refreshDeviceStatus() {
+    return _cacheDeviceStatus(
+      deviceRepository.refreshDeviceStatus(),
+      reason: 'refresh_device_status',
+    );
+  }
 
   @override
   Future<void> unpairDevice() async {
@@ -993,6 +1018,10 @@ class EixamConnectSdkImpl
       deviceRepository.unpairDevice,
     );
     _lastDeviceStatus = await deviceRepository.getDeviceStatus();
+    _publishPublicDeviceStatus(
+      rawStatus: _lastDeviceStatus!,
+      reason: 'unpair_device',
+    );
   }
 
   @override
@@ -1001,6 +1030,7 @@ class EixamConnectSdkImpl
       _bleAutoReconnectCoordinator.pairDeviceManually(
         pairingCode: pairingCode,
       ),
+      reason: 'pair_device',
     );
   }
 
@@ -1040,8 +1070,13 @@ class EixamConnectSdkImpl
     final current =
         _lastDeviceStatus ?? await deviceRepository.getDeviceStatus();
     _lastDeviceStatus = current;
-    yield current;
-    yield* deviceRepository.watchDeviceStatus();
+    final publicCurrent = _publishPublicDeviceStatus(
+      rawStatus: current,
+      reason: 'watch_device_status_initial',
+      emit: false,
+    );
+    yield publicCurrent;
+    yield* _publicDeviceStatusController.stream;
   }
 
   @override
@@ -3840,15 +3875,150 @@ class EixamConnectSdkImpl
   }
 
   Future<DeviceStatus> _cacheDeviceStatus(
-    Future<DeviceStatus> future,
-  ) async {
+    Future<DeviceStatus> future, {
+    required String reason,
+    bool emitPublicStatus = true,
+  }) async {
     final status = await future;
     _lastDeviceStatus = status;
+    final publicStatus = _publishPublicDeviceStatus(
+      rawStatus: status,
+      reason: reason,
+      emit: emitPublicStatus,
+    );
     _scheduleRegisteredDeviceAutoSync(
       trigger: 'cache_device_status',
       status: status,
     );
-    return status;
+    return publicStatus;
+  }
+
+  DeviceStatus _publishPublicDeviceStatus({
+    required DeviceStatus rawStatus,
+    required String reason,
+    bool emit = true,
+  }) {
+    final publicStatus = _toPublicDeviceStatus(rawStatus, reason: reason);
+    final previous = _lastPublicDeviceStatus;
+    _lastPublicDeviceStatus = publicStatus;
+    if (emit &&
+        !_publicDeviceStatusController.isClosed &&
+        (previous == null ||
+            _hasEffectivePublicDeviceStatusChange(previous, publicStatus))) {
+      _publicDeviceStatusController.add(publicStatus);
+    }
+    return publicStatus;
+  }
+
+  DeviceStatus _toPublicDeviceStatus(
+    DeviceStatus rawStatus, {
+    required String reason,
+  }) {
+    final protectionStatus = _protectionModeController.currentStatus;
+    final protectionLive =
+        _protectionReportsLiveBleConnection(protectionStatus);
+    final belongsToKnownDevice = _protectionConnectionBelongsToKnownDevice(
+      baseStatus: rawStatus,
+      protectionStatus: protectionStatus,
+    );
+    final shouldBridge =
+        !rawStatus.connected && protectionLive && belongsToKnownDevice;
+    final publicStatus = shouldBridge
+        ? rawStatus.copyWith(
+            connected: true,
+            lifecycleState: rawStatus.activated
+                ? DeviceLifecycleState.ready
+                : rawStatus.lifecycleState,
+            lastSeen: rawStatus.lastSeen ?? DateTime.now(),
+          )
+        : rawStatus;
+
+    BleDebugRegistry.instance.recordEvent(
+      '[DEVICE_FLOW] sdk_public_device_status '
+      'reason=$reason '
+      'rawConnected=${rawStatus.connected} '
+      'protectionDeviceConnected=${protectionStatus.deviceConnected} '
+      'serviceBleConnected=${protectionStatus.serviceBleConnected} '
+      'serviceBleReady=${protectionStatus.serviceBleReady} '
+      'bleOwner=${protectionStatus.bleOwner.name} '
+      'baseDeviceId=${rawStatus.deviceId} '
+      'canonicalHardwareId=${rawStatus.canonicalHardwareId ?? "-"} '
+      'activeDeviceId=${protectionStatus.activeDeviceId ?? "-"} '
+      'protectedDeviceId=${protectionStatus.protectedDeviceId ?? "-"} '
+      'finalConnected=${publicStatus.connected} '
+      'finalPublicConnected=${publicStatus.connected}',
+    );
+    if (shouldBridge) {
+      BleDebugRegistry.instance.recordEvent(
+        '[DEVICE_FLOW] protection_connection_bridge '
+        'flutterConnected=${rawStatus.connected} '
+        'protectionDeviceConnected=${protectionStatus.deviceConnected} '
+        'serviceBleConnected=${protectionStatus.serviceBleConnected} '
+        'serviceBleReady=${protectionStatus.serviceBleReady} '
+        'bleOwner=${protectionStatus.bleOwner.name} '
+        'finalPublicConnected=${publicStatus.connected} '
+        'deviceId=${rawStatus.deviceId}',
+      );
+    }
+    return publicStatus;
+  }
+
+  bool _protectionReportsLiveBleConnection(ProtectionStatus status) {
+    return status.deviceConnected ||
+        status.serviceBleConnected ||
+        status.serviceBleReady;
+  }
+
+  bool _protectionConnectionBelongsToKnownDevice({
+    required DeviceStatus baseStatus,
+    required ProtectionStatus protectionStatus,
+  }) {
+    if (!baseStatus.paired) {
+      return false;
+    }
+
+    final knownIds = <String>{
+      baseStatus.deviceId.trim(),
+      if ((baseStatus.canonicalHardwareId ?? '').trim().isNotEmpty)
+        baseStatus.canonicalHardwareId!.trim(),
+    }..removeWhere((id) => id.isEmpty);
+    final protectionIds = <String>{
+      if ((protectionStatus.activeDeviceId ?? '').trim().isNotEmpty)
+        protectionStatus.activeDeviceId!.trim(),
+      if ((protectionStatus.protectedDeviceId ?? '').trim().isNotEmpty)
+        protectionStatus.protectedDeviceId!.trim(),
+    };
+    final hasMatchingProtectionId =
+        protectionIds.any((id) => knownIds.contains(id));
+
+    if (!protectionStatus.devicePaired) {
+      return hasMatchingProtectionId;
+    }
+
+    if (protectionIds.isEmpty) {
+      return true;
+    }
+    return hasMatchingProtectionId;
+  }
+
+  bool _hasEffectivePublicDeviceStatusChange(
+    DeviceStatus previous,
+    DeviceStatus next,
+  ) {
+    return previous.deviceId != next.deviceId ||
+        previous.canonicalHardwareId != next.canonicalHardwareId ||
+        previous.deviceAlias != next.deviceAlias ||
+        previous.model != next.model ||
+        previous.paired != next.paired ||
+        previous.activated != next.activated ||
+        previous.connected != next.connected ||
+        previous.batteryLevel != next.batteryLevel ||
+        previous.effectiveBatteryState != next.effectiveBatteryState ||
+        previous.batterySource != next.batterySource ||
+        previous.firmwareVersion != next.firmwareVersion ||
+        previous.signalQuality != next.signalQuality ||
+        previous.lifecycleState != next.lifecycleState ||
+        previous.provisioningError != next.provisioningError;
   }
 
   Future<void> _resumeDeathManMonitoringIfNeeded() async {
@@ -3929,6 +4099,17 @@ class EixamConnectSdkImpl
   Future<void> _handleProtectionBleOwnershipChanged(
     ProtectionBleOwner owner,
   ) async {
+    final protectionStatus = _protectionModeController.currentStatus;
+    BleDebugRegistry.instance.recordEvent(
+      '[DEVICE_FLOW] ble_owner_transition '
+      'flutterConnected=${_lastDeviceStatus?.connected ?? false} '
+      'protectionDeviceConnected=${protectionStatus.deviceConnected} '
+      'serviceBleConnected=${protectionStatus.serviceBleConnected} '
+      'serviceBleReady=${protectionStatus.serviceBleReady} '
+      'bleOwner=${owner.name} '
+      'finalPublicConnected=${_lastPublicDeviceStatus?.connected ?? _lastDeviceStatus?.connected ?? false} '
+      'deviceId=${_lastDeviceStatus?.deviceId ?? "-"}',
+    );
     if (deviceRepository is! InMemoryDeviceRepository) {
       return;
     }
@@ -4049,8 +4230,7 @@ class EixamConnectSdkImpl
     final effectiveClassificationKind = isNativeApprovedOwnLifecycle
         ? BleIncomingPayloadKind.ownDeviceSos
         : remoteClassification.kind;
-    final isLocalPlatformSosClassification =
-        isNativeApprovedOwnLifecycle ||
+    final isLocalPlatformSosClassification = isNativeApprovedOwnLifecycle ||
         hasTrustedPlatformConnectedNode &&
             (remoteClassification.kind == BleIncomingPayloadKind.ownDeviceSos ||
                 remoteClassification.kind == BleIncomingPayloadKind.sosClear ||
@@ -4059,8 +4239,8 @@ class EixamConnectSdkImpl
       originatorNodeId: originatorNodeId,
       connectedBleNodeId: platformConnectedBleNodeId,
       relayNodeId: payloadReason.relayNodeId,
-      sourceChannel: (payloadReason.source ?? RemoteRelaySosSource.sosNotify)
-          .name,
+      sourceChannel:
+          (payloadReason.source ?? RemoteRelaySosSource.sosNotify).name,
       platformEventType: event.type.name,
       decision: remoteRelaySnapshot != null
           ? unknownRemoteRelaySnapshot != null
@@ -5452,6 +5632,7 @@ class EixamConnectSdkImpl
     await _operationalDiagnosticsController.close();
     await _guidedRescueStateController.close();
     await _bleNotificationNavigationController.close();
+    await _publicDeviceStatusController.close();
     await _publicSosStateController.close();
     await _publicPreSosStatusController.close();
     await _eventsController.close();
