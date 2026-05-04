@@ -3622,6 +3622,11 @@ class EixamConnectSdkImpl
   }
 
   @override
+  Future<SosHistoryPage> listSosHistory({String? cursor, int limit = 20}) async {
+    return sosRepository.listSosHistory(cursor: cursor, limit: limit);
+  }
+
+  @override
   Stream<SosState> get currentSosStateStream async* {
     yield await getSosState();
     yield* _publicSosStateController.stream;

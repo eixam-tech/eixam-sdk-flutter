@@ -18,6 +18,7 @@ import '../entities/runtime_identity_snapshot.dart';
 import '../entities/sdk_operational_diagnostics.dart';
 import '../entities/sdk_user_profile.dart';
 import '../entities/sdk_telemetry_payload.dart';
+import '../entities/sos_history_item.dart';
 import '../entities/sos_incident.dart';
 import '../entities/sos_trigger_payload.dart';
 import '../entities/tracking_position.dart';
@@ -221,6 +222,12 @@ abstract class EixamConnectSdk {
   Future<SosIncident> cancelSos();
   Future<void> resolveSos();
   Future<SosState> getSosState();
+
+  /// Returns paginated SOS history for the authenticated user.
+  ///
+  /// [cursor] is the `nextCursor` from the previous page. [limit] defaults to 20
+  /// and is capped at 100 by the backend.
+  Future<SosHistoryPage> listSosHistory({String? cursor, int limit = 20});
   @Deprecated('Use currentSosStateStream instead.')
   Stream<SosState> watchSosState();
 

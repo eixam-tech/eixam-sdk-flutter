@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import '../../device/ble_debug_registry.dart';
+import '../dtos/sos_history_dto.dart';
 import '../dtos/sos_incident_dto.dart';
 import 'sdk_http_transport.dart';
 import 'sos_remote_data_source.dart';
@@ -224,6 +225,21 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
       );
     }
     return SosIncidentDto.fromJson(incident);
+  }
+
+  @override
+  Future<SosHistoryPageDto> listSosHistory({String? cursor, int limit = 20}) async {
+    final params = <String, String>{'limit': '$limit'};
+    if (cursor != null && cursor.isNotEmpty) {
+      params['cursor'] = cursor;
+    }
+    final query = params.entries.map((e) => '${e.key}=${Uri.encodeComponent(e.value)}').join('&');
+    final response = await transport.get('/v1/sdk/sos/history?$query');
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw SosException('E_HTTP_SOS_LIST_HISTORY_FAILED', response.body);
+    }
+    final payload = jsonDecode(response.body) as Map<String, dynamic>;
+    return SosHistoryPageDto.fromJson(payload);
   }
 
   void _logRequest({

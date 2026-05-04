@@ -96,6 +96,11 @@ class FakeSosRepository implements SosRepository {
   @override
   Stream<SosState> watchSosState() => stateController.stream;
 
+  @override
+  Future<SosHistoryPage> listSosHistory({String? cursor, int limit = 20}) async {
+    return const SosHistoryPage(items: [], hasMore: false);
+  }
+
   Future<void> dispose() async {
     await stateController.close();
   }

@@ -129,6 +129,11 @@ class InMemorySosRepository implements SosRepository {
   @override
   Stream<SosState> watchSosState() => _stateController.stream;
 
+  @override
+  Future<SosHistoryPage> listSosHistory({String? cursor, int limit = 20}) async {
+    return const SosHistoryPage(items: [], hasMore: false);
+  }
+
   void _emit(SosState state) {
     _stateMachine.transitionTo(state);
     _stateController.add(_stateMachine.current);

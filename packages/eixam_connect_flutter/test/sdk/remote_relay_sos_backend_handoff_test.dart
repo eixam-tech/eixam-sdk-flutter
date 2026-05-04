@@ -11,6 +11,7 @@ import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/preferred_ble_device_store.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sos_remote_data_source.dart';
+import 'package:eixam_connect_flutter/src/data/dtos/sos_history_dto.dart';
 import 'package:eixam_connect_flutter/src/data/dtos/sos_incident_dto.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/api_sos_repository.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/mqtt_operational_sos_repository.dart';
@@ -968,6 +969,11 @@ class _FakeCancelRemoteDataSource implements SosRemoteDataSource {
 
   @override
   Future<SosIncidentDto?> getActiveSos() async => null;
+
+  @override
+  Future<SosHistoryPageDto> listSosHistory({String? cursor, int limit = 20}) async {
+    return const SosHistoryPageDto(items: [], hasMore: false);
+  }
 }
 
 class _FakeRemoteRelaySosDataSource implements SosRemoteDataSource {
@@ -1023,6 +1029,11 @@ class _FakeRemoteRelaySosDataSource implements SosRemoteDataSource {
 
   @override
   Future<SosIncidentDto?> getActiveSos() async => null;
+
+  @override
+  Future<SosHistoryPageDto> listSosHistory({String? cursor, int limit = 20}) async {
+    return const SosHistoryPageDto(items: [], hasMore: false);
+  }
 }
 
 class _RecordedSosTriggerRequest {

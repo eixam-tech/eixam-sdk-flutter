@@ -191,6 +191,47 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
   Stream<SosState> watchSosState() => _stateController.stream;
 
   @override
+  Future<SosHistoryPage> listSosHistory({String? cursor, int limit = 20}) async {
+    final dto = await remoteDataSource.listSosHistory(cursor: cursor, limit: limit);
+    return SosHistoryPage(
+      items: dto.items.map((item) {
+        final incident = mapper.toDomain(item.incident);
+        return SosHistoryItem(
+          id: incident.id,
+          state: incident.state,
+          createdAt: incident.createdAt,
+          positionSnapshot: incident.positionSnapshot,
+          triggerSource: incident.triggerSource,
+          message: incident.message,
+          deliveryChannel: incident.deliveryChannel,
+          creationTelemetry: item.creationTelemetry == null
+              ? null
+              : SosHistoryTelemetry(
+                  id: item.creationTelemetry!.id,
+                  occurredAt: DateTime.parse(item.creationTelemetry!.occurredAt),
+                  latitude: item.creationTelemetry!.latitude,
+                  longitude: item.creationTelemetry!.longitude,
+                  altitude: item.creationTelemetry!.altitude,
+                  deviceBattery: item.creationTelemetry!.deviceBattery,
+                  deviceCoverage: item.creationTelemetry!.deviceCoverage,
+                  mobileBattery: item.creationTelemetry!.mobileBattery,
+                  mobileCoverage: item.creationTelemetry!.mobileCoverage,
+                ),
+          trail: item.trail.map((p) => TrackingPosition(
+            latitude: p.latitude,
+            longitude: p.longitude,
+            timestamp: DateTime.parse(p.occurredAt),
+            altitude: p.altitude,
+            source: DeliveryMode.mobile,
+          )).toList(),
+        );
+      }).toList(),
+      nextCursor: dto.nextCursor,
+      hasMore: dto.hasMore,
+    );
+  }
+
+  @override
   Future<SosRuntimeRehydrationResult> rehydrateRuntimeStateFromBackend() async {
     final active = await remoteDataSource.getActiveSos();
     if (active == null) {

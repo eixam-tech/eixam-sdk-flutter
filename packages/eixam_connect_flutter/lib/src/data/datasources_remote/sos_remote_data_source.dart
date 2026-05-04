@@ -1,5 +1,6 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import '../dtos/sos_history_dto.dart';
 import '../dtos/sos_incident_dto.dart';
 
 /// Defines the remote contract for SOS operations.
@@ -23,4 +24,5 @@ abstract class SosRemoteDataSource {
   Future<SosIncidentDto?> cancelSos({String? deviceId});
   Future<SosIncidentDto?> resolveSos();
   Future<SosIncidentDto?> getActiveSos();
+  Future<SosHistoryPageDto> listSosHistory({String? cursor, int limit = 20});
 }
