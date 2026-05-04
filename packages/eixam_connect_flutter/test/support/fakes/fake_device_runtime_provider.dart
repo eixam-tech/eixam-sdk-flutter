@@ -14,6 +14,8 @@ class FakeDeviceRuntimeProvider implements DeviceRuntimeProvider {
   DeviceException? pairError;
   DeviceException? activateError;
   int refreshCallCount = 0;
+  DeviceRefreshMode? lastRefreshMode;
+  bool? lastForceFirmwareRead;
 
   @override
   Stream<DeviceStatus> watchRuntimeStatus() => _runtimeStatusController.stream;
@@ -45,8 +47,14 @@ class FakeDeviceRuntimeProvider implements DeviceRuntimeProvider {
   }
 
   @override
-  Future<DeviceStatus> refresh(DeviceStatus currentStatus) async {
+  Future<DeviceStatus> refresh(
+    DeviceStatus currentStatus, {
+    DeviceRefreshMode mode = DeviceRefreshMode.manual,
+    bool forceFirmwareRead = false,
+  }) async {
     refreshCallCount++;
+    lastRefreshMode = mode;
+    lastForceFirmwareRead = forceFirmwareRead;
     return refreshResult ?? currentStatus;
   }
 

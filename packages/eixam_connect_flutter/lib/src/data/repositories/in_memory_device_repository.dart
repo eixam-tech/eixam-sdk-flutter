@@ -37,6 +37,7 @@ class InMemoryDeviceRepository implements DeviceRepository {
   StreamSubscription<DeviceStatus>? _runtimeStatusSub;
 
   Timer? _heartbeatTimer;
+  bool _loggedLightweightHeartbeat = false;
   DeviceStatus _status = const DeviceStatus(
     deviceId: 'demo-device',
     deviceAlias: 'Demo Beacon',
@@ -217,7 +218,16 @@ class InMemoryDeviceRepository implements DeviceRepository {
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
       if (!_status.connected) return;
       final previous = _status;
-      _status = await _runtimeProvider.refresh(_status);
+      if (!_loggedLightweightHeartbeat) {
+        BleDebugRegistry.instance.recordEvent(
+          '[BATTERY_FLOW] sdk_heartbeat_refresh mode=lightweight readFirmware=false readSignalQuality=false',
+        );
+        _loggedLightweightHeartbeat = true;
+      }
+      _status = await _runtimeProvider.refresh(
+        _status,
+        mode: DeviceRefreshMode.heartbeat,
+      );
       await _persistAndEmitIfChanged(
         previous: previous,
         source: 'heartbeat',

@@ -66,6 +66,8 @@ class BleDeviceRuntimeProvider
   final Map<String, DateTime> _recentSosPacketSignatures = <String, DateTime>{};
   bool _ownershipSuspended = false;
   Completer<DeviceRuntimeStatus>? _pendingRuntimeStatusRequest;
+  bool _loggedHeartbeatFirmwareSkip = false;
+  bool _loggedHeartbeatSignalSkip = false;
 
   static const Duration _recentSosDedupWindow = Duration(seconds: 2);
   static const String _rescueDeviceNotReadyCode = 'E_RESCUE_DEVICE_NOT_READY';
@@ -218,10 +220,16 @@ class BleDeviceRuntimeProvider
         batteryLevel: _effectiveBatteryLevel(currentStatus),
         batteryState: _effectiveBatteryState(currentStatus),
         batterySource: _effectiveBatterySource(currentStatus),
-        firmwareVersion: await _bleClient.readFirmwareVersion(
+        firmwareVersion: await _readFirmwareMetadata(
           candidate.deviceId,
+          currentFirmwareVersion: null,
+          reason: 'pairing',
+          force: true,
         ),
-        signalQuality: await _bleClient.readSignalQuality(candidate.deviceId),
+        signalQuality: await _readSignalQuality(
+          candidate.deviceId,
+          reason: 'pairing',
+        ),
         lastSeen: DateTime.now(),
         lastSyncedAt: DateTime.now(),
         clearProvisioningError: true,
@@ -419,10 +427,15 @@ class BleDeviceRuntimeProvider
       batteryLevel: _effectiveBatteryLevel(currentStatus),
       batteryState: _effectiveBatteryState(currentStatus),
       batterySource: _effectiveBatterySource(currentStatus),
-      firmwareVersion: await _bleClient.readFirmwareVersion(
+      firmwareVersion: await _readFirmwareMetadata(
         currentStatus.deviceId,
+        currentFirmwareVersion: currentStatus.firmwareVersion,
+        reason: 'activation',
       ),
-      signalQuality: await _bleClient.readSignalQuality(currentStatus.deviceId),
+      signalQuality: await _readSignalQuality(
+        currentStatus.deviceId,
+        reason: 'activation',
+      ),
       lastSeen: DateTime.now(),
       lastSyncedAt: DateTime.now(),
       clearProvisioningError: true,
@@ -440,12 +453,33 @@ class BleDeviceRuntimeProvider
   }
 
   @override
-  Future<DeviceStatus> refresh(DeviceStatus currentStatus) async {
+  Future<DeviceStatus> refresh(
+    DeviceStatus currentStatus, {
+    DeviceRefreshMode mode = DeviceRefreshMode.manual,
+    bool forceFirmwareRead = false,
+  }) async {
     if (!currentStatus.paired) return currentStatus;
 
     final adapterState = await _bleClient.getAdapterState();
     final connected = adapterState == BleAdapterState.poweredOn &&
         await _resolveConnection(currentStatus.deviceId);
+    final readFirmware = mode != DeviceRefreshMode.heartbeat;
+    final readSignalQuality = mode != DeviceRefreshMode.heartbeat;
+    final firmwareVersion = connected
+        ? await _resolveFirmwareForRefresh(
+            currentStatus,
+            readFirmware: readFirmware,
+            forceFirmwareRead: forceFirmwareRead,
+            mode: mode,
+          )
+        : currentStatus.firmwareVersion;
+    final signalQuality = connected
+        ? await _resolveSignalQualityForRefresh(
+            currentStatus,
+            readSignalQuality: readSignalQuality,
+            mode: mode,
+          )
+        : currentStatus.signalQuality;
 
     BleDebugRegistry.instance.recordEvent(
       'Refreshed device status for ${currentStatus.deviceId}',
@@ -462,12 +496,8 @@ class BleDeviceRuntimeProvider
       batterySource: connected
           ? _effectiveBatterySource(currentStatus)
           : currentStatus.batterySource,
-      firmwareVersion: connected
-          ? await _bleClient.readFirmwareVersion(currentStatus.deviceId)
-          : currentStatus.firmwareVersion,
-      signalQuality: connected
-          ? await _bleClient.readSignalQuality(currentStatus.deviceId)
-          : currentStatus.signalQuality,
+      firmwareVersion: firmwareVersion,
+      signalQuality: signalQuality,
       lifecycleState: _resolveLifecycle(currentStatus, connected),
       lastSeen: connected ? DateTime.now() : currentStatus.lastSeen,
       lastSyncedAt: DateTime.now(),
@@ -482,6 +512,88 @@ class BleDeviceRuntimeProvider
       ),
     );
     return nextStatus;
+  }
+
+  Future<String?> _resolveFirmwareForRefresh(
+    DeviceStatus currentStatus, {
+    required bool readFirmware,
+    required bool forceFirmwareRead,
+    required DeviceRefreshMode mode,
+  }) async {
+    final hasFirmwareCache = _hasFirmwareCache(currentStatus.firmwareVersion);
+    if (!readFirmware) {
+      if (mode == DeviceRefreshMode.heartbeat &&
+          hasFirmwareCache &&
+          !_loggedHeartbeatFirmwareSkip) {
+        BleDebugRegistry.instance.recordEvent(
+          '[BATTERY_FLOW] ble_metadata_read action=skip type=firmware reason=heartbeat_cached',
+        );
+        _loggedHeartbeatFirmwareSkip = true;
+      }
+      return currentStatus.firmwareVersion;
+    }
+    if (!forceFirmwareRead && hasFirmwareCache) {
+      return currentStatus.firmwareVersion;
+    }
+    final reason = hasFirmwareCache ? mode.name : 'missing_cache';
+    return _readFirmwareMetadata(
+      currentStatus.deviceId,
+      currentFirmwareVersion: currentStatus.firmwareVersion,
+      reason: reason,
+      force: forceFirmwareRead,
+    );
+  }
+
+  Future<int?> _resolveSignalQualityForRefresh(
+    DeviceStatus currentStatus, {
+    required bool readSignalQuality,
+    required DeviceRefreshMode mode,
+  }) async {
+    if (!readSignalQuality) {
+      if (mode == DeviceRefreshMode.heartbeat && !_loggedHeartbeatSignalSkip) {
+        BleDebugRegistry.instance.recordEvent(
+          '[BATTERY_FLOW] ble_signal_read action=skip reason=heartbeat',
+        );
+        _loggedHeartbeatSignalSkip = true;
+      }
+      return currentStatus.signalQuality;
+    }
+    return _readSignalQuality(
+      currentStatus.deviceId,
+      reason: mode.name,
+    );
+  }
+
+  Future<String?> _readFirmwareMetadata(
+    String deviceId, {
+    required String? currentFirmwareVersion,
+    required String reason,
+    bool force = false,
+  }) async {
+    if (!force && _hasFirmwareCache(currentFirmwareVersion)) {
+      return currentFirmwareVersion;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      '[BATTERY_FLOW] ble_metadata_read type=firmware reason=$reason',
+    );
+    return _bleClient.readFirmwareVersion(deviceId);
+  }
+
+  Future<int?> _readSignalQuality(
+    String deviceId, {
+    required String reason,
+  }) async {
+    BleDebugRegistry.instance.recordEvent(
+      '[BATTERY_FLOW] ble_signal_read reason=$reason',
+    );
+    return _bleClient.readSignalQuality(deviceId);
+  }
+
+  bool _hasFirmwareCache(String? firmwareVersion) {
+    final normalized = firmwareVersion?.trim().toLowerCase();
+    return normalized != null &&
+        normalized.isNotEmpty &&
+        normalized != 'unknown';
   }
 
   @override
@@ -997,19 +1109,19 @@ class BleDeviceRuntimeProvider
           relayNodeId: _connectedBleTagNodeId,
           sourceChannel: 'd2Relay',
           platformEventType: null,
-          decision: d2RelayClassification.kind ==
-                  BleIncomingPayloadKind.ownDeviceSos
-              ? 'own_device'
-              : d2RelayClassification.kind ==
-                      BleIncomingPayloadKind.remoteRelaySos
-                  ? 'remote_relay'
-                  : 'unknown_hold',
-          reason: d2RelayClassification.kind ==
-                  BleIncomingPayloadKind.ownDeviceSos
-              ? 'originator_matches_connected_ble_node'
-              : _connectedBleTagNodeId == null
-                  ? 'connected_ble_node_unknown'
-                  : 'originator_differs_from_connected_ble_node',
+          decision:
+              d2RelayClassification.kind == BleIncomingPayloadKind.ownDeviceSos
+                  ? 'own_device'
+                  : d2RelayClassification.kind ==
+                          BleIncomingPayloadKind.remoteRelaySos
+                      ? 'remote_relay'
+                      : 'unknown_hold',
+          reason:
+              d2RelayClassification.kind == BleIncomingPayloadKind.ownDeviceSos
+                  ? 'originator_matches_connected_ble_node'
+                  : _connectedBleTagNodeId == null
+                      ? 'connected_ble_node_unknown'
+                      : 'originator_differs_from_connected_ble_node',
         );
       }
       BleDebugRegistry.instance.recordDecodedIncomingEvent(

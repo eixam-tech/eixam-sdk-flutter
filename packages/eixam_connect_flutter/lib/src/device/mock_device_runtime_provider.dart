@@ -67,13 +67,20 @@ class MockDeviceRuntimeProvider implements DeviceRuntimeProvider {
   }
 
   @override
-  Future<DeviceStatus> refresh(DeviceStatus currentStatus) async {
+  Future<DeviceStatus> refresh(
+    DeviceStatus currentStatus, {
+    DeviceRefreshMode mode = DeviceRefreshMode.manual,
+    bool forceFirmwareRead = false,
+  }) async {
     if (!currentStatus.paired) return currentStatus;
 
     final currentBatteryLevel =
         currentStatus.batteryLevel ?? DeviceBatteryLevel.ok.protocolValue;
     final battery = (currentBatteryLevel - _random.nextInt(2)).clamp(0, 3);
     final activated = currentStatus.activated;
+    final signalQuality = mode == DeviceRefreshMode.heartbeat
+        ? currentStatus.signalQuality
+        : 2 + _random.nextInt(3);
     return currentStatus.copyWith(
       connected: true,
       batteryLevel: battery,
@@ -81,7 +88,7 @@ class MockDeviceRuntimeProvider implements DeviceRuntimeProvider {
       batterySource: DeviceBatterySource.unknown,
       lastSeen: DateTime.now(),
       lastSyncedAt: DateTime.now(),
-      signalQuality: 2 + _random.nextInt(3),
+      signalQuality: signalQuality,
       lifecycleState:
           activated ? DeviceLifecycleState.ready : DeviceLifecycleState.paired,
       clearProvisioningError: true,
