@@ -51,6 +51,7 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
         'apiBaseUrl': request.apiBaseUrl,
         'sessionReady': request.sessionReady,
         'enableStoreAndForward': request.enableStoreAndForward,
+        'hostAppManagedNotifications': request.hostAppManagedNotifications,
         'autoReconnectBle': request.modeOptions.autoReconnectBle,
         'autoFlushOnReconnect': request.modeOptions.autoFlushOnReconnect,
       },

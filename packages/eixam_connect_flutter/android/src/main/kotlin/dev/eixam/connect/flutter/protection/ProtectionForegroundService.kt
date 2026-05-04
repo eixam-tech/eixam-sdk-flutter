@@ -11,6 +11,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -42,6 +43,10 @@ internal class ProtectionForegroundService : Service() {
         }
 
         startForeground(notificationId, buildNotification())
+        Log.d(
+            logTag,
+            "[NOTIFICATION_FLOW] protection_foreground_notification_show type=runtime reason=foreground_service_required",
+        )
         ensureProtectionRuntime(
             runtimeStore = runtimeStore,
             restored = intent == null,
@@ -135,6 +140,7 @@ internal class ProtectionForegroundService : Service() {
         }
 
         val manager = getSystemService(NotificationManager::class.java)
+        val runtimeStore = ProtectionRuntimeStore(applicationContext)
         val runtimeChannel = NotificationChannel(
             notificationChannelId,
             "Protection Mode Runtime",
@@ -142,15 +148,17 @@ internal class ProtectionForegroundService : Service() {
         ).apply {
             description = "Keeps the Android Protection Mode runtime visible and restartable."
         }
-        val sosChannel = NotificationChannel(
-            sosNotificationChannelId,
-            "Protection Mode SOS",
-            NotificationManager.IMPORTANCE_HIGH,
-        ).apply {
-            description = "Surfaces Protection Mode SOS lifecycle alerts while the app is backgrounded."
-        }
         manager.createNotificationChannel(runtimeChannel)
-        manager.createNotificationChannel(sosChannel)
+        if (!runtimeStore.hostAppManagedNotifications()) {
+            val sosChannel = NotificationChannel(
+                sosNotificationChannelId,
+                "Protection Mode SOS",
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = "Surfaces Protection Mode SOS lifecycle alerts while the app is backgrounded."
+            }
+            manager.createNotificationChannel(sosChannel)
+        }
     }
 
     private fun ensureProtectionRuntime(
@@ -188,6 +196,7 @@ internal class ProtectionForegroundService : Service() {
         private const val activeNotificationId = 6023
         private const val resolvedNotificationId = 6024
         private const val defaultReconnectBackoffMs = 5000L
+        private const val logTag = "EixamProtectionService"
         private const val actionStart = "dev.eixam.connect.flutter.action.PROTECTION_START"
         private const val actionStop = "dev.eixam.connect.flutter.action.PROTECTION_STOP"
         private const val extraWakeReason = "wake_reason"
@@ -214,6 +223,7 @@ internal class ProtectionForegroundService : Service() {
             showEventNotification(
                 context = context,
                 notificationId = preConfirmNotificationId,
+                type = "preSos",
                 title = "Protection Mode: SOS pre-alert",
                 body = "The protected device reported a pre-confirm SOS packet. Protection Mode is listening in the background.",
             )
@@ -223,6 +233,7 @@ internal class ProtectionForegroundService : Service() {
             showEventNotification(
                 context = context,
                 notificationId = activeNotificationId,
+                type = "sosActive",
                 title = "Protection Mode: SOS active",
                 body = "The protected device reported an active SOS cycle. Native backend sync is running from the Android service path.",
             )
@@ -232,6 +243,7 @@ internal class ProtectionForegroundService : Service() {
             showEventNotification(
                 context = context,
                 notificationId = resolvedNotificationId,
+                type = "sosResolved",
                 title = "Protection Mode: SOS resolved",
                 body = "The protected device reported a resolved or cancelled SOS cycle.",
             )
@@ -240,9 +252,17 @@ internal class ProtectionForegroundService : Service() {
         private fun showEventNotification(
             context: Context,
             notificationId: Int,
+            type: String,
             title: String,
             body: String,
         ) {
+            if (ProtectionRuntimeStore(context).hostAppManagedNotifications()) {
+                Log.d(
+                    logTag,
+                    "[NOTIFICATION_FLOW] protection_notification_skip type=$type reason=hostAppManaged",
+                )
+                return
+            }
             val notification = NotificationCompat.Builder(context, sosNotificationChannelId)
                 .setSmallIcon(android.R.drawable.stat_notify_sync)
                 .setContentTitle(title)
@@ -253,6 +273,10 @@ internal class ProtectionForegroundService : Service() {
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .build()
             NotificationManagerCompat.from(context).notify(notificationId, notification)
+            Log.d(
+                logTag,
+                "[NOTIFICATION_FLOW] protection_notification_show type=$type policy=sdkManaged",
+            )
         }
     }
 }

@@ -262,6 +262,8 @@ class EixamConnectSdkImpl
           _loadBackendHardwareIdForOperationalPayloads(
         runtimeStatus: _lastDeviceStatus,
       ),
+      hostAppManagedNotificationsProvider: () =>
+          notificationPolicy == EixamNotificationPolicy.hostAppManaged,
       onBleOwnershipChanged: _handleProtectionBleOwnershipChanged,
     );
     _operationalTelemetryCoordinator = OperationalTelemetryCoordinator(
@@ -1389,8 +1391,14 @@ class EixamConnectSdkImpl
     BleDebugRegistry.instance.recordEvent(
       '[NOTIFICATION_FLOW] sdk_intent_emit '
       'type=${intent.type.name} dedupeKey=${intent.dedupeKey} '
-      'policy=${notificationPolicy.name}',
+      'policy=${_notificationPolicyLabel(notificationPolicy)}',
     );
+    if (!_sdkSosNotificationsEnabled) {
+      BleDebugRegistry.instance.recordEvent(
+        '[NOTIFICATION_FLOW] sdk_local_notification_skip '
+        'type=${intent.type.name} reason=hostAppManaged',
+      );
+    }
   }
 
   void _trimPendingNotificationIntents() {
@@ -1749,7 +1757,8 @@ class EixamConnectSdkImpl
       BleDebugRegistry.instance.recordEvent(
         '[NOTIFICATION_FLOW] sdk_local_notification_show '
         'type=${_notificationIntentTypeForDeviceSosState(status.state).name} '
-        'policy=${notificationPolicy.name}',
+        'policy=${_notificationPolicyLabel(notificationPolicy)} '
+        'channel=eixam_sos_alerts',
       );
       await notificationsRepository.showLocalNotification(
         notificationId: _nextBleNotificationId(),
@@ -1794,6 +1803,16 @@ class EixamConnectSdkImpl
 
   bool get _sdkSosNotificationsEnabled =>
       notificationPolicy != EixamNotificationPolicy.hostAppManaged;
+
+  String _notificationPolicyLabel(EixamNotificationPolicy policy) {
+    if (policy == EixamNotificationPolicy.hostAppManaged) {
+      return 'hostAppManaged';
+    }
+    if (policy == EixamNotificationPolicy.sdkManaged) {
+      return 'sdkManaged';
+    }
+    return policy.toString();
+  }
 
   bool _shouldSuppressExternalSosNotificationForSelfNode(
     DeviceSosStatus status,
@@ -5347,7 +5366,8 @@ class EixamConnectSdkImpl
       BleDebugRegistry.instance.recordEvent(
         '[NOTIFICATION_FLOW] sdk_local_notification_show '
         'type=${EixamNotificationIntentType.externalSosSent.name} '
-        'policy=${notificationPolicy.name}',
+        'policy=${_notificationPolicyLabel(notificationPolicy)} '
+        'channel=eixam_sos_alerts',
       );
       await notificationsRepository.showLocalNotification(
         notificationId: _nextBleNotificationId(),

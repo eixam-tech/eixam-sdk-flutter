@@ -111,6 +111,7 @@ internal class ProtectionRuntimeStore(context: Context) {
         backendHardwareId: String?,
         apiBaseUrl: String?,
         enableStoreAndForward: Boolean,
+        hostAppManagedNotifications: Boolean,
     ) {
         preferences.edit()
             .putString(keyTargetDeviceId, activeDeviceId)
@@ -123,6 +124,7 @@ internal class ProtectionRuntimeStore(context: Context) {
             .putString(keyBleOwner, "androidService")
             .putBoolean(keyServiceBleConnected, false)
             .putBoolean(keyServiceBleReady, false)
+            .putBoolean(keyHostAppManagedNotifications, hostAppManagedNotifications)
             .putString(keyReadinessFailureReason, null)
             .putString(keyDiscoveredBleServicesSummary, null)
             .putBoolean(keyStoreAndForwardEnabled, enableStoreAndForward)
@@ -197,6 +199,9 @@ internal class ProtectionRuntimeStore(context: Context) {
     fun isProtectionArmed(): Boolean =
         preferences.getBoolean(keyServiceRunning, false) &&
             preferences.getString(keyBleOwner, "flutter") == "androidService"
+
+    fun hostAppManagedNotifications(): Boolean =
+        preferences.getBoolean(keyHostAppManagedNotifications, false)
 
     fun markServiceBleConnected() {
         preferences.edit()
@@ -553,6 +558,7 @@ internal class ProtectionRuntimeStore(context: Context) {
         private const val keyBoundDeviceId = "bound_device_id"
         private const val keyBoundNodeId = "bound_node_id"
         private const val keyStoreAndForwardEnabled = "store_and_forward_enabled"
+        private const val keyHostAppManagedNotifications = "host_app_managed_notifications"
         private const val keyPendingSosCount = "pending_sos_count"
         private const val keyPendingSosState = "pending_sos_state"
         private const val keyPendingTelemetryCount = "pending_telemetry_count"

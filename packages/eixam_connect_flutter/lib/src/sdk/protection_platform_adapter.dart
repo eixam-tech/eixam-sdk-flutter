@@ -42,6 +42,7 @@ class ProtectionPlatformStartRequest {
     this.apiBaseUrl,
     this.sessionReady = false,
     this.enableStoreAndForward = true,
+    this.hostAppManagedNotifications = false,
   });
 
   final ProtectionModeOptions modeOptions;
@@ -50,6 +51,7 @@ class ProtectionPlatformStartRequest {
   final String? apiBaseUrl;
   final bool sessionReady;
   final bool enableStoreAndForward;
+  final bool hostAppManagedNotifications;
 }
 
 class ProtectionPlatformFlushResult {
