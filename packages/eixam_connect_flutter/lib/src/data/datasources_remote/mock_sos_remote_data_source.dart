@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import '../dtos/sos_history_dto.dart';
 import '../dtos/sos_incident_dto.dart';
 import 'sos_remote_data_source.dart';
 
@@ -74,5 +75,11 @@ class MockSosRemoteDataSource implements SosRemoteDataSource {
   Future<SosIncidentDto?> getActiveSos() async {
     await Future<void>.delayed(const Duration(milliseconds: 100));
     return _active;
+  }
+
+  @override
+  Future<SosHistoryPageDto> listSosHistory({String? cursor, int limit = 20}) async {
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    return const SosHistoryPageDto(items: [], hasMore: false);
   }
 }

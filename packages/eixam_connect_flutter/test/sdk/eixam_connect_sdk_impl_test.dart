@@ -16,6 +16,7 @@ import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_session_co
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sos_remote_data_source.dart';
 import 'package:eixam_connect_flutter/src/data/dtos/sdk_contact_dto.dart';
 import 'package:eixam_connect_flutter/src/data/dtos/sdk_device_dto.dart';
+import 'package:eixam_connect_flutter/src/data/dtos/sos_history_dto.dart';
 import 'package:eixam_connect_flutter/src/data/dtos/sos_incident_dto.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/api_contacts_repository.dart';
 import 'package:eixam_connect_flutter/src/mappers/sdk_contact_mapper.dart';
@@ -9482,6 +9483,11 @@ class _FakeCancelSosRemoteDataSource implements SosRemoteDataSource {
       createdAt: '2026-03-30T12:00:00.000Z',
     );
     return activeIncident!;
+  }
+
+  @override
+  Future<SosHistoryPageDto> listSosHistory({String? cursor, int limit = 20}) async {
+    return const SosHistoryPageDto(items: [], hasMore: false);
   }
 }
 

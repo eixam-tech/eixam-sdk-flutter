@@ -1,3 +1,4 @@
+import '../entities/sos_history_item.dart';
 import '../entities/sos_incident.dart';
 import '../entities/sdk_telemetry_payload.dart';
 import '../entities/tracking_position.dart';
@@ -30,4 +31,10 @@ abstract class SosRepository {
   Future<SosIncident?> getCurrentIncident();
   Future<SosState> getSosState();
   Stream<SosState> watchSosState();
+
+  /// Returns paginated SOS history for the authenticated user.
+  ///
+  /// [cursor] is the `nextCursor` from the previous page. [limit] defaults to 20
+  /// and is capped at 100 by the backend.
+  Future<SosHistoryPage> listSosHistory({String? cursor, int limit = 20});
 }
