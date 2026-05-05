@@ -109,6 +109,9 @@ internal class ProtectionRuntimeStore(context: Context) {
     fun markStartRequest(
         activeDeviceId: String?,
         backendHardwareId: String?,
+        bleHardwareId: String?,
+        firmwareVersion: String?,
+        hardwareModel: String?,
         apiBaseUrl: String?,
         enableStoreAndForward: Boolean,
         hostAppManagedNotifications: Boolean,
@@ -116,6 +119,9 @@ internal class ProtectionRuntimeStore(context: Context) {
         preferences.edit()
             .putString(keyTargetDeviceId, activeDeviceId)
             .putString(keyBackendHardwareId, backendHardwareId)
+            .putString(keyBleHardwareId, bleHardwareId?.trim()?.takeIf { it.isNotBlank() })
+            .putString(keyFirmwareVersion, firmwareVersion?.trim()?.takeIf { it.isNotBlank() })
+            .putString(keyHardwareModel, hardwareModel?.trim()?.takeIf { it.isNotBlank() })
             .putString(keyBoundDeviceId, activeDeviceId)
             .remove(keyBoundNodeId)
             .putString(keyApiBaseUrl, apiBaseUrl)
@@ -171,6 +177,15 @@ internal class ProtectionRuntimeStore(context: Context) {
 
     fun currentBackendHardwareId(): String? =
         preferences.getString(keyBackendHardwareId, null)
+
+    fun currentBleHardwareId(): String? =
+        preferences.getString(keyBleHardwareId, null)
+
+    fun currentFirmwareVersion(): String? =
+        preferences.getString(keyFirmwareVersion, null)
+
+    fun currentHardwareModel(): String? =
+        preferences.getString(keyHardwareModel, null)
 
     fun saveBoundDeviceIdentity(
         boundDeviceId: String?,
@@ -555,6 +570,9 @@ internal class ProtectionRuntimeStore(context: Context) {
         private const val keyServiceBleReady = "service_ble_ready"
         private const val keyTargetDeviceId = "target_device_id"
         private const val keyBackendHardwareId = "backend_hardware_id"
+        private const val keyBleHardwareId = "ble_hardware_id"
+        private const val keyFirmwareVersion = "firmware_version"
+        private const val keyHardwareModel = "hardware_model"
         private const val keyBoundDeviceId = "bound_device_id"
         private const val keyBoundNodeId = "bound_node_id"
         private const val keyStoreAndForwardEnabled = "store_and_forward_enabled"

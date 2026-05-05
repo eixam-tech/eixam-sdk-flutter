@@ -257,7 +257,7 @@ class BleDeviceRuntimeProvider
         'Connection failed for ${candidate.deviceId}: $error',
       );
       debugPrint(
-        'BLE pair failed -> deviceId=${candidate.deviceId} error=$error',
+        'BLE pair failed -> hardwareId=${candidate.deviceId} error=$error',
       );
       debugPrintStack(stackTrace: stackTrace);
       await _resetFailedPairingAttempt(candidate.deviceId);
@@ -290,13 +290,13 @@ class BleDeviceRuntimeProvider
     final commandWriter = (EixamDeviceCommand command) {
       _lastAppCommandAt = DateTime.now();
       BleDebugRegistry.instance.recordEvent(
-        'BLE app command tracked -> deviceId=$deviceId command=${command.label} payload=${command.encodedHex}',
+        'BLE app command tracked -> hardwareId=$deviceId command=${command.label} payload=${command.encodedHex}',
       );
       return _bleClient.writeDeviceCommand(deviceId, command);
     };
     BleDebugRegistry.instance.registerCommandWriter(commandWriter);
     BleDebugRegistry.instance.recordEvent(
-      'BLE SOS runtime attach requested -> deviceId=$deviceId inetAvailable=${BleDebugRegistry.instance.currentState.inetFound} cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound}',
+      'BLE SOS runtime attach requested -> hardwareId=$deviceId inetAvailable=${BleDebugRegistry.instance.currentState.inetFound} cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound}',
     );
     await _deviceSosController.attach(
       commandWriter: commandWriter,
@@ -304,7 +304,7 @@ class BleDeviceRuntimeProvider
       longCommandAvailable: BleDebugRegistry.instance.currentState.cmdFound,
     );
     BleDebugRegistry.instance.recordEvent(
-      'BLE SOS runtime attached -> deviceId=$deviceId inetAvailable=${BleDebugRegistry.instance.currentState.inetFound} cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound}',
+      'BLE SOS runtime attached -> hardwareId=$deviceId inetAvailable=${BleDebugRegistry.instance.currentState.inetFound} cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound}',
     );
 
     final stream = await _bleClient.subscribeEixamNotifications(deviceId);
@@ -363,7 +363,7 @@ class BleDeviceRuntimeProvider
     _connectionStateSubscription = null;
     BleDebugRegistry.instance.clearCommandWriter();
     BleDebugRegistry.instance.recordEvent(
-      'BLE SOS runtime detach requested -> deviceId=${_connectedDeviceId ?? "-"} inetAvailable=${BleDebugRegistry.instance.currentState.inetFound} cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound}',
+      'BLE SOS runtime detach requested -> hardwareId=${_connectedDeviceId ?? "-"} inetAvailable=${BleDebugRegistry.instance.currentState.inetFound} cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound}',
     );
     await _deviceSosController.detach();
     final deviceId = _connectedDeviceId;
@@ -603,7 +603,7 @@ class BleDeviceRuntimeProvider
     await _notificationSubscription?.cancel();
     _notificationSubscription = null;
     BleDebugRegistry.instance.recordEvent(
-      'BLE SOS runtime detach requested -> deviceId=${_connectedDeviceId ?? "-"} reason=unpair inetAvailable=${BleDebugRegistry.instance.currentState.inetFound} cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound}',
+      'BLE SOS runtime detach requested -> hardwareId=${_connectedDeviceId ?? "-"} reason=unpair inetAvailable=${BleDebugRegistry.instance.currentState.inetFound} cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound}',
     );
     await _deviceSosController.detach();
     if (_connectedDeviceId != null) {
@@ -626,6 +626,7 @@ class BleDeviceRuntimeProvider
 
     final nextStatus = DeviceStatus(
       deviceId: currentStatus.deviceId,
+      nodeId: currentStatus.nodeId,
       canonicalHardwareId: currentStatus.canonicalHardwareId,
       deviceAlias: currentStatus.deviceAlias,
       model: currentStatus.model,
@@ -1015,6 +1016,7 @@ class BleDeviceRuntimeProvider
     );
     if (runtimeStatusPacket != null) {
       _connectedBleTagNodeId = runtimeStatusPacket.status.nodeId;
+      _publishRuntimeNodeIdIfChanged(runtimeStatusPacket.status.nodeId);
       BleDebugRegistry.instance.recordEvent(
         'TEL classified -> type=device_status len=${payload.length} nodeId=${_formatNodeId(runtimeStatusPacket.status.nodeId)} battery=${runtimeStatusPacket.status.batteryPercent} telInterval=${runtimeStatusPacket.status.telIntervalSeconds}',
       );
@@ -1741,6 +1743,21 @@ class BleDeviceRuntimeProvider
     }
 
     _publishRuntimeStatus(nextStatus, reason: reason);
+  }
+
+  void _publishRuntimeNodeIdIfChanged(int nodeId) {
+    final currentStatus = _lastRuntimeStatus;
+    if (currentStatus == null || currentStatus.nodeId == nodeId) {
+      return;
+    }
+    _publishRuntimeStatus(
+      currentStatus.copyWith(
+        nodeId: nodeId,
+        lastSeen: DateTime.now(),
+        lastSyncedAt: DateTime.now(),
+      ),
+      reason: 'runtime_node_id_updated',
+    );
   }
 
   int? _effectiveBatteryLevel(DeviceStatus currentStatus) {

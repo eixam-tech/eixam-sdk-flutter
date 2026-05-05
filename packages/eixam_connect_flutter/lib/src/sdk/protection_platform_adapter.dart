@@ -39,6 +39,9 @@ class ProtectionPlatformStartRequest {
     required this.modeOptions,
     this.activeDeviceId,
     this.backendHardwareId,
+    this.bleHardwareId,
+    this.firmwareVersion,
+    this.hardwareModel,
     this.apiBaseUrl,
     this.sessionReady = false,
     this.enableStoreAndForward = true,
@@ -48,6 +51,9 @@ class ProtectionPlatformStartRequest {
   final ProtectionModeOptions modeOptions;
   final String? activeDeviceId;
   final String? backendHardwareId;
+  final String? bleHardwareId;
+  final String? firmwareVersion;
+  final String? hardwareModel;
   final String? apiBaseUrl;
   final bool sessionReady;
   final bool enableStoreAndForward;

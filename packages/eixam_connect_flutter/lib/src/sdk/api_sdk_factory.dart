@@ -35,6 +35,7 @@ import 'mock_realtime_client.dart';
 import 'eixam_bootstrap_resolver.dart';
 import 'protection_platform_adapter.dart';
 import 'protection_platform_adapter_factory.dart';
+import 'stable_app_device_id_store.dart';
 
 /// Factory helpers for API-backed and mock-API-backed SDK instances.
 class ApiSdkFactory {
@@ -47,6 +48,7 @@ class ApiSdkFactory {
     final store = SharedPrefsSdkStore();
     final sessionStore = SdkSessionStore(localStore: store);
     final sessionContext = SdkSessionContext();
+    final appDeviceIdStore = StableAppDeviceIdStore(localStore: store);
     final preferredBleDeviceStore = PreferredBleDeviceStore(localStore: store);
     final permissionsRepository = PlatformPermissionsRepository();
 
@@ -113,6 +115,7 @@ class ApiSdkFactory {
       preferredBleDeviceStore: preferredBleDeviceStore,
       sessionStore: sessionStore,
       sessionContext: sessionContext,
+      stableAppDeviceIdProvider: appDeviceIdStore.getOrCreate,
       protectionPlatformAdapter: buildDefaultProtectionPlatformAdapter(),
       disposeCallback: () async {
         httpClient.close();
@@ -144,6 +147,7 @@ class ApiSdkFactory {
     final store = SharedPrefsSdkStore();
     final sessionStore = SdkSessionStore(localStore: store);
     final sessionContext = SdkSessionContext();
+    final appDeviceIdStore = StableAppDeviceIdStore(localStore: store);
     final preferredBleDeviceStore = PreferredBleDeviceStore(localStore: store);
     final permissionsRepository = PlatformPermissionsRepository();
     final config = EixamSdkConfig(
@@ -231,6 +235,7 @@ class ApiSdkFactory {
       preferredBleDeviceStore: preferredBleDeviceStore,
       sessionStore: sessionStore,
       sessionContext: sessionContext,
+      stableAppDeviceIdProvider: appDeviceIdStore.getOrCreate,
       identityRemoteDataSource: HttpSdkIdentityRemoteDataSource(
         transport: httpTransport,
       ),

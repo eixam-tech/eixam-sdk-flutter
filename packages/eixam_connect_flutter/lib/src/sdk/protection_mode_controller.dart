@@ -134,10 +134,14 @@ class ProtectionModeController {
       );
     }
 
+    final startDeviceStatus = await _deviceStatusProvider();
     final startRequest = ProtectionPlatformStartRequest(
       modeOptions: options,
       activeDeviceId: armingSnapshot.status.activeDeviceId,
       backendHardwareId: await _backendHardwareIdProvider?.call(),
+      bleHardwareId: _nonBlankOrNull(startDeviceStatus.canonicalHardwareId),
+      firmwareVersion: _nonBlankOrNull(startDeviceStatus.firmwareVersion),
+      hardwareModel: _nonBlankOrNull(startDeviceStatus.model),
       apiBaseUrl: _sdkConfigProvider()?.apiBaseUrl,
       sessionReady: armingSnapshot.status.sessionReady,
       enableStoreAndForward: options.enableStoreAndForward,
@@ -914,6 +918,11 @@ class ProtectionModeController {
 
   bool _isPlatformBleOwner(ProtectionBleOwner owner) {
     return owner != ProtectionBleOwner.flutter;
+  }
+
+  String? _nonBlankOrNull(String? value) {
+    final trimmed = value?.trim();
+    return trimmed == null || trimmed.isEmpty ? null : trimmed;
   }
 
   ProtectionBleOwner get _nativeBleOwner {

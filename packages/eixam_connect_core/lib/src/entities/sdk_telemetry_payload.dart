@@ -70,6 +70,9 @@ class SdkTelemetryPayload {
     this.eventId,
     this.userId,
     this.deviceId,
+    this.appDeviceId,
+    this.hardwareId,
+    this.identitySource,
     this.deviceBattery,
     this.deviceBatterySnapshot,
     this.deviceCoverage,
@@ -93,6 +96,9 @@ class SdkTelemetryPayload {
   final String? eventId;
   final String? userId;
   final String? deviceId;
+  final String? appDeviceId;
+  final String? hardwareId;
+  final String? identitySource;
   final double? deviceBattery;
   final SdkDeviceBatterySnapshot? deviceBatterySnapshot;
   final int? deviceCoverage;
@@ -117,6 +123,9 @@ class SdkTelemetryPayload {
       if (_hasText(eventId)) 'eventId': eventId!.trim(),
       if (_hasText(userId)) 'userId': userId!.trim(),
       if (_hasText(deviceId)) 'deviceId': deviceId!.trim(),
+      if (_hasText(appDeviceId)) 'appDeviceId': appDeviceId!.trim(),
+      if (_hasText(hardwareId)) 'hardwareId': hardwareId!.trim(),
+      if (_hasText(identitySource)) 'identitySource': identitySource!.trim(),
       if (_resolvedDeviceBattery != null)
         'deviceBattery': _resolvedDeviceBattery!.toJson(),
       if (_resolvedDeviceCoverage != null)
@@ -143,6 +152,9 @@ class SdkTelemetryPayload {
     Object? eventId = _unset,
     Object? userId = _unset,
     Object? deviceId = _unset,
+    Object? appDeviceId = _unset,
+    Object? hardwareId = _unset,
+    Object? identitySource = _unset,
     Object? deviceBattery = _unset,
     Object? deviceBatterySnapshot = _unset,
     Object? deviceCoverage = _unset,
@@ -172,6 +184,15 @@ class SdkTelemetryPayload {
       userId: identical(userId, _unset) ? this.userId : userId as String?,
       deviceId:
           identical(deviceId, _unset) ? this.deviceId : deviceId as String?,
+      appDeviceId: identical(appDeviceId, _unset)
+          ? this.appDeviceId
+          : appDeviceId as String?,
+      hardwareId: identical(hardwareId, _unset)
+          ? this.hardwareId
+          : hardwareId as String?,
+      identitySource: identical(identitySource, _unset)
+          ? this.identitySource
+          : identitySource as String?,
       deviceBattery: identical(deviceBattery, _unset)
           ? this.deviceBattery
           : deviceBattery as double?,

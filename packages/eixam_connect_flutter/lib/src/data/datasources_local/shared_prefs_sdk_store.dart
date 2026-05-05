@@ -18,6 +18,7 @@ class SharedPrefsSdkStore {
   static const String emergencyContactsKey = 'eixam.contacts.list';
   static const String deviceStatusKey = 'eixam.device.status';
   static const String sdkSessionKey = 'eixam.sdk.session';
+  static const String appDeviceIdKey = 'eixam.app.device_id';
 
   SharedPreferences? _prefs;
 

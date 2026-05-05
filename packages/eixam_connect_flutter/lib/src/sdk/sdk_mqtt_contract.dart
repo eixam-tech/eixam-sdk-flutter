@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import 'mqtt_topic_segment.dart';
+import 'sos_backend_identity_normalizer.dart';
 
 class SdkMqttConnectRequest {
   const SdkMqttConnectRequest({
@@ -36,11 +37,16 @@ class MqttOperationalSosRequest {
     this.positionSnapshot,
     this.sdkUserId,
     this.deviceId,
+    this.appDeviceId,
+    this.hardwareId,
+    this.identitySource,
     this.originatorNodeId,
     this.relayNodeId,
     this.relayDeviceId,
     this.relayHardwareId,
     this.source,
+    this.incidentId,
+    this.cycleKey,
     this.deviceBattery,
     this.deviceCoverage,
     this.mobileBattery,
@@ -51,11 +57,16 @@ class MqttOperationalSosRequest {
   final TrackingPosition? positionSnapshot;
   final String? sdkUserId;
   final String? deviceId;
+  final String? appDeviceId;
+  final String? hardwareId;
+  final String? identitySource;
   final int? originatorNodeId;
   final int? relayNodeId;
   final String? relayDeviceId;
   final String? relayHardwareId;
   final String? source;
+  final String? incidentId;
+  final String? cycleKey;
   final SdkDeviceBatterySnapshot? deviceBattery;
   final SdkCoverageSnapshot? deviceCoverage;
   final int? mobileBattery;
@@ -66,11 +77,16 @@ class MqttOperationalSosRequest {
     TrackingPosition? positionSnapshot,
     Object? sdkUserId = _unset,
     Object? deviceId = _unset,
+    Object? appDeviceId = _unset,
+    Object? hardwareId = _unset,
+    Object? identitySource = _unset,
     Object? originatorNodeId = _unset,
     Object? relayNodeId = _unset,
     Object? relayDeviceId = _unset,
     Object? relayHardwareId = _unset,
     Object? source = _unset,
+    Object? incidentId = _unset,
+    Object? cycleKey = _unset,
     Object? deviceBattery = _unset,
     Object? deviceCoverage = _unset,
     Object? mobileBattery = _unset,
@@ -83,6 +99,15 @@ class MqttOperationalSosRequest {
           identical(sdkUserId, _unset) ? this.sdkUserId : sdkUserId as String?,
       deviceId:
           identical(deviceId, _unset) ? this.deviceId : deviceId as String?,
+      appDeviceId: identical(appDeviceId, _unset)
+          ? this.appDeviceId
+          : appDeviceId as String?,
+      hardwareId: identical(hardwareId, _unset)
+          ? this.hardwareId
+          : hardwareId as String?,
+      identitySource: identical(identitySource, _unset)
+          ? this.identitySource
+          : identitySource as String?,
       originatorNodeId: identical(originatorNodeId, _unset)
           ? this.originatorNodeId
           : originatorNodeId as int?,
@@ -96,6 +121,11 @@ class MqttOperationalSosRequest {
           ? this.relayHardwareId
           : relayHardwareId as String?,
       source: identical(source, _unset) ? this.source : source as String?,
+      incidentId: identical(incidentId, _unset)
+          ? this.incidentId
+          : incidentId as String?,
+      cycleKey:
+          identical(cycleKey, _unset) ? this.cycleKey : cycleKey as String?,
       deviceBattery: identical(deviceBattery, _unset)
           ? this.deviceBattery
           : deviceBattery as SdkDeviceBatterySnapshot?,
@@ -150,6 +180,16 @@ class SdkMqttContract {
   static SdkMqttEnvelope buildOperationalSosEnvelope(
     MqttOperationalSosRequest request,
   ) {
+    final identity = normalizeSosBackendIdentity(
+      deviceId: request.deviceId,
+      appDeviceId: request.appDeviceId,
+      hardwareId: request.hardwareId,
+      originatorNodeId: request.originatorNodeId,
+      relayNodeId: request.relayNodeId,
+      relayDeviceId: request.relayDeviceId,
+      incidentId: request.incidentId,
+      cycleKey: request.cycleKey,
+    );
     final payload = <String, dynamic>{
       'timestamp': request.timestamp.toUtc().toIso8601String(),
       if (request.positionSnapshot != null) ...{
@@ -159,14 +199,20 @@ class SdkMqttContract {
       },
       if (request.sdkUserId != null && request.sdkUserId!.trim().isNotEmpty)
         'userId': request.sdkUserId!.trim(),
-      if (request.deviceId != null && request.deviceId!.trim().isNotEmpty)
-        'deviceId': request.deviceId!.trim(),
-      if (request.originatorNodeId != null)
-        'originatorNodeId': request.originatorNodeId,
+      if (identity.deviceId != null && identity.deviceId!.isNotEmpty)
+        'deviceId': identity.deviceId,
+      if (identity.appDeviceId != null && identity.appDeviceId!.isNotEmpty)
+        'appDeviceId': identity.appDeviceId,
+      if (identity.hardwareId != null && identity.hardwareId!.trim().isNotEmpty)
+        'hardwareId': identity.hardwareId!.trim(),
+      'identitySource': identity.identitySource,
+      if (identity.originatorNodeId != null) ...{
+        'nodeId': identity.originatorNodeId,
+        'originatorNodeId': identity.originatorNodeId,
+      },
       if (request.relayNodeId != null) 'relayNodeId': request.relayNodeId,
-      if (request.relayDeviceId != null &&
-          request.relayDeviceId!.trim().isNotEmpty)
-        'relayDeviceId': request.relayDeviceId!.trim(),
+      if (identity.relayDeviceId != null && identity.relayDeviceId!.isNotEmpty)
+        'relayDeviceId': identity.relayDeviceId,
       if (request.relayHardwareId != null &&
           request.relayHardwareId!.trim().isNotEmpty)
         'relayHardwareId': request.relayHardwareId!.trim(),
@@ -192,9 +238,10 @@ class SdkMqttContract {
     required EixamSession session,
     required SdkTelemetryPayload payload,
   }) {
+    final identity = normalizeTelemetryBackendIdentity(payload: payload);
     return SdkMqttEnvelope(
       topic: SdkMqttTopics.telemetryDataFor(session),
-      payload: jsonEncode(payload.toJson()),
+      payload: jsonEncode(identity.payload.toJson()),
     );
   }
 

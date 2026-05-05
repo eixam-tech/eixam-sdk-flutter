@@ -2,14 +2,16 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import '../../device/ble_debug_registry.dart';
 import '../../mappers/local_state_serializers.dart';
-import '../dtos/sos_incident_dto.dart';
-import '../datasources_remote/sos_remote_data_source.dart';
-import '../datasources_local/shared_prefs_sdk_store.dart';
+import '../../mappers/sos_incident_mapper.dart';
 import '../../sdk/operational_realtime_client.dart';
 import '../../sdk/sdk_mqtt_contract.dart';
+import '../../sdk/sos_backend_identity_normalizer.dart';
+import '../datasources_local/shared_prefs_sdk_store.dart';
+import '../datasources_remote/sos_remote_data_source.dart';
+import '../dtos/sos_incident_dto.dart';
 import 'mqtt_sos_lifecycle_update.dart';
-import '../../mappers/sos_incident_mapper.dart';
 import 'sos_runtime_rehydration_support.dart';
 
 class MqttOperationalSosRepository
@@ -72,11 +74,15 @@ class MqttOperationalSosRepository
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
+    String? appDeviceId,
+    String? hardwareId,
     int? originatorNodeId,
     int? relayNodeId,
     String? relayDeviceId,
     String? relayHardwareId,
     String? relaySource,
+    String? incidentId,
+    String? cycleKey,
     SdkDeviceBatterySnapshot? deviceBattery,
     SdkCoverageSnapshot? deviceCoverage,
     int? mobileBattery,
@@ -117,11 +123,15 @@ class MqttOperationalSosRepository
         timestamp: incident.createdAt,
         positionSnapshot: positionSnapshot,
         deviceId: deviceId,
+        appDeviceId: appDeviceId,
+        hardwareId: hardwareId,
         originatorNodeId: originatorNodeId,
         relayNodeId: relayNodeId,
         relayDeviceId: relayDeviceId,
         relayHardwareId: relayHardwareId,
         relaySource: relaySource,
+        incidentId: incidentId ?? incident.id,
+        cycleKey: cycleKey,
         deviceBattery: deviceBattery,
         deviceCoverage: deviceCoverage,
         mobileBattery: mobileBattery,
@@ -146,26 +156,72 @@ class MqttOperationalSosRepository
     required DateTime timestamp,
     required TrackingPosition? positionSnapshot,
     String? deviceId,
+    String? appDeviceId,
+    String? hardwareId,
     int? originatorNodeId,
     int? relayNodeId,
     String? relayDeviceId,
     String? relayHardwareId,
     String? relaySource,
+    String? incidentId,
+    String? cycleKey,
     SdkDeviceBatterySnapshot? deviceBattery,
     SdkCoverageSnapshot? deviceCoverage,
     int? mobileBattery,
     SdkCoverageSnapshot? mobileCoverage,
   }) {
+    final identity = normalizeSosBackendIdentity(
+      deviceId: deviceId,
+      appDeviceId: appDeviceId,
+      originatorNodeId: originatorNodeId,
+      relayNodeId: relayNodeId,
+      relayDeviceId: relayDeviceId,
+      incidentId: incidentId,
+      cycleKey: cycleKey,
+      hardwareId: hardwareId,
+    );
+    if (identity.hardwareId != null) {
+      BleDebugRegistry.instance.recordEvent(
+        'BACKEND_DEVICE_ID_NORMALIZED previousDeviceId=$deviceId '
+        'normalizedDeviceId=${identity.deviceId} source=sos',
+      );
+    }
+    if (isBleMacDeviceId(identity.deviceId)) {
+      BleDebugRegistry.instance.recordEvent(
+        'BACKEND_DEVICE_ID_INVALID invalidBackendDeviceId=${identity.deviceId} source=sos',
+      );
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_BACKEND_PAYLOAD_FINAL source=mqtt '
+      'owner=${identity.originatorNodeId == null ? "app" : "device"} '
+      'triggerSource=${relaySource ?? "mqtt_operational_sos"} '
+      'deviceId=${identity.deviceId ?? "none"} '
+      'nodeId=${identity.nodeId?.toString() ?? "none"} '
+      'appDeviceId=${identity.appDeviceId ?? "none"} '
+      'originatorNodeId=${identity.originatorNodeId?.toString() ?? "none"} '
+      'relayNodeId=${relayNodeId?.toString() ?? "none"} '
+      'relayDeviceId=${identity.relayDeviceId ?? "none"} '
+      'hardwareId=${identity.hardwareId ?? "none"} '
+      'relayHardwareId=${relayHardwareId ?? "none"} '
+      'identitySource=${identity.identitySource} '
+      'incidentId=${incidentId ?? "none"} '
+      'cycleKey=${cycleKey ?? "none"}',
+    );
     return realtimeClient.publishOperationalSos(
       MqttOperationalSosRequest(
         timestamp: timestamp,
         positionSnapshot: positionSnapshot,
-        deviceId: deviceId,
-        originatorNodeId: originatorNodeId,
+        deviceId: identity.deviceId,
+        appDeviceId: identity.appDeviceId,
+        hardwareId: identity.hardwareId,
+        identitySource: identity.identitySource,
+        originatorNodeId: identity.originatorNodeId,
         relayNodeId: relayNodeId,
-        relayDeviceId: relayDeviceId,
+        relayDeviceId: identity.relayDeviceId,
         relayHardwareId: relayHardwareId,
         source: relaySource,
+        incidentId: incidentId,
+        cycleKey: cycleKey,
         deviceBattery: deviceBattery,
         deviceCoverage: deviceCoverage,
         mobileBattery: mobileBattery,
@@ -311,7 +367,8 @@ class MqttOperationalSosRepository
   Stream<SosState> watchSosState() => _stateController.stream;
 
   @override
-  Future<SosHistoryPage> listSosHistory({String? cursor, int limit = 20}) async {
+  Future<SosHistoryPage> listSosHistory(
+      {String? cursor, int limit = 20}) async {
     final dataSource = remoteDataSource;
     if (dataSource == null) {
       return const SosHistoryPage(items: [], hasMore: false);
@@ -332,7 +389,8 @@ class MqttOperationalSosRepository
                 ? null
                 : SosHistoryTelemetry(
                     id: item.creationTelemetry!.id,
-                    occurredAt: DateTime.parse(item.creationTelemetry!.occurredAt),
+                    occurredAt:
+                        DateTime.parse(item.creationTelemetry!.occurredAt),
                     latitude: item.creationTelemetry!.latitude,
                     longitude: item.creationTelemetry!.longitude,
                     altitude: item.creationTelemetry!.altitude,
@@ -341,13 +399,15 @@ class MqttOperationalSosRepository
                     mobileBattery: item.creationTelemetry!.mobileBattery,
                     mobileCoverage: item.creationTelemetry!.mobileCoverage,
                   ),
-            trail: item.trail.map((p) => TrackingPosition(
-              latitude: p.latitude,
-              longitude: p.longitude,
-              timestamp: DateTime.parse(p.occurredAt),
-              altitude: p.altitude,
-              source: DeliveryMode.mobile,
-            )).toList(),
+            trail: item.trail
+                .map((p) => TrackingPosition(
+                      latitude: p.latitude,
+                      longitude: p.longitude,
+                      timestamp: DateTime.parse(p.occurredAt),
+                      altitude: p.altitude,
+                      source: DeliveryMode.mobile,
+                    ))
+                .toList(),
           );
         }).toList(),
         nextCursor: dto.nextCursor,
@@ -423,16 +483,125 @@ class MqttOperationalSosRepository
       return;
     }
 
-    _activeIncident = _activeIncident!.copyWith(state: update.state);
+    final previousIncident = _activeIncident;
+    final nextIncident = previousIncident!.copyWith(state: update.state);
+    final accepted = _emit(
+      update.state,
+      previousIncident: previousIncident,
+      incomingIncident: nextIncident,
+      reason: 'realtime_event',
+    );
+    if (!accepted) {
+      return;
+    }
+    _activeIncident = nextIncident;
     _rememberActiveLikeStateIfNeeded(update.state);
-    _emit(update.state);
     unawaited(_persistState());
   }
 
-  void _emit(SosState state) {
-    _rememberActiveLikeStateIfNeeded(state);
-    _stateMachine.transitionTo(state);
-    _stateController.add(_stateMachine.current);
+  bool _emit(
+    SosState state, {
+    SosIncident? previousIncident,
+    SosIncident? incomingIncident,
+    String reason = 'emit',
+  }) {
+    final previousState = _stateMachine.current;
+    if (previousState == state) {
+      return false;
+    }
+    try {
+      _stateMachine.transitionTo(state);
+      _rememberActiveLikeStateIfNeeded(state);
+      _stateController.add(_stateMachine.current);
+      return true;
+    } on EixamSdkException catch (error) {
+      if (error.code != 'E_SOS_INVALID_TRANSITION') {
+        rethrow;
+      }
+      final accepted = _handleInvalidTransition(
+        previousState: previousState,
+        incomingState: state,
+        previousIncident: previousIncident ?? _activeIncident,
+        incomingIncident: incomingIncident,
+        reason: reason,
+      );
+      if (accepted) {
+        _rememberActiveLikeStateIfNeeded(state);
+      }
+      return accepted;
+    }
+  }
+
+  bool _handleInvalidTransition({
+    required SosState previousState,
+    required SosState incomingState,
+    required SosIncident? previousIncident,
+    required SosIncident? incomingIncident,
+    required String reason,
+  }) {
+    final previousTerminal = _terminalLabel(previousState);
+    final incomingTerminal = _terminalLabel(incomingState);
+    if (_isTerminalState(previousState) && _isActiveLikeState(incomingState)) {
+      _logTransitionGuard(
+        decision: 'ignore_invalid_transition',
+        previousState: previousState,
+        incomingState: incomingState,
+        previousIncident: previousIncident,
+        incomingIncident: incomingIncident,
+        reason: 'stale_open_after_terminal:$reason',
+      );
+      return false;
+    }
+    if (_isTerminalState(incomingState) || incomingState == SosState.cancelRequested) {
+      _setState(incomingState);
+      return true;
+    }
+    _logTransitionGuard(
+      decision: 'ignore_invalid_transition',
+      previousState: previousState,
+      incomingState: incomingState,
+      previousIncident: previousIncident,
+      incomingIncident: incomingIncident,
+      reason: 'invalid_state_machine_transition:$reason '
+          'previousTerminal=$previousTerminal incomingTerminal=$incomingTerminal',
+    );
+    return false;
+  }
+
+  void _logTransitionGuard({
+    required String decision,
+    required SosState previousState,
+    required SosState incomingState,
+    required SosIncident? previousIncident,
+    required SosIncident? incomingIncident,
+    required String reason,
+  }) {
+    BleDebugRegistry.instance.recordEvent(
+      '[SOS_REPOSITORY_TRANSITION_GUARD] decision=$decision '
+      'previousStage=${previousState.name} incomingStage=${incomingState.name} '
+      'previousTerminal=${_terminalLabel(previousState)} '
+      'incomingTerminal=${_terminalLabel(incomingState)} '
+      'previousIncident=${previousIncident?.id ?? "none"} '
+      'incomingIncident=${incomingIncident?.id ?? "none"} '
+      'reason=$reason',
+    );
+  }
+
+  String _terminalLabel(SosState state) {
+    if (state == SosState.resolved) {
+      return 'resolved';
+    }
+    if (state == SosState.cancelled) {
+      return 'cancelled';
+    }
+    if (state == SosState.idle || state == SosState.failed) {
+      return 'idle';
+    }
+    return 'open';
+  }
+
+  bool _isTerminalState(SosState state) {
+    return state == SosState.resolved || state == SosState.cancelled;
   }
 
   void _setState(SosState state) {

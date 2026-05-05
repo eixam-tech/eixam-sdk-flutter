@@ -1262,6 +1262,10 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
             value: _controller.deviceStatus?.deviceId ?? '-',
           ),
           InfoLine(
+            label: 'deviceStatus.nodeId',
+            value: _formatNodeId(_controller.deviceStatus?.nodeId),
+          ),
+          InfoLine(
             label: 'Connected',
             value: (_controller.deviceStatus?.connected ?? false).toString(),
           ),
@@ -1560,6 +1564,13 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
       case ValidationBackendPreset.custom:
         return 'Custom URL';
     }
+  }
+
+  String _formatNodeId(int? nodeId) {
+    if (nodeId == null) {
+      return '-';
+    }
+    return '$nodeId';
   }
 
   void _seedSessionDraftFromCurrentState() {

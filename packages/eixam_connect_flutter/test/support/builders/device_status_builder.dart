@@ -2,6 +2,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 DeviceStatus buildDeviceStatus({
   String deviceId = 'demo-device',
+  int? nodeId,
   String? canonicalHardwareId,
   String? deviceAlias = 'Demo Beacon',
   String? model = 'EIXAM R1',
@@ -21,6 +22,7 @@ DeviceStatus buildDeviceStatus({
   final timestamp = DateTime.utc(2026, 1, 1, 10);
   return DeviceStatus(
     deviceId: deviceId,
+    nodeId: nodeId,
     canonicalHardwareId: canonicalHardwareId,
     deviceAlias: deviceAlias,
     model: model,

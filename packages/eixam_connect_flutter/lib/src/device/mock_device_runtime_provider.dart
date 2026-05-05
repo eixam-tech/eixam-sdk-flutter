@@ -115,6 +115,7 @@ class MockDeviceRuntimeProvider implements DeviceRuntimeProvider {
   Future<DeviceStatus> unpair(DeviceStatus currentStatus) async {
     return DeviceStatus(
       deviceId: currentStatus.deviceId,
+      nodeId: currentStatus.nodeId,
       canonicalHardwareId: currentStatus.canonicalHardwareId,
       deviceAlias: currentStatus.deviceAlias,
       model: currentStatus.model,

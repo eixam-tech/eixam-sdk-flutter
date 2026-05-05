@@ -187,6 +187,7 @@ void main() {
       deviceRepository.emitStatus(
         buildDeviceStatus(
           deviceId: 'ble-device-123',
+          nodeId: 233234039,
           canonicalHardwareId: 'CF:82:11:22:33:44',
           paired: true,
           connected: true,
@@ -209,8 +210,10 @@ void main() {
       expect(sosRepository.lastTriggerSource, 'button_ui');
       expect(sosRepository.lastPositionSnapshot, isNotNull);
       expect(sosRepository.lastPositionSnapshot!.latitude, 41.38);
-      expect(sosRepository.lastDeviceId, 'CF:82:11:22:33:44');
+      expect(sosRepository.lastDeviceId, '233234039');
+      expect(sosRepository.lastOriginatorNodeId, 233234039);
       expect(sosRepository.lastDeviceId, isNot('ble-device-123'));
+      expect(sosRepository.lastDeviceId, isNot('CF:82:11:22:33:44'));
       expect(
         sosRepository.lastDeviceBattery?.toJson(),
         <String, dynamic>{'rawValue': 1, 'range': 'low'},
@@ -5593,6 +5596,27 @@ void main() {
       );
     });
 
+    test('operational SOS envelope normalizes logical identity from node ids',
+        () {
+      final envelope = SdkMqttContract.buildOperationalSosEnvelope(
+        MqttOperationalSosRequest(
+          timestamp: DateTime.utc(2026, 3, 30, 12),
+          deviceId: 'CF:82:59:4B:1A:A8',
+          originatorNodeId: 233234039,
+          relayNodeId: 1498094248,
+          relayDeviceId: 'CF:82:59:4B:1A:A8',
+          relayHardwareId: 'CF:82:59:4B:1A:A8',
+        ),
+      );
+
+      final payload = jsonDecode(envelope.payload) as Map<String, dynamic>;
+      expect(payload['deviceId'], '233234039');
+      expect(payload['originatorNodeId'], 233234039);
+      expect(payload['relayNodeId'], 1498094248);
+      expect(payload['relayDeviceId'], '1498094248');
+      expect(payload['relayHardwareId'], 'CF:82:59:4B:1A:A8');
+    });
+
     test('operational SOS envelope omits null operational metadata', () {
       final envelope = SdkMqttContract.buildOperationalSosEnvelope(
         MqttOperationalSosRequest(
@@ -5666,6 +5690,47 @@ void main() {
           contains(
               '"deviceCoverage":{"signalStrength":2,"networkType":"ble","isConnected":true}'));
       expect(capturedRequest.headers['Authorization'], 'Bearer deadbeef');
+    });
+
+    test('http trigger path normalizes logical identity from node ids',
+        () async {
+      late http.Request capturedRequest;
+      final dataSource = HttpSosRemoteDataSource(
+        transport: SdkHttpTransport(
+          client: _RecordingClient(
+            handler: (request) async {
+              capturedRequest = request;
+              return http.Response(
+                '{"incident":{"id":"sos-1","state":"sent","createdAt":"2026-03-30T12:00:00.000Z"}}',
+                200,
+              );
+            },
+          ),
+          config: const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
+          sessionContext: SdkSessionContext()
+            ..currentSession = const EixamSession.signed(
+              appId: 'app-demo',
+              externalUserId: 'external-123',
+              userHash: 'deadbeef',
+            ),
+        ),
+      );
+
+      await dataSource.triggerSos(
+        triggerSource: 'remote_lora_relay',
+        deviceId: 'none',
+        originatorNodeId: 233234039,
+        relayNodeId: 1498094248,
+        relayDeviceId: 'CF:82:59:4B:1A:A8',
+        relayHardwareId: 'CF:82:59:4B:1A:A8',
+      );
+
+      final payload = jsonDecode(capturedRequest.body) as Map<String, dynamic>;
+      expect(payload['deviceId'], '233234039');
+      expect(payload['originatorNodeId'], 233234039);
+      expect(payload['relayNodeId'], 1498094248);
+      expect(payload['relayDeviceId'], '1498094248');
+      expect(payload['relayHardwareId'], 'CF:82:59:4B:1A:A8');
     });
 
     test('http cancel path posts to /v1/sdk/sos/cancel without a request body',
@@ -6310,6 +6375,43 @@ void main() {
             'E_TELEMETRY_LATITUDE_INVALID',
           ),
         ),
+      );
+    });
+
+    test('telemetry repository normalizes MAC deviceId from nodeId', () async {
+      BleDebugRegistry.instance.reset();
+      final realtimeClient = _FakeOperationalRealtimeClient();
+      final repository = MqttTelemetryRepository(
+        realtimeClient: realtimeClient,
+      );
+
+      await repository.publishTelemetry(
+        SdkTelemetryPayload(
+          timestamp: DateTime.utc(2026, 3, 31, 10, 15),
+          latitude: 41.38,
+          longitude: 2.17,
+          altitude: 8,
+          nodeId: 1498094248,
+          deviceId: 'CF:82:59:4B:1A:A8',
+          hardwareId: 'CF:82:59:4B:1A:A8',
+        ),
+      );
+
+      final payload = realtimeClient.publishedTelemetry.single;
+      expect(payload.deviceId, '1498094248');
+      expect(payload.nodeId, 1498094248);
+      expect(payload.hardwareId, 'CF:82:59:4B:1A:A8');
+      expect(payload.deviceId, isNot('CF:82:59:4B:1A:A8'));
+      expect(
+        BleDebugRegistry.instance.currentState.events.any(
+          (event) =>
+              event.message.contains('TELEMETRY_BACKEND_PAYLOAD_FINAL') &&
+              event.message.contains('source=mqtt') &&
+              event.message.contains('deviceId=1498094248') &&
+              event.message.contains('nodeId=1498094248') &&
+              event.message.contains('hardwareId=CF:82:59:4B:1A:A8'),
+        ),
+        isTrue,
       );
     });
 
@@ -9134,6 +9236,7 @@ void main() {
       deviceRepository.emitStatus(
         buildDeviceStatus(
           deviceId: 'ble-confirm-1',
+          nodeId: 0x12345678,
           canonicalHardwareId: 'CF:82:00:00:00:01',
           paired: true,
           connected: true,
@@ -9154,8 +9257,10 @@ void main() {
       expect(sosRepository.triggerCallCount, 1);
       expect(sosRepository.lastTriggerSource, 'ble_device_runtime_confirm');
       expect(sosRepository.lastPositionSnapshot?.latitude, 41.38);
-      expect(sosRepository.lastDeviceId, 'CF:82:00:00:00:01');
+      expect(sosRepository.lastDeviceId, 0x12345678.toString());
+      expect(sosRepository.lastOriginatorNodeId, 0x12345678);
       expect(sosRepository.lastDeviceId, isNot('ble-confirm-1'));
+      expect(sosRepository.lastDeviceId, isNot('CF:82:00:00:00:01'));
     });
 
     test('confirmDeviceSos publishes relayed SOS with the remote deviceId',
@@ -9164,6 +9269,7 @@ void main() {
       final localDeviceRepository = FakeDeviceRepository(
         initialStatus: buildDeviceStatus(
           deviceId: 'ble-confirm-relay',
+          nodeId: 0x0A0B0C0D,
           canonicalHardwareId: 'CF:82:00:00:00:05',
           paired: true,
           connected: true,
@@ -9217,7 +9323,10 @@ void main() {
         await localSdk.confirmDeviceSos();
 
         expect(sosRepository.triggerCallCount, 1);
-        expect(sosRepository.lastDeviceId, 'CF:82:10:20:30:41');
+        expect(sosRepository.lastDeviceId, relayPacket.nodeId.toString());
+        expect(sosRepository.lastOriginatorNodeId, relayPacket.nodeId);
+        expect(sosRepository.lastRelayDeviceId, 0x0A0B0C0D.toString());
+        expect(sosRepository.lastRelayHardwareId, 'CF:82:00:00:00:05');
         expect(sosRepository.lastDeviceId, isNot('CF:82:00:00:00:05'));
       } finally {
         await localSdk.dispose();
@@ -9821,11 +9930,15 @@ class _FakeCancelSosRemoteDataSource implements SosRemoteDataSource {
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
+    String? appDeviceId,
+    String? hardwareId,
     int? originatorNodeId,
     int? relayNodeId,
     String? relayDeviceId,
     String? relayHardwareId,
     String? relaySource,
+    String? incidentId,
+    String? cycleKey,
     SdkDeviceBatterySnapshot? deviceBattery,
     SdkCoverageSnapshot? deviceCoverage,
     int? mobileBattery,
@@ -9840,7 +9953,8 @@ class _FakeCancelSosRemoteDataSource implements SosRemoteDataSource {
   }
 
   @override
-  Future<SosHistoryPageDto> listSosHistory({String? cursor, int limit = 20}) async {
+  Future<SosHistoryPageDto> listSosHistory(
+      {String? cursor, int limit = 20}) async {
     return const SosHistoryPageDto(items: [], hasMore: false);
   }
 }
@@ -9856,11 +9970,15 @@ class _AvailabilityAwareSosRepository extends FakeSosRepository {
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
+    String? appDeviceId,
+    String? hardwareId,
     int? originatorNodeId,
     int? relayNodeId,
     String? relayDeviceId,
     String? relayHardwareId,
     String? relaySource,
+    String? incidentId,
+    String? cycleKey,
     SdkDeviceBatterySnapshot? deviceBattery,
     SdkCoverageSnapshot? deviceCoverage,
     int? mobileBattery,
@@ -9882,6 +10000,8 @@ class _AvailabilityAwareSosRepository extends FakeSosRepository {
       relayDeviceId: relayDeviceId,
       relayHardwareId: relayHardwareId,
       relaySource: relaySource,
+      incidentId: incidentId,
+      cycleKey: cycleKey,
       deviceBattery: deviceBattery,
       deviceCoverage: deviceCoverage,
       mobileBattery: mobileBattery,

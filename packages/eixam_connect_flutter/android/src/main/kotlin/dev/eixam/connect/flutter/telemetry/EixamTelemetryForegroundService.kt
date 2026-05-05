@@ -237,6 +237,22 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             connection.setRequestProperty("X-App-ID", appId)
             connection.setRequestProperty("X-User-ID", externalUserId)
             connection.setRequestProperty("Authorization", "Bearer $userHash")
+            val correlationId = nextCorrelationId("tel-http")
+            Log.i(
+                logTag,
+                "[TELEMETRY_BACKEND_OUTBOUND_FINAL] transport=http " +
+                    "endpoint=/v1/sdk/telemetry correlationId=$correlationId " +
+                    "source=android_background_telemetry " +
+                    "deviceId=${body.optStringOrNone("deviceId")} " +
+                    "nodeId=${body.optStringOrNone("nodeId")} " +
+                    "appDeviceId=${body.optStringOrNone("appDeviceId")} " +
+                    "hardwareId=${body.optStringOrNone("hardwareId")} " +
+                    "identitySource=${body.optStringOrNone("identitySource")} " +
+                    "lat=${body.optStringOrNone("latitude")} " +
+                    "lon=${body.optStringOrNone("longitude")} " +
+                    "timestamp=${body.optStringOrNone("timestamp")} " +
+                    "payload=${redactedCompactJson(body)}",
+            )
             OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use {
                 it.write(body.toString())
             }
@@ -252,8 +268,18 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
                     logTag,
                     "$logPrefix publish result=failed httpStatus=$code body=${errorBody ?: "-"}",
                 )
+                Log.w(
+                    logTag,
+                    "[TELEMETRY_BACKEND_RESPONSE] correlationId=$correlationId " +
+                        "status=$code responseSummary=${compactSummary(errorBody ?: "-")}",
+                )
                 throw IllegalStateException("http_$code")
             }
+            Log.i(
+                logTag,
+                "[TELEMETRY_BACKEND_RESPONSE] correlationId=$correlationId " +
+                    "status=$code responseSummary=ok",
+            )
             Log.i(logTag, "$logPrefix publish httpStatus=$code")
         } finally {
             connection.disconnect()
@@ -666,6 +692,31 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
     private fun logStop(reason: String) {
         Log.i(logTag, "$logPrefix action=stop reason=$reason")
     }
+
+    private fun nextCorrelationId(prefix: String): String =
+        "$prefix-${System.currentTimeMillis()}"
+
+    private fun redactedCompactJson(payload: JSONObject): String {
+        val copy = JSONObject(payload.toString())
+        val userId = copy.optString("userId", "")
+        if (userId.contains("@")) {
+            copy.put("userId", "<redacted-email>")
+        }
+        listOf("token", "secret", "authorization", "password", "userHash", "email").forEach {
+            if (copy.has(it)) {
+                copy.put(it, "<redacted>")
+            }
+        }
+        return copy.toString()
+    }
+
+    private fun compactSummary(value: String): String {
+        val summary = value.replace(Regex("\\s+"), " ").trim()
+        return if (summary.length <= 240) summary else summary.take(240) + "..."
+    }
+
+    private fun JSONObject.optStringOrNone(key: String): String =
+        if (has(key) && !isNull(key)) optString(key).takeIf { it.isNotBlank() } ?: "none" else "none"
 
     private fun stopSelfSafely() {
         handler.removeCallbacks(tick)

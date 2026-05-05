@@ -1385,6 +1385,8 @@ class ValidationConsoleController extends ChangeNotifier {
           ValidationStateField(
               label: 'Device id', value: status?.deviceId ?? '-'),
           ValidationStateField(
+              label: 'Node id', value: status?.nodeId?.toString() ?? '-'),
+          ValidationStateField(
               label: 'Alias', value: status?.deviceAlias ?? '-'),
           ValidationStateField(label: 'Model', value: status?.model ?? '-'),
           ValidationStateField(

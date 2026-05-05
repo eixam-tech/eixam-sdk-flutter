@@ -1,6 +1,8 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import '../../device/ble_debug_registry.dart';
 import '../../sdk/operational_realtime_client.dart';
+import '../../sdk/sos_backend_identity_normalizer.dart';
 import 'telemetry_repository.dart';
 
 class MqttTelemetryRepository implements TelemetryRepository {
@@ -12,8 +14,32 @@ class MqttTelemetryRepository implements TelemetryRepository {
 
   @override
   Future<void> publishTelemetry(SdkTelemetryPayload payload) {
-    _validate(payload);
-    return realtimeClient.publishTelemetry(payload);
+    final identity = normalizeTelemetryBackendIdentity(payload: payload);
+    if (identity.normalized) {
+      BleDebugRegistry.instance.recordEvent(
+        'BACKEND_DEVICE_ID_NORMALIZED '
+        'previousDeviceId=${identity.previousDeviceId} '
+        'normalizedDeviceId=${identity.payload.deviceId} source=telemetry',
+      );
+    }
+    if (identity.invalidDeviceId) {
+      BleDebugRegistry.instance.recordEvent(
+        'BACKEND_DEVICE_ID_INVALID '
+        'invalidBackendDeviceId=${identity.previousDeviceId} source=telemetry',
+      );
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'TELEMETRY_BACKEND_PAYLOAD_FINAL source=mqtt '
+      'deviceId=${identity.payload.deviceId ?? "none"} '
+      'nodeId=${identity.nodeId?.toString() ?? "none"} '
+      'appDeviceId=${identity.appDeviceId ?? "none"} '
+      'hardwareId=${identity.payload.hardwareId ?? "none"} '
+      'identitySource=${identity.identitySource} '
+      'lat=${identity.payload.latitude} lon=${identity.payload.longitude} '
+      'timestamp=${identity.payload.timestamp.toUtc().toIso8601String()}',
+    );
+    _validate(identity.payload);
+    return realtimeClient.publishTelemetry(identity.payload);
   }
 
   @override

@@ -178,6 +178,9 @@ class _TechnicalLabScreenState extends State<TechnicalLabScreen> {
                       LabInfoLine(
                           label: 'Device ID', value: status?.deviceId ?? '-'),
                       LabInfoLine(
+                          label: 'Node ID',
+                          value: _formatNodeId(status?.nodeId)),
+                      LabInfoLine(
                           label: 'Model', value: deviceViewState.modelLabel),
                       LabInfoLine(
                           label: 'Alias', value: deviceViewState.aliasLabel),

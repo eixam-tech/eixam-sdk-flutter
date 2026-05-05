@@ -33,11 +33,15 @@ class FakeSosRepository implements SosRepository {
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
+    String? appDeviceId,
+    String? hardwareId,
     int? originatorNodeId,
     int? relayNodeId,
     String? relayDeviceId,
     String? relayHardwareId,
     String? relaySource,
+    String? incidentId,
+    String? cycleKey,
     SdkDeviceBatterySnapshot? deviceBattery,
     SdkCoverageSnapshot? deviceCoverage,
     int? mobileBattery,
@@ -79,7 +83,8 @@ class FakeSosRepository implements SosRepository {
   Stream<SosState> watchSosState() => _controller.stream;
 
   @override
-  Future<SosHistoryPage> listSosHistory({String? cursor, int limit = 20}) async {
+  Future<SosHistoryPage> listSosHistory(
+      {String? cursor, int limit = 20}) async {
     return const SosHistoryPage(items: [], hasMore: false);
   }
 }

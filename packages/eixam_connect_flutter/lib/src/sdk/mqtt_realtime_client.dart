@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
@@ -103,12 +104,41 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
         sdkUserId: session.canonicalExternalUserId ?? session.sdkUserId,
       ),
     );
-    await transport.publish(
-      topic: envelope.topic,
-      payload: envelope.payload,
-      qos: SdkMqttQos.atLeastOnce,
-      retain: false,
+    final correlationId = _nextCorrelationId('sos');
+    final payload = _decodeJsonObject(envelope.payload);
+    BleDebugRegistry.instance.recordEvent(
+      '[SOS_BACKEND_OUTBOUND_FINAL] transport=mqtt '
+      'endpoint=${envelope.topic} correlationId=$correlationId '
+      'source=${_field(payload, 'source', fallback: request.source ?? 'mqtt_operational_sos')} '
+      'owner=${_intField(payload, 'originatorNodeId') == null ? "app" : "device"} '
+      'deviceId=${_field(payload, 'deviceId')} '
+      'nodeId=${_intField(payload, 'originatorNodeId')?.toString() ?? "none"} '
+      'originatorNodeId=${_intField(payload, 'originatorNodeId')?.toString() ?? "none"} '
+      'appDeviceId=${_field(payload, 'appDeviceId')} '
+      'hardwareId=${_field(payload, 'hardwareId')} '
+      'identitySource=${_field(payload, 'identitySource')} '
+      'incidentId=${request.incidentId ?? "none"} '
+      'canonicalIncidentId=none '
+      'payload=${_redactedCompactJson(envelope.payload)}',
     );
+    try {
+      await transport.publish(
+        topic: envelope.topic,
+        payload: envelope.payload,
+        qos: SdkMqttQos.atLeastOnce,
+        retain: false,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        '[SOS_BACKEND_RESPONSE] correlationId=$correlationId status=ok '
+        'backendIncidentId=none responseSummary=mqtt_publish_accepted',
+      );
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        '[SOS_BACKEND_RESPONSE] correlationId=$correlationId status=error '
+        'backendIncidentId=none responseSummary=${_compactSummary(error)}',
+      );
+      rethrow;
+    }
   }
 
   @override
@@ -139,6 +169,22 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
             session.externalUserId,
       ),
     );
+    final correlationId = _nextCorrelationId('tel');
+    final envelopePayload = _decodeJsonObject(envelope.payload);
+    BleDebugRegistry.instance.recordEvent(
+      '[TELEMETRY_BACKEND_OUTBOUND_FINAL] transport=mqtt '
+      'endpoint=${envelope.topic} correlationId=$correlationId '
+      'source=${_field(envelopePayload, 'kind', fallback: 'mqtt_telemetry')} '
+      'deviceId=${_field(envelopePayload, 'deviceId')} '
+      'nodeId=${_intField(envelopePayload, 'nodeId')?.toString() ?? "none"} '
+      'appDeviceId=${_field(envelopePayload, 'appDeviceId')} '
+      'hardwareId=${_field(envelopePayload, 'hardwareId')} '
+      'identitySource=${_field(envelopePayload, 'identitySource')} '
+      'lat=${_field(envelopePayload, 'latitude')} '
+      'lon=${_field(envelopePayload, 'longitude')} '
+      'timestamp=${_field(envelopePayload, 'timestamp')} '
+      'payload=${_redactedCompactJson(envelope.payload)}',
+    );
     BleDebugRegistry.instance.recordEvent(
       'Telemetry publish start -> transport=MQTT method=PUBLISH topic=${envelope.topic} payload=${envelope.payload}',
     );
@@ -152,9 +198,17 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
       BleDebugRegistry.instance.recordEvent(
         'Telemetry publish success -> transport=MQTT topic=${envelope.topic} qos=1 retain=false backendHttpResponse=<not_applicable>',
       );
+      BleDebugRegistry.instance.recordEvent(
+        '[TELEMETRY_BACKEND_RESPONSE] correlationId=$correlationId status=ok '
+        'responseSummary=mqtt_publish_accepted',
+      );
     } catch (error) {
       BleDebugRegistry.instance.recordEvent(
         'Telemetry publish failure -> transport=MQTT topic=${envelope.topic} error=$error',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        '[TELEMETRY_BACKEND_RESPONSE] correlationId=$correlationId status=error '
+        'responseSummary=${_compactSummary(error)}',
       );
       rethrow;
     }
@@ -282,5 +336,88 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
     }
     _state = next;
     _connectionController.add(next);
+  }
+
+  String _nextCorrelationId(String prefix) =>
+      '$prefix-${DateTime.now().toUtc().microsecondsSinceEpoch}';
+
+  Map<String, dynamic> _decodeJsonObject(String payload) {
+    try {
+      final decoded = jsonDecode(payload);
+      if (decoded is Map<String, dynamic>) {
+        return decoded;
+      }
+    } catch (_) {
+      // Keep logging resilient; the raw payload is still summarized below.
+    }
+    return const <String, dynamic>{};
+  }
+
+  String _field(
+    Map<String, dynamic> payload,
+    String key, {
+    String fallback = 'none',
+  }) {
+    final value = payload[key];
+    if (value == null) {
+      return fallback;
+    }
+    final text = value.toString().trim();
+    return text.isEmpty ? fallback : text;
+  }
+
+  int? _intField(Map<String, dynamic> payload, String key) {
+    final value = payload[key];
+    if (value is int) {
+      return value;
+    }
+    if (value is String) {
+      return int.tryParse(value.trim());
+    }
+    return null;
+  }
+
+  String _redactedCompactJson(String payload) {
+    try {
+      return jsonEncode(_redactJsonValue(jsonDecode(payload)));
+    } catch (_) {
+      return _compactSummary(payload);
+    }
+  }
+
+  Object? _redactJsonValue(Object? value, {String? key}) {
+    final normalizedKey = key?.toLowerCase();
+    if (normalizedKey != null &&
+        (normalizedKey.contains('token') ||
+            normalizedKey.contains('secret') ||
+            normalizedKey.contains('authorization') ||
+            normalizedKey == 'password' ||
+            normalizedKey == 'userhash' ||
+            normalizedKey == 'email')) {
+      return '<redacted>';
+    }
+    if (normalizedKey == 'userid' && value is String && value.contains('@')) {
+      return '<redacted-email>';
+    }
+    if (value is Map) {
+      return value.map<String, Object?>(
+        (key, child) => MapEntry(
+          key.toString(),
+          _redactJsonValue(child, key: key.toString()),
+        ),
+      );
+    }
+    if (value is List) {
+      return value.map((child) => _redactJsonValue(child)).toList();
+    }
+    return value;
+  }
+
+  String _compactSummary(Object? value) {
+    final summary = value.toString().replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (summary.isEmpty) {
+      return 'none';
+    }
+    return summary.length <= 240 ? summary : '${summary.substring(0, 240)}...';
   }
 }

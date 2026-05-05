@@ -38,7 +38,7 @@ class HttpSdkDevicesRemoteDataSource implements SdkDevicesRemoteDataSource {
         'paired_at': pairedAt.toUtc().toIso8601String(),
       }),
     );
-    if (response.statusCode != 200) {
+    if (response.statusCode < 200 || response.statusCode >= 300) {
       throw DeviceException('E_HTTP_DEVICE_UPSERT_FAILED', response.body);
     }
     final payload =

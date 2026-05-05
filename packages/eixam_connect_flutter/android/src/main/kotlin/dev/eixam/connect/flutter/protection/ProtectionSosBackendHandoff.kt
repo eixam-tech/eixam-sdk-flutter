@@ -2,11 +2,16 @@ package dev.eixam.connect.flutter.protection
 
 import android.content.Context
 import android.content.pm.ApplicationInfo
+import android.util.Log
 import org.json.JSONObject
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -19,6 +24,7 @@ internal class ProtectionSosBackendHandoff(
     private val executor = Executors.newSingleThreadExecutor()
     private val flutterPreferences =
         context.getSharedPreferences(flutterPrefsName, Context.MODE_PRIVATE)
+    private val registeredBackendNodeIds = mutableSetOf<Int>()
 
     fun dispose() {
         executor.shutdownNow()
@@ -238,16 +244,107 @@ internal class ProtectionSosBackendHandoff(
             .put("latitude", position.latitude)
             .put("longitude", position.longitude)
             .put("altitude", position.altitude)
-        runtimeStore.currentBackendHardwareId()
+        val nodeId = runtimeStore.currentBoundNodeId()
+        val hardwareId = runtimeStore.currentBackendHardwareId()
             ?.trim()
             ?.takeIf { it.isNotBlank() }
-            ?.let { payload.put("deviceId", it) }
+        if (nodeId != null) {
+            payload
+                .put("deviceId", nodeId.toString())
+                .put("nodeId", nodeId)
+                .put("originatorNodeId", nodeId)
+                .put("identitySource", "ble_node")
+        } else {
+            payload.put("identitySource", "app_device_ble_node_pending")
+        }
+        hardwareId?.let {
+            payload.put("hardwareId", it)
+            if (nodeId == null && !looksLikeBleMac(it)) {
+                payload.put("deviceId", it)
+            }
+        }
+        if (nodeId != null) {
+            registerBackendDevice(
+                apiBaseUrl = apiBaseUrl,
+                session = session,
+                nodeId = nodeId,
+                bleHardwareId = hardwareId,
+            )
+        }
+        val correlationId = nextCorrelationId("sos-native")
+        Log.i(
+            logTag,
+            "[SOS_BACKEND_OUTBOUND_FINAL] transport=http endpoint=/v1/sdk/sos " +
+                "correlationId=$correlationId source=native_protection_sos owner=device " +
+                "deviceId=${payload.optStringOrNone("deviceId")} " +
+                "nodeId=${nodeId?.toString() ?: "none"} " +
+                "originatorNodeId=${payload.optStringOrNone("originatorNodeId")} " +
+                "appDeviceId=${payload.optStringOrNone("appDeviceId")} " +
+                "hardwareId=${payload.optStringOrNone("hardwareId")} " +
+                "identitySource=${payload.optStringOrNone("identitySource")} " +
+                "incidentId=none canonicalIncidentId=none " +
+                "payload=${redactedCompactJson(payload)}",
+        )
         val response = sendRequest(
             method = "POST",
             url = normalizeUrl(apiBaseUrl, "/v1/sdk/sos"),
             session = session,
             body = payload.toString(),
         )
+        Log.i(
+            logTag,
+            "[SOS_BACKEND_RESPONSE] correlationId=$correlationId " +
+                "status=${response.statusCode} " +
+                "backendIncidentId=${backendIncidentIdFrom(response.body) ?: "none"} " +
+                "responseSummary=${compactSummary(response.body)}",
+        )
+        if (response.statusCode == 422 || response.statusCode == 402) {
+            Log.w(
+                logTag,
+                "SOS_RUNTIME_BACKEND_DELIVERY_FAILED status=${response.statusCode} " +
+                    "failure=backend_validation_error pendingSos=1 " +
+                    "localSosPreserved=true correlationId=$correlationId " +
+                    "deviceId=${payload.optStringOrNone("deviceId")} " +
+                    "nodeId=${payload.optStringOrNone("nodeId")} " +
+                    "originatorNodeId=${payload.optStringOrNone("originatorNodeId")} " +
+                    "hardwareId=${payload.optStringOrNone("hardwareId")}",
+            )
+            if (nodeId != null && isReferencedDeviceMissing(response.body)) {
+                registerBackendDevice(
+                    apiBaseUrl = apiBaseUrl,
+                    session = session,
+                    nodeId = nodeId,
+                    bleHardwareId = hardwareId,
+                    force = true,
+                )
+                val retryCorrelationId = nextCorrelationId("sos-native-retry")
+                Log.i(
+                    logTag,
+                    "[SOS_BACKEND_RETRY_AFTER_DEVICE_REGISTER] " +
+                        "originalCorrelationId=$correlationId " +
+                        "retryCorrelationId=$retryCorrelationId " +
+                        "nodeId=$nodeId backendHardwareId=${nodeId} " +
+                        "reason=referenced_device_does_not_exist",
+                )
+                val retryResponse = sendRequest(
+                    method = "POST",
+                    url = normalizeUrl(apiBaseUrl, "/v1/sdk/sos"),
+                    session = session,
+                    body = payload.toString(),
+                )
+                Log.i(
+                    logTag,
+                    "[SOS_BACKEND_RESPONSE] correlationId=$retryCorrelationId " +
+                        "status=${retryResponse.statusCode} " +
+                        "backendIncidentId=${backendIncidentIdFrom(retryResponse.body) ?: "none"} " +
+                        "responseSummary=${compactSummary(retryResponse.body)}",
+                )
+                if (retryResponse.statusCode in 200..299) {
+                    return parseIncidentResponse(retryResponse.body)
+                        ?: throw IllegalStateException("Native SOS create did not return an incident payload.")
+                }
+            }
+        }
         if (response.statusCode !in 200..299) {
             throw IllegalStateException("Native SOS create failed: ${response.statusCode} ${response.body}")
         }
@@ -329,6 +426,77 @@ internal class ProtectionSosBackendHandoff(
         } finally {
             connection.disconnect()
         }
+    }
+
+    private fun registerBackendDevice(
+        apiBaseUrl: String,
+        session: SessionSnapshot,
+        nodeId: Int,
+        bleHardwareId: String?,
+        force: Boolean = false,
+    ) {
+        if (!force && registeredBackendNodeIds.contains(nodeId)) {
+            return
+        }
+        val backendHardwareId = runtimeStore.currentBackendHardwareId()
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: nodeId.toString()
+        val diagnosticBleHardwareId = bleHardwareId
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: runtimeStore.currentBleHardwareId()
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+        val firmwareVersion = runtimeStore.currentFirmwareVersion()
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        val hardwareModel = runtimeStore.currentHardwareModel()
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        if (firmwareVersion == null || hardwareModel == null) {
+            Log.w(
+                logTag,
+                "[DEVICE_BACKEND_REGISTER_SKIPPED] reason=missing_metadata " +
+                    "backendHardwareId=$backendHardwareId nodeId=$nodeId " +
+                    "bleHardwareId=${diagnosticBleHardwareId ?: "none"} " +
+                    "firmwareVersion=${firmwareVersion ?: "none"} " +
+                    "hardwareModel=${hardwareModel ?: "none"}",
+            )
+            return
+        }
+        val pairedAt = isoNow()
+        val payload = JSONObject()
+            .put("hardware_id", backendHardwareId)
+            .put("firmware_version", firmwareVersion)
+            .put("hardware_model", hardwareModel)
+            .put("paired_at", pairedAt)
+        Log.i(
+            logTag,
+            "[DEVICE_BACKEND_REGISTER_OUTBOUND] endpoint=/v1/sdk/devices " +
+                "backendHardwareId=$backendHardwareId nodeId=$nodeId " +
+                "bleHardwareId=${diagnosticBleHardwareId ?: "none"} " +
+                "firmwareVersion=$firmwareVersion hardwareModel=$hardwareModel " +
+                "pairedAt=$pairedAt " +
+                "payload=${payload}",
+        )
+        val response = sendRequest(
+            method = "POST",
+            url = normalizeUrl(apiBaseUrl, "/v1/sdk/devices"),
+            session = session,
+            body = payload.toString(),
+        )
+        Log.i(
+            logTag,
+            "[DEVICE_BACKEND_REGISTER_RESPONSE] status=${response.statusCode} " +
+                "backendDeviceId=${backendDeviceIdFrom(response.body) ?: "none"} " +
+                "backendHardwareId=$backendHardwareId " +
+                "responseSummary=${compactSummary(response.body)}",
+        )
+        if (response.statusCode !in 200..299) {
+            throw IllegalStateException("Native device registration failed: ${response.statusCode} ${response.body}")
+        }
+        registeredBackendNodeIds.add(nodeId)
     }
 
     private fun parseIncidentResponse(body: String): BackendIncident? {
@@ -500,7 +668,59 @@ internal class ProtectionSosBackendHandoff(
     private fun isDebugBuild(): Boolean =
         (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
+    private fun nextCorrelationId(prefix: String): String =
+        "$prefix-${System.currentTimeMillis()}"
+
+    private fun redactedCompactJson(payload: JSONObject): String {
+        val copy = JSONObject(payload.toString())
+        listOf("token", "secret", "authorization", "password", "userHash", "email").forEach {
+            if (copy.has(it)) {
+                copy.put(it, "<redacted>")
+            }
+        }
+        return copy.toString()
+    }
+
+    private fun compactSummary(value: String): String {
+        val summary = value.replace(Regex("\\s+"), " ").trim()
+        return if (summary.length <= 240) summary else summary.take(240) + "..."
+    }
+
+    private fun backendIncidentIdFrom(body: String): String? =
+        try {
+            JSONObject(body).optJSONObject("incident")
+                ?.optString("id")
+                ?.takeIf { it.isNotBlank() }
+        } catch (_: Exception) {
+            null
+        }
+
+    private fun backendDeviceIdFrom(body: String): String? =
+        try {
+            JSONObject(body).optJSONObject("device")
+                ?.optString("id")
+                ?.takeIf { it.isNotBlank() }
+        } catch (_: Exception) {
+            null
+        }
+
+    private fun isReferencedDeviceMissing(body: String): Boolean =
+        body.contains("Referenced device does not exist", ignoreCase = true)
+
+    private fun isoNow(): String {
+        val formatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+        formatter.timeZone = TimeZone.getTimeZone("UTC")
+        return formatter.format(Date())
+    }
+
+    private fun JSONObject.optStringOrNone(key: String): String =
+        if (has(key) && !isNull(key)) optString(key).takeIf { it.isNotBlank() } ?: "none" else "none"
+
+    private fun looksLikeBleMac(value: String): Boolean =
+        Regex("^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$").matches(value)
+
     companion object {
+        private const val logTag = "ProtectionSosBackend"
         private const val flutterPrefsName = "FlutterSharedPreferences"
         private const val flutterKeyPrefix = "flutter."
         private const val sdkSessionKey = "eixam.sdk.session"

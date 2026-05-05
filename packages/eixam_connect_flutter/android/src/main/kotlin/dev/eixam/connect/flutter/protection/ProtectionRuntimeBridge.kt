@@ -80,6 +80,9 @@ internal object ProtectionRuntimeBridge {
                 val arguments = call.arguments as? Map<*, *>
                 val activeDeviceId = arguments?.get("activeDeviceId") as? String
                 val backendHardwareId = arguments?.get("backendHardwareId") as? String
+                val bleHardwareId = arguments?.get("bleHardwareId") as? String
+                val firmwareVersion = arguments?.get("firmwareVersion") as? String
+                val hardwareModel = arguments?.get("hardwareModel") as? String
                 val enableStoreAndForward =
                     arguments?.get("enableStoreAndForward") as? Boolean ?: true
                 val hostAppManagedNotifications =
@@ -93,6 +96,9 @@ internal object ProtectionRuntimeBridge {
                     store.markStartRequest(
                         activeDeviceId = activeDeviceId,
                         backendHardwareId = backendHardwareId,
+                        bleHardwareId = bleHardwareId,
+                        firmwareVersion = firmwareVersion,
+                        hardwareModel = hardwareModel,
                         apiBaseUrl = arguments?.get("apiBaseUrl") as? String,
                         enableStoreAndForward = enableStoreAndForward,
                         hostAppManagedNotifications = hostAppManagedNotifications,

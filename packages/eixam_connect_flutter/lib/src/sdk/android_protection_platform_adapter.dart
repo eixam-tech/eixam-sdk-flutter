@@ -50,6 +50,9 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
       <String, dynamic>{
         'activeDeviceId': request.activeDeviceId,
         'backendHardwareId': request.backendHardwareId,
+        'bleHardwareId': request.bleHardwareId,
+        'firmwareVersion': request.firmwareVersion,
+        'hardwareModel': request.hardwareModel,
         'apiBaseUrl': request.apiBaseUrl,
         'sessionReady': request.sessionReady,
         'enableStoreAndForward': request.enableStoreAndForward,

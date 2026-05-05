@@ -277,19 +277,20 @@ class InMemoryDeviceRepository implements DeviceRepository {
 
     if (_hasEffectiveStatusChange(previous, _status)) {
       BleDebugRegistry.instance.recordEvent(
-        'InMemoryDeviceRepository.$source -> effective_change=true connected=${_status.connected} previousConnected=${previous.connected} lifecycle=${_status.lifecycleState.name} deviceId=${_status.deviceId}',
+        'InMemoryDeviceRepository.$source -> effective_change=true connected=${_status.connected} previousConnected=${previous.connected} lifecycle=${_status.lifecycleState.name} hardwareId=${_status.deviceId} nodeId=${_status.nodeId?.toString() ?? "-"}',
       );
       _controller.add(_status);
       return;
     }
 
     BleDebugRegistry.instance.recordEvent(
-      'InMemoryDeviceRepository.$source -> effective_change=false emit_skipped deviceId=${_status.deviceId} connected=${_status.connected} lifecycle=${_status.lifecycleState.name}',
+      'InMemoryDeviceRepository.$source -> effective_change=false emit_skipped hardwareId=${_status.deviceId} nodeId=${_status.nodeId?.toString() ?? "-"} connected=${_status.connected} lifecycle=${_status.lifecycleState.name}',
     );
   }
 
   bool _hasEffectiveStatusChange(DeviceStatus previous, DeviceStatus next) {
     return previous.deviceId != next.deviceId ||
+        previous.nodeId != next.nodeId ||
         previous.canonicalHardwareId != next.canonicalHardwareId ||
         previous.deviceAlias != next.deviceAlias ||
         previous.model != next.model ||

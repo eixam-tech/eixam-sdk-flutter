@@ -170,7 +170,7 @@ class RealBleClient implements BleClient {
     final device = _devices[deviceId];
     if (device == null) {
       BleDebugRegistry.instance.recordEvent(
-        'BLE connect selected device missing -> deviceId=$deviceId',
+        'BLE connect selected device missing -> hardwareId=$deviceId',
       );
       throw Exception('Dispositiu no trobat: $deviceId');
     }
@@ -181,42 +181,42 @@ class RealBleClient implements BleClient {
     );
     BleDebugRegistry.instance.recordEvent('Connecting to $deviceId');
     BleDebugRegistry.instance.recordEvent(
-      'BLE connect selected device found -> deviceId=$deviceId platformName="${device.platformName}"',
+      'BLE connect selected device found -> hardwareId=$deviceId platformName="${device.platformName}"',
     );
 
     try {
       final initialConnectionState = await _readConnectionState(device);
       BleDebugRegistry.instance.recordEvent(
-        'BLE connect initial connectionState -> deviceId=$deviceId state=${initialConnectionState.name}',
+        'BLE connect initial connectionState -> hardwareId=$deviceId state=${initialConnectionState.name}',
       );
       _log(
-        'BLE connect initial connectionState -> deviceId=$deviceId state=${initialConnectionState.name}',
+        'BLE connect initial connectionState -> hardwareId=$deviceId state=${initialConnectionState.name}',
       );
 
       if (initialConnectionState != BluetoothConnectionState.connected) {
         BleDebugRegistry.instance.recordEvent(
-          'BLE connect() start -> deviceId=$deviceId',
+          'BLE connect() start -> hardwareId=$deviceId',
         );
-        _log('BLE connect() start -> deviceId=$deviceId');
+        _log('BLE connect() start -> hardwareId=$deviceId');
         try {
           await device.connect(timeout: _connectTimeout);
           BleDebugRegistry.instance.recordEvent(
-            'BLE connect() success -> deviceId=$deviceId',
+            'BLE connect() success -> hardwareId=$deviceId',
           );
-          _log('BLE connect() success -> deviceId=$deviceId');
+          _log('BLE connect() success -> hardwareId=$deviceId');
         } catch (error) {
           BleDebugRegistry.instance.recordEvent(
-            'BLE connect() failure -> deviceId=$deviceId error=$error',
+            'BLE connect() failure -> hardwareId=$deviceId error=$error',
           );
-          _log('BLE connect() failure -> deviceId=$deviceId error=$error');
+          _log('BLE connect() failure -> hardwareId=$deviceId error=$error');
           rethrow;
         }
       } else {
         BleDebugRegistry.instance.recordEvent(
-          'BLE connect() success -> deviceId=$deviceId skipped=already_connected',
+          'BLE connect() success -> hardwareId=$deviceId skipped=already_connected',
         );
         _log(
-          'BLE connect() success -> deviceId=$deviceId skipped=already_connected',
+          'BLE connect() success -> hardwareId=$deviceId skipped=already_connected',
         );
       }
 
@@ -225,24 +225,24 @@ class RealBleClient implements BleClient {
         deviceId: deviceId,
       );
       BleDebugRegistry.instance.recordEvent(
-        'BLE connect post-connect connectionState -> deviceId=$deviceId state=${postConnectState.name}',
+        'BLE connect post-connect connectionState -> hardwareId=$deviceId state=${postConnectState.name}',
       );
       _log(
-        'BLE connect post-connect connectionState -> deviceId=$deviceId state=${postConnectState.name}',
+        'BLE connect post-connect connectionState -> hardwareId=$deviceId state=${postConnectState.name}',
       );
       BleDebugRegistry.instance.recordEvent('Connected to $deviceId');
 
       _servicesCache.remove(deviceId);
       BleDebugRegistry.instance.recordEvent(
-        'BLE discoverServices() start -> deviceId=$deviceId',
+        'BLE discoverServices() start -> hardwareId=$deviceId',
       );
-      _log('BLE discoverServices() start -> deviceId=$deviceId');
+      _log('BLE discoverServices() start -> hardwareId=$deviceId');
       final services = await device.discoverServices();
       BleDebugRegistry.instance.recordEvent(
-        'BLE discoverServices() success -> deviceId=$deviceId services=${services.length}',
+        'BLE discoverServices() success -> hardwareId=$deviceId services=${services.length}',
       );
       _log(
-        'BLE discoverServices() success -> deviceId=$deviceId services=${services.length}',
+        'BLE discoverServices() success -> hardwareId=$deviceId services=${services.length}',
       );
       _servicesCache[deviceId] = services;
 
@@ -256,7 +256,7 @@ class RealBleClient implements BleClient {
       BleDebugRegistry.instance.recordEvent(
         'discoverServices succeeded for $deviceId with ${services.length} service(s)',
       );
-      _log('BLE connect -> deviceId=$deviceId services=${services.length}');
+      _log('BLE connect -> hardwareId=$deviceId services=${services.length}');
       for (final s in services) {
         _log('Service: ${s.uuid}');
         for (final c in s.characteristics) {
@@ -269,11 +269,11 @@ class RealBleClient implements BleClient {
       final transientDisconnect = _isTransientDisconnectError(error);
       if (transientDisconnect) {
         BleDebugRegistry.instance.recordEvent(
-          'BLE connect/discover transient disconnect -> deviceId=$deviceId error=$error',
+          'BLE connect/discover transient disconnect -> hardwareId=$deviceId error=$error',
         );
       } else {
         BleDebugRegistry.instance.recordEvent(
-          'BLE connect/discover generic failure -> deviceId=$deviceId error=$error',
+          'BLE connect/discover generic failure -> hardwareId=$deviceId error=$error',
         );
       }
       await _clearTransientConnectionState(deviceId, device);
@@ -281,7 +281,7 @@ class RealBleClient implements BleClient {
         'Connection/discoverServices failed for $deviceId: $error',
       );
       debugPrint(
-        'BLE connect/discoverServices failed -> deviceId=$deviceId error=$error',
+        'BLE connect/discoverServices failed -> hardwareId=$deviceId error=$error',
       );
       debugPrintStack(stackTrace: stackTrace);
       rethrow;
@@ -412,7 +412,7 @@ class RealBleClient implements BleClient {
 
     final payload = command.encodedHex;
     _log(
-      'BLE write -> deviceId=$deviceId target=${targetUuid.str} command=${command.label} payload=$payload',
+      'BLE write -> hardwareId=$deviceId target=${targetUuid.str} command=${command.label} payload=$payload',
     );
     BleDebugRegistry.instance.update(
       lastCommandSent: payload,
@@ -486,7 +486,7 @@ class RealBleClient implements BleClient {
       'Notify subscription enabled for $deviceId',
     );
     _log(
-      'BLE notify subscribe -> deviceId=$deviceId tel=${tel.uuid.str} sos=${sos.uuid.str}',
+      'BLE notify subscribe -> hardwareId=$deviceId tel=${tel.uuid.str} sos=${sos.uuid.str}',
     );
 
     final telStream = tel.lastValueStream.map(
@@ -526,7 +526,7 @@ class RealBleClient implements BleClient {
         'Notify packet received from $deviceId channel=${notification.channel.name} meshPort=${notification.meshPort?.toString() ?? "-"} (${notification.payload.length} bytes)',
       );
       _log(
-        'BLE notify packet -> deviceId=$deviceId channel=${notification.channel.name} meshPort=${notification.meshPort?.toString() ?? "-"} payload=${notification.payloadHex}',
+        'BLE notify packet -> hardwareId=$deviceId channel=${notification.channel.name} meshPort=${notification.meshPort?.toString() ?? "-"} payload=${notification.payloadHex}',
       );
       return notification;
     });
@@ -652,7 +652,7 @@ class RealBleClient implements BleClient {
             'deviceDisconnected while waiting for a stable BLE connection before discoverServices',
       );
       BleDebugRegistry.instance.recordEvent(
-        'BLE connect stabilization failed -> deviceId=$deviceId state=${state.name} error=$error',
+        'BLE connect stabilization failed -> hardwareId=$deviceId state=${state.name} error=$error',
       );
       throw error;
     }

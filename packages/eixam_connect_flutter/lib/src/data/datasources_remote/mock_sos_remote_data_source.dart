@@ -16,11 +16,15 @@ class MockSosRemoteDataSource implements SosRemoteDataSource {
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
+    String? appDeviceId,
+    String? hardwareId,
     int? originatorNodeId,
     int? relayNodeId,
     String? relayDeviceId,
     String? relayHardwareId,
     String? relaySource,
+    String? incidentId,
+    String? cycleKey,
     SdkDeviceBatterySnapshot? deviceBattery,
     SdkCoverageSnapshot? deviceCoverage,
     int? mobileBattery,
@@ -78,7 +82,8 @@ class MockSosRemoteDataSource implements SosRemoteDataSource {
   }
 
   @override
-  Future<SosHistoryPageDto> listSosHistory({String? cursor, int limit = 20}) async {
+  Future<SosHistoryPageDto> listSosHistory(
+      {String? cursor, int limit = 20}) async {
     await Future<void>.delayed(const Duration(milliseconds: 100));
     return const SosHistoryPageDto(items: [], hasMore: false);
   }

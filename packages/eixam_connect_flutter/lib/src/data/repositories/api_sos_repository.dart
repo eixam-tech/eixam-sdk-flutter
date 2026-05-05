@@ -58,11 +58,15 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
+    String? appDeviceId,
+    String? hardwareId,
     int? originatorNodeId,
     int? relayNodeId,
     String? relayDeviceId,
     String? relayHardwareId,
     String? relaySource,
+    String? incidentId,
+    String? cycleKey,
     SdkDeviceBatterySnapshot? deviceBattery,
     SdkCoverageSnapshot? deviceCoverage,
     int? mobileBattery,
@@ -87,11 +91,15 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
         triggerSource: triggerSource,
         positionSnapshot: positionSnapshot,
         deviceId: deviceId,
+        appDeviceId: appDeviceId,
+        hardwareId: hardwareId,
         originatorNodeId: originatorNodeId,
         relayNodeId: relayNodeId,
         relayDeviceId: relayDeviceId,
         relayHardwareId: relayHardwareId,
         relaySource: relaySource,
+        incidentId: incidentId,
+        cycleKey: cycleKey,
         deviceBattery: deviceBattery,
         deviceCoverage: deviceCoverage,
         mobileBattery: mobileBattery,
@@ -191,8 +199,10 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
   Stream<SosState> watchSosState() => _stateController.stream;
 
   @override
-  Future<SosHistoryPage> listSosHistory({String? cursor, int limit = 20}) async {
-    final dto = await remoteDataSource.listSosHistory(cursor: cursor, limit: limit);
+  Future<SosHistoryPage> listSosHistory(
+      {String? cursor, int limit = 20}) async {
+    final dto =
+        await remoteDataSource.listSosHistory(cursor: cursor, limit: limit);
     return SosHistoryPage(
       items: dto.items.map((item) {
         final incident = mapper.toDomain(item.incident);
@@ -208,7 +218,8 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
               ? null
               : SosHistoryTelemetry(
                   id: item.creationTelemetry!.id,
-                  occurredAt: DateTime.parse(item.creationTelemetry!.occurredAt),
+                  occurredAt:
+                      DateTime.parse(item.creationTelemetry!.occurredAt),
                   latitude: item.creationTelemetry!.latitude,
                   longitude: item.creationTelemetry!.longitude,
                   altitude: item.creationTelemetry!.altitude,
@@ -217,13 +228,15 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
                   mobileBattery: item.creationTelemetry!.mobileBattery,
                   mobileCoverage: item.creationTelemetry!.mobileCoverage,
                 ),
-          trail: item.trail.map((p) => TrackingPosition(
-            latitude: p.latitude,
-            longitude: p.longitude,
-            timestamp: DateTime.parse(p.occurredAt),
-            altitude: p.altitude,
-            source: DeliveryMode.mobile,
-          )).toList(),
+          trail: item.trail
+              .map((p) => TrackingPosition(
+                    latitude: p.latitude,
+                    longitude: p.longitude,
+                    timestamp: DateTime.parse(p.occurredAt),
+                    altitude: p.altitude,
+                    source: DeliveryMode.mobile,
+                  ))
+              .toList(),
         );
       }).toList(),
       nextCursor: dto.nextCursor,

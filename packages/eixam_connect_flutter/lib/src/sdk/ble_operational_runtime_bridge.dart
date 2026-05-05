@@ -15,6 +15,24 @@ import '../device/eixam_tel_packet.dart';
 import '../device/eixam_tel_relay_cluster_packet.dart';
 import 'relay_ingest_context.dart';
 
+typedef SosBackendDeviceRegisterRetry = Future<bool> Function({
+  required String originalCorrelationId,
+  required String retryCorrelationId,
+  required String signature,
+  required String triggerSource,
+  required String message,
+  required TrackingPosition positionSnapshot,
+  required String? deviceId,
+  required String? appDeviceId,
+  required String? hardwareId,
+  required int? originatorNodeId,
+  required int? relayNodeId,
+  required String? relayDeviceId,
+  required String? relayHardwareId,
+  required String? incidentId,
+  required String? cycleKey,
+});
+
 class BleOperationalRuntimeBridge {
   BleOperationalRuntimeBridge({
     required Stream<BleIncomingEvent> bleIncomingEvents,
@@ -25,6 +43,7 @@ class BleOperationalRuntimeBridge {
     required this.deviceSosController,
     required EixamSession? Function() sessionProvider,
     Future<String?> Function(String runtimeDeviceId)? backendHardwareIdResolver,
+    SosBackendDeviceRegisterRetry? sosBackendDeviceRegisterRetry,
     DateTime Function()? now,
     Duration dedupWindow = const Duration(seconds: 3),
   })  : _bleIncomingEvents = bleIncomingEvents,
@@ -32,6 +51,7 @@ class BleOperationalRuntimeBridge {
         _realtimeEvents = realtimeEvents,
         _sessionProvider = sessionProvider,
         _backendHardwareIdResolver = backendHardwareIdResolver,
+        _sosBackendDeviceRegisterRetry = sosBackendDeviceRegisterRetry,
         _now = now ?? DateTime.now,
         _dedupWindow = dedupWindow;
 
@@ -44,6 +64,7 @@ class BleOperationalRuntimeBridge {
   final EixamSession? Function() _sessionProvider;
   final Future<String?> Function(String runtimeDeviceId)?
       _backendHardwareIdResolver;
+  final SosBackendDeviceRegisterRetry? _sosBackendDeviceRegisterRetry;
   final DateTime Function() _now;
   final Duration _dedupWindow;
 
@@ -140,6 +161,14 @@ class BleOperationalRuntimeBridge {
     required String message,
     required TrackingPosition positionSnapshot,
     String? deviceId,
+    String? appDeviceId,
+    String? hardwareId,
+    int? originatorNodeId,
+    int? relayNodeId,
+    String? relayDeviceId,
+    String? relayHardwareId,
+    String? incidentId,
+    String? cycleKey,
     RelayIngestContext? relayContext,
     String? summary,
   }) async {
@@ -169,6 +198,14 @@ class BleOperationalRuntimeBridge {
       message: message,
       positionSnapshot: positionSnapshot,
       deviceId: deviceId,
+      appDeviceId: appDeviceId,
+      hardwareId: hardwareId,
+      originatorNodeId: originatorNodeId,
+      relayNodeId: relayNodeId,
+      relayDeviceId: relayDeviceId,
+      relayHardwareId: relayHardwareId,
+      incidentId: incidentId,
+      cycleKey: cycleKey,
       allowPendingFallback: true,
       relayContext: relayContext,
     );
@@ -188,7 +225,7 @@ class BleOperationalRuntimeBridge {
           ),
         );
         BleDebugRegistry.instance.recordEvent(
-          'BLE operational bridge observed TEL aggregate fragment -> awaiting_completion deviceId=${event.deviceId}',
+          'BLE operational bridge observed TEL aggregate fragment -> awaiting_completion hardwareId=${event.deviceId}',
         );
         return;
       case BleIncomingEventType.telAggregateComplete:
@@ -270,7 +307,7 @@ class BleOperationalRuntimeBridge {
         ),
       );
       BleDebugRegistry.instance.recordEvent(
-        'BLE operational bridge skipped aggregate telemetry -> reason=missing_payload deviceId=${event.deviceId}',
+        'BLE operational bridge skipped aggregate telemetry -> reason=missing_payload hardwareId=${event.deviceId}',
       );
       return;
     }
@@ -305,7 +342,7 @@ class BleOperationalRuntimeBridge {
         ),
       );
       BleDebugRegistry.instance.recordEvent(
-        'BLE operational bridge skipped aggregate telemetry -> reason=unsupported_contract deviceId=${event.deviceId} aggregateLen=${aggregatePayload.length}',
+        'BLE operational bridge skipped aggregate telemetry -> reason=unsupported_contract hardwareId=${event.deviceId} aggregateLen=${aggregatePayload.length}',
       );
       return;
     }
@@ -318,7 +355,7 @@ class BleOperationalRuntimeBridge {
         ),
       );
       BleDebugRegistry.instance.recordEvent(
-        'BLE operational bridge skipped aggregate telemetry -> reason=invalid_completed_payload deviceId=${event.deviceId}',
+        'BLE operational bridge skipped aggregate telemetry -> reason=invalid_completed_payload hardwareId=${event.deviceId}',
       );
       return;
     }
@@ -357,7 +394,7 @@ class BleOperationalRuntimeBridge {
         ),
       );
       BleDebugRegistry.instance.recordEvent(
-        'BLE operational bridge skipped heartbeat publish -> reason=minimum_fields_missing deviceId=${event.deviceId}',
+        'BLE operational bridge skipped heartbeat publish -> reason=minimum_fields_missing hardwareId=${event.deviceId}',
       );
       return;
     }
@@ -428,7 +465,7 @@ class BleOperationalRuntimeBridge {
         ),
       );
       BleDebugRegistry.instance.recordEvent(
-        'BLE operational bridge skipped telemetry publish -> reason=minimum_fields_missing deviceId=${event.deviceId}',
+        'BLE operational bridge skipped telemetry publish -> reason=minimum_fields_missing hardwareId=${event.deviceId}',
       );
       return;
     }
@@ -488,7 +525,9 @@ class BleOperationalRuntimeBridge {
       latitude: packet.position.latitude,
       longitude: packet.position.longitude,
       altitude: packet.position.altitudeMeters.toDouble(),
-      deviceId: overrideDeviceId ?? await _resolveBackendHardwareId(event),
+      nodeId: packet.nodeId,
+      deviceId: overrideDeviceId ?? packet.nodeId.toString(),
+      hardwareId: await _resolveBackendHardwareId(event),
     );
   }
 
@@ -508,7 +547,8 @@ class BleOperationalRuntimeBridge {
       score: packet.score,
       memberCount: packet.memberCount,
       aggSpreadingFactor: packet.aggSpreadingFactor,
-      deviceId: await _resolveBackendHardwareId(event),
+      deviceId: packet.nodeId.toString(),
+      hardwareId: await _resolveBackendHardwareId(event),
     );
   }
 
@@ -535,7 +575,7 @@ class BleOperationalRuntimeBridge {
         ),
       );
       BleDebugRegistry.instance.recordEvent(
-        'BLE operational bridge observed SOS packet -> reason=invalid_payload deviceId=${event.deviceId}',
+        'BLE operational bridge observed SOS packet -> reason=invalid_payload hardwareId=${event.deviceId}',
       );
       return;
     }
@@ -763,6 +803,14 @@ class BleOperationalRuntimeBridge {
           message: pendingSos.message,
           positionSnapshot: pendingSos.positionSnapshot,
           deviceId: pendingSos.deviceId,
+          appDeviceId: pendingSos.appDeviceId,
+          hardwareId: pendingSos.hardwareId,
+          originatorNodeId: pendingSos.originatorNodeId,
+          relayNodeId: pendingSos.relayNodeId,
+          relayDeviceId: pendingSos.relayDeviceId,
+          relayHardwareId: pendingSos.relayHardwareId,
+          incidentId: pendingSos.incidentId,
+          cycleKey: pendingSos.cycleKey,
           allowPendingFallback: false,
           relayContext: pendingSos.relayContext,
         );
@@ -882,6 +930,14 @@ class BleOperationalRuntimeBridge {
     required String message,
     required TrackingPosition positionSnapshot,
     required String? deviceId,
+    String? appDeviceId,
+    String? hardwareId,
+    required int? originatorNodeId,
+    required int? relayNodeId,
+    required String? relayDeviceId,
+    required String? relayHardwareId,
+    String? incidentId,
+    String? cycleKey,
     required bool allowPendingFallback,
     RelayIngestContext? relayContext,
   }) async {
@@ -896,6 +952,14 @@ class BleOperationalRuntimeBridge {
         triggerSource: triggerSource,
         positionSnapshot: positionSnapshot,
         deviceId: deviceId,
+        appDeviceId: appDeviceId,
+        hardwareId: hardwareId,
+        originatorNodeId: originatorNodeId,
+        relayNodeId: relayNodeId,
+        relayDeviceId: relayDeviceId,
+        relayHardwareId: relayHardwareId,
+        incidentId: incidentId,
+        cycleKey: cycleKey,
       );
       _emitDiagnostics(
         _diagnostics.copyWith(
@@ -922,6 +986,77 @@ class BleOperationalRuntimeBridge {
         );
         return false;
       }
+      if (allowPendingFallback && _isBackendValidationError(error)) {
+        final validationStatus = _backendValidationStatus(error);
+        final retry = _sosBackendDeviceRegisterRetry;
+        if (retry != null && originatorNodeId != null) {
+          final originalCorrelationId = signature;
+          final retryCorrelationId =
+              'sos-retry-${_now().toUtc().microsecondsSinceEpoch}';
+          final retried = await retry(
+            originalCorrelationId: originalCorrelationId,
+            retryCorrelationId: retryCorrelationId,
+            signature: signature,
+            triggerSource: triggerSource,
+            message: message,
+            positionSnapshot: positionSnapshot,
+            deviceId: deviceId,
+            appDeviceId: appDeviceId,
+            hardwareId: hardwareId,
+            originatorNodeId: originatorNodeId,
+            relayNodeId: relayNodeId,
+            relayDeviceId: relayDeviceId,
+            relayHardwareId: relayHardwareId,
+            incidentId: incidentId,
+            cycleKey: cycleKey,
+          );
+          if (retried) {
+            _pendingSos = null;
+            _emitDiagnostics(
+              _diagnostics.copyWith(
+                pendingSos: null,
+                lastDecision: 'SOS published after device registration retry',
+              ),
+            );
+            return true;
+          }
+        }
+        _pendingSos = _PendingSosPublish(
+          signature: signature,
+          triggerSource: triggerSource,
+          message: message,
+          positionSnapshot: positionSnapshot,
+          deviceId: deviceId,
+          appDeviceId: appDeviceId,
+          hardwareId: hardwareId,
+          originatorNodeId: originatorNodeId,
+          relayNodeId: relayNodeId,
+          relayDeviceId: relayDeviceId,
+          relayHardwareId: relayHardwareId,
+          incidentId: incidentId,
+          cycleKey: cycleKey,
+          relayContext: relayContext,
+        );
+        _emitDiagnostics(
+          _diagnostics.copyWith(
+            pendingSos: PendingSosDiagnostics(
+              signature: signature,
+              message: message,
+              positionSnapshot: positionSnapshot,
+            ),
+            lastDecision:
+                'SOS backendDelivery=failed failure=backend_validation_error',
+          ),
+        );
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_RUNTIME_BACKEND_DELIVERY_FAILED '
+          'status=$validationStatus failure=backend_validation_error pendingSos=1 '
+          'localSosPreserved=true signature=$signature '
+          'originatorNodeId=${originatorNodeId?.toString() ?? "none"} '
+          'deviceId=${deviceId ?? "none"}',
+        );
+        return false;
+      }
       if (relayContext != null && _isRelayTerminalError(error)) {
         _recordRelayTerminalError(relayContext: relayContext, error: error);
         _emitDiagnostics(
@@ -940,6 +1075,14 @@ class BleOperationalRuntimeBridge {
           message: message,
           positionSnapshot: positionSnapshot,
           deviceId: deviceId,
+          appDeviceId: appDeviceId,
+          hardwareId: hardwareId,
+          originatorNodeId: originatorNodeId,
+          relayNodeId: relayNodeId,
+          relayDeviceId: relayDeviceId,
+          relayHardwareId: relayHardwareId,
+          incidentId: incidentId,
+          cycleKey: cycleKey,
           relayContext: relayContext,
         );
         _emitDiagnostics(
@@ -991,6 +1134,29 @@ class BleOperationalRuntimeBridge {
         error.code == 'E_MQTT_NOT_CONNECTED' ||
         error.code == 'E_SDK_SESSION_REQUIRED' ||
         error.code == 'E_SOS_TRIGGER_FAILED';
+  }
+
+  bool _isBackendValidationError(EixamSdkException error) {
+    final code = error.code.toUpperCase();
+    final message = error.message.toUpperCase();
+    return code.contains('422') ||
+        message.contains('422') ||
+        code.contains('402') ||
+        message.contains('402') ||
+        code.contains('VALIDATION') ||
+        message.contains('VALIDATION_ERROR') ||
+        message.contains('REFERENCED DEVICE DOES NOT EXIST');
+  }
+
+  String _backendValidationStatus(EixamSdkException error) {
+    final text = '${error.code} ${error.message}';
+    if (text.contains('402')) {
+      return '402';
+    }
+    if (text.contains('422')) {
+      return '422';
+    }
+    return 'error';
   }
 
   bool _isRelayTerminalError(EixamSdkException error) {
@@ -1118,6 +1284,14 @@ class _PendingSosPublish {
     required this.message,
     required this.positionSnapshot,
     required this.deviceId,
+    this.appDeviceId,
+    this.hardwareId,
+    this.originatorNodeId,
+    this.relayNodeId,
+    this.relayDeviceId,
+    this.relayHardwareId,
+    this.incidentId,
+    this.cycleKey,
     this.relayContext,
   });
 
@@ -1126,6 +1300,14 @@ class _PendingSosPublish {
   final String message;
   final TrackingPosition positionSnapshot;
   final String? deviceId;
+  final String? appDeviceId;
+  final String? hardwareId;
+  final int? originatorNodeId;
+  final int? relayNodeId;
+  final String? relayDeviceId;
+  final String? relayHardwareId;
+  final String? incidentId;
+  final String? cycleKey;
   final RelayIngestContext? relayContext;
 }
 
