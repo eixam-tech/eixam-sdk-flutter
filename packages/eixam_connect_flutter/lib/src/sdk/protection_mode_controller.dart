@@ -14,13 +14,16 @@ class ProtectionModeController {
     required Future<SdkOperationalDiagnostics> Function()
         operationalDiagnosticsProvider,
     Future<String?> Function()? backendHardwareIdProvider,
+    bool Function()? hostAppManagedNotificationsProvider,
     this.onBleOwnershipChanged,
   })  : _sessionProvider = sessionProvider,
         _sdkConfigProvider = sdkConfigProvider,
         _deviceStatusProvider = deviceStatusProvider,
         _permissionStateProvider = permissionStateProvider,
         _operationalDiagnosticsProvider = operationalDiagnosticsProvider,
-        _backendHardwareIdProvider = backendHardwareIdProvider {
+        _backendHardwareIdProvider = backendHardwareIdProvider,
+        _hostAppManagedNotificationsProvider =
+            hostAppManagedNotificationsProvider {
     _platformEventsSub = platformAdapter.watchPlatformEvents().listen(
       _handlePlatformEvent,
       onError: (_) {
@@ -40,6 +43,7 @@ class ProtectionModeController {
   final Future<SdkOperationalDiagnostics> Function()
       _operationalDiagnosticsProvider;
   final Future<String?> Function()? _backendHardwareIdProvider;
+  final bool Function()? _hostAppManagedNotificationsProvider;
   final Future<void> Function(ProtectionBleOwner owner)? onBleOwnershipChanged;
 
   final StreamController<ProtectionStatus> _statusController =
@@ -137,6 +141,8 @@ class ProtectionModeController {
       apiBaseUrl: _sdkConfigProvider()?.apiBaseUrl,
       sessionReady: armingSnapshot.status.sessionReady,
       enableStoreAndForward: options.enableStoreAndForward,
+      hostAppManagedNotifications:
+          _hostAppManagedNotificationsProvider?.call() ?? false,
     );
     final startResult = await platformAdapter.startProtectionRuntime(
       request: startRequest,

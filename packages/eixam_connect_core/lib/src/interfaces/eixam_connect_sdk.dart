@@ -9,6 +9,7 @@ import '../entities/device_sos_status.dart';
 import '../entities/device_status.dart';
 import '../entities/device_runtime_status.dart';
 import '../entities/emergency_contact.dart';
+import '../entities/eixam_notification_intent.dart';
 import '../entities/guided_rescue_state.dart';
 import '../entities/permission_state.dart';
 import '../entities/preferred_device.dart';
@@ -165,6 +166,8 @@ abstract class EixamConnectSdk {
       consumePendingBleNotificationNavigationRequest();
   Stream<BleNotificationNavigationRequest>
       watchBleNotificationNavigationRequests();
+  Future<List<EixamNotificationIntent>> consumePendingNotificationIntents();
+  Stream<EixamNotificationIntent> watchNotificationIntents();
 
   Future<PermissionState> getPermissionState();
   Future<PermissionState> requestLocationPermission();
