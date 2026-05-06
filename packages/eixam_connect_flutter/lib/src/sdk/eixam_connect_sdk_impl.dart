@@ -143,6 +143,7 @@ class EixamConnectSdkImpl
   String? _lastSosRehydrationNote;
   SdkBridgeDiagnostics _bridgeDiagnostics = const SdkBridgeDiagnostics();
   SosState _publicSosState = SosState.idle;
+  PublicPreSosStatus? _lastPublishedPreSosStatus;
   SosIncident? _publicSosFallbackIncident;
   String? _lastPublicSosIncidentId;
   SosDeliveryChannel? _lastPublicSosDeliveryChannel;
@@ -170,8 +171,7 @@ class EixamConnectSdkImpl
   String? _lastLoggedDeviceRuntimeCanonicalization;
   String? _lastDeviceRuntimeCanonicalIncidentSignature;
   SosIncident? _lastDeviceRuntimeCanonicalIncident;
-  final Set<String> _loggedDeviceRuntimeCanonicalizationSignatures =
-      <String>{};
+  final Set<String> _loggedDeviceRuntimeCanonicalizationSignatures = <String>{};
   String? _stableAppDeviceId;
   String? _lastLoggedAppDeviceIdResolution;
   final Map<String, int> _sosRuntimeNodeIdByHardwareId = <String, int>{};
@@ -1944,7 +1944,8 @@ class EixamConnectSdkImpl
       return null;
     }
     final currentLocalCycle = _activeDeviceRuntimeLocalCycleKey;
-    if (currentLocalCycle != null && !_isTerminalPublicSosState(_publicSosState)) {
+    if (currentLocalCycle != null &&
+        !_isTerminalPublicSosState(_publicSosState)) {
       return currentLocalCycle;
     }
     if (currentLocalCycle != null &&
@@ -3310,7 +3311,9 @@ class EixamConnectSdkImpl
   }
 
   int? _cachedNodeIdForHardwareId(String? hardwareId) {
-    return hardwareId == null ? null : _sosRuntimeNodeIdByHardwareId[hardwareId];
+    return hardwareId == null
+        ? null
+        : _sosRuntimeNodeIdByHardwareId[hardwareId];
   }
 
   int? _resolveConnectedDeviceNodeIdForRemoteGuard() {
@@ -3318,13 +3321,13 @@ class EixamConnectSdkImpl
   }
 
   _RemoteRelayLocalGuardMatch _resolveConnectedDeviceNodeGuardMatch() {
-    final deviceRuntimeIncidentNodeId =
-        _parseDeviceRuntimeNodeId(_activeDeviceRuntimeIncidentId) ??
-            _parseDeviceRuntimeNodeId(_currentDeviceRuntimeUiIncidentId()) ??
-            _parseDeviceRuntimeNodeId(_publicSosFallbackIncident?.id) ??
-            _parseDeviceRuntimeNodeId(_lastPublicSosIncidentId) ??
-            _parseDeviceRuntimeNodeId(_lastDeviceRuntimeCanonicalIncident?.id) ??
-            _deviceRuntimeNodeIdFromCanonicalizationState();
+    final deviceRuntimeIncidentNodeId = _parseDeviceRuntimeNodeId(
+            _activeDeviceRuntimeIncidentId) ??
+        _parseDeviceRuntimeNodeId(_currentDeviceRuntimeUiIncidentId()) ??
+        _parseDeviceRuntimeNodeId(_publicSosFallbackIncident?.id) ??
+        _parseDeviceRuntimeNodeId(_lastPublicSosIncidentId) ??
+        _parseDeviceRuntimeNodeId(_lastDeviceRuntimeCanonicalIncident?.id) ??
+        _deviceRuntimeNodeIdFromCanonicalizationState();
     if (deviceRuntimeIncidentNodeId != null) {
       return _RemoteRelayLocalGuardMatch(
         nodeId: deviceRuntimeIncidentNodeId,
@@ -3360,14 +3363,16 @@ class EixamConnectSdkImpl
         matchedBy: 'hardware_node_cache',
       );
     }
-    final statusNodeId = _lastDeviceStatus?.nodeId ?? _lastPublicDeviceStatus?.nodeId;
+    final statusNodeId =
+        _lastDeviceStatus?.nodeId ?? _lastPublicDeviceStatus?.nodeId;
     if (statusNodeId != null) {
       return _RemoteRelayLocalGuardMatch(
         nodeId: statusNodeId,
         matchedBy: 'runtime_device_status',
       );
     }
-    final runtimeCycleNodeId = _parseSosCycleNodeId(_activeDeviceRuntimeCycleKey);
+    final runtimeCycleNodeId =
+        _parseSosCycleNodeId(_activeDeviceRuntimeCycleKey);
     if (runtimeCycleNodeId != null) {
       return _RemoteRelayLocalGuardMatch(
         nodeId: runtimeCycleNodeId,
@@ -3390,8 +3395,7 @@ class EixamConnectSdkImpl
     final currentHardwareNodeId = _cachedNodeIdForCurrentHardwareId();
     return _RemoteRelayLocalGuardMatch(
       nodeId: currentHardwareNodeId,
-      matchedBy:
-          currentHardwareNodeId == null ? 'none' : 'hardware_node_cache',
+      matchedBy: currentHardwareNodeId == null ? 'none' : 'hardware_node_cache',
     );
   }
 
@@ -3526,6 +3530,17 @@ class EixamConnectSdkImpl
       );
     }
     if (_isDeviceRuntimeSosIncidentId(incoming.id)) {
+      final backendIncidentId = _deviceOwnedBackendIncidentId;
+      if (backendIncidentId != null) {
+        return _canonicalizeDeviceOwnedBackendIncident(
+          _reidentifySosIncident(
+            incoming,
+            id: backendIncidentId,
+            deliveryChannel: SosDeliveryChannel.backendAndDevice,
+          ),
+          source: source,
+        );
+      }
       return incoming;
     }
     if (!_isLocalAppSosIncidentId(incoming.id) &&
@@ -3550,6 +3565,19 @@ class EixamConnectSdkImpl
             'activeIncident=${_activeDeviceRuntimeIncidentId ?? "-"} '
             'cycle=${_activeDeviceRuntimeCycleKey ?? "-"}',
       );
+      final backendIncidentId = _deviceOwnedBackendIncidentId;
+      if (backendIncidentId != null) {
+        return _canonicalizeDeviceOwnedBackendIncident(
+          _reidentifySosIncident(
+            incoming,
+            id: backendIncidentId,
+            state: SosState.sent,
+            triggerSource: 'ble_device_runtime_status',
+            deliveryChannel: SosDeliveryChannel.backendAndDevice,
+          ),
+          source: source,
+        );
+      }
       return _activeDeviceRuntimeIncidentId == null
           ? null
           : SosIncident(
@@ -3564,6 +3592,24 @@ class EixamConnectSdkImpl
     return incoming;
   }
 
+  SosIncident _reidentifySosIncident(
+    SosIncident incident, {
+    required String id,
+    SosState? state,
+    String? triggerSource,
+    SosDeliveryChannel? deliveryChannel,
+  }) {
+    return SosIncident(
+      id: id,
+      state: state ?? incident.state,
+      createdAt: incident.createdAt,
+      positionSnapshot: incident.positionSnapshot,
+      triggerSource: triggerSource ?? incident.triggerSource,
+      message: incident.message,
+      deliveryChannel: deliveryChannel ?? incident.deliveryChannel,
+    );
+  }
+
   SosIncident _canonicalizeDeviceOwnedBackendIncident(
     SosIncident incoming, {
     required String source,
@@ -3576,28 +3622,21 @@ class EixamConnectSdkImpl
       return incoming;
     }
     final signature =
-        '$backendIncidentId|$runtimeIncidentId|$runtimeIncidentId';
+        '$backendIncidentId|$runtimeIncidentId|$backendIncidentId|${incoming.state.name}';
     final cachedCanonicalIncident = _lastDeviceRuntimeCanonicalIncident;
     if (_lastDeviceRuntimeCanonicalIncidentSignature == signature &&
-        cachedCanonicalIncident != null &&
-        cachedCanonicalIncident.state == incoming.state) {
+        cachedCanonicalIncident != null) {
       return cachedCanonicalIncident;
     }
     _logDeviceRuntimeCanonicalizationOnce(
-      action: 'preserve_device_runtime_ui_cycle_id',
+      action: 'adopt_backend_canonical_incident_id',
       source: source,
       incomingIncidentId: backendIncidentId,
       existingIncidentId: runtimeIncidentId,
       existingCanonicalIncidentId: runtimeIncidentId,
-      chosenCanonicalIncidentId: runtimeIncidentId,
+      chosenCanonicalIncidentId: backendIncidentId,
     );
-    final canonicalIncident = SosIncident(
-      id: runtimeIncidentId,
-      state: incoming.state,
-      createdAt: incoming.createdAt,
-      positionSnapshot: incoming.positionSnapshot,
-      triggerSource: incoming.triggerSource,
-      message: incoming.message,
+    final canonicalIncident = incoming.copyWith(
       deliveryChannel:
           incoming.deliveryChannel ?? SosDeliveryChannel.backendAndDevice,
     );
@@ -3622,10 +3661,13 @@ class EixamConnectSdkImpl
     )) {
       return;
     }
-    final originatorNodeId =
-        _parseDeviceRuntimeNodeId(existingIncidentId) ??
-            _parseSosCycleNodeId(_activeDeviceRuntimeCycleKey) ??
-            _parseSosCycleNodeId(_activeDeviceSosCycleKey);
+    if (action == 'preserve_existing_canonical_id' &&
+        existingCanonicalIncidentId == chosenCanonicalIncidentId) {
+      return;
+    }
+    final originatorNodeId = _parseDeviceRuntimeNodeId(existingIncidentId) ??
+        _parseSosCycleNodeId(_activeDeviceRuntimeCycleKey) ??
+        _parseSosCycleNodeId(_activeDeviceSosCycleKey);
     final terminal = _isOpenSosState(_publicSosState)
         ? 'open'
         : _publicSosState == SosState.resolved
@@ -4267,12 +4309,34 @@ class EixamConnectSdkImpl
   }
 
   void _publishPreSosStatus(PublicPreSosStatus? status) {
+    if (_equivalentPreSosStatus(_lastPublishedPreSosStatus, status)) {
+      return;
+    }
+    _lastPublishedPreSosStatus = status;
     if (!_publicPreSosStatusController.isClosed) {
       _publicPreSosStatusController.add(status);
     }
     if (status != null && _publicSosState != SosState.arming) {
       _emitPublicSosState(SosState.arming, source: 'pre_sos_status');
     }
+  }
+
+  bool _equivalentPreSosStatus(
+    PublicPreSosStatus? previous,
+    PublicPreSosStatus? next,
+  ) {
+    if (identical(previous, next)) {
+      return true;
+    }
+    if (previous == null || next == null) {
+      return false;
+    }
+    return previous.active == next.active &&
+        previous.startedAt == next.startedAt &&
+        previous.expectedActivationAt == next.expectedActivationAt &&
+        previous.remainingSeconds == next.remainingSeconds &&
+        previous.mirroredOnDevice == next.mirroredOnDevice &&
+        previous.origin == next.origin;
   }
 
   Future<void> _clearSosNotificationsSafely({
@@ -4326,6 +4390,9 @@ class EixamConnectSdkImpl
       incoming: state,
       source: source,
     );
+    if (nextState == _publicSosState) {
+      return;
+    }
     _publicSosState = nextState;
     if (!_publicSosStateController.isClosed) {
       _publicSosStateController.add(nextState);
@@ -4370,9 +4437,10 @@ class EixamConnectSdkImpl
     if (!_isOpenSosState(_publicSosState)) {
       return false;
     }
-    final cycleNodeId = _parseDeviceRuntimeNodeId(_activeDeviceRuntimeIncidentId) ??
-        _parseSosCycleNodeId(_activeDeviceRuntimeCycleKey) ??
-        _parseSosCycleNodeId(_activeDeviceSosCycleKey);
+    final cycleNodeId =
+        _parseDeviceRuntimeNodeId(_activeDeviceRuntimeIncidentId) ??
+            _parseSosCycleNodeId(_activeDeviceRuntimeCycleKey) ??
+            _parseSosCycleNodeId(_activeDeviceSosCycleKey);
     return cycleNodeId != null || _activeDeviceRuntimeIncidentId != null;
   }
 
@@ -5014,15 +5082,13 @@ class EixamConnectSdkImpl
   }
 
   String _compactJson(Map<String, dynamic> payload) {
-    final body = payload.entries
-        .map((entry) {
-          final value = entry.value;
-          if (value is num || value is bool) {
-            return '"${entry.key}":$value';
-          }
-          return '"${entry.key}":"${value.toString().replaceAll('"', r'\"')}"';
-        })
-        .join(',');
+    final body = payload.entries.map((entry) {
+      final value = entry.value;
+      if (value is num || value is bool) {
+        return '"${entry.key}":$value';
+      }
+      return '"${entry.key}":"${value.toString().replaceAll('"', r'\"')}"';
+    }).join(',');
     return '{$body}';
   }
 

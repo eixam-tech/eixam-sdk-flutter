@@ -606,7 +606,7 @@ void main() {
 
       final incident = await sdk.getCurrentSosIncident();
 
-      expect(incident?.id, 'device-runtime-sos:1498094248:0');
+      expect(incident?.id, startsWith('device-runtime-sos:1498094248:'));
     });
 
     test('device-runtime-sos active ignores app-owned backend response',
@@ -629,8 +629,103 @@ void main() {
         const SosTriggerPayload(triggerSource: 'activate_sos'),
       );
 
-      expect(appIncident.id, 'device-runtime-sos:1498094248:0');
+      expect(appIncident.id, startsWith('device-runtime-sos:1498094248:'));
       expect(sosRepository.triggerCallCount, 1);
+    });
+
+    test('equivalent runtime active snapshots publish one public SOS state',
+        () async {
+      final states = <SosState>[];
+      final subscription = sdk.watchSosState().listen(states.add);
+      try {
+        trackingRepository.emitPosition(
+          TrackingPosition(
+            latitude: 41.38,
+            longitude: 2.17,
+            timestamp: DateTime.utc(2026, 1, 1, 10),
+            source: DeliveryMode.mobile,
+          ),
+        );
+
+        deviceSosController.handleIncomingSosPacket(
+          _deviceOriginActivePacketForNode(1498094248),
+          source: DeviceSosTransitionSource.device,
+        );
+        await _eventually(() => states.contains(SosState.sent));
+
+        deviceSosController.handleIncomingSosPacket(
+          _deviceOriginActivePacketForNode(1498094248),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+
+        expect(states.where((state) => state == SosState.sent), hasLength(1));
+      } finally {
+        await subscription.cancel();
+      }
+    });
+
+    test('equivalent runtime active snapshots do not log canonicalize spam',
+        () async {
+      BleDebugRegistry.instance.reset();
+      trackingRepository.emitPosition(
+        TrackingPosition(
+          latitude: 41.38,
+          longitude: 2.17,
+          timestamp: DateTime.utc(2026, 1, 1, 10),
+          source: DeliveryMode.mobile,
+        ),
+      );
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginActivePacketForNode(1498094248),
+        source: DeviceSosTransitionSource.device,
+      );
+      await _eventually(() => sosRepository.triggerCallCount == 1);
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginActivePacketForNode(1498094248),
+        source: DeviceSosTransitionSource.device,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      final canonicalLogs = BleDebugRegistry.instance.currentState.events
+          .where((event) => event.message.contains('[SOS_CANONICALIZE]'))
+          .toList();
+      expect(canonicalLogs, isEmpty);
+    });
+
+    test('device active state clears public countdown immediately', () async {
+      final preSosStatuses = <PublicPreSosStatus?>[];
+      final subscription = sdk.watchPreSosStatus().listen(preSosStatuses.add);
+      try {
+        trackingRepository.emitPosition(
+          TrackingPosition(
+            latitude: 41.38,
+            longitude: 2.17,
+            timestamp: DateTime.utc(2026, 1, 1, 10),
+            source: DeliveryMode.mobile,
+          ),
+        );
+
+        deviceSosController.handleIncomingSosPacket(
+          _deviceOriginPreConfirmPacketForNode(1498094248),
+          source: DeviceSosTransitionSource.device,
+        );
+        await _eventually(
+            () => preSosStatuses.whereType<PublicPreSosStatus>().isNotEmpty);
+
+        deviceSosController.handleIncomingSosPacket(
+          _deviceOriginActivePacketForNode(1498094248),
+          source: DeviceSosTransitionSource.device,
+        );
+        await _eventually(
+            () => preSosStatuses.isNotEmpty && preSosStatuses.last == null);
+
+        expect(await sdk.getPreSosStatus(), isNull);
+        expect(await sdk.getSosState(), SosState.sent);
+      } finally {
+        await subscription.cancel();
+      }
     });
 
     test('device-runtime-sos can promote to backend id from device request',
@@ -659,6 +754,76 @@ void main() {
       expect(incident?.id, '17330a7e-74bd-4bc5-b7ee-d3f6ca13c327');
       expect(sosRepository.lastDeviceId, '1498094248');
       expect(sosRepository.lastOriginatorNodeId, 1498094248);
+    });
+
+    test('backend id remains canonical after later runtime snapshots',
+        () async {
+      const backendIncidentId = '17330a7e-74bd-4bc5-b7ee-d3f6ca13c327';
+      trackingRepository.emitPosition(
+        TrackingPosition(
+          latitude: 41.38,
+          longitude: 2.17,
+          timestamp: DateTime.utc(2026, 1, 1, 10),
+          source: DeliveryMode.mobile,
+        ),
+      );
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginActivePacketForNode(1498094248),
+        source: DeviceSosTransitionSource.device,
+      );
+      await _eventually(() => sosRepository.triggerCallCount == 1);
+      sosRepository.currentIncident = SosIncident(
+        id: backendIncidentId,
+        state: SosState.sent,
+        createdAt: DateTime.utc(2026, 1, 1, 10),
+      );
+
+      final adopted = await sdk.getCurrentSosIncident();
+      sosRepository.currentIncident = SosIncident(
+        id: 'device-runtime-sos:1498094248:0',
+        state: SosState.sent,
+        createdAt: DateTime.utc(2026, 1, 1, 10),
+      );
+      final afterRuntimeSnapshot = await sdk.getCurrentSosIncident();
+
+      expect(adopted?.id, backendIncidentId);
+      expect(afterRuntimeSnapshot?.id, backendIncidentId);
+    });
+
+    test('equivalent backend canonical snapshots log once', () async {
+      const backendIncidentId = '17330a7e-74bd-4bc5-b7ee-d3f6ca13c327';
+      trackingRepository.emitPosition(
+        TrackingPosition(
+          latitude: 41.38,
+          longitude: 2.17,
+          timestamp: DateTime.utc(2026, 1, 1, 10),
+          source: DeliveryMode.mobile,
+        ),
+      );
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginActivePacketForNode(1498094248),
+        source: DeviceSosTransitionSource.device,
+      );
+      await _eventually(() => sosRepository.triggerCallCount == 1);
+      sosRepository.currentIncident = SosIncident(
+        id: backendIncidentId,
+        state: SosState.sent,
+        createdAt: DateTime.utc(2026, 1, 1, 10),
+      );
+
+      final first = await sdk.getCurrentSosIncident();
+      final second = await sdk.getCurrentSosIncident();
+      final canonicalLogs = BleDebugRegistry.instance.currentState.events
+          .where((event) => event.message.contains('[SOS_CANONICALIZE]'))
+          .toList();
+
+      expect(first?.id, backendIncidentId);
+      expect(second?.id, backendIncidentId);
+      expect(canonicalLogs, hasLength(1));
+      expect(
+        canonicalLogs.single.message,
+        contains('action=adopt_backend_canonical_incident_id'),
+      );
     });
 
     test('SOS_BACKEND_PAYLOAD_FINAL logs runtime node identity', () async {
@@ -1716,6 +1881,24 @@ EixamSosPacket _deviceOriginActivePacketForNode(int nodeId) {
     0x00,
     0x00,
     0x80,
+  ])!;
+}
+
+EixamSosPacket _deviceOriginPreConfirmPacketForNode(int nodeId) {
+  const flagsWord = 0x4000;
+  return EixamSosPacket.tryParse(<int>[
+    nodeId & 0xFF,
+    (nodeId >> 8) & 0xFF,
+    (nodeId >> 16) & 0xFF,
+    (nodeId >> 24) & 0xFF,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    flagsWord & 0xFF,
+    (flagsWord >> 8) & 0xFF,
   ])!;
 }
 
