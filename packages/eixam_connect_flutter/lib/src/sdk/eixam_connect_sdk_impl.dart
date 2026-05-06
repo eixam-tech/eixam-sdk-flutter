@@ -762,7 +762,10 @@ class EixamConnectSdkImpl
     if (remoteDataSource == null) {
       return session;
     }
-    if (session.canonicalExternalUserId?.trim().isNotEmpty == true) {
+    final hasCanonicalExternalUserId =
+        session.canonicalExternalUserId?.trim().isNotEmpty == true;
+    final hasSdkUserId = session.sdkUserId?.trim().isNotEmpty == true;
+    if (hasCanonicalExternalUserId && hasSdkUserId) {
       return session;
     }
     final bootstrapped = await remoteDataSource.bootstrapSession(session);
@@ -883,6 +886,7 @@ class EixamConnectSdkImpl
 
     final status = _lastDeviceStatus;
     final deviceId = _resolveOperationalDeviceId(
+      nodeId: status?.nodeId,
       backendHardwareId: await _loadBackendHardwareIdForOperationalPayloads(
         runtimeStatus: status,
       ),
@@ -946,6 +950,7 @@ class EixamConnectSdkImpl
       await backgroundTelemetryPlatformAdapter.updateBackgroundTelemetry(
         sosOpen: _isOpenSosState(_publicSosState),
         deviceId: _resolveOperationalDeviceId(
+          nodeId: status?.nodeId,
           backendHardwareId: await _loadBackendHardwareIdForOperationalPayloads(
             runtimeStatus: status,
           ),
@@ -2961,7 +2966,6 @@ class EixamConnectSdkImpl
   Future<SdkTelemetryPayload> _enrichOperationalTelemetryPayload(
     SdkTelemetryPayload payload,
   ) async {
-    final session = _session;
     var status = _lastDeviceStatus;
     final hardwareId = await _loadBackendHardwareIdForOperationalPayloads(
       runtimeStatus: status,
@@ -2999,9 +3003,7 @@ class EixamConnectSdkImpl
     }
 
     return identity.payload.copyWith(
-      userId: payload.userId ??
-          session?.canonicalExternalUserId ??
-          session?.externalUserId,
+      userId: null,
       deviceBatterySnapshot:
           payload.deviceBatterySnapshot ?? _buildDeviceBatterySnapshot(status),
       deviceCoverageSnapshot: payload.deviceCoverageSnapshot ??
@@ -3165,6 +3167,7 @@ class EixamConnectSdkImpl
         BleDebugRegistry.instance.recordEvent(
           'SOS_TRACE device_terminal_command_queued reason=no_command_characteristic_ready',
         );
+        return null;
       }
 
       return status;
@@ -5102,12 +5105,19 @@ class EixamConnectSdkImpl
   }
 
   String? _resolveOperationalDeviceId({
+    required int? nodeId,
     required String? backendHardwareId,
   }) {
-    if (backendHardwareId == null || backendHardwareId.trim().isEmpty) {
+    if (nodeId != null) {
+      return nodeId.toString();
+    }
+    final hardwareId = backendHardwareId?.trim();
+    if (hardwareId == null ||
+        hardwareId.isEmpty ||
+        isBleMacDeviceId(hardwareId)) {
       return null;
     }
-    return backendHardwareId;
+    return hardwareId;
   }
 
   Future<void> _ensureBackendSosForDeviceOriginatedCycle(

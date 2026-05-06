@@ -122,6 +122,7 @@ void main() {
           appId: 'app-demo',
           externalUserId: 'external-123',
           userHash: 'deadbeef',
+          sdkUserId: 'sdk-user-42',
           canonicalExternalUserId: 'partner/user 42',
         ),
         payload: SdkTelemetryPayload(
@@ -141,7 +142,7 @@ void main() {
       );
 
       final decoded = jsonDecode(envelope.payload) as Map<String, dynamic>;
-      expect(envelope.topic, 'tel/partner%2Fuser%2042/data');
+      expect(envelope.topic, 'tel/sdk-user-42/data');
       expect(decoded['kind'], 'HEARTBEAT');
       expect(decoded['nodeId'], 0x12345678);
       expect(decoded['clusterId'], 0xABCD);
