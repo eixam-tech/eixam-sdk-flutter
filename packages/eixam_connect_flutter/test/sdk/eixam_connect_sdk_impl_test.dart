@@ -9349,10 +9349,52 @@ void main() {
     test('cancelPreSos during arming returns idle and does not touch backend',
         () async {
       final commands = <String>[];
+      final cancelCommandTargetsCmd = <bool>[];
       deviceRepository.emitStatus(
         buildDeviceStatus(
           deviceId: 'ble-pre-sos-2',
           canonicalHardwareId: 'CF:82:10:10:10:11',
+          paired: true,
+          connected: true,
+          activated: true,
+        ),
+      );
+      await deviceSosController.attach(
+        commandWriter: (command) async {
+          commands.add(command.label);
+          if (command.label == 'SOS CANCEL') {
+            cancelCommandTargetsCmd.add(command.usesCmdCharacteristic);
+            Future<void>.delayed(Duration.zero, () {
+              deviceSosController.handleIncomingSosEventPacket(
+                EixamSosEventPacket.tryParse(
+                  <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
+                )!,
+                source: DeviceSosTransitionSource.device,
+              );
+            });
+          }
+        },
+      );
+
+      await sdk.startPreSos();
+      await sdk.cancelPreSos();
+
+      expect(commands, <String>['SOS TRIGGER APP', 'SOS CANCEL']);
+      expect(cancelCommandTargetsCmd, <bool>[true]);
+      expect(await sdk.getSosState(), SosState.idle);
+      expect(await sdk.getPreSosStatus(), isNull);
+      expect(sosRepository.triggerCallCount, 0);
+      expect(sosRepository.cancelCallCount, 0);
+    });
+
+    test(
+        'cancelSos during mirrored PRE-SOS sends device cancel without backend incident',
+        () async {
+      final commands = <String>[];
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-pre-sos-cancel-public',
+          canonicalHardwareId: 'CF:82:10:10:10:15',
           paired: true,
           connected: true,
           activated: true,
@@ -9375,18 +9417,27 @@ void main() {
       );
 
       await sdk.startPreSos();
-      await sdk.cancelPreSos();
+      final cancelled = await sdk.cancelSos();
 
       expect(commands, <String>['SOS TRIGGER APP', 'SOS CANCEL']);
+      expect(cancelled.state, SosState.cancelled);
       expect(await sdk.getSosState(), SosState.idle);
       expect(await sdk.getPreSosStatus(), isNull);
       expect(sosRepository.triggerCallCount, 0);
       expect(sosRepository.cancelCallCount, 0);
+      final logs = BleDebugRegistry.instance.currentState.events
+          .map((event) => event.message)
+          .join('\n');
+      expect(logs, contains('action=cancel_pre_sos'));
+      expect(logs, contains('hasIncidentId=false'));
+      expect(logs, contains('decision=send_device_cancel'));
+      expect(logs, contains('result=device_cancel_dispatched'));
     });
 
     test('cancelPreSos clears mirrored device countdown over short path',
         () async {
       final commands = <String>[];
+      final cancelCommandTargetsCmd = <bool>[];
       deviceRepository.emitStatus(
         buildDeviceStatus(
           deviceId: 'ble-pre-sos-cancel-short-only',
@@ -9404,6 +9455,7 @@ void main() {
         commandWriter: (command) async {
           commands.add(command.label);
           if (command.label == 'SOS CANCEL') {
+            cancelCommandTargetsCmd.add(command.usesCmdCharacteristic);
             Future<void>.delayed(Duration.zero, () {
               deviceSosController.handleIncomingSosEventPacket(
                 EixamSosEventPacket.tryParse(
@@ -9420,6 +9472,7 @@ void main() {
       await sdk.cancelPreSos();
 
       expect(commands, <String>['SOS TRIGGER APP', 'SOS CANCEL']);
+      expect(cancelCommandTargetsCmd, <bool>[false]);
       expect(await sdk.getSosState(), SosState.idle);
       expect(await sdk.getPreSosStatus(), isNull);
       expect(sosRepository.cancelCallCount, 0);
@@ -9430,7 +9483,7 @@ void main() {
       expect(logs, contains('path=ble_pre_sos_cancel'));
     });
 
-    test('cancelPreSos force-clears device countdown when clear command fails',
+    test('cancelPreSos reports device countdown cancel command failure',
         () async {
       final commands = <String>[];
       deviceRepository.emitStatus(
@@ -9458,19 +9511,21 @@ void main() {
       await sdk.startPreSos(countdown: const Duration(seconds: 20));
       expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.preConfirm);
 
-      await sdk.cancelPreSos();
+      await expectLater(
+        sdk.cancelPreSos(),
+        throwsA(isA<StateError>()),
+      );
 
       expect(commands, <String>['SOS TRIGGER APP', 'SOS CANCEL']);
-      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.inactive);
-      expect(await sdk.getPreSosStatus(), isNull);
-      expect(await sdk.getSosState(), SosState.idle);
+      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.preConfirm);
+      expect(await sdk.getPreSosStatus(), isNotNull);
+      expect(await sdk.getSosState(), SosState.arming);
       final logs = BleDebugRegistry.instance.currentState.events
           .map((event) => event.message)
           .join('\n');
-      expect(logs, contains('[APP_PRE_SOS_CANCEL] action=state_cleared'));
       expect(
         logs,
-        contains('[APP_PRE_SOS_CANCEL] action=device_state_cleared'),
+        contains('decision=send_device_cancel result=device_cancel_failed'),
       );
     });
 
@@ -9494,6 +9549,25 @@ void main() {
           '[APP_PRE_SOS_DEVICE_COMMAND] action=skip reason=no_ble',
         ),
       );
+    });
+
+    test('cancelSos during local PRE-SOS stays local without backend cancel',
+        () async {
+      await sdk.startPreSos(countdown: const Duration(seconds: 20));
+
+      final cancelled = await sdk.cancelSos();
+
+      expect(cancelled.state, SosState.cancelled);
+      expect(await sdk.getPreSosStatus(), isNull);
+      expect(await sdk.getSosState(), SosState.idle);
+      expect(sosRepository.triggerCallCount, 0);
+      expect(sosRepository.cancelCallCount, 0);
+      final logs = BleDebugRegistry.instance.currentState.events
+          .map((event) => event.message)
+          .join('\n');
+      expect(logs, contains('action=cancel_pre_sos'));
+      expect(logs, contains('decision=local_only_cancel'));
+      expect(logs, contains('result=local_state_cleared'));
     });
 
     test('startPreSos after cancel starts a fresh full countdown', () async {

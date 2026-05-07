@@ -1509,6 +1509,8 @@ internal class ProtectionBleRuntimeOwner(
                     synchronized(commandLock) {
                         pendingCommandResult
                     } ?: return
+                val terminalCancelSucceeded =
+                    status == BluetoothGatt.GATT_SUCCESS && pending.label == "SOS CANCEL"
                 if (status == BluetoothGatt.GATT_SUCCESS) {
                     val result =
                         "${pending.label} native write succeeded via androidService."
@@ -1537,6 +1539,12 @@ internal class ProtectionBleRuntimeOwner(
                     if (pendingCommandResult === pending) {
                         pendingCommandResult = null
                     }
+                }
+                if (terminalCancelSucceeded) {
+                    stop("sos_cancel_command_succeeded")
+                    runtimeStore.markStopped()
+                    ProtectionForegroundService.stop(context)
+                    return
                 }
                 drainQueuedCommand(gatt)
             }

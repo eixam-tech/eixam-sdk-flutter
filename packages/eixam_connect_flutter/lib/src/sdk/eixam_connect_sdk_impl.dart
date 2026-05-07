@@ -1435,8 +1435,12 @@ class EixamConnectSdkImpl
   Future<DeviceSosStatus> _closeDeviceSos({
     required _SosClosureIntent intent,
     bool syncBackendForDeviceOriginatedCycle = true,
+    bool waitForDeviceAcknowledgement = true,
   }) async {
     final currentStatus = await deviceSosController.getStatus();
+    final capabilitySnapshot = _computeCurrentSosCapabilitySnapshot(
+      reason: 'device_terminal_${intent.name}_command',
+    );
     late final DeviceSosStatus status;
     _logSosTrace(
       'device_terminal_command_requested action=${intent.name}',
@@ -1446,6 +1450,8 @@ class EixamConnectSdkImpl
         commandWriterOverride: _sendDeviceCommandThroughActiveOwner,
         commandRouteLabel: _currentDeviceCommandOwnerRoute,
         terminalAction: intent.name,
+        terminalCmdAvailable: capabilitySnapshot.longCommandAvailable,
+        waitForCloseAcknowledgement: waitForDeviceAcknowledgement,
       );
     } catch (error) {
       if (currentStatus.triggerOrigin != DeviceSosTransitionSource.device ||
@@ -2570,22 +2576,75 @@ class EixamConnectSdkImpl
   Future<void> cancelPreSos() async {
     final status = await deviceSosController.getStatus();
     final activeSession = _preSosSession;
+    final runtimeStatus = await _loadRuntimeReadyDeviceStatusForSosSync(
+      action: 'cancel_pre_sos',
+      refreshRuntimeStatus: true,
+    );
+    final capabilitySnapshot = _computeCurrentSosCapabilitySnapshot(
+      reason: 'cancel_pre_sos_decision',
+      statusOverride: runtimeStatus,
+    );
+    final deviceConnected = capabilitySnapshot.deviceConnected;
+    final commandAvailable = capabilitySnapshot.shortCommandAvailable ||
+        capabilitySnapshot.longCommandAvailable;
+    final stageIsArming = _publicSosState == SosState.arming;
+    final protectionStatus = _protectionModeController.currentStatus;
+    final protectionActive =
+        protectionStatus.modeState == ProtectionModeState.armed ||
+            protectionStatus.runtimeState == ProtectionRuntimeState.active;
+    final deviceOwnedCountdown = status.state == DeviceSosState.preConfirm ||
+        activeSession?.mirroredOnDevice == true ||
+        activeSession?.owner == _SosOwner.device ||
+        activeSession?.origin == DeviceSosTransitionSource.device ||
+        stageIsArming;
+    final hasIncidentId =
+        _hasBackendVisibleSosIncident(_lastKnownActiveSosIncident) ||
+            _hasBackendVisibleSosIncident(_publicSosFallbackIncident);
+    final deviceId = runtimeStatus?.nodeId?.toString() ??
+        _lastDeviceStatus?.nodeId?.toString() ??
+        runtimeStatus?.deviceId ??
+        _lastDeviceStatus?.deviceId ??
+        '-';
+    final cancelDecision = deviceConnected && commandAvailable
+        ? 'send_device_cancel'
+        : 'local_only_cancel';
     BleDebugRegistry.instance.recordEvent(
       '[APP_PRE_SOS_CANCEL] action=clear_requested source=cancelPreSos '
       'cycle=${activeSession?.cycleRevision ?? _preSosCycleRevision} '
       'countdown=${_buildCurrentPreSosStatus()?.remainingSeconds.toString() ?? "none"} '
       'deadline=${activeSession?.expectedActivationAt.toUtc().toIso8601String() ?? "none"}',
     );
-    if (status.state == DeviceSosState.preConfirm) {
+    BleDebugRegistry.instance.recordEvent(
+      '[APP_PRE_SOS_CANCEL] action=cancel_pre_sos '
+      'stage=${_publicSosState.name} '
+      'deviceConnected=$deviceConnected '
+      'commandAvailable=$commandAvailable '
+      'deviceId=$deviceId '
+      'hasIncidentId=$hasIncidentId '
+      'deviceOwnedCountdown=$deviceOwnedCountdown '
+      'protectionMode=${protectionStatus.modeState.name} '
+      'runtimeMode=${protectionStatus.runtimeState.name} '
+      'protectionActive=$protectionActive '
+      'decision=$cancelDecision',
+    );
+    if (cancelDecision == 'send_device_cancel') {
       try {
         BleDebugRegistry.instance.recordEvent(
           '[APP_PRE_SOS_DEVICE_COMMAND] action=attempt '
           'path=ble_pre_sos_cancel countdown=0',
         );
-        await cancelDeviceSos();
+        await _closeDeviceSos(
+          intent: _SosClosureIntent.cancel,
+          syncBackendForDeviceOriginatedCycle: false,
+          waitForDeviceAcknowledgement: false,
+        );
         BleDebugRegistry.instance.recordEvent(
           '[APP_PRE_SOS_DEVICE_COMMAND] action=sent '
           'path=ble_pre_sos_cancel',
+        );
+        BleDebugRegistry.instance.recordEvent(
+          '[APP_PRE_SOS_CANCEL] action=cancel_pre_sos '
+          'decision=send_device_cancel result=device_cancel_dispatched',
         );
       } catch (error) {
         BleDebugRegistry.instance.recordEvent(
@@ -2594,12 +2653,24 @@ class EixamConnectSdkImpl
           'cmd=${deviceSosController.longCommandAvailable} '
           'inet_continues=true error=${_compactDiagnosticValue(error)}',
         );
+        BleDebugRegistry.instance.recordEvent(
+          '[APP_PRE_SOS_CANCEL] action=cancel_pre_sos '
+          'decision=send_device_cancel result=device_cancel_failed '
+          'error=${_compactDiagnosticValue(error)}',
+        );
+        rethrow;
       }
+    }
+    if (status.state == DeviceSosState.preConfirm) {
       deviceSosController.clearPreSosLocally(reason: 'app_cancel_pre_sos');
     }
     _clearPreSosSession(
       reason: 'public_pre_sos_cancelled',
       emitIdleState: true,
+    );
+    BleDebugRegistry.instance.recordEvent(
+      '[APP_PRE_SOS_CANCEL] action=cancel_pre_sos '
+      'decision=$cancelDecision result=local_state_cleared',
     );
   }
 
@@ -3042,6 +3113,7 @@ class EixamConnectSdkImpl
     _publicSosActionInFlight = true;
     try {
       if (_hasActivePreSosSession ||
+          _publicSosState == SosState.arming ||
           (await deviceSosController.getStatus()).state ==
               DeviceSosState.preConfirm) {
         await cancelPreSos();
@@ -3675,7 +3747,9 @@ class EixamConnectSdkImpl
         return null;
       }
 
-      final terminalAction = action == 'cancel' || action == 'resolve';
+      final terminalAction = action == 'cancel' ||
+          action == 'resolve' ||
+          action == 'cancel_pre_sos';
       if (!capabilitySnapshot.shortCommandAvailable && !terminalAction) {
         BleDebugRegistry.instance.recordEvent(
           '[APP_SOS_DEVICE_COMMAND] action=skip '

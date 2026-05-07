@@ -180,6 +180,8 @@ class DeviceSosController {
     DeviceCommandWriter? commandWriterOverride,
     String commandRouteLabel = 'attached_writer',
     String terminalAction = 'cancel',
+    bool? terminalCmdAvailable,
+    bool waitForCloseAcknowledgement = true,
   }) async {
     final writer = commandWriterOverride ?? _commandWriter;
     if (writer == null) {
@@ -195,7 +197,7 @@ class DeviceSosController {
       writer: writer,
       previous: previous,
       commandRouteLabel: commandRouteLabel,
-      allowCmd: commandWriterOverride == null && longCommandAvailable,
+      allowCmd: terminalCmdAvailable ?? longCommandAvailable,
       allowInet: commandWriterOverride != null || shortCommandAvailable,
       action: terminalAction,
       commandWriterOverride: commandWriterOverride,
@@ -209,6 +211,12 @@ class DeviceSosController {
       );
     }
     if (_isClosedState(previous.state)) {
+      return _status;
+    }
+    if (!waitForCloseAcknowledgement) {
+      BleDebugRegistry.instance.recordEvent(
+        'Device SOS close command dispatched without waiting for acknowledgement -> route=$commandRouteLabel previousState=${previous.state.name}',
+      );
       return _status;
     }
     try {
