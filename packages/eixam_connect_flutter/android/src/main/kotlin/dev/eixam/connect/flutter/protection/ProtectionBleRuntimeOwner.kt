@@ -41,6 +41,8 @@ internal class ProtectionBleRuntimeOwner(
     private var sosActivationRunnable: Runnable? = null
     private var backendRetryRunnable: Runnable? = null
     private var connectionInFlight = false
+    private val commandLock = Any()
+    private val pendingCommandQueue = java.util.ArrayDeque<QueuedCommand>()
     private var pendingCommandResult: PendingCommandResult? = null
     private var connectedBleNodeId: Int? = null
     private var boundDeviceId: String? = null
@@ -188,8 +190,39 @@ internal class ProtectionBleRuntimeOwner(
             )
         }
 
+        val command =
+            QueuedCommand(
+                label = label,
+                payload = payload.copyOf(),
+                forceCmdCharacteristic = forceCmdCharacteristic,
+                route = route,
+            )
+        synchronized(commandLock) {
+            if (pendingCommandResult != null) {
+                pendingCommandQueue.add(command)
+                val result =
+                    "$label native write queued via androidService because another BLE write is pending."
+                Log.d(logTag, "[SDK_BLE_COMMAND] action=queued label=$label")
+                runtimeStore.recordCommandResult(result)
+                return commandResult(
+                    success = true,
+                    route = route,
+                    result = result,
+                    error = null,
+                )
+            }
+        }
+        return startCommandWrite(gatt, command, queued = false)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startCommandWrite(
+        gatt: BluetoothGatt,
+        command: QueuedCommand,
+        queued: Boolean,
+    ): Map<String, Any?> {
         val requiresLongCommandPath =
-            forceCmdCharacteristic || payload.size > inetMaxPayloadLength
+            command.forceCmdCharacteristic || command.payload.size > inetMaxPayloadLength
         val preferredCharacteristic =
             if (requiresLongCommandPath) {
                 cmdWriteCharacteristic
@@ -199,9 +232,9 @@ internal class ProtectionBleRuntimeOwner(
         val characteristic =
             if (
                 preferredCharacteristic == null &&
-                forceCmdCharacteristic &&
-                payload.size <= inetMaxPayloadLength &&
-                payload.getOrNull(0)?.toInt()?.and(0xFF) == 0x04
+                command.forceCmdCharacteristic &&
+                command.payload.size <= inetMaxPayloadLength &&
+                command.payload.getOrNull(0)?.toInt()?.and(0xFF) == 0x04
             ) {
                 logSosTrace(
                     "device_terminal_command_fallback channel=inet reason=cmd_not_ready",
@@ -214,58 +247,95 @@ internal class ProtectionBleRuntimeOwner(
         if (characteristic == null) {
             val error =
                 if (requiresLongCommandPath) {
-                    "Protection Mode native BLE owner does not have CMD/EA04 ready for long command $label."
+                    "Protection Mode native BLE owner does not have CMD/EA04 ready for long command ${command.label}."
                 } else {
                     "Protection Mode native BLE owner does not have a writable short command characteristic ready."
                 }
             runtimeStore.recordCommandError(error)
+            if (queued) {
+                drainQueuedCommand(gatt)
+            }
+            Log.w(
+                logTag,
+                "[SDK_BLE_COMMAND] action=not_ready label=${command.label} error=$error",
+            )
             return commandResult(
                 success = false,
-                route = route,
+                route = command.route,
                 result = null,
                 error = error,
             )
         }
 
-        pendingCommandResult = PendingCommandResult(label = label)
+        synchronized(commandLock) {
+            if (pendingCommandResult != null) {
+                pendingCommandQueue.add(command)
+                val result =
+                    "${command.label} native write queued via androidService because another BLE write is pending."
+                Log.d(logTag, "[SDK_BLE_COMMAND] action=queued label=${command.label}")
+                runtimeStore.recordCommandResult(result)
+                return commandResult(
+                    success = true,
+                    route = command.route,
+                    result = result,
+                    error = null,
+                )
+            }
+            pendingCommandResult = PendingCommandResult(label = command.label)
+        }
         val writeAccepted =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 gatt.writeCharacteristic(
                     characteristic,
-                    payload,
+                    command.payload,
                     BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
                 ) == BluetoothStatusCodes.SUCCESS
             } else {
                 @Suppress("DEPRECATION")
                 run {
                     characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                    characteristic.value = payload
+                    characteristic.value = command.payload
                     gatt.writeCharacteristic(characteristic)
                 }
             }
         if (!writeAccepted) {
-            pendingCommandResult = null
-            val error = "Android native BLE owner rejected the $label write request."
+            synchronized(commandLock) {
+                if (pendingCommandResult?.label == command.label) {
+                    pendingCommandResult = null
+                }
+            }
+            val error = "Android native BLE owner rejected the ${command.label} write request."
             runtimeStore.recordCommandError(error)
+            Log.w(logTag, "[SDK_BLE_COMMAND] action=rejected label=${command.label}")
+            drainQueuedCommand(gatt)
             return commandResult(
                 success = false,
-                route = route,
+                route = command.route,
                 result = null,
                 error = error,
             )
         }
-        if (payload.getOrNull(0)?.toInt()?.and(0xFF) == 0x04) {
+        if (command.payload.getOrNull(0)?.toInt()?.and(0xFF) == 0x04) {
             val terminalChannel =
                 if (characteristic.uuid == cmdWriteUuid) "cmd" else "inet"
             logSosTrace(
                 "device_terminal_command_sent opcode=0x04 channel=$terminalChannel",
             )
         }
-        val result = "$label native write accepted via androidService."
+        val result =
+            if (queued) {
+                "${command.label} queued native write accepted via androidService."
+            } else {
+                "${command.label} native write accepted via androidService."
+            }
         runtimeStore.recordCommandResult(result)
+        Log.d(
+            logTag,
+            "[SDK_BLE_COMMAND] action=accepted label=${command.label} queued=$queued characteristic=${characteristic.uuid}",
+        )
         return commandResult(
             success = true,
-            route = route,
+            route = command.route,
             result = result,
             error = null,
         )
@@ -306,6 +376,18 @@ internal class ProtectionBleRuntimeOwner(
         )
 
         try {
+            if (!isBondedDevice(adapter, deviceId)) {
+                connectionInFlight = false
+                val failureReason =
+                    "E_DEVICE_MOBILE_BOND_REQUIRED: The device is no longer paired in the phone Bluetooth settings."
+                runtimeStore.markRuntimeFailure(failureReason)
+                ProtectionRuntimeBridge.recordBleEvent(
+                    context = context,
+                    type = "reconnectFailed",
+                    reason = "mobile_bond_missing",
+                )
+                return
+            }
             val device = adapter.getRemoteDevice(deviceId)
             bluetoothGatt?.close()
             bluetoothGatt =
@@ -337,6 +419,20 @@ internal class ProtectionBleRuntimeOwner(
                 type = "runtimeError",
                 reason = "invalid_device_id",
             )
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun isBondedDevice(
+        adapter: android.bluetooth.BluetoothAdapter,
+        deviceId: String,
+    ): Boolean {
+        return try {
+            adapter.bondedDevices.any { device ->
+                device.address.equals(deviceId, ignoreCase = true)
+            }
+        } catch (_: SecurityException) {
+            true
         }
     }
 
@@ -503,6 +599,39 @@ internal class ProtectionBleRuntimeOwner(
         sosNotifyCharacteristic = null
         inetWriteCharacteristic = null
         cmdWriteCharacteristic = null
+        clearPendingCommandWrites()
+    }
+
+    private fun clearPendingCommandWrites() {
+        synchronized(commandLock) {
+            pendingCommandResult = null
+            pendingCommandQueue.clear()
+        }
+    }
+
+    private fun drainQueuedCommand(gatt: BluetoothGatt) {
+        val next =
+            synchronized(commandLock) {
+                if (pendingCommandResult == null) {
+                    pendingCommandQueue.pollFirst()
+                } else {
+                    null
+                }
+            } ?: return
+        mainHandler.post {
+            if (bluetoothGatt !== gatt) {
+                runtimeStore.recordCommandError(
+                    "${next.label} queued native write dropped because the BLE session changed.",
+                )
+                Log.w(
+                    logTag,
+                    "[SDK_BLE_COMMAND] action=dropped label=${next.label} reason=session_changed",
+                )
+                drainQueuedCommand(gatt)
+                return@post
+            }
+            startCommandWrite(gatt, next, queued = true)
+        }
     }
 
     private fun bindDeviceIdentity(
@@ -1376,11 +1505,18 @@ internal class ProtectionBleRuntimeOwner(
                 characteristic: BluetoothGattCharacteristic,
                 status: Int,
             ) {
-                val pending = pendingCommandResult ?: return
+                val pending =
+                    synchronized(commandLock) {
+                        pendingCommandResult
+                    } ?: return
                 if (status == BluetoothGatt.GATT_SUCCESS) {
                     val result =
                         "${pending.label} native write succeeded via androidService."
                     runtimeStore.recordCommandResult(result)
+                    Log.d(
+                        logTag,
+                        "[SDK_BLE_COMMAND] action=succeeded label=${pending.label}",
+                    )
                     pending.complete(
                         result = result,
                     )
@@ -1388,12 +1524,21 @@ internal class ProtectionBleRuntimeOwner(
                     runtimeStore.recordCommandError(
                         "${pending.label} native write failed with status $status.",
                     )
+                    Log.w(
+                        logTag,
+                        "[SDK_BLE_COMMAND] action=failed label=${pending.label} status=$status",
+                    )
                     pending.fail(
                         error =
                             "${pending.label} native write failed with status $status.",
                     )
                 }
-                pendingCommandResult = null
+                synchronized(commandLock) {
+                    if (pendingCommandResult === pending) {
+                        pendingCommandResult = null
+                    }
+                }
+                drainQueuedCommand(gatt)
             }
 
             override fun onCharacteristicChanged(
@@ -1425,6 +1570,7 @@ internal class ProtectionBleRuntimeOwner(
         private const val inetMaxPayloadLength = 4
         private const val sosActivationDelayMs = 20_000L
         private const val terminalSosSuppressionWindowMs = 10_000L
+        private const val logTag = "EixamProtectionBle"
 
         private val serviceUuid: UUID = UUID.fromString("6ba1b218-15a8-461f-9fa8-5dcae273ea00")
         private val telNotifyUuid: UUID = UUID.fromString("6ba1b218-15a8-461f-9fa8-5dcae273ea01")
@@ -1474,6 +1620,13 @@ internal class ProtectionBleRuntimeOwner(
             this.completed = true
         }
     }
+
+    private data class QueuedCommand(
+        val label: String,
+        val payload: ByteArray,
+        val forceCmdCharacteristic: Boolean,
+        val route: String,
+    )
 
     private data class TerminalSosSuppression(
         val originatorNodeId: Int?,

@@ -73,7 +73,7 @@ class BleDeviceRuntimeProvider
   static const String _rescueDeviceNotReadyCode = 'E_RESCUE_DEVICE_NOT_READY';
   static const String _deviceCommandNotReadyCode = 'E_DEVICE_COMMAND_NOT_READY';
   static const String _deviceStatusTimeoutCode = 'E_DEVICE_STATUS_TIMEOUT';
-  static const String _deviceStatusMalformedCode = 'E_DEVICE_STATUS_MALFORMED';
+  static const String _mobileBondRequiredCode = 'E_DEVICE_MOBILE_BOND_REQUIRED';
 
   DeviceSosController get deviceSosController => _deviceSosController;
   Stream<BleIncomingEvent> watchIncomingEvents() =>
@@ -161,7 +161,6 @@ class BleDeviceRuntimeProvider
         'Selected BLE device was not found in the latest scan results.',
       );
     }
-
     try {
       _log(
         'BLE selected candidate -> id=${candidate.deviceId} name=${candidate.name} rssi=${candidate.rssi}',
@@ -209,16 +208,33 @@ class BleDeviceRuntimeProvider
         'Pairing succeeded for ${candidate.deviceId}',
       );
 
+      final runtimeStatus = await _readRuntimeStatusAfterConnection(
+        deviceId: candidate.deviceId,
+        reason: 'pairing',
+      );
+      final runtimeBatteryState = _batteryStateFromPercent(
+        runtimeStatus?.batteryPercent,
+      );
+      final activated = currentStatus.activated ||
+          runtimeStatus?.isProvisioned == true ||
+          runtimeStatus?.txEnabled == true;
+
       final nextStatus = currentStatus.copyWith(
         deviceId: candidate.deviceId,
+        nodeId: runtimeStatus?.nodeId,
         canonicalHardwareId: candidate.canonicalHardwareId,
         deviceAlias: candidate.name,
         model: 'EIXAM R1',
         paired: true,
+        activated: activated,
         connected: true,
-        lifecycleState: DeviceLifecycleState.paired,
-        batteryLevel: _effectiveBatteryLevel(currentStatus),
-        batteryState: _effectiveBatteryState(currentStatus),
+        lifecycleState: activated
+            ? DeviceLifecycleState.ready
+            : DeviceLifecycleState.paired,
+        batteryLevel: runtimeBatteryState?.protocolValue ??
+            _effectiveBatteryLevel(currentStatus),
+        batteryState:
+            runtimeBatteryState ?? _effectiveBatteryState(currentStatus),
         batterySource: _effectiveBatterySource(currentStatus),
         firmwareVersion: await _readFirmwareMetadata(
           candidate.deviceId,
@@ -264,8 +280,179 @@ class BleDeviceRuntimeProvider
       try {
         await _bleClient.disconnect(candidate.deviceId);
       } catch (_) {}
+      if (_isMobilePairingRequiredError(error)) {
+        throw const DeviceException(
+          _mobileBondRequiredCode,
+          'The device is no longer paired in the phone Bluetooth settings.',
+        );
+      }
       rethrow;
     }
+  }
+
+  @override
+  Future<DeviceStatus> reconnect({
+    required DeviceStatus currentStatus,
+    required PreferredDevice preferredDevice,
+  }) async {
+    final deviceId = preferredDevice.deviceId.trim();
+    if (deviceId.isEmpty) {
+      throw const DeviceException(
+        'E_DEVICE_INVALID_PREFERRED_DEVICE',
+        'A preferred BLE device id is required before reconnecting.',
+      );
+    }
+
+    final adapterState = await _bleClient.getAdapterState();
+    if (adapterState != BleAdapterState.poweredOn) {
+      throw const DeviceException(
+        'E_DEVICE_BLUETOOTH_OFF',
+        'Bluetooth must be enabled before reconnecting.',
+      );
+    }
+    if (!await _bleClient.hasSystemAssociation(deviceId)) {
+      throw const DeviceException(
+        _mobileBondRequiredCode,
+        'The device is no longer paired in the phone Bluetooth settings.',
+      );
+    }
+
+    try {
+      BleDebugRegistry.instance.update(
+        selectedDeviceId: deviceId,
+        connectionStatus: BleConnectionStatus.reconnecting,
+        connectionError: null,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'Reconnect started for known BLE device $deviceId',
+      );
+      await _bleClient.connect(deviceId);
+      BleDebugRegistry.instance.update(
+        connectionStatus: BleConnectionStatus.connected,
+        connectionError: null,
+      );
+
+      final compatible = await _bleClient.isEixamCompatible(deviceId);
+      BleDebugRegistry.instance.recordEvent(
+        'Reconnect compatibility result for $deviceId: $compatible',
+      );
+      if (!compatible) {
+        BleDebugRegistry.instance.update(
+          connectionStatus: BleConnectionStatus.incompatible,
+          connectionError:
+              'Connected, but required EIXAM service/characteristics were not found.',
+        );
+        await _bleClient.disconnect(deviceId);
+        throw const DeviceException(
+          'E_DEVICE_INCOMPATIBLE',
+          'Selected device is not compatible with the EIXAM BLE protocol.',
+        );
+      }
+
+      _connectedDeviceId = deviceId;
+      _connectedDeviceAlias =
+          preferredDevice.displayName ?? currentStatus.deviceAlias;
+      _connectedCanonicalHardwareId = currentStatus.canonicalHardwareId;
+      await _bindNotifications(deviceId);
+      await _bindConnectionMonitor(deviceId);
+      BleDebugRegistry.instance.recordEvent(
+        'Reconnect succeeded for known BLE device $deviceId',
+      );
+
+      final runtimeStatus = await _readRuntimeStatusAfterConnection(
+        deviceId: deviceId,
+        reason: 'reconnect',
+      );
+      final runtimeBatteryState = _batteryStateFromPercent(
+        runtimeStatus?.batteryPercent,
+      );
+      final activated = currentStatus.activated ||
+          runtimeStatus?.isProvisioned == true ||
+          runtimeStatus?.txEnabled == true;
+
+      final nextStatus = currentStatus.copyWith(
+        deviceId: deviceId,
+        nodeId: runtimeStatus?.nodeId,
+        deviceAlias: _connectedDeviceAlias,
+        paired: true,
+        activated: activated,
+        connected: true,
+        lifecycleState: activated
+            ? DeviceLifecycleState.ready
+            : DeviceLifecycleState.paired,
+        batteryLevel: runtimeBatteryState?.protocolValue ??
+            _effectiveBatteryLevel(currentStatus),
+        batteryState:
+            runtimeBatteryState ?? _effectiveBatteryState(currentStatus),
+        batterySource: _effectiveBatterySource(currentStatus),
+        firmwareVersion: await _readFirmwareMetadata(
+          deviceId,
+          currentFirmwareVersion: currentStatus.firmwareVersion,
+          reason: 'reconnect',
+          force: currentStatus.firmwareVersion == null,
+        ),
+        signalQuality: await _readSignalQuality(deviceId, reason: 'reconnect'),
+        lastSeen: DateTime.now(),
+        lastSyncedAt: DateTime.now(),
+        clearProvisioningError: true,
+      );
+      _publishRuntimeStatus(nextStatus, reason: 'reconnect_completed');
+      _publishGuidedRescueState(
+        _guidedRescueState.copyWith(
+          availableActions: _resolvedGuidedRescueActions(),
+          unavailableReason: _resolvedGuidedRescueUnavailableReason(),
+          lastUpdatedAt: DateTime.now(),
+          clearLastError: true,
+        ),
+      );
+      return nextStatus;
+    } catch (error, stackTrace) {
+      if (_isMobilePairingRequiredError(error)) {
+        BleDebugRegistry.instance.recordEvent(
+          'Reconnect stopped because phone Bluetooth bond is missing for $deviceId',
+        );
+        await _resetFailedPairingAttempt(deviceId);
+        try {
+          await _bleClient.disconnect(deviceId);
+        } catch (_) {}
+        throw const DeviceException(
+          _mobileBondRequiredCode,
+          'The device is no longer paired in the phone Bluetooth settings.',
+        );
+      }
+      final currentConnectionStatus =
+          BleDebugRegistry.instance.currentState.connectionStatus;
+      if (currentConnectionStatus != BleConnectionStatus.incompatible) {
+        BleDebugRegistry.instance.update(
+          connectionStatus: BleConnectionStatus.failed,
+          connectionError: error.toString(),
+        );
+      }
+      BleDebugRegistry.instance.recordEvent(
+        'Reconnect failed for known BLE device $deviceId: $error',
+      );
+      debugPrint('BLE reconnect failed -> hardwareId=$deviceId error=$error');
+      debugPrintStack(stackTrace: stackTrace);
+      await _resetFailedPairingAttempt(deviceId);
+      try {
+        await _bleClient.disconnect(deviceId);
+      } catch (_) {}
+      rethrow;
+    }
+  }
+
+  bool _isMobilePairingRequiredError(Object error) {
+    if (error is DeviceException) {
+      return error.code == _mobileBondRequiredCode;
+    }
+    final text = error.toString().toLowerCase();
+    return text.contains('bond') ||
+        text.contains('pairing') ||
+        text.contains('pair') ||
+        text.contains('pin') ||
+        text.contains('passkey') ||
+        text.contains('authentication') ||
+        text.contains('insufficient authentication');
   }
 
   BleScanResult? _findSelectedCandidate(
@@ -381,7 +568,7 @@ class BleDeviceRuntimeProvider
       canonicalHardwareId: currentStatus.canonicalHardwareId,
       lifecycleState: _resolveLifecycle(currentStatus, false),
       lastSyncedAt: DateTime.now(),
-      provisioningError: 'Flutter BLE ownership released: $reason',
+      clearProvisioningError: true,
     );
     _publishRuntimeStatus(nextStatus, reason: 'ownership_released');
     return nextStatus;
@@ -397,7 +584,7 @@ class BleDeviceRuntimeProvider
     }
     final nextStatus = currentStatus.copyWith(
       canonicalHardwareId: currentStatus.canonicalHardwareId,
-      provisioningError: 'Flutter BLE ownership restored: $reason',
+      clearProvisioningError: true,
       lastSyncedAt: DateTime.now(),
     );
     _publishRuntimeStatus(nextStatus, reason: 'ownership_restored');
@@ -589,6 +776,46 @@ class BleDeviceRuntimeProvider
     return _bleClient.readSignalQuality(deviceId);
   }
 
+  Future<DeviceRuntimeStatus?> _readRuntimeStatusAfterConnection({
+    required String deviceId,
+    required String reason,
+  }) async {
+    try {
+      final status = await requestDeviceRuntimeStatus(
+        timeout: const Duration(seconds: 2),
+      );
+      _connectedBleTagNodeId = status.nodeId;
+      BleDebugRegistry.instance.recordEvent(
+        'Runtime status resolved after $reason -> hardwareId=$deviceId '
+        'nodeId=${_formatNodeId(status.nodeId)} '
+        'battery=${status.batteryPercent}',
+      );
+      return status;
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'Runtime status unavailable after $reason -> hardwareId=$deviceId '
+        'error=$error',
+      );
+      return null;
+    }
+  }
+
+  DeviceBatteryLevel? _batteryStateFromPercent(int? percent) {
+    if (percent == null) {
+      return null;
+    }
+    if (percent <= 15) {
+      return DeviceBatteryLevel.critical;
+    }
+    if (percent <= 40) {
+      return DeviceBatteryLevel.low;
+    }
+    if (percent <= 75) {
+      return DeviceBatteryLevel.medium;
+    }
+    return DeviceBatteryLevel.ok;
+  }
+
   bool _hasFirmwareCache(String? firmwareVersion) {
     final normalized = firmwareVersion?.trim().toLowerCase();
     return normalized != null &&
@@ -598,6 +825,10 @@ class BleDeviceRuntimeProvider
 
   @override
   Future<DeviceStatus> unpair(DeviceStatus currentStatus) async {
+    final systemAssociationDeviceId =
+        _connectedDeviceId?.trim().isNotEmpty == true
+            ? _connectedDeviceId!
+            : currentStatus.deviceId.trim();
     await _connectionStateSubscription?.cancel();
     _connectionStateSubscription = null;
     await _notificationSubscription?.cancel();
@@ -608,6 +839,15 @@ class BleDeviceRuntimeProvider
     await _deviceSosController.detach();
     if (_connectedDeviceId != null) {
       await _bleClient.disconnect(_connectedDeviceId!);
+    }
+    if (systemAssociationDeviceId.isNotEmpty) {
+      final removed =
+          await _bleClient.removeSystemAssociation(systemAssociationDeviceId);
+      BleDebugRegistry.instance.recordEvent(
+        removed
+            ? 'Device system association removed'
+            : 'Device system association removal skipped',
+      );
     }
     _connectedDeviceId = null;
     _connectedDeviceAlias = null;
@@ -892,7 +1132,7 @@ class BleDeviceRuntimeProvider
       canonicalHardwareId: currentStatus.canonicalHardwareId,
       lifecycleState: _resolveLifecycle(currentStatus, false),
       lastSyncedAt: DateTime.now(),
-      provisioningError: 'Unexpected BLE disconnect',
+      clearProvisioningError: true,
     );
     _publishRuntimeStatus(nextStatus, reason: 'unexpected_disconnect');
     _publishGuidedRescueState(
@@ -1729,6 +1969,7 @@ class BleDeviceRuntimeProvider
       batterySource: batterySource,
       lastSeen: DateTime.now(),
       lastSyncedAt: DateTime.now(),
+      clearProvisioningError: true,
     );
 
     final unchanged = currentStatus.batteryLevel == nextStatus.batteryLevel &&
@@ -1755,6 +1996,7 @@ class BleDeviceRuntimeProvider
         nodeId: nodeId,
         lastSeen: DateTime.now(),
         lastSyncedAt: DateTime.now(),
+        clearProvisioningError: true,
       ),
       reason: 'runtime_node_id_updated',
     );

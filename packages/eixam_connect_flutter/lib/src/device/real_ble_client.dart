@@ -167,7 +167,7 @@ class RealBleClient implements BleClient {
   Future<void> connect(String deviceId) async {
     _ensureInitialized();
 
-    final device = _devices[deviceId];
+    final device = await _resolveKnownDevice(deviceId);
     if (device == null) {
       BleDebugRegistry.instance.recordEvent(
         'BLE connect selected device missing -> hardwareId=$deviceId',
@@ -292,7 +292,7 @@ class RealBleClient implements BleClient {
   Future<void> disconnect(String deviceId) async {
     _ensureInitialized();
 
-    final device = _devices[deviceId];
+    final device = await _resolveKnownDevice(deviceId);
     if (device != null) {
       await device.disconnect();
     }
@@ -310,22 +310,85 @@ class RealBleClient implements BleClient {
   Future<bool> isConnected(String deviceId) async {
     _ensureInitialized();
 
-    final device = _devices[deviceId];
+    final device = await _resolveKnownDevice(deviceId);
     if (device == null) return false;
 
-    final state = await device.connectionState.first;
-    return state == BluetoothConnectionState.connected;
+    try {
+      final state = await device.connectionState.first;
+      return state == BluetoothConnectionState.connected;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> hasSystemAssociation(String deviceId) async {
+    _ensureInitialized();
+    if (defaultTargetPlatform != TargetPlatform.android) {
+      return true;
+    }
+    final normalized = deviceId.trim();
+    if (normalized.isEmpty) {
+      return false;
+    }
+    try {
+      final bondedDevices = await FlutterBluePlus.bondedDevices;
+      if (_firstDeviceWithId(bondedDevices, normalized) != null) {
+        return true;
+      }
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'BLE Android bond association lookup failed -> hardwareId=$normalized error=$error',
+      );
+      return true;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'BLE known device has no Android system bond -> hardwareId=$normalized',
+    );
+    return false;
+  }
+
+  @override
+  Future<bool> removeSystemAssociation(String deviceId) async {
+    _ensureInitialized();
+    if (defaultTargetPlatform != TargetPlatform.android) {
+      return false;
+    }
+    final normalized = deviceId.trim();
+    if (normalized.isEmpty) {
+      return false;
+    }
+    final device = await _resolveKnownDevice(normalized);
+    if (device == null) {
+      return false;
+    }
+    try {
+      await device.removeBond();
+      BleDebugRegistry.instance.recordEvent(
+        'BLE Android system bond removed -> hardwareId=$normalized',
+      );
+      return true;
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'BLE Android system bond removal failed -> hardwareId=$normalized error=$error',
+      );
+      return false;
+    }
   }
 
   @override
   Stream<bool> watchConnection(String deviceId) {
     _ensureInitialized();
 
-    final device = _devices[deviceId];
-    if (device == null) {
-      return const Stream<bool>.empty();
+    final existing = _devices[deviceId];
+    if (existing != null) {
+      return existing.connectionState
+          .map((state) => state == BluetoothConnectionState.connected)
+          .distinct();
     }
 
+    final device = BluetoothDevice.fromId(deviceId);
+    _devices[deviceId] = device;
     return device.connectionState
         .map((state) => state == BluetoothConnectionState.connected)
         .distinct();
@@ -620,7 +683,7 @@ class RealBleClient implements BleClient {
       return _servicesCache[deviceId]!;
     }
 
-    final device = _devices[deviceId];
+    final device = await _resolveKnownDevice(deviceId);
     if (device == null) {
       return [];
     }
@@ -628,6 +691,81 @@ class RealBleClient implements BleClient {
     final services = await device.discoverServices();
     _servicesCache[deviceId] = services;
     return services;
+  }
+
+  Future<BluetoothDevice?> _resolveKnownDevice(String deviceId) async {
+    final normalized = deviceId.trim();
+    if (normalized.isEmpty) {
+      return null;
+    }
+    final cached = _devices[normalized];
+    if (cached != null) {
+      return cached;
+    }
+
+    final systemDevice = await _findSystemDevice(normalized);
+    if (systemDevice != null) {
+      _devices[normalized] = systemDevice;
+      BleDebugRegistry.instance.recordEvent(
+        'BLE known device restored from system devices -> hardwareId=$normalized',
+      );
+      return systemDevice;
+    }
+
+    final bondedDevice = await _findBondedDevice(normalized);
+    if (bondedDevice != null) {
+      _devices[normalized] = bondedDevice;
+      BleDebugRegistry.instance.recordEvent(
+        'BLE known device restored from bonded devices -> hardwareId=$normalized',
+      );
+      return bondedDevice;
+    }
+
+    final restored = BluetoothDevice.fromId(normalized);
+    _devices[normalized] = restored;
+    BleDebugRegistry.instance.recordEvent(
+      'BLE known device restored from persisted remoteId -> hardwareId=$normalized',
+    );
+    return restored;
+  }
+
+  Future<BluetoothDevice?> _findSystemDevice(String deviceId) async {
+    try {
+      final devices = await FlutterBluePlus.systemDevices([eixamServiceUuid]);
+      return _firstDeviceWithId(devices, deviceId);
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'BLE system device lookup failed -> hardwareId=$deviceId error=$error',
+      );
+      return null;
+    }
+  }
+
+  Future<BluetoothDevice?> _findBondedDevice(String deviceId) async {
+    if (defaultTargetPlatform != TargetPlatform.android) {
+      return null;
+    }
+    try {
+      final devices = await FlutterBluePlus.bondedDevices;
+      return _firstDeviceWithId(devices, deviceId);
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'BLE bonded device lookup failed -> hardwareId=$deviceId error=$error',
+      );
+      return null;
+    }
+  }
+
+  BluetoothDevice? _firstDeviceWithId(
+    List<BluetoothDevice> devices,
+    String deviceId,
+  ) {
+    for (final device in devices) {
+      if (device.remoteId.str == deviceId) {
+        return device;
+      }
+    }
+    return null;
   }
 
   Future<BluetoothConnectionState> _readConnectionState(

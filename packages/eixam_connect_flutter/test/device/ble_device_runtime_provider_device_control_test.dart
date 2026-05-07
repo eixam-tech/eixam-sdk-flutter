@@ -1,4 +1,5 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:eixam_connect_flutter/src/device/ble_adapter_state.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/ble_device_runtime_provider.dart';
 import 'package:eixam_connect_flutter/src/device/mock_ble_client.dart';
@@ -88,6 +89,16 @@ void main() {
       expect(status.telIntervalSeconds, 60);
     });
 
+    test('pairing resolves node id and device health immediately', () async {
+      final status = await _pairDemoDevice(runtimeProvider);
+
+      expect(status.nodeId, 0x1234);
+      expect(status.activated, isTrue);
+      expect(status.lifecycleState, DeviceLifecycleState.ready);
+      expect(status.effectiveBatteryState, DeviceBatteryLevel.ok);
+      expect(status.signalQuality, isNotNull);
+    });
+
     test('handles malformed runtime status responses safely', () async {
       await _pairDemoDevice(runtimeProvider);
       bleClient.runtimeStatusPayload = <int>[0xE9, 0x78, 0x02, 0x02];
@@ -114,13 +125,121 @@ void main() {
       expect(bleClient.writtenCommands.last.bytes, <int>[0x22]);
       expect(bleClient.writtenCommands.last.usesCmdCharacteristic, isTrue);
     });
+
+    test('unpair removes the phone Bluetooth association', () async {
+      await _pairDemoDevice(runtimeProvider);
+
+      final status = await runtimeProvider.unpair(
+        buildDeviceStatus(
+          deviceId: MockBleClient.demoDeviceId,
+          paired: true,
+          activated: true,
+          connected: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        ),
+      );
+
+      expect(status.paired, isFalse);
+      expect(status.connected, isFalse);
+      expect(
+        bleClient.removedSystemAssociations,
+        contains(MockBleClient.demoDeviceId),
+      );
+    });
+
+    test('unpair removes a saved phone Bluetooth association while offline',
+        () async {
+      final status = await runtimeProvider.unpair(
+        buildDeviceStatus(
+          deviceId: MockBleClient.demoDeviceId,
+          paired: true,
+          activated: true,
+          connected: false,
+          lifecycleState: DeviceLifecycleState.paired,
+        ),
+      );
+
+      expect(status.paired, isFalse);
+      expect(
+        bleClient.removedSystemAssociations,
+        contains(MockBleClient.demoDeviceId),
+      );
+    });
+
+    test('unexpected disconnect is not exposed as provisioning error',
+        () async {
+      final pairedStatus = await _pairDemoDevice(runtimeProvider);
+      expect(pairedStatus.provisioningError, isNull);
+      final emittedStatuses = <DeviceStatus>[];
+      final subscription =
+          runtimeProvider.watchRuntimeStatus().listen(emittedStatuses.add);
+
+      try {
+        await bleClient.setAdapterState(BleAdapterState.poweredOff);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(emittedStatuses, isNotEmpty);
+        expect(emittedStatuses.last.connected, isFalse);
+        expect(emittedStatuses.last.provisioningError, isNull);
+      } finally {
+        await subscription.cancel();
+      }
+    });
+
+    test('BLE ownership transitions are not exposed as provisioning errors',
+        () async {
+      await _pairDemoDevice(runtimeProvider);
+
+      final released = await runtimeProvider.suspendOwnership(
+        reason: 'native protection mode',
+      );
+      final restored = await runtimeProvider.resumeOwnership(
+        reason: 'app foreground',
+      );
+
+      expect(released?.provisioningError, isNull);
+      expect(restored?.provisioningError, isNull);
+    });
+
+    test('reconnect rejects known device when phone Bluetooth bond is missing',
+        () async {
+      bleClient.systemAssociationAvailable = false;
+
+      await expectLater(
+        runtimeProvider.reconnect(
+          currentStatus: buildDeviceStatus(
+            deviceId: MockBleClient.demoDeviceId,
+            paired: true,
+            activated: true,
+            connected: false,
+            lifecycleState: DeviceLifecycleState.paired,
+          ),
+          preferredDevice: PreferredDevice(
+            deviceId: MockBleClient.demoDeviceId,
+            displayName: 'EIXAM R1 Demo',
+            lastConnectedAt: DateTime.utc(2026, 5, 7),
+          ),
+        ),
+        throwsA(
+          isA<DeviceException>().having(
+            (error) => error.code,
+            'code',
+            'E_DEVICE_MOBILE_BOND_REQUIRED',
+          ),
+        ),
+      );
+
+      expect(await bleClient.isConnected(MockBleClient.demoDeviceId), isFalse);
+    });
   });
 }
 
-Future<void> _pairDemoDevice(BleDeviceRuntimeProvider runtimeProvider) async {
+Future<DeviceStatus> _pairDemoDevice(
+  BleDeviceRuntimeProvider runtimeProvider,
+) async {
   BleDebugRegistry.instance
       .update(selectedDeviceId: MockBleClient.demoDeviceId);
-  await runtimeProvider.pair(
+  return runtimeProvider.pair(
     currentStatus: buildDeviceStatus(
       paired: false,
       activated: false,

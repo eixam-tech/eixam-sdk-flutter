@@ -74,6 +74,14 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     return _methodChannel.invokeMethod<void>('stopProtectionRuntime');
   }
 
+  Future<bool> removeBluetoothBond(String deviceId) async {
+    final removed = await _methodChannel.invokeMethod<bool>(
+      'removeBluetoothBond',
+      <String, dynamic>{'deviceId': deviceId},
+    );
+    return removed == true;
+  }
+
   @override
   Future<void> ensureProtectionRuntimeActive({
     String reason = 'app_foreground_resume',

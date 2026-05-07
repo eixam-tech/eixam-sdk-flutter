@@ -7,6 +7,8 @@ import androidx.core.content.ContextCompat
 internal class BackgroundTelemetryStore(context: Context) {
     private val preferences =
         context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
+    private val flutterPreferences =
+        context.getSharedPreferences(flutterPrefsName, Context.MODE_PRIVATE)
 
     fun saveStartRequest(arguments: Map<*, *>) {
         val session = arguments["session"] as? Map<*, *>
@@ -17,9 +19,7 @@ internal class BackgroundTelemetryStore(context: Context) {
             .putString(keyExternalUserId, session?.get("externalUserId") as? String)
             .putString(keyUserHash, session?.get("userHash") as? String)
             .putString(keyCanonicalExternalUserId, session?.get("canonicalExternalUserId") as? String)
-            .putString(keyDeviceId, arguments["deviceId"] as? String)
-            .putString(keyDeviceBattery, compactJson(arguments["deviceBattery"]))
-            .putString(keyDeviceCoverage, compactJson(arguments["deviceCoverage"]))
+            .putDevicePayload(arguments)
             .putBoolean(keySosOpen, arguments["sosOpen"] as? Boolean ?: false)
             .putString(keyNotificationTitle, arguments["notificationTitle"] as? String)
             .putString(keyNotificationBody, arguments["notificationBody"] as? String)
@@ -31,9 +31,7 @@ internal class BackgroundTelemetryStore(context: Context) {
     fun update(arguments: Map<*, *>) {
         preferences.edit()
             .putBoolean(keySosOpen, arguments["sosOpen"] as? Boolean ?: false)
-            .putString(keyDeviceId, arguments["deviceId"] as? String)
-            .putString(keyDeviceBattery, compactJson(arguments["deviceBattery"]))
-            .putString(keyDeviceCoverage, compactJson(arguments["deviceCoverage"]))
+            .putDevicePayload(arguments)
             .apply()
     }
 
@@ -46,6 +44,9 @@ internal class BackgroundTelemetryStore(context: Context) {
             .putBoolean(keyServiceRunning, false)
             .putBoolean(keyEnabled, false)
             .putBoolean(keyActiveLocationRequest, false)
+            .remove(keyDeviceId)
+            .remove(keyDeviceBattery)
+            .remove(keyDeviceCoverage)
             .apply()
     }
 
@@ -116,11 +117,35 @@ internal class BackgroundTelemetryStore(context: Context) {
     fun canonicalExternalUserId(): String? =
         preferences.getString(keyCanonicalExternalUserId, null)
     fun userHash(): String? = preferences.getString(keyUserHash, null)
-    fun deviceId(): String? = preferences.getString(keyDeviceId, null)
-    fun deviceBatteryJson(): String? = preferences.getString(keyDeviceBattery, null)
-    fun deviceCoverageJson(): String? = preferences.getString(keyDeviceCoverage, null)
+    fun deviceId(): String? =
+        preferences.getString(keyDeviceId, null).takeUnless { isManualDisconnectRequested() }
+    fun deviceBatteryJson(): String? =
+        preferences.getString(keyDeviceBattery, null).takeUnless { isManualDisconnectRequested() }
+    fun deviceCoverageJson(): String? =
+        preferences.getString(keyDeviceCoverage, null).takeUnless { isManualDisconnectRequested() }
     fun notificationTitle(): String? = preferences.getString(keyNotificationTitle, null)
     fun notificationBody(): String? = preferences.getString(keyNotificationBody, null)
+
+    private fun android.content.SharedPreferences.Editor.putDevicePayload(
+        arguments: Map<*, *>,
+    ): android.content.SharedPreferences.Editor {
+        if (isManualDisconnectRequested()) {
+            remove(keyDeviceId)
+            remove(keyDeviceBattery)
+            remove(keyDeviceCoverage)
+            return this
+        }
+        putString(keyDeviceId, arguments["deviceId"] as? String)
+        putString(keyDeviceBattery, compactJson(arguments["deviceBattery"]))
+        putString(keyDeviceCoverage, compactJson(arguments["deviceCoverage"]))
+        return this
+    }
+
+    private fun isManualDisconnectRequested(): Boolean =
+        flutterPreferences.getBoolean(
+            "$flutterKeyPrefix$manualDisconnectRequestedKey",
+            false,
+        )
 
     private fun compactJson(value: Any?): String? {
         val map = value as? Map<*, *> ?: return null
@@ -151,6 +176,8 @@ internal class BackgroundTelemetryStore(context: Context) {
 
     companion object {
         private const val prefsName = "eixam_background_telemetry"
+        private const val flutterPrefsName = "FlutterSharedPreferences"
+        private const val flutterKeyPrefix = "flutter."
         private const val keyEnabled = "enabled"
         private const val keyServiceRunning = "service_running"
         private const val keyApiBaseUrl = "api_base_url"
@@ -164,6 +191,8 @@ internal class BackgroundTelemetryStore(context: Context) {
         private const val keySosOpen = "sos_open"
         private const val keyNotificationTitle = "notification_title"
         private const val keyNotificationBody = "notification_body"
+        private const val manualDisconnectRequestedKey =
+            "eixam.ble.manual_disconnect_requested"
         private const val keyLastTelemetryAt = "last_telemetry_at"
         private const val keyLastError = "last_error"
         private const val keyLastLocationMode = "last_location_mode"

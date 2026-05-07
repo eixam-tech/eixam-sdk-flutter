@@ -40,6 +40,37 @@ class MockDeviceRuntimeProvider implements DeviceRuntimeProvider {
   }
 
   @override
+  Future<DeviceStatus> reconnect({
+    required DeviceStatus currentStatus,
+    required PreferredDevice preferredDevice,
+  }) async {
+    if (preferredDevice.deviceId.trim().isEmpty) {
+      throw const DeviceException(
+        'E_DEVICE_INVALID_PREFERRED_DEVICE',
+        'A preferred BLE device id is required before reconnecting.',
+      );
+    }
+    return currentStatus.copyWith(
+      deviceId: preferredDevice.deviceId,
+      deviceAlias: preferredDevice.displayName ?? currentStatus.deviceAlias,
+      paired: true,
+      connected: true,
+      lifecycleState: currentStatus.activated
+          ? DeviceLifecycleState.ready
+          : DeviceLifecycleState.paired,
+      batteryLevel:
+          currentStatus.batteryLevel ?? DeviceBatteryLevel.ok.protocolValue,
+      batteryState:
+          currentStatus.effectiveBatteryState ?? DeviceBatteryLevel.ok,
+      batterySource: currentStatus.batterySource ?? DeviceBatterySource.unknown,
+      lastSeen: DateTime.now(),
+      lastSyncedAt: DateTime.now(),
+      signalQuality: currentStatus.signalQuality ?? 4,
+      clearProvisioningError: true,
+    );
+  }
+
+  @override
   Future<DeviceStatus> activate(
       {required DeviceStatus currentStatus,
       required String activationCode}) async {

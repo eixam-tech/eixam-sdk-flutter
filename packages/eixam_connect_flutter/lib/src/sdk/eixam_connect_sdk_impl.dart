@@ -25,6 +25,7 @@ import '../device/eixam_sos_packet.dart';
 import '../data/datasources_remote/sdk_session_context.dart';
 import '../data/repositories/telemetry_repository.dart';
 import '../data/repositories/sos_runtime_rehydration_support.dart';
+import 'android_protection_platform_adapter.dart';
 import 'backlog_sync_controller.dart';
 import 'background_telemetry_platform_adapter.dart';
 import 'background_telemetry_platform_adapter_factory.dart';
@@ -187,6 +188,7 @@ class EixamConnectSdkImpl
   final Set<String> _backendRegisteredNodeIdsForSession = <String>{};
   final Map<String, Future<void>> _backendDeviceRegistrationInFlightByNodeId =
       <String, Future<void>>{};
+  bool _manualDisconnectRequested = false;
   bool _lastDeviceSosCommandPathAvailable = false;
   late final BleAutoReconnectCoordinator _bleAutoReconnectCoordinator;
   late final BacklogSyncController _backlogSyncController;
@@ -304,6 +306,11 @@ class EixamConnectSdkImpl
     _sdkConfig = config;
     _session = await sessionStore?.load();
     _session = await _bootstrapSessionIfNeeded(_session);
+    _manualDisconnectRequested =
+        await preferredBleDeviceStore.readManualDisconnectRequested();
+    if (_manualDisconnectRequested) {
+      _clearDeviceRuntimeResidueAfterManualDisconnect();
+    }
     _stableAppDeviceId = await _resolveStableAppDeviceId();
     if (sessionContext != null) {
       sessionContext!.currentSession = _session;
@@ -340,6 +347,9 @@ class EixamConnectSdkImpl
     await _reconcileBackgroundTelemetry(reason: 'initialize');
     await realtimeClient.connect();
     await _resumeDeathManMonitoringIfNeeded();
+    await _seedPreferredBleDeviceFromBackendRegistryIfNeeded(
+      trigger: 'initialize',
+    );
     await _bleAutoReconnectCoordinator.tryAutoConnectOnStartup();
     _scheduleRegisteredDeviceAutoSync(
       trigger: 'initialize',
@@ -658,6 +668,10 @@ class EixamConnectSdkImpl
       trigger: 'set_session',
       status: _lastDeviceStatus,
     );
+    await _seedPreferredBleDeviceFromBackendRegistryIfNeeded(
+      trigger: 'set_session',
+    );
+    await _bleAutoReconnectCoordinator.tryAutoConnectOnResume();
     final realtime = realtimeClient;
     if (realtime is OperationalRealtimeClient) {
       await realtime.reconnectIfSessionChanged(_session!);
@@ -706,6 +720,10 @@ class EixamConnectSdkImpl
       trigger: 'refresh_identity',
       status: _lastDeviceStatus,
     );
+    await _seedPreferredBleDeviceFromBackendRegistryIfNeeded(
+      trigger: 'refresh_identity',
+    );
+    await _bleAutoReconnectCoordinator.tryAutoConnectOnResume();
     final realtime = realtimeClient;
     if (realtime is OperationalRealtimeClient) {
       await realtime.reconnectIfSessionChanged(refreshed);
@@ -1087,6 +1105,15 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> unpairDevice() async {
+    _manualDisconnectRequested = true;
+    _clearDeviceRuntimeResidueAfterManualDisconnect();
+    final preferredDevice = await preferredBleDeviceStore.getPreferredDevice();
+    final currentStatus = await _readCurrentDeviceStatusForUnpair();
+    await _stopProtectionRuntimeForManualUnpair();
+    await _removeAndroidBluetoothBondsForManualUnpair(
+      preferredDevice: preferredDevice,
+      currentStatus: currentStatus,
+    );
     await _bleAutoReconnectCoordinator.unpairDeviceManually(
       deviceRepository.unpairDevice,
     );
@@ -1097,8 +1124,83 @@ class EixamConnectSdkImpl
     );
   }
 
+  Future<DeviceStatus?> _readCurrentDeviceStatusForUnpair() async {
+    try {
+      return await deviceRepository.getDeviceStatus();
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'Manual unpair could not read current device status before cleanup: $error',
+      );
+      return _lastDeviceStatus;
+    }
+  }
+
+  Future<void> _stopProtectionRuntimeForManualUnpair() async {
+    final status = _protectionModeController.currentStatus;
+    if (!status.protectionRuntimeActive &&
+        !status.foregroundServiceRunning &&
+        status.bleOwner == ProtectionBleOwner.flutter) {
+      return;
+    }
+    try {
+      await _protectionModeController.exit();
+      BleDebugRegistry.instance.recordEvent(
+        'Protection runtime stopped before manual unpair',
+      );
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'Protection runtime stop before manual unpair failed: $error',
+      );
+    }
+  }
+
+  Future<void> _removeAndroidBluetoothBondsForManualUnpair({
+    required PreferredDevice? preferredDevice,
+    required DeviceStatus? currentStatus,
+  }) async {
+    final adapter = protectionPlatformAdapter;
+    if (adapter is! AndroidProtectionPlatformAdapter) {
+      return;
+    }
+    for (final deviceId in _manualUnpairBluetoothDeviceIds(
+      preferredDevice: preferredDevice,
+      currentStatus: currentStatus,
+    )) {
+      final removed = await adapter.removeBluetoothBond(deviceId);
+      BleDebugRegistry.instance.recordEvent(
+        removed
+            ? 'Android Bluetooth bond removed before manual unpair -> hardwareId=$deviceId'
+            : 'Android Bluetooth bond removal before manual unpair skipped -> hardwareId=$deviceId',
+      );
+      if (removed) {
+        return;
+      }
+    }
+  }
+
+  List<String> _manualUnpairBluetoothDeviceIds({
+    required PreferredDevice? preferredDevice,
+    required DeviceStatus? currentStatus,
+  }) {
+    final values = <String?>[
+      preferredDevice?.deviceId,
+      currentStatus?.deviceId,
+      currentStatus?.canonicalHardwareId,
+      _lastDeviceStatus?.deviceId,
+      _lastDeviceStatus?.canonicalHardwareId,
+    ];
+    final seen = <String>{};
+    return values
+        .whereType<String>()
+        .map((value) => value.trim())
+        .where((value) => value.isNotEmpty)
+        .where((value) => seen.add(value.toLowerCase()))
+        .toList(growable: false);
+  }
+
   @override
   Future<DeviceStatus> pairDevice({required String pairingCode}) {
+    _manualDisconnectRequested = false;
     return _cacheDeviceStatus(
       _bleAutoReconnectCoordinator.pairDeviceManually(
         pairingCode: pairingCode,
@@ -1319,26 +1421,41 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> sendShutdownToDevice() async {
-    return deviceSosController.sendShutdown(
+    if (!_isProtectionPlatformOwningBle &&
+        !deviceSosController.hasSosCommandPath) {
+      await _ensureCommandCapableDeviceRepository(action: 'send_shutdown');
+    }
+    await deviceSosController.sendShutdown(
       commandWriterOverride: _sendDeviceCommandThroughActiveOwner,
       commandRouteLabel: _currentDeviceCommandOwnerRoute,
     );
+    await _markDeviceDisconnectedAfterLocalShutdown();
   }
 
   @override
   Future<void> setDeviceNotificationVolume(int volume) async {
-    await _requireCommandCapableDeviceRepository()
-        .setNotificationVolume(volume);
+    _validateDeviceVolume(volume);
+    await _sendDeviceControlCommandThroughActiveOwner(
+      action: 'set_notification_volume',
+      command: EixamDeviceCommand.notificationVolume(volume),
+    );
   }
 
   @override
   Future<void> setDeviceSosVolume(int volume) async {
-    await _requireCommandCapableDeviceRepository().setSosVolume(volume);
+    _validateDeviceVolume(volume);
+    await _sendDeviceControlCommandThroughActiveOwner(
+      action: 'set_sos_volume',
+      command: EixamDeviceCommand.sosVolume(volume),
+    );
   }
 
   @override
   Future<DeviceRuntimeStatus> getDeviceRuntimeStatus() async {
-    return _requireCommandCapableDeviceRepository().getDeviceRuntimeStatus();
+    final repository = await _ensureCommandCapableDeviceRepository(
+      action: 'get_device_runtime_status',
+    );
+    return repository.getDeviceRuntimeStatus();
   }
 
   @override
@@ -1359,7 +1476,10 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> rebootDevice() async {
-    await _requireCommandCapableDeviceRepository().rebootDevice();
+    await _sendDeviceControlCommandThroughActiveOwner(
+      action: 'reboot_device',
+      command: EixamDeviceCommand.reboot(),
+    );
   }
 
   @override
@@ -1527,13 +1647,16 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Future<ProtectionStatus> getProtectionStatus() {
-    return _protectionModeController.getStatus();
+  Future<ProtectionStatus> getProtectionStatus() async {
+    final status = await _protectionModeController.getStatus();
+    return _syncDeviceStateFromProtectionStatus(status);
   }
 
   @override
   Stream<ProtectionStatus> watchProtectionStatus() {
-    return _protectionModeController.watchStatus();
+    return _protectionModeController.watchStatus().asyncMap(
+          _syncDeviceStateFromProtectionStatus,
+        );
   }
 
   @override
@@ -4848,6 +4971,109 @@ class EixamConnectSdkImpl
     );
   }
 
+  Future<void> _seedPreferredBleDeviceFromBackendRegistryIfNeeded({
+    required String trigger,
+  }) async {
+    final manualDisconnectRequested =
+        await preferredBleDeviceStore.readManualDisconnectRequested();
+    _manualDisconnectRequested = manualDisconnectRequested;
+    if (manualDisconnectRequested) {
+      await preferredBleDeviceStore.clearPreferredDevice();
+      _clearDeviceRuntimeResidueAfterManualDisconnect();
+      debugPrint(
+        '[AUTO_RECONNECT] backend_registry_seed skipped trigger=$trigger '
+        'reason=manual_disconnect_requested',
+      );
+      return;
+    }
+    final existingPreferred =
+        await preferredBleDeviceStore.getPreferredDevice();
+    if (existingPreferred != null) {
+      return;
+    }
+    final status =
+        _lastDeviceStatus ?? await deviceRepository.getDeviceStatus();
+    if (status.paired && status.deviceId.trim().isNotEmpty) {
+      return;
+    }
+    if (!_hasSignedSessionIdentityReadyForDeviceRegistrySync()) {
+      return;
+    }
+
+    final registeredDevices =
+        await deviceRegistryRepository.listRegisteredDevices();
+    final candidate =
+        _preferredReconnectCandidateFromRegistry(registeredDevices);
+    if (candidate == null) {
+      debugPrint(
+        '[AUTO_RECONNECT] backend_registry_seed skipped trigger=$trigger reason=no_registered_hardware',
+      );
+      return;
+    }
+
+    final preferredDevice = PreferredDevice(
+      deviceId: candidate.hardwareId.trim(),
+      displayName: candidate.hardwareModel.trim().isEmpty
+          ? null
+          : candidate.hardwareModel.trim(),
+      lastConnectedAt: candidate.updatedAt,
+    );
+    final restoredNodeId = _preferredNodeIdCandidateFromRegistry(
+      registeredDevices,
+      bleHardwareId: preferredDevice.deviceId,
+    );
+    if (restoredNodeId != null) {
+      _knownLocalDeviceNodeId = restoredNodeId;
+      _sosRuntimeNodeIdByHardwareId[preferredDevice.deviceId] = restoredNodeId;
+    }
+    await preferredBleDeviceStore.savePreferredDevice(preferredDevice);
+    await preferredBleDeviceStore.saveManualDisconnectRequested(false);
+    debugPrint(
+      '[AUTO_RECONNECT] backend_registry_seed saved trigger=$trigger bleHardwareId=${preferredDevice.deviceId} nodeId=${restoredNodeId?.toString() ?? "none"}',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'Preferred BLE device restored from backend registry -> trigger=$trigger bleHardwareId=${preferredDevice.deviceId} nodeId=${restoredNodeId?.toString() ?? "none"}',
+    );
+  }
+
+  BackendRegisteredDevice? _preferredReconnectCandidateFromRegistry(
+    List<BackendRegisteredDevice> devices,
+  ) {
+    final candidates = devices
+        .where((device) => device.hardwareId.trim().isNotEmpty)
+        .toList(growable: false);
+    if (candidates.isEmpty) {
+      return null;
+    }
+    candidates.sort((a, b) {
+      final aIsBleId = isBleMacDeviceId(a.hardwareId);
+      final bIsBleId = isBleMacDeviceId(b.hardwareId);
+      if (aIsBleId != bIsBleId) {
+        return aIsBleId ? -1 : 1;
+      }
+      return b.updatedAt.compareTo(a.updatedAt);
+    });
+    return candidates.first;
+  }
+
+  int? _preferredNodeIdCandidateFromRegistry(
+    List<BackendRegisteredDevice> devices, {
+    required String bleHardwareId,
+  }) {
+    final candidates = devices.where((device) {
+      final hardwareId = device.hardwareId.trim();
+      return hardwareId.isNotEmpty &&
+          hardwareId != bleHardwareId &&
+          !isBleMacDeviceId(hardwareId) &&
+          int.tryParse(hardwareId) != null;
+    }).toList(growable: false);
+    if (candidates.isEmpty) {
+      return null;
+    }
+    candidates.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    return int.tryParse(candidates.first.hardwareId.trim())?.toUnsigned(32);
+  }
+
   String? _currentDeviceRuntimeUiIncidentId() {
     final active = _activeDeviceRuntimeIncidentId;
     if (_isDeviceRuntimeSosIncidentId(active)) {
@@ -6370,6 +6596,10 @@ class EixamConnectSdkImpl
     required String reason,
     int? nodeId,
   }) {
+    if (_manualDisconnectRequested) {
+      _clearDeviceRuntimeResidueAfterManualDisconnect();
+      return;
+    }
     final now = DateTime.now();
     _pruneTerminalSosSuppressions(now);
     final boundDeviceId = _lastDeviceStatus?.deviceId.trim();
@@ -6403,6 +6633,10 @@ class EixamConnectSdkImpl
     required int? originatorNodeId,
     required String rawHex,
   }) {
+    if (_manualDisconnectRequested) {
+      _clearDeviceRuntimeResidueAfterManualDisconnect();
+      return true;
+    }
     final now = DateTime.now();
     _pruneTerminalSosSuppressions(now);
     final boundDeviceId = _lastDeviceStatus?.deviceId.trim();
@@ -6448,6 +6682,21 @@ class EixamConnectSdkImpl
     if (deviceId != null && deviceId.isNotEmpty) {
       yield 'device:$deviceId';
     }
+  }
+
+  void _clearDeviceRuntimeResidueAfterManualDisconnect() {
+    _terminalSosSuppressionByKey.clear();
+    _sosRuntimeNodeIdByHardwareId.clear();
+    _knownLocalDeviceNodeId = null;
+    _activeDeviceSosCycleKey = null;
+    _notifiedDeviceSosCycleKey = null;
+    _notifiedDeviceSosState = null;
+    _activeDeviceRuntimeIncidentId = null;
+    _activeDeviceRuntimeCycleKey = null;
+    _activeDeviceRuntimeLocalCycleKey = null;
+    _deviceOwnedBackendIncidentId = null;
+    _lastDeviceRuntimeCanonicalIncidentSignature = null;
+    _lastDeviceRuntimeCanonicalIncident = null;
   }
 
   void _pruneTerminalSosSuppressions(DateTime now) {
@@ -7368,16 +7617,102 @@ class EixamConnectSdkImpl
     return owner != ProtectionBleOwner.flutter;
   }
 
-  InMemoryDeviceRepository _requireCommandCapableDeviceRepository() {
+  Future<InMemoryDeviceRepository> _ensureCommandCapableDeviceRepository({
+    required String action,
+  }) async {
     final repository = deviceRepository;
-    if (repository is! InMemoryDeviceRepository ||
-        !repository.hasCommandCapableBleRuntime) {
-      throw const DeviceException(
-        'E_DEVICE_COMMAND_NOT_READY',
-        'A connected command-capable device is required for this SDK action.',
+    if (repository is! InMemoryDeviceRepository) {
+      _throwDeviceCommandNotReady();
+    }
+    if (repository.hasCommandCapableBleRuntime) {
+      return repository;
+    }
+
+    BleDebugRegistry.instance.recordEvent(
+      '[DEVICE_COMMAND_READY] rebind_requested action=$action',
+    );
+    await _bleAutoReconnectCoordinator.tryAutoConnectOnResume();
+    if (repository.hasCommandCapableBleRuntime) {
+      BleDebugRegistry.instance.recordEvent(
+        '[DEVICE_COMMAND_READY] rebind_succeeded action=$action',
+      );
+      return repository;
+    }
+
+    final identity = await repository.getRuntimeIdentitySnapshot();
+    BleDebugRegistry.instance.recordEvent(
+      '[DEVICE_COMMAND_READY] rebind_unavailable action=$action '
+      'serviceBleConnected=${identity.serviceBleConnected} '
+      'commandCapable=${identity.commandCapable} '
+      'reason=${identity.readinessReason.diagnosticName}',
+    );
+    _throwDeviceCommandNotReady();
+  }
+
+  Future<void> _markDeviceDisconnectedAfterLocalShutdown() async {
+    final repository = deviceRepository;
+    if (repository is! InMemoryDeviceRepository) {
+      _lastDeviceStatus = await repository.getDeviceStatus();
+      return;
+    }
+    _lastDeviceStatus = await repository.markDeviceDisconnected(
+      reason: 'shutdown_command',
+    );
+  }
+
+  Future<ProtectionStatus> _syncDeviceStateFromProtectionStatus(
+    ProtectionStatus status,
+  ) async {
+    if (!_protectionStatusIndicatesMissingMobileBond(status)) {
+      return status;
+    }
+    final repository = deviceRepository;
+    if (repository is InMemoryDeviceRepository) {
+      _lastDeviceStatus = await repository.markMobileBondMissing(
+        reason: 'protection_mobile_bond_missing',
       );
     }
-    return repository;
+    return status.copyWith(
+      devicePaired: false,
+      deviceConnected: false,
+    );
+  }
+
+  bool _protectionStatusIndicatesMissingMobileBond(ProtectionStatus status) {
+    final text = <String?>[
+      status.readinessFailureReason,
+      status.degradationReason,
+      status.lastCommandError,
+    ].whereType<String>().join(' ').toLowerCase();
+    return text.contains('e_device_mobile_bond_required') ||
+        text.contains('phone bluetooth bond') ||
+        text.contains('no longer paired in the phone bluetooth');
+  }
+
+  Future<void> _sendDeviceControlCommandThroughActiveOwner({
+    required String action,
+    required EixamDeviceCommand command,
+  }) async {
+    if (!_isProtectionPlatformOwningBle) {
+      await _ensureCommandCapableDeviceRepository(action: action);
+    }
+    await _sendDeviceCommandThroughActiveOwner(command);
+  }
+
+  void _validateDeviceVolume(int volume) {
+    if (volume < 0 || volume > 100) {
+      throw const DeviceException(
+        'E_DEVICE_INVALID_VOLUME',
+        'Device volume must be within the inclusive range 0..100.',
+      );
+    }
+  }
+
+  Never _throwDeviceCommandNotReady() {
+    throw const DeviceException(
+      'E_DEVICE_COMMAND_NOT_READY',
+      'A connected command-capable device is required for this SDK action.',
+    );
   }
 
   SdkOperationalDiagnostics _buildOperationalDiagnostics({
