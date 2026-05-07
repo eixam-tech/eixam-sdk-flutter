@@ -82,46 +82,74 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
 
   @override
   Future<void> publishOperationalSos(MqttOperationalSosRequest request) async {
-    final session = sessionContext.currentSession;
-    if (session == null) {
-      throw const AuthException(
-        'E_SDK_SESSION_REQUIRED',
-        'A signed SDK session must be configured before publishing SOS over MQTT.',
-      );
-    }
-
-    await _ensureConnected(initialConnect: true);
-    final transport = _transport;
-    if (transport == null) {
-      throw const NetworkException(
-        'E_MQTT_NOT_CONNECTED',
-        'The MQTT transport is not connected.',
-      );
-    }
-
-    final envelope = SdkMqttContract.buildOperationalSosEnvelope(
-      request.copyWith(
-        sdkUserId: session.canonicalExternalUserId ?? session.sdkUserId,
-      ),
-    );
-    final correlationId = _nextCorrelationId('sos');
-    final payload = _decodeJsonObject(envelope.payload);
+    final methodStopwatch = Stopwatch()..start();
+    String correlationId = 'none';
+    String topic = SdkMqttTopics.sosAlerts;
     BleDebugRegistry.instance.recordEvent(
-      '[SOS_BACKEND_OUTBOUND_FINAL] transport=mqtt '
-      'endpoint=${envelope.topic} correlationId=$correlationId '
-      'source=${_field(payload, 'source', fallback: request.source ?? 'mqtt_operational_sos')} '
-      'owner=${_intField(payload, 'originatorNodeId') == null ? "app" : "device"} '
-      'deviceId=${_field(payload, 'deviceId')} '
-      'nodeId=${_intField(payload, 'originatorNodeId')?.toString() ?? "none"} '
-      'originatorNodeId=${_intField(payload, 'originatorNodeId')?.toString() ?? "none"} '
-      'appDeviceId=${_field(payload, 'appDeviceId')} '
-      'hardwareId=${_field(payload, 'hardwareId')} '
-      'identitySource=${_field(payload, 'identitySource')} '
-      'incidentId=${request.incidentId ?? "none"} '
-      'canonicalIncidentId=none '
-      'payload=${_redactedCompactJson(envelope.payload)}',
+      '[BACKGROUND_SOS] mqtt_publish_method_entry '
+      'deviceId=${request.deviceId ?? "none"} '
+      'nodeId=${request.originatorNodeId?.toString() ?? "none"} '
+      'hardwareId=${request.hardwareId ?? "none"} '
+      'appDeviceId=${request.appDeviceId ?? "none"} '
+      'identitySource=${request.identitySource ?? "none"} '
+      'incidentId=${request.incidentId ?? "none"}',
     );
     try {
+      final session = sessionContext.currentSession;
+      if (session == null) {
+        throw const AuthException(
+          'E_SDK_SESSION_REQUIRED',
+          'A signed SDK session must be configured before publishing SOS over MQTT.',
+        );
+      }
+
+      await _ensureConnected(initialConnect: true);
+      final transport = _transport;
+      if (transport == null) {
+        throw const NetworkException(
+          'E_MQTT_NOT_CONNECTED',
+          'The MQTT transport is not connected.',
+        );
+      }
+
+      final envelope = SdkMqttContract.buildOperationalSosEnvelope(
+        request.copyWith(
+          sdkUserId: session.canonicalExternalUserId ?? session.sdkUserId,
+        ),
+      );
+      topic = envelope.topic;
+      correlationId = _nextCorrelationId('sos');
+      final payload = _decodeJsonObject(envelope.payload);
+      BleDebugRegistry.instance.recordEvent(
+        '[BACKGROUND_SOS] mqtt_payload_built '
+        'topic=${envelope.topic} correlationId=$correlationId '
+        'deviceId=${_field(payload, 'deviceId')} '
+        'isLocalDeviceId=${_field(payload, 'deviceId').startsWith('app-device-local-')} '
+        'nodeId=${_intField(payload, 'originatorNodeId')?.toString() ?? "none"} '
+        'hardwareId=${_field(payload, 'hardwareId')} '
+        'appDeviceId=${_field(payload, 'appDeviceId')} '
+        'userId=${_field(payload, 'userId')} '
+        'hasLocation=${payload.containsKey('latitude') && payload.containsKey('longitude')}',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        '[SOS_BACKEND_OUTBOUND_FINAL] transport=mqtt '
+        'endpoint=${envelope.topic} correlationId=$correlationId '
+        'source=${_field(payload, 'source', fallback: request.source ?? 'mqtt_operational_sos')} '
+        'owner=${_intField(payload, 'originatorNodeId') == null ? "app" : "device"} '
+        'deviceId=${_field(payload, 'deviceId')} '
+        'nodeId=${_intField(payload, 'originatorNodeId')?.toString() ?? "none"} '
+        'originatorNodeId=${_intField(payload, 'originatorNodeId')?.toString() ?? "none"} '
+        'appDeviceId=${_field(payload, 'appDeviceId')} '
+        'hardwareId=${_field(payload, 'hardwareId')} '
+        'identitySource=${_field(payload, 'identitySource')} '
+        'incidentId=${request.incidentId ?? "none"} '
+        'canonicalIncidentId=none '
+        'payload=${_redactedCompactJson(envelope.payload)}',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        '[BACKGROUND_SOS] mqtt_publish_start '
+        'topic=${envelope.topic} correlationId=$correlationId qos=atLeastOnce',
+      );
       await transport.publish(
         topic: envelope.topic,
         payload: envelope.payload,
@@ -132,12 +160,29 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
         '[SOS_BACKEND_RESPONSE] correlationId=$correlationId status=ok '
         'backendIncidentId=none responseSummary=mqtt_publish_accepted',
       );
+      BleDebugRegistry.instance.recordEvent(
+        '[BACKGROUND_SOS] mqtt_publish_result '
+        'topic=${envelope.topic} correlationId=$correlationId '
+        'result=publish_returned',
+      );
     } catch (error) {
       BleDebugRegistry.instance.recordEvent(
         '[SOS_BACKEND_RESPONSE] correlationId=$correlationId status=error '
         'backendIncidentId=none responseSummary=${_compactSummary(error)}',
       );
+      BleDebugRegistry.instance.recordEvent(
+        '[BACKGROUND_SOS] mqtt_publish_failed '
+        'topic=$topic correlationId=$correlationId '
+        'errorType=${error.runtimeType} message=${_compactSummary(error)}',
+      );
       rethrow;
+    } finally {
+      methodStopwatch.stop();
+      BleDebugRegistry.instance.recordEvent(
+        '[BACKGROUND_SOS] mqtt_publish_finally '
+        'topic=$topic correlationId=$correlationId '
+        'elapsedMs=${methodStopwatch.elapsedMilliseconds}',
+      );
     }
   }
 

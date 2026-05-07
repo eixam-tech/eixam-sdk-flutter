@@ -38,7 +38,7 @@ void main() {
   group('remote relay SOS backend handoff', () {
     late StreamController<BleIncomingEvent> bleEvents;
     late _FakeOperationalRealtimeClient realtimeClient;
-    late FakeSosRepository sosRepository;
+    late _MissingCurrentIncidentSosRepository sosRepository;
     late FakeTrackingRepository trackingRepository;
     late FakeTelemetryRepository telemetryRepository;
     late FakeContactsRepository contactsRepository;
@@ -55,7 +55,7 @@ void main() {
     setUp(() async {
       bleEvents = StreamController<BleIncomingEvent>.broadcast();
       realtimeClient = _FakeOperationalRealtimeClient();
-      sosRepository = FakeSosRepository();
+      sosRepository = _MissingCurrentIncidentSosRepository();
       trackingRepository = FakeTrackingRepository();
       telemetryRepository = FakeTelemetryRepository();
       contactsRepository = FakeContactsRepository();
@@ -872,6 +872,8 @@ void main() {
 
     test('countdown zero skips activate_sos when device runtime SOS exists',
         () async {
+      await deviceSosController.triggerSos();
+      await deviceSosController.confirmSos();
       sosRepository.currentIncident = SosIncident(
         id: 'device-runtime-sos:1498094248:0',
         state: SosState.sent,
@@ -1709,6 +1711,54 @@ void main() {
         expect(sosRepository.cancelCallCount, 1);
         expect(sosRepository.currentIncident.state, SosState.cancelled);
       });
+
+      test('active open refresh without incident preserves canonical id',
+          () async {
+        final triggered = await sdk.triggerSos(
+          const SosTriggerPayload(message: 'local SOS'),
+        );
+        sosRepository.hideCurrentIncident = true;
+
+        final current = await sdk.getCurrentSosIncident();
+
+        expect(current?.id, triggered.id);
+        expect(current?.state, SosState.sent);
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) =>
+                event.message
+                    .contains('decision=preserve_active_incident_id') &&
+                event.message.contains(triggered.id),
+          ),
+          isTrue,
+        );
+      });
+
+      test('active cancel without BLE reaches backend with preserved id',
+          () async {
+        deviceRepository.emitStatus(
+          buildDeviceStatus(
+            connected: false,
+            lifecycleState: DeviceLifecycleState.unpaired,
+            paired: false,
+            activated: false,
+          ),
+        );
+        final triggered = await sdk.triggerSos(
+          const SosTriggerPayload(message: 'local SOS'),
+        );
+        sosRepository.hideCurrentIncident = true;
+
+        final cancelled = await sdk.cancelSos();
+
+        expect(cancelled.id, triggered.id);
+        expect(cancelled.state, SosState.cancelled);
+        expect(sosRepository.cancelCallCount, 1);
+        expect(
+          sosRepository.terminalOperations,
+          <String>['cancel:${triggered.id}'],
+        );
+      });
     });
   });
 }
@@ -1900,6 +1950,18 @@ EixamSosPacket _deviceOriginPreConfirmPacketForNode(int nodeId) {
     flagsWord & 0xFF,
     (flagsWord >> 8) & 0xFF,
   ])!;
+}
+
+class _MissingCurrentIncidentSosRepository extends FakeSosRepository {
+  bool hideCurrentIncident = false;
+
+  @override
+  Future<SosIncident?> getCurrentIncident() async {
+    if (hideCurrentIncident) {
+      return null;
+    }
+    return super.getCurrentIncident();
+  }
 }
 
 class _FakeCancelRemoteDataSource implements SosRemoteDataSource {

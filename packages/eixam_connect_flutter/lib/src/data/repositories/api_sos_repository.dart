@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import '../../device/ble_debug_registry.dart';
 import '../../mappers/local_state_serializers.dart';
 import '../../mappers/sos_incident_mapper.dart';
 import '../datasources_local/shared_prefs_sdk_store.dart';
@@ -85,7 +86,16 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
     _emit(SosState.triggeredLocal);
     _emit(SosState.sending);
 
+    final publishStopwatch = Stopwatch()..start();
     try {
+      BleDebugRegistry.instance.recordEvent(
+        '[BACKGROUND_SOS] api_repository_trigger_entry '
+        'state=sent deviceId=${deviceId ?? "none"} '
+        'nodeId=${originatorNodeId?.toString() ?? "none"} '
+        'hardwareId=${hardwareId ?? "none"} '
+        'appDeviceId=${appDeviceId ?? "none"} '
+        'hasLocation=${positionSnapshot != null}',
+      );
       final dto = await remoteDataSource.triggerSos(
         message: message,
         triggerSource: triggerSource,
@@ -105,15 +115,30 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
         mobileBattery: mobileBattery,
         mobileCoverage: mobileCoverage,
       );
+      BleDebugRegistry.instance.recordEvent(
+        '[BACKGROUND_SOS] api_repository_trigger_returned '
+        'state=sent resultType=${dto.runtimeType} '
+        'backendIncidentId=${dto.id} httpStatus=${dto.statusCode?.toString() ?? "none"}',
+      );
       _activeIncident = mapper.toDomain(dto);
       _emit(_activeIncident!.state);
       await _persistState();
       return _activeIncident!;
     } catch (e) {
+      BleDebugRegistry.instance.recordEvent(
+        '[BACKGROUND_SOS] api_repository_trigger_failed '
+        'state=sent errorType=${e.runtimeType} message=${_compactSummary(e)}',
+      );
       _emit(SosState.failed);
       await _persistState();
       if (e is EixamSdkException) rethrow;
       throw SosException('E_SOS_TRIGGER_FAILED', e.toString());
+    } finally {
+      publishStopwatch.stop();
+      BleDebugRegistry.instance.recordEvent(
+        '[BACKGROUND_SOS] api_repository_trigger_finally '
+        'state=sent elapsedMs=${publishStopwatch.elapsedMilliseconds}',
+      );
     }
   }
 
@@ -248,6 +273,17 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
   Future<SosRuntimeRehydrationResult> rehydrateRuntimeStateFromBackend() async {
     final active = await remoteDataSource.getActiveSos();
     if (active == null) {
+      if (_shouldPreserveOpenIncidentWithoutBackendPayload()) {
+        await _persistState();
+        return SosRuntimeRehydrationResult(
+          outcome: SosRuntimeRehydrationOutcome.keptLocalFallback,
+          resultingState: _stateMachine.current,
+          diagnosticNote:
+              'Backend returned no active SOS payload while the local incident '
+              'is still open; preserved it so cancellation can target the '
+              'known incident id.',
+        );
+      }
       _activeIncident = null;
       _setState(SosState.idle);
       await _persistState();
@@ -264,6 +300,36 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
       outcome: SosRuntimeRehydrationOutcome.hydratedFromBackend,
       resultingState: _stateMachine.current,
     );
+  }
+
+  bool _shouldPreserveOpenIncidentWithoutBackendPayload() {
+    return _activeIncident != null && _isOpenSosState(_stateMachine.current);
+  }
+
+  bool _isOpenSosState(SosState state) {
+    return switch (state) {
+      SosState.arming ||
+      SosState.triggerRequested ||
+      SosState.triggeredLocal ||
+      SosState.sending ||
+      SosState.sent ||
+      SosState.acknowledged ||
+      SosState.cancelRequested =>
+        true,
+      SosState.idle ||
+      SosState.cancelled ||
+      SosState.resolved ||
+      SosState.failed =>
+        false,
+    };
+  }
+
+  String _compactSummary(Object? value) {
+    final summary = value.toString().replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (summary.isEmpty) {
+      return 'none';
+    }
+    return summary.length <= 240 ? summary : '${summary.substring(0, 240)}...';
   }
 
   void _emit(SosState state) {

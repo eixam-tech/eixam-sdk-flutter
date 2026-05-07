@@ -67,7 +67,9 @@ SosBackendIdentity normalizeSosBackendIdentity({
     _looksLikeBleMac(trimmedDeviceId) ? trimmedDeviceId : null,
   ]);
   final normalizedDeviceId = parsedNodeId?.toString() ??
-      normalizedAppDeviceId ??
+      (_isLocalAppDeviceId(normalizedAppDeviceId)
+          ? null
+          : normalizedAppDeviceId) ??
       (_looksLikeBleMac(trimmedDeviceId)
           ? null
           : _emptyToNull(trimmedDeviceId));
@@ -79,7 +81,7 @@ SosBackendIdentity normalizeSosBackendIdentity({
               ? 'app_device_local_fallback'
               : _isAccountFallbackAppDeviceId(normalizedAppDeviceId)
                   ? 'app_device_account_fallback'
-              : 'app_device';
+                  : 'app_device';
   final normalizedRelayDeviceId =
       relayNodeId?.toString() ?? relayDeviceId?.trim();
 
@@ -141,7 +143,7 @@ TelemetryBackendIdentity normalizeTelemetryBackendIdentity({
           ? 'app_device_local_fallback'
           : _isAccountFallbackAppDeviceId(normalizedAppDeviceId)
               ? 'app_device_account_fallback'
-          : 'app_device';
+              : 'app_device';
   return TelemetryBackendIdentity(
     payload: payload.copyWith(
       deviceId: normalizedDeviceId,

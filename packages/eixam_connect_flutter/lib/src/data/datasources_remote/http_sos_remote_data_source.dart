@@ -37,7 +37,8 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     int? mobileBattery,
     SdkCoverageSnapshot? mobileCoverage,
   }) async {
-    final allowsMissingPosition = triggerSource == 'remote_lora_relay';
+    final allowsMissingPosition =
+        triggerSource == 'remote_lora_relay' || originatorNodeId == null;
     if (positionSnapshot == null && !allowsMissingPosition) {
       throw const SosException(
         'E_HTTP_SOS_POSITION_REQUIRED',
@@ -102,8 +103,7 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
         'hardwareId': identity.hardwareId,
       'identitySource': identity.identitySource,
       if (relayNodeId != null) 'relayNodeId': relayNodeId,
-      if (identity.relayDeviceId != null &&
-          identity.relayDeviceId!.isNotEmpty)
+      if (identity.relayDeviceId != null && identity.relayDeviceId!.isNotEmpty)
         'relayDeviceId': identity.relayDeviceId,
       if (relayHardwareId != null && relayHardwareId.trim().isNotEmpty)
         'relayHardwareId': relayHardwareId.trim(),
@@ -130,50 +130,318 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
       'canonicalIncidentId=none '
       'payload=${_redactedCompactJson(body)}',
     );
-
-    final response = await transport.post(
-      '/v1/sdk/sos',
-      body: body,
+    if (_isLocalAppDeviceId(identity.deviceId)) {
+      BleDebugRegistry.instance.recordEvent(
+        '[BACKGROUND_SOS] backend_publish_warning '
+        'reason=local_app_device_id_used_as_device_id '
+        'state=sent transport=http '
+        'deviceId=${identity.deviceId ?? "none"} '
+        'nodeId=${identity.nodeId?.toString() ?? "none"} '
+        'appDeviceId=${identity.appDeviceId ?? "none"} '
+        'hardwareId=${identity.hardwareId ?? "none"} '
+        'identitySource=${identity.identitySource}',
+      );
+    }
+    BleDebugRegistry.instance.recordEvent(
+      '[BACKGROUND_SOS] backend_publish_requested state=sent '
+      'diagnostics_version=sos_backend_publish_trace_v3_actual_line '
+      'before_requested=true occurrence=3',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      '[BACKGROUND_SOS] backend_publish_requested state=sent '
+      'transport=http endpoint=/v1/sdk/sos '
+      'deviceId=${identity.deviceId ?? "none"} '
+      'nodeId=${identity.nodeId?.toString() ?? "none"} '
+      'appDeviceId=${identity.appDeviceId ?? "none"} '
+      'hardwareId=${identity.hardwareId ?? "none"} '
+      'identitySource=${identity.identitySource}',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      '[BACKGROUND_SOS] backend_publish_requested state=sent '
+      'diagnostics_version=sos_backend_publish_trace_v3_actual_line '
+      'after_requested=true occurrence=3',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      '[BACKGROUND_SOS] diagnostics_version=sos_backend_publish_trace_v3_actual_line '
+      'function=triggerSos file=http_sos_remote_data_source.dart '
+      'occurrence=3',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      '[BACKGROUND_SOS] diagnostics_version=sos_backend_publish_trace_v2',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      '[BACKGROUND_SOS] backend_publish_payload identity '
+      'deviceId=${identity.deviceId ?? "none"} '
+      'isLocalDeviceId=${_isLocalAppDeviceId(identity.deviceId)} '
+      'nodeId=${identity.nodeId?.toString() ?? "none"} '
+      'hardwareId=${identity.hardwareId ?? "none"} '
+      'appDeviceId=${identity.appDeviceId ?? "none"} '
+      'userId=not_in_http_payload '
+      'hasLocation=${positionSnapshot != null}',
     );
 
-    if (response.statusCode < 200 || response.statusCode >= 300) {
+    final publishStopwatch = Stopwatch()..start();
+    try {
+      BleDebugRegistry.instance.recordEvent(
+        '[BACKGROUND_SOS] backend_publish_call_start state=sent '
+        'incidentId=${incidentId ?? "none"} '
+        'deviceId=${identity.deviceId ?? "none"} '
+        'nodeId=${identity.nodeId?.toString() ?? "none"} '
+        'hardwareId=${identity.hardwareId ?? "none"} '
+        'appDeviceId=${identity.appDeviceId ?? "none"} '
+        'identitySource=${identity.identitySource}',
+      );
+      var response = await transport.post(
+        '/v1/sdk/sos',
+        body: body,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        '[BACKGROUND_SOS] backend_publish_call_returned state=sent '
+        'resultType=http_response '
+        'result=status=${response.statusCode} body=${_redactedCompactJson(response.body)}',
+      );
+      if (_isReferencedDeviceMissingResponse(
+        response.statusCode,
+        response.body,
+      )) {
+        BleDebugRegistry.instance.recordEvent(
+          '[SOS_BACKEND_RESPONSE] status=422 '
+          'reason=referenced_device_does_not_exist '
+          'action=register_device_and_retry '
+          'deviceId=${identity.deviceId ?? "none"} '
+          'nodeId=${identity.nodeId?.toString() ?? "none"} '
+          'hardwareId=${identity.hardwareId ?? "none"} '
+          'identitySource=${identity.identitySource}',
+        );
+        final recoveryHardwareId = await _registerDeviceForSos422Recovery(
+          identity: identity,
+        );
+        BleDebugRegistry.instance.recordEvent(
+          '[SOS_BACKEND_RETRY] reason=device_registered_after_422 retry=1 '
+          'deviceId=${identity.deviceId ?? "none"} '
+          'nodeId=${identity.nodeId?.toString() ?? "none"} '
+          'hardwareId=${identity.hardwareId ?? "none"} '
+          'registeredHardwareId=$recoveryHardwareId '
+          'identitySource=${identity.identitySource}',
+        );
+        response = await transport.post(
+          '/v1/sdk/sos',
+          body: body,
+        );
+        final retryIncidentId = _incidentIdFromResponseBody(response.body);
+        BleDebugRegistry.instance.recordEvent(
+          '[SOS_BACKEND_RETRY_RESPONSE] status=${response.statusCode} '
+          'backendIncidentId=${retryIncidentId ?? "none"} '
+          'error=${response.statusCode >= 200 && response.statusCode < 300 ? "none" : _redactedCompactJson(response.body)}',
+        );
+      }
+
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        BleDebugRegistry.instance.recordEvent(
+          '[SOS_BACKEND_RESPONSE] correlationId=$correlationId '
+          'status=${response.statusCode} backendIncidentId=none '
+          'responseSummary=${_redactedCompactJson(response.body)}',
+        );
+        BleDebugRegistry.instance.recordEvent(
+          '[BACKGROUND_SOS] backend_publish_failed state=sent '
+          'errorType=SosHttpException message=${_compactSummary(response.body)} '
+          'httpStatus=${response.statusCode} '
+          'responseBody=${_redactedCompactJson(response.body)} '
+          'endpoint=/v1/sdk/sos '
+          'deviceId=${identity.deviceId ?? "none"} '
+          'nodeId=${identity.nodeId?.toString() ?? "none"} '
+          'appDeviceId=${identity.appDeviceId ?? "none"} '
+          'hardwareId=${identity.hardwareId ?? "none"} '
+          'identitySource=${identity.identitySource}',
+        );
+        throw SosHttpException(
+          response.statusCode == 422
+              ? 'E_HTTP_SOS_TRIGGER_422'
+              : 'E_HTTP_SOS_TRIGGER_FAILED',
+          response.body,
+          statusCode: response.statusCode,
+        );
+      }
+
+      final payload = jsonDecode(response.body) as Map<String, dynamic>;
+      final incident = payload['incident'];
+      if (incident is! Map<String, dynamic>) {
+        BleDebugRegistry.instance.recordEvent(
+          '[SOS_BACKEND_RESPONSE] correlationId=$correlationId '
+          'status=${response.statusCode} backendIncidentId=none '
+          'responseSummary=${_redactedCompactJson(response.body)}',
+        );
+        BleDebugRegistry.instance.recordEvent(
+          '[BACKGROUND_SOS] backend_publish_failed state=sent '
+          'errorType=SosException '
+          'message=The_backend_did_not_return_an_incident_payload '
+          'httpStatus=${response.statusCode} '
+          'responseBody=${_redactedCompactJson(response.body)} '
+          'endpoint=/v1/sdk/sos '
+          'deviceId=${identity.deviceId ?? "none"} '
+          'nodeId=${identity.nodeId?.toString() ?? "none"} '
+          'appDeviceId=${identity.appDeviceId ?? "none"} '
+          'hardwareId=${identity.hardwareId ?? "none"} '
+          'identitySource=${identity.identitySource}',
+        );
+        throw const SosException(
+          'E_HTTP_SOS_TRIGGER_FAILED',
+          'The backend did not return an incident payload.',
+        );
+      }
+
+      final dto = SosIncidentDto.fromJson(incident).copyWith(
+        statusCode: response.statusCode,
+      );
       BleDebugRegistry.instance.recordEvent(
         '[SOS_BACKEND_RESPONSE] correlationId=$correlationId '
-        'status=${response.statusCode} backendIncidentId=none '
+        'status=${response.statusCode} backendIncidentId=${dto.id} '
         'responseSummary=${_redactedCompactJson(response.body)}',
       );
+      BleDebugRegistry.instance.recordEvent(
+        '[BACKGROUND_SOS] backend_publish_succeeded state=sent '
+        'backendIncidentId=${dto.id} httpStatus=${response.statusCode} '
+        'deviceId=${identity.deviceId ?? "none"} '
+        'nodeId=${identity.nodeId?.toString() ?? "none"} '
+        'appDeviceId=${identity.appDeviceId ?? "none"} '
+        'hardwareId=${identity.hardwareId ?? "none"} '
+        'identitySource=${identity.identitySource}',
+      );
+      return dto;
+    } catch (error) {
+      if (error is! SosHttpException && error is! SosException) {
+        BleDebugRegistry.instance.recordEvent(
+          '[BACKGROUND_SOS] backend_publish_failed state=sent '
+          'errorType=${error.runtimeType} message=${_compactSummary(error)} '
+          'httpStatus=none responseBody=none '
+          'endpoint=/v1/sdk/sos '
+          'deviceId=${identity.deviceId ?? "none"} '
+          'nodeId=${identity.nodeId?.toString() ?? "none"} '
+          'appDeviceId=${identity.appDeviceId ?? "none"} '
+          'hardwareId=${identity.hardwareId ?? "none"} '
+          'identitySource=${identity.identitySource}',
+        );
+      }
+      rethrow;
+    } finally {
+      publishStopwatch.stop();
+      BleDebugRegistry.instance.recordEvent(
+        '[BACKGROUND_SOS] backend_publish_finally state=sent '
+        'transport=http elapsedMs=${publishStopwatch.elapsedMilliseconds}',
+      );
+    }
+  }
+
+  Future<String> _registerDeviceForSos422Recovery({
+    required SosBackendIdentity identity,
+  }) async {
+    final hardwareId = _recoveryHardwareIdFor(identity);
+    if (hardwareId == null) {
+      BleDebugRegistry.instance.recordEvent(
+        '[BACKGROUND_SOS] backend_publish_blocked '
+        'reason=missing_device_identity_for_422_recovery '
+        'deviceId=${identity.deviceId ?? "none"} '
+        'nodeId=${identity.nodeId?.toString() ?? "none"} '
+        'appDeviceId=${identity.appDeviceId ?? "none"} '
+        'hardwareId=${identity.hardwareId ?? "none"} '
+        'identitySource=${identity.identitySource}',
+      );
+      throw const SosException(
+        'E_HTTP_SOS_DEVICE_REGISTRATION_IDENTITY_MISSING',
+        'SOS backend rejected the device and no stable identity is available for registration.',
+      );
+    }
+    final source = identity.nodeId != null ? 'ble_node' : 'app_device';
+    final pairedAt = DateTime.now().toUtc();
+    final firmwareVersion = identity.nodeId != null ? 'unknown' : 'app';
+    final hardwareModel = identity.nodeId != null ? 'EIXAM R1' : 'EIXAM App';
+    final body = jsonEncode(<String, dynamic>{
+      'hardware_id': hardwareId,
+      'firmware_version': firmwareVersion,
+      'hardware_model': hardwareModel,
+      'paired_at': pairedAt.toIso8601String(),
+    });
+    BleDebugRegistry.instance.recordEvent(
+      '[DEVICE_BACKEND_REGISTER_OUTBOUND] reason=sos_422_recovery '
+      'hardware_id=$hardwareId source=$source '
+      'payload=${_redactedCompactJson(body)}',
+    );
+    final response = await transport.post(
+      '/v1/sdk/devices',
+      body: body,
+    );
+    final backendDeviceId = _deviceIdFromResponseBody(response.body);
+    BleDebugRegistry.instance.recordEvent(
+      '[DEVICE_BACKEND_REGISTER_RESPONSE] reason=sos_422_recovery '
+      'status=${response.statusCode} '
+      'backendDeviceId=${backendDeviceId ?? "none"} '
+      'hardware_id=$hardwareId',
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
       throw SosHttpException(
-        response.statusCode == 422
-            ? 'E_HTTP_SOS_TRIGGER_422'
-            : 'E_HTTP_SOS_TRIGGER_FAILED',
+        'E_HTTP_SOS_DEVICE_REGISTRATION_FAILED',
         response.body,
         statusCode: response.statusCode,
       );
     }
+    return hardwareId;
+  }
 
-    final payload = jsonDecode(response.body) as Map<String, dynamic>;
-    final incident = payload['incident'];
-    if (incident is! Map<String, dynamic>) {
-      BleDebugRegistry.instance.recordEvent(
-        '[SOS_BACKEND_RESPONSE] correlationId=$correlationId '
-        'status=${response.statusCode} backendIncidentId=none '
-        'responseSummary=${_redactedCompactJson(response.body)}',
-      );
-      throw const SosException(
-        'E_HTTP_SOS_TRIGGER_FAILED',
-        'The backend did not return an incident payload.',
-      );
+  String? _recoveryHardwareIdFor(SosBackendIdentity identity) {
+    final nodeId = identity.nodeId;
+    if (nodeId != null) {
+      return nodeId.toString();
     }
+    final deviceId = identity.deviceId?.trim();
+    if (deviceId != null && deviceId.isNotEmpty) {
+      return deviceId;
+    }
+    final appDeviceId = identity.appDeviceId?.trim();
+    if (appDeviceId != null && appDeviceId.isNotEmpty) {
+      return appDeviceId;
+    }
+    return null;
+  }
 
-    final dto = SosIncidentDto.fromJson(incident).copyWith(
-      statusCode: response.statusCode,
-    );
-    BleDebugRegistry.instance.recordEvent(
-      '[SOS_BACKEND_RESPONSE] correlationId=$correlationId '
-      'status=${response.statusCode} backendIncidentId=${dto.id} '
-      'responseSummary=${_redactedCompactJson(response.body)}',
-    );
-    return dto;
+  bool _isReferencedDeviceMissingResponse(int statusCode, String body) {
+    if (statusCode != 422) {
+      return false;
+    }
+    final normalized = body.toLowerCase();
+    return normalized.contains('validation_error') &&
+        normalized.contains('referenced device does not exist');
+  }
+
+  String? _incidentIdFromResponseBody(String body) {
+    try {
+      final payload = jsonDecode(body);
+      if (payload is! Map<String, dynamic>) {
+        return null;
+      }
+      final incident = payload['incident'];
+      if (incident is Map<String, dynamic>) {
+        return incident['id']?.toString();
+      }
+    } catch (_) {
+      return null;
+    }
+    return null;
+  }
+
+  String? _deviceIdFromResponseBody(String body) {
+    try {
+      final payload = jsonDecode(body);
+      if (payload is! Map<String, dynamic>) {
+        return null;
+      }
+      final device = payload['device'];
+      if (device is Map<String, dynamic>) {
+        return device['id']?.toString();
+      }
+    } catch (_) {
+      return null;
+    }
+    return null;
   }
 
   @override
@@ -418,5 +686,9 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
       return 'none';
     }
     return summary.length <= 240 ? summary : '${summary.substring(0, 240)}...';
+  }
+
+  bool _isLocalAppDeviceId(String? value) {
+    return value?.trim().startsWith('app-device-local-') == true;
   }
 }

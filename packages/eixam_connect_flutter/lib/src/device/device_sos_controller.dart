@@ -228,6 +228,30 @@ class DeviceSosController {
     }
   }
 
+  DeviceSosStatus clearPreSosLocally({required String reason}) {
+    if (_status.state != DeviceSosState.preConfirm) {
+      return _status;
+    }
+    final previous = _status;
+    _awaitingObservedAppActivation = false;
+    _cancelCountdownTimer();
+    BleDebugRegistry.instance.recordEvent(
+      '[APP_PRE_SOS_CANCEL] action=device_state_cleared reason=$reason '
+      'previousState=${previous.state.name}',
+    );
+    _emit(
+      DeviceSosStatus(
+        state: DeviceSosState.inactive,
+        previousState: previous.state,
+        transitionSource: DeviceSosTransitionSource.app,
+        triggerOrigin: previous.triggerOrigin,
+        lastEvent: 'Local PRE-SOS countdown cleared: $reason',
+        updatedAt: _now(),
+      ),
+    );
+    return _status;
+  }
+
   Future<DeviceSosStatus> acknowledgeSos({
     DeviceCommandWriter? commandWriterOverride,
     String commandRouteLabel = 'attached_writer',

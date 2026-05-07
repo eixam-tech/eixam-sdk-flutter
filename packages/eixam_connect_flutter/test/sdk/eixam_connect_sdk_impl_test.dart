@@ -4893,6 +4893,121 @@ void main() {
     });
 
     test(
+        'app SOS uses backend when BLE is connected but CMD is unavailable',
+        () async {
+      await sdk.setSession(
+        const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-123',
+          userHash: 'deadbeef',
+        ),
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'CF:82:11:22:33:66',
+          canonicalHardwareId: 'CF:82:11:22:33:66',
+          nodeId: null,
+          paired: true,
+          connected: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.paired,
+        ),
+      );
+
+      final incident = await sdk.triggerSos(
+        const SosTriggerPayload(message: 'Need help'),
+      );
+
+      expect(sosRepository.triggerCallCount, 1);
+      expect(sosRepository.lastOriginatorNodeId, isNull);
+      expect(incident.deliveryChannel, SosDeliveryChannel.backendOnly);
+      final logs = BleDebugRegistry.instance.currentState.events
+          .map((event) => event.message)
+          .join('\n');
+      expect(logs, contains('decision=inet_only_cmd_skip'));
+      expect(
+        logs,
+        contains(
+          '[APP_SOS_DEVICE_COMMAND] action=skip reason=cmd_not_ready inet_continues=true',
+        ),
+      );
+    });
+
+    test(
+        'app cancel uses backend when BLE is connected but CMD is unavailable',
+        () async {
+      await sdk.setSession(
+        const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-123',
+          userHash: 'deadbeef',
+        ),
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'CF:82:11:22:33:67',
+          canonicalHardwareId: 'CF:82:11:22:33:67',
+          nodeId: null,
+          paired: true,
+          connected: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.paired,
+        ),
+      );
+
+      await sdk.triggerSos(const SosTriggerPayload(message: 'Need help'));
+      final cancelled = await sdk.cancelSos();
+
+      expect(sosRepository.cancelCallCount, 1);
+      expect(cancelled.state, SosState.cancelled);
+      expect(cancelled.deliveryChannel, SosDeliveryChannel.backendOnly);
+      final logs = BleDebugRegistry.instance.currentState.events
+          .map((event) => event.message)
+          .join('\n');
+      expect(logs, contains('action=cancel'));
+      expect(logs, contains('decision=inet_only_cmd_skip'));
+    });
+
+    test('app SOS uses backend plus BLE command when CMD is available',
+        () async {
+      await sdk.setSession(
+        const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-123',
+          userHash: 'deadbeef',
+        ),
+      );
+      final commands = <String>[];
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-cmd-ready-trigger-1',
+          canonicalHardwareId: 'CF:82:11:22:33:68',
+          nodeId: 0x1234,
+          paired: true,
+          connected: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        ),
+      );
+      await _attachObservedAppActivationWriter(
+        deviceSosController,
+        commandLabels: commands,
+      );
+
+      final incident = await sdk.triggerSos(
+        const SosTriggerPayload(message: 'Need help'),
+      );
+
+      expect(sosRepository.triggerCallCount, 1);
+      expect(commands, contains('SOS TRIGGER APP'));
+      expect(incident.deliveryChannel, SosDeliveryChannel.backendAndDevice);
+      final logs = BleDebugRegistry.instance.currentState.events
+          .map((event) => event.message)
+          .join('\n');
+      expect(logs, contains('decision=inet_plus_cmd'));
+    });
+
+    test(
         'historical SOS delivery channel remains separate from current capability',
         () async {
       await sdk.setSession(
@@ -6159,7 +6274,7 @@ void main() {
     });
 
     test(
-        'mqtt cancel recovers after a refresh gap when backend incident appears on retry',
+        'mqtt cancel uses preserved local incident after an active refresh gap',
         () async {
       final realtimeClient = _FakeOperationalRealtimeClient();
       var now = DateTime.utc(2026, 3, 30, 12, 0, 0);
@@ -6190,14 +6305,12 @@ void main() {
         );
 
         now = now.add(const Duration(seconds: 1));
-        expect(await repository.getCurrentIncident(), isNull);
+        expect((await repository.getCurrentIncident())?.id, 'sos-1');
 
-        // Cancellation retries one backend rehydrate before failing, so the
-        // delayed backend incident can still recover the flow.
         final cancelled = await repository.cancelSos();
 
         expect(cancelled.state, SosState.cancelled);
-        expect(cancelDataSource.getActiveCallCount, 2);
+        expect(cancelDataSource.getActiveCallCount, 1);
         expect(cancelDataSource.cancelCallCount, 1);
       } finally {
         await repository.dispose();
@@ -6206,7 +6319,7 @@ void main() {
     });
 
     test(
-        'mqtt SOS clears stale local state after the grace window when backend remains null',
+        'mqtt SOS preserves open local state when backend omits active payload',
         () async {
       final realtimeClient = _FakeOperationalRealtimeClient();
       var now = DateTime.utc(2026, 3, 30, 12, 0, 0);
@@ -6231,11 +6344,11 @@ void main() {
           ),
         );
 
-        // After the grace window, a null backend read is treated as
-        // authoritative and the runtime returns to idle.
+        // A null active payload is not enough to erase an open local incident;
+        // cancel/resolve still need the known id.
         now = now.add(const Duration(seconds: 6));
-        expect(await repository.getCurrentIncident(), isNull);
-        expect(await repository.getSosState(), SosState.idle);
+        expect((await repository.getCurrentIncident())?.id, 'sos-1');
+        expect(await repository.getSosState(), SosState.sent);
       } finally {
         await repository.dispose();
         await realtimeClient.dispose();
@@ -6243,7 +6356,7 @@ void main() {
     });
 
     test(
-        'mqtt cancel throws only after recovery also confirms there is no active incident',
+        'mqtt cancel still reaches backend when active refresh omits the incident',
         () async {
       final realtimeClient = _FakeOperationalRealtimeClient();
       var now = DateTime.utc(2026, 3, 30, 12, 0, 0);
@@ -6269,20 +6382,13 @@ void main() {
         );
 
         now = now.add(const Duration(seconds: 1));
-        expect(await repository.getCurrentIncident(), isNull);
+        expect((await repository.getCurrentIncident())?.id, 'sos-1');
 
-        await expectLater(
-          repository.cancelSos(),
-          throwsA(
-            isA<SosException>().having(
-              (error) => error.code,
-              'code',
-              'E_SOS_CANCEL_NOT_ALLOWED',
-            ),
-          ),
-        );
+        final cancelled = await repository.cancelSos();
+
+        expect(cancelled.state, SosState.cancelled);
         expect(cancelDataSource.getActiveCallCount, 2);
-        expect(cancelDataSource.cancelCallCount, 0);
+        expect(cancelDataSource.cancelCallCount, 1);
       } finally {
         await repository.dispose();
         await realtimeClient.dispose();
@@ -8792,6 +8898,52 @@ void main() {
       expect(status.active, isTrue);
     });
 
+    test(
+        'startPreSos mirrors to device over short path when terminal CMD is unavailable',
+        () async {
+      final commands = <String>[];
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-pre-sos-short-only',
+          canonicalHardwareId: 'CF:82:10:10:10:12',
+          nodeId: null,
+          paired: true,
+          connected: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.paired,
+        ),
+      );
+      await deviceSosController.attach(
+        shortCommandAvailable: true,
+        longCommandAvailable: false,
+        commandWriter: (command) async {
+          commands.add(command.label);
+        },
+      );
+
+      await sdk.startPreSos(countdown: const Duration(seconds: 20));
+
+      final status = await sdk.getPreSosStatus();
+      expect(commands, <String>['SOS TRIGGER APP']);
+      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.preConfirm);
+      expect(await sdk.getSosState(), SosState.arming);
+      expect(sosRepository.triggerCallCount, 0);
+      expect(status, isNotNull);
+      expect(status!.mirroredOnDevice, isTrue);
+      final logs = BleDebugRegistry.instance.currentState.events
+          .map((event) => event.message)
+          .join('\n');
+      expect(logs, contains('[APP_PRE_SOS_ROUTE] origin=app'));
+      expect(logs, contains('preSosDevicePath=ble_inet_sos_trigger'));
+      expect(logs, contains('decision=app_countdown_plus_device_pre_sos'));
+      expect(
+        logs,
+        contains(
+          '[APP_PRE_SOS_DEVICE_COMMAND] action=sent path=ble_inet_sos_trigger',
+        ),
+      );
+    });
+
     test('cancelPreSos during arming returns idle and does not touch backend',
         () async {
       final commands = <String>[];
@@ -8828,6 +8980,142 @@ void main() {
       expect(await sdk.getPreSosStatus(), isNull);
       expect(sosRepository.triggerCallCount, 0);
       expect(sosRepository.cancelCallCount, 0);
+    });
+
+    test('cancelPreSos clears mirrored device countdown over short path',
+        () async {
+      final commands = <String>[];
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-pre-sos-cancel-short-only',
+          canonicalHardwareId: 'CF:82:10:10:10:13',
+          nodeId: null,
+          paired: true,
+          connected: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.paired,
+        ),
+      );
+      await deviceSosController.attach(
+        shortCommandAvailable: true,
+        longCommandAvailable: false,
+        commandWriter: (command) async {
+          commands.add(command.label);
+          if (command.label == 'SOS CANCEL') {
+            Future<void>.delayed(Duration.zero, () {
+              deviceSosController.handleIncomingSosEventPacket(
+                EixamSosEventPacket.tryParse(
+                  <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
+                )!,
+                source: DeviceSosTransitionSource.device,
+              );
+            });
+          }
+        },
+      );
+
+      await sdk.startPreSos();
+      await sdk.cancelPreSos();
+
+      expect(commands, <String>['SOS TRIGGER APP', 'SOS CANCEL']);
+      expect(await sdk.getSosState(), SosState.idle);
+      expect(await sdk.getPreSosStatus(), isNull);
+      expect(sosRepository.cancelCallCount, 0);
+      final logs = BleDebugRegistry.instance.currentState.events
+          .map((event) => event.message)
+          .join('\n');
+      expect(logs, contains('[APP_PRE_SOS_DEVICE_COMMAND] action=sent'));
+      expect(logs, contains('path=ble_pre_sos_cancel'));
+    });
+
+    test('cancelPreSos force-clears device countdown when clear command fails',
+        () async {
+      final commands = <String>[];
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-pre-sos-cancel-failure',
+          canonicalHardwareId: 'CF:82:10:10:10:14',
+          nodeId: null,
+          paired: true,
+          connected: true,
+          activated: true,
+          lifecycleState: DeviceLifecycleState.paired,
+        ),
+      );
+      await deviceSosController.attach(
+        shortCommandAvailable: true,
+        longCommandAvailable: false,
+        commandWriter: (command) async {
+          commands.add(command.label);
+          if (command.label == 'SOS CANCEL') {
+            throw StateError('simulated clear failure');
+          }
+        },
+      );
+
+      await sdk.startPreSos(countdown: const Duration(seconds: 20));
+      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.preConfirm);
+
+      await sdk.cancelPreSos();
+
+      expect(commands, <String>['SOS TRIGGER APP', 'SOS CANCEL']);
+      expect((await sdk.getDeviceSosStatus()).state, DeviceSosState.inactive);
+      expect(await sdk.getPreSosStatus(), isNull);
+      expect(await sdk.getSosState(), SosState.idle);
+      final logs = BleDebugRegistry.instance.currentState.events
+          .map((event) => event.message)
+          .join('\n');
+      expect(logs, contains('[APP_PRE_SOS_CANCEL] action=state_cleared'));
+      expect(
+        logs,
+        contains('[APP_PRE_SOS_CANCEL] action=device_state_cleared'),
+      );
+    });
+
+    test('startPreSos without BLE keeps local countdown and logs no BLE route',
+        () async {
+      await sdk.startPreSos(countdown: const Duration(seconds: 20));
+
+      final status = await sdk.getPreSosStatus();
+      expect(status, isNotNull);
+      expect(status!.mirroredOnDevice, isFalse);
+      expect(await sdk.getSosState(), SosState.arming);
+      expect(sosRepository.triggerCallCount, 0);
+      final logs = BleDebugRegistry.instance.currentState.events
+          .map((event) => event.message)
+          .join('\n');
+      expect(logs, contains('[APP_PRE_SOS_ROUTE] origin=app'));
+      expect(logs, contains('decision=no_ble_pre_sos'));
+      expect(
+        logs,
+        contains(
+          '[APP_PRE_SOS_DEVICE_COMMAND] action=skip reason=no_ble',
+        ),
+      );
+    });
+
+    test('startPreSos after cancel starts a fresh full countdown', () async {
+      await sdk.startPreSos(countdown: const Duration(seconds: 20));
+      final first = await sdk.getPreSosStatus();
+      expect(first, isNotNull);
+
+      await sdk.cancelPreSos();
+      expect(await sdk.getPreSosStatus(), isNull);
+
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      await sdk.startPreSos(countdown: const Duration(seconds: 20));
+      final second = await sdk.getPreSosStatus();
+
+      expect(second, isNotNull);
+      expect(second!.remainingSeconds, 20);
+      expect(second.expectedActivationAt.isAfter(first!.expectedActivationAt),
+          isTrue);
+      expect(await sdk.getSosState(), SosState.arming);
+      final logs = BleDebugRegistry.instance.currentState.events
+          .map((event) => event.message)
+          .join('\n');
+      expect(logs, contains('[APP_PRE_SOS_START] action=fresh_cycle'));
+      expect(logs, contains('[APP_PRE_SOS_CANCEL] action=timer_cancelled'));
     });
 
     test(
