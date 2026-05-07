@@ -8,10 +8,12 @@ class FakeDeviceRuntimeProvider implements DeviceRuntimeProvider {
       StreamController<DeviceStatus>.broadcast();
 
   DeviceStatus? pairResult;
+  DeviceStatus? reconnectResult;
   DeviceStatus? activateResult;
   DeviceStatus? refreshResult;
   DeviceStatus? unpairResult;
   DeviceException? pairError;
+  Object? reconnectError;
   DeviceException? activateError;
   int refreshCallCount = 0;
   DeviceRefreshMode? lastRefreshMode;
@@ -33,6 +35,27 @@ class FakeDeviceRuntimeProvider implements DeviceRuntimeProvider {
       throw pairError!;
     }
     return pairResult ?? currentStatus;
+  }
+
+  @override
+  Future<DeviceStatus> reconnect({
+    required DeviceStatus currentStatus,
+    required PreferredDevice preferredDevice,
+  }) async {
+    if (reconnectError != null) {
+      throw reconnectError!;
+    }
+    return reconnectResult ??
+        currentStatus.copyWith(
+          deviceId: preferredDevice.deviceId,
+          deviceAlias: preferredDevice.displayName ?? currentStatus.deviceAlias,
+          paired: true,
+          connected: true,
+          lifecycleState: currentStatus.activated
+              ? DeviceLifecycleState.ready
+              : DeviceLifecycleState.paired,
+          clearProvisioningError: true,
+        );
   }
 
   @override

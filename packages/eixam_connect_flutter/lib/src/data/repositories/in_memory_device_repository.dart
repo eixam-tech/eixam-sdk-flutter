@@ -5,6 +5,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import '../../device/ble_debug_registry.dart';
 import '../../device/device_runtime_provider.dart';
 import '../../device/ble_device_runtime_provider.dart';
+import '../../device/known_device_reconnect_repository.dart';
 import '../datasources_local/shared_prefs_sdk_store.dart';
 import '../../mappers/local_state_serializers.dart';
 
@@ -13,7 +14,8 @@ import '../../mappers/local_state_serializers.dart';
 /// It persists the latest device state, delegates runtime mutations to a
 /// provider and emits heartbeat updates so the host app can build UX around a
 /// living device model before BLE or backend integration lands.
-class InMemoryDeviceRepository implements DeviceRepository {
+class InMemoryDeviceRepository
+    implements DeviceRepository, KnownDeviceReconnectRepository {
   InMemoryDeviceRepository({
     required DeviceRuntimeProvider runtimeProvider,
     SharedPrefsSdkStore? localStore,
@@ -57,7 +59,9 @@ class InMemoryDeviceRepository implements DeviceRepository {
     final raw =
         await _localStore?.readJson(SharedPrefsSdkStore.deviceStatusKey);
     if (raw != null) {
-      _status = LocalStateSerializers.deviceStatusFromJson(raw);
+      _status = _normalizeRestoredStatus(
+        LocalStateSerializers.deviceStatusFromJson(raw),
+      );
     }
     if (_status.connected) {
       _startHeartbeat();
@@ -75,7 +79,55 @@ class InMemoryDeviceRepository implements DeviceRepository {
       _startHeartbeat();
       return _status;
     } on DeviceException catch (error) {
-      await _setFailure(error.message);
+      if (_isMobileBondRequired(error)) {
+        await _setMobileBondMissing(source: 'pair_mobile_bond_missing');
+      } else {
+        await _setFailure(error.message);
+      }
+      rethrow;
+    }
+  }
+
+  @override
+  Future<DeviceStatus> reconnectDevice(
+      {required PreferredDevice device}) async {
+    if (device.deviceId.trim().isEmpty) {
+      throw const DeviceException(
+        'E_DEVICE_INVALID_PREFERRED_DEVICE',
+        'A preferred BLE device id is required before reconnecting.',
+      );
+    }
+    final previous = _status;
+    final reconnectingStatus = _status.copyWith(
+      deviceId: device.deviceId,
+      deviceAlias: device.displayName ?? _status.deviceAlias,
+      paired: true,
+      connected: false,
+      lifecycleState: DeviceLifecycleState.paired,
+      clearProvisioningError: true,
+    );
+    _status = reconnectingStatus;
+    await _persistAndEmitIfChanged(
+      previous: previous,
+      source: 'reconnect_device_start',
+    );
+    try {
+      _status = await _runtimeProvider.reconnect(
+        currentStatus: _status,
+        preferredDevice: device,
+      );
+      await _persistAndEmit();
+      _startHeartbeat();
+      return _status;
+    } on DeviceException catch (error) {
+      if (_isMobileBondRequired(error)) {
+        await _setMobileBondMissing(source: 'mobile_bond_missing');
+      } else {
+        await _setReconnectUnavailable();
+      }
+      rethrow;
+    } catch (_) {
+      await _setReconnectUnavailable();
       rethrow;
     }
   }
@@ -106,6 +158,28 @@ class InMemoryDeviceRepository implements DeviceRepository {
       previous: previous,
       source: 'refresh_device_status',
     );
+    return _status;
+  }
+
+  Future<DeviceStatus> markDeviceDisconnected({required String reason}) async {
+    _stopHeartbeat();
+    final previous = _status;
+    _status = _status.copyWith(
+      paired: true,
+      connected: false,
+      lifecycleState: DeviceLifecycleState.paired,
+      clearProvisioningError: true,
+      lastSyncedAt: DateTime.now(),
+    );
+    await _persistAndEmitIfChanged(
+      previous: previous,
+      source: reason,
+    );
+    return _status;
+  }
+
+  Future<DeviceStatus> markMobileBondMissing({required String reason}) async {
+    await _setMobileBondMissing(source: reason);
     return _status;
   }
 
@@ -240,6 +314,17 @@ class InMemoryDeviceRepository implements DeviceRepository {
     _heartbeatTimer = null;
   }
 
+  DeviceStatus _normalizeRestoredStatus(DeviceStatus status) {
+    if (!status.connected) {
+      return status;
+    }
+    return status.copyWith(
+      connected: false,
+      lifecycleState: DeviceLifecycleState.paired,
+      clearProvisioningError: true,
+    );
+  }
+
   Future<void> _setLifecycle(DeviceLifecycleState nextState) async {
     _status = _status.copyWith(
       lifecycleState: nextState,
@@ -256,6 +341,39 @@ class InMemoryDeviceRepository implements DeviceRepository {
       lastSyncedAt: DateTime.now(),
     );
     await _persistAndEmit();
+  }
+
+  Future<void> _setReconnectUnavailable() async {
+    _stopHeartbeat();
+    _status = _status.copyWith(
+      paired: true,
+      connected: false,
+      lifecycleState: DeviceLifecycleState.paired,
+      clearProvisioningError: true,
+      lastSyncedAt: DateTime.now(),
+    );
+    await _persistAndEmit();
+  }
+
+  Future<void> _setMobileBondMissing({required String source}) async {
+    _stopHeartbeat();
+    final previous = _status;
+    _status = _status.copyWith(
+      paired: false,
+      activated: false,
+      connected: false,
+      lifecycleState: DeviceLifecycleState.unpaired,
+      clearProvisioningError: true,
+      lastSyncedAt: DateTime.now(),
+    );
+    await _persistAndEmitIfChanged(
+      previous: previous,
+      source: source,
+    );
+  }
+
+  bool _isMobileBondRequired(DeviceException error) {
+    return error.code == 'E_DEVICE_MOBILE_BOND_REQUIRED';
   }
 
   Future<void> _persistAndEmit() async {

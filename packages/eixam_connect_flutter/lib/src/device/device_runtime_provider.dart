@@ -13,6 +13,10 @@ abstract class DeviceRuntimeProvider {
   Stream<DeviceStatus> watchRuntimeStatus();
   Future<DeviceStatus> pair(
       {required DeviceStatus currentStatus, required String pairingCode});
+  Future<DeviceStatus> reconnect({
+    required DeviceStatus currentStatus,
+    required PreferredDevice preferredDevice,
+  });
   Future<DeviceStatus> activate(
       {required DeviceStatus currentStatus, required String activationCode});
   Future<DeviceStatus> refresh(

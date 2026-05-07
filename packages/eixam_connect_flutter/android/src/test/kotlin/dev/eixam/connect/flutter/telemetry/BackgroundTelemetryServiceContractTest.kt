@@ -9,6 +9,9 @@ class BackgroundTelemetryServiceContractTest {
     private val serviceSource = File(
         "src/main/kotlin/dev/eixam/connect/flutter/telemetry/EixamTelemetryForegroundService.kt",
     ).readText()
+    private val storeSource = File(
+        "src/main/kotlin/dev/eixam/connect/flutter/telemetry/BackgroundTelemetryStore.kt",
+    ).readText()
 
     @Test
     fun `normal telemetry uses one shot location request instead of service listener`() {
@@ -40,6 +43,16 @@ class BackgroundTelemetryServiceContractTest {
     @Test
     fun `background telemetry body does not publish BLE MAC as deviceId`() {
         assertTrue(serviceSource.contains("!looksLikeBleMac(it)"))
+    }
+
+    @Test
+    fun `manual BLE disconnect marker suppresses cached background device identity`() {
+        assertTrue(storeSource.contains("manualDisconnectRequestedKey"))
+        assertTrue(storeSource.contains("isManualDisconnectRequested()"))
+        assertTrue(storeSource.contains("remove(keyDeviceId)"))
+        assertTrue(storeSource.contains("remove(keyDeviceBattery)"))
+        assertTrue(storeSource.contains("remove(keyDeviceCoverage)"))
+        assertTrue(storeSource.contains("takeUnless { isManualDisconnectRequested() }"))
     }
 
     @Test
