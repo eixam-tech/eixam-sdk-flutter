@@ -125,31 +125,6 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
       'incidentId=${request.incidentId ?? "none"}',
     );
     try {
-      final session = sessionContext.currentSession;
-      if (session == null) {
-        throw const AuthException(
-          'E_SDK_SESSION_REQUIRED',
-          'A signed SDK session must be configured before publishing SOS over MQTT.',
-        );
-      }
-
-      await _ensureConnected(initialConnect: true);
-      final transport = _transport;
-      if (transport == null) {
-        throw const NetworkException(
-          'E_MQTT_NOT_CONNECTED',
-          'The MQTT transport is not connected.',
-        );
-      }
-
-      final envelope = SdkMqttContract.buildOperationalSosEnvelope(
-        request.copyWith(
-          sdkUserId: session.canonicalExternalUserId ?? session.sdkUserId,
-        ),
-      );
-      topic = envelope.topic;
-      correlationId = _nextCorrelationId('sos');
-      final payload = _decodeJsonObject(envelope.payload);
       BleDebugRegistry.instance.recordEvent(
         '[BACKGROUND_SOS] mqtt_payload_built '
         'topic=${envelope.topic} correlationId=$correlationId '
@@ -202,17 +177,10 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
       );
       BleDebugRegistry.instance.recordEvent(
         '[BACKGROUND_SOS] mqtt_publish_failed '
-        'topic=$topic correlationId=$correlationId '
+        'topic=${envelope.topic} correlationId=$correlationId '
         'errorType=${error.runtimeType} message=${_compactSummary(error)}',
       );
       rethrow;
-    } finally {
-      methodStopwatch.stop();
-      BleDebugRegistry.instance.recordEvent(
-        '[BACKGROUND_SOS] mqtt_publish_finally '
-        'topic=$topic correlationId=$correlationId '
-        'elapsedMs=${methodStopwatch.elapsedMilliseconds}',
-      );
     }
   }
 

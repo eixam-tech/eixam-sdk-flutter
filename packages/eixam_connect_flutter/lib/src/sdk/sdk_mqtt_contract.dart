@@ -141,6 +141,7 @@ class MqttOperationalSosRequest {
 
 class SdkMqttTopics {
   static const String legacySosAlerts = 'sos/alerts';
+  static const String sosAlerts = legacySosAlerts;
 
   static String sosAlertsFor(String sdkUserId) {
     return 'sos/alerts/${MqttTopicSegment.encode(sdkUserId)}';
