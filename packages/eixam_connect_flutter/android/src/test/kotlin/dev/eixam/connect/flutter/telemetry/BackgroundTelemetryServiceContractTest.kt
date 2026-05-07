@@ -33,6 +33,16 @@ class BackgroundTelemetryServiceContractTest {
     }
 
     @Test
+    fun `background telemetry body omits userId`() {
+        assertFalse(serviceSource.contains("payload.put(\"userId\""))
+    }
+
+    @Test
+    fun `background telemetry body does not publish BLE MAC as deviceId`() {
+        assertTrue(serviceSource.contains("!looksLikeBleMac(it)"))
+    }
+
+    @Test
     fun `SOS movement listener is scoped to SOS interval and removed on close`() {
         assertTrue(
             serviceSource.contains(

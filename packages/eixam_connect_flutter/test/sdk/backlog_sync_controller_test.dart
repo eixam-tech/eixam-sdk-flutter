@@ -328,6 +328,8 @@ const List<int> _wire10A = <int>[
   0x00,
   0x01,
   0x21,
+  0x01,
+  0x00,
 ];
 
 const List<int> _wire10B = <int>[
@@ -341,4 +343,6 @@ const List<int> _wire10B = <int>[
   0x00,
   0x01,
   0x21,
+  0x02,
+  0x00,
 ];

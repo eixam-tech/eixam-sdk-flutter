@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:mqtt5_client/mqtt5_client.dart';
 import 'package:mqtt5_client/mqtt5_server_client.dart';
+import 'package:flutter/foundation.dart';
 
 import 'sdk_mqtt_contract.dart';
 import 'sdk_mqtt_transport.dart';
@@ -31,6 +32,12 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
     final brokerUri = request.brokerUri;
     final server = _serverStringFor(brokerUri);
     final client = MqttServerClient(server, request.clientIdentifier);
+    _logTransport(
+      'connect_start uri=${_redactedUri(brokerUri)} server=$server '
+      'port=${brokerUri.hasPort ? brokerUri.port : _defaultPortFor(brokerUri)} '
+      'websocket=${brokerUri.scheme == 'ws' || brokerUri.scheme == 'wss'} '
+      'secure=${brokerUri.scheme == 'ssl' || brokerUri.scheme == 'tls'}',
+    );
     client.logging(on: enableLogging, logPayloads: enableLogging);
     client.keepAlivePeriod = 30;
     client.port =
@@ -57,17 +64,24 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
     try {
       await client.connect();
     } on SocketException catch (error) {
+      _logTransport('connect_socket_failure error=${error.message}');
       throw StateError('MQTT socket connect failed: ${error.message}');
     } on Exception catch (error) {
+      _logTransport('connect_failure error=$error');
       throw StateError('MQTT connect failed: $error');
     }
 
     if (client.connectionStatus?.state != MqttConnectionState.connected) {
       final status = client.connectionStatus;
+      _logTransport(
+        'connect_rejected state=${status?.state.name ?? 'unknown'} '
+        'reason=${status?.reasonCode ?? ''}',
+      );
       throw StateError(
         'MQTT connect rejected: ${status?.state.name ?? 'unknown'} ${status?.reasonCode ?? ''}',
       );
     }
+    _logTransport('connect_success uri=${_redactedUri(brokerUri)}');
 
     _client = client;
     _updatesSub = client.updates.listen((messages) {
@@ -141,6 +155,17 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
       throw StateError('MQTT client is not connected.');
     }
     return client;
+  }
+
+  void _logTransport(String message) {
+    if (!enableLogging) {
+      return;
+    }
+    debugPrint('[SDK_MQTT_TRANSPORT] $message');
+  }
+
+  String _redactedUri(Uri uri) {
+    return uri.replace(userInfo: '').toString();
   }
 
   String _serverStringFor(Uri brokerUri) {

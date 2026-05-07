@@ -35,7 +35,6 @@ class MqttOperationalSosRequest {
   const MqttOperationalSosRequest({
     required this.timestamp,
     this.positionSnapshot,
-    this.sdkUserId,
     this.deviceId,
     this.appDeviceId,
     this.hardwareId,
@@ -55,7 +54,6 @@ class MqttOperationalSosRequest {
 
   final DateTime timestamp;
   final TrackingPosition? positionSnapshot;
-  final String? sdkUserId;
   final String? deviceId;
   final String? appDeviceId;
   final String? hardwareId;
@@ -75,7 +73,6 @@ class MqttOperationalSosRequest {
   MqttOperationalSosRequest copyWith({
     DateTime? timestamp,
     TrackingPosition? positionSnapshot,
-    Object? sdkUserId = _unset,
     Object? deviceId = _unset,
     Object? appDeviceId = _unset,
     Object? hardwareId = _unset,
@@ -95,8 +92,6 @@ class MqttOperationalSosRequest {
     return MqttOperationalSosRequest(
       timestamp: timestamp ?? this.timestamp,
       positionSnapshot: positionSnapshot ?? this.positionSnapshot,
-      sdkUserId:
-          identical(sdkUserId, _unset) ? this.sdkUserId : sdkUserId as String?,
       deviceId:
           identical(deviceId, _unset) ? this.deviceId : deviceId as String?,
       appDeviceId: identical(appDeviceId, _unset)
@@ -145,20 +140,34 @@ class MqttOperationalSosRequest {
 }
 
 class SdkMqttTopics {
-  static const String sosAlerts = 'sos/alerts';
+  static const String legacySosAlerts = 'sos/alerts';
+
+  static String sosAlertsFor(String sdkUserId) {
+    return 'sos/alerts/${MqttTopicSegment.encode(sdkUserId)}';
+  }
+
+  static String sosAlertsForSession(EixamSession session) {
+    if (MqttTopicSegment.usesLegacyUserTopics(session)) {
+      return legacySosAlerts;
+    }
+    return sosAlertsFor(MqttTopicSegment.sdkUserIdFrom(session));
+  }
 
   static String telemetryDataFor(EixamSession session) {
-    final canonicalExternalUserId =
-        MqttTopicSegment.canonicalExternalUserIdFrom(session);
-    return 'tel/${MqttTopicSegment.encode(canonicalExternalUserId)}/data';
+    final userId = MqttTopicSegment.userTopicSegmentFrom(session);
+    return 'tel/${MqttTopicSegment.encode(userId)}/data';
   }
 
   static Set<String> eventTopicsFor(EixamSession session) {
-    final canonicalExternalUserId =
-        MqttTopicSegment.canonicalExternalUserIdFrom(session);
-    return <String>{
-      'sos/events/${MqttTopicSegment.encode(canonicalExternalUserId)}',
+    final topics = <String>{
+      'sos/events/${MqttTopicSegment.encode(MqttTopicSegment.userTopicSegmentFrom(session))}',
     };
+    final legacyUserId = MqttTopicSegment.legacyUserIdFrom(session);
+    if (!MqttTopicSegment.usesLegacyUserTopics(session) &&
+        legacyUserId != MqttTopicSegment.sdkUserIdFrom(session)) {
+      topics.add('sos/events/${MqttTopicSegment.encode(legacyUserId)}');
+    }
+    return topics;
   }
 }
 
@@ -177,9 +186,13 @@ class SdkMqttContract {
     );
   }
 
-  static SdkMqttEnvelope buildOperationalSosEnvelope(
-    MqttOperationalSosRequest request,
-  ) {
+  static SdkMqttEnvelope buildOperationalSosEnvelope({
+    required String sdkUserId,
+    String? legacyUserId,
+    required MqttOperationalSosRequest request,
+  }) {
+    final topicSDKUserId = sdkUserId.trim();
+    final payloadUserId = legacyUserId?.trim();
     final identity = normalizeSosBackendIdentity(
       deviceId: request.deviceId,
       appDeviceId: request.appDeviceId,
@@ -197,8 +210,8 @@ class SdkMqttContract {
         'longitude': request.positionSnapshot!.longitude,
         'altitude': request.positionSnapshot!.altitude ?? 0.0,
       },
-      if (request.sdkUserId != null && request.sdkUserId!.trim().isNotEmpty)
-        'userId': request.sdkUserId!.trim(),
+      if (payloadUserId != null && payloadUserId.isNotEmpty)
+        'userId': payloadUserId,
       if (identity.deviceId != null && identity.deviceId!.isNotEmpty)
         'deviceId': identity.deviceId,
       if (identity.appDeviceId != null && identity.appDeviceId!.isNotEmpty)
@@ -229,7 +242,9 @@ class SdkMqttContract {
     };
 
     return SdkMqttEnvelope(
-      topic: SdkMqttTopics.sosAlerts,
+      topic: topicSDKUserId.isEmpty
+          ? SdkMqttTopics.legacySosAlerts
+          : SdkMqttTopics.sosAlertsFor(topicSDKUserId),
       payload: jsonEncode(payload),
     );
   }
@@ -239,9 +254,14 @@ class SdkMqttContract {
     required SdkTelemetryPayload payload,
   }) {
     final identity = normalizeTelemetryBackendIdentity(payload: payload);
+    final legacyUserId = MqttTopicSegment.usesLegacyUserTopics(session)
+        ? MqttTopicSegment.legacyUserIdFrom(session)
+        : null;
     return SdkMqttEnvelope(
       topic: SdkMqttTopics.telemetryDataFor(session),
-      payload: jsonEncode(identity.payload.toJson()),
+      payload: jsonEncode(
+        identity.payload.copyWith(userId: legacyUserId).toJson(),
+      ),
     );
   }
 

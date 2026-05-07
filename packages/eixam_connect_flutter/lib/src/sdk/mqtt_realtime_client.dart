@@ -5,9 +5,11 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
 import 'package:eixam_connect_core/src/events/realtime_event.dart';
 import 'package:eixam_connect_core/src/interfaces/realtime_client.dart';
+import 'package:flutter/foundation.dart';
 
 import '../data/datasources_remote/sdk_session_context.dart';
 import '../device/ble_debug_registry.dart';
+import 'mqtt_topic_segment.dart';
 import 'operational_realtime_client.dart';
 import 'sdk_mqtt_contract.dart';
 import 'sdk_mqtt_transport.dart';
@@ -82,9 +84,37 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
 
   @override
   Future<void> publishOperationalSos(MqttOperationalSosRequest request) async {
-    final methodStopwatch = Stopwatch()..start();
-    String correlationId = 'none';
-    String topic = SdkMqttTopics.sosAlerts;
+    final session = sessionContext.currentSession;
+    if (session == null) {
+      throw const AuthException(
+        'E_SDK_SESSION_REQUIRED',
+        'A signed SDK session must be configured before publishing SOS over MQTT.',
+      );
+    }
+    final sdkUserId = MqttTopicSegment.usesLegacyUserTopics(session)
+        ? ''
+        : MqttTopicSegment.sdkUserIdFrom(session);
+    final legacyUserId = MqttTopicSegment.usesLegacyUserTopics(session)
+        ? MqttTopicSegment.legacyUserIdFrom(session)
+        : null;
+
+    await _ensureConnected(initialConnect: true);
+    final transport = _transport;
+    if (transport == null) {
+      throw const NetworkException(
+        'E_MQTT_NOT_CONNECTED',
+        'The MQTT transport is not connected.',
+      );
+    }
+
+    final envelope = SdkMqttContract.buildOperationalSosEnvelope(
+      sdkUserId: sdkUserId,
+      legacyUserId: legacyUserId,
+      request: request,
+    );
+    final correlationId = _nextCorrelationId('sos');
+    final payload = _decodeJsonObject(envelope.payload);
+
     BleDebugRegistry.instance.recordEvent(
       '[BACKGROUND_SOS] mqtt_publish_method_entry '
       'deviceId=${request.deviceId ?? "none"} '
@@ -195,7 +225,6 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
         'A signed SDK session must be configured before publishing telemetry over MQTT.',
       );
     }
-
     await _ensureConnected(initialConnect: true);
     final transport = _transport;
     if (transport == null) {
@@ -207,12 +236,7 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
 
     final envelope = SdkMqttContract.buildTelemetryEnvelope(
       session: session,
-      payload: payload.copyWith(
-        userId: payload.userId ??
-            session.canonicalExternalUserId ??
-            session.sdkUserId ??
-            session.externalUserId,
-      ),
+      payload: payload.copyWith(userId: null),
     );
     final correlationId = _nextCorrelationId('tel');
     final envelopePayload = _decodeJsonObject(envelope.payload);
@@ -298,13 +322,19 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
     _connectFuture = completer.future;
     unawaited(() async {
       try {
+        _logRealtime(
+          'connect_start initial=$initialConnect '
+          'session=${session.externalUserId} state=${_state.name}',
+        );
         _setState(initialConnect
             ? RealtimeConnectionState.connecting
             : RealtimeConnectionState.reconnecting);
         await _connectTransport(session);
         _setState(RealtimeConnectionState.connected);
+        _logRealtime('connect_success session=${session.externalUserId}');
         completer.complete();
       } catch (error) {
+        _logRealtime('connect_failure error=$error');
         _setState(RealtimeConnectionState.error);
         _scheduleReconnect();
         completer.complete();
@@ -336,9 +366,13 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
     });
     _disconnectSub = transport.watchDisconnects().listen((event) {
       if (_manualDisconnect || _disposed || event.solicited) {
+        _logRealtime(
+          'disconnect solicited=${event.solicited} manual=$_manualDisconnect',
+        );
         _setState(RealtimeConnectionState.disconnected);
         return;
       }
+      _logRealtime('disconnect unexpected reconnect_scheduled=true');
       _setState(RealtimeConnectionState.reconnecting);
       _scheduleReconnect();
     });
@@ -379,8 +413,16 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
     if (_state == next) {
       return;
     }
+    _logRealtime('state ${_state.name}->${next.name}');
     _state = next;
     _connectionController.add(next);
+  }
+
+  void _logRealtime(String message) {
+    if (!config.enableLogging) {
+      return;
+    }
+    debugPrint('[SDK_MQTT_REALTIME] $message');
   }
 
   String _nextCorrelationId(String prefix) =>

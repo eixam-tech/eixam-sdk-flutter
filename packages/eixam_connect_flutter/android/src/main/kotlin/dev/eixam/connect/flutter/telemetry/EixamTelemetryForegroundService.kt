@@ -201,12 +201,7 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             .put("latitude", location.latitude)
             .put("longitude", location.longitude)
             .put("altitude", location.altitude)
-        val userId = store.canonicalExternalUserId()?.takeIf { it.isNotBlank() }
-            ?: store.externalUserId()
-        if (!userId.isNullOrBlank()) {
-            payload.put("userId", userId)
-        }
-        store.deviceId()?.takeIf { it.isNotBlank() }?.let {
+        store.deviceId()?.takeIf { it.isNotBlank() && !looksLikeBleMac(it) }?.let {
             payload.put("deviceId", it)
         }
         store.deviceBatteryJson()?.let {
@@ -717,6 +712,9 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
 
     private fun JSONObject.optStringOrNone(key: String): String =
         if (has(key) && !isNull(key)) optString(key).takeIf { it.isNotBlank() } ?: "none" else "none"
+
+    private fun looksLikeBleMac(value: String): Boolean =
+        Regex("^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$").matches(value)
 
     private fun stopSelfSafely() {
         handler.removeCallbacks(tick)

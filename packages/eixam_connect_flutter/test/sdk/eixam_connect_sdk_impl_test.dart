@@ -350,7 +350,7 @@ void main() {
       );
       expect(
         telemetryRepository.publishedPayloads.single.userId,
-        'canonical-user',
+        isNull,
       );
       expect(
         telemetryRepository.publishedPayloads.single.deviceBatterySnapshot
@@ -447,6 +447,7 @@ void main() {
         appId: 'app-1',
         externalUserId: 'partner-user',
         userHash: 'token-1',
+        sdkUserId: '11111111-1111-1111-1111-111111111111',
         canonicalExternalUserId: 'partner/user 42',
       );
 
@@ -458,11 +459,11 @@ void main() {
       expect(currentSession?.canonicalExternalUserId, 'partner/user 42');
       expect(
         diagnostics.telemetryPublishTopic,
-        'tel/partner%2Fuser%2042/data',
+        'tel/11111111-1111-1111-1111-111111111111/data',
       );
       expect(
         diagnostics.sosEventTopics,
-        contains('sos/events/partner%2Fuser%2042'),
+        contains('sos/events/11111111-1111-1111-1111-111111111111'),
       );
       expect(diagnostics.hasActiveSession, isTrue);
     });
@@ -5334,6 +5335,72 @@ void main() {
     });
 
     test(
+        'setSession bootstraps when canonical id exists but sdk user id is missing',
+        () async {
+      final localStore = MemorySharedPrefsSdkStore();
+      final localSessionStore = SdkSessionStore(localStore: localStore);
+      final localSessionContext = SdkSessionContext();
+      var requestCount = 0;
+      final client = _RecordingClient(
+        handler: (request) async {
+          requestCount += 1;
+          return http.Response(
+            '{"user":{"id":"sdk-user-42","external_user_id":"partner/user 42"}}',
+            200,
+            headers: const <String, String>{
+              'content-type': 'application/json',
+            },
+          );
+        },
+      );
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController();
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+        sessionStore: localSessionStore,
+        sessionContext: localSessionContext,
+        identityRemoteDataSource: HttpSdkIdentityRemoteDataSource(
+          transport: SdkHttpTransport(
+            client: client,
+            config: const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+            sessionContext: localSessionContext,
+          ),
+        ),
+      );
+
+      try {
+        await localSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+            canonicalExternalUserId: 'partner/user 42',
+          ),
+        );
+
+        final persisted = await localSessionStore.load();
+        expect(requestCount, 1);
+        expect(localSessionContext.currentSession?.sdkUserId, 'sdk-user-42');
+        expect(persisted?.sdkUserId, 'sdk-user-42');
+      } finally {
+        await localSdk.dispose();
+        await localRealtimeClient.dispose();
+      }
+    });
+
+    test(
         'setSession clears stale local SOS state when backend reports no incident',
         () async {
       final localRealtimeClient = FakeRealtimeClient();
@@ -5525,7 +5592,7 @@ void main() {
     });
 
     test(
-        'mqtt realtime composes username/password auth and canonical encoded event topics',
+        'mqtt realtime composes username/password auth and SDK user id event topics',
         () async {
       final sessionContext = SdkSessionContext()
         ..currentSession = const EixamSession.signed(
@@ -5558,7 +5625,93 @@ void main() {
         expect(capturedRequest.cleanSession, isTrue);
         expect(
           transport.subscriptions,
-          <String>['sos/events/partner%2Fuser%2042'],
+          <String>['sos/events/sdk-user-42'],
+        );
+      } finally {
+        await mqttClient.dispose();
+      }
+    });
+
+    test('mqtt realtime publishes SOS on SDK user id topic', () async {
+      final sessionContext = SdkSessionContext()
+        ..currentSession = const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-123',
+          userHash: 'deadbeef',
+          sdkUserId: 'sdk-user-42',
+          canonicalExternalUserId: 'partner/user 42',
+        );
+      late _FakeSdkMqttTransport transport;
+      final mqttClient = MqttRealtimeClient(
+        config: const EixamSdkConfig(
+          apiBaseUrl: 'https://api.example.test',
+          websocketUrl: 'wss://mqtt.example.test/mqtt',
+        ),
+        sessionContext: sessionContext,
+        transportFactory: (_) {
+          transport = _FakeSdkMqttTransport();
+          return transport;
+        },
+      );
+
+      try {
+        await mqttClient.publishOperationalSos(
+          MqttOperationalSosRequest(
+            timestamp: DateTime.utc(2026, 3, 30, 12),
+            positionSnapshot: TrackingPosition(
+              latitude: 41.38,
+              longitude: 2.17,
+              altitude: 8,
+              timestamp: DateTime.utc(2026, 3, 30, 12),
+            ),
+          ),
+        );
+
+        expect(transport.publications, hasLength(1));
+        final publish = transport.publications.single;
+        expect(publish.topic, 'sos/alerts/sdk-user-42');
+        expect(publish.payload, isNot(contains('userId')));
+      } finally {
+        await mqttClient.dispose();
+      }
+    });
+
+    test('mqtt operational publish requires the SDK user id', () async {
+      final sessionContext = SdkSessionContext()
+        ..currentSession = const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-123',
+          userHash: 'deadbeef',
+        );
+      final mqttClient = MqttRealtimeClient(
+        config: const EixamSdkConfig(
+          apiBaseUrl: 'https://api.example.test',
+          websocketUrl: 'wss://mqtt.example.test/mqtt',
+        ),
+        sessionContext: sessionContext,
+        transportFactory: (_) => _FakeSdkMqttTransport(),
+      );
+
+      try {
+        await expectLater(
+          mqttClient.publishOperationalSos(
+            MqttOperationalSosRequest(
+              timestamp: DateTime.utc(2026, 3, 30, 12),
+              positionSnapshot: TrackingPosition(
+                latitude: 41.38,
+                longitude: 2.17,
+                altitude: 8,
+                timestamp: DateTime.utc(2026, 3, 30, 12),
+              ),
+            ),
+          ),
+          throwsA(
+            isA<AuthException>().having(
+              (error) => error.code,
+              'code',
+              'E_SDK_USER_ID_REQUIRED',
+            ),
+          ),
         );
       } finally {
         await mqttClient.dispose();
@@ -5571,6 +5724,7 @@ void main() {
           appId: 'app-demo',
           externalUserId: 'external-123',
           userHash: 'deadbeef',
+          sdkUserId: 'sdk-user-42',
           canonicalExternalUserId: 'external-123',
         );
       final completer = Completer<void>();
@@ -5605,6 +5759,7 @@ void main() {
           appId: 'app-demo',
           externalUserId: 'external-123',
           userHash: 'deadbeef',
+          sdkUserId: 'sdk-user-42',
           canonicalExternalUserId: 'external-123',
         );
       final firstTransport = _FakeSdkMqttTransport();
@@ -5657,10 +5812,12 @@ void main() {
         expect(realtimeClient.publishedRequests, hasLength(1));
         expect(realtimeClient.publishedRequests.single.deviceId, 'hw-1');
         final envelope = SdkMqttContract.buildOperationalSosEnvelope(
-          realtimeClient.publishedRequests.single,
+          sdkUserId: 'sdk-user-42',
+          request: realtimeClient.publishedRequests.single,
         );
-        expect(envelope.topic, SdkMqttTopics.sosAlerts);
+        expect(envelope.topic, SdkMqttTopics.sosAlertsFor('sdk-user-42'));
         expect(envelope.payload, contains('"deviceId":"hw-1"'));
+        expect(envelope.payload, isNot(contains('userId')));
         expect(envelope.payload, isNot(contains('originatorNodeId')));
         expect(envelope.payload, isNot(contains('relayNodeId')));
       } finally {
@@ -5671,7 +5828,8 @@ void main() {
 
     test('operational SOS envelope includes provided operational metadata', () {
       final envelope = SdkMqttContract.buildOperationalSosEnvelope(
-        MqttOperationalSosRequest(
+        sdkUserId: 'sdk-user-42',
+        request: MqttOperationalSosRequest(
           timestamp: DateTime.utc(2026, 3, 30, 12),
           positionSnapshot: TrackingPosition(
             latitude: 41.38,
@@ -5691,6 +5849,7 @@ void main() {
       );
 
       expect(jsonDecode(envelope.payload), containsPair('deviceId', 'hw-1'));
+      expect(envelope.topic, SdkMqttTopics.sosAlertsFor('sdk-user-42'));
       expect(
         jsonDecode(envelope.payload),
         containsPair(
@@ -5714,7 +5873,8 @@ void main() {
     test('operational SOS envelope normalizes logical identity from node ids',
         () {
       final envelope = SdkMqttContract.buildOperationalSosEnvelope(
-        MqttOperationalSosRequest(
+        sdkUserId: 'sdk-user-42',
+        request: MqttOperationalSosRequest(
           timestamp: DateTime.utc(2026, 3, 30, 12),
           deviceId: 'CF:82:59:4B:1A:A8',
           originatorNodeId: 233234039,
@@ -5734,7 +5894,8 @@ void main() {
 
     test('operational SOS envelope omits null operational metadata', () {
       final envelope = SdkMqttContract.buildOperationalSosEnvelope(
-        MqttOperationalSosRequest(
+        sdkUserId: 'sdk-user-42',
+        request: MqttOperationalSosRequest(
           timestamp: DateTime.utc(2026, 3, 30, 12),
           positionSnapshot: TrackingPosition(
             latitude: 41.38,
@@ -5746,6 +5907,7 @@ void main() {
       );
 
       final payload = jsonDecode(envelope.payload) as Map<String, dynamic>;
+      expect(payload.containsKey('userId'), isFalse);
       expect(payload.containsKey('deviceBattery'), isFalse);
       expect(payload.containsKey('deviceCoverage'), isFalse);
       expect(payload.containsKey('mobileBattery'), isFalse);
@@ -6061,11 +6223,12 @@ void main() {
             appId: 'app-demo',
             externalUserId: 'external-123',
             userHash: 'deadbeef',
+            sdkUserId: 'sdk-user-42',
             canonicalExternalUserId: 'external-123',
           ),
         );
 
-        expect(transport.subscriptions, <String>['sos/events/external-123']);
+        expect(transport.subscriptions, <String>['sos/events/sdk-user-42']);
 
         await localSdk.clearSession();
 
@@ -6395,8 +6558,22 @@ void main() {
       }
     });
 
-    test('telemetry topic builder uses the canonical encoded external user id',
-        () {
+    test('telemetry topic builder uses the SDK user id', () {
+      const session = EixamSession.signed(
+        appId: 'app-demo',
+        externalUserId: 'external-123',
+        userHash: 'deadbeef',
+        sdkUserId: 'sdk-user-42',
+        canonicalExternalUserId: 'partner/user 42',
+      );
+
+      expect(
+        SdkMqttTopics.telemetryDataFor(session),
+        'tel/sdk-user-42/data',
+      );
+    });
+
+    test('telemetry topic builder falls back to legacy user id', () {
       const session = EixamSession.signed(
         appId: 'app-demo',
         externalUserId: 'external-123',
@@ -6408,6 +6585,48 @@ void main() {
         SdkMqttTopics.telemetryDataFor(session),
         'tel/partner%2Fuser%2042/data',
       );
+      expect(
+        SdkMqttTopics.eventTopicsFor(session),
+        <String>{'sos/events/partner%2Fuser%2042'},
+      );
+    });
+
+    test('legacy operational SOS envelope keeps flat topic and userId', () {
+      final envelope = SdkMqttContract.buildOperationalSosEnvelope(
+        sdkUserId: '',
+        legacyUserId: 'partner-user-42',
+        request: MqttOperationalSosRequest(
+          timestamp: DateTime.utc(2026, 3, 30, 12),
+        ),
+      );
+
+      expect(envelope.topic, SdkMqttTopics.legacySosAlerts);
+      expect(
+        jsonDecode(envelope.payload),
+        containsPair('userId', 'partner-user-42'),
+      );
+    });
+
+    test('legacy telemetry envelope keeps userId in payload', () {
+      final envelope = SdkMqttContract.buildTelemetryEnvelope(
+        session: const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-123',
+          userHash: 'deadbeef',
+        ),
+        payload: SdkTelemetryPayload(
+          timestamp: DateTime.utc(2026, 3, 31, 10, 15),
+          latitude: 41.38,
+          longitude: 2.17,
+          altitude: 8,
+        ),
+      );
+
+      expect(envelope.topic, 'tel/external-123/data');
+      expect(
+        jsonDecode(envelope.payload),
+        containsPair('userId', 'external-123'),
+      );
     });
 
     test('telemetry payload serialization matches the mqtt contract', () {
@@ -6416,6 +6635,7 @@ void main() {
           appId: 'app-demo',
           externalUserId: 'external-123',
           userHash: 'deadbeef',
+          sdkUserId: 'sdk-user-42',
           canonicalExternalUserId: 'partner/user 42',
         ),
         payload: SdkTelemetryPayload(
@@ -6423,7 +6643,6 @@ void main() {
           latitude: 41.38,
           longitude: 2.17,
           altitude: 8,
-          userId: 'sdk-user-42',
           deviceId: 'device-1',
           deviceBattery: 77.5,
           deviceCoverage: 4,
@@ -6432,13 +6651,12 @@ void main() {
         ),
       );
 
-      expect(envelope.topic, 'tel/partner%2Fuser%2042/data');
+      expect(envelope.topic, 'tel/sdk-user-42/data');
       expect(jsonDecode(envelope.payload), <String, dynamic>{
         'timestamp': '2026-03-31T10:15:00.000Z',
         'latitude': 41.38,
         'longitude': 2.17,
         'altitude': 8.0,
-        'userId': 'sdk-user-42',
         'deviceId': 'device-1',
         'deviceBattery': <String, dynamic>{
           'rawValue': 3,
@@ -6560,10 +6778,10 @@ void main() {
 
         expect(transport.publications, hasLength(1));
         final publish = transport.publications.single;
-        expect(publish.topic, 'tel/partner%2Fuser%2042/data');
+        expect(publish.topic, 'tel/sdk-user-42/data');
         expect(publish.qos, SdkMqttQos.atLeastOnce);
         expect(publish.retain, isFalse);
-        expect(publish.payload, contains('"userId":"partner/user 42"'));
+        expect(publish.payload, isNot(contains('userId')));
       } finally {
         await mqttClient.dispose();
       }
@@ -7910,6 +8128,45 @@ void main() {
               (error) => error.code,
               'code',
               'E_SDK_SESSION_REQUIRED',
+            ),
+          ),
+        );
+      } finally {
+        await mqttClient.dispose();
+      }
+    });
+
+    test('mqtt telemetry publish requires the SDK user id', () async {
+      final sessionContext = SdkSessionContext()
+        ..currentSession = const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-123',
+          userHash: 'deadbeef',
+        );
+      final mqttClient = MqttRealtimeClient(
+        config: const EixamSdkConfig(
+          apiBaseUrl: 'https://api.example.test',
+          websocketUrl: 'wss://mqtt.example.test/mqtt',
+        ),
+        sessionContext: sessionContext,
+        transportFactory: (_) => _FakeSdkMqttTransport(),
+      );
+
+      try {
+        await expectLater(
+          mqttClient.publishTelemetry(
+            SdkTelemetryPayload(
+              timestamp: DateTime.utc(2026, 3, 31, 10, 15),
+              latitude: 41.38,
+              longitude: 2.17,
+              altitude: 8,
+            ),
+          ),
+          throwsA(
+            isA<AuthException>().having(
+              (error) => error.code,
+              'code',
+              'E_SDK_USER_ID_REQUIRED',
             ),
           ),
         );
@@ -10138,9 +10395,7 @@ class _FakeOperationalRealtimeClient implements OperationalRealtimeClient {
 
   @override
   Future<void> publishOperationalSos(MqttOperationalSosRequest request) async {
-    publishedRequests.add(
-      request.copyWith(sdkUserId: 'sdk-user-42'),
-    );
+    publishedRequests.add(request);
   }
 
   @override

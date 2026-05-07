@@ -17,7 +17,7 @@
 - It enriches the session with:
   - `sdkUserId`
   - `canonicalExternalUserId`
-- MQTT topic building depends on canonical external user id.
+- MQTT topic building depends on `sdkUserId` from `GET /v1/sdk/me`.
 
 ## SOS Backend Paths
 
@@ -42,8 +42,9 @@
 
 - Built in `sdk/sdk_mqtt_contract.dart`.
 - Current patterns:
-  - telemetry publish: `tel/<canonicalExternalUserId>/data`
-  - SOS event subscribe: `sos/events/<canonicalExternalUserId>`
+  - telemetry publish: `tel/<sdkUserId>/data`
+  - SOS publish: `sos/alerts/<sdkUserId>`
+  - SOS event subscribe: `sos/events/<sdkUserId>`
 
 ## Telemetry Upload Strategy
 

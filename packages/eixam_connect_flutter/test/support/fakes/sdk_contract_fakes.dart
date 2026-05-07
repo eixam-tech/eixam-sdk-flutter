@@ -6,6 +6,7 @@ import 'package:eixam_connect_core/src/events/realtime_event.dart';
 import 'package:eixam_connect_core/src/interfaces/realtime_client.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/sos_runtime_rehydration_support.dart';
 import 'package:eixam_connect_flutter/src/sdk/guided_rescue_runtime.dart';
+import 'package:eixam_connect_flutter/src/sdk/sdk_mqtt_contract.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/telemetry_repository.dart';
 
 class FakeSosRepository implements SosRepository {
@@ -580,6 +581,8 @@ class FakeRealtimeClient implements RealtimeClient {
       StreamController<RealtimeConnectionState>.broadcast();
   final StreamController<RealtimeEvent> _eventsController =
       StreamController<RealtimeEvent>.broadcast();
+  final List<MqttOperationalSosRequest> publishedSos =
+      <MqttOperationalSosRequest>[];
 
   int connectCallCount = 0;
   int disconnectCallCount = 0;

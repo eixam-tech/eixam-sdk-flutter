@@ -195,7 +195,7 @@ class DeviceSosController {
       writer: writer,
       previous: previous,
       commandRouteLabel: commandRouteLabel,
-      allowCmd: commandWriterOverride != null || longCommandAvailable,
+      allowCmd: commandWriterOverride == null && longCommandAvailable,
       allowInet: commandWriterOverride != null || shortCommandAvailable,
       action: terminalAction,
       commandWriterOverride: commandWriterOverride,
@@ -444,7 +444,8 @@ class DeviceSosController {
   }) async {
     Object? cmdError;
     if (allowCmd) {
-      final command = EixamDeviceCommand.sosCancel(forceCmdCharacteristic: true);
+      final command =
+          EixamDeviceCommand.sosCancel(forceCmdCharacteristic: true);
       try {
         BleDebugRegistry.instance.recordEvent(
           'Device SOS command dispatch -> route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
@@ -546,7 +547,7 @@ class DeviceSosController {
       writer: writer,
       previous: _status,
       commandRouteLabel: pending.commandRouteLabel ?? 'attached_writer',
-      allowCmd: usesOverride || longCommandAvailable,
+      allowCmd: !usesOverride && longCommandAvailable,
       allowInet: usesOverride || shortCommandAvailable,
       action: pending.action,
       commandWriterOverride: pending.commandWriterOverride,
