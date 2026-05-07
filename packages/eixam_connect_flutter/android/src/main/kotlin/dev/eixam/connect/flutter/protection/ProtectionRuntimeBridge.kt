@@ -1,6 +1,7 @@
 package dev.eixam.connect.flutter.protection
 
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothDevice
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.os.Handler
@@ -158,6 +159,11 @@ internal object ProtectionRuntimeBridge {
                 result.success(null)
             }
 
+            "removeBluetoothBond" -> {
+                val deviceId = (call.arguments as? Map<*, *>)?.get("deviceId") as? String
+                result.success(removeBluetoothBond(context, deviceId))
+            }
+
             "flushProtectionQueues" -> {
                 val flushed = ensureRuntimeOwner(context).flushPendingBackendActions("manual_flush")
                 result.success(flushed)
@@ -216,6 +222,43 @@ internal object ProtectionRuntimeBridge {
             runtimeStore = ProtectionRuntimeStore(context.applicationContext),
         ).also {
             runtimeOwner = it
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun removeBluetoothBond(
+        context: Context,
+        deviceId: String?,
+    ): Boolean {
+        val normalized = deviceId?.trim()?.takeIf { it.isNotBlank() } ?: return false
+        return try {
+            runtimeOwner?.stop("remove_bluetooth_bond")
+            val bluetoothManager =
+                context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+            val adapter = bluetoothManager.adapter ?: return false
+            val bondedDevice = adapter.bondedDevices.firstOrNull { device ->
+                device.address.equals(normalized, ignoreCase = true)
+            }
+            val device = bondedDevice ?: adapter.getRemoteDevice(normalized)
+            if (device.bondState == BluetoothDevice.BOND_NONE) {
+                return true
+            }
+            val removed = BluetoothDevice::class.java
+                .getMethod("removeBond")
+                .invoke(device) as? Boolean ?: false
+            recordBleEvent(
+                context = context,
+                type = if (removed) "bondRemoved" else "bondRemoveSkipped",
+                reason = "hardwareId=$normalized",
+            )
+            removed
+        } catch (error: Exception) {
+            recordBleEvent(
+                context = context,
+                type = "bondRemoveFailed",
+                reason = "hardwareId=$normalized error=${error.message ?: error.javaClass.simpleName}",
+            )
+            false
         }
     }
 

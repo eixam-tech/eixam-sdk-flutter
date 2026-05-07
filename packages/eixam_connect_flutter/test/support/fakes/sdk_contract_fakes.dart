@@ -1,10 +1,9 @@
 import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
-import 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
-import 'package:eixam_connect_core/src/events/realtime_event.dart';
 import 'package:eixam_connect_core/src/interfaces/realtime_client.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/sos_runtime_rehydration_support.dart';
+import 'package:eixam_connect_flutter/src/device/known_device_reconnect_repository.dart';
 import 'package:eixam_connect_flutter/src/sdk/guided_rescue_runtime.dart';
 import 'package:eixam_connect_flutter/src/sdk/sdk_mqtt_contract.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/telemetry_repository.dart';
@@ -354,7 +353,8 @@ class FakeSdkDeviceRegistryRepository implements SdkDeviceRegistryRepository {
   }
 }
 
-class FakeDeviceRepository implements DeviceRepository {
+class FakeDeviceRepository
+    implements DeviceRepository, KnownDeviceReconnectRepository {
   FakeDeviceRepository({required DeviceStatus initialStatus})
       : _status = initialStatus;
 
@@ -363,6 +363,7 @@ class FakeDeviceRepository implements DeviceRepository {
 
   DeviceStatus _status;
   int pairCallCount = 0;
+  int reconnectCallCount = 0;
   int refreshCallCount = 0;
   int unpairCallCount = 0;
   String? lastPairingCode;
@@ -371,6 +372,23 @@ class FakeDeviceRepository implements DeviceRepository {
   Future<DeviceStatus> pairDevice({required String pairingCode}) async {
     pairCallCount++;
     lastPairingCode = pairingCode;
+    return _status;
+  }
+
+  @override
+  Future<DeviceStatus> reconnectDevice(
+      {required PreferredDevice device}) async {
+    reconnectCallCount++;
+    _status = _status.copyWith(
+      deviceId: device.deviceId,
+      deviceAlias: device.displayName ?? _status.deviceAlias,
+      paired: true,
+      connected: true,
+      lifecycleState: _status.activated
+          ? DeviceLifecycleState.ready
+          : DeviceLifecycleState.paired,
+      clearProvisioningError: true,
+    );
     return _status;
   }
 

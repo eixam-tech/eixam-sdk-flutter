@@ -730,6 +730,39 @@ void main() {
       expect((await sdk.preferredDevice)?.deviceId, 'device-preferred');
     });
 
+    test(
+        'manual disconnect marker prevents backend registry from restoring preferred BLE device',
+        () async {
+      await deviceRegistryRepository.upsertRegisteredDevice(
+        hardwareId: 'F4:F2:18:F4:99:79',
+        firmwareVersion: 'v1.0.0',
+        hardwareModel: 'EIXAM_9979',
+        pairedAt: DateTime.utc(2026, 5, 7, 13, 26),
+      );
+      await preferredDeviceStore.savePreferredDevice(
+        PreferredDevice(
+          deviceId: 'F4:F2:18:F4:99:79',
+          displayName: 'EIXAM_9979',
+          lastConnectedAt: DateTime.utc(2026, 5, 7, 13, 26),
+        ),
+      );
+      await preferredDeviceStore.saveManualDisconnectRequested(true);
+
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+      );
+      await sdk.setSession(
+        const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'external-123',
+          userHash: 'deadbeef',
+          canonicalExternalUserId: 'canonical-user',
+        ),
+      );
+
+      expect(await sdk.preferredDevice, isNull);
+    });
+
     test('watchDeviceSosStatus replays the current controller state', () async {
       final status = await sdk.watchDeviceSosStatus().first;
 
@@ -1187,7 +1220,7 @@ void main() {
       }
     });
 
-    test('protection connection does not make Flutter command APIs available',
+    test('protection connection routes volume through native BLE owner',
         () async {
       deviceRepository.emitStatus(
         buildDeviceStatus(
@@ -1223,16 +1256,16 @@ void main() {
         final status = await runtimeSdk.getDeviceStatus();
 
         expect(status.connected, isTrue);
-        await expectLater(
-          runtimeSdk.setDeviceNotificationVolume(50),
-          throwsA(
-            isA<DeviceException>().having(
-              (error) => error.code,
-              'code',
-              'E_DEVICE_COMMAND_NOT_READY',
-            ),
-          ),
-        );
+        await runtimeSdk.setDeviceNotificationVolume(50);
+        await runtimeSdk.setDeviceSosVolume(75);
+
+        expect(localAdapter.sendCommandCallCount, 2);
+        expect(localAdapter.commandRequests[0].label, 'BUZZER NOTIFY VOL');
+        expect(localAdapter.commandRequests[0].bytes, <int>[0x11, 50]);
+        expect(localAdapter.commandRequests[0].forceCmdCharacteristic, isTrue);
+        expect(localAdapter.commandRequests[1].label, 'BUZZER SOS VOL');
+        expect(localAdapter.commandRequests[1].bytes, <int>[0x12, 75]);
+        expect(localAdapter.commandRequests[1].forceCmdCharacteristic, isTrue);
       } finally {
         await runtimeSdk.dispose();
       }

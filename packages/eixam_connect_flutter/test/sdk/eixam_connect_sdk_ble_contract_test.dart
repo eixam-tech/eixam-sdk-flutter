@@ -100,6 +100,67 @@ void main() {
       expect(bleClient.writtenCommands[1].bytes, <int>[0x12, 90]);
     });
 
+    test('public SDK rebinds command channel before volume commands', () async {
+      await _connectDemoDevice(sdk);
+      BleDebugRegistry.instance.update(
+        cmdFound: false,
+        commandWriterReady: false,
+      );
+
+      await sdk.setDeviceNotificationVolume(35);
+
+      expect(bleClient.writtenCommands.single.bytes, <int>[0x11, 35]);
+      expect(BleDebugRegistry.instance.currentState.cmdFound, isTrue);
+      expect(
+        BleDebugRegistry.instance.currentState.events
+            .map((event) => event.message),
+        contains(
+            '[DEVICE_COMMAND_READY] rebind_succeeded action=set_notification_volume'),
+      );
+    });
+
+    test('public SDK restores preferred BLE device from backend registry',
+        () async {
+      deviceRegistryRepository.devices.add(
+        BackendRegisteredDevice(
+          id: 'registered-1',
+          hardwareId: MockBleClient.demoDeviceId,
+          firmwareVersion: '2.7.21-mock',
+          hardwareModel: 'EIXAM R1',
+          pairedAt: DateTime.utc(2026, 5, 1),
+          createdAt: DateTime.utc(2026, 5, 1),
+          updatedAt: DateTime.utc(2026, 5, 7),
+        ),
+      );
+      deviceRegistryRepository.devices.add(
+        BackendRegisteredDevice(
+          id: 'registered-node',
+          hardwareId: '418683257',
+          firmwareVersion: '2.7.21-mock',
+          hardwareModel: 'EIXAM R1',
+          pairedAt: DateTime.utc(2026, 5, 1),
+          createdAt: DateTime.utc(2026, 5, 1),
+          updatedAt: DateTime.utc(2026, 5, 7),
+        ),
+      );
+
+      await sdk.setSession(
+        const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'user-demo',
+          userHash: 'signed-hash',
+        ),
+      );
+
+      final preferred = await sdk.preferredDevice;
+      final status = await sdk.refreshDeviceStatus();
+
+      expect(preferred?.deviceId, MockBleClient.demoDeviceId);
+      expect(status.connected, isTrue);
+      expect(status.nodeId, 418683257);
+      expect(BleDebugRegistry.instance.currentState.cmdFound, isTrue);
+    });
+
     test('public SDK exposes parsed device runtime status', () async {
       await _connectDemoDevice(sdk);
 

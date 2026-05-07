@@ -4,6 +4,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/preferred_ble_device_store.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/shared_prefs_sdk_store.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
+import 'package:eixam_connect_flutter/src/device/known_device_reconnect_repository.dart';
 import 'package:eixam_connect_flutter/src/device/preferred_ble_device.dart';
 import 'package:eixam_connect_flutter/src/sdk/ble_auto_reconnect_coordinator.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -36,7 +37,8 @@ void main() {
       );
       await coordinator.tryAutoConnectOnStartup();
 
-      expect(repository.pairCallCount, 1);
+      expect(repository.reconnectCallCount, 1);
+      expect(repository.pairCallCount, 0);
       expect(
         BleDebugRegistry.instance.currentState.selectedDeviceId,
         'ble-demo-r1',
@@ -104,8 +106,9 @@ void main() {
       coordinator.setAppForeground(true);
       await Future<void>.delayed(Duration.zero);
 
-      expect(repository.pairCallCount, 1);
-      expect(repository.lastPairingCode, 'AUTO-RECONNECT');
+      expect(repository.reconnectCallCount, 1);
+      expect(repository.lastReconnectedDeviceId, 'ble-demo-r1');
+      expect(repository.lastPairingCode, isNull);
       await coordinator.dispose();
     });
 
@@ -136,8 +139,157 @@ void main() {
 
       await coordinator.tryAutoConnectOnResume();
 
-      expect(repository.pairCallCount, 1);
-      expect(repository.lastPairingCode, 'AUTO-RECONNECT');
+      expect(repository.reconnectCallCount, 1);
+      expect(repository.lastReconnectedDeviceId, 'ble-demo-r1');
+      expect(repository.lastPairingCode, isNull);
+      await coordinator.dispose();
+    });
+
+    test('stops auto-connect when phone Bluetooth bond was removed', () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _FakeDeviceRepository()
+        ..pairErrors = <Object>[
+          const DeviceException(
+            'E_DEVICE_MOBILE_BOND_REQUIRED',
+            'The device is no longer paired in the phone Bluetooth settings.',
+          ),
+        ];
+      final store = PreferredBleDeviceStore(
+        localStore: SharedPrefsSdkStore(),
+      );
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: 'ble-demo-r1',
+          displayName: 'EIXAM Demo',
+          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+        ),
+      );
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+      );
+
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+      await coordinator.tryAutoConnectOnResume();
+
+      expect(repository.reconnectCallCount, 1);
+      expect(await store.getPreferredDevice(), isNull);
+      expect(await store.readManualDisconnectRequested(), isTrue);
+      expect(
+        BleDebugRegistry.instance.currentState.events
+            .map((event) => event.message),
+        contains(
+          'Auto-reconnect stopped because Android bond is missing -> hardwareId=ble-demo-r1',
+        ),
+      );
+      await coordinator.dispose();
+    });
+
+    test('uses restored paired device id when preferred store is empty',
+        () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _FakeDeviceRepository()..setDisconnected();
+      final store = PreferredBleDeviceStore(
+        localStore: SharedPrefsSdkStore(),
+      );
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+      );
+
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+      await coordinator.tryAutoConnectOnStartup();
+
+      expect(repository.reconnectCallCount, 1);
+      expect(repository.lastReconnectedDeviceId, 'demo-device');
+      await coordinator.dispose();
+    });
+
+    test(
+        'rebinds an already connected device when command channel is not ready',
+        () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _FakeDeviceRepository()
+        ..setConnected(commandCapable: false);
+      final store = PreferredBleDeviceStore(
+        localStore: SharedPrefsSdkStore(),
+      );
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: 'ble-demo-r1',
+          displayName: 'EIXAM Demo',
+          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+        ),
+      );
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+      );
+
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+      await coordinator.tryAutoConnectOnResume();
+
+      expect(repository.refreshCallCount, 1);
+      expect(repository.reconnectCallCount, 1);
+      expect(repository.lastReconnectedDeviceId, 'ble-demo-r1');
+      expect(
+        BleDebugRegistry.instance.currentState.events
+            .map((event) => event.message),
+        contains(
+          'resume auto-connect will rebind the connected device because command channel is not ready',
+        ),
+      );
+      await coordinator.dispose();
+    });
+
+    test('skips already connected device when command channel is ready',
+        () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _FakeDeviceRepository()
+        ..setConnected(commandCapable: true);
+      final store = PreferredBleDeviceStore(
+        localStore: SharedPrefsSdkStore(),
+      );
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: 'ble-demo-r1',
+          displayName: 'EIXAM Demo',
+          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+        ),
+      );
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+      );
+
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+      await coordinator.tryAutoConnectOnResume();
+
+      expect(repository.refreshCallCount, 1);
+      expect(repository.reconnectCallCount, 0);
+      expect(
+        BleDebugRegistry.instance.currentState.events
+            .map((event) => event.message),
+        contains(
+          'resume auto-connect skipped because connected device command channel is ready',
+        ),
+      );
       await coordinator.dispose();
     });
 
@@ -211,7 +363,8 @@ void main() {
 
       await coordinator.tryAutoConnectOnStartup();
 
-      expect(repository.pairCallCount, 1);
+      expect(repository.reconnectCallCount, 1);
+      expect(repository.pairCallCount, 0);
       expect(
         BleDebugRegistry.instance.currentState.events
             .map((event) => event.message)
@@ -223,7 +376,8 @@ void main() {
   });
 }
 
-class _FakeDeviceRepository implements DeviceRepository {
+class _FakeDeviceRepository
+    implements DeviceRepository, KnownDeviceReconnectRepository {
   final StreamController<DeviceStatus> _controller =
       StreamController<DeviceStatus>.broadcast();
 
@@ -238,13 +392,30 @@ class _FakeDeviceRepository implements DeviceRepository {
   );
 
   int pairCallCount = 0;
+  int reconnectCallCount = 0;
+  int refreshCallCount = 0;
   String? lastPairingCode;
+  String? lastReconnectedDeviceId;
   List<Object> pairErrors = <Object>[];
+  bool _commandCapable = false;
 
   void setDisconnected() {
     _status = _status.copyWith(
       paired: true,
       connected: false,
+      lifecycleState: DeviceLifecycleState.paired,
+      clearProvisioningError: true,
+    );
+    _controller.add(_status);
+  }
+
+  void setConnected({required bool commandCapable}) {
+    _commandCapable = commandCapable;
+    _status = _status.copyWith(
+      deviceId: 'ble-demo-r1',
+      deviceAlias: 'EIXAM Demo',
+      paired: true,
+      connected: true,
       lifecycleState: DeviceLifecycleState.paired,
       clearProvisioningError: true,
     );
@@ -279,7 +450,31 @@ class _FakeDeviceRepository implements DeviceRepository {
   }
 
   @override
-  Future<DeviceStatus> refreshDeviceStatus() async => _status;
+  Future<DeviceStatus> reconnectDevice(
+      {required PreferredDevice device}) async {
+    reconnectCallCount++;
+    lastReconnectedDeviceId = device.deviceId;
+    if (pairErrors.isNotEmpty) {
+      throw pairErrors.removeAt(0);
+    }
+    _status = _status.copyWith(
+      deviceId: device.deviceId,
+      deviceAlias: device.displayName ?? 'EIXAM Demo',
+      paired: true,
+      connected: true,
+      lifecycleState: DeviceLifecycleState.paired,
+      clearProvisioningError: true,
+    );
+    _commandCapable = true;
+    _controller.add(_status);
+    return _status;
+  }
+
+  @override
+  Future<DeviceStatus> refreshDeviceStatus() async {
+    refreshCallCount++;
+    return _status;
+  }
 
   @override
   Future<RuntimeIdentitySnapshot> getRuntimeIdentitySnapshot() async {
@@ -287,10 +482,12 @@ class _FakeDeviceRepository implements DeviceRepository {
       connectedBleNodeId: null,
       deviceId: _status.connected ? _status.deviceId : null,
       serviceBleConnected: _status.connected,
-      commandCapable: false,
-      readinessReason: _status.connected
-          ? RuntimeIdentityReadinessReason.commandPathNotReady
-          : RuntimeIdentityReadinessReason.noConnectedDevice,
+      commandCapable: _commandCapable,
+      readinessReason: _status.connected && _commandCapable
+          ? RuntimeIdentityReadinessReason.ready
+          : _status.connected
+              ? RuntimeIdentityReadinessReason.commandPathNotReady
+              : RuntimeIdentityReadinessReason.noConnectedDevice,
       lastUpdatedAt: _status.lastSyncedAt ?? _status.lastSeen,
     );
   }

@@ -5,6 +5,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import '../data/datasources_local/preferred_ble_device_store.dart';
 import '../device/ble_connection_status.dart';
 import '../device/ble_debug_registry.dart';
+import '../device/known_device_reconnect_repository.dart';
 import '../device/preferred_ble_device.dart';
 
 class BleAutoReconnectCoordinator {
@@ -181,15 +182,22 @@ class BleAutoReconnectCoordinator {
     final currentStatus = await _deviceRepository.getDeviceStatus();
     if (currentStatus.connected) {
       final refreshedStatus = await _deviceRepository.refreshDeviceStatus();
-      if (refreshedStatus.connected) {
+      if (refreshedStatus.connected &&
+          await _isCommandChannelAvailableForConnectedDevice()) {
         BleDebugRegistry.instance.recordEvent(
-          '$trigger auto-connect skipped because device is already connected',
+          '$trigger auto-connect skipped because connected device command channel is ready',
         );
         return;
       }
+      if (refreshedStatus.connected) {
+        BleDebugRegistry.instance.recordEvent(
+          '$trigger auto-connect will rebind the connected device because command channel is not ready',
+        );
+      }
     }
 
-    final preferredDevice = await _preferredDeviceStore.getPreferredDevice();
+    final preferredDevice = await _preferredDeviceStore.getPreferredDevice() ??
+        _preferredDeviceFromStatus(currentStatus);
     if (preferredDevice == null) {
       BleDebugRegistry.instance.recordEvent(
         '$trigger auto-connect skipped because no preferred device is stored',
@@ -201,16 +209,52 @@ class BleAutoReconnectCoordinator {
       '$trigger auto-connect started for ${preferredDevice.deviceId}',
     );
     BleDebugRegistry.instance.selectDevice(preferredDevice.deviceId);
+    final reconnectRepository = _deviceRepository;
+    if (reconnectRepository is! KnownDeviceReconnectRepository) {
+      BleDebugRegistry.instance.recordEvent(
+        '$trigger auto-connect skipped because repository cannot restore known devices',
+      );
+      return;
+    }
+    final knownDeviceReconnectRepository =
+        reconnectRepository as KnownDeviceReconnectRepository;
     try {
       await _runConnectionAttempt(
         reason: '${trigger}_auto_connect',
         status: BleConnectionStatus.reconnecting,
-        action: () => _deviceRepository.pairDevice(
-          pairingCode: autoReconnectPairingCode,
+        action: () => knownDeviceReconnectRepository.reconnectDevice(
+          device: preferredDevice,
         ),
       );
-    } catch (_) {
+    } catch (error) {
+      if (_isMobileBondRequired(error)) {
+        await _handleMissingMobileBond(preferredDevice.deviceId);
+        return;
+      }
       onUnexpectedDisconnect();
+    }
+  }
+
+  PreferredBleDevice? _preferredDeviceFromStatus(DeviceStatus status) {
+    if (!status.paired || status.deviceId.trim().isEmpty) {
+      return null;
+    }
+    return PreferredBleDevice(
+      deviceId: status.deviceId,
+      displayName: status.deviceAlias,
+      lastConnectedAt: status.lastSyncedAt ?? status.lastSeen ?? DateTime.now(),
+    );
+  }
+
+  Future<bool> _isCommandChannelAvailableForConnectedDevice() async {
+    try {
+      final identity = await _deviceRepository.getRuntimeIdentitySnapshot();
+      return identity.serviceBleConnected && identity.commandCapable;
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'Connected-device command readiness check failed: $error',
+      );
+      return false;
     }
   }
 
@@ -273,6 +317,27 @@ class BleAutoReconnectCoordinator {
         text.contains('device disconnected') ||
         text.contains('platformexception(deviceDisconnected'.toLowerCase()) ||
         text.contains('platformexception(devicedisconnected');
+  }
+
+  bool _isMobileBondRequired(Object error) {
+    return error is DeviceException &&
+        error.code == 'E_DEVICE_MOBILE_BOND_REQUIRED';
+  }
+
+  Future<void> _handleMissingMobileBond(String deviceId) async {
+    _manualDisconnectRequested = true;
+    await _preferredDeviceStore.saveManualDisconnectRequested(true);
+    await _preferredDeviceStore.clearPreferredDevice();
+    _retryAttempt = 0;
+    _retryTimer?.cancel();
+    _retryTimer = null;
+    BleDebugRegistry.instance.update(
+      connectionStatus: BleConnectionStatus.disconnectedManual,
+      connectionError: null,
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'Auto-reconnect stopped because Android bond is missing -> hardwareId=$deviceId',
+    );
   }
 
   Future<void> _handleDeviceStatus(DeviceStatus status) async {

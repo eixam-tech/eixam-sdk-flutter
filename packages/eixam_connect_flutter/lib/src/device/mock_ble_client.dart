@@ -21,6 +21,8 @@ class MockBleClient implements BleClient {
   BleAdapterState _adapterState = BleAdapterState.poweredOn;
   final Set<String> _connectedDeviceIds = <String>{};
   final List<EixamDeviceCommand> writtenCommands = <EixamDeviceCommand>[];
+  bool systemAssociationAvailable = true;
+  final List<String> removedSystemAssociations = <String>[];
   List<List<int>> backlogSyncStartNotifications = <List<int>>[];
   final Map<int, List<List<int>>> backlogSyncAckNotifications =
       <int, List<List<int>>>{};
@@ -136,6 +138,17 @@ class MockBleClient implements BleClient {
   @override
   Future<bool> isConnected(String deviceId) async =>
       _connectedDeviceIds.contains(deviceId);
+
+  @override
+  Future<bool> hasSystemAssociation(String deviceId) async =>
+      systemAssociationAvailable;
+
+  @override
+  Future<bool> removeSystemAssociation(String deviceId) async {
+    removedSystemAssociations.add(deviceId);
+    systemAssociationAvailable = false;
+    return true;
+  }
 
   @override
   Stream<bool> watchConnection(String deviceId) =>
