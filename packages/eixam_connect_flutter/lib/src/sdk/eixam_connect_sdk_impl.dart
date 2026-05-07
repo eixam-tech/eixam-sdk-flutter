@@ -8173,7 +8173,8 @@ class EixamConnectSdkImpl
         'relayNodeId=${snapshot.relayNodeId ?? "none"} '
         'relayDeviceId=${relayDeviceId ?? "none"} '
         'relayHardwareId=${relayHardwareId ?? "none"} '
-        'source=${snapshot.source.name} '
+        'triggerSource=remote_lora_relay '
+        'packetSource=${snapshot.source.name} '
         'hasLocation=${positionSnapshot != null}',
       );
       _logSosTrace(
@@ -8266,12 +8267,26 @@ class EixamConnectSdkImpl
           ackRelayErrorMessage: ackRelayErrorMessage,
         ),
       );
+      _logRemoteRelaySosStateRehydrate(
+        snapshot: snapshot,
+        expectedIncidentId: backendResult.incidentId,
+        source: 'mqtt',
+      );
       _emitExternalSosSentNotificationIntent(
         snapshot: snapshot,
         statusCode: backendResult.statusCode,
         incidentId: backendResult.incidentId,
       );
     } catch (error) {
+      _logRemoteRelayBackendResponse(
+        correlationId: _remoteRelayCorrelationId(snapshot),
+        snapshot: snapshot,
+        statusCode: _statusCodeForError(error),
+        incidentId: null,
+        backendStatus: 'mqtt_publish_failed',
+        responseSummary: _compactDiagnosticValue(error),
+        error: error,
+      );
       _logSosTrace(
         'backend_result originatorNodeId=${snapshot.originatorNodeId} '
         'relayNodeId=${snapshot.relayNodeId ?? "none"} '
@@ -8554,37 +8569,60 @@ class EixamConnectSdkImpl
     required String? relayDeviceId,
     required String? relayHardwareId,
   }) async {
+    final correlationId = _remoteRelayCorrelationId(snapshot);
+    final relayNodeId = snapshot.relayNodeId;
+    final relaySource = 'remote_lora_relay';
+    _logRemoteRelayBackendOutbound(
+      correlationId: correlationId,
+      snapshot: snapshot,
+      endpoint: _remoteRelayBackendEndpointLabel(),
+      method: _remoteRelayBackendMethodLabel(),
+      submitPath: _remoteRelaySosBackendSubmitPath(),
+      deviceId: deviceId,
+      relayDeviceId: relayDeviceId,
+      relayHardwareId: relayHardwareId,
+      positionSnapshot: positionSnapshot,
+    );
     final repository = sosRepository;
     if (repository is MqttOperationalSosRepository) {
+      // Remote relay SOS creation is MQTT-only. Attached HTTP data sources are
+      // retained for other repository operations, not for this handoff.
+      if (repository.remoteDataSource != null) {
+        _logRemoteRelayHttpSosCreationSkipped(
+          correlationId: correlationId,
+          snapshot: snapshot,
+          deviceId: deviceId,
+        );
+      }
       await repository.submitSosToBackend(
         timestamp: snapshot.receivedAt.toUtc(),
         positionSnapshot: positionSnapshot,
         deviceId: deviceId,
+        appDeviceId: _stableAppDeviceId,
         originatorNodeId: snapshot.originatorNodeId,
-        relayNodeId: snapshot.relayNodeId,
+        relayNodeId: relayNodeId,
         relayDeviceId: relayDeviceId,
         relayHardwareId: relayHardwareId,
-        relaySource: snapshot.source.name,
+        relaySource: relaySource,
+      );
+      _logRemoteRelayBackendResponse(
+        correlationId: correlationId,
+        snapshot: snapshot,
+        statusCode: null,
+        incidentId: null,
+        backendStatus: 'mqtt_publish_accepted',
+        responseSummary: 'backend_confirmation=not_available',
+        error: null,
       );
       return const _RemoteRelayBackendSubmissionResult(
-        submitPath: 'local_sos_method',
+        submitPath: 'mqtt_operational_publish',
       );
     }
     if (repository is ApiSosRepository) {
-      final dto = await repository.remoteDataSource.triggerSos(
-        triggerSource: 'remote_lora_relay',
-        positionSnapshot: positionSnapshot,
+      _logRemoteRelayHttpSosCreationSkipped(
+        correlationId: correlationId,
+        snapshot: snapshot,
         deviceId: deviceId,
-        originatorNodeId: snapshot.originatorNodeId,
-        relayNodeId: snapshot.relayNodeId,
-        relayDeviceId: relayDeviceId,
-        relayHardwareId: relayHardwareId,
-        relaySource: snapshot.source.name,
-      );
-      return _RemoteRelayBackendSubmissionResult(
-        submitPath: 'local_sos_method',
-        incidentId: dto.id,
-        statusCode: dto.statusCode,
       );
     }
 
@@ -8595,12 +8633,22 @@ class EixamConnectSdkImpl
           timestamp: snapshot.receivedAt.toUtc(),
           positionSnapshot: positionSnapshot,
           deviceId: deviceId,
+          appDeviceId: _stableAppDeviceId,
           originatorNodeId: snapshot.originatorNodeId,
-          relayNodeId: snapshot.relayNodeId,
+          relayNodeId: relayNodeId,
           relayDeviceId: relayDeviceId,
           relayHardwareId: relayHardwareId,
-          source: snapshot.source.name,
+          source: relaySource,
         ),
+      );
+      _logRemoteRelayBackendResponse(
+        correlationId: correlationId,
+        snapshot: snapshot,
+        statusCode: null,
+        incidentId: null,
+        backendStatus: 'mqtt_publish_accepted',
+        responseSummary: 'backend_confirmation=not_available',
+        error: null,
       );
       return const _RemoteRelayBackendSubmissionResult(
         submitPath: 'remote_special',
@@ -8625,11 +8673,171 @@ class EixamConnectSdkImpl
     return null;
   }
 
+  String _remoteRelayCorrelationId(RemoteRelaySosSnapshot snapshot) {
+    return 'remote-relay-${snapshot.originatorNodeId}-'
+        '${snapshot.receivedAt.toUtc().microsecondsSinceEpoch}';
+  }
+
+  void _logRemoteRelayBackendOutbound({
+    required String correlationId,
+    required RemoteRelaySosSnapshot snapshot,
+    required String endpoint,
+    required String method,
+    required String submitPath,
+    required String? deviceId,
+    required String? relayDeviceId,
+    required String? relayHardwareId,
+    required TrackingPosition? positionSnapshot,
+  }) {
+    final session = _session;
+    final appUserIdPresent =
+        session?.externalUserId.trim().isNotEmpty == true ||
+            session?.canonicalExternalUserId?.trim().isNotEmpty == true;
+    final sdkUserIdPresent = session?.sdkUserId?.trim().isNotEmpty == true;
+    final identity = normalizeSosBackendIdentity(
+      deviceId: deviceId,
+      appDeviceId: _stableAppDeviceId,
+      originatorNodeId: snapshot.originatorNodeId,
+      relayNodeId: snapshot.relayNodeId,
+      relayDeviceId: relayDeviceId,
+      incidentId: null,
+      cycleKey: null,
+      hardwareId: null,
+    );
+    final transport = switch (submitPath) {
+      'mqtt_operational_publish' || 'remote_special' => 'mqtt',
+      _ => 'none',
+    };
+    final topic = transport == 'mqtt' ? endpoint : 'none';
+    final payloadSummary =
+        'triggerSource=remote_lora_relay source=remote_lora_relay '
+        'packetSource=${snapshot.source.name} '
+        'deviceId=${identity.deviceId ?? "none"} '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"} '
+        'relayDeviceId=${identity.relayDeviceId ?? "none"} '
+        'relayHardwareId=${relayHardwareId ?? "none"} '
+        'hasLocation=${positionSnapshot != null} '
+        'hasLat=${positionSnapshot?.latitude.isFinite == true} '
+        'hasLon=${positionSnapshot?.longitude.isFinite == true}';
+    BleDebugRegistry.instance.recordEvent(
+      '[REMOTE_RELAY_SOS_BACKEND_OUTBOUND] '
+      'transport=$transport '
+      'topic=$topic '
+      'endpoint=$endpoint '
+      'method=$method '
+      'correlationId=$correlationId '
+      'submitPath=$submitPath '
+      'deviceId=${identity.deviceId ?? "none"} '
+      'originatorNodeId=${snapshot.originatorNodeId} '
+      'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"} '
+      'triggerSource=remote_lora_relay '
+      'incidentId=none '
+      'connectedDeviceNodeId=${_resolveConnectedDeviceNodeGuardMatch().nodeId?.toString() ?? "none"} '
+      'hasLocation=${positionSnapshot != null} '
+      'latPresent=${positionSnapshot?.latitude.isFinite == true} '
+      'lonPresent=${positionSnapshot?.longitude.isFinite == true} '
+      'payloadSummary=${_compactDiagnosticValue(payloadSummary)} '
+      'appUserIdPresent=$appUserIdPresent '
+      'sdkUserIdPresent=$sdkUserIdPresent '
+      'relayDeviceId=${identity.relayDeviceId ?? "none"} '
+      'relayHardwareId=${relayHardwareId ?? "none"} '
+      'identitySource=${identity.identitySource}',
+    );
+  }
+
+  void _logRemoteRelayHttpSosCreationSkipped({
+    required String correlationId,
+    required RemoteRelaySosSnapshot snapshot,
+    required String? deviceId,
+  }) {
+    final identity = normalizeSosBackendIdentity(
+      deviceId: deviceId,
+      appDeviceId: _stableAppDeviceId,
+      originatorNodeId: snapshot.originatorNodeId,
+      relayNodeId: snapshot.relayNodeId,
+      relayDeviceId: snapshot.relayNodeId?.toString(),
+      incidentId: null,
+      cycleKey: null,
+      hardwareId: null,
+    );
+    BleDebugRegistry.instance.recordEvent(
+      '[REMOTE_RELAY_SOS_BACKEND_OUTBOUND] '
+      'transport=http '
+      'decision=skipped '
+      'reason=sos_must_use_mqtt '
+      'endpoint=/v1/sdk/sos '
+      'method=POST '
+      'correlationId=$correlationId '
+      'deviceId=${identity.deviceId ?? "none"} '
+      'originatorNodeId=${snapshot.originatorNodeId} '
+      'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"} '
+      'triggerSource=remote_lora_relay '
+      'incidentId=none',
+    );
+  }
+
+  void _logRemoteRelayBackendResponse({
+    required String correlationId,
+    required RemoteRelaySosSnapshot snapshot,
+    required int? statusCode,
+    required String? incidentId,
+    required String backendStatus,
+    required String responseSummary,
+    required Object? error,
+  }) {
+    final deviceId = _remoteRelayOriginatorDeviceId(snapshot);
+    BleDebugRegistry.instance.recordEvent(
+      '[REMOTE_RELAY_SOS_BACKEND_RESPONSE] '
+      'transport=mqtt '
+      'correlationId=$correlationId '
+      'deviceId=$deviceId '
+      'originatorNodeId=${snapshot.originatorNodeId} '
+      'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"} '
+      'triggerSource=remote_lora_relay '
+      'httpStatus=${statusCode?.toString() ?? "not_applicable"} '
+      'incidentId=${incidentId ?? "none"} '
+      'backendStatus=$backendStatus '
+      'responseSummary=${_compactDiagnosticValue(responseSummary)} '
+      'error=${error == null ? "none" : _compactDiagnosticValue(error)}',
+    );
+  }
+
+  void _logRemoteRelaySosStateRehydrate({
+    required RemoteRelaySosSnapshot snapshot,
+    required String? expectedIncidentId,
+    required String source,
+  }) {
+    final currentIncident =
+        _publicSosFallbackIncident ?? _lastKnownActiveSosIncident;
+    final currentIncidentId = currentIncident?.id ?? _lastPublicSosIncidentId;
+    final terminal = _isOpenSosState(_publicSosState)
+        ? 'open'
+        : _isTerminalPublicSosState(_publicSosState)
+            ? _publicSosState.name
+            : _publicSosState.name;
+    final containsRemoteSos = expectedIncidentId != null &&
+        expectedIncidentId.trim().isNotEmpty &&
+        currentIncidentId == expectedIncidentId;
+    BleDebugRegistry.instance.recordEvent(
+      '[REMOTE_RELAY_SOS_STATE_REHYDRATE] '
+      'source=$source '
+      'deviceId=${_remoteRelayOriginatorDeviceId(snapshot)} '
+      'originatorNodeId=${snapshot.originatorNodeId} '
+      'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"} '
+      'expectedIncidentId=${expectedIncidentId ?? "none"} '
+      'fetchSosState=${_publicSosState.name} '
+      'currentStage=${_publicSosState.name} '
+      'currentTerminal=$terminal '
+      'currentIncidentId=${currentIncidentId ?? "none"} '
+      'backendStateContainsRemoteSos=$containsRemoteSos',
+    );
+  }
+
   String _remoteRelaySosBackendSubmitPath() {
     final repository = sosRepository;
-    if (repository is MqttOperationalSosRepository ||
-        repository is ApiSosRepository) {
-      return 'local_sos_method';
+    if (repository is MqttOperationalSosRepository) {
+      return 'mqtt_operational_publish';
     }
     if (_remoteRelayOperationalRealtimeClient() != null) {
       return 'remote_special';
@@ -8637,7 +8845,22 @@ class EixamConnectSdkImpl
     return 'none';
   }
 
+  String _remoteRelayBackendEndpointLabel() {
+    final path = _remoteRelaySosBackendSubmitPath();
+    return switch (path) {
+      'mqtt_operational_publish' || 'remote_special' => SdkMqttTopics.sosAlerts,
+      _ => 'none',
+    };
+  }
+
+  String _remoteRelayBackendMethodLabel() {
+    final path = _remoteRelaySosBackendSubmitPath();
+    return path == 'none' ? 'none' : 'MQTT_PUBLISH';
+  }
+
   String _remoteRelayOriginatorDeviceId(RemoteRelaySosSnapshot snapshot) {
+    // LoRa relay SOS is owned by the originator node; the connected relay is
+    // metadata only.
     return snapshot.originatorNodeId.toString();
   }
 
