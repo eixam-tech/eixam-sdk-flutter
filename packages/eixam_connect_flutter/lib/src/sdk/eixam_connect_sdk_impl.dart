@@ -186,6 +186,7 @@ class EixamConnectSdkImpl
       <String, DateTime>{};
   final Map<String, DateTime> _sosRejectionLogByKey = <String, DateTime>{};
   bool _publicSosActionInFlight = false;
+  _SosClosureIntent? _publicSosClosureInFlight;
   Future<SosIncident>? _pendingPreSosConfirmation;
   final Set<String> _deviceOriginatedBackendSyncInFlight = <String>{};
   EixamSdkConfig? _sdkConfig;
@@ -2574,104 +2575,110 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> cancelPreSos() async {
-    final status = await deviceSosController.getStatus();
-    final activeSession = _preSosSession;
-    final runtimeStatus = await _loadRuntimeReadyDeviceStatusForSosSync(
-      action: 'cancel_pre_sos',
-      refreshRuntimeStatus: true,
-    );
-    final capabilitySnapshot = _computeCurrentSosCapabilitySnapshot(
-      reason: 'cancel_pre_sos_decision',
-      statusOverride: runtimeStatus,
-    );
-    final deviceConnected = capabilitySnapshot.deviceConnected;
-    final commandAvailable = capabilitySnapshot.shortCommandAvailable ||
-        capabilitySnapshot.longCommandAvailable;
-    final stageIsArming = _publicSosState == SosState.arming;
-    final protectionStatus = _protectionModeController.currentStatus;
-    final protectionActive =
-        protectionStatus.modeState == ProtectionModeState.armed ||
-            protectionStatus.runtimeState == ProtectionRuntimeState.active;
-    final deviceOwnedCountdown = status.state == DeviceSosState.preConfirm ||
-        activeSession?.mirroredOnDevice == true ||
-        activeSession?.owner == _SosOwner.device ||
-        activeSession?.origin == DeviceSosTransitionSource.device ||
-        stageIsArming;
-    final hasIncidentId =
-        _hasBackendVisibleSosIncident(_lastKnownActiveSosIncident) ||
-            _hasBackendVisibleSosIncident(_publicSosFallbackIncident);
-    final deviceId = runtimeStatus?.nodeId?.toString() ??
-        _lastDeviceStatus?.nodeId?.toString() ??
-        runtimeStatus?.deviceId ??
-        _lastDeviceStatus?.deviceId ??
-        '-';
-    final cancelDecision = deviceConnected && commandAvailable
-        ? 'send_device_cancel'
-        : 'local_only_cancel';
-    BleDebugRegistry.instance.recordEvent(
-      '[APP_PRE_SOS_CANCEL] action=clear_requested source=cancelPreSos '
-      'cycle=${activeSession?.cycleRevision ?? _preSosCycleRevision} '
-      'countdown=${_buildCurrentPreSosStatus()?.remainingSeconds.toString() ?? "none"} '
-      'deadline=${activeSession?.expectedActivationAt.toUtc().toIso8601String() ?? "none"}',
-    );
-    BleDebugRegistry.instance.recordEvent(
-      '[APP_PRE_SOS_CANCEL] action=cancel_pre_sos '
-      'stage=${_publicSosState.name} '
-      'deviceConnected=$deviceConnected '
-      'commandAvailable=$commandAvailable '
-      'deviceId=$deviceId '
-      'hasIncidentId=$hasIncidentId '
-      'deviceOwnedCountdown=$deviceOwnedCountdown '
-      'protectionMode=${protectionStatus.modeState.name} '
-      'runtimeMode=${protectionStatus.runtimeState.name} '
-      'protectionActive=$protectionActive '
-      'decision=$cancelDecision',
-    );
-    if (cancelDecision == 'send_device_cancel') {
-      try {
-        BleDebugRegistry.instance.recordEvent(
-          '[APP_PRE_SOS_DEVICE_COMMAND] action=attempt '
-          'path=ble_pre_sos_cancel countdown=0',
-        );
-        await _closeDeviceSos(
-          intent: _SosClosureIntent.cancel,
-          syncBackendForDeviceOriginatedCycle: false,
-          waitForDeviceAcknowledgement: false,
-        );
-        BleDebugRegistry.instance.recordEvent(
-          '[APP_PRE_SOS_DEVICE_COMMAND] action=sent '
-          'path=ble_pre_sos_cancel',
-        );
-        BleDebugRegistry.instance.recordEvent(
-          '[APP_PRE_SOS_CANCEL] action=cancel_pre_sos '
-          'decision=send_device_cancel result=device_cancel_dispatched',
-        );
-      } catch (error) {
-        BleDebugRegistry.instance.recordEvent(
-          '[APP_PRE_SOS_DEVICE_COMMAND] action=skip '
-          'reason=cancel_failed bleConnected=${_lastDeviceStatus?.connected ?? false} '
-          'cmd=${deviceSosController.longCommandAvailable} '
-          'inet_continues=true error=${_compactDiagnosticValue(error)}',
-        );
-        BleDebugRegistry.instance.recordEvent(
-          '[APP_PRE_SOS_CANCEL] action=cancel_pre_sos '
-          'decision=send_device_cancel result=device_cancel_failed '
-          'error=${_compactDiagnosticValue(error)}',
-        );
-        rethrow;
+    final previousClosureInFlight = _publicSosClosureInFlight;
+    _publicSosClosureInFlight = _SosClosureIntent.cancel;
+    try {
+      final status = await deviceSosController.getStatus();
+      final activeSession = _preSosSession;
+      final runtimeStatus = await _loadRuntimeReadyDeviceStatusForSosSync(
+        action: 'cancel_pre_sos',
+        refreshRuntimeStatus: true,
+      );
+      final capabilitySnapshot = _computeCurrentSosCapabilitySnapshot(
+        reason: 'cancel_pre_sos_decision',
+        statusOverride: runtimeStatus,
+      );
+      final deviceConnected = capabilitySnapshot.deviceConnected;
+      final commandAvailable = capabilitySnapshot.shortCommandAvailable ||
+          capabilitySnapshot.longCommandAvailable;
+      final stageIsArming = _publicSosState == SosState.arming;
+      final protectionStatus = _protectionModeController.currentStatus;
+      final protectionActive =
+          protectionStatus.modeState == ProtectionModeState.armed ||
+              protectionStatus.runtimeState == ProtectionRuntimeState.active;
+      final deviceOwnedCountdown = status.state == DeviceSosState.preConfirm ||
+          activeSession?.mirroredOnDevice == true ||
+          activeSession?.owner == _SosOwner.device ||
+          activeSession?.origin == DeviceSosTransitionSource.device ||
+          stageIsArming;
+      final hasIncidentId =
+          _hasBackendVisibleSosIncident(_lastKnownActiveSosIncident) ||
+              _hasBackendVisibleSosIncident(_publicSosFallbackIncident);
+      final deviceId = runtimeStatus?.nodeId?.toString() ??
+          _lastDeviceStatus?.nodeId?.toString() ??
+          runtimeStatus?.deviceId ??
+          _lastDeviceStatus?.deviceId ??
+          '-';
+      final cancelDecision = deviceConnected && commandAvailable
+          ? 'send_device_cancel'
+          : 'local_only_cancel';
+      BleDebugRegistry.instance.recordEvent(
+        '[APP_PRE_SOS_CANCEL] action=clear_requested source=cancelPreSos '
+        'cycle=${activeSession?.cycleRevision ?? _preSosCycleRevision} '
+        'countdown=${_buildCurrentPreSosStatus()?.remainingSeconds.toString() ?? "none"} '
+        'deadline=${activeSession?.expectedActivationAt.toUtc().toIso8601String() ?? "none"}',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        '[APP_PRE_SOS_CANCEL] action=cancel_pre_sos '
+        'stage=${_publicSosState.name} '
+        'deviceConnected=$deviceConnected '
+        'commandAvailable=$commandAvailable '
+        'deviceId=$deviceId '
+        'hasIncidentId=$hasIncidentId '
+        'deviceOwnedCountdown=$deviceOwnedCountdown '
+        'protectionMode=${protectionStatus.modeState.name} '
+        'runtimeMode=${protectionStatus.runtimeState.name} '
+        'protectionActive=$protectionActive '
+        'decision=$cancelDecision',
+      );
+      if (cancelDecision == 'send_device_cancel') {
+        try {
+          BleDebugRegistry.instance.recordEvent(
+            '[APP_PRE_SOS_DEVICE_COMMAND] action=attempt '
+            'path=ble_pre_sos_cancel countdown=0',
+          );
+          await _closeDeviceSos(
+            intent: _SosClosureIntent.cancel,
+            syncBackendForDeviceOriginatedCycle: false,
+            waitForDeviceAcknowledgement: false,
+          );
+          BleDebugRegistry.instance.recordEvent(
+            '[APP_PRE_SOS_DEVICE_COMMAND] action=sent '
+            'path=ble_pre_sos_cancel',
+          );
+          BleDebugRegistry.instance.recordEvent(
+            '[APP_PRE_SOS_CANCEL] action=cancel_pre_sos '
+            'decision=send_device_cancel result=device_cancel_dispatched',
+          );
+        } catch (error) {
+          BleDebugRegistry.instance.recordEvent(
+            '[APP_PRE_SOS_DEVICE_COMMAND] action=skip '
+            'reason=cancel_failed bleConnected=${_lastDeviceStatus?.connected ?? false} '
+            'cmd=${deviceSosController.longCommandAvailable} '
+            'inet_continues=true error=${_compactDiagnosticValue(error)}',
+          );
+          BleDebugRegistry.instance.recordEvent(
+            '[APP_PRE_SOS_CANCEL] action=cancel_pre_sos '
+            'decision=send_device_cancel result=device_cancel_failed '
+            'error=${_compactDiagnosticValue(error)}',
+          );
+          rethrow;
+        }
       }
+      if (status.state == DeviceSosState.preConfirm) {
+        deviceSosController.clearPreSosLocally(reason: 'app_cancel_pre_sos');
+      }
+      _clearPreSosSession(
+        reason: 'public_pre_sos_cancelled',
+        emitIdleState: true,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        '[APP_PRE_SOS_CANCEL] action=cancel_pre_sos '
+        'decision=$cancelDecision result=local_state_cleared',
+      );
+    } finally {
+      _publicSosClosureInFlight = previousClosureInFlight;
     }
-    if (status.state == DeviceSosState.preConfirm) {
-      deviceSosController.clearPreSosLocally(reason: 'app_cancel_pre_sos');
-    }
-    _clearPreSosSession(
-      reason: 'public_pre_sos_cancelled',
-      emitIdleState: true,
-    );
-    BleDebugRegistry.instance.recordEvent(
-      '[APP_PRE_SOS_CANCEL] action=cancel_pre_sos '
-      'decision=$cancelDecision result=local_state_cleared',
-    );
   }
 
   @override
@@ -2682,7 +2689,23 @@ class EixamConnectSdkImpl
       deviceStatus: deviceStatus,
       emitResolvedState: false,
     );
-    return _buildCurrentPreSosStatus();
+    final current = _buildCurrentPreSosStatus();
+    if (current != null) {
+      return current;
+    }
+    if (_shouldKeepDeviceRuntimePreSos(
+      incoming: SosState.idle,
+      source: 'get_pre_sos_status',
+    )) {
+      _logSosRuntimePrecedence(
+        incomingSource: 'get_pre_sos_status',
+        incoming: SosState.idle,
+        decision: 'keep_device_runtime_arming',
+        reason: 'runtime_pre_sos_active',
+      );
+      return _lastPublishedPreSosStatus;
+    }
+    return null;
   }
 
   @override
@@ -3111,6 +3134,8 @@ class EixamConnectSdkImpl
   @override
   Future<SosIncident> cancelSos() async {
     _publicSosActionInFlight = true;
+    final previousClosureInFlight = _publicSosClosureInFlight;
+    _publicSosClosureInFlight = _SosClosureIntent.cancel;
     try {
       if (_hasActivePreSosSession ||
           _publicSosState == SosState.arming ||
@@ -3222,6 +3247,7 @@ class EixamConnectSdkImpl
       _publishCancelledSosEventIfNeeded(incident);
       return incident;
     } finally {
+      _publicSosClosureInFlight = previousClosureInFlight;
       _publicSosActionInFlight = false;
     }
   }
@@ -3229,6 +3255,8 @@ class EixamConnectSdkImpl
   @override
   Future<void> resolveSos() async {
     _publicSosActionInFlight = true;
+    final previousClosureInFlight = _publicSosClosureInFlight;
+    _publicSosClosureInFlight = _SosClosureIntent.resolve;
     try {
       if (_hasActivePreSosSession ||
           (await deviceSosController.getStatus()).state ==
@@ -3302,6 +3330,7 @@ class EixamConnectSdkImpl
       );
       _clearPendingAppTriggeredSosBridge(reason: 'public_resolve_completed');
     } finally {
+      _publicSosClosureInFlight = previousClosureInFlight;
       _publicSosActionInFlight = false;
     }
   }
@@ -5093,6 +5122,22 @@ class EixamConnectSdkImpl
   }
 
   void _publishPreSosStatus(PublicPreSosStatus? status) {
+    if (status == null &&
+        _shouldKeepDeviceRuntimePreSos(
+          incoming: SosState.idle,
+          source: 'pre_sos_status_clear',
+        )) {
+      _logSosRuntimePrecedence(
+        incomingSource: 'pre_sos_status_clear',
+        incoming: SosState.idle,
+        decision: 'keep_device_runtime_arming',
+        reason: 'runtime_pre_sos_active',
+      );
+      if (_publicSosState != SosState.arming) {
+        _emitPublicSosState(SosState.arming, source: 'pre_sos_status_guard');
+      }
+      return;
+    }
     if (_equivalentPreSosStatus(_lastPublishedPreSosStatus, status)) {
       return;
     }
@@ -5179,8 +5224,12 @@ class EixamConnectSdkImpl
     SosState state, {
     String source = 'unspecified',
   }) {
-    final nextState = _preserveDeviceRuntimeSosStateIfNeeded(
+    final stateAfterRuntimePrecedence = _applyPublicSosRuntimePrecedence(
       incoming: state,
+      source: source,
+    );
+    final nextState = _preserveDeviceRuntimeSosStateIfNeeded(
+      incoming: stateAfterRuntimePrecedence,
       source: source,
     );
     if (nextState == _publicSosState) {
@@ -5192,6 +5241,126 @@ class EixamConnectSdkImpl
     }
     unawaited(
       _updateBackgroundTelemetryState(reason: 'sos_state:${nextState.name}'),
+    );
+  }
+
+  SosState _applyPublicSosRuntimePrecedence({
+    required SosState incoming,
+    required String source,
+  }) {
+    if (!_shouldKeepDeviceRuntimePreSos(
+      incoming: incoming,
+      source: source,
+    )) {
+      if (_isClosingPublicSosState(incoming)) {
+        _logSosRuntimePrecedence(
+          incomingSource: source,
+          incoming: incoming,
+          decision: 'apply_idle_or_terminal',
+          reason: _runtimePrecedenceApplyReason(),
+        );
+      }
+      return incoming;
+    }
+    _logSosRuntimePrecedence(
+      incomingSource: source,
+      incoming: incoming,
+      decision: 'keep_device_runtime_arming',
+      reason: 'runtime_pre_sos_active',
+    );
+    return SosState.arming;
+  }
+
+  bool _shouldKeepDeviceRuntimePreSos({
+    required SosState incoming,
+    required String source,
+  }) {
+    if (!_isClosingPublicSosState(incoming)) {
+      return false;
+    }
+    if (_publicSosClosureInFlight != null) {
+      return false;
+    }
+    if (!_runtimeProtectionActiveForPreSos()) {
+      return false;
+    }
+    return _publicSosState == SosState.arming ||
+        _preSosSession != null ||
+        _lastPublishedPreSosStatus != null ||
+        deviceSosController.currentStatus.state == DeviceSosState.preConfirm;
+  }
+
+  bool _isClosingPublicSosState(SosState state) {
+    return state == SosState.idle ||
+        state == SosState.failed ||
+        _isTerminalPublicSosState(state);
+  }
+
+  String _runtimePrecedenceApplyReason() {
+    if (_publicSosClosureInFlight == _SosClosureIntent.cancel) {
+      return 'user_cancel_in_flight';
+    }
+    if (_publicSosClosureInFlight == _SosClosureIntent.resolve) {
+      return 'resolve_in_flight';
+    }
+    if (!_runtimeProtectionActiveForPreSos()) {
+      return 'runtime_inactive';
+    }
+    if (_publicSosState != SosState.arming &&
+        _preSosSession == null &&
+        _lastPublishedPreSosStatus == null &&
+        deviceSosController.currentStatus.state != DeviceSosState.preConfirm) {
+      return 'sent_transition';
+    }
+    return 'current_cycle_terminal';
+  }
+
+  void _logSosRuntimePrecedence({
+    required String incomingSource,
+    required SosState incoming,
+    required String decision,
+    required String reason,
+  }) {
+    final status = _protectionModeController.currentStatus;
+    final currentPreSosStatus =
+        _buildCurrentPreSosStatus() ?? _lastPublishedPreSosStatus;
+    final currentTerminal = _isOpenSosState(_publicSosState)
+        ? 'open'
+        : _isTerminalPublicSosState(_publicSosState)
+            ? _publicSosState.name
+            : _publicSosState.name;
+    final incomingTerminal = _isOpenSosState(incoming)
+        ? 'open'
+        : _isTerminalPublicSosState(incoming)
+            ? incoming.name
+            : incoming.name;
+    final deviceId = _lastDeviceStatus?.nodeId?.toString() ??
+        status.activeDeviceId ??
+        status.protectedDeviceId ??
+        _lastDeviceStatus?.deviceId ??
+        'none';
+    final commandAvailable = deviceSosController.shortCommandAvailable ||
+        deviceSosController.longCommandAvailable;
+    BleDebugRegistry.instance.recordEvent(
+      '[SOS_RUNTIME_PRECEDENCE] '
+      'action=sos_runtime_precedence '
+      'incomingSource=$incomingSource '
+      'incomingStage=${incoming.name} '
+      'incomingTerminal=$incomingTerminal '
+      'incomingCountdown=none '
+      'currentStage=${_publicSosState.name} '
+      'currentTerminal=$currentTerminal '
+      'currentCountdown=${currentPreSosStatus?.remainingSeconds.toString() ?? "none"} '
+      'runtimeMode=${status.modeState.name} '
+      'runtimeState=${status.runtimeState.name} '
+      'runtimeActive=${_runtimeProtectionActiveForPreSos()} '
+      'deviceConnected=${status.deviceConnected} '
+      'commandAvailable=$commandAvailable '
+      'deviceId=$deviceId '
+      'incomingIncidentId=${_publicSosFallbackIncident?.id ?? _lastPublicSosIncidentId ?? "none"} '
+      'currentIncidentId=${_currentDeviceRuntimeUiIncidentId() ?? _lastPublicSosIncidentId ?? "none"} '
+      'decision=$decision '
+      'reason=$reason',
     );
   }
 
@@ -5356,13 +5525,114 @@ class EixamConnectSdkImpl
     if (_publicSosFallbackIncident != null || _publicSosActionInFlight) {
       return;
     }
+    if (_shouldIgnoreStaleRepositoryTerminalDuringPreSos(
+      incoming: state,
+      source: 'sos_state_stream',
+    )) {
+      return;
+    }
     if (_isTerminalPublicSosState(state) &&
         await _isCurrentRepositoryTerminalSosAcknowledged()) {
+      _logSosTerminalArbitration(
+        incomingSource: 'sos_state_stream',
+        incomingRaw: state,
+        decision: 'apply_terminal',
+        reason: 'current_cycle_terminal_acknowledged',
+      );
       _emitPublicSosState(SosState.idle,
           source: 'sos_state_stream:acknowledged');
       return;
     }
+    if (_isTerminalPublicSosState(state)) {
+      _logSosTerminalArbitration(
+        incomingSource: 'sos_state_stream',
+        incomingRaw: state,
+        decision: 'apply_terminal',
+        reason: _runtimeProtectionActiveForPreSos()
+            ? 'current_cycle_terminal'
+            : 'runtime_inactive',
+      );
+    }
     _emitPublicSosState(state, source: 'sos_state_stream');
+  }
+
+  bool _shouldIgnoreStaleRepositoryTerminalDuringPreSos({
+    required SosState incoming,
+    required String source,
+  }) {
+    if (!_isTerminalPublicSosState(incoming)) {
+      return false;
+    }
+    if (_publicSosActionInFlight) {
+      _logSosTerminalArbitration(
+        incomingSource: source,
+        incomingRaw: incoming,
+        decision: 'apply_terminal',
+        reason: 'user_cancelled',
+      );
+      return false;
+    }
+    final preSosStatus = _buildCurrentPreSosStatus();
+    final hasActivePreSos =
+        preSosStatus != null || _publicSosState == SosState.arming;
+    if (!hasActivePreSos || !_runtimeProtectionActiveForPreSos()) {
+      return false;
+    }
+    _logSosTerminalArbitration(
+      incomingSource: source,
+      incomingRaw: incoming,
+      decision: 'ignore_stale_terminal_keep_runtime_arming',
+      reason: 'runtime_pre_sos_active',
+    );
+    if (_publicSosState != SosState.arming) {
+      _emitPublicSosState(SosState.arming, source: '$source:pre_sos_guard');
+    }
+    return true;
+  }
+
+  bool _runtimeProtectionActiveForPreSos() {
+    final status = _protectionModeController.currentStatus;
+    return status.deviceConnected &&
+        (status.protectionRuntimeActive ||
+            status.modeState == ProtectionModeState.armed ||
+            status.modeState == ProtectionModeState.arming ||
+            status.runtimeState == ProtectionRuntimeState.active ||
+            status.runtimeState == ProtectionRuntimeState.recovering);
+  }
+
+  void _logSosTerminalArbitration({
+    required String incomingSource,
+    required SosState incomingRaw,
+    required String decision,
+    required String reason,
+  }) {
+    final status = _protectionModeController.currentStatus;
+    final preSosStatus = _buildCurrentPreSosStatus();
+    final currentTerminal = _isOpenSosState(_publicSosState)
+        ? 'open'
+        : _isTerminalPublicSosState(_publicSosState)
+            ? _publicSosState.name
+            : _publicSosState.name;
+    final incomingIncidentId = _publicSosFallbackIncident?.id ??
+        _lastKnownActiveSosIncident?.id ??
+        _lastPublicSosIncidentId ??
+        'none';
+    BleDebugRegistry.instance.recordEvent(
+      '[SOS_TERMINAL_ARBITRATION] '
+      'action=sos_terminal_arbitration '
+      'incomingSource=$incomingSource '
+      'incomingRaw=${incomingRaw.name} '
+      'incomingIncidentId=$incomingIncidentId '
+      'currentStage=${_publicSosState.name} '
+      'currentTerminal=$currentTerminal '
+      'currentCountdown=${preSosStatus?.remainingSeconds.toString() ?? "none"} '
+      'runtimeMode=${status.modeState.name} '
+      'runtimeState=${status.runtimeState.name} '
+      'runtimeActive=${_runtimeProtectionActiveForPreSos()} '
+      'deviceConnected=${status.deviceConnected} '
+      'decision=$decision '
+      'reason=$reason',
+    );
   }
 
   Future<bool> _isCurrentRepositoryTerminalSosAcknowledged() async {
@@ -6519,11 +6789,15 @@ class EixamConnectSdkImpl
       emitResolvedState: false,
     );
     if (deviceOverride != null) {
-      _publicSosState = deviceOverride;
-      BleDebugRegistry.instance.recordEvent(
-        'getSosState() -> deviceOverride=${deviceOverride.name}',
+      _publicSosState = _applyPublicSosRuntimePrecedence(
+        incoming: deviceOverride,
+        source: 'fetch_sos_state:device_override',
       );
-      return deviceOverride;
+      BleDebugRegistry.instance.recordEvent(
+        'getSosState() -> deviceOverride=${deviceOverride.name} '
+        'effectiveState=${_publicSosState.name}',
+      );
+      return _publicSosState;
     }
     if (_publicSosFallbackIncident != null) {
       BleDebugRegistry.instance.recordEvent(
@@ -6532,14 +6806,54 @@ class EixamConnectSdkImpl
       return _publicSosState;
     }
     final repositoryState = await sosRepository.getSosState();
+    final runtimePrecedenceState = _applyPublicSosRuntimePrecedence(
+      incoming: repositoryState,
+      source: 'fetch_sos_state',
+    );
+    if (runtimePrecedenceState != repositoryState) {
+      _publicSosState = runtimePrecedenceState;
+      BleDebugRegistry.instance.recordEvent(
+        'getSosState() -> repositoryState=${repositoryState.name} '
+        'effectiveState=${_publicSosState.name} '
+        'reason=device_runtime_pre_sos_precedence',
+      );
+      return _publicSosState;
+    }
+    if (_shouldIgnoreStaleRepositoryTerminalDuringPreSos(
+      incoming: repositoryState,
+      source: 'fetch_sos_state',
+    )) {
+      BleDebugRegistry.instance.recordEvent(
+        'getSosState() -> repositoryState=${repositoryState.name} '
+        'effectiveState=${_publicSosState.name} '
+        'reason=runtime_pre_sos_terminal_guard',
+      );
+      return _publicSosState;
+    }
     if (_isTerminalPublicSosState(repositoryState) &&
         await _isCurrentRepositoryTerminalSosAcknowledged()) {
+      _logSosTerminalArbitration(
+        incomingSource: 'fetch_sos_state',
+        incomingRaw: repositoryState,
+        decision: 'apply_terminal',
+        reason: 'current_cycle_terminal_acknowledged',
+      );
       _publicSosState = SosState.idle;
       BleDebugRegistry.instance.recordEvent(
         'getSosState() -> repositoryState=${repositoryState.name} '
         'effectiveState=idle reason=terminal_summary_acknowledged',
       );
       return _publicSosState;
+    }
+    if (_isTerminalPublicSosState(repositoryState)) {
+      _logSosTerminalArbitration(
+        incomingSource: 'fetch_sos_state',
+        incomingRaw: repositoryState,
+        decision: 'apply_terminal',
+        reason: _runtimeProtectionActiveForPreSos()
+            ? 'current_cycle_terminal'
+            : 'runtime_inactive',
+      );
     }
     _publicSosState = _preserveDeviceRuntimeSosStateIfNeeded(
       incoming: repositoryState,
