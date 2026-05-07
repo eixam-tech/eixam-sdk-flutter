@@ -150,6 +150,8 @@ class EixamConnectSdkImpl
   bool _loggedBackgroundSosPublishTraceV2 = false;
   String? _lastPublicSosIncidentId;
   SosDeliveryChannel? _lastPublicSosDeliveryChannel;
+  final Set<String> _acknowledgedTerminalSosIncidentIds = <String>{};
+  bool _acknowledgedTerminalSosWithoutIncident = false;
   _AppTriggeredSosBridge? _pendingAppTriggeredSosBridge;
   _PreSosSession? _preSosSession;
   int? _knownLocalDeviceNodeId;
@@ -858,15 +860,18 @@ class EixamConnectSdkImpl
     _emitOperationalDiagnostics();
   }
 
-  Future<void> _rehydrateSosRuntimeState() async {
+  Future<SosRuntimeRehydrationResult?> _rehydrateSosRuntimeState({
+    String trigger = 'startup',
+    bool emitPublicState = false,
+  }) async {
     _lastSosRehydrationNote = null;
 
     if (_session == null) {
-      return;
+      return null;
     }
 
     if (sosRepository is! SosRuntimeRehydrationSupport) {
-      return;
+      return null;
     }
     final rehydrationRepository = sosRepository as SosRuntimeRehydrationSupport;
 
@@ -874,9 +879,84 @@ class EixamConnectSdkImpl
       final result =
           await rehydrationRepository.rehydrateRuntimeStateFromBackend();
       _lastSosRehydrationNote = result.diagnosticNote;
+      await _applySosRuntimeRehydrationResult(
+        result,
+        trigger: trigger,
+        emitPublicState: emitPublicState,
+      );
+      return result;
     } catch (error) {
       _lastSosRehydrationNote =
-          'SOS rehydration failed before startup completed. Error: $error';
+          'SOS rehydration failed for $trigger. Error: $error';
+      BleDebugRegistry.instance.recordEvent(
+        '[SOS_REHYDRATE] trigger=$trigger outcome=failed error=$error',
+      );
+      return null;
+    }
+  }
+
+  Future<void> _applySosRuntimeRehydrationResult(
+    SosRuntimeRehydrationResult result, {
+    required String trigger,
+    required bool emitPublicState,
+  }) async {
+    BleDebugRegistry.instance.recordEvent(
+      '[SOS_REHYDRATE] trigger=$trigger outcome=${result.outcome.name} '
+      'state=${result.resultingState.name} '
+      'note=${result.diagnosticNote ?? "-"}',
+    );
+
+    switch (result.outcome) {
+      case SosRuntimeRehydrationOutcome.clearedToIdle:
+        _clearPreSosSession(
+          reason: 'backend_rehydration_cleared_to_idle',
+          emitIdleState: false,
+        );
+        if (deviceSosController.currentStatus.state ==
+            DeviceSosState.preConfirm) {
+          deviceSosController.clearPreSosLocally(
+            reason: 'backend_rehydration_cleared_to_idle',
+          );
+        }
+        _publicSosFallbackIncident = null;
+        _lastKnownActiveSosIncident = null;
+        _lastLoggedActiveIncidentPreservationSignature = null;
+        _clearPendingAppTriggeredSosBridge(
+          reason: 'backend_rehydration_cleared_to_idle',
+        );
+        _clearDeviceRuntimeSosOwnership(
+          reason: 'backend_rehydration_cleared_to_idle',
+        );
+        BleDebugRegistry.instance.recordEvent(
+          '[SOS_REHYDRATE] action=stale_countdown_discarded '
+          'trigger=$trigger backendState=idle',
+        );
+        if (emitPublicState || _publicSosState != SosState.idle) {
+          _emitPublicSosState(SosState.idle, source: 'sos_rehydrate:$trigger');
+        }
+        return;
+      case SosRuntimeRehydrationOutcome.hydratedFromBackend:
+        final state = result.resultingState;
+        if (_isTerminalPublicSosState(state)) {
+          _clearPreSosSession(
+            reason: 'backend_rehydration_terminal:${state.name}',
+            emitIdleState: false,
+          );
+          _applyTerminalSosSuppression(
+            reason: 'backend_terminal_state:${state.name}',
+          );
+        } else if (_isOpenSosState(state)) {
+          _clearPreSosSession(
+            reason: 'backend_rehydration_open:${state.name}',
+            emitIdleState: false,
+          );
+        }
+        if (emitPublicState || _publicSosState != state) {
+          _emitPublicSosState(state, source: 'sos_rehydrate:$trigger');
+        }
+        return;
+      case SosRuntimeRehydrationOutcome.keptLocalFallback:
+        return;
     }
   }
 
@@ -1123,10 +1203,7 @@ class EixamConnectSdkImpl
       case AppLifecycleState.resumed:
         _bleAutoReconnectCoordinator.setAppForeground(true);
         unawaited(
-          _rehydrateDeviceSosPublicState(
-            trigger: 'app_resumed',
-            emitResolvedState: true,
-          ),
+          _rehydrateSosStateOnAppResume(),
         );
         if (_isProtectionPlatformOwningBle) {
           unawaited(
@@ -1146,6 +1223,20 @@ class EixamConnectSdkImpl
         _bleAutoReconnectCoordinator.setAppForeground(false);
         break;
     }
+  }
+
+  Future<void> _rehydrateSosStateOnAppResume() async {
+    BleDebugRegistry.instance.recordEvent(
+      '[SOS_REHYDRATE] trigger=app_resumed action=start',
+    );
+    await _rehydrateSosRuntimeState(
+      trigger: 'app_resumed',
+      emitPublicState: true,
+    );
+    await _rehydrateDeviceSosPublicState(
+      trigger: 'app_resumed',
+      emitResolvedState: true,
+    );
   }
 
   @override
@@ -2827,6 +2918,18 @@ class EixamConnectSdkImpl
   Future<SosIncident> cancelSos() async {
     _publicSosActionInFlight = true;
     try {
+      if (_hasActivePreSosSession ||
+          (await deviceSosController.getStatus()).state ==
+              DeviceSosState.preConfirm) {
+        await cancelPreSos();
+        final incident = SosIncident(
+          id: 'pre-sos-cancelled:${DateTime.now().toUtc().microsecondsSinceEpoch}',
+          state: SosState.cancelled,
+          createdAt: DateTime.now().toUtc(),
+          triggerSource: 'pre_sos_cancel',
+        );
+        return incident;
+      }
       final activeIncident = await getCurrentSosIncident();
       if (activeIncident == null && _isOpenSosState(_publicSosState)) {
         BleDebugRegistry.instance.recordEvent(
@@ -2932,6 +3035,11 @@ class EixamConnectSdkImpl
   Future<void> resolveSos() async {
     _publicSosActionInFlight = true;
     try {
+      if (_hasActivePreSosSession ||
+          (await deviceSosController.getStatus()).state ==
+              DeviceSosState.preConfirm) {
+        await confirmPreSos(const SosTriggerPayload());
+      }
       final activeIncident = await sosRepository.getCurrentIncident();
       _rememberDeviceOriginatedClosureIntent(
         incident: activeIncident,
@@ -3001,6 +3109,31 @@ class EixamConnectSdkImpl
     } finally {
       _publicSosActionInFlight = false;
     }
+  }
+
+  @override
+  Future<SosState> acknowledgeSosSummary() async {
+    final repositoryIncident = await sosRepository.getCurrentIncident();
+    final terminalIncident = _publicSosFallbackIncident ??
+        (_isTerminalBackendSosIncident(repositoryIncident)
+            ? repositoryIncident
+            : null);
+    _rememberAcknowledgedTerminalSosIncident(terminalIncident);
+    _clearPreSosSession(
+      reason: 'terminal_summary_acknowledged',
+      emitIdleState: false,
+    );
+    _publicSosFallbackIncident = null;
+    _lastKnownActiveSosIncident = null;
+    _clearDeviceRuntimeSosOwnership(reason: 'terminal_summary_acknowledged');
+    _clearPendingAppTriggeredSosBridge(reason: 'terminal_summary_acknowledged');
+    _emitPublicSosState(SosState.idle, source: 'terminal_summary_acknowledged');
+    _emitOperationalDiagnostics();
+    BleDebugRegistry.instance.recordEvent(
+      '[SOS_SUMMARY_ACK] action=acknowledge '
+      'incidentId=${terminalIncident?.id ?? 'none'} state=idle',
+    );
+    return SosState.idle;
   }
 
   Future<TrackingPosition?> _loadPositionSnapshotForSos() async {
@@ -4552,6 +4685,7 @@ class EixamConnectSdkImpl
   }
 
   void _clearTerminalPublicSosFallbackForNewOpenFlow() {
+    _clearAcknowledgedTerminalSosSummaries(reason: 'new_user_driven_open_flow');
     final fallback = _publicSosFallbackIncident;
     if (fallback == null || !_isTerminalPublicSosState(fallback.state)) {
       return;
@@ -5025,7 +5159,18 @@ class EixamConnectSdkImpl
     if (_publicSosFallbackIncident != null || _publicSosActionInFlight) {
       return;
     }
+    if (_isTerminalPublicSosState(state) &&
+        await _isCurrentRepositoryTerminalSosAcknowledged()) {
+      _emitPublicSosState(SosState.idle,
+          source: 'sos_state_stream:acknowledged');
+      return;
+    }
     _emitPublicSosState(state, source: 'sos_state_stream');
+  }
+
+  Future<bool> _isCurrentRepositoryTerminalSosAcknowledged() async {
+    final incident = await sosRepository.getCurrentIncident();
+    return _isAcknowledgedTerminalSosIncident(incident);
   }
 
   Future<SosState?> _rehydrateDeviceSosPublicState({
@@ -5066,6 +5211,28 @@ class EixamConnectSdkImpl
     BleDebugRegistry.instance.recordEvent(
       '[DEVICE_SOS_REHYDRATE] trigger=$trigger device=${status.state.name} previous=${status.previousState?.name ?? "-"} origin=${status.triggerOrigin.name} remaining=${status.countdownRemainingSeconds?.toString() ?? "-"} expectedActivationAt=${status.expectedActivationAt?.toIso8601String() ?? "-"} sessionExpired=$sessionExpired deviceCountdownExpired=$deviceCountdownExpired chosen=${chosenPublicState?.name ?? "-"}',
     );
+
+    if (chosenPublicState != null &&
+        _isTerminalPublicSosState(chosenPublicState) &&
+        _acknowledgedTerminalSosWithoutIncident) {
+      BleDebugRegistry.instance.recordEvent(
+        '[DEVICE_SOS_REHYDRATE] trigger=$trigger '
+        'decision=suppress_acknowledged_terminal incoming=${chosenPublicState.name}',
+      );
+      chosenPublicState = null;
+    }
+
+    if (chosenPublicState != null &&
+        _isTerminalPublicSosState(chosenPublicState) &&
+        _isTerminalPublicSosState(_publicSosState) &&
+        chosenPublicState != _publicSosState) {
+      BleDebugRegistry.instance.recordEvent(
+        '[DEVICE_SOS_REHYDRATE] trigger=$trigger '
+        'decision=keep_existing_terminal existing=${_publicSosState.name} '
+        'incoming=${chosenPublicState.name}',
+      );
+      chosenPublicState = _publicSosState;
+    }
 
     if (emitResolvedState && chosenPublicState != null) {
       _emitPublicSosState(chosenPublicState, source: trigger);
@@ -5344,6 +5511,52 @@ class EixamConnectSdkImpl
 
   bool _isTerminalPublicSosState(SosState state) {
     return state == SosState.resolved || state == SosState.cancelled;
+  }
+
+  void _rememberAcknowledgedTerminalSosIncident(SosIncident? incident) {
+    _acknowledgedTerminalSosWithoutIncident = true;
+    final ids = _terminalSosIncidentIds(incident);
+    if (ids.isEmpty) {
+      return;
+    }
+    _acknowledgedTerminalSosIncidentIds.addAll(ids);
+    while (_acknowledgedTerminalSosIncidentIds.length > 24) {
+      _acknowledgedTerminalSosIncidentIds.remove(
+        _acknowledgedTerminalSosIncidentIds.first,
+      );
+    }
+  }
+
+  bool _isAcknowledgedTerminalSosIncident(SosIncident? incident) {
+    if (!_isTerminalBackendSosIncident(incident)) {
+      return false;
+    }
+    final ids = _terminalSosIncidentIds(incident);
+    if (ids.isEmpty) {
+      return _acknowledgedTerminalSosWithoutIncident;
+    }
+    return ids.any(_acknowledgedTerminalSosIncidentIds.contains);
+  }
+
+  Set<String> _terminalSosIncidentIds(SosIncident? incident) {
+    final ids = <String>{};
+    final id = incident?.id.trim();
+    if (id != null && id.isNotEmpty) {
+      ids.add(id);
+    }
+    return ids;
+  }
+
+  void _clearAcknowledgedTerminalSosSummaries({required String reason}) {
+    if (_acknowledgedTerminalSosIncidentIds.isEmpty &&
+        !_acknowledgedTerminalSosWithoutIncident) {
+      return;
+    }
+    _acknowledgedTerminalSosIncidentIds.clear();
+    _acknowledgedTerminalSosWithoutIncident = false;
+    BleDebugRegistry.instance.recordEvent(
+      '[SOS_SUMMARY_ACK] action=clear_acknowledged reason=$reason',
+    );
   }
 
   bool _sameDeviceRuntimeCycle({
@@ -5765,9 +5978,11 @@ class EixamConnectSdkImpl
       return;
     }
 
-    if (_publicSosActionInFlight && rememberedIntent != null) {
+    if (_publicSosActionInFlight) {
       BleDebugRegistry.instance.recordEvent(
-        'Device SOS backend closure deferred -> incidentId=${incident?.id ?? "-"} intent=${rememberedIntent.name} reason=public_sos_action_in_flight',
+        'Device SOS backend closure deferred -> incidentId=${incident?.id ?? "-"} '
+        'intent=${(rememberedIntent ?? fallbackIntent ?? _SosClosureIntent.cancel).name} '
+        'reason=public_sos_action_in_flight',
       );
       return;
     }
@@ -6017,6 +6232,15 @@ class EixamConnectSdkImpl
       return _publicSosState;
     }
     final repositoryState = await sosRepository.getSosState();
+    if (_isTerminalPublicSosState(repositoryState) &&
+        await _isCurrentRepositoryTerminalSosAcknowledged()) {
+      _publicSosState = SosState.idle;
+      BleDebugRegistry.instance.recordEvent(
+        'getSosState() -> repositoryState=${repositoryState.name} '
+        'effectiveState=idle reason=terminal_summary_acknowledged',
+      );
+      return _publicSosState;
+    }
     _publicSosState = _preserveDeviceRuntimeSosStateIfNeeded(
       incoming: repositoryState,
       source: 'fetch_sos_state',
@@ -6898,6 +7122,16 @@ class EixamConnectSdkImpl
         _hasActiveDeviceRuntimeSosOwnership() ||
         _hasBackendVisibleSosIncident(fallbackIncident) ||
         _hasBackendVisibleSosIncident(activeIncident);
+    if (reason.toLowerCase().contains('device_terminal_event') &&
+        _isTerminalPublicSosState(_publicSosState) &&
+        _publicSosState != terminalState) {
+      BleDebugRegistry.instance.recordEvent(
+        '[APP_SOS_TERMINAL_EVENT] source=device_terminal_event '
+        'decision=keep_existing_terminal existing=${_publicSosState.name} '
+        'incoming=${terminalState.name} reason=$reason',
+      );
+      return;
+    }
     if (!shouldClose && _isTerminalPublicSosState(_publicSosState)) {
       return;
     }

@@ -224,6 +224,7 @@ abstract class EixamConnectSdk {
 
   Future<SosIncident> cancelSos();
   Future<void> resolveSos();
+  Future<SosState> acknowledgeSosSummary();
   Future<SosState> getSosState();
 
   /// Returns paginated SOS history for the authenticated user.

@@ -4893,8 +4893,7 @@ void main() {
       expect(incident.deliveryChannel, SosDeliveryChannel.backendAndDevice);
     });
 
-    test(
-        'app SOS uses backend when BLE is connected but CMD is unavailable',
+    test('app SOS uses backend when BLE is connected but CMD is unavailable',
         () async {
       await sdk.setSession(
         const EixamSession.signed(
@@ -4934,8 +4933,7 @@ void main() {
       );
     });
 
-    test(
-        'app cancel uses backend when BLE is connected but CMD is unavailable',
+    test('app cancel uses backend when BLE is connected but CMD is unavailable',
         () async {
       await sdk.setSession(
         const EixamSession.signed(
@@ -5438,6 +5436,120 @@ void main() {
 
         expect(localSosRepository.rehydrateCallCount, 1);
         expect(await localSdk.getSosState(), SosState.idle);
+      } finally {
+        await localSdk.dispose();
+        await localRealtimeClient.dispose();
+        await localSosRepository.dispose();
+      }
+    });
+
+    test('app resume rehydrates backend and clears stale PRE-SOS countdown',
+        () async {
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController();
+      final localSosRepository = FakeRehydratingSosRepository()
+        ..currentIncident = _testSosIncident(state: SosState.sent)
+        ..rehydrationResult = const SosRuntimeRehydrationResult(
+          outcome: SosRuntimeRehydrationOutcome.clearedToIdle,
+          resultingState: SosState.idle,
+        );
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: localSosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        await localSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+          ),
+        );
+        await localSdk.startPreSos(countdown: const Duration(seconds: 20));
+
+        expect(await localSdk.getPreSosStatus(), isNotNull);
+        expect(await localSdk.getSosState(), SosState.arming);
+
+        localSdk.didChangeAppLifecycleState(AppLifecycleState.resumed);
+        await pumpEventQueue(times: 5);
+
+        expect(localSosRepository.rehydrateCallCount, 2);
+        expect(await localSdk.getPreSosStatus(), isNull);
+        expect(await localSdk.getSosState(), SosState.idle);
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) =>
+                event.message.contains(
+                  '[SOS_REHYDRATE] action=stale_countdown_discarded',
+                ) &&
+                event.message.contains('trigger=app_resumed'),
+          ),
+          isTrue,
+        );
+      } finally {
+        await localSdk.dispose();
+        await localRealtimeClient.dispose();
+        await localSosRepository.dispose();
+      }
+    });
+
+    test('app resume applies backend terminal state over stale PRE-SOS',
+        () async {
+      final localRealtimeClient = FakeRealtimeClient();
+      final localDeviceSosController = DeviceSosController();
+      final localSosRepository = FakeRehydratingSosRepository()
+        ..currentIncident = _testSosIncident(state: SosState.sent)
+        ..rehydrationResult = const SosRuntimeRehydrationResult(
+          outcome: SosRuntimeRehydrationOutcome.hydratedFromBackend,
+          resultingState: SosState.resolved,
+        );
+      final localSdk = EixamConnectSdkImpl(
+        sosRepository: localSosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: localRealtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: preferredDeviceStore,
+      );
+
+      try {
+        await localSdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'external-123',
+            userHash: 'deadbeef',
+          ),
+        );
+        await localSdk.startPreSos(countdown: const Duration(seconds: 20));
+
+        expect(await localSdk.getPreSosStatus(), isNotNull);
+        expect(await localSdk.getSosState(), SosState.arming);
+
+        localSdk.didChangeAppLifecycleState(AppLifecycleState.resumed);
+        await pumpEventQueue(times: 5);
+
+        expect(localSosRepository.rehydrateCallCount, 2);
+        expect(await localSdk.getPreSosStatus(), isNull);
+        expect(await localSdk.getSosState(), SosState.resolved);
       } finally {
         await localSdk.dispose();
         await localRealtimeClient.dispose();
