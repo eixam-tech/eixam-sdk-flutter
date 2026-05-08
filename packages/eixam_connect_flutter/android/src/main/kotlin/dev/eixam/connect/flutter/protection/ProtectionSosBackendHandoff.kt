@@ -245,7 +245,7 @@ internal class ProtectionSosBackendHandoff(
             .put("longitude", position.longitude)
             .put("altitude", position.altitude)
         val nodeId = runtimeStore.currentBoundNodeId()
-        val hardwareId = runtimeStore.currentBackendHardwareId()
+        val hardwareId = currentBleHardwareIdForBackendPayload()
             ?.trim()
             ?.takeIf { it.isNotBlank() }
         if (nodeId != null) {
@@ -438,16 +438,11 @@ internal class ProtectionSosBackendHandoff(
         if (!force && registeredBackendNodeIds.contains(nodeId)) {
             return
         }
-        val backendHardwareId = runtimeStore.currentBackendHardwareId()
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
-            ?: nodeId.toString()
+        val backendHardwareId = nodeId.toString()
         val diagnosticBleHardwareId = bleHardwareId
             ?.trim()
             ?.takeIf { it.isNotBlank() }
-            ?: runtimeStore.currentBleHardwareId()
-                ?.trim()
-                ?.takeIf { it.isNotBlank() }
+            ?: currentBleHardwareIdForBackendPayload()
         val firmwareVersion = runtimeStore.currentFirmwareVersion()
             ?.trim()
             ?.takeIf { it.isNotBlank() }
@@ -471,15 +466,6 @@ internal class ProtectionSosBackendHandoff(
             .put("firmware_version", firmwareVersion)
             .put("hardware_model", hardwareModel)
             .put("paired_at", pairedAt)
-        Log.i(
-            logTag,
-            "[DEVICE_BACKEND_REGISTER_OUTBOUND] endpoint=/v1/sdk/devices " +
-                "backendHardwareId=$backendHardwareId nodeId=$nodeId " +
-                "bleHardwareId=${diagnosticBleHardwareId ?: "none"} " +
-                "firmwareVersion=$firmwareVersion hardwareModel=$hardwareModel " +
-                "pairedAt=$pairedAt " +
-                "payload=${payload}",
-        )
         val response = sendRequest(
             method = "POST",
             url = normalizeUrl(apiBaseUrl, "/v1/sdk/devices"),
@@ -497,6 +483,16 @@ internal class ProtectionSosBackendHandoff(
             throw IllegalStateException("Native device registration failed: ${response.statusCode} ${response.body}")
         }
         registeredBackendNodeIds.add(nodeId)
+    }
+
+    private fun currentBleHardwareIdForBackendPayload(): String? {
+        runtimeStore.currentBleHardwareId()
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { return it }
+        return runtimeStore.currentBackendHardwareId()
+            ?.trim()
+            ?.takeIf { it.isNotBlank() && looksLikeBleMac(it) }
     }
 
     private fun parseIncidentResponse(body: String): BackendIncident? {

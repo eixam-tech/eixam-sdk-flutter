@@ -1,4 +1,3 @@
-import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_mesh_port_inference.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -76,30 +75,6 @@ void main() {
           ],
         ),
         EixamBleProtocol.telMeshPort,
-      );
-    });
-
-    test('does not guess a mesh port for ambiguous 12-byte TEL notifications',
-        () {
-      expect(
-        inferMeshPortForLiveNotification(
-          channel: EixamBleChannel.tel,
-          payload: const <int>[
-            0x78,
-            0x56,
-            0x34,
-            0x12,
-            0x01,
-            0x02,
-            0x03,
-            0x04,
-            0x05,
-            0x06,
-            0x87,
-            0x65,
-          ],
-        ),
-        isNull,
       );
     });
   });

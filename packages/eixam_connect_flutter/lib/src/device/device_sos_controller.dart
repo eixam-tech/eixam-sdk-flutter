@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
-import 'package:flutter/foundation.dart';
 
 import 'ble_debug_registry.dart';
 import 'eixam_ble_command.dart';
@@ -419,7 +418,7 @@ class DeviceSosController {
         'Device SOS command sent -> route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
       );
       return;
-    } catch (error, stackTrace) {
+    } catch (error) {
       _emit(
         previous.copyWith(
           lastEvent: '$failureEvent: $error',
@@ -433,10 +432,7 @@ class DeviceSosController {
       BleDebugRegistry.instance.recordEvent(
         'Device SOS command failed -> route=$commandRouteLabel command=${command.label} error=$error',
       );
-      debugPrint(
-        'Device SOS command failed -> opcode=${command.opcode} error=$error',
-      );
-      debugPrintStack(stackTrace: stackTrace);
+
       rethrow;
     }
   }

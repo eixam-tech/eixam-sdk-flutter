@@ -1514,9 +1514,7 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
     setState(() {
       _applyingBackendConfig = true;
     });
-    debugPrint(
-      'Validation console apply backend start -> api=$apiBaseUrl mqtt=$mqttUrl sdkHash=${identityHashCode(widget.sdk)}',
-    );
+
     try {
       await widget.onApplyBackendConfig(
         ValidationBackendConfig(
@@ -1525,9 +1523,6 @@ class _OperationalDemoScreenState extends State<OperationalDemoScreen> {
           apiBaseUrl: apiBaseUrl,
           mqttWebsocketUrl: mqttUrl,
         ),
-      );
-      debugPrint(
-        'Validation console apply backend completed -> reloading validation surface expected',
       );
     } catch (error) {
       _controller.reportActionError(error);

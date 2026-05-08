@@ -17,7 +17,6 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -52,7 +51,6 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
 
     override fun onCreate() {
         super.onCreate()
-        Log.i(logTag, "$logPrefix action=service_on_create")
         store = BackgroundTelemetryStore(applicationContext)
         ensureForegroundStarted(buildForegroundNotification())
     }
@@ -146,7 +144,6 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         }
         publishInFlight = true
         val mode = if (store.isSosOpen()) "sos" else "normal"
-        Log.i(logTag, "$logPrefix tick mode=$mode reason=$reason")
         store.markPublishAttempt(reason)
         getBestEffortLocationForTick(locationTimeoutMs) { location, locationMode ->
             if (location == null) {
@@ -158,10 +155,6 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
                 }
                 store.markError(skipReason)
                 store.markLocationMode(locationMode)
-                Log.i(
-                    logTag,
-                    "$logPrefix skip reason=$skipReason locationMode=$locationMode",
-                )
                 publishInFlight = false
                 return@getBestEffortLocationForTick
             }
@@ -180,14 +173,9 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
                     store.markPublishAttempt(reason, locationMode)
                     store.markPublished()
                     store.markHttpStatusCode(null)
-                    Log.i(
-                        logTag,
-                        "$logPrefix publish result=success locationMode=$locationMode",
-                    )
                 } catch (error: Exception) {
                     val message = error.message ?: error.javaClass.simpleName
                     store.markError(message)
-                    Log.w(logTag, "$logPrefix publish result=failed reason=$reason error=$message")
                 } finally {
                     publishInFlight = false
                 }
@@ -233,21 +221,6 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             connection.setRequestProperty("X-User-ID", externalUserId)
             connection.setRequestProperty("Authorization", "Bearer $userHash")
             val correlationId = nextCorrelationId("tel-http")
-            Log.i(
-                logTag,
-                "[TELEMETRY_BACKEND_OUTBOUND_FINAL] transport=http " +
-                    "endpoint=/v1/sdk/telemetry correlationId=$correlationId " +
-                    "source=android_background_telemetry " +
-                    "deviceId=${body.optStringOrNone("deviceId")} " +
-                    "nodeId=${body.optStringOrNone("nodeId")} " +
-                    "appDeviceId=${body.optStringOrNone("appDeviceId")} " +
-                    "hardwareId=${body.optStringOrNone("hardwareId")} " +
-                    "identitySource=${body.optStringOrNone("identitySource")} " +
-                    "lat=${body.optStringOrNone("latitude")} " +
-                    "lon=${body.optStringOrNone("longitude")} " +
-                    "timestamp=${body.optStringOrNone("timestamp")} " +
-                    "payload=${redactedCompactJson(body)}",
-            )
             OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use {
                 it.write(body.toString())
             }
@@ -259,23 +232,8 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
                 } catch (_: Exception) {
                     null
                 }
-                Log.w(
-                    logTag,
-                    "$logPrefix publish result=failed httpStatus=$code body=${errorBody ?: "-"}",
-                )
-                Log.w(
-                    logTag,
-                    "[TELEMETRY_BACKEND_RESPONSE] correlationId=$correlationId " +
-                        "status=$code responseSummary=${compactSummary(errorBody ?: "-")}",
-                )
                 throw IllegalStateException("http_$code")
             }
-            Log.i(
-                logTag,
-                "[TELEMETRY_BACKEND_RESPONSE] correlationId=$correlationId " +
-                    "status=$code responseSummary=ok",
-            )
-            Log.i(logTag, "$logPrefix publish httpStatus=$code")
         } finally {
             connection.disconnect()
         }
@@ -304,17 +262,12 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             if (ageMs <= maxAgeMs) {
                 lastLocation = cached
                 store.markLocationMode("cached")
-                Log.i(
-                    logTag,
-                    "$logPrefix location action=use_cached ageMs=$ageMs provider=${cached.provider}",
-                )
                 onComplete(cached, "cached")
                 return
             }
         }
         if (store.isSosOpen() && sosLocationUpdatesActive) {
             store.markLocationMode("timeout")
-            Log.i(logTag, "$logPrefix location action=timeout")
             onComplete(null, "timeout")
             return
         }
@@ -327,7 +280,6 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         onComplete: (Location?, String) -> Unit,
     ) {
         if (singleLocationListeners.isNotEmpty()) {
-            Log.i(logTag, "$logPrefix location action=request_single_skipped reason=active")
             onComplete(null, "active")
             return
         }
@@ -337,11 +289,6 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             if (fallback != null) {
                 lastLocation = fallback
                 store.markLocationMode("stale_fallback")
-                Log.i(
-                    logTag,
-                    "$logPrefix location action=use_stale_fallback reason=no_provider " +
-                        "ageMs=${locationAgeMs(fallback)} provider=${fallback.provider}",
-                )
                 onComplete(fallback, "stale_fallback")
                 return
             }
@@ -349,10 +296,6 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             onComplete(null, "provider_missing")
             return
         }
-        Log.i(
-            logTag,
-            "$logPrefix location action=request_single providers=${providers.joinToString(",")}",
-        )
         store.markActiveLocationRequest(true)
         var completed = false
         fun complete(location: Location?, mode: String) {
@@ -367,14 +310,8 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             val fallback = relaxedNormalFallbackLocation(manager)
             if (fallback != null) {
                 lastLocation = fallback
-                Log.i(
-                    logTag,
-                    "$logPrefix location action=use_stale_fallback reason=timeout " +
-                        "ageMs=${locationAgeMs(fallback)} provider=${fallback.provider}",
-                )
                 complete(fallback, "stale_fallback")
             } else {
-                Log.i(logTag, "$logPrefix location action=timeout")
                 complete(null, "timeout")
             }
         }
@@ -387,10 +324,6 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
                             return
                         }
                         lastLocation = location
-                        Log.i(
-                            logTag,
-                            "$logPrefix location action=received provider=${location.provider ?: provider}",
-                        )
                         complete(location, "current:${location.provider ?: provider}")
                     }
 
@@ -398,7 +331,6 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
                     override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
 
                     override fun onProviderDisabled(provider: String) {
-                        Log.i(logTag, "$logPrefix location provider_disabled provider=$provider")
                     }
                 }
                 manager.requestLocationUpdates(provider, 0L, 0f, listener, Looper.getMainLooper())
@@ -431,7 +363,6 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
                     manager.removeUpdates(listener)
                 } catch (_: SecurityException) {
                 }
-                Log.i(logTag, "$logPrefix location action=remove_single_update provider=$provider")
             }
             store.markActiveLocationRequest(false)
             if (markTimeout) {
@@ -464,7 +395,6 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         try {
             manager.requestLocationUpdates(provider, sosIntervalMs, sosMovementThresholdMeters, this)
             sosLocationUpdatesActive = true
-            Log.i(logTag, "$logPrefix location action=start_sos_updates intervalMs=$sosIntervalMs")
         } catch (_: SecurityException) {
             store.markError("location_permission_missing")
         } catch (_: IllegalArgumentException) {
@@ -482,7 +412,6 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         } catch (_: SecurityException) {
         }
         sosLocationUpdatesActive = false
-        Log.i(logTag, "$logPrefix location action=remove_updates")
     }
 
     private fun freshestKnownLocation(manager: LocationManager): Location? {
@@ -604,23 +533,14 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
                 foregroundServiceType(),
             )
             foregroundStarted = true
-            Log.i(logTag, "$logPrefix action=foreground_started")
             true
         } catch (error: SecurityException) {
             store.markError("foreground_start_failed: ${error.message ?: error.javaClass.simpleName}")
-            Log.e(
-                logTag,
-                "$logPrefix action=foreground_start_failed error=${error.message ?: error.javaClass.simpleName}",
-            )
             store.markStopped()
             stopSelf()
             false
         } catch (error: Exception) {
             store.markError("foreground_start_failed: ${error.message ?: error.javaClass.simpleName}")
-            Log.e(
-                logTag,
-                "$logPrefix action=foreground_start_failed error=${error.message ?: error.javaClass.simpleName}",
-            )
             store.markStopped()
             stopSelf()
             false
@@ -685,7 +605,6 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
     }
 
     private fun logStop(reason: String) {
-        Log.i(logTag, "$logPrefix action=stop reason=$reason")
     }
 
     private fun nextCorrelationId(prefix: String): String =

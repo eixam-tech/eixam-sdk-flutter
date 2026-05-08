@@ -35,9 +35,7 @@ class _EixamDemoAppState extends State<EixamDemoApp> {
   @override
   void initState() {
     super.initState();
-    debugPrint(
-      'EixamDemoApp init -> backend=${widget.backendConfig.label} sdkHash=${identityHashCode(widget.sdk)}',
-    );
+
     _bindNotificationNavigation();
   }
 
@@ -53,9 +51,6 @@ class _EixamDemoAppState extends State<EixamDemoApp> {
       return;
     }
 
-    debugPrint(
-      'EixamDemoApp update -> sdkChanged=$sdkChanged backendChanged=$backendChanged reloading validation shell',
-    );
     _notificationSub?.cancel();
     _bindNotificationNavigation();
   }
@@ -97,9 +92,6 @@ class _EixamDemoAppState extends State<EixamDemoApp> {
       return;
     }
 
-    debugPrint(
-      'EixamDemoApp backend reconfigured -> returning to refreshed app shell with sdkHash=${identityHashCode(widget.sdk)}',
-    );
     final navigator = _navigatorKey.currentState;
     if (navigator == null) {
       return;
@@ -131,9 +123,6 @@ class _EixamDemoAppState extends State<EixamDemoApp> {
 
   @override
   void dispose() {
-    debugPrint(
-      'EixamDemoApp dispose -> backend=${widget.backendConfig.label} sdkHash=${identityHashCode(widget.sdk)}',
-    );
     _notificationSub?.cancel();
     super.dispose();
   }

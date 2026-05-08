@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:mqtt5_client/mqtt5_client.dart';
 import 'package:mqtt5_client/mqtt5_server_client.dart';
-import 'package:flutter/foundation.dart';
 
 import 'sdk_mqtt_contract.dart';
 import 'sdk_mqtt_transport.dart';
@@ -161,7 +160,6 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
     if (!enableLogging) {
       return;
     }
-    debugPrint('[SDK_MQTT_TRANSPORT] $message');
   }
 
   String _redactedUri(Uri uri) {

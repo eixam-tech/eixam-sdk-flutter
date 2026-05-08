@@ -1,5 +1,3 @@
-import 'package:eixam_connect_core/eixam_connect_core.dart';
-
 import 'sos_incident_dto.dart';
 
 /// DTO for one SOS history item from the backend.

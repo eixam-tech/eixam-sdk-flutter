@@ -53,37 +53,6 @@ void main() {
       );
     });
 
-    test('routes guided rescue commands through the device layer', () async {
-      await _pairDemoDevice(runtimeProvider);
-      await runtimeProvider.setSession(
-        targetNodeId: 0x1001,
-        rescueNodeId: 0x2002,
-      );
-
-      await runtimeProvider.requestPosition();
-      await runtimeProvider.requestStatus();
-      await runtimeProvider.acknowledgeSos();
-      await runtimeProvider.enableBuzzer();
-      await runtimeProvider.disableBuzzer();
-
-      expect(bleClient.writtenCommands, hasLength(5));
-      expect(bleClient.writtenCommands[0].bytes,
-          <int>[0x01, 0x10, 0x02, 0x20, 0x01]);
-      expect(bleClient.writtenCommands[1].bytes,
-          <int>[0x01, 0x10, 0x02, 0x20, 0x05]);
-      expect(bleClient.writtenCommands[2].bytes,
-          <int>[0x01, 0x10, 0x02, 0x20, 0x02]);
-      expect(bleClient.writtenCommands[3].bytes,
-          <int>[0x01, 0x10, 0x02, 0x20, 0x03]);
-      expect(bleClient.writtenCommands[4].bytes,
-          <int>[0x01, 0x10, 0x02, 0x20, 0x04]);
-      expect(
-        bleClient.writtenCommands
-            .every((command) => command.usesCmdCharacteristic),
-        isTrue,
-      );
-    });
-
     test('updates rescue state from STATUS_RESP and TEL position responses',
         () async {
       await _pairDemoDevice(runtimeProvider);

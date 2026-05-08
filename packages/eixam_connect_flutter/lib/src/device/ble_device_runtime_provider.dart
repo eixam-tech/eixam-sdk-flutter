@@ -260,7 +260,7 @@ class BleDeviceRuntimeProvider
         ),
       );
       return nextStatus;
-    } catch (error, stackTrace) {
+    } catch (error) {
       final currentStatus =
           BleDebugRegistry.instance.currentState.connectionStatus;
       if (currentStatus != BleConnectionStatus.incompatible) {
@@ -272,10 +272,7 @@ class BleDeviceRuntimeProvider
       BleDebugRegistry.instance.recordEvent(
         'Connection failed for ${candidate.deviceId}: $error',
       );
-      debugPrint(
-        'BLE pair failed -> hardwareId=${candidate.deviceId} error=$error',
-      );
-      debugPrintStack(stackTrace: stackTrace);
+
       await _resetFailedPairingAttempt(candidate.deviceId);
       try {
         await _bleClient.disconnect(candidate.deviceId);
@@ -406,7 +403,7 @@ class BleDeviceRuntimeProvider
         ),
       );
       return nextStatus;
-    } catch (error, stackTrace) {
+    } catch (error) {
       if (_isMobilePairingRequiredError(error)) {
         BleDebugRegistry.instance.recordEvent(
           'Reconnect stopped because phone Bluetooth bond is missing for $deviceId',
@@ -432,7 +429,7 @@ class BleDeviceRuntimeProvider
         'Reconnect failed for known BLE device $deviceId: $error',
       );
       debugPrint('BLE reconnect failed -> hardwareId=$deviceId error=$error');
-      debugPrintStack(stackTrace: stackTrace);
+
       await _resetFailedPairingAttempt(deviceId);
       try {
         await _bleClient.disconnect(deviceId);
@@ -1071,9 +1068,7 @@ class BleDeviceRuntimeProvider
     }
   }
 
-  void _log(String message) {
-    debugPrint(message);
-  }
+  void _log(String message) {}
 
   DeviceSosTransitionSource _inferPacketSource() {
     final lastAppCommandAt = _lastAppCommandAt;

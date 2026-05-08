@@ -202,7 +202,6 @@ internal class ProtectionBleRuntimeOwner(
                 pendingCommandQueue.add(command)
                 val result =
                     "$label native write queued via androidService because another BLE write is pending."
-                Log.d(logTag, "[SDK_BLE_COMMAND] action=queued label=$label")
                 runtimeStore.recordCommandResult(result)
                 return commandResult(
                     success = true,
@@ -272,7 +271,6 @@ internal class ProtectionBleRuntimeOwner(
                 pendingCommandQueue.add(command)
                 val result =
                     "${command.label} native write queued via androidService because another BLE write is pending."
-                Log.d(logTag, "[SDK_BLE_COMMAND] action=queued label=${command.label}")
                 runtimeStore.recordCommandResult(result)
                 return commandResult(
                     success = true,
@@ -329,10 +327,6 @@ internal class ProtectionBleRuntimeOwner(
                 "${command.label} native write accepted via androidService."
             }
         runtimeStore.recordCommandResult(result)
-        Log.d(
-            logTag,
-            "[SDK_BLE_COMMAND] action=accepted label=${command.label} queued=$queued characteristic=${characteristic.uuid}",
-        )
         return commandResult(
             success = true,
             route = command.route,
@@ -1326,7 +1320,6 @@ internal class ProtectionBleRuntimeOwner(
     }
 
     private fun logSosTrace(message: String) {
-        Log.d("SOS_TRACE", "SOS_TRACE $message")
     }
 
     private fun observeSosLifecycle(payload: List<Int>) {
@@ -1515,10 +1508,6 @@ internal class ProtectionBleRuntimeOwner(
                     val result =
                         "${pending.label} native write succeeded via androidService."
                     runtimeStore.recordCommandResult(result)
-                    Log.d(
-                        logTag,
-                        "[SDK_BLE_COMMAND] action=succeeded label=${pending.label}",
-                    )
                     pending.complete(
                         result = result,
                     )

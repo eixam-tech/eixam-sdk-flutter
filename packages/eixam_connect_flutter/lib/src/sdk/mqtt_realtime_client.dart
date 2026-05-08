@@ -5,7 +5,6 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
 import 'package:eixam_connect_core/src/events/realtime_event.dart';
 import 'package:eixam_connect_core/src/interfaces/realtime_client.dart';
-import 'package:flutter/foundation.dart';
 
 import '../data/datasources_remote/sdk_session_context.dart';
 import '../device/ble_debug_registry.dart';
@@ -390,7 +389,6 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
     if (!config.enableLogging) {
       return;
     }
-    debugPrint('[SDK_MQTT_REALTIME] $message');
   }
 
   String _nextCorrelationId(String prefix) =>

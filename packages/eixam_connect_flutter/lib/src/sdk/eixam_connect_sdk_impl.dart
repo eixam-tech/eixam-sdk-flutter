@@ -129,7 +129,6 @@ class EixamConnectSdkImpl
   DeviceStatus? _lastDeviceStatus;
   DeviceStatus? _lastPublicDeviceStatus;
   GuidedRescueState _guidedRescueState = const GuidedRescueState.unsupported();
-  BacklogSyncState _backlogSyncState = const BacklogSyncState.idle();
   BleNotificationNavigationRequest? _pendingBleNotificationNavigationRequest;
   final List<EixamNotificationIntent> _pendingNotificationIntents =
       <EixamNotificationIntent>[];
@@ -174,7 +173,6 @@ class EixamConnectSdkImpl
   String? _activeDeviceRuntimeLocalCycleKey;
   int _deviceRuntimeLocalCycleSequence = 0;
   String? _deviceOwnedBackendIncidentId;
-  String? _lastLoggedDeviceRuntimeCanonicalization;
   String? _lastDeviceRuntimeCanonicalIncidentSignature;
   SosIncident? _lastDeviceRuntimeCanonicalIncident;
   final Set<String> _loggedDeviceRuntimeCanonicalizationSignatures = <String>{};
@@ -191,7 +189,6 @@ class EixamConnectSdkImpl
   final Set<String> _deviceOriginatedBackendSyncInFlight = <String>{};
   EixamSdkConfig? _sdkConfig;
   bool _registeredDeviceAutoSyncInFlight = false;
-  String? _lastRegisteredDeviceAutoSyncFingerprint;
   final Set<String> _backendRegisteredNodeIdsForSession = <String>{};
   final Map<String, Future<void>> _backendDeviceRegistrationInFlightByNodeId =
       <String, Future<void>>{};
@@ -652,10 +649,7 @@ class EixamConnectSdkImpl
 
   void _bindBacklogSyncStreams() {
     _backlogSyncSub?.cancel();
-    _backlogSyncState = _backlogSyncController.currentState;
-    _backlogSyncSub = _backlogSyncController.watchState().listen((state) {
-      _backlogSyncState = state;
-    });
+    _backlogSyncSub = _backlogSyncController.watchState().listen((_) {});
   }
 
   @override
@@ -1870,7 +1864,7 @@ class EixamConnectSdkImpl
     DateTime? since,
     int maxEvents = 100,
   }) async {
-    _backlogSyncState = await _backlogSyncController.start(
+    await _backlogSyncController.start(
       since: since,
       maxEvents: maxEvents,
     );
@@ -1880,7 +1874,6 @@ class EixamConnectSdkImpl
   @override
   Future<void> cancelBacklogSync() async {
     await _backlogSyncController.cancel();
-    _backlogSyncState = _backlogSyncController.currentState;
   }
 
   Future<void> _handleDeviceSosStatus(DeviceSosStatus status) async {
@@ -2079,12 +2072,10 @@ class EixamConnectSdkImpl
         payload: payload.toJsonString(),
         actions: const <LocalNotificationAction>[],
       );
-    } catch (error, stackTrace) {
+    } catch (error) {
       BleDebugRegistry.instance.recordEvent(
         'Local BLE notification failed -> kind=sos_received error=$error',
       );
-      debugPrint('Local BLE notification failed: $error');
-      debugPrintStack(stackTrace: stackTrace);
     }
   }
 
@@ -2283,12 +2274,10 @@ class EixamConnectSdkImpl
     if (deathManPayload != null) {
       try {
         await _handleDeathManNotificationAction(actionId, deathManPayload);
-      } catch (error, stackTrace) {
+      } catch (error) {
         BleDebugRegistry.instance.recordEvent(
           'Death Man notification action failed -> action=$actionId error=$error',
         );
-        debugPrint('Death Man notification action failed: $error');
-        debugPrintStack(stackTrace: stackTrace);
       }
       return;
     }
@@ -2355,12 +2344,11 @@ class EixamConnectSdkImpl
           );
           return;
       }
-    } catch (error, stackTrace) {
+    } catch (error) {
       BleDebugRegistry.instance.recordEvent(
         'BLE command failed from notification action -> action=$actionId error=$error',
       );
-      debugPrint('BLE notification action failed: $error');
-      debugPrintStack(stackTrace: stackTrace);
+
       await _queueBleNotificationNavigation(
         actionId: actionId,
         reason: 'BLE command could not be completed in the background.',
@@ -3387,10 +3375,6 @@ class EixamConnectSdkImpl
     }
   }
 
-  bool _deviceSosReady(DeviceStatus? status) {
-    return status != null && status.connected && status.nodeId != null;
-  }
-
   Future<String> _resolveStableAppDeviceId() async {
     final existing = _stableAppDeviceId?.trim();
     if (existing != null && existing.isNotEmpty) {
@@ -3994,10 +3978,6 @@ class EixamConnectSdkImpl
         : _sosRuntimeNodeIdByHardwareId[hardwareId];
   }
 
-  int? _resolveConnectedDeviceNodeIdForRemoteGuard() {
-    return _resolveConnectedDeviceNodeGuardMatch().nodeId;
-  }
-
   _RemoteRelayLocalGuardMatch _resolveConnectedDeviceNodeGuardMatch() {
     final deviceRuntimeIncidentNodeId = _parseDeviceRuntimeNodeId(
             _activeDeviceRuntimeIncidentId) ??
@@ -4158,7 +4138,6 @@ class EixamConnectSdkImpl
     _activeDeviceRuntimeCycleKey = null;
     _activeDeviceRuntimeLocalCycleKey = null;
     _deviceOwnedBackendIncidentId = null;
-    _lastLoggedDeviceRuntimeCanonicalization = null;
     _lastDeviceRuntimeCanonicalIncidentSignature = null;
     _lastDeviceRuntimeCanonicalIncident = null;
     _loggedDeviceRuntimeCanonicalizationSignatures.clear();
@@ -4390,7 +4369,6 @@ class EixamConnectSdkImpl
     if (!_loggedDeviceRuntimeCanonicalizationSignatures.add(signature)) {
       return;
     }
-    _lastLoggedDeviceRuntimeCanonicalization = signature;
     BleDebugRegistry.instance.recordEvent(
       '[SOS_CANONICALIZE] action=$action '
       'source=$source stage=${_publicSosState.name} terminal=$terminal '
@@ -5180,12 +5158,11 @@ class EixamConnectSdkImpl
     }
     try {
       await notificationsRepository.clearSosNotifications();
-    } catch (error, stackTrace) {
+    } catch (error) {
       BleDebugRegistry.instance.recordEvent(
         'SOS notification cleanup failed -> reason=$reason error=$error',
       );
       debugPrint('SOS notification cleanup failed: $error');
-      debugPrintStack(stackTrace: stackTrace);
     }
   }
 
@@ -5959,10 +5936,7 @@ class EixamConnectSdkImpl
     if (manualDisconnectRequested) {
       await preferredBleDeviceStore.clearPreferredDevice();
       _clearDeviceRuntimeResidueAfterManualDisconnect();
-      debugPrint(
-        '[AUTO_RECONNECT] backend_registry_seed skipped trigger=$trigger '
-        'reason=manual_disconnect_requested',
-      );
+
       return;
     }
     final existingPreferred =
@@ -5984,9 +5958,6 @@ class EixamConnectSdkImpl
     final candidate =
         _preferredReconnectCandidateFromRegistry(registeredDevices);
     if (candidate == null) {
-      debugPrint(
-        '[AUTO_RECONNECT] backend_registry_seed skipped trigger=$trigger reason=no_registered_hardware',
-      );
       return;
     }
 
@@ -6007,9 +5978,7 @@ class EixamConnectSdkImpl
     }
     await preferredBleDeviceStore.savePreferredDevice(preferredDevice);
     await preferredBleDeviceStore.saveManualDisconnectRequested(false);
-    debugPrint(
-      '[AUTO_RECONNECT] backend_registry_seed saved trigger=$trigger bleHardwareId=${preferredDevice.deviceId} nodeId=${restoredNodeId?.toString() ?? "none"}',
-    );
+
     BleDebugRegistry.instance.recordEvent(
       'Preferred BLE device restored from backend registry -> trigger=$trigger bleHardwareId=${preferredDevice.deviceId} nodeId=${restoredNodeId?.toString() ?? "none"}',
     );
@@ -8419,7 +8388,7 @@ class EixamConnectSdkImpl
         'hasLocation=$hasLocation permission=$permissionLabel '
         'appLifecycle=$appLifecycle shown=true error=none',
       );
-    } catch (error, stackTrace) {
+    } catch (error) {
       _logSosTrace(
         'remote_notification_result '
         'originatorNodeId=${snapshot.originatorNodeId} '
@@ -8431,7 +8400,6 @@ class EixamConnectSdkImpl
         'originatorNodeId=${snapshot.originatorNodeId} error=$error',
       );
       debugPrint('Remote relay SOS notification failed: $error');
-      debugPrintStack(stackTrace: stackTrace);
     }
   }
 
@@ -8616,6 +8584,8 @@ class EixamConnectSdkImpl
       );
       return const _RemoteRelayBackendSubmissionResult(
         submitPath: 'mqtt_operational_publish',
+        statusCode: null,
+        incidentId: null,
       );
     }
     if (repository is ApiSosRepository) {
@@ -8652,6 +8622,8 @@ class EixamConnectSdkImpl
       );
       return const _RemoteRelayBackendSubmissionResult(
         submitPath: 'remote_special',
+        statusCode: null,
+        incidentId: null,
       );
     }
 
@@ -9303,9 +9275,7 @@ class EixamConnectSdkImpl
     }
   }
 
-  void _logSosTrace(String message) {
-    debugPrint('SOS_TRACE $message');
-  }
+  void _logSosTrace(String message) {}
 
   void _logProtectionSosIdentityDecision({
     required int? originatorNodeId,

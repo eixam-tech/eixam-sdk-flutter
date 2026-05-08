@@ -11,7 +11,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import android.os.IBinder
-import android.util.Log
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -43,10 +42,6 @@ internal class ProtectionForegroundService : Service() {
         }
 
         startForeground(notificationId, buildNotification())
-        Log.d(
-            logTag,
-            "[NOTIFICATION_FLOW] protection_foreground_notification_show type=runtime reason=foreground_service_required",
-        )
         ensureProtectionRuntime(
             runtimeStore = runtimeStore,
             restored = intent == null,
@@ -257,10 +252,6 @@ internal class ProtectionForegroundService : Service() {
             body: String,
         ) {
             if (ProtectionRuntimeStore(context).hostAppManagedNotifications()) {
-                Log.d(
-                    logTag,
-                    "[NOTIFICATION_FLOW] protection_notification_skip type=$type reason=hostAppManaged",
-                )
                 return
             }
             val notification = NotificationCompat.Builder(context, sosNotificationChannelId)
@@ -273,10 +264,6 @@ internal class ProtectionForegroundService : Service() {
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .build()
             NotificationManagerCompat.from(context).notify(notificationId, notification)
-            Log.d(
-                logTag,
-                "[NOTIFICATION_FLOW] protection_notification_show type=$type policy=sdkManaged",
-            )
         }
     }
 }

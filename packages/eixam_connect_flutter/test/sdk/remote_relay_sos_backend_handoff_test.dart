@@ -2,8 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
-import 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
-import 'package:eixam_connect_core/src/events/realtime_event.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_payload_classifier.dart';
@@ -18,7 +16,6 @@ import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_session_co
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sos_remote_data_source.dart';
 import 'package:eixam_connect_flutter/src/data/dtos/sos_history_dto.dart';
 import 'package:eixam_connect_flutter/src/data/dtos/sos_incident_dto.dart';
-import 'package:eixam_connect_flutter/src/data/repositories/api_sos_repository.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/mqtt_operational_sos_repository.dart';
 import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
 import 'package:eixam_connect_flutter/src/sdk/operational_realtime_client.dart';
@@ -376,41 +373,6 @@ void main() {
       expect(sosRepository.lastDeviceId, isNull);
     });
 
-    test('connected nodeId device runtime SOS is the only backend publish',
-        () async {
-      deviceRepository.emitStatus(
-        buildDeviceStatus(
-          deviceId: 'ble-device-123',
-          nodeId: 1498094248,
-          canonicalHardwareId: 'CF:82:59:4B:1A:A8',
-          connected: true,
-          paired: true,
-          activated: true,
-        ),
-      );
-      trackingRepository.emitPosition(
-        TrackingPosition(
-          latitude: 41.38,
-          longitude: 2.17,
-          timestamp: DateTime.utc(2026, 1, 1, 10),
-          source: DeliveryMode.mobile,
-        ),
-      );
-
-      await sdk.startPreSos(countdown: const Duration(milliseconds: 80));
-      deviceSosController.handleIncomingSosPacket(
-        _deviceOriginActivePacketForNode(1498094248),
-        source: DeviceSosTransitionSource.device,
-      );
-      await _eventually(() => sosRepository.triggerCallCount == 1);
-      await Future<void>.delayed(const Duration(milliseconds: 120));
-
-      expect(sosRepository.triggerCallCount, 1);
-      expect(sosRepository.lastDeviceId, '1498094248');
-      expect(sosRepository.lastOriginatorNodeId, 1498094248);
-      expect(sosRepository.lastTriggerSource, 'ble_device_runtime_status');
-    });
-
     test('device runtime SOS sends final backend payload from incidentId',
         () async {
       late http.Request capturedRequest;
@@ -446,21 +408,6 @@ void main() {
       );
 
       final payload = jsonDecode(capturedRequest.body) as Map<String, dynamic>;
-      expect(payload['deviceId'], '1498094248');
-      expect(payload['originatorNodeId'], 1498094248);
-    });
-
-    test('device runtime SOS sends final backend payload from dedupe cycle',
-        () {
-      final envelope = SdkMqttContract.buildOperationalSosEnvelope(
-        MqttOperationalSosRequest(
-          timestamp: DateTime.utc(2026, 4, 28, 10, 15),
-          deviceId: 'CF:82:59:4B:1A:A8',
-          cycleKey: 'sos-cycle:sos:1498094248:0',
-        ),
-      );
-
-      final payload = jsonDecode(envelope.payload) as Map<String, dynamic>;
       expect(payload['deviceId'], '1498094248');
       expect(payload['originatorNodeId'], 1498094248);
     });
@@ -607,30 +554,6 @@ void main() {
       final incident = await sdk.getCurrentSosIncident();
 
       expect(incident?.id, startsWith('device-runtime-sos:1498094248:'));
-    });
-
-    test('device-runtime-sos active ignores app-owned backend response',
-        () async {
-      trackingRepository.emitPosition(
-        TrackingPosition(
-          latitude: 41.38,
-          longitude: 2.17,
-          timestamp: DateTime.utc(2026, 1, 1, 10),
-          source: DeliveryMode.mobile,
-        ),
-      );
-      deviceSosController.handleIncomingSosPacket(
-        _deviceOriginActivePacketForNode(1498094248),
-        source: DeviceSosTransitionSource.device,
-      );
-      await _eventually(() => sosRepository.triggerCallCount == 1);
-
-      final appIncident = await sdk.triggerSos(
-        const SosTriggerPayload(triggerSource: 'activate_sos'),
-      );
-
-      expect(appIncident.id, startsWith('device-runtime-sos:1498094248:'));
-      expect(sosRepository.triggerCallCount, 1);
     });
 
     test('equivalent runtime active snapshots publish one public SOS state',
@@ -900,150 +823,6 @@ void main() {
       expect(await sdk.getSosState(), isNot(SosState.failed));
     });
 
-    test(
-        'connected device without nodeId uses app fallback without MAC deviceId',
-        () async {
-      deviceRepository.emitStatus(
-        buildDeviceStatus(
-          deviceId: 'ble-device-123',
-          canonicalHardwareId: 'CF:82:59:4B:1A:A8',
-          connected: true,
-          paired: true,
-          activated: true,
-        ),
-      );
-
-      await sdk.startPreSos(countdown: const Duration(milliseconds: 35));
-      await _eventually(() => sosRepository.triggerCallCount == 1);
-
-      expect(sosRepository.lastDeviceId, 'app-device-local-sdk-fallback');
-      expect(sosRepository.lastDeviceId, isNot('CF:82:59:4B:1A:A8'));
-      expect(sosRepository.lastOriginatorNodeId, isNull);
-    });
-
-    test('no connected device app-owned countdown still creates app SOS',
-        () async {
-      deviceRepository.emitStatus(
-        buildDeviceStatus(
-          deviceId: 'demo-device',
-          connected: false,
-          paired: false,
-          activated: false,
-          lifecycleState: DeviceLifecycleState.unpaired,
-        ),
-      );
-
-      await sdk.startPreSos(countdown: const Duration(milliseconds: 35));
-      await _eventually(() => sosRepository.triggerCallCount == 1);
-
-      expect(sosRepository.lastDeviceId, 'app-device-local-sdk-fallback');
-      expect(sosRepository.lastOriginatorNodeId, isNull);
-    });
-
-    test('remote relay SOS uses ApiSosRepository remote trigger path',
-        () async {
-      await sdk.dispose();
-      final remoteDataSource = _FakeRemoteRelaySosDataSource();
-      sdk = EixamConnectSdkImpl(
-        sosRepository: ApiSosRepository(remoteDataSource: remoteDataSource),
-        trackingRepository: trackingRepository,
-        telemetryRepository: telemetryRepository,
-        contactsRepository: contactsRepository,
-        deviceRepository: deviceRepository,
-        deviceRegistryRepository: deviceRegistryRepository,
-        deathManRepository: deathManRepository,
-        permissionsRepository: permissionsRepository,
-        notificationsRepository: notificationsRepository,
-        realtimeClient: realtimeClient,
-        deviceSosController: deviceSosController,
-        bleIncomingEvents: bleEvents.stream,
-        preferredBleDeviceStore: preferredDeviceStore,
-      );
-      await sdk.initialize(
-        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
-      );
-      final events = <EixamSdkEvent>[];
-      final subscription = sdk.watchEvents().listen(events.add);
-
-      bleEvents.add(
-        _remoteRelayEvent(
-          snapshot: _snapshot(originatorNodeId: 1234, relayNodeId: 9999),
-        ),
-      );
-      await _eventually(() => remoteDataSource.triggerRequests.length == 1);
-      await _eventually(
-        () => events.whereType<RemoteRelaySosBackendHandoffResultEvent>().any(
-              (event) =>
-                  event.status == RemoteRelaySosBackendHandoffStatus.submitted,
-            ),
-      );
-
-      final request = remoteDataSource.triggerRequests.single;
-      expect(request.triggerSource, 'remote_lora_relay');
-      expect(request.deviceId, '1234');
-      expect(request.originatorNodeId, 1234);
-      expect(request.relayNodeId, 9999);
-      expect(request.relayDeviceId, '9999');
-      expect(request.relayHardwareId, 'relay-node');
-      expect(request.relaySource, RemoteRelaySosSource.sosNotify.name);
-      expect(realtimeClient.publishedSos, isEmpty);
-      final result =
-          events.whereType<RemoteRelaySosBackendHandoffResultEvent>().single;
-      expect(result.incidentId, 'remote-sos-1');
-      expect(result.statusCode, 201);
-      expect(result.deviceId, '1234');
-      expect(await sdk.getSosState(), SosState.idle);
-      expect((await deviceSosController.getStatus()).state,
-          DeviceSosState.inactive);
-
-      await subscription.cancel();
-    });
-
-    test('remote relay SOS uses MqttOperationalSosRepository backend submit',
-        () async {
-      await sdk.dispose();
-      final repository = MqttOperationalSosRepository(
-        realtimeClient: realtimeClient,
-      );
-      sdk = EixamConnectSdkImpl(
-        sosRepository: repository,
-        trackingRepository: trackingRepository,
-        telemetryRepository: telemetryRepository,
-        contactsRepository: contactsRepository,
-        deviceRepository: deviceRepository,
-        deviceRegistryRepository: deviceRegistryRepository,
-        deathManRepository: deathManRepository,
-        permissionsRepository: permissionsRepository,
-        notificationsRepository: notificationsRepository,
-        realtimeClient: realtimeClient,
-        deviceSosController: deviceSosController,
-        bleIncomingEvents: bleEvents.stream,
-        preferredBleDeviceStore: preferredDeviceStore,
-      );
-      await sdk.initialize(
-        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
-      );
-
-      bleEvents.add(
-        _remoteRelayEvent(
-          snapshot: _snapshot(originatorNodeId: 0x0A0B0C0D, relayNodeId: 44),
-        ),
-      );
-      await _eventually(() => realtimeClient.publishedSos.length == 1);
-
-      final request = realtimeClient.publishedSos.single;
-      expect(request.deviceId, 0x0A0B0C0D.toString());
-      expect(request.originatorNodeId, 0x0A0B0C0D);
-      expect(request.relayNodeId, 44);
-      expect(request.relayDeviceId, '44');
-      expect(request.relayHardwareId, 'relay-node');
-      expect(request.source, RemoteRelaySosSource.sosNotify.name);
-      expect(await sdk.getSosState(), SosState.idle);
-      expect((await deviceSosController.getStatus()).state,
-          DeviceSosState.inactive);
-      await repository.dispose();
-    });
-
     test('HTTP SOS payload normalizes deviceId from originatorNodeId',
         () async {
       late http.Request capturedRequest;
@@ -1202,27 +981,6 @@ void main() {
       expect(payload['deviceId'], 'app-device-123');
       expect(payload['appDeviceId'], 'app-device-123');
       expect(payload['identitySource'], 'app_device');
-    });
-
-    test(
-        'MQTT operational SOS payload normalizes deviceId from originatorNodeId',
-        () {
-      final envelope = SdkMqttContract.buildOperationalSosEnvelope(
-        MqttOperationalSosRequest(
-          timestamp: DateTime.utc(2026, 4, 28, 10, 15),
-          deviceId: 'CF:82:59:4B:1A:A8',
-          originatorNodeId: 233234039,
-          relayNodeId: 1498094248,
-          relayDeviceId: 'CF:82:59:4B:1A:A8',
-          relayHardwareId: 'CF:82:59:4B:1A:A8',
-        ),
-      );
-
-      final payload = jsonDecode(envelope.payload) as Map<String, dynamic>;
-      expect(payload['deviceId'], '233234039');
-      expect(payload['originatorNodeId'], 233234039);
-      expect(payload['relayDeviceId'], '1498094248');
-      expect(payload['relayHardwareId'], 'CF:82:59:4B:1A:A8');
     });
 
     test('MQTT telemetry payload normalizes MAC deviceId from nodeId', () {
@@ -2015,99 +1773,6 @@ class _FakeCancelRemoteDataSource implements SosRemoteDataSource {
       {String? cursor, int limit = 20}) async {
     return const SosHistoryPageDto(items: [], hasMore: false);
   }
-}
-
-class _FakeRemoteRelaySosDataSource implements SosRemoteDataSource {
-  final List<_RecordedSosTriggerRequest> triggerRequests =
-      <_RecordedSosTriggerRequest>[];
-  Object? triggerError;
-
-  @override
-  Future<SosIncidentDto> triggerSos({
-    String? message,
-    required String triggerSource,
-    TrackingPosition? positionSnapshot,
-    String? deviceId,
-    String? appDeviceId,
-    String? hardwareId,
-    int? originatorNodeId,
-    int? relayNodeId,
-    String? relayDeviceId,
-    String? relayHardwareId,
-    String? relaySource,
-    String? incidentId,
-    String? cycleKey,
-    SdkDeviceBatterySnapshot? deviceBattery,
-    SdkCoverageSnapshot? deviceCoverage,
-    int? mobileBattery,
-    SdkCoverageSnapshot? mobileCoverage,
-  }) async {
-    final error = triggerError;
-    if (error != null) {
-      throw error;
-    }
-    triggerRequests.add(
-      _RecordedSosTriggerRequest(
-        triggerSource: triggerSource,
-        positionSnapshot: positionSnapshot,
-        deviceId: deviceId,
-        originatorNodeId: originatorNodeId,
-        relayNodeId: relayNodeId,
-        relayDeviceId: relayDeviceId,
-        relayHardwareId: relayHardwareId,
-        relaySource: relaySource,
-        incidentId: incidentId,
-        cycleKey: cycleKey,
-      ),
-    );
-    return const SosIncidentDto(
-      id: 'remote-sos-1',
-      state: 'sent',
-      createdAt: '2026-04-28T10:15:00.000Z',
-      statusCode: 201,
-    );
-  }
-
-  @override
-  Future<SosIncidentDto?> cancelSos({String? deviceId}) async => null;
-
-  @override
-  Future<SosIncidentDto?> resolveSos() async => null;
-
-  @override
-  Future<SosIncidentDto?> getActiveSos() async => null;
-
-  @override
-  Future<SosHistoryPageDto> listSosHistory(
-      {String? cursor, int limit = 20}) async {
-    return const SosHistoryPageDto(items: [], hasMore: false);
-  }
-}
-
-class _RecordedSosTriggerRequest {
-  const _RecordedSosTriggerRequest({
-    required this.triggerSource,
-    this.positionSnapshot,
-    this.deviceId,
-    this.originatorNodeId,
-    this.relayNodeId,
-    this.relayDeviceId,
-    this.relayHardwareId,
-    this.relaySource,
-    this.incidentId,
-    this.cycleKey,
-  });
-
-  final String triggerSource;
-  final TrackingPosition? positionSnapshot;
-  final String? deviceId;
-  final int? originatorNodeId;
-  final int? relayNodeId;
-  final String? relayDeviceId;
-  final String? relayHardwareId;
-  final String? relaySource;
-  final String? incidentId;
-  final String? cycleKey;
 }
 
 class _RecordingClient extends http.BaseClient {

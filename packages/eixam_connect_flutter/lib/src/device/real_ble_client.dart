@@ -265,7 +265,7 @@ class RealBleClient implements BleClient {
           );
         }
       }
-    } catch (error, stackTrace) {
+    } catch (error) {
       final transientDisconnect = _isTransientDisconnectError(error);
       if (transientDisconnect) {
         BleDebugRegistry.instance.recordEvent(
@@ -283,7 +283,7 @@ class RealBleClient implements BleClient {
       debugPrint(
         'BLE connect/discoverServices failed -> hardwareId=$deviceId error=$error',
       );
-      debugPrintStack(stackTrace: stackTrace);
+
       rethrow;
     }
   }
@@ -856,9 +856,7 @@ class RealBleClient implements BleClient {
     }
   }
 
-  void _log(String message) {
-    debugPrint(message);
-  }
+  void _log(String message) {}
 
   BleAdapterState _mapAdapterState(BluetoothAdapterState state) {
     switch (state) {

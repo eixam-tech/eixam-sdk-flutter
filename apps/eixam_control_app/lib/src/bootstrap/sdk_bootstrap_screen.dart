@@ -46,9 +46,7 @@ class _SdkBootstrapScreenState extends State<SdkBootstrapScreen> {
   Future<void> _bootstrapSdk({ValidationBackendConfig? config}) async {
     final nextConfig =
         config ?? _activeConfig ?? ValidationBackendConfig.production;
-    debugPrint(
-      'SDK bootstrap start -> backend=${nextConfig.label} api=${nextConfig.apiBaseUrl} mqtt=${nextConfig.mqttWebsocketUrl}',
-    );
+
     setState(() {
       _isLoading = true;
       _error = null;
@@ -63,9 +61,7 @@ class _SdkBootstrapScreenState extends State<SdkBootstrapScreen> {
         websocketUrl: nextConfig.mqttWebsocketUrl,
       );
       await sdk.rehydrateProtectionState();
-      debugPrint(
-        'SDK bootstrap ready -> backend=${nextConfig.label} disposing_previous=${previousSdk != null}',
-      );
+
       await _disposeSdk(previousSdk);
       if (!mounted) return;
       setState(() {
@@ -73,12 +69,7 @@ class _SdkBootstrapScreenState extends State<SdkBootstrapScreen> {
         _isLoading = false;
         _sdkGeneration++;
       });
-      debugPrint(
-        'SDK bootstrap applied -> generation=$_sdkGeneration backend=${nextConfig.label}',
-      );
     } catch (error, stackTrace) {
-      debugPrint('SDK bootstrap failed: $error');
-      debugPrintStack(stackTrace: stackTrace);
       if (!mounted) return;
       setState(() {
         _error = error.toString();
@@ -89,18 +80,13 @@ class _SdkBootstrapScreenState extends State<SdkBootstrapScreen> {
   }
 
   Future<void> _reconfigureBackend(ValidationBackendConfig config) async {
-    debugPrint(
-      'Backend reconfigure requested -> backend=${config.label} api=${config.apiBaseUrl}',
-    );
     await _configStore.save(config);
     await _bootstrapSdk(config: config);
   }
 
   Future<void> _disposeSdk(EixamConnectSdk? sdk) async {
     if (sdk is EixamConnectSdkImpl) {
-      debugPrint('Disposing previous SDK instance...');
       await sdk.dispose();
-      debugPrint('Previous SDK instance disposed.');
     }
   }
 
