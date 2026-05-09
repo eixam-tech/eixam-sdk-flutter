@@ -23,7 +23,6 @@ typedef SosBackendDeviceRegisterRetry = Future<bool> Function({
   required String message,
   required TrackingPosition positionSnapshot,
   required String? deviceId,
-  required String? appDeviceId,
   required String? hardwareId,
   required int? originatorNodeId,
   required int? relayNodeId,
@@ -161,7 +160,6 @@ class BleOperationalRuntimeBridge {
     required String message,
     required TrackingPosition positionSnapshot,
     String? deviceId,
-    String? appDeviceId,
     String? hardwareId,
     int? originatorNodeId,
     int? relayNodeId,
@@ -198,7 +196,6 @@ class BleOperationalRuntimeBridge {
       message: message,
       positionSnapshot: positionSnapshot,
       deviceId: deviceId,
-      appDeviceId: appDeviceId,
       hardwareId: hardwareId,
       originatorNodeId: originatorNodeId,
       relayNodeId: relayNodeId,
@@ -803,7 +800,6 @@ class BleOperationalRuntimeBridge {
           message: pendingSos.message,
           positionSnapshot: pendingSos.positionSnapshot,
           deviceId: pendingSos.deviceId,
-          appDeviceId: pendingSos.appDeviceId,
           hardwareId: pendingSos.hardwareId,
           originatorNodeId: pendingSos.originatorNodeId,
           relayNodeId: pendingSos.relayNodeId,
@@ -930,7 +926,6 @@ class BleOperationalRuntimeBridge {
     required String message,
     required TrackingPosition positionSnapshot,
     required String? deviceId,
-    String? appDeviceId,
     String? hardwareId,
     required int? originatorNodeId,
     required int? relayNodeId,
@@ -952,7 +947,6 @@ class BleOperationalRuntimeBridge {
         triggerSource: triggerSource,
         positionSnapshot: positionSnapshot,
         deviceId: deviceId,
-        appDeviceId: appDeviceId,
         hardwareId: hardwareId,
         originatorNodeId: originatorNodeId,
         relayNodeId: relayNodeId,
@@ -1001,7 +995,6 @@ class BleOperationalRuntimeBridge {
             message: message,
             positionSnapshot: positionSnapshot,
             deviceId: deviceId,
-            appDeviceId: appDeviceId,
             hardwareId: hardwareId,
             originatorNodeId: originatorNodeId,
             relayNodeId: relayNodeId,
@@ -1027,7 +1020,6 @@ class BleOperationalRuntimeBridge {
           message: message,
           positionSnapshot: positionSnapshot,
           deviceId: deviceId,
-          appDeviceId: appDeviceId,
           hardwareId: hardwareId,
           originatorNodeId: originatorNodeId,
           relayNodeId: relayNodeId,
@@ -1075,7 +1067,6 @@ class BleOperationalRuntimeBridge {
           message: message,
           positionSnapshot: positionSnapshot,
           deviceId: deviceId,
-          appDeviceId: appDeviceId,
           hardwareId: hardwareId,
           originatorNodeId: originatorNodeId,
           relayNodeId: relayNodeId,
@@ -1284,7 +1275,6 @@ class _PendingSosPublish {
     required this.message,
     required this.positionSnapshot,
     required this.deviceId,
-    this.appDeviceId,
     this.hardwareId,
     this.originatorNodeId,
     this.relayNodeId,
@@ -1300,7 +1290,6 @@ class _PendingSosPublish {
   final String message;
   final TrackingPosition positionSnapshot;
   final String? deviceId;
-  final String? appDeviceId;
   final String? hardwareId;
   final int? originatorNodeId;
   final int? relayNodeId;

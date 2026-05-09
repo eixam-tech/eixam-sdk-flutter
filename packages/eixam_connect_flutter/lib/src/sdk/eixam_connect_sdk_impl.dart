@@ -41,7 +41,6 @@ import 'protection_platform_adapter_factory.dart';
 import 'relay_ingest_context.dart';
 import 'sdk_mqtt_contract.dart';
 import 'sos_backend_identity_normalizer.dart';
-import 'stable_app_device_id_store.dart';
 
 /// Main SDK orchestrator used by host apps.
 ///
@@ -72,7 +71,6 @@ class EixamConnectSdkImpl
   final EixamNotificationPolicy notificationPolicy;
   final ProtectionPlatformAdapter protectionPlatformAdapter;
   final BackgroundTelemetryPlatformAdapter backgroundTelemetryPlatformAdapter;
-  final Future<String> Function()? stableAppDeviceIdProvider;
   final Future<void> Function()? disposeCallback;
 
   final StreamController<EixamSdkEvent> _eventsController =
@@ -177,8 +175,6 @@ class EixamConnectSdkImpl
   SosIncident? _lastDeviceRuntimeCanonicalIncident;
   final Set<String> _loggedDeviceRuntimeCanonicalizationSignatures = <String>{};
   final Set<String> _closedDeviceRuntimeIncidentIds = <String>{};
-  String? _stableAppDeviceId;
-  String? _lastLoggedAppDeviceIdResolution;
   final Map<String, int> _sosRuntimeNodeIdByHardwareId = <String, int>{};
   final Map<String, DateTime> _sosRuntimeInvariantLogByKey =
       <String, DateTime>{};
@@ -244,7 +240,6 @@ class EixamConnectSdkImpl
     this.notificationPolicy = EixamNotificationPolicy.sdkManaged,
     ProtectionPlatformAdapter? protectionPlatformAdapter,
     BackgroundTelemetryPlatformAdapter? backgroundTelemetryPlatformAdapter,
-    this.stableAppDeviceIdProvider,
     Duration appTriggeredSosBridgeWindow = _defaultAppTriggeredSosBridgeWindow,
     this.disposeCallback,
   })  : _appTriggeredSosBridgeWindow = appTriggeredSosBridgeWindow,
@@ -321,12 +316,9 @@ class EixamConnectSdkImpl
     if (_manualDisconnectRequested) {
       _clearDeviceRuntimeResidueAfterManualDisconnect();
     }
-    _stableAppDeviceId = await _resolveStableAppDeviceId();
     if (sessionContext != null) {
       sessionContext!.currentSession = _session;
     }
-    _stableAppDeviceId = null;
-    await _resolveStableAppDeviceId();
     await _rehydrateSosRuntimeState();
     _publicSosState = _preserveDeviceRuntimeSosStateIfNeeded(
       incoming: await sosRepository.getSosState(),
@@ -402,7 +394,7 @@ class EixamConnectSdkImpl
         reason: 'device_status_stream',
       );
       BleDebugRegistry.instance.recordEvent(
-        'Device connectivity changed -> connected=${promotedStatus.connected} previous=${previousStatus?.connected} deviceId=${promotedStatus.nodeId?.toString() ?? _stableAppDeviceId ?? "-"} nodeId=${promotedStatus.nodeId?.toString() ?? "-"} appDeviceId=${_stableAppDeviceId ?? "-"} hardwareId=${promotedStatus.deviceId} lifecycle=${promotedStatus.lifecycleState.name}',
+        'Device connectivity changed -> connected=${promotedStatus.connected} previous=${previousStatus?.connected} deviceId=${promotedStatus.nodeId?.toString() ?? "-"} nodeId=${promotedStatus.nodeId?.toString() ?? "-"} hardwareId=${promotedStatus.deviceId} lifecycle=${promotedStatus.lifecycleState.name}',
       );
       _emitOperationalDiagnostics();
       unawaited(
@@ -437,7 +429,7 @@ class EixamConnectSdkImpl
         final previous = _lastDeviceSosCommandPathAvailable;
         _lastDeviceSosCommandPathAvailable = available;
         BleDebugRegistry.instance.recordEvent(
-          'SOS command path availability changed -> available=$available previous=$previous connected=${_lastDeviceStatus?.connected} deviceId=${_lastDeviceStatus?.nodeId?.toString() ?? _stableAppDeviceId ?? "-"} nodeId=${_lastDeviceStatus?.nodeId?.toString() ?? "-"} appDeviceId=${_stableAppDeviceId ?? "-"} hardwareId=${_lastDeviceStatus?.deviceId ?? "-"}',
+          'SOS command path availability changed -> available=$available previous=$previous connected=${_lastDeviceStatus?.connected} deviceId=${_lastDeviceStatus?.nodeId?.toString() ?? "-"} nodeId=${_lastDeviceStatus?.nodeId?.toString() ?? "-"} hardwareId=${_lastDeviceStatus?.deviceId ?? "-"}',
         );
         if (available == previous) {
           BleDebugRegistry.instance.recordEvent(
@@ -710,8 +702,6 @@ class EixamConnectSdkImpl
     if (sessionContext != null) {
       sessionContext!.currentSession = refreshed;
     }
-    _stableAppDeviceId = null;
-    await _resolveStableAppDeviceId();
     await _rehydrateSosRuntimeState();
     _publicSosFallbackIncident = null;
     _clearPendingAppTriggeredSosBridge(reason: 'identity_refreshed');
@@ -832,7 +822,6 @@ class EixamConnectSdkImpl
     _bleOperationalRuntimeBridge.clearPendingOperationalItems();
     _session = null;
     _clearBackendDeviceRegistrationSessionCache();
-    _stableAppDeviceId = null;
     _lastSosRehydrationNote = null;
     _publicSosFallbackIncident = null;
     _lastPublicSosIncidentId = null;
@@ -847,7 +836,6 @@ class EixamConnectSdkImpl
     if (sessionContext != null) {
       sessionContext!.currentSession = null;
     }
-    await _resolveStableAppDeviceId();
     await sessionStore?.clear();
     _emitOperationalDiagnostics();
     await realtimeClient.disconnect();
@@ -2760,17 +2748,6 @@ class EixamConnectSdkImpl
             );
       final identity = await _resolveLocalOperationalSosIdentity();
       final identitySource = _sosIdentitySourceFor(identity);
-      if (_isLocalAppDeviceId(identity.deviceId)) {
-        BleDebugRegistry.instance.recordEvent(
-          '[BACKGROUND_SOS] backend_publish_warning '
-          'reason=local_app_device_id_used_as_device_id '
-          'state=sent deviceId=${identity.deviceId ?? "none"} '
-          'nodeId=${identity.originatorNodeId?.toString() ?? "none"} '
-          'hardwareId=${identity.hardwareId ?? "none"} '
-          'appDeviceId=${identity.appDeviceId ?? "none"} '
-          'identitySource=$identitySource',
-        );
-      }
       if (!_loggedBackgroundSosPublishTraceV2) {
         _loggedBackgroundSosPublishTraceV2 = true;
         BleDebugRegistry.instance.recordEvent(
@@ -2788,7 +2765,6 @@ class EixamConnectSdkImpl
         'deviceId=${identity.deviceId ?? "none"} '
         'nodeId=${identity.originatorNodeId?.toString() ?? "none"} '
         'hardwareId=${identity.hardwareId ?? "none"} '
-        'appDeviceId=${identity.appDeviceId ?? "none"} '
         'identitySource=$identitySource '
         'commandAvailable=${deviceSync.available}',
       );
@@ -2805,10 +2781,8 @@ class EixamConnectSdkImpl
       BleDebugRegistry.instance.recordEvent(
         '[BACKGROUND_SOS] backend_publish_payload identity '
         'deviceId=${identity.deviceId ?? "none"} '
-        'isLocalDeviceId=${_isLocalAppDeviceId(identity.deviceId)} '
         'nodeId=${identity.originatorNodeId?.toString() ?? "none"} '
         'hardwareId=${identity.hardwareId ?? "none"} '
-        'appDeviceId=${identity.appDeviceId ?? "none"} '
         'userId=${_session?.canonicalExternalUserId ?? _session?.sdkUserId ?? "none"} '
         'hasLocation=${positionSnapshot != null}',
       );
@@ -2823,7 +2797,6 @@ class EixamConnectSdkImpl
           'deviceId=${identity.deviceId ?? "none"} '
           'nodeId=${identity.originatorNodeId?.toString() ?? "none"} '
           'hardwareId=${identity.hardwareId ?? "none"} '
-          'appDeviceId=${identity.appDeviceId ?? "none"} '
           'identitySource=$identitySource',
         );
         final publishedIncident = await sosRepository.triggerSos(
@@ -2831,7 +2804,6 @@ class EixamConnectSdkImpl
           triggerSource: payload.triggerSource,
           positionSnapshot: positionSnapshot,
           deviceId: identity.deviceId,
-          appDeviceId: identity.appDeviceId,
           hardwareId: identity.hardwareId,
           originatorNodeId: identity.originatorNodeId,
           deviceBattery: metadata.deviceBattery,
@@ -2856,7 +2828,6 @@ class EixamConnectSdkImpl
           'deviceId=${identity.deviceId ?? "none"} '
           'nodeId=${identity.originatorNodeId?.toString() ?? "none"} '
           'hardwareId=${identity.hardwareId ?? "none"} '
-          'appDeviceId=${identity.appDeviceId ?? "none"} '
           'identitySource=$identitySource '
           'backendConfirmation=${backendIncidentId == "none" ? "not_confirmed" : "confirmed"}',
         );
@@ -2883,7 +2854,6 @@ class EixamConnectSdkImpl
           'deviceId=${identity.deviceId ?? "none"} '
           'nodeId=${identity.originatorNodeId?.toString() ?? "none"} '
           'hardwareId=${identity.hardwareId ?? "none"} '
-          'appDeviceId=${identity.appDeviceId ?? "none"} '
           'identitySource=$identitySource',
         );
       } finally {
@@ -3375,108 +3345,36 @@ class EixamConnectSdkImpl
     }
   }
 
-  Future<String> _resolveStableAppDeviceId() async {
-    final existing = _stableAppDeviceId?.trim();
-    if (existing != null && existing.isNotEmpty) {
-      return existing;
-    }
-    final accountResolution =
-        StableAppDeviceIdStore.resolveFromSession(_session);
-    if (accountResolution != null) {
-      _applyAppDeviceIdResolution(accountResolution);
-      return _stableAppDeviceId!;
-    }
-    try {
-      final provided = await stableAppDeviceIdProvider?.call();
-      final trimmed = provided?.trim();
-      if (trimmed != null && trimmed.isNotEmpty) {
-        _applyAppDeviceIdResolution(
-          AppDeviceIdResolution(
-            deviceId: trimmed,
-            source: 'local_install_fallback',
-            persistenceScope: 'local_install_only',
-            limitation: 'lost_on_uninstall',
-          ),
-        );
-        return _stableAppDeviceId!;
-      }
-    } catch (_) {}
-    _applyAppDeviceIdResolution(
-      const AppDeviceIdResolution(
-        deviceId: 'app-device-local-sdk-fallback',
-        source: 'local_install_fallback',
-        persistenceScope: 'local_install_only',
-        limitation: 'lost_on_uninstall',
-      ),
-    );
-    return _stableAppDeviceId!;
-  }
-
-  void _applyAppDeviceIdResolution(AppDeviceIdResolution resolution) {
-    _stableAppDeviceId = resolution.deviceId;
-    final signature =
-        '${resolution.deviceId}|${resolution.source}|${resolution.persistenceScope}|${resolution.limitation}';
-    if (_lastLoggedAppDeviceIdResolution == signature) {
-      return;
-    }
-    _lastLoggedAppDeviceIdResolution = signature;
-    BleDebugRegistry.instance.recordEvent(
-      'APP_DEVICE_ID_RESOLVED deviceId=${resolution.deviceId} '
-      'source=${resolution.source} '
-      'persistenceScope=${resolution.persistenceScope} '
-      'limitation=${resolution.limitation}',
-    );
-  }
-
   Future<_OperationalSosIdentity> _resolveLocalOperationalSosIdentity() async {
     final status =
         _lastDeviceStatus ?? await deviceRepository.getDeviceStatus();
     _lastDeviceStatus = status;
-    final appDeviceId = await _resolveStableAppDeviceId();
     final originatorNodeId = status.nodeId ?? _knownLocalDeviceNodeId;
     if (originatorNodeId != null) {
       BleDebugRegistry.instance.recordEvent(
         'SOS_BACKEND_IDENTITY_RESOLVED deviceId=${originatorNodeId.toString()} '
         'originatorNodeId=$originatorNodeId '
-        'appDeviceId=$appDeviceId '
         'hardwareId=${status.canonicalHardwareId ?? "-"} '
         'identitySource=ble_node source=local_sos owner=device',
       );
       return _OperationalSosIdentity(
         deviceId: originatorNodeId.toString(),
-        appDeviceId: appDeviceId,
         hardwareId: status.canonicalHardwareId,
         originatorNodeId: originatorNodeId,
       );
     }
     final hardwareId = status.connected ? status.canonicalHardwareId : null;
     BleDebugRegistry.instance.recordEvent(
-      'SOS_BACKEND_IDENTITY_RESOLVED deviceId=$appDeviceId '
+      'SOS_BACKEND_IDENTITY_RESOLVED deviceId=none '
       'originatorNodeId=none '
-      'appDeviceId=$appDeviceId '
       'hardwareId=${hardwareId ?? "-"} '
-      'identitySource=${hardwareId == null ? _appIdentitySourceForDeviceId(appDeviceId) : "app_device_ble_node_pending"} '
+      'identitySource=${hardwareId == null ? "app" : "device_hardware_pending"} '
       'source=local_sos owner=app',
     );
     return _OperationalSosIdentity(
-      deviceId: appDeviceId,
-      appDeviceId: appDeviceId,
+      deviceId: null,
       hardwareId: hardwareId,
     );
-  }
-
-  String _appIdentitySourceForDeviceId(String? appDeviceId) {
-    final trimmed = appDeviceId?.trim();
-    if (trimmed == null || trimmed.isEmpty) {
-      return 'app_device';
-    }
-    if (trimmed.startsWith('app-device-local-')) {
-      return 'app_device_local_fallback';
-    }
-    if (trimmed.startsWith('app-device-account-')) {
-      return 'app_device_account_fallback';
-    }
-    return 'app_device';
   }
 
   String _sosIdentitySourceFor(_OperationalSosIdentity identity) {
@@ -3484,13 +3382,9 @@ class EixamConnectSdkImpl
       return 'ble_node';
     }
     if (identity.hardwareId != null && identity.hardwareId!.trim().isNotEmpty) {
-      return 'app_device_ble_node_pending';
+      return 'device_hardware_pending';
     }
-    return _appIdentitySourceForDeviceId(identity.appDeviceId);
-  }
-
-  bool _isLocalAppDeviceId(String? deviceId) {
-    return deviceId?.trim().startsWith('app-device-local-') == true;
+    return 'app';
   }
 
   String _httpStatusForError(Object error) {
@@ -3565,7 +3459,6 @@ class EixamConnectSdkImpl
     );
     status = _lastDeviceStatus;
     final nodeId = payload.nodeId ?? status?.nodeId ?? _knownLocalDeviceNodeId;
-    final appDeviceId = await _resolveStableAppDeviceId();
     if (nodeId == null && isBleMacDeviceId(payload.deviceId ?? hardwareId)) {
       BleDebugRegistry.instance.recordEvent(
         'TELEMETRY_BACKEND_NODE_ID_UNAVAILABLE '
@@ -3575,10 +3468,8 @@ class EixamConnectSdkImpl
     final identity = normalizeTelemetryBackendIdentity(
       payload: payload.copyWith(
         nodeId: nodeId,
-        appDeviceId: payload.appDeviceId ?? appDeviceId,
         hardwareId: payload.hardwareId ?? hardwareId,
       ),
-      appDeviceId: appDeviceId,
       hardwareId: hardwareId,
     );
     if (identity.normalized) {
@@ -3664,11 +3555,11 @@ class EixamConnectSdkImpl
 
     final deviceSosStatus = await deviceSosController.getStatus();
     BleDebugRegistry.instance.recordEvent(
-      'Public SOS device sync evaluated -> action=$action commandPathAvailable=true deviceId=${runtimeStatus.nodeId?.toString() ?? _stableAppDeviceId ?? "-"} nodeId=${runtimeStatus.nodeId?.toString() ?? "-"} appDeviceId=${_stableAppDeviceId ?? "-"} hardwareId=${runtimeStatus.deviceId} state=${deviceSosStatus.state.name} origin=${deviceSosStatus.triggerOrigin.name} optimistic=${deviceSosStatus.optimistic} derivedFromBle=${deviceSosStatus.derivedFromBlePacket}',
+      'Public SOS device sync evaluated -> action=$action commandPathAvailable=true deviceId=${runtimeStatus.nodeId?.toString() ?? "-"} nodeId=${runtimeStatus.nodeId?.toString() ?? "-"} hardwareId=${runtimeStatus.deviceId} state=${deviceSosStatus.state.name} origin=${deviceSosStatus.triggerOrigin.name} optimistic=${deviceSosStatus.optimistic} derivedFromBle=${deviceSosStatus.derivedFromBlePacket}',
     );
     if (!shouldRun(deviceSosStatus)) {
       BleDebugRegistry.instance.recordEvent(
-        'Public SOS device sync skipped -> action=$action reason=state_already_converged state=${deviceSosStatus.state.name} origin=${deviceSosStatus.triggerOrigin.name} deviceId=${runtimeStatus.nodeId?.toString() ?? _stableAppDeviceId ?? "-"} hardwareId=${runtimeStatus.deviceId} commandPathAvailable=true',
+        'Public SOS device sync skipped -> action=$action reason=state_already_converged state=${deviceSosStatus.state.name} origin=${deviceSosStatus.triggerOrigin.name} deviceId=${runtimeStatus.nodeId?.toString() ?? "-"} hardwareId=${runtimeStatus.deviceId} commandPathAvailable=true',
       );
       return const _PublicSosDeviceAttempt(
         available: true,
@@ -3679,11 +3570,11 @@ class EixamConnectSdkImpl
 
     try {
       BleDebugRegistry.instance.recordEvent(
-        'Public SOS device sync attempting -> action=$action deviceId=${runtimeStatus.nodeId?.toString() ?? _stableAppDeviceId ?? "-"} hardwareId=${runtimeStatus.deviceId} route=$_currentDeviceCommandOwnerRoute state=${deviceSosStatus.state.name} commandPathAvailable=true',
+        'Public SOS device sync attempting -> action=$action deviceId=${runtimeStatus.nodeId?.toString() ?? "-"} hardwareId=${runtimeStatus.deviceId} route=$_currentDeviceCommandOwnerRoute state=${deviceSosStatus.state.name} commandPathAvailable=true',
       );
       await operation();
       BleDebugRegistry.instance.recordEvent(
-        'Public SOS device sync succeeded -> action=$action deviceId=${runtimeStatus.nodeId?.toString() ?? _stableAppDeviceId ?? "-"} hardwareId=${runtimeStatus.deviceId} route=$_currentDeviceCommandOwnerRoute',
+        'Public SOS device sync succeeded -> action=$action deviceId=${runtimeStatus.nodeId?.toString() ?? "-"} hardwareId=${runtimeStatus.deviceId} route=$_currentDeviceCommandOwnerRoute',
       );
       return const _PublicSosDeviceAttempt(
         available: true,
@@ -3698,7 +3589,7 @@ class EixamConnectSdkImpl
         );
       }
       BleDebugRegistry.instance.recordEvent(
-        'Public SOS device sync failed -> action=$action error=$error deviceId=${runtimeStatus.nodeId?.toString() ?? _stableAppDeviceId ?? "-"} hardwareId=${runtimeStatus.deviceId} route=$_currentDeviceCommandOwnerRoute',
+        'Public SOS device sync failed -> action=$action error=$error deviceId=${runtimeStatus.nodeId?.toString() ?? "-"} hardwareId=${runtimeStatus.deviceId} route=$_currentDeviceCommandOwnerRoute',
       );
       return const _PublicSosDeviceAttempt(
         available: true,
@@ -3917,7 +3808,6 @@ class EixamConnectSdkImpl
       return;
     }
     final previousDeviceId = status.nodeId?.toString() ??
-        _stableAppDeviceId ??
         (isBleMacDeviceId(status.deviceId) ? null : status.deviceId) ??
         status.deviceId;
     final promotedStatus = status.copyWith(nodeId: nodeId);
@@ -4730,7 +4620,7 @@ class EixamConnectSdkImpl
       expiresAt: now.add(_appTriggeredSosBridgeWindow),
     );
     BleDebugRegistry.instance.recordEvent(
-      'App-triggered SOS bridge registered -> incidentId=${incident.id} deviceId=${_lastDeviceStatus?.nodeId?.toString() ?? _stableAppDeviceId ?? "-"} nodeId=${_lastDeviceStatus?.nodeId?.toString() ?? "-"} appDeviceId=${_stableAppDeviceId ?? "-"} hardwareId=${_lastDeviceStatus?.deviceId ?? "-"} expiresInMs=${_appTriggeredSosBridgeWindow.inMilliseconds}',
+      'App-triggered SOS bridge registered -> incidentId=${incident.id} deviceId=${_lastDeviceStatus?.nodeId?.toString() ?? "-"} nodeId=${_lastDeviceStatus?.nodeId?.toString() ?? "-"} hardwareId=${_lastDeviceStatus?.deviceId ?? "-"} expiresInMs=${_appTriggeredSosBridgeWindow.inMilliseconds}',
     );
   }
 
@@ -6248,7 +6138,6 @@ class EixamConnectSdkImpl
     required String message,
     required TrackingPosition positionSnapshot,
     required String? deviceId,
-    required String? appDeviceId,
     required String? hardwareId,
     required int? originatorNodeId,
     required int? relayNodeId,
@@ -6284,7 +6173,6 @@ class EixamConnectSdkImpl
         triggerSource: triggerSource,
         positionSnapshot: positionSnapshot,
         deviceId: deviceId,
-        appDeviceId: appDeviceId,
         hardwareId: hardwareId,
         originatorNodeId: originatorNodeId,
         relayNodeId: relayNodeId,
@@ -6424,7 +6312,6 @@ class EixamConnectSdkImpl
         message: message,
         positionSnapshot: positionSnapshot,
         deviceId: originatorNodeId?.toString() ?? localIdentity.deviceId,
-        appDeviceId: localIdentity.appDeviceId,
         hardwareId: localIdentity.hardwareId,
         originatorNodeId: originatorNodeId,
         relayNodeId: relayNodeId,
@@ -7191,7 +7078,7 @@ class EixamConnectSdkImpl
         'serviceBleReady=${protectionStatus.serviceBleReady} '
         'bleOwner=${protectionStatus.bleOwner.name} '
         'finalPublicConnected=${publicStatus.connected} '
-        'deviceId=${rawStatus.nodeId?.toString() ?? _stableAppDeviceId ?? "-"} nodeId=${rawStatus.nodeId?.toString() ?? "-"} appDeviceId=${_stableAppDeviceId ?? "-"} hardwareId=${rawStatus.deviceId}',
+        'deviceId=${rawStatus.nodeId?.toString() ?? "-"} nodeId=${rawStatus.nodeId?.toString() ?? "-"} hardwareId=${rawStatus.deviceId}',
       );
     }
     return publicStatus;
@@ -7343,7 +7230,7 @@ class EixamConnectSdkImpl
       'serviceBleReady=${protectionStatus.serviceBleReady} '
       'bleOwner=${owner.name} '
       'finalPublicConnected=${_lastPublicDeviceStatus?.connected ?? _lastDeviceStatus?.connected ?? false} '
-      'deviceId=${_lastDeviceStatus?.nodeId?.toString() ?? _stableAppDeviceId ?? "-"} nodeId=${_lastDeviceStatus?.nodeId?.toString() ?? "-"} appDeviceId=${_stableAppDeviceId ?? "-"} hardwareId=${_lastDeviceStatus?.deviceId ?? "-"}',
+      'deviceId=${_lastDeviceStatus?.nodeId?.toString() ?? "-"} nodeId=${_lastDeviceStatus?.nodeId?.toString() ?? "-"} hardwareId=${_lastDeviceStatus?.deviceId ?? "-"}',
     );
     if (deviceRepository is! InMemoryDeviceRepository) {
       return;
@@ -8038,7 +7925,7 @@ class EixamConnectSdkImpl
     final identitySource = connectedDeviceNodeId != null
         ? 'ble_node'
         : hardwareId != null
-            ? 'app_device_ble_node_pending'
+            ? 'device_hardware_pending'
             : 'none';
     if (connectedDeviceNodeId == null) {
       BleDebugRegistry.instance.recordEvent(
@@ -8566,7 +8453,6 @@ class EixamConnectSdkImpl
         timestamp: snapshot.receivedAt.toUtc(),
         positionSnapshot: positionSnapshot,
         deviceId: deviceId,
-        appDeviceId: _stableAppDeviceId,
         originatorNodeId: snapshot.originatorNodeId,
         relayNodeId: relayNodeId,
         relayDeviceId: relayDeviceId,
@@ -8603,7 +8489,6 @@ class EixamConnectSdkImpl
           timestamp: snapshot.receivedAt.toUtc(),
           positionSnapshot: positionSnapshot,
           deviceId: deviceId,
-          appDeviceId: _stableAppDeviceId,
           originatorNodeId: snapshot.originatorNodeId,
           relayNodeId: relayNodeId,
           relayDeviceId: relayDeviceId,
@@ -8668,7 +8553,6 @@ class EixamConnectSdkImpl
     final sdkUserIdPresent = session?.sdkUserId?.trim().isNotEmpty == true;
     final identity = normalizeSosBackendIdentity(
       deviceId: deviceId,
-      appDeviceId: _stableAppDeviceId,
       originatorNodeId: snapshot.originatorNodeId,
       relayNodeId: snapshot.relayNodeId,
       relayDeviceId: relayDeviceId,
@@ -8725,7 +8609,6 @@ class EixamConnectSdkImpl
   }) {
     final identity = normalizeSosBackendIdentity(
       deviceId: deviceId,
-      appDeviceId: _stableAppDeviceId,
       originatorNodeId: snapshot.originatorNodeId,
       relayNodeId: snapshot.relayNodeId,
       relayDeviceId: snapshot.relayNodeId?.toString(),
@@ -9441,13 +9324,11 @@ enum _SosOwner { app, device }
 class _OperationalSosIdentity {
   const _OperationalSosIdentity({
     this.deviceId,
-    this.appDeviceId,
     this.hardwareId,
     this.originatorNodeId,
   });
 
   final String? deviceId;
-  final String? appDeviceId;
   final String? hardwareId;
   final int? originatorNodeId;
 }

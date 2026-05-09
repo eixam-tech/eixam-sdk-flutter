@@ -255,7 +255,10 @@ internal class ProtectionSosBackendHandoff(
                 .put("originatorNodeId", nodeId)
                 .put("identitySource", "ble_node")
         } else {
-            payload.put("identitySource", "app_device_ble_node_pending")
+            payload.put(
+                "identitySource",
+                if (hardwareId == null) "app" else "device_hardware_pending",
+            )
         }
         hardwareId?.let {
             payload.put("hardwareId", it)
@@ -279,7 +282,6 @@ internal class ProtectionSosBackendHandoff(
                 "deviceId=${payload.optStringOrNone("deviceId")} " +
                 "nodeId=${nodeId?.toString() ?: "none"} " +
                 "originatorNodeId=${payload.optStringOrNone("originatorNodeId")} " +
-                "appDeviceId=${payload.optStringOrNone("appDeviceId")} " +
                 "hardwareId=${payload.optStringOrNone("hardwareId")} " +
                 "identitySource=${payload.optStringOrNone("identitySource")} " +
                 "incidentId=none canonicalIncidentId=none " +

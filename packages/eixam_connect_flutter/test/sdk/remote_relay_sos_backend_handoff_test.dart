@@ -21,7 +21,6 @@ import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
 import 'package:eixam_connect_flutter/src/sdk/operational_realtime_client.dart';
 import 'package:eixam_connect_flutter/src/sdk/protection_platform_adapter.dart';
 import 'package:eixam_connect_flutter/src/sdk/sdk_mqtt_contract.dart';
-import 'package:eixam_connect_flutter/src/sdk/stable_app_device_id_store.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
@@ -901,7 +900,7 @@ void main() {
       expect(payload['hardwareId'], 'CF:82:59:4B:1A:A8');
     });
 
-    test('HTTP SOS payload uses appDeviceId when BLE nodeId is pending',
+    test('HTTP SOS payload omits deviceId when BLE nodeId is pending',
         () async {
       late http.Request capturedRequest;
       final dataSource = HttpSosRemoteDataSource(
@@ -932,19 +931,17 @@ void main() {
           source: DeliveryMode.mobile,
         ),
         deviceId: 'CF:82:59:4B:1A:A8',
-        appDeviceId: 'app-device-123',
         hardwareId: 'CF:82:59:4B:1A:A8',
       );
 
       final payload = jsonDecode(capturedRequest.body) as Map<String, dynamic>;
-      expect(payload['deviceId'], 'app-device-123');
-      expect(payload['appDeviceId'], 'app-device-123');
+      expect(payload.containsKey('deviceId'), isFalse);
       expect(payload['hardwareId'], 'CF:82:59:4B:1A:A8');
-      expect(payload['identitySource'], 'app_device_ble_node_pending');
+      expect(payload['identitySource'], 'device_hardware_pending');
       expect(payload['deviceId'], isNot('CF:82:59:4B:1A:A8'));
     });
 
-    test('HTTP SOS payload uses appDeviceId when no BLE is connected',
+    test('HTTP SOS payload has no device id when no BLE is connected',
         () async {
       late http.Request capturedRequest;
       final dataSource = HttpSosRemoteDataSource(
@@ -974,13 +971,11 @@ void main() {
           timestamp: DateTime.utc(2026, 1, 1, 10),
           source: DeliveryMode.mobile,
         ),
-        appDeviceId: 'app-device-123',
       );
 
       final payload = jsonDecode(capturedRequest.body) as Map<String, dynamic>;
-      expect(payload['deviceId'], 'app-device-123');
-      expect(payload['appDeviceId'], 'app-device-123');
-      expect(payload['identitySource'], 'app_device');
+      expect(payload.containsKey('deviceId'), isFalse);
+      expect(payload['identitySource'], 'app');
     });
 
     test('MQTT telemetry payload normalizes MAC deviceId from nodeId', () {
@@ -1009,7 +1004,7 @@ void main() {
       expect(payload['deviceId'], isNot('CF:82:59:4B:1A:A8'));
     });
 
-    test('MQTT telemetry payload uses appDeviceId while BLE nodeId is pending',
+    test('MQTT telemetry payload omits deviceId while BLE nodeId is pending',
         () {
       final envelope = SdkMqttContract.buildTelemetryEnvelope(
         session: const EixamSession.signed(
@@ -1024,70 +1019,15 @@ void main() {
           longitude: 2.1686,
           altitude: 42,
           deviceId: 'CF:82:59:4B:1A:A8',
-          appDeviceId: 'app-device-123',
           hardwareId: 'CF:82:59:4B:1A:A8',
         ),
       );
 
       final payload = jsonDecode(envelope.payload) as Map<String, dynamic>;
-      expect(payload['deviceId'], 'app-device-123');
-      expect(payload['appDeviceId'], 'app-device-123');
+      expect(payload.containsKey('deviceId'), isFalse);
       expect(payload['hardwareId'], 'CF:82:59:4B:1A:A8');
-      expect(payload['identitySource'], 'app_device_ble_node_pending');
+      expect(payload['identitySource'], 'device_hardware');
       expect(payload['deviceId'], isNot('CF:82:59:4B:1A:A8'));
-    });
-
-    test('stable app device id is derived from canonical account identity', () {
-      final first = StableAppDeviceIdStore.resolveFromSession(
-        const EixamSession.signed(
-          appId: 'partner-app',
-          externalUserId: 'raw@example.com',
-          canonicalExternalUserId: 'Account/User 42',
-          userHash: 'signed-user-hash',
-        ),
-      );
-      final second = StableAppDeviceIdStore.resolveFromSession(
-        const EixamSession.signed(
-          appId: 'partner-app',
-          externalUserId: 'raw@example.com',
-          canonicalExternalUserId: 'Account/User 42',
-          userHash: 'signed-user-hash',
-        ),
-      );
-
-      expect(first, isNotNull);
-      expect(first!.deviceId, second!.deviceId);
-      expect(first.deviceId, startsWith('app-device-account-'));
-      expect(first.deviceId, isNot(contains('Account')));
-      expect(first.deviceId, isNot(contains('User')));
-      expect(first.deviceId, isNot(contains('raw@example.com')));
-      expect(first.source, 'account_hash');
-      expect(first.persistenceScope, 'account_stable');
-      expect(
-        first.limitation,
-        'not_unique_across_multiple_mobile_devices_for_same_account',
-      );
-    });
-
-    test('stable app device id hashes email-like account identifiers', () {
-      final resolution = StableAppDeviceIdStore.resolveFromSession(
-        const EixamSession.signed(
-          appId: 'partner-app',
-          externalUserId: 'person@example.com',
-          userHash: 'signed-email-hash',
-        ),
-      );
-
-      expect(resolution, isNotNull);
-      expect(resolution!.deviceId, startsWith('app-device-account-'));
-      expect(resolution.deviceId, isNot(contains('person@example.com')));
-      expect(resolution.deviceId, isNot(contains('signed-email-hash')));
-      expect(resolution.source, 'email_hash');
-      expect(resolution.persistenceScope, 'account_stable');
-      expect(
-        resolution.limitation,
-        'not_unique_across_multiple_mobile_devices_for_same_account',
-      );
     });
 
     test('platform unknown-origin SOS routes to remote candidate handoff',
@@ -1470,6 +1410,22 @@ void main() {
         expect(sosRepository.currentIncident.state, SosState.cancelled);
       });
 
+      test('app-only SOS does not send fake app identity', () async {
+        deviceRepository.emitStatus(
+          buildDeviceStatus(
+            connected: false,
+            lifecycleState: DeviceLifecycleState.unpaired,
+            paired: false,
+            activated: false,
+          ),
+        );
+
+        await sdk.triggerSos(const SosTriggerPayload(message: 'local SOS'));
+
+        expect(sosRepository.lastDeviceId, isNull);
+        expect(sosRepository.lastOriginatorNodeId, isNull);
+      });
+
       test('active open refresh without incident preserves canonical id',
           () async {
         final triggered = await sdk.triggerSos(
@@ -1735,7 +1691,6 @@ class _FakeCancelRemoteDataSource implements SosRemoteDataSource {
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
-    String? appDeviceId,
     String? hardwareId,
     int? originatorNodeId,
     int? relayNodeId,

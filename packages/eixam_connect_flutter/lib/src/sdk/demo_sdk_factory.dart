@@ -21,7 +21,6 @@ import '../device/ble_debug_registry.dart';
 import '../device/real_ble_client.dart';
 import 'eixam_connect_sdk_impl.dart';
 import 'mock_realtime_client.dart';
-import 'stable_app_device_id_store.dart';
 
 /// Factory that wires a mostly local SDK instance for demos and development.
 ///
@@ -39,7 +38,6 @@ class DemoSdkFactory {
     final store = SharedPrefsSdkStore();
     final sessionStore = SdkSessionStore(localStore: store);
     final sessionContext = SdkSessionContext();
-    final appDeviceIdStore = StableAppDeviceIdStore(localStore: store);
     final preferredBleDeviceStore = PreferredBleDeviceStore(localStore: store);
     final permissionsRepository = PlatformPermissionsRepository();
 
@@ -111,7 +109,6 @@ class DemoSdkFactory {
       preferredBleDeviceStore: preferredBleDeviceStore,
       sessionStore: sessionStore,
       sessionContext: sessionContext,
-      stableAppDeviceIdProvider: appDeviceIdStore.getOrCreate,
     );
 
     await sdk.initialize(config);

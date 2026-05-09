@@ -59,7 +59,6 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
-    String? appDeviceId,
     String? hardwareId,
     int? originatorNodeId,
     int? relayNodeId,
@@ -93,7 +92,6 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
         'state=sent deviceId=${deviceId ?? "none"} '
         'nodeId=${originatorNodeId?.toString() ?? "none"} '
         'hardwareId=${hardwareId ?? "none"} '
-        'appDeviceId=${appDeviceId ?? "none"} '
         'hasLocation=${positionSnapshot != null}',
       );
       final dto = await remoteDataSource.triggerSos(
@@ -101,7 +99,6 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
         triggerSource: triggerSource,
         positionSnapshot: positionSnapshot,
         deviceId: deviceId,
-        appDeviceId: appDeviceId,
         hardwareId: hardwareId,
         originatorNodeId: originatorNodeId,
         relayNodeId: relayNodeId,

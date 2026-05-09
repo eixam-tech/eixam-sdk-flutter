@@ -184,7 +184,7 @@ class BacklogSyncController {
         if (!_matchesActiveSession(chunk.sessionId)) {
           return;
         }
-        final backendDeviceId = await _backendHardwareIdResolver();
+        final backendHardwareId = await _backendHardwareIdResolver();
         final payloads = chunk.records
             .map(
               (record) => SdkTelemetryPayload(
@@ -195,7 +195,9 @@ class BacklogSyncController {
                 latitude: record.telPacket.position.latitude,
                 longitude: record.telPacket.position.longitude,
                 altitude: record.telPacket.position.altitudeMeters.toDouble(),
-                deviceId: backendDeviceId,
+                nodeId: record.telPacket.nodeId,
+                deviceId: record.telPacket.nodeId.toString(),
+                hardwareId: backendHardwareId,
                 eventId:
                     '${record.telPacket.nodeId}:${record.timeUnix}:${record.telPacket.packetId}',
               ),

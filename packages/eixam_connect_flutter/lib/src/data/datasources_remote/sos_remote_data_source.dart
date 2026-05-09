@@ -10,7 +10,6 @@ abstract class SosRemoteDataSource {
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
-    String? appDeviceId,
     String? hardwareId,
     int? originatorNodeId,
     int? relayNodeId,
