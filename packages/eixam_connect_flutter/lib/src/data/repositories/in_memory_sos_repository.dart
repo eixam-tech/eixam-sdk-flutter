@@ -21,6 +21,7 @@ class InMemorySosRepository implements SosRepository {
       StreamController<SosState>.broadcast();
 
   SosIncident? _activeIncident;
+  String? _locallyClosedIncidentId;
 
   /// Restores the last persisted SOS state, if available.
   Future<void> restoreState() async {
@@ -30,6 +31,8 @@ class InMemorySosRepository implements SosRepository {
         await _localStore.readJson(SharedPrefsSdkStore.sosIncidentKey);
     final stateRaw =
         await _localStore.readString(SharedPrefsSdkStore.sosStateKey);
+    _locallyClosedIncidentId =
+        await _localStore.readString(SharedPrefsSdkStore.sosClosedIncidentKey);
 
     if (incidentJson != null) {
       _activeIncident = LocalStateSerializers.sosIncidentFromJson(incidentJson);
@@ -84,6 +87,7 @@ class InMemorySosRepository implements SosRepository {
       message: message,
       positionSnapshot: positionSnapshot,
     );
+    _locallyClosedIncidentId = null;
 
     _emit(_activeIncident!.state);
     await _persistState();
@@ -101,10 +105,15 @@ class InMemorySosRepository implements SosRepository {
     }
 
     _emit(SosState.cancelRequested);
-    _activeIncident = _activeIncident!.copyWith(state: SosState.cancelled);
-    _emit(_activeIncident!.state);
+    final cancelledIncident =
+        _activeIncident!.copyWith(state: SosState.cancelled);
+    _activeIncident = cancelledIncident;
+    _locallyClosedIncidentId = cancelledIncident.id;
+    _emit(SosState.cancelled);
+    _activeIncident = null;
+    _emit(SosState.idle);
     await _persistState();
-    return _activeIncident!;
+    return cancelledIncident;
   }
 
   @override
@@ -212,6 +221,15 @@ class InMemorySosRepository implements SosRepository {
 
     await _localStore.saveString(
         SharedPrefsSdkStore.sosStateKey, _stateMachine.current.name);
+    final closedIncidentId = _locallyClosedIncidentId;
+    if (closedIncidentId == null || closedIncidentId.isEmpty) {
+      await _localStore.remove(SharedPrefsSdkStore.sosClosedIncidentKey);
+    } else {
+      await _localStore.saveString(
+        SharedPrefsSdkStore.sosClosedIncidentKey,
+        closedIncidentId,
+      );
+    }
     if (_activeIncident == null || _stateMachine.current == SosState.idle) {
       await _localStore.remove(SharedPrefsSdkStore.sosIncidentKey);
       return;

@@ -40,6 +40,7 @@ class MqttOperationalSosRepository
 
   StreamSubscription<RealtimeEvent>? _realtimeSub;
   SosIncident? _activeIncident;
+  String? _locallyClosedIncidentId;
 
   Future<void> restoreState() async {
     if (_localStore == null) {
@@ -50,6 +51,8 @@ class MqttOperationalSosRepository
         await _localStore.readJson(SharedPrefsSdkStore.sosIncidentKey);
     final stateRaw =
         await _localStore.readString(SharedPrefsSdkStore.sosStateKey);
+    _locallyClosedIncidentId =
+        await _localStore.readString(SharedPrefsSdkStore.sosClosedIncidentKey);
 
     if (incidentJson != null) {
       _activeIncident = LocalStateSerializers.sosIncidentFromJson(incidentJson);
@@ -91,7 +94,8 @@ class MqttOperationalSosRepository
         'There is already an SOS flow in progress',
       );
     }
-    final appOwnedSos = originatorNodeId == null && relayNodeId == null;
+    final appOwnedSos = _isAppOwnedTriggerSource(triggerSource) ||
+        (originatorNodeId == null && relayNodeId == null);
     if (positionSnapshot == null && !appOwnedSos) {
       throw const SosException(
         'E_SOS_POSITION_REQUIRED',
@@ -137,6 +141,7 @@ class MqttOperationalSosRepository
               mobileCoverage: mobileCoverage,
             );
       _activeIncident = incident;
+      _locallyClosedIncidentId = null;
       _rememberActiveLikeState();
       _emit(SosState.sent);
       await _persistState();
@@ -148,6 +153,16 @@ class MqttOperationalSosRepository
         rethrow;
       }
       throw SosException('E_SOS_TRIGGER_FAILED', error.toString());
+    }
+  }
+
+  bool _isAppOwnedTriggerSource(String triggerSource) {
+    switch (triggerSource) {
+      case 'button_ui':
+      case 'commercial_app':
+        return true;
+      default:
+        return false;
     }
   }
 
@@ -464,7 +479,6 @@ class MqttOperationalSosRepository
     try {
       final cancelled = await remoteDataSource.cancelSos();
       final settledIncident = await _settleCancelledIncident(
-        remoteDataSource: remoteDataSource,
         cancelledDto: cancelled,
       );
       await _persistState();
@@ -514,21 +528,13 @@ class MqttOperationalSosRepository
   }
 
   Future<SosIncident> _settleCancelledIncident({
-    required SosRemoteDataSource remoteDataSource,
     required SosIncidentDto? cancelledDto,
   }) async {
-    if (cancelledDto != null) {
-      return _applyBackendIncident(cancelledDto);
-    }
-
-    final activeAfterCancel = await remoteDataSource.getActiveSos();
-    if (activeAfterCancel != null) {
-      return _applyBackendIncident(activeAfterCancel);
-    }
-
-    _activeIncident = _activeIncident!.copyWith(state: SosState.cancelled);
-    _setState(SosState.cancelled);
-    return _activeIncident!;
+    final cancelledIncident = cancelledDto == null
+        ? _activeIncident!.copyWith(state: SosState.cancelled)
+        : _mapper.toDomain(cancelledDto).copyWith(state: SosState.cancelled);
+    _clearCurrentIncidentAfterCancellation(cancelledIncident);
+    return cancelledIncident;
   }
 
   Future<SosIncident> _settleResolvedIncident({
@@ -556,6 +562,19 @@ class MqttOperationalSosRepository
     }
     _setState(_activeIncident!.state);
     return _activeIncident!;
+  }
+
+  void _clearCurrentIncidentAfterCancellation(SosIncident cancelledIncident) {
+    _activeIncident = cancelledIncident;
+    _locallyClosedIncidentId = cancelledIncident.id;
+    _setState(SosState.cancelled);
+    _activeIncident = null;
+    _setState(SosState.idle);
+  }
+
+  bool _shouldIgnoreLocallyClosedIncident(SosIncident incident) {
+    final closedIncidentId = _locallyClosedIncidentId;
+    return closedIncidentId != null && incident.id == closedIncidentId;
   }
 
   @override
@@ -659,7 +678,24 @@ class MqttOperationalSosRepository
         );
       }
 
-      _activeIncident = _mapper.toDomain(active);
+      final hydratedIncident = _mapper.toDomain(active);
+      if (_shouldIgnoreLocallyClosedIncident(hydratedIncident)) {
+        _activeIncident = null;
+        _setState(SosState.idle);
+        await _persistState();
+        return const SosRuntimeRehydrationResult(
+          outcome: SosRuntimeRehydrationOutcome.clearedToIdle,
+          resultingState: SosState.idle,
+          diagnosticNote:
+              'Backend returned the same SOS incident that was locally closed; ignored it.',
+        );
+      }
+      if (_locallyClosedIncidentId != null &&
+          hydratedIncident.id != _locallyClosedIncidentId) {
+        _locallyClosedIncidentId = null;
+      }
+
+      _activeIncident = hydratedIncident;
       _rememberActiveLikeStateIfNeeded(_activeIncident!.state);
       _setState(_activeIncident!.state);
       await _persistState();
@@ -892,6 +928,15 @@ class MqttOperationalSosRepository
       SharedPrefsSdkStore.sosStateKey,
       _stateMachine.current.name,
     );
+    final closedIncidentId = _locallyClosedIncidentId;
+    if (closedIncidentId == null || closedIncidentId.isEmpty) {
+      await _localStore.remove(SharedPrefsSdkStore.sosClosedIncidentKey);
+    } else {
+      await _localStore.saveString(
+        SharedPrefsSdkStore.sosClosedIncidentKey,
+        closedIncidentId,
+      );
+    }
     if (_activeIncident == null || _stateMachine.current == SosState.idle) {
       await _localStore.remove(SharedPrefsSdkStore.sosIncidentKey);
       return;

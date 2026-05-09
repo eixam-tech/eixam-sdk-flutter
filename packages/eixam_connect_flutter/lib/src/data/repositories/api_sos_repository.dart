@@ -32,6 +32,7 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
       StreamController<SosState>.broadcast();
 
   SosIncident? _activeIncident;
+  String? _locallyClosedIncidentId;
 
   /// Restores the latest cached incident and state from local storage.
   Future<void> restoreState() async {
@@ -41,6 +42,8 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
         await _localStore.readJson(SharedPrefsSdkStore.sosIncidentKey);
     final stateRaw =
         await _localStore.readString(SharedPrefsSdkStore.sosStateKey);
+    _locallyClosedIncidentId =
+        await _localStore.readString(SharedPrefsSdkStore.sosClosedIncidentKey);
 
     if (incidentJson != null) {
       _activeIncident = LocalStateSerializers.sosIncidentFromJson(incidentJson);
@@ -118,6 +121,7 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
         'backendIncidentId=${dto.id} httpStatus=${dto.statusCode?.toString() ?? "none"}',
       );
       _activeIncident = mapper.toDomain(dto);
+      _locallyClosedIncidentId = null;
       _emit(_activeIncident!.state);
       await _persistState();
       return _activeIncident!;
@@ -153,14 +157,12 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
 
     try {
       final dto = await remoteDataSource.cancelSos();
-      if (dto == null) {
-        _activeIncident = _activeIncident!.copyWith(state: SosState.cancelled);
-      } else {
-        _activeIncident = mapper.toDomain(dto);
-      }
-      _emit(_activeIncident!.state);
+      final cancelledIncident = dto == null
+          ? _activeIncident!.copyWith(state: SosState.cancelled)
+          : mapper.toDomain(dto).copyWith(state: SosState.cancelled);
+      _clearCurrentIncidentAfterCancellation(cancelledIncident);
       await _persistState();
-      return _activeIncident!;
+      return cancelledIncident;
     } catch (e) {
       _emit(SosState.failed);
       await _persistState();
@@ -290,13 +292,43 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
       );
     }
 
-    _activeIncident = mapper.toDomain(active);
+    final hydratedIncident = mapper.toDomain(active);
+    if (_shouldIgnoreLocallyClosedIncident(hydratedIncident)) {
+      _activeIncident = null;
+      _setState(SosState.idle);
+      await _persistState();
+      return const SosRuntimeRehydrationResult(
+        outcome: SosRuntimeRehydrationOutcome.clearedToIdle,
+        resultingState: SosState.idle,
+        diagnosticNote:
+            'Backend returned the same SOS incident that was locally closed; ignored it.',
+      );
+    }
+    if (_locallyClosedIncidentId != null &&
+        hydratedIncident.id != _locallyClosedIncidentId) {
+      _locallyClosedIncidentId = null;
+    }
+
+    _activeIncident = hydratedIncident;
     _setState(_activeIncident!.state);
     await _persistState();
     return SosRuntimeRehydrationResult(
       outcome: SosRuntimeRehydrationOutcome.hydratedFromBackend,
       resultingState: _stateMachine.current,
     );
+  }
+
+  void _clearCurrentIncidentAfterCancellation(SosIncident cancelledIncident) {
+    _activeIncident = cancelledIncident;
+    _locallyClosedIncidentId = cancelledIncident.id;
+    _emit(SosState.cancelled);
+    _activeIncident = null;
+    _emit(SosState.idle);
+  }
+
+  bool _shouldIgnoreLocallyClosedIncident(SosIncident incident) {
+    final closedIncidentId = _locallyClosedIncidentId;
+    return closedIncidentId != null && incident.id == closedIncidentId;
   }
 
   bool _shouldPreserveOpenIncidentWithoutBackendPayload() {
@@ -409,6 +441,15 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
 
     await _localStore.saveString(
         SharedPrefsSdkStore.sosStateKey, _stateMachine.current.name);
+    final closedIncidentId = _locallyClosedIncidentId;
+    if (closedIncidentId == null || closedIncidentId.isEmpty) {
+      await _localStore.remove(SharedPrefsSdkStore.sosClosedIncidentKey);
+    } else {
+      await _localStore.saveString(
+        SharedPrefsSdkStore.sosClosedIncidentKey,
+        closedIncidentId,
+      );
+    }
     if (_activeIncident == null || _stateMachine.current == SosState.idle) {
       await _localStore.remove(SharedPrefsSdkStore.sosIncidentKey);
       return;

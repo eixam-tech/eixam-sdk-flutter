@@ -111,7 +111,8 @@ void main() {
 
         expect(harness.sosRepository.cancelCallCount, 1);
         expect(cancelled.state, SosState.cancelled);
-        expect(await harness.sdk.getSosState(), SosState.cancelled);
+        expect(await harness.sdk.getSosState(), SosState.idle);
+        expect(await harness.sdk.getCurrentSosIncident(), isNull);
       } finally {
         await harness.dispose();
       }
@@ -145,7 +146,7 @@ void main() {
         await harness.sdk.cancelSos();
 
         expect(harness.sosRepository.cancelCallCount, 1);
-        expect(await harness.sdk.getSosState(), SosState.cancelled);
+        expect(await harness.sdk.getSosState(), SosState.idle);
       } finally {
         await harness.dispose();
       }
@@ -251,7 +252,7 @@ void main() {
         await pumpEventQueue(times: 2);
 
         expect(harness.sosRepository.cancelCallCount, 1);
-        expect(await harness.sdk.getSosState(), SosState.cancelled);
+        expect(await harness.sdk.getSosState(), SosState.idle);
       } finally {
         await harness.dispose();
       }

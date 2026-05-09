@@ -111,6 +111,42 @@ void main() {
       await sosRepository.dispose();
     });
 
+    Future<void> rebuildSdkWithDeviceSosTiming({
+      required Duration countdownDuration,
+      required Duration countdownTick,
+    }) async {
+      await sdk.dispose();
+      deviceSosController = DeviceSosController(
+        countdownDuration: countdownDuration,
+        countdownTick: countdownTick,
+      );
+      deviceCommands = <EixamDeviceCommand>[];
+      await deviceSosController.attach(
+        commandWriter: (command) async {
+          deviceCommands.add(command);
+        },
+      );
+      sdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: realtimeClient,
+        deviceSosController: deviceSosController,
+        bleIncomingEvents: bleEvents.stream,
+        preferredBleDeviceStore: preferredDeviceStore,
+        localStore: localStore,
+      );
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+      );
+    }
+
     test('12-byte remote relay SOS backend handoff includes packet location',
         () async {
       final events = <EixamSdkEvent>[];
@@ -353,8 +389,12 @@ void main() {
       expect(sosRepository.lastDeviceId, isNot('CF:82:59:4B:1A:A8'));
     });
 
-    test('connected nodeId device countdown zero does not create app SOS',
+    test('connected nodeId device countdown zero publishes backend SOS',
         () async {
+      await rebuildSdkWithDeviceSosTiming(
+        countdownDuration: const Duration(milliseconds: 35),
+        countdownTick: const Duration(seconds: 1),
+      );
       deviceRepository.emitStatus(
         buildDeviceStatus(
           deviceId: 'ble-device-123',
@@ -369,8 +409,63 @@ void main() {
       await sdk.startPreSos(countdown: const Duration(milliseconds: 35));
       await Future<void>.delayed(const Duration(milliseconds: 120));
 
-      expect(sosRepository.triggerCallCount, 0);
-      expect(sosRepository.lastDeviceId, isNull);
+      expect(sosRepository.triggerCallCount, 1);
+      expect(sosRepository.lastDeviceId, '1498094248');
+      expect(sosRepository.lastOriginatorNodeId, 1498094248);
+      expect(await sdk.getPreSosStatus(), isNull);
+    });
+
+    test('device-origin countdown zero promotes backend SOS once', () async {
+      await rebuildSdkWithDeviceSosTiming(
+        countdownDuration: const Duration(milliseconds: 35),
+        countdownTick: const Duration(seconds: 1),
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-device-123',
+          nodeId: 1498094248,
+          canonicalHardwareId: 'CF:82:59:4B:1A:A8',
+          connected: true,
+          paired: true,
+          activated: true,
+        ),
+      );
+      trackingRepository.emitPosition(
+        TrackingPosition(
+          latitude: 41.38,
+          longitude: 2.17,
+          timestamp: DateTime.utc(2026, 1, 1, 10),
+          source: DeliveryMode.mobile,
+        ),
+      );
+      sosRepository.currentIncident = SosIncident(
+        id: 'api-sos-1',
+        state: SosState.idle,
+        createdAt: DateTime.utc(2026, 1, 1),
+      );
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginPreConfirmPacketForNode(1498094248),
+        source: DeviceSosTransitionSource.device,
+      );
+      await _eventually(() => sosRepository.triggerCallCount == 1);
+
+      expect(sosRepository.lastDeviceId, '1498094248');
+      expect(sosRepository.lastOriginatorNodeId, 1498094248);
+      expect(await sdk.getPreSosStatus(), isNull);
+      expect(
+          (await deviceSosController.getStatus()).state, DeviceSosState.active);
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginPreConfirmPacketForNode(1498094248),
+        source: DeviceSosTransitionSource.device,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+
+      expect(sosRepository.triggerCallCount, 1);
+      expect(await sdk.getPreSosStatus(), isNull);
+      expect(
+          (await deviceSosController.getStatus()).state, DeviceSosState.active);
     });
 
     test('device runtime SOS sends final backend payload from incidentId',
@@ -661,7 +756,7 @@ void main() {
 
       await Future<void>.delayed(const Duration(milliseconds: 20));
       deviceSosController.handleIncomingSosPacket(
-        _deviceOriginPreConfirmPacketForNode(1498094248),
+        _deviceOriginPreConfirmPacketForNode(1498094248, packetId: 1),
         source: DeviceSosTransitionSource.device,
       );
       final duplicate = await sdk.getPreSosStatus();
@@ -671,6 +766,28 @@ void main() {
       expect(duplicate.expectedActivationAt, first.expectedActivationAt);
       expect(duplicate.startedAt, first.startedAt);
       expect(duplicate.owner, PublicPreSosOwner.device);
+      expect(duplicate.packetId, first.packetId);
+    });
+
+    test('app start during device-origin PRE-SOS does not restart countdown',
+        () async {
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginPreConfirmPacketForNode(1498094248),
+        source: DeviceSosTransitionSource.device,
+      );
+      final first = await sdk.getPreSosStatus();
+      expect(first, isNotNull);
+
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await sdk.startPreSos(countdown: const Duration(seconds: 20));
+      final afterStart = await sdk.getPreSosStatus();
+
+      expect(afterStart, isNotNull);
+      expect(afterStart!.owner, PublicPreSosOwner.device);
+      expect(afterStart.cycleKey, first!.cycleKey);
+      expect(afterStart.startedAt, first.startedAt);
+      expect(afterStart.expectedActivationAt, first.expectedActivationAt);
+      expect(deviceCommands, isEmpty);
     });
 
     test('app-origin device echo enriches cycle without resetting deadline',
@@ -836,7 +953,7 @@ void main() {
       );
     });
 
-    test('countdown zero skips activate_sos when device runtime SOS exists',
+    test('trigger still publishes backend when device runtime SOS exists',
         () async {
       await deviceSosController.triggerSos();
       await deviceSosController.confirmSos();
@@ -846,10 +963,42 @@ void main() {
         createdAt: DateTime.utc(2026, 1, 1),
       );
 
+      await sdk.triggerSos(const SosTriggerPayload(message: 'local SOS'));
+
+      expect(sosRepository.triggerCallCount, 1);
+    });
+
+    test('backend failure after countdown does not surface device-only SOS',
+        () async {
+      await rebuildSdkWithDeviceSosTiming(
+        countdownDuration: const Duration(milliseconds: 35),
+        countdownTick: const Duration(seconds: 1),
+      );
+      final states = <SosState>[];
+      final subscription = sdk.watchSosState().listen(states.add);
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-device-123',
+          nodeId: 1498094248,
+          canonicalHardwareId: 'CF:82:59:4B:1A:A8',
+          connected: true,
+          paired: true,
+          activated: true,
+        ),
+      );
+      sosRepository.triggerError =
+          const NetworkException('E_NETWORK', 'offline');
+
       await sdk.startPreSos(countdown: const Duration(milliseconds: 35));
       await Future<void>.delayed(const Duration(milliseconds: 120));
 
-      expect(sosRepository.triggerCallCount, 0);
+      expect(states, contains(SosState.sending));
+      expect(states, contains(SosState.failed));
+      final incident = await sdk.getCurrentSosIncident();
+      expect(incident?.state, isNot(SosState.sent));
+      expect(incident?.deliveryChannel, isNot(SosDeliveryChannel.deviceOnly));
+
+      await subscription.cancel();
     });
 
     test('countdown zero handles E_SOS_ALREADY_ACTIVE as successful no-op',
@@ -864,6 +1013,28 @@ void main() {
 
       expect(sosRepository.triggerCallCount, 0);
       expect(await sdk.getSosState(), isNot(SosState.failed));
+    });
+
+    test('commercial app SOS uses HTTP path even when a nodeId is present',
+        () async {
+      final remoteDataSource = _CapturingSosRemoteDataSource();
+      final repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        remoteDataSource: remoteDataSource,
+      );
+      addTearDown(repository.dispose);
+
+      await repository.triggerSos(
+        triggerSource: 'commercial_app',
+        deviceId: '1498094248',
+        hardwareId: 'CF:82:59:4B:1A:A8',
+        originatorNodeId: 1498094248,
+      );
+
+      expect(remoteDataSource.triggerCallCount, 1);
+      expect(remoteDataSource.lastDeviceId, '1498094248');
+      expect(remoteDataSource.lastOriginatorNodeId, isNull);
+      expect(realtimeClient.publishedSos, isEmpty);
     });
 
     test('HTTP SOS payload normalizes deviceId from originatorNodeId',
@@ -1298,6 +1469,61 @@ void main() {
       await platformEvents.close();
     });
 
+    test('native backend sync failure surfaces failed state, not sent',
+        () async {
+      await sdk.dispose();
+      final platformEvents =
+          StreamController<ProtectionPlatformEvent>.broadcast();
+      final platformAdapter = _FakeProtectionPlatformAdapter(
+        platformEvents: platformEvents.stream,
+      );
+      final localDeviceSosController = DeviceSosController();
+      sdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: realtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: bleEvents.stream,
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: platformAdapter,
+        localStore: localStore,
+      );
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+      );
+      final states = <SosState>[];
+      final subscription = sdk.watchSosState().listen(states.add);
+
+      platformEvents.add(
+        ProtectionPlatformEvent(
+          type: ProtectionPlatformEventType.nativeBackendSyncQueued,
+          timestamp: DateTime.utc(2026, 4, 28, 10, 32),
+          reason: 'queued',
+        ),
+      );
+      await _eventually(() => states.contains(SosState.sending));
+      platformEvents.add(
+        ProtectionPlatformEvent(
+          type: ProtectionPlatformEventType.nativeBackendSyncFailed,
+          timestamp: DateTime.utc(2026, 4, 28, 10, 32, 1),
+          reason: 'offline',
+        ),
+      );
+      await _eventually(() => states.contains(SosState.failed));
+
+      expect(states, isNot(contains(SosState.sent)));
+
+      await subscription.cancel();
+      await platformEvents.close();
+    });
+
     group('remote relay cancel handoff', () {
       late _FakeCancelRemoteDataSource cancelDataSource;
 
@@ -1696,8 +1922,11 @@ EixamSosPacket _deviceOriginActivePacketForNode(int nodeId) {
   ])!;
 }
 
-EixamSosPacket _deviceOriginPreConfirmPacketForNode(int nodeId) {
-  const flagsWord = 0x4000;
+EixamSosPacket _deviceOriginPreConfirmPacketForNode(
+  int nodeId, {
+  int packetId = 0,
+}) {
+  final flagsWord = 0x4000 | (packetId & 0x0F);
   return EixamSosPacket.tryParse(<int>[
     nodeId & 0xFF,
     (nodeId >> 8) & 0xFF,
@@ -1723,6 +1952,43 @@ class _MissingCurrentIncidentSosRepository extends FakeSosRepository {
       return null;
     }
     return super.getCurrentIncident();
+  }
+}
+
+class _CapturingSosRemoteDataSource extends _FakeCancelRemoteDataSource {
+  int triggerCallCount = 0;
+  String? lastDeviceId;
+  int? lastOriginatorNodeId;
+
+  @override
+  Future<SosIncidentDto> triggerSos({
+    String? message,
+    required String triggerSource,
+    TrackingPosition? positionSnapshot,
+    String? deviceId,
+    String? hardwareId,
+    int? originatorNodeId,
+    int? relayNodeId,
+    String? relayDeviceId,
+    String? relayHardwareId,
+    String? relaySource,
+    String? incidentId,
+    String? cycleKey,
+    SdkDeviceBatterySnapshot? deviceBattery,
+    SdkCoverageSnapshot? deviceCoverage,
+    int? mobileBattery,
+    SdkCoverageSnapshot? mobileCoverage,
+  }) async {
+    triggerCallCount++;
+    lastDeviceId = deviceId;
+    lastOriginatorNodeId = originatorNodeId;
+    return SosIncidentDto(
+      id: 'http-sos-1',
+      state: 'sent',
+      createdAt: DateTime.utc(2026, 1, 1).toIso8601String(),
+      triggerSource: triggerSource,
+      message: message,
+    );
   }
 }
 

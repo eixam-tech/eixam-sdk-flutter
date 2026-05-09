@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+
 import 'ble_adapter_state.dart';
 import 'ble_connection_status.dart';
 import 'eixam_ble_command.dart';
@@ -25,6 +27,19 @@ class BleDebugRegistry {
   Stream<BleDebugState> watch() => _controller.stream;
 
   BleDebugState get currentState => _state;
+
+  static const List<String> _consoleDiagnosticPrefixes = <String>[
+    '[DEVICE_PRE_SOS_COUNTDOWN]',
+    '[DEVICE_SOS_STATE_DECISION]',
+    '[SDK_SOS_CLASSIFY]',
+    '[PRE_SOS_CYCLE]',
+    '[APP_PRE_SOS_START]',
+    '[APP_SOS_COUNTDOWN_ZERO]',
+    '[NATIVE_PRE_SOS_BACKEND]',
+    '[BACKGROUND_SOS]',
+    'Device SOS backend sync created incident',
+    'SOS_BACKEND_PAYLOAD_FINAL',
+  ];
 
   void reset() {
     _commandWriter = null;
@@ -97,6 +112,9 @@ class BleDebugRegistry {
   }
 
   void recordEvent(String message) {
+    if (kDebugMode && _shouldPrintDiagnosticEvent(message)) {
+      debugPrint(message);
+    }
     final events = List<BleDebugEvent>.from(_state.events)
       ..add(BleDebugEvent(timestamp: DateTime.now(), message: message));
     if (events.length > 30) {
@@ -104,6 +122,10 @@ class BleDebugRegistry {
     }
     _state = _state.copyWith(events: events);
     _controller.add(_state);
+  }
+
+  bool _shouldPrintDiagnosticEvent(String message) {
+    return _consoleDiagnosticPrefixes.any(message.startsWith);
   }
 
   void recordIncomingNotification({
