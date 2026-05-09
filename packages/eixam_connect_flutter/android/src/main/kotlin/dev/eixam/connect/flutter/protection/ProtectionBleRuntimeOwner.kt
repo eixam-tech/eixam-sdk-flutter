@@ -48,6 +48,7 @@ internal class ProtectionBleRuntimeOwner(
     private var boundDeviceId: String? = null
     private var boundNodeId: Int? = null
     private val terminalSosSuppressionByKey = mutableMapOf<String, TerminalSosSuppression>()
+    private val closedPreSosCycleUntilMs = mutableMapOf<String, Long>()
     private val backendHandoff =
         ProtectionSosBackendHandoff(
             context = context,
@@ -72,6 +73,7 @@ internal class ProtectionBleRuntimeOwner(
         targetDeviceId = deviceId
         connectedBleNodeId = null
         terminalSosSuppressionByKey.clear()
+        closedPreSosCycleUntilMs.clear()
         bindDeviceIdentity(deviceId, backendHardwareId)
         this.reconnectBackoffMs = reconnectBackoffMs.coerceAtLeast(1000L)
         isStopping = false
@@ -89,6 +91,7 @@ internal class ProtectionBleRuntimeOwner(
         backendHandoff.flushPendingActions(
             reason = if (restored) "restored_runtime_flush" else "runtime_start_flush",
         )
+        rehydratePreSosLifecycle(reason = if (restored) "restored_runtime" else "runtime_start")
         connect(reason = if (restored) "restored_runtime_connect" else "runtime_connect")
     }
 
@@ -103,8 +106,10 @@ internal class ProtectionBleRuntimeOwner(
         sosActivationRunnable = null
         subscriptionStep = SubscriptionStep.idle
         pendingSosLifecycleState = ProtectionSosLifecycleState.idle
+        runtimeStore.clearPreSosLifecycle()
         connectedBleNodeId = null
         terminalSosSuppressionByKey.clear()
+        closedPreSosCycleUntilMs.clear()
         clearCharacteristicRefs()
         bluetoothGatt?.close()
         bluetoothGatt = null
@@ -1340,32 +1345,62 @@ internal class ProtectionBleRuntimeOwner(
                     )
                 }
                 if (closed && pendingSosLifecycleState != ProtectionSosLifecycleState.idle) {
+                    val lifecycleSnapshot = runtimeStore.snapshot()
+                    val closedCycleKey = lifecycleSnapshot["preSosCycleKey"] as? String
+                    rememberClosedPreSosCycle(closedCycleKey)
                     val closeOutcome =
                         ProtectionSosLifecycleLogic.onClosePacket(pendingSosLifecycleState)
                     pendingSosLifecycleState = closeOutcome.nextState
                     cancelSosActivationTimeout()
+                    runtimeStore.recordPreSosLifecycle(
+                        state = pendingSosLifecycleState.name,
+                        cycleKey = closedCycleKey,
+                        owner = "device",
+                        startedAt = null,
+                        expectedActivationAt = null,
+                        originatorNodeId = readPacketOriginatorNodeId(payload),
+                        packetId = null,
+                    )
                     ProtectionForegroundService.showResolvedSosNotification(context)
                     if (closeOutcome.shouldCancelBackend) {
                         backendHandoff.queueCancel("device_cycle_closed")
                     }
+                    runtimeStore.clearPreSosLifecycle()
+                    pendingSosLifecycleState = ProtectionSosLifecycleState.idle
                 }
             }
 
             5, 7, 10, 12 -> {
+                val parsedCycle = parsePreSosCycle(payload)
+                if (shouldSuppressClosedPreSosCycle(parsedCycle?.cycleKey)) {
+                    return
+                }
                 val nextState = ProtectionSosLifecycleLogic.onMeshPacket(pendingSosLifecycleState)
                 if (nextState == ProtectionSosLifecycleState.preConfirmSeen &&
                     pendingSosLifecycleState != ProtectionSosLifecycleState.preConfirmSeen
                 ) {
                     pendingSosLifecycleState = nextState
+                    val startedAt = System.currentTimeMillis()
+                    val expectedActivationAt = startedAt + sosActivationDelayMs
+                    runtimeStore.recordPreSosLifecycle(
+                        state = pendingSosLifecycleState.name,
+                        cycleKey = parsedCycle?.cycleKey,
+                        owner = "device",
+                        startedAt = startedAt,
+                        expectedActivationAt = expectedActivationAt,
+                        originatorNodeId = parsedCycle?.originatorNodeId,
+                        packetId = parsedCycle?.packetId,
+                    )
                     ProtectionForegroundService.showPreConfirmNotification(context)
-                    scheduleSosActivationTimeout()
+                    scheduleSosActivationTimeout(expectedActivationAt = expectedActivationAt)
                 }
             }
         }
     }
 
-    private fun scheduleSosActivationTimeout() {
+    private fun scheduleSosActivationTimeout(expectedActivationAt: Long = System.currentTimeMillis() + sosActivationDelayMs) {
         sosActivationRunnable?.let(mainHandler::removeCallbacks)
+        val delayMs = (expectedActivationAt - System.currentTimeMillis()).coerceAtLeast(0L)
         sosActivationRunnable = Runnable {
             val nextState =
                 ProtectionSosLifecycleLogic.onCountdownElapsed(pendingSosLifecycleState)
@@ -1373,12 +1408,22 @@ internal class ProtectionBleRuntimeOwner(
                 pendingSosLifecycleState == ProtectionSosLifecycleState.preConfirmSeen
             ) {
                 pendingSosLifecycleState = nextState
+                val snapshot = runtimeStore.snapshot()
+                runtimeStore.recordPreSosLifecycle(
+                    state = pendingSosLifecycleState.name,
+                    cycleKey = snapshot["preSosCycleKey"] as? String,
+                    owner = snapshot["preSosOwner"] as? String ?: "device",
+                    startedAt = snapshot["preSosStartedAt"] as? Long,
+                    expectedActivationAt = snapshot["preSosExpectedActivationAt"] as? Long,
+                    originatorNodeId = snapshot["preSosOriginatorNodeId"] as? Int,
+                    packetId = snapshot["preSosPacketId"] as? Int,
+                )
                 ProtectionForegroundService.showActiveSosNotification(context)
                 backendHandoff.queueCreate("device_cycle_active_after_timeout")
             }
             sosActivationRunnable = null
         }.also {
-            mainHandler.postDelayed(it, sosActivationDelayMs)
+            mainHandler.postDelayed(it, delayMs)
         }
     }
 
@@ -1386,6 +1431,103 @@ internal class ProtectionBleRuntimeOwner(
         sosActivationRunnable?.let(mainHandler::removeCallbacks)
         sosActivationRunnable = null
     }
+
+    private fun rememberClosedPreSosCycle(cycleKey: String?) {
+        val key = cycleKey?.trim()
+        if (key.isNullOrEmpty()) {
+            return
+        }
+        val now = System.currentTimeMillis()
+        pruneClosedPreSosCycles(now)
+        closedPreSosCycleUntilMs[key] = now + closedPreSosCycleSuppressionMs
+    }
+
+    private fun shouldSuppressClosedPreSosCycle(cycleKey: String?): Boolean {
+        val key = cycleKey?.trim()
+        if (key.isNullOrEmpty()) {
+            return false
+        }
+        val now = System.currentTimeMillis()
+        pruneClosedPreSosCycles(now)
+        return closedPreSosCycleUntilMs.containsKey(key)
+    }
+
+    private fun pruneClosedPreSosCycles(now: Long = System.currentTimeMillis()) {
+        closedPreSosCycleUntilMs.entries.removeIf { (_, expiresAt) -> expiresAt <= now }
+    }
+
+    private fun rehydratePreSosLifecycle(reason: String) {
+        val snapshot = runtimeStore.snapshot()
+        val state = snapshot["preSosLifecycleState"] as? String ?: return
+        if (state == ProtectionSosLifecycleState.createPending.name) {
+            pendingSosLifecycleState = ProtectionSosLifecycleState.createPending
+            cancelSosActivationTimeout()
+            ProtectionForegroundService.showActiveSosNotification(context)
+            if (!runtimeStore.hasPendingNativeSosCreate()) {
+                backendHandoff.queueCreate("restored_device_cycle_active")
+            } else {
+                backendHandoff.flushPendingActions("restored_device_cycle_active")
+            }
+            ProtectionRuntimeBridge.recordPlatformEvent(
+                context = context,
+                type = "runtimeRecovered",
+                reason = "pre_sos_active_rehydrated:$reason",
+            )
+            return
+        }
+        if (state != ProtectionSosLifecycleState.preConfirmSeen.name) {
+            return
+        }
+        val expectedActivationAt = snapshot["preSosExpectedActivationAt"] as? Long ?: return
+        pendingSosLifecycleState = ProtectionSosLifecycleState.preConfirmSeen
+        if (System.currentTimeMillis() >= expectedActivationAt) {
+            scheduleSosActivationTimeout(expectedActivationAt = System.currentTimeMillis())
+        } else {
+            scheduleSosActivationTimeout(expectedActivationAt = expectedActivationAt)
+        }
+        ProtectionRuntimeBridge.recordPlatformEvent(
+            context = context,
+            type = "runtimeRecovered",
+            reason = "pre_sos_rehydrated:$reason",
+        )
+    }
+
+    private fun parsePreSosCycle(payload: List<Int>): PreSosPacketCycle? {
+        if (payload.size < 4) {
+            return null
+        }
+        val originatorNodeId = readU32OrNull(payload, 0) ?: return null
+        val flagsOffset = when {
+            payload.size >= 12 -> 10
+            payload.size >= 7 -> 4
+            else -> null
+        }
+        val packetId = flagsOffset?.let { offset ->
+            if (payload.size > offset + 1) {
+                val flagsWord = (payload[offset] and 0xFF) or
+                    ((payload[offset + 1] and 0xFF) shl 8)
+                flagsWord and 0x0F
+            } else {
+                null
+            }
+        }
+        val cycleKey = if (packetId == null) {
+            "sos:$originatorNodeId:${payloadHex(payload)}"
+        } else {
+            "sos:$originatorNodeId:$packetId"
+        }
+        return PreSosPacketCycle(
+            cycleKey = cycleKey,
+            originatorNodeId = originatorNodeId,
+            packetId = packetId,
+        )
+    }
+
+    private data class PreSosPacketCycle(
+        val cycleKey: String,
+        val originatorNodeId: Int,
+        val packetId: Int?,
+    )
 
     private val gattCallback =
         object : BluetoothGattCallback() {
@@ -1567,6 +1709,7 @@ internal class ProtectionBleRuntimeOwner(
         private const val inetMaxPayloadLength = 4
         private const val sosActivationDelayMs = 20_000L
         private const val terminalSosSuppressionWindowMs = 10_000L
+        private const val closedPreSosCycleSuppressionMs = 120_000L
         private const val logTag = "EixamProtectionBle"
 
         private val serviceUuid: UUID = UUID.fromString("6ba1b218-15a8-461f-9fa8-5dcae273ea00")

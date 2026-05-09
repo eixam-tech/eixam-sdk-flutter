@@ -1,5 +1,10 @@
 import '../enums/device_sos_transition_source.dart';
 
+enum PublicPreSosOwner {
+  app,
+  device,
+}
+
 class PublicPreSosStatus {
   const PublicPreSosStatus({
     required this.active,
@@ -8,6 +13,10 @@ class PublicPreSosStatus {
     required this.remainingSeconds,
     required this.mirroredOnDevice,
     required this.origin,
+    this.cycleKey,
+    this.owner,
+    this.originatorNodeId,
+    this.packetId,
   });
 
   final bool active;
@@ -16,4 +25,8 @@ class PublicPreSosStatus {
   final int remainingSeconds;
   final bool mirroredOnDevice;
   final DeviceSosTransitionSource? origin;
+  final String? cycleKey;
+  final PublicPreSosOwner? owner;
+  final int? originatorNodeId;
+  final int? packetId;
 }

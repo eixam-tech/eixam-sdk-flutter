@@ -45,6 +45,7 @@ void main() {
     late FakeNotificationsRepository notificationsRepository;
     late DeviceSosController deviceSosController;
     late PreferredBleDeviceStore preferredDeviceStore;
+    late MemorySharedPrefsSdkStore localStore;
     late EixamConnectSdkImpl sdk;
     late List<EixamDeviceCommand> deviceCommands;
 
@@ -69,9 +70,8 @@ void main() {
       permissionsRepository = FakePermissionsRepository();
       notificationsRepository = FakeNotificationsRepository();
       deviceSosController = DeviceSosController();
-      preferredDeviceStore = PreferredBleDeviceStore(
-        localStore: MemorySharedPrefsSdkStore(),
-      );
+      localStore = MemorySharedPrefsSdkStore();
+      preferredDeviceStore = PreferredBleDeviceStore(localStore: localStore);
       deviceCommands = <EixamDeviceCommand>[];
       await deviceSosController.attach(
         commandWriter: (command) async {
@@ -93,6 +93,7 @@ void main() {
         deviceSosController: deviceSosController,
         bleIncomingEvents: bleEvents.stream,
         preferredBleDeviceStore: preferredDeviceStore,
+        localStore: localStore,
       );
       await sdk.initialize(
         const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
@@ -650,6 +651,49 @@ void main() {
       }
     });
 
+    test('duplicate device PRE-SOS preserves first SDK deadline', () async {
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginPreConfirmPacketForNode(1498094248),
+        source: DeviceSosTransitionSource.device,
+      );
+      final first = await sdk.getPreSosStatus();
+      expect(first, isNotNull);
+
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginPreConfirmPacketForNode(1498094248),
+        source: DeviceSosTransitionSource.device,
+      );
+      final duplicate = await sdk.getPreSosStatus();
+
+      expect(duplicate, isNotNull);
+      expect(duplicate!.cycleKey, first!.cycleKey);
+      expect(duplicate.expectedActivationAt, first.expectedActivationAt);
+      expect(duplicate.startedAt, first.startedAt);
+      expect(duplicate.owner, PublicPreSosOwner.device);
+    });
+
+    test('app-origin device echo enriches cycle without resetting deadline',
+        () async {
+      await sdk.startPreSos(countdown: const Duration(seconds: 20));
+      final started = await sdk.getPreSosStatus();
+      expect(started, isNotNull);
+
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginPreConfirmPacketForNode(1498094248),
+        source: DeviceSosTransitionSource.device,
+      );
+      final echoed = await sdk.getPreSosStatus();
+
+      expect(echoed, isNotNull);
+      expect(echoed!.owner, PublicPreSosOwner.app);
+      expect(echoed.expectedActivationAt, started!.expectedActivationAt);
+      expect(echoed.startedAt, started.startedAt);
+      expect(echoed.originatorNodeId, 1498094248);
+      expect(echoed.packetId, 0);
+    });
+
     test('device-runtime-sos can promote to backend id from device request',
         () async {
       sosRepository.currentIncident = SosIncident(
@@ -1059,6 +1103,7 @@ void main() {
         bleIncomingEvents: bleEvents.stream,
         preferredBleDeviceStore: preferredDeviceStore,
         protectionPlatformAdapter: platformAdapter,
+        localStore: localStore,
       );
       await sdk.initialize(
         const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
@@ -1146,6 +1191,7 @@ void main() {
           bleIncomingEvents: bleEvents.stream,
           preferredBleDeviceStore: preferredDeviceStore,
           protectionPlatformAdapter: platformAdapter,
+          localStore: localStore,
         );
         await sdk.initialize(
           const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
@@ -1215,6 +1261,7 @@ void main() {
         bleIncomingEvents: bleEvents.stream,
         preferredBleDeviceStore: preferredDeviceStore,
         protectionPlatformAdapter: platformAdapter,
+        localStore: localStore,
       );
       await sdk.initialize(
         const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
@@ -1281,6 +1328,7 @@ void main() {
           deviceSosController: deviceSosController,
           bleIncomingEvents: bleEvents.stream,
           preferredBleDeviceStore: preferredDeviceStore,
+          localStore: localStore,
         );
         await sdk.initialize(
           const EixamSdkConfig(apiBaseUrl: 'https://example.test'),

@@ -56,6 +56,7 @@ void main() {
       realtimeClient = FakeRealtimeClient();
       deviceSosController = DeviceSosController();
       backgroundAdapter = _FakeBackgroundTelemetryAdapter();
+      final localStore = MemorySharedPrefsSdkStore();
       sdk = EixamConnectSdkImpl(
         sosRepository: sosRepository,
         trackingRepository: trackingRepository,
@@ -70,8 +71,9 @@ void main() {
         deviceSosController: deviceSosController,
         bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
         preferredBleDeviceStore: PreferredBleDeviceStore(
-          localStore: MemorySharedPrefsSdkStore(),
+          localStore: localStore,
         ),
+        localStore: localStore,
         protectionPlatformAdapter: const NoopProtectionPlatformAdapter(),
         backgroundTelemetryPlatformAdapter: backgroundAdapter,
       );

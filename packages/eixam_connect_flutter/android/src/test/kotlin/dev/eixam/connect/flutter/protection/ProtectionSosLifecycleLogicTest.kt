@@ -28,6 +28,26 @@ class ProtectionSosLifecycleLogicTest {
     }
 
     @Test
+    fun `active create state ignores repeated mesh packet`() {
+        val nextState =
+            ProtectionSosLifecycleLogic.onMeshPacket(
+                ProtectionSosLifecycleState.createPending,
+            )
+
+        assertEquals(ProtectionSosLifecycleState.createPending, nextState)
+    }
+
+    @Test
+    fun `cancel pending state ignores repeated mesh packet`() {
+        val nextState =
+            ProtectionSosLifecycleLogic.onMeshPacket(
+                ProtectionSosLifecycleState.cancelPending,
+            )
+
+        assertEquals(ProtectionSosLifecycleState.cancelPending, nextState)
+    }
+
+    @Test
     fun `closing preConfirm does not request backend cancel`() {
         val outcome =
             ProtectionSosLifecycleLogic.onClosePacket(
