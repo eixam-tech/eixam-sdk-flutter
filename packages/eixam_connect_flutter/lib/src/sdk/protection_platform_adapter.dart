@@ -121,6 +121,14 @@ class ProtectionPlatformSnapshot {
     this.lastCommandRoute,
     this.lastCommandResult,
     this.lastCommandError,
+    this.preSosLifecycleState,
+    this.preSosCycleKey,
+    this.preSosOwner,
+    this.preSosStartedAt,
+    this.preSosExpectedActivationAt,
+    this.preSosRemainingSeconds,
+    this.preSosOriginatorNodeId,
+    this.preSosPacketId,
   });
 
   final bool backgroundCapabilityReady;
@@ -170,6 +178,14 @@ class ProtectionPlatformSnapshot {
   final String? lastCommandRoute;
   final String? lastCommandResult;
   final String? lastCommandError;
+  final String? preSosLifecycleState;
+  final String? preSosCycleKey;
+  final String? preSosOwner;
+  final DateTime? preSosStartedAt;
+  final DateTime? preSosExpectedActivationAt;
+  final int? preSosRemainingSeconds;
+  final int? preSosOriginatorNodeId;
+  final int? preSosPacketId;
 }
 
 class ProtectionPlatformCommandRequest {

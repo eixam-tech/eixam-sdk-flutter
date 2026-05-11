@@ -16,7 +16,6 @@ class MockSosRemoteDataSource implements SosRemoteDataSource {
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
-    String? appDeviceId,
     String? hardwareId,
     int? originatorNodeId,
     int? relayNodeId,
@@ -60,8 +59,9 @@ class MockSosRemoteDataSource implements SosRemoteDataSource {
       throw const SosException(
           'E_SOS_NOT_FOUND', 'Active SOS incident not found');
     }
-    _active = _active!.copyWith(state: SosState.cancelled.name);
-    return _active!;
+    final cancelled = _active!.copyWith(state: SosState.cancelled.name);
+    _active = null;
+    return cancelled;
   }
 
   @override

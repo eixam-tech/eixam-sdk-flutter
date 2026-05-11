@@ -119,7 +119,6 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
       'deviceId=${request.deviceId ?? "none"} '
       'nodeId=${request.originatorNodeId?.toString() ?? "none"} '
       'hardwareId=${request.hardwareId ?? "none"} '
-      'appDeviceId=${request.appDeviceId ?? "none"} '
       'identitySource=${request.identitySource ?? "none"} '
       'incidentId=${request.incidentId ?? "none"}',
     );
@@ -128,10 +127,8 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
         '[BACKGROUND_SOS] mqtt_payload_built '
         'topic=${envelope.topic} correlationId=$correlationId '
         'deviceId=${_field(payload, 'deviceId')} '
-        'isLocalDeviceId=${_field(payload, 'deviceId').startsWith('app-device-local-')} '
         'nodeId=${_intField(payload, 'originatorNodeId')?.toString() ?? "none"} '
         'hardwareId=${_field(payload, 'hardwareId')} '
-        'appDeviceId=${_field(payload, 'appDeviceId')} '
         'userId=${_field(payload, 'userId')} '
         'hasLocation=${payload.containsKey('latitude') && payload.containsKey('longitude')}',
       );
@@ -143,7 +140,6 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
         'deviceId=${_field(payload, 'deviceId')} '
         'nodeId=${_intField(payload, 'originatorNodeId')?.toString() ?? "none"} '
         'originatorNodeId=${_intField(payload, 'originatorNodeId')?.toString() ?? "none"} '
-        'appDeviceId=${_field(payload, 'appDeviceId')} '
         'hardwareId=${_field(payload, 'hardwareId')} '
         'identitySource=${_field(payload, 'identitySource')} '
         'incidentId=${request.incidentId ?? "none"} '
@@ -213,7 +209,6 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
       'source=${_field(envelopePayload, 'kind', fallback: 'mqtt_telemetry')} '
       'deviceId=${_field(envelopePayload, 'deviceId')} '
       'nodeId=${_intField(envelopePayload, 'nodeId')?.toString() ?? "none"} '
-      'appDeviceId=${_field(envelopePayload, 'appDeviceId')} '
       'hardwareId=${_field(envelopePayload, 'hardwareId')} '
       'identitySource=${_field(envelopePayload, 'identitySource')} '
       'lat=${_field(envelopePayload, 'latitude')} '

@@ -24,6 +24,11 @@ internal class ProtectionRuntimeStore(context: Context) {
             preferences.getInt(keyPendingNativeSosCreateCount, 0)
         val pendingNativeSosCancelCount =
             preferences.getInt(keyPendingNativeSosCancelCount, 0)
+        val preSosExpectedActivationAt =
+            preferences.getLong(keyPreSosExpectedActivationAt, 0L).takeIf { it > 0L }
+        val preSosRemainingSeconds = preSosExpectedActivationAt?.let { deadline ->
+            (((deadline - System.currentTimeMillis()).coerceAtLeast(0L) + 999L) / 1000L).toInt()
+        }
 
         return mapOf(
             "platformRuntimeConfigured" to true,
@@ -103,6 +108,14 @@ internal class ProtectionRuntimeStore(context: Context) {
             "lastCommandRoute" to preferences.getString(keyLastCommandRoute, null),
             "lastCommandResult" to preferences.getString(keyLastCommandResult, null),
             "lastCommandError" to preferences.getString(keyLastCommandError, null),
+            "preSosLifecycleState" to preferences.getString(keyPreSosLifecycleState, "idle"),
+            "preSosCycleKey" to preferences.getString(keyPreSosCycleKey, null),
+            "preSosOwner" to preferences.getString(keyPreSosOwner, null),
+            "preSosStartedAt" to preferences.getLong(keyPreSosStartedAt, 0L).takeIf { it > 0L },
+            "preSosExpectedActivationAt" to preSosExpectedActivationAt,
+            "preSosRemainingSeconds" to preSosRemainingSeconds,
+            "preSosOriginatorNodeId" to preferences.getIntOrNull(keyPreSosOriginatorNodeId),
+            "preSosPacketId" to preferences.getIntOrNull(keyPreSosPacketId),
         )
     }
 
@@ -315,6 +328,7 @@ internal class ProtectionRuntimeStore(context: Context) {
         preferences.edit()
             .putInt(keyPendingNativeSosCreateCount, 1)
             .putString(keyPendingSosState, "create_pending")
+            .putString(keyPreSosLifecycleState, "createPending")
             .apply()
     }
 
@@ -322,6 +336,7 @@ internal class ProtectionRuntimeStore(context: Context) {
         preferences.edit()
             .putInt(keyPendingNativeSosCancelCount, 1)
             .putString(keyPendingSosState, "cancel_pending")
+            .putString(keyPreSosLifecycleState, "cancelPending")
             .apply()
     }
 
@@ -343,9 +358,62 @@ internal class ProtectionRuntimeStore(context: Context) {
             .putInt(keyPendingNativeSosCreateCount, 0)
             .putInt(keyPendingNativeSosCancelCount, 0)
             .putString(keyPendingSosState, "idle")
+            .putString(keyPreSosLifecycleState, "idle")
+            .remove(keyPreSosCycleKey)
+            .remove(keyPreSosOwner)
+            .remove(keyPreSosStartedAt)
+            .remove(keyPreSosExpectedActivationAt)
+            .remove(keyPreSosOriginatorNodeId)
+            .remove(keyPreSosPacketId)
             .remove(keyActiveBackendIncidentId)
             .remove(keyActiveBackendIncidentState)
             .remove(keyActiveBackendIncidentAt)
+            .apply()
+    }
+
+    fun recordPreSosLifecycle(
+        state: String,
+        cycleKey: String?,
+        owner: String?,
+        startedAt: Long?,
+        expectedActivationAt: Long?,
+        originatorNodeId: Int?,
+        packetId: Int?,
+    ) {
+        val editor = preferences.edit()
+            .putString(keyPreSosLifecycleState, state)
+            .putString(keyPendingSosState, state)
+        if (cycleKey == null) editor.remove(keyPreSosCycleKey) else editor.putString(keyPreSosCycleKey, cycleKey)
+        if (owner == null) editor.remove(keyPreSosOwner) else editor.putString(keyPreSosOwner, owner)
+        if (startedAt == null) editor.remove(keyPreSosStartedAt) else editor.putLong(keyPreSosStartedAt, startedAt)
+        if (expectedActivationAt == null) {
+            editor.remove(keyPreSosExpectedActivationAt)
+        } else {
+            editor.putLong(keyPreSosExpectedActivationAt, expectedActivationAt)
+        }
+        if (originatorNodeId == null) {
+            editor.remove(keyPreSosOriginatorNodeId)
+        } else {
+            editor.putInt(keyPreSosOriginatorNodeId, originatorNodeId)
+        }
+        if (packetId == null) {
+            editor.remove(keyPreSosPacketId)
+        } else {
+            editor.putInt(keyPreSosPacketId, packetId)
+        }
+        editor.apply()
+    }
+
+    fun clearPreSosLifecycle() {
+        preferences.edit()
+            .putString(keyPreSosLifecycleState, "idle")
+            .putString(keyPendingSosState, "idle")
+            .remove(keyPreSosCycleKey)
+            .remove(keyPreSosOwner)
+            .remove(keyPreSosStartedAt)
+            .remove(keyPreSosExpectedActivationAt)
+            .remove(keyPreSosOriginatorNodeId)
+            .remove(keyPreSosPacketId)
             .apply()
     }
 
@@ -381,6 +449,14 @@ internal class ProtectionRuntimeStore(context: Context) {
             .remove(keyActiveBackendIncidentState)
             .remove(keyActiveBackendIncidentAt)
             .putString(keyLastNativeBackendHandoffResult, result)
+            .putString(keyPreSosLifecycleState, "idle")
+            .putString(keyPendingSosState, "idle")
+            .remove(keyPreSosCycleKey)
+            .remove(keyPreSosOwner)
+            .remove(keyPreSosStartedAt)
+            .remove(keyPreSosExpectedActivationAt)
+            .remove(keyPreSosOriginatorNodeId)
+            .remove(keyPreSosPacketId)
             .remove(keyLastNativeBackendHandoffError)
             .apply()
     }
@@ -615,6 +691,13 @@ internal class ProtectionRuntimeStore(context: Context) {
         private const val keyLastCommandRoute = "last_command_route"
         private const val keyLastCommandResult = "last_command_result"
         private const val keyLastCommandError = "last_command_error"
+        private const val keyPreSosLifecycleState = "pre_sos_lifecycle_state"
+        private const val keyPreSosCycleKey = "pre_sos_cycle_key"
+        private const val keyPreSosOwner = "pre_sos_owner"
+        private const val keyPreSosStartedAt = "pre_sos_started_at"
+        private const val keyPreSosExpectedActivationAt = "pre_sos_expected_activation_at"
+        private const val keyPreSosOriginatorNodeId = "pre_sos_originator_node_id"
+        private const val keyPreSosPacketId = "pre_sos_packet_id"
         private const val expectedBleServiceUuid = "6ba1b218-15a8-461f-9fa8-5dcae273ea00"
         private val expectedBleCharacteristicUuids = listOf(
             "6ba1b218-15a8-461f-9fa8-5dcae273ea01",

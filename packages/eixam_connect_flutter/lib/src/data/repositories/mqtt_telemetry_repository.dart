@@ -32,7 +32,6 @@ class MqttTelemetryRepository implements TelemetryRepository {
       'TELEMETRY_BACKEND_PAYLOAD_FINAL source=mqtt '
       'deviceId=${identity.payload.deviceId ?? "none"} '
       'nodeId=${identity.nodeId?.toString() ?? "none"} '
-      'appDeviceId=${identity.appDeviceId ?? "none"} '
       'hardwareId=${identity.payload.hardwareId ?? "none"} '
       'identitySource=${identity.identitySource} '
       'lat=${identity.payload.latitude} lon=${identity.payload.longitude} '

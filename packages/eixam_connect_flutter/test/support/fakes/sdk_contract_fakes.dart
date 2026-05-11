@@ -23,7 +23,6 @@ class FakeSosRepository implements SosRepository {
   String? lastTriggerSource;
   TrackingPosition? lastPositionSnapshot;
   String? lastDeviceId;
-  String? lastAppDeviceId;
   String? lastHardwareId;
   int? lastOriginatorNodeId;
   int? lastRelayNodeId;
@@ -43,7 +42,6 @@ class FakeSosRepository implements SosRepository {
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
-    String? appDeviceId,
     String? hardwareId,
     int? originatorNodeId,
     int? relayNodeId,
@@ -65,7 +63,6 @@ class FakeSosRepository implements SosRepository {
     lastTriggerSource = triggerSource;
     lastPositionSnapshot = positionSnapshot;
     lastDeviceId = deviceId;
-    lastAppDeviceId = appDeviceId;
     lastHardwareId = hardwareId;
     lastOriginatorNodeId = originatorNodeId;
     lastRelayNodeId = relayNodeId;

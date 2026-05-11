@@ -111,7 +111,8 @@ void main() {
 
         expect(harness.sosRepository.cancelCallCount, 1);
         expect(cancelled.state, SosState.cancelled);
-        expect(await harness.sdk.getSosState(), SosState.cancelled);
+        expect(await harness.sdk.getSosState(), SosState.idle);
+        expect(await harness.sdk.getCurrentSosIncident(), isNull);
       } finally {
         await harness.dispose();
       }
@@ -145,7 +146,31 @@ void main() {
         await harness.sdk.cancelSos();
 
         expect(harness.sosRepository.cancelCallCount, 1);
-        expect(await harness.sdk.getSosState(), SosState.cancelled);
+        expect(await harness.sdk.getSosState(), SosState.idle);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('SOS-04b BLE active cancel ignores residual preConfirm status',
+        () async {
+      final harness = _SdkSosHarness(connectedBle: true);
+      try {
+        await harness.deviceSosController.attach(commandWriter: (_) async {});
+        harness.deviceSosController.handleIncomingSosPacket(
+          _deviceOriginCountdownPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await pumpEventQueue(times: 2);
+        await harness.sdk.triggerSos(const SosTriggerPayload());
+
+        expect(await harness.sdk.getSosState(), SosState.sent);
+
+        final cancelled = await harness.sdk.cancelSos();
+
+        expect(cancelled.state, SosState.cancelled);
+        expect(harness.sosRepository.cancelCallCount, 1);
+        expect(await harness.sdk.getSosState(), SosState.idle);
       } finally {
         await harness.dispose();
       }
@@ -251,7 +276,7 @@ void main() {
         await pumpEventQueue(times: 2);
 
         expect(harness.sosRepository.cancelCallCount, 1);
-        expect(await harness.sdk.getSosState(), SosState.cancelled);
+        expect(await harness.sdk.getSosState(), SosState.idle);
       } finally {
         await harness.dispose();
       }
@@ -334,7 +359,7 @@ void main() {
       }
     });
 
-    test('SOS-12 resume lets backend terminal/idle beat stale active state',
+    test('SOS-12 backend idle rehydration does not cancel active PRE-SOS',
         () async {
       final repository = FakeRehydratingSosRepository()
         ..currentIncident = _incident(
@@ -353,8 +378,33 @@ void main() {
         harness.sdk.didChangeAppLifecycleState(AppLifecycleState.resumed);
         await pumpEventQueue(times: 3);
 
-        expect(await harness.sdk.getPreSosStatus(), isNull);
-        expect(await harness.sdk.getSosState(), SosState.idle);
+        expect(await harness.sdk.getPreSosStatus(), isNotNull);
+        expect(await harness.sdk.getSosState(), SosState.arming);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('session refresh does not reset app-origin PRE-SOS countdown',
+        () async {
+      final repository = FakeRehydratingSosRepository()
+        ..rehydrationResult = const SosRuntimeRehydrationResult(
+          outcome: SosRuntimeRehydrationOutcome.clearedToIdle,
+          resultingState: SosState.idle,
+        );
+      final harness = _SdkSosHarness(sosRepository: repository);
+      try {
+        await harness.setSession();
+        await harness.sdk.startPreSos(countdown: const Duration(seconds: 20));
+        final before = await harness.sdk.getPreSosStatus();
+
+        await harness.sdk.refreshCanonicalIdentity();
+
+        final after = await harness.sdk.getPreSosStatus();
+        expect(after, isNotNull);
+        expect(after!.cycleKey, before!.cycleKey);
+        expect(after.expectedActivationAt, before.expectedActivationAt);
+        expect(await harness.sdk.getSosState(), SosState.arming);
       } finally {
         await harness.dispose();
       }
@@ -460,6 +510,57 @@ void main() {
         await harness.dispose();
       }
     });
+
+    test('app-origin countdown survives repository idle reads', () async {
+      final harness = _SdkSosHarness();
+      try {
+        await harness.sdk.startPreSos(countdown: const Duration(seconds: 20));
+
+        final firstStatus = await harness.sdk.getPreSosStatus();
+        expect(firstStatus, isNotNull);
+        expect(await harness.sdk.getSosState(), SosState.arming);
+
+        final secondStatus = await harness.sdk.getPreSosStatus();
+        expect(secondStatus, isNotNull);
+        expect(secondStatus!.cycleKey, firstStatus!.cycleKey);
+        expect(secondStatus.expectedActivationAt,
+            firstStatus.expectedActivationAt);
+        expect(await harness.sdk.getSosState(), SosState.arming);
+        expect(harness.sosRepository.triggerCallCount, 0);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('app-origin countdown survives SDK restart and promotes on restore',
+        () async {
+      final store = MemorySharedPrefsSdkStore();
+      final repository = FakeSosRepository();
+      final first = _SdkSosHarness(
+        sosRepository: repository,
+        localStore: store,
+      );
+      await first.sdk.startPreSos(countdown: const Duration(milliseconds: 5));
+      expect(await first.sdk.getPreSosStatus(), isNotNull);
+      await first.dispose();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      final restored = _SdkSosHarness(
+        sosRepository: repository,
+        localStore: store,
+      );
+      try {
+        await restored.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+
+        expect(repository.triggerCallCount, 1);
+        expect(await restored.sdk.getPreSosStatus(), isNull);
+        expect(await restored.sdk.getSosState(), SosState.sent);
+      } finally {
+        await restored.dispose();
+      }
+    });
   });
 }
 
@@ -468,6 +569,7 @@ final class _SdkSosHarness {
     FakeSosRepository? sosRepository,
     bool connectedBle = false,
     Duration deviceCountdown = const Duration(seconds: 20),
+    MemorySharedPrefsSdkStore? localStore,
   })  : sosRepository = sosRepository ?? FakeSosRepository(),
         trackingRepository = FakeTrackingRepository(
           currentPosition: TrackingPosition(
@@ -503,8 +605,9 @@ final class _SdkSosHarness {
           countdownDuration: deviceCountdown,
           countdownTick: const Duration(milliseconds: 5),
         ),
+        localStore = localStore ?? MemorySharedPrefsSdkStore(),
         preferredBleDeviceStore = PreferredBleDeviceStore(
-          localStore: MemorySharedPrefsSdkStore(),
+          localStore: localStore ?? MemorySharedPrefsSdkStore(),
         ) {
     sdk = EixamConnectSdkImpl(
       sosRepository: this.sosRepository,
@@ -520,6 +623,7 @@ final class _SdkSosHarness {
       deviceSosController: deviceSosController,
       bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
       preferredBleDeviceStore: preferredBleDeviceStore,
+      localStore: this.localStore,
     );
   }
 
@@ -534,6 +638,7 @@ final class _SdkSosHarness {
   final FakeNotificationsRepository notificationsRepository;
   final FakeRealtimeClient realtimeClient;
   final DeviceSosController deviceSosController;
+  final MemorySharedPrefsSdkStore localStore;
   final PreferredBleDeviceStore preferredBleDeviceStore;
   late final EixamConnectSdkImpl sdk;
 

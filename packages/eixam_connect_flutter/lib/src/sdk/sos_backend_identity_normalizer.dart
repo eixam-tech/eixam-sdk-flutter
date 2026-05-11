@@ -4,7 +4,6 @@ class SosBackendIdentity {
   const SosBackendIdentity({
     required this.deviceId,
     required this.nodeId,
-    required this.appDeviceId,
     required this.originatorNodeId,
     required this.relayDeviceId,
     required this.hardwareId,
@@ -13,7 +12,6 @@ class SosBackendIdentity {
 
   final String? deviceId;
   final int? nodeId;
-  final String? appDeviceId;
   final int? originatorNodeId;
   final String? relayDeviceId;
   final String? hardwareId;
@@ -24,7 +22,6 @@ class TelemetryBackendIdentity {
   const TelemetryBackendIdentity({
     required this.payload,
     required this.nodeId,
-    required this.appDeviceId,
     required this.hardwareId,
     required this.identitySource,
     required this.previousDeviceId,
@@ -34,7 +31,6 @@ class TelemetryBackendIdentity {
 
   final SdkTelemetryPayload payload;
   final int? nodeId;
-  final String? appDeviceId;
   final String? hardwareId;
   final String identitySource;
   final String? previousDeviceId;
@@ -44,7 +40,6 @@ class TelemetryBackendIdentity {
 
 SosBackendIdentity normalizeSosBackendIdentity({
   required String? deviceId,
-  String? appDeviceId,
   required int? originatorNodeId,
   required int? relayNodeId,
   required String? relayDeviceId,
@@ -56,7 +51,6 @@ SosBackendIdentity normalizeSosBackendIdentity({
       _parseDeviceRuntimeIncidentNodeId(incidentId) ??
       _parseSosCycleNodeId(cycleKey);
   final trimmedDeviceId = deviceId?.trim();
-  final normalizedAppDeviceId = _firstText(<String?>[appDeviceId]);
   final normalizedHardwareId = _firstText(<String?>[
     hardwareId,
     parsedNodeId != null &&
@@ -67,28 +61,20 @@ SosBackendIdentity normalizeSosBackendIdentity({
     _looksLikeBleMac(trimmedDeviceId) ? trimmedDeviceId : null,
   ]);
   final normalizedDeviceId = parsedNodeId?.toString() ??
-      (_isLocalAppDeviceId(normalizedAppDeviceId)
-          ? null
-          : normalizedAppDeviceId) ??
       (_looksLikeBleMac(trimmedDeviceId)
           ? null
           : _emptyToNull(trimmedDeviceId));
   final identitySource = parsedNodeId != null
       ? 'ble_node'
       : normalizedHardwareId != null
-          ? 'app_device_ble_node_pending'
-          : _isLocalAppDeviceId(normalizedAppDeviceId)
-              ? 'app_device_local_fallback'
-              : _isAccountFallbackAppDeviceId(normalizedAppDeviceId)
-                  ? 'app_device_account_fallback'
-                  : 'app_device';
+          ? 'device_hardware_pending'
+          : 'app';
   final normalizedRelayDeviceId =
       relayNodeId?.toString() ?? relayDeviceId?.trim();
 
   return SosBackendIdentity(
     deviceId: normalizedDeviceId,
     nodeId: parsedNodeId,
-    appDeviceId: normalizedAppDeviceId,
     originatorNodeId: parsedNodeId,
     relayDeviceId:
         normalizedRelayDeviceId == null || normalizedRelayDeviceId.isEmpty
@@ -101,13 +87,10 @@ SosBackendIdentity normalizeSosBackendIdentity({
 
 TelemetryBackendIdentity normalizeTelemetryBackendIdentity({
   required SdkTelemetryPayload payload,
-  String? appDeviceId,
   String? hardwareId,
 }) {
   final nodeId = payload.nodeId;
   final previousDeviceId = payload.deviceId?.trim();
-  final normalizedAppDeviceId =
-      _firstText(<String?>[appDeviceId, payload.appDeviceId]);
   final normalizedHardwareId = _firstText(<String?>[
     payload.hardwareId,
     hardwareId,
@@ -118,12 +101,10 @@ TelemetryBackendIdentity normalizeTelemetryBackendIdentity({
     return TelemetryBackendIdentity(
       payload: payload.copyWith(
         deviceId: normalizedDeviceId,
-        appDeviceId: normalizedAppDeviceId,
         hardwareId: normalizedHardwareId,
         identitySource: 'ble_node',
       ),
       nodeId: nodeId,
-      appDeviceId: normalizedAppDeviceId,
       hardwareId: normalizedHardwareId,
       identitySource: 'ble_node',
       previousDeviceId: previousDeviceId,
@@ -135,24 +116,16 @@ TelemetryBackendIdentity normalizeTelemetryBackendIdentity({
   }
 
   final invalid = _looksLikeBleMac(previousDeviceId);
-  final normalizedDeviceId = normalizedAppDeviceId ??
-      (invalid ? null : _emptyToNull(previousDeviceId));
-  final identitySource = normalizedHardwareId != null
-      ? 'app_device_ble_node_pending'
-      : _isLocalAppDeviceId(normalizedAppDeviceId)
-          ? 'app_device_local_fallback'
-          : _isAccountFallbackAppDeviceId(normalizedAppDeviceId)
-              ? 'app_device_account_fallback'
-              : 'app_device';
+  final normalizedDeviceId = invalid ? null : _emptyToNull(previousDeviceId);
+  final identitySource =
+      normalizedHardwareId != null ? 'device_hardware' : 'app';
   return TelemetryBackendIdentity(
     payload: payload.copyWith(
       deviceId: normalizedDeviceId,
-      appDeviceId: normalizedAppDeviceId,
       hardwareId: normalizedHardwareId,
       identitySource: identitySource,
     ),
     nodeId: null,
-    appDeviceId: normalizedAppDeviceId,
     hardwareId: normalizedHardwareId,
     identitySource: identitySource,
     previousDeviceId: previousDeviceId,
@@ -214,12 +187,6 @@ String? _emptyToNull(String? value) {
 bool _hasText(String? value) => value != null && value.trim().isNotEmpty;
 
 bool _isNodeIdString(String? value, int nodeId) => value?.trim() == '$nodeId';
-
-bool _isLocalAppDeviceId(String? value) =>
-    value?.trim().startsWith('app-device-local-') == true;
-
-bool _isAccountFallbackAppDeviceId(String? value) =>
-    value?.trim().startsWith('app-device-account-') == true;
 
 bool _looksLikeBleMac(String? value) {
   final trimmed = value?.trim();

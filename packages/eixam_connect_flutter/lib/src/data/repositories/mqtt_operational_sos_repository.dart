@@ -40,6 +40,7 @@ class MqttOperationalSosRepository
 
   StreamSubscription<RealtimeEvent>? _realtimeSub;
   SosIncident? _activeIncident;
+  String? _locallyClosedIncidentId;
 
   Future<void> restoreState() async {
     if (_localStore == null) {
@@ -50,6 +51,8 @@ class MqttOperationalSosRepository
         await _localStore.readJson(SharedPrefsSdkStore.sosIncidentKey);
     final stateRaw =
         await _localStore.readString(SharedPrefsSdkStore.sosStateKey);
+    _locallyClosedIncidentId =
+        await _localStore.readString(SharedPrefsSdkStore.sosClosedIncidentKey);
 
     if (incidentJson != null) {
       _activeIncident = LocalStateSerializers.sosIncidentFromJson(incidentJson);
@@ -68,7 +71,6 @@ class MqttOperationalSosRepository
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
-    String? appDeviceId,
     String? hardwareId,
     int? originatorNodeId,
     int? relayNodeId,
@@ -92,7 +94,8 @@ class MqttOperationalSosRepository
         'There is already an SOS flow in progress',
       );
     }
-    final appOwnedSos = originatorNodeId == null && relayNodeId == null;
+    final appOwnedSos = _isAppOwnedTriggerSource(triggerSource) ||
+        (originatorNodeId == null && relayNodeId == null);
     if (positionSnapshot == null && !appOwnedSos) {
       throw const SosException(
         'E_SOS_POSITION_REQUIRED',
@@ -111,7 +114,6 @@ class MqttOperationalSosRepository
               triggerSource: triggerSource,
               positionSnapshot: positionSnapshot,
               deviceId: deviceId,
-              appDeviceId: appDeviceId,
               hardwareId: hardwareId,
               incidentId: incidentId,
               cycleKey: cycleKey,
@@ -125,7 +127,6 @@ class MqttOperationalSosRepository
               triggerSource: triggerSource,
               positionSnapshot: positionSnapshot,
               deviceId: deviceId,
-              appDeviceId: appDeviceId,
               hardwareId: hardwareId,
               originatorNodeId: originatorNodeId,
               relayNodeId: relayNodeId,
@@ -140,6 +141,7 @@ class MqttOperationalSosRepository
               mobileCoverage: mobileCoverage,
             );
       _activeIncident = incident;
+      _locallyClosedIncidentId = null;
       _rememberActiveLikeState();
       _emit(SosState.sent);
       await _persistState();
@@ -154,12 +156,21 @@ class MqttOperationalSosRepository
     }
   }
 
+  bool _isAppOwnedTriggerSource(String triggerSource) {
+    switch (triggerSource) {
+      case 'button_ui':
+      case 'commercial_app':
+        return true;
+      default:
+        return false;
+    }
+  }
+
   Future<SosIncident> _triggerAppOwnedSosOverHttp({
     String? message,
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
-    String? appDeviceId,
     String? hardwareId,
     String? incidentId,
     String? cycleKey,
@@ -170,22 +181,21 @@ class MqttOperationalSosRepository
   }) async {
     final dataSource = remoteDataSource;
     final identity = normalizeSosBackendIdentity(
-      deviceId: deviceId ?? appDeviceId,
-      appDeviceId: appDeviceId,
+      deviceId: deviceId,
       originatorNodeId: null,
       relayNodeId: null,
       relayDeviceId: null,
       incidentId: incidentId,
       cycleKey: cycleKey,
-      hardwareId: null,
+      hardwareId: hardwareId,
     );
     if (dataSource == null) {
       BleDebugRegistry.instance.recordEvent(
         '[BACKGROUND_SOS] app_sos_backend_publish_blocked '
         'reason=http_sos_remote_data_source_unavailable '
         'deviceId=${identity.deviceId ?? "none"} nodeId=none '
-        'appDeviceId=${identity.appDeviceId ?? "none"} '
-        'hardwareId=none identitySource=${identity.identitySource}',
+        'hardwareId=${identity.hardwareId ?? "none"} '
+        'identitySource=${identity.identitySource}',
       );
       throw const SosException(
         'E_APP_SOS_BACKEND_UNAVAILABLE',
@@ -195,22 +205,21 @@ class MqttOperationalSosRepository
     BleDebugRegistry.instance.recordEvent(
       '[BACKGROUND_SOS] app_sos_backend_publish_start owner=app '
       'deviceId=${identity.deviceId ?? "none"} nodeId=none '
-      'appDeviceId=${identity.appDeviceId ?? "none"} '
-      'hardwareId=none identitySource=${identity.identitySource} '
+      'hardwareId=${identity.hardwareId ?? "none"} '
+      'identitySource=${identity.identitySource} '
       'hasLocation=${positionSnapshot != null}',
     );
     BleDebugRegistry.instance.recordEvent(
       '[BACKGROUND_SOS] app_sos_backend_http_request endpoint=/v1/sdk/sos '
-      'payloadSummary=${_compactSummary('timestamp=${positionSnapshot?.timestamp.toUtc().toIso8601String() ?? DateTime.now().toUtc().toIso8601String()} hasLocation=${positionSnapshot != null} appDeviceId=${identity.appDeviceId ?? "none"} identitySource=${identity.identitySource} deviceId=${identity.deviceId ?? identity.appDeviceId ?? "none"} owner=app runtimeDeviceId=${deviceId ?? "none"} runtimeHardwareId=${hardwareId ?? "none"}')}',
+      'payloadSummary=${_compactSummary('timestamp=${positionSnapshot?.timestamp.toUtc().toIso8601String() ?? DateTime.now().toUtc().toIso8601String()} hasLocation=${positionSnapshot != null} identitySource=${identity.identitySource} deviceId=${identity.deviceId ?? "none"} owner=app runtimeDeviceId=${deviceId ?? "none"} runtimeHardwareId=${hardwareId ?? "none"}')}',
     );
     try {
       final dto = await dataSource.triggerSos(
         message: message,
         triggerSource: triggerSource,
         positionSnapshot: positionSnapshot,
-        deviceId: identity.deviceId ?? identity.appDeviceId,
-        appDeviceId: identity.appDeviceId,
-        hardwareId: null,
+        deviceId: identity.deviceId,
+        hardwareId: identity.hardwareId,
         incidentId: incidentId,
         cycleKey: cycleKey,
         deviceBattery: deviceBattery,
@@ -241,7 +250,6 @@ class MqttOperationalSosRepository
     required String triggerSource,
     required TrackingPosition? positionSnapshot,
     String? deviceId,
-    String? appDeviceId,
     String? hardwareId,
     int? originatorNodeId,
     int? relayNodeId,
@@ -267,7 +275,6 @@ class MqttOperationalSosRepository
       timestamp: incident.createdAt,
       positionSnapshot: positionSnapshot,
       deviceId: deviceId,
-      appDeviceId: appDeviceId,
       hardwareId: hardwareId,
       originatorNodeId: originatorNodeId,
       relayNodeId: relayNodeId,
@@ -293,7 +300,6 @@ class MqttOperationalSosRepository
     required DateTime timestamp,
     required TrackingPosition? positionSnapshot,
     String? deviceId,
-    String? appDeviceId,
     String? hardwareId,
     int? originatorNodeId,
     int? relayNodeId,
@@ -309,7 +315,6 @@ class MqttOperationalSosRepository
   }) async {
     final identity = normalizeSosBackendIdentity(
       deviceId: deviceId,
-      appDeviceId: appDeviceId,
       originatorNodeId: originatorNodeId,
       relayNodeId: relayNodeId,
       relayDeviceId: relayDeviceId,
@@ -328,25 +333,12 @@ class MqttOperationalSosRepository
         'BACKEND_DEVICE_ID_INVALID invalidBackendDeviceId=${identity.deviceId} source=sos',
       );
     }
-    if (_isLocalAppDeviceId(identity.deviceId)) {
-      BleDebugRegistry.instance.recordEvent(
-        '[BACKGROUND_SOS] backend_publish_warning '
-        'reason=local_app_device_id_used_as_device_id '
-        'state=sent transport=mqtt '
-        'deviceId=${identity.deviceId ?? "none"} '
-        'nodeId=${identity.nodeId?.toString() ?? "none"} '
-        'appDeviceId=${identity.appDeviceId ?? "none"} '
-        'hardwareId=${identity.hardwareId ?? "none"} '
-        'identitySource=${identity.identitySource}',
-      );
-    }
     BleDebugRegistry.instance.recordEvent(
       'SOS_BACKEND_PAYLOAD_FINAL source=mqtt '
       'owner=${identity.originatorNodeId == null ? "app" : "device"} '
       'triggerSource=${relaySource ?? "mqtt_operational_sos"} '
       'deviceId=${identity.deviceId ?? "none"} '
       'nodeId=${identity.nodeId?.toString() ?? "none"} '
-      'appDeviceId=${identity.appDeviceId ?? "none"} '
       'originatorNodeId=${identity.originatorNodeId?.toString() ?? "none"} '
       'relayNodeId=${relayNodeId?.toString() ?? "none"} '
       'relayDeviceId=${identity.relayDeviceId ?? "none"} '
@@ -360,7 +352,6 @@ class MqttOperationalSosRepository
       timestamp: timestamp,
       positionSnapshot: positionSnapshot,
       deviceId: identity.deviceId,
-      appDeviceId: identity.appDeviceId,
       hardwareId: identity.hardwareId,
       identitySource: identity.identitySource,
       originatorNodeId: identity.originatorNodeId,
@@ -385,7 +376,6 @@ class MqttOperationalSosRepository
       'transport=mqtt topic=${SdkMqttTopics.sosAlerts} '
       'deviceId=${identity.deviceId ?? "none"} '
       'nodeId=${identity.nodeId?.toString() ?? "none"} '
-      'appDeviceId=${identity.appDeviceId ?? "none"} '
       'hardwareId=${identity.hardwareId ?? "none"} '
       'identitySource=${identity.identitySource} '
       'incidentId=${incidentId ?? "none"}',
@@ -406,10 +396,8 @@ class MqttOperationalSosRepository
     BleDebugRegistry.instance.recordEvent(
       '[BACKGROUND_SOS] backend_publish_payload identity '
       'deviceId=${identity.deviceId ?? "none"} '
-      'isLocalDeviceId=${_isLocalAppDeviceId(identity.deviceId)} '
       'nodeId=${identity.nodeId?.toString() ?? "none"} '
       'hardwareId=${identity.hardwareId ?? "none"} '
-      'appDeviceId=${identity.appDeviceId ?? "none"} '
       'userId=delegated_to_mqtt_client '
       'hasLocation=${positionSnapshot != null}',
     );
@@ -421,7 +409,6 @@ class MqttOperationalSosRepository
         'deviceId=${identity.deviceId ?? "none"} '
         'nodeId=${identity.nodeId?.toString() ?? "none"} '
         'hardwareId=${identity.hardwareId ?? "none"} '
-        'appDeviceId=${identity.appDeviceId ?? "none"} '
         'identitySource=${identity.identitySource}',
       );
       await realtimeClient.publishOperationalSos(request);
@@ -437,7 +424,6 @@ class MqttOperationalSosRepository
         'backendConfirmation=not_available '
         'deviceId=${identity.deviceId ?? "none"} '
         'nodeId=${identity.nodeId?.toString() ?? "none"} '
-        'appDeviceId=${identity.appDeviceId ?? "none"} '
         'hardwareId=${identity.hardwareId ?? "none"} '
         'identitySource=${identity.identitySource}',
       );
@@ -454,7 +440,6 @@ class MqttOperationalSosRepository
         'endpoint=${SdkMqttTopics.sosAlerts} '
         'deviceId=${identity.deviceId ?? "none"} '
         'nodeId=${identity.nodeId?.toString() ?? "none"} '
-        'appDeviceId=${identity.appDeviceId ?? "none"} '
         'hardwareId=${identity.hardwareId ?? "none"} '
         'identitySource=${identity.identitySource}',
       );
@@ -494,7 +479,6 @@ class MqttOperationalSosRepository
     try {
       final cancelled = await remoteDataSource.cancelSos();
       final settledIncident = await _settleCancelledIncident(
-        remoteDataSource: remoteDataSource,
         cancelledDto: cancelled,
       );
       await _persistState();
@@ -544,21 +528,13 @@ class MqttOperationalSosRepository
   }
 
   Future<SosIncident> _settleCancelledIncident({
-    required SosRemoteDataSource remoteDataSource,
     required SosIncidentDto? cancelledDto,
   }) async {
-    if (cancelledDto != null) {
-      return _applyBackendIncident(cancelledDto);
-    }
-
-    final activeAfterCancel = await remoteDataSource.getActiveSos();
-    if (activeAfterCancel != null) {
-      return _applyBackendIncident(activeAfterCancel);
-    }
-
-    _activeIncident = _activeIncident!.copyWith(state: SosState.cancelled);
-    _setState(SosState.cancelled);
-    return _activeIncident!;
+    final cancelledIncident = cancelledDto == null
+        ? _activeIncident!.copyWith(state: SosState.cancelled)
+        : _mapper.toDomain(cancelledDto).copyWith(state: SosState.cancelled);
+    _clearCurrentIncidentAfterCancellation(cancelledIncident);
+    return cancelledIncident;
   }
 
   Future<SosIncident> _settleResolvedIncident({
@@ -586,6 +562,19 @@ class MqttOperationalSosRepository
     }
     _setState(_activeIncident!.state);
     return _activeIncident!;
+  }
+
+  void _clearCurrentIncidentAfterCancellation(SosIncident cancelledIncident) {
+    _activeIncident = cancelledIncident;
+    _locallyClosedIncidentId = cancelledIncident.id;
+    _setState(SosState.cancelled);
+    _activeIncident = null;
+    _setState(SosState.idle);
+  }
+
+  bool _shouldIgnoreLocallyClosedIncident(SosIncident incident) {
+    final closedIncidentId = _locallyClosedIncidentId;
+    return closedIncidentId != null && incident.id == closedIncidentId;
   }
 
   @override
@@ -689,7 +678,24 @@ class MqttOperationalSosRepository
         );
       }
 
-      _activeIncident = _mapper.toDomain(active);
+      final hydratedIncident = _mapper.toDomain(active);
+      if (_shouldIgnoreLocallyClosedIncident(hydratedIncident)) {
+        _activeIncident = null;
+        _setState(SosState.idle);
+        await _persistState();
+        return const SosRuntimeRehydrationResult(
+          outcome: SosRuntimeRehydrationOutcome.clearedToIdle,
+          resultingState: SosState.idle,
+          diagnosticNote:
+              'Backend returned the same SOS incident that was locally closed; ignored it.',
+        );
+      }
+      if (_locallyClosedIncidentId != null &&
+          hydratedIncident.id != _locallyClosedIncidentId) {
+        _locallyClosedIncidentId = null;
+      }
+
+      _activeIncident = hydratedIncident;
       _rememberActiveLikeStateIfNeeded(_activeIncident!.state);
       _setState(_activeIncident!.state);
       await _persistState();
@@ -922,6 +928,15 @@ class MqttOperationalSosRepository
       SharedPrefsSdkStore.sosStateKey,
       _stateMachine.current.name,
     );
+    final closedIncidentId = _locallyClosedIncidentId;
+    if (closedIncidentId == null || closedIncidentId.isEmpty) {
+      await _localStore.remove(SharedPrefsSdkStore.sosClosedIncidentKey);
+    } else {
+      await _localStore.saveString(
+        SharedPrefsSdkStore.sosClosedIncidentKey,
+        closedIncidentId,
+      );
+    }
     if (_activeIncident == null || _stateMachine.current == SosState.idle) {
       await _localStore.remove(SharedPrefsSdkStore.sosIncidentKey);
       return;
@@ -981,10 +996,6 @@ class MqttOperationalSosRepository
   }
 
   void _rememberActiveLikeState() {}
-
-  bool _isLocalAppDeviceId(String? value) {
-    return value?.trim().startsWith('app-device-local-') == true;
-  }
 
   String _errorMessageFor(Object error) {
     if (error is EixamSdkException) {

@@ -36,7 +36,6 @@ class MqttOperationalSosRequest {
     required this.timestamp,
     this.positionSnapshot,
     this.deviceId,
-    this.appDeviceId,
     this.hardwareId,
     this.identitySource,
     this.originatorNodeId,
@@ -55,7 +54,6 @@ class MqttOperationalSosRequest {
   final DateTime timestamp;
   final TrackingPosition? positionSnapshot;
   final String? deviceId;
-  final String? appDeviceId;
   final String? hardwareId;
   final String? identitySource;
   final int? originatorNodeId;
@@ -74,7 +72,6 @@ class MqttOperationalSosRequest {
     DateTime? timestamp,
     TrackingPosition? positionSnapshot,
     Object? deviceId = _unset,
-    Object? appDeviceId = _unset,
     Object? hardwareId = _unset,
     Object? identitySource = _unset,
     Object? originatorNodeId = _unset,
@@ -94,9 +91,6 @@ class MqttOperationalSosRequest {
       positionSnapshot: positionSnapshot ?? this.positionSnapshot,
       deviceId:
           identical(deviceId, _unset) ? this.deviceId : deviceId as String?,
-      appDeviceId: identical(appDeviceId, _unset)
-          ? this.appDeviceId
-          : appDeviceId as String?,
       hardwareId: identical(hardwareId, _unset)
           ? this.hardwareId
           : hardwareId as String?,
@@ -196,7 +190,6 @@ class SdkMqttContract {
     final payloadUserId = legacyUserId?.trim();
     final identity = normalizeSosBackendIdentity(
       deviceId: request.deviceId,
-      appDeviceId: request.appDeviceId,
       hardwareId: request.hardwareId,
       originatorNodeId: request.originatorNodeId,
       relayNodeId: request.relayNodeId,
@@ -215,8 +208,6 @@ class SdkMqttContract {
         'userId': payloadUserId,
       if (identity.deviceId != null && identity.deviceId!.isNotEmpty)
         'deviceId': identity.deviceId,
-      if (identity.appDeviceId != null && identity.appDeviceId!.isNotEmpty)
-        'appDeviceId': identity.appDeviceId,
       if (identity.hardwareId != null && identity.hardwareId!.trim().isNotEmpty)
         'hardwareId': identity.hardwareId!.trim(),
       'identitySource': identity.identitySource,

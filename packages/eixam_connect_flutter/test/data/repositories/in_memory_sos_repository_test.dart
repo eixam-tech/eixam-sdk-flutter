@@ -51,14 +51,15 @@ void main() {
       );
     });
 
-    test('cancels an active SOS and updates the state', () async {
+    test('cancels an active SOS and clears the current state', () async {
       final repository = InMemorySosRepository();
 
       await repository.triggerSos(triggerSource: 'button_ui');
       final cancelled = await repository.cancelSos();
 
       expect(cancelled.state, SosState.cancelled);
-      expect(await repository.getSosState(), SosState.cancelled);
+      expect(await repository.getSosState(), SosState.idle);
+      expect(await repository.getCurrentIncident(), isNull);
     });
 
     test('restores persisted SOS incident and state', () async {
@@ -84,7 +85,7 @@ void main() {
       expect(await repository.getSosState(), SosState.sent);
     });
 
-    test('persists cancellation state and keeps the active incident snapshot',
+    test('persists cancellation as idle and removes the active incident',
         () async {
       final store = MemorySharedPrefsSdkStore();
       final repository = InMemorySosRepository(localStore: store);
@@ -96,11 +97,11 @@ void main() {
       await repository.cancelSos();
 
       expect(store.stringValues[SharedPrefsSdkStore.sosStateKey],
-          SosState.cancelled.name);
-      expect(store.jsonValues[SharedPrefsSdkStore.sosIncidentKey], isNotNull);
+          SosState.idle.name);
+      expect(store.jsonValues[SharedPrefsSdkStore.sosIncidentKey], isNull);
       expect(
-        store.jsonValues[SharedPrefsSdkStore.sosIncidentKey]?['state'],
-        SosState.cancelled.name,
+        store.stringValues[SharedPrefsSdkStore.sosClosedIncidentKey],
+        isNotNull,
       );
     });
 

@@ -531,6 +531,42 @@ void main() {
       expect(status.state, isNot(DeviceSosState.preConfirm));
     });
 
+    test(
+        'duplicate PRE-SOS packet with a new packet id keeps the first countdown deadline',
+        () async {
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 80),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      addTearDown(controller.dispose);
+
+      controller.handleIncomingSosPacket(
+        _countdownPacket(packetId: 0),
+        source: DeviceSosTransitionSource.device,
+      );
+      final first = controller.currentStatus;
+
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      controller.handleIncomingSosPacket(
+        _countdownPacket(packetId: 1),
+        source: DeviceSosTransitionSource.device,
+      );
+      final duplicate = controller.currentStatus;
+
+      expect(duplicate.state, DeviceSosState.preConfirm);
+      expect(duplicate.countdownStartedAt, first.countdownStartedAt);
+      expect(duplicate.expectedActivationAt, first.expectedActivationAt);
+      expect(duplicate.packetId, 1);
+
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+
+      final elapsed = controller.currentStatus;
+      expect(elapsed.state, DeviceSosState.active);
+      expect(elapsed.countdownStartedAt, first.countdownStartedAt);
+      expect(elapsed.expectedActivationAt, first.expectedActivationAt);
+      expect(elapsed.countdownRemainingSeconds, 0);
+    });
+
     test('device active packet as first observed packet becomes active', () {
       final controller = DeviceSosController(
         countdownDuration: const Duration(milliseconds: 40),
@@ -677,6 +713,37 @@ void main() {
       );
     });
 
+    test(
+        'later PRE-SOS-like packet with a new packet id cannot restart an active SOS',
+        () {
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 40),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      addTearDown(controller.dispose);
+
+      controller.handleIncomingSosPacket(
+        _activePacket(packetId: 0),
+        source: DeviceSosTransitionSource.device,
+      );
+
+      controller.handleIncomingSosPacket(
+        _countdownPacket(packetId: 1),
+        source: DeviceSosTransitionSource.device,
+      );
+
+      final status = controller.currentStatus;
+      expect(status.state, DeviceSosState.active);
+      expect(status.previousState, DeviceSosState.active);
+      expect(status.countdownStartedAt, isNull);
+      expect(status.expectedActivationAt, isNull);
+      expect(status.countdownRemainingSeconds, isNull);
+      expect(
+        status.decoderNote,
+        contains('already-open device SOS cycle'),
+      );
+    });
+
     test('active -> ack -> acknowledged', () async {
       final commands = <EixamDeviceCommand>[];
       final controller = DeviceSosController(
@@ -705,8 +772,12 @@ void main() {
   });
 }
 
-EixamSosPacket _countdownPacket({int retryCountBits = 1}) {
-  final flagsWord = 0x4000 | ((retryCountBits & 0x03) << 12);
+EixamSosPacket _countdownPacket({
+  int retryCountBits = 1,
+  int packetId = 0,
+}) {
+  final flagsWord =
+      0x4000 | ((retryCountBits & 0x03) << 12) | (packetId & 0x0F);
   return EixamSosPacket.tryParse(<int>[
     0x34,
     0x12,
@@ -718,14 +789,15 @@ EixamSosPacket _countdownPacket({int retryCountBits = 1}) {
   ])!;
 }
 
-EixamSosPacket _activePacket() {
+EixamSosPacket _activePacket({int packetId = 0}) {
+  final flagsWord = 0x8000 | (packetId & 0x0F);
   return EixamSosPacket.tryParse(<int>[
     0x34,
     0x12,
     0x00,
     0x00,
-    0x00,
-    0x80,
+    flagsWord & 0xFF,
+    (flagsWord >> 8) & 0xFF,
     0x00,
   ])!;
 }

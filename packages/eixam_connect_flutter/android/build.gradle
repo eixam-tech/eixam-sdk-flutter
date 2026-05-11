@@ -21,6 +21,11 @@ allprojects {
     }
 }
 
+def flutterRoot = project.findProperty('flutter.sdk') ?: System.getenv('FLUTTER_ROOT')
+def flutterEmbeddingJar = flutterRoot == null
+        ? null
+        : file("$flutterRoot/bin/cache/artifacts/engine/android-arm64/flutter.jar")
+
 apply plugin: 'com.android.library'
 apply plugin: 'kotlin-android'
 
@@ -46,5 +51,9 @@ dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
     implementation 'androidx.core:core-ktx:1.13.1'
     implementation 'androidx.appcompat:appcompat:1.7.0'
+    if (flutterEmbeddingJar != null && flutterEmbeddingJar.exists()) {
+        compileOnly files(flutterEmbeddingJar)
+        testImplementation files(flutterEmbeddingJar)
+    }
     testImplementation 'junit:junit:4.13.2'
 }

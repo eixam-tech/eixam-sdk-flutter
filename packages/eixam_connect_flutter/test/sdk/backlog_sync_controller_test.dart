@@ -62,7 +62,7 @@ void main() {
             });
           }
         },
-        backendHardwareIdResolver: () async => 'device-42',
+        backendHardwareIdResolver: () async => 'CF:82:59:4B:1A:A8',
         sessionTimeout: const Duration(seconds: 1),
       );
 
@@ -75,7 +75,12 @@ void main() {
       expect(commands.last.bytes, <int>[0x31, 0x07, 0x02, 0x00, 0x00, 0x00]);
       expect(telemetryRepository.publishCallCount, 2);
       expect(telemetryRepository.publishedPayloads, hasLength(2));
-      expect(telemetryRepository.publishedPayloads.first.deviceId, 'device-42');
+      expect(telemetryRepository.publishedPayloads.first.nodeId, 6824);
+      expect(telemetryRepository.publishedPayloads.first.deviceId, '6824');
+      expect(
+        telemetryRepository.publishedPayloads.first.hardwareId,
+        'CF:82:59:4B:1A:A8',
+      );
       expect(
         telemetryRepository.publishedPayloads.first.eventId,
         '6824:1710000000:1',

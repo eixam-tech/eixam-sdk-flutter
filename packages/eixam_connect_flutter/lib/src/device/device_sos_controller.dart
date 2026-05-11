@@ -103,6 +103,17 @@ class DeviceSosController {
 
   Stream<DeviceSosStatus> watchStatus() => _controller.stream;
 
+  DeviceSosStatus settleExpiredPreConfirmCountdown({required String reason}) {
+    if (_status.state != DeviceSosState.preConfirm ||
+        _status.expectedActivationAt == null ||
+        _now().isBefore(_status.expectedActivationAt!)) {
+      return _status;
+    }
+    return _promoteExpiredPreConfirmCountdown(
+      event: 'SOS countdown elapsed: $reason',
+    );
+  }
+
   Future<DeviceSosStatus> triggerSos({
     DeviceCommandWriter? commandWriterOverride,
     String commandRouteLabel = 'attached_writer',
@@ -951,7 +962,6 @@ class DeviceSosController {
 
     if ((currentStatus.state == DeviceSosState.active ||
             currentStatus.state == DeviceSosState.acknowledged) &&
-        sameCycle &&
         protocolState == DeviceSosState.preConfirm) {
       return _MeshPacketResolution(
         protocolState: protocolState,
@@ -959,11 +969,13 @@ class DeviceSosController {
         cycleKey: cycleKey,
         downgradeSuppressed: true,
         classificationDecision: 'active_sos',
-        classificationReason: 'same_cycle_downgrade_suppressed',
+        classificationReason: sameCycle
+            ? 'same_cycle_downgrade_suppressed'
+            : 'active_cycle_downgrade_suppressed',
         reason:
-            'Suppressed a PRE-SOS downgrade for an already-open device SOS cycle because active or acknowledged state is authoritative for the same node/packet cycle.',
+            'Suppressed a PRE-SOS downgrade for an already-open device SOS cycle because active or acknowledged state is authoritative until an explicit close event arrives.',
         decoderNote:
-            'Suppressed a PRE-SOS downgrade for an already-open device SOS cycle because active or acknowledged state is authoritative for the same node/packet cycle.',
+            'Suppressed a PRE-SOS downgrade for an already-open device SOS cycle because active or acknowledged state is authoritative until an explicit close event arrives.',
       );
     }
 
@@ -1241,6 +1253,21 @@ class DeviceSosController {
         : at.add(_countdownDuration);
     final triggerOrigin =
         triggerOriginOverride ?? _resolveTriggerOrigin(source);
+    BleDebugRegistry.instance.recordEvent(
+      '[DEVICE_PRE_SOS_COUNTDOWN] '
+      'action=${isExistingCountdown ? "preserve" : "start"} '
+      'source=${source.name} origin=${triggerOrigin.name} '
+      'previousState=${_status.state.name} '
+      'nodeId=${nodeId == null ? "-" : _formatNodeId(nodeId)} '
+      'packetId=${packetId?.toString() ?? "-"} '
+      'previousPacketId=${_status.packetId?.toString() ?? "-"} '
+      'startedAt=${countdownStartedAt.toUtc().toIso8601String()} '
+      'deadline=${expectedActivationAt.toUtc().toIso8601String()} '
+      'remaining=${_countdownRemainingSeconds(
+        now: at,
+        expectedActivationAt: expectedActivationAt,
+      )}',
+    );
     if (!isExistingCountdown) {
       _cancelCountdownTimer();
     }
@@ -1298,21 +1325,10 @@ class DeviceSosController {
 
       if (remainingSeconds <= 0) {
         timer.cancel();
-        _emit(
-          _status.copyWith(
-            state: DeviceSosState.active,
-            previousState: DeviceSosState.preConfirm,
-            transitionSource: _status.triggerOrigin,
-            triggerOrigin: _status.triggerOrigin,
-            lastEvent:
-                'SOS countdown elapsed after ${_countdownDuration.inSeconds}s.',
-            updatedAt: now,
-            optimistic: false,
-            derivedFromBlePacket: false,
-            decoderNote:
-                'The SDK promoted preConfirm to active after the protocol-defined 20-second countdown because no distinct countdown-finished BLE packet was observed.',
-            countdownRemainingSeconds: 0,
-          ),
+        _promoteExpiredPreConfirmCountdown(
+          event:
+              'SOS countdown elapsed after ${_countdownDuration.inSeconds}s.',
+          now: now,
         );
         return;
       }
@@ -1335,6 +1351,39 @@ class DeviceSosController {
       return 0;
     }
     return remaining.inSeconds + (remaining.inMilliseconds % 1000 == 0 ? 0 : 1);
+  }
+
+  DeviceSosStatus _promoteExpiredPreConfirmCountdown({
+    required String event,
+    DateTime? now,
+  }) {
+    final resolvedNow = now ?? _now();
+    _cancelCountdownTimer();
+    BleDebugRegistry.instance.recordEvent(
+      '[DEVICE_PRE_SOS_COUNTDOWN] action=promote_to_active '
+      'origin=${_status.triggerOrigin.name} '
+      'nodeId=${_status.nodeId == null ? "-" : _formatNodeId(_status.nodeId!)} '
+      'packetId=${_status.packetId?.toString() ?? "-"} '
+      'startedAt=${_status.countdownStartedAt?.toUtc().toIso8601String() ?? "-"} '
+      'deadline=${_status.expectedActivationAt?.toUtc().toIso8601String() ?? "-"} '
+      'now=${resolvedNow.toUtc().toIso8601String()}',
+    );
+    _emit(
+      _status.copyWith(
+        state: DeviceSosState.active,
+        previousState: DeviceSosState.preConfirm,
+        transitionSource: _status.triggerOrigin,
+        triggerOrigin: _status.triggerOrigin,
+        lastEvent: event,
+        updatedAt: resolvedNow,
+        optimistic: false,
+        derivedFromBlePacket: false,
+        decoderNote:
+            'The SDK promoted preConfirm to active after the protocol-defined 20-second countdown because no distinct countdown-finished BLE packet was observed.',
+        countdownRemainingSeconds: 0,
+      ),
+    );
+    return _status;
   }
 
   DeviceSosTransitionSource _resolveTriggerOrigin(

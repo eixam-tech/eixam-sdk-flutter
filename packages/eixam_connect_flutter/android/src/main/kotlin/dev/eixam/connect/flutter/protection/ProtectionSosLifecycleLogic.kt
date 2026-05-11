@@ -3,12 +3,11 @@ package dev.eixam.connect.flutter.protection
 internal object ProtectionSosLifecycleLogic {
     fun onMeshPacket(currentState: ProtectionSosLifecycleState): ProtectionSosLifecycleState =
         when (currentState) {
-            ProtectionSosLifecycleState.idle,
-            ProtectionSosLifecycleState.cancelPending,
-            -> ProtectionSosLifecycleState.preConfirmSeen
+            ProtectionSosLifecycleState.idle -> ProtectionSosLifecycleState.preConfirmSeen
 
             ProtectionSosLifecycleState.preConfirmSeen,
             ProtectionSosLifecycleState.createPending,
+            ProtectionSosLifecycleState.cancelPending,
             -> currentState
         }
 

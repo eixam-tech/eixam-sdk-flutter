@@ -23,7 +23,6 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     required String triggerSource,
     TrackingPosition? positionSnapshot,
     String? deviceId,
-    String? appDeviceId,
     String? hardwareId,
     int? originatorNodeId,
     int? relayNodeId,
@@ -47,7 +46,6 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     }
     final identity = normalizeSosBackendIdentity(
       deviceId: deviceId,
-      appDeviceId: appDeviceId,
       originatorNodeId: originatorNodeId,
       relayNodeId: relayNodeId,
       relayDeviceId: relayDeviceId,
@@ -72,7 +70,6 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
       'triggerSource=$triggerSource '
       'deviceId=${identity.deviceId ?? "none"} '
       'nodeId=${identity.nodeId?.toString() ?? "none"} '
-      'appDeviceId=${identity.appDeviceId ?? "none"} '
       'originatorNodeId=${identity.originatorNodeId?.toString() ?? "none"} '
       'relayNodeId=${relayNodeId?.toString() ?? "none"} '
       'relayDeviceId=${identity.relayDeviceId ?? "none"} '
@@ -97,8 +94,6 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
         'nodeId': identity.originatorNodeId,
         'originatorNodeId': identity.originatorNodeId,
       },
-      if (identity.appDeviceId != null && identity.appDeviceId!.isNotEmpty)
-        'appDeviceId': identity.appDeviceId,
       if (identity.hardwareId != null && identity.hardwareId!.isNotEmpty)
         'hardwareId': identity.hardwareId,
       'identitySource': identity.identitySource,
@@ -123,25 +118,12 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
       'deviceId=${identity.deviceId ?? "none"} '
       'nodeId=${identity.nodeId?.toString() ?? "none"} '
       'originatorNodeId=${identity.originatorNodeId?.toString() ?? "none"} '
-      'appDeviceId=${identity.appDeviceId ?? "none"} '
       'hardwareId=${identity.hardwareId ?? "none"} '
       'identitySource=${identity.identitySource} '
       'incidentId=${incidentId ?? "none"} '
       'canonicalIncidentId=none '
       'payload=${_redactedCompactJson(body)}',
     );
-    if (_isLocalAppDeviceId(identity.deviceId)) {
-      BleDebugRegistry.instance.recordEvent(
-        '[BACKGROUND_SOS] backend_publish_warning '
-        'reason=local_app_device_id_used_as_device_id '
-        'state=sent transport=http '
-        'deviceId=${identity.deviceId ?? "none"} '
-        'nodeId=${identity.nodeId?.toString() ?? "none"} '
-        'appDeviceId=${identity.appDeviceId ?? "none"} '
-        'hardwareId=${identity.hardwareId ?? "none"} '
-        'identitySource=${identity.identitySource}',
-      );
-    }
     BleDebugRegistry.instance.recordEvent(
       '[BACKGROUND_SOS] backend_publish_requested state=sent '
       'diagnostics_version=sos_backend_publish_trace_v3_actual_line '
@@ -152,7 +134,6 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
       'transport=http endpoint=/v1/sdk/sos '
       'deviceId=${identity.deviceId ?? "none"} '
       'nodeId=${identity.nodeId?.toString() ?? "none"} '
-      'appDeviceId=${identity.appDeviceId ?? "none"} '
       'hardwareId=${identity.hardwareId ?? "none"} '
       'identitySource=${identity.identitySource}',
     );
@@ -172,10 +153,8 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     BleDebugRegistry.instance.recordEvent(
       '[BACKGROUND_SOS] backend_publish_payload identity '
       'deviceId=${identity.deviceId ?? "none"} '
-      'isLocalDeviceId=${_isLocalAppDeviceId(identity.deviceId)} '
       'nodeId=${identity.nodeId?.toString() ?? "none"} '
       'hardwareId=${identity.hardwareId ?? "none"} '
-      'appDeviceId=${identity.appDeviceId ?? "none"} '
       'userId=not_in_http_payload '
       'hasLocation=${positionSnapshot != null}',
     );
@@ -188,7 +167,6 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
         'deviceId=${identity.deviceId ?? "none"} '
         'nodeId=${identity.nodeId?.toString() ?? "none"} '
         'hardwareId=${identity.hardwareId ?? "none"} '
-        'appDeviceId=${identity.appDeviceId ?? "none"} '
         'identitySource=${identity.identitySource}',
       );
       var response = await transport.post(
@@ -250,7 +228,6 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
           'endpoint=/v1/sdk/sos '
           'deviceId=${identity.deviceId ?? "none"} '
           'nodeId=${identity.nodeId?.toString() ?? "none"} '
-          'appDeviceId=${identity.appDeviceId ?? "none"} '
           'hardwareId=${identity.hardwareId ?? "none"} '
           'identitySource=${identity.identitySource}',
         );
@@ -280,7 +257,6 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
           'endpoint=/v1/sdk/sos '
           'deviceId=${identity.deviceId ?? "none"} '
           'nodeId=${identity.nodeId?.toString() ?? "none"} '
-          'appDeviceId=${identity.appDeviceId ?? "none"} '
           'hardwareId=${identity.hardwareId ?? "none"} '
           'identitySource=${identity.identitySource}',
         );
@@ -303,7 +279,6 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
         'backendIncidentId=${dto.id} httpStatus=${response.statusCode} '
         'deviceId=${identity.deviceId ?? "none"} '
         'nodeId=${identity.nodeId?.toString() ?? "none"} '
-        'appDeviceId=${identity.appDeviceId ?? "none"} '
         'hardwareId=${identity.hardwareId ?? "none"} '
         'identitySource=${identity.identitySource}',
       );
@@ -317,7 +292,6 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
           'endpoint=/v1/sdk/sos '
           'deviceId=${identity.deviceId ?? "none"} '
           'nodeId=${identity.nodeId?.toString() ?? "none"} '
-          'appDeviceId=${identity.appDeviceId ?? "none"} '
           'hardwareId=${identity.hardwareId ?? "none"} '
           'identitySource=${identity.identitySource}',
         );
@@ -342,7 +316,6 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
         'reason=missing_device_identity_for_422_recovery '
         'deviceId=${identity.deviceId ?? "none"} '
         'nodeId=${identity.nodeId?.toString() ?? "none"} '
-        'appDeviceId=${identity.appDeviceId ?? "none"} '
         'hardwareId=${identity.hardwareId ?? "none"} '
         'identitySource=${identity.identitySource}',
       );
@@ -351,7 +324,7 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
         'SOS backend rejected the device and no stable identity is available for registration.',
       );
     }
-    final source = identity.nodeId != null ? 'ble_node' : 'app_device';
+    final source = identity.nodeId != null ? 'ble_node' : 'app';
     final pairedAt = DateTime.now().toUtc();
     final firmwareVersion = identity.nodeId != null ? 'unknown' : 'app';
     final hardwareModel = identity.nodeId != null ? 'EIXAM R1' : 'EIXAM App';
@@ -395,10 +368,6 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     final deviceId = identity.deviceId?.trim();
     if (deviceId != null && deviceId.isNotEmpty) {
       return deviceId;
-    }
-    final appDeviceId = identity.appDeviceId?.trim();
-    if (appDeviceId != null && appDeviceId.isNotEmpty) {
-      return appDeviceId;
     }
     return null;
   }
@@ -686,9 +655,5 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
       return 'none';
     }
     return summary.length <= 240 ? summary : '${summary.substring(0, 240)}...';
-  }
-
-  bool _isLocalAppDeviceId(String? value) {
-    return value?.trim().startsWith('app-device-local-') == true;
   }
 }
