@@ -16,11 +16,16 @@ class BleAutoReconnectCoordinator {
   })  : _deviceRepository = deviceRepository,
         _preferredDeviceStore = preferredDeviceStore;
 
+  // The first retry waits longer than flutter_blue_plus's internal 2 s
+  // disconnect-gap so that the previous BluetoothGatt has fully closed
+  // before we issue a new connect; reconnecting too soon races Android's
+  // duplicate onConnectionStateChange callback and FBP rejects it as an
+  // "[unexpected connection]".
   static const List<Duration> _retryBackoff = <Duration>[
-    Duration(seconds: 2),
-    Duration(seconds: 5),
-    Duration(seconds: 10),
-    Duration(seconds: 20),
+    Duration(seconds: 4),
+    Duration(seconds: 8),
+    Duration(seconds: 15),
+    Duration(seconds: 30),
   ];
 
   final DeviceRepository _deviceRepository;
