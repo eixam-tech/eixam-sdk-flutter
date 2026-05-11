@@ -3227,20 +3227,32 @@ class EixamConnectSdkImpl
           _publicSosState == SosState.arming ||
           (deviceStatus.state == DeviceSosState.preConfirm &&
               !_isOpenSosState(_publicSosState))) {
+        final preCancelPublicState = _publicSosState;
+        final preCancelHasOpenBackendIncident =
+            _hasBackendVisibleSosIncident(_lastKnownActiveSosIncident) ||
+                _hasBackendVisibleSosIncident(_publicSosFallbackIncident);
+        final preCancelRequiresBackendCancel =
+            preCancelPublicState != SosState.arming &&
+                (_isOpenSosState(preCancelPublicState) ||
+                    preCancelHasOpenBackendIncident);
+        BleDebugRegistry.instance.recordEvent(
+          '[SOS_CANCEL] action=pre_sos_branch '
+          'publicState=${preCancelPublicState.name} '
+          'deviceState=${deviceStatus.state.name} '
+          'hasActivePreSos=$_hasActivePreSosSession '
+          'hasOpenBackendIncident=$preCancelHasOpenBackendIncident '
+          'requiresBackendCancel=$preCancelRequiresBackendCancel',
+        );
         await cancelPreSos();
         // If the public SOS was already published to the backend (e.g. app
         // pressed SOS over HTTP and the device started a separate local
         // pre-SOS countdown right after), the synthetic pre-sos cancel above
         // only cleared the device countdown — the backend incident would
         // still be "active". Cancel it explicitly so the row converges.
-        final hasOpenBackendIncident = _isOpenSosState(_publicSosState) &&
-            (_hasBackendVisibleSosIncident(_lastKnownActiveSosIncident) ||
-                _hasBackendVisibleSosIncident(_publicSosFallbackIncident));
-        if (hasOpenBackendIncident) {
+        if (preCancelRequiresBackendCancel || preCancelHasOpenBackendIncident) {
           try {
             final backendIncident = await sosRepository.cancelSos();
-            _applyTerminalSosSuppression(
-                reason: 'public_cancel_after_pre_sos');
+            _applyTerminalSosSuppression(reason: 'public_cancel_after_pre_sos');
             await _clearSosNotificationsSafely(
                 reason: 'public_cancel_after_pre_sos');
             _clearCurrentPublicSosAfterCancellation(backendIncident);
@@ -3250,6 +3262,9 @@ class EixamConnectSdkImpl
             BleDebugRegistry.instance.recordEvent(
               'Public SOS backend cancel during pre_sos cancel failed -> error=$error',
             );
+            if (preCancelRequiresBackendCancel) {
+              rethrow;
+            }
           }
         }
         return SosIncident(

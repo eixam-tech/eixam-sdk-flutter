@@ -1684,6 +1684,37 @@ void main() {
         expect(sosRepository.currentIncident.state, SosState.cancelled);
       });
 
+      test('residual PRE-SOS does not skip active backend cancel', () async {
+        deviceRepository.emitStatus(
+          buildDeviceStatus(
+            deviceId: 'ble-device-123',
+            nodeId: 418683257,
+            canonicalHardwareId: 'F4:F2:18:F4:99:79',
+            connected: true,
+            paired: true,
+            activated: true,
+          ),
+        );
+        await sdk.startPreSos(countdown: const Duration(seconds: 20));
+        sosRepository.currentIncident = SosIncident(
+          id: 'backend-sos-1',
+          state: SosState.sent,
+          createdAt: DateTime.utc(2026, 5, 11, 13, 13),
+        );
+        sosRepository.stateController.add(SosState.sent);
+        await Future<void>.delayed(Duration.zero);
+
+        final cancelled = await sdk.cancelSos();
+
+        expect(cancelled.id, 'backend-sos-1');
+        expect(cancelled.state, SosState.cancelled);
+        expect(sosRepository.cancelCallCount, 1);
+        expect(
+          sosRepository.terminalOperations,
+          <String>['cancel:backend-sos-1'],
+        );
+      });
+
       test('app-only SOS does not send fake app identity', () async {
         deviceRepository.emitStatus(
           buildDeviceStatus(
