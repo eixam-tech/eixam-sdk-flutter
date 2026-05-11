@@ -1156,6 +1156,18 @@ class EixamConnectSdkImpl
     };
   }
 
+  SosState _promotePostTriggerSosState(SosState state) {
+    return switch (state) {
+      SosState.idle ||
+      SosState.arming ||
+      SosState.triggerRequested ||
+      SosState.triggeredLocal ||
+      SosState.sending =>
+        SosState.sent,
+      _ => state,
+    };
+  }
+
   @override
   Future<DeviceStatus> connectDevice({required String pairingCode}) {
     return pairDevice(pairingCode: pairingCode);
@@ -1949,6 +1961,21 @@ class EixamConnectSdkImpl
             ? 'App-triggered SOS correlation preserved -> incidentId=${_pendingAppTriggeredSosBridge?.incidentId ?? "-"} nodeId=${_formatNodeId(status.nodeId)} state=${status.state.name}'
             : 'App-triggered SOS origin preserved without pending bridge -> nodeId=${_formatNodeId(status.nodeId)} state=${status.state.name}',
       );
+      if (_isDeviceSosCycleClosed(status.state) &&
+          !_publicSosActionInFlight) {
+        final appCycleIncident = await sosRepository.getCurrentIncident();
+        if (_hasBackendVisibleSosIncident(appCycleIncident)) {
+          BleDebugRegistry.instance.recordEvent(
+            'App-triggered SOS device-side closure -> '
+            'syncing backend incidentId=${appCycleIncident!.id} '
+            'state=${status.state.name}',
+          );
+          await _applyBackendClosureForAppTriggeredCycle(
+            status: status,
+            incident: appCycleIncident,
+          );
+        }
+      }
     } else {
       await _synchronizeDeviceOriginatedBackendLifecycle(
         status,
@@ -2953,8 +2980,10 @@ class EixamConnectSdkImpl
         );
       }
 
-      final incident =
-          backendIncident.copyWith(deliveryChannel: deliveryChannel);
+      final incident = backendIncident.copyWith(
+        deliveryChannel: deliveryChannel,
+        state: _promotePostTriggerSosState(backendIncident.state),
+      );
       _recordPublicSosResult(
         incident: incident,
         deliveryChannel: deliveryChannel,
@@ -3194,21 +3223,24 @@ class EixamConnectSdkImpl
     final previousClosureInFlight = _publicSosClosureInFlight;
     _publicSosClosureInFlight = _SosClosureIntent.cancel;
     try {
+      final deviceStatus = await deviceSosController.getStatus();
       if (_hasActivePreSosSession ||
           _publicSosState == SosState.arming ||
-          (await deviceSosController.getStatus()).state ==
-              DeviceSosState.preConfirm) {
+          deviceStatus.state == DeviceSosState.preConfirm) {
         await cancelPreSos();
-        final incident = SosIncident(
+        return SosIncident(
           id: 'pre-sos-cancelled:${DateTime.now().toUtc().microsecondsSinceEpoch}',
           state: SosState.cancelled,
           createdAt: DateTime.now().toUtc(),
           triggerSource: 'pre_sos_cancel',
         );
-        return incident;
       }
       final activeIncident = await getCurrentSosIncident();
-      if (activeIncident == null && _isOpenSosState(_publicSosState)) {
+      final cancellableIncident =
+          activeIncident ?? _lastKnownActiveSosIncident;
+      if (cancellableIncident == null &&
+          _isOpenSosState(_publicSosState) &&
+          !_canCloseDeviceSosForPublicSos(deviceStatus)) {
         BleDebugRegistry.instance.recordEvent(
           '[SOS_CANCEL] action=blocked reason=missing_incident_id '
           'stage=${_publicSosState.name} terminal=open',
@@ -3219,7 +3251,7 @@ class EixamConnectSdkImpl
         );
       }
       _rememberDeviceOriginatedClosureIntent(
-        incident: activeIncident,
+        incident: cancellableIncident,
         intent: _SosClosureIntent.cancel,
       );
       final fallbackDeliveryChannel =
@@ -4412,15 +4444,22 @@ class EixamConnectSdkImpl
     final fallback = _publicSosFallbackIncident ??
         _decorateIncidentWithPublicDeliveryChannel(
           await sosRepository.getCurrentIncident(),
+        ) ??
+        _decorateIncidentWithPublicDeliveryChannel(
+          _lastKnownActiveSosIncident,
         );
-    if (fallback == null) {
-      throw const SosException(
-        'E_SOS_NOT_AVAILABLE',
-        'SOS is unavailable because neither backend nor device channel can complete this request.',
+    if (fallback != null) {
+      return fallback.copyWith(
+        state: state,
+        deliveryChannel: deliveryChannel,
       );
     }
-    return fallback.copyWith(
+    final now = DateTime.now().toUtc();
+    return SosIncident(
+      id: 'public-sos-fallback:${now.microsecondsSinceEpoch}',
       state: state,
+      createdAt: now,
+      triggerSource: 'public_sos_fallback',
       deliveryChannel: deliveryChannel,
     );
   }
@@ -6948,42 +6987,93 @@ class EixamConnectSdkImpl
 
     final intent =
         rememberedIntent ?? fallbackIntent ?? _SosClosureIntent.cancel;
-    late final SosIncident terminalIncident;
-    switch (intent) {
-      case _SosClosureIntent.cancel:
-        terminalIncident = await sosRepository.cancelSos();
-        _emitSosTerminalNotificationIntent(
-          terminalIncident,
-          type: EixamNotificationIntentType.sosCancelled,
-          severity: EixamNotificationIntentSeverity.info,
-          titleKey: 'notification.sos.cancelled.title',
-          bodyKey: 'notification.sos.cancelled.body',
-          fallbackTitle: 'SOS cancelled',
-          fallbackBody: 'The SOS has been cancelled.',
-          dedupeKey: cycleKey == null ? null : 'sos-cycle:$cycleKey',
-          nodeId: status.nodeId,
-        );
-        _publishCancelledSosEventIfNeeded(terminalIncident);
-        break;
-      case _SosClosureIntent.resolve:
-        terminalIncident = await sosRepository.resolveSos();
-        _emitSosTerminalNotificationIntent(
-          terminalIncident,
-          type: EixamNotificationIntentType.sosResolved,
-          severity: EixamNotificationIntentSeverity.success,
-          titleKey: 'notification.sos.resolved.title',
-          bodyKey: 'notification.sos.resolved.body',
-          fallbackTitle: 'SOS resolved',
-          fallbackBody: 'The SOS has been resolved.',
-          dedupeKey: cycleKey == null ? null : 'sos-cycle:$cycleKey',
-          nodeId: status.nodeId,
-        );
-        break;
-    }
+    final terminalIncident = await _runBackendTerminalClosure(
+      intent: intent,
+      status: status,
+      cycleKey: cycleKey,
+    );
     BleDebugRegistry.instance.recordEvent(
       'Device SOS backend ${intent.name} applied -> '
       'incidentId=${terminalIncident.id}',
     );
+  }
+
+  Future<void> _applyBackendClosureForAppTriggeredCycle({
+    required DeviceSosStatus status,
+    required SosIncident incident,
+  }) async {
+    if (_isTerminalBackendSosIncident(incident)) {
+      return;
+    }
+    final intent =
+        _mapTerminalDeviceStatusToPublicSosState(status) == SosState.resolved
+            ? _SosClosureIntent.resolve
+            : _SosClosureIntent.cancel;
+    try {
+      final terminalIncident = await _runBackendTerminalClosure(
+        intent: intent,
+        status: status,
+        cycleKey: _activeDeviceSosCycleKey,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'App-triggered SOS device-side closure backend ${intent.name} applied -> '
+        'incidentId=${terminalIncident.id}',
+      );
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'App-triggered SOS device-side closure backend ${intent.name} failed -> '
+        'incidentId=${incident.id} error=$error',
+      );
+    }
+  }
+
+  Future<SosIncident> _runBackendTerminalClosure({
+    required _SosClosureIntent intent,
+    required DeviceSosStatus status,
+    required String? cycleKey,
+  }) async {
+    final SosIncident terminal;
+    final EixamNotificationIntentType notificationType;
+    final EixamNotificationIntentSeverity severity;
+    final String titleKey;
+    final String bodyKey;
+    final String fallbackTitle;
+    final String fallbackBody;
+    switch (intent) {
+      case _SosClosureIntent.cancel:
+        terminal = await sosRepository.cancelSos();
+        notificationType = EixamNotificationIntentType.sosCancelled;
+        severity = EixamNotificationIntentSeverity.info;
+        titleKey = 'notification.sos.cancelled.title';
+        bodyKey = 'notification.sos.cancelled.body';
+        fallbackTitle = 'SOS cancelled';
+        fallbackBody = 'The SOS has been cancelled.';
+        break;
+      case _SosClosureIntent.resolve:
+        terminal = await sosRepository.resolveSos();
+        notificationType = EixamNotificationIntentType.sosResolved;
+        severity = EixamNotificationIntentSeverity.success;
+        titleKey = 'notification.sos.resolved.title';
+        bodyKey = 'notification.sos.resolved.body';
+        fallbackTitle = 'SOS resolved';
+        fallbackBody = 'The SOS has been resolved.';
+        break;
+    }
+    _emitSosTerminalNotificationIntent(
+      terminal,
+      type: notificationType,
+      severity: severity,
+      titleKey: titleKey,
+      bodyKey: bodyKey,
+      fallbackTitle: fallbackTitle,
+      fallbackBody: fallbackBody,
+      dedupeKey: cycleKey == null ? null : 'sos-cycle:$cycleKey',
+      nodeId: status.nodeId,
+    );
+    if (intent == _SosClosureIntent.cancel) {
+      _publishCancelledSosEventIfNeeded(terminal);
+    }
+    return terminal;
   }
 
   void _rememberDeviceOriginatedClosureIntent({
