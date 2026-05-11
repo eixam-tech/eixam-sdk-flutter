@@ -152,6 +152,30 @@ void main() {
       }
     });
 
+    test('SOS-04b BLE active cancel ignores residual preConfirm status',
+        () async {
+      final harness = _SdkSosHarness(connectedBle: true);
+      try {
+        await harness.deviceSosController.attach(commandWriter: (_) async {});
+        harness.deviceSosController.handleIncomingSosPacket(
+          _deviceOriginCountdownPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await pumpEventQueue(times: 2);
+        await harness.sdk.triggerSos(const SosTriggerPayload());
+
+        expect(await harness.sdk.getSosState(), SosState.sent);
+
+        final cancelled = await harness.sdk.cancelSos();
+
+        expect(cancelled.state, SosState.cancelled);
+        expect(harness.sosRepository.cancelCallCount, 1);
+        expect(await harness.sdk.getSosState(), SosState.idle);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
     test('SOS-05 BLE app-origin resolve requests backend and clears state',
         () async {
       final harness = _SdkSosHarness(connectedBle: true);

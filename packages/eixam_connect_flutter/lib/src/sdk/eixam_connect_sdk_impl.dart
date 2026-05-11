@@ -1961,8 +1961,7 @@ class EixamConnectSdkImpl
             ? 'App-triggered SOS correlation preserved -> incidentId=${_pendingAppTriggeredSosBridge?.incidentId ?? "-"} nodeId=${_formatNodeId(status.nodeId)} state=${status.state.name}'
             : 'App-triggered SOS origin preserved without pending bridge -> nodeId=${_formatNodeId(status.nodeId)} state=${status.state.name}',
       );
-      if (_isDeviceSosCycleClosed(status.state) &&
-          !_publicSosActionInFlight) {
+      if (_isDeviceSosCycleClosed(status.state) && !_publicSosActionInFlight) {
         final appCycleIncident = await sosRepository.getCurrentIncident();
         if (_hasBackendVisibleSosIncident(appCycleIncident)) {
           BleDebugRegistry.instance.recordEvent(
@@ -3226,7 +3225,8 @@ class EixamConnectSdkImpl
       final deviceStatus = await deviceSosController.getStatus();
       if (_hasActivePreSosSession ||
           _publicSosState == SosState.arming ||
-          deviceStatus.state == DeviceSosState.preConfirm) {
+          (deviceStatus.state == DeviceSosState.preConfirm &&
+              !_isOpenSosState(_publicSosState))) {
         await cancelPreSos();
         return SosIncident(
           id: 'pre-sos-cancelled:${DateTime.now().toUtc().microsecondsSinceEpoch}',
@@ -3236,8 +3236,7 @@ class EixamConnectSdkImpl
         );
       }
       final activeIncident = await getCurrentSosIncident();
-      final cancellableIncident =
-          activeIncident ?? _lastKnownActiveSosIncident;
+      final cancellableIncident = activeIncident ?? _lastKnownActiveSosIncident;
       if (cancellableIncident == null &&
           _isOpenSosState(_publicSosState) &&
           !_canCloseDeviceSosForPublicSos(deviceStatus)) {
