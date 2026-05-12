@@ -232,7 +232,7 @@ void main() {
     });
 
     test(
-        'classifies an SOS notify E1 02 for another node as a remote clear event',
+        'classifies an SOS notify E1 02 for another node as a remote cancel event',
         () async {
       await runtimeProvider.requestDeviceRuntimeStatus();
       final nextEvent = _nextIncomingEvent(runtimeProvider);
@@ -245,9 +245,9 @@ void main() {
 
       final event = await nextEvent;
       expect(event.type, BleIncomingEventType.sosDeviceEvent);
-      expect(event.classification.kind, BleIncomingPayloadKind.sosClear);
+      expect(event.classification.kind, BleIncomingPayloadKind.sosCancel);
       expect(event.remoteRelaySosSnapshot, isNotNull);
-      expect(event.remoteRelaySosSnapshot!.kind, RemoteRelaySosKind.clear);
+      expect(event.remoteRelaySosSnapshot!.kind, RemoteRelaySosKind.cancel);
       expect(event.remoteRelaySosSnapshot!.originatorNodeId, 0x12345678);
       expect(event.remoteRelaySosSnapshot!.relayNodeId, 0x1234);
       expect(

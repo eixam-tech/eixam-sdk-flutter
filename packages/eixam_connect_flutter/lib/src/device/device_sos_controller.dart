@@ -191,7 +191,7 @@ class DeviceSosController {
     String commandRouteLabel = 'attached_writer',
     String terminalAction = 'cancel',
     bool? terminalCmdAvailable,
-    bool waitForCloseAcknowledgement = true,
+    bool waitForCloseAcknowledgement = false,
   }) async {
     final writer = commandWriterOverride ?? _commandWriter;
     if (writer == null) {
@@ -226,6 +226,28 @@ class DeviceSosController {
     if (!waitForCloseAcknowledgement) {
       BleDebugRegistry.instance.recordEvent(
         'DEVICE_SOS_CLOSE_COMMAND_DISPATCHED_WITHOUT_ACK_WAIT route=$commandRouteLabel previousState=${previous.state.name}',
+      );
+      final now = _now();
+      final nextState = terminalAction == 'resolve'
+          ? DeviceSosState.resolved
+          : DeviceSosState.inactive;
+      _cancelCountdownTimer();
+      _awaitingObservedAppActivation = false;
+      _emit(
+        _status.copyWith(
+          state: nextState,
+          previousState: previous.state,
+          transitionSource: DeviceSosTransitionSource.app,
+          triggerOrigin: previous.triggerOrigin,
+          lastEvent:
+              'DEVICE_SOS_CLOSE_COMMAND_APPLIED_LOCALLY action=$terminalAction',
+          updatedAt: now,
+          optimistic: false,
+          derivedFromBlePacket: false,
+          countdownStartedAt: null,
+          expectedActivationAt: null,
+          countdownRemainingSeconds: null,
+        ),
       );
       return _status;
     }
@@ -750,6 +772,8 @@ class DeviceSosController {
     if (nextState == DeviceSosState.active) {
       _awaitingObservedAppActivation = false;
     }
+    final preserveCurrentPacketMetadata =
+        resolution.downgradeSuppressed && nextState == _status.state;
     _emit(
       _status.copyWith(
         state: nextState,
@@ -768,16 +792,30 @@ class DeviceSosController {
         lastPacketAt: now,
         lastPacketSignature:
             '${packet.nodeId}:${packet.packetId}:${packet.rawHex}',
-        nodeId: packet.nodeId,
-        flags: packet.flagsWord,
-        sosType: packet.sosType,
-        retryCount: packet.retryCount,
-        relayCount: packet.relayCount,
-        batteryLevel: packet.batteryLevel,
-        batteryState: DeviceBatteryLevel.fromProtocolValue(packet.batteryLevel),
-        gpsQuality: packet.gpsQuality,
-        packetId: packet.packetId,
-        hasLocation: packet.hasPosition,
+        nodeId: preserveCurrentPacketMetadata ? _status.nodeId : packet.nodeId,
+        flags: preserveCurrentPacketMetadata ? _status.flags : packet.flagsWord,
+        sosType:
+            preserveCurrentPacketMetadata ? _status.sosType : packet.sosType,
+        retryCount: preserveCurrentPacketMetadata
+            ? _status.retryCount
+            : packet.retryCount,
+        relayCount: preserveCurrentPacketMetadata
+            ? _status.relayCount
+            : packet.relayCount,
+        batteryLevel: preserveCurrentPacketMetadata
+            ? _status.batteryLevel
+            : packet.batteryLevel,
+        batteryState: preserveCurrentPacketMetadata
+            ? _status.batteryState
+            : DeviceBatteryLevel.fromProtocolValue(packet.batteryLevel),
+        gpsQuality: preserveCurrentPacketMetadata
+            ? _status.gpsQuality
+            : packet.gpsQuality,
+        packetId:
+            preserveCurrentPacketMetadata ? _status.packetId : packet.packetId,
+        hasLocation: preserveCurrentPacketMetadata
+            ? _status.hasLocation
+            : packet.hasPosition,
         decoderNote: resolution.decoderNote,
         countdownStartedAt:
             keepCountdownMetadata ? _status.countdownStartedAt : null,
@@ -811,11 +849,11 @@ class DeviceSosController {
       'decision=${classification.decision} '
       'reason=${classification.reason}',
     );
-    if (packet.opcode == 0xE2 && _matchesPendingTerminalNode(packet.nodeId)) {
+    if (packet.opcode == 0xE2) {
       BleDebugRegistry.instance.recordEvent(
-        'SOS_TRACE device_terminal_command_ack_received event=0xE2 subcode=0x${packet.subcode.toRadixString(16).padLeft(2, '0')}',
+        'SOS_TRACE device_terminal_command_ack_ignored event=0xE2 subcode=0x${packet.subcode.toRadixString(16).padLeft(2, '0')}',
       );
-      _pendingTerminalCommand = null;
+      return;
     }
 
     if (nextState == DeviceSosState.inactive ||
@@ -916,6 +954,9 @@ class DeviceSosController {
     final sameCycle = cycleKey != null &&
         currentCycleKey != null &&
         cycleKey == currentCycleKey;
+    final sameOriginNode = packet.nodeId != 0 &&
+        currentStatus.nodeId != null &&
+        packet.nodeId == currentStatus.nodeId;
 
     if (protocolState == DeviceSosState.inactive) {
       return _MeshPacketResolution(
@@ -934,7 +975,11 @@ class DeviceSosController {
         _isClosedState(currentStatus.state) &&
         _now().difference(currentStatus.updatedAt) <=
             _terminalCycleSuppressionWindow;
-    if (recentlyClosedSameCycle) {
+    final recentlyClosedSameOrigin = sameOriginNode &&
+        _isClosedState(currentStatus.state) &&
+        _now().difference(currentStatus.updatedAt) <=
+            _terminalCycleSuppressionWindow;
+    if (recentlyClosedSameCycle || recentlyClosedSameOrigin) {
       final closedDecision = currentStatus.state == DeviceSosState.inactive
           ? 'terminal_cancelled'
           : 'terminal_resolved';
@@ -947,39 +992,48 @@ class DeviceSosController {
         cycleKey: cycleKey,
         downgradeSuppressed: true,
         classificationDecision: closedDecision,
-        classificationReason: closedReason,
-        reason: 'DEVICE_SOS_SAME_CYCLE_REOPEN_SUPPRESSED_AFTER_TERMINAL',
-        decoderNote: 'DEVICE_SOS_SAME_CYCLE_REOPEN_SUPPRESSED_AFTER_TERMINAL',
+        classificationReason: recentlyClosedSameCycle
+            ? closedReason
+            : '${closedReason}_same_node',
+        reason: recentlyClosedSameCycle
+            ? 'DEVICE_SOS_SAME_CYCLE_REOPEN_SUPPRESSED_AFTER_TERMINAL'
+            : 'DEVICE_SOS_SAME_NODE_REOPEN_SUPPRESSED_AFTER_TERMINAL',
+        decoderNote: recentlyClosedSameCycle
+            ? 'DEVICE_SOS_SAME_CYCLE_REOPEN_SUPPRESSED_AFTER_TERMINAL'
+            : 'DEVICE_SOS_SAME_NODE_REOPEN_SUPPRESSED_AFTER_TERMINAL',
       );
     }
 
-    if ((currentStatus.state == DeviceSosState.active ||
-            currentStatus.state == DeviceSosState.acknowledged) &&
-        protocolState == DeviceSosState.preConfirm) {
+    if (currentStatus.state == DeviceSosState.active ||
+        currentStatus.state == DeviceSosState.acknowledged) {
+      final preserveAcknowledged =
+          currentStatus.state == DeviceSosState.acknowledged;
       return _MeshPacketResolution(
         protocolState: protocolState,
-        resolvedState: currentStatus.state,
-        cycleKey: cycleKey,
-        downgradeSuppressed: true,
-        classificationDecision: 'active_sos',
-        classificationReason: sameCycle
-            ? 'same_cycle_downgrade_suppressed'
-            : 'active_cycle_downgrade_suppressed',
-        reason: 'DEVICE_SOS_PRE_CONFIRM_DOWNGRADE_SUPPRESSED_OPEN_CYCLE',
-        decoderNote: 'DEVICE_SOS_PRE_CONFIRM_DOWNGRADE_SUPPRESSED_OPEN_CYCLE',
-      );
-    }
-
-    if (currentStatus.state == DeviceSosState.acknowledged) {
-      return _MeshPacketResolution(
-        protocolState: protocolState,
-        resolvedState: DeviceSosState.acknowledged,
+        resolvedState: preserveAcknowledged
+            ? DeviceSosState.acknowledged
+            : DeviceSosState.active,
         cycleKey: cycleKey,
         downgradeSuppressed: protocolState == DeviceSosState.preConfirm,
-        classificationDecision: 'acknowledged_sos',
-        classificationReason: 'acknowledged_cycle_authoritative',
-        reason: 'DEVICE_SOS_ACKNOWLEDGED_CYCLE_AUTHORITATIVE',
-        decoderNote: 'DEVICE_SOS_ACKNOWLEDGED_CYCLE_AUTHORITATIVE',
+        classificationDecision:
+            preserveAcknowledged ? 'acknowledged_sos' : 'active_sos',
+        classificationReason: preserveAcknowledged
+            ? 'acknowledged_cycle_authoritative'
+            : (protocolState == DeviceSosState.preConfirm
+                ? (sameCycle || sameOriginNode
+                    ? 'same_open_cycle_packet_preserved'
+                    : 'open_cycle_packet_preserved')
+                : 'explicit_active_packet'),
+        reason: preserveAcknowledged
+            ? 'DEVICE_SOS_ACKNOWLEDGED_CYCLE_AUTHORITATIVE'
+            : (protocolState == DeviceSosState.preConfirm
+                ? 'DEVICE_SOS_NONZERO_PACKET_PRESERVED_OPEN_CYCLE'
+                : 'DEVICE_SOS_PACKET_EXPLICIT_ACTIVE'),
+        decoderNote: preserveAcknowledged
+            ? 'DEVICE_SOS_ACKNOWLEDGED_CYCLE_AUTHORITATIVE'
+            : (protocolState == DeviceSosState.preConfirm
+                ? 'DEVICE_SOS_NONZERO_PACKET_PRESERVED_OPEN_CYCLE'
+                : 'DEVICE_SOS_PACKET_EXPLICIT_ACTIVE'),
       );
     }
 
@@ -1019,6 +1073,27 @@ class DeviceSosController {
         decoderNote: protocolState == DeviceSosState.active
             ? 'DEVICE_SOS_PACKET_EXPLICIT_ACTIVE'
             : 'DEVICE_SOS_PACKET_PRE_CONFIRM_KEEP_COUNTDOWN',
+      );
+    }
+
+    if (currentStatus.state == DeviceSosState.preConfirm &&
+        currentStatus.expectedActivationAt != null &&
+        !_now().isBefore(currentStatus.expectedActivationAt!)) {
+      return _MeshPacketResolution(
+        protocolState: protocolState,
+        resolvedState: DeviceSosState.active,
+        cycleKey: cycleKey,
+        downgradeSuppressed: protocolState == DeviceSosState.preConfirm,
+        classificationDecision: 'active_sos',
+        classificationReason: protocolState == DeviceSosState.active
+            ? 'explicit_active_packet_after_countdown'
+            : 'countdown_elapsed_nonzero_sos_packet',
+        reason: protocolState == DeviceSosState.active
+            ? 'DEVICE_SOS_PACKET_EXPLICIT_ACTIVE_AFTER_COUNTDOWN'
+            : 'DEVICE_SOS_NONZERO_PACKET_AFTER_COUNTDOWN',
+        decoderNote: protocolState == DeviceSosState.active
+            ? 'DEVICE_SOS_PACKET_EXPLICIT_ACTIVE_AFTER_COUNTDOWN'
+            : 'DEVICE_SOS_NONZERO_PACKET_AFTER_COUNTDOWN',
       );
     }
 
@@ -1090,20 +1165,8 @@ class DeviceSosController {
   ) {
     switch (packet.opcode) {
       case 0xE1:
-        if (packet.subcode == 0x01) {
-          return DeviceSosState.inactive;
-        }
-        if (packet.subcode == 0x02) {
-          return DeviceSosState.resolved;
-        }
-        return current;
+        return DeviceSosState.inactive;
       case 0xE2:
-        if (packet.subcode == 0x01) {
-          return DeviceSosState.inactive;
-        }
-        if (packet.subcode == 0x02 || packet.subcode == 0x03) {
-          return DeviceSosState.resolved;
-        }
         return current;
       default:
         return current;
@@ -1116,38 +1179,14 @@ class DeviceSosController {
   ) {
     switch (packet.opcode) {
       case 0xE1:
-        if (packet.subcode == 0x01 || nextState == DeviceSosState.inactive) {
-          return const _EventPacketClassification(
-            decision: 'terminal_cancelled',
-            reason: 'device_cancel',
-          );
-        }
-        if (packet.subcode == 0x02 || nextState == DeviceSosState.resolved) {
-          return const _EventPacketClassification(
-            decision: 'terminal_resolved',
-            reason: 'device_resolve',
-          );
-        }
         return const _EventPacketClassification(
-          decision: 'terminal_closed',
-          reason: 'device_terminal_event',
+          decision: 'terminal_cancelled',
+          reason: 'device_cancel',
         );
       case 0xE2:
-        if (packet.subcode == 0x01) {
-          return const _EventPacketClassification(
-            decision: 'terminal_cancelled',
-            reason: 'cancel_ack',
-          );
-        }
-        if (packet.subcode == 0x02 || packet.subcode == 0x03) {
-          return const _EventPacketClassification(
-            decision: 'terminal_resolved',
-            reason: 'resolve_ack',
-          );
-        }
         return const _EventPacketClassification(
-          decision: 'terminal_closed',
-          reason: 'app_terminal_ack',
+          decision: 'ignored_event',
+          reason: 'app_terminal_ack_ignored',
         );
       default:
         return const _EventPacketClassification(
@@ -1159,19 +1198,10 @@ class DeviceSosController {
 
   String _describeEventPacket(EixamSosEventPacket packet) {
     if (packet.isUserDeactivated) {
-      return switch (packet.subcode) {
-        0x01 => 'user deactivated to inactive',
-        0x02 => 'user deactivated to resolved',
-        _ => 'user deactivated event',
-      };
+      return 'user deactivated to cancelled';
     }
     if (packet.isAppCancelAck) {
-      return switch (packet.subcode) {
-        0x01 => 'app cancel acknowledged as inactive',
-        0x02 => 'app cancel acknowledged as resolved',
-        0x03 => 'app cancel acknowledged as resolved',
-        _ => 'app cancel acknowledgment',
-      };
+      return 'app cancel acknowledgment ignored';
     }
     return 'unknown control event';
   }
@@ -1193,14 +1223,6 @@ class DeviceSosController {
     final anchor = pending.sentAt ?? pending.requestedAt;
     if (_now().difference(anchor) > _terminalCycleSuppressionWindow) {
       _pendingTerminalCommand = null;
-      return false;
-    }
-    return pending.nodeId == null || pending.nodeId == nodeId;
-  }
-
-  bool _matchesPendingTerminalNode(int nodeId) {
-    final pending = _pendingTerminalCommand;
-    if (pending == null) {
       return false;
     }
     return pending.nodeId == null || pending.nodeId == nodeId;

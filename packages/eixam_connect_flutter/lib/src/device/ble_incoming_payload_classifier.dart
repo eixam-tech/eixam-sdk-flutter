@@ -21,12 +21,7 @@ class BleIncomingPayloadClassifier {
     final eventPacket =
         payload.length == 6 ? EixamSosEventPacket.tryParse(payload) : null;
     if (eventPacket != null) {
-      final classification = _classifySosEvent(
-        packet: eventPacket,
-        connectedBleTagNodeId: connectedBleTagNodeId,
-        source: source,
-        fallbackOnUnknownConnectedNode: fallbackOnUnknownConnectedNode,
-      );
+      final classification = _classifySosEvent(eventPacket);
       return BleIncomingPayloadClassification(
         kind: classification,
         sosEventPacket: eventPacket,
@@ -119,27 +114,11 @@ class BleIncomingPayloadClassifier {
     return BleIncomingPayloadKind.unknownOriginSos;
   }
 
-  BleIncomingPayloadKind _classifySosEvent({
-    required EixamSosEventPacket packet,
-    required int? connectedBleTagNodeId,
-    required DeviceSosTransitionSource source,
-    required BleIncomingPayloadClassification fallbackOnUnknownConnectedNode,
-  }) {
-    final terminalKind = packet.subcode == 0x02 || packet.subcode == 0x03
-        ? BleIncomingPayloadKind.sosClear
-        : BleIncomingPayloadKind.sosCancel;
-    if (connectedBleTagNodeId != null) {
-      return packet.nodeId == connectedBleTagNodeId
-          ? terminalKind
-          : terminalKind;
+  BleIncomingPayloadKind _classifySosEvent(EixamSosEventPacket packet) {
+    if (packet.opcode == EixamBleProtocol.sosEventAppCancelAckOpcode) {
+      return BleIncomingPayloadKind.unknown;
     }
-    if (source == DeviceSosTransitionSource.app) {
-      return terminalKind;
-    }
-    return fallbackOnUnknownConnectedNode.kind ==
-            BleIncomingPayloadKind.ownDeviceSos
-        ? terminalKind
-        : terminalKind;
+    return BleIncomingPayloadKind.sosCancel;
   }
 
   bool _isRemoteTerminalEvent(

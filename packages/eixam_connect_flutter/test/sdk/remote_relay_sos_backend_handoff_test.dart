@@ -1538,6 +1538,76 @@ void main() {
       await platformEvents.close();
     });
 
+    test('native backend sync success promotes sending after incident appears',
+        () async {
+      await sdk.dispose();
+      final platformEvents =
+          StreamController<ProtectionPlatformEvent>.broadcast();
+      final platformAdapter = _FakeProtectionPlatformAdapter(
+        platformEvents: platformEvents.stream,
+      );
+      final localDeviceSosController = DeviceSosController();
+      sdk = EixamConnectSdkImpl(
+        sosRepository: sosRepository,
+        trackingRepository: trackingRepository,
+        telemetryRepository: telemetryRepository,
+        contactsRepository: contactsRepository,
+        deviceRepository: deviceRepository,
+        deviceRegistryRepository: deviceRegistryRepository,
+        deathManRepository: deathManRepository,
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notificationsRepository,
+        realtimeClient: realtimeClient,
+        deviceSosController: localDeviceSosController,
+        bleIncomingEvents: bleEvents.stream,
+        preferredBleDeviceStore: preferredDeviceStore,
+        protectionPlatformAdapter: platformAdapter,
+        localStore: localStore,
+      );
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+      );
+      final states = <SosState>[];
+      final subscription = sdk.watchSosState().listen(states.add);
+      sosRepository.hideCurrentIncident = true;
+
+      platformEvents.add(
+        ProtectionPlatformEvent(
+          type: ProtectionPlatformEventType.nativeBackendSyncQueued,
+          timestamp: DateTime.utc(2026, 4, 28, 10, 33),
+          reason: 'queued',
+        ),
+      );
+      await _eventually(() => states.contains(SosState.sending));
+      platformEvents.add(
+        ProtectionPlatformEvent(
+          type: ProtectionPlatformEventType.nativeBackendSyncSucceeded,
+          timestamp: DateTime.utc(2026, 4, 28, 10, 33, 1),
+          reason: 'synced:native-sos-1',
+        ),
+      );
+      unawaited(
+        Future<void>.delayed(const Duration(milliseconds: 80), () {
+          sosRepository.currentIncident = SosIncident(
+            id: 'native-sos-1',
+            state: SosState.sent,
+            createdAt: DateTime.utc(2026, 4, 28, 10, 33),
+            deliveryChannel: SosDeliveryChannel.backendAndDevice,
+          );
+          sosRepository.hideCurrentIncident = false;
+        }),
+      );
+      await _eventually(
+        () => states.contains(SosState.sent),
+        timeout: const Duration(seconds: 2),
+      );
+
+      expect(states.last, SosState.sent);
+
+      await subscription.cancel();
+      await platformEvents.close();
+    });
+
     group('remote relay cancel handoff', () {
       late _FakeCancelRemoteDataSource cancelDataSource;
 
@@ -1871,7 +1941,7 @@ RemoteRelaySosSnapshot _cancelSnapshot({
   int? relayNodeId = 0x0A0B0C0D,
 }) {
   return RemoteRelaySosSnapshot(
-    kind: RemoteRelaySosKind.clear,
+    kind: RemoteRelaySosKind.cancel,
     originatorNodeId: originatorNodeId,
     relayNodeId: relayNodeId,
     source: RemoteRelaySosSource.sosNotify,
