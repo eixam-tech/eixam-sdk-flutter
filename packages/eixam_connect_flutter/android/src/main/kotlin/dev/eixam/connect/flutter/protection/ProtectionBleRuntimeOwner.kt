@@ -49,6 +49,7 @@ internal class ProtectionBleRuntimeOwner(
     private var boundNodeId: Int? = null
     private val terminalSosSuppressionByKey = mutableMapOf<String, TerminalSosSuppression>()
     private val closedPreSosCycleUntilMs = mutableMapOf<String, Long>()
+    private val completedPreSosCycleUntilMs = mutableMapOf<String, Long>()
     private val backendHandoff =
         ProtectionSosBackendHandoff(
             context = context,
@@ -74,6 +75,7 @@ internal class ProtectionBleRuntimeOwner(
         connectedBleNodeId = null
         terminalSosSuppressionByKey.clear()
         closedPreSosCycleUntilMs.clear()
+        completedPreSosCycleUntilMs.clear()
         bindDeviceIdentity(deviceId, backendHardwareId)
         this.reconnectBackoffMs = reconnectBackoffMs.coerceAtLeast(1000L)
         isStopping = false
@@ -110,6 +112,7 @@ internal class ProtectionBleRuntimeOwner(
         connectedBleNodeId = null
         terminalSosSuppressionByKey.clear()
         closedPreSosCycleUntilMs.clear()
+        completedPreSosCycleUntilMs.clear()
         clearCharacteristicRefs()
         bluetoothGatt?.close()
         bluetoothGatt = null
@@ -1372,7 +1375,9 @@ internal class ProtectionBleRuntimeOwner(
 
             5, 7, 10, 12 -> {
                 val parsedCycle = parsePreSosCycle(payload)
-                if (shouldSuppressClosedPreSosCycle(parsedCycle?.cycleKey)) {
+                if (shouldSuppressClosedPreSosCycle(parsedCycle?.cycleKey) ||
+                    shouldSuppressCompletedPreSosCycle(parsedCycle?.cycleKey)
+                ) {
                     return
                 }
                 val nextState = ProtectionSosLifecycleLogic.onMeshPacket(pendingSosLifecycleState)
@@ -1410,6 +1415,7 @@ internal class ProtectionBleRuntimeOwner(
             ) {
                 pendingSosLifecycleState = nextState
                 val snapshot = runtimeStore.snapshot()
+                rememberCompletedPreSosCycle(snapshot["preSosCycleKey"] as? String)
                 runtimeStore.recordPreSosLifecycle(
                     state = pendingSosLifecycleState.name,
                     cycleKey = snapshot["preSosCycleKey"] as? String,
@@ -1443,6 +1449,16 @@ internal class ProtectionBleRuntimeOwner(
         closedPreSosCycleUntilMs[key] = now + closedPreSosCycleSuppressionMs
     }
 
+    private fun rememberCompletedPreSosCycle(cycleKey: String?) {
+        val key = cycleKey?.trim()
+        if (key.isNullOrEmpty()) {
+            return
+        }
+        val now = System.currentTimeMillis()
+        pruneCompletedPreSosCycles(now)
+        completedPreSosCycleUntilMs[key] = now + completedPreSosCycleSuppressionMs
+    }
+
     private fun shouldSuppressClosedPreSosCycle(cycleKey: String?): Boolean {
         val key = cycleKey?.trim()
         if (key.isNullOrEmpty()) {
@@ -1453,8 +1469,22 @@ internal class ProtectionBleRuntimeOwner(
         return closedPreSosCycleUntilMs.containsKey(key)
     }
 
+    private fun shouldSuppressCompletedPreSosCycle(cycleKey: String?): Boolean {
+        val key = cycleKey?.trim()
+        if (key.isNullOrEmpty()) {
+            return false
+        }
+        val now = System.currentTimeMillis()
+        pruneCompletedPreSosCycles(now)
+        return completedPreSosCycleUntilMs.containsKey(key)
+    }
+
     private fun pruneClosedPreSosCycles(now: Long = System.currentTimeMillis()) {
         closedPreSosCycleUntilMs.entries.removeIf { (_, expiresAt) -> expiresAt <= now }
+    }
+
+    private fun pruneCompletedPreSosCycles(now: Long = System.currentTimeMillis()) {
+        completedPreSosCycleUntilMs.entries.removeIf { (_, expiresAt) -> expiresAt <= now }
     }
 
     private fun rehydratePreSosLifecycle(reason: String) {
@@ -1712,6 +1742,7 @@ internal class ProtectionBleRuntimeOwner(
         private const val observedPreSosSkewMs = 2000L
         private const val terminalSosSuppressionWindowMs = 10_000L
         private const val closedPreSosCycleSuppressionMs = 120_000L
+        private const val completedPreSosCycleSuppressionMs = 120_000L
         private const val logTag = "EixamProtectionBle"
 
         private val serviceUuid: UUID = UUID.fromString("6ba1b218-15a8-461f-9fa8-5dcae273ea00")

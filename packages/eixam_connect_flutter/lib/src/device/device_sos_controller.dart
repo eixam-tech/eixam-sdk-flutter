@@ -38,8 +38,13 @@ class DeviceSosController {
   Timer? _countdownTimer;
   bool _awaitingObservedAppActivation = false;
   _PendingTerminalDeviceCommand? _pendingTerminalCommand;
+  String? _lastPromotedPreConfirmCycleKey;
+  DateTime? _lastPromotedPreConfirmAt;
 
   static const Duration _terminalCycleSuppressionWindow = Duration(seconds: 5);
+  static const Duration _promotedPreConfirmSuppressionWindow = Duration(
+    minutes: 2,
+  );
   static const Duration _observedDevicePreSosSkew = Duration(seconds: 2);
 
   DeviceSosStatus get currentStatus => _status;
@@ -1004,6 +1009,21 @@ class DeviceSosController {
       );
     }
 
+    if (protocolState == DeviceSosState.preConfirm &&
+        _shouldSuppressPromotedPreConfirmCycle(cycleKey: cycleKey)) {
+      return _MeshPacketResolution(
+        protocolState: protocolState,
+        resolvedState: DeviceSosState.active,
+        cycleKey: cycleKey,
+        downgradeSuppressed: true,
+        classificationDecision: 'active_sos',
+        classificationReason: 'same_promoted_cycle_packet_preserved',
+        reason: 'DEVICE_SOS_PRE_CONFIRM_RESTART_SUPPRESSED_AFTER_PROMOTION',
+        decoderNote:
+            'DEVICE_SOS_PRE_CONFIRM_RESTART_SUPPRESSED_AFTER_PROMOTION',
+      );
+    }
+
     if (currentStatus.state == DeviceSosState.active ||
         currentStatus.state == DeviceSosState.acknowledged) {
       final preserveAcknowledged =
@@ -1384,6 +1404,7 @@ class DeviceSosController {
     DateTime? now,
   }) {
     final resolvedNow = now ?? _now();
+    _rememberPromotedPreConfirmCycle(_status);
     _cancelCountdownTimer();
     BleDebugRegistry.instance.recordEvent(
       '[DEVICE_PRE_SOS_COUNTDOWN] action=promote_to_active '
@@ -1409,6 +1430,35 @@ class DeviceSosController {
       ),
     );
     return _status;
+  }
+
+  void _rememberPromotedPreConfirmCycle(DeviceSosStatus status) {
+    final cycleKey = _deriveDeviceSosCycleKey(
+      nodeId: status.nodeId,
+      packetId: status.packetId,
+    );
+    if (cycleKey == null) {
+      return;
+    }
+    _lastPromotedPreConfirmCycleKey = cycleKey;
+    _lastPromotedPreConfirmAt = _now();
+  }
+
+  bool _shouldSuppressPromotedPreConfirmCycle({required String? cycleKey}) {
+    final promotedCycleKey = _lastPromotedPreConfirmCycleKey;
+    final promotedAt = _lastPromotedPreConfirmAt;
+    if (cycleKey == null || promotedCycleKey == null || promotedAt == null) {
+      return false;
+    }
+    if (cycleKey != promotedCycleKey) {
+      return false;
+    }
+    if (_now().difference(promotedAt) > _promotedPreConfirmSuppressionWindow) {
+      _lastPromotedPreConfirmCycleKey = null;
+      _lastPromotedPreConfirmAt = null;
+      return false;
+    }
+    return true;
   }
 
   DeviceSosTransitionSource _resolveTriggerOrigin(

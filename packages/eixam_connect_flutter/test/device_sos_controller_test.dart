@@ -833,6 +833,41 @@ void main() {
     });
 
     test(
+        'repeated PRE-SOS packet for promoted cycle does not restart after detach',
+        () async {
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 35),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      addTearDown(controller.dispose);
+      await controller.attach(commandWriter: (_) async {});
+
+      controller.handleIncomingSosPacket(
+        _countdownPacket(retryCountBits: 0),
+        source: DeviceSosTransitionSource.device,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 55));
+      expect(controller.currentStatus.state, DeviceSosState.active);
+
+      await controller.detach();
+      expect(controller.currentStatus.state, DeviceSosState.inactive);
+
+      controller.handleIncomingSosPacket(
+        _countdownPacket(retryCountBits: 3),
+        source: DeviceSosTransitionSource.device,
+      );
+
+      final status = controller.currentStatus;
+      expect(status.state, DeviceSosState.active);
+      expect(status.countdownStartedAt, isNull);
+      expect(status.countdownRemainingSeconds, isNull);
+      expect(
+        status.decoderNote,
+        contains('PRE_CONFIRM_RESTART_SUPPRESSED_AFTER_PROMOTION'),
+      );
+    });
+
+    test(
         'later PRE-SOS-like packet with a new packet id cannot restart an active SOS',
         () {
       final controller = DeviceSosController(

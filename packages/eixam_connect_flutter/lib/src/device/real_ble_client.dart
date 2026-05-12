@@ -235,16 +235,9 @@ class RealBleClient implements BleClient {
       );
 
       _servicesCache.remove(deviceId);
-      BleDebugRegistry.instance.recordEvent(
-        'BLE discoverServices() start -> hardwareId=$deviceId',
-      );
-      _log('BLE discoverServices() start -> hardwareId=$deviceId');
-      final services = await device.discoverServices();
-      BleDebugRegistry.instance.recordEvent(
-        'BLE discoverServices() success -> hardwareId=$deviceId services=${services.length}',
-      );
-      _log(
-        'BLE discoverServices() success -> hardwareId=$deviceId services=${services.length}',
+      final services = await _discoverServicesWithReconnectRetry(
+        deviceId: deviceId,
+        device: device,
       );
       _servicesCache[deviceId] = services;
 
@@ -686,7 +679,10 @@ class RealBleClient implements BleClient {
       return [];
     }
 
-    final services = await device.discoverServices();
+    final services = await _discoverServicesWithReconnectRetry(
+      deviceId: deviceId,
+      device: device,
+    );
     _servicesCache[deviceId] = services;
     return services;
   }
@@ -811,6 +807,59 @@ class RealBleClient implements BleClient {
     } catch (_) {}
   }
 
+  Future<List<BluetoothService>> _discoverServicesWithReconnectRetry({
+    required String deviceId,
+    required BluetoothDevice device,
+  }) async {
+    const retryDelays = <Duration>[
+      Duration.zero,
+      Duration(milliseconds: 350),
+      Duration(milliseconds: 900),
+    ];
+    Object? lastError;
+    for (var attempt = 0; attempt < retryDelays.length; attempt += 1) {
+      final delay = retryDelays[attempt];
+      if (delay > Duration.zero) {
+        await Future<void>.delayed(delay);
+        final state = await _readConnectionState(device);
+        if (state != BluetoothConnectionState.connected) {
+          BleDebugRegistry.instance.recordEvent(
+            'BLE discoverServices reconnect() start -> hardwareId=$deviceId attempt=${attempt + 1}',
+          );
+          await device.connect(timeout: _connectTimeout);
+          await _waitForStableConnectedState(device, deviceId: deviceId);
+        }
+      }
+      try {
+        BleDebugRegistry.instance.recordEvent(
+          'BLE discoverServices() start -> hardwareId=$deviceId attempt=${attempt + 1}',
+        );
+        _log(
+          'BLE discoverServices() start -> hardwareId=$deviceId attempt=${attempt + 1}',
+        );
+        final services = await device.discoverServices();
+        BleDebugRegistry.instance.recordEvent(
+          'BLE discoverServices() success -> hardwareId=$deviceId services=${services.length} attempt=${attempt + 1}',
+        );
+        _log(
+          'BLE discoverServices() success -> hardwareId=$deviceId services=${services.length} attempt=${attempt + 1}',
+        );
+        return services;
+      } catch (error) {
+        lastError = error;
+        if (!_isTransientDisconnectError(error) ||
+            attempt == retryDelays.length - 1) {
+          rethrow;
+        }
+        BleDebugRegistry.instance.recordEvent(
+          'BLE discoverServices transient disconnect -> hardwareId=$deviceId attempt=${attempt + 1} error=$error',
+        );
+        await _clearTransientConnectionState(deviceId, device);
+      }
+    }
+    throw lastError ?? StateError('BLE discoverServices failed');
+  }
+
   bool _isTransientDisconnectError(Object error) {
     if (error is PlatformException) {
       return _isTransientDisconnectCode(error.code) ||
@@ -825,7 +874,9 @@ class RealBleClient implements BleClient {
     return normalized == 'e_ble_device_disconnected' ||
         normalized == 'e_device_disconnected' ||
         normalized == 'e_ble_connection_interrupted' ||
-        normalized == 'devicedisconnected';
+        normalized == 'devicedisconnected' ||
+        normalized == 'device is disconnected' ||
+        (normalized?.contains('device is disconnected') ?? false);
   }
 
   Future<BluetoothCharacteristic?> _findCharacteristic(

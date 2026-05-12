@@ -2886,12 +2886,20 @@ class EixamConnectSdkImpl
     if (_publicSosFallbackIncident != null) {
       return _publicSosFallbackIncident;
     }
-    final deviceStatus = await deviceSosController.getStatus();
-    await _rehydrateDeviceSosPublicState(
-      trigger: 'getCurrentSosIncident',
-      deviceStatus: deviceStatus,
-      emitResolvedState: false,
-    );
+    DeviceSosStatus? deviceStatus;
+    try {
+      deviceStatus = await deviceSosController.getStatus();
+      await _rehydrateDeviceSosPublicState(
+        trigger: 'getCurrentSosIncident',
+        deviceStatus: deviceStatus,
+        emitResolvedState: false,
+      );
+    } catch (error) {
+      debugPrint(
+        '[BACKGROUND_SOS] get_current_sos_device_status_failed '
+        'error=$error',
+      );
+    }
     final repositoryIncident = await sosRepository.getCurrentIncident();
     if (_isAcknowledgedTerminalSosIncident(repositoryIncident)) {
       return null;
@@ -2902,8 +2910,9 @@ class EixamConnectSdkImpl
       incident,
       source: 'get_current_sos_incident',
     );
-    final deviceDerivedIncident =
-        _buildDeviceRuntimePublicSosIncident(deviceStatus);
+    final deviceDerivedIncident = deviceStatus == null
+        ? null
+        : _buildDeviceRuntimePublicSosIncident(deviceStatus);
     if (_shouldSuppressDeviceRuntimePublicIncident(
       deviceDerivedIncident,
       backendIncident: rememberedIncident,
@@ -2914,20 +2923,22 @@ class EixamConnectSdkImpl
         source: 'get_current_sos_incident',
       );
     }
-    if (deviceDerivedIncident != null) {
+    final resolvedDeviceStatus = deviceStatus;
+    if (deviceDerivedIncident != null && resolvedDeviceStatus != null) {
       _rememberDeviceRuntimeSosOwnership(
-        deviceStatus,
-        _deriveDeviceSosCycleKey(deviceStatus),
+        resolvedDeviceStatus,
+        _deriveDeviceSosCycleKey(resolvedDeviceStatus),
       );
     }
     if (deviceDerivedIncident != null &&
+        resolvedDeviceStatus != null &&
         _hasActiveDeviceRuntimeSosOwnership() &&
         rememberedIncident != null &&
         _isLocalAppSosIncidentId(rememberedIncident.id) &&
         !_isDeviceOwnedBackendIncidentId(rememberedIncident.id)) {
       _logSosRejectionThrottled(
         cycleId: _activeDeviceRuntimeCycleKey ??
-            _deriveDeviceSosCycleKey(deviceStatus) ??
+            _deriveDeviceSosCycleKey(resolvedDeviceStatus) ??
             deviceDerivedIncident.id,
         source: 'get_current_sos_incident',
         reason: 'duplicate_device_owned_sos',
@@ -2939,6 +2950,7 @@ class EixamConnectSdkImpl
       return deviceDerivedIncident;
     }
     if (rememberedIncident == null &&
+        deviceStatus != null &&
         _hasOpenDeviceRuntimeSosInvariant() &&
         _canSurfaceDeviceRuntimeOpenSos()) {
       _logDeviceRuntimeInvariantPreserved(
