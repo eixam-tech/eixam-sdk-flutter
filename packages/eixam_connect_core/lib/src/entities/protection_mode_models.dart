@@ -49,6 +49,47 @@ enum ProtectionBlockingIssueType {
   hostRuntimeStartFailed,
 }
 
+abstract final class ProtectionSemanticCode {
+  static const platformEventStreamFailed =
+      'PROTECTION_PLATFORM_EVENT_STREAM_FAILED';
+  static const hostRuntimeStartFailed = 'PROTECTION_HOST_RUNTIME_START_FAILED';
+
+  static const noSession = 'PROTECTION_BLOCKED_NO_SESSION';
+  static const noPairedDevice = 'PROTECTION_BLOCKED_NO_PAIRED_DEVICE';
+  static const bluetoothDisabled = 'PROTECTION_BLOCKED_BLUETOOTH_DISABLED';
+  static const locationPermissionMissing =
+      'PROTECTION_BLOCKED_LOCATION_PERMISSION_MISSING';
+  static const notificationsPermissionMissing =
+      'PROTECTION_BLOCKED_NOTIFICATIONS_PERMISSION_MISSING';
+  static const platformBackgroundCapabilityMissing =
+      'PROTECTION_BLOCKED_PLATFORM_BACKGROUND_CAPABILITY_MISSING';
+
+  static const warningDeviceNotConnected =
+      'PROTECTION_WARNING_DEVICE_NOT_CONNECTED';
+  static const warningRealtimeNotReady =
+      'PROTECTION_WARNING_REALTIME_NOT_READY';
+  static const warningNativeBackendConfigInvalid =
+      'PROTECTION_WARNING_NATIVE_BACKEND_CONFIG_INVALID';
+  static const warningStoreAndForwardDisabled =
+      'PROTECTION_WARNING_STORE_AND_FORWARD_DISABLED';
+
+  static const degradedPlatformPartial = 'PROTECTION_DEGRADED_PLATFORM_PARTIAL';
+  static const degradedRehydratedPartial =
+      'PROTECTION_DEGRADED_REHYDRATED_PARTIAL';
+  static const degradedDeviceNotConnected =
+      'PROTECTION_DEGRADED_DEVICE_NOT_CONNECTED';
+  static const degradedAndroidServiceNotConnected =
+      'PROTECTION_DEGRADED_ANDROID_SERVICE_NOT_CONNECTED';
+  static const degradedIosRuntimeNotConnected =
+      'PROTECTION_DEGRADED_IOS_RUNTIME_NOT_CONNECTED';
+  static const degradedAndroidSubscriptionsPending =
+      'PROTECTION_DEGRADED_ANDROID_SUBSCRIPTIONS_PENDING';
+  static const degradedIosSubscriptionsPending =
+      'PROTECTION_DEGRADED_IOS_SUBSCRIPTIONS_PENDING';
+  static const degradedNativeBackendConfigInvalid =
+      'PROTECTION_DEGRADED_NATIVE_BACKEND_CONFIG_INVALID';
+}
+
 class ProtectionStatus {
   const ProtectionStatus({
     required this.modeState,

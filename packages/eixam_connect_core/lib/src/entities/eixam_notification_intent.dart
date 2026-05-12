@@ -4,6 +4,9 @@ enum EixamNotificationIntentType {
   sosResolved,
   sosCancelled,
   externalSosSent,
+  deathManOverdue,
+  deathManConfirmationRequired,
+  deathManEscalated,
 }
 
 enum EixamNotificationIntentSeverity {
@@ -28,8 +31,6 @@ class EixamNotificationIntent {
     this.relayNodeId,
     this.titleKey,
     this.bodyKey,
-    this.fallbackTitle,
-    this.fallbackBody,
     this.payload = const <String, String>{},
     this.shouldClearSosNotifications = false,
   });
@@ -52,10 +53,6 @@ class EixamNotificationIntent {
   /// Host apps own localization and may ignore these.
   final String? titleKey;
   final String? bodyKey;
-
-  /// Human-readable fallback copy for host apps that do not localize intents.
-  final String? fallbackTitle;
-  final String? fallbackBody;
 
   /// Generic serializable payload for routing or notification metadata.
   final Map<String, String> payload;

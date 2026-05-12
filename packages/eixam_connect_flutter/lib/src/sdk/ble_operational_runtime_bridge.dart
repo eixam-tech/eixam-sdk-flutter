@@ -234,12 +234,9 @@ class BleOperationalRuntimeBridge {
       case BleIncomingEventType.clusterHeartbeat:
         await _publishHeartbeatIfValid(event);
         return;
-      case BleIncomingEventType.backlogSyncFrame:
-        return;
       case BleIncomingEventType.sosMeshPacket:
         _observeSosIfValid(event);
         return;
-      case BleIncomingEventType.guidedRescueStatus:
       case BleIncomingEventType.sosDeviceEvent:
       case BleIncomingEventType.unknownProtocolPacket:
         return;
@@ -1129,18 +1126,13 @@ class BleOperationalRuntimeBridge {
 
   bool _isBackendValidationError(EixamSdkException error) {
     final code = error.code.toUpperCase();
-    final message = error.message.toUpperCase();
     return code.contains('422') ||
-        message.contains('422') ||
         code.contains('402') ||
-        message.contains('402') ||
-        code.contains('VALIDATION') ||
-        message.contains('VALIDATION_ERROR') ||
-        message.contains('REFERENCED DEVICE DOES NOT EXIST');
+        code.contains('VALIDATION');
   }
 
   String _backendValidationStatus(EixamSdkException error) {
-    final text = '${error.code} ${error.message}';
+    final text = error.code;
     if (text.contains('402')) {
       return '402';
     }
@@ -1152,11 +1144,7 @@ class BleOperationalRuntimeBridge {
 
   bool _isRelayTerminalError(EixamSdkException error) {
     final code = error.code.toUpperCase();
-    final message = error.message.toUpperCase();
-    return code.contains('422') ||
-        message.contains('422') ||
-        code.contains('UNPROCESSABLE') ||
-        message.contains('UNPROCESSABLE');
+    return code.contains('422') || code.contains('UNPROCESSABLE');
   }
 
   void _recordRelayAttempt({

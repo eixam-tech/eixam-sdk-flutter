@@ -1380,7 +1380,8 @@ internal class ProtectionBleRuntimeOwner(
                     pendingSosLifecycleState != ProtectionSosLifecycleState.preConfirmSeen
                 ) {
                     pendingSosLifecycleState = nextState
-                    val startedAt = System.currentTimeMillis()
+                    val observedAt = System.currentTimeMillis()
+                    val startedAt = observedAt - observedPreSosSkewMs
                     val expectedActivationAt = startedAt + sosActivationDelayMs
                     runtimeStore.recordPreSosLifecycle(
                         state = pendingSosLifecycleState.name,
@@ -1708,6 +1709,7 @@ internal class ProtectionBleRuntimeOwner(
         private const val defaultReconnectBackoffMs = 5000L
         private const val inetMaxPayloadLength = 4
         private const val sosActivationDelayMs = 20_000L
+        private const val observedPreSosSkewMs = 2000L
         private const val terminalSosSuppressionWindowMs = 10_000L
         private const val closedPreSosCycleSuppressionMs = 120_000L
         private const val logTag = "EixamProtectionBle"

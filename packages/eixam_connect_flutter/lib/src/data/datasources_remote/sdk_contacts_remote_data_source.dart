@@ -50,7 +50,7 @@ class HttpSdkContactsRemoteDataSource implements SdkContactsRemoteDataSource {
     if (contacts is! List) {
       throw const ContactsException(
         'E_HTTP_CONTACTS_LIST_FAILED',
-        'The backend did not return a valid contacts list.',
+        'E_HTTP_CONTACTS_INVALID_LIST_PAYLOAD',
       );
     }
     return [
@@ -60,7 +60,7 @@ class HttpSdkContactsRemoteDataSource implements SdkContactsRemoteDataSource {
         else
           throw const ContactsException(
             'E_HTTP_CONTACTS_LIST_FAILED',
-            'The backend returned an invalid contact payload.',
+            'E_HTTP_CONTACTS_INVALID_PAYLOAD',
           ),
     ];
   }
@@ -175,7 +175,7 @@ class HttpSdkContactsRemoteDataSource implements SdkContactsRemoteDataSource {
     if (contact is! Map<String, dynamic>) {
       throw ContactsException(
         errorCode,
-        'The backend did not return a valid contact payload.',
+        'E_HTTP_CONTACTS_INVALID_PAYLOAD',
       );
     }
     return SdkContactDto.fromJson(contact);
@@ -189,12 +189,12 @@ class HttpSdkContactsRemoteDataSource implements SdkContactsRemoteDataSource {
     try {
       decoded = jsonDecode(body);
     } on FormatException {
-      throw ContactsException(errorCode, 'The backend returned invalid JSON.');
+      throw ContactsException(errorCode, 'E_HTTP_CONTACTS_INVALID_JSON');
     }
     if (decoded is Map<String, dynamic>) {
       return decoded;
     }
-    throw ContactsException(errorCode, 'The backend returned invalid JSON.');
+    throw ContactsException(errorCode, 'E_HTTP_CONTACTS_INVALID_JSON');
   }
 
   void _ensureStatus(

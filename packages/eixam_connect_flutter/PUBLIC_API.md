@@ -2,9 +2,8 @@
 
 This guide is intentionally integration-oriented.
 
-It explains what partner apps should call and observe for relay ingest and BLE
-backlog sync without moving protocol or orchestration responsibilities out of
-the SDK.
+It explains what partner apps should call and observe for relay ingest without
+moving protocol or orchestration responsibilities out of the SDK.
 
 ## Minimal Host Responsibilities
 
@@ -20,8 +19,6 @@ Partner apps are not expected to:
 
 - decode relay TEL or SOS packets
 - map relay BLE payloads to backend device ids
-- implement backlog sync protocol state machines
-- decide when BLE backlog progress should be ACKed
 
 Those responsibilities stay inside the SDK/runtime layers.
 
@@ -59,45 +56,10 @@ This means:
 - the SDK does not keep retrying that same relay publish as a transient pending item
 - host apps should not add app-side retry logic for the same relay payload
 
-## BLE Backlog Sync
-
-The public backlog sync surface is intentionally small:
-
-- `startBacklogSync(...)`
-- `cancelBacklogSync()`
-- `getBacklogSyncState()`
-- `watchBacklogSyncState()`
-
-Lifecycle summary:
-
-1. host app starts backlog sync
-2. SDK opens the BLE session with the device
-3. device sends typed backlog frames over TEL notify
-4. SDK uploads chunk records to the backend in batches
-5. SDK ACKs device progress only after backend persistence succeeds
-6. SDK exposes coarse progress through `BacklogSyncState`
-
-Useful `BacklogSyncState` fields/getters:
-
-- `phase`
-- `confirmedEvents`
-- `totalEvents`
-- `nextOffset`
-- `lastError`
-- `isActive`
-- `isTerminal`
-- `completionFraction`
-
-Reconnect behavior stays SDK-owned:
-
-- if BLE disconnects during an active sync, the SDK restarts with a new sync start request
-- backend idempotency remains the duplicate-safety mechanism
-
 ## Diagnostics vs State
 
 Use public APIs this way:
 
-- use `BacklogSyncState` for backlog progress
 - use `SdkOperationalDiagnostics` for relay/bridge/support diagnostics
 - use `SosIncident.deliveryChannel` and SOS capability fields for public SOS UX
 

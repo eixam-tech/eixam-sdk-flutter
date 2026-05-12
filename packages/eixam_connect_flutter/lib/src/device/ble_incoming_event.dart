@@ -1,10 +1,8 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import 'eixam_ble_protocol.dart';
-import 'eixam_backlog_sync_frame.dart';
 import 'eixam_cluster_heartbeat_packet.dart';
 import 'eixam_device_runtime_status_packet.dart';
-import 'eixam_guided_rescue_status_packet.dart';
 import 'eixam_sos_event_packet.dart';
 import 'eixam_sos_packet.dart';
 import 'eixam_tel_fragment.dart';
@@ -45,8 +43,6 @@ enum BleIncomingEventType {
   telAggregateComplete,
   telRelayRx,
   clusterHeartbeat,
-  backlogSyncFrame,
-  guidedRescueStatus,
   sosMeshPacket,
   sosDeviceEvent,
   unknownProtocolPacket,
@@ -68,10 +64,8 @@ class BleIncomingEvent {
     this.telFragment,
     this.aggregatePayload,
     this.clusterHeartbeatPacket,
-    this.guidedRescueStatusPacket,
     this.deviceRuntimeStatusPacket,
     this.telRelayRxPacket,
-    this.backlogSyncFrame,
     this.sosPacket,
     this.sosEventPacket,
     this.classification = const BleIncomingPayloadClassification(
@@ -94,10 +88,8 @@ class BleIncomingEvent {
   final EixamTelFragment? telFragment;
   final List<int>? aggregatePayload;
   final EixamClusterHeartbeatPacket? clusterHeartbeatPacket;
-  final EixamGuidedRescueStatusPacket? guidedRescueStatusPacket;
   final EixamDeviceRuntimeStatusPacket? deviceRuntimeStatusPacket;
   final EixamTelRelayRxPacket? telRelayRxPacket;
-  final EixamBacklogSyncFrame? backlogSyncFrame;
   final EixamSosPacket? sosPacket;
   final EixamSosEventPacket? sosEventPacket;
   final BleIncomingPayloadClassification classification;

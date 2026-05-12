@@ -17,10 +17,8 @@ class EixamBleProtocol {
   static const int clusterMeshPort = 260;
   static const int rescueMeshPort = 261;
   static const int telAggregateFragmentOpcode = 0xD0;
-  static const int backlogSyncOpcode = 0xD1;
   static const int telAggregateFragmentHeaderLength = 5;
   static const int telAggregateFragmentMaxPayloadLength = 15;
-  static const int backlogSyncRecordLength = 16;
   static const int clusterHeartbeatPacketLength = 12;
   static const int sosPacketLengthWithPosition = 12;
   static const int sosPacketLengthMinimal = 7;

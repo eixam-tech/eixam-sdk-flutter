@@ -181,7 +181,7 @@ class SdkHttpTransport {
     } catch (_) {
       throw const NetworkException(
         'E_SDK_HTTP_INVALID_JSON',
-        'The backend returned invalid JSON.',
+        'E_SDK_HTTP_INVALID_JSON',
       );
     }
     if (decoded is Map<String, dynamic>) {
@@ -189,7 +189,7 @@ class SdkHttpTransport {
     }
     throw const NetworkException(
       'E_SDK_HTTP_INVALID_JSON',
-      'The backend returned an unexpected JSON payload.',
+      'E_SDK_HTTP_UNEXPECTED_JSON_PAYLOAD',
     );
   }
 }

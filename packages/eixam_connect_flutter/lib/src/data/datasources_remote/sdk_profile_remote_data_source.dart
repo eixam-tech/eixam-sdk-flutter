@@ -15,7 +15,8 @@ abstract class SdkProfileRemoteDataSource {
 }
 
 /// HTTP implementation for `GET`/`PUT /v1/sdk/me`.
-final class HttpSdkProfileRemoteDataSource implements SdkProfileRemoteDataSource {
+final class HttpSdkProfileRemoteDataSource
+    implements SdkProfileRemoteDataSource {
   HttpSdkProfileRemoteDataSource({required this.transport});
 
   static const _mePath = '/v1/sdk/me';
@@ -112,39 +113,37 @@ abstract final class SdkProfileHttpSupport {
     }
   }
 
-  /// OpenAPI does not define field paths on [ErrorEnvelope]; infer hints for UX.
+  /// OpenAPI does not define field paths on [ErrorEnvelope]; only explicit
+  /// backend error codes may become field hints.
   static List<SdkProfileApiFieldHint> fieldHintsFromEnvelope(
     SdkProfileErrorEnvelope? envelope,
     String rawFallback,
   ) {
-    final messageText = envelope?.message ?? rawFallback;
-    final text = messageText.toLowerCase();
-    if (text.isEmpty) {
+    final code = envelope?.code;
+    if (code == null || code.isEmpty) {
       return const [];
     }
-    final hints = <SdkProfileApiFieldHint>[];
-    final seen = <SdkProfileFieldKey>{};
-
-    void add(SdkProfileFieldKey field, bool condition) {
-      if (condition && seen.add(field)) {
-        hints.add(SdkProfileApiFieldHint(field: field, message: messageText));
-      }
+    final field = switch (code) {
+      'bad_phone' ||
+      'invalid_phone' ||
+      'phone_invalid' ||
+      'phone_invalid_e164' =>
+        SdkProfileFieldKey.phone,
+      'bad_email' ||
+      'invalid_email' ||
+      'email_invalid' =>
+        SdkProfileFieldKey.email,
+      'bad_address' ||
+      'invalid_address' ||
+      'address_invalid' =>
+        SdkProfileFieldKey.address,
+      'bad_name' || 'invalid_name' || 'name_invalid' => SdkProfileFieldKey.name,
+      _ => null,
+    };
+    if (field == null) {
+      return const [];
     }
-
-    add(
-      SdkProfileFieldKey.phone,
-      text.contains('phone') ||
-          text.contains('e.164') ||
-          text.contains('e164'),
-    );
-    add(SdkProfileFieldKey.email, text.contains('email'));
-    add(SdkProfileFieldKey.address, text.contains('address'));
-    add(
-      SdkProfileFieldKey.name,
-      text.contains('name') && !text.contains('username'),
-    );
-
-    return hints;
+    return [SdkProfileApiFieldHint(field: field, message: code)];
   }
 
   static String _errorCodeForStatus(int statusCode) {

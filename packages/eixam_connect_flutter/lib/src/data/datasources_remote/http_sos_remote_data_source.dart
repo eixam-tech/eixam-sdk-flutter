@@ -41,7 +41,7 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     if (positionSnapshot == null && !allowsMissingPosition) {
       throw const SosException(
         'E_HTTP_SOS_POSITION_REQUIRED',
-        'The production SOS HTTP endpoint requires a position snapshot.',
+        'E_HTTP_SOS_POSITION_REQUIRED',
       );
     }
     final identity = normalizeSosBackendIdentity(
@@ -262,7 +262,7 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
         );
         throw const SosException(
           'E_HTTP_SOS_TRIGGER_FAILED',
-          'The backend did not return an incident payload.',
+          'E_HTTP_SOS_TRIGGER_FAILED',
         );
       }
 
@@ -376,9 +376,24 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     if (statusCode != 422) {
       return false;
     }
-    final normalized = body.toLowerCase();
-    return normalized.contains('validation_error') &&
-        normalized.contains('referenced device does not exist');
+    return _errorCodeFromBody(body) == 'validation_error';
+  }
+
+  String? _errorCodeFromBody(String body) {
+    try {
+      final payload = jsonDecode(body);
+      if (payload is! Map<String, dynamic>) {
+        return null;
+      }
+      final error = payload['error'];
+      if (error is! Map<String, dynamic>) {
+        return null;
+      }
+      final code = error['code'];
+      return code is String ? code : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   String? _incidentIdFromResponseBody(String body) {
@@ -458,11 +473,11 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
       _logError(
         action: 'cancel',
         code: 'E_HTTP_SOS_CANCEL_FAILED',
-        message: 'The backend returned an invalid incident payload.',
+        message: 'E_HTTP_SOS_CANCEL_FAILED',
       );
       throw const SosException(
         'E_HTTP_SOS_CANCEL_FAILED',
-        'The backend returned an invalid incident payload.',
+        'E_HTTP_SOS_CANCEL_FAILED',
       );
     }
     final dto = SosIncidentDto.fromJson(incident);
@@ -515,11 +530,11 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
       _logError(
         action: 'resolve',
         code: 'E_HTTP_SOS_RESOLVE_FAILED',
-        message: 'The backend returned an invalid incident payload.',
+        message: 'E_HTTP_SOS_RESOLVE_FAILED',
       );
       throw const SosException(
         'E_HTTP_SOS_RESOLVE_FAILED',
-        'The backend returned an invalid incident payload.',
+        'E_HTTP_SOS_RESOLVE_FAILED',
       );
     }
     final dto = SosIncidentDto.fromJson(incident);
@@ -543,7 +558,7 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     if (incident is! Map<String, dynamic>) {
       throw const SosException(
         'E_HTTP_SOS_GET_ACTIVE_FAILED',
-        'The backend returned an invalid incident payload.',
+        'E_HTTP_SOS_GET_ACTIVE_FAILED',
       );
     }
     return SosIncidentDto.fromJson(incident);

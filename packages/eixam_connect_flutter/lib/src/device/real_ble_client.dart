@@ -62,7 +62,7 @@ class RealBleClient implements BleClient {
   @override
   Future<void> initialize() async {
     if (await FlutterBluePlus.isSupported == false) {
-      throw Exception('BLE no suportat en aquest dispositiu');
+      throw Exception('E_BLE_UNSUPPORTED');
     }
     _adapterStateSub?.cancel();
     _adapterStateSub = FlutterBluePlus.adapterState.listen((state) {
@@ -172,7 +172,7 @@ class RealBleClient implements BleClient {
       BleDebugRegistry.instance.recordEvent(
         'BLE connect selected device missing -> hardwareId=$deviceId',
       );
-      throw Exception('Dispositiu no trobat: $deviceId');
+      throw Exception('E_BLE_DEVICE_NOT_FOUND');
     }
     BleDebugRegistry.instance.update(
       selectedDeviceId: deviceId,
@@ -230,7 +230,9 @@ class RealBleClient implements BleClient {
       _log(
         'BLE connect post-connect connectionState -> hardwareId=$deviceId state=${postConnectState.name}',
       );
-      BleDebugRegistry.instance.recordEvent('Connected to $deviceId');
+      BleDebugRegistry.instance.recordEvent(
+        'BLE_CONNECTED hardwareId=$deviceId',
+      );
 
       _servicesCache.remove(deviceId);
       BleDebugRegistry.instance.recordEvent(
@@ -254,7 +256,7 @@ class RealBleClient implements BleClient {
         (command) => writeDeviceCommand(deviceId, command),
       );
       BleDebugRegistry.instance.recordEvent(
-        'discoverServices succeeded for $deviceId with ${services.length} service(s)',
+        'BLE_DISCOVER_SERVICES_SUCCESS hardwareId=$deviceId services=${services.length}',
       );
       _log('BLE connect -> hardwareId=$deviceId services=${services.length}');
       for (final s in services) {
@@ -278,7 +280,7 @@ class RealBleClient implements BleClient {
       }
       await _clearTransientConnectionState(deviceId, device);
       BleDebugRegistry.instance.recordEvent(
-        'Connection/discoverServices failed for $deviceId: $error',
+        'BLE_CONNECT_DISCOVER_FAILED hardwareId=$deviceId error=$error',
       );
       debugPrint(
         'BLE connect/discoverServices failed -> hardwareId=$deviceId error=$error',
@@ -303,7 +305,9 @@ class RealBleClient implements BleClient {
       sosNotifySubscribed: false,
       commandWriterReady: false,
     );
-    BleDebugRegistry.instance.recordEvent('Disconnected from $deviceId');
+    BleDebugRegistry.instance.recordEvent(
+      'BLE_DISCONNECTED hardwareId=$deviceId',
+    );
   }
 
   @override
@@ -445,7 +449,7 @@ class RealBleClient implements BleClient {
   ) async {
     final data = command.encode();
     if (data.isEmpty) {
-      throw Exception('Command payload cannot be empty');
+      throw Exception('E_BLE_COMMAND_PAYLOAD_EMPTY');
     }
 
     var targetUuid =
@@ -464,13 +468,9 @@ class RealBleClient implements BleClient {
 
     if (c == null) {
       if (!command.usesCmdCharacteristic) {
-        throw Exception(
-          'INET characteristic (ea03) not found on connected device',
-        );
+        throw Exception('E_BLE_INET_CHARACTERISTIC_MISSING');
       }
-      throw Exception(
-        'CMD characteristic (ea04) is missing on this connected EIXAM device. Advanced commands requiring CMD are unavailable.',
-      );
+      throw Exception('E_BLE_CMD_CHARACTERISTIC_MISSING');
     }
 
     final payload = command.encodedHex;
@@ -536,7 +536,7 @@ class RealBleClient implements BleClient {
     );
 
     if (tel == null || sos == null) {
-      throw Exception('EIXAM notify characteristics not found');
+      throw Exception('E_BLE_NOTIFY_CHARACTERISTICS_MISSING');
     }
 
     await tel.setNotifyValue(true);
@@ -666,13 +666,11 @@ class RealBleClient implements BleClient {
 
     final compatible = hasTel && hasSos && hasInet;
     BleDebugRegistry.instance.recordEvent(
-      compatible
-          ? 'Compatibility check passed for $deviceId'
-          : 'Compatibility check failed for $deviceId: missing required characteristics',
+      'BLE_COMPATIBILITY_CHECK hardwareId=$deviceId result=${compatible ? 'passed' : 'failed'} reason=${compatible ? 'none' : 'missing_required_characteristics'}',
     );
     if (compatible && !hasCmd) {
       BleDebugRegistry.instance.recordEvent(
-        'Connected to EIXAM device, but CMD characteristic (ea04) is missing. Advanced commands may be unavailable.',
+        'BLE_CMD_CHARACTERISTIC_MISSING hardwareId=$deviceId characteristic=ea04',
       );
     }
     return compatible;
@@ -785,9 +783,8 @@ class RealBleClient implements BleClient {
     final state = await _readConnectionState(device);
     if (state != BluetoothConnectionState.connected) {
       final error = PlatformException(
-        code: 'deviceDisconnected',
-        message:
-            'deviceDisconnected while waiting for a stable BLE connection before discoverServices',
+        code: 'E_BLE_DEVICE_DISCONNECTED',
+        message: 'E_BLE_DEVICE_DISCONNECTED',
       );
       BleDebugRegistry.instance.recordEvent(
         'BLE connect stabilization failed -> hardwareId=$deviceId state=${state.name} error=$error',
@@ -816,19 +813,19 @@ class RealBleClient implements BleClient {
 
   bool _isTransientDisconnectError(Object error) {
     if (error is PlatformException) {
-      final code = error.code.toLowerCase();
-      final message = (error.message ?? '').toLowerCase();
-      if (code.contains('devicedisconnected') ||
-          message.contains('devicedisconnected')) {
-        return true;
-      }
+      return _isTransientDisconnectCode(error.code) ||
+          _isTransientDisconnectCode(error.message);
     }
 
-    final text = error.toString().toLowerCase();
-    return text.contains('devicedisconnected') ||
-        text.contains('device disconnected') ||
-        text.contains('disconnected during discoverservices') ||
-        text.contains('disconnected during connection');
+    return _isTransientDisconnectCode(error.toString());
+  }
+
+  bool _isTransientDisconnectCode(String? value) {
+    final normalized = value?.trim().toLowerCase();
+    return normalized == 'e_ble_device_disconnected' ||
+        normalized == 'e_device_disconnected' ||
+        normalized == 'e_ble_connection_interrupted' ||
+        normalized == 'devicedisconnected';
   }
 
   Future<BluetoothCharacteristic?> _findCharacteristic(

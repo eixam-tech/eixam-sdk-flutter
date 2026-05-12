@@ -3,7 +3,7 @@ import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/ble_device_runtime_provider.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
-import 'package:eixam_connect_flutter/src/device/mock_ble_client.dart';
+import '../support/device/mock_ble_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/builders/device_status_builder.dart';

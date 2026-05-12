@@ -40,19 +40,17 @@ class DeviceException extends EixamSdkException {
   const DeviceException(super.code, super.message);
 
   const DeviceException.invalidPairingCode()
-      : this('E_DEVICE_INVALID_PAIRING_CODE', 'The pairing code is not valid.');
+      : this('E_DEVICE_INVALID_PAIRING_CODE', 'E_DEVICE_INVALID_PAIRING_CODE');
 
   const DeviceException.invalidActivationCode()
       : this('E_DEVICE_INVALID_ACTIVATION_CODE',
-            'The activation code is not valid.');
+            'E_DEVICE_INVALID_ACTIVATION_CODE');
 
   const DeviceException.notPaired()
-      : this('E_DEVICE_NOT_PAIRED',
-            'The device must be paired before this action.');
+      : this('E_DEVICE_NOT_PAIRED', 'E_DEVICE_NOT_PAIRED');
 
   const DeviceException.notActivated()
-      : this('E_DEVICE_NOT_ACTIVATED',
-            'The device must be activated before this action.');
+      : this('E_DEVICE_NOT_ACTIVATED', 'E_DEVICE_NOT_ACTIVATED');
 }
 
 class ContactsException extends EixamSdkException {
@@ -108,20 +106,4 @@ class ProfileHttpException extends EixamSdkException {
   final String? apiErrorCode;
   final String? apiErrorMessage;
   final List<SdkProfileApiFieldHint> fieldHints;
-}
-
-class RescueException extends EixamSdkException {
-  const RescueException(super.code, super.message);
-
-  const RescueException.notImplemented()
-      : this(
-          'E_RESCUE_NOT_IMPLEMENTED',
-          'Guided Rescue Phase 1 is not implemented in the current SDK runtime.',
-        );
-
-  const RescueException.missingSession()
-      : this(
-          'E_RESCUE_SESSION_REQUIRED',
-          'A guided rescue session must be configured before issuing rescue commands.',
-        );
 }

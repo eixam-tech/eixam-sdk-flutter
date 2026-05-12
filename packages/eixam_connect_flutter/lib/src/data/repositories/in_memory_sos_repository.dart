@@ -71,8 +71,7 @@ class InMemorySosRepository implements SosRepository {
         current != SosState.failed &&
         current != SosState.cancelled &&
         current != SosState.resolved) {
-      throw const SosException(
-          'E_SOS_ALREADY_ACTIVE', 'There is already an SOS flow in progress');
+      throw const SosException('E_SOS_ALREADY_ACTIVE', 'E_SOS_ALREADY_ACTIVE');
     }
 
     _emit(SosState.triggerRequested);
@@ -101,7 +100,9 @@ class InMemorySosRepository implements SosRepository {
             .contains(current) ||
         _activeIncident == null) {
       throw const SosException(
-          'E_SOS_CANCEL_NOT_ALLOWED', 'There is no active SOS to cancel');
+        'E_SOS_CANCEL_NOT_ALLOWED',
+        'E_SOS_CANCEL_NOT_ALLOWED',
+      );
     }
 
     _emit(SosState.cancelRequested);
@@ -123,7 +124,9 @@ class InMemorySosRepository implements SosRepository {
             .contains(current) ||
         _activeIncident == null) {
       throw const SosException(
-          'E_SOS_RESOLVE_NOT_ALLOWED', 'There is no active SOS to resolve');
+        'E_SOS_RESOLVE_NOT_ALLOWED',
+        'E_SOS_RESOLVE_NOT_ALLOWED',
+      );
     }
 
     _activeIncident = _activeIncident!.copyWith(state: SosState.resolved);

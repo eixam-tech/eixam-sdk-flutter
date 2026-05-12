@@ -11,28 +11,9 @@ class LocalNotificationsRepository implements NotificationsRepository {
   NotificationActionHandler? _onAction;
   bool _launchActionDispatched = false;
 
-  static const String _bleSosCategoryId = 'eixam_ble_sos_actions';
   static const String _defaultTapActionId = 'open_app';
   static const String _defaultChannelId = 'eixam_local_alerts';
   static const String _sosChannelId = 'eixam_sos_alerts';
-  static const List<String> _sosKeywords = <String>[
-    'sos',
-    'pre-sos',
-    'presos',
-    'preventive sos',
-    'emergency',
-    'incident',
-    'countdown',
-    'cancelled',
-    'canceled',
-    'resolved',
-  ];
-  static const List<String> _nonSosKeywords = <String>[
-    'death man',
-    'safety check',
-    'check-in',
-    'i\'m ok',
-  ];
 
   @override
   Future<void> initialize({NotificationActionHandler? onAction}) async {
@@ -45,54 +26,10 @@ class LocalNotificationsRepository implements NotificationsRepository {
     const androidSettings = AndroidInitializationSettings(
       '@mipmap/ic_launcher',
     );
-    final darwinSettings = DarwinInitializationSettings(
+    const darwinSettings = DarwinInitializationSettings(
       requestAlertPermission: false,
       requestBadgePermission: false,
       requestSoundPermission: false,
-      notificationCategories: <DarwinNotificationCategory>[
-        DarwinNotificationCategory(
-          _bleSosCategoryId,
-          actions: <DarwinNotificationAction>[
-            DarwinNotificationAction.plain(
-              _defaultTapActionId,
-              'Open app',
-              options: <DarwinNotificationActionOption>{
-                DarwinNotificationActionOption.foreground,
-              },
-            ),
-            DarwinNotificationAction.plain(
-              'cancel_sos',
-              'Cancel SOS',
-              options: <DarwinNotificationActionOption>{
-                DarwinNotificationActionOption.foreground,
-                DarwinNotificationActionOption.destructive,
-              },
-            ),
-            DarwinNotificationAction.plain(
-              'confirm_sos',
-              'Confirm SOS',
-              options: <DarwinNotificationActionOption>{
-                DarwinNotificationActionOption.foreground,
-              },
-            ),
-            DarwinNotificationAction.plain(
-              'resolve_sos',
-              'Resolve SOS',
-              options: <DarwinNotificationActionOption>{
-                DarwinNotificationActionOption.foreground,
-                DarwinNotificationActionOption.destructive,
-              },
-            ),
-            DarwinNotificationAction.plain(
-              'confirm_dead_man_safe',
-              'I\'m OK',
-              options: <DarwinNotificationActionOption>{
-                DarwinNotificationActionOption.foreground,
-              },
-            ),
-          ],
-        ),
-      ],
     );
 
     final settings = InitializationSettings(
@@ -111,7 +48,7 @@ class LocalNotificationsRepository implements NotificationsRepository {
     if (ok == null) {
       throw const DeviceException(
         'E_NOTIFICATIONS_INIT_FAILED',
-        'Unable to initialize local notifications',
+        'E_NOTIFICATIONS_INIT_FAILED',
       );
     }
     _initialized = true;
@@ -150,22 +87,15 @@ class LocalNotificationsRepository implements NotificationsRepository {
     }
 
     final isSosNotification = _looksLikeSosNotification(
-      title: title,
-      body: body,
       payload: payload,
     );
     final channelId = isSosNotification ? _sosChannelId : _defaultChannelId;
-    final channelName =
-        isSosNotification ? 'EIXAM SOS Alerts' : 'EIXAM Local Alerts';
-    final channelDescription = isSosNotification
-        ? 'Local alerts for EIXAM BLE SOS and pre-SOS events'
-        : 'Local alerts for tracking and Death Man checks';
+    final channelName = channelId;
 
     final details = NotificationDetails(
       android: AndroidNotificationDetails(
         channelId,
         channelName,
-        channelDescription: channelDescription,
         importance: Importance.max,
         priority: Priority.high,
         actions: actions
@@ -180,10 +110,10 @@ class LocalNotificationsRepository implements NotificationsRepository {
             .toList(growable: false),
       ),
       iOS: DarwinNotificationDetails(
-        categoryIdentifier: actions.isEmpty ? null : _bleSosCategoryId,
+        categoryIdentifier: null,
       ),
       macOS: DarwinNotificationDetails(
-        categoryIdentifier: actions.isEmpty ? null : _bleSosCategoryId,
+        categoryIdentifier: null,
       ),
     );
 
@@ -317,37 +247,26 @@ class LocalNotificationsRepository implements NotificationsRepository {
     if (channelId == _sosChannelId) {
       return true;
     }
-    return _looksLikeSosNotification(
-      title: title,
-      body: body,
-      payload: payload,
-    );
+    return _looksLikeSosNotification(payload: payload);
   }
 
   bool _looksLikeSosNotification({
-    String? title,
-    String? body,
     String? payload,
   }) {
-    final haystack = <String?>[title, body, payload]
-        .whereType<String>()
-        .map((value) => value.toLowerCase())
-        .join(' ');
-    if (haystack.isEmpty) {
+    if (payload == null || payload.trim().isEmpty) {
       return false;
     }
-    if (payload != null && payload.startsWith('death_man:')) {
+    final normalized = payload.trim().toLowerCase();
+    if (normalized.startsWith('death_man:')) {
       return false;
     }
-    if (_nonSosKeywords.any(haystack.contains)) {
-      return false;
-    }
-    if (payload != null &&
-        (payload.contains('"kind":"sos_received"') ||
-            payload.contains('"kind": "sos_received"'))) {
+    if (normalized.startsWith('sos:') ||
+        normalized.startsWith('pre_sos:') ||
+        normalized.startsWith('pre-sos:')) {
       return true;
     }
-    return _sosKeywords.any(haystack.contains);
+    return normalized.contains('"kind":"sos_received"') ||
+        normalized.contains('"kind": "sos_received"');
   }
 
   int _nextNotificationId() {

@@ -183,7 +183,7 @@ class BleDebugRegistry {
   Future<List<BleScanResult>> startScan() async {
     final scanner = _scanner;
     if (scanner == null) {
-      throw StateError('BLE scanner is not ready.');
+      throw StateError('E_BLE_SCANNER_NOT_READY');
     }
     update(isScanning: true, scanResults: const <BleScanResult>[]);
     recordEvent('Starting BLE scan');
@@ -202,7 +202,7 @@ class BleDebugRegistry {
   Future<void> sendCommand(EixamDeviceCommand command) async {
     final writer = _commandWriter;
     if (writer == null) {
-      throw StateError('BLE command channel is not ready.');
+      throw StateError('E_BLE_COMMAND_CHANNEL_NOT_READY');
     }
     await writer(command);
   }

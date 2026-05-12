@@ -9,7 +9,6 @@ Run from the repository root unless noted otherwise.
 | Format check | `dart format --set-exit-if-changed .` |
 | Root analysis | `flutter analyze --no-fatal-infos` |
 | Root test sweep | `flutter test` |
-| Run validation app | `flutter run -t apps/eixam_control_app/lib/main.dart` |
 
 ## Package-Level Commands
 
@@ -17,7 +16,6 @@ Run from the repository root unless noted otherwise.
 |---|---|
 | Core package tests | `dart test packages/eixam_connect_core/test` |
 | Flutter SDK tests | `flutter test packages/eixam_connect_flutter/test` |
-| Control app tests | `flutter test apps/eixam_control_app/test` |
 
 ## High-Signal Test Files
 
@@ -25,17 +23,15 @@ Run from the repository root unless noted otherwise.
 |---|---|
 | Public SDK orchestration | `packages/eixam_connect_flutter/test/sdk/eixam_connect_sdk_impl_test.dart` |
 | BLE contract surface | `packages/eixam_connect_flutter/test/sdk/eixam_connect_sdk_ble_contract_test.dart` |
-| Backlog sync | `packages/eixam_connect_flutter/test/sdk/backlog_sync_controller_test.dart` |
 | Auto reconnect | `packages/eixam_connect_flutter/test/ble_auto_reconnect_coordinator_test.dart` |
 | Device runtime/provider | `packages/eixam_connect_flutter/test/device/*` |
 | Core SOS / DMP state | `packages/eixam_connect_core/test/state/*`, `packages/eixam_connect_core/test/usecases/*` |
-| Validation host behavior | `apps/eixam_control_app/test/validation_console_controller_test.dart` |
 
 ## Analyzer / Format Notes
 
 - Root `flutter analyze --no-fatal-infos` is the repo-level baseline from the README.
 - `eixam_connect_core` is a Dart package; targeted `dart test` is often the fastest check there.
-- `eixam_connect_flutter` and `eixam_control_app` are Flutter packages/apps; prefer `flutter test` for targeted validation.
+- `eixam_connect_flutter` is a Flutter package; prefer `flutter test` for targeted validation.
 
 ## Manual Validation Checklist
 

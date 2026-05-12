@@ -40,6 +40,7 @@ class DeviceSosController {
   _PendingTerminalDeviceCommand? _pendingTerminalCommand;
 
   static const Duration _terminalCycleSuppressionWindow = Duration(seconds: 5);
+  static const Duration _observedDevicePreSosSkew = Duration(seconds: 2);
 
   DeviceSosStatus get currentStatus => _status;
   bool get shortCommandAvailable =>
@@ -63,12 +64,12 @@ class DeviceSosController {
     _shortCommandAvailable = shortCommandAvailable;
     _longCommandAvailable = longCommandAvailable;
     BleDebugRegistry.instance.recordEvent(
-      'Device SOS command path attached -> available=$hasSosCommandPath previous=$previousAvailability shortCommandAvailable=${this.shortCommandAvailable} longCommandAvailable=${this.longCommandAvailable}',
+      'DEVICE_SOS_COMMAND_PATH_ATTACHED available=$hasSosCommandPath previous=$previousAvailability shortCommandAvailable=${this.shortCommandAvailable} longCommandAvailable=${this.longCommandAvailable}',
     );
     _emitCommandPathAvailabilityIfChanged(previousAvailability);
     _emit(
       _status.copyWith(
-        lastEvent: 'Device SOS command channel attached',
+        lastEvent: 'DEVICE_SOS_COMMAND_CHANNEL_ATTACHED',
         updatedAt: _now(),
       ),
     );
@@ -83,7 +84,7 @@ class DeviceSosController {
     _awaitingObservedAppActivation = false;
     _pendingTerminalCommand = null;
     BleDebugRegistry.instance.recordEvent(
-      'Device SOS command path detached -> available=$hasSosCommandPath previous=$previousAvailability',
+      'DEVICE_SOS_COMMAND_PATH_DETACHED available=$hasSosCommandPath previous=$previousAvailability',
     );
     _emitCommandPathAvailabilityIfChanged(previousAvailability);
     _cancelCountdownTimer();
@@ -93,7 +94,7 @@ class DeviceSosController {
         previousState: _status.state,
         transitionSource: DeviceSosTransitionSource.unknown,
         triggerOrigin: DeviceSosTransitionSource.unknown,
-        lastEvent: 'Device SOS controller detached',
+        lastEvent: 'DEVICE_SOS_CONTROLLER_DETACHED',
         updatedAt: _now(),
       ),
     );
@@ -121,8 +122,8 @@ class DeviceSosController {
     return _sendCommand(
       command: EixamDeviceCommand.sosTriggerApp(),
       optimisticState: DeviceSosState.preConfirm,
-      optimisticEvent: 'App triggered SOS on device',
-      failureEvent: 'SOS trigger write failed',
+      optimisticEvent: 'DEVICE_SOS_TRIGGERED_BY_APP',
+      failureEvent: 'DEVICE_SOS_TRIGGER_WRITE_FAILED',
       commandWriterOverride: commandWriterOverride,
       commandRouteLabel: commandRouteLabel,
     );
@@ -139,7 +140,7 @@ class DeviceSosController {
         commandRouteLabel: commandRouteLabel,
       );
       await _waitForStatus(
-        description: 'observed device pre-confirm countdown',
+        description: 'DEVICE_SOS_PRE_CONFIRM_OBSERVED',
         predicate: _isObservedPreConfirmForAppActivation,
       );
       await _sendAppConfirmCommand(
@@ -147,17 +148,17 @@ class DeviceSosController {
         commandRouteLabel: commandRouteLabel,
       );
       final active = await _waitForStatus(
-        description: 'observed device active SOS after confirm',
+        description: 'DEVICE_SOS_ACTIVE_OBSERVED_AFTER_CONFIRM',
         predicate: _isObservedActiveForAppActivation,
       );
       BleDebugRegistry.instance.recordEvent(
-        'App SOS device activation completed -> route=$commandRouteLabel state=${active.state.name}',
+        'APP_SOS_DEVICE_ACTIVATION_COMPLETED route=$commandRouteLabel state=${active.state.name}',
       );
       return active;
     } catch (error) {
       _awaitingObservedAppActivation = false;
       BleDebugRegistry.instance.recordEvent(
-        'App SOS device activation incomplete -> route=$commandRouteLabel state=${_status.state.name} error=$error note=device_stayed_in_pre_sos',
+        'APP_SOS_DEVICE_ACTIVATION_INCOMPLETE route=$commandRouteLabel state=${_status.state.name} error=$error note=device_stayed_in_pre_sos',
       );
       rethrow;
     }
@@ -170,8 +171,7 @@ class DeviceSosController {
     if (_status.state != DeviceSosState.preConfirm) {
       return Future<DeviceSosStatus>.value(
         _status.copyWith(
-          lastEvent:
-              'SOS confirm ignored because the device is not in pre-confirmation.',
+          lastEvent: 'DEVICE_SOS_CONFIRM_IGNORED_STATE_NOT_PRE_CONFIRM',
           updatedAt: _now(),
         ),
       );
@@ -179,8 +179,8 @@ class DeviceSosController {
     return _sendCommand(
       command: EixamDeviceCommand.sosConfirm(),
       optimisticState: DeviceSosState.active,
-      optimisticEvent: 'App confirmed SOS on device',
-      failureEvent: 'SOS confirm write failed',
+      optimisticEvent: 'DEVICE_SOS_CONFIRMED_BY_APP',
+      failureEvent: 'DEVICE_SOS_CONFIRM_WRITE_FAILED',
       commandWriterOverride: commandWriterOverride,
       commandRouteLabel: commandRouteLabel,
     );
@@ -225,22 +225,22 @@ class DeviceSosController {
     }
     if (!waitForCloseAcknowledgement) {
       BleDebugRegistry.instance.recordEvent(
-        'Device SOS close command dispatched without waiting for acknowledgement -> route=$commandRouteLabel previousState=${previous.state.name}',
+        'DEVICE_SOS_CLOSE_COMMAND_DISPATCHED_WITHOUT_ACK_WAIT route=$commandRouteLabel previousState=${previous.state.name}',
       );
       return _status;
     }
     try {
       final closed = await _waitForStatus(
-        description: 'observed device close acknowledgement after cancel',
+        description: 'DEVICE_SOS_CLOSE_ACK_OBSERVED_AFTER_CANCEL',
         predicate: _isObservedClosedAfterCancel,
       );
       BleDebugRegistry.instance.recordEvent(
-        'Device SOS close command acknowledged -> route=$commandRouteLabel state=${closed.state.name} previousState=${previous.state.name}',
+        'DEVICE_SOS_CLOSE_COMMAND_ACKNOWLEDGED route=$commandRouteLabel state=${closed.state.name} previousState=${previous.state.name}',
       );
       return closed;
     } catch (error) {
       BleDebugRegistry.instance.recordEvent(
-        'Device SOS close command timed out or failed -> route=$commandRouteLabel lastState=${_status.state.name} previousState=${previous.state.name} error=$error',
+        'DEVICE_SOS_CLOSE_COMMAND_ACK_TIMEOUT_OR_FAILED route=$commandRouteLabel lastState=${_status.state.name} previousState=${previous.state.name} error=$error',
       );
       rethrow;
     }
@@ -263,7 +263,7 @@ class DeviceSosController {
         previousState: previous.state,
         transitionSource: DeviceSosTransitionSource.app,
         triggerOrigin: previous.triggerOrigin,
-        lastEvent: 'Local PRE-SOS countdown cleared: $reason',
+        lastEvent: 'DEVICE_PRE_SOS_COUNTDOWN_CLEARED reason=$reason',
         updatedAt: _now(),
       ),
     );
@@ -277,8 +277,7 @@ class DeviceSosController {
     if (_status.state != DeviceSosState.active) {
       return Future<DeviceSosStatus>.value(
         _status.copyWith(
-          lastEvent:
-              'Backend acknowledgment ignored because the SOS is not active.',
+          lastEvent: 'DEVICE_SOS_ACK_IGNORED_STATE_NOT_ACTIVE',
           updatedAt: _now(),
         ),
       );
@@ -286,8 +285,8 @@ class DeviceSosController {
     return _sendCommand(
       command: EixamDeviceCommand.sosAck(),
       optimisticState: DeviceSosState.acknowledged,
-      optimisticEvent: 'App sent backend acknowledgment to device',
-      failureEvent: 'Backend acknowledgment write failed',
+      optimisticEvent: 'DEVICE_SOS_BACKEND_ACK_SENT_BY_APP',
+      failureEvent: 'DEVICE_SOS_BACKEND_ACK_WRITE_FAILED',
       commandWriterOverride: commandWriterOverride,
       commandRouteLabel: commandRouteLabel,
     );
@@ -359,7 +358,7 @@ class DeviceSosController {
   }) async {
     final writer = commandWriterOverride ?? _commandWriter;
     if (writer == null) {
-      throw StateError('Device SOS command channel is not ready.');
+      throw StateError('E_DEVICE_SOS_COMMAND_CHANNEL_NOT_READY');
     }
     if (commandWriterOverride == null) {
       _ensureCommandAvailable(command: command);
@@ -376,7 +375,7 @@ class DeviceSosController {
         derivedFromBlePacket: false,
         lastOpcode: command.opcode,
         decoderNote:
-            'Optimistic local transition pending BLE/device confirmation.',
+            'DEVICE_SOS_OPTIMISTIC_LOCAL_TRANSITION_PENDING_CONFIRMATION',
       );
     } else {
       _cancelCountdownTimer();
@@ -395,7 +394,7 @@ class DeviceSosController {
           derivedFromBlePacket: false,
           lastOpcode: command.opcode,
           decoderNote:
-              'Optimistic local transition pending BLE/device confirmation.',
+              'DEVICE_SOS_OPTIMISTIC_LOCAL_TRANSITION_PENDING_CONFIRMATION',
           countdownStartedAt: null,
           expectedActivationAt: null,
           countdownRemainingSeconds: null,
@@ -422,11 +421,11 @@ class DeviceSosController {
   }) async {
     try {
       BleDebugRegistry.instance.recordEvent(
-        'Device SOS command dispatch -> route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
+        'DEVICE_SOS_COMMAND_DISPATCH route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
       );
       await writer(command);
       BleDebugRegistry.instance.recordEvent(
-        'Device SOS command sent -> route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
+        'DEVICE_SOS_COMMAND_SENT route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
       );
       return;
     } catch (error) {
@@ -441,7 +440,7 @@ class DeviceSosController {
         ),
       );
       BleDebugRegistry.instance.recordEvent(
-        'Device SOS command failed -> route=$commandRouteLabel command=${command.label} error=$error',
+        'DEVICE_SOS_COMMAND_FAILED route=$commandRouteLabel command=${command.label} error=$error',
       );
 
       rethrow;
@@ -463,11 +462,11 @@ class DeviceSosController {
           EixamDeviceCommand.sosCancel(forceCmdCharacteristic: true);
       try {
         BleDebugRegistry.instance.recordEvent(
-          'Device SOS command dispatch -> route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
+          'DEVICE_SOS_COMMAND_DISPATCH route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
         );
         await writer(command);
         BleDebugRegistry.instance.recordEvent(
-          'Device SOS command sent -> route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
+          'DEVICE_SOS_COMMAND_SENT route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
         );
         _recordTerminalCommandSent(
           channel: 'cmd',
@@ -490,11 +489,11 @@ class DeviceSosController {
       final command = EixamDeviceCommand.sosCancel();
       try {
         BleDebugRegistry.instance.recordEvent(
-          'Device SOS command dispatch -> route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
+          'DEVICE_SOS_COMMAND_DISPATCH route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
         );
         await writer(command);
         BleDebugRegistry.instance.recordEvent(
-          'Device SOS command sent -> route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
+          'DEVICE_SOS_COMMAND_SENT route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
         );
         _recordTerminalCommandSent(
           channel: 'inet',
@@ -531,7 +530,7 @@ class DeviceSosController {
     );
     _emit(
       _status.copyWith(
-        lastEvent: 'Device terminal clear command queued.',
+        lastEvent: 'DEVICE_TERMINAL_CLEAR_COMMAND_QUEUED',
         updatedAt: now,
         transitionSource: DeviceSosTransitionSource.app,
         optimistic: false,
@@ -598,13 +597,11 @@ class DeviceSosController {
     required String commandRouteLabel,
   }) async {
     if (_status.state != DeviceSosState.preConfirm) {
-      throw StateError(
-        'Device SOS confirm requires an observed pre-confirm state.',
-      );
+      throw StateError('E_DEVICE_SOS_CONFIRM_STATE_REQUIRED');
     }
     final writer = commandWriterOverride ?? _commandWriter;
     if (writer == null) {
-      throw StateError('Device SOS command channel is not ready.');
+      throw StateError('E_DEVICE_SOS_COMMAND_CHANNEL_NOT_READY');
     }
     final command = EixamDeviceCommand.sosConfirm();
     if (commandWriterOverride == null) {
@@ -616,7 +613,7 @@ class DeviceSosController {
       writer: writer,
       command: command,
       previous: previous,
-      failureEvent: 'SOS confirm write failed',
+      failureEvent: 'DEVICE_SOS_CONFIRM_WRITE_FAILED',
       commandRouteLabel: commandRouteLabel,
     );
   }
@@ -628,17 +625,17 @@ class DeviceSosController {
   }) async {
     final writer = commandWriterOverride ?? _commandWriter;
     if (writer == null) {
-      throw StateError('Device command channel is not ready.');
+      throw StateError('E_BLE_COMMAND_CHANNEL_NOT_READY');
     }
     if (commandWriterOverride == null) {
       _ensureCommandAvailable(command: command);
     }
     BleDebugRegistry.instance.recordEvent(
-      'Device command dispatch -> route=$commandRouteLabel command=${command.label}',
+      'DEVICE_COMMAND_DISPATCH route=$commandRouteLabel command=${command.label}',
     );
     await writer(command);
     BleDebugRegistry.instance.recordEvent(
-      'Device command sent -> route=$commandRouteLabel command=${command.label}',
+      'DEVICE_COMMAND_SENT route=$commandRouteLabel command=${command.label}',
     );
   }
 
@@ -653,7 +650,7 @@ class DeviceSosController {
         ? 'longCommandAvailable=$longCommandAvailable'
         : 'shortCommandAvailable=$shortCommandAvailable';
     throw StateError(
-      '${command.label} is unavailable because the required BLE command path is not ready ($readiness).',
+      'E_BLE_COMMAND_PATH_NOT_READY ($readiness)',
     );
   }
 
@@ -886,7 +883,7 @@ class DeviceSosController {
             ? _status.gpsQuality
             : null,
         decoderNote:
-            'Decoded SOS device control event ($controlEventLabel) from the SOS characteristic.',
+            'DEVICE_SOS_CONTROL_EVENT_DECODED event=$controlEventLabel',
         countdownStartedAt: nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
             ? null
@@ -928,10 +925,8 @@ class DeviceSosController {
         downgradeSuppressed: false,
         classificationDecision: 'ignored_inactive',
         classificationReason: 'protocol_inactive_without_explicit_close',
-        reason:
-            'Ignored SOS mesh packet because the protocol state resolved to inactive and no explicit close event was observed.',
-        decoderNote:
-            'Ignored SOS mesh packet because the protocol state resolved to inactive and no explicit close event was observed.',
+        reason: 'DEVICE_SOS_INACTIVE_PACKET_IGNORED_NO_EXPLICIT_CLOSE',
+        decoderNote: 'DEVICE_SOS_INACTIVE_PACKET_IGNORED_NO_EXPLICIT_CLOSE',
       );
     }
 
@@ -953,10 +948,8 @@ class DeviceSosController {
         downgradeSuppressed: true,
         classificationDecision: closedDecision,
         classificationReason: closedReason,
-        reason:
-            'Suppressed a same-cycle SOS reopen because the device had already emitted a terminal close event for this node/packet cycle.',
-        decoderNote:
-            'Suppressed a same-cycle SOS reopen because the device had already emitted a terminal close event for this node/packet cycle.',
+        reason: 'DEVICE_SOS_SAME_CYCLE_REOPEN_SUPPRESSED_AFTER_TERMINAL',
+        decoderNote: 'DEVICE_SOS_SAME_CYCLE_REOPEN_SUPPRESSED_AFTER_TERMINAL',
       );
     }
 
@@ -972,10 +965,8 @@ class DeviceSosController {
         classificationReason: sameCycle
             ? 'same_cycle_downgrade_suppressed'
             : 'active_cycle_downgrade_suppressed',
-        reason:
-            'Suppressed a PRE-SOS downgrade for an already-open device SOS cycle because active or acknowledged state is authoritative until an explicit close event arrives.',
-        decoderNote:
-            'Suppressed a PRE-SOS downgrade for an already-open device SOS cycle because active or acknowledged state is authoritative until an explicit close event arrives.',
+        reason: 'DEVICE_SOS_PRE_CONFIRM_DOWNGRADE_SUPPRESSED_OPEN_CYCLE',
+        decoderNote: 'DEVICE_SOS_PRE_CONFIRM_DOWNGRADE_SUPPRESSED_OPEN_CYCLE',
       );
     }
 
@@ -987,10 +978,8 @@ class DeviceSosController {
         downgradeSuppressed: protocolState == DeviceSosState.preConfirm,
         classificationDecision: 'acknowledged_sos',
         classificationReason: 'acknowledged_cycle_authoritative',
-        reason:
-            'Kept the device SOS acknowledged because only an explicit close event may end an acknowledged cycle.',
-        decoderNote:
-            'Kept the device SOS acknowledged because only an explicit close event may end an acknowledged cycle.',
+        reason: 'DEVICE_SOS_ACKNOWLEDGED_CYCLE_AUTHORITATIVE',
+        decoderNote: 'DEVICE_SOS_ACKNOWLEDGED_CYCLE_AUTHORITATIVE',
       );
     }
 
@@ -1004,10 +993,8 @@ class DeviceSosController {
         downgradeSuppressed: false,
         classificationDecision: 'active_sos',
         classificationReason: 'app_activation_confirmed',
-        reason:
-            'Mapped the observed SOS mesh packet to active while app-triggered activation was awaiting a device-confirmed active transition.',
-        decoderNote:
-            'Mapped the observed SOS mesh packet to active while app-triggered activation was awaiting a device-confirmed active transition.',
+        reason: 'DEVICE_SOS_APP_ACTIVATION_CONFIRMED_BY_PACKET',
+        decoderNote: 'DEVICE_SOS_APP_ACTIVATION_CONFIRMED_BY_PACKET',
       );
     }
 
@@ -1027,11 +1014,11 @@ class DeviceSosController {
             ? 'countdown_promoted_to_active'
             : 'remote_emergency_trigger',
         reason: protocolState == DeviceSosState.active
-            ? 'Mapped the SOS mesh packet to active immediately because the packet itself explicitly encodes an active SOS state.'
-            : 'Mapped the SOS mesh packet to preConfirm and kept the local countdown running for the current device-originated SOS cycle.',
+            ? 'DEVICE_SOS_PACKET_EXPLICIT_ACTIVE'
+            : 'DEVICE_SOS_PACKET_PRE_CONFIRM_KEEP_COUNTDOWN',
         decoderNote: protocolState == DeviceSosState.active
-            ? 'Mapped the SOS mesh packet to active immediately because the packet itself explicitly encodes an active SOS state.'
-            : 'Mapped the SOS mesh packet to preConfirm and kept the local countdown running for the current device-originated SOS cycle.',
+            ? 'DEVICE_SOS_PACKET_EXPLICIT_ACTIVE'
+            : 'DEVICE_SOS_PACKET_PRE_CONFIRM_KEEP_COUNTDOWN',
       );
     }
 
@@ -1046,11 +1033,11 @@ class DeviceSosController {
             ? 'explicit_active_packet'
             : 'same_cycle_pre_sos_ignored',
         reason: protocolState == DeviceSosState.active
-            ? 'Mapped the SOS mesh packet to active immediately because the packet itself explicitly encodes an active SOS state.'
-            : 'Kept the SOS cycle active because the local countdown for this node/packet cycle had already elapsed and PRE-SOS must not restart.',
+            ? 'DEVICE_SOS_PACKET_EXPLICIT_ACTIVE'
+            : 'DEVICE_SOS_PRE_CONFIRM_RESTART_SUPPRESSED_AFTER_COUNTDOWN',
         decoderNote: protocolState == DeviceSosState.active
-            ? 'Mapped the SOS mesh packet to active immediately because the packet itself explicitly encodes an active SOS state.'
-            : 'Kept the SOS cycle active because the local countdown for this node/packet cycle had already elapsed and PRE-SOS must not restart.',
+            ? 'DEVICE_SOS_PACKET_EXPLICIT_ACTIVE'
+            : 'DEVICE_SOS_PRE_CONFIRM_RESTART_SUPPRESSED_AFTER_COUNTDOWN',
       );
     }
 
@@ -1065,11 +1052,11 @@ class DeviceSosController {
           ? 'explicit_active_packet'
           : 'remote_emergency_trigger',
       reason: protocolState == DeviceSosState.active
-          ? 'Mapped the SOS mesh packet to active immediately because the packet itself explicitly encodes an active SOS state.'
-          : 'Mapped the SOS mesh packet to preConfirm and started a local countdown for a newly observed device-originated SOS cycle.',
+          ? 'DEVICE_SOS_PACKET_EXPLICIT_ACTIVE'
+          : 'DEVICE_SOS_PACKET_PRE_CONFIRM_STARTED_COUNTDOWN',
       decoderNote: protocolState == DeviceSosState.active
-          ? 'Mapped the SOS mesh packet to active immediately because the packet itself explicitly encodes an active SOS state.'
-          : 'Mapped the SOS mesh packet to preConfirm and started a local countdown for a newly observed device-originated SOS cycle.',
+          ? 'DEVICE_SOS_PACKET_EXPLICIT_ACTIVE'
+          : 'DEVICE_SOS_PACKET_PRE_CONFIRM_STARTED_COUNTDOWN',
     );
   }
 
@@ -1246,13 +1233,18 @@ class DeviceSosController {
     final isExistingCountdown = _status.state == DeviceSosState.preConfirm &&
         _status.countdownStartedAt != null &&
         _status.expectedActivationAt != null;
-    final countdownStartedAt =
-        isExistingCountdown ? _status.countdownStartedAt! : at;
-    final expectedActivationAt = isExistingCountdown
-        ? _status.expectedActivationAt!
-        : at.add(_countdownDuration);
     final triggerOrigin =
         triggerOriginOverride ?? _resolveTriggerOrigin(source);
+    final countdownStartAdjustment = _observedDevicePreSosStartAdjustment(
+      derivedFromBlePacket: derivedFromBlePacket,
+      triggerOrigin: triggerOrigin,
+    );
+    final countdownStartedAt = isExistingCountdown
+        ? _status.countdownStartedAt!
+        : at.subtract(countdownStartAdjustment);
+    final expectedActivationAt = isExistingCountdown
+        ? _status.expectedActivationAt!
+        : countdownStartedAt.add(_countdownDuration);
     BleDebugRegistry.instance.recordEvent(
       '[DEVICE_PRE_SOS_COUNTDOWN] '
       'action=${isExistingCountdown ? "preserve" : "start"} '
@@ -1353,6 +1345,18 @@ class DeviceSosController {
     return remaining.inSeconds + (remaining.inMilliseconds % 1000 == 0 ? 0 : 1);
   }
 
+  Duration _observedDevicePreSosStartAdjustment({
+    required bool derivedFromBlePacket,
+    required DeviceSosTransitionSource triggerOrigin,
+  }) {
+    if (!derivedFromBlePacket ||
+        triggerOrigin != DeviceSosTransitionSource.device ||
+        _countdownDuration <= _observedDevicePreSosSkew) {
+      return Duration.zero;
+    }
+    return _observedDevicePreSosSkew;
+  }
+
   DeviceSosStatus _promoteExpiredPreConfirmCountdown({
     required String event,
     DateTime? now,
@@ -1378,8 +1382,7 @@ class DeviceSosController {
         updatedAt: resolvedNow,
         optimistic: false,
         derivedFromBlePacket: false,
-        decoderNote:
-            'The SDK promoted preConfirm to active after the protocol-defined 20-second countdown because no distinct countdown-finished BLE packet was observed.',
+        decoderNote: 'DEVICE_SOS_PRE_CONFIRM_PROMOTED_AFTER_COUNTDOWN',
         countdownRemainingSeconds: 0,
       ),
     );
@@ -1455,7 +1458,7 @@ class DeviceSosController {
       return await completer.future.timeout(
         _appActivationObservationTimeout,
         onTimeout: () => throw StateError(
-          'Timed out waiting for $description; last_state=${_status.state.name} optimistic=${_status.optimistic} derivedFromBle=${_status.derivedFromBlePacket}.',
+          'E_DEVICE_SOS_STATUS_WAIT_TIMEOUT description=$description last_state=${_status.state.name} optimistic=${_status.optimistic} derivedFromBle=${_status.derivedFromBlePacket}',
         ),
       );
     } finally {

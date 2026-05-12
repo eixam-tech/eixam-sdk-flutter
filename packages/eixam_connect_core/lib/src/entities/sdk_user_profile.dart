@@ -23,7 +23,7 @@ final class SdkUserProfile {
   factory SdkUserProfile.fromMeResponseJson(Map<String, dynamic> json) {
     final user = json['user'];
     if (user is! Map<String, dynamic>) {
-      throw const FormatException('SDKMeResponse missing user object');
+      throw const FormatException('E_SDK_ME_MISSING_USER_OBJECT');
     }
     final id = user['id'];
     final appId = user['app_id'];
@@ -34,7 +34,7 @@ final class SdkUserProfile {
         appId.trim().isEmpty ||
         externalUserId is! String ||
         externalUserId.trim().isEmpty) {
-      throw const FormatException('SDK user payload missing required ids');
+      throw const FormatException('E_SDK_USER_MISSING_REQUIRED_IDS');
     }
     String str(dynamic v) => v is String ? v : '';
     return SdkUserProfile(

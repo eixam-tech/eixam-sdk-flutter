@@ -6,7 +6,6 @@
 |---|---|---|
 | EIXAM SOS Core | Public contracts, entities, enums, state machines, SDK interface | `packages/eixam_connect_core/lib/src` |
 | EIXAM Connect SDK | Concrete Flutter/runtime implementation | `packages/eixam_connect_flutter/lib/src` |
-| Control / host / validation app | Thin shell to exercise SDK flows | `apps/eixam_control_app/lib/src` |
 | Backend integration | HTTP, MQTT, signed session, device registry, contacts | `packages/eixam_connect_flutter/lib/src/data` and `lib/src/sdk` |
 | BLE/device runtime | Pairing, reconnect, notifications, packet parsing, SOS device state | `packages/eixam_connect_flutter/lib/src/device` |
 
@@ -18,7 +17,7 @@
   - public config/session models
   - `SosState`, `DeviceSosState`, `DeathManStatus`, `RealtimeConnectionState`
   - `SosStateMachine` and `DeathManStateMachine`
-  - public entities like `SosIncident`, `DeviceStatus`, `DeviceRuntimeStatus`, `BacklogSyncState`, `SdkOperationalDiagnostics`
+  - public entities like `SosIncident`, `DeviceStatus`, `DeviceRuntimeStatus`, `SdkOperationalDiagnostics`
 
 ## EIXAM Connect SDK
 
@@ -31,18 +30,8 @@
   - realtime client
   - `DeviceSosController`
   - BLE operational bridge
-  - backlog sync controller
   - protection mode adapter/controller
 - `api_sdk_factory.dart` builds production-like HTTP + MQTT + BLE wiring.
-
-## Control / Host / Validation App
-
-- The app shell explicitly describes itself as a thin host:
-  - `apps/eixam_control_app/lib/src/app_shell/app_shell_screen.dart`
-- Main surfaces:
-  - operational validation console
-  - technical lab / diagnostics surface
-- The app should render SDK state and call SDK APIs. It should not become the owner of protocol logic, relay routing, SOS orchestration, or device parsing.
 
 ## Backend Integration
 
@@ -97,12 +86,10 @@
 | BLE protocol parsing and packet classification | `eixam_connect_flutter` |
 | Relay ingest routing and retry policy | `eixam_connect_flutter` |
 | DMP monitoring and escalation | `eixam_connect_flutter` |
-| Validation UI and diagnostics rendering | `eixam_control_app` |
-
 ## Architecture Rules To Preserve
 
 - The app should remain thin.
 - The app should render typed SDK state and call SDK APIs.
 - Business-critical behavior should not move into widgets.
-- BLE raw bytes, relay mapping, and backlog sync ACK policy stay SDK-owned.
+- BLE raw bytes and relay mapping stay SDK-owned.
 - Current MQTT usage exists, but the repo rule still applies: do not hardcode a final production WebSocket model beyond the current contract.

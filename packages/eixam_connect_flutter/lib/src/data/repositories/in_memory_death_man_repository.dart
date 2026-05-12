@@ -99,7 +99,7 @@ class InMemoryDeathManRepository implements DeathManRepository {
       String planId, DeathManStatus status) async {
     if (_activePlan?.id != planId || _activePlan == null) {
       throw const DeathManException(
-          'E_DEATH_MAN_PLAN_NOT_FOUND', 'Death Man plan not found');
+          'E_DEATH_MAN_PLAN_NOT_FOUND', 'E_DEATH_MAN_PLAN_NOT_FOUND');
     }
     final updatedPlan = _activePlan!.copyWith(status: status);
     _controller.add(updatedPlan);

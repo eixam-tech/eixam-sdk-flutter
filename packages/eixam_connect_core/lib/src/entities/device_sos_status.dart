@@ -69,7 +69,7 @@ class DeviceSosStatus {
       previousState: null,
       transitionSource: DeviceSosTransitionSource.unknown,
       triggerOrigin: DeviceSosTransitionSource.unknown,
-      lastEvent: 'Device SOS inactive',
+      lastEvent: 'DEVICE_SOS_INACTIVE',
       updatedAt: DateTime.now(),
     );
   }

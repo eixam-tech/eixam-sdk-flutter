@@ -37,11 +37,9 @@
 - Packet handling includes:
   - TEL fragments and aggregate completion
   - runtime status packets
-  - guided rescue status packets
   - relay packets
   - SOS packets
   - cluster heartbeat packets
-  - backlog sync frames
 - Host apps should never decode these payloads directly.
 
 ## Device-Origin Events
@@ -61,7 +59,6 @@
   - no connection attempt is already in progress
   - a preferred device is stored
 - Unexpected disconnect triggers retry backoff.
-- Backlog sync restart on reconnect is SDK-owned.
 - When protection mode owns BLE, Flutter releases ownership and later reclaims it.
 - `BleDeviceRuntimeProvider` can suspend and resume ownership for this handoff.
 
@@ -80,10 +77,8 @@
 - `packages/eixam_connect_flutter/test/ble_auto_reconnect_coordinator_test.dart`
 - `packages/eixam_connect_flutter/test/data/repositories/in_memory_device_repository_test.dart`
 - `packages/eixam_connect_flutter/test/device/ble_device_runtime_provider_device_control_test.dart`
-- `packages/eixam_connect_flutter/test/device/ble_device_runtime_provider_guided_rescue_test.dart`
 - `packages/eixam_connect_flutter/test/device/ble_device_runtime_provider_payload_classification_test.dart`
 - `packages/eixam_connect_flutter/test/device/eixam_ble_command_test.dart`
-- `packages/eixam_connect_flutter/test/device/eixam_backlog_sync_frame_test.dart`
 - `packages/eixam_connect_flutter/test/device/eixam_sos_packet_test.dart`
 - `packages/eixam_connect_flutter/test/device/eixam_sos_event_packet_test.dart`
 

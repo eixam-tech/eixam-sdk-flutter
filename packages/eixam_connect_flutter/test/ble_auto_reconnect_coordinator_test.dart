@@ -7,6 +7,7 @@ import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/known_device_reconnect_repository.dart';
 import 'package:eixam_connect_flutter/src/device/preferred_ble_device.dart';
 import 'package:eixam_connect_flutter/src/sdk/ble_auto_reconnect_coordinator.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -183,7 +184,7 @@ void main() {
         BleDebugRegistry.instance.currentState.events
             .map((event) => event.message),
         contains(
-          'Auto-reconnect stopped because Android bond is missing -> hardwareId=ble-demo-r1',
+          'BLE_AUTO_RECONNECT_STOPPED reason=android_bond_missing hardwareId=ble-demo-r1',
         ),
       );
       await coordinator.dispose();
@@ -248,7 +249,7 @@ void main() {
         BleDebugRegistry.instance.currentState.events
             .map((event) => event.message),
         contains(
-          'resume auto-connect will rebind the connected device because command channel is not ready',
+          'BLE_AUTO_CONNECT_REBIND trigger=resume reason=command_channel_not_ready',
         ),
       );
       await coordinator.dispose();
@@ -287,7 +288,7 @@ void main() {
         BleDebugRegistry.instance.currentState.events
             .map((event) => event.message),
         contains(
-          'resume auto-connect skipped because connected device command channel is ready',
+          'BLE_AUTO_CONNECT_SKIPPED trigger=resume reason=command_channel_ready',
         ),
       );
       await coordinator.dispose();
@@ -299,8 +300,10 @@ void main() {
       BleDebugRegistry.instance.reset();
       final repository = _FakeDeviceRepository()
         ..pairErrors = <Object>[
-          Exception(
-              'PlatformException(deviceDisconnected, deviceDisconnected)'),
+          PlatformException(
+            code: 'deviceDisconnected',
+            message: 'deviceDisconnected',
+          ),
         ];
       final store = PreferredBleDeviceStore(
         localStore: SharedPrefsSdkStore(),
@@ -338,8 +341,10 @@ void main() {
       BleDebugRegistry.instance.reset();
       final repository = _FakeDeviceRepository()
         ..pairErrors = <Object>[
-          Exception(
-              'PlatformException(deviceDisconnected, deviceDisconnected)'),
+          PlatformException(
+            code: 'deviceDisconnected',
+            message: 'deviceDisconnected',
+          ),
         ];
       final store = PreferredBleDeviceStore(
         localStore: SharedPrefsSdkStore(),

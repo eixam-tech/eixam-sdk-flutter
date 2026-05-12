@@ -148,7 +148,9 @@ class GeolocatorTrackingRepository implements TrackingRepository {
     if (!state.hasLocationAccess) {
       _setState(TrackingState.error);
       throw const TrackingException(
-          'E_LOCATION_PERMISSION_REQUIRED', 'Location permission is required');
+        'E_LOCATION_PERMISSION_REQUIRED',
+        'E_LOCATION_PERMISSION_REQUIRED',
+      );
     }
   }
 

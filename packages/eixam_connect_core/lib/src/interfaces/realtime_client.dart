@@ -5,9 +5,8 @@ import 'package:eixam_connect_core/src/events/realtime_event.dart';
 
 /// Defines the contract for realtime connectivity used by the SDK.
 ///
-/// Implementations may use WebSocket, SSE or any other bidirectional transport.
-/// For now, the SDK will start with a mock implementation and later evolve
-/// towards a real backend-connected WebSocket client.
+/// Implementations may use WebSocket, MQTT, SSE or another bidirectional
+/// backend-connected transport.
 abstract class RealtimeClient {
   Future<void> connect();
 

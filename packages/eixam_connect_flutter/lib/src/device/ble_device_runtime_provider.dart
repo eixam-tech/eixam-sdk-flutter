@@ -2,8 +2,8 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
-import '../sdk/guided_rescue_runtime.dart';
 import 'ble_adapter_state.dart';
 import 'ble_client.dart';
 import 'ble_connection_status.dart';
@@ -13,13 +13,11 @@ import 'ble_incoming_payload_classifier.dart';
 import 'ble_scan_result.dart';
 import 'device_runtime_provider.dart';
 import 'device_sos_controller.dart';
-import 'eixam_backlog_sync_frame.dart';
 import 'eixam_ble_command.dart';
 import 'eixam_ble_notification.dart';
 import 'eixam_ble_protocol.dart';
 import 'eixam_cluster_heartbeat_packet.dart';
 import 'eixam_device_runtime_status_packet.dart';
-import 'eixam_guided_rescue_status_packet.dart';
 import 'eixam_sos_packet.dart';
 import 'eixam_tel_fragment.dart';
 import 'eixam_tel_packet.dart';
@@ -27,8 +25,7 @@ import 'eixam_tel_relay_cluster_packet.dart';
 import 'eixam_tel_reassembler.dart';
 import 'eixam_tel_relay_rx_packet.dart';
 
-class BleDeviceRuntimeProvider
-    implements DeviceRuntimeProvider, GuidedRescueRuntime {
+class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   BleDeviceRuntimeProvider({
     required BleClient bleClient,
     DeviceSosController? deviceSosController,
@@ -41,8 +38,6 @@ class BleDeviceRuntimeProvider
       StreamController<BleIncomingEvent>.broadcast();
   final StreamController<DeviceStatus> _runtimeStatusController =
       StreamController<DeviceStatus>.broadcast();
-  final StreamController<GuidedRescueState> _guidedRescueStateController =
-      StreamController<GuidedRescueState>.broadcast();
   final EixamTelReassembler _telReassembler = EixamTelReassembler();
   final BleIncomingPayloadClassifier _payloadClassifier =
       const BleIncomingPayloadClassifier();
@@ -54,12 +49,6 @@ class BleDeviceRuntimeProvider
   StreamSubscription<bool>? _connectionStateSubscription;
   DateTime? _lastAppCommandAt;
   DeviceStatus? _lastRuntimeStatus;
-  GuidedRescueState _guidedRescueState = const GuidedRescueState(
-    hasRuntimeSupport: true,
-    availableActions: <GuidedRescueAction>{},
-    unavailableReason:
-        'Configure a guided rescue session before issuing rescue commands.',
-  );
   int? _lastTelBatteryLevel;
   int? _lastSosBatteryLevel;
   int? _connectedBleTagNodeId;
@@ -70,7 +59,6 @@ class BleDeviceRuntimeProvider
   bool _loggedHeartbeatSignalSkip = false;
 
   static const Duration _recentSosDedupWindow = Duration(seconds: 2);
-  static const String _rescueDeviceNotReadyCode = 'E_RESCUE_DEVICE_NOT_READY';
   static const String _deviceCommandNotReadyCode = 'E_DEVICE_COMMAND_NOT_READY';
   static const String _deviceStatusTimeoutCode = 'E_DEVICE_STATUS_TIMEOUT';
   static const String _mobileBondRequiredCode = 'E_DEVICE_MOBILE_BOND_REQUIRED';
@@ -80,9 +68,6 @@ class BleDeviceRuntimeProvider
       _incomingEventsController.stream;
   @override
   Stream<DeviceStatus> watchRuntimeStatus() => _runtimeStatusController.stream;
-  @override
-  Stream<GuidedRescueState> watchState() => _guidedRescueStateController.stream;
-
   bool get hasCommandChannel =>
       _connectedDeviceId != null &&
       BleDebugRegistry.instance.currentState.cmdFound;
@@ -133,7 +118,7 @@ class BleDeviceRuntimeProvider
     if (adapterState != BleAdapterState.poweredOn) {
       throw const DeviceException(
         'E_DEVICE_BLUETOOTH_OFF',
-        'Bluetooth must be enabled before pairing.',
+        'E_DEVICE_BLUETOOTH_OFF',
       );
     }
 
@@ -141,7 +126,7 @@ class BleDeviceRuntimeProvider
     if (scanResults.isEmpty) {
       throw const DeviceException(
         'E_DEVICE_NOT_FOUND',
-        'No BLE devices were found nearby.',
+        'E_DEVICE_NOT_FOUND',
       );
     }
 
@@ -150,7 +135,7 @@ class BleDeviceRuntimeProvider
     if (selectedDeviceId == null || selectedDeviceId.isEmpty) {
       throw const DeviceException(
         'E_DEVICE_NOT_SELECTED',
-        'Select a BLE device before pairing.',
+        'E_DEVICE_NOT_SELECTED',
       );
     }
 
@@ -158,7 +143,7 @@ class BleDeviceRuntimeProvider
     if (candidate == null) {
       throw const DeviceException(
         'E_DEVICE_NOT_FOUND',
-        'Selected BLE device was not found in the latest scan results.',
+        'E_DEVICE_NOT_FOUND',
       );
     }
     try {
@@ -189,13 +174,12 @@ class BleDeviceRuntimeProvider
       if (!compatible) {
         BleDebugRegistry.instance.update(
           connectionStatus: BleConnectionStatus.incompatible,
-          connectionError:
-              'Connected, but required EIXAM service/characteristics were not found.',
+          connectionError: 'E_DEVICE_INCOMPATIBLE',
         );
         await _bleClient.disconnect(candidate.deviceId);
         throw const DeviceException(
           'E_DEVICE_INCOMPATIBLE',
-          'Selected device is not compatible with the EIXAM BLE protocol.',
+          'E_DEVICE_INCOMPATIBLE',
         );
       }
 
@@ -251,14 +235,6 @@ class BleDeviceRuntimeProvider
         clearProvisioningError: true,
       );
       _publishRuntimeStatus(nextStatus, reason: 'pair_completed');
-      _publishGuidedRescueState(
-        _guidedRescueState.copyWith(
-          availableActions: _resolvedGuidedRescueActions(),
-          unavailableReason: _resolvedGuidedRescueUnavailableReason(),
-          lastUpdatedAt: DateTime.now(),
-          clearLastError: true,
-        ),
-      );
       return nextStatus;
     } catch (error) {
       final currentStatus =
@@ -280,7 +256,7 @@ class BleDeviceRuntimeProvider
       if (_isMobilePairingRequiredError(error)) {
         throw const DeviceException(
           _mobileBondRequiredCode,
-          'The device is no longer paired in the phone Bluetooth settings.',
+          _mobileBondRequiredCode,
         );
       }
       rethrow;
@@ -296,7 +272,7 @@ class BleDeviceRuntimeProvider
     if (deviceId.isEmpty) {
       throw const DeviceException(
         'E_DEVICE_INVALID_PREFERRED_DEVICE',
-        'A preferred BLE device id is required before reconnecting.',
+        'E_DEVICE_INVALID_PREFERRED_DEVICE',
       );
     }
 
@@ -304,13 +280,13 @@ class BleDeviceRuntimeProvider
     if (adapterState != BleAdapterState.poweredOn) {
       throw const DeviceException(
         'E_DEVICE_BLUETOOTH_OFF',
-        'Bluetooth must be enabled before reconnecting.',
+        'E_DEVICE_BLUETOOTH_OFF',
       );
     }
     if (!await _bleClient.hasSystemAssociation(deviceId)) {
       throw const DeviceException(
         _mobileBondRequiredCode,
-        'The device is no longer paired in the phone Bluetooth settings.',
+        _mobileBondRequiredCode,
       );
     }
 
@@ -336,13 +312,12 @@ class BleDeviceRuntimeProvider
       if (!compatible) {
         BleDebugRegistry.instance.update(
           connectionStatus: BleConnectionStatus.incompatible,
-          connectionError:
-              'Connected, but required EIXAM service/characteristics were not found.',
+          connectionError: 'E_DEVICE_INCOMPATIBLE',
         );
         await _bleClient.disconnect(deviceId);
         throw const DeviceException(
           'E_DEVICE_INCOMPATIBLE',
-          'Selected device is not compatible with the EIXAM BLE protocol.',
+          'E_DEVICE_INCOMPATIBLE',
         );
       }
 
@@ -394,19 +369,11 @@ class BleDeviceRuntimeProvider
         clearProvisioningError: true,
       );
       _publishRuntimeStatus(nextStatus, reason: 'reconnect_completed');
-      _publishGuidedRescueState(
-        _guidedRescueState.copyWith(
-          availableActions: _resolvedGuidedRescueActions(),
-          unavailableReason: _resolvedGuidedRescueUnavailableReason(),
-          lastUpdatedAt: DateTime.now(),
-          clearLastError: true,
-        ),
-      );
       return nextStatus;
     } catch (error) {
       if (_isMobilePairingRequiredError(error)) {
         BleDebugRegistry.instance.recordEvent(
-          'Reconnect stopped because phone Bluetooth bond is missing for $deviceId',
+          'BLE_RECONNECT_STOPPED reason=mobile_bond_missing hardwareId=$deviceId',
         );
         await _resetFailedPairingAttempt(deviceId);
         try {
@@ -414,7 +381,7 @@ class BleDeviceRuntimeProvider
         } catch (_) {}
         throw const DeviceException(
           _mobileBondRequiredCode,
-          'The device is no longer paired in the phone Bluetooth settings.',
+          _mobileBondRequiredCode,
         );
       }
       final currentConnectionStatus =
@@ -442,14 +409,13 @@ class BleDeviceRuntimeProvider
     if (error is DeviceException) {
       return error.code == _mobileBondRequiredCode;
     }
-    final text = error.toString().toLowerCase();
-    return text.contains('bond') ||
-        text.contains('pairing') ||
-        text.contains('pair') ||
-        text.contains('pin') ||
-        text.contains('passkey') ||
-        text.contains('authentication') ||
-        text.contains('insufficient authentication');
+    if (error is PlatformException) {
+      return error.code == _mobileBondRequiredCode ||
+          error.code == 'bondRequired' ||
+          error.code == 'pairingRequired' ||
+          error.code == 'insufficientAuthentication';
+    }
+    return false;
   }
 
   BleScanResult? _findSelectedCandidate(
@@ -625,14 +591,6 @@ class BleDeviceRuntimeProvider
       clearProvisioningError: true,
     );
     _publishRuntimeStatus(nextStatus, reason: 'activate_completed');
-    _publishGuidedRescueState(
-      _guidedRescueState.copyWith(
-        availableActions: _resolvedGuidedRescueActions(),
-        unavailableReason: _resolvedGuidedRescueUnavailableReason(),
-        lastUpdatedAt: DateTime.now(),
-        clearLastError: true,
-      ),
-    );
     return nextStatus;
   }
 
@@ -688,13 +646,6 @@ class BleDeviceRuntimeProvider
       clearProvisioningError: true,
     );
     _publishRuntimeStatus(nextStatus, reason: 'refresh_completed');
-    _publishGuidedRescueState(
-      _guidedRescueState.copyWith(
-        availableActions: _resolvedGuidedRescueActions(),
-        unavailableReason: _resolvedGuidedRescueUnavailableReason(),
-        lastUpdatedAt: DateTime.now(),
-      ),
-    );
     return nextStatus;
   }
 
@@ -881,129 +832,17 @@ class BleDeviceRuntimeProvider
       provisioningError: null,
     );
     _publishRuntimeStatus(nextStatus, reason: 'unpair_completed');
-    _publishGuidedRescueState(
-      _guidedRescueState.copyWith(
-        availableActions: _resolvedGuidedRescueActions(),
-        unavailableReason: _resolvedGuidedRescueUnavailableReason(),
-        lastUpdatedAt: DateTime.now(),
-      ),
-    );
     return nextStatus;
-  }
-
-  @override
-  Future<GuidedRescueState> getCurrentState() async => _guidedRescueState;
-
-  @override
-  Future<GuidedRescueState> setSession({
-    required int targetNodeId,
-    required int rescueNodeId,
-  }) async {
-    final nextState = GuidedRescueState(
-      hasRuntimeSupport: true,
-      targetNodeId: targetNodeId,
-      rescueNodeId: rescueNodeId,
-      availableActions: _resolvedGuidedRescueActions(
-        hasSession: true,
-        deviceReady: _isGuidedRescueDeviceReady,
-      ),
-      unavailableReason: _resolvedGuidedRescueUnavailableReason(
-        hasSession: true,
-        deviceReady: _isGuidedRescueDeviceReady,
-      ),
-      lastUpdatedAt: DateTime.now(),
-    );
-    _publishGuidedRescueState(nextState);
-    return nextState;
-  }
-
-  @override
-  Future<void> clearSession() async {
-    _publishGuidedRescueState(
-      GuidedRescueState(
-        hasRuntimeSupport: true,
-        availableActions: _resolvedGuidedRescueActions(
-          hasSession: false,
-          deviceReady: _isGuidedRescueDeviceReady,
-        ),
-        unavailableReason: _resolvedGuidedRescueUnavailableReason(
-          hasSession: false,
-          deviceReady: _isGuidedRescueDeviceReady,
-        ),
-        lastUpdatedAt: DateTime.now(),
-      ),
-    );
-  }
-
-  @override
-  Future<void> requestPosition() {
-    return _runGuidedRescueCommand(
-      command: EixamDeviceCommand.guidedRescue(
-        targetNodeId: _requireGuidedRescueTargetNodeId(),
-        rescueNodeId: _requireGuidedRescueRescueNodeId(),
-        commandCode: 0x01,
-        label: 'GUIDED RESCUE REQUEST POS',
-      ),
-    );
-  }
-
-  @override
-  Future<void> acknowledgeSos() {
-    return _runGuidedRescueCommand(
-      command: EixamDeviceCommand.guidedRescue(
-        targetNodeId: _requireGuidedRescueTargetNodeId(),
-        rescueNodeId: _requireGuidedRescueRescueNodeId(),
-        commandCode: 0x02,
-        label: 'GUIDED RESCUE ACK SOS',
-      ),
-    );
-  }
-
-  @override
-  Future<void> enableBuzzer() {
-    return _runGuidedRescueCommand(
-      command: EixamDeviceCommand.guidedRescue(
-        targetNodeId: _requireGuidedRescueTargetNodeId(),
-        rescueNodeId: _requireGuidedRescueRescueNodeId(),
-        commandCode: 0x03,
-        label: 'GUIDED RESCUE BUZZER ON',
-      ),
-    );
-  }
-
-  @override
-  Future<void> disableBuzzer() {
-    return _runGuidedRescueCommand(
-      command: EixamDeviceCommand.guidedRescue(
-        targetNodeId: _requireGuidedRescueTargetNodeId(),
-        rescueNodeId: _requireGuidedRescueRescueNodeId(),
-        commandCode: 0x04,
-        label: 'GUIDED RESCUE BUZZER OFF',
-      ),
-    );
-  }
-
-  @override
-  Future<void> requestStatus() {
-    return _runGuidedRescueCommand(
-      command: EixamDeviceCommand.guidedRescue(
-        targetNodeId: _requireGuidedRescueTargetNodeId(),
-        rescueNodeId: _requireGuidedRescueRescueNodeId(),
-        commandCode: 0x05,
-        label: 'GUIDED RESCUE STATUS REQ',
-      ),
-    );
   }
 
   Future<void> setNotificationVolume(int volume) {
     _validateVolume(volume);
     return _runDeviceCommand(
       command: EixamDeviceCommand.notificationVolume(volume),
-      missingDeviceMessage:
-          'A compatible connected device is required before setting notification volume.',
+      missingDeviceMessage: _deviceCommandNotReadyCode,
       missingDeviceError: const DeviceException(
         _deviceCommandNotReadyCode,
-        'A compatible connected device is required before setting notification volume.',
+        _deviceCommandNotReadyCode,
       ),
     );
   }
@@ -1012,11 +851,10 @@ class BleDeviceRuntimeProvider
     _validateVolume(volume);
     return _runDeviceCommand(
       command: EixamDeviceCommand.sosVolume(volume),
-      missingDeviceMessage:
-          'A compatible connected device is required before setting SOS volume.',
+      missingDeviceMessage: _deviceCommandNotReadyCode,
       missingDeviceError: const DeviceException(
         _deviceCommandNotReadyCode,
-        'A compatible connected device is required before setting SOS volume.',
+        _deviceCommandNotReadyCode,
       ),
     );
   }
@@ -1024,11 +862,10 @@ class BleDeviceRuntimeProvider
   Future<void> rebootDevice() {
     return _runDeviceCommand(
       command: EixamDeviceCommand.reboot(),
-      missingDeviceMessage:
-          'A compatible connected device is required before rebooting the device.',
+      missingDeviceMessage: _deviceCommandNotReadyCode,
       missingDeviceError: const DeviceException(
         _deviceCommandNotReadyCode,
-        'A compatible connected device is required before rebooting the device.',
+        _deviceCommandNotReadyCode,
       ),
     );
   }
@@ -1039,7 +876,7 @@ class BleDeviceRuntimeProvider
     if (_pendingRuntimeStatusRequest != null) {
       throw const DeviceException(
         _deviceStatusTimeoutCode,
-        'A device runtime status request is already in flight.',
+        _deviceStatusTimeoutCode,
       );
     }
     final completer = Completer<DeviceRuntimeStatus>();
@@ -1047,18 +884,17 @@ class BleDeviceRuntimeProvider
     try {
       await _runDeviceCommand(
         command: EixamDeviceCommand.getDeviceStatus(),
-        missingDeviceMessage:
-            'A compatible connected device is required before requesting runtime status.',
+        missingDeviceMessage: _deviceCommandNotReadyCode,
         missingDeviceError: const DeviceException(
           _deviceCommandNotReadyCode,
-          'A compatible connected device is required before requesting runtime status.',
+          _deviceCommandNotReadyCode,
         ),
       );
       return await completer.future.timeout(
         timeout,
         onTimeout: () => throw const DeviceException(
           _deviceStatusTimeoutCode,
-          'Timed out waiting for the device runtime status response.',
+          _deviceStatusTimeoutCode,
         ),
       );
     } finally {
@@ -1099,7 +935,7 @@ class BleDeviceRuntimeProvider
   Future<void> _handleUnexpectedDisconnect(String deviceId) async {
     if (_ownershipSuspended) {
       BleDebugRegistry.instance.recordEvent(
-        'Unexpected disconnect ignored because Flutter BLE ownership is suspended',
+        'BLE_UNEXPECTED_DISCONNECT_IGNORED reason=flutter_ble_ownership_suspended',
       );
       return;
     }
@@ -1130,13 +966,6 @@ class BleDeviceRuntimeProvider
       clearProvisioningError: true,
     );
     _publishRuntimeStatus(nextStatus, reason: 'unexpected_disconnect');
-    _publishGuidedRescueState(
-      _guidedRescueState.copyWith(
-        availableActions: _resolvedGuidedRescueActions(),
-        unavailableReason: _resolvedGuidedRescueUnavailableReason(),
-        lastUpdatedAt: DateTime.now(),
-      ),
-    );
   }
 
   void _handleTelNotification(
@@ -1153,35 +982,6 @@ class BleDeviceRuntimeProvider
     BleDebugRegistry.instance.recordEvent(
       'TEL raw payload (ea01) -> len=${notification.payload.length} payload=${notification.payloadHex}',
     );
-
-    final backlogSyncFrame =
-        EixamBacklogSyncFrame.tryParse(notification.payload);
-    if (backlogSyncFrame != null) {
-      BleDebugRegistry.instance.recordEvent(
-        'Backlog sync frame decoded -> type=${backlogSyncFrame.messageType.name} sessionId=${backlogSyncFrame.sessionId}',
-      );
-      BleDebugRegistry.instance.recordDecodedIncomingEvent(
-        eventType: BleIncomingEventType.backlogSyncFrame.name,
-        outcome: BleIncomingEventType.backlogSyncFrame.name,
-        receivedAt: notification.receivedAt,
-      );
-      _incomingEventsController.add(
-        BleIncomingEvent(
-          deviceId: deviceId,
-          canonicalHardwareId: _connectedCanonicalHardwareId,
-          deviceAlias: _connectedDeviceAlias,
-          type: BleIncomingEventType.backlogSyncFrame,
-          channel: notification.channel,
-          payload: List<int>.unmodifiable(notification.payload),
-          payloadHex: notification.payloadHex,
-          source: source,
-          receivedAt: notification.receivedAt,
-          meshPort: notification.meshPort,
-          backlogSyncFrame: backlogSyncFrame,
-        ),
-      );
-      return;
-    }
 
     final telFragment = EixamTelFragment.tryParse(notification.payload);
     if (telFragment != null) {
@@ -1277,40 +1077,6 @@ class BleDeviceRuntimeProvider
           telFragment: telFragment,
           aggregatePayload: aggregatePayload,
           deviceRuntimeStatusPacket: runtimeStatusPacket,
-        ),
-      );
-      return;
-    }
-
-    final rescueStatusPacket = EixamGuidedRescueStatusPacket.tryParse(
-      payload,
-      receivedAt: notification.receivedAt,
-    );
-    if (rescueStatusPacket != null) {
-      BleDebugRegistry.instance.recordEvent(
-        'TEL classified -> type=guided_rescue_status len=${payload.length} rescueId=${_formatNodeId(rescueStatusPacket.rescueNodeId)} victimId=${_formatNodeId(rescueStatusPacket.victimNodeId)} state=${rescueStatusPacket.targetState.name}',
-      );
-      BleDebugRegistry.instance.recordDecodedIncomingEvent(
-        eventType: BleIncomingEventType.guidedRescueStatus.name,
-        outcome: BleIncomingEventType.guidedRescueStatus.name,
-        receivedAt: notification.receivedAt,
-      );
-      _handleGuidedRescueStatusPacket(rescueStatusPacket);
-      _incomingEventsController.add(
-        BleIncomingEvent(
-          deviceId: deviceId,
-          canonicalHardwareId: _connectedCanonicalHardwareId,
-          deviceAlias: _connectedDeviceAlias,
-          type: BleIncomingEventType.guidedRescueStatus,
-          channel: notification.channel,
-          payload: List<int>.unmodifiable(payload),
-          payloadHex: payloadHex,
-          source: source,
-          receivedAt: notification.receivedAt,
-          meshPort: notification.meshPort,
-          telFragment: telFragment,
-          aggregatePayload: aggregatePayload,
-          guidedRescueStatusPacket: rescueStatusPacket,
         ),
       );
       return;
@@ -1485,7 +1251,6 @@ class BleDeviceRuntimeProvider
         outcome: BleIncomingEventType.sosMeshPacket.name,
         receivedAt: notification.receivedAt,
       );
-      _handleGuidedRescueSosPacket(sosPacket, notification.receivedAt);
       if (classification.kind == BleIncomingPayloadKind.ownDeviceSos) {
         _handleSosBatteryUpdate(sosPacket);
         if (_shouldProcessSosPacket(
@@ -1550,7 +1315,6 @@ class BleDeviceRuntimeProvider
         receivedAt: notification.receivedAt,
       );
       _handleTelBatteryUpdate(telPacket);
-      _handleGuidedRescueTelPacket(telPacket, notification.receivedAt);
       _incomingEventsController.add(
         BleIncomingEvent(
           deviceId: deviceId,
@@ -1816,7 +1580,6 @@ class BleDeviceRuntimeProvider
         outcome: BleIncomingEventType.sosMeshPacket.name,
         receivedAt: notification.receivedAt,
       );
-      _handleGuidedRescueSosPacket(sosPacket, notification.receivedAt);
       if (sosClassification.kind == BleIncomingPayloadKind.ownDeviceSos) {
         _handleSosBatteryUpdate(sosPacket);
         if (_shouldProcessSosPacket(
@@ -2029,83 +1792,6 @@ class BleDeviceRuntimeProvider
     _runtimeStatusController.add(nextStatus);
   }
 
-  bool get _isGuidedRescueDeviceReady =>
-      _connectedDeviceId != null && (_lastRuntimeStatus?.connected ?? true);
-
-  Set<GuidedRescueAction> _resolvedGuidedRescueActions({
-    bool? hasSession,
-    bool? deviceReady,
-  }) {
-    final effectiveHasSession = hasSession ?? _guidedRescueState.hasSession;
-    final effectiveDeviceReady = deviceReady ??
-        (_connectedDeviceId != null && _isGuidedRescueDeviceReady);
-    if (!effectiveHasSession || !effectiveDeviceReady) {
-      return const <GuidedRescueAction>{};
-    }
-    return const <GuidedRescueAction>{
-      GuidedRescueAction.requestPosition,
-      GuidedRescueAction.acknowledgeSos,
-      GuidedRescueAction.buzzerOn,
-      GuidedRescueAction.buzzerOff,
-      GuidedRescueAction.requestStatus,
-    };
-  }
-
-  String? _resolvedGuidedRescueUnavailableReason({
-    bool? hasSession,
-    bool? deviceReady,
-  }) {
-    final effectiveHasSession = hasSession ?? _guidedRescueState.hasSession;
-    final effectiveDeviceReady = deviceReady ?? _isGuidedRescueDeviceReady;
-    if (!effectiveHasSession) {
-      return 'Configure a guided rescue session before issuing rescue commands.';
-    }
-    if (!effectiveDeviceReady) {
-      return 'Connect a compatible EIXAM device before issuing guided rescue commands.';
-    }
-    return null;
-  }
-
-  int _requireGuidedRescueTargetNodeId() {
-    final targetNodeId = _guidedRescueState.targetNodeId;
-    if (targetNodeId == null) {
-      throw const RescueException.missingSession();
-    }
-    return targetNodeId;
-  }
-
-  int _requireGuidedRescueRescueNodeId() {
-    final rescueNodeId = _guidedRescueState.rescueNodeId;
-    if (rescueNodeId == null) {
-      throw const RescueException.missingSession();
-    }
-    return rescueNodeId;
-  }
-
-  Future<void> _runGuidedRescueCommand({
-    required EixamDeviceCommand command,
-  }) async {
-    await _runDeviceCommand(
-      command: command,
-      missingDeviceMessage:
-          'A compatible connected device is required before issuing guided rescue commands.',
-      missingDeviceError: const RescueException(
-        _rescueDeviceNotReadyCode,
-        'A compatible connected device is required before issuing guided rescue commands.',
-      ),
-    );
-    _publishGuidedRescueState(
-      _guidedRescueState.copyWith(
-        availableActions: _resolvedGuidedRescueActions(deviceReady: true),
-        unavailableReason: _resolvedGuidedRescueUnavailableReason(
-          deviceReady: true,
-        ),
-        lastUpdatedAt: DateTime.now(),
-        clearLastError: true,
-      ),
-    );
-  }
-
   Future<void> _runDeviceCommand({
     required EixamDeviceCommand command,
     required String missingDeviceMessage,
@@ -2115,19 +1801,6 @@ class BleDeviceRuntimeProvider
     if (deviceId == null ||
         !await _bleClient.isConnected(deviceId) ||
         (command.usesCmdCharacteristic && !hasCommandChannel)) {
-      final message = missingDeviceMessage;
-      _publishGuidedRescueState(
-        _guidedRescueState.copyWith(
-          availableActions: _resolvedGuidedRescueActions(
-            deviceReady: false,
-          ),
-          unavailableReason: _resolvedGuidedRescueUnavailableReason(
-            deviceReady: false,
-          ),
-          lastError: message,
-          lastUpdatedAt: DateTime.now(),
-        ),
-      );
       throw missingDeviceError;
     }
 
@@ -2138,108 +1811,16 @@ class BleDeviceRuntimeProvider
     if (volume < 0 || volume > 100) {
       throw const DeviceException(
         'E_DEVICE_INVALID_VOLUME',
-        'Device volume must be within the inclusive range 0..100.',
+        'E_DEVICE_INVALID_VOLUME',
       );
     }
-  }
-
-  void _handleGuidedRescueStatusPacket(EixamGuidedRescueStatusPacket packet) {
-    if (!_matchesGuidedRescueSession(
-      targetNodeId: packet.victimNodeId,
-      rescueNodeId: packet.rescueNodeId,
-    )) {
-      return;
-    }
-
-    _publishGuidedRescueState(
-      _guidedRescueState.copyWith(
-        availableActions: _resolvedGuidedRescueActions(),
-        unavailableReason: _resolvedGuidedRescueUnavailableReason(),
-        lastStatusSnapshot: packet.toSnapshot(),
-        lastUpdatedAt: packet.receivedAt,
-        clearLastError: true,
-      ),
-    );
-  }
-
-  void _handleGuidedRescueTelPacket(
-    EixamTelPacket packet,
-    DateTime receivedAt,
-  ) {
-    if (!_matchesGuidedRescueSession(targetNodeId: packet.nodeId)) {
-      return;
-    }
-
-    _publishGuidedRescueState(
-      _guidedRescueState.copyWith(
-        availableActions: _resolvedGuidedRescueActions(),
-        unavailableReason: _resolvedGuidedRescueUnavailableReason(),
-        lastKnownTargetPosition: TrackingPosition(
-          latitude: packet.position.latitude,
-          longitude: packet.position.longitude,
-          altitude: packet.position.altitudeMeters.toDouble(),
-          timestamp: receivedAt,
-          source: DeliveryMode.mesh,
-        ),
-        lastUpdatedAt: receivedAt,
-        clearLastError: true,
-      ),
-    );
-  }
-
-  void _handleGuidedRescueSosPacket(
-    EixamSosPacket packet,
-    DateTime receivedAt,
-  ) {
-    if (!_matchesGuidedRescueSession(targetNodeId: packet.nodeId) ||
-        packet.position == null) {
-      return;
-    }
-
-    _publishGuidedRescueState(
-      _guidedRescueState.copyWith(
-        availableActions: _resolvedGuidedRescueActions(),
-        unavailableReason: _resolvedGuidedRescueUnavailableReason(),
-        lastKnownTargetPosition: TrackingPosition(
-          latitude: packet.position!.latitude,
-          longitude: packet.position!.longitude,
-          altitude: packet.position!.altitudeMeters.toDouble(),
-          timestamp: receivedAt,
-          source: DeliveryMode.mesh,
-        ),
-        lastUpdatedAt: receivedAt,
-        clearLastError: true,
-      ),
-    );
-  }
-
-  bool _matchesGuidedRescueSession({
-    required int targetNodeId,
-    int? rescueNodeId,
-  }) {
-    if (!_guidedRescueState.hasSession) {
-      return false;
-    }
-    if (_guidedRescueState.targetNodeId != targetNodeId) {
-      return false;
-    }
-    if (rescueNodeId != null &&
-        _guidedRescueState.rescueNodeId != rescueNodeId) {
-      return false;
-    }
-    return true;
-  }
-
-  void _publishGuidedRescueState(GuidedRescueState nextState) {
-    _guidedRescueState = nextState;
-    _guidedRescueStateController.add(nextState);
   }
 
   Future<void> dispose() async {
     _pendingRuntimeStatusRequest?.completeError(
       const DeviceException(
         _deviceStatusTimeoutCode,
-        'The BLE device runtime was disposed before the status response arrived.',
+        _deviceStatusTimeoutCode,
       ),
     );
     _pendingRuntimeStatusRequest = null;
@@ -2247,6 +1828,5 @@ class BleDeviceRuntimeProvider
     await _notificationSubscription?.cancel();
     await _runtimeStatusController.close();
     await _incomingEventsController.close();
-    await _guidedRescueStateController.close();
   }
 }

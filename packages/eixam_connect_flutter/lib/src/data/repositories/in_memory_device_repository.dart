@@ -41,16 +41,16 @@ class InMemoryDeviceRepository
   Timer? _heartbeatTimer;
   bool _loggedLightweightHeartbeat = false;
   DeviceStatus _status = const DeviceStatus(
-    deviceId: 'demo-device',
-    deviceAlias: 'Demo Beacon',
-    model: 'EIXAM R1',
+    deviceId: '',
+    deviceAlias: null,
+    model: null,
     paired: false,
     activated: false,
     connected: false,
     batteryLevel: null,
     batteryState: null,
     batterySource: null,
-    firmwareVersion: '0.1.0-demo',
+    firmwareVersion: null,
     lifecycleState: DeviceLifecycleState.unpaired,
   );
 
@@ -248,7 +248,7 @@ class InMemoryDeviceRepository
     if (runtimeProvider is! BleDeviceRuntimeProvider) {
       throw const DeviceException(
         'E_DEVICE_COMMAND_NOT_READY',
-        'A command-capable BLE runtime is not available.',
+        'E_DEVICE_COMMAND_NOT_READY',
       );
     }
     await runtimeProvider.setNotificationVolume(volume);
@@ -259,7 +259,7 @@ class InMemoryDeviceRepository
     if (runtimeProvider is! BleDeviceRuntimeProvider) {
       throw const DeviceException(
         'E_DEVICE_COMMAND_NOT_READY',
-        'A command-capable BLE runtime is not available.',
+        'E_DEVICE_COMMAND_NOT_READY',
       );
     }
     await runtimeProvider.setSosVolume(volume);
@@ -270,7 +270,7 @@ class InMemoryDeviceRepository
     if (runtimeProvider is! BleDeviceRuntimeProvider) {
       throw const DeviceException(
         'E_DEVICE_COMMAND_NOT_READY',
-        'A command-capable BLE runtime is not available.',
+        'E_DEVICE_COMMAND_NOT_READY',
       );
     }
     return runtimeProvider.requestDeviceRuntimeStatus();
@@ -281,7 +281,7 @@ class InMemoryDeviceRepository
     if (runtimeProvider is! BleDeviceRuntimeProvider) {
       throw const DeviceException(
         'E_DEVICE_COMMAND_NOT_READY',
-        'A command-capable BLE runtime is not available.',
+        'E_DEVICE_COMMAND_NOT_READY',
       );
     }
     await runtimeProvider.rebootDevice();

@@ -9,6 +9,7 @@ class SosIncidentDto {
   final String? message;
   final Map<String, dynamic>? positionSnapshot;
   final int? statusCode;
+
   /// References the telemetry row inserted when this incident was first opened.
   final String? creationTelemetryId;
 

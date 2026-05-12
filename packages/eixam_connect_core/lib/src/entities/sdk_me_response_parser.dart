@@ -22,7 +22,7 @@ abstract final class SdkMeResponseParser {
   }) readIdentityIds(Map<String, dynamic> payload) {
     final user = payload['user'];
     if (user is! Map<String, dynamic>) {
-      throw const FormatException('SDK /me payload missing user object');
+      throw const FormatException('E_SDK_ME_MISSING_USER_OBJECT');
     }
     final sdkUserId = user['id'];
     final canonicalExternalUserId = user['external_user_id'];
@@ -31,7 +31,7 @@ abstract final class SdkMeResponseParser {
         canonicalExternalUserId is! String ||
         canonicalExternalUserId.trim().isEmpty) {
       throw const FormatException(
-        'SDK /me payload missing sdk user id or external_user_id',
+        'E_SDK_ME_MISSING_REQUIRED_IDS',
       );
     }
     return (

@@ -47,7 +47,7 @@ class HttpSdkDevicesRemoteDataSource implements SdkDevicesRemoteDataSource {
     if (device is! Map<String, dynamic>) {
       throw const DeviceException(
         'E_HTTP_DEVICE_UPSERT_FAILED',
-        'The backend did not return a valid device payload.',
+        'E_HTTP_DEVICE_INVALID_PAYLOAD',
       );
     }
     return SdkDeviceDto.fromJson(device);
@@ -65,7 +65,7 @@ class HttpSdkDevicesRemoteDataSource implements SdkDevicesRemoteDataSource {
     if (devices is! List) {
       throw const DeviceException(
         'E_HTTP_DEVICE_LIST_FAILED',
-        'The backend did not return a valid device list.',
+        'E_HTTP_DEVICE_INVALID_LIST_PAYLOAD',
       );
     }
     return [
@@ -75,7 +75,7 @@ class HttpSdkDevicesRemoteDataSource implements SdkDevicesRemoteDataSource {
         else
           throw const DeviceException(
             'E_HTTP_DEVICE_LIST_FAILED',
-            'The backend returned an invalid device payload.',
+            'E_HTTP_DEVICE_INVALID_PAYLOAD',
           ),
     ];
   }
@@ -99,11 +99,11 @@ class HttpSdkDevicesRemoteDataSource implements SdkDevicesRemoteDataSource {
     try {
       decoded = jsonDecode(body);
     } on FormatException {
-      throw DeviceException(errorCode, 'The backend returned invalid JSON.');
+      throw DeviceException(errorCode, 'E_HTTP_DEVICE_INVALID_JSON');
     }
     if (decoded is Map<String, dynamic>) {
       return decoded;
     }
-    throw DeviceException(errorCode, 'The backend returned invalid JSON.');
+    throw DeviceException(errorCode, 'E_HTTP_DEVICE_INVALID_JSON');
   }
 }

@@ -87,7 +87,7 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
     if (session == null) {
       throw const AuthException(
         'E_SDK_SESSION_REQUIRED',
-        'A signed SDK session must be configured before publishing SOS over MQTT.',
+        'E_SDK_SESSION_REQUIRED',
       );
     }
     final sdkUserId = MqttTopicSegment.usesLegacyUserTopics(session)
@@ -185,7 +185,7 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
     if (session == null) {
       throw const AuthException(
         'E_SDK_SESSION_REQUIRED',
-        'A signed SDK session must be configured before publishing telemetry over MQTT.',
+        'E_SDK_SESSION_REQUIRED',
       );
     }
     await _ensureConnected(initialConnect: true);

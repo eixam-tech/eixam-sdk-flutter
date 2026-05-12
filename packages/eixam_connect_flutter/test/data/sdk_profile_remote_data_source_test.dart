@@ -13,12 +13,13 @@ void main() {
       expect(env?.message, 'invalid phone');
     });
 
-    test('infers phone field hint from message', () {
+    test('maps phone field hint from structured error code', () {
       final hints = SdkProfileHttpSupport.fieldHintsFromEnvelope(
-        SdkProfileErrorEnvelope(code: 'validation', message: 'invalid phone'),
+        SdkProfileErrorEnvelope(code: 'bad_phone', message: 'invalid phone'),
         '',
       );
       expect(hints.single.field, SdkProfileFieldKey.phone);
+      expect(hints.single.message, 'bad_phone');
     });
 
     test('maps 400 responses to profile validation exception', () {

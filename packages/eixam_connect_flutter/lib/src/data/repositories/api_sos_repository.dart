@@ -80,8 +80,7 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
         current != SosState.failed &&
         current != SosState.cancelled &&
         current != SosState.resolved) {
-      throw const SosException(
-          'E_SOS_ALREADY_ACTIVE', 'There is already an SOS flow in progress');
+      throw const SosException('E_SOS_ALREADY_ACTIVE', 'E_SOS_ALREADY_ACTIVE');
     }
 
     _emit(SosState.triggerRequested);
@@ -150,7 +149,9 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
             .contains(current) ||
         _activeIncident == null) {
       throw const SosException(
-          'E_SOS_CANCEL_NOT_ALLOWED', 'There is no active SOS to cancel');
+        'E_SOS_CANCEL_NOT_ALLOWED',
+        'E_SOS_CANCEL_NOT_ALLOWED',
+      );
     }
 
     _emit(SosState.cancelRequested);
@@ -178,7 +179,9 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
             .contains(current) ||
         _activeIncident == null) {
       throw const SosException(
-          'E_SOS_RESOLVE_NOT_ALLOWED', 'There is no active SOS to resolve');
+        'E_SOS_RESOLVE_NOT_ALLOWED',
+        'E_SOS_RESOLVE_NOT_ALLOWED',
+      );
     }
 
     try {
@@ -277,10 +280,7 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
         return SosRuntimeRehydrationResult(
           outcome: SosRuntimeRehydrationOutcome.keptLocalFallback,
           resultingState: _stateMachine.current,
-          diagnosticNote:
-              'Backend returned no active SOS payload while the local incident '
-              'is still open; preserved it so cancellation can target the '
-              'known incident id.',
+          diagnosticNote: 'E_SOS_REHYDRATION_KEPT_LOCAL_FALLBACK',
         );
       }
       _activeIncident = null;
@@ -300,8 +300,7 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
       return const SosRuntimeRehydrationResult(
         outcome: SosRuntimeRehydrationOutcome.clearedToIdle,
         resultingState: SosState.idle,
-        diagnosticNote:
-            'Backend returned the same SOS incident that was locally closed; ignored it.',
+        diagnosticNote: 'E_SOS_REHYDRATION_IGNORED_LOCALLY_CLOSED_INCIDENT',
       );
     }
     if (_locallyClosedIncidentId != null &&

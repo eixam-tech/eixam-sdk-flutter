@@ -91,7 +91,7 @@ class MqttOperationalSosRepository
         current != SosState.resolved) {
       throw const SosException(
         'E_SOS_ALREADY_ACTIVE',
-        'There is already an SOS flow in progress',
+        'E_SOS_ALREADY_ACTIVE',
       );
     }
     final appOwnedSos = _isAppOwnedTriggerSource(triggerSource) ||
@@ -99,7 +99,7 @@ class MqttOperationalSosRepository
     if (positionSnapshot == null && !appOwnedSos) {
       throw const SosException(
         'E_SOS_POSITION_REQUIRED',
-        'Operational SOS over MQTT requires a current location snapshot.',
+        'E_SOS_POSITION_REQUIRED',
       );
     }
 
@@ -199,7 +199,7 @@ class MqttOperationalSosRepository
       );
       throw const SosException(
         'E_APP_SOS_BACKEND_UNAVAILABLE',
-        'HTTP SOS backend transport is unavailable for app-originated SOS.',
+        'E_APP_SOS_BACKEND_UNAVAILABLE',
       );
     }
     BleDebugRegistry.instance.recordEvent(
@@ -458,7 +458,7 @@ class MqttOperationalSosRepository
     if (!await _ensureActiveIncidentForCancellation()) {
       throw const SosException(
         'E_SOS_CANCEL_NOT_ALLOWED',
-        'There is no active SOS to cancel',
+        'E_SOS_CANCEL_NOT_ALLOWED',
       );
     }
 
@@ -466,7 +466,7 @@ class MqttOperationalSosRepository
     if (remoteDataSource == null) {
       throw const SosException(
         'E_SOS_CANCEL_HTTP_UNAVAILABLE',
-        'SOS cancellation requires an HTTP remote data source.',
+        'E_SOS_CANCEL_HTTP_UNAVAILABLE',
       );
     }
 
@@ -499,7 +499,7 @@ class MqttOperationalSosRepository
     if (!await _ensureActiveIncidentForCancellation()) {
       throw const SosException(
         'E_SOS_RESOLVE_NOT_ALLOWED',
-        'There is no active SOS to resolve',
+        'E_SOS_RESOLVE_NOT_ALLOWED',
       );
     }
 
@@ -507,7 +507,7 @@ class MqttOperationalSosRepository
     if (remoteDataSource == null) {
       throw const SosException(
         'E_SOS_RESOLVE_HTTP_UNAVAILABLE',
-        'SOS resolve requires an HTTP remote data source.',
+        'E_SOS_RESOLVE_HTTP_UNAVAILABLE',
       );
     }
 
@@ -663,9 +663,7 @@ class MqttOperationalSosRepository
           return SosRuntimeRehydrationResult(
             outcome: SosRuntimeRehydrationOutcome.keptLocalFallback,
             resultingState: _stateMachine.current,
-            diagnosticNote:
-                'Backend reported no active SOS during the short post-trigger '
-                'consistency window; kept the recent local incident.',
+            diagnosticNote: 'E_SOS_REHYDRATION_KEPT_LOCAL_FALLBACK',
           );
         }
 
@@ -686,8 +684,7 @@ class MqttOperationalSosRepository
         return const SosRuntimeRehydrationResult(
           outcome: SosRuntimeRehydrationOutcome.clearedToIdle,
           resultingState: SosState.idle,
-          diagnosticNote:
-              'Backend returned the same SOS incident that was locally closed; ignored it.',
+          diagnosticNote: 'E_SOS_REHYDRATION_IGNORED_LOCALLY_CLOSED_INCIDENT',
         );
       }
       if (_locallyClosedIncidentId != null &&
@@ -707,8 +704,7 @@ class MqttOperationalSosRepository
       return SosRuntimeRehydrationResult(
         outcome: SosRuntimeRehydrationOutcome.keptLocalFallback,
         resultingState: _stateMachine.current,
-        diagnosticNote:
-            'SOS rehydration failed; kept local fallback state. Error: $error',
+        diagnosticNote: 'E_SOS_REHYDRATION_FAILED error=$error',
       );
     }
   }

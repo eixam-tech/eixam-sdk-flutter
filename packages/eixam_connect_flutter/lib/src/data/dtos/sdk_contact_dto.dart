@@ -44,7 +44,7 @@ class SdkContactDto {
     }
     throw ContactsException(
       'E_HTTP_CONTACTS_INVALID_PAYLOAD',
-      'The backend contact payload has an invalid $field.',
+      'E_HTTP_CONTACTS_INVALID_PAYLOAD field=$field',
     );
   }
 
@@ -58,7 +58,7 @@ class SdkContactDto {
     }
     throw ContactsException(
       'E_HTTP_CONTACTS_INVALID_PAYLOAD',
-      'The backend contact payload has an invalid $field.',
+      'E_HTTP_CONTACTS_INVALID_PAYLOAD field=$field',
     );
   }
 
@@ -72,7 +72,7 @@ class SdkContactDto {
     }
     throw ContactsException(
       'E_HTTP_CONTACTS_INVALID_PAYLOAD',
-      'The backend contact payload has an invalid $field.',
+      'E_HTTP_CONTACTS_INVALID_PAYLOAD field=$field',
     );
   }
 }

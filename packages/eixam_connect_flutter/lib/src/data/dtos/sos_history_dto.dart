@@ -21,7 +21,8 @@ class SosHistoryItemDto {
               json['creationTelemetry'] as Map<String, dynamic>)
           : null,
       trail: (json['trail'] as List<dynamic>?)
-              ?.map((e) => SosHistoryTrailPointDto.fromJson(e as Map<String, dynamic>))
+              ?.map((e) =>
+                  SosHistoryTrailPointDto.fromJson(e as Map<String, dynamic>))
               .toList() ??
           const [],
     );
@@ -63,11 +64,13 @@ class SosHistoryTelemetryDto {
       altitude: (json['altitude'] as num?)?.toDouble(),
       deviceBattery: (json['deviceBattery']?['rawValue'] as num?)?.round() ??
           (json['device_battery'] as num?)?.round(),
-      deviceCoverage: (json['deviceCoverage']?['signalStrength'] as num?)?.round() ??
-          (json['device_coverage'] as num?)?.round(),
+      deviceCoverage:
+          (json['deviceCoverage']?['signalStrength'] as num?)?.round() ??
+              (json['device_coverage'] as num?)?.round(),
       mobileBattery: (json['mobileBattery'] as num?)?.round(),
-      mobileCoverage: (json['mobileCoverage']?['signalStrength'] as num?)?.round() ??
-          (json['mobile_coverage'] as num?)?.round(),
+      mobileCoverage:
+          (json['mobileCoverage']?['signalStrength'] as num?)?.round() ??
+              (json['mobile_coverage'] as num?)?.round(),
     );
   }
 }

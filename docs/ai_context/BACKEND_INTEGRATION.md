@@ -50,10 +50,6 @@
 
 - Normal telemetry publish uses `MqttTelemetryRepository`.
 - BLE-origin telemetry may be published through `BleOperationalRuntimeBridge`.
-- Backlog sync:
-  - device sends frames over BLE
-  - SDK converts records into telemetry payloads
-  - backend batch publish happens before ACK back to the device
 
 ## Offline / Reconnect Behavior
 
@@ -86,7 +82,6 @@
 - `packages/eixam_connect_flutter/test/sdk/eixam_bootstrap_resolver_test.dart`
 - `packages/eixam_connect_flutter/test/sdk/eixam_connect_sdk_impl_test.dart`
 - `packages/eixam_connect_flutter/test/sdk/eixam_connect_sdk_ble_contract_test.dart`
-- `packages/eixam_connect_flutter/test/sdk/backlog_sync_controller_test.dart`
 - `packages/eixam_connect_flutter/test/data/repositories/in_memory_tracking_repository_test.dart`
 - `packages/eixam_connect_flutter/test/mappers/sos_incident_mapper_test.dart`
 

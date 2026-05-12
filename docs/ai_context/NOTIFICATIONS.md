@@ -72,7 +72,6 @@
 ## Related Tests
 
 - `packages/eixam_connect_flutter/test/sdk/eixam_connect_sdk_impl_test.dart`
-- `apps/eixam_control_app/test/validation_console_controller_test.dart`
 - `packages/eixam_connect_flutter/test/sdk/android_protection_platform_adapter_test.dart`
 - `packages/eixam_connect_flutter/test/sdk/ios_protection_platform_adapter_test.dart`
 

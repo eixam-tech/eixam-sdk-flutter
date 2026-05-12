@@ -406,6 +406,32 @@ void main() {
       expect(status.countdownRemainingSeconds, isNull);
     });
 
+    test('device trigger compensates observed BLE countdown start skew', () {
+      final observedAt = DateTime.utc(2026, 5, 12, 12, 0);
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(seconds: 20),
+        now: () => observedAt,
+      );
+      addTearDown(controller.dispose);
+
+      controller.handleIncomingSosPacket(
+        _countdownPacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+
+      final status = controller.currentStatus;
+      expect(status.state, DeviceSosState.preConfirm);
+      expect(
+        status.countdownStartedAt,
+        observedAt.subtract(const Duration(seconds: 2)),
+      );
+      expect(
+        status.expectedActivationAt,
+        observedAt.add(const Duration(seconds: 18)),
+      );
+      expect(status.countdownRemainingSeconds, 18);
+    });
+
     test(
         'active SOS + incoming device cancel packet keeps terminal cancelled and does not reopen preConfirm',
         () {

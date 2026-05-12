@@ -294,16 +294,16 @@ void main() {
         () async {
       final runtimeProvider = FakeDeviceRuntimeProvider()
         ..refreshResult = const DeviceStatus(
-          deviceId: 'demo-device',
-          deviceAlias: 'Demo Beacon',
-          model: 'EIXAM R1',
+          deviceId: '',
+          deviceAlias: null,
+          model: null,
           paired: false,
           activated: false,
           connected: false,
           batteryLevel: null,
           batteryState: null,
           batterySource: null,
-          firmwareVersion: '0.1.0-demo',
+          firmwareVersion: null,
           lifecycleState: DeviceLifecycleState.unpaired,
         ).copyWith(
           lastSyncedAt: DateTime.utc(2026, 1, 1, 12),

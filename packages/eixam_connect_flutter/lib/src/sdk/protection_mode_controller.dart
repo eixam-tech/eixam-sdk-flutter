@@ -28,7 +28,7 @@ class ProtectionModeController {
       _handlePlatformEvent,
       onError: (_) {
         _diagnostics = _diagnostics.copyWith(
-          lastFailureReason: 'Protection platform event stream failed.',
+          lastFailureReason: ProtectionSemanticCode.platformEventStreamFailed,
         );
         _emitDiagnostics();
       },
@@ -152,8 +152,11 @@ class ProtectionModeController {
       request: startRequest,
     );
     if (!startResult.success) {
-      final failureReason = startResult.failureReason ??
-          'Protection runtime could not be started in this host app.';
+      final failureReason = _semanticCodeOrFallback(
+            startResult.failureReason,
+            ProtectionSemanticCode.hostRuntimeStartFailed,
+          ) ??
+          ProtectionSemanticCode.hostRuntimeStartFailed;
       final issue = ProtectionBlockingIssue(
         type: ProtectionBlockingIssueType.hostRuntimeStartFailed,
         message: failureReason,
@@ -303,10 +306,16 @@ class ProtectionModeController {
       targetCoverageLevel: targetCoverageLevel,
       options: options,
       degradationReason: targetModeState == ProtectionModeState.degraded
-          ? platformSnapshot.degradationReason ??
-              _status.degradationReason ??
-              platformSnapshot.lastFailureReason ??
-              'Protection runtime was rehydrated with partial platform coverage.'
+          ? _semanticCodeOrFallback(
+              platformSnapshot.degradationReason,
+              _semanticCodeOrFallback(
+                _status.degradationReason,
+                _semanticCodeOrFallback(
+                  platformSnapshot.lastFailureReason,
+                  ProtectionSemanticCode.degradedRehydratedPartial,
+                ),
+              ),
+            )
           : null,
       platformSnapshotOverride: platformSnapshot,
     );
@@ -417,57 +426,50 @@ class ProtectionModeController {
       if (!sessionReady)
         const ProtectionBlockingIssue(
           type: ProtectionBlockingIssueType.noSession,
-          message:
-              'A signed SDK session is required before Protection Mode can be enabled.',
+          message: ProtectionSemanticCode.noSession,
           canBeResolvedInline: false,
         ),
       if (!deviceStatus.paired)
         const ProtectionBlockingIssue(
           type: ProtectionBlockingIssueType.noPairedDevice,
-          message:
-              'Pair a trusted EIXAM device before enabling Protection Mode.',
+          message: ProtectionSemanticCode.noPairedDevice,
           canBeResolvedInline: true,
         ),
       if (!bluetoothEnabled)
         const ProtectionBlockingIssue(
           type: ProtectionBlockingIssueType.bluetoothDisabled,
-          message:
-              'Bluetooth access and adapter availability are required for Protection Mode.',
+          message: ProtectionSemanticCode.bluetoothDisabled,
           canBeResolvedInline: true,
         ),
       if (!permissionState.hasLocationAccess)
         const ProtectionBlockingIssue(
           type: ProtectionBlockingIssueType.locationPermissionMissing,
-          message:
-              'Location permission is required before Protection Mode can be enabled.',
+          message: ProtectionSemanticCode.locationPermissionMissing,
           canBeResolvedInline: true,
         ),
       if (!notificationsGranted)
         const ProtectionBlockingIssue(
           type: ProtectionBlockingIssueType.notificationsPermissionMissing,
-          message:
-              'Notification permission is required so Protection Mode can surface runtime issues.',
+          message: ProtectionSemanticCode.notificationsPermissionMissing,
           canBeResolvedInline: true,
         ),
       if (!platformSnapshot.backgroundCapabilityReady)
         const ProtectionBlockingIssue(
           type: ProtectionBlockingIssueType.platformBackgroundCapabilityMissing,
-          message:
-              'Host platform background runtime support is not configured yet for Protection Mode.',
+          message: ProtectionSemanticCode.platformBackgroundCapabilityMissing,
           canBeResolvedInline: false,
         ),
     ];
 
     final warnings = <String>[
       if (!deviceStatus.connected)
-        'The trusted device is not connected right now. Protection Mode would start in reconnect/recovery posture.',
-      if (!realtimeReady)
-        'Realtime/backend transport is not fully ready, so Protection Mode would rely on reconnect or store-and-forward behavior.',
+        ProtectionSemanticCode.warningDeviceNotConnected,
+      if (!realtimeReady) ProtectionSemanticCode.warningRealtimeNotReady,
       if (!platformSnapshot.nativeBackendConfigValid &&
           (platformSnapshot.nativeBackendConfigIssue ?? '').trim().isNotEmpty)
-        platformSnapshot.nativeBackendConfigIssue!,
+        ProtectionSemanticCode.warningNativeBackendConfigInvalid,
       if (!options.enableStoreAndForward)
-        'Store-and-forward is disabled for this Protection Mode configuration.',
+        ProtectionSemanticCode.warningStoreAndForwardDisabled,
     ];
 
     final status = ProtectionStatus(
@@ -514,8 +516,10 @@ class ProtectionModeController {
           platformSnapshot.protectedDeviceId ?? platformSnapshot.activeDeviceId,
       activeDeviceId: platformSnapshot.activeDeviceId ??
           (deviceStatus.deviceId.trim().isEmpty ? null : deviceStatus.deviceId),
-      degradationReason:
-          degradationReason ?? platformSnapshot.degradationReason,
+      degradationReason: _semanticCodeOrFallback(
+        degradationReason,
+        _semanticCodeOrFallback(platformSnapshot.degradationReason, null),
+      ),
       expectedBleServiceUuid: platformSnapshot.expectedBleServiceUuid,
       expectedBleCharacteristicUuids:
           platformSnapshot.expectedBleCharacteristicUuids,
@@ -619,26 +623,29 @@ class ProtectionModeController {
   }) {
     if ((platformStatusMessage ?? '').trim().isNotEmpty &&
         platformCoverageLevel == ProtectionCoverageLevel.partial) {
-      return platformStatusMessage;
+      return _semanticCodeOrFallback(
+        platformStatusMessage,
+        ProtectionSemanticCode.degradedPlatformPartial,
+      );
     }
     if (!status.deviceConnected) {
-      return 'Protection Mode is active, but the trusted device is not connected yet.';
+      return ProtectionSemanticCode.degradedDeviceNotConnected;
     }
     if (_isPlatformBleOwner(status.bleOwner) && !status.serviceBleConnected) {
-      return _nativeOwnerLabel(status.bleOwner) == 'Android service'
-          ? 'Protection Mode is active, but the Android service has not connected to the protected device yet.'
-          : 'Protection Mode is active, but the iOS plugin runtime has not connected to the protected device yet.';
+      return status.bleOwner == ProtectionBleOwner.androidService
+          ? ProtectionSemanticCode.degradedAndroidServiceNotConnected
+          : ProtectionSemanticCode.degradedIosRuntimeNotConnected;
     }
     if (_isPlatformBleOwner(status.bleOwner) && !status.serviceBleReady) {
-      return _nativeOwnerLabel(status.bleOwner) == 'Android service'
-          ? 'Protection Mode is active, but the Android service has not finished TEL/SOS subscriptions yet.'
-          : 'Protection Mode is active, but the iOS plugin runtime has not finished TEL/SOS subscriptions yet.';
+      return status.bleOwner == ProtectionBleOwner.androidService
+          ? ProtectionSemanticCode.degradedAndroidSubscriptionsPending
+          : ProtectionSemanticCode.degradedIosSubscriptionsPending;
     }
     if (!status.nativeBackendConfigValid &&
         (status.nativeBackendConfigIssue ?? '').trim().isNotEmpty) {
-      return status.nativeBackendConfigIssue;
+      return ProtectionSemanticCode.degradedNativeBackendConfigInvalid;
     }
-    return status.degradationReason;
+    return _semanticCodeOrFallback(status.degradationReason, null);
   }
 
   bool _isProtectionDeviceConnected(
@@ -936,15 +943,21 @@ class ProtectionModeController {
     }
   }
 
-  String _nativeOwnerLabel(ProtectionBleOwner owner) {
-    switch (owner) {
-      case ProtectionBleOwner.androidService:
-        return 'Android service';
-      case ProtectionBleOwner.iosPlugin:
-        return 'iOS plugin runtime';
-      case ProtectionBleOwner.flutter:
-        return 'Flutter';
+  String? _semanticCodeOrFallback(String? value, String? fallback) {
+    final trimmed = value?.trim();
+    if (trimmed == null || trimmed.isEmpty) {
+      return fallback;
     }
+    if (_looksLikeSemanticCode(trimmed)) {
+      return trimmed;
+    }
+    return fallback;
+  }
+
+  bool _looksLikeSemanticCode(String value) {
+    return value == value.toUpperCase() &&
+        value.contains('_') &&
+        !value.contains(' ');
   }
 
   void _emitStatus() {

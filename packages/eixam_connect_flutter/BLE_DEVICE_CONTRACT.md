@@ -4,11 +4,11 @@
 
 The Flutter SDK is responsible for hiding the EIXAM BLE protocol from host apps. Host apps should call typed SDK APIs for SOS, device control, runtime inspection, and typed relay telemetry instead of sending raw BLE commands or decoding packets themselves.
 
-For relay ingest and backlog sync specifically:
+For relay ingest specifically:
 
 - host apps consume typed SDK state and diagnostics
-- the SDK owns backend routing, terminal handling, and BLE sync progress ACKs
-- host apps must not implement their own relay or backlog protocol state machines
+- the SDK owns backend routing and terminal handling
+- host apps must not implement their own relay protocol state machines
 
 ## Public SOS Diagnostics And Availability
 
@@ -155,30 +155,6 @@ The SDK records that outcome in bridge diagnostics:
 
 Partner apps may display or log that information, but should not retry relay
 ingest independently from the app layer.
-
-## BLE Backlog Sync
-
-The SDK now exposes a minimal BLE backlog sync API:
-
-- `startBacklogSync(...)`
-- `cancelBacklogSync()`
-- `getBacklogSyncState()`
-- `watchBacklogSyncState()`
-
-The BLE protocol details remain internal to the runtime.
-
-Integration expectations:
-
-- backlog sync commands are sent by the SDK over CMD
-- backlog frames are parsed by the SDK from `0xD1` TEL notify payloads
-- chunk records are uploaded in SDK-managed backend batches
-- the SDK only sends `BACKLOG_SYNC_ACK` after backend persistence succeeds
-- reconnect recovery is SDK-owned and restarts with a new sync start request
-
-Host apps are responsible only for:
-
-- deciding when to start or cancel sync
-- showing coarse progress and error state from `BacklogSyncState`
 
 ## Safety Notes
 

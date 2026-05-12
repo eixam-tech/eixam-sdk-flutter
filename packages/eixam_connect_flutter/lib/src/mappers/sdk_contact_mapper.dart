@@ -22,7 +22,7 @@ class SdkContactMapper {
     if (value == null || value.trim().isEmpty) {
       throw ContactsException(
         'E_HTTP_CONTACTS_INVALID_PAYLOAD',
-        'The backend contact payload is missing $field.',
+        'E_HTTP_CONTACTS_MISSING_FIELD field=$field',
       );
     }
     try {
@@ -30,7 +30,7 @@ class SdkContactMapper {
     } on FormatException {
       throw ContactsException(
         'E_HTTP_CONTACTS_INVALID_PAYLOAD',
-        'The backend contact payload contains an invalid $field.',
+        'E_HTTP_CONTACTS_INVALID_FIELD field=$field',
       );
     }
   }

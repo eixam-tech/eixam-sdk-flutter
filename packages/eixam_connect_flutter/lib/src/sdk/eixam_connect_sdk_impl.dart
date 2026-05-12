@@ -27,13 +27,11 @@ import '../data/datasources_remote/sdk_session_context.dart';
 import '../data/repositories/telemetry_repository.dart';
 import '../data/repositories/sos_runtime_rehydration_support.dart';
 import 'android_protection_platform_adapter.dart';
-import 'backlog_sync_controller.dart';
 import 'background_telemetry_platform_adapter.dart';
 import 'background_telemetry_platform_adapter_factory.dart';
 import 'ble_operational_runtime_bridge.dart';
 import 'ble_auto_reconnect_coordinator.dart';
 import 'ble_sos_notification_payload.dart';
-import 'guided_rescue_runtime.dart';
 import 'operational_telemetry_coordinator.dart';
 import 'operational_realtime_client.dart';
 import 'protection_mode_controller.dart';
@@ -64,7 +62,6 @@ class EixamConnectSdkImpl
   final DeviceSosController deviceSosController;
   final Stream<BleIncomingEvent> bleIncomingEvents;
   final PreferredBleDeviceStore preferredBleDeviceStore;
-  final GuidedRescueRuntime? guidedRescueRuntime;
   final SdkSessionStore? sessionStore;
   final SdkSessionContext? sessionContext;
   final SdkIdentityRemoteDataSource? identityRemoteDataSource;
@@ -87,8 +84,6 @@ class EixamConnectSdkImpl
   final StreamController<SdkOperationalDiagnostics>
       _operationalDiagnosticsController =
       StreamController<SdkOperationalDiagnostics>.broadcast();
-  final StreamController<GuidedRescueState> _guidedRescueStateController =
-      StreamController<GuidedRescueState>.broadcast();
   final StreamController<BleNotificationNavigationRequest>
       _bleNotificationNavigationController =
       StreamController<BleNotificationNavigationRequest>.broadcast();
@@ -109,8 +104,6 @@ class EixamConnectSdkImpl
   StreamSubscription<DeviceStatus>? _deviceStatusSub;
   StreamSubscription<DeviceSosStatus>? _deviceSosSub;
   StreamSubscription<bool>? _deviceSosCommandPathSub;
-  StreamSubscription<GuidedRescueState>? _guidedRescueSub;
-  StreamSubscription<BacklogSyncState>? _backlogSyncSub;
   StreamSubscription<SosState>? _sosStateSub;
   StreamSubscription<SdkBridgeDiagnostics>? _bridgeDiagnosticsSub;
   StreamSubscription<BleIncomingEvent>? _bleIncomingEventDiagnosticsSub;
@@ -128,7 +121,6 @@ class EixamConnectSdkImpl
   RealtimeEvent? _lastRealtimeEvent;
   DeviceStatus? _lastDeviceStatus;
   DeviceStatus? _lastPublicDeviceStatus;
-  GuidedRescueState _guidedRescueState = const GuidedRescueState.unsupported();
   BleNotificationNavigationRequest? _pendingBleNotificationNavigationRequest;
   final List<EixamNotificationIntent> _pendingNotificationIntents =
       <EixamNotificationIntent>[];
@@ -143,6 +135,8 @@ class EixamConnectSdkImpl
   String? _lastSosRehydrationNote;
   SdkBridgeDiagnostics _bridgeDiagnostics = const SdkBridgeDiagnostics();
   SosState _publicSosState = SosState.idle;
+  DateTime? _lastTerminalPublicSosAt;
+  static const Duration _postTerminalSettleWindow = Duration(seconds: 5);
   PublicPreSosStatus? _lastPublishedPreSosStatus;
   SosIncident? _publicSosFallbackIncident;
   SosIncident? _lastKnownActiveSosIncident;
@@ -196,7 +190,6 @@ class EixamConnectSdkImpl
   int _preSosCycleRevision = 0;
   final Set<int> _loggedIgnoredPreSosTickCycles = <int>{};
   late final BleAutoReconnectCoordinator _bleAutoReconnectCoordinator;
-  late final BacklogSyncController _backlogSyncController;
   late final BleOperationalRuntimeBridge _bleOperationalRuntimeBridge;
   late final ProtectionModeController _protectionModeController;
   late final OperationalTelemetryCoordinator _operationalTelemetryCoordinator;
@@ -235,7 +228,6 @@ class EixamConnectSdkImpl
     required this.deviceSosController,
     required this.bleIncomingEvents,
     required this.preferredBleDeviceStore,
-    this.guidedRescueRuntime,
     this.sessionStore,
     this.sessionContext,
     this.identityRemoteDataSource,
@@ -270,15 +262,6 @@ class EixamConnectSdkImpl
         runtimeStatus: _lastDeviceStatus,
       ),
       sosBackendDeviceRegisterRetry: _retrySosAfterBackendDeviceRegistration,
-    );
-    _backlogSyncController = BacklogSyncController(
-      bleIncomingEvents: bleIncomingEvents,
-      telemetryRepository: telemetryRepository,
-      commandSender: _sendDeviceCommandThroughActiveOwner,
-      backendHardwareIdResolver: () =>
-          _loadBackendHardwareIdForOperationalPayloads(
-        runtimeStatus: _lastDeviceStatus,
-      ),
     );
     _protectionModeController = ProtectionModeController(
       platformAdapter: this.protectionPlatformAdapter,
@@ -336,20 +319,17 @@ class EixamConnectSdkImpl
       trigger: 'initialize',
     );
     await _restorePersistedPreSosSession(trigger: 'initialize');
-    _guidedRescueState = guidedRescueRuntime == null
-        ? _fallbackGuidedRescueState()
-        : await guidedRescueRuntime!.getCurrentState();
     WidgetsBinding.instance.addObserver(this);
     await _bleAutoReconnectCoordinator.initialize(
       initialStatus: _lastDeviceStatus!,
       deviceStatusStream: deviceRepository.watchDeviceStatus(),
     );
     _bindDeviceStreams();
-    _bindGuidedRescueStreams();
-    _bindBacklogSyncStreams();
-    await notificationsRepository.initialize(
-      onAction: _handleNotificationAction,
-    );
+    if (_sdkSosNotificationsEnabled) {
+      await notificationsRepository.initialize(
+        onAction: _handleNotificationAction,
+      );
+    }
     _bindRealtimeStreams();
     _bindOperationalDiagnostics();
     _bleOperationalRuntimeBridge.start();
@@ -366,20 +346,6 @@ class EixamConnectSdkImpl
       trigger: 'initialize',
       status: _lastDeviceStatus,
     );
-  }
-
-  void _bindGuidedRescueStreams() {
-    _guidedRescueSub?.cancel();
-
-    if (guidedRescueRuntime == null) {
-      _guidedRescueStateController.add(_guidedRescueState);
-      return;
-    }
-
-    _guidedRescueSub = guidedRescueRuntime!.watchState().listen((state) {
-      _guidedRescueState = state;
-      _guidedRescueStateController.add(state);
-    });
   }
 
   void _bindDeviceStreams() {
@@ -412,12 +378,6 @@ class EixamConnectSdkImpl
       _scheduleRegisteredDeviceAutoSync(
         trigger: 'device_status_stream',
         status: promotedStatus,
-      );
-      unawaited(
-        _backlogSyncController.onDeviceStatusChanged(
-          previous: previousStatus,
-          current: promotedStatus,
-        ),
       );
     });
 
@@ -648,11 +608,6 @@ class EixamConnectSdkImpl
     _protectionDisconnectGraceTimer = null;
   }
 
-  void _bindBacklogSyncStreams() {
-    _backlogSyncSub?.cancel();
-    _backlogSyncSub = _backlogSyncController.watchState().listen((_) {});
-  }
-
   @override
   Future<void> setSession(EixamSession session) async {
     _bleOperationalRuntimeBridge.resetForSessionChange();
@@ -804,6 +759,7 @@ class EixamConnectSdkImpl
       if (state == SosState.cancelled || state == SosState.resolved) {
         _applyTerminalSosSuppression(
           reason: 'backend_terminal_state:${state.name}',
+          terminalState: state,
         );
         await _clearSosNotificationsSafely(
           reason: 'public_state_stream:${state.name}',
@@ -968,6 +924,7 @@ class EixamConnectSdkImpl
           );
           _applyTerminalSosSuppression(
             reason: 'backend_terminal_state:${state.name}',
+            terminalState: state,
           );
         } else if (_isOpenSosState(state)) {
           _clearPreSosSession(
@@ -1493,6 +1450,9 @@ class EixamConnectSdkImpl
       );
       _applyTerminalSosSuppression(
         reason: 'device_close_command_without_ack:${intent.name}',
+        terminalState: intent == _SosClosureIntent.resolve
+            ? SosState.resolved
+            : SosState.cancelled,
         nodeId: status.nodeId,
       );
     }
@@ -1729,8 +1689,6 @@ class EixamConnectSdkImpl
     int? relayNodeId,
     String? titleKey,
     String? bodyKey,
-    String? fallbackTitle,
-    String? fallbackBody,
     Map<String, String> payload = const <String, String>{},
     bool shouldClearSosNotifications = false,
   }) {
@@ -1749,8 +1707,6 @@ class EixamConnectSdkImpl
       relayNodeId: relayNodeId,
       titleKey: titleKey,
       bodyKey: bodyKey,
-      fallbackTitle: fallbackTitle,
-      fallbackBody: fallbackBody,
       payload: payload,
       shouldClearSosNotifications: shouldClearSosNotifications,
     );
@@ -1804,101 +1760,6 @@ class EixamConnectSdkImpl
   @override
   Future<FlushProtectionQueuesResult> flushProtectionQueues() {
     return _protectionModeController.flushQueues();
-  }
-
-  @override
-  Future<GuidedRescueState> getGuidedRescueState() async => _guidedRescueState;
-
-  @override
-  Stream<GuidedRescueState> watchGuidedRescueState() async* {
-    yield _guidedRescueState;
-    yield* _guidedRescueStateController.stream;
-  }
-
-  @override
-  Future<GuidedRescueState> setGuidedRescueSession({
-    required int targetNodeId,
-    required int rescueNodeId,
-  }) async {
-    if (guidedRescueRuntime == null) {
-      _guidedRescueState = _fallbackGuidedRescueState().copyWith(
-        targetNodeId: targetNodeId,
-        rescueNodeId: rescueNodeId,
-        lastUpdatedAt: DateTime.now(),
-        clearLastError: true,
-      );
-      _guidedRescueStateController.add(_guidedRescueState);
-      return _guidedRescueState;
-    }
-
-    _guidedRescueState = await guidedRescueRuntime!.setSession(
-      targetNodeId: targetNodeId,
-      rescueNodeId: rescueNodeId,
-    );
-    _guidedRescueStateController.add(_guidedRescueState);
-    return _guidedRescueState;
-  }
-
-  @override
-  Future<void> clearGuidedRescueSession() async {
-    if (guidedRescueRuntime == null) {
-      _guidedRescueState = _fallbackGuidedRescueState();
-      _guidedRescueStateController.add(_guidedRescueState);
-      return;
-    }
-    await guidedRescueRuntime!.clearSession();
-  }
-
-  @override
-  Future<void> requestGuidedRescuePosition() {
-    return _runGuidedRescueCommand(GuidedRescueAction.requestPosition);
-  }
-
-  @override
-  Future<void> acknowledgeGuidedRescueSos() {
-    return _runGuidedRescueCommand(GuidedRescueAction.acknowledgeSos);
-  }
-
-  @override
-  Future<void> enableGuidedRescueBuzzer() {
-    return _runGuidedRescueCommand(GuidedRescueAction.buzzerOn);
-  }
-
-  @override
-  Future<void> disableGuidedRescueBuzzer() {
-    return _runGuidedRescueCommand(GuidedRescueAction.buzzerOff);
-  }
-
-  @override
-  Future<void> requestGuidedRescueStatus() {
-    return _runGuidedRescueCommand(GuidedRescueAction.requestStatus);
-  }
-
-  @override
-  Future<BacklogSyncState> getBacklogSyncState() async =>
-      _backlogSyncController.currentState;
-
-  @override
-  Stream<BacklogSyncState> watchBacklogSyncState() async* {
-    yield _backlogSyncController.currentState;
-    yield* _backlogSyncController.watchState();
-  }
-
-  @override
-  Future<BacklogSyncState> startBacklogSync({
-    DateTime? since,
-    int maxEvents = 100,
-  }) async {
-    await _backlogSyncController.start(
-      since: since,
-      maxEvents: maxEvents,
-    );
-    return _backlogSyncController.currentState;
-  }
-
-  @override
-  Future<void> cancelBacklogSync() async {
-    await _backlogSyncController.cancel();
   }
 
   Future<void> _handleDeviceSosStatus(DeviceSosStatus status) async {
@@ -1989,8 +1850,13 @@ class EixamConnectSdkImpl
     );
 
     if (_isSosCycleClosed(status.state)) {
+      final terminalState = _mapTerminalDeviceStatusToPublicSosState(status) ??
+          (status.state == DeviceSosState.resolved
+              ? SosState.resolved
+              : SosState.cancelled);
       _applyTerminalSosSuppression(
         reason: 'device_terminal_event:${status.state.name}',
+        terminalState: terminalState,
         nodeId: status.nodeId,
       );
       final closedCycleKey = _activeDeviceSosCycleKey;
@@ -2035,87 +1901,9 @@ class EixamConnectSdkImpl
       return;
     }
 
-    if (!_sdkSosNotificationsEnabled) {
-      BleDebugRegistry.instance.recordEvent(
-        'SOS notification skipped -> reason=host_app_managed cycleKey=$cycleKey state=${status.state.name}',
-      );
-      BleDebugRegistry.instance.recordEvent(
-        '[NOTIFICATION_FLOW] sdk_local_notification_skip '
-        'type=${_notificationIntentTypeForDeviceSosState(status.state).name} '
-        'reason=hostAppManaged',
-      );
-      return;
-    }
-
-    if (_shouldSuppressExternalSosNotificationForSelfNode(status)) {
-      BleDebugRegistry.instance.recordEvent(
-        'SOS notification skipped -> reason=self_node nodeId=${_formatNodeId(status.nodeId)}',
-      );
-      return;
-    }
-
-    final previousActiveCycleKey = _activeDeviceSosCycleKey;
-    if (previousActiveCycleKey == null) {
-      _activeDeviceSosCycleKey = cycleKey;
-      BleDebugRegistry.instance.recordEvent(
-        'SOS cycle opened -> key=$cycleKey',
-      );
-    } else if (previousActiveCycleKey != cycleKey) {
-      BleDebugRegistry.instance.recordEvent(
-        'SOS notification skipped -> reason=cycle_already_open activeCycle=$previousActiveCycleKey incomingCycle=$cycleKey',
-      );
-      return;
-    }
-
-    if (_notifiedDeviceSosCycleKey == cycleKey) {
-      if (_notifiedDeviceSosState == status.state) {
-        BleDebugRegistry.instance.recordEvent(
-          'SOS notification skipped -> reason=already_notified_for_cycle_state cycleKey=$cycleKey state=${status.state.name}',
-        );
-        return;
-      }
-      BleDebugRegistry.instance.recordEvent(
-        'SOS notification state advanced -> cycleKey=$cycleKey from=${_notifiedDeviceSosState?.name ?? "-"} to=${status.state.name}',
-      );
-    }
-
-    _notifiedDeviceSosCycleKey = cycleKey;
-    _notifiedDeviceSosState = status.state;
-
-    final title = _notificationTitleForSosState(status.state);
-    final body = _notificationBodyForSosState(status.state);
-    final payload = BleSosNotificationPayload(
-      kind: 'sos_received',
-      state: status.state,
-      transitionSource: status.transitionSource,
-      deviceId: _lastDeviceStatus?.deviceId,
-      deviceAlias: _lastDeviceStatus?.deviceAlias,
-      nodeId: status.nodeId,
-    );
-
     BleDebugRegistry.instance.recordEvent(
-      'SOS notification emitted -> reason=external_node nodeId=${_formatNodeId(status.nodeId)} cycleKey=$cycleKey source=${status.transitionSource.name}',
+      'SOS local notification skipped -> reason=notification_intents_only cycleKey=$cycleKey state=${status.state.name} policy=${_notificationPolicyLabel(notificationPolicy)}',
     );
-
-    try {
-      BleDebugRegistry.instance.recordEvent(
-        '[NOTIFICATION_FLOW] sdk_local_notification_show '
-        'type=${_notificationIntentTypeForDeviceSosState(status.state).name} '
-        'policy=${_notificationPolicyLabel(notificationPolicy)} '
-        'channel=eixam_sos_alerts',
-      );
-      await notificationsRepository.showLocalNotification(
-        notificationId: _nextBleNotificationId(),
-        title: title,
-        body: body,
-        payload: payload.toJsonString(),
-        actions: const <LocalNotificationAction>[],
-      );
-    } catch (error) {
-      BleDebugRegistry.instance.recordEvent(
-        'Local BLE notification failed -> kind=sos_received error=$error',
-      );
-    }
   }
 
   bool _isSosCycleNotifiable(DeviceSosState state) {
@@ -2126,21 +1914,6 @@ class EixamConnectSdkImpl
 
   bool _isSosCycleClosed(DeviceSosState state) {
     return state == DeviceSosState.inactive || state == DeviceSosState.resolved;
-  }
-
-  EixamNotificationIntentType _notificationIntentTypeForDeviceSosState(
-    DeviceSosState state,
-  ) {
-    return switch (state) {
-      DeviceSosState.preConfirm => EixamNotificationIntentType.preSos,
-      DeviceSosState.active ||
-      DeviceSosState.acknowledged =>
-        EixamNotificationIntentType.sosActive,
-      DeviceSosState.resolved => EixamNotificationIntentType.sosResolved,
-      DeviceSosState.inactive ||
-      DeviceSosState.unknown =>
-        EixamNotificationIntentType.sosCancelled,
-    };
   }
 
   bool get _sdkSosNotificationsEnabled =>
@@ -2154,23 +1927,6 @@ class EixamConnectSdkImpl
       return 'sdkManaged';
     }
     return policy.toString();
-  }
-
-  bool _shouldSuppressExternalSosNotificationForSelfNode(
-    DeviceSosStatus status,
-  ) {
-    final nodeId = status.nodeId;
-    if (nodeId == null) {
-      return false;
-    }
-    if (_knownLocalDeviceNodeId == nodeId) {
-      return true;
-    }
-    final bridge = _pendingAppTriggeredSosBridge;
-    return bridge != null &&
-        bridge.nodeId == nodeId &&
-        (status.triggerOrigin == DeviceSosTransitionSource.app ||
-            _isCorrelatedAppTriggeredSosStatus(status));
   }
 
   String? _deriveDeviceSosCycleKey(DeviceSosStatus status) {
@@ -2286,20 +2042,6 @@ class EixamConnectSdkImpl
     return _deriveDeviceSosCycleKey(status);
   }
 
-  String _notificationTitleForSosState(DeviceSosState state) {
-    if (state == DeviceSosState.preConfirm) {
-      return 'Preventive SOS sent';
-    }
-    return 'SOS activated';
-  }
-
-  String _notificationBodyForSosState(DeviceSosState state) {
-    if (state == DeviceSosState.preConfirm) {
-      return 'Pending confirmation. Tap to open the app and review it.';
-    }
-    return 'Emergency protocol is now active. Tap to open the app and review it.';
-  }
-
   Future<void> _handleNotificationAction(
     NotificationActionInvocation invocation,
   ) async {
@@ -2345,11 +2087,11 @@ class EixamConnectSdkImpl
 
     if (!_canExecuteBleActionNow()) {
       BleDebugRegistry.instance.recordEvent(
-        'BLE command deferred from notification action -> action=$actionId reason=connection unavailable',
+        'BLE_COMMAND_DEFERRED_FROM_NOTIFICATION action=$actionId reason=connection_unavailable',
       );
       await _queueBleNotificationNavigation(
         actionId: actionId,
-        reason: 'BLE connection is unavailable. Open the app to continue.',
+        reason: 'E_BLE_CONNECTION_UNAVAILABLE',
         state: payload.state,
         deviceId: payload.deviceId,
         deviceAlias: payload.deviceAlias,
@@ -2452,10 +2194,6 @@ class EixamConnectSdkImpl
     }
     final normalized = nodeId & 0xFFFFFFFF;
     return '0x${normalized.toRadixString(16).padLeft(8, '0')} ($nodeId)';
-  }
-
-  int _nextBleNotificationId() {
-    return DateTime.now().microsecondsSinceEpoch % 2147483647;
   }
 
   @override
@@ -3034,14 +2772,13 @@ class EixamConnectSdkImpl
         await _ensureBackendSosForDeviceOriginatedCycle(
           confirmedStatus,
           triggerSource: 'ble_device_runtime_confirm',
-          message: 'Device-owned SOS confirmed and promoted to backend sync.',
+          message: 'E_SOS_DEVICE_BACKEND_SYNC_CONFIRMED',
         );
       } else if (deviceAlreadyActive) {
         await _ensureBackendSosForDeviceOriginatedCycle(
           deviceStatus,
           triggerSource: 'ble_device_runtime_countdown_elapsed',
-          message:
-              'Device-owned SOS countdown elapsed and was promoted to backend sync.',
+          message: 'E_SOS_DEVICE_BACKEND_SYNC_COUNTDOWN_ELAPSED',
           forceDeviceOwned: true,
         );
       }
@@ -3100,8 +2837,7 @@ class EixamConnectSdkImpl
         await _ensureBackendSosForDeviceOriginatedCycle(
           confirmedStatus,
           triggerSource: 'ble_device_runtime_confirm',
-          message:
-              'Device-originated SOS confirmed from the app and promoted to backend sync.',
+          message: 'E_SOS_DEVICE_BACKEND_SYNC_CONFIRMED_FROM_APP',
         );
         incident = await getCurrentSosIncident();
       }
@@ -3252,7 +2988,10 @@ class EixamConnectSdkImpl
         if (preCancelRequiresBackendCancel || preCancelHasOpenBackendIncident) {
           try {
             final backendIncident = await sosRepository.cancelSos();
-            _applyTerminalSosSuppression(reason: 'public_cancel_after_pre_sos');
+            _applyTerminalSosSuppression(
+              reason: 'public_cancel_after_pre_sos',
+              terminalState: SosState.cancelled,
+            );
             await _clearSosNotificationsSafely(
                 reason: 'public_cancel_after_pre_sos');
             _clearCurrentPublicSosAfterCancellation(backendIncident);
@@ -3344,7 +3083,7 @@ class EixamConnectSdkImpl
         }
         throw const SosException(
           'E_SOS_CANCEL_NOT_ALLOWED',
-          'There is no active SOS to cancel.',
+          'E_SOS_CANCEL_NOT_ALLOWED',
         );
       }
 
@@ -3354,7 +3093,10 @@ class EixamConnectSdkImpl
               state: SosState.cancelled,
               deliveryChannel: deliveryChannel,
             );
-      _applyTerminalSosSuppression(reason: 'public_cancel_completed');
+      _applyTerminalSosSuppression(
+        reason: 'public_cancel_completed',
+        terminalState: SosState.cancelled,
+      );
       await _clearSosNotificationsSafely(reason: 'public_cancel_completed');
       _recordPublicSosResult(
         incident: incident,
@@ -3368,8 +3110,6 @@ class EixamConnectSdkImpl
         severity: EixamNotificationIntentSeverity.info,
         titleKey: 'notification.sos.cancelled.title',
         bodyKey: 'notification.sos.cancelled.body',
-        fallbackTitle: 'SOS cancelled',
-        fallbackBody: 'The SOS has been cancelled.',
       );
       _clearPendingAppTriggeredSosBridge(reason: 'public_cancel_completed');
       _publishCancelledSosEventIfNeeded(incident);
@@ -3430,7 +3170,7 @@ class EixamConnectSdkImpl
         }
         throw const SosException(
           'E_SOS_RESOLVE_NOT_ALLOWED',
-          'There is no active SOS to resolve.',
+          'E_SOS_RESOLVE_NOT_ALLOWED',
         );
       }
 
@@ -3440,7 +3180,10 @@ class EixamConnectSdkImpl
               state: SosState.resolved,
               deliveryChannel: deliveryChannel,
             );
-      _applyTerminalSosSuppression(reason: 'public_resolve_completed');
+      _applyTerminalSosSuppression(
+        reason: 'public_resolve_completed',
+        terminalState: SosState.resolved,
+      );
       await _clearSosNotificationsSafely(reason: 'public_resolve_completed');
       _recordPublicSosResult(
         incident: incident,
@@ -3453,8 +3196,6 @@ class EixamConnectSdkImpl
         severity: EixamNotificationIntentSeverity.success,
         titleKey: 'notification.sos.resolved.title',
         bodyKey: 'notification.sos.resolved.body',
-        fallbackTitle: 'SOS resolved',
-        fallbackBody: 'The SOS has been resolved.',
       );
       _clearPendingAppTriggeredSosBridge(reason: 'public_resolve_completed');
     } finally {
@@ -4628,8 +4369,6 @@ class EixamConnectSdkImpl
         nodeId: nodeId,
         titleKey: 'notification.sos.active.title',
         bodyKey: 'notification.sos.active.body',
-        fallbackTitle: 'SOS active',
-        fallbackBody: 'An SOS is active.',
         payload: <String, String>{
           'incidentId': incident.id,
           if (incident.deliveryChannel != null)
@@ -4645,8 +4384,6 @@ class EixamConnectSdkImpl
     required EixamNotificationIntentSeverity severity,
     required String titleKey,
     required String bodyKey,
-    required String fallbackTitle,
-    required String fallbackBody,
     String? dedupeKey,
     int? nodeId,
   }) {
@@ -4661,8 +4398,6 @@ class EixamConnectSdkImpl
         nodeId: nodeId,
         titleKey: titleKey,
         bodyKey: bodyKey,
-        fallbackTitle: fallbackTitle,
-        fallbackBody: fallbackBody,
         payload: <String, String>{
           'incidentId': incident.id,
           if (incident.deliveryChannel != null)
@@ -4695,8 +4430,6 @@ class EixamConnectSdkImpl
         nodeId: status.nodeId,
         titleKey: 'notification.sos.active.title',
         bodyKey: 'notification.sos.active.body',
-        fallbackTitle: _notificationTitleForSosState(status.state),
-        fallbackBody: _notificationBodyForSosState(status.state),
         payload: <String, String>{
           'deviceSosState': status.state.name,
           'transitionSource': status.transitionSource.name,
@@ -4738,11 +4471,6 @@ class EixamConnectSdkImpl
         bodyKey: publicState == SosState.resolved
             ? 'notification.sos.resolved.body'
             : 'notification.sos.cancelled.body',
-        fallbackTitle:
-            publicState == SosState.resolved ? 'SOS resolved' : 'SOS cancelled',
-        fallbackBody: publicState == SosState.resolved
-            ? 'The SOS has been resolved.'
-            : 'The SOS has been cancelled.',
         payload: <String, String>{
           'deviceSosState': status.state.name,
           'transitionSource': status.transitionSource.name,
@@ -4769,8 +4497,6 @@ class EixamConnectSdkImpl
         severity: EixamNotificationIntentSeverity.success,
         titleKey: 'notification.sos.resolved.title',
         bodyKey: 'notification.sos.resolved.body',
-        fallbackTitle: 'SOS resolved',
-        fallbackBody: 'The SOS has been resolved.',
       );
       return;
     }
@@ -4781,8 +4507,6 @@ class EixamConnectSdkImpl
         severity: EixamNotificationIntentSeverity.info,
         titleKey: 'notification.sos.cancelled.title',
         bodyKey: 'notification.sos.cancelled.body',
-        fallbackTitle: 'SOS cancelled',
-        fallbackBody: 'The SOS has been cancelled.',
       );
     }
   }
@@ -4920,6 +4644,14 @@ class EixamConnectSdkImpl
   Future<void> _syncPreSosSessionFromProtectionPlatformSnapshot({
     required String trigger,
   }) async {
+    // If the public SOS state already reached a terminal outcome (cancelled,
+    // resolved, failed), do not let a stale native protection snapshot
+    // resurrect the pre-SOS session — that produces phantom arming snapshots
+    // that the app then rejects as regressions, leaving the UI stuck on the
+    // previous open state.
+    if (_isTerminalPublicSosState(_publicSosState)) {
+      return;
+    }
     ProtectionPlatformSnapshot snapshot;
     try {
       snapshot = await protectionPlatformAdapter.getPlatformSnapshot();
@@ -5272,8 +5004,6 @@ class EixamConnectSdkImpl
         deviceAlias: _lastDeviceStatus?.deviceAlias,
         titleKey: 'notification.pre_sos.title',
         bodyKey: 'notification.pre_sos.body',
-        fallbackTitle: 'SOS countdown started',
-        fallbackBody: 'An SOS will be activated when the countdown ends.',
         payload: <String, String>{
           'cycleKey': session.cycleKey,
           'startedAt': session.startedAt.toUtc().toIso8601String(),
@@ -5610,6 +5340,22 @@ class EixamConnectSdkImpl
     SosState state, {
     String source = 'unspecified',
   }) {
+    // Post-terminal regression guard: stale BLE packets (pre-confirm / active)
+    // can arrive after we accept a terminal close and try to re-open the
+    // public state. Refuse to regress from a terminal state back to an open
+    // one for a short settle window. Transitions to idle / another terminal
+    // remain allowed so user-acknowledged dismissal and new SOS cycles can
+    // proceed once the window elapses.
+    if (_isTerminalPublicSosState(_publicSosState) &&
+        _isOpenSosState(state) &&
+        _isWithinPostTerminalSettleWindow()) {
+      BleDebugRegistry.instance.recordEvent(
+        '[APP_SOS_TERMINAL_EVENT] source=$source '
+        'decision=block_post_terminal_regression '
+        'current=${_publicSosState.name} incoming=${state.name}',
+      );
+      return;
+    }
     final stateAfterRuntimePrecedence = _applyPublicSosRuntimePrecedence(
       incoming: state,
       source: source,
@@ -5620,6 +5366,12 @@ class EixamConnectSdkImpl
     );
     if (nextState == _publicSosState) {
       return;
+    }
+    if (_isOpenSosState(_publicSosState) && _isTerminalPublicSosState(nextState)) {
+      _lastTerminalPublicSosAt = DateTime.now();
+    } else if (_isTerminalPublicSosState(_publicSosState) &&
+        !_isTerminalPublicSosState(nextState)) {
+      _lastTerminalPublicSosAt = null;
     }
     _publicSosState = nextState;
     if (!_publicSosStateController.isClosed) {
@@ -5679,6 +5431,19 @@ class EixamConnectSdkImpl
       return false;
     }
     if (_publicSosClosureInFlight != null) {
+      return false;
+    }
+    // If the public lifecycle already advanced past arming (the SOS was
+    // triggered / sending / sent / acknowledged), the runtime should never
+    // degrade an incoming close back into "arming". The stale
+    // _lastPublishedPreSosStatus left over from the original countdown can
+    // otherwise pin the precedence layer to arming and swallow cancelled.
+    if (_publicSosState == SosState.triggerRequested ||
+        _publicSosState == SosState.triggeredLocal ||
+        _publicSosState == SosState.sending ||
+        _publicSosState == SosState.sent ||
+        _publicSosState == SosState.acknowledged ||
+        _publicSosState == SosState.cancelRequested) {
       return false;
     }
     if (_buildCurrentPreSosStatus() != null) {
@@ -6206,25 +5971,11 @@ class EixamConnectSdkImpl
         status.previousState == DeviceSosState.preConfirm) {
       return null;
     }
-    final eventBytes = _parseHexBytes(status.lastPacketHex);
-    if (eventBytes == null || eventBytes.length < 2) {
-      return status.state == DeviceSosState.resolved
-          ? SosState.resolved
-          : SosState.cancelled;
-    }
-    final opcode = eventBytes[0];
-    final subcode = eventBytes[1];
-    if (opcode == EixamBleProtocol.sosEventUserDeactivatedOpcode) {
-      return subcode == 0x02 ? SosState.resolved : SosState.cancelled;
-    }
-    if (opcode == EixamBleProtocol.sosEventAppCancelAckOpcode) {
-      return subcode == 0x02 || subcode == 0x03
-          ? SosState.resolved
-          : SosState.cancelled;
-    }
-    return status.state == DeviceSosState.resolved
-        ? SosState.resolved
-        : SosState.cancelled;
+    // Device-side closures are always treated as cancellations: the physical
+    // device has no "resolve" gesture, so opcode/subcode variants all map to
+    // SosState.cancelled. This keeps the backend incident, the public state
+    // stream, and the terminal notification intent in agreement.
+    return SosState.cancelled;
   }
 
   bool _isBleTerminalSosEventStatus(DeviceSosStatus status) {
@@ -6346,7 +6097,7 @@ class EixamConnectSdkImpl
     if (backendUnavailable && !deviceAvailable) {
       throw const SosException(
         'E_SOS_NOT_AVAILABLE',
-        'SOS is unavailable because neither backend nor device channel is currently available.',
+        'E_SOS_NOT_AVAILABLE',
       );
     }
     if (backendError != null) {
@@ -6354,7 +6105,7 @@ class EixamConnectSdkImpl
     }
     throw const SosException(
       'E_SOS_BACKEND_NOT_CONFIRMED',
-      'SOS could not be sent because the backend did not confirm incident creation.',
+      'E_SOS_BACKEND_NOT_CONFIRMED',
     );
   }
 
@@ -6543,6 +6294,14 @@ class EixamConnectSdkImpl
 
   bool _isTerminalPublicSosState(SosState state) {
     return state == SosState.resolved || state == SosState.cancelled;
+  }
+
+  bool _isWithinPostTerminalSettleWindow() {
+    final terminalAt = _lastTerminalPublicSosAt;
+    if (terminalAt == null) {
+      return false;
+    }
+    return DateTime.now().difference(terminalAt) < _postTerminalSettleWindow;
   }
 
   void _rememberAcknowledgedTerminalSosIncident(SosIncident? incident) {
@@ -7075,8 +6834,6 @@ class EixamConnectSdkImpl
     final EixamNotificationIntentSeverity severity;
     final String titleKey;
     final String bodyKey;
-    final String fallbackTitle;
-    final String fallbackBody;
     switch (intent) {
       case _SosClosureIntent.cancel:
         terminal = await sosRepository.cancelSos();
@@ -7084,8 +6841,6 @@ class EixamConnectSdkImpl
         severity = EixamNotificationIntentSeverity.info;
         titleKey = 'notification.sos.cancelled.title';
         bodyKey = 'notification.sos.cancelled.body';
-        fallbackTitle = 'SOS cancelled';
-        fallbackBody = 'The SOS has been cancelled.';
         break;
       case _SosClosureIntent.resolve:
         terminal = await sosRepository.resolveSos();
@@ -7093,8 +6848,6 @@ class EixamConnectSdkImpl
         severity = EixamNotificationIntentSeverity.success;
         titleKey = 'notification.sos.resolved.title';
         bodyKey = 'notification.sos.resolved.body';
-        fallbackTitle = 'SOS resolved';
-        fallbackBody = 'The SOS has been resolved.';
         break;
     }
     _emitSosTerminalNotificationIntent(
@@ -7103,8 +6856,6 @@ class EixamConnectSdkImpl
       severity: severity,
       titleKey: titleKey,
       bodyKey: bodyKey,
-      fallbackTitle: fallbackTitle,
-      fallbackBody: fallbackBody,
       dedupeKey: cycleKey == null ? null : 'sos-cycle:$cycleKey',
       nodeId: status.nodeId,
     );
@@ -7257,8 +7008,7 @@ class EixamConnectSdkImpl
       await _ensureBackendSosForDeviceOriginatedCycle(
         status,
         triggerSource: 'ble_device_runtime_status',
-        message:
-            'Device-originated SOS became active in runtime and was promoted to backend sync.',
+        message: 'E_SOS_DEVICE_BACKEND_SYNC_RUNTIME_ACTIVE',
         forceDeviceOwned: forceDeviceOwned,
       );
       return;
@@ -7617,29 +7367,28 @@ class EixamConnectSdkImpl
     );
   }
 
-  Future<void> _notifyDeathMan(
-    String title,
-    String body, {
+  void _emitDeathManNotificationIntent(
+    EixamNotificationIntentType type, {
     String? planId,
     bool includeConfirmAction = false,
-  }) async {
-    try {
-      await notificationsRepository.initialize(
-        onAction: _handleNotificationAction,
-      );
-      await notificationsRepository.showLocalNotification(
-        title: title,
-        body: body,
-        payload: planId == null
-            ? null
-            : _DeathManNotificationPayload(planId).serialize(),
-        actions: _notificationActionsForDeathMan(
-          includeConfirmAction: includeConfirmAction,
-        ),
-      );
-    } catch (_) {
-      // Best effort; death man logic should continue.
-    }
+  }) {
+    final createdAt = DateTime.now().toUtc();
+    _emitNotificationIntent(
+      _buildNotificationIntent(
+        type: type,
+        dedupeKey:
+            'death_man:${type.name}:${planId ?? createdAt.microsecondsSinceEpoch}',
+        severity: type == EixamNotificationIntentType.deathManEscalated
+            ? EixamNotificationIntentSeverity.critical
+            : EixamNotificationIntentSeverity.warning,
+        titleKey: 'notification.${type.name}.title',
+        bodyKey: 'notification.${type.name}.body',
+        payload: <String, String>{
+          if (planId != null) 'planId': planId,
+          'includeConfirmAction': includeConfirmAction.toString(),
+        },
+      ),
+    );
   }
 
   void _stopDeathManMonitoring() {
@@ -7853,8 +7602,7 @@ class EixamConnectSdkImpl
           'Native owner command rejected -> owner=$ownerRoute command=${command.label} route=${result.route ?? "-"} error=${result.error ?? result.result ?? "-"}',
         );
         throw StateError(
-          result.error ??
-              'Protection Mode native BLE owner could not send ${command.label}.',
+          result.error ?? 'E_PROTECTION_NATIVE_COMMAND_SEND_FAILED',
         );
       }
       BleDebugRegistry.instance.recordEvent(
@@ -7868,9 +7616,7 @@ class EixamConnectSdkImpl
       BleDebugRegistry.instance.recordEvent(
         'Flutter writer command rejected -> owner=$ownerRoute command=${command.label} reason=writer_unavailable',
       );
-      throw StateError(
-        'Flutter BLE command writer is not ready for ${command.label}.',
-      );
+      throw StateError('E_BLE_COMMAND_WRITER_NOT_READY');
     }
 
     try {
@@ -8148,6 +7894,7 @@ class EixamConnectSdkImpl
       if (_isTerminalSosEventPacket(sosEventPacket)) {
         _applyTerminalSosSuppression(
           reason: 'own_device_terminal_packet',
+          terminalState: _terminalStateForSosEventPacket(sosEventPacket),
           nodeId: sosEventPacket.nodeId,
         );
       }
@@ -8193,10 +7940,38 @@ class EixamConnectSdkImpl
           reason: 'native_backend_sync_queued',
           emitIdleState: false,
         );
-        _emitPublicSosState(
-          SosState.sending,
-          source: 'native_backend_sync_queued',
-        );
+        if (_isCancelBackendSyncReason(event.reason)) {
+          // Optimistic cancel: the native protection service already detected
+          // the device cycle close from the BLE packet and queued the backend
+          // cancel. Surface SosState.cancelled to the UI immediately instead
+          // of waiting for the HTTP round-trip to complete.
+          _applyTerminalSosSuppression(
+            reason: 'backend_terminal_state:native_cancel_queued',
+            terminalState: SosState.cancelled,
+            nodeId: deviceSosController.currentStatus.nodeId,
+          );
+          // Defensive backstop: in disconnect-during-cancel scenarios the
+          // suppression path can early-return when the incident id cannot be
+          // resolved. Force the public state to cancelled so downstream
+          // snapshot composition stops emitting arming/active and the
+          // pre-SOS sync guard at getPreSosStatus() short-circuits.
+          if (!_isTerminalPublicSosState(_publicSosState)) {
+            _lastKnownActiveSosIncident = null;
+            _activeDeviceSosCycleKey = null;
+            _notifiedDeviceSosCycleKey = null;
+            _notifiedDeviceSosState = null;
+            _clearDeviceRuntimeSosOwnership(reason: 'native_cancel_queued');
+            _emitPublicSosState(
+              SosState.cancelled,
+              source: 'native_backend_sync_queued_cancel_backstop',
+            );
+          }
+        } else {
+          _emitPublicSosState(
+            SosState.sending,
+            source: 'native_backend_sync_queued',
+          );
+        }
         return true;
       case ProtectionPlatformEventType.nativeBackendSyncSucceeded:
         BleDebugRegistry.instance.recordEvent(
@@ -8207,9 +7982,17 @@ class EixamConnectSdkImpl
           reason: 'native_backend_sync_succeeded',
           emitIdleState: false,
         );
-        unawaited(_syncNativePreSosBackendPending(
-          trigger: 'native_backend_sync_succeeded',
-        ));
+        if (_isCancelBackendSyncReason(event.reason)) {
+          _applyTerminalSosSuppression(
+            reason: 'backend_terminal_state:native_cancel_synced',
+            terminalState: SosState.cancelled,
+            nodeId: deviceSosController.currentStatus.nodeId,
+          );
+        } else {
+          unawaited(_syncNativePreSosBackendPending(
+            trigger: 'native_backend_sync_succeeded',
+          ));
+        }
         return true;
       case ProtectionPlatformEventType.nativeBackendSyncFailed:
         BleDebugRegistry.instance.recordEvent(
@@ -8271,6 +8054,7 @@ class EixamConnectSdkImpl
 
   void _applyTerminalSosSuppression({
     required String reason,
+    required SosState terminalState,
     int? nodeId,
   }) {
     if (_manualDisconnectRequested) {
@@ -8289,6 +8073,7 @@ class EixamConnectSdkImpl
     if (keys.isEmpty) {
       _applyDeviceTerminalPublicSosClose(
         reason: reason,
+        terminalState: terminalState,
         nodeId: effectiveNodeId,
       );
       return;
@@ -8310,18 +8095,19 @@ class EixamConnectSdkImpl
     );
     _applyDeviceTerminalPublicSosClose(
       reason: reason,
+      terminalState: terminalState,
       nodeId: effectiveNodeId,
     );
   }
 
   void _applyDeviceTerminalPublicSosClose({
     required String reason,
+    required SosState terminalState,
     required int? nodeId,
   }) {
     if (!_isTerminalSuppressionCloseReason(reason)) {
       return;
     }
-    final terminalState = _terminalStateForSuppressionReason(reason);
     final currentRuntimeIncidentId = _currentDeviceRuntimeUiIncidentId();
     final activeIncident = _lastKnownActiveSosIncident;
     final fallbackIncident = _publicSosFallbackIncident;
@@ -8401,6 +8187,16 @@ class EixamConnectSdkImpl
     _emitOperationalDiagnostics();
   }
 
+  bool _isCancelBackendSyncReason(String? reason) {
+    if (reason == null) {
+      return false;
+    }
+    final normalized = reason.toLowerCase();
+    return normalized.startsWith('cancel:') ||
+        normalized.startsWith('cancel_') ||
+        normalized == 'cancel';
+  }
+
   bool _isTerminalSuppressionCloseReason(String reason) {
     final normalized = reason.toLowerCase();
     return normalized.contains('device_terminal_event') ||
@@ -8409,13 +8205,6 @@ class EixamConnectSdkImpl
         normalized.contains('public_cancel_completed') ||
         normalized.contains('public_resolve_completed') ||
         normalized.contains('device_close_command_without_ack');
-  }
-
-  SosState _terminalStateForSuppressionReason(String reason) {
-    final normalized = reason.toLowerCase();
-    return normalized.contains('resolved') || normalized.contains('resolve')
-        ? SosState.resolved
-        : SosState.cancelled;
   }
 
   bool _shouldSuppressRecentTerminalOwnSosPacket({
@@ -8506,6 +8295,18 @@ class EixamConnectSdkImpl
     return false;
   }
 
+  SosState _terminalStateForSosEventPacket(EixamSosEventPacket packet) {
+    if (packet.opcode == EixamBleProtocol.sosEventUserDeactivatedOpcode) {
+      return packet.subcode == 0x02 ? SosState.resolved : SosState.cancelled;
+    }
+    if (packet.opcode == EixamBleProtocol.sosEventAppCancelAckOpcode) {
+      return packet.subcode == 0x02 || packet.subcode == 0x03
+          ? SosState.resolved
+          : SosState.cancelled;
+    }
+    return SosState.cancelled;
+  }
+
   Future<void> _evaluateDeathManPlan(String planId) async {
     var plan = await deathManRepository.getActiveDeathManPlan();
     if (plan == null || plan.id != planId) {
@@ -8525,9 +8326,8 @@ class EixamConnectSdkImpl
       );
       if (!_deathManOverdueNotified) {
         _deathManOverdueNotified = true;
-        await _notifyDeathMan(
-          'Safety check pending',
-          'You are past the expected return time. Please confirm that you are safe.',
+        _emitDeathManNotificationIntent(
+          EixamNotificationIntentType.deathManOverdue,
           planId: plan.id,
           includeConfirmAction: true,
         );
@@ -8544,9 +8344,8 @@ class EixamConnectSdkImpl
       );
       if (!_deathManCheckInNotified) {
         _deathManCheckInNotified = true;
-        await _notifyDeathMan(
-          'Confirmation required',
-          'If you do not respond during the check-in window, the SOS protocol will be triggered.',
+        _emitDeathManNotificationIntent(
+          EixamNotificationIntentType.deathManConfirmationRequired,
           planId: plan.id,
           includeConfirmAction: true,
         );
@@ -8566,15 +8365,13 @@ class EixamConnectSdkImpl
         DeathManStatus.escalated,
       );
       _publishSdkEvent(DeathManEscalatedEvent(plan.id));
-      await _notifyDeathMan(
-        'Protocol escalated',
-        'No response was received. Automatic escalation has been triggered.',
+      _emitDeathManNotificationIntent(
+        EixamNotificationIntentType.deathManEscalated,
         planId: plan.id,
       );
       if (plan.autoTriggerSos) {
         await triggerSos(
           const SosTriggerPayload(
-            message: 'Auto-triggered by Death Man Protocol',
             triggerSource: 'death_man_protocol',
           ),
         );
@@ -8595,69 +8392,6 @@ class EixamConnectSdkImpl
         status == DeathManStatus.monitoring ||
         status == DeathManStatus.overdue ||
         status == DeathManStatus.awaitingConfirmation;
-  }
-
-  List<LocalNotificationAction> _notificationActionsForDeathMan({
-    required bool includeConfirmAction,
-  }) {
-    final actions = <LocalNotificationAction>[
-      const LocalNotificationAction(
-        id: _openAppActionId,
-        title: 'Open app',
-        foreground: true,
-      ),
-    ];
-    if (includeConfirmAction) {
-      actions.add(
-        const LocalNotificationAction(
-          id: _confirmDeadManSafeActionId,
-          title: 'I\'m OK',
-          foreground: true,
-        ),
-      );
-    }
-    return actions;
-  }
-
-  Future<void> _runGuidedRescueCommand(GuidedRescueAction action) async {
-    final state = _guidedRescueState;
-    if (!state.hasSession) {
-      throw const RescueException.missingSession();
-    }
-
-    if (guidedRescueRuntime == null) {
-      _guidedRescueState = state.copyWith(
-        lastError: const RescueException.notImplemented().message,
-        lastUpdatedAt: DateTime.now(),
-      );
-      _guidedRescueStateController.add(_guidedRescueState);
-      throw const RescueException.notImplemented();
-    }
-
-    switch (action) {
-      case GuidedRescueAction.requestPosition:
-        await guidedRescueRuntime!.requestPosition();
-        break;
-      case GuidedRescueAction.acknowledgeSos:
-        await guidedRescueRuntime!.acknowledgeSos();
-        break;
-      case GuidedRescueAction.buzzerOn:
-        await guidedRescueRuntime!.enableBuzzer();
-        break;
-      case GuidedRescueAction.buzzerOff:
-        await guidedRescueRuntime!.disableBuzzer();
-        break;
-      case GuidedRescueAction.requestStatus:
-        await guidedRescueRuntime!.requestStatus();
-        break;
-    }
-  }
-
-  GuidedRescueState _fallbackGuidedRescueState() {
-    return GuidedRescueState.unsupported(
-      unavailableReason:
-          'Guided Rescue Phase 1 contract is exposed by the SDK, but the runtime orchestration is still pending.',
-    );
   }
 
   Future<void> _handleRemoteRelaySosBackendHandoff(
@@ -8944,8 +8678,6 @@ class EixamConnectSdkImpl
         relayNodeId: snapshot.relayNodeId,
         titleKey: 'notification.external_sos.sent.title',
         bodyKey: 'notification.external_sos.sent.body',
-        fallbackTitle: 'External SOS sent',
-        fallbackBody: 'A relay SOS was submitted.',
         payload: <String, String>{
           'originatorNodeId': snapshot.originatorNodeId.toString(),
           if (snapshot.relayNodeId != null)
@@ -8961,84 +8693,17 @@ class EixamConnectSdkImpl
   Future<void> _showRemoteRelaySosNotification(
     RemoteRelaySosSnapshot snapshot,
   ) async {
-    if (!_sdkSosNotificationsEnabled) {
-      BleDebugRegistry.instance.recordEvent(
-        '[REMOTE_RELAY_SOS] notification_skipped '
-        'originatorNodeId=${snapshot.originatorNodeId} reason=host_app_managed',
-      );
-      BleDebugRegistry.instance.recordEvent(
-        '[NOTIFICATION_FLOW] sdk_local_notification_skip '
-        'type=${EixamNotificationIntentType.externalSosSent.name} '
-        'reason=hostAppManaged',
-      );
-      return;
-    }
-
-    PermissionState? permissionState;
-    Object? permissionError;
-    try {
-      permissionState = await permissionsRepository.getPermissionState();
-    } catch (error) {
-      permissionError = error;
-    }
-    final permissionLabel = permissionState?.notifications.name ?? 'unknown';
-    final appLifecycle =
-        WidgetsBinding.instance.lifecycleState?.name ?? 'unknown';
-    final hasLocation = snapshot.location != null;
-    _logSosTrace(
-      'remote_notification_decision '
+    BleDebugRegistry.instance.recordEvent(
+      '[REMOTE_RELAY_SOS] notification_skipped '
       'originatorNodeId=${snapshot.originatorNodeId} '
-      'hasLocation=$hasLocation permission=$permissionLabel '
-      'appLifecycle=$appLifecycle willShow=true skipReason=none',
+      'reason=notification_intents_only '
+      'policy=${_notificationPolicyLabel(notificationPolicy)}',
     );
-    if (permissionError != null) {
-      BleDebugRegistry.instance.recordEvent(
-        '[REMOTE_RELAY_SOS] notification_permission_snapshot_failed '
-        'originatorNodeId=${snapshot.originatorNodeId} error=$permissionError',
-      );
-    }
-
-    try {
-      BleDebugRegistry.instance.recordEvent(
-        '[NOTIFICATION_FLOW] sdk_local_notification_show '
-        'type=${EixamNotificationIntentType.externalSosSent.name} '
-        'policy=${_notificationPolicyLabel(notificationPolicy)} '
-        'channel=eixam_sos_alerts',
-      );
-      await notificationsRepository.showLocalNotification(
-        notificationId: _nextBleNotificationId(),
-        title: 'Remote SOS received',
-        body: hasLocation
-            ? 'Relay SOS from node ${snapshot.originatorNodeId} with location.'
-            : 'Relay SOS from node ${snapshot.originatorNodeId}.',
-        payload: BleSosNotificationPayload(
-          kind: 'sos_received',
-          state: DeviceSosState.active,
-          transitionSource: DeviceSosTransitionSource.device,
-          deviceId: snapshot.relayNodeId?.toString(),
-          nodeId: snapshot.originatorNodeId,
-        ).toJsonString(),
-        actions: const <LocalNotificationAction>[],
-      );
-      _logSosTrace(
-        'remote_notification_result '
-        'originatorNodeId=${snapshot.originatorNodeId} '
-        'hasLocation=$hasLocation permission=$permissionLabel '
-        'appLifecycle=$appLifecycle shown=true error=none',
-      );
-    } catch (error) {
-      _logSosTrace(
-        'remote_notification_result '
-        'originatorNodeId=${snapshot.originatorNodeId} '
-        'hasLocation=$hasLocation permission=$permissionLabel '
-        'appLifecycle=$appLifecycle shown=false error=$error',
-      );
-      BleDebugRegistry.instance.recordEvent(
-        '[REMOTE_RELAY_SOS] notification_failed '
-        'originatorNodeId=${snapshot.originatorNodeId} error=$error',
-      );
-      debugPrint('Remote relay SOS notification failed: $error');
-    }
+    BleDebugRegistry.instance.recordEvent(
+      '[NOTIFICATION_FLOW] sdk_local_notification_skip '
+      'type=${EixamNotificationIntentType.externalSosSent.name} '
+      'reason=notificationIntentsOnly',
+    );
   }
 
   bool _isRemoteRelayCancelSnapshot(RemoteRelaySosSnapshot snapshot) {
@@ -9692,14 +9357,13 @@ class EixamConnectSdkImpl
   }
 
   bool _protectionStatusIndicatesMissingMobileBond(ProtectionStatus status) {
-    final text = <String?>[
+    return <String?>[
       status.readinessFailureReason,
       status.degradationReason,
       status.lastCommandError,
-    ].whereType<String>().join(' ').toLowerCase();
-    return text.contains('e_device_mobile_bond_required') ||
-        text.contains('phone bluetooth bond') ||
-        text.contains('no longer paired in the phone bluetooth');
+    ]
+        .whereType<String>()
+        .any((value) => value == 'E_DEVICE_MOBILE_BOND_REQUIRED');
   }
 
   Future<void> _sendDeviceControlCommandThroughActiveOwner({
@@ -9716,7 +9380,7 @@ class EixamConnectSdkImpl
     if (volume < 0 || volume > 100) {
       throw const DeviceException(
         'E_DEVICE_INVALID_VOLUME',
-        'Device volume must be within the inclusive range 0..100.',
+        'E_DEVICE_INVALID_VOLUME',
       );
     }
   }
@@ -9724,7 +9388,7 @@ class EixamConnectSdkImpl
   Never _throwDeviceCommandNotReady() {
     throw const DeviceException(
       'E_DEVICE_COMMAND_NOT_READY',
-      'A connected command-capable device is required for this SDK action.',
+      'E_DEVICE_COMMAND_NOT_READY',
     );
   }
 
@@ -10021,15 +9685,12 @@ class EixamConnectSdkImpl
     await _deviceStatusSub?.cancel();
     await _deviceSosSub?.cancel();
     await _deviceSosCommandPathSub?.cancel();
-    await _guidedRescueSub?.cancel();
-    await _backlogSyncSub?.cancel();
     await _sosStateSub?.cancel();
     await _bridgeDiagnosticsSub?.cancel();
     await _bleIncomingEventDiagnosticsSub?.cancel();
     await _protectionStatusSub?.cancel();
     await _protectionRawSosEventsSub?.cancel();
     await _bleOperationalRuntimeBridge.dispose();
-    await _backlogSyncController.dispose();
     await _protectionModeController.dispose();
     await _operationalTelemetryCoordinator.stop();
     await deviceSosController.dispose();
@@ -10038,7 +9699,6 @@ class EixamConnectSdkImpl
     await _realtimeConnectionStateController.close();
     await _realtimeEventsController.close();
     await _operationalDiagnosticsController.close();
-    await _guidedRescueStateController.close();
     await _bleNotificationNavigationController.close();
     await _publicDeviceStatusController.close();
     await _publicSosStateController.close();

@@ -244,18 +244,24 @@ void main() {
     });
 
     test('remote relay notification is independent of local pre-SOS', () async {
+      final notificationIntents = <EixamNotificationIntent>[];
+      final notificationSubscription =
+          sdk.watchNotificationIntents().listen(notificationIntents.add);
       bleEvents.add(_remoteRelayEventFromPayload());
-      await _eventually(
-          () => notificationsRepository.notifications.length == 1);
+      await _eventually(() => notificationIntents.length == 1);
 
-      final notification = notificationsRepository.notifications.single;
-      expect(notification.title, 'Remote SOS received');
-      expect(notification.payload, contains('"kind":"sos_received"'));
+      final notification = notificationIntents.single;
+      expect(notification.type, EixamNotificationIntentType.externalSosSent);
+      expect(notification.titleKey, 'notification.external_sos.sent.title');
+      expect(notification.bodyKey, 'notification.external_sos.sent.body');
+      expect(notification.payload['originatorNodeId'], isNotNull);
+      expect(notificationsRepository.notifications, isEmpty);
       expect(await sdk.getPreSosStatus(), isNull);
       expect(
         (await deviceSosController.getStatus()).state,
         DeviceSosState.inactive,
       );
+      await notificationSubscription.cancel();
     });
 
     test('backend success sends SOS_ACK_RELAY 0x08 to originator node',
@@ -1280,6 +1286,9 @@ void main() {
         const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
       );
       final subscription = sdk.watchEvents().listen(events.add);
+      final notificationIntents = <EixamNotificationIntent>[];
+      final notificationSubscription =
+          sdk.watchNotificationIntents().listen(notificationIntents.add);
       await sdk.enterProtectionMode();
 
       platformEvents.add(
@@ -1310,7 +1319,11 @@ void main() {
         closeTo(4.994316101074219, 0.000001),
       );
       expect(request.positionSnapshot!.altitude, 600);
-      expect(notificationsRepository.notifications, hasLength(1));
+      await _eventually(() => notificationIntents.length == 1);
+      final notification = notificationIntents.single;
+      expect(notification.type, EixamNotificationIntentType.externalSosSent);
+      expect(notification.originatorNodeId, 233234039);
+      expect(notificationsRepository.notifications, isEmpty);
       expect(
         events.whereType<RemoteRelaySosObservedEvent>().single.snapshot,
         isA<RemoteRelaySosSnapshot>()
@@ -1329,6 +1342,7 @@ void main() {
       expect(result.ackRelaySent, isFalse);
 
       await subscription.cancel();
+      await notificationSubscription.cancel();
       await platformEvents.close();
     });
 

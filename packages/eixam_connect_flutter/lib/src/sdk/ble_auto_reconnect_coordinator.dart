@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:flutter/services.dart';
 
 import '../data/datasources_local/preferred_ble_device_store.dart';
 import '../device/ble_connection_status.dart';
@@ -190,13 +191,13 @@ class BleAutoReconnectCoordinator {
       if (refreshedStatus.connected &&
           await _isCommandChannelAvailableForConnectedDevice()) {
         BleDebugRegistry.instance.recordEvent(
-          '$trigger auto-connect skipped because connected device command channel is ready',
+          'BLE_AUTO_CONNECT_SKIPPED trigger=$trigger reason=command_channel_ready',
         );
         return;
       }
       if (refreshedStatus.connected) {
         BleDebugRegistry.instance.recordEvent(
-          '$trigger auto-connect will rebind the connected device because command channel is not ready',
+          'BLE_AUTO_CONNECT_REBIND trigger=$trigger reason=command_channel_not_ready',
         );
       }
     }
@@ -257,7 +258,7 @@ class BleAutoReconnectCoordinator {
       return identity.serviceBleConnected && identity.commandCapable;
     } catch (error) {
       BleDebugRegistry.instance.recordEvent(
-        'Connected-device command readiness check failed: $error',
+        'BLE_CONNECTED_DEVICE_COMMAND_READINESS_CHECK_FAILED error=$error',
       );
       return false;
     }
@@ -317,11 +318,22 @@ class BleAutoReconnectCoordinator {
   }
 
   bool _isTransientDisconnectError(Object error) {
-    final text = error.toString().toLowerCase();
-    return text.contains('devicedisconnected') ||
-        text.contains('device disconnected') ||
-        text.contains('platformexception(deviceDisconnected'.toLowerCase()) ||
-        text.contains('platformexception(devicedisconnected');
+    if (error is DeviceException) {
+      return _isTransientDisconnectCode(error.code);
+    }
+    if (error is PlatformException) {
+      return _isTransientDisconnectCode(error.code) ||
+          _isTransientDisconnectCode(error.message);
+    }
+    return false;
+  }
+
+  bool _isTransientDisconnectCode(String? value) {
+    final normalized = value?.trim().toLowerCase();
+    return normalized == 'e_ble_device_disconnected' ||
+        normalized == 'e_device_disconnected' ||
+        normalized == 'e_ble_connection_interrupted' ||
+        normalized == 'devicedisconnected';
   }
 
   bool _isMobileBondRequired(Object error) {
@@ -341,7 +353,7 @@ class BleAutoReconnectCoordinator {
       connectionError: null,
     );
     BleDebugRegistry.instance.recordEvent(
-      'Auto-reconnect stopped because Android bond is missing -> hardwareId=$deviceId',
+      'BLE_AUTO_RECONNECT_STOPPED reason=android_bond_missing hardwareId=$deviceId',
     );
   }
 
