@@ -41,6 +41,7 @@ class ApiSdkFactory {
     ProtectionPlatformAdapter? protectionPlatformAdapter,
     EixamNotificationPolicy notificationPolicy =
         EixamNotificationPolicy.sdkManaged,
+    required EixamNotificationTexts notificationTexts,
     bool enableLogging = false,
   }) async {
     BleDebugRegistry.instance.reset();
@@ -139,6 +140,7 @@ class ApiSdkFactory {
       ),
       profileRemoteDataSource: profileRemoteDataSource,
       notificationPolicy: notificationPolicy,
+      notificationTexts: notificationTexts,
       protectionPlatformAdapter:
           protectionPlatformAdapter ?? buildDefaultProtectionPlatformAdapter(),
       disposeCallback: () async {
@@ -161,6 +163,7 @@ class ApiSdkFactory {
       apiBaseUrl: resolved.sdkConfig.apiBaseUrl,
       websocketUrl: resolved.sdkConfig.websocketUrl ?? '',
       notificationPolicy: config.notificationPolicy,
+      notificationTexts: config.notificationTexts,
       enableLogging: resolved.sdkConfig.enableLogging,
     );
 

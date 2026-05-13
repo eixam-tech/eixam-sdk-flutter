@@ -29,6 +29,7 @@ class EixamBootstrapResolver {
         'EixamBootstrapConfig.appId must not be empty.',
       );
     }
+    _validateNotificationTexts(config.notificationTexts);
 
     if (config.environment == EixamEnvironment.custom) {
       final endpoints = config.customEndpoints;
@@ -140,5 +141,41 @@ class EixamBootstrapResolver {
     }
 
     return initialSession;
+  }
+
+  static void _validateNotificationTexts(EixamNotificationTexts texts) {
+    final values = <String, String>{
+      'notificationTexts.protectionActiveTitle': texts.protectionActiveTitle,
+      'notificationTexts.protectionActiveBody': texts.protectionActiveBody,
+      'notificationTexts.protectionModeTitle': texts.protectionModeTitle,
+      'notificationTexts.protectionModeBody': texts.protectionModeBody,
+      'notificationTexts.protectionModeChannelName':
+          texts.protectionModeChannelName,
+      'notificationTexts.protectionModeChannelDescription':
+          texts.protectionModeChannelDescription,
+      'notificationTexts.protectionSosChannelName':
+          texts.protectionSosChannelName,
+      'notificationTexts.protectionSosChannelDescription':
+          texts.protectionSosChannelDescription,
+      'notificationTexts.protectionPreSosTitle': texts.protectionPreSosTitle,
+      'notificationTexts.protectionPreSosBody': texts.protectionPreSosBody,
+      'notificationTexts.protectionSosActiveTitle':
+          texts.protectionSosActiveTitle,
+      'notificationTexts.protectionSosActiveBody':
+          texts.protectionSosActiveBody,
+      'notificationTexts.protectionSosResolvedTitle':
+          texts.protectionSosResolvedTitle,
+      'notificationTexts.protectionSosResolvedBody':
+          texts.protectionSosResolvedBody,
+    };
+    for (final entry in values.entries) {
+      if (entry.value.trim().isEmpty) {
+        throw ArgumentError.value(
+          entry.value,
+          entry.key,
+          'EixamBootstrapConfig.notificationTexts values must not be empty.',
+        );
+      }
+    }
   }
 }

@@ -57,6 +57,23 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
         'sessionReady': request.sessionReady,
         'enableStoreAndForward': request.enableStoreAndForward,
         'hostAppManagedNotifications': request.hostAppManagedNotifications,
+        if (request.notificationTexts case final texts?)
+          'notificationTexts': <String, String>{
+            'protectionModeTitle': texts.protectionModeTitle,
+            'protectionModeBody': texts.protectionModeBody,
+            'protectionModeChannelName': texts.protectionModeChannelName,
+            'protectionModeChannelDescription':
+                texts.protectionModeChannelDescription,
+            'protectionSosChannelName': texts.protectionSosChannelName,
+            'protectionSosChannelDescription':
+                texts.protectionSosChannelDescription,
+            'protectionPreSosTitle': texts.protectionPreSosTitle,
+            'protectionPreSosBody': texts.protectionPreSosBody,
+            'protectionSosActiveTitle': texts.protectionSosActiveTitle,
+            'protectionSosActiveBody': texts.protectionSosActiveBody,
+            'protectionSosResolvedTitle': texts.protectionSosResolvedTitle,
+            'protectionSosResolvedBody': texts.protectionSosResolvedBody,
+          },
         'autoReconnectBle': request.modeOptions.autoReconnectBle,
         'autoFlushOnReconnect': request.modeOptions.autoFlushOnReconnect,
         'allowDegradedMode': request.modeOptions.allowDegradedMode,

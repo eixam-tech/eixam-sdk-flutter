@@ -29,7 +29,9 @@ void main() {
     test('classifies a 12-byte TEL notify as SOS when SOS decode is valid',
         () async {
       await runtimeProvider.requestDeviceRuntimeStatus();
-      final nextEvent = _nextIncomingEvent(runtimeProvider);
+      final nextEvent = runtimeProvider.watchIncomingEvents().firstWhere(
+            (event) => event.type == BleIncomingEventType.sosMeshPacket,
+          );
 
       bleClient.emitNotification(
         MockBleClient.demoDeviceId,
@@ -57,6 +59,86 @@ void main() {
       expect(
         (await runtimeProvider.deviceSosController.getStatus()).state,
         isNot(DeviceSosState.inactive),
+      );
+    });
+
+    test(
+        'recovers connected node identity before holding a device-originated SOS',
+        () async {
+      await runtimeProvider.dispose();
+      await bleClient.dispose();
+      BleDebugRegistry.instance.reset();
+
+      bleClient = MockBleClient()..runtimeStatusPayload = const <int>[0x99];
+      await bleClient.initialize();
+      runtimeProvider = BleDeviceRuntimeProvider(bleClient: bleClient);
+      await _pairDemoDevice(runtimeProvider);
+
+      expect(
+        (await runtimeProvider.getRuntimeIdentitySnapshot(
+          buildDeviceStatus(connected: true),
+        ))
+            .connectedBleNodeId,
+        isNull,
+      );
+
+      bleClient.runtimeStatusPayload = <int>[
+        0xE9,
+        0x78,
+        0x02,
+        0x02,
+        0x03,
+        0x07,
+        0x1F,
+        0x34,
+        0x12,
+        0x00,
+        0x00,
+        88,
+        0x3C,
+        0x00,
+      ];
+      final nextEvent = runtimeProvider.watchIncomingEvents().firstWhere(
+            (event) => event.type == BleIncomingEventType.sosMeshPacket,
+          );
+      final nextSosStatus = runtimeProvider.deviceSosController
+          .watchStatus()
+          .firstWhere((status) => status.state == DeviceSosState.preConfirm);
+
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.sos,
+        payload: const <int>[
+          0x34,
+          0x12,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x40,
+        ],
+      );
+
+      final event = await nextEvent;
+      final status = await nextSosStatus.timeout(
+        const Duration(seconds: 2),
+      );
+      expect(event.type, BleIncomingEventType.sosMeshPacket);
+      expect(event.classification.kind, BleIncomingPayloadKind.ownDeviceSos);
+      expect(status.nodeId, 0x1234);
+      expect(status.packetId, 0);
+      expect(
+        BleDebugRegistry.instance.currentState.events.any(
+          (event) =>
+              event.message.contains('SOS unknown origin reclassified') &&
+              event.message.contains('role=ownDeviceSos'),
+        ),
+        isTrue,
       );
     });
 
@@ -253,6 +335,67 @@ void main() {
       expect(
         (await runtimeProvider.deviceSosController.getStatus()).state,
         DeviceSosState.inactive,
+      );
+    });
+
+    test(
+        'recovers connected node identity before holding a device cancel event',
+        () async {
+      await runtimeProvider.dispose();
+      await bleClient.dispose();
+      BleDebugRegistry.instance.reset();
+
+      bleClient = MockBleClient()..runtimeStatusPayload = const <int>[0x99];
+      await bleClient.initialize();
+      runtimeProvider = BleDeviceRuntimeProvider(bleClient: bleClient);
+      await _pairDemoDevice(runtimeProvider);
+
+      bleClient.runtimeStatusPayload = <int>[
+        0xE9,
+        0x78,
+        0x02,
+        0x02,
+        0x03,
+        0x07,
+        0x1F,
+        0x34,
+        0x12,
+        0x00,
+        0x00,
+        88,
+        0x3C,
+        0x00,
+      ];
+      final nextEvent = runtimeProvider.watchIncomingEvents().firstWhere(
+            (event) => event.type == BleIncomingEventType.sosDeviceEvent,
+          );
+      final nextSosStatus = runtimeProvider.deviceSosController
+          .watchStatus()
+          .firstWhere((status) => status.lastOpcode == 0xE1);
+
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.sos,
+        payload: const <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
+      );
+
+      final event = await nextEvent;
+      final status = await nextSosStatus.timeout(
+        const Duration(seconds: 2),
+      );
+      expect(event.classification.kind, BleIncomingPayloadKind.sosCancel);
+      expect(event.remoteRelaySosSnapshot, isNull);
+      expect(status.state, DeviceSosState.inactive);
+      expect(status.nodeId, 0x1234);
+      expect(
+        BleDebugRegistry.instance.currentState.events.any(
+          (event) =>
+              event.message.contains(
+                'SOS event unknown origin reclassified',
+              ) &&
+              event.message.contains('role=ownDeviceEvent'),
+        ),
+        isTrue,
       );
     });
 

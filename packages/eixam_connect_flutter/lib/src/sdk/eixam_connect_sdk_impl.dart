@@ -67,6 +67,7 @@ class EixamConnectSdkImpl
   final SdkIdentityRemoteDataSource? identityRemoteDataSource;
   final SdkProfileRemoteDataSource? profileRemoteDataSource;
   final EixamNotificationPolicy notificationPolicy;
+  final EixamNotificationTexts notificationTexts;
   final ProtectionPlatformAdapter protectionPlatformAdapter;
   final BackgroundTelemetryPlatformAdapter backgroundTelemetryPlatformAdapter;
   final SharedPrefsSdkStore _localStore;
@@ -213,6 +214,23 @@ class EixamConnectSdkImpl
   static const Duration _terminalSosSuppressionWindow = Duration(seconds: 10);
   static const int _maxPendingNotificationIntents = 20;
   static const int _maxRememberedNotificationIntentKeys = 100;
+  static const EixamNotificationTexts _fallbackNotificationTexts =
+      EixamNotificationTexts(
+    protectionActiveTitle: '',
+    protectionActiveBody: '',
+    protectionModeTitle: '',
+    protectionModeBody: '',
+    protectionModeChannelName: '',
+    protectionModeChannelDescription: '',
+    protectionSosChannelName: '',
+    protectionSosChannelDescription: '',
+    protectionPreSosTitle: '',
+    protectionPreSosBody: '',
+    protectionSosActiveTitle: '',
+    protectionSosActiveBody: '',
+    protectionSosResolvedTitle: '',
+    protectionSosResolvedBody: '',
+  );
 
   EixamConnectSdkImpl({
     required this.sosRepository,
@@ -233,6 +251,7 @@ class EixamConnectSdkImpl
     this.identityRemoteDataSource,
     this.profileRemoteDataSource,
     this.notificationPolicy = EixamNotificationPolicy.sdkManaged,
+    this.notificationTexts = _fallbackNotificationTexts,
     ProtectionPlatformAdapter? protectionPlatformAdapter,
     BackgroundTelemetryPlatformAdapter? backgroundTelemetryPlatformAdapter,
     SharedPrefsSdkStore? localStore,
@@ -279,6 +298,7 @@ class EixamConnectSdkImpl
       ),
       hostAppManagedNotificationsProvider: () =>
           notificationPolicy == EixamNotificationPolicy.hostAppManaged,
+      notificationTextsProvider: () => notificationTexts,
       onBleOwnershipChanged: _handleProtectionBleOwnershipChanged,
     );
     _operationalTelemetryCoordinator = OperationalTelemetryCoordinator(
@@ -296,6 +316,10 @@ class EixamConnectSdkImpl
       '[SDK_RUNTIME_MARKER] package=eixam_connect_flutter '
       'marker=sos_debug_build_v3 path=eixam_connect_sdk_impl.dart',
     );
+    _backgroundTelemetryNotificationTitle ??=
+        notificationTexts.protectionActiveTitle;
+    _backgroundTelemetryNotificationBody ??=
+        notificationTexts.protectionActiveBody;
     _sdkConfig = config;
     _session = await sessionStore?.load();
     _session = await _bootstrapSessionIfNeeded(_session);
@@ -812,8 +836,10 @@ class EixamConnectSdkImpl
     String? notificationBody,
   }) async {
     _backgroundTelemetryEnabled = true;
-    _backgroundTelemetryNotificationTitle = notificationTitle;
-    _backgroundTelemetryNotificationBody = notificationBody;
+    _backgroundTelemetryNotificationTitle =
+        notificationTitle ?? notificationTexts.protectionActiveTitle;
+    _backgroundTelemetryNotificationBody =
+        notificationBody ?? notificationTexts.protectionActiveBody;
     await _reconcileBackgroundTelemetry(reason: 'enable_background_telemetry');
     _emitOperationalDiagnostics();
   }

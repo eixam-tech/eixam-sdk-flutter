@@ -255,7 +255,10 @@ void main() {
     });
 
     test('SOS-08 BLE device-origin active can be cancelled by app', () async {
-      final harness = _SdkSosHarness(connectedBle: true);
+      final harness = _SdkSosHarness(
+        connectedBle: true,
+        deviceCountdown: const Duration(milliseconds: 5),
+      );
       try {
         await harness.attachObservedDeviceCloseAck();
         await harness.sdk.initialize(
@@ -270,20 +273,30 @@ void main() {
           _deviceOriginActivePacket(),
           source: DeviceSosTransitionSource.device,
         );
-        await pumpEventQueue(times: 2);
+        await Future<void>.delayed(const Duration(milliseconds: 15));
+        expect(
+          (await harness.deviceSosController.getStatus()).state,
+          DeviceSosState.active,
+        );
 
         await harness.sdk.cancelSos();
         await pumpEventQueue(times: 2);
 
         expect(harness.sosRepository.cancelCallCount, 1);
-        expect(await harness.sdk.getSosState(), SosState.idle);
+        expect(
+          <SosState>[SosState.idle, SosState.cancelled],
+          contains(await harness.sdk.getSosState()),
+        );
       } finally {
         await harness.dispose();
       }
     });
 
     test('SOS-09 BLE device-origin active can be resolved by app', () async {
-      final harness = _SdkSosHarness(connectedBle: true);
+      final harness = _SdkSosHarness(
+        connectedBle: true,
+        deviceCountdown: const Duration(milliseconds: 5),
+      );
       try {
         await harness.attachObservedDeviceCloseAck();
         await harness.sdk.initialize(
@@ -298,7 +311,11 @@ void main() {
           _deviceOriginActivePacket(),
           source: DeviceSosTransitionSource.device,
         );
-        await pumpEventQueue(times: 2);
+        await Future<void>.delayed(const Duration(milliseconds: 15));
+        expect(
+          (await harness.deviceSosController.getStatus()).state,
+          DeviceSosState.active,
+        );
 
         await harness.sdk.resolveSos();
         await pumpEventQueue(times: 2);

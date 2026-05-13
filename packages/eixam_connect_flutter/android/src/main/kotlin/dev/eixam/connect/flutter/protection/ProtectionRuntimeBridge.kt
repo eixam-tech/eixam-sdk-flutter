@@ -88,6 +88,7 @@ internal object ProtectionRuntimeBridge {
                     arguments?.get("enableStoreAndForward") as? Boolean ?: true
                 val hostAppManagedNotifications =
                     arguments?.get("hostAppManagedNotifications") as? Boolean ?: false
+                val notificationTexts = arguments?.get("notificationTexts") as? Map<*, *>
                 val reconnectBackoffMs =
                     (arguments?.get("reconnectBackoffMs") as? Number)?.toLong() ?: 5000L
                 try {
@@ -103,6 +104,7 @@ internal object ProtectionRuntimeBridge {
                         apiBaseUrl = arguments?.get("apiBaseUrl") as? String,
                         enableStoreAndForward = enableStoreAndForward,
                         hostAppManagedNotifications = hostAppManagedNotifications,
+                        notificationTexts = notificationTexts,
                     )
                     store.recordNativeBackendConfig(
                         apiBaseUrl = arguments?.get("apiBaseUrl") as? String,

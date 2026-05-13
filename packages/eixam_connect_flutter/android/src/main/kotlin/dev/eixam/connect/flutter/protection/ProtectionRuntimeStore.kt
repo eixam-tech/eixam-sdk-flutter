@@ -128,6 +128,7 @@ internal class ProtectionRuntimeStore(context: Context) {
         apiBaseUrl: String?,
         enableStoreAndForward: Boolean,
         hostAppManagedNotifications: Boolean,
+        notificationTexts: Map<*, *>?,
     ) {
         preferences.edit()
             .putString(keyTargetDeviceId, activeDeviceId)
@@ -144,6 +145,66 @@ internal class ProtectionRuntimeStore(context: Context) {
             .putBoolean(keyServiceBleConnected, false)
             .putBoolean(keyServiceBleReady, false)
             .putBoolean(keyHostAppManagedNotifications, hostAppManagedNotifications)
+            .putNotificationText(
+                keyProtectionModeTitle,
+                notificationTexts,
+                "protectionModeTitle",
+            )
+            .putNotificationText(
+                keyProtectionModeBody,
+                notificationTexts,
+                "protectionModeBody",
+            )
+            .putNotificationText(
+                keyProtectionModeChannelName,
+                notificationTexts,
+                "protectionModeChannelName",
+            )
+            .putNotificationText(
+                keyProtectionModeChannelDescription,
+                notificationTexts,
+                "protectionModeChannelDescription",
+            )
+            .putNotificationText(
+                keyProtectionSosChannelName,
+                notificationTexts,
+                "protectionSosChannelName",
+            )
+            .putNotificationText(
+                keyProtectionSosChannelDescription,
+                notificationTexts,
+                "protectionSosChannelDescription",
+            )
+            .putNotificationText(
+                keyProtectionPreSosTitle,
+                notificationTexts,
+                "protectionPreSosTitle",
+            )
+            .putNotificationText(
+                keyProtectionPreSosBody,
+                notificationTexts,
+                "protectionPreSosBody",
+            )
+            .putNotificationText(
+                keyProtectionSosActiveTitle,
+                notificationTexts,
+                "protectionSosActiveTitle",
+            )
+            .putNotificationText(
+                keyProtectionSosActiveBody,
+                notificationTexts,
+                "protectionSosActiveBody",
+            )
+            .putNotificationText(
+                keyProtectionSosResolvedTitle,
+                notificationTexts,
+                "protectionSosResolvedTitle",
+            )
+            .putNotificationText(
+                keyProtectionSosResolvedBody,
+                notificationTexts,
+                "protectionSosResolvedBody",
+            )
             .putString(keyReadinessFailureReason, null)
             .putString(keyDiscoveredBleServicesSummary, null)
             .putBoolean(keyStoreAndForwardEnabled, enableStoreAndForward)
@@ -230,6 +291,45 @@ internal class ProtectionRuntimeStore(context: Context) {
 
     fun hostAppManagedNotifications(): Boolean =
         preferences.getBoolean(keyHostAppManagedNotifications, false)
+
+    fun protectionModeTitle(): String =
+        notificationText(keyProtectionModeTitle, "EIXAM")
+
+    fun protectionModeBody(): String =
+        notificationText(keyProtectionModeBody, "SOS")
+
+    fun protectionModeChannelName(): String =
+        notificationText(keyProtectionModeChannelName, "EIXAM")
+
+    fun protectionModeChannelDescription(): String =
+        notificationText(keyProtectionModeChannelDescription, "EIXAM")
+
+    fun protectionSosChannelName(): String =
+        notificationText(keyProtectionSosChannelName, "SOS")
+
+    fun protectionSosChannelDescription(): String =
+        notificationText(keyProtectionSosChannelDescription, "SOS")
+
+    fun protectionPreSosTitle(): String =
+        notificationText(keyProtectionPreSosTitle, "SOS pre-alert")
+
+    fun protectionPreSosBody(): String =
+        notificationText(keyProtectionPreSosBody, "SOS")
+
+    fun protectionSosActiveTitle(): String =
+        notificationText(keyProtectionSosActiveTitle, "SOS active")
+
+    fun protectionSosActiveBody(): String =
+        notificationText(keyProtectionSosActiveBody, "SOS")
+
+    fun protectionSosResolvedTitle(): String =
+        notificationText(keyProtectionSosResolvedTitle, "SOS resolved")
+
+    fun protectionSosResolvedBody(): String =
+        notificationText(keyProtectionSosResolvedBody, "SOS")
+
+    private fun notificationText(key: String, fallback: String): String =
+        preferences.getString(key, null)?.trim()?.takeIf { it.isNotBlank() } ?: fallback
 
     fun markServiceBleConnected() {
         preferences.edit()
@@ -653,6 +753,22 @@ internal class ProtectionRuntimeStore(context: Context) {
         private const val keyBoundNodeId = "bound_node_id"
         private const val keyStoreAndForwardEnabled = "store_and_forward_enabled"
         private const val keyHostAppManagedNotifications = "host_app_managed_notifications"
+        private const val keyProtectionModeTitle = "notification_protection_mode_title"
+        private const val keyProtectionModeBody = "notification_protection_mode_body"
+        private const val keyProtectionModeChannelName = "notification_protection_mode_channel_name"
+        private const val keyProtectionModeChannelDescription =
+            "notification_protection_mode_channel_description"
+        private const val keyProtectionSosChannelName = "notification_protection_sos_channel_name"
+        private const val keyProtectionSosChannelDescription =
+            "notification_protection_sos_channel_description"
+        private const val keyProtectionPreSosTitle = "notification_protection_pre_sos_title"
+        private const val keyProtectionPreSosBody = "notification_protection_pre_sos_body"
+        private const val keyProtectionSosActiveTitle = "notification_protection_sos_active_title"
+        private const val keyProtectionSosActiveBody = "notification_protection_sos_active_body"
+        private const val keyProtectionSosResolvedTitle =
+            "notification_protection_sos_resolved_title"
+        private const val keyProtectionSosResolvedBody =
+            "notification_protection_sos_resolved_body"
         private const val keyPendingSosCount = "pending_sos_count"
         private const val keyPendingSosState = "pending_sos_state"
         private const val keyPendingTelemetryCount = "pending_telemetry_count"
@@ -710,3 +826,14 @@ internal class ProtectionRuntimeStore(context: Context) {
 
 private fun android.content.SharedPreferences.getIntOrNull(key: String): Int? =
     if (contains(key)) getInt(key, 0) else null
+
+private fun android.content.SharedPreferences.Editor.putNotificationText(
+    preferenceKey: String,
+    notificationTexts: Map<*, *>?,
+    textKey: String,
+): android.content.SharedPreferences.Editor {
+    val value = (notificationTexts?.get(textKey) as? String)
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+    return if (value == null) remove(preferenceKey) else putString(preferenceKey, value)
+}

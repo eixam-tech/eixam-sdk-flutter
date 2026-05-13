@@ -18,6 +18,7 @@ import 'eixam_ble_notification.dart';
 import 'eixam_ble_protocol.dart';
 import 'eixam_cluster_heartbeat_packet.dart';
 import 'eixam_device_runtime_status_packet.dart';
+import 'eixam_sos_event_packet.dart';
 import 'eixam_sos_packet.dart';
 import 'eixam_tel_fragment.dart';
 import 'eixam_tel_packet.dart';
@@ -437,13 +438,14 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
   Future<void> _bindNotifications(String deviceId) async {
     await _notificationSubscription?.cancel();
-    final commandWriter = (EixamDeviceCommand command) {
+    Future<void> commandWriter(EixamDeviceCommand command) {
       _lastAppCommandAt = DateTime.now();
       BleDebugRegistry.instance.recordEvent(
         'BLE app command tracked -> hardwareId=$deviceId command=${command.label} payload=${command.encodedHex}',
       );
       return _bleClient.writeDeviceCommand(deviceId, command);
-    };
+    }
+
     BleDebugRegistry.instance.registerCommandWriter(commandWriter);
     BleDebugRegistry.instance.recordEvent(
       'BLE SOS runtime attach requested -> hardwareId=$deviceId inetAvailable=${BleDebugRegistry.instance.currentState.inetFound} cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound}',
@@ -460,14 +462,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     final stream = await _bleClient.subscribeEixamNotifications(deviceId);
     _notificationSubscription = stream.listen(
       (notification) {
-        switch (notification.channel) {
-          case EixamBleChannel.tel:
-            _handleTelNotification(deviceId, notification);
-            break;
-          case EixamBleChannel.sos:
-            _handleSosNotification(deviceId, notification);
-            break;
-        }
+        unawaited(_handleNotification(deviceId, notification));
       },
       onError: (Object error) {
         BleDebugRegistry.instance.recordEvent(
@@ -475,6 +470,26 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         );
       },
     );
+  }
+
+  Future<void> _handleNotification(
+    String deviceId,
+    EixamBleNotification notification,
+  ) async {
+    try {
+      switch (notification.channel) {
+        case EixamBleChannel.tel:
+          await _handleTelNotification(deviceId, notification);
+          break;
+        case EixamBleChannel.sos:
+          await _handleSosNotification(deviceId, notification);
+          break;
+      }
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'Notify processing error for $deviceId channel=${notification.channel.name}: $error',
+      );
+    }
   }
 
   Future<void> _resetFailedPairingAttempt(String deviceId) async {
@@ -968,10 +983,10 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     _publishRuntimeStatus(nextStatus, reason: 'unexpected_disconnect');
   }
 
-  void _handleTelNotification(
+  Future<void> _handleTelNotification(
     String deviceId,
     EixamBleNotification notification,
-  ) {
+  ) async {
     final source = DeviceSosTransitionSource.device;
     BleDebugRegistry.instance.recordIncomingNotification(
       channel: notification.channel.name,
@@ -1014,7 +1029,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         BleDebugRegistry.instance.recordEvent(
           'TEL aggregate completed -> totalLen=${completedPayload.length} payload=${EixamBleProtocol.hex(completedPayload)}',
         );
-        _dispatchClassifiedTelPayload(
+        await _dispatchClassifiedTelPayload(
           deviceId: deviceId,
           notification: notification,
           payload: completedPayload,
@@ -1027,7 +1042,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       return;
     }
 
-    _dispatchClassifiedTelPayload(
+    await _dispatchClassifiedTelPayload(
       deviceId: deviceId,
       notification: notification,
       payload: notification.payload,
@@ -1036,7 +1051,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     );
   }
 
-  void _dispatchClassifiedTelPayload({
+  Future<void> _dispatchClassifiedTelPayload({
     required String deviceId,
     required EixamBleNotification notification,
     required List<int> payload,
@@ -1044,7 +1059,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     required DeviceSosTransitionSource source,
     EixamTelFragment? telFragment,
     List<int>? aggregatePayload,
-  }) {
+  }) async {
     final runtimeStatusPacket = EixamDeviceRuntimeStatusPacket.tryParse(
       payload,
       receivedAt: notification.receivedAt,
@@ -1216,7 +1231,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       }
     }
 
-    final classification = _payloadClassifier.classifySosPayload(
+    var classification = _payloadClassifier.classifySosPayload(
       payload: payload,
       payloadHex: payloadHex,
       receivedAt: notification.receivedAt,
@@ -1226,6 +1241,15 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       fallbackOnUnknownConnectedNode: const BleIncomingPayloadClassification(
         kind: BleIncomingPayloadKind.remoteRelaySos,
       ),
+    );
+    classification = await _resolveUnknownOriginSosClassification(
+      classification: classification,
+      payload: payload,
+      payloadHex: payloadHex,
+      receivedAt: notification.receivedAt,
+      source: source,
+      channel: notification.channel,
+      reason: 'tel_sos_unknown_origin',
     );
     if (classification.kind == BleIncomingPayloadKind.ownDeviceSos ||
         classification.kind == BleIncomingPayloadKind.remoteRelaySos) {
@@ -1449,10 +1473,10 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     );
   }
 
-  void _handleSosNotification(
+  Future<void> _handleSosNotification(
     String deviceId,
     EixamBleNotification notification,
-  ) {
+  ) async {
     final source = _inferPacketSource();
     BleDebugRegistry.instance.recordIncomingNotification(
       channel: notification.channel.name,
@@ -1464,7 +1488,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       'SOS raw payload (ea02) -> len=${notification.payload.length} payload=${notification.payloadHex}',
     );
 
-    final sosEventPacket = notification.payload.length == 6
+    var sosEventPacket = notification.payload.length == 6
         ? _payloadClassifier.classifySosPayload(
             payload: notification.payload,
             payloadHex: notification.payloadHex,
@@ -1478,6 +1502,11 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
             ),
           )
         : null;
+    sosEventPacket = await _resolveUnknownOriginSosEventClassification(
+      classification: sosEventPacket,
+      receivedAt: notification.receivedAt,
+      reason: 'sos_event_unknown_origin',
+    );
     if (sosEventPacket?.sosEventPacket != null) {
       final packet = sosEventPacket!.sosEventPacket!;
       final isLocalEvent = packet.nodeId == _connectedBleTagNodeId;
@@ -1542,7 +1571,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       return;
     }
 
-    final sosClassification = _payloadClassifier.classifySosPayload(
+    var sosClassification = _payloadClassifier.classifySosPayload(
       payload: notification.payload,
       payloadHex: notification.payloadHex,
       receivedAt: notification.receivedAt,
@@ -1552,6 +1581,15 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       fallbackOnUnknownConnectedNode: const BleIncomingPayloadClassification(
         kind: BleIncomingPayloadKind.remoteRelaySos,
       ),
+    );
+    sosClassification = await _resolveUnknownOriginSosClassification(
+      classification: sosClassification,
+      payload: notification.payload,
+      payloadHex: notification.payloadHex,
+      receivedAt: notification.receivedAt,
+      source: source,
+      channel: notification.channel,
+      reason: 'sos_notify_unknown_origin',
     );
     if (sosClassification.sosPacket != null) {
       final sosPacket = sosClassification.sosPacket!;
@@ -1638,6 +1676,187 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         receivedAt: notification.receivedAt,
         meshPort: notification.meshPort,
       ),
+    );
+  }
+
+  Future<BleIncomingPayloadClassification?>
+      _resolveUnknownOriginSosEventClassification({
+    required BleIncomingPayloadClassification? classification,
+    required DateTime receivedAt,
+    required String reason,
+  }) async {
+    final packet = classification?.sosEventPacket;
+    if (classification == null ||
+        packet == null ||
+        _connectedBleTagNodeId != null) {
+      return classification;
+    }
+
+    final resolvedNodeId = await _refreshConnectedBleNodeIdForSosEventPacket(
+      packet: packet,
+      reason: reason,
+    );
+    if (resolvedNodeId == null) {
+      return classification;
+    }
+
+    final isLocalEvent = packet.nodeId == resolvedNodeId;
+    final resolved = BleIncomingPayloadClassification(
+      kind: packet.isAppCancelAck
+          ? BleIncomingPayloadKind.unknown
+          : BleIncomingPayloadKind.sosCancel,
+      sosEventPacket: packet,
+      remoteRelaySosSnapshot: isLocalEvent || packet.isAppCancelAck
+          ? null
+          : RemoteRelaySosSnapshot(
+              kind: RemoteRelaySosKind.cancel,
+              originatorNodeId: packet.nodeId,
+              relayNodeId: resolvedNodeId,
+              source: RemoteRelaySosSource.sosNotify,
+              sosType: 0,
+              receivedAt: receivedAt,
+              rawPayload: packet.rawBytes,
+              payloadHex: packet.rawHex,
+              eventOpcode: packet.opcode,
+              eventSubcode: packet.subcode,
+            ),
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'SOS event unknown origin reclassified -> reason=$reason '
+      'connectedNodeId=${_formatNodeId(resolvedNodeId)} '
+      'originatorNodeId=${_formatNodeId(packet.nodeId)} '
+      'role=${isLocalEvent ? "ownDeviceEvent" : "remoteRelayEvent"}',
+    );
+    return resolved;
+  }
+
+  Future<BleIncomingPayloadClassification>
+      _resolveUnknownOriginSosClassification({
+    required BleIncomingPayloadClassification classification,
+    required List<int> payload,
+    required String payloadHex,
+    required DateTime receivedAt,
+    required DeviceSosTransitionSource source,
+    required EixamBleChannel channel,
+    required String reason,
+  }) async {
+    final packet = classification.sosPacket;
+    if (classification.kind != BleIncomingPayloadKind.unknownOriginSos ||
+        packet == null ||
+        _connectedBleTagNodeId != null) {
+      return classification;
+    }
+
+    final resolvedNodeId = await _refreshConnectedBleNodeIdForSosPacket(
+      packet: packet,
+      reason: reason,
+    );
+    if (resolvedNodeId == null) {
+      return classification;
+    }
+
+    final resolved = _payloadClassifier.classifySosPayload(
+      payload: payload,
+      payloadHex: payloadHex,
+      receivedAt: receivedAt,
+      source: source,
+      channel: channel,
+      connectedBleTagNodeId: resolvedNodeId,
+      fallbackOnUnknownConnectedNode: const BleIncomingPayloadClassification(
+        kind: BleIncomingPayloadKind.remoteRelaySos,
+      ),
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'SOS unknown origin reclassified -> reason=$reason '
+      'connectedNodeId=${_formatNodeId(resolvedNodeId)} '
+      'originatorNodeId=${_formatNodeId(packet.nodeId)} '
+      'role=${resolved.kind.name}',
+    );
+    return resolved;
+  }
+
+  Future<int?> _refreshConnectedBleNodeIdForSosPacket({
+    required EixamSosPacket packet,
+    required String reason,
+  }) async {
+    final existing = _connectedBleTagNodeId;
+    if (existing != null) {
+      return existing;
+    }
+    if (_connectedDeviceId == null) {
+      return null;
+    }
+
+    try {
+      final status = await _requestOrAwaitRuntimeStatusForSosIdentity(
+        reason: reason,
+      );
+      _connectedBleTagNodeId = status.nodeId;
+      BleDebugRegistry.instance.recordEvent(
+        'SOS identity refresh succeeded -> reason=$reason '
+        'connectedNodeId=${_formatNodeId(status.nodeId)} '
+        'originatorNodeId=${_formatNodeId(packet.nodeId)}',
+      );
+      return status.nodeId;
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS identity refresh failed -> reason=$reason '
+        'originatorNodeId=${_formatNodeId(packet.nodeId)} error=$error',
+      );
+      return null;
+    }
+  }
+
+  Future<int?> _refreshConnectedBleNodeIdForSosEventPacket({
+    required EixamSosEventPacket packet,
+    required String reason,
+  }) async {
+    final existing = _connectedBleTagNodeId;
+    if (existing != null) {
+      return existing;
+    }
+    if (_connectedDeviceId == null) {
+      return null;
+    }
+
+    try {
+      final status = await _requestOrAwaitRuntimeStatusForSosIdentity(
+        reason: reason,
+      );
+      _connectedBleTagNodeId = status.nodeId;
+      BleDebugRegistry.instance.recordEvent(
+        'SOS event identity refresh succeeded -> reason=$reason '
+        'connectedNodeId=${_formatNodeId(status.nodeId)} '
+        'originatorNodeId=${_formatNodeId(packet.nodeId)}',
+      );
+      return status.nodeId;
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS event identity refresh failed -> reason=$reason '
+        'originatorNodeId=${_formatNodeId(packet.nodeId)} error=$error',
+      );
+      return null;
+    }
+  }
+
+  Future<DeviceRuntimeStatus> _requestOrAwaitRuntimeStatusForSosIdentity({
+    required String reason,
+  }) async {
+    final pending = _pendingRuntimeStatusRequest;
+    if (pending != null) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS identity refresh awaiting pending runtime status -> reason=$reason',
+      );
+      return pending.future.timeout(
+        const Duration(milliseconds: 1500),
+        onTimeout: () => throw const DeviceException(
+          _deviceStatusTimeoutCode,
+          _deviceStatusTimeoutCode,
+        ),
+      );
+    }
+    return requestDeviceRuntimeStatus(
+      timeout: const Duration(milliseconds: 1500),
     );
   }
 

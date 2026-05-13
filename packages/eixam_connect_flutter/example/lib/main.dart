@@ -146,6 +146,7 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
                   websocketUrl: _customWebsocketUrlController.text.trim(),
                 )
               : null,
+          notificationTexts: _notificationTexts,
         ),
       );
 
@@ -916,6 +917,24 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
     );
   }
 }
+
+const _notificationTexts = EixamNotificationTexts(
+  protectionActiveTitle: 'EIXAM protection active',
+  protectionActiveBody: 'Sharing your safety status in the background.',
+  protectionModeTitle: 'EIXAM Protection Mode',
+  protectionModeBody: 'Keeping your device connected for SOS alerts.',
+  protectionModeChannelName: 'Protection mode',
+  protectionModeChannelDescription:
+      'Keeps protection available in the background.',
+  protectionSosChannelName: 'Protection SOS',
+  protectionSosChannelDescription: 'Alerts from your protected device.',
+  protectionPreSosTitle: 'SOS pre-alert',
+  protectionPreSosBody: 'Your device reported a possible SOS.',
+  protectionSosActiveTitle: 'SOS active',
+  protectionSosActiveBody: 'Your device has activated SOS.',
+  protectionSosResolvedTitle: 'SOS resolved',
+  protectionSosResolvedBody: 'The device SOS has ended.',
+);
 
 class _SectionCard extends StatelessWidget {
   const _SectionCard({

@@ -500,19 +500,21 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
 
     private fun buildNotification(): Notification {
         return buildForegroundNotification(
-            title = store.notificationTitle() ?: defaultNotificationTitle,
-            body = store.notificationBody() ?: defaultNotificationBody,
+            title = store.notificationTitle(),
+            body = store.notificationBody(),
         )
     }
 
     private fun buildForegroundNotification(
-        title: String = defaultNotificationTitle,
-        body: String = defaultNotificationBody,
+        title: String? = null,
+        body: String? = null,
     ): Notification {
+        val resolvedTitle = title ?: defaultNotificationTitle
+        val resolvedBody = body ?: defaultNotificationBody
         return NotificationCompat.Builder(this, notificationChannelId)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle(title)
-            .setContentText(body)
+            .setContentTitle(resolvedTitle)
+            .setContentText(resolvedBody)
             .setContentIntent(NotificationLaunchIntents.contentIntentForLaunchingApp(this))
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
@@ -652,8 +654,8 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         private const val logPrefix = "[SDK_BG_TELEMETRY]"
         private const val notificationChannelId = "eixam_background_telemetry"
         private const val notificationId = 6031
-        private const val defaultNotificationTitle = "EIXAM protection active"
-        private const val defaultNotificationBody = "Sharing safety telemetry in the background"
+        private const val defaultNotificationTitle = "EIXAM"
+        private const val defaultNotificationBody = "EIXAM"
         private const val actionStart = "dev.eixam.connect.flutter.action.TELEMETRY_START"
         private const val actionUpdate = "dev.eixam.connect.flutter.action.TELEMETRY_UPDATE"
         private const val actionStop = "dev.eixam.connect.flutter.action.TELEMETRY_STOP"

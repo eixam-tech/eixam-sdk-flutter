@@ -116,12 +116,11 @@ internal class ProtectionForegroundService : Service() {
     }
 
     private fun buildNotification(): Notification {
+        val runtimeStore = ProtectionRuntimeStore(applicationContext)
         return NotificationCompat.Builder(this, notificationChannelId)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle("EIXAM Protection Mode")
-            .setContentText(
-                "Protection Mode is armed. The Android foreground service owns the runtime while coverage is active.",
-            )
+            .setContentTitle(runtimeStore.protectionModeTitle())
+            .setContentText(runtimeStore.protectionModeBody())
             .setContentIntent(NotificationLaunchIntents.contentIntentForLaunchingApp(this))
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
@@ -138,19 +137,19 @@ internal class ProtectionForegroundService : Service() {
         val runtimeStore = ProtectionRuntimeStore(applicationContext)
         val runtimeChannel = NotificationChannel(
             notificationChannelId,
-            "Protection Mode Runtime",
+            runtimeStore.protectionModeChannelName(),
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
-            description = "Keeps the Android Protection Mode runtime visible and restartable."
+            description = runtimeStore.protectionModeChannelDescription()
         }
         manager.createNotificationChannel(runtimeChannel)
         if (!runtimeStore.hostAppManagedNotifications()) {
             val sosChannel = NotificationChannel(
                 sosNotificationChannelId,
-                "Protection Mode SOS",
+                runtimeStore.protectionSosChannelName(),
                 NotificationManager.IMPORTANCE_HIGH,
             ).apply {
-                description = "Surfaces Protection Mode SOS lifecycle alerts while the app is backgrounded."
+                description = runtimeStore.protectionSosChannelDescription()
             }
             manager.createNotificationChannel(sosChannel)
         }
@@ -215,32 +214,35 @@ internal class ProtectionForegroundService : Service() {
         }
 
         fun showPreConfirmNotification(context: Context) {
+            val runtimeStore = ProtectionRuntimeStore(context)
             showEventNotification(
                 context = context,
                 notificationId = preConfirmNotificationId,
                 type = "preSos",
-                title = "Protection Mode: SOS pre-alert",
-                body = "The protected device reported a pre-confirm SOS packet. Protection Mode is listening in the background.",
+                title = runtimeStore.protectionPreSosTitle(),
+                body = runtimeStore.protectionPreSosBody(),
             )
         }
 
         fun showActiveSosNotification(context: Context) {
+            val runtimeStore = ProtectionRuntimeStore(context)
             showEventNotification(
                 context = context,
                 notificationId = activeNotificationId,
                 type = "sosActive",
-                title = "Protection Mode: SOS active",
-                body = "The protected device reported an active SOS cycle. Native backend sync is running from the Android service path.",
+                title = runtimeStore.protectionSosActiveTitle(),
+                body = runtimeStore.protectionSosActiveBody(),
             )
         }
 
         fun showResolvedSosNotification(context: Context) {
+            val runtimeStore = ProtectionRuntimeStore(context)
             showEventNotification(
                 context = context,
                 notificationId = resolvedNotificationId,
                 type = "sosResolved",
-                title = "Protection Mode: SOS resolved",
-                body = "The protected device reported a resolved or cancelled SOS cycle.",
+                title = runtimeStore.protectionSosResolvedTitle(),
+                body = runtimeStore.protectionSosResolvedBody(),
             )
         }
 

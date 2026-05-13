@@ -46,6 +46,7 @@ class ProtectionPlatformStartRequest {
     this.sessionReady = false,
     this.enableStoreAndForward = true,
     this.hostAppManagedNotifications = false,
+    this.notificationTexts,
   });
 
   final ProtectionModeOptions modeOptions;
@@ -58,6 +59,7 @@ class ProtectionPlatformStartRequest {
   final bool sessionReady;
   final bool enableStoreAndForward;
   final bool hostAppManagedNotifications;
+  final EixamNotificationTexts? notificationTexts;
 }
 
 class ProtectionPlatformFlushResult {

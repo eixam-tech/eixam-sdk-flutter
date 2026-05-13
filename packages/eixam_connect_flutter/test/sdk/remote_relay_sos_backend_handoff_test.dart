@@ -474,6 +474,63 @@ void main() {
           (await deviceSosController.getStatus()).state, DeviceSosState.active);
     });
 
+    test('device-origin active first packet enters PRE-SOS before backend SOS',
+        () async {
+      await rebuildSdkWithDeviceSosTiming(
+        countdownDuration: const Duration(milliseconds: 80),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-device-123',
+          nodeId: 1498094248,
+          canonicalHardwareId: 'CF:82:59:4B:1A:A8',
+          connected: true,
+          paired: true,
+          activated: true,
+        ),
+      );
+      trackingRepository.emitPosition(
+        TrackingPosition(
+          latitude: 41.38,
+          longitude: 2.17,
+          timestamp: DateTime.utc(2026, 1, 1, 10),
+          source: DeliveryMode.mobile,
+        ),
+      );
+      sosRepository.currentIncident = SosIncident(
+        id: 'api-sos-1',
+        state: SosState.idle,
+        createdAt: DateTime.utc(2026, 1, 1),
+      );
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginActivePacketForNode(1498094248),
+        source: DeviceSosTransitionSource.device,
+      );
+
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+
+      final preSos = await sdk.getPreSosStatus();
+      expect(preSos, isNotNull);
+      expect(preSos!.remainingSeconds, greaterThan(0));
+      expect(
+        (await deviceSosController.getStatus()).state,
+        DeviceSosState.preConfirm,
+      );
+      expect(sosRepository.triggerCallCount, 0);
+
+      await _eventually(() => sosRepository.triggerCallCount == 1);
+
+      expect(sosRepository.lastDeviceId, '1498094248');
+      expect(sosRepository.lastOriginatorNodeId, 1498094248);
+      expect(await sdk.getPreSosStatus(), isNull);
+      expect(
+        (await deviceSosController.getStatus()).state,
+        DeviceSosState.active,
+      );
+    });
+
     test('device runtime SOS sends final backend payload from incidentId',
         () async {
       late http.Request capturedRequest;

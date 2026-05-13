@@ -15,6 +15,7 @@ class ProtectionModeController {
         operationalDiagnosticsProvider,
     Future<String?> Function()? backendHardwareIdProvider,
     bool Function()? hostAppManagedNotificationsProvider,
+    EixamNotificationTexts Function()? notificationTextsProvider,
     this.onBleOwnershipChanged,
   })  : _sessionProvider = sessionProvider,
         _sdkConfigProvider = sdkConfigProvider,
@@ -23,7 +24,8 @@ class ProtectionModeController {
         _operationalDiagnosticsProvider = operationalDiagnosticsProvider,
         _backendHardwareIdProvider = backendHardwareIdProvider,
         _hostAppManagedNotificationsProvider =
-            hostAppManagedNotificationsProvider {
+            hostAppManagedNotificationsProvider,
+        _notificationTextsProvider = notificationTextsProvider {
     _platformEventsSub = platformAdapter.watchPlatformEvents().listen(
       _handlePlatformEvent,
       onError: (_) {
@@ -44,6 +46,7 @@ class ProtectionModeController {
       _operationalDiagnosticsProvider;
   final Future<String?> Function()? _backendHardwareIdProvider;
   final bool Function()? _hostAppManagedNotificationsProvider;
+  final EixamNotificationTexts Function()? _notificationTextsProvider;
   final Future<void> Function(ProtectionBleOwner owner)? onBleOwnershipChanged;
 
   final StreamController<ProtectionStatus> _statusController =
@@ -147,6 +150,7 @@ class ProtectionModeController {
       enableStoreAndForward: options.enableStoreAndForward,
       hostAppManagedNotifications:
           _hostAppManagedNotificationsProvider?.call() ?? false,
+      notificationTexts: _notificationTextsProvider?.call(),
     );
     final startResult = await platformAdapter.startProtectionRuntime(
       request: startRequest,

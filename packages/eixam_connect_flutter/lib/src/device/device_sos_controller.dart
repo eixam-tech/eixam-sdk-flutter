@@ -691,6 +691,7 @@ class DeviceSosController {
     final resolution = _resolveMeshPacketState(
       packet,
       currentStatus: previousStatus,
+      source: source,
     );
     final nextState = resolution.resolvedState;
     final event =
@@ -725,7 +726,12 @@ class DeviceSosController {
       'reason=${resolution.classificationReason}',
     );
 
-    if (_shouldSuppressForPendingTerminalCommand(packet.nodeId)) {
+    if (_shouldSuppressForPendingTerminalCommand(
+      packet.nodeId,
+      source: source,
+      currentStatus: previousStatus,
+      resolution: resolution,
+    )) {
       BleDebugRegistry.instance.recordEvent(
         'SOS_TRACE device_rearm_suppressed reason=pending_terminal_command',
       );
@@ -946,6 +952,7 @@ class DeviceSosController {
   _MeshPacketResolution _resolveMeshPacketState(
     EixamSosPacket packet, {
     required DeviceSosStatus currentStatus,
+    required DeviceSosTransitionSource source,
   }) {
     final protocolState = _resolveProtocolSosPacketState(packet);
     final cycleKey = _deriveDeviceSosCycleKey(
@@ -1010,7 +1017,10 @@ class DeviceSosController {
     }
 
     if (protocolState == DeviceSosState.preConfirm &&
-        _shouldSuppressPromotedPreConfirmCycle(cycleKey: cycleKey)) {
+        _shouldSuppressPromotedPreConfirmCycle(
+          cycleKey: cycleKey,
+          currentStatus: currentStatus,
+        )) {
       return _MeshPacketResolution(
         protocolState: protocolState,
         resolvedState: DeviceSosState.active,
@@ -1072,26 +1082,39 @@ class DeviceSosController {
       );
     }
 
+    if (source == DeviceSosTransitionSource.device &&
+        protocolState == DeviceSosState.active &&
+        currentStatus.state != DeviceSosState.preConfirm &&
+        !_isOpenSosState(currentStatus.state)) {
+      return _MeshPacketResolution(
+        protocolState: protocolState,
+        resolvedState: DeviceSosState.preConfirm,
+        cycleKey: cycleKey,
+        downgradeSuppressed: true,
+        classificationDecision: 'pre_sos',
+        classificationReason: 'device_active_packet_held_for_countdown',
+        reason: 'DEVICE_SOS_ACTIVE_PACKET_STARTED_PRE_CONFIRM_COUNTDOWN',
+        decoderNote: 'DEVICE_SOS_ACTIVE_PACKET_STARTED_PRE_CONFIRM_COUNTDOWN',
+      );
+    }
+
     if (currentStatus.state == DeviceSosState.preConfirm &&
         currentStatus.expectedActivationAt != null &&
         _now().isBefore(currentStatus.expectedActivationAt!)) {
       return _MeshPacketResolution(
         protocolState: protocolState,
-        resolvedState: protocolState == DeviceSosState.active
-            ? DeviceSosState.active
-            : DeviceSosState.preConfirm,
+        resolvedState: DeviceSosState.preConfirm,
         cycleKey: cycleKey,
-        downgradeSuppressed: false,
-        classificationDecision:
-            protocolState == DeviceSosState.active ? 'active_sos' : 'pre_sos',
+        downgradeSuppressed: protocolState == DeviceSosState.active,
+        classificationDecision: 'pre_sos',
         classificationReason: protocolState == DeviceSosState.active
-            ? 'countdown_promoted_to_active'
+            ? 'active_packet_held_until_countdown'
             : 'remote_emergency_trigger',
         reason: protocolState == DeviceSosState.active
-            ? 'DEVICE_SOS_PACKET_EXPLICIT_ACTIVE'
+            ? 'DEVICE_SOS_ACTIVE_PACKET_HELD_UNTIL_COUNTDOWN'
             : 'DEVICE_SOS_PACKET_PRE_CONFIRM_KEEP_COUNTDOWN',
         decoderNote: protocolState == DeviceSosState.active
-            ? 'DEVICE_SOS_PACKET_EXPLICIT_ACTIVE'
+            ? 'DEVICE_SOS_ACTIVE_PACKET_HELD_UNTIL_COUNTDOWN'
             : 'DEVICE_SOS_PACKET_PRE_CONFIRM_KEEP_COUNTDOWN',
       );
     }
@@ -1169,6 +1192,11 @@ class DeviceSosController {
     }
   }
 
+  bool _isOpenSosState(DeviceSosState state) {
+    return state == DeviceSosState.active ||
+        state == DeviceSosState.acknowledged;
+  }
+
   String? _deriveDeviceSosCycleKey({
     required int? nodeId,
     required int? packetId,
@@ -1235,7 +1263,12 @@ class DeviceSosController {
     return state == DeviceSosState.inactive || state == DeviceSosState.resolved;
   }
 
-  bool _shouldSuppressForPendingTerminalCommand(int nodeId) {
+  bool _shouldSuppressForPendingTerminalCommand(
+    int nodeId, {
+    required DeviceSosTransitionSource source,
+    required DeviceSosStatus currentStatus,
+    required _MeshPacketResolution resolution,
+  }) {
     final pending = _pendingTerminalCommand;
     if (pending == null) {
       return false;
@@ -1243,6 +1276,16 @@ class DeviceSosController {
     final anchor = pending.sentAt ?? pending.requestedAt;
     if (_now().difference(anchor) > _terminalCycleSuppressionWindow) {
       _pendingTerminalCommand = null;
+      return false;
+    }
+    if (source == DeviceSosTransitionSource.device &&
+        currentStatus.state == DeviceSosState.inactive &&
+        resolution.protocolState == DeviceSosState.preConfirm &&
+        resolution.resolvedState == DeviceSosState.preConfirm) {
+      _pendingTerminalCommand = null;
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_TRACE device_rearm_allowed reason=pending_terminal_command_pre_sos',
+      );
       return false;
     }
     return pending.nodeId == null || pending.nodeId == nodeId;
@@ -1444,10 +1487,16 @@ class DeviceSosController {
     _lastPromotedPreConfirmAt = _now();
   }
 
-  bool _shouldSuppressPromotedPreConfirmCycle({required String? cycleKey}) {
+  bool _shouldSuppressPromotedPreConfirmCycle({
+    required String? cycleKey,
+    required DeviceSosStatus currentStatus,
+  }) {
     final promotedCycleKey = _lastPromotedPreConfirmCycleKey;
     final promotedAt = _lastPromotedPreConfirmAt;
     if (cycleKey == null || promotedCycleKey == null || promotedAt == null) {
+      return false;
+    }
+    if (!_isOpenSosState(currentStatus.state)) {
       return false;
     }
     if (cycleKey != promotedCycleKey) {

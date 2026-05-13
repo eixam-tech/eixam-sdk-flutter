@@ -9,6 +9,7 @@ void main() {
         const EixamBootstrapConfig(
           appId: 'partner-app',
           environment: EixamEnvironment.production,
+          notificationTexts: _notificationTexts,
         ),
       );
 
@@ -28,6 +29,7 @@ void main() {
         const EixamBootstrapConfig(
           appId: 'partner-app',
           environment: EixamEnvironment.staging,
+          notificationTexts: _notificationTexts,
         ),
       );
 
@@ -51,6 +53,7 @@ void main() {
         const EixamBootstrapConfig(
           appId: 'partner-app',
           environment: EixamEnvironment.custom,
+          notificationTexts: _notificationTexts,
           customEndpoints: EixamCustomEndpoints(
             apiBaseUrl: 'https://custom.example',
             websocketUrl: 'wss://custom.example/ws',
@@ -67,6 +70,7 @@ void main() {
         const EixamBootstrapConfig(
           appId: 'partner-app',
           environment: EixamEnvironment.custom,
+          notificationTexts: _notificationTexts,
           customEndpoints: EixamCustomEndpoints(
             apiBaseUrl: 'https://custom.example',
             mqttUrl: 'wss://custom.example/mqtt',
@@ -83,6 +87,7 @@ void main() {
           const EixamBootstrapConfig(
             appId: 'partner-app',
             environment: EixamEnvironment.custom,
+            notificationTexts: _notificationTexts,
           ),
         ),
         throwsA(isA<ArgumentError>()),
@@ -95,6 +100,7 @@ void main() {
           const EixamBootstrapConfig(
             appId: 'partner-app',
             environment: EixamEnvironment.sandbox,
+            notificationTexts: _notificationTexts,
             customEndpoints: EixamCustomEndpoints(
               apiBaseUrl: 'https://custom.example',
               websocketUrl: 'wss://custom.example/ws',
@@ -111,10 +117,39 @@ void main() {
           const EixamBootstrapConfig(
             appId: 'partner-app',
             environment: EixamEnvironment.production,
+            notificationTexts: _notificationTexts,
             initialSession: EixamSession.signed(
               appId: 'different-app',
               externalUserId: 'user-1',
               userHash: 'signed-value',
+            ),
+          ),
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('rejects empty notification text values', () {
+      expect(
+        () => EixamBootstrapResolver.resolve(
+          const EixamBootstrapConfig(
+            appId: 'partner-app',
+            environment: EixamEnvironment.production,
+            notificationTexts: EixamNotificationTexts(
+              protectionActiveTitle: '',
+              protectionActiveBody: 'Sharing safety status.',
+              protectionModeTitle: 'Protection mode',
+              protectionModeBody: 'Keeping the device connected.',
+              protectionModeChannelName: 'Protection mode',
+              protectionModeChannelDescription: 'Protection status.',
+              protectionSosChannelName: 'Protection SOS',
+              protectionSosChannelDescription: 'Protection SOS alerts.',
+              protectionPreSosTitle: 'SOS pre-alert',
+              protectionPreSosBody: 'Possible SOS.',
+              protectionSosActiveTitle: 'SOS active',
+              protectionSosActiveBody: 'SOS activated.',
+              protectionSosResolvedTitle: 'SOS resolved',
+              protectionSosResolvedBody: 'SOS ended.',
             ),
           ),
         ),
@@ -148,3 +183,20 @@ void main() {
     });
   });
 }
+
+const _notificationTexts = EixamNotificationTexts(
+  protectionActiveTitle: 'Protection active',
+  protectionActiveBody: 'Sharing safety status.',
+  protectionModeTitle: 'Protection mode',
+  protectionModeBody: 'Keeping the device connected.',
+  protectionModeChannelName: 'Protection mode',
+  protectionModeChannelDescription: 'Protection status.',
+  protectionSosChannelName: 'Protection SOS',
+  protectionSosChannelDescription: 'Protection SOS alerts.',
+  protectionPreSosTitle: 'SOS pre-alert',
+  protectionPreSosBody: 'Possible SOS.',
+  protectionSosActiveTitle: 'SOS active',
+  protectionSosActiveBody: 'SOS activated.',
+  protectionSosResolvedTitle: 'SOS resolved',
+  protectionSosResolvedBody: 'SOS ended.',
+);
