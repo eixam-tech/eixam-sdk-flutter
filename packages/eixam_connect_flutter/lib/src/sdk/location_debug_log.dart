@@ -1,12 +1,14 @@
 import 'dart:math' as math;
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:flutter/foundation.dart';
 
 import '../device/ble_debug_registry.dart';
 
 class LocationDebugLog {
   const LocationDebugLog._();
 
+  static const bool enabled = kDebugMode;
   static const String tag = '[EIXAM_LOCATION_AUTH]';
   static const double _suspiciousJumpKm = 50;
   static const Duration _suspiciousJumpWindow = Duration(minutes: 10);
@@ -227,6 +229,9 @@ class LocationDebugLog {
     required bool sentToBackend,
     String? note,
   }) {
+    if (!enabled) {
+      return;
+    }
     _checkSuspiciousJump(flow: flow, location: location, accepted: accepted);
     if (accepted &&
         location.authoritativeForBackend == true &&
@@ -280,6 +285,9 @@ class LocationDebugLog {
     int? relayNodeId,
     String? note,
   }) {
+    if (!enabled) {
+      return;
+    }
     final now = DateTime.now().toUtc();
     final normalizedTimestamp = timestamp?.toUtc();
     final ageMs = normalizedTimestamp == null

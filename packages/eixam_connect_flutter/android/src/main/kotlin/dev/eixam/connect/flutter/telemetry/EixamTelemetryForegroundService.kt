@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
@@ -663,6 +664,9 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         persisted: Boolean = false,
         sentToBackend: Boolean = false,
     ) {
+        if (!isDebugBuild()) {
+            return
+        }
         if (accepted) {
             logSuspiciousJump(flow, source, location)
             lastDebugAcceptedLocation = Location(location)
@@ -693,6 +697,9 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         longitude: Double? = null,
         timestamp: String? = null,
     ) {
+        if (!isDebugBuild()) {
+            return
+        }
         Log.d(
             logTag,
             "$locationAuthTag flow=$flow source=$source " +
@@ -706,6 +713,9 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
     }
 
     private fun logSuspiciousJump(flow: String, source: String, location: Location) {
+        if (!isDebugBuild()) {
+            return
+        }
         val previous = lastDebugAcceptedLocation ?: return
         val previousSource = lastDebugAcceptedSource ?: "unknown"
         val elapsedMs = kotlin.math.abs(location.time - previous.time)
@@ -749,6 +759,9 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             sin(dLon / 2)
         return earthRadiusKm * 2 * atan2(sqrt(a), sqrt(1 - a))
     }
+
+    private fun isDebugBuild(): Boolean =
+        (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
     private fun resolvedLocationAgeMs(timestamp: String): Long {
         val parsed = resolvedLocationEpochMs(timestamp) ?: return Long.MAX_VALUE

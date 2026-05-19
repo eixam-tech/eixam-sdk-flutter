@@ -644,6 +644,9 @@ internal class ProtectionSosBackendHandoff(
         persisted: Boolean = false,
         sentToBackend: Boolean = false,
     ) {
+        if (!isDebugBuild()) {
+            return
+        }
         Log.d(
             logTag,
             "$locationAuthTag flow=$flow source=$source " +
@@ -667,6 +670,9 @@ internal class ProtectionSosBackendHandoff(
         longitude: Double? = null,
         timestamp: String? = null,
     ) {
+        if (!isDebugBuild()) {
+            return
+        }
         Log.d(
             logTag,
             "$locationAuthTag flow=$flow source=$source " +
