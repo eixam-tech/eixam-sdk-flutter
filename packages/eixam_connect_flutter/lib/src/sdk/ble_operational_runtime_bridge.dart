@@ -816,21 +816,20 @@ class BleOperationalRuntimeBridge {
   }
 
   bool _hasMinimumTelemetry(SdkTelemetryPayload payload) {
+    final hasValidLocation = _isValidCoordinate(
+      payload.latitude,
+      payload.longitude,
+    );
     if (payload.kind == 'HEARTBEAT') {
-      return payload.nodeId != null &&
+      return hasValidLocation &&
+          payload.nodeId != null &&
           payload.clusterId != null &&
           payload.aggId != null &&
           payload.score != null &&
           payload.memberCount != null &&
           payload.aggSpreadingFactor != null;
     }
-    return payload.latitude.isFinite &&
-        payload.latitude >= -90 &&
-        payload.latitude <= 90 &&
-        payload.longitude.isFinite &&
-        payload.longitude >= -180 &&
-        payload.longitude <= 180 &&
-        payload.altitude.isFinite;
+    return hasValidLocation && payload.altitude.isFinite;
   }
 
   bool _registerSignature(

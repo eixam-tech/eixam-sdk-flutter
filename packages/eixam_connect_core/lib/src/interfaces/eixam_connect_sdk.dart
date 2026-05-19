@@ -198,6 +198,14 @@ abstract class EixamConnectSdk {
 
   Future<void> startTracking();
   Future<void> stopTracking();
+
+  /// Publishes a live backend-authoritative telemetry payload.
+  ///
+  /// Host apps should prefer [getResolvedTelemetryPreview] and publish only
+  /// previews that are explicitly marked as backend-authoritative by their
+  /// integration layer. Display-only sources such as cached fallbacks, backend
+  /// snapshots, and remote relay event locations are not valid for this raw
+  /// publish path.
   Future<void> publishTelemetry(SdkTelemetryPayload payload);
   Future<TrackingPosition?> getCurrentPosition();
   Future<TrackingState> getTrackingState();

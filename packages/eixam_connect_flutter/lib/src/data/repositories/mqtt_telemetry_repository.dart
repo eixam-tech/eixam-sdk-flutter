@@ -51,6 +51,15 @@ class MqttTelemetryRepository implements TelemetryRepository {
   }
 
   void _validate(SdkTelemetryPayload payload) {
+    final source = payload.identitySource?.trim().toLowerCase();
+    if (source == 'cached_fallback' ||
+        source == 'backend_snapshot' ||
+        source == 'remote_relay') {
+      throw TrackingException(
+        'E_TELEMETRY_SOURCE_NOT_PUBLISHABLE',
+        'Telemetry source ${payload.identitySource} is not valid for live telemetry publish.',
+      );
+    }
     if (!_isFinite(payload.latitude) ||
         payload.latitude < -90 ||
         payload.latitude > 90) {
@@ -65,6 +74,12 @@ class MqttTelemetryRepository implements TelemetryRepository {
       throw const TrackingException(
         'E_TELEMETRY_LONGITUDE_INVALID',
         'Telemetry longitude must be a finite value between -180 and 180.',
+      );
+    }
+    if (payload.latitude == 0 && payload.longitude == 0) {
+      throw const TrackingException(
+        'E_TELEMETRY_COORDINATES_INVALID',
+        'Telemetry coordinates must not be 0,0.',
       );
     }
     if (!_isFinite(payload.altitude)) {

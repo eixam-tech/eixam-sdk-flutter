@@ -530,31 +530,7 @@ internal class ProtectionSosBackendHandoff(
     }
 
     private fun loadTrackingPosition(): TrackingPositionSnapshot? {
-        loadResolvedAuthoritativePosition()?.let {
-            return it
-        }
-        val raw =
-            flutterPreferences.getString("$flutterKeyPrefix${trackingPositionKey}", null)
-                ?: return null
-        val json = JSONObject(raw)
-        if (!json.has("latitude") || !json.has("longitude") || !json.has("timestamp")) {
-            return null
-        }
-        val timestamp = json.getString("timestamp")
-        if (resolvedLocationAgeMs(timestamp) > resolvedLocationMaxAgeMs) {
-            return null
-        }
-        val latitude = json.getDouble("latitude")
-        val longitude = json.getDouble("longitude")
-        if (!isValidCoordinate(latitude, longitude)) {
-            return null
-        }
-        return TrackingPositionSnapshot(
-            latitude = latitude,
-            longitude = longitude,
-            altitude = if (json.isNull("altitude")) null else json.optDouble("altitude"),
-            timestamp = timestamp,
-        )
+        return loadResolvedAuthoritativePosition()
     }
 
     private fun loadResolvedAuthoritativePosition(): TrackingPositionSnapshot? {
@@ -797,7 +773,6 @@ internal class ProtectionSosBackendHandoff(
         private const val flutterPrefsName = "FlutterSharedPreferences"
         private const val flutterKeyPrefix = "flutter."
         private const val sdkSessionKey = "eixam.sdk.session"
-        private const val trackingPositionKey = "eixam.tracking.last_position"
         private const val resolvedLocationKey = "eixam.location.resolved"
         private const val resolvedLocationMaxAgeMs = 120_000L
     }

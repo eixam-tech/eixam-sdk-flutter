@@ -2284,9 +2284,22 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> publishTelemetry(SdkTelemetryPayload payload) async {
+    _assertPublicTelemetryPublishContract(payload);
     await telemetryRepository.publishTelemetry(
       await _enrichOperationalTelemetryPayload(payload),
     );
+  }
+
+  void _assertPublicTelemetryPublishContract(SdkTelemetryPayload payload) {
+    final source = payload.identitySource?.trim().toLowerCase();
+    if (source == 'cached_fallback' ||
+        source == 'backend_snapshot' ||
+        source == 'remote_relay') {
+      throw TrackingException(
+        'E_TELEMETRY_SOURCE_NOT_PUBLISHABLE',
+        'Telemetry source ${payload.identitySource} is not valid for raw live telemetry publish.',
+      );
+    }
   }
 
   @override

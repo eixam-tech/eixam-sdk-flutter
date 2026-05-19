@@ -297,13 +297,6 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         }
         val providers = eligibleProviders(manager)
         if (providers.isEmpty()) {
-            val fallback = relaxedNormalFallbackLocation(manager)
-            if (fallback != null) {
-                lastLocation = fallback
-                store.markLocationMode("stale_fallback")
-                onComplete(fallback, "stale_fallback")
-                return
-            }
             store.markError("no_location_provider")
             onComplete(null, "provider_missing")
             return
@@ -319,13 +312,7 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             onComplete(location, mode)
         }
         val timeout = Runnable {
-            val fallback = relaxedNormalFallbackLocation(manager)
-            if (fallback != null) {
-                lastLocation = fallback
-                complete(fallback, "stale_fallback")
-            } else {
-                complete(null, "timeout")
-            }
+            complete(null, "timeout")
         }
         singleLocationTimeout = timeout
         try {
@@ -440,18 +427,6 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             .plus(listOfNotNull(lastLocation)))
             .filter { isValid(it) }
             .minByOrNull { locationAgeMs(it) }
-    }
-
-    private fun freshestKnownLocationWithin(manager: LocationManager, maxAgeMs: Long): Location? {
-        return freshestKnownLocation(manager)
-            ?.takeIf { locationAgeMs(it) <= maxAgeMs }
-    }
-
-    private fun relaxedNormalFallbackLocation(manager: LocationManager): Location? {
-        if (store.isSosOpen()) {
-            return null
-        }
-        return freshestKnownLocationWithin(manager, normalStaleFallbackMaxAgeMs)
     }
 
     private fun bestProvider(manager: LocationManager): String? {
@@ -733,7 +708,6 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         private const val locationTimeoutMs = 8000L
         private const val normalCachedLocationMaxAgeMs = 45000L
         private const val sosCachedLocationMaxAgeMs = 15000L
-        private const val normalStaleFallbackMaxAgeMs = 600000L
         private const val sosMovementThresholdMeters = 7f
         private const val flutterPrefsName = "FlutterSharedPreferences"
         private const val flutterKeyPrefix = "flutter."
