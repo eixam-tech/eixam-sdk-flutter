@@ -39,6 +39,7 @@ import 'protection_mode_controller.dart';
 import 'protection_platform_adapter.dart';
 import 'protection_platform_adapter_factory.dart';
 import 'relay_ingest_context.dart';
+import 'location_debug_log.dart';
 import 'sdk_resolved_location_resolver.dart';
 import 'sdk_mqtt_contract.dart';
 import 'sos_backend_identity_normalizer.dart';
@@ -2284,6 +2285,14 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> publishTelemetry(SdkTelemetryPayload payload) async {
+    final rejectionReason = _publicTelemetryPublishRejectionReason(payload);
+    LocationDebugLog.telemetryPayload(
+      flow: 'public_publishTelemetry',
+      payload: payload,
+      accepted: rejectionReason == null,
+      rejectionReason: rejectionReason,
+      sentToBackend: false,
+    );
     _assertPublicTelemetryPublishContract(payload);
     await telemetryRepository.publishTelemetry(
       await _enrichOperationalTelemetryPayload(payload),
@@ -2291,15 +2300,24 @@ class EixamConnectSdkImpl
   }
 
   void _assertPublicTelemetryPublishContract(SdkTelemetryPayload payload) {
+    final rejectionReason = _publicTelemetryPublishRejectionReason(payload);
+    if (rejectionReason == null) {
+      return;
+    }
+    throw TrackingException(
+      'E_TELEMETRY_SOURCE_NOT_PUBLISHABLE',
+      'Telemetry source ${payload.identitySource} is not valid for raw live telemetry publish.',
+    );
+  }
+
+  String? _publicTelemetryPublishRejectionReason(SdkTelemetryPayload payload) {
     final source = payload.identitySource?.trim().toLowerCase();
     if (source == 'cached_fallback' ||
         source == 'backend_snapshot' ||
         source == 'remote_relay') {
-      throw TrackingException(
-        'E_TELEMETRY_SOURCE_NOT_PUBLISHABLE',
-        'Telemetry source ${payload.identitySource} is not valid for raw live telemetry publish.',
-      );
+      return 'source_not_publishable';
     }
+    return null;
   }
 
   @override
@@ -3375,6 +3393,14 @@ class EixamConnectSdkImpl
         (location.source == SdkLocationSource.connectedDevice ||
             location.source == SdkLocationSource.phone)) {
       unawaited(_persistResolvedLocationForNative(location));
+    } else {
+      LocationDebugLog.resolved(
+        flow: 'resolver_selected',
+        location: location,
+        accepted: true,
+        persisted: false,
+        note: 'not_persisted_for_native',
+      );
     }
   }
 
@@ -3382,9 +3408,21 @@ class EixamConnectSdkImpl
     SdkResolvedLocation location,
   ) async {
     try {
+      final payload = location.toJson()
+        ..['persistedAt'] = DateTime.now().toUtc().toIso8601String()
+        ..['resolvedLocationHandoffVersion'] =
+            SharedPrefsSdkStore.resolvedLocationHandoffVersion
+        ..['geoDecoderVersion'] =
+            SharedPrefsSdkStore.resolvedLocationGeoDecoderVersion;
       await _localStore.saveJson(
         SharedPrefsSdkStore.resolvedLocationKey,
-        location.toJson(),
+        payload,
+      );
+      LocationDebugLog.resolved(
+        flow: 'resolver_selected',
+        location: location,
+        accepted: true,
+        persisted: true,
       );
     } catch (_) {}
   }
@@ -7576,7 +7614,19 @@ class EixamConnectSdkImpl
     if (location == null) {
       return null;
     }
-    return _telemetryPayloadFromResolvedLocation(location);
+    final payload = _telemetryPayloadFromResolvedLocation(location);
+    LocationDebugLog.telemetryPayload(
+      flow: 'telemetry_publish_candidate',
+      payload: payload,
+      accepted: location.authoritativeForBackend,
+      source: location.source.name,
+      rejectionReason:
+          location.authoritativeForBackend ? null : 'preview_display_only',
+      authoritativeForBackend: location.authoritativeForBackend,
+      sentToBackend: false,
+      note: 'getResolvedTelemetryPreview',
+    );
+    return payload;
   }
 
   @override

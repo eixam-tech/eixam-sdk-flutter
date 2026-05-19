@@ -244,6 +244,14 @@ internal class ProtectionSosBackendHandoff(
             .put("latitude", position.latitude)
             .put("longitude", position.longitude)
             .put("altitude", position.altitude)
+        logLocationAuth(
+            flow = "native_protection_final",
+            source = "sdk_resolved",
+            position = position,
+            accepted = true,
+            persisted = true,
+            sentToBackend = true,
+        )
         val nodeId = runtimeStore.currentBoundNodeId()
         val hardwareId = currentBleHardwareIdForBackendPayload()
             ?.trim()
@@ -538,30 +546,136 @@ internal class ProtectionSosBackendHandoff(
             flutterPreferences.getString("$flutterKeyPrefix${resolvedLocationKey}", null)
                 ?: return null
         val json = JSONObject(raw)
-        if (!json.optBoolean("authoritativeForBackend", false)) {
+        val source = json.optString("source", "unknown")
+        if (
+            json.optInt(resolvedLocationHandoffVersionKey, 0) != resolvedLocationHandoffVersion ||
+            json.optString(geoDecoderVersionKey, "") != expectedGeoDecoderVersion
+        ) {
+            logLocationAuthRaw(
+                flow = "native_protection_candidate",
+                source = source,
+                latitude = if (json.has("latitude") && !json.isNull("latitude")) json.optDouble("latitude") else null,
+                longitude = if (json.has("longitude") && !json.isNull("longitude")) json.optDouble("longitude") else null,
+                timestamp = json.optString("timestamp", "").takeIf { it.isNotBlank() },
+                accepted = false,
+                rejectionReason = "stale_or_incompatible_decoder_version",
+            )
+            flutterPreferences.edit()
+                .remove("$flutterKeyPrefix${resolvedLocationKey}")
+                .apply()
             return null
         }
-        val source = json.optString("source")
+        if (!json.optBoolean("authoritativeForBackend", false)) {
+            logLocationAuthRaw(
+                flow = "native_protection_candidate",
+                source = source,
+                accepted = false,
+                rejectionReason = "persisted_resolved_not_authoritative",
+            )
+            return null
+        }
         if (source == "cachedFallback" || source == "backendSnapshot" || source.isBlank()) {
+            logLocationAuthRaw(
+                flow = "native_protection_candidate",
+                source = source.ifBlank { "unknown" },
+                accepted = false,
+                rejectionReason = "persisted_resolved_not_publishable",
+            )
             return null
         }
         if (!json.has("latitude") || !json.has("longitude") || !json.has("timestamp")) {
+            logLocationAuthRaw(
+                flow = "native_protection_candidate",
+                source = source,
+                accepted = false,
+                rejectionReason = "persisted_resolved_missing_coordinate",
+            )
             return null
         }
         val timestamp = json.getString("timestamp")
         if (resolvedLocationAgeMs(timestamp) > resolvedLocationMaxAgeMs) {
+            logLocationAuthRaw(
+                flow = "native_protection_candidate",
+                source = source,
+                latitude = json.optDouble("latitude"),
+                longitude = json.optDouble("longitude"),
+                timestamp = timestamp,
+                accepted = false,
+                rejectionReason = "persisted_resolved_stale",
+            )
             return null
         }
         val latitude = json.getDouble("latitude")
         val longitude = json.getDouble("longitude")
         if (!isValidCoordinate(latitude, longitude)) {
+            logLocationAuthRaw(
+                flow = "native_protection_candidate",
+                source = source,
+                latitude = latitude,
+                longitude = longitude,
+                timestamp = timestamp,
+                accepted = false,
+                rejectionReason = "persisted_resolved_invalid_coordinate",
+            )
             return null
         }
-        return TrackingPositionSnapshot(
+        val position = TrackingPositionSnapshot(
             latitude = latitude,
             longitude = longitude,
             altitude = if (json.isNull("altitudeMeters")) null else json.optDouble("altitudeMeters"),
             timestamp = timestamp,
+        )
+        logLocationAuth(
+            flow = "native_protection_candidate",
+            source = source,
+            position = position,
+            accepted = true,
+            persisted = true,
+        )
+        return position
+    }
+
+    private fun logLocationAuth(
+        flow: String,
+        source: String,
+        position: TrackingPositionSnapshot,
+        accepted: Boolean,
+        rejectionReason: String? = null,
+        persisted: Boolean = false,
+        sentToBackend: Boolean = false,
+    ) {
+        Log.d(
+            logTag,
+            "$locationAuthTag flow=$flow source=$source " +
+                "lat=${"%.6f".format(Locale.US, position.latitude)} " +
+                "lon=${"%.6f".format(Locale.US, position.longitude)} " +
+                "alt=${position.altitude?.let { "%.2f".format(Locale.US, it) } ?: "none"} " +
+                "accuracy=none timestamp=${position.timestamp} " +
+                "ageMs=${resolvedLocationAgeMs(position.timestamp)} " +
+                "authoritativeForBackend=true accepted=$accepted " +
+                "rejectionReason=${rejectionReason ?: "none"} " +
+                "persisted=$persisted sentToBackend=$sentToBackend",
+        )
+    }
+
+    private fun logLocationAuthRaw(
+        flow: String,
+        source: String,
+        accepted: Boolean,
+        rejectionReason: String,
+        latitude: Double? = null,
+        longitude: Double? = null,
+        timestamp: String? = null,
+    ) {
+        Log.d(
+            logTag,
+            "$locationAuthTag flow=$flow source=$source " +
+                "lat=${latitude?.let { "%.6f".format(Locale.US, it) } ?: "none"} " +
+                "lon=${longitude?.let { "%.6f".format(Locale.US, it) } ?: "none"} " +
+                "alt=none accuracy=none timestamp=${timestamp ?: "none"} " +
+                "ageMs=${timestamp?.let { resolvedLocationAgeMs(it).toString() } ?: "none"} " +
+                "authoritativeForBackend=false accepted=$accepted " +
+                "rejectionReason=$rejectionReason persisted=true sentToBackend=false",
         )
     }
 
@@ -770,10 +884,15 @@ internal class ProtectionSosBackendHandoff(
 
     companion object {
         private const val logTag = "ProtectionSosBackend"
+        private const val locationAuthTag = "[EIXAM_LOCATION_AUTH]"
         private const val flutterPrefsName = "FlutterSharedPreferences"
         private const val flutterKeyPrefix = "flutter."
         private const val sdkSessionKey = "eixam.sdk.session"
         private const val resolvedLocationKey = "eixam.location.resolved"
+        private const val resolvedLocationHandoffVersionKey = "resolvedLocationHandoffVersion"
+        private const val resolvedLocationHandoffVersion = 2
+        private const val geoDecoderVersionKey = "geoDecoderVersion"
+        private const val expectedGeoDecoderVersion = "firmware_tel_sos_v2"
         private const val resolvedLocationMaxAgeMs = 120_000L
     }
 }

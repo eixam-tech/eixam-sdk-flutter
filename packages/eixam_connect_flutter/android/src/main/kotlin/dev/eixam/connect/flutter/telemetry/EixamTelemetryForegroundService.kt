@@ -17,6 +17,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -29,6 +30,10 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import kotlin.concurrent.thread
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.sqrt
 import org.json.JSONObject
 
 internal class EixamTelemetryForegroundService : Service(), LocationListener {
@@ -39,6 +44,8 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
     private var foregroundStarted = false
     private var lastLocation: Location? = null
     private var lastPublishedSosLocation: Location? = null
+    private var lastDebugAcceptedLocation: Location? = null
+    private var lastDebugAcceptedSource: String? = null
     private val singleLocationListeners = mutableListOf<Pair<String, LocationListener>>()
     private var singleLocationTimeout: Runnable? = null
     private var sosLocationUpdatesActive = false
@@ -165,12 +172,20 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             }
             thread(name = "eixam-bg-telemetry") {
                 try {
+                    val body = buildPayload(location)
+                    logLocationAuth(
+                        flow = "native_foreground_final",
+                        source = locationMode,
+                        location = location,
+                        accepted = true,
+                        sentToBackend = true,
+                    )
                     postTelemetry(
                         apiBaseUrl = apiBaseUrl,
                         appId = appId,
                         externalUserId = externalUserId,
                         userHash = userHash,
-                        body = buildPayload(location),
+                        body = body,
                     )
                     if (store.isSosOpen()) {
                         lastPublishedSosLocation = location
@@ -254,11 +269,23 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         timeoutMs: Long,
         onComplete: (Location?, String) -> Unit,
     ) {
-        val resolvedDevice = loadResolvedConnectedDeviceLocation()
-        if (resolvedDevice != null) {
-            lastLocation = resolvedDevice
-            store.markLocationMode("sdk_resolved_connected_device")
-            onComplete(resolvedDevice, "sdk_resolved_connected_device")
+        val resolvedTelemetryLocation = loadResolvedTelemetryLocation()
+        if (resolvedTelemetryLocation != null) {
+            val (resolvedLocation, resolvedSource) = resolvedTelemetryLocation
+            val resolvedMode = when (resolvedSource) {
+                "phone" -> "sdk_resolved_phone"
+                else -> "sdk_resolved_connected_device"
+            }
+            lastLocation = resolvedLocation
+            store.markLocationMode(resolvedMode)
+            logLocationAuth(
+                flow = "native_foreground_candidate",
+                source = resolvedSource,
+                location = resolvedLocation,
+                accepted = true,
+                persisted = true,
+            )
+            onComplete(resolvedLocation, resolvedMode)
             return
         }
         if (!hasLocationPermission()) {
@@ -274,9 +301,24 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             if (ageMs <= maxAgeMs) {
                 lastLocation = cached
                 store.markLocationMode("cached")
+                logLocationAuth(
+                    flow = "native_foreground_candidate",
+                    source = "phone_cached_os",
+                    location = cached,
+                    accepted = true,
+                    persisted = true,
+                )
                 onComplete(cached, "cached")
                 return
             }
+            logLocationAuth(
+                flow = "native_foreground_candidate",
+                source = "phone_cached_os",
+                location = cached,
+                accepted = false,
+                rejectionReason = "stale_cached_os_location",
+                persisted = true,
+            )
         }
         if (store.isSosOpen() && sosLocationUpdatesActive) {
             store.markLocationMode("timeout")
@@ -320,9 +362,22 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
                 val listener = object : LocationListener {
                     override fun onLocationChanged(location: Location) {
                         if (!isValid(location)) {
+                            logLocationAuth(
+                                flow = "native_foreground_candidate",
+                                source = "phone_current:${location.provider ?: provider}",
+                                location = location,
+                                accepted = false,
+                                rejectionReason = "invalid_current_location",
+                            )
                             return
                         }
                         lastLocation = location
+                        logLocationAuth(
+                            flow = "native_foreground_candidate",
+                            source = "phone_current:${location.provider ?: provider}",
+                            location = location,
+                            accepted = true,
+                        )
                         complete(location, "current:${location.provider ?: provider}")
                     }
 
@@ -486,47 +541,237 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             !(location.latitude == 0.0 && location.longitude == 0.0)
     }
 
-    private fun loadResolvedConnectedDeviceLocation(): Location? {
+    private fun loadResolvedTelemetryLocation(): Pair<Location, String>? {
         val raw =
             flutterPreferences.getString("$flutterKeyPrefix${resolvedLocationKey}", null)
                 ?: return null
         val json = JSONObject(raw)
-        if (!json.optBoolean("authoritativeForBackend", false) ||
-            json.optString("source") != "connectedDevice"
+        val source = json.optString("source", "unknown")
+        if (
+            json.optInt(resolvedLocationHandoffVersionKey, 0) != resolvedLocationHandoffVersion ||
+            json.optString(geoDecoderVersionKey, "") != expectedGeoDecoderVersion
         ) {
+            logLocationAuthRaw(
+                flow = "native_foreground_candidate",
+                source = source,
+                latitude = if (json.has("latitude") && !json.isNull("latitude")) json.optDouble("latitude") else null,
+                longitude = if (json.has("longitude") && !json.isNull("longitude")) json.optDouble("longitude") else null,
+                timestamp = json.optString("timestamp", "").takeIf { it.isNotBlank() },
+                accepted = false,
+                rejectionReason = "stale_or_incompatible_decoder_version",
+                authoritativeForBackend = json.optBoolean("authoritativeForBackend", false),
+                persisted = true,
+            )
+            flutterPreferences.edit()
+                .remove("$flutterKeyPrefix${resolvedLocationKey}")
+                .apply()
             return null
         }
-        if (!json.has("latitude") || !json.has("longitude") || !json.has("timestamp")) {
+        if (!json.optBoolean("authoritativeForBackend", false)) {
+            logLocationAuthRaw(
+                flow = "native_foreground_candidate",
+                source = source,
+                accepted = false,
+                rejectionReason = "persisted_resolved_not_authoritative",
+                persisted = true,
+            )
             return null
         }
-        if (resolvedLocationAgeMs(json.getString("timestamp")) > resolvedLocationMaxAgeMs) {
+        if (source != "connectedDevice" && source != "phone") {
+            logLocationAuthRaw(
+                flow = "native_foreground_candidate",
+                source = source,
+                accepted = false,
+                rejectionReason = "persisted_resolved_source_not_allowed",
+                authoritativeForBackend = true,
+                persisted = true,
+            )
             return null
         }
-        val location = Location("eixam_resolved_connected_device")
+        if (!json.has("latitude") || json.isNull("latitude") ||
+            !json.has("longitude") || json.isNull("longitude") ||
+            !json.has("timestamp") || json.isNull("timestamp")
+        ) {
+            logLocationAuthRaw(
+                flow = "native_foreground_candidate",
+                source = source,
+                accepted = false,
+                rejectionReason = "persisted_resolved_missing_coordinate",
+                authoritativeForBackend = true,
+                persisted = true,
+            )
+            return null
+        }
+        val timestamp = json.getString("timestamp")
+        val sampleAgeMs = resolvedLocationAgeMs(timestamp)
+        val persistedAt = json.optString("persistedAt", "")
+            .takeIf { it.isNotBlank() }
+            ?: json.optString("updatedAt", "").takeIf { it.isNotBlank() }
+        val persistedAgeMs = persistedAt?.let { resolvedLocationAgeMs(it) }
+        if (sampleAgeMs > resolvedLocationMaxAgeMs ||
+            (persistedAgeMs != null && persistedAgeMs > resolvedLocationMaxAgeMs)
+        ) {
+            logLocationAuthRaw(
+                flow = "native_foreground_candidate",
+                source = source,
+                latitude = json.optDouble("latitude"),
+                longitude = json.optDouble("longitude"),
+                timestamp = timestamp,
+                accepted = false,
+                rejectionReason = "stale_sdk_resolved_location",
+                authoritativeForBackend = true,
+                persisted = true,
+            )
+            return null
+        }
+        val location = Location("eixam_resolved_$source")
         location.latitude = json.getDouble("latitude")
         location.longitude = json.getDouble("longitude")
         if (!json.isNull("altitudeMeters")) {
             location.altitude = json.optDouble("altitudeMeters")
         }
-        location.time = System.currentTimeMillis()
+        location.time = resolvedLocationEpochMs(timestamp) ?: System.currentTimeMillis()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+            location.elapsedRealtimeNanos = (
+                SystemClock.elapsedRealtimeNanos() -
+                    sampleAgeMs.coerceAtLeast(0L) * 1_000_000L
+                ).coerceAtLeast(0L)
+        }
         return if (isValid(location) &&
             !(location.latitude == 0.0 && location.longitude == 0.0)
         ) {
-            location
+            location to source
         } else {
+            logLocationAuth(
+                flow = "native_foreground_candidate",
+                source = source,
+                location = location,
+                accepted = false,
+                rejectionReason = "persisted_resolved_invalid_coordinate",
+                persisted = true,
+            )
             null
         }
     }
 
+    private fun logLocationAuth(
+        flow: String,
+        source: String,
+        location: Location,
+        accepted: Boolean,
+        rejectionReason: String? = null,
+        persisted: Boolean = false,
+        sentToBackend: Boolean = false,
+    ) {
+        if (accepted) {
+            logSuspiciousJump(flow, source, location)
+            lastDebugAcceptedLocation = Location(location)
+            lastDebugAcceptedSource = source
+        }
+        Log.d(
+            logTag,
+            "$locationAuthTag flow=$flow source=$source " +
+                "lat=${"%.6f".format(Locale.US, location.latitude)} " +
+                "lon=${"%.6f".format(Locale.US, location.longitude)} " +
+                "alt=${if (location.hasAltitude()) "%.2f".format(Locale.US, location.altitude) else "none"} " +
+                "accuracy=${if (location.hasAccuracy()) "%.2f".format(Locale.US, location.accuracy) else "none"} " +
+                "timestamp=${location.time} ageMs=${locationAgeMs(location)} " +
+                "authoritativeForBackend=true accepted=$accepted " +
+                "rejectionReason=${rejectionReason ?: "none"} " +
+                "persisted=$persisted sentToBackend=$sentToBackend",
+        )
+    }
+
+    private fun logLocationAuthRaw(
+        flow: String,
+        source: String,
+        accepted: Boolean,
+        rejectionReason: String,
+        persisted: Boolean,
+        authoritativeForBackend: Boolean = false,
+        latitude: Double? = null,
+        longitude: Double? = null,
+        timestamp: String? = null,
+    ) {
+        Log.d(
+            logTag,
+            "$locationAuthTag flow=$flow source=$source " +
+                "lat=${latitude?.let { "%.6f".format(Locale.US, it) } ?: "none"} " +
+                "lon=${longitude?.let { "%.6f".format(Locale.US, it) } ?: "none"} " +
+                "alt=none accuracy=none timestamp=${timestamp ?: "none"} " +
+                "ageMs=${timestamp?.let { resolvedLocationAgeMs(it).toString() } ?: "none"} " +
+                "authoritativeForBackend=$authoritativeForBackend accepted=$accepted " +
+                "rejectionReason=$rejectionReason persisted=$persisted sentToBackend=false",
+        )
+    }
+
+    private fun logSuspiciousJump(flow: String, source: String, location: Location) {
+        val previous = lastDebugAcceptedLocation ?: return
+        val previousSource = lastDebugAcceptedSource ?: "unknown"
+        val elapsedMs = kotlin.math.abs(location.time - previous.time)
+        if (elapsedMs > suspiciousJumpWindowMs) {
+            return
+        }
+        val distanceKm = distanceKm(
+            previous.latitude,
+            previous.longitude,
+            location.latitude,
+            location.longitude,
+        )
+        if (distanceKm <= suspiciousJumpKm) {
+            return
+        }
+        Log.w(
+            logTag,
+            "$locationAuthTag[suspicious_jump] flow=$flow " +
+                "previousLat=${"%.6f".format(Locale.US, previous.latitude)} " +
+                "previousLon=${"%.6f".format(Locale.US, previous.longitude)} " +
+                "newLat=${"%.6f".format(Locale.US, location.latitude)} " +
+                "newLon=${"%.6f".format(Locale.US, location.longitude)} " +
+                "distanceKm=${"%.2f".format(Locale.US, distanceKm)} " +
+                "elapsedMs=$elapsedMs previousSource=$previousSource newSource=$source",
+        )
+    }
+
+    private fun distanceKm(
+        lat1: Double,
+        lon1: Double,
+        lat2: Double,
+        lon2: Double,
+    ): Double {
+        val earthRadiusKm = 6371.0
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val a = sin(dLat / 2) * sin(dLat / 2) +
+            cos(Math.toRadians(lat1)) *
+            cos(Math.toRadians(lat2)) *
+            sin(dLon / 2) *
+            sin(dLon / 2)
+        return earthRadiusKm * 2 * atan2(sqrt(a), sqrt(1 - a))
+    }
+
     private fun resolvedLocationAgeMs(timestamp: String): Long {
+        val parsed = resolvedLocationEpochMs(timestamp) ?: return Long.MAX_VALUE
+        val ageMs = System.currentTimeMillis() - parsed
+        return if (ageMs < -resolvedLocationMaxAgeMs) {
+            Long.MAX_VALUE
+        } else {
+            ageMs.coerceAtLeast(0L)
+        }
+    }
+
+    private fun resolvedLocationEpochMs(timestamp: String): Long? {
         return try {
-            val normalizedTimestamp = normalizeIsoTimestamp(timestamp)
+            val trimmed = timestamp.trim()
+            trimmed.toLongOrNull()?.let { numeric ->
+                return if (trimmed.length <= 10) numeric * 1000L else numeric
+            }
+            val normalizedTimestamp = normalizeIsoTimestamp(trimmed)
             val formatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
             formatter.timeZone = TimeZone.getTimeZone("UTC")
-            val parsed = formatter.parse(normalizedTimestamp) ?: return Long.MAX_VALUE
-            (System.currentTimeMillis() - parsed.time).coerceAtLeast(0L)
+            formatter.parse(normalizedTimestamp)?.time
         } catch (_: Exception) {
-            Long.MAX_VALUE
+            null
         }
     }
 
@@ -695,6 +940,7 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
 
     companion object {
         private const val logTag = "EixamTelemetryService"
+        private const val locationAuthTag = "[EIXAM_LOCATION_AUTH]"
         private const val logPrefix = "[SDK_BG_TELEMETRY]"
         private const val notificationChannelId = "eixam_background_telemetry"
         private const val notificationId = 6031
@@ -712,7 +958,13 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         private const val flutterPrefsName = "FlutterSharedPreferences"
         private const val flutterKeyPrefix = "flutter."
         private const val resolvedLocationKey = "eixam.location.resolved"
+        private const val resolvedLocationHandoffVersionKey = "resolvedLocationHandoffVersion"
+        private const val resolvedLocationHandoffVersion = 2
+        private const val geoDecoderVersionKey = "geoDecoderVersion"
+        private const val expectedGeoDecoderVersion = "firmware_tel_sos_v2"
         private const val resolvedLocationMaxAgeMs = 120000L
+        private const val suspiciousJumpKm = 50.0
+        private const val suspiciousJumpWindowMs = 600000L
 
         fun start(context: Context) {
             val intent = Intent(context, EixamTelemetryForegroundService::class.java).apply {

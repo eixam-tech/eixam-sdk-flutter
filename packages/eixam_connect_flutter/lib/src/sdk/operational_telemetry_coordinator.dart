@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import '../device/ble_debug_registry.dart';
+import 'location_debug_log.dart';
 
 typedef OperationalTelemetrySessionProvider = EixamSession? Function();
 typedef OperationalTelemetryPayloadPublisher = Future<void> Function(
@@ -208,7 +209,15 @@ class OperationalTelemetryCoordinator {
           '[SDK_TELEMETRY_LOOP] action=skip reason=no_location error=$error');
       return;
     }
-    if (!_hasValidResolvedLocation(location)) {
+    final validResolved = _hasValidResolvedLocation(location);
+    LocationDebugLog.resolved(
+      flow: 'telemetry_publish_candidate',
+      location: location,
+      accepted: validResolved,
+      rejectionReason: validResolved ? null : 'invalid_resolved_location',
+      sentToBackend: false,
+    );
+    if (!validResolved) {
       _logger('[SDK_TELEMETRY_LOOP] action=skip reason=no_location');
       return;
     }
@@ -231,23 +240,29 @@ class OperationalTelemetryCoordinator {
     }
     _publishInFlight = true;
     try {
-      await _publishTelemetry(
-        SdkTelemetryPayload(
-          timestamp: _clock().toUtc(),
-          latitude: location.latitude,
-          longitude: location.longitude,
-          altitude: location.altitudeMeters ?? 0,
-          deviceId: location.deviceId,
-          hardwareId: location.hardwareId,
-          nodeId: location.nodeId,
-          identitySource: switch (location.source) {
-            SdkLocationSource.connectedDevice => 'ble_node',
-            SdkLocationSource.phone => 'app',
-            SdkLocationSource.remoteRelayDevice => 'remote_relay',
-            _ => null,
-          },
-        ),
+      final payload = SdkTelemetryPayload(
+        timestamp: _clock().toUtc(),
+        latitude: location.latitude,
+        longitude: location.longitude,
+        altitude: location.altitudeMeters ?? 0,
+        deviceId: location.deviceId,
+        hardwareId: location.hardwareId,
+        nodeId: location.nodeId,
+        identitySource: switch (location.source) {
+          SdkLocationSource.connectedDevice => 'ble_node',
+          SdkLocationSource.phone => 'app',
+          SdkLocationSource.remoteRelayDevice => 'remote_relay',
+          _ => null,
+        },
       );
+      LocationDebugLog.telemetryPayload(
+        flow: 'telemetry_publish_final',
+        payload: payload,
+        accepted: true,
+        source: location.source.name,
+        sentToBackend: true,
+      );
+      await _publishTelemetry(payload);
       if (_sosOpen) {
         _lastPublishedSosLocation = location;
       }

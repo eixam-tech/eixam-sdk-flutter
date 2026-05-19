@@ -37,6 +37,7 @@ class BleDebugRegistry {
     '[APP_SOS_COUNTDOWN_ZERO]',
     '[NATIVE_PRE_SOS_BACKEND]',
     '[BACKGROUND_SOS]',
+    '[EIXAM_LOCATION_AUTH]',
     'Device SOS backend sync created incident',
     'SOS_BACKEND_PAYLOAD_FINAL',
   ];

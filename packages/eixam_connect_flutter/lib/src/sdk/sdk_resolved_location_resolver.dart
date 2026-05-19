@@ -1,5 +1,7 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import 'location_debug_log.dart';
+
 enum SdkResolvedLocationUseCase {
   emergencyBackend,
   telemetryBackend,
@@ -36,27 +38,64 @@ class SdkResolvedLocationResolver {
   }) async {
     final remote = _authoritativeRemoteRelay(remoteRelayLocation);
     if (remote != null) {
+      LocationDebugLog.resolved(
+        flow: 'resolver_selected',
+        location: remote,
+        accepted: true,
+      );
       return remote;
     }
 
     final device = _freshConnectedOwnDeviceLocation();
     if (device != null) {
+      LocationDebugLog.resolved(
+        flow: 'resolver_selected',
+        location: device,
+        accepted: true,
+      );
       return device;
     }
 
     final phone = await _freshPhoneLocation();
     if (phone != null) {
+      LocationDebugLog.resolved(
+        flow: 'resolver_selected',
+        location: phone,
+        accepted: true,
+      );
       return phone;
     }
 
     if (useCase == SdkResolvedLocationUseCase.uiPreview) {
       final backend = _presentationOnly(backendSnapshot);
       if (backend != null) {
+        LocationDebugLog.resolved(
+          flow: 'resolver_selected',
+          location: backend,
+          accepted: true,
+          note: 'uiPreview',
+        );
         return backend;
       }
-      return _presentationOnly(cachedFallback);
+      final cached = _presentationOnly(cachedFallback);
+      if (cached != null) {
+        LocationDebugLog.resolved(
+          flow: 'resolver_selected',
+          location: cached,
+          accepted: true,
+          note: 'uiPreview',
+        );
+      }
+      return cached;
     }
 
+    LocationDebugLog.resolved(
+      flow: 'resolver_selected',
+      location: null,
+      accepted: false,
+      rejectionReason: 'no_authoritative_location',
+      note: useCase.name,
+    );
     return null;
   }
 
@@ -65,26 +104,83 @@ class SdkResolvedLocationResolver {
   ) {
     if (location == null ||
         location.source != SdkLocationSource.remoteRelayDevice) {
+      if (location != null) {
+        LocationDebugLog.resolved(
+          flow: 'resolver_candidate',
+          location: location,
+          accepted: false,
+          rejectionReason: 'not_remote_relay_device',
+        );
+      }
       return null;
     }
     final resolved = _withFreshness(location);
     if (!resolved.isValid) {
+      LocationDebugLog.resolved(
+        flow: 'resolver_candidate',
+        location: resolved,
+        accepted: false,
+        rejectionReason: 'invalid_remote_relay_coordinate',
+      );
       return null;
     }
+    LocationDebugLog.resolved(
+      flow: 'resolver_candidate',
+      location: resolved,
+      accepted: true,
+    );
     return resolved.copyWith(authoritativeForBackend: true);
   }
 
   SdkResolvedLocation? _freshConnectedOwnDeviceLocation() {
-    final candidate = _bridgeDiagnosticsProvider().latestOwnDeviceLocation;
-    if (candidate == null ||
-        candidate.source != SdkLocationSource.connectedDevice) {
+    final diagnostics = _bridgeDiagnosticsProvider();
+    final candidate = diagnostics.latestOwnDeviceLocation;
+    final status = _deviceStatusProvider();
+    if (candidate == null) {
+      LocationDebugLog.availability(
+        flow: 'resolver_candidate',
+        source: 'connectedDevice',
+        accepted: false,
+        rejectionReason: 'no_latest_own_device_location',
+        authoritativeForBackend: true,
+        candidateExists: false,
+        connected: status?.connected ?? false,
+        runtimeReady: status?.isReadyForSafety,
+        deviceId: status?.deviceId,
+        hardwareId: status?.canonicalHardwareId,
+        nodeId: status?.nodeId,
+        note: 'bridgeActive=${diagnostics.isActive}',
+      );
       return null;
     }
-    final status = _deviceStatusProvider();
+    if (candidate.source != SdkLocationSource.connectedDevice) {
+      LocationDebugLog.resolved(
+        flow: 'resolver_candidate',
+        location: candidate,
+        accepted: false,
+        rejectionReason: 'not_connected_device_candidate',
+        note: _candidateNote(candidate, status),
+      );
+      return null;
+    }
     if (status?.connected != true) {
+      LocationDebugLog.resolved(
+        flow: 'resolver_candidate',
+        location: candidate,
+        accepted: false,
+        rejectionReason: 'device_not_connected',
+        note: _candidateNote(candidate, status),
+      );
       return null;
     }
     if (!_belongsToCurrentDevice(candidate, status!)) {
+      LocationDebugLog.resolved(
+        flow: 'resolver_candidate',
+        location: candidate,
+        accepted: false,
+        rejectionReason: 'identity_mismatch',
+        note: _candidateNote(candidate, status),
+      );
       return null;
     }
     final resolved = _withFreshness(
@@ -95,8 +191,23 @@ class SdkResolvedLocationResolver {
       ),
     );
     if (!resolved.isValid || !resolved.isFresh) {
+      LocationDebugLog.resolved(
+        flow: 'resolver_candidate',
+        location: resolved,
+        accepted: false,
+        rejectionReason: !resolved.isValid
+            ? 'invalid_device_location'
+            : 'stale_device_location',
+        note: _candidateNote(resolved, status),
+      );
       return null;
     }
+    LocationDebugLog.resolved(
+      flow: 'resolver_candidate',
+      location: resolved,
+      accepted: true,
+      note: _candidateNote(resolved, status),
+    );
     return resolved.copyWith(authoritativeForBackend: true);
   }
 
@@ -104,6 +215,12 @@ class SdkResolvedLocationResolver {
     try {
       final position = await _trackingRepository.getCurrentPosition();
       if (position == null) {
+        LocationDebugLog.resolved(
+          flow: 'resolver_candidate',
+          location: null,
+          accepted: false,
+          rejectionReason: 'phone_position_null',
+        );
         return null;
       }
       final freshness = _age(position.timestamp);
@@ -113,10 +230,29 @@ class SdkResolvedLocationResolver {
         isFresh: freshness <= _freshnessThreshold,
       );
       if (!location.isValid || !location.isFresh) {
+        LocationDebugLog.resolved(
+          flow: 'resolver_candidate',
+          location: location,
+          accepted: false,
+          rejectionReason: !location.isValid
+              ? 'invalid_phone_coordinate'
+              : 'stale_phone_coordinate',
+        );
         return null;
       }
+      LocationDebugLog.resolved(
+        flow: 'resolver_candidate',
+        location: location,
+        accepted: true,
+      );
       return location;
     } catch (_) {
+      LocationDebugLog.resolved(
+        flow: 'resolver_candidate',
+        location: null,
+        accepted: false,
+        rejectionReason: 'phone_position_error',
+      );
       return null;
     }
   }
@@ -127,9 +263,22 @@ class SdkResolvedLocationResolver {
     }
     final resolved = _withFreshness(location);
     if (!resolved.isValid) {
+      LocationDebugLog.resolved(
+        flow: 'resolver_candidate',
+        location: resolved,
+        accepted: false,
+        rejectionReason: 'invalid_presentation_coordinate',
+      );
       return null;
     }
-    return resolved.copyWith(authoritativeForBackend: false);
+    final presentation = resolved.copyWith(authoritativeForBackend: false);
+    LocationDebugLog.resolved(
+      flow: 'resolver_candidate',
+      location: presentation,
+      accepted: true,
+      note: 'presentation_only',
+    );
+    return presentation;
   }
 
   SdkResolvedLocation _withFreshness(SdkResolvedLocation location) {
@@ -162,6 +311,20 @@ class SdkResolvedLocationResolver {
       return false;
     }
     return true;
+  }
+
+  String _candidateNote(SdkResolvedLocation location, DeviceStatus? status) {
+    final freshness = _age(location.timestamp);
+    return 'candidateExists=true '
+        'connected=${status?.connected ?? false} '
+        'runtimeReady=${status?.isReadyForSafety.toString() ?? 'unknown'} '
+        'latestTelAgeMs=${freshness.inMilliseconds} '
+        'latestTelTimestamp=${location.timestamp.toUtc().toIso8601String()} '
+        'candidateNodeId=${location.nodeId?.toString() ?? 'none'} '
+        'statusNodeId=${status?.nodeId?.toString() ?? 'none'} '
+        'candidateHardwareId=${location.hardwareId ?? 'none'} '
+        'statusHardwareId=${status?.canonicalHardwareId ?? 'none'} '
+        'statusDeviceId=${status?.deviceId ?? 'none'}';
   }
 
   bool _isValidCoordinate(double latitude, double longitude) {

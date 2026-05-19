@@ -13,6 +13,8 @@ import '../device/eixam_cluster_heartbeat_packet.dart';
 import '../device/eixam_sos_packet.dart';
 import '../device/eixam_tel_packet.dart';
 import '../device/eixam_tel_relay_cluster_packet.dart';
+import '../device/eixam_position_data.dart';
+import 'location_debug_log.dart';
 import 'relay_ingest_context.dart';
 
 typedef SosBackendDeviceRegisterRetry = Future<bool> Function({
@@ -366,8 +368,34 @@ class BleOperationalRuntimeBridge {
   Future<void> _publishHeartbeatIfValid(BleIncomingEvent event) async {
     final packet = event.clusterHeartbeatPacket;
     if (packet == null) {
+      LocationDebugLog.availability(
+        flow: 'ble_decode',
+        source: 'connectedDevice',
+        accepted: false,
+        rejectionReason: 'unknown_packet_type',
+        authoritativeForBackend: false,
+        packetType: 'heartbeat',
+        rawHex: event.payloadHex,
+        deviceId: event.deviceId,
+        hardwareId: event.canonicalHardwareId,
+      );
       return;
     }
+    LocationDebugLog.availability(
+      flow: 'ble_decode',
+      source: 'connectedDevice',
+      accepted: true,
+      authoritativeForBackend: false,
+      timestamp: event.receivedAt.toUtc(),
+      packetType: 'heartbeat',
+      classification: event.classification.kind.name,
+      hasLocation: false,
+      rawHex: packet.rawHex,
+      deviceId: packet.nodeId.toString(),
+      hardwareId: event.canonicalHardwareId,
+      nodeId: packet.nodeId,
+      note: 'clusterId=${packet.clusterId}',
+    );
 
     final summary =
         'device=${event.deviceId} heartbeat nodeId=${_formatNodeId(packet.nodeId)} clusterId=${packet.clusterId} aggId=0x${packet.aggId.toRadixString(16).padLeft(8, '0')} score=${packet.score} members=${packet.memberCount} aggSf=${packet.aggSpreadingFactor} raw=${packet.rawHex}';
@@ -441,9 +469,82 @@ class BleOperationalRuntimeBridge {
     RelayIngestContext? relayContext,
     String? overrideDeviceId,
   }) async {
+    final decodedValid = _isValidCoordinate(
+      packet.position.latitude,
+      packet.position.longitude,
+    );
+    final packetType = relayContext == null ? 'TEL' : 'relay_TEL';
+    final classification = event.classification.kind.name;
+    LocationDebugLog.raw(
+      flow: 'ble_decode',
+      source: relayContext == null ? 'connectedDevice' : 'remoteRelayDevice',
+      latitude: packet.position.latitude,
+      longitude: packet.position.longitude,
+      altitude: packet.position.altitudeMeters.toDouble(),
+      timestamp: event.receivedAt.toUtc(),
+      accepted: decodedValid,
+      rejectionReason: decodedValid ? null : 'invalid_ble_coordinate',
+      authoritativeForBackend: relayContext == null,
+      deviceId: overrideDeviceId ?? packet.nodeId.toString(),
+      hardwareId: event.canonicalHardwareId,
+      nodeId: packet.nodeId,
+      note: relayContext == null
+          ? 'packetType=$packetType classification=$classification '
+              'hasLocation=true gpsQuality=${packet.gpsQuality} '
+              'raw=${packet.rawHex}'
+          : 'packetType=$packetType classification=$classification '
+              'hasLocation=true gpsQuality=${packet.gpsQuality} '
+              'raw=${packet.rawHex}',
+    );
+    _logPositionDecodeDetail(
+      event: event,
+      source: relayContext == null ? 'connectedDevice' : 'remoteRelayDevice',
+      packetType: packetType,
+      packetLength: packet.rawBytes.length,
+      rawBytes: packet.rawBytes,
+      rawHex: packet.rawHex,
+      positionOffset: 4,
+      latitude: packet.position.latitude,
+      longitude: packet.position.longitude,
+      altitudeMeters: packet.position.altitudeMeters,
+      gpsQualityByte: packet.rawBytes.length > 10 ? packet.rawBytes[10] : null,
+      gpsQuality: packet.gpsQuality,
+      accepted: decodedValid,
+      rejectionReason: decodedValid
+          ? null
+          : _coordinateRejectionReason(
+              packet.position.latitude,
+              packet.position.longitude,
+            ),
+      authoritativeForBackend: relayContext == null,
+      deviceId: overrideDeviceId ?? packet.nodeId.toString(),
+      nodeId: packet.nodeId,
+      classificationReason: _classificationReasonForTel(event),
+    );
     if (relayContext == null) {
-      _rememberOwnDeviceLocation(
-        _ownDeviceLocationFromTelPacket(event: event, packet: packet),
+      _rememberOwnDeviceLocationFromTel(
+        event: event,
+        packet: packet,
+      );
+    } else {
+      LocationDebugLog.availability(
+        flow: 'ble_own_location_store',
+        source: 'connectedDevice',
+        accepted: false,
+        rejectionReason: 'remote_or_relay_packet',
+        authoritativeForBackend: true,
+        timestamp: event.receivedAt.toUtc(),
+        latitude: packet.position.latitude,
+        longitude: packet.position.longitude,
+        altitude: packet.position.altitudeMeters.toDouble(),
+        deviceId: overrideDeviceId ?? packet.nodeId.toString(),
+        hardwareId: event.canonicalHardwareId,
+        nodeId: packet.nodeId,
+        packetType: packetType,
+        classification: classification,
+        hasLocation: true,
+        gpsQuality: packet.gpsQuality,
+        rawHex: packet.rawHex,
       );
     }
     _emitDiagnostics(
@@ -457,7 +558,17 @@ class BleOperationalRuntimeBridge {
       packet: packet,
       overrideDeviceId: overrideDeviceId,
     );
-    if (!_hasMinimumTelemetry(payload)) {
+    final hasMinimumTelemetry = _hasMinimumTelemetry(payload);
+    LocationDebugLog.telemetryPayload(
+      flow: 'telemetry_publish_candidate',
+      payload: payload,
+      accepted: hasMinimumTelemetry,
+      source: relayContext == null ? 'connectedDevice' : 'remoteRelayDevice',
+      rejectionReason:
+          hasMinimumTelemetry ? null : 'minimum_telemetry_fields_missing',
+      sentToBackend: false,
+    );
+    if (!hasMinimumTelemetry) {
       _emitDiagnostics(
         _diagnostics.copyWith(
           lastDecision: 'Telemetry skipped: minimum fields missing',
@@ -497,6 +608,14 @@ class BleOperationalRuntimeBridge {
       );
       BleDebugRegistry.instance.recordEvent(
         'BLE operational bridge retained pending telemetry -> latest_sample_wins signature=$signature',
+      );
+      LocationDebugLog.telemetryPayload(
+        flow: 'telemetry_publish_candidate',
+        payload: payload,
+        accepted: false,
+        source: relayContext == null ? 'connectedDevice' : 'remoteRelayDevice',
+        rejectionReason: 'operational_publish_unavailable_buffered',
+        sentToBackend: false,
       );
       return;
     }
@@ -555,11 +674,115 @@ class BleOperationalRuntimeBridge {
     final packet = event.sosPacket;
     if (packet != null &&
         event.classification.kind == BleIncomingPayloadKind.ownDeviceSos) {
-      _rememberOwnDeviceLocation(
-        _ownDeviceLocationFromSosPacket(event: event, packet: packet),
+      _rememberOwnDeviceLocationFromSos(
+        event: event,
+        packet: packet,
+      );
+    } else if (packet != null) {
+      final position = packet.position;
+      LocationDebugLog.availability(
+        flow: 'ble_own_location_store',
+        source: 'connectedDevice',
+        accepted: false,
+        rejectionReason:
+            event.classification.kind == BleIncomingPayloadKind.remoteRelaySos
+                ? 'remote_or_relay_packet'
+                : 'not_own_device',
+        authoritativeForBackend: true,
+        timestamp: event.receivedAt.toUtc(),
+        latitude: position?.latitude,
+        longitude: position?.longitude,
+        altitude: position?.altitudeMeters.toDouble(),
+        deviceId: packet.nodeId.toString(),
+        hardwareId: event.canonicalHardwareId,
+        nodeId: packet.nodeId,
+        packetType: 'SOS',
+        classification: event.classification.kind.name,
+        hasLocation: packet.hasPosition,
+        gpsQuality: packet.gpsQuality,
+        rawHex: packet.rawHex,
       );
     }
     if (packet != null) {
+      final position = packet.position;
+      if (position != null) {
+        final sosCoordinateValid =
+            _isValidCoordinate(position.latitude, position.longitude);
+        LocationDebugLog.raw(
+          flow: 'ble_decode',
+          source:
+              event.classification.kind == BleIncomingPayloadKind.remoteRelaySos
+                  ? 'remoteRelayDevice'
+                  : 'connectedDevice',
+          latitude: position.latitude,
+          longitude: position.longitude,
+          altitude: position.altitudeMeters.toDouble(),
+          timestamp: event.receivedAt.toUtc(),
+          accepted: sosCoordinateValid,
+          rejectionReason: sosCoordinateValid
+              ? null
+              : _coordinateRejectionReason(
+                  position.latitude, position.longitude),
+          authoritativeForBackend:
+              event.classification.kind == BleIncomingPayloadKind.ownDeviceSos,
+          deviceId: packet.nodeId.toString(),
+          hardwareId: event.canonicalHardwareId,
+          nodeId: packet.nodeId,
+          note:
+              'packetType=SOS classification=${event.classification.kind.name} '
+              'hasLocation=${packet.hasPosition} gpsQuality=${packet.gpsQuality} '
+              'raw=${packet.rawHex}',
+        );
+        _logPositionDecodeDetail(
+          event: event,
+          source:
+              event.classification.kind == BleIncomingPayloadKind.remoteRelaySos
+                  ? 'remoteRelayDevice'
+                  : 'connectedDevice',
+          packetType: 'SOS',
+          packetLength: packet.rawBytes.length,
+          rawBytes: packet.rawBytes,
+          rawHex: packet.rawHex,
+          positionOffset: 4,
+          latitude: position.latitude,
+          longitude: position.longitude,
+          altitudeMeters: position.altitudeMeters,
+          gpsQualityByte:
+              packet.rawBytes.length > 10 ? packet.rawBytes[10] : null,
+          gpsQuality: packet.gpsQuality,
+          accepted: sosCoordinateValid,
+          rejectionReason: sosCoordinateValid
+              ? null
+              : _coordinateRejectionReason(
+                  position.latitude, position.longitude),
+          authoritativeForBackend:
+              event.classification.kind == BleIncomingPayloadKind.ownDeviceSos,
+          deviceId: packet.nodeId.toString(),
+          nodeId: packet.nodeId,
+          classificationReason: _classificationReasonForSos(event),
+        );
+      } else {
+        LocationDebugLog.availability(
+          flow: 'ble_decode',
+          source:
+              event.classification.kind == BleIncomingPayloadKind.remoteRelaySos
+                  ? 'remoteRelayDevice'
+                  : 'connectedDevice',
+          accepted: false,
+          rejectionReason: 'no_location',
+          authoritativeForBackend:
+              event.classification.kind == BleIncomingPayloadKind.ownDeviceSos,
+          timestamp: event.receivedAt.toUtc(),
+          deviceId: packet.nodeId.toString(),
+          hardwareId: event.canonicalHardwareId,
+          nodeId: packet.nodeId,
+          packetType: 'SOS',
+          classification: event.classification.kind.name,
+          hasLocation: packet.hasPosition,
+          gpsQuality: packet.gpsQuality,
+          rawHex: packet.rawHex,
+        );
+      }
       final role = _incomingSosRoleFrom(packet);
       final remoteDeviceId = packet.remoteDeviceId?.trim();
       _emitDiagnostics(
@@ -714,6 +937,116 @@ class BleOperationalRuntimeBridge {
     );
   }
 
+  void _rememberOwnDeviceLocationFromTel({
+    required BleIncomingEvent event,
+    required EixamTelPacket packet,
+  }) {
+    final latitude = packet.position.latitude;
+    final longitude = packet.position.longitude;
+    final rejectionReason = _coordinateRejectionReason(latitude, longitude);
+    if (rejectionReason != null) {
+      LocationDebugLog.availability(
+        flow: 'ble_own_location_store',
+        source: 'connectedDevice',
+        accepted: false,
+        rejectionReason: rejectionReason,
+        authoritativeForBackend: true,
+        timestamp: event.receivedAt.toUtc(),
+        latitude: latitude,
+        longitude: longitude,
+        altitude: packet.position.altitudeMeters.toDouble(),
+        deviceId: packet.nodeId.toString(),
+        hardwareId: event.canonicalHardwareId,
+        nodeId: packet.nodeId,
+        packetType: 'TEL',
+        classification: event.classification.kind.name,
+        hasLocation: true,
+        gpsQuality: packet.gpsQuality,
+        rawHex: packet.rawHex,
+      );
+      return;
+    }
+    final location = _ownDeviceLocationFromTelPacket(
+      event: event,
+      packet: packet,
+    );
+    _rememberOwnDeviceLocation(location);
+    LocationDebugLog.resolved(
+      flow: 'ble_own_location_store',
+      location: location,
+      accepted: location != null,
+      rejectionReason: location == null ? 'unknown_packet_type' : null,
+      persisted: false,
+      note: 'packetType=TEL classification=${event.classification.kind.name} '
+          'hasLocation=true gpsQuality=${packet.gpsQuality} raw=${packet.rawHex}',
+    );
+  }
+
+  void _rememberOwnDeviceLocationFromSos({
+    required BleIncomingEvent event,
+    required EixamSosPacket packet,
+  }) {
+    final position = packet.position;
+    if (position == null) {
+      LocationDebugLog.availability(
+        flow: 'ble_own_location_store',
+        source: 'connectedDevice',
+        accepted: false,
+        rejectionReason: 'no_location',
+        authoritativeForBackend: true,
+        timestamp: event.receivedAt.toUtc(),
+        deviceId: packet.nodeId.toString(),
+        hardwareId: event.canonicalHardwareId,
+        nodeId: packet.nodeId,
+        packetType: 'SOS',
+        classification: event.classification.kind.name,
+        hasLocation: packet.hasPosition,
+        gpsQuality: packet.gpsQuality,
+        rawHex: packet.rawHex,
+      );
+      return;
+    }
+    final rejectionReason =
+        _coordinateRejectionReason(position.latitude, position.longitude);
+    if (rejectionReason != null) {
+      LocationDebugLog.availability(
+        flow: 'ble_own_location_store',
+        source: 'connectedDevice',
+        accepted: false,
+        rejectionReason: rejectionReason,
+        authoritativeForBackend: true,
+        timestamp: event.receivedAt.toUtc(),
+        latitude: position.latitude,
+        longitude: position.longitude,
+        altitude: position.altitudeMeters.toDouble(),
+        deviceId: packet.nodeId.toString(),
+        hardwareId: event.canonicalHardwareId,
+        nodeId: packet.nodeId,
+        packetType: 'SOS',
+        classification: event.classification.kind.name,
+        hasLocation: packet.hasPosition,
+        gpsQuality: packet.gpsQuality,
+        rawHex: packet.rawHex,
+      );
+      return;
+    }
+    final location = _ownDeviceLocationFromSosPacket(
+      event: event,
+      packet: packet,
+    );
+    _rememberOwnDeviceLocation(location);
+    LocationDebugLog.resolved(
+      flow: 'ble_own_location_store',
+      location: location,
+      accepted: location != null,
+      rejectionReason: location == null ? 'unknown_packet_type' : null,
+      persisted: false,
+      note: 'packetType=SOS classification=${event.classification.kind.name} '
+          'hasLocation=${packet.hasPosition} gpsQuality=${packet.gpsQuality} '
+          'raw=${packet.rawHex}',
+    );
+  }
+
   SdkResolvedLocation? _ownDeviceLocationFromTelPacket({
     required BleIncomingEvent event,
     required EixamTelPacket packet,
@@ -764,6 +1097,153 @@ class BleOperationalRuntimeBridge {
         longitude >= -180 &&
         longitude <= 180 &&
         !(latitude == 0 && longitude == 0);
+  }
+
+  void _logPositionDecodeDetail({
+    required BleIncomingEvent event,
+    required String source,
+    required String packetType,
+    required int packetLength,
+    required List<int> rawBytes,
+    required String rawHex,
+    required int positionOffset,
+    required double latitude,
+    required double longitude,
+    required int altitudeMeters,
+    required int? gpsQualityByte,
+    required int gpsQuality,
+    required bool accepted,
+    required bool authoritativeForBackend,
+    required String? deviceId,
+    required int? nodeId,
+    required String classificationReason,
+    String? rejectionReason,
+  }) {
+    if (rawBytes.length < positionOffset + 6) {
+      LocationDebugLog.availability(
+        flow: 'ble_decode_detail',
+        source: source,
+        accepted: false,
+        rejectionReason: 'position_slice_too_short',
+        authoritativeForBackend: authoritativeForBackend,
+        timestamp: event.receivedAt.toUtc(),
+        latitude: latitude,
+        longitude: longitude,
+        altitude: altitudeMeters.toDouble(),
+        deviceId: deviceId,
+        hardwareId: event.canonicalHardwareId,
+        nodeId: nodeId,
+        packetType: packetType,
+        classification: event.classification.kind.name,
+        gpsQuality: gpsQuality,
+        rawHex: rawHex,
+        note: 'packetLength=$packetLength '
+            'parserName=${EixamPositionDecodeDetails.parserName} '
+            'protocolVersion=${EixamPositionDecodeDetails.protocolVersion} '
+            'positionOffset=$positionOffset '
+            'classificationReason=$classificationReason',
+      );
+      return;
+    }
+
+    final details = EixamPositionDecodeDetails.decode(
+      rawBytes,
+      offset: positionOffset,
+    );
+    LocationDebugLog.availability(
+      flow: 'ble_decode_detail',
+      source: source,
+      accepted: accepted,
+      rejectionReason: rejectionReason,
+      authoritativeForBackend: authoritativeForBackend,
+      timestamp: event.receivedAt.toUtc(),
+      latitude: latitude,
+      longitude: longitude,
+      altitude: altitudeMeters.toDouble(),
+      deviceId: deviceId,
+      hardwareId: event.canonicalHardwareId,
+      nodeId: nodeId,
+      packetType: packetType,
+      classification: event.classification.kind.name,
+      gpsQuality: gpsQuality,
+      rawHex: rawHex,
+      note: 'packetLength=$packetLength '
+          'parserName=${EixamPositionDecodeDetails.parserName} '
+          'protocolVersion=${EixamPositionDecodeDetails.protocolVersion} '
+          'fullRaw=${event.payloadHex} '
+          'telPayload=$rawHex '
+          'positionOffset=$positionOffset '
+          'positionBytes=${details.positionBytesHex} '
+          'packed=0x${details.packed.toRadixString(16)} '
+          'legacyLittleEndianPacked=0x${details.legacyLittleEndianPacked.toRadixString(16)} '
+          'latBytes=${details.latBytesHex} '
+          'latRawInt=${details.latRawInt} '
+          'latScale=${EixamPositionDecodeDetails.latScale} '
+          'decodedLat=${details.decodedLatitude.toStringAsFixed(6)} '
+          'lonBytes=${details.lonBytesHex} '
+          'lonRawInt=${details.lonRawInt} '
+          'lonSigned21RawInt=${details.lonSigned21RawInt} '
+          'lonScale=${EixamPositionDecodeDetails.lonScale} '
+          'decodedLon=${details.decodedLongitude.toStringAsFixed(6)} '
+          'decodedLonCurrent=${details.decodedLongitude.toStringAsFixed(6)} '
+          'decodedLonOffsetMinus180=${details.decodedLongitudeOffsetMinus180.toStringAsFixed(6)} '
+          'decodedLonNoOffset=${details.decodedLongitudeNoOffset.toStringAsFixed(6)} '
+          'decodedLonSigned21=${details.decodedLongitudeSigned21.toStringAsFixed(6)} '
+          'legacyLittleEndianLonRawInt=${details.legacyLittleEndianLonRawInt} '
+          'legacyLittleEndianDecodedLonOffsetMinus180=${details.legacyLittleEndianDecodedLongitudeOffsetMinus180.toStringAsFixed(6)} '
+          'legacyLittleEndianDecodedLonNoOffset=${details.legacyLittleEndianDecodedLongitudeNoOffset.toStringAsFixed(6)} '
+          'legacyLittleEndianDecodedLonSigned21=${details.legacyLittleEndianDecodedLongitudeSigned21.toStringAsFixed(6)} '
+          'selectedFormula=${EixamPositionDecodeDetails.selectedLongitudeFormula} '
+          'altBytes=${details.altBytesHex} '
+          'altRawInt=${details.altRawInt} '
+          'altScale=${EixamPositionDecodeDetails.altScale} '
+          'decodedAlt=${details.decodedAltitudeMeters} '
+          'gpsQualityBytes=${gpsQualityByte == null ? 'none' : gpsQualityByte.toRadixString(16).padLeft(2, '0')} '
+          'classificationReason=$classificationReason',
+    );
+  }
+
+  String _classificationReasonForTel(BleIncomingEvent event) {
+    if (event.classification.kind == BleIncomingPayloadKind.telPosition &&
+        event.payload.length == EixamBleProtocol.telPacketLength) {
+      return '12_byte_tel_fallback_after_sos_inactive_or_invalid';
+    }
+    if (event.classification.kind == BleIncomingPayloadKind.telRelayRx) {
+      return 'd2_tel_relay_rx_peer_payload';
+    }
+    return event.classification.kind.name;
+  }
+
+  String _classificationReasonForSos(BleIncomingEvent event) {
+    switch (event.classification.kind) {
+      case BleIncomingPayloadKind.ownDeviceSos:
+        return 'sos_node_matches_connected_ble_node';
+      case BleIncomingPayloadKind.remoteRelaySos:
+        return 'sos_node_differs_from_connected_ble_node';
+      case BleIncomingPayloadKind.unknownOriginSos:
+        return 'sos_connected_ble_node_unknown';
+      case BleIncomingPayloadKind.sosClear:
+      case BleIncomingPayloadKind.sosCancel:
+      case BleIncomingPayloadKind.telPosition:
+      case BleIncomingPayloadKind.telRelayRx:
+      case BleIncomingPayloadKind.unknown:
+        return event.classification.kind.name;
+    }
+  }
+
+  String? _coordinateRejectionReason(double latitude, double longitude) {
+    if (!latitude.isFinite ||
+        !longitude.isFinite ||
+        latitude < -90 ||
+        latitude > 90 ||
+        longitude < -180 ||
+        longitude > 180) {
+      return 'invalid_coordinates';
+    }
+    if (latitude == 0 && longitude == 0) {
+      return 'zero_coordinates';
+    }
+    return null;
   }
 
   Future<void> _applySosRelayAcknowledgment({
@@ -914,6 +1394,13 @@ class BleOperationalRuntimeBridge {
           'remote=${relayContext?.remoteDeviceId ?? "-"} signature=$signature',
     );
     try {
+      LocationDebugLog.telemetryPayload(
+        flow: 'telemetry_publish_final',
+        payload: payload,
+        accepted: true,
+        source: relayContext == null ? 'connectedDevice' : 'remoteRelayDevice',
+        sentToBackend: true,
+      );
       await telemetryRepository.publishTelemetry(payload);
       _emitDiagnostics(
         _diagnostics.copyWith(
