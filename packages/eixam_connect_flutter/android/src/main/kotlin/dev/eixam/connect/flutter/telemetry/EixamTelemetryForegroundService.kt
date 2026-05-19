@@ -33,6 +33,7 @@ import org.json.JSONObject
 
 internal class EixamTelemetryForegroundService : Service(), LocationListener {
     private lateinit var store: BackgroundTelemetryStore
+    private lateinit var flutterPreferences: android.content.SharedPreferences
     private val handler = Handler(Looper.getMainLooper())
     private var publishInFlight = false
     private var foregroundStarted = false
@@ -52,6 +53,10 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
     override fun onCreate() {
         super.onCreate()
         store = BackgroundTelemetryStore(applicationContext)
+        flutterPreferences = applicationContext.getSharedPreferences(
+            flutterPrefsName,
+            Context.MODE_PRIVATE,
+        )
         ensureForegroundStarted(buildForegroundNotification())
     }
 
@@ -249,6 +254,13 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         timeoutMs: Long,
         onComplete: (Location?, String) -> Unit,
     ) {
+        val resolvedDevice = loadResolvedConnectedDeviceLocation()
+        if (resolvedDevice != null) {
+            lastLocation = resolvedDevice
+            store.markLocationMode("sdk_resolved_connected_device")
+            onComplete(resolvedDevice, "sdk_resolved_connected_device")
+            return
+        }
         if (!hasLocationPermission()) {
             store.markError("location_permission_missing")
             onComplete(null, "permission_missing")
@@ -495,7 +507,64 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             return false
         }
         return location.latitude in -90.0..90.0 &&
-            location.longitude in -180.0..180.0
+            location.longitude in -180.0..180.0 &&
+            !(location.latitude == 0.0 && location.longitude == 0.0)
+    }
+
+    private fun loadResolvedConnectedDeviceLocation(): Location? {
+        val raw =
+            flutterPreferences.getString("$flutterKeyPrefix${resolvedLocationKey}", null)
+                ?: return null
+        val json = JSONObject(raw)
+        if (!json.optBoolean("authoritativeForBackend", false) ||
+            json.optString("source") != "connectedDevice"
+        ) {
+            return null
+        }
+        if (!json.has("latitude") || !json.has("longitude") || !json.has("timestamp")) {
+            return null
+        }
+        if (resolvedLocationAgeMs(json.getString("timestamp")) > resolvedLocationMaxAgeMs) {
+            return null
+        }
+        val location = Location("eixam_resolved_connected_device")
+        location.latitude = json.getDouble("latitude")
+        location.longitude = json.getDouble("longitude")
+        if (!json.isNull("altitudeMeters")) {
+            location.altitude = json.optDouble("altitudeMeters")
+        }
+        location.time = System.currentTimeMillis()
+        return if (isValid(location) &&
+            !(location.latitude == 0.0 && location.longitude == 0.0)
+        ) {
+            location
+        } else {
+            null
+        }
+    }
+
+    private fun resolvedLocationAgeMs(timestamp: String): Long {
+        return try {
+            val normalizedTimestamp = normalizeIsoTimestamp(timestamp)
+            val formatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+            formatter.timeZone = TimeZone.getTimeZone("UTC")
+            val parsed = formatter.parse(normalizedTimestamp) ?: return Long.MAX_VALUE
+            (System.currentTimeMillis() - parsed.time).coerceAtLeast(0L)
+        } catch (_: Exception) {
+            Long.MAX_VALUE
+        }
+    }
+
+    private fun normalizeIsoTimestamp(timestamp: String): String {
+        val trimmed = timestamp.trim()
+        val zIndex = trimmed.indexOf('Z')
+        val dotIndex = trimmed.indexOf('.')
+        if (zIndex <= 0 || dotIndex <= 0 || dotIndex > zIndex) {
+            return trimmed
+        }
+        val fraction = trimmed.substring(dotIndex + 1, zIndex)
+        val millis = fraction.padEnd(3, '0').take(3)
+        return trimmed.substring(0, dotIndex + 1) + millis + trimmed.substring(zIndex)
     }
 
     private fun buildNotification(): Notification {
@@ -666,6 +735,10 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         private const val sosCachedLocationMaxAgeMs = 15000L
         private const val normalStaleFallbackMaxAgeMs = 600000L
         private const val sosMovementThresholdMeters = 7f
+        private const val flutterPrefsName = "FlutterSharedPreferences"
+        private const val flutterKeyPrefix = "flutter."
+        private const val resolvedLocationKey = "eixam.location.resolved"
+        private const val resolvedLocationMaxAgeMs = 120000L
 
         fun start(context: Context) {
             val intent = Intent(context, EixamTelemetryForegroundService::class.java).apply {

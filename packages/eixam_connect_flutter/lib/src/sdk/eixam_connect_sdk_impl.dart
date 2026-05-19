@@ -39,6 +39,7 @@ import 'protection_mode_controller.dart';
 import 'protection_platform_adapter.dart';
 import 'protection_platform_adapter_factory.dart';
 import 'relay_ingest_context.dart';
+import 'sdk_resolved_location_resolver.dart';
 import 'sdk_mqtt_contract.dart';
 import 'sos_backend_identity_normalizer.dart';
 
@@ -87,6 +88,8 @@ class EixamConnectSdkImpl
   final StreamController<SdkOperationalDiagnostics>
       _operationalDiagnosticsController =
       StreamController<SdkOperationalDiagnostics>.broadcast();
+  final StreamController<SdkResolvedLocation?> _resolvedLocationController =
+      StreamController<SdkResolvedLocation?>.broadcast();
   final StreamController<BleNotificationNavigationRequest>
       _bleNotificationNavigationController =
       StreamController<BleNotificationNavigationRequest>.broadcast();
@@ -137,6 +140,7 @@ class EixamConnectSdkImpl
   String? _pendingCancelledIncidentId;
   String? _lastSosRehydrationNote;
   SdkBridgeDiagnostics _bridgeDiagnostics = const SdkBridgeDiagnostics();
+  SdkResolvedLocation? _lastResolvedLocation;
   SosState _publicSosState = SosState.idle;
   DateTime? _lastTerminalPublicSosAt;
   static const Duration _postTerminalSettleWindow = Duration(seconds: 5);
@@ -196,6 +200,7 @@ class EixamConnectSdkImpl
   late final BleOperationalRuntimeBridge _bleOperationalRuntimeBridge;
   late final ProtectionModeController _protectionModeController;
   late final OperationalTelemetryCoordinator _operationalTelemetryCoordinator;
+  late final SdkResolvedLocationResolver _resolvedLocationResolver;
   final Duration _appTriggeredSosBridgeWindow;
   bool _backgroundTelemetryEnabled = true;
   bool _backgroundTelemetryStarted = false;
@@ -304,11 +309,19 @@ class EixamConnectSdkImpl
       notificationTextsProvider: () => notificationTexts,
       onBleOwnershipChanged: _handleProtectionBleOwnershipChanged,
     );
+    _resolvedLocationResolver = SdkResolvedLocationResolver(
+      trackingRepository: trackingRepository,
+      deviceStatusProvider: () => _lastPublicDeviceStatus ?? _lastDeviceStatus,
+      bridgeDiagnosticsProvider: () => _bridgeDiagnostics,
+    );
     _operationalTelemetryCoordinator = OperationalTelemetryCoordinator(
       trackingRepository: trackingRepository,
       sosStateStream: _publicSosStateController.stream,
       sessionProvider: () => _session,
       publishTelemetry: publishTelemetry,
+      resolvedLocationProvider: () => _resolveLocation(
+        useCase: SdkResolvedLocationUseCase.telemetryBackend,
+      ),
     );
     _bindSosStreams();
   }
@@ -477,6 +490,12 @@ class EixamConnectSdkImpl
     _bridgeDiagnosticsSub =
         _bleOperationalRuntimeBridge.watchDiagnostics().listen((diagnostics) {
       _bridgeDiagnostics = diagnostics;
+      final latestOwnDeviceLocation = diagnostics.latestOwnDeviceLocation;
+      final connected =
+          (_lastPublicDeviceStatus ?? _lastDeviceStatus)?.connected == true;
+      if (connected && latestOwnDeviceLocation != null) {
+        _rememberResolvedLocation(latestOwnDeviceLocation);
+      }
       _emitOperationalDiagnostics(reason: 'bridge_diagnostics');
     });
     _protectionStatusSub?.cancel();
@@ -3300,11 +3319,94 @@ class EixamConnectSdkImpl
 
   Future<TrackingPosition?> _loadPositionSnapshotForSos() async {
     try {
-      return await trackingRepository.getCurrentPosition();
+      final location = await _resolveLocation(
+        useCase: SdkResolvedLocationUseCase.emergencyBackend,
+      );
+      return location?.toTrackingPosition();
     } catch (_) {
       // Best-effort snapshot: SOS should continue even if location lookup fails.
     }
     return null;
+  }
+
+  Future<SdkResolvedLocation?> _resolveLocation({
+    required SdkResolvedLocationUseCase useCase,
+    SdkResolvedLocation? remoteRelayLocation,
+  }) async {
+    final location = await _resolvedLocationResolver.resolve(
+      useCase: useCase,
+      remoteRelayLocation: remoteRelayLocation,
+      backendSnapshot: useCase == SdkResolvedLocationUseCase.uiPreview
+          ? _resolvedLocationFromIncident(_lastKnownActiveSosIncident)
+          : null,
+      cachedFallback: useCase == SdkResolvedLocationUseCase.uiPreview
+          ? _lastResolvedLocation?.copyWith(
+              source: SdkLocationSource.cachedFallback,
+              authoritativeForBackend: false,
+            )
+          : null,
+    );
+    _rememberResolvedLocation(location);
+    return location;
+  }
+
+  void _rememberResolvedLocation(SdkResolvedLocation? location) {
+    if (location == null || !location.isValid) {
+      return;
+    }
+    _lastResolvedLocation = location;
+    if (!_resolvedLocationController.isClosed) {
+      _resolvedLocationController.add(location);
+    }
+    if (location.authoritativeForBackend &&
+        (location.source == SdkLocationSource.connectedDevice ||
+            location.source == SdkLocationSource.phone)) {
+      unawaited(_persistResolvedLocationForNative(location));
+    }
+  }
+
+  Future<void> _persistResolvedLocationForNative(
+    SdkResolvedLocation location,
+  ) async {
+    try {
+      await _localStore.saveJson(
+        SharedPrefsSdkStore.resolvedLocationKey,
+        location.toJson(),
+      );
+    } catch (_) {}
+  }
+
+  SdkResolvedLocation? _resolvedLocationFromIncident(SosIncident? incident) {
+    final position = incident?.positionSnapshot;
+    if (position == null) {
+      return null;
+    }
+    return SdkResolvedLocation.backendSnapshot(
+      position: position,
+      isFresh: !position.isStale,
+    );
+  }
+
+  SdkTelemetryPayload _telemetryPayloadFromResolvedLocation(
+    SdkResolvedLocation location,
+  ) {
+    return SdkTelemetryPayload(
+      timestamp: location.timestamp.toUtc(),
+      latitude: location.latitude,
+      longitude: location.longitude,
+      altitude: location.altitudeMeters ?? 0,
+      deviceId: location.deviceId,
+      hardwareId: location.hardwareId,
+      nodeId: location.nodeId,
+      identitySource: switch (location.source) {
+        SdkLocationSource.connectedDevice => 'ble_node',
+        SdkLocationSource.phone => 'app',
+        SdkLocationSource.remoteRelayDevice => 'remote_relay',
+        SdkLocationSource.backendSnapshot => 'backend_snapshot',
+        SdkLocationSource.cachedFallback => 'cached_fallback',
+        SdkLocationSource.unknown => null,
+      },
+    );
   }
 
   Future<String?> _loadBackendHardwareIdForOperationalPayloads({
@@ -7438,6 +7540,33 @@ class EixamConnectSdkImpl
   }
 
   @override
+  Future<SdkResolvedLocation?> getResolvedLocationForEmergencyContext() {
+    return _resolveLocation(
+        useCase: SdkResolvedLocationUseCase.emergencyBackend);
+  }
+
+  @override
+  Stream<SdkResolvedLocation?> watchResolvedLocation() async* {
+    yield await getResolvedLocationForEmergencyContext();
+    yield* _resolvedLocationController.stream;
+  }
+
+  @override
+  Future<SdkTelemetryPayload?> getResolvedTelemetryPreview({
+    bool includeCachedFallback = true,
+  }) async {
+    final location = await _resolveLocation(
+      useCase: includeCachedFallback
+          ? SdkResolvedLocationUseCase.uiPreview
+          : SdkResolvedLocationUseCase.telemetryBackend,
+    );
+    if (location == null) {
+      return null;
+    }
+    return _telemetryPayloadFromResolvedLocation(location);
+  }
+
+  @override
   Future<RealtimeConnectionState> getRealtimeConnectionState() async {
     return _lastRealtimeConnectionState;
   }
@@ -9530,6 +9659,8 @@ class EixamConnectSdkImpl
           _backgroundTelemetryDiagnostics.lastLocationMode,
       activeBackgroundLocationRequest:
           _backgroundTelemetryDiagnostics.activeLocationRequest,
+      resolvedLocation:
+          _lastResolvedLocation ?? _bridgeDiagnostics.latestOwnDeviceLocation,
       bridge: _bridgeDiagnostics,
     );
   }
@@ -9792,6 +9923,7 @@ class EixamConnectSdkImpl
     await _realtimeConnectionStateController.close();
     await _realtimeEventsController.close();
     await _operationalDiagnosticsController.close();
+    await _resolvedLocationController.close();
     await _bleNotificationNavigationController.close();
     await _publicDeviceStatusController.close();
     await _publicSosStateController.close();

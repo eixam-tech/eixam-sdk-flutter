@@ -9,6 +9,8 @@ typedef OperationalTelemetrySessionProvider = EixamSession? Function();
 typedef OperationalTelemetryPayloadPublisher = Future<void> Function(
   SdkTelemetryPayload payload,
 );
+typedef OperationalResolvedLocationProvider = Future<SdkResolvedLocation?>
+    Function();
 typedef OperationalTelemetryClock = DateTime Function();
 typedef OperationalTelemetryLogger = void Function(String message);
 
@@ -18,6 +20,7 @@ class OperationalTelemetryCoordinator {
     required Stream<SosState> sosStateStream,
     required OperationalTelemetrySessionProvider sessionProvider,
     required OperationalTelemetryPayloadPublisher publishTelemetry,
+    required OperationalResolvedLocationProvider resolvedLocationProvider,
     Duration normalInterval = const Duration(seconds: 60),
     Duration sosInterval = const Duration(seconds: 20),
     double sosMovementThresholdMeters = 7,
@@ -27,6 +30,7 @@ class OperationalTelemetryCoordinator {
         _sosStateStream = sosStateStream,
         _sessionProvider = sessionProvider,
         _publishTelemetry = publishTelemetry,
+        _resolvedLocationProvider = resolvedLocationProvider,
         _normalInterval = normalInterval,
         _sosInterval = sosInterval,
         _sosMovementThresholdMeters = sosMovementThresholdMeters,
@@ -38,6 +42,7 @@ class OperationalTelemetryCoordinator {
   final Stream<SosState> _sosStateStream;
   final OperationalTelemetrySessionProvider _sessionProvider;
   final OperationalTelemetryPayloadPublisher _publishTelemetry;
+  final OperationalResolvedLocationProvider _resolvedLocationProvider;
   final Duration _normalInterval;
   final Duration _sosInterval;
   final double _sosMovementThresholdMeters;
@@ -51,7 +56,7 @@ class OperationalTelemetryCoordinator {
   bool _sosOpen = false;
   bool _intervalPublishingEnabled = true;
   bool _publishInFlight = false;
-  TrackingPosition? _lastPublishedSosPosition;
+  SdkResolvedLocation? _lastPublishedSosLocation;
 
   bool get isRunning => _started;
 
@@ -71,7 +76,7 @@ class OperationalTelemetryCoordinator {
     }
     _started = true;
     _sosOpen = _isOpenSosState(initialSosState);
-    _lastPublishedSosPosition = null;
+    _lastPublishedSosLocation = null;
     _sosStateSub = _sosStateStream.listen(
       _handleSosState,
       onError: (Object error) {
@@ -106,7 +111,7 @@ class OperationalTelemetryCoordinator {
     await _positionSub?.cancel();
     _sosStateSub = null;
     _positionSub = null;
-    _lastPublishedSosPosition = null;
+    _lastPublishedSosLocation = null;
     _logger('[SDK_TELEMETRY_LOOP] action=stop');
   }
 
@@ -123,7 +128,7 @@ class OperationalTelemetryCoordinator {
       return;
     }
     _sosOpen = nextOpen;
-    _lastPublishedSosPosition = null;
+    _lastPublishedSosLocation = null;
     if (_sosOpen) {
       unawaited(_primeSosMovementAnchor());
     }
@@ -134,21 +139,20 @@ class OperationalTelemetryCoordinator {
     if (!_started || !_sosOpen || !_hasValidLocation(position)) {
       return;
     }
-    final anchor = _lastPublishedSosPosition;
+    final anchor = _lastPublishedSosLocation;
     if (anchor == null) {
-      _lastPublishedSosPosition = position;
+      _lastPublishedSosLocation = _resolvedLocationFromTracking(position);
       return;
     }
-    final distance = distanceMeters(anchor, position);
+    final distance = distanceMeters(
+      anchor,
+      _resolvedLocationFromTracking(position),
+    );
     if (distance < _sosMovementThresholdMeters) {
       return;
     }
     unawaited(
-      _publishPosition(
-        position,
-        reason: 'sos_moved',
-        distanceMeters: distance,
-      ),
+      _publishFromCurrentLocation(reason: 'sos_moved'),
     );
   }
 
@@ -156,7 +160,7 @@ class OperationalTelemetryCoordinator {
     try {
       final position = await _trackingRepository.getCurrentPosition();
       if (_sosOpen && _hasValidLocation(position)) {
-        _lastPublishedSosPosition = position;
+        _lastPublishedSosLocation = _resolvedLocationFromTracking(position!);
       }
     } catch (_) {
       // The interval publisher will log no_location if location remains absent.
@@ -196,23 +200,23 @@ class OperationalTelemetryCoordinator {
   }
 
   Future<void> _publishFromCurrentLocation({required String reason}) async {
-    TrackingPosition? position;
+    SdkResolvedLocation? location;
     try {
-      position = await _trackingRepository.getCurrentPosition();
+      location = await _resolvedLocationProvider();
     } catch (error) {
       _logger(
           '[SDK_TELEMETRY_LOOP] action=skip reason=no_location error=$error');
       return;
     }
-    if (!_hasValidLocation(position)) {
+    if (!_hasValidResolvedLocation(location)) {
       _logger('[SDK_TELEMETRY_LOOP] action=skip reason=no_location');
       return;
     }
-    await _publishPosition(position!, reason: reason);
+    await _publishResolvedLocation(location!, reason: reason);
   }
 
-  Future<void> _publishPosition(
-    TrackingPosition position, {
+  Future<void> _publishResolvedLocation(
+    SdkResolvedLocation location, {
     required String reason,
     double? distanceMeters,
   }) async {
@@ -230,13 +234,22 @@ class OperationalTelemetryCoordinator {
       await _publishTelemetry(
         SdkTelemetryPayload(
           timestamp: _clock().toUtc(),
-          latitude: position.latitude,
-          longitude: position.longitude,
-          altitude: position.altitude ?? 0,
+          latitude: location.latitude,
+          longitude: location.longitude,
+          altitude: location.altitudeMeters ?? 0,
+          deviceId: location.deviceId,
+          hardwareId: location.hardwareId,
+          nodeId: location.nodeId,
+          identitySource: switch (location.source) {
+            SdkLocationSource.connectedDevice => 'ble_node',
+            SdkLocationSource.phone => 'app',
+            SdkLocationSource.remoteRelayDevice => 'remote_relay',
+            _ => null,
+          },
         ),
       );
       if (_sosOpen) {
-        _lastPublishedSosPosition = position;
+        _lastPublishedSosLocation = location;
       }
       final distanceFragment = distanceMeters == null
           ? ''
@@ -283,7 +296,27 @@ class OperationalTelemetryCoordinator {
         position.longitude <= 180;
   }
 
-  static double distanceMeters(TrackingPosition a, TrackingPosition b) {
+  bool _hasValidResolvedLocation(SdkResolvedLocation? location) {
+    if (location == null || !location.authoritativeForBackend) {
+      return false;
+    }
+    return location.isValid &&
+        location.latitude.isFinite &&
+        location.latitude >= -90 &&
+        location.latitude <= 90 &&
+        location.longitude.isFinite &&
+        location.longitude >= -180 &&
+        location.longitude <= 180;
+  }
+
+  SdkResolvedLocation _resolvedLocationFromTracking(TrackingPosition position) {
+    return SdkResolvedLocation.fromPhoneTrackingPosition(
+      position: position,
+      isFresh: !position.isStale,
+    );
+  }
+
+  static double distanceMeters(SdkResolvedLocation a, SdkResolvedLocation b) {
     const earthRadiusMeters = 6371000.0;
     final lat1 = _degreesToRadians(a.latitude);
     final lat2 = _degreesToRadians(b.latitude);

@@ -530,6 +530,9 @@ internal class ProtectionSosBackendHandoff(
     }
 
     private fun loadTrackingPosition(): TrackingPositionSnapshot? {
+        loadResolvedAuthoritativePosition()?.let {
+            return it
+        }
         val raw =
             flutterPreferences.getString("$flutterKeyPrefix${trackingPositionKey}", null)
                 ?: return null
@@ -537,12 +540,84 @@ internal class ProtectionSosBackendHandoff(
         if (!json.has("latitude") || !json.has("longitude") || !json.has("timestamp")) {
             return null
         }
+        val timestamp = json.getString("timestamp")
+        if (resolvedLocationAgeMs(timestamp) > resolvedLocationMaxAgeMs) {
+            return null
+        }
+        val latitude = json.getDouble("latitude")
+        val longitude = json.getDouble("longitude")
+        if (!isValidCoordinate(latitude, longitude)) {
+            return null
+        }
         return TrackingPositionSnapshot(
-            latitude = json.getDouble("latitude"),
-            longitude = json.getDouble("longitude"),
+            latitude = latitude,
+            longitude = longitude,
             altitude = if (json.isNull("altitude")) null else json.optDouble("altitude"),
-            timestamp = json.getString("timestamp"),
+            timestamp = timestamp,
         )
+    }
+
+    private fun loadResolvedAuthoritativePosition(): TrackingPositionSnapshot? {
+        val raw =
+            flutterPreferences.getString("$flutterKeyPrefix${resolvedLocationKey}", null)
+                ?: return null
+        val json = JSONObject(raw)
+        if (!json.optBoolean("authoritativeForBackend", false)) {
+            return null
+        }
+        val source = json.optString("source")
+        if (source == "cachedFallback" || source == "backendSnapshot" || source.isBlank()) {
+            return null
+        }
+        if (!json.has("latitude") || !json.has("longitude") || !json.has("timestamp")) {
+            return null
+        }
+        val timestamp = json.getString("timestamp")
+        if (resolvedLocationAgeMs(timestamp) > resolvedLocationMaxAgeMs) {
+            return null
+        }
+        val latitude = json.getDouble("latitude")
+        val longitude = json.getDouble("longitude")
+        if (!isValidCoordinate(latitude, longitude)) {
+            return null
+        }
+        return TrackingPositionSnapshot(
+            latitude = latitude,
+            longitude = longitude,
+            altitude = if (json.isNull("altitudeMeters")) null else json.optDouble("altitudeMeters"),
+            timestamp = timestamp,
+        )
+    }
+
+    private fun isValidCoordinate(latitude: Double, longitude: Double): Boolean =
+        latitude.isFinite() &&
+            longitude.isFinite() &&
+            latitude in -90.0..90.0 &&
+            longitude in -180.0..180.0 &&
+            !(latitude == 0.0 && longitude == 0.0)
+
+    private fun resolvedLocationAgeMs(timestamp: String): Long {
+        return try {
+            val normalizedTimestamp = normalizeIsoTimestamp(timestamp)
+            val formatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+            formatter.timeZone = TimeZone.getTimeZone("UTC")
+            val parsed = formatter.parse(normalizedTimestamp) ?: return Long.MAX_VALUE
+            (System.currentTimeMillis() - parsed.time).coerceAtLeast(0L)
+        } catch (_: Exception) {
+            Long.MAX_VALUE
+        }
+    }
+
+    private fun normalizeIsoTimestamp(timestamp: String): String {
+        val trimmed = timestamp.trim()
+        val zIndex = trimmed.indexOf('Z')
+        val dotIndex = trimmed.indexOf('.')
+        if (zIndex <= 0 || dotIndex <= 0 || dotIndex > zIndex) {
+            return trimmed
+        }
+        val fraction = trimmed.substring(dotIndex + 1, zIndex)
+        val millis = fraction.padEnd(3, '0').take(3)
+        return trimmed.substring(0, dotIndex + 1) + millis + trimmed.substring(zIndex)
     }
 
     private fun normalizeUrl(
@@ -723,5 +798,7 @@ internal class ProtectionSosBackendHandoff(
         private const val flutterKeyPrefix = "flutter."
         private const val sdkSessionKey = "eixam.sdk.session"
         private const val trackingPositionKey = "eixam.tracking.last_position"
+        private const val resolvedLocationKey = "eixam.location.resolved"
+        private const val resolvedLocationMaxAgeMs = 120_000L
     }
 }

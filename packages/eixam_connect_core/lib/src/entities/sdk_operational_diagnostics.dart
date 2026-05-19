@@ -3,6 +3,7 @@ import '../enums/realtime_connection_state.dart';
 import '../enums/sos_delivery_channel.dart';
 import 'device_tel_relay_rx.dart';
 import 'sdk_bridge_diagnostics.dart';
+import 'sdk_resolved_location.dart';
 
 /// Partner-facing runtime snapshot for capability, relay, and bridge status.
 class SdkOperationalDiagnostics {
@@ -26,6 +27,7 @@ class SdkOperationalDiagnostics {
     this.lastBackgroundTelemetryError,
     this.lastBackgroundLocationMode,
     this.activeBackgroundLocationRequest = false,
+    this.resolvedLocation,
   });
 
   final EixamSession? session;
@@ -52,6 +54,7 @@ class SdkOperationalDiagnostics {
   final String? lastBackgroundTelemetryError;
   final String? lastBackgroundLocationMode;
   final bool activeBackgroundLocationRequest;
+  final SdkResolvedLocation? resolvedLocation;
   final SdkBridgeDiagnostics bridge;
 
   bool get hasActiveSession => session != null;
@@ -102,6 +105,7 @@ class SdkOperationalDiagnostics {
     Object? lastBackgroundTelemetryError = _unset,
     Object? lastBackgroundLocationMode = _unset,
     bool? activeBackgroundLocationRequest,
+    Object? resolvedLocation = _unset,
     SdkBridgeDiagnostics? bridge,
   }) {
     return SdkOperationalDiagnostics(
@@ -145,6 +149,9 @@ class SdkOperationalDiagnostics {
           : lastBackgroundLocationMode as String?,
       activeBackgroundLocationRequest: activeBackgroundLocationRequest ??
           this.activeBackgroundLocationRequest,
+      resolvedLocation: identical(resolvedLocation, _unset)
+          ? this.resolvedLocation
+          : resolvedLocation as SdkResolvedLocation?,
       bridge: bridge ?? this.bridge,
     );
   }

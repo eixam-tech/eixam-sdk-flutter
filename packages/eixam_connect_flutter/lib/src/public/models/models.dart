@@ -17,6 +17,7 @@ export 'package:eixam_connect_core/src/entities/public_pre_sos_status.dart';
 export 'package:eixam_connect_core/src/entities/runtime_identity_snapshot.dart';
 export 'package:eixam_connect_core/src/entities/sdk_bridge_diagnostics.dart';
 export 'package:eixam_connect_core/src/entities/sdk_operational_diagnostics.dart';
+export 'package:eixam_connect_core/src/entities/sdk_resolved_location.dart';
 export 'package:eixam_connect_core/src/entities/sdk_user_profile.dart';
 export 'package:eixam_connect_core/src/profile/sdk_profile_validation.dart';
 export 'package:eixam_connect_core/src/entities/sdk_telemetry_payload.dart';

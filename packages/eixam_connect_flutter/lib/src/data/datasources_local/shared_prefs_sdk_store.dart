@@ -14,6 +14,7 @@ class SharedPrefsSdkStore {
   static const String sosStateKey = 'eixam.sos.state';
   static const String sosClosedIncidentKey = 'eixam.sos.closed_incident';
   static const String trackingPositionKey = 'eixam.tracking.last_position';
+  static const String resolvedLocationKey = 'eixam.location.resolved';
   static const String trackingStateKey = 'eixam.tracking.state';
   static const String deathManPlanKey = 'eixam.death_man.active_plan';
   static const String emergencyContactsKey = 'eixam.contacts.list';

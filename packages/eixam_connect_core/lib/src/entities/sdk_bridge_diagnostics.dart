@@ -1,4 +1,5 @@
 import 'sdk_telemetry_payload.dart';
+import 'sdk_resolved_location.dart';
 import 'tracking_position.dart';
 
 /// Buffered telemetry item retained by the SDK bridge for later retry.
@@ -43,6 +44,7 @@ class SdkBridgeDiagnostics {
     this.lastRelayTerminalErrorMessage,
     this.lastDecision,
     this.lastDeviceCommandSent,
+    this.latestOwnDeviceLocation,
     this.pendingTelemetry,
     this.pendingSos,
   });
@@ -62,6 +64,7 @@ class SdkBridgeDiagnostics {
   final String? lastRelayTerminalErrorMessage;
   final String? lastDecision;
   final String? lastDeviceCommandSent;
+  final SdkResolvedLocation? latestOwnDeviceLocation;
   final PendingTelemetryDiagnostics? pendingTelemetry;
   final PendingSosDiagnostics? pendingSos;
 
@@ -78,6 +81,7 @@ class SdkBridgeDiagnostics {
     Object? lastRelayTerminalErrorMessage = _unset,
     Object? lastDecision = _unset,
     Object? lastDeviceCommandSent = _unset,
+    Object? latestOwnDeviceLocation = _unset,
     Object? pendingTelemetry = _unset,
     Object? pendingSos = _unset,
   }) {
@@ -120,6 +124,9 @@ class SdkBridgeDiagnostics {
       lastDeviceCommandSent: identical(lastDeviceCommandSent, _unset)
           ? this.lastDeviceCommandSent
           : lastDeviceCommandSent as String?,
+      latestOwnDeviceLocation: identical(latestOwnDeviceLocation, _unset)
+          ? this.latestOwnDeviceLocation
+          : latestOwnDeviceLocation as SdkResolvedLocation?,
       pendingTelemetry: identical(pendingTelemetry, _unset)
           ? this.pendingTelemetry
           : pendingTelemetry as PendingTelemetryDiagnostics?,

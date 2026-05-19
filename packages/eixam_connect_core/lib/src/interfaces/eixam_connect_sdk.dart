@@ -16,6 +16,7 @@ import '../entities/protection_mode_models.dart';
 import '../entities/public_pre_sos_status.dart';
 import '../entities/runtime_identity_snapshot.dart';
 import '../entities/sdk_operational_diagnostics.dart';
+import '../entities/sdk_resolved_location.dart';
 import '../entities/sdk_user_profile.dart';
 import '../entities/sdk_telemetry_payload.dart';
 import '../entities/sos_history_item.dart';
@@ -92,6 +93,11 @@ abstract class EixamConnectSdk {
 
   Future<SdkOperationalDiagnostics> getOperationalDiagnostics();
   Stream<SdkOperationalDiagnostics> watchOperationalDiagnostics();
+  Future<SdkResolvedLocation?> getResolvedLocationForEmergencyContext();
+  Stream<SdkResolvedLocation?> watchResolvedLocation();
+  Future<SdkTelemetryPayload?> getResolvedTelemetryPreview({
+    bool includeCachedFallback = true,
+  });
   Future<void> enableBackgroundTelemetry({
     String? notificationTitle,
     String? notificationBody,

@@ -441,6 +441,11 @@ class BleOperationalRuntimeBridge {
     RelayIngestContext? relayContext,
     String? overrideDeviceId,
   }) async {
+    if (relayContext == null) {
+      _rememberOwnDeviceLocation(
+        _ownDeviceLocationFromTelPacket(event: event, packet: packet),
+      );
+    }
     _emitDiagnostics(
       _diagnostics.copyWith(
         lastBleTelemetryEventSummary: summary,
@@ -548,6 +553,12 @@ class BleOperationalRuntimeBridge {
 
   void _observeSosIfValid(BleIncomingEvent event) {
     final packet = event.sosPacket;
+    if (packet != null &&
+        event.classification.kind == BleIncomingPayloadKind.ownDeviceSos) {
+      _rememberOwnDeviceLocation(
+        _ownDeviceLocationFromSosPacket(event: event, packet: packet),
+      );
+    }
     if (packet != null) {
       final role = _incomingSosRoleFrom(packet);
       final remoteDeviceId = packet.remoteDeviceId?.trim();
@@ -692,6 +703,67 @@ class BleOperationalRuntimeBridge {
         );
         return;
     }
+  }
+
+  void _rememberOwnDeviceLocation(SdkResolvedLocation? location) {
+    if (location == null || !location.isValid) {
+      return;
+    }
+    _emitDiagnostics(
+      _diagnostics.copyWith(latestOwnDeviceLocation: location),
+    );
+  }
+
+  SdkResolvedLocation? _ownDeviceLocationFromTelPacket({
+    required BleIncomingEvent event,
+    required EixamTelPacket packet,
+  }) {
+    final latitude = packet.position.latitude;
+    final longitude = packet.position.longitude;
+    if (!_isValidCoordinate(latitude, longitude)) {
+      return null;
+    }
+    return SdkResolvedLocation.connectedDevice(
+      latitude: latitude,
+      longitude: longitude,
+      altitudeMeters: packet.position.altitudeMeters.toDouble(),
+      timestamp: event.receivedAt.toUtc(),
+      deviceId: packet.nodeId.toString(),
+      hardwareId: event.canonicalHardwareId,
+      nodeId: packet.nodeId,
+      freshness: Duration.zero,
+    );
+  }
+
+  SdkResolvedLocation? _ownDeviceLocationFromSosPacket({
+    required BleIncomingEvent event,
+    required EixamSosPacket packet,
+  }) {
+    final position = packet.position;
+    if (position == null ||
+        !_isValidCoordinate(position.latitude, position.longitude)) {
+      return null;
+    }
+    return SdkResolvedLocation.connectedDevice(
+      latitude: position.latitude,
+      longitude: position.longitude,
+      altitudeMeters: position.altitudeMeters.toDouble(),
+      timestamp: event.receivedAt.toUtc(),
+      deviceId: packet.nodeId.toString(),
+      hardwareId: event.canonicalHardwareId,
+      nodeId: packet.nodeId,
+      freshness: Duration.zero,
+    );
+  }
+
+  bool _isValidCoordinate(double latitude, double longitude) {
+    return latitude.isFinite &&
+        latitude >= -90 &&
+        latitude <= 90 &&
+        longitude.isFinite &&
+        longitude >= -180 &&
+        longitude <= 180 &&
+        !(latitude == 0 && longitude == 0);
   }
 
   Future<void> _applySosRelayAcknowledgment({
