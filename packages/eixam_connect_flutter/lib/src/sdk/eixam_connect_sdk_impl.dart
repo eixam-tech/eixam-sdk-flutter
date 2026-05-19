@@ -13,6 +13,7 @@ import '../data/datasources_remote/sos_remote_data_source.dart';
 import '../data/repositories/in_memory_device_repository.dart';
 import '../data/repositories/api_sos_repository.dart';
 import '../data/repositories/mqtt_operational_sos_repository.dart';
+import '../data/datasources_remote/sdk_feedback_remote_data_source.dart';
 import '../data/datasources_remote/sdk_identity_remote_data_source.dart';
 import '../data/datasources_remote/sdk_profile_remote_data_source.dart';
 import '../device/ble_incoming_event.dart';
@@ -66,6 +67,7 @@ class EixamConnectSdkImpl
   final SdkSessionContext? sessionContext;
   final SdkIdentityRemoteDataSource? identityRemoteDataSource;
   final SdkProfileRemoteDataSource? profileRemoteDataSource;
+  final SdkFeedbackRemoteDataSource? feedbackRemoteDataSource;
   final EixamNotificationPolicy notificationPolicy;
   final EixamNotificationTexts notificationTexts;
   final ProtectionPlatformAdapter protectionPlatformAdapter;
@@ -250,6 +252,7 @@ class EixamConnectSdkImpl
     this.sessionContext,
     this.identityRemoteDataSource,
     this.profileRemoteDataSource,
+    this.feedbackRemoteDataSource,
     this.notificationPolicy = EixamNotificationPolicy.sdkManaged,
     this.notificationTexts = _fallbackNotificationTexts,
     ProtectionPlatformAdapter? protectionPlatformAdapter,
@@ -755,6 +758,32 @@ class EixamConnectSdkImpl
       );
     }
     return ds.updateProfile(update, sessionOverride: session);
+  }
+
+  @override
+  Future<AppFeedbackSubmission> submitAppFeedback({
+    required String description,
+    required String userAccessToken,
+  }) async {
+    final ds = feedbackRemoteDataSource;
+    if (ds == null) {
+      throw const AuthException(
+        'E_SDK_FEEDBACK_HTTP_UNAVAILABLE',
+        'SDK feedback HTTP API is not configured for this runtime.',
+      );
+    }
+    final session = _session;
+    if (session == null) {
+      throw const AuthException(
+        'E_SDK_SESSION_REQUIRED',
+        'An SDK session must be configured before submitting feedback.',
+      );
+    }
+    return ds.submitFeedback(
+      session: session,
+      description: description,
+      userAccessToken: userAccessToken,
+    );
   }
 
   Future<EixamSession?> _bootstrapSessionIfNeeded(EixamSession? session) async {

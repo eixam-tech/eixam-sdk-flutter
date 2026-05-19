@@ -5,6 +5,7 @@ import '../data/datasources_local/shared_prefs_sdk_store.dart';
 import '../data/datasources_local/preferred_ble_device_store.dart';
 import '../data/datasources_local/sdk_session_store.dart';
 import '../data/datasources_remote/http_sos_remote_data_source.dart';
+import '../data/datasources_remote/sdk_feedback_remote_data_source.dart';
 import '../data/datasources_remote/sdk_identity_remote_data_source.dart';
 import '../data/datasources_remote/sdk_profile_remote_data_source.dart';
 import '../data/datasources_remote/sdk_session_context.dart';
@@ -64,6 +65,8 @@ class ApiSdkFactory {
     );
     final profileRemoteDataSource =
         HttpSdkProfileRemoteDataSource(transport: httpTransport);
+    final feedbackRemoteDataSource =
+        HttpSdkFeedbackRemoteDataSource(transport: httpTransport);
     final realtimeClient = MqttRealtimeClient(
       config: config,
       sessionContext: sessionContext,
@@ -139,6 +142,7 @@ class ApiSdkFactory {
         transport: httpTransport,
       ),
       profileRemoteDataSource: profileRemoteDataSource,
+      feedbackRemoteDataSource: feedbackRemoteDataSource,
       notificationPolicy: notificationPolicy,
       notificationTexts: notificationTexts,
       protectionPlatformAdapter:

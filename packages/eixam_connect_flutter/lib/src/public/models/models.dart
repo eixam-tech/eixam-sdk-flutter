@@ -9,6 +9,7 @@ export 'package:eixam_connect_core/src/entities/device_status.dart';
 export 'package:eixam_connect_core/src/entities/device_tel_relay_rx.dart';
 export 'package:eixam_connect_core/src/entities/eixam_notification_intent.dart';
 export 'package:eixam_connect_core/src/entities/emergency_contact.dart';
+export 'package:eixam_connect_core/src/entities/app_feedback.dart';
 export 'package:eixam_connect_core/src/entities/permission_state.dart';
 export 'package:eixam_connect_core/src/entities/preferred_device.dart';
 export 'package:eixam_connect_core/src/entities/protection_mode_models.dart';

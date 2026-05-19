@@ -53,6 +53,26 @@ class DeviceException extends EixamSdkException {
       : this('E_DEVICE_NOT_ACTIVATED', 'E_DEVICE_NOT_ACTIVATED');
 }
 
+class FeedbackException extends EixamSdkException {
+  const FeedbackException(super.code, super.message);
+}
+
+class FeedbackHttpException extends FeedbackException {
+  const FeedbackHttpException(
+    super.code,
+    super.message, {
+    required this.statusCode,
+    this.rawBody,
+    this.apiErrorCode,
+    this.apiErrorMessage,
+  });
+
+  final int statusCode;
+  final String? rawBody;
+  final String? apiErrorCode;
+  final String? apiErrorMessage;
+}
+
 class ContactsException extends EixamSdkException {
   const ContactsException(super.code, super.message);
 }
