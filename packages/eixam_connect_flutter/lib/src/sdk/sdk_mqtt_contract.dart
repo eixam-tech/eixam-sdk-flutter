@@ -45,6 +45,7 @@ class MqttOperationalSosRequest {
     this.source,
     this.incidentId,
     this.cycleKey,
+    this.osWidgetActivation,
     this.deviceBattery,
     this.deviceCoverage,
     this.mobileBattery,
@@ -63,6 +64,7 @@ class MqttOperationalSosRequest {
   final String? source;
   final String? incidentId;
   final String? cycleKey;
+  final OsSosWidgetActivation? osWidgetActivation;
   final SdkDeviceBatterySnapshot? deviceBattery;
   final SdkCoverageSnapshot? deviceCoverage;
   final int? mobileBattery;
@@ -81,6 +83,7 @@ class MqttOperationalSosRequest {
     Object? source = _unset,
     Object? incidentId = _unset,
     Object? cycleKey = _unset,
+    Object? osWidgetActivation = _unset,
     Object? deviceBattery = _unset,
     Object? deviceCoverage = _unset,
     Object? mobileBattery = _unset,
@@ -115,6 +118,9 @@ class MqttOperationalSosRequest {
           : incidentId as String?,
       cycleKey:
           identical(cycleKey, _unset) ? this.cycleKey : cycleKey as String?,
+      osWidgetActivation: identical(osWidgetActivation, _unset)
+          ? this.osWidgetActivation
+          : osWidgetActivation as OsSosWidgetActivation?,
       deviceBattery: identical(deviceBattery, _unset)
           ? this.deviceBattery
           : deviceBattery as SdkDeviceBatterySnapshot?,
@@ -223,6 +229,11 @@ class SdkMqttContract {
         'relayHardwareId': request.relayHardwareId!.trim(),
       if (request.source != null && request.source!.trim().isNotEmpty)
         'source': request.source!.trim(),
+      if (request.osWidgetActivation != null) ...{
+        'source': OsSosWidgetActivation.source,
+        'triggerSource': OsSosWidgetActivation.source,
+        'osWidgetActivation': request.osWidgetActivation!.toJson(),
+      },
       if (request.deviceBattery != null)
         'deviceBattery': request.deviceBattery!.toJson(),
       if (request.deviceCoverage != null)

@@ -79,6 +79,7 @@ class MqttOperationalSosRepository
     String? relaySource,
     String? incidentId,
     String? cycleKey,
+    OsSosWidgetActivation? osWidgetActivation,
     SdkDeviceBatterySnapshot? deviceBattery,
     SdkCoverageSnapshot? deviceCoverage,
     int? mobileBattery,
@@ -117,6 +118,7 @@ class MqttOperationalSosRepository
               hardwareId: hardwareId,
               incidentId: incidentId,
               cycleKey: cycleKey,
+              osWidgetActivation: osWidgetActivation,
               deviceBattery: deviceBattery,
               deviceCoverage: deviceCoverage,
               mobileBattery: mobileBattery,
@@ -135,6 +137,7 @@ class MqttOperationalSosRepository
               relaySource: relaySource,
               incidentId: incidentId,
               cycleKey: cycleKey,
+              osWidgetActivation: osWidgetActivation,
               deviceBattery: deviceBattery,
               deviceCoverage: deviceCoverage,
               mobileBattery: mobileBattery,
@@ -160,6 +163,7 @@ class MqttOperationalSosRepository
     switch (triggerSource) {
       case 'button_ui':
       case 'commercial_app':
+      case SosTriggerPayload.osWidgetSource:
         return true;
       default:
         return false;
@@ -174,6 +178,7 @@ class MqttOperationalSosRepository
     String? hardwareId,
     String? incidentId,
     String? cycleKey,
+    OsSosWidgetActivation? osWidgetActivation,
     SdkDeviceBatterySnapshot? deviceBattery,
     SdkCoverageSnapshot? deviceCoverage,
     int? mobileBattery,
@@ -222,6 +227,7 @@ class MqttOperationalSosRepository
         hardwareId: identity.hardwareId,
         incidentId: incidentId,
         cycleKey: cycleKey,
+        osWidgetActivation: osWidgetActivation,
         deviceBattery: deviceBattery,
         deviceCoverage: deviceCoverage,
         mobileBattery: mobileBattery,
@@ -258,6 +264,7 @@ class MqttOperationalSosRepository
     String? relaySource,
     String? incidentId,
     String? cycleKey,
+    OsSosWidgetActivation? osWidgetActivation,
     SdkDeviceBatterySnapshot? deviceBattery,
     SdkCoverageSnapshot? deviceCoverage,
     int? mobileBattery,
@@ -283,6 +290,7 @@ class MqttOperationalSosRepository
       relaySource: relaySource,
       incidentId: incidentId ?? incident.id,
       cycleKey: cycleKey,
+      osWidgetActivation: osWidgetActivation,
       deviceBattery: deviceBattery,
       deviceCoverage: deviceCoverage,
       mobileBattery: mobileBattery,
@@ -308,6 +316,7 @@ class MqttOperationalSosRepository
     String? relaySource,
     String? incidentId,
     String? cycleKey,
+    OsSosWidgetActivation? osWidgetActivation,
     SdkDeviceBatterySnapshot? deviceBattery,
     SdkCoverageSnapshot? deviceCoverage,
     int? mobileBattery,
@@ -361,6 +370,7 @@ class MqttOperationalSosRepository
       source: relaySource,
       incidentId: incidentId,
       cycleKey: cycleKey,
+      osWidgetActivation: osWidgetActivation,
       deviceBattery: deviceBattery,
       deviceCoverage: deviceCoverage,
       mobileBattery: mobileBattery,

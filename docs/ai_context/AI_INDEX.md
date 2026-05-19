@@ -16,6 +16,7 @@ This folder is a lightweight orientation layer for future Codex sessions working
 | General repo orientation | [`../../README.md`](../../README.md), [`../../AGENTS.md`](../../AGENTS.md), [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | Public SDK / bootstrap / session questions | [`ARCHITECTURE.md`](ARCHITECTURE.md), [`BACKEND_INTEGRATION.md`](BACKEND_INTEGRATION.md), [`../../packages/eixam_connect_flutter/lib/src/sdk/api_sdk_factory.dart`](../../packages/eixam_connect_flutter/lib/src/sdk/api_sdk_factory.dart) |
 | SOS behavior | [`SOS_FLOW.md`](SOS_FLOW.md), [`../../packages/eixam_connect_flutter/SOS_ORCHESTRATION.md`](../../packages/eixam_connect_flutter/SOS_ORCHESTRATION.md), [`../../packages/eixam_connect_flutter/lib/src/sdk/eixam_connect_sdk_impl.dart`](../../packages/eixam_connect_flutter/lib/src/sdk/eixam_connect_sdk_impl.dart) |
+| OS SOS widgets | [`OS_SOS_WIDGETS.md`](OS_SOS_WIDGETS.md), [`SOS_FLOW.md`](SOS_FLOW.md), [`../../packages/eixam_connect_core/lib/src/entities/os_sos_widget_activation.dart`](../../packages/eixam_connect_core/lib/src/entities/os_sos_widget_activation.dart) |
 | BLE / device runtime | [`BLE_AND_DEVICE_RUNTIME.md`](BLE_AND_DEVICE_RUNTIME.md), [`../../packages/eixam_connect_flutter/BLE_DEVICE_CONTRACT.md`](../../packages/eixam_connect_flutter/BLE_DEVICE_CONTRACT.md), [`../../packages/eixam_connect_flutter/lib/src/device/ble_device_runtime_provider.dart`](../../packages/eixam_connect_flutter/lib/src/device/ble_device_runtime_provider.dart) |
 | Relay / remote-node behavior | [`RELAY_FLOW.md`](RELAY_FLOW.md), [`../../packages/eixam_connect_flutter/lib/src/sdk/ble_operational_runtime_bridge.dart`](../../packages/eixam_connect_flutter/lib/src/sdk/ble_operational_runtime_bridge.dart) |
 | DMP / Death Man | [`DMP_FLOW.md`](DMP_FLOW.md), [`../../packages/eixam_connect_flutter/lib/src/sdk/eixam_connect_sdk_impl.dart`](../../packages/eixam_connect_flutter/lib/src/sdk/eixam_connect_sdk_impl.dart) |
@@ -27,6 +28,7 @@ This folder is a lightweight orientation layer for future Codex sessions working
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md)
 - [`SOS_FLOW.md`](SOS_FLOW.md)
+- [`OS_SOS_WIDGETS.md`](OS_SOS_WIDGETS.md)
 - [`BLE_AND_DEVICE_RUNTIME.md`](BLE_AND_DEVICE_RUNTIME.md)
 - [`RELAY_FLOW.md`](RELAY_FLOW.md)
 - [`DMP_FLOW.md`](DMP_FLOW.md)

@@ -23,6 +23,8 @@ class SharedPrefsSdkStore {
   static const String deviceStatusKey = 'eixam.device.status';
   static const String sdkSessionKey = 'eixam.sdk.session';
   static const String preSosSessionKey = 'eixam.sos.pre_sos_session';
+  static const String osSosWidgetRecentActionsKey =
+      'eixam.sos.os_widget.recent_actions';
 
   SharedPreferences? _prefs;
 

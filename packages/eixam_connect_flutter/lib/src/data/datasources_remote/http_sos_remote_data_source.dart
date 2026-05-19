@@ -31,6 +31,7 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     String? relaySource,
     String? incidentId,
     String? cycleKey,
+    OsSosWidgetActivation? osWidgetActivation,
     SdkDeviceBatterySnapshot? deviceBattery,
     SdkCoverageSnapshot? deviceCoverage,
     int? mobileBattery,
@@ -104,6 +105,14 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
         'relayHardwareId': relayHardwareId.trim(),
       if (relaySource != null && relaySource.trim().isNotEmpty)
         'source': relaySource.trim(),
+      if (relaySource == null &&
+          triggerSource == SosTriggerPayload.osWidgetSource)
+        'source': SosTriggerPayload.osWidgetSource,
+      'triggerSource': triggerSource,
+      if (message != null && message.trim().isNotEmpty)
+        'message': message.trim(),
+      if (osWidgetActivation != null)
+        'osWidgetActivation': osWidgetActivation.toJson(),
       if (deviceBattery != null) 'deviceBattery': deviceBattery.toJson(),
       if (deviceCoverage != null) 'deviceCoverage': deviceCoverage.toJson(),
       if (mobileBattery != null) 'mobileBattery': mobileBattery.clamp(0, 100),

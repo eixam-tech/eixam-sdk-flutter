@@ -51,3 +51,8 @@ packages/eixam_connect_flutter/build/test_cache/build/fa875cea96ff9eb23bebfb51f1
 *.dill
 *.dill
 *.dill
+/apps/eixam_control_app/android/.gradle/8.14/checksums
+/apps/eixam_control_app/android/.gradle/8.14/executionHistory
+/apps/eixam_control_app/android/.gradle/8.14/fileChanges
+/apps/eixam_control_app/android/.gradle
+/apps/eixam_control_app/build

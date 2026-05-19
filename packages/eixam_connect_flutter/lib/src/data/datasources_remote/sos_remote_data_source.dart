@@ -18,6 +18,7 @@ abstract class SosRemoteDataSource {
     String? relaySource,
     String? incidentId,
     String? cycleKey,
+    OsSosWidgetActivation? osWidgetActivation,
     SdkDeviceBatterySnapshot? deviceBattery,
     SdkCoverageSnapshot? deviceCoverage,
     int? mobileBattery,

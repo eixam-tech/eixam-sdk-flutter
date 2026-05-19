@@ -31,6 +31,7 @@ class FakeSosRepository implements SosRepository {
   SdkCoverageSnapshot? lastDeviceCoverage;
   int? lastMobileBattery;
   SdkCoverageSnapshot? lastMobileCoverage;
+  OsSosWidgetActivation? lastOsWidgetActivation;
   Object? triggerError;
   final StreamController<SosState> stateController =
       StreamController<SosState>.broadcast();
@@ -49,6 +50,7 @@ class FakeSosRepository implements SosRepository {
     String? relaySource,
     String? incidentId,
     String? cycleKey,
+    OsSosWidgetActivation? osWidgetActivation,
     SdkDeviceBatterySnapshot? deviceBattery,
     SdkCoverageSnapshot? deviceCoverage,
     int? mobileBattery,
@@ -71,6 +73,7 @@ class FakeSosRepository implements SosRepository {
     lastDeviceCoverage = deviceCoverage;
     lastMobileBattery = mobileBattery;
     lastMobileCoverage = mobileCoverage;
+    lastOsWidgetActivation = osWidgetActivation;
     currentIncident = currentIncident.copyWith(
       state: SosState.sent,
       message: message,

@@ -118,6 +118,33 @@ class LocalStateSerializers {
     );
   }
 
+  static Map<String, dynamic> sosTriggerPayloadToJson(
+    SosTriggerPayload payload,
+  ) {
+    return <String, dynamic>{
+      'message': payload.message,
+      'triggerSource': payload.triggerSource,
+      if (payload.osWidgetActivation != null)
+        'osWidgetActivation': payload.osWidgetActivation!.toJson(),
+    };
+  }
+
+  static SosTriggerPayload sosTriggerPayloadFromJson(
+    Map<String, dynamic>? json,
+  ) {
+    if (json == null) {
+      return const SosTriggerPayload();
+    }
+    final rawOsWidgetActivation = json['osWidgetActivation'];
+    return SosTriggerPayload(
+      message: json['message'] as String?,
+      triggerSource: json['triggerSource'] as String? ?? 'button_ui',
+      osWidgetActivation: rawOsWidgetActivation is Map<String, dynamic>
+          ? OsSosWidgetActivation.fromJson(rawOsWidgetActivation)
+          : null,
+    );
+  }
+
   static Map<String, dynamic> deathManPlanToJson(DeathManPlan plan) {
     return {
       'id': plan.id,

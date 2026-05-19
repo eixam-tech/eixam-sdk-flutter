@@ -83,6 +83,7 @@ final class _FakeSosRemoteDataSource implements SosRemoteDataSource {
     String? relaySource,
     String? incidentId,
     String? cycleKey,
+    OsSosWidgetActivation? osWidgetActivation,
     SdkDeviceBatterySnapshot? deviceBattery,
     SdkCoverageSnapshot? deviceCoverage,
     int? mobileBattery,

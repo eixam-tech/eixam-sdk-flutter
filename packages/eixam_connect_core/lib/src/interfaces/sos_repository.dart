@@ -1,3 +1,4 @@
+import '../entities/os_sos_widget_activation.dart';
 import '../entities/sos_history_item.dart';
 import '../entities/sos_incident.dart';
 import '../entities/sdk_telemetry_payload.dart';
@@ -23,6 +24,7 @@ abstract class SosRepository {
     String? relaySource,
     String? incidentId,
     String? cycleKey,
+    OsSosWidgetActivation? osWidgetActivation,
     SdkDeviceBatterySnapshot? deviceBattery,
     SdkCoverageSnapshot? deviceCoverage,
     int? mobileBattery,

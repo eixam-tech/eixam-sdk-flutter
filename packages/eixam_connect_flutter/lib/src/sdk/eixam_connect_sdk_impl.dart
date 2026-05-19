@@ -27,6 +27,7 @@ import '../device/eixam_sos_packet.dart';
 import '../data/datasources_remote/sdk_session_context.dart';
 import '../data/repositories/telemetry_repository.dart';
 import '../data/repositories/sos_runtime_rehydration_support.dart';
+import '../mappers/local_state_serializers.dart';
 import 'android_protection_platform_adapter.dart';
 import 'background_telemetry_platform_adapter.dart';
 import 'background_telemetry_platform_adapter_factory.dart';
@@ -187,6 +188,7 @@ class EixamConnectSdkImpl
   _SosClosureIntent? _publicSosClosureInFlight;
   Future<SosIncident>? _pendingPreSosConfirmation;
   bool _preSosExpirySettlementInFlight = false;
+  final Map<String, DateTime> _recentOsSosWidgetActions = <String, DateTime>{};
   final Set<String> _deviceOriginatedBackendSyncInFlight = <String>{};
   EixamSdkConfig? _sdkConfig;
   bool _registeredDeviceAutoSyncInFlight = false;
@@ -220,6 +222,7 @@ class EixamConnectSdkImpl
       Duration(seconds: 15);
   static const Duration _preSosTickInterval = Duration(milliseconds: 50);
   static const Duration _terminalSosSuppressionWindow = Duration(seconds: 10);
+  static const Duration _osSosWidgetActionDedupeWindow = Duration(minutes: 10);
   static const int _maxPendingNotificationIntents = 20;
   static const int _maxRememberedNotificationIntentKeys = 100;
   static const EixamNotificationTexts _fallbackNotificationTexts =
@@ -2347,6 +2350,13 @@ class EixamConnectSdkImpl
   @override
   Future<void> startPreSos({
     Duration countdown = const Duration(seconds: 20),
+  }) {
+    return _startPreSos(countdown: countdown);
+  }
+
+  Future<void> _startPreSos({
+    required Duration countdown,
+    SosTriggerPayload? activationPayload,
   }) async {
     await _restorePersistedPreSosSession(trigger: 'startPreSos');
     if (await _settleExpiredPreSosSession(trigger: 'startPreSos')) {
@@ -2408,6 +2418,7 @@ class EixamConnectSdkImpl
           cycleKey: _preSosCycleKeyFromDeviceStatus(deviceStatus),
           originatorNodeId: deviceStatus.nodeId ?? runtimeStatus.nodeId,
           packetId: deviceStatus.packetId,
+          activationPayload: activationPayload,
         );
         return;
       } catch (error) {
@@ -2437,6 +2448,7 @@ class EixamConnectSdkImpl
       cycleKey: _newLocalPreSosCycleKey(startedAt),
       originatorNodeId: runtimeStatus?.nodeId,
       packetId: null,
+      activationPayload: activationPayload,
     );
   }
 
@@ -2604,6 +2616,85 @@ class EixamConnectSdkImpl
   }
 
   @override
+  Future<OsSosWidgetActivationResult> handleOsSosWidgetActivation(
+    OsSosWidgetActivation activation, {
+    Duration countdown = const Duration(seconds: 10),
+  }) async {
+    final idempotencyKey = activation.idempotencyKey;
+    if (idempotencyKey.isEmpty) {
+      throw const SosException(
+        'E_OS_WIDGET_ACTION_ID_REQUIRED',
+        'E_OS_WIDGET_ACTION_ID_REQUIRED',
+      );
+    }
+
+    await _restorePersistedPreSosSession(trigger: 'os_sos_widget');
+    await _settleExpiredPreSosSession(trigger: 'os_sos_widget');
+
+    final currentIncident = await getCurrentSosIncident();
+    if (_hasBackendVisibleSosIncident(currentIncident) ||
+        _isOpenSosState(_publicSosState)) {
+      return OsSosWidgetActivationResult.fromActivation(
+        activation: activation,
+        outcome: OsSosWidgetActivationOutcome.activeSosAlreadyRunning,
+        sosState: _publicSosState,
+        incident: currentIncident,
+      );
+    }
+
+    final preSosStatus = _buildCurrentPreSosStatus();
+    if (preSosStatus != null) {
+      return OsSosWidgetActivationResult.fromActivation(
+        activation: activation,
+        outcome: OsSosWidgetActivationOutcome.countdownAlreadyRunning,
+        sosState: SosState.arming,
+        preSosStatus: preSosStatus,
+      );
+    }
+
+    if (!await _rememberOsSosWidgetAction(idempotencyKey)) {
+      return OsSosWidgetActivationResult.fromActivation(
+        activation: activation,
+        outcome: OsSosWidgetActivationOutcome.duplicateIgnored,
+        sosState: _publicSosState,
+      );
+    }
+
+    final payload = SosTriggerPayload(
+      triggerSource: SosTriggerPayload.osWidgetSource,
+      osWidgetActivation: activation,
+    );
+
+    switch (activation.confirmationMode) {
+      case OsSosWidgetConfirmationMode.countdown:
+        await _startPreSos(
+          countdown: countdown,
+          activationPayload: payload,
+        );
+        return OsSosWidgetActivationResult.fromActivation(
+          activation: activation,
+          outcome: OsSosWidgetActivationOutcome.countdownStarted,
+          sosState: SosState.arming,
+          preSosStatus: _buildCurrentPreSosStatus(),
+        );
+      case OsSosWidgetConfirmationMode.hold:
+        final incident = await triggerSos(payload);
+        return OsSosWidgetActivationResult.fromActivation(
+          activation: activation,
+          outcome: OsSosWidgetActivationOutcome.activated,
+          sosState: incident.state,
+          incident: incident,
+        );
+      case OsSosWidgetConfirmationMode.appOpened:
+        return OsSosWidgetActivationResult.fromActivation(
+          activation: activation,
+          outcome: OsSosWidgetActivationOutcome.confirmationRequired,
+          sosState: _publicSosState,
+        );
+    }
+  }
+
+  @override
   Future<SosIncident> triggerSos(SosTriggerPayload payload) async {
     if (_hasActivePreSosSession ||
         (await deviceSosController.getStatus()).state ==
@@ -2717,6 +2808,7 @@ class EixamConnectSdkImpl
           deviceId: identity.deviceId,
           hardwareId: identity.hardwareId,
           originatorNodeId: identity.originatorNodeId,
+          osWidgetActivation: payload.osWidgetActivation,
           deviceBattery: metadata.deviceBattery,
           deviceCoverage: metadata.deviceCoverage,
           mobileBattery: metadata.mobileBattery,
@@ -4998,6 +5090,7 @@ class EixamConnectSdkImpl
     String? cycleKey,
     int? originatorNodeId,
     int? packetId,
+    SosTriggerPayload? activationPayload,
     bool emitNotificationIntent = true,
     bool publishStatus = true,
   }) {
@@ -5018,6 +5111,7 @@ class EixamConnectSdkImpl
         owner: owner,
         originatorNodeId: originatorNodeId,
         packetId: packetId,
+        activationPayload: activationPayload ?? const SosTriggerPayload(),
         timer: Timer.periodic(_preSosTickInterval, (_) {
           unawaited(_handlePreSosTimerTick(cycleRevision: cycleRevision));
         }),
@@ -5065,6 +5159,7 @@ class EixamConnectSdkImpl
         owner: owner,
         originatorNodeId: originatorNodeId ?? session.originatorNodeId,
         packetId: resolvedPacketId,
+        activationPayload: activationPayload ?? session.activationPayload,
       );
       if (preserveExistingCycle &&
           (session.startedAt != startedAt ||
@@ -5131,6 +5226,11 @@ class EixamConnectSdkImpl
       cycleKey: raw['cycleKey'] as String?,
       originatorNodeId: raw['originatorNodeId'] as int?,
       packetId: raw['packetId'] as int?,
+      activationPayload: LocalStateSerializers.sosTriggerPayloadFromJson(
+        raw['activationPayload'] is Map<String, dynamic>
+            ? raw['activationPayload'] as Map<String, dynamic>
+            : null,
+      ),
       emitNotificationIntent: false,
       publishStatus: DateTime.now().isBefore(expectedActivationAt),
     );
@@ -5156,12 +5256,51 @@ class EixamConnectSdkImpl
         if (session.originatorNodeId != null)
           'originatorNodeId': session.originatorNodeId,
         if (session.packetId != null) 'packetId': session.packetId,
+        'activationPayload': LocalStateSerializers.sosTriggerPayloadToJson(
+          session.activationPayload,
+        ),
       },
     );
   }
 
   Future<void> _clearPersistedPreSosSession() {
     return _localStore.remove(SharedPrefsSdkStore.preSosSessionKey);
+  }
+
+  Future<bool> _rememberOsSosWidgetAction(String idempotencyKey) async {
+    final now = DateTime.now().toUtc();
+    final persisted = await _localStore.readJson(
+      SharedPrefsSdkStore.osSosWidgetRecentActionsKey,
+    );
+    if (persisted != null) {
+      for (final entry in persisted.entries) {
+        final seenAtRaw = entry.value;
+        if (seenAtRaw is! String) {
+          continue;
+        }
+        final seenAt = DateTime.tryParse(seenAtRaw)?.toUtc();
+        if (seenAt != null) {
+          _recentOsSosWidgetActions[entry.key] = seenAt;
+        }
+      }
+    }
+    _recentOsSosWidgetActions.removeWhere(
+      (_, seenAt) => now.difference(seenAt) > _osSosWidgetActionDedupeWindow,
+    );
+    if (_recentOsSosWidgetActions.containsKey(idempotencyKey)) {
+      BleDebugRegistry.instance.recordEvent(
+        '[OS_SOS_WIDGET] action=duplicate_ignored key=$idempotencyKey',
+      );
+      return false;
+    }
+    _recentOsSosWidgetActions[idempotencyKey] = now;
+    await _localStore.saveJson(
+      SharedPrefsSdkStore.osSosWidgetRecentActionsKey,
+      _recentOsSosWidgetActions.map(
+        (key, value) => MapEntry(key, value.toUtc().toIso8601String()),
+      ),
+    );
+    return true;
   }
 
   DateTime? _parsePersistedDateTime(Object? value) {
@@ -5293,7 +5432,9 @@ class EixamConnectSdkImpl
 
   Future<void> _confirmPreSosFromCountdownZero() async {
     try {
-      await confirmPreSos(const SosTriggerPayload());
+      await confirmPreSos(
+        _preSosSession?.activationPayload ?? const SosTriggerPayload(),
+      );
     } on SosException catch (error) {
       if (error.code != 'E_SOS_ALREADY_ACTIVE') {
         BleDebugRegistry.instance.recordEvent(
@@ -10079,6 +10220,7 @@ class _PreSosSession {
     required this.owner,
     required this.originatorNodeId,
     required this.packetId,
+    required this.activationPayload,
     required this.timer,
   });
 
@@ -10091,6 +10233,7 @@ class _PreSosSession {
   final _SosOwner owner;
   final int? originatorNodeId;
   final int? packetId;
+  final SosTriggerPayload activationPayload;
   final Timer timer;
 
   _PreSosSession copyWith({
@@ -10103,6 +10246,7 @@ class _PreSosSession {
     _SosOwner? owner,
     int? originatorNodeId,
     int? packetId,
+    SosTriggerPayload? activationPayload,
     Timer? timer,
   }) {
     return _PreSosSession(
@@ -10117,6 +10261,7 @@ class _PreSosSession {
       owner: owner ?? this.owner,
       originatorNodeId: originatorNodeId ?? this.originatorNodeId,
       packetId: packetId ?? this.packetId,
+      activationPayload: activationPayload ?? this.activationPayload,
       timer: timer ?? this.timer,
     );
   }

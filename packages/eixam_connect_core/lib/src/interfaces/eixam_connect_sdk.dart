@@ -14,6 +14,7 @@ import '../entities/permission_state.dart';
 import '../entities/preferred_device.dart';
 import '../entities/protection_mode_models.dart';
 import '../entities/public_pre_sos_status.dart';
+import '../entities/os_sos_widget_activation.dart';
 import '../entities/runtime_identity_snapshot.dart';
 import '../entities/sdk_operational_diagnostics.dart';
 import '../entities/sdk_resolved_location.dart';
@@ -136,6 +137,10 @@ abstract class EixamConnectSdk {
   Future<void> cancelPreSos();
   Future<PublicPreSosStatus?> getPreSosStatus();
   Stream<PublicPreSosStatus?> watchPreSosStatus();
+  Future<OsSosWidgetActivationResult> handleOsSosWidgetActivation(
+    OsSosWidgetActivation activation, {
+    Duration countdown = const Duration(seconds: 10),
+  });
   Future<SosIncident> triggerSos(SosTriggerPayload payload);
   Future<SosIncident?> getCurrentSosIncident();
   Stream<SosState> get currentSosStateStream;
