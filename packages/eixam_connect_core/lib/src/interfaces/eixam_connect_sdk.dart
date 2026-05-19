@@ -9,6 +9,7 @@ import '../entities/device_status.dart';
 import '../entities/device_runtime_status.dart';
 import '../entities/emergency_contact.dart';
 import '../entities/eixam_notification_intent.dart';
+import '../entities/app_feedback.dart';
 import '../entities/permission_state.dart';
 import '../entities/preferred_device.dart';
 import '../entities/protection_mode_models.dart';
@@ -77,6 +78,17 @@ abstract class EixamConnectSdk {
 
   /// Updates the authenticated SDK user's profile via `PUT /v1/sdk/me`.
   Future<SdkUserProfile> updateSdkUserProfile(SdkUserProfileUpdate update);
+
+  /// Submits authenticated in-app feedback to `POST /v1/feedback`.
+  ///
+  /// The SDK uses the current SDK session for `app_id` and `sdk_user_id`.
+  /// [userAccessToken] must be the current authenticated Eixam user JWT.
+  /// This endpoint is not available through SDK HMAC-only authentication and
+  /// is intentionally not signed with the SDK `userHash`.
+  Future<AppFeedbackSubmission> submitAppFeedback({
+    required String description,
+    required String userAccessToken,
+  });
 
   Future<SdkOperationalDiagnostics> getOperationalDiagnostics();
   Stream<SdkOperationalDiagnostics> watchOperationalDiagnostics();
