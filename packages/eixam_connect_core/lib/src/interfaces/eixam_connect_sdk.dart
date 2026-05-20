@@ -44,6 +44,9 @@ void registerEixamConnectSdkBootstrapper(
 }
 
 abstract class EixamConnectSdk {
+  /// Canonical guarded PRE-SOS countdown used by in-app and OS widget flows.
+  static const Duration defaultPreSosCountdown = Duration(seconds: 20);
+
   static Future<EixamConnectSdk> bootstrap(EixamBootstrapConfig config) {
     final bootstrapper = _bootstrapper;
     if (bootstrapper == null) {
@@ -131,7 +134,7 @@ abstract class EixamConnectSdk {
   Future<void> deleteRegisteredDevice(String deviceId);
 
   Future<void> startPreSos({
-    Duration countdown = const Duration(seconds: 20),
+    Duration countdown = defaultPreSosCountdown,
   });
   Future<SosIncident> confirmPreSos(SosTriggerPayload payload);
   Future<void> cancelPreSos();
@@ -139,7 +142,7 @@ abstract class EixamConnectSdk {
   Stream<PublicPreSosStatus?> watchPreSosStatus();
   Future<OsSosWidgetActivationResult> handleOsSosWidgetActivation(
     OsSosWidgetActivation activation, {
-    Duration countdown = const Duration(seconds: 10),
+    Duration countdown = defaultPreSosCountdown,
   });
   Future<SosIncident> triggerSos(SosTriggerPayload payload);
   Future<SosIncident?> getCurrentSosIncident();

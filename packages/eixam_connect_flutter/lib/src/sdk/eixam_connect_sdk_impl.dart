@@ -2349,7 +2349,7 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> startPreSos({
-    Duration countdown = const Duration(seconds: 20),
+    Duration countdown = EixamConnectSdk.defaultPreSosCountdown,
   }) {
     return _startPreSos(countdown: countdown);
   }
@@ -2618,7 +2618,7 @@ class EixamConnectSdkImpl
   @override
   Future<OsSosWidgetActivationResult> handleOsSosWidgetActivation(
     OsSosWidgetActivation activation, {
-    Duration countdown = const Duration(seconds: 10),
+    Duration countdown = EixamConnectSdk.defaultPreSosCountdown,
   }) async {
     final idempotencyKey = activation.idempotencyKey;
     if (idempotencyKey.isEmpty) {
