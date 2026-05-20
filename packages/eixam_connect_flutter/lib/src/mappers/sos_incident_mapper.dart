@@ -12,7 +12,15 @@ class SosIncidentMapper {
       id: dto.id,
       state: _mapState(dto.state),
       createdAt: DateTime.parse(dto.createdAt),
+      source: dto.source,
       triggerSource: dto.triggerSource,
+      relaySource: dto.relaySource,
+      originatorNodeId: dto.originatorNodeId,
+      relayNodeId: dto.relayNodeId,
+      deviceId: dto.deviceId,
+      hardwareId: dto.hardwareId,
+      owner: dto.owner,
+      cycleKey: dto.cycleKey,
       message: dto.message,
       positionSnapshot: dto.positionSnapshot == null
           ? null

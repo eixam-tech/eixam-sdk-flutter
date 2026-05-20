@@ -43,6 +43,9 @@ class MqttOperationalSosRequest {
     this.relayDeviceId,
     this.relayHardwareId,
     this.source,
+    this.triggerSource,
+    this.relaySource,
+    this.owner,
     this.incidentId,
     this.cycleKey,
     this.osWidgetActivation,
@@ -62,6 +65,9 @@ class MqttOperationalSosRequest {
   final String? relayDeviceId;
   final String? relayHardwareId;
   final String? source;
+  final String? triggerSource;
+  final String? relaySource;
+  final String? owner;
   final String? incidentId;
   final String? cycleKey;
   final OsSosWidgetActivation? osWidgetActivation;
@@ -81,6 +87,9 @@ class MqttOperationalSosRequest {
     Object? relayDeviceId = _unset,
     Object? relayHardwareId = _unset,
     Object? source = _unset,
+    Object? triggerSource = _unset,
+    Object? relaySource = _unset,
+    Object? owner = _unset,
     Object? incidentId = _unset,
     Object? cycleKey = _unset,
     Object? osWidgetActivation = _unset,
@@ -113,6 +122,13 @@ class MqttOperationalSosRequest {
           ? this.relayHardwareId
           : relayHardwareId as String?,
       source: identical(source, _unset) ? this.source : source as String?,
+      triggerSource: identical(triggerSource, _unset)
+          ? this.triggerSource
+          : triggerSource as String?,
+      relaySource: identical(relaySource, _unset)
+          ? this.relaySource
+          : relaySource as String?,
+      owner: identical(owner, _unset) ? this.owner : owner as String?,
       incidentId: identical(incidentId, _unset)
           ? this.incidentId
           : incidentId as String?,
@@ -229,6 +245,13 @@ class SdkMqttContract {
         'relayHardwareId': request.relayHardwareId!.trim(),
       if (request.source != null && request.source!.trim().isNotEmpty)
         'source': request.source!.trim(),
+      if (request.triggerSource != null &&
+          request.triggerSource!.trim().isNotEmpty)
+        'triggerSource': request.triggerSource!.trim(),
+      if (request.relaySource != null && request.relaySource!.trim().isNotEmpty)
+        'relaySource': request.relaySource!.trim(),
+      if (request.owner != null && request.owner!.trim().isNotEmpty)
+        'owner': request.owner!.trim(),
       if (request.osWidgetActivation != null) ...{
         'source': OsSosWidgetActivation.source,
         'triggerSource': OsSosWidgetActivation.source,

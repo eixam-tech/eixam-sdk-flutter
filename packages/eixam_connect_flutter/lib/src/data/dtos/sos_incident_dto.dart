@@ -1,11 +1,19 @@
-//// DTO representation of an SOS incident returned by the backend layer.
+/// DTO representation of an SOS incident returned by the backend layer.
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 class SosIncidentDto {
   final String id;
   final String state;
   final String createdAt;
+  final String? source;
   final String? triggerSource;
+  final String? relaySource;
+  final int? originatorNodeId;
+  final int? relayNodeId;
+  final String? deviceId;
+  final String? hardwareId;
+  final String? owner;
+  final String? cycleKey;
   final String? message;
   final Map<String, dynamic>? positionSnapshot;
   final int? statusCode;
@@ -17,7 +25,15 @@ class SosIncidentDto {
     required this.id,
     required this.state,
     required this.createdAt,
+    this.source,
     this.triggerSource,
+    this.relaySource,
+    this.originatorNodeId,
+    this.relayNodeId,
+    this.deviceId,
+    this.hardwareId,
+    this.owner,
+    this.cycleKey,
     this.message,
     this.positionSnapshot,
     this.statusCode,
@@ -34,8 +50,19 @@ class SosIncidentDto {
           (json['occurredAt'] as String?) ??
           (json['timestamp'] as String?) ??
           DateTime.now().toIso8601String(),
+      source: _stringFromJson(json, const ['source']),
       triggerSource:
-          json['triggerSource'] as String? ?? json['trigger_source'] as String?,
+          _stringFromJson(json, const ['triggerSource', 'trigger_source']),
+      relaySource: _stringFromJson(json, const ['relaySource', 'relay_source']),
+      originatorNodeId: _intFromJson(
+        json,
+        const ['originatorNodeId', 'originator_node_id'],
+      ),
+      relayNodeId: _intFromJson(json, const ['relayNodeId', 'relay_node_id']),
+      deviceId: _stringFromJson(json, const ['deviceId', 'device_id']),
+      hardwareId: _stringFromJson(json, const ['hardwareId', 'hardware_id']),
+      owner: _stringFromJson(json, const ['owner']),
+      cycleKey: _stringFromJson(json, const ['cycleKey', 'cycle_key']),
       message: json['message'] as String?,
       positionSnapshot: _positionSnapshotFromJson(json),
       creationTelemetryId: json['creationTelemetryId'] as String? ??
@@ -47,7 +74,15 @@ class SosIncidentDto {
     String? id,
     String? state,
     String? createdAt,
+    String? source,
     String? triggerSource,
+    String? relaySource,
+    int? originatorNodeId,
+    int? relayNodeId,
+    String? deviceId,
+    String? hardwareId,
+    String? owner,
+    String? cycleKey,
     String? message,
     Map<String, dynamic>? positionSnapshot,
     int? statusCode,
@@ -57,12 +92,56 @@ class SosIncidentDto {
       id: id ?? this.id,
       state: state ?? this.state,
       createdAt: createdAt ?? this.createdAt,
+      source: source ?? this.source,
       triggerSource: triggerSource ?? this.triggerSource,
+      relaySource: relaySource ?? this.relaySource,
+      originatorNodeId: originatorNodeId ?? this.originatorNodeId,
+      relayNodeId: relayNodeId ?? this.relayNodeId,
+      deviceId: deviceId ?? this.deviceId,
+      hardwareId: hardwareId ?? this.hardwareId,
+      owner: owner ?? this.owner,
+      cycleKey: cycleKey ?? this.cycleKey,
       message: message ?? this.message,
       positionSnapshot: positionSnapshot ?? this.positionSnapshot,
       statusCode: statusCode ?? this.statusCode,
       creationTelemetryId: creationTelemetryId ?? this.creationTelemetryId,
     );
+  }
+
+  static String? _stringFromJson(
+    Map<String, dynamic> json,
+    List<String> keys,
+  ) {
+    for (final key in keys) {
+      final value = json[key];
+      if (value == null) {
+        continue;
+      }
+      final normalized = value.toString().trim();
+      if (normalized.isNotEmpty) {
+        return normalized;
+      }
+    }
+    return null;
+  }
+
+  static int? _intFromJson(Map<String, dynamic> json, List<String> keys) {
+    for (final key in keys) {
+      final value = json[key];
+      if (value is int) {
+        return value;
+      }
+      if (value is num) {
+        return value.toInt();
+      }
+      if (value is String) {
+        final parsed = int.tryParse(value.trim());
+        if (parsed != null) {
+          return parsed;
+        }
+      }
+    }
+    return null;
   }
 
   static Map<String, dynamic>? _positionSnapshotFromJson(

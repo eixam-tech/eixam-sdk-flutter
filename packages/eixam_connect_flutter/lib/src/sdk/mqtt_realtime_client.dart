@@ -113,6 +113,35 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
     );
     final correlationId = _nextCorrelationId('sos');
     final payload = _decodeJsonObject(envelope.payload);
+    final externalSos = _isExternalSosRequest(request, payload);
+    if (externalSos) {
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS mqtt_publish_start '
+        'triggerSource=${_field(payload, 'triggerSource', fallback: request.triggerSource ?? request.source ?? "none")} '
+        'originatorNodeId=${request.originatorNodeId?.toString() ?? _intField(payload, 'originatorNodeId')?.toString() ?? "none"} '
+        'relayNodeId=${request.relayNodeId?.toString() ?? _intField(payload, 'relayNodeId')?.toString() ?? "none"}',
+      );
+      try {
+        await transport.publish(
+          topic: envelope.topic,
+          payload: envelope.payload,
+          qos: SdkMqttQos.atLeastOnce,
+          retain: false,
+        );
+        BleDebugRegistry.instance.recordEvent(
+          'EXTERNAL_SOS mqtt_publish_result result=publish_returned '
+          'topic=${envelope.topic} correlationId=$correlationId',
+        );
+      } catch (error) {
+        BleDebugRegistry.instance.recordEvent(
+          'EXTERNAL_SOS mqtt_publish_failed '
+          'topic=${envelope.topic} correlationId=$correlationId '
+          'errorType=${error.runtimeType} message=${_compactSummary(error)}',
+        );
+        rethrow;
+      }
+      return;
+    }
 
     BleDebugRegistry.instance.recordEvent(
       '[BACKGROUND_SOS] mqtt_publish_method_entry '
@@ -177,6 +206,38 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
       );
       rethrow;
     }
+  }
+
+  bool _isExternalSosRequest(
+    MqttOperationalSosRequest request,
+    Map<String, dynamic> payload,
+  ) {
+    final source = _field(
+      payload,
+      'source',
+      fallback: request.source ?? request.triggerSource ?? 'unknown',
+    );
+    final triggerSource = _field(
+      payload,
+      'triggerSource',
+      fallback: request.triggerSource ?? source,
+    );
+    final relaySource = _field(
+      payload,
+      'relaySource',
+      fallback: request.relaySource ?? triggerSource,
+    );
+    return _normalizeOriginToken(source) == 'remote_lora_relay' ||
+        _normalizeOriginToken(triggerSource) == 'remote_lora_relay' ||
+        _normalizeOriginToken(relaySource) == 'remote_lora_relay';
+  }
+
+  String? _normalizeOriginToken(String? value) {
+    final trimmed = value?.trim();
+    if (trimmed == null || trimmed.isEmpty) {
+      return null;
+    }
+    return trimmed.toLowerCase().replaceAll('-', '_');
   }
 
   @override

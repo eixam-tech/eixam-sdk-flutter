@@ -100,7 +100,17 @@ final class _FakeSosRemoteDataSource implements SosRemoteDataSource {
   }
 
   @override
-  Future<SosIncidentDto?> cancelSos({String? deviceId}) async {
+  Future<SosIncidentDto?> cancelSos({
+    String? deviceId,
+    String? source,
+    String? triggerSource,
+    String? relaySource,
+    int? originatorNodeId,
+    int? relayNodeId,
+    String? relayHardwareId,
+    String? incidentId,
+    String? cycleKey,
+  }) async {
     return active?.copyWith(state: cancelResponseState);
   }
 

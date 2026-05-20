@@ -438,11 +438,70 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
   }
 
   @override
-  Future<SosIncidentDto?> cancelSos({String? deviceId}) async {
+  Future<SosIncidentDto?> cancelSos({
+    String? deviceId,
+    String? source,
+    String? triggerSource,
+    String? relaySource,
+    int? originatorNodeId,
+    int? relayNodeId,
+    String? relayHardwareId,
+    String? incidentId,
+    String? cycleKey,
+  }) async {
     final normalizedDeviceId = deviceId?.trim();
-    final body = normalizedDeviceId == null || normalizedDeviceId.isEmpty
-        ? null
-        : jsonEncode({'deviceId': normalizedDeviceId});
+    final requestPayload = <String, dynamic>{
+      if (normalizedDeviceId != null && normalizedDeviceId.isNotEmpty)
+        'deviceId': normalizedDeviceId,
+      if (source != null && source.trim().isNotEmpty) 'source': source.trim(),
+      if (triggerSource != null && triggerSource.trim().isNotEmpty)
+        'triggerSource': triggerSource.trim(),
+      if (relaySource != null && relaySource.trim().isNotEmpty)
+        'relaySource': relaySource.trim(),
+      if (originatorNodeId != null) 'originatorNodeId': originatorNodeId,
+      if (_isExternalRelaySource(source, triggerSource, relaySource) &&
+          originatorNodeId != null)
+        'nodeId': originatorNodeId,
+      if (relayNodeId != null) 'relayNodeId': relayNodeId,
+      if (relayHardwareId != null && relayHardwareId.trim().isNotEmpty)
+        'relayHardwareId': relayHardwareId.trim(),
+      if (incidentId != null && incidentId.trim().isNotEmpty)
+        'incidentId': incidentId.trim(),
+      if (cycleKey != null && cycleKey.trim().isNotEmpty)
+        'cycleKey': cycleKey.trim(),
+      if (_isExternalRelaySource(source, triggerSource, relaySource))
+        'owner': 'device',
+      if (_isExternalRelaySource(source, triggerSource, relaySource))
+        'reason': 'remote_lora_cancel',
+    };
+    final body = requestPayload.isEmpty ? null : jsonEncode(requestPayload);
+    BleDebugRegistry.instance.recordEvent(
+      '[REMOTE_RELAY_SOS] cancel_backend_payload '
+      'deviceId=${normalizedDeviceId ?? "none"} '
+      'source=${source ?? "none"} '
+      'triggerSource=${triggerSource ?? "none"} '
+      'relaySource=${relaySource ?? "none"} '
+      'originatorNodeId=${originatorNodeId?.toString() ?? "none"} '
+      'relayNodeId=${relayNodeId?.toString() ?? "none"} '
+      'relayHardwareId=${relayHardwareId ?? "none"} '
+      'incidentId=${incidentId ?? "none"} '
+      'cycleKey=${cycleKey ?? "none"}',
+    );
+    if (_isExternalRelaySource(source, triggerSource, relaySource)) {
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS cancel_payload '
+        'deviceId=${normalizedDeviceId ?? "none"} '
+        'nodeId=${originatorNodeId?.toString() ?? normalizedDeviceId ?? "none"} '
+        'originatorNodeId=${originatorNodeId?.toString() ?? "none"} '
+        'relayNodeId=${relayNodeId?.toString() ?? "none"} '
+        'relayHardwareId=${relayHardwareId ?? "none"} '
+        'incidentId=${incidentId ?? "none"} '
+        'source=${source ?? "none"} '
+        'triggerSource=${triggerSource ?? "none"} '
+        'relaySource=${relaySource ?? "none"} '
+        'owner=device reason=remote_lora_cancel',
+      );
+    }
     _logRequest(
       action: 'cancel',
       path: '/v1/sdk/sos/cancel',
@@ -456,6 +515,12 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
         action: 'cancel', statusCode: response.statusCode, body: response.body);
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
+      if (_isExternalRelaySource(source, triggerSource, relaySource)) {
+        BleDebugRegistry.instance.recordEvent(
+          'EXTERNAL_SOS cancel_result httpStatus=${response.statusCode} '
+          'success=false responseIncidentId=none',
+        );
+      }
       _logError(
         action: 'cancel',
         code: _cancelErrorCodeForStatus(response.statusCode),
@@ -470,12 +535,24 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
 
     if (response.body.trim().isEmpty) {
       _logParsed(action: 'cancel', result: 'incident=null');
+      if (_isExternalRelaySource(source, triggerSource, relaySource)) {
+        BleDebugRegistry.instance.recordEvent(
+          'EXTERNAL_SOS cancel_result httpStatus=${response.statusCode} '
+          'success=true responseIncidentId=none',
+        );
+      }
       return null;
     }
-    final payload = jsonDecode(response.body) as Map<String, dynamic>;
-    final incident = payload['incident'];
+    final responsePayload = jsonDecode(response.body) as Map<String, dynamic>;
+    final incident = responsePayload['incident'];
     if (incident == null) {
       _logParsed(action: 'cancel', result: 'incident=null');
+      if (_isExternalRelaySource(source, triggerSource, relaySource)) {
+        BleDebugRegistry.instance.recordEvent(
+          'EXTERNAL_SOS cancel_result httpStatus=${response.statusCode} '
+          'success=true responseIncidentId=none',
+        );
+      }
       return null;
     }
     if (incident is! Map<String, dynamic>) {
@@ -490,9 +567,29 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
       );
     }
     final dto = SosIncidentDto.fromJson(incident);
+    if (_isExternalRelaySource(source, triggerSource, relaySource)) {
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS cancel_result httpStatus=${response.statusCode} '
+        'success=true responseIncidentId=${dto.id}',
+      );
+    }
     _logParsed(
         action: 'cancel', result: 'incidentId=${dto.id} state=${dto.state}');
     return dto;
+  }
+
+  bool _isExternalRelaySource(
+    String? source,
+    String? triggerSource,
+    String? relaySource,
+  ) {
+    String normalize(String? value) =>
+        value?.trim().toLowerCase().replaceAll('-', '_') ?? '';
+    return <String>[
+      normalize(source),
+      normalize(triggerSource),
+      normalize(relaySource),
+    ].contains('remote_lora_relay');
   }
 
   String _cancelErrorCodeForStatus(int statusCode) {

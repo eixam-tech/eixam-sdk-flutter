@@ -25,7 +25,17 @@ abstract class SosRemoteDataSource {
     SdkCoverageSnapshot? mobileCoverage,
   });
 
-  Future<SosIncidentDto?> cancelSos({String? deviceId});
+  Future<SosIncidentDto?> cancelSos({
+    String? deviceId,
+    String? source,
+    String? triggerSource,
+    String? relaySource,
+    int? originatorNodeId,
+    int? relayNodeId,
+    String? relayHardwareId,
+    String? incidentId,
+    String? cycleKey,
+  });
   Future<SosIncidentDto?> resolveSos();
   Future<SosIncidentDto?> getActiveSos();
   Future<SosHistoryPageDto> listSosHistory({String? cursor, int limit = 20});

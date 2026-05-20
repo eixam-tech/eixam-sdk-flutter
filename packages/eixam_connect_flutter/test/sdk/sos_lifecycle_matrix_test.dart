@@ -427,7 +427,8 @@ void main() {
       }
     });
 
-    test('SOS-13 LoRa/backend foreground active maps to SDK active', () async {
+    test('SOS-13 LoRa/backend foreground active stays external-only idle',
+        () async {
       final harness = _SdkSosHarness();
       try {
         await harness.sdk.initialize(
@@ -440,17 +441,14 @@ void main() {
         harness.sosRepository.stateController.add(SosState.sent);
         await pumpEventQueue(times: 2);
 
-        expect(await harness.sdk.getSosState(), SosState.sent);
-        expect(
-          (await harness.sdk.getCurrentSosIncident())?.triggerSource,
-          'remote_lora_relay',
-        );
+        expect(await harness.sdk.getSosState(), SosState.idle);
+        expect(await harness.sdk.getCurrentSosIncident(), isNull);
       } finally {
         await harness.dispose();
       }
     });
 
-    test('SOS-14 LoRa/backend terminal clears SDK active state', () async {
+    test('SOS-14 LoRa/backend terminal leaves SDK local state idle', () async {
       final harness = _SdkSosHarness();
       try {
         await harness.sdk.initialize(
@@ -470,13 +468,15 @@ void main() {
         await pumpEventQueue(times: 2);
 
         expect(await harness.sdk.getPreSosStatus(), isNull);
-        expect(await harness.sdk.getSosState(), SosState.cancelled);
+        expect(await harness.sdk.getSosState(), SosState.idle);
+        expect(await harness.sdk.getCurrentSosIncident(), isNull);
       } finally {
         await harness.dispose();
       }
     });
 
-    test('SOS-15 resume reconstructs active LoRa/backend SOS', () async {
+    test('SOS-15 resume ignores active LoRa/backend SOS as local state',
+        () async {
       final repository = FakeRehydratingSosRepository()
         ..currentIncident = _incident(
           state: SosState.sent,
@@ -492,11 +492,8 @@ void main() {
         harness.sdk.didChangeAppLifecycleState(AppLifecycleState.resumed);
         await pumpEventQueue(times: 3);
 
-        expect(await harness.sdk.getSosState(), SosState.sent);
-        expect(
-          (await harness.sdk.getCurrentSosIncident())?.triggerSource,
-          'remote_lora_relay',
-        );
+        expect(await harness.sdk.getSosState(), SosState.idle);
+        expect(await harness.sdk.getCurrentSosIncident(), isNull);
       } finally {
         await harness.dispose();
       }
@@ -522,7 +519,8 @@ void main() {
         await pumpEventQueue(times: 3);
 
         expect(await harness.sdk.getPreSosStatus(), isNull);
-        expect(await harness.sdk.getSosState(), SosState.cancelled);
+        expect(await harness.sdk.getSosState(), SosState.idle);
+        expect(await harness.sdk.getCurrentSosIncident(), isNull);
       } finally {
         await harness.dispose();
       }

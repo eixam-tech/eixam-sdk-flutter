@@ -2196,7 +2196,17 @@ class _FakeCancelRemoteDataSource implements SosRemoteDataSource {
   }
 
   @override
-  Future<SosIncidentDto?> cancelSos({String? deviceId}) async {
+  Future<SosIncidentDto?> cancelSos({
+    String? deviceId,
+    String? source,
+    String? triggerSource,
+    String? relaySource,
+    int? originatorNodeId,
+    int? relayNodeId,
+    String? relayHardwareId,
+    String? incidentId,
+    String? cycleKey,
+  }) async {
     cancelDeviceIds.add(deviceId);
     final error = cancelError;
     if (error != null) {

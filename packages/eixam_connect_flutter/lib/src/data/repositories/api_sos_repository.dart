@@ -5,6 +5,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import '../../device/ble_debug_registry.dart';
 import '../../mappers/local_state_serializers.dart';
 import '../../mappers/sos_incident_mapper.dart';
+import '../../sdk/sos_origin_classifier.dart';
 import '../datasources_local/shared_prefs_sdk_store.dart';
 import '../datasources_remote/sos_remote_data_source.dart';
 import 'sos_runtime_rehydration_support.dart';
@@ -76,12 +77,57 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
     int? mobileBattery,
     SdkCoverageSnapshot? mobileCoverage,
   }) async {
+    final originDecision = classifySosOrigin(
+      source: relaySource,
+      triggerSource: triggerSource,
+      relaySource: relaySource,
+      owner: originatorNodeId == null ? 'app' : 'device',
+      originatorNodeId: originatorNodeId,
+      relayNodeId: relayNodeId,
+      deviceId: deviceId,
+      hardwareId: hardwareId,
+      forBackendPublish: true,
+    );
     final current = _stateMachine.current;
-    if (current != SosState.idle &&
+    if (!originDecision.isExternalOnly &&
+        current != SosState.idle &&
         current != SosState.failed &&
         current != SosState.cancelled &&
         current != SosState.resolved) {
       throw const SosException('E_SOS_ALREADY_ACTIVE', 'E_SOS_ALREADY_ACTIVE');
+    }
+    if (originDecision.isExternalOnly) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_ORIGIN_DECISION source=api_repository_trigger '
+        'actionability=${originDecision.actionability.name} '
+        'localStateMutation=${originDecision.localStateMutation} '
+        'publicIncident=${originDecision.publicIncident} '
+        'backendPublish=${originDecision.backendPublish} '
+        'reason=external_backend_publish_only:${originDecision.reason}',
+      );
+      final dto = await remoteDataSource.triggerSos(
+        message: message,
+        triggerSource: triggerSource,
+        positionSnapshot: positionSnapshot,
+        deviceId: deviceId,
+        hardwareId: hardwareId,
+        originatorNodeId: originatorNodeId,
+        relayNodeId: relayNodeId,
+        relayDeviceId: relayDeviceId,
+        relayHardwareId: relayHardwareId,
+        relaySource: relaySource,
+        incidentId: incidentId,
+        cycleKey: cycleKey,
+        osWidgetActivation: osWidgetActivation,
+        deviceBattery: deviceBattery,
+        deviceCoverage: deviceCoverage,
+        mobileBattery: mobileBattery,
+        mobileCoverage: mobileCoverage,
+      );
+      _activeIncident = null;
+      _setState(SosState.idle);
+      await _persistState();
+      return mapper.toDomain(dto).copyWith(state: SosState.idle);
     }
 
     _emit(SosState.triggerRequested);
@@ -240,7 +286,8 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
           state: incident.state,
           createdAt: incident.createdAt,
           positionSnapshot: incident.positionSnapshot,
-          triggerSource: incident.triggerSource,
+          triggerSource:
+              incident.triggerSource ?? incident.source ?? incident.relaySource,
           message: incident.message,
           deliveryChannel: incident.deliveryChannel,
           creationTelemetry: item.creationTelemetry == null
@@ -295,6 +342,25 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
     }
 
     final hydratedIncident = mapper.toDomain(active);
+    final originDecision = classifySosIncidentOrigin(hydratedIncident);
+    if (originDecision.isExternalOnly) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_ORIGIN_DECISION source=api_repository_rehydrate '
+        'actionability=${originDecision.actionability.name} '
+        'localStateMutation=${originDecision.localStateMutation} '
+        'publicIncident=${originDecision.publicIncident} '
+        'backendPublish=${originDecision.backendPublish} '
+        'reason=external_backend_rehydration_blocked:${originDecision.reason}',
+      );
+      _activeIncident = null;
+      _setState(SosState.idle);
+      await _persistState();
+      return const SosRuntimeRehydrationResult(
+        outcome: SosRuntimeRehydrationOutcome.clearedToIdle,
+        resultingState: SosState.idle,
+        diagnosticNote: 'E_SOS_REHYDRATION_EXTERNAL_ONLY_IGNORED',
+      );
+    }
     if (_shouldIgnoreLocallyClosedIncident(hydratedIncident)) {
       _activeIncident = null;
       _setState(SosState.idle);

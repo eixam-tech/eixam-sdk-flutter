@@ -8,6 +8,7 @@ import '../../mappers/sos_incident_mapper.dart';
 import '../../sdk/operational_realtime_client.dart';
 import '../../sdk/sdk_mqtt_contract.dart';
 import '../../sdk/sos_backend_identity_normalizer.dart';
+import '../../sdk/sos_origin_classifier.dart';
 import '../datasources_local/shared_prefs_sdk_store.dart';
 import '../datasources_remote/sos_remote_data_source.dart';
 import '../dtos/sos_incident_dto.dart';
@@ -41,6 +42,8 @@ class MqttOperationalSosRepository
   StreamSubscription<RealtimeEvent>? _realtimeSub;
   SosIncident? _activeIncident;
   String? _locallyClosedIncidentId;
+  final Map<String, DateTime> _externalRelaySosPublishDedupe =
+      <String, DateTime>{};
 
   Future<void> restoreState() async {
     if (_localStore == null) {
@@ -85,8 +88,20 @@ class MqttOperationalSosRepository
     int? mobileBattery,
     SdkCoverageSnapshot? mobileCoverage,
   }) async {
+    final originDecision = classifySosOrigin(
+      source: relaySource,
+      triggerSource: triggerSource,
+      relaySource: relaySource,
+      owner: originatorNodeId == null ? 'app' : 'device',
+      originatorNodeId: originatorNodeId,
+      relayNodeId: relayNodeId,
+      deviceId: deviceId,
+      hardwareId: hardwareId,
+      forBackendPublish: true,
+    );
     final current = _stateMachine.current;
-    if (current != SosState.idle &&
+    if (!originDecision.isExternalOnly &&
+        current != SosState.idle &&
         current != SosState.failed &&
         current != SosState.cancelled &&
         current != SosState.resolved) {
@@ -97,6 +112,54 @@ class MqttOperationalSosRepository
     }
     final appOwnedSos = _isAppOwnedTriggerSource(triggerSource) ||
         (originatorNodeId == null && relayNodeId == null);
+    if (originDecision.isExternalOnly) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_ORIGIN_DECISION source=mqtt_repository_trigger '
+        'actionability=${originDecision.actionability.name} '
+        'localStateMutation=${originDecision.localStateMutation} '
+        'publicIncident=${originDecision.publicIncident} '
+        'backendPublish=${originDecision.backendPublish} '
+        'reason=external_backend_publish_only:${originDecision.reason}',
+      );
+      await submitSosToBackend(
+        timestamp: DateTime.now().toUtc(),
+        positionSnapshot: positionSnapshot,
+        deviceId: deviceId,
+        hardwareId: hardwareId,
+        originatorNodeId: originatorNodeId,
+        relayNodeId: relayNodeId,
+        relayDeviceId: relayDeviceId,
+        relayHardwareId: relayHardwareId,
+        relaySource: relaySource ?? triggerSource,
+        incidentId: incidentId,
+        cycleKey: cycleKey,
+        osWidgetActivation: osWidgetActivation,
+        deviceBattery: deviceBattery,
+        deviceCoverage: deviceCoverage,
+        mobileBattery: mobileBattery,
+        mobileCoverage: mobileCoverage,
+      );
+      _activeIncident = null;
+      _setState(SosState.idle);
+      await _persistState();
+      return SosIncident(
+        id: incidentId ??
+            'external-sos-${DateTime.now().microsecondsSinceEpoch}',
+        state: SosState.idle,
+        createdAt: DateTime.now().toUtc(),
+        source: relaySource ?? triggerSource,
+        triggerSource: triggerSource,
+        relaySource: relaySource,
+        originatorNodeId: originatorNodeId,
+        relayNodeId: relayNodeId,
+        deviceId: deviceId,
+        hardwareId: hardwareId,
+        owner: originatorNodeId == null ? 'app' : 'device',
+        cycleKey: cycleKey,
+        message: message,
+        positionSnapshot: positionSnapshot,
+      );
+    }
     if (positionSnapshot == null && !appOwnedSos) {
       throw const SosException(
         'E_SOS_POSITION_REQUIRED',
@@ -342,9 +405,23 @@ class MqttOperationalSosRepository
         'BACKEND_DEVICE_ID_INVALID invalidBackendDeviceId=${identity.deviceId} source=sos',
       );
     }
+    final externalDecision = classifySosOrigin(
+      source: relaySource,
+      triggerSource: relaySource,
+      relaySource: relaySource,
+      owner: identity.originatorNodeId == null ? 'app' : 'device',
+      originatorNodeId: identity.originatorNodeId,
+      relayNodeId: relayNodeId,
+      deviceId: identity.deviceId,
+      hardwareId: identity.hardwareId,
+      forBackendPublish: true,
+    );
+    final ownerLabel = externalDecision.isExternalOnly
+        ? (identity.originatorNodeId == null ? 'external' : 'device')
+        : (identity.originatorNodeId == null ? 'app' : 'device');
     BleDebugRegistry.instance.recordEvent(
       'SOS_BACKEND_PAYLOAD_FINAL source=mqtt '
-      'owner=${identity.originatorNodeId == null ? "app" : "device"} '
+      'owner=$ownerLabel '
       'triggerSource=${relaySource ?? "mqtt_operational_sos"} '
       'deviceId=${identity.deviceId ?? "none"} '
       'nodeId=${identity.nodeId?.toString() ?? "none"} '
@@ -368,6 +445,9 @@ class MqttOperationalSosRepository
       relayDeviceId: identity.relayDeviceId,
       relayHardwareId: relayHardwareId,
       source: relaySource,
+      triggerSource: relaySource,
+      relaySource: relaySource,
+      owner: ownerLabel,
       incidentId: incidentId,
       cycleKey: cycleKey,
       osWidgetActivation: osWidgetActivation,
@@ -376,6 +456,30 @@ class MqttOperationalSosRepository
       mobileBattery: mobileBattery,
       mobileCoverage: mobileCoverage,
     );
+    if (externalDecision.isExternalOnly) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_ORIGIN_DECISION source=mqtt_submit_sos '
+        'actionability=${externalDecision.actionability.name} '
+        'localStateMutation=false publicIncident=false backendPublish=true '
+        'reason=remote_lora_relay_bypassed_background_sos',
+      );
+      if (_shouldSkipExternalRelaySosPublish(
+        originatorNodeId: identity.originatorNodeId,
+        relayNodeId: relayNodeId,
+        relayHardwareId: relayHardwareId,
+        incidentId: incidentId,
+        cycleKey: cycleKey,
+      )) {
+        return;
+      }
+      await _publishExternalSosToBackend(
+        request: request,
+        originatorNodeId: identity.originatorNodeId,
+        relayNodeId: relayNodeId,
+        relayHardwareId: relayHardwareId,
+      );
+      return;
+    }
     BleDebugRegistry.instance.recordEvent(
       '[BACKGROUND_SOS] backend_publish_requested state=sent '
       'diagnostics_version=sos_backend_publish_trace_v3_actual_line '
@@ -461,6 +565,58 @@ class MqttOperationalSosRepository
         'transport=mqtt elapsedMs=${publishStopwatch.elapsedMilliseconds}',
       );
     }
+  }
+
+  bool _shouldSkipExternalRelaySosPublish({
+    required int? originatorNodeId,
+    required int? relayNodeId,
+    required String? relayHardwareId,
+    required String? incidentId,
+    required String? cycleKey,
+  }) {
+    final now = DateTime.now().toUtc();
+    _externalRelaySosPublishDedupe.removeWhere(
+      (_, seenAt) => now.difference(seenAt) > const Duration(seconds: 30),
+    );
+    final key = <String>[
+      'remote_lora_relay',
+      originatorNodeId?.toString() ?? 'none',
+      relayNodeId?.toString() ?? 'none',
+      relayHardwareId?.trim() ?? 'none',
+      incidentId?.trim() ?? cycleKey?.trim() ?? 'active',
+    ].join(':');
+    if (_externalRelaySosPublishDedupe.containsKey(key)) {
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS dedupe_skip triggerSource=remote_lora_relay '
+        'originatorNodeId=${originatorNodeId?.toString() ?? "none"} '
+        'relayNodeId=${relayNodeId?.toString() ?? "none"} '
+        'relayHardwareId=${relayHardwareId ?? "none"}',
+      );
+      return true;
+    }
+    _externalRelaySosPublishDedupe[key] = now;
+    return false;
+  }
+
+  Future<void> _publishExternalSosToBackend({
+    required MqttOperationalSosRequest request,
+    required int? originatorNodeId,
+    required int? relayNodeId,
+    required String? relayHardwareId,
+  }) async {
+    BleDebugRegistry.instance.recordEvent(
+      'EXTERNAL_SOS backend_publish_start triggerSource=remote_lora_relay '
+      'originatorNodeId=${originatorNodeId?.toString() ?? "none"} '
+      'relayNodeId=${relayNodeId?.toString() ?? "none"} '
+      'relayHardwareId=${relayHardwareId ?? "none"}',
+    );
+    await realtimeClient.publishOperationalSos(request);
+    BleDebugRegistry.instance.recordEvent(
+      'EXTERNAL_SOS backend_publish_result result=publish_returned '
+      'triggerSource=remote_lora_relay '
+      'originatorNodeId=${originatorNodeId?.toString() ?? "none"} '
+      'relayNodeId=${relayNodeId?.toString() ?? "none"}',
+    );
   }
 
   @override
@@ -619,7 +775,9 @@ class MqttOperationalSosRepository
             state: incident.state,
             createdAt: incident.createdAt,
             positionSnapshot: incident.positionSnapshot,
-            triggerSource: incident.triggerSource,
+            triggerSource: incident.triggerSource ??
+                incident.source ??
+                incident.relaySource,
             message: incident.message,
             deliveryChannel: incident.deliveryChannel,
             creationTelemetry: item.creationTelemetry == null
@@ -687,6 +845,25 @@ class MqttOperationalSosRepository
       }
 
       final hydratedIncident = _mapper.toDomain(active);
+      final originDecision = classifySosIncidentOrigin(hydratedIncident);
+      if (originDecision.isExternalOnly) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_ORIGIN_DECISION source=mqtt_repository_rehydrate '
+          'actionability=${originDecision.actionability.name} '
+          'localStateMutation=${originDecision.localStateMutation} '
+          'publicIncident=${originDecision.publicIncident} '
+          'backendPublish=${originDecision.backendPublish} '
+          'reason=external_backend_rehydration_blocked:${originDecision.reason}',
+        );
+        _activeIncident = null;
+        _setState(SosState.idle);
+        await _persistState();
+        return const SosRuntimeRehydrationResult(
+          outcome: SosRuntimeRehydrationOutcome.clearedToIdle,
+          resultingState: SosState.idle,
+          diagnosticNote: 'E_SOS_REHYDRATION_EXTERNAL_ONLY_IGNORED',
+        );
+      }
       if (_shouldIgnoreLocallyClosedIncident(hydratedIncident)) {
         _activeIncident = null;
         _setState(SosState.idle);

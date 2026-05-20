@@ -938,6 +938,161 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     return '0x${normalized.toRadixString(16).padLeft(8, '0')} ($nodeId)';
   }
 
+  void _logRawIncomingSosPacket({
+    required String source,
+    required List<int> payload,
+    required String payloadHex,
+    required EixamBleChannel channel,
+    required String classificationBefore,
+  }) {
+    if (!_isSosLikePayload(payload)) {
+      return;
+    }
+    final sosPacket = EixamSosPacket.tryParse(payload);
+    final eventPacket =
+        payload.length == 6 ? EixamSosEventPacket.tryParse(payload) : null;
+    final decodedNodeId = sosPacket?.nodeId ?? eventPacket?.nodeId;
+    BleDebugRegistry.instance.recordEvent(
+      'BLE_SOS_PACKET_RAW source=$source raw=$payloadHex '
+      'length=${payload.length} channel=${channel.name} '
+      'connectedNodeId=${_connectedBleTagNodeId?.toString() ?? "none"} '
+      'decodedNodeId=${decodedNodeId?.toString() ?? "none"} '
+      'relayNodeId=${_connectedBleTagNodeId?.toString() ?? "none"} '
+      'classificationBefore=$classificationBefore '
+      'packetTypeByte=${_packetTypeByte(payload)} '
+      'statusByte=${_statusByte(payload)} '
+      'lastByte=${_lastByte(payload)} '
+      'sequenceByte=${_sequenceByte(payload)} '
+      'flagsWord=${sosPacket == null ? "none" : _hexWord(sosPacket.flagsWord)} '
+      'sosType=${sosPacket?.sosType.toString() ?? "none"} '
+      'retryCount=${sosPacket?.retryCount.toString() ?? "none"} '
+      'relayCount=${sosPacket?.relayCount.toString() ?? "none"} '
+      'packetId=${sosPacket?.packetId.toString() ?? "none"} '
+      'eventOpcode=${eventPacket == null ? "none" : _hexByte(eventPacket.opcode)} '
+      'eventSubcode=${eventPacket == null ? "none" : _hexByte(eventPacket.subcode)}',
+    );
+  }
+
+  void _logIncomingSosClassifyDecision({
+    required List<int> payload,
+    required String payloadHex,
+    required BleIncomingPayloadClassification classification,
+    required String source,
+  }) {
+    if (!_isSosLikePayload(payload)) {
+      return;
+    }
+    final sosPacket =
+        classification.sosPacket ?? EixamSosPacket.tryParse(payload);
+    final eventPacket = classification.sosEventPacket ??
+        (payload.length == 6 ? EixamSosEventPacket.tryParse(payload) : null);
+    final nodeId = sosPacket?.nodeId ?? eventPacket?.nodeId;
+    final remoteSnapshot = classification.remoteRelaySosSnapshot;
+    final terminalFlag = eventPacket != null ||
+        classification.kind == BleIncomingPayloadKind.sosCancel ||
+        classification.kind == BleIncomingPayloadKind.sosClear ||
+        remoteSnapshot?.kind == RemoteRelaySosKind.cancel ||
+        remoteSnapshot?.kind == RemoteRelaySosKind.clear;
+    final cancelFlag =
+        classification.kind == BleIncomingPayloadKind.sosCancel ||
+            classification.kind == BleIncomingPayloadKind.sosClear ||
+            remoteSnapshot?.kind == RemoteRelaySosKind.cancel ||
+            remoteSnapshot?.kind == RemoteRelaySosKind.clear;
+    BleDebugRegistry.instance.recordEvent(
+      'BLE_SOS_CLASSIFY_DECISION raw=$payloadHex '
+      'packetType=${eventPacket != null ? "sos_event" : sosPacket != null ? "sos" : _packetTypeByte(payload)} '
+      'classification=${classification.kind.name} '
+      'reason=${_classificationReason(classification)} '
+      'source=$source nodeId=${nodeId?.toString() ?? "none"} '
+      'relayNodeId=${remoteSnapshot?.relayNodeId?.toString() ?? _connectedBleTagNodeId?.toString() ?? "none"} '
+      'statusByte=${_statusByte(payload)} terminalFlag=$terminalFlag '
+      'cancelFlag=$cancelFlag',
+    );
+  }
+
+  String _classificationReason(
+      BleIncomingPayloadClassification classification) {
+    switch (classification.kind) {
+      case BleIncomingPayloadKind.ownDeviceSos:
+        return 'originator_matches_connected_ble_node';
+      case BleIncomingPayloadKind.remoteRelaySos:
+        return 'originator_differs_from_connected_ble_node';
+      case BleIncomingPayloadKind.unknownOriginSos:
+        return 'connected_ble_node_unknown';
+      case BleIncomingPayloadKind.sosCancel:
+      case BleIncomingPayloadKind.sosClear:
+        return classification.remoteRelaySosSnapshot == null
+            ? 'terminal_event_local'
+            : 'terminal_event_remote_relay';
+      case BleIncomingPayloadKind.telPosition:
+        return 'tel_packet';
+      case BleIncomingPayloadKind.telRelayRx:
+        return 'tel_relay_packet';
+      case BleIncomingPayloadKind.unknown:
+        return 'unknown_or_ignored';
+    }
+  }
+
+  bool _isSosLikePayload(List<int> payload) {
+    return payload.length == 6 ||
+        payload.length == EixamBleProtocol.sosPacketLengthMinimal ||
+        payload.length == EixamBleProtocol.sosPacketLengthWithPosition ||
+        payload.length == EixamBleProtocol.sosPacketLengthMinimal + 6 ||
+        payload.length == EixamBleProtocol.sosPacketLengthWithPosition + 6 ||
+        _looksLikeTerminalOpcode(payload);
+  }
+
+  bool _looksLikeTerminalOpcode(List<int> payload) {
+    if (payload.isEmpty) {
+      return false;
+    }
+    return payload.first == EixamBleProtocol.sosEventUserDeactivatedOpcode ||
+        payload.first == EixamBleProtocol.sosEventAppCancelAckOpcode;
+  }
+
+  String _packetTypeByte(List<int> payload) {
+    if (payload.isEmpty) {
+      return 'none';
+    }
+    return _hexByte(payload.first);
+  }
+
+  String _statusByte(List<int> payload) {
+    if (payload.length == 6) {
+      return _hexByte(payload[1]);
+    }
+    if (payload.length >= EixamBleProtocol.sosPacketLengthWithPosition) {
+      return _hexByte(payload[11]);
+    }
+    if (payload.length >= EixamBleProtocol.sosPacketLengthMinimal) {
+      return _hexByte(payload[5]);
+    }
+    return 'none';
+  }
+
+  String _lastByte(List<int> payload) {
+    if (payload.isEmpty) {
+      return 'none';
+    }
+    return _hexByte(payload.last);
+  }
+
+  String _sequenceByte(List<int> payload) {
+    if (payload.length == EixamBleProtocol.sosPacketLengthMinimal) {
+      return _hexByte(payload[6]);
+    }
+    final packet = EixamSosPacket.tryParse(payload);
+    return packet == null ? 'none' : packet.packetId.toString();
+  }
+
+  String _hexByte(int value) {
+    return '0x${(value & 0xFF).toRadixString(16).padLeft(2, '0')}';
+  }
+
+  String _hexWord(int value) {
+    return '0x${(value & 0xFFFF).toRadixString(16).padLeft(4, '0')}';
+  }
+
   String _characteristicLabelForChannel(EixamBleChannel channel) {
     switch (channel) {
       case EixamBleChannel.tel:
@@ -1060,6 +1215,13 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     EixamTelFragment? telFragment,
     List<int>? aggregatePayload,
   }) async {
+    _logRawIncomingSosPacket(
+      source: 'ble_device_runtime_provider_tel_entry',
+      payload: payload,
+      payloadHex: payloadHex,
+      channel: notification.channel,
+      classificationBefore: 'before_tel_dispatch',
+    );
     final runtimeStatusPacket = EixamDeviceRuntimeStatusPacket.tryParse(
       payload,
       receivedAt: notification.receivedAt,
@@ -1231,6 +1393,14 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       }
     }
 
+    _logRawIncomingSosPacket(
+      source: 'ble_device_runtime_provider',
+      payload: payload,
+      payloadHex: payloadHex,
+      channel: notification.channel,
+      classificationBefore: 'before_payload_classifier',
+    );
+
     var classification = _payloadClassifier.classifySosPayload(
       payload: payload,
       payloadHex: payloadHex,
@@ -1250,6 +1420,12 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       source: source,
       channel: notification.channel,
       reason: 'tel_sos_unknown_origin',
+    );
+    _logIncomingSosClassifyDecision(
+      payload: payload,
+      payloadHex: payloadHex,
+      classification: classification,
+      source: 'ble_device_runtime_provider_post_resolve',
     );
     if (classification.kind == BleIncomingPayloadKind.ownDeviceSos ||
         classification.kind == BleIncomingPayloadKind.remoteRelaySos) {
@@ -1400,7 +1576,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
   String? _nodeIdForEmbeddedWire(List<int> payload) {
     final sosPacket = EixamSosPacket.tryParse(payload);
-    if (sosPacket != null && sosPacket.sosType != 0) {
+    if (sosPacket != null) {
       return _formatNodeId(sosPacket.nodeId);
     }
     final telPacket = EixamTelPacket.tryParse(payload);
@@ -1415,11 +1591,25 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     required String payloadHex,
     required DateTime receivedAt,
   }) {
+    _logRawIncomingSosPacket(
+      source: 'ble_device_runtime_provider_d2_relay_peer',
+      payload: payload,
+      payloadHex: payloadHex,
+      channel: EixamBleChannel.tel,
+      classificationBefore: 'before_d2_peer_classifier',
+    );
     final sosPacket = EixamSosPacket.tryParse(payload);
     if (sosPacket == null || sosPacket.sosType == 0) {
-      return const BleIncomingPayloadClassification(
+      const classification = BleIncomingPayloadClassification(
         kind: BleIncomingPayloadKind.telRelayRx,
       );
+      _logIncomingSosClassifyDecision(
+        payload: payload,
+        payloadHex: payloadHex,
+        classification: classification,
+        source: 'ble_device_runtime_provider_d2_relay_peer',
+      );
+      return classification;
     }
     final connectedNodeId = _connectedBleTagNodeId;
     final kind = connectedNodeId == null
@@ -1428,9 +1618,17 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
             ? BleIncomingPayloadKind.ownDeviceSos
             : BleIncomingPayloadKind.remoteRelaySos;
     if (kind != BleIncomingPayloadKind.remoteRelaySos) {
-      return BleIncomingPayloadClassification(kind: kind, sosPacket: sosPacket);
+      final classification =
+          BleIncomingPayloadClassification(kind: kind, sosPacket: sosPacket);
+      _logIncomingSosClassifyDecision(
+        payload: payload,
+        payloadHex: payloadHex,
+        classification: classification,
+        source: 'ble_device_runtime_provider_d2_relay_peer',
+      );
+      return classification;
     }
-    return BleIncomingPayloadClassification(
+    final classification = BleIncomingPayloadClassification(
       kind: BleIncomingPayloadKind.remoteRelaySos,
       sosPacket: sosPacket,
       remoteRelaySosSnapshot: RemoteRelaySosSnapshot(
@@ -1454,6 +1652,13 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         relayCount: sosPacket.relayCount,
       ),
     );
+    _logIncomingSosClassifyDecision(
+      payload: payload,
+      payloadHex: payloadHex,
+      classification: classification,
+      source: 'ble_device_runtime_provider_d2_relay_peer',
+    );
+    return classification;
   }
 
   Future<void> _bindConnectionMonitor(String deviceId) async {
@@ -1487,6 +1692,13 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     BleDebugRegistry.instance.recordEvent(
       'SOS raw payload (ea02) -> len=${notification.payload.length} payload=${notification.payloadHex}',
     );
+    _logRawIncomingSosPacket(
+      source: 'ble_device_runtime_provider_sos_notify',
+      payload: notification.payload,
+      payloadHex: notification.payloadHex,
+      channel: notification.channel,
+      classificationBefore: 'before_sos_notify_classifier',
+    );
 
     var sosEventPacket = notification.payload.length == 6
         ? _payloadClassifier.classifySosPayload(
@@ -1507,6 +1719,14 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       receivedAt: notification.receivedAt,
       reason: 'sos_event_unknown_origin',
     );
+    if (sosEventPacket != null) {
+      _logIncomingSosClassifyDecision(
+        payload: notification.payload,
+        payloadHex: notification.payloadHex,
+        classification: sosEventPacket,
+        source: 'ble_device_runtime_provider_sos_event_post_resolve',
+      );
+    }
     if (sosEventPacket?.sosEventPacket != null) {
       final packet = sosEventPacket!.sosEventPacket!;
       final isLocalEvent = packet.nodeId == _connectedBleTagNodeId;
@@ -1590,6 +1810,12 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       source: source,
       channel: notification.channel,
       reason: 'sos_notify_unknown_origin',
+    );
+    _logIncomingSosClassifyDecision(
+      payload: notification.payload,
+      payloadHex: notification.payloadHex,
+      classification: sosClassification,
+      source: 'ble_device_runtime_provider_sos_notify_post_resolve',
     );
     if (sosClassification.sosPacket != null) {
       final sosPacket = sosClassification.sosPacket!;
@@ -1701,12 +1927,16 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     }
 
     final isLocalEvent = packet.nodeId == resolvedNodeId;
+    final isExternalBackendCancel =
+        packet.opcode == EixamBleProtocol.sosEventUserDeactivatedOpcode &&
+            packet.subcode == 0x02 &&
+            !isLocalEvent;
     final resolved = BleIncomingPayloadClassification(
       kind: packet.isAppCancelAck
           ? BleIncomingPayloadKind.unknown
           : BleIncomingPayloadKind.sosCancel,
       sosEventPacket: packet,
-      remoteRelaySosSnapshot: isLocalEvent || packet.isAppCancelAck
+      remoteRelaySosSnapshot: !isExternalBackendCancel
           ? null
           : RemoteRelaySosSnapshot(
               kind: RemoteRelaySosKind.cancel,
@@ -1722,10 +1952,26 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
             ),
     );
     BleDebugRegistry.instance.recordEvent(
+      'REMOTE_RELAY_CANCEL_DETECT source=ble_runtime_unknown_origin_resolve '
+      'rawType=sos_event nodeId=${packet.nodeId} '
+      'originatorNodeId=${packet.nodeId} relayNodeId=$resolvedNodeId '
+      'relayHardwareId=${_connectedCanonicalHardwareId ?? "none"} '
+      'classifiedAs=${isExternalBackendCancel ? "remoteRelay" : isLocalEvent ? "ownDevice" : "unknown"} '
+      'action=${isExternalBackendCancel ? "emit_remote_cancel_snapshot" : isLocalEvent ? "local_terminal" : "non_backend_event"}',
+    );
+    if (isExternalBackendCancel) {
+      BleDebugRegistry.instance.recordEvent(
+        'REMOTE_RELAY_CANCEL_DETECT source=ble_sos_event_e1_02 '
+        'classifiedAs=remoteRelay '
+        'originatorNodeId=${packet.nodeId} '
+        'relayNodeId=$resolvedNodeId',
+      );
+    }
+    BleDebugRegistry.instance.recordEvent(
       'SOS event unknown origin reclassified -> reason=$reason '
       'connectedNodeId=${_formatNodeId(resolvedNodeId)} '
       'originatorNodeId=${_formatNodeId(packet.nodeId)} '
-      'role=${isLocalEvent ? "ownDeviceEvent" : "remoteRelayEvent"}',
+      'role=${isExternalBackendCancel ? "remoteRelayEvent" : isLocalEvent ? "ownDeviceEvent" : "nonBackendEvent"}',
     );
     return resolved;
   }

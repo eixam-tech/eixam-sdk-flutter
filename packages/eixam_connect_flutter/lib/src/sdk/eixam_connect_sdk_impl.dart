@@ -44,6 +44,7 @@ import 'location_debug_log.dart';
 import 'sdk_resolved_location_resolver.dart';
 import 'sdk_mqtt_contract.dart';
 import 'sos_backend_identity_normalizer.dart';
+import 'sos_origin_classifier.dart';
 
 /// Main SDK orchestrator used by host apps.
 ///
@@ -53,6 +54,8 @@ import 'sos_backend_identity_normalizer.dart';
 class EixamConnectSdkImpl
     with WidgetsBindingObserver
     implements EixamConnectSdk {
+  static bool _externalLoraBuildMarkerLogged = false;
+
   final SosRepository sosRepository;
   final TrackingRepository trackingRepository;
   final TelemetryRepository telemetryRepository;
@@ -164,6 +167,13 @@ class EixamConnectSdkImpl
       <String, _ObservedRelaySosContext>{};
   final Map<String, DateTime> _remoteRelaySosBackendHandoffBySignature =
       <String, DateTime>{};
+  final Map<String, DateTime> _remoteRelaySosCancelHandoffBySignature =
+      <String, DateTime>{};
+  final Map<String, _RecentExternalRelaySosContext>
+      _recentExternalRelaySosContexts =
+      <String, _RecentExternalRelaySosContext>{};
+  final Map<String, _PendingExternalRelayCancel> _pendingExternalRelayCancels =
+      <String, _PendingExternalRelayCancel>{};
   final Map<String, _TerminalSosSuppression> _terminalSosSuppressionByKey =
       <String, _TerminalSosSuppression>{};
   final Map<String, _SosClosureIntent>
@@ -332,6 +342,15 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> initialize(EixamSdkConfig config) async {
+    if (!_externalLoraBuildMarkerLogged) {
+      _externalLoraBuildMarkerLogged = true;
+      debugPrint(
+        'EIXAM_SDK_BUILD_MARKER external_lora_history_only_fix_loaded',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'EIXAM_SDK_BUILD_MARKER external_lora_history_only_fix_loaded',
+      );
+    }
     BleDebugRegistry.instance.recordEvent(
       '[SDK_RUNTIME_MARKER] package=eixam_connect_flutter '
       'marker=sos_debug_build_v3 path=eixam_connect_sdk_impl.dart',
@@ -533,6 +552,18 @@ class EixamConnectSdkImpl
         }
         final remoteRelaySnapshot = event.remoteRelaySosSnapshot;
         if (remoteRelaySnapshot != null) {
+          _logRemoteRelayCancelDetection(
+            source: 'ble_incoming_event',
+            rawType: event.type.name,
+            nodeId: remoteRelaySnapshot.originatorNodeId,
+            originatorNodeId: remoteRelaySnapshot.originatorNodeId,
+            relayNodeId: remoteRelaySnapshot.relayNodeId,
+            relayHardwareId: event.canonicalHardwareId,
+            classifiedAs: 'remoteRelay',
+            action: remoteRelaySnapshot.kind == RemoteRelaySosKind.sos
+                ? 'trigger_handoff'
+                : 'cancel_handoff',
+          );
           if (remoteRelaySnapshot.kind == RemoteRelaySosKind.sos) {
             _logSosTrace(
               'dart_sdk_remote_relay_received '
@@ -563,6 +594,41 @@ class EixamConnectSdkImpl
           unawaited(
             _handleRemoteRelaySosBackendHandoff(remoteRelaySnapshot),
           );
+        }
+        final sosEventPacket = event.sosEventPacket;
+        if (sosEventPacket != null &&
+            _isTerminalSosEventPacket(sosEventPacket)) {
+          final synthesizedRemoteCancel =
+              _remoteRelayCancelSnapshotForRelayTerminalEvent(
+            packet: sosEventPacket,
+            receivedAt: event.receivedAt,
+            rawPayload: event.payload,
+            payloadHex: event.payloadHex,
+          );
+          _logRemoteRelayCancelDetection(
+            source: 'ble_incoming_event_terminal',
+            rawType: event.type.name,
+            nodeId: sosEventPacket.nodeId,
+            originatorNodeId: synthesizedRemoteCancel?.originatorNodeId ??
+                sosEventPacket.nodeId,
+            relayNodeId:
+                synthesizedRemoteCancel?.relayNodeId ?? sosEventPacket.nodeId,
+            relayHardwareId: event.canonicalHardwareId,
+            classifiedAs:
+                synthesizedRemoteCancel == null ? 'ownDevice' : 'remoteRelay',
+            action: synthesizedRemoteCancel == null
+                ? 'local_terminal_only'
+                : 'external_cancel_handoff',
+          );
+          if (synthesizedRemoteCancel != null) {
+            _publishSdkEvent(
+                RemoteRelaySosObservedEvent(synthesizedRemoteCancel));
+            unawaited(
+              _handleRemoteRelaySosCancelBackendHandoff(
+                synthesizedRemoteCancel,
+              ),
+            );
+          }
         }
         final sosPacket = event.sosPacket;
         final remoteDeviceId = sosPacket?.remoteDeviceId?.trim();
@@ -995,6 +1061,22 @@ class EixamConnectSdkImpl
         return;
       case SosRuntimeRehydrationOutcome.hydratedFromBackend:
         final state = result.resultingState;
+        final incident = await sosRepository.getCurrentIncident();
+        if (_isExternalOnlySosIncident(
+          incident,
+          source: 'sos_rehydrate:$trigger',
+        )) {
+          _clearExternalOnlyPublicSosResidue(
+            reason: 'backend_rehydration_external_only',
+          );
+          if (emitPublicState || _publicSosState != SosState.idle) {
+            _emitPublicSosState(
+              SosState.idle,
+              source: 'sos_rehydrate:$trigger:external_only',
+            );
+          }
+          return;
+        }
         if (_isTerminalPublicSosState(state)) {
           _clearPreSosSession(
             reason: 'backend_rehydration_terminal:${state.name}',
@@ -2710,6 +2792,23 @@ class EixamConnectSdkImpl
     bool deviceAlreadyActive = false,
     bool allowDeviceRuntimeActiveShortCircuit = true,
   }) async {
+    final originDecision = classifySosOrigin(
+      triggerSource: payload.triggerSource,
+      forBackendPublish: true,
+    );
+    if (originDecision.isExternalOnly) {
+      _logSosOriginDecision(
+        source: 'activate_public_sos',
+        decision: originDecision,
+      );
+      _clearExternalOnlyPublicSosResidue(
+        reason: 'external_payload_blocked_from_public_trigger',
+      );
+      throw const SosException(
+        'E_EXTERNAL_SOS_NOT_LOCAL_ACTIONABLE',
+        'External SOS payloads must use the remote relay backend handoff path.',
+      );
+    }
     if (allowDeviceRuntimeActiveShortCircuit &&
         await _deviceRuntimeSosAlreadyActive()) {
       BleDebugRegistry.instance.recordEvent(
@@ -3081,6 +3180,15 @@ class EixamConnectSdkImpl
   @override
   Future<SosIncident?> getCurrentSosIncident() async {
     if (_publicSosFallbackIncident != null) {
+      if (_isExternalOnlySosIncident(
+        _publicSosFallbackIncident,
+        source: 'get_current_sos_fallback',
+      )) {
+        _clearExternalOnlyPublicSosResidue(
+          reason: 'get_current_sos_fallback_external_only',
+        );
+        return null;
+      }
       return _publicSosFallbackIncident;
     }
     DeviceSosStatus? deviceStatus;
@@ -3098,6 +3206,21 @@ class EixamConnectSdkImpl
       );
     }
     final repositoryIncident = await sosRepository.getCurrentIncident();
+    if (_isExternalOnlySosIncident(
+      repositoryIncident,
+      source: 'get_current_sos_incident',
+    )) {
+      _clearExternalOnlyPublicSosResidue(
+        reason: 'get_current_sos_incident_external_only',
+      );
+      if (_isOpenSosState(_publicSosState)) {
+        _emitPublicSosState(
+          SosState.idle,
+          source: 'get_current_sos_incident:external_only',
+        );
+      }
+      return null;
+    }
     if (_isAcknowledgedTerminalSosIncident(repositoryIncident)) {
       return null;
     }
@@ -4562,6 +4685,21 @@ class EixamConnectSdkImpl
     required SosDeliveryChannel deliveryChannel,
     SosState? fallbackState,
   }) {
+    if (_isExternalOnlySosIncident(
+      incident,
+      source: 'record_public_sos_result',
+    )) {
+      _clearExternalOnlyPublicSosResidue(
+        reason: 'record_public_sos_result_external_only',
+      );
+      if (_isOpenSosState(_publicSosState)) {
+        _emitPublicSosState(
+          SosState.idle,
+          source: 'record_public_sos_result:external_only',
+        );
+      }
+      return;
+    }
     final recordedIncident = _guardDeviceOwnedCanonicalIncident(
       incident,
       source: 'record_public_sos_result',
@@ -4605,6 +4743,15 @@ class EixamConnectSdkImpl
     required String source,
   }) {
     if (incoming != null) {
+      if (_isExternalOnlySosIncident(
+        incoming,
+        source: '$source:preserve_active_incident',
+      )) {
+        _clearExternalOnlyPublicSosResidue(
+          reason: '${source}_external_only_preserve_blocked',
+        );
+        return null;
+      }
       _rememberActiveSosIncident(incoming);
       return incoming;
     }
@@ -6135,6 +6282,24 @@ class EixamConnectSdkImpl
   }
 
   Future<void> _syncPublicSosStateFromRepository(SosState state) async {
+    if (state != SosState.idle) {
+      final incident = await sosRepository.getCurrentIncident();
+      if (_isExternalOnlySosIncident(
+        incident,
+        source: 'sos_state_stream',
+      )) {
+        _clearExternalOnlyPublicSosResidue(
+          reason: 'sos_state_stream_external_only',
+        );
+        if (_publicSosState != SosState.idle) {
+          _emitPublicSosState(
+            SosState.idle,
+            source: 'sos_state_stream:external_only',
+          );
+        }
+        return;
+      }
+    }
     final deviceOverride = await _rehydrateDeviceSosPublicState(
       trigger: 'repository_stream:${state.name}',
       emitResolvedState: false,
@@ -7359,6 +7524,369 @@ class EixamConnectSdkImpl
         incident.state != SosState.failed;
   }
 
+  bool _isExternalOnlySosIncident(
+    SosIncident? incident, {
+    required String source,
+  }) {
+    if (incident == null) {
+      return false;
+    }
+    final decision = classifySosIncidentOrigin(
+      incident,
+      boundNodeId: _knownLocalDeviceNodeId ?? _lastDeviceStatus?.nodeId,
+      boundDeviceId: _lastDeviceStatus?.deviceId,
+      boundHardwareId: _lastDeviceStatus?.canonicalHardwareId,
+    );
+    if (!decision.isExternalOnly) {
+      final recentExternalContext =
+          _recentExternalRelaySosContextForIncident(incident);
+      if (recentExternalContext != null) {
+        _correlateRemoteRelayBackendIncidentFromContext(
+          context: recentExternalContext,
+          incident: incident,
+        );
+        _logSosOriginDecision(
+          source: source,
+          decision: _externalSosOriginDecision(
+            'recent_remote_lora_relay_backend_open_blocked',
+          ),
+        );
+        return true;
+      }
+      return false;
+    }
+    _logSosOriginDecision(source: source, decision: decision);
+    return true;
+  }
+
+  SosOriginDecision _externalSosOriginDecision(String reason) {
+    return SosOriginDecision(
+      actionability: SosActionability.externalOnly,
+      localStateMutation: false,
+      publicIncident: false,
+      backendPublish: false,
+      reason: reason,
+    );
+  }
+
+  bool _matchesRecentExternalRelaySosContext(SosIncident incident) {
+    return _recentExternalRelaySosContextForIncident(incident) != null;
+  }
+
+  _RecentExternalRelaySosContext? _recentExternalRelaySosContextForIncident(
+    SosIncident incident,
+  ) {
+    final now = DateTime.now().toUtc();
+    _recentExternalRelaySosContexts.removeWhere(
+      (_, context) => now.isAfter(context.expiresAt),
+    );
+    if (_recentExternalRelaySosContexts.isEmpty) {
+      return null;
+    }
+    final incidentDeviceId = incident.deviceId?.trim();
+    final incidentHardwareId = incident.hardwareId?.trim().toLowerCase();
+    for (final context in _recentExternalRelaySosContexts.values) {
+      if (incident.originatorNodeId == context.originatorNodeId) {
+        return context;
+      }
+      if (incidentDeviceId == context.originatorNodeId.toString()) {
+        return context;
+      }
+      if (incidentHardwareId != null &&
+          incidentHardwareId.isNotEmpty &&
+          incidentHardwareId == context.relayHardwareId?.toLowerCase()) {
+        return context;
+      }
+    }
+    if (_isOpenSosState(incident.state) &&
+        !_hasPositiveLocalSosOriginProof(incident)) {
+      return _recentExternalRelaySosContexts.values.first;
+    }
+    return null;
+  }
+
+  bool _hasPositiveLocalSosOriginProof(SosIncident incident) {
+    final decision = classifySosIncidentOrigin(
+      incident,
+      boundNodeId: _knownLocalDeviceNodeId ?? _lastDeviceStatus?.nodeId,
+      boundDeviceId: _lastDeviceStatus?.deviceId,
+      boundHardwareId: _lastDeviceStatus?.canonicalHardwareId,
+    );
+    return decision.actionability == SosActionability.localActionable;
+  }
+
+  void _rememberRecentExternalRelaySosContext({
+    required RemoteRelaySosSnapshot snapshot,
+    String? relayHardwareId,
+    String? backendIncidentId,
+  }) {
+    final now = DateTime.now().toUtc();
+    final key = _remoteRelaySosContextKey(
+      originatorNodeId: snapshot.originatorNodeId,
+      relayNodeId: snapshot.relayNodeId,
+      relayHardwareId: relayHardwareId,
+    );
+    final existing = _recentExternalRelaySosContexts[key];
+    _recentExternalRelaySosContexts[key] = _RecentExternalRelaySosContext(
+      originatorNodeId: snapshot.originatorNodeId,
+      relayNodeId: snapshot.relayNodeId,
+      relayHardwareId: relayHardwareId,
+      backendIncidentId: backendIncidentId ?? existing?.backendIncidentId,
+      expiresAt: now.add(const Duration(minutes: 10)),
+    );
+  }
+
+  void _correlateRemoteRelayBackendIncident({
+    required RemoteRelaySosSnapshot snapshot,
+    required String? backendIncidentId,
+    required String? relayHardwareId,
+  }) {
+    final normalizedIncidentId = backendIncidentId?.trim();
+    if (normalizedIncidentId == null || normalizedIncidentId.isEmpty) {
+      return;
+    }
+    _rememberRecentExternalRelaySosContext(
+      snapshot: snapshot,
+      relayHardwareId: relayHardwareId,
+      backendIncidentId: normalizedIncidentId,
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'EXTERNAL_SOS incident_correlated '
+      'originatorNodeId=${snapshot.originatorNodeId} '
+      'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"} '
+      'relayHardwareId=${relayHardwareId ?? "none"} '
+      'backendIncidentId=$normalizedIncidentId',
+    );
+    _flushPendingExternalRelayCancel(
+      snapshot: snapshot,
+      backendIncidentId: normalizedIncidentId,
+      relayHardwareId: relayHardwareId,
+    );
+  }
+
+  void _correlateRemoteRelayBackendIncidentFromContext({
+    required _RecentExternalRelaySosContext context,
+    required SosIncident incident,
+  }) {
+    final normalizedIncidentId = incident.id.trim();
+    if (normalizedIncidentId.isEmpty) {
+      return;
+    }
+    final snapshot = RemoteRelaySosSnapshot(
+      kind: RemoteRelaySosKind.sos,
+      originatorNodeId: context.originatorNodeId,
+      relayNodeId: context.relayNodeId,
+      source: RemoteRelaySosSource.sosNotify,
+      sosType: 1,
+      receivedAt: incident.createdAt,
+      rawPayload: const <int>[],
+      payloadHex: null,
+    );
+    _correlateRemoteRelayBackendIncident(
+      snapshot: snapshot,
+      backendIncidentId: normalizedIncidentId,
+      relayHardwareId: context.relayHardwareId,
+    );
+  }
+
+  RemoteRelaySosSnapshot? _remoteRelayCancelSnapshotForRelayTerminalEvent({
+    required EixamSosEventPacket packet,
+    required DateTime receivedAt,
+    required List<int> rawPayload,
+    required String payloadHex,
+  }) {
+    if (packet.opcode != EixamBleProtocol.sosEventUserDeactivatedOpcode ||
+        packet.subcode != 0x02) {
+      return null;
+    }
+    final context = _recentExternalRelayContextForOriginatorNode(packet.nodeId);
+    if (context == null) {
+      return null;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'REMOTE_RELAY_CANCEL_DETECT source=ble_sos_event_e1_02 '
+      'classifiedAs=remoteRelay '
+      'originatorNodeId=${context.originatorNodeId} '
+      'relayNodeId=${context.relayNodeId?.toString() ?? "none"}',
+    );
+    return RemoteRelaySosSnapshot(
+      kind: RemoteRelaySosKind.cancel,
+      originatorNodeId: context.originatorNodeId,
+      relayNodeId: context.relayNodeId,
+      source: RemoteRelaySosSource.sosNotify,
+      sosType: 0,
+      receivedAt: receivedAt,
+      rawPayload: List<int>.unmodifiable(rawPayload),
+      payloadHex: payloadHex,
+      eventOpcode: packet.opcode,
+      eventSubcode: packet.subcode,
+    );
+  }
+
+  _RecentExternalRelaySosContext? _recentExternalRelayContextForOriginatorNode(
+    int nodeId,
+  ) {
+    final now = DateTime.now().toUtc();
+    _recentExternalRelaySosContexts.removeWhere(
+      (_, context) => now.isAfter(context.expiresAt),
+    );
+    for (final context in _recentExternalRelaySosContexts.values) {
+      if (context.originatorNodeId == nodeId) {
+        return context;
+      }
+    }
+    return null;
+  }
+
+  _RecentExternalRelaySosContext? _recentExternalRelayContextForSnapshot(
+    RemoteRelaySosSnapshot snapshot,
+  ) {
+    final now = DateTime.now().toUtc();
+    _recentExternalRelaySosContexts.removeWhere(
+      (_, context) => now.isAfter(context.expiresAt),
+    );
+    for (final context in _recentExternalRelaySosContexts.values) {
+      if (context.originatorNodeId != snapshot.originatorNodeId) {
+        continue;
+      }
+      if (snapshot.relayNodeId != null &&
+          context.relayNodeId != null &&
+          context.relayNodeId != snapshot.relayNodeId) {
+        continue;
+      }
+      return context;
+    }
+    return null;
+  }
+
+  String _remoteRelaySosCancelHandoffSignature({
+    required RemoteRelaySosSnapshot snapshot,
+    required String? backendIncidentId,
+    required String? relayHardwareId,
+  }) {
+    return <String>[
+      'remote_lora_relay_cancel',
+      snapshot.originatorNodeId.toString(),
+      snapshot.relayNodeId?.toString() ?? 'none',
+      relayHardwareId?.trim() ?? 'none',
+      backendIncidentId?.trim() ?? 'active',
+    ].join(':');
+  }
+
+  String _externalRelayCancelContextKey(RemoteRelaySosSnapshot snapshot) {
+    return 'remote_lora_relay_cancel:${snapshot.originatorNodeId}';
+  }
+
+  void _storePendingExternalRelayCancel({
+    required RemoteRelaySosSnapshot snapshot,
+    required String? relayHardwareId,
+  }) {
+    final key = _externalRelayCancelContextKey(snapshot);
+    final now = DateTime.now().toUtc();
+    _pendingExternalRelayCancels[key] = _PendingExternalRelayCancel(
+      snapshot: snapshot,
+      relayHardwareId: relayHardwareId,
+      expiresAt: now.add(const Duration(minutes: 10)),
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'EXTERNAL_SOS pending_cancel_stored '
+      'originatorNodeId=${snapshot.originatorNodeId} '
+      'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"} '
+      'relayHardwareId=${relayHardwareId ?? "none"} '
+      'backendIncidentId=none',
+    );
+  }
+
+  void _flushPendingExternalRelayCancel({
+    required RemoteRelaySosSnapshot snapshot,
+    required String backendIncidentId,
+    required String? relayHardwareId,
+  }) {
+    final now = DateTime.now().toUtc();
+    _pendingExternalRelayCancels.removeWhere(
+      (_, pending) => now.isAfter(pending.expiresAt),
+    );
+    final key = _externalRelayCancelContextKey(snapshot);
+    final pending = _pendingExternalRelayCancels.remove(key);
+    if (pending == null) {
+      return;
+    }
+    final flushSnapshot = RemoteRelaySosSnapshot(
+      kind: RemoteRelaySosKind.cancel,
+      originatorNodeId: pending.snapshot.originatorNodeId,
+      relayNodeId: pending.snapshot.relayNodeId,
+      source: pending.snapshot.source,
+      sosType: pending.snapshot.sosType,
+      location: pending.snapshot.location,
+      receivedAt: pending.snapshot.receivedAt,
+      rawPayload: pending.snapshot.rawPayload,
+      payloadHex: pending.snapshot.payloadHex,
+      eventOpcode: pending.snapshot.eventOpcode,
+      eventSubcode: pending.snapshot.eventSubcode,
+      relayCount: pending.snapshot.relayCount,
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'EXTERNAL_SOS pending_cancel_flushed '
+      'originatorNodeId=${flushSnapshot.originatorNodeId} '
+      'relayNodeId=${flushSnapshot.relayNodeId?.toString() ?? "none"} '
+      'relayHardwareId=${pending.relayHardwareId ?? relayHardwareId ?? "none"} '
+      'backendIncidentId=$backendIncidentId',
+    );
+    unawaited(_handleRemoteRelaySosCancelBackendHandoff(flushSnapshot));
+  }
+
+  void _logRemoteRelayCancelDetection({
+    required String source,
+    required String rawType,
+    required int? nodeId,
+    required int? originatorNodeId,
+    required int? relayNodeId,
+    required String? relayHardwareId,
+    required String classifiedAs,
+    required String action,
+  }) {
+    BleDebugRegistry.instance.recordEvent(
+      'REMOTE_RELAY_CANCEL_DETECT source=$source rawType=$rawType '
+      'nodeId=${nodeId?.toString() ?? "none"} '
+      'originatorNodeId=${originatorNodeId?.toString() ?? "none"} '
+      'relayNodeId=${relayNodeId?.toString() ?? "none"} '
+      'relayHardwareId=${relayHardwareId ?? "none"} '
+      'classifiedAs=$classifiedAs action=$action',
+    );
+  }
+
+  String _remoteRelaySosContextKey({
+    required int originatorNodeId,
+    required int? relayNodeId,
+    required String? relayHardwareId,
+  }) {
+    return 'remote_lora_relay:$originatorNodeId:'
+        '${relayNodeId?.toString() ?? "none"}:'
+        '${relayHardwareId?.trim() ?? "none"}';
+  }
+
+  void _logSosOriginDecision({
+    required String source,
+    required SosOriginDecision decision,
+  }) {
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_ORIGIN_DECISION source=$source '
+      'actionability=${decision.actionability.name} '
+      'localStateMutation=${decision.localStateMutation} '
+      'publicIncident=${decision.publicIncident} '
+      'backendPublish=${decision.backendPublish} '
+      'reason=${decision.reason}',
+    );
+  }
+
+  void _clearExternalOnlyPublicSosResidue({required String reason}) {
+    _publicSosFallbackIncident = null;
+    _lastKnownActiveSosIncident = null;
+    _lastPublicSosIncidentId = null;
+    _clearPendingAppTriggeredSosBridge(reason: reason);
+    _clearDeviceRuntimeSosOwnership(reason: reason);
+  }
+
   bool _hasNonRuntimeVisibleSosIncident(SosIncident? incident) {
     return _hasBackendVisibleSosIncident(incident) &&
         !_isDeviceRuntimeSosIncidentId(incident!.id);
@@ -7468,12 +7996,42 @@ class EixamConnectSdkImpl
       return _publicSosState;
     }
     if (_publicSosFallbackIncident != null) {
+      if (_isExternalOnlySosIncident(
+        _publicSosFallbackIncident,
+        source: 'fetch_sos_state:fallback',
+      )) {
+        _clearExternalOnlyPublicSosResidue(
+          reason: 'fetch_sos_state_external_fallback',
+        );
+        _emitPublicSosState(
+          SosState.idle,
+          source: 'fetch_sos_state:external_fallback',
+        );
+        return _publicSosState;
+      }
       BleDebugRegistry.instance.recordEvent(
         'getSosState() -> fallbackState=${_publicSosState.name}',
       );
       return _publicSosState;
     }
     final repositoryState = await sosRepository.getSosState();
+    if (repositoryState != SosState.idle) {
+      final repositoryIncident = await sosRepository.getCurrentIncident();
+      if (_isExternalOnlySosIncident(
+        repositoryIncident,
+        source: 'fetch_sos_state',
+      )) {
+        _clearExternalOnlyPublicSosResidue(
+          reason: 'fetch_sos_state_external_only',
+        );
+        _emitPublicSosState(SosState.idle, source: 'fetch_sos_state');
+        BleDebugRegistry.instance.recordEvent(
+          'getSosState() -> repositoryState=${repositoryState.name} '
+          'effectiveState=idle reason=external_only',
+        );
+        return _publicSosState;
+      }
+    }
     final runtimePrecedenceState = _applyPublicSosRuntimePrecedence(
       incoming: repositoryState,
       source: 'fetch_sos_state',
@@ -8314,6 +8872,40 @@ class EixamConnectSdkImpl
 
     final sosEventPacket = platformSosEventPacket;
     if (sosEventPacket != null) {
+      if (_isTerminalSosEventPacket(sosEventPacket)) {
+        final synthesizedRemoteCancel =
+            _remoteRelayCancelSnapshotForRelayTerminalEvent(
+          packet: sosEventPacket,
+          receivedAt: event.timestamp,
+          rawPayload: bytes,
+          payloadHex: rawHex,
+        );
+        _logRemoteRelayCancelDetection(
+          source: 'protection_platform_event_terminal',
+          rawType: event.type.name,
+          nodeId: sosEventPacket.nodeId,
+          originatorNodeId: synthesizedRemoteCancel?.originatorNodeId ??
+              sosEventPacket.nodeId,
+          relayNodeId:
+              synthesizedRemoteCancel?.relayNodeId ?? payloadReason.relayNodeId,
+          relayHardwareId: _lastDeviceStatus?.canonicalHardwareId,
+          classifiedAs:
+              synthesizedRemoteCancel == null ? 'ownDevice' : 'remoteRelay',
+          action: synthesizedRemoteCancel == null
+              ? 'local_terminal_only'
+              : 'external_cancel_handoff',
+        );
+        if (synthesizedRemoteCancel != null) {
+          _publishSdkEvent(
+              RemoteRelaySosObservedEvent(synthesizedRemoteCancel));
+          unawaited(
+            _handleRemoteRelaySosCancelBackendHandoff(
+              synthesizedRemoteCancel,
+            ),
+          );
+          return;
+        }
+      }
       _logSosTrace(
         'dart_platform_event_route route=local_sos reason=sos_event_packet',
       );
@@ -8894,6 +9486,10 @@ class EixamConnectSdkImpl
     final relayNodeId = snapshot.relayNodeId ?? _lastDeviceStatus?.nodeId;
     final relayDeviceId = relayNodeId?.toString();
     final relayHardwareId = _lastDeviceStatus?.canonicalHardwareId;
+    _rememberRecentExternalRelaySosContext(
+      snapshot: snapshot,
+      relayHardwareId: relayHardwareId,
+    );
     final location = snapshot.location;
     final positionSnapshot = _hasValidRemoteRelayLocation(location)
         ? _remoteRelayBackendPosition(
@@ -8955,6 +9551,11 @@ class EixamConnectSdkImpl
         positionSnapshot: positionSnapshot,
         deviceId: deviceId,
         relayDeviceId: relayDeviceId,
+        relayHardwareId: relayHardwareId,
+      );
+      _correlateRemoteRelayBackendIncident(
+        snapshot: snapshot,
+        backendIncidentId: backendResult.incidentId,
         relayHardwareId: relayHardwareId,
       );
       _logSosTrace(
@@ -9141,6 +9742,45 @@ class EixamConnectSdkImpl
     RemoteRelaySosSnapshot snapshot,
   ) async {
     final deviceId = snapshot.originatorNodeId.toString();
+    final relayHardwareId = _lastDeviceStatus?.canonicalHardwareId;
+    _rememberRecentExternalRelaySosContext(
+      snapshot: snapshot,
+      relayHardwareId: relayHardwareId,
+    );
+    final context = _recentExternalRelayContextForSnapshot(snapshot);
+    final backendIncidentId = context?.backendIncidentId;
+    BleDebugRegistry.instance.recordEvent(
+      'REMOTE_RELAY_CANCEL_DETECT source=remote_relay_cancel_handoff '
+      'status=external_context_allows_unknown_device '
+      'originatorNodeId=${snapshot.originatorNodeId} '
+      'backendIncidentId=${backendIncidentId ?? "none"}',
+    );
+    if (backendIncidentId == null) {
+      _storePendingExternalRelayCancel(
+        snapshot: snapshot,
+        relayHardwareId: relayHardwareId,
+      );
+    }
+    final signature = _remoteRelaySosCancelHandoffSignature(
+      snapshot: snapshot,
+      backendIncidentId: backendIncidentId,
+      relayHardwareId: relayHardwareId,
+    );
+    final now = DateTime.now().toUtc();
+    _remoteRelaySosCancelHandoffBySignature.removeWhere(
+      (_, seenAt) => now.difference(seenAt) > const Duration(seconds: 30),
+    );
+    if (_remoteRelaySosCancelHandoffBySignature.containsKey(signature)) {
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS cancel_dedupe_skip '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"} '
+        'relayHardwareId=${relayHardwareId ?? "none"} '
+        'backendIncidentId=${backendIncidentId ?? "none"}',
+      );
+      return;
+    }
+    _remoteRelaySosCancelHandoffBySignature[signature] = now;
     if (deviceId.trim().isEmpty) {
       BleDebugRegistry.instance.recordEvent(
         '[REMOTE_RELAY_SOS] remote_cancel_handoff_skipped '
@@ -9173,17 +9813,45 @@ class EixamConnectSdkImpl
     }
 
     BleDebugRegistry.instance.recordEvent(
-      '[REMOTE_RELAY_SOS] remote_cancel_handoff_start '
+      'EXTERNAL_SOS cancel_start '
       'originatorNodeId=${snapshot.originatorNodeId} '
-      'deviceId=$deviceId',
+      'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"} '
+      'relayHardwareId=${relayHardwareId ?? "none"} '
+      'backendIncidentId=${backendIncidentId ?? "none"}',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'EXTERNAL_SOS cancel_payload '
+      'deviceId=$deviceId nodeId=${snapshot.originatorNodeId} '
+      'originatorNodeId=${snapshot.originatorNodeId} '
+      'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"} '
+      'relayHardwareId=${relayHardwareId ?? "none"} '
+      'incidentId=${backendIncidentId ?? "none"} '
+      'source=remote_lora_relay triggerSource=remote_lora_relay '
+      'relaySource=remote_lora_relay owner=device reason=remote_lora_cancel',
     );
 
     try {
-      await dataSource.cancelSos(deviceId: deviceId);
+      final cancelledIncident = await dataSource.cancelSos(
+        deviceId: deviceId,
+        source: 'remote_lora_relay',
+        triggerSource: 'remote_lora_relay',
+        relaySource: 'remote_lora_relay',
+        originatorNodeId: snapshot.originatorNodeId,
+        relayNodeId: snapshot.relayNodeId,
+        relayHardwareId: relayHardwareId,
+        incidentId: backendIncidentId,
+      );
       BleDebugRegistry.instance.recordEvent(
         '[REMOTE_RELAY_SOS] remote_cancel_handoff_success '
         'originatorNodeId=${snapshot.originatorNodeId} '
         'deviceId=$deviceId',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS cancel_result httpStatus=none success=true '
+        'responseIncidentId=${cancelledIncident?.id ?? "none"}',
+      );
+      _pendingExternalRelayCancels.remove(
+        _externalRelayCancelContextKey(snapshot),
       );
       _publishRemoteRelaySosCancelHandoffResult(
         snapshot: snapshot,
@@ -9191,13 +9859,87 @@ class EixamConnectSdkImpl
         status: RemoteRelaySosBackendHandoffStatus.submitted,
       );
     } catch (error) {
-      final reason = _remoteRelaySosCancelFailureReason(error);
       final statusCode = error is SosHttpException ? error.statusCode : null;
+      if (statusCode == 422 && backendIncidentId != null) {
+        BleDebugRegistry.instance.recordEvent(
+          'REMOTE_RELAY_CANCEL_DETECT source=remote_relay_cancel_handoff '
+          'status=external_context_allows_unknown_device '
+          'originatorNodeId=${snapshot.originatorNodeId} '
+          'backendIncidentId=$backendIncidentId',
+        );
+        BleDebugRegistry.instance.recordEvent(
+          'EXTERNAL_SOS cancel_retry_incident_only '
+          'originatorNodeId=${snapshot.originatorNodeId} '
+          'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"} '
+          'backendIncidentId=$backendIncidentId',
+        );
+        try {
+          final cancelledIncident = await dataSource.cancelSos(
+            source: 'remote_lora_relay',
+            triggerSource: 'remote_lora_relay',
+            relaySource: 'remote_lora_relay',
+            originatorNodeId: snapshot.originatorNodeId,
+            relayNodeId: snapshot.relayNodeId,
+            relayHardwareId: relayHardwareId,
+            incidentId: backendIncidentId,
+          );
+          BleDebugRegistry.instance.recordEvent(
+            '[REMOTE_RELAY_SOS] remote_cancel_handoff_success '
+            'originatorNodeId=${snapshot.originatorNodeId} '
+            'deviceId=$deviceId retry=incident_only',
+          );
+          BleDebugRegistry.instance.recordEvent(
+            'EXTERNAL_SOS cancel_result httpStatus=none success=true '
+            'responseIncidentId=${cancelledIncident?.id ?? "none"} '
+            'retry=incident_only',
+          );
+          _pendingExternalRelayCancels.remove(
+            _externalRelayCancelContextKey(snapshot),
+          );
+          _publishRemoteRelaySosCancelHandoffResult(
+            snapshot: snapshot,
+            deviceId: deviceId,
+            status: RemoteRelaySosBackendHandoffStatus.submitted,
+          );
+          return;
+        } catch (retryError) {
+          final retryStatusCode =
+              retryError is SosHttpException ? retryError.statusCode : null;
+          BleDebugRegistry.instance.recordEvent(
+            'EXTERNAL_SOS cancel_retry_failed '
+            'httpStatus=${retryStatusCode?.toString() ?? "none"} '
+            'originatorNodeId=${snapshot.originatorNodeId} '
+            'backendIncidentId=$backendIncidentId error=$retryError',
+          );
+        }
+      }
+      if (statusCode == 422 && backendIncidentId == null) {
+        BleDebugRegistry.instance.recordEvent(
+          'REMOTE_RELAY_CANCEL_DETECT source=remote_relay_cancel_handoff '
+          'status=external_context_allows_unknown_device '
+          'originatorNodeId=${snapshot.originatorNodeId} '
+          'backendIncidentId=none action=pending_correlation',
+        );
+        _publishRemoteRelaySosCancelHandoffResult(
+          snapshot: snapshot,
+          deviceId: deviceId,
+          status: RemoteRelaySosBackendHandoffStatus.skipped,
+          reason: 'pending_backend_incident_correlation',
+          errorMessage: error.toString(),
+        );
+        return;
+      }
+      final reason = _remoteRelaySosCancelFailureReason(error);
       BleDebugRegistry.instance.recordEvent(
         '[REMOTE_RELAY_SOS] remote_cancel_handoff_failed '
         'originatorNodeId=${snapshot.originatorNodeId} '
         'statusCode=${statusCode ?? "-"} '
         'error=$error',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS cancel_result '
+        'httpStatus=${statusCode?.toString() ?? "none"} success=false '
+        'responseIncidentId=none error=$error',
       );
       _publishRemoteRelaySosCancelHandoffResult(
         snapshot: snapshot,
@@ -9336,6 +10078,9 @@ class EixamConnectSdkImpl
           relayDeviceId: relayDeviceId,
           relayHardwareId: relayHardwareId,
           source: relaySource,
+          triggerSource: relaySource,
+          relaySource: relaySource,
+          owner: 'device',
         ),
       );
       _logRemoteRelayBackendResponse(
@@ -9593,12 +10338,10 @@ class EixamConnectSdkImpl
   String _remoteRelaySosBackendHandoffSignature(
     RemoteRelaySosSnapshot snapshot,
   ) {
-    final rawPayloadHex = EixamBleProtocol.hex(snapshot.rawPayload);
-    final payloadToken = snapshot.payloadHex ?? rawPayloadHex;
     return '${snapshot.originatorNodeId}:'
         '${snapshot.sosType}:'
-        '${snapshot.receivedAt.toUtc().microsecondsSinceEpoch}:'
-        '$payloadToken';
+        '${snapshot.relayNodeId?.toString() ?? "none"}:'
+        '${_lastDeviceStatus?.canonicalHardwareId ?? "none"}';
   }
 
   void _publishSdkEvent(EixamSdkEvent event) {
@@ -10321,6 +11064,34 @@ class _ObservedRelaySosContext {
   final int nodeId;
   final int relayCount;
   final String packetSignature;
+}
+
+class _RecentExternalRelaySosContext {
+  const _RecentExternalRelaySosContext({
+    required this.originatorNodeId,
+    required this.relayNodeId,
+    required this.relayHardwareId,
+    required this.backendIncidentId,
+    required this.expiresAt,
+  });
+
+  final int originatorNodeId;
+  final int? relayNodeId;
+  final String? relayHardwareId;
+  final String? backendIncidentId;
+  final DateTime expiresAt;
+}
+
+class _PendingExternalRelayCancel {
+  const _PendingExternalRelayCancel({
+    required this.snapshot,
+    required this.relayHardwareId,
+    required this.expiresAt,
+  });
+
+  final RemoteRelaySosSnapshot snapshot;
+  final String? relayHardwareId;
+  final DateTime expiresAt;
 }
 
 class _ProtectionSosPayloadReason {
