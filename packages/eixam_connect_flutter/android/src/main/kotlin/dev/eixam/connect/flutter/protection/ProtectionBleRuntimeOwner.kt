@@ -1102,6 +1102,24 @@ internal class ProtectionBleRuntimeOwner(
         activeBleHardwareId: String?,
         bleLinkActive: Boolean,
     ) {
+        val relayHardwareId = activeBleHardwareId?.trim()?.takeIf { it.isNotBlank() }
+        val rawPayloadHex = payloadHex(classification.rawPayload)
+        val stored = runtimeStore.recordPendingExternalRelayCancel(
+            originatorNodeId = classification.originatorNodeId,
+            relayNodeId = classification.relayNodeId,
+            relayHardwareId = relayHardwareId,
+            rawPayloadHex = rawPayloadHex,
+            source = "remote_lora_relay",
+        )
+        logSosTrace(
+            if (stored) {
+                "EXTERNAL_SOS pending_cancel_stored originatorNodeId=${classification.originatorNodeId} " +
+                    "relayNodeId=${classification.relayNodeId} relayHardwareId=${relayHardwareId ?: "none"}"
+            } else {
+                "EXTERNAL_SOS pending_cancel_dedupe_skip originatorNodeId=${classification.originatorNodeId} " +
+                    "relayNodeId=${classification.relayNodeId} relayHardwareId=${relayHardwareId ?: "none"}"
+            },
+        )
         recordSosIdentityDecision(
             originatorNodeId = classification.originatorNodeId,
             relayNodeId = classification.relayNodeId,
@@ -1116,7 +1134,7 @@ internal class ProtectionBleRuntimeOwner(
         logSosTrace(
             "platform_event type=sosEventReceived originatorNodeId=${classification.originatorNodeId} " +
                 "relayNodeId=${classification.relayNodeId} hasLocation=false " +
-                "lat=none lon=none alt=none payloadHex=${payloadHex(classification.rawPayload)}",
+                "lat=none lon=none alt=none payloadHex=$rawPayloadHex",
         )
         ProtectionRuntimeBridge.recordBleEvent(
             context = context,
@@ -1128,7 +1146,7 @@ internal class ProtectionBleRuntimeOwner(
             context = context,
             type = "sosEventReceived",
             reason =
-                "remote:${classification.source.name}:${classification.relayNodeId}:${payloadHex(classification.rawPayload)}",
+                "remote:${classification.source.name}:${classification.relayNodeId}:$rawPayloadHex",
             )
     }
 

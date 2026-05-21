@@ -18,6 +18,7 @@ class BleIncomingPayloadClassifier {
     required EixamBleChannel channel,
     required int? connectedBleTagNodeId,
     required BleIncomingPayloadClassification fallbackOnUnknownConnectedNode,
+    bool hasRecentExternalRelayContext = false,
   }) {
     _logRawSosLikePayload(
       source: 'ble_payload_classifier',
@@ -39,6 +40,7 @@ class BleIncomingPayloadClassifier {
         classification,
         eventPacket,
         connectedBleTagNodeId,
+        hasRecentExternalRelayContext: hasRecentExternalRelayContext,
       );
       BleDebugRegistry.instance.recordEvent(
         'REMOTE_RELAY_CANCEL_DETECT source=ble_payload_classifier '
@@ -92,6 +94,60 @@ class BleIncomingPayloadClassifier {
     }
 
     final sosPacket = EixamSosPacket.tryParse(payload);
+    if (sosPacket != null && sosPacket.sosType == 0) {
+      final isRemoteClear = _isExternalBackendClearPacket(
+        sosPacket,
+        connectedBleTagNodeId,
+        hasRecentExternalRelayContext: hasRecentExternalRelayContext,
+      );
+      final classification = isRemoteClear
+          ? BleIncomingPayloadKind.remoteRelaySos
+          : connectedBleTagNodeId != null &&
+                  sosPacket.nodeId == connectedBleTagNodeId
+              ? BleIncomingPayloadKind.sosClear
+              : BleIncomingPayloadKind.unknownOriginSos;
+      _logClassifyDecision(
+        raw: payloadHex,
+        packetType: 'sos_clear',
+        classification:
+            isRemoteClear ? 'remoteRelayClear' : classification.name,
+        reason: isRemoteClear
+            ? _sosClearPacketClassificationReason(
+                packet: sosPacket,
+                connectedBleTagNodeId: connectedBleTagNodeId,
+              )
+            : 'local_or_unknown_sos_clear',
+        nodeId: sosPacket.nodeId,
+        relayNodeId: connectedBleTagNodeId,
+        statusByte: _statusByte(payload),
+        terminalFlag: true,
+        cancelFlag: true,
+      );
+      if (isRemoteClear) {
+        BleDebugRegistry.instance.recordEvent(
+          'EXTERNAL_SOS tel_clear_detected '
+          'relayNodeId=${connectedBleTagNodeId?.toString() ?? "none"} '
+          'sosType=${sosPacket.sosType}',
+        );
+      }
+      return BleIncomingPayloadClassification(
+        kind: classification,
+        sosPacket: sosPacket,
+        remoteRelaySosSnapshot: isRemoteClear
+            ? RemoteRelaySosSnapshot(
+                kind: RemoteRelaySosKind.clear,
+                originatorNodeId: sosPacket.nodeId,
+                relayNodeId: connectedBleTagNodeId,
+                source: _remoteSourceFor(channel),
+                sosType: sosPacket.sosType,
+                receivedAt: receivedAt,
+                rawPayload: List<int>.unmodifiable(payload),
+                payloadHex: payloadHex,
+                relayCount: sosPacket.relayCount,
+              )
+            : null,
+      );
+    }
     if (sosPacket != null && sosPacket.sosType != 0) {
       // Safety-critical rule: decoding a valid BLE SOS payload is not enough to
       // claim that the connected tag itself is in SOS. The originator nodeId in
@@ -209,15 +265,32 @@ class BleIncomingPayloadClassifier {
   bool _isExternalBackendCancelEvent(
     BleIncomingPayloadKind classification,
     EixamSosEventPacket packet,
-    int? connectedBleTagNodeId,
-  ) {
+    int? connectedBleTagNodeId, {
+    required bool hasRecentExternalRelayContext,
+  }) {
     if (classification != BleIncomingPayloadKind.sosCancel ||
         packet.opcode != EixamBleProtocol.sosEventUserDeactivatedOpcode ||
         packet.subcode != 0x02) {
       return false;
     }
-    return connectedBleTagNodeId != null &&
-        packet.nodeId != connectedBleTagNodeId;
+    if (connectedBleTagNodeId != null) {
+      return packet.nodeId != connectedBleTagNodeId;
+    }
+    return hasRecentExternalRelayContext;
+  }
+
+  bool _isExternalBackendClearPacket(
+    EixamSosPacket packet,
+    int? connectedBleTagNodeId, {
+    required bool hasRecentExternalRelayContext,
+  }) {
+    if (packet.sosType != 0) {
+      return false;
+    }
+    if (connectedBleTagNodeId != null) {
+      return packet.nodeId != connectedBleTagNodeId;
+    }
+    return hasRecentExternalRelayContext;
   }
 
   RemoteRelaySosSource _remoteSourceFor(EixamBleChannel channel) {
@@ -316,6 +389,19 @@ class BleIncomingPayloadClassifier {
       return 'connected_ble_node_unknown';
     }
     return 'classification=${classification.name}';
+  }
+
+  String _sosClearPacketClassificationReason({
+    required EixamSosPacket packet,
+    required int? connectedBleTagNodeId,
+  }) {
+    if (connectedBleTagNodeId == null) {
+      return 'remote_lora_clear_recent_context_connected_node_unknown';
+    }
+    if (packet.nodeId != connectedBleTagNodeId) {
+      return 'remote_lora_clear_originator_differs_from_connected_node';
+    }
+    return 'local_sos_clear_originator_matches_connected_node';
   }
 
   bool _isSosLikePayload(List<int> payload) {

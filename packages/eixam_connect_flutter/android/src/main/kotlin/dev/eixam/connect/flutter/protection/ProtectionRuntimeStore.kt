@@ -1,6 +1,8 @@
 package dev.eixam.connect.flutter.protection
 
 import android.content.Context
+import org.json.JSONArray
+import org.json.JSONObject
 
 internal class ProtectionRuntimeStore(context: Context) {
     private val preferences =
@@ -24,6 +26,7 @@ internal class ProtectionRuntimeStore(context: Context) {
             preferences.getInt(keyPendingNativeSosCreateCount, 0)
         val pendingNativeSosCancelCount =
             preferences.getInt(keyPendingNativeSosCancelCount, 0)
+        val pendingExternalRelayCancelCount = pendingExternalRelayCancelCount()
         val preSosExpectedActivationAt =
             preferences.getLong(keyPreSosExpectedActivationAt, 0L).takeIf { it > 0L }
         val preSosRemainingSeconds = preSosExpectedActivationAt?.let { deadline ->
@@ -79,10 +82,12 @@ internal class ProtectionRuntimeStore(context: Context) {
             "pendingSosCount" to
                 (preferences.getInt(keyPendingSosCount, 0) +
                     pendingNativeSosCreateCount +
-                    pendingNativeSosCancelCount),
+                    pendingNativeSosCancelCount +
+                    pendingExternalRelayCancelCount),
             "pendingTelemetryCount" to preferences.getInt(keyPendingTelemetryCount, 0),
             "pendingNativeSosCreateCount" to pendingNativeSosCreateCount,
             "pendingNativeSosCancelCount" to pendingNativeSosCancelCount,
+            "pendingExternalRelayCancelCount" to pendingExternalRelayCancelCount,
             "runtimeState" to when {
                 preferences.getString(keyLastPlatformEvent, null) == "runtimeStarting" -> "starting"
                 preferences.getString(keyLastPlatformEvent, null) == "runtimeError" -> "failed"
@@ -471,6 +476,138 @@ internal class ProtectionRuntimeStore(context: Context) {
             .apply()
     }
 
+    fun recordPendingExternalRelayCancel(
+        originatorNodeId: Int,
+        relayNodeId: Int?,
+        relayHardwareId: String?,
+        rawPayloadHex: String?,
+        source: String = "remote_lora_relay",
+        timestamp: Long = System.currentTimeMillis(),
+    ): Boolean {
+        val normalizedOriginatorNodeId = normalizeNodeId(originatorNodeId)
+        val normalizedRelayNodeId = relayNodeId?.let(::normalizeNodeId)
+        val dedupeKey = listOf(
+            normalizedOriginatorNodeId.toString(),
+            normalizedRelayNodeId?.toString() ?: "none",
+            rawPayloadHex?.trim()?.takeIf { it.isNotBlank() } ?: "none",
+        ).joinToString(":")
+        val existing = pendingExternalRelayCancels()
+        if (existing.any { it["dedupeKey"] == dedupeKey }) {
+            return false
+        }
+        val updated = existing + mapOf(
+            "originatorNodeId" to normalizedOriginatorNodeId,
+            "relayNodeId" to normalizedRelayNodeId,
+            "relayHardwareId" to relayHardwareId?.trim()?.takeIf { it.isNotBlank() },
+            "payloadHex" to rawPayloadHex?.trim()?.takeIf { it.isNotBlank() },
+            "source" to source,
+            "timestamp" to timestamp,
+            "dedupeKey" to dedupeKey,
+            "signature" to dedupeKey,
+        )
+        preferences.edit()
+            .putString(keyPendingExternalRelayCancels, encodePendingExternalRelayCancels(updated))
+            .apply()
+        return true
+    }
+
+    fun peekPendingExternalRelayCancels(): List<Map<String, Any?>> =
+        pendingExternalRelayCancels()
+
+    fun ackPendingExternalRelayCancel(signature: String): Boolean {
+        val normalizedSignature = signature.trim()
+        if (normalizedSignature.isBlank()) {
+            return false
+        }
+        val pending = pendingExternalRelayCancels()
+        val remaining = pending.filterNot { event ->
+            event["signature"] == normalizedSignature ||
+                event["dedupeKey"] == normalizedSignature
+        }
+        if (remaining.size == pending.size) {
+            return false
+        }
+        val editor = preferences.edit()
+        if (remaining.isEmpty()) {
+            editor.remove(keyPendingExternalRelayCancels)
+        } else {
+            editor.putString(
+                keyPendingExternalRelayCancels,
+                encodePendingExternalRelayCancels(remaining),
+            )
+        }
+        editor.apply()
+        return true
+    }
+
+    private fun pendingExternalRelayCancelCount(): Int =
+        pendingExternalRelayCancels().size
+
+    private fun pendingExternalRelayCancels(): List<Map<String, Any?>> {
+        val raw = preferences.getString(keyPendingExternalRelayCancels, null)
+            ?: return emptyList()
+        return try {
+            val array = JSONArray(raw)
+            buildList {
+                for (index in 0 until array.length()) {
+                    val item = array.optJSONObject(index) ?: continue
+                    val rawOriginatorNodeId = item.optLong("originatorNodeId", Long.MIN_VALUE)
+                    if (rawOriginatorNodeId == Long.MIN_VALUE) {
+                        continue
+                    }
+                    val originatorNodeId = normalizeNodeId(rawOriginatorNodeId)
+                    val relayNodeId = if (item.has("relayNodeId") && !item.isNull("relayNodeId")) {
+                        normalizeNodeId(item.optLong("relayNodeId"))
+                    } else {
+                        null
+                    }
+                    val payloadHex = item.optNullableString("payloadHex")
+                    val normalizedDedupeKey = listOf(
+                        originatorNodeId.toString(),
+                        relayNodeId?.toString() ?: "none",
+                        payloadHex?.trim()?.takeIf { it.isNotBlank() } ?: "none",
+                    ).joinToString(":")
+                    add(
+                        mapOf(
+                            "originatorNodeId" to originatorNodeId,
+                            "relayNodeId" to relayNodeId,
+                            "relayHardwareId" to item.optNullableString("relayHardwareId"),
+                            "payloadHex" to payloadHex,
+                            "source" to (item.optNullableString("source") ?: "remote_lora_relay"),
+                            "timestamp" to item.optLong("timestamp", System.currentTimeMillis()),
+                            "dedupeKey" to normalizedDedupeKey,
+                            "signature" to (
+                                item.optNullableString("signature")
+                                    ?: item.optNullableString("dedupeKey")
+                                    ?: normalizedDedupeKey
+                                ),
+                        ),
+                    )
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun encodePendingExternalRelayCancels(
+        pending: List<Map<String, Any?>>,
+    ): String {
+        val array = JSONArray()
+        for (event in pending) {
+            val item = JSONObject()
+            for ((key, value) in event) {
+                item.put(key, value ?: JSONObject.NULL)
+            }
+            array.put(item)
+        }
+        return array.toString()
+    }
+
+    private fun normalizeNodeId(nodeId: Int): Long = normalizeNodeId(nodeId.toLong())
+
+    private fun normalizeNodeId(nodeId: Long): Long = nodeId and 0xFFFF_FFFFL
+
     fun recordPreSosLifecycle(
         state: String,
         cycleKey: String?,
@@ -774,6 +911,7 @@ internal class ProtectionRuntimeStore(context: Context) {
         private const val keyPendingTelemetryCount = "pending_telemetry_count"
         private const val keyPendingNativeSosCreateCount = "pending_native_sos_create_count"
         private const val keyPendingNativeSosCancelCount = "pending_native_sos_cancel_count"
+        private const val keyPendingExternalRelayCancels = "pending_external_relay_cancels"
         private const val keyReconnectAttemptCount = "reconnect_attempt_count"
         private const val keyLastReconnectAttemptAt = "last_reconnect_attempt_at"
         private const val keyReconnectBackoffMs = "reconnect_backoff_ms"
@@ -826,6 +964,9 @@ internal class ProtectionRuntimeStore(context: Context) {
 
 private fun android.content.SharedPreferences.getIntOrNull(key: String): Int? =
     if (contains(key)) getInt(key, 0) else null
+
+private fun JSONObject.optNullableString(key: String): String? =
+    if (has(key) && !isNull(key)) optString(key).trim().takeIf { it.isNotBlank() } else null
 
 private fun android.content.SharedPreferences.Editor.putNotificationText(
     preferenceKey: String,

@@ -167,7 +167,9 @@ class EixamConnectSdkImpl
       <String, _ObservedRelaySosContext>{};
   final Map<String, DateTime> _remoteRelaySosBackendHandoffBySignature =
       <String, DateTime>{};
-  final Map<String, DateTime> _remoteRelaySosCancelHandoffBySignature =
+  final Map<String, DateTime> _remoteRelaySosCancelSucceededBySignature =
+      <String, DateTime>{};
+  final Map<String, DateTime> _remoteRelaySosCancelInFlightBySignature =
       <String, DateTime>{};
   final Map<String, _RecentExternalRelaySosContext>
       _recentExternalRelaySosContexts =
@@ -185,12 +187,14 @@ class EixamConnectSdkImpl
   String? _activeDeviceRuntimeCycleKey;
   String? _activeDeviceRuntimeLocalCycleKey;
   int _deviceRuntimeLocalCycleSequence = 0;
+  int _deviceSosStatusEventSequence = 0;
   String? _deviceOwnedBackendIncidentId;
   String? _lastDeviceRuntimeCanonicalIncidentSignature;
   SosIncident? _lastDeviceRuntimeCanonicalIncident;
   final Set<String> _loggedDeviceRuntimeCanonicalizationSignatures = <String>{};
   final Set<String> _closedDeviceRuntimeIncidentIds = <String>{};
   final Map<String, int> _sosRuntimeNodeIdByHardwareId = <String, int>{};
+  final Map<int, String> _hardwareIdByNodeId = <int, String>{};
   final Map<String, DateTime> _sosRuntimeInvariantLogByKey =
       <String, DateTime>{};
   final Map<String, DateTime> _sosRejectionLogByKey = <String, DateTime>{};
@@ -228,6 +232,7 @@ class EixamConnectSdkImpl
   static const String _resolveSosActionId = 'resolve_sos';
   static const String _confirmSosActionId = 'confirm_sos';
   static const String _confirmDeadManSafeActionId = 'confirm_dead_man_safe';
+  static const Duration _externalRelayIdentityTtl = Duration(days: 30);
   static const Duration _defaultAppTriggeredSosBridgeWindow =
       Duration(seconds: 15);
   static const Duration _preSosTickInterval = Duration(milliseconds: 50);
@@ -347,8 +352,14 @@ class EixamConnectSdkImpl
       debugPrint(
         'EIXAM_SDK_BUILD_MARKER external_lora_history_only_fix_loaded',
       );
+      debugPrint(
+        'EIXAM_SDK_BUILD_MARKER external_lora_tel_clear_v1_loaded',
+      );
       BleDebugRegistry.instance.recordEvent(
         'EIXAM_SDK_BUILD_MARKER external_lora_history_only_fix_loaded',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'EIXAM_SDK_BUILD_MARKER external_lora_tel_clear_v1_loaded',
       );
     }
     BleDebugRegistry.instance.recordEvent(
@@ -370,6 +381,8 @@ class EixamConnectSdkImpl
     if (sessionContext != null) {
       sessionContext!.currentSession = _session;
     }
+    await _restoreDeviceIdentityMappings();
+    await _restoreRecentExternalRelaySosContexts();
     await _rehydrateSosRuntimeState();
     _publicSosState = _publicSosStateFromRepositoryLoad(
       incoming: await sosRepository.getSosState(),
@@ -402,6 +415,9 @@ class EixamConnectSdkImpl
     await realtimeClient.connect();
     await _resumeDeathManMonitoringIfNeeded();
     await _seedPreferredBleDeviceFromBackendRegistryIfNeeded(
+      trigger: 'initialize',
+    );
+    await _flushPendingExternalRelayCancelsFromProtectionPlatform(
       trigger: 'initialize',
     );
     await _bleAutoReconnectCoordinator.tryAutoConnectOnStartup();
@@ -552,6 +568,7 @@ class EixamConnectSdkImpl
         }
         final remoteRelaySnapshot = event.remoteRelaySosSnapshot;
         if (remoteRelaySnapshot != null) {
+          _logRemoteRelayTelClearDetected(remoteRelaySnapshot);
           _logRemoteRelayCancelDetection(
             source: 'ble_incoming_event',
             rawType: event.type.name,
@@ -1449,6 +1466,11 @@ class EixamConnectSdkImpl
             ),
           );
           unawaited(_protectionModeController.rehydrate());
+          unawaited(
+            _flushPendingExternalRelayCancelsFromProtectionPlatform(
+              trigger: 'app_foreground_resume',
+            ),
+          );
         } else {
           unawaited(_bleAutoReconnectCoordinator.tryAutoConnectOnResume());
         }
@@ -1921,7 +1943,12 @@ class EixamConnectSdkImpl
 
   @override
   Future<FlushProtectionQueuesResult> flushProtectionQueues() {
-    return _protectionModeController.flushQueues();
+    return _protectionModeController.flushQueues().then((result) async {
+      await _flushPendingExternalRelayCancelsFromProtectionPlatform(
+        trigger: 'manual_flush',
+      );
+      return result;
+    });
   }
 
   Future<void> _handleDeviceSosStatus(DeviceSosStatus status) async {
@@ -1940,9 +1967,33 @@ class EixamConnectSdkImpl
         emitIdleState: false,
       );
     }
+    final sosStatusEventSequence = ++_deviceSosStatusEventSequence;
     final isCorrelatedAppTriggeredStatus =
         _isCorrelatedAppTriggeredSosStatus(status);
     final cycleKey = _deriveDeviceSosCycleKey(status);
+    final terminalPreview = _remoteRelayTerminalResidueLabel(status);
+    final statusNodeId = _normalizeNodeIdOrNull(
+      status.nodeId ??
+          _parseDeviceRuntimeNodeId(status.lastPacketSignature) ??
+          _parseSosCycleNodeId(status.lastPacketSignature),
+    );
+    final hasRecentRelayContext = statusNodeId == null
+        ? false
+        : _recentExternalRelayContextForRelayNode(statusNodeId) != null;
+    BleDebugRegistry.instance.recordEvent(
+      'EXTERNAL_SOS device_sos_status_observed '
+      'seq=$sosStatusEventSequence '
+      'nodeId=${statusNodeId?.toString() ?? "none"} '
+      'state=${status.state.name} '
+      'previous=${status.previousState?.name ?? "none"} '
+      'terminal=${terminalPreview ?? "none"} '
+      'sosType=${status.sosType?.toString() ?? "none"} '
+      'packetId=${status.packetId?.toString() ?? "none"} '
+      'lastPacketAt=${status.lastPacketAt?.toUtc().toIso8601String() ?? "none"} '
+      'updatedAt=${status.updatedAt.toUtc().toIso8601String()} '
+      'recentRemoteRelayContext=$hasRecentRelayContext '
+      'lastPacketSignature=${status.lastPacketSignature ?? "none"}',
+    );
     final isDeviceTimeoutPromotion = !status.derivedFromBlePacket &&
         status.state == DeviceSosState.active &&
         status.previousState == DeviceSosState.preConfirm &&
@@ -1967,6 +2018,12 @@ class EixamConnectSdkImpl
         nodeId: promotedNodeId,
         source: 'device_originated_sos',
       );
+    }
+    if (await _handleRemoteRelayCancelFromTerminalResidue(
+      status,
+      eventSequence: sosStatusEventSequence,
+    )) {
+      return;
     }
     _rememberDeviceRuntimeSosOwnership(status, cycleKey);
     _emitDeviceSosActiveNotificationIntent(status, cycleKey);
@@ -2076,6 +2133,170 @@ class EixamConnectSdkImpl
 
   bool _isSosCycleClosed(DeviceSosState state) {
     return state == DeviceSosState.inactive || state == DeviceSosState.resolved;
+  }
+
+  Future<bool> _handleRemoteRelayCancelFromTerminalResidue(
+    DeviceSosStatus status, {
+    required int eventSequence,
+  }) async {
+    final terminal = _remoteRelayTerminalResidueLabel(status);
+    if (terminal == null) {
+      return false;
+    }
+    final relayNodeId = _normalizeNodeIdOrNull(
+      status.nodeId ??
+          _parseDeviceRuntimeNodeId(status.lastPacketSignature) ??
+          _parseSosCycleNodeId(status.lastPacketSignature),
+    );
+    if (relayNodeId == null) {
+      return false;
+    }
+    final observedAt = _relayTerminalResidueObservedAt(status);
+    final signature = _relayTerminalResidueSignature(
+      status: status,
+      relayNodeId: relayNodeId,
+      terminal: terminal,
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'EXTERNAL_SOS relay_terminal_residue_detected '
+      'relayNodeId=$relayNodeId terminal=$terminal '
+      'observedAt=${observedAt?.toIso8601String() ?? "none"} '
+      'signature=${signature ?? "none"}',
+    );
+    final context = _recentExternalRelayContextForRelayNode(relayNodeId);
+    if (context == null) {
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS relay_terminal_residue_ignored '
+        'reason=no_recent_remote_context relayNodeId=$relayNodeId '
+        'terminal=$terminal signature=${signature ?? "none"}',
+      );
+      return false;
+    }
+    if (!_isFreshRemoteRelayTerminalResidue(
+      context: context,
+      signature: signature,
+      observedAt: observedAt,
+      eventSequence: eventSequence,
+    )) {
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS relay_terminal_residue_ignored '
+        'reason=stale_baseline relayNodeId=$relayNodeId '
+        'originatorNodeId=${context.originatorNodeId} '
+        'baselineSignature=${context.baselineTerminalSignature ?? "none"} '
+        'signature=${signature ?? "none"}',
+      );
+      return true;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'EXTERNAL_SOS relay_terminal_residue_matched '
+      'originatorNodeId=${context.originatorNodeId} '
+      'relayNodeId=$relayNodeId '
+      'backendIncidentId=${context.backendIncidentId ?? "none"}',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_ORIGIN_DECISION source=relay_terminal_residue '
+      'actionability=externalOnly localStateMutation=false '
+      'publicIncident=false backendCancel=true '
+      'reason=remote_lora_cancel_from_tel_clear',
+    );
+    final payloadHex = status.lastPacketHex?.trim();
+    final rawPayload = payloadHex == null || payloadHex.isEmpty
+        ? const <int>[]
+        : _tryDecodeHexPayload(payloadHex) ?? const <int>[];
+    final snapshot = RemoteRelaySosSnapshot(
+      kind: RemoteRelaySosKind.cancel,
+      originatorNodeId: context.originatorNodeId,
+      relayNodeId: relayNodeId,
+      source: RemoteRelaySosSource.telRelay,
+      sosType: status.sosType ?? 0,
+      receivedAt: observedAt ?? status.updatedAt,
+      rawPayload: List<int>.unmodifiable(rawPayload),
+      payloadHex: payloadHex,
+      relayCount: status.relayCount,
+      eventOpcode: status.lastOpcode,
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'EXTERNAL_SOS synthetic_cancel_from_relay_terminal_residue '
+      'originatorNodeId=${snapshot.originatorNodeId} '
+      'relayNodeId=$relayNodeId '
+      'kind=${snapshot.kind.name} '
+      'backendIncidentId=${context.backendIncidentId ?? "none"}',
+    );
+    await _handleRemoteRelaySosCancelBackendHandoff(
+      snapshot,
+      relayHardwareIdOverride: context.relayHardwareId,
+    );
+    return true;
+  }
+
+  String? _remoteRelayTerminalResidueLabel(DeviceSosStatus status) {
+    final terminalState = _mapTerminalDeviceStatusToPublicSosState(status);
+    if (terminalState != null) {
+      return terminalState.name;
+    }
+    if (status.state == DeviceSosState.resolved) {
+      return SosState.resolved.name;
+    }
+    if (status.state == DeviceSosState.inactive &&
+        (status.sosType == 0 ||
+            status.previousState == DeviceSosState.active ||
+            status.previousState == DeviceSosState.acknowledged ||
+            status.previousState == DeviceSosState.preConfirm)) {
+      return SosState.cancelled.name;
+    }
+    return null;
+  }
+
+  DateTime? _relayTerminalResidueObservedAt(DeviceSosStatus status) {
+    return (status.lastPacketAt ?? status.updatedAt).toUtc();
+  }
+
+  String? _relayTerminalResidueSignature({
+    required DeviceSosStatus status,
+    required int relayNodeId,
+    required String terminal,
+  }) {
+    final explicitSignature = status.lastPacketSignature?.trim();
+    if (explicitSignature != null && explicitSignature.isNotEmpty) {
+      return explicitSignature;
+    }
+    final payloadHex = status.lastPacketHex?.trim();
+    if (payloadHex != null && payloadHex.isNotEmpty) {
+      return 'payload:$payloadHex';
+    }
+    final packetId = status.packetId?.toString() ?? 'none';
+    final sosType = status.sosType?.toString() ?? 'none';
+    return 'relay:$relayNodeId:terminal:$terminal:state:${status.state.name}:'
+        'sosType:$sosType:packetId:$packetId';
+  }
+
+  bool _isFreshRemoteRelayTerminalResidue({
+    required _RecentExternalRelaySosContext context,
+    required String? signature,
+    required DateTime? observedAt,
+    required int eventSequence,
+  }) {
+    final baselineSignature = context.baselineTerminalSignature;
+    if (baselineSignature != null &&
+        signature != null &&
+        baselineSignature == signature) {
+      return false;
+    }
+    final baselineObservedAt = context.baselineTerminalObservedAt;
+    if (baselineObservedAt != null &&
+        observedAt != null &&
+        !observedAt.isAfter(baselineObservedAt)) {
+      return false;
+    }
+    if (observedAt != null &&
+        observedAt.isBefore(context.triggerObservedAt) &&
+        eventSequence <= context.baselineEventSequence) {
+      return false;
+    }
+    if (signature == null && observedAt == null) {
+      return eventSequence > context.baselineEventSequence;
+    }
+    return true;
   }
 
   bool get _sdkSosNotificationsEnabled =>
@@ -4135,6 +4356,13 @@ class EixamConnectSdkImpl
     final hardwareId = _canonicalHardwareIdForStatus(status);
     if (hardwareId != null) {
       _sosRuntimeNodeIdByHardwareId[hardwareId] = nodeId;
+      unawaited(
+        _rememberDeviceIdentityMapping(
+          nodeId: nodeId,
+          hardwareId: hardwareId,
+          source: source,
+        ),
+      );
     }
     if (status == null) {
       return;
@@ -4173,6 +4401,13 @@ class EixamConnectSdkImpl
       final hardwareId = _canonicalHardwareIdForStatus(status);
       if (hardwareId != null) {
         _sosRuntimeNodeIdByHardwareId[hardwareId] = status.nodeId!;
+        unawaited(
+          _rememberDeviceIdentityMapping(
+            nodeId: status.nodeId!,
+            hardwareId: hardwareId,
+            source: source,
+          ),
+        );
       }
       return status;
     }
@@ -6995,6 +7230,226 @@ class EixamConnectSdkImpl
     });
   }
 
+  Future<void> _rememberDeviceIdentityMapping({
+    required int nodeId,
+    required String hardwareId,
+    required String source,
+    bool persist = true,
+  }) async {
+    final normalizedNodeId = _normalizeNodeId(nodeId);
+    final normalizedHardwareId = hardwareId.trim();
+    if (normalizedHardwareId.isEmpty) {
+      return;
+    }
+    _hardwareIdByNodeId[normalizedNodeId] = normalizedHardwareId;
+    _sosRuntimeNodeIdByHardwareId[normalizedHardwareId] = normalizedNodeId;
+    BleDebugRegistry.instance.recordEvent(
+      'EXTERNAL_SOS identity_mapping_registered '
+      'originatorNodeId=$normalizedNodeId hardwareId=$normalizedHardwareId '
+      'source=$source',
+    );
+    if (persist) {
+      await _persistDeviceIdentityMappings();
+    }
+  }
+
+  Future<void> _restoreDeviceIdentityMappings() async {
+    final persisted = await _localStore.readJson(
+      SharedPrefsSdkStore.deviceIdentityMappingsKey,
+    );
+    if (persisted == null) {
+      return;
+    }
+    final now = DateTime.now().toUtc();
+    var restored = 0;
+    for (final entry in persisted.entries) {
+      final nodeId = int.tryParse(entry.key);
+      final value = entry.value;
+      if (nodeId == null || value is! Map<String, dynamic>) {
+        continue;
+      }
+      final normalizedNodeId = _normalizeNodeId(nodeId);
+      final hardwareId = value['hardwareId'] as String?;
+      final observedAtRaw = value['observedAt'] as String?;
+      final observedAt = observedAtRaw == null
+          ? null
+          : DateTime.tryParse(observedAtRaw)?.toUtc();
+      if (observedAt != null &&
+          now.difference(observedAt) > _externalRelayIdentityTtl) {
+        continue;
+      }
+      final normalizedHardwareId = hardwareId?.trim();
+      if (normalizedHardwareId == null || normalizedHardwareId.isEmpty) {
+        continue;
+      }
+      _hardwareIdByNodeId[normalizedNodeId] = normalizedHardwareId;
+      _sosRuntimeNodeIdByHardwareId[normalizedHardwareId] = normalizedNodeId;
+      restored++;
+    }
+    if (restored > 0) {
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS identity_mappings_restored count=$restored',
+      );
+    }
+  }
+
+  Future<void> _persistDeviceIdentityMappings() async {
+    final now = DateTime.now().toUtc().toIso8601String();
+    await _localStore.saveJson(
+      SharedPrefsSdkStore.deviceIdentityMappingsKey,
+      <String, dynamic>{
+        for (final entry in _hardwareIdByNodeId.entries)
+          entry.key.toString(): <String, dynamic>{
+            'hardwareId': entry.value,
+            'observedAt': now,
+          },
+      },
+    );
+  }
+
+  Future<String?> _resolveOriginatorHardwareId(int originatorNodeId) async {
+    final normalizedOriginatorNodeId = _normalizeNodeId(originatorNodeId);
+    final cached = _hardwareIdByNodeId[normalizedOriginatorNodeId]?.trim();
+    if (cached != null && cached.isNotEmpty) {
+      return cached;
+    }
+    await _restoreDeviceIdentityMappings();
+    final restored = _hardwareIdByNodeId[normalizedOriginatorNodeId]?.trim();
+    if (restored != null && restored.isNotEmpty) {
+      return restored;
+    }
+    final status = _lastPublicDeviceStatus ?? _lastDeviceStatus;
+    if (_normalizeNodeIdOrNull(status?.nodeId) == normalizedOriginatorNodeId) {
+      final hardwareId = _canonicalHardwareIdForStatus(status);
+      if (hardwareId != null && hardwareId.isNotEmpty) {
+        await _rememberDeviceIdentityMapping(
+          nodeId: normalizedOriginatorNodeId,
+          hardwareId: hardwareId,
+          source: 'current_device_status',
+        );
+        return hardwareId;
+      }
+    }
+    return null;
+  }
+
+  Future<void> _restoreRecentExternalRelaySosContexts() async {
+    final persisted = await _localStore.readJson(
+      SharedPrefsSdkStore.externalRelaySosContextsKey,
+    );
+    if (persisted == null) {
+      return;
+    }
+    final now = DateTime.now().toUtc();
+    var restored = 0;
+    for (final entry in persisted.entries) {
+      final value = entry.value;
+      if (value is! Map<String, dynamic>) {
+        continue;
+      }
+      final originatorNodeId = (value['originatorNodeId'] as num?)?.toInt();
+      final relayNodeId = (value['relayNodeId'] as num?)?.toInt();
+      final relayHardwareId = value['relayHardwareId'] as String?;
+      final backendIncidentId = value['backendIncidentId'] as String?;
+      final triggerDeviceId =
+          (value['acceptedTriggerDeviceId'] as String?) ??
+              (value['triggerDeviceId'] as String?);
+      final triggerObservedAtRaw = value['triggerObservedAt'] as String?;
+      final triggerObservedAt = triggerObservedAtRaw == null
+          ? null
+          : DateTime.tryParse(triggerObservedAtRaw)?.toUtc();
+      final baselineTerminal = value['baselineTerminal'] as String?;
+      final baselineTerminalSignature =
+          value['baselineTerminalSignature'] as String?;
+      final baselineTerminalObservedAtRaw =
+          value['baselineTerminalObservedAt'] as String?;
+      final baselineTerminalObservedAt =
+          baselineTerminalObservedAtRaw == null
+              ? null
+              : DateTime.tryParse(baselineTerminalObservedAtRaw)?.toUtc();
+      final baselineEventSequence =
+          (value['baselineEventSequence'] as num?)?.toInt() ?? 0;
+      final expiresAtRaw = value['expiresAt'] as String?;
+      final expiresAt = expiresAtRaw == null
+          ? null
+          : DateTime.tryParse(expiresAtRaw)?.toUtc();
+      if (originatorNodeId == null ||
+          expiresAt == null ||
+          !expiresAt.isAfter(now)) {
+        continue;
+      }
+      final normalizedOriginatorNodeId = _normalizeNodeId(originatorNodeId);
+      final normalizedRelayNodeId = _normalizeNodeIdOrNull(relayNodeId);
+      final contextKey = _remoteRelaySosContextKey(
+        originatorNodeId: normalizedOriginatorNodeId,
+        relayNodeId: normalizedRelayNodeId,
+        relayHardwareId: relayHardwareId,
+      );
+      final restoredContext = _RecentExternalRelaySosContext(
+        originatorNodeId: normalizedOriginatorNodeId,
+        relayNodeId: normalizedRelayNodeId,
+        relayHardwareId: relayHardwareId,
+        backendIncidentId: backendIncidentId,
+        triggerDeviceId: _normalizeNodeIdDeviceIdString(triggerDeviceId),
+        triggerObservedAt: triggerObservedAt ?? now,
+        baselineTerminal: baselineTerminal,
+        baselineTerminalSignature: baselineTerminalSignature,
+        baselineTerminalObservedAt: baselineTerminalObservedAt,
+        baselineEventSequence: baselineEventSequence,
+        expiresAt: expiresAt,
+      );
+      _recentExternalRelaySosContexts[contextKey] =
+          _mergeRecentExternalRelaySosContext(
+        previous: _recentExternalRelaySosContexts[contextKey],
+        incoming: restoredContext,
+      );
+      restored++;
+    }
+    if (restored > 0) {
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS recent_contexts_restored count=$restored',
+      );
+    }
+  }
+
+  Future<void> _persistRecentExternalRelaySosContexts() async {
+    final now = DateTime.now().toUtc();
+    _recentExternalRelaySosContexts.removeWhere(
+      (_, context) => now.isAfter(context.expiresAt),
+    );
+    await _localStore.saveJson(
+      SharedPrefsSdkStore.externalRelaySosContextsKey,
+      <String, dynamic>{
+        for (final entry in _recentExternalRelaySosContexts.entries)
+          entry.key: <String, dynamic>{
+            'originatorNodeId': entry.value.originatorNodeId,
+            if (entry.value.relayNodeId != null)
+              'relayNodeId': entry.value.relayNodeId,
+            if (entry.value.relayHardwareId != null)
+              'relayHardwareId': entry.value.relayHardwareId,
+            if (entry.value.backendIncidentId != null)
+              'backendIncidentId': entry.value.backendIncidentId,
+            if (entry.value.triggerDeviceId != null)
+              'acceptedTriggerDeviceId': entry.value.triggerDeviceId,
+            'triggerObservedAt':
+                entry.value.triggerObservedAt.toUtc().toIso8601String(),
+            if (entry.value.baselineTerminal != null)
+              'baselineTerminal': entry.value.baselineTerminal,
+            if (entry.value.baselineTerminalSignature != null)
+              'baselineTerminalSignature':
+                  entry.value.baselineTerminalSignature,
+            if (entry.value.baselineTerminalObservedAt != null)
+              'baselineTerminalObservedAt': entry
+                  .value.baselineTerminalObservedAt!
+                  .toUtc()
+                  .toIso8601String(),
+            'baselineEventSequence': entry.value.baselineEventSequence,
+            'expiresAt': entry.value.expiresAt.toUtc().toIso8601String(),
+          },
+      },
+    );
+  }
+
   void _clearBackendDeviceRegistrationSessionCache() {
     _backendRegisteredNodeIdsForSession.clear();
     _backendDeviceRegistrationInFlightByNodeId.clear();
@@ -7585,11 +8040,19 @@ class EixamConnectSdkImpl
     }
     final incidentDeviceId = incident.deviceId?.trim();
     final incidentHardwareId = incident.hardwareId?.trim().toLowerCase();
+    final incidentOriginatorNodeId =
+        _normalizeNodeIdOrNull(incident.originatorNodeId);
     for (final context in _recentExternalRelaySosContexts.values) {
-      if (incident.originatorNodeId == context.originatorNodeId) {
+      if (incidentOriginatorNodeId == context.originatorNodeId) {
         return context;
       }
       if (incidentDeviceId == context.originatorNodeId.toString()) {
+        return context;
+      }
+      final incidentDeviceIdAsNode = int.tryParse(incidentDeviceId ?? '');
+      if (incidentDeviceIdAsNode != null &&
+          _normalizeNodeId(incidentDeviceIdAsNode) ==
+              context.originatorNodeId) {
         return context;
       }
       if (incidentHardwareId != null &&
@@ -7615,31 +8078,268 @@ class EixamConnectSdkImpl
     return decision.actionability == SosActionability.localActionable;
   }
 
+  int _normalizeNodeId(int nodeId) => nodeId & 0xFFFFFFFF;
+
+  int? _normalizeNodeIdOrNull(int? nodeId) {
+    if (nodeId == null) {
+      return null;
+    }
+    return _normalizeNodeId(nodeId);
+  }
+
   void _rememberRecentExternalRelaySosContext({
     required RemoteRelaySosSnapshot snapshot,
     String? relayHardwareId,
     String? backendIncidentId,
+    String? triggerDeviceId,
   }) {
     final now = DateTime.now().toUtc();
+    final originatorNodeId = _normalizeNodeId(snapshot.originatorNodeId);
+    final relayNodeId = _normalizeNodeIdOrNull(snapshot.relayNodeId);
     final key = _remoteRelaySosContextKey(
-      originatorNodeId: snapshot.originatorNodeId,
-      relayNodeId: snapshot.relayNodeId,
+      originatorNodeId: originatorNodeId,
+      relayNodeId: relayNodeId,
       relayHardwareId: relayHardwareId,
     );
-    final existing = _recentExternalRelaySosContexts[key];
-    _recentExternalRelaySosContexts[key] = _RecentExternalRelaySosContext(
-      originatorNodeId: snapshot.originatorNodeId,
-      relayNodeId: snapshot.relayNodeId,
-      relayHardwareId: relayHardwareId,
-      backendIncidentId: backendIncidentId ?? existing?.backendIncidentId,
+    final exactExisting = _recentExternalRelaySosContexts[key];
+    final bestExisting = _bestRecentExternalRelayContext(
+      originatorNodeId: originatorNodeId,
+      relayNodeId: relayNodeId,
+    );
+    final existing =
+        exactExisting?.backendIncidentId?.trim().isNotEmpty == true
+            ? exactExisting
+            : bestExisting?.backendIncidentId?.trim().isNotEmpty == true
+                ? bestExisting
+                : exactExisting ?? bestExisting;
+    final triggerObservedAt = existing?.triggerObservedAt ??
+        snapshot.receivedAt.toUtc();
+    final normalizedBackendIncidentId = backendIncidentId?.trim();
+    final acceptedTriggerDeviceId =
+        _normalizeNodeIdDeviceIdString(triggerDeviceId) ??
+            _normalizeNodeIdDeviceIdString(existing?.triggerDeviceId);
+    BleDebugRegistry.instance.recordEvent(
+      'EXTERNAL_SOS remote_context_remember_attempt '
+      'originatorNodeId=$originatorNodeId '
+      'relayNodeId=${relayNodeId?.toString() ?? "none"} '
+      'kind=${snapshot.kind.name} '
+      'existing=${existing != null} '
+      'backendIncidentId=${normalizedBackendIncidentId ?? existing?.backendIncidentId ?? "none"} '
+      'acceptedTriggerDeviceId=${acceptedTriggerDeviceId ?? "none"}',
+    );
+    final shouldCaptureBaseline = existing == null ||
+        existing.baselineTerminalSignature == null &&
+            existing.baselineTerminalObservedAt == null;
+    final baseline = shouldCaptureBaseline
+        ? _captureRemoteRelayTerminalBaseline(
+            snapshot: snapshot,
+            triggerObservedAt: triggerObservedAt,
+          )
+        : null;
+    final incomingContext = _RecentExternalRelaySosContext(
+      originatorNodeId: originatorNodeId,
+      relayNodeId: relayNodeId,
+      relayHardwareId: relayHardwareId ?? existing?.relayHardwareId,
+      backendIncidentId: normalizedBackendIncidentId?.isNotEmpty == true
+          ? normalizedBackendIncidentId
+          : existing?.backendIncidentId,
+      triggerDeviceId: acceptedTriggerDeviceId,
+      triggerObservedAt: triggerObservedAt,
+      baselineTerminal:
+          baseline?.terminal ?? existing?.baselineTerminal,
+      baselineTerminalSignature:
+          baseline?.signature ?? existing?.baselineTerminalSignature,
+      baselineTerminalObservedAt:
+          baseline?.observedAt ?? existing?.baselineTerminalObservedAt,
+      baselineEventSequence:
+          baseline?.eventSequence ?? existing?.baselineEventSequence ?? 0,
       expiresAt: now.add(const Duration(minutes: 10)),
     );
+    final remembered = _mergeRecentExternalRelaySosContext(
+      previous: existing,
+      incoming: incomingContext,
+    );
+    _removeRecentExternalRelayContextsFor(
+      originatorNodeId: originatorNodeId,
+      relayNodeId: relayNodeId,
+    );
+    _recentExternalRelaySosContexts[key] = remembered;
+    if (existing?.backendIncidentId != null &&
+        normalizedBackendIncidentId == null) {
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS remote_context_merge_preserved '
+        'backendIncidentId=${remembered.backendIncidentId ?? "none"} '
+        'acceptedTriggerDeviceId=${remembered.triggerDeviceId ?? "none"}',
+      );
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'EXTERNAL_SOS remote_context_baseline '
+      'relayNodeId=${relayNodeId?.toString() ?? "none"} '
+      'originatorNodeId=$originatorNodeId '
+      'baselineTerminal=${remembered.baselineTerminal ?? "none"} '
+      'baselineSignature=${remembered.baselineTerminalSignature ?? "none"} '
+      'baselineObservedAt=${remembered.baselineTerminalObservedAt?.toIso8601String() ?? "none"}',
+    );
+    unawaited(_persistRecentExternalRelaySosContexts());
+  }
+
+  _RemoteRelayTerminalBaseline? _captureRemoteRelayTerminalBaseline({
+    required RemoteRelaySosSnapshot snapshot,
+    required DateTime triggerObservedAt,
+  }) {
+    final relayNodeId = _normalizeNodeIdOrNull(snapshot.relayNodeId);
+    if (relayNodeId == null) {
+      return _RemoteRelayTerminalBaseline(
+        terminal: null,
+        signature: null,
+        observedAt: triggerObservedAt,
+        eventSequence: _deviceSosStatusEventSequence,
+      );
+    }
+    final status = deviceSosController.currentStatus;
+    final statusRelayNodeId = _normalizeNodeIdOrNull(
+      status.nodeId ??
+          _parseDeviceRuntimeNodeId(status.lastPacketSignature) ??
+          _parseSosCycleNodeId(status.lastPacketSignature),
+    );
+    if (statusRelayNodeId != relayNodeId) {
+      return _RemoteRelayTerminalBaseline(
+        terminal: null,
+        signature: null,
+        observedAt: triggerObservedAt,
+        eventSequence: _deviceSosStatusEventSequence,
+      );
+    }
+    final terminal = _remoteRelayTerminalResidueLabel(status);
+    if (terminal == null) {
+      return _RemoteRelayTerminalBaseline(
+        terminal: null,
+        signature: null,
+        observedAt: triggerObservedAt,
+        eventSequence: _deviceSosStatusEventSequence,
+      );
+    }
+    return _RemoteRelayTerminalBaseline(
+      terminal: terminal,
+      signature: _relayTerminalResidueSignature(
+        status: status,
+        relayNodeId: relayNodeId,
+        terminal: terminal,
+      ),
+      observedAt: _relayTerminalResidueObservedAt(status),
+      eventSequence: _deviceSosStatusEventSequence,
+    );
+  }
+
+  _RecentExternalRelaySosContext? _bestRecentExternalRelayContext({
+    required int originatorNodeId,
+    required int? relayNodeId,
+  }) {
+    final now = DateTime.now().toUtc();
+    _recentExternalRelaySosContexts.removeWhere(
+      (_, context) => now.isAfter(context.expiresAt),
+    );
+    final matches = _recentExternalRelaySosContexts.values.where((context) {
+      if (context.originatorNodeId != originatorNodeId) {
+        return false;
+      }
+      if (relayNodeId != null &&
+          context.relayNodeId != null &&
+          context.relayNodeId != relayNodeId) {
+        return false;
+      }
+      return true;
+    }).toList(growable: false);
+    if (matches.isEmpty) {
+      return null;
+    }
+    matches.sort((left, right) {
+      final leftCorrelated =
+          left.backendIncidentId?.trim().isNotEmpty == true ? 0 : 1;
+      final rightCorrelated =
+          right.backendIncidentId?.trim().isNotEmpty == true ? 0 : 1;
+      if (leftCorrelated != rightCorrelated) {
+        return leftCorrelated.compareTo(rightCorrelated);
+      }
+      final leftAccepted =
+          left.triggerDeviceId?.trim().isNotEmpty == true ? 0 : 1;
+      final rightAccepted =
+          right.triggerDeviceId?.trim().isNotEmpty == true ? 0 : 1;
+      if (leftAccepted != rightAccepted) {
+        return leftAccepted.compareTo(rightAccepted);
+      }
+      return right.triggerObservedAt.compareTo(left.triggerObservedAt);
+    });
+    return matches.first;
+  }
+
+  _RecentExternalRelaySosContext _mergeRecentExternalRelaySosContext({
+    required _RecentExternalRelaySosContext? previous,
+    required _RecentExternalRelaySosContext incoming,
+  }) {
+    if (previous == null) {
+      return incoming;
+    }
+    final previousIncidentId = previous.backendIncidentId?.trim();
+    final incomingIncidentId = incoming.backendIncidentId?.trim();
+    final previousTriggerDeviceId =
+        _normalizeNodeIdDeviceIdString(previous.triggerDeviceId);
+    final incomingTriggerDeviceId =
+        _normalizeNodeIdDeviceIdString(incoming.triggerDeviceId);
+    return _RecentExternalRelaySosContext(
+      originatorNodeId: incoming.originatorNodeId,
+      relayNodeId: incoming.relayNodeId ?? previous.relayNodeId,
+      relayHardwareId: incoming.relayHardwareId ?? previous.relayHardwareId,
+      backendIncidentId: incomingIncidentId?.isNotEmpty == true
+          ? incomingIncidentId
+          : previousIncidentId?.isNotEmpty == true
+              ? previousIncidentId
+              : null,
+      triggerDeviceId: incomingTriggerDeviceId?.isNotEmpty == true
+          ? incomingTriggerDeviceId
+          : previousTriggerDeviceId?.isNotEmpty == true
+              ? previousTriggerDeviceId
+              : null,
+      triggerObservedAt: previous.triggerObservedAt.isBefore(
+        incoming.triggerObservedAt,
+      )
+          ? previous.triggerObservedAt
+          : incoming.triggerObservedAt,
+      baselineTerminal:
+          previous.baselineTerminal ?? incoming.baselineTerminal,
+      baselineTerminalSignature: previous.baselineTerminalSignature ??
+          incoming.baselineTerminalSignature,
+      baselineTerminalObservedAt: previous.baselineTerminalObservedAt ??
+          incoming.baselineTerminalObservedAt,
+      baselineEventSequence: previous.baselineEventSequence != 0
+          ? previous.baselineEventSequence
+          : incoming.baselineEventSequence,
+      expiresAt: incoming.expiresAt.isAfter(previous.expiresAt)
+          ? incoming.expiresAt
+          : previous.expiresAt,
+    );
+  }
+
+  void _removeRecentExternalRelayContextsFor({
+    required int originatorNodeId,
+    required int? relayNodeId,
+  }) {
+    _recentExternalRelaySosContexts.removeWhere((_, context) {
+      if (context.originatorNodeId != originatorNodeId) {
+        return false;
+      }
+      if (relayNodeId == null) {
+        return true;
+      }
+      return context.relayNodeId == null || context.relayNodeId == relayNodeId;
+    });
   }
 
   void _correlateRemoteRelayBackendIncident({
     required RemoteRelaySosSnapshot snapshot,
     required String? backendIncidentId,
     required String? relayHardwareId,
+    String? acceptedTriggerDeviceId,
   }) {
     final normalizedIncidentId = backendIncidentId?.trim();
     if (normalizedIncidentId == null || normalizedIncidentId.isEmpty) {
@@ -7649,13 +8349,16 @@ class EixamConnectSdkImpl
       snapshot: snapshot,
       relayHardwareId: relayHardwareId,
       backendIncidentId: normalizedIncidentId,
+      triggerDeviceId: acceptedTriggerDeviceId,
     );
+    final context = _recentExternalRelayContextForSnapshot(snapshot);
     BleDebugRegistry.instance.recordEvent(
       'EXTERNAL_SOS incident_correlated '
-      'originatorNodeId=${snapshot.originatorNodeId} '
-      'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"} '
+      'originatorNodeId=${_normalizeNodeId(snapshot.originatorNodeId)} '
+      'relayNodeId=${_normalizeNodeIdOrNull(snapshot.relayNodeId)?.toString() ?? "none"} '
       'relayHardwareId=${relayHardwareId ?? "none"} '
-      'backendIncidentId=$normalizedIncidentId',
+      'backendIncidentId=$normalizedIncidentId '
+      'acceptedTriggerDeviceId=${context?.triggerDeviceId ?? acceptedTriggerDeviceId ?? "none"}',
     );
     _flushPendingExternalRelayCancel(
       snapshot: snapshot,
@@ -7686,6 +8389,7 @@ class EixamConnectSdkImpl
       snapshot: snapshot,
       backendIncidentId: normalizedIncidentId,
       relayHardwareId: context.relayHardwareId,
+      acceptedTriggerDeviceId: context.triggerDeviceId,
     );
   }
 
@@ -7726,37 +8430,150 @@ class EixamConnectSdkImpl
   _RecentExternalRelaySosContext? _recentExternalRelayContextForOriginatorNode(
     int nodeId,
   ) {
-    final now = DateTime.now().toUtc();
-    _recentExternalRelaySosContexts.removeWhere(
-      (_, context) => now.isAfter(context.expiresAt),
+    return _bestRecentExternalRelayContext(
+      originatorNodeId: _normalizeNodeId(nodeId),
+      relayNodeId: null,
     );
-    for (final context in _recentExternalRelaySosContexts.values) {
-      if (context.originatorNodeId == nodeId) {
-        return context;
-      }
-    }
-    return null;
   }
 
   _RecentExternalRelaySosContext? _recentExternalRelayContextForSnapshot(
     RemoteRelaySosSnapshot snapshot,
   ) {
+    return _bestRecentExternalRelayContext(
+      originatorNodeId: _normalizeNodeId(snapshot.originatorNodeId),
+      relayNodeId: _normalizeNodeIdOrNull(snapshot.relayNodeId),
+    );
+  }
+
+  _RecentExternalRelaySosContext? _recentExternalRelayContextForRelayNode(
+    int relayNodeId,
+  ) {
+    final normalizedRelayNodeId = _normalizeNodeId(relayNodeId);
     final now = DateTime.now().toUtc();
     _recentExternalRelaySosContexts.removeWhere(
       (_, context) => now.isAfter(context.expiresAt),
     );
-    for (final context in _recentExternalRelaySosContexts.values) {
-      if (context.originatorNodeId != snapshot.originatorNodeId) {
-        continue;
-      }
-      if (snapshot.relayNodeId != null &&
-          context.relayNodeId != null &&
-          context.relayNodeId != snapshot.relayNodeId) {
-        continue;
-      }
-      return context;
+    final matches = _recentExternalRelaySosContexts.values
+        .where(
+          (context) =>
+              context.relayNodeId == normalizedRelayNodeId &&
+              context.originatorNodeId != normalizedRelayNodeId,
+        )
+        .toList(growable: false);
+    if (matches.isEmpty) {
+      return null;
+    }
+    matches.sort((left, right) {
+      final leftCorrelated =
+          left.backendIncidentId?.trim().isNotEmpty == true ? 0 : 1;
+      final rightCorrelated =
+          right.backendIncidentId?.trim().isNotEmpty == true ? 0 : 1;
+      return leftCorrelated.compareTo(rightCorrelated);
+    });
+    return matches.first;
+  }
+
+  String? _remoteRelayTriggerDeviceIdForContext(
+    _RecentExternalRelaySosContext? context,
+  ) {
+    final triggerDeviceId = _normalizeNodeIdDeviceIdString(
+      context?.triggerDeviceId,
+    );
+    if (triggerDeviceId == null || triggerDeviceId.isEmpty) {
+      return null;
+    }
+    final backendIncidentId = context?.backendIncidentId?.trim();
+    if (backendIncidentId == null || backendIncidentId.isEmpty) {
+      return null;
+    }
+    return triggerDeviceId;
+  }
+
+  bool _isNumericNodeDeviceId(String deviceId) {
+    final parsed = int.tryParse(deviceId.trim());
+    return parsed != null;
+  }
+
+  String? _normalizeNodeIdDeviceIdString(String? deviceId) {
+    final trimmed = deviceId?.trim();
+    if (trimmed == null || trimmed.isEmpty) {
+      return null;
+    }
+    final parsed = int.tryParse(trimmed);
+    if (parsed == null) {
+      return trimmed;
+    }
+    return _normalizeNodeId(parsed).toString();
+  }
+
+  Future<_RemoteRelayCancelDeviceIdentity?> _resolveRemoteRelayCancelDeviceId({
+    required RemoteRelaySosSnapshot snapshot,
+    required _RecentExternalRelaySosContext? context,
+  }) async {
+    final hardwareId =
+        (await _resolveOriginatorHardwareId(snapshot.originatorNodeId))?.trim();
+    if (hardwareId != null && hardwareId.isNotEmpty) {
+      return _RemoteRelayCancelDeviceIdentity(
+        deviceId: hardwareId,
+        source: 'originator_hardware_id',
+      );
+    }
+    final triggerDeviceId = _remoteRelayTriggerDeviceIdForContext(context);
+    if (triggerDeviceId != null && !_isNumericNodeDeviceId(triggerDeviceId)) {
+      return _RemoteRelayCancelDeviceIdentity(
+        deviceId: triggerDeviceId,
+        source: 'correlated_trigger_device_id',
+      );
+    }
+    if (_canUseCallerActiveIncidentForRemoteRelayCancel(
+      snapshot: snapshot,
+      context: context,
+    )) {
+      return const _RemoteRelayCancelDeviceIdentity(
+        deviceId: null,
+        source: 'caller_active_incident_no_device_id',
+      );
     }
     return null;
+  }
+
+  bool _canUseCallerActiveIncidentForRemoteRelayCancel({
+    required RemoteRelaySosSnapshot snapshot,
+    required _RecentExternalRelaySosContext? context,
+  }) {
+    if (context == null) {
+      return false;
+    }
+    if (!_isRemoteRelayCancelSnapshot(snapshot)) {
+      return false;
+    }
+    final backendIncidentId = context.backendIncidentId?.trim();
+    if (backendIncidentId == null || backendIncidentId.isEmpty) {
+      return false;
+    }
+    if (context.originatorNodeId != _normalizeNodeId(snapshot.originatorNodeId)) {
+      return false;
+    }
+    final snapshotRelayNodeId = _normalizeNodeIdOrNull(snapshot.relayNodeId);
+    if (snapshotRelayNodeId != null &&
+        context.relayNodeId != null &&
+        context.relayNodeId != snapshotRelayNodeId) {
+      return false;
+    }
+    final candidates = <SosIncident?>[
+      _lastKnownActiveSosIncident,
+      _publicSosFallbackIncident,
+    ];
+    for (final incident in candidates) {
+      if (incident == null || !_isOpenSosState(incident.state)) {
+        continue;
+      }
+      if (_hasPositiveLocalSosOriginProof(incident) &&
+          !_matchesRecentExternalRelaySosContext(incident)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   String _remoteRelaySosCancelHandoffSignature({
@@ -7766,26 +8583,32 @@ class EixamConnectSdkImpl
   }) {
     return <String>[
       'remote_lora_relay_cancel',
-      snapshot.originatorNodeId.toString(),
-      snapshot.relayNodeId?.toString() ?? 'none',
+      _normalizeNodeId(snapshot.originatorNodeId).toString(),
+      _normalizeNodeIdOrNull(snapshot.relayNodeId)?.toString() ?? 'none',
       relayHardwareId?.trim() ?? 'none',
       backendIncidentId?.trim() ?? 'active',
     ].join(':');
   }
 
   String _externalRelayCancelContextKey(RemoteRelaySosSnapshot snapshot) {
-    return 'remote_lora_relay_cancel:${snapshot.originatorNodeId}';
+    final originatorNodeId = _normalizeNodeId(snapshot.originatorNodeId);
+    final relayNodeId = _normalizeNodeIdOrNull(snapshot.relayNodeId);
+    return 'remote_lora_relay_cancel:$originatorNodeId:'
+        '${relayNodeId?.toString() ?? "none"}';
   }
 
   void _storePendingExternalRelayCancel({
     required RemoteRelaySosSnapshot snapshot,
     required String? relayHardwareId,
+    String? nativePendingSignature,
   }) {
+    snapshot = _normalizeRemoteRelaySosSnapshot(snapshot);
     final key = _externalRelayCancelContextKey(snapshot);
     final now = DateTime.now().toUtc();
     _pendingExternalRelayCancels[key] = _PendingExternalRelayCancel(
       snapshot: snapshot,
       relayHardwareId: relayHardwareId,
+      nativePendingSignature: nativePendingSignature,
       expiresAt: now.add(const Duration(minutes: 10)),
     );
     BleDebugRegistry.instance.recordEvent(
@@ -7802,19 +8625,45 @@ class EixamConnectSdkImpl
     required String backendIncidentId,
     required String? relayHardwareId,
   }) {
+    snapshot = _normalizeRemoteRelaySosSnapshot(snapshot);
     final now = DateTime.now().toUtc();
     _pendingExternalRelayCancels.removeWhere(
       (_, pending) => now.isAfter(pending.expiresAt),
     );
     final key = _externalRelayCancelContextKey(snapshot);
-    final pending = _pendingExternalRelayCancels.remove(key);
+    var pending = _pendingExternalRelayCancels.remove(key);
+    if (pending == null) {
+      final originatorNodeId = _normalizeNodeId(snapshot.originatorNodeId);
+      final relayNodeId = _normalizeNodeIdOrNull(snapshot.relayNodeId);
+      String? matchedKey;
+      for (final entry in _pendingExternalRelayCancels.entries) {
+        final pendingOriginatorNodeId =
+            _normalizeNodeId(entry.value.snapshot.originatorNodeId);
+        final pendingRelayNodeId =
+            _normalizeNodeIdOrNull(entry.value.snapshot.relayNodeId);
+        if (pendingOriginatorNodeId != originatorNodeId) {
+          continue;
+        }
+        if (relayNodeId != null &&
+            pendingRelayNodeId != null &&
+            pendingRelayNodeId != relayNodeId) {
+          continue;
+        }
+        matchedKey = entry.key;
+        pending = entry.value;
+        break;
+      }
+      if (matchedKey != null) {
+        _pendingExternalRelayCancels.remove(matchedKey);
+      }
+    }
     if (pending == null) {
       return;
     }
     final flushSnapshot = RemoteRelaySosSnapshot(
       kind: RemoteRelaySosKind.cancel,
-      originatorNodeId: pending.snapshot.originatorNodeId,
-      relayNodeId: pending.snapshot.relayNodeId,
+      originatorNodeId: _normalizeNodeId(pending.snapshot.originatorNodeId),
+      relayNodeId: _normalizeNodeIdOrNull(pending.snapshot.relayNodeId),
       source: pending.snapshot.source,
       sosType: pending.snapshot.sosType,
       location: pending.snapshot.location,
@@ -7832,7 +8681,128 @@ class EixamConnectSdkImpl
       'relayHardwareId=${pending.relayHardwareId ?? relayHardwareId ?? "none"} '
       'backendIncidentId=$backendIncidentId',
     );
-    unawaited(_handleRemoteRelaySosCancelBackendHandoff(flushSnapshot));
+    unawaited(
+      _handleRemoteRelaySosCancelBackendHandoff(
+        flushSnapshot,
+        nativePendingSignature: pending.nativePendingSignature,
+        relayHardwareIdOverride: pending.relayHardwareId ?? relayHardwareId,
+      ),
+    );
+  }
+
+  Future<void> _flushPendingExternalRelayCancelsForOriginator({
+    required int originatorNodeId,
+    required String trigger,
+  }) async {
+    final normalizedOriginatorNodeId = _normalizeNodeId(originatorNodeId);
+    final now = DateTime.now().toUtc();
+    _pendingExternalRelayCancels.removeWhere(
+      (_, pending) => now.isAfter(pending.expiresAt),
+    );
+    final matches = _pendingExternalRelayCancels.entries
+        .where(
+          (entry) =>
+              _normalizeNodeId(entry.value.snapshot.originatorNodeId) ==
+              normalizedOriginatorNodeId,
+        )
+        .map((entry) => entry.value)
+        .toList(growable: false);
+    if (matches.isEmpty) {
+      return;
+    }
+    _pendingExternalRelayCancels.removeWhere(
+      (_, pending) =>
+          _normalizeNodeId(pending.snapshot.originatorNodeId) ==
+          normalizedOriginatorNodeId,
+    );
+    for (final pending in matches) {
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS pending_cancel_flushed '
+        'originatorNodeId=${pending.snapshot.originatorNodeId} '
+        'relayNodeId=${pending.snapshot.relayNodeId?.toString() ?? "none"} '
+        'relayHardwareId=${pending.relayHardwareId ?? "none"} '
+        'trigger=$trigger',
+      );
+      await _handleRemoteRelaySosCancelBackendHandoff(
+        pending.snapshot,
+        nativePendingSignature: pending.nativePendingSignature,
+        relayHardwareIdOverride: pending.relayHardwareId,
+      );
+    }
+  }
+
+  Future<void> _flushPendingExternalRelayCancelsFromProtectionPlatform({
+    required String trigger,
+  }) async {
+    final pending =
+        await protectionPlatformAdapter.peekPendingExternalRelayCancels();
+    BleDebugRegistry.instance.recordEvent(
+      'EXTERNAL_SOS pending_cancel_peeked count=${pending.length} '
+      'trigger=$trigger',
+    );
+    if (pending.isEmpty) {
+      return;
+    }
+    for (final event in pending) {
+      final payloadHex = event.payloadHex?.trim();
+      final rawPayload = payloadHex == null || payloadHex.isEmpty
+          ? const <int>[]
+          : _tryDecodeHexPayload(payloadHex) ?? const <int>[];
+      final snapshot = RemoteRelaySosSnapshot(
+        kind: RemoteRelaySosKind.cancel,
+        originatorNodeId: _normalizeNodeId(event.originatorNodeId),
+        relayNodeId: _normalizeNodeIdOrNull(event.relayNodeId),
+        source: RemoteRelaySosSource.sosNotify,
+        sosType: 0,
+        receivedAt: event.timestamp,
+        rawPayload: List<int>.unmodifiable(rawPayload),
+        payloadHex: payloadHex,
+        eventOpcode: EixamBleProtocol.sosEventUserDeactivatedOpcode,
+        eventSubcode: 0x02,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS pending_cancel_flushed '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"} '
+        'relayHardwareId=${event.relayHardwareId ?? "none"} '
+        'trigger=$trigger',
+      );
+      await _handleRemoteRelaySosCancelBackendHandoff(
+        snapshot,
+        nativePendingSignature: event.signature,
+        relayHardwareIdOverride: event.relayHardwareId,
+      );
+    }
+  }
+
+  Future<void> _ackPendingExternalRelayCancelFromProtectionPlatform(
+    String? signature,
+  ) async {
+    final normalizedSignature = signature?.trim();
+    if (normalizedSignature == null || normalizedSignature.isEmpty) {
+      return;
+    }
+    try {
+      final acknowledged =
+          await protectionPlatformAdapter.ackPendingExternalRelayCancel(
+        normalizedSignature,
+      );
+      if (acknowledged) {
+        BleDebugRegistry.instance.recordEvent(
+          'EXTERNAL_SOS pending_cancel_ack signature=$normalizedSignature',
+        );
+      } else {
+        BleDebugRegistry.instance.recordEvent(
+          'EXTERNAL_SOS pending_cancel_ack_missing '
+          'signature=$normalizedSignature',
+        );
+      }
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS pending_cancel_ack_failed '
+        'signature=$normalizedSignature error=$error',
+      );
+    }
   }
 
   void _logRemoteRelayCancelDetection({
@@ -7860,8 +8830,10 @@ class EixamConnectSdkImpl
     required int? relayNodeId,
     required String? relayHardwareId,
   }) {
-    return 'remote_lora_relay:$originatorNodeId:'
-        '${relayNodeId?.toString() ?? "none"}:'
+    final normalizedOriginatorNodeId = _normalizeNodeId(originatorNodeId);
+    final normalizedRelayNodeId = _normalizeNodeIdOrNull(relayNodeId);
+    return 'remote_lora_relay:$normalizedOriginatorNodeId:'
+        '${normalizedRelayNodeId?.toString() ?? "none"}:'
         '${relayHardwareId?.trim() ?? "none"}';
   }
 
@@ -8135,6 +9107,30 @@ class EixamConnectSdkImpl
       firmwareVersion: firmwareVersion,
       hardwareModel: hardwareModel,
       pairedAt: pairedAt,
+    );
+  }
+
+  @override
+  Future<void> registerDeviceIdentityMapping({
+    required String hardwareId,
+    required int nodeId,
+    String? source,
+  }) async {
+    final normalizedHardwareId = hardwareId.trim();
+    if (normalizedHardwareId.isEmpty) {
+      return;
+    }
+    await _rememberDeviceIdentityMapping(
+      nodeId: nodeId,
+      hardwareId: normalizedHardwareId,
+      source: source ?? 'public_api',
+      persist: true,
+    );
+    unawaited(
+      _flushPendingExternalRelayCancelsForOriginator(
+        originatorNodeId: nodeId,
+        trigger: 'identity_mapping_registered',
+      ),
     );
   }
 
@@ -9415,8 +10411,19 @@ class EixamConnectSdkImpl
   Future<void> _handleRemoteRelaySosBackendHandoff(
     RemoteRelaySosSnapshot snapshot,
   ) async {
+    snapshot = _normalizeRemoteRelaySosSnapshot(snapshot);
+    BleDebugRegistry.instance.recordEvent(
+      'EXTERNAL_SOS remote_relay_handoff_enter '
+      'kind=${snapshot.kind.name} '
+      'originatorNodeId=${snapshot.originatorNodeId} '
+      'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"} '
+      'source=${snapshot.source.name} '
+      'sosType=${snapshot.sosType} '
+      'payloadHex=${snapshot.payloadHex ?? "none"}',
+    );
     if (snapshot.kind != RemoteRelaySosKind.sos) {
       if (_isRemoteRelayCancelSnapshot(snapshot)) {
+        _logRemoteRelayTelClearDetected(snapshot);
         await _handleRemoteRelaySosCancelBackendHandoff(snapshot);
       }
       return;
@@ -9489,6 +10496,7 @@ class EixamConnectSdkImpl
     _rememberRecentExternalRelaySosContext(
       snapshot: snapshot,
       relayHardwareId: relayHardwareId,
+      triggerDeviceId: deviceId,
     );
     final location = snapshot.location;
     final positionSnapshot = _hasValidRemoteRelayLocation(location)
@@ -9557,6 +10565,7 @@ class EixamConnectSdkImpl
         snapshot: snapshot,
         backendIncidentId: backendResult.incidentId,
         relayHardwareId: relayHardwareId,
+        acceptedTriggerDeviceId: deviceId,
       );
       _logSosTrace(
         'backend_result originatorNodeId=${snapshot.originatorNodeId} '
@@ -9738,11 +10747,53 @@ class EixamConnectSdkImpl
         snapshot.kind == RemoteRelaySosKind.clear;
   }
 
-  Future<void> _handleRemoteRelaySosCancelBackendHandoff(
+  RemoteRelaySosSnapshot _normalizeRemoteRelaySosSnapshot(
     RemoteRelaySosSnapshot snapshot,
-  ) async {
-    final deviceId = snapshot.originatorNodeId.toString();
-    final relayHardwareId = _lastDeviceStatus?.canonicalHardwareId;
+  ) {
+    final originatorNodeId = _normalizeNodeId(snapshot.originatorNodeId);
+    final relayNodeId = _normalizeNodeIdOrNull(snapshot.relayNodeId);
+    if (originatorNodeId == snapshot.originatorNodeId &&
+        relayNodeId == snapshot.relayNodeId) {
+      return snapshot;
+    }
+    return RemoteRelaySosSnapshot(
+      kind: snapshot.kind,
+      originatorNodeId: originatorNodeId,
+      relayNodeId: relayNodeId,
+      source: snapshot.source,
+      sosType: snapshot.sosType,
+      location: snapshot.location,
+      receivedAt: snapshot.receivedAt,
+      rawPayload: snapshot.rawPayload,
+      payloadHex: snapshot.payloadHex,
+      relayCount: snapshot.relayCount,
+      eventOpcode: snapshot.eventOpcode,
+      eventSubcode: snapshot.eventSubcode,
+    );
+  }
+
+  void _logRemoteRelayTelClearDetected(RemoteRelaySosSnapshot snapshot) {
+    if (snapshot.kind != RemoteRelaySosKind.clear && snapshot.sosType != 0) {
+      return;
+    }
+    if (snapshot.source != RemoteRelaySosSource.telRelay) {
+      return;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'EXTERNAL_SOS tel_clear_detected '
+      'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"} '
+      'sosType=${snapshot.sosType}',
+    );
+  }
+
+  Future<void> _handleRemoteRelaySosCancelBackendHandoff(
+    RemoteRelaySosSnapshot snapshot, {
+    String? nativePendingSignature,
+    String? relayHardwareIdOverride,
+  }) async {
+    snapshot = _normalizeRemoteRelaySosSnapshot(snapshot);
+    final relayHardwareId =
+        relayHardwareIdOverride ?? _lastDeviceStatus?.canonicalHardwareId;
     _rememberRecentExternalRelaySosContext(
       snapshot: snapshot,
       relayHardwareId: relayHardwareId,
@@ -9755,22 +10806,19 @@ class EixamConnectSdkImpl
       'originatorNodeId=${snapshot.originatorNodeId} '
       'backendIncidentId=${backendIncidentId ?? "none"}',
     );
-    if (backendIncidentId == null) {
-      _storePendingExternalRelayCancel(
-        snapshot: snapshot,
-        relayHardwareId: relayHardwareId,
-      );
-    }
     final signature = _remoteRelaySosCancelHandoffSignature(
       snapshot: snapshot,
       backendIncidentId: backendIncidentId,
       relayHardwareId: relayHardwareId,
     );
     final now = DateTime.now().toUtc();
-    _remoteRelaySosCancelHandoffBySignature.removeWhere(
+    _remoteRelaySosCancelSucceededBySignature.removeWhere(
       (_, seenAt) => now.difference(seenAt) > const Duration(seconds: 30),
     );
-    if (_remoteRelaySosCancelHandoffBySignature.containsKey(signature)) {
+    _remoteRelaySosCancelInFlightBySignature.removeWhere(
+      (_, seenAt) => now.difference(seenAt) > const Duration(seconds: 30),
+    );
+    if (_remoteRelaySosCancelSucceededBySignature.containsKey(signature)) {
       BleDebugRegistry.instance.recordEvent(
         'EXTERNAL_SOS cancel_dedupe_skip '
         'originatorNodeId=${snapshot.originatorNodeId} '
@@ -9778,23 +10826,67 @@ class EixamConnectSdkImpl
         'relayHardwareId=${relayHardwareId ?? "none"} '
         'backendIncidentId=${backendIncidentId ?? "none"}',
       );
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS pending_cancel_dedupe_skip '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"} '
+        'signature=$signature',
+      );
+      await _ackPendingExternalRelayCancelFromProtectionPlatform(
+        nativePendingSignature,
+      );
       return;
     }
-    _remoteRelaySosCancelHandoffBySignature[signature] = now;
-    if (deviceId.trim().isEmpty) {
+    if (_remoteRelaySosCancelInFlightBySignature.containsKey(signature)) {
       BleDebugRegistry.instance.recordEvent(
-        '[REMOTE_RELAY_SOS] remote_cancel_handoff_skipped '
-        'reason=missing_device_id '
+        'EXTERNAL_SOS cancel_in_flight_skip '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"} '
+        'relayHardwareId=${relayHardwareId ?? "none"} '
+        'backendIncidentId=${backendIncidentId ?? "none"}',
+      );
+      return;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_ORIGIN_DECISION source=remote_lora_cancel '
+      'actionability=externalOnly localStateMutation=false '
+      'publicIncident=false backendCancel=true '
+      'originatorNodeId=${snapshot.originatorNodeId}',
+    );
+    final resolvedIdentity = await _resolveRemoteRelayCancelDeviceId(
+      snapshot: snapshot,
+      context: context,
+    );
+    final deviceId = resolvedIdentity?.deviceId?.trim();
+    if (resolvedIdentity == null || deviceId?.isEmpty == true) {
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS cancel_identity_missing '
+        'originatorNodeId=${snapshot.originatorNodeId}',
+      );
+      _storePendingExternalRelayCancel(
+        snapshot: snapshot,
+        relayHardwareId: relayHardwareId,
+        nativePendingSignature: nativePendingSignature,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS pending_cancel_kept reason=identity_missing '
         'originatorNodeId=${snapshot.originatorNodeId}',
       );
       _publishRemoteRelaySosCancelHandoffResult(
         snapshot: snapshot,
-        deviceId: deviceId,
+        deviceId: null,
         status: RemoteRelaySosBackendHandoffStatus.skipped,
         reason: 'missing_device_id',
       );
       return;
     }
+    BleDebugRegistry.instance.recordEvent(
+      'EXTERNAL_SOS cancel_identity_resolved '
+      'originatorNodeId=${snapshot.originatorNodeId} '
+      'hardwareId=${resolvedIdentity.source == "originator_hardware_id" ? deviceId : "none"} '
+      'deviceId=${deviceId ?? "none"} identitySource=${resolvedIdentity.source} '
+      'backendIncidentId=${backendIncidentId ?? "none"}',
+    );
 
     final dataSource = _remoteRelaySosCancelRemoteDataSource();
     if (dataSource == null) {
@@ -9809,6 +10901,21 @@ class EixamConnectSdkImpl
         status: RemoteRelaySosBackendHandoffStatus.skipped,
         reason: 'backend_transport_unavailable',
       );
+      _storePendingExternalRelayCancel(
+        snapshot: snapshot,
+        relayHardwareId: relayHardwareId,
+        nativePendingSignature: nativePendingSignature,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS pending_cancel_kept reason=backend_failure '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'detail=backend_transport_unavailable',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS cancel_backend_failed_retry_kept '
+        'httpStatus=none originatorNodeId=${snapshot.originatorNodeId} '
+        'detail=backend_transport_unavailable',
+      );
       return;
     }
 
@@ -9821,7 +10928,7 @@ class EixamConnectSdkImpl
     );
     BleDebugRegistry.instance.recordEvent(
       'EXTERNAL_SOS cancel_payload '
-      'deviceId=$deviceId nodeId=${snapshot.originatorNodeId} '
+      'deviceId=${deviceId ?? "none"} nodeId=${snapshot.originatorNodeId} '
       'originatorNodeId=${snapshot.originatorNodeId} '
       'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"} '
       'relayHardwareId=${relayHardwareId ?? "none"} '
@@ -9829,7 +10936,14 @@ class EixamConnectSdkImpl
       'source=remote_lora_relay triggerSource=remote_lora_relay '
       'relaySource=remote_lora_relay owner=device reason=remote_lora_cancel',
     );
+    BleDebugRegistry.instance.recordEvent(
+      '[REMOTE_RELAY_SOS] cancel_backend_payload '
+      'deviceId=${deviceId ?? "none"} originatorNodeId=${snapshot.originatorNodeId} '
+      'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"} '
+      'backendIncidentId=${backendIncidentId ?? "none"}',
+    );
 
+    _remoteRelaySosCancelInFlightBySignature[signature] = now;
     try {
       final cancelledIncident = await dataSource.cancelSos(
         deviceId: deviceId,
@@ -9844,14 +10958,35 @@ class EixamConnectSdkImpl
       BleDebugRegistry.instance.recordEvent(
         '[REMOTE_RELAY_SOS] remote_cancel_handoff_success '
         'originatorNodeId=${snapshot.originatorNodeId} '
-        'deviceId=$deviceId',
+        'deviceId=${deviceId ?? "none"}',
       );
       BleDebugRegistry.instance.recordEvent(
         'EXTERNAL_SOS cancel_result httpStatus=none success=true '
         'responseIncidentId=${cancelledIncident?.id ?? "none"}',
       );
-      _pendingExternalRelayCancels.remove(
-        _externalRelayCancelContextKey(snapshot),
+      _remoteRelaySosCancelInFlightBySignature.remove(signature);
+      _remoteRelaySosCancelSucceededBySignature[signature] =
+          DateTime.now().toUtc();
+      final completedOriginatorNodeId =
+          _normalizeNodeId(snapshot.originatorNodeId);
+      final completedRelayNodeId =
+          _normalizeNodeIdOrNull(snapshot.relayNodeId);
+      _pendingExternalRelayCancels.removeWhere((_, pending) {
+        if (_normalizeNodeId(pending.snapshot.originatorNodeId) !=
+            completedOriginatorNodeId) {
+          return false;
+        }
+        final pendingRelayNodeId =
+            _normalizeNodeIdOrNull(pending.snapshot.relayNodeId);
+        if (completedRelayNodeId != null &&
+            pendingRelayNodeId != null &&
+            pendingRelayNodeId != completedRelayNodeId) {
+          return false;
+        }
+        return true;
+      });
+      await _ackPendingExternalRelayCancelFromProtectionPlatform(
+        nativePendingSignature,
       );
       _publishRemoteRelaySosCancelHandoffResult(
         snapshot: snapshot,
@@ -9859,66 +10994,28 @@ class EixamConnectSdkImpl
         status: RemoteRelaySosBackendHandoffStatus.submitted,
       );
     } catch (error) {
+      _remoteRelaySosCancelInFlightBySignature.remove(signature);
       final statusCode = error is SosHttpException ? error.statusCode : null;
-      if (statusCode == 422 && backendIncidentId != null) {
-        BleDebugRegistry.instance.recordEvent(
-          'REMOTE_RELAY_CANCEL_DETECT source=remote_relay_cancel_handoff '
-          'status=external_context_allows_unknown_device '
-          'originatorNodeId=${snapshot.originatorNodeId} '
-          'backendIncidentId=$backendIncidentId',
-        );
-        BleDebugRegistry.instance.recordEvent(
-          'EXTERNAL_SOS cancel_retry_incident_only '
-          'originatorNodeId=${snapshot.originatorNodeId} '
-          'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"} '
-          'backendIncidentId=$backendIncidentId',
-        );
-        try {
-          final cancelledIncident = await dataSource.cancelSos(
-            source: 'remote_lora_relay',
-            triggerSource: 'remote_lora_relay',
-            relaySource: 'remote_lora_relay',
-            originatorNodeId: snapshot.originatorNodeId,
-            relayNodeId: snapshot.relayNodeId,
-            relayHardwareId: relayHardwareId,
-            incidentId: backendIncidentId,
-          );
-          BleDebugRegistry.instance.recordEvent(
-            '[REMOTE_RELAY_SOS] remote_cancel_handoff_success '
-            'originatorNodeId=${snapshot.originatorNodeId} '
-            'deviceId=$deviceId retry=incident_only',
-          );
-          BleDebugRegistry.instance.recordEvent(
-            'EXTERNAL_SOS cancel_result httpStatus=none success=true '
-            'responseIncidentId=${cancelledIncident?.id ?? "none"} '
-            'retry=incident_only',
-          );
-          _pendingExternalRelayCancels.remove(
-            _externalRelayCancelContextKey(snapshot),
-          );
-          _publishRemoteRelaySosCancelHandoffResult(
-            snapshot: snapshot,
-            deviceId: deviceId,
-            status: RemoteRelaySosBackendHandoffStatus.submitted,
-          );
-          return;
-        } catch (retryError) {
-          final retryStatusCode =
-              retryError is SosHttpException ? retryError.statusCode : null;
-          BleDebugRegistry.instance.recordEvent(
-            'EXTERNAL_SOS cancel_retry_failed '
-            'httpStatus=${retryStatusCode?.toString() ?? "none"} '
-            'originatorNodeId=${snapshot.originatorNodeId} '
-            'backendIncidentId=$backendIncidentId error=$retryError',
-          );
-        }
-      }
       if (statusCode == 422 && backendIncidentId == null) {
         BleDebugRegistry.instance.recordEvent(
           'REMOTE_RELAY_CANCEL_DETECT source=remote_relay_cancel_handoff '
           'status=external_context_allows_unknown_device '
           'originatorNodeId=${snapshot.originatorNodeId} '
           'backendIncidentId=none action=pending_correlation',
+        );
+        _storePendingExternalRelayCancel(
+          snapshot: snapshot,
+          relayHardwareId: relayHardwareId,
+          nativePendingSignature: nativePendingSignature,
+        );
+        BleDebugRegistry.instance.recordEvent(
+          'EXTERNAL_SOS pending_cancel_kept reason=backend_failure '
+          'originatorNodeId=${snapshot.originatorNodeId} '
+          'detail=pending_backend_incident_correlation',
+        );
+        BleDebugRegistry.instance.recordEvent(
+          'EXTERNAL_SOS cancel_backend_failed_retry_kept '
+          'httpStatus=422 originatorNodeId=${snapshot.originatorNodeId}',
         );
         _publishRemoteRelaySosCancelHandoffResult(
           snapshot: snapshot,
@@ -9936,10 +11033,34 @@ class EixamConnectSdkImpl
         'statusCode=${statusCode ?? "-"} '
         'error=$error',
       );
+      if (deviceId == null) {
+        BleDebugRegistry.instance.recordEvent(
+          'EXTERNAL_SOS remote_cancel_no_device_id_failed '
+          'httpStatus=${statusCode?.toString() ?? "none"} '
+          'originatorNodeId=${snapshot.originatorNodeId} '
+          'backendIncidentId=${backendIncidentId ?? "none"} '
+          'error=$error',
+        );
+      }
       BleDebugRegistry.instance.recordEvent(
         'EXTERNAL_SOS cancel_result '
         'httpStatus=${statusCode?.toString() ?? "none"} success=false '
         'responseIncidentId=none error=$error',
+      );
+      _storePendingExternalRelayCancel(
+        snapshot: snapshot,
+        relayHardwareId: relayHardwareId,
+        nativePendingSignature: nativePendingSignature,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS pending_cancel_kept reason=backend_failure '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'httpStatus=${statusCode?.toString() ?? "none"}',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS cancel_backend_failed_retry_kept '
+        'httpStatus=${statusCode?.toString() ?? "none"} '
+        'originatorNodeId=${snapshot.originatorNodeId}',
       );
       _publishRemoteRelaySosCancelHandoffResult(
         snapshot: snapshot,
@@ -9983,7 +11104,7 @@ class EixamConnectSdkImpl
 
   void _publishRemoteRelaySosCancelHandoffResult({
     required RemoteRelaySosSnapshot snapshot,
-    required String deviceId,
+    required String? deviceId,
     required RemoteRelaySosBackendHandoffStatus status,
     String? reason,
     String? errorMessage,
@@ -10118,7 +11239,7 @@ class EixamConnectSdkImpl
   }
 
   String _remoteRelayCorrelationId(RemoteRelaySosSnapshot snapshot) {
-    return 'remote-relay-${snapshot.originatorNodeId}-'
+    return 'remote-relay-${_normalizeNodeId(snapshot.originatorNodeId)}-'
         '${snapshot.receivedAt.toUtc().microsecondsSinceEpoch}';
   }
 
@@ -10303,7 +11424,7 @@ class EixamConnectSdkImpl
   String _remoteRelayOriginatorDeviceId(RemoteRelaySosSnapshot snapshot) {
     // LoRa relay SOS is owned by the originator node; the connected relay is
     // metadata only.
-    return snapshot.originatorNodeId.toString();
+    return _normalizeNodeId(snapshot.originatorNodeId).toString();
   }
 
   bool _hasValidRemoteRelayLocation(TrackingPosition? location) {
@@ -10338,9 +11459,9 @@ class EixamConnectSdkImpl
   String _remoteRelaySosBackendHandoffSignature(
     RemoteRelaySosSnapshot snapshot,
   ) {
-    return '${snapshot.originatorNodeId}:'
+    return '${_normalizeNodeId(snapshot.originatorNodeId)}:'
         '${snapshot.sosType}:'
-        '${snapshot.relayNodeId?.toString() ?? "none"}:'
+        '${_normalizeNodeIdOrNull(snapshot.relayNodeId)?.toString() ?? "none"}:'
         '${_lastDeviceStatus?.canonicalHardwareId ?? "none"}';
   }
 
@@ -10689,6 +11810,8 @@ class EixamConnectSdkImpl
     final channel = source == RemoteRelaySosSource.telRelay
         ? EixamBleChannel.tel
         : EixamBleChannel.sos;
+    final eventPacket = EixamSosEventPacket.tryParse(bytes);
+    final sosPacket = EixamSosPacket.tryParse(bytes);
     return _protectionSosPayloadClassifier.classifySosPayload(
       payload: bytes,
       payloadHex: rawHex,
@@ -10697,6 +11820,15 @@ class EixamConnectSdkImpl
       channel: channel,
       connectedBleTagNodeId:
           forceUnknownIdentity ? null : relayNodeId ?? _knownLocalDeviceNodeId,
+      hasRecentExternalRelayContext: eventPacket != null
+          ? _recentExternalRelayContextForOriginatorNode(eventPacket.nodeId) !=
+              null
+          : sosPacket != null
+              ? _recentExternalRelayContextForOriginatorNode(
+                    sosPacket.nodeId,
+                  ) !=
+                  null
+              : false,
       fallbackOnUnknownConnectedNode: const BleIncomingPayloadClassification(
         kind: BleIncomingPayloadKind.unknownOriginSos,
       ),
@@ -10709,8 +11841,26 @@ class EixamConnectSdkImpl
     required RemoteRelaySosSource? source,
   }) {
     final sosPacket = EixamSosPacket.tryParse(bytes);
-    if (sosPacket == null || sosPacket.sosType == 0) {
+    if (sosPacket == null) {
       return null;
+    }
+    if (sosPacket.sosType == 0) {
+      final context =
+          _recentExternalRelayContextForOriginatorNode(sosPacket.nodeId);
+      if (context == null) {
+        return null;
+      }
+      return RemoteRelaySosSnapshot(
+        kind: RemoteRelaySosKind.clear,
+        originatorNodeId: context.originatorNodeId,
+        relayNodeId: context.relayNodeId,
+        source: source ?? RemoteRelaySosSource.telRelay,
+        sosType: 0,
+        receivedAt: DateTime.now().toUtc(),
+        rawPayload: List<int>.unmodifiable(bytes),
+        payloadHex: rawHex,
+        relayCount: sosPacket.relayCount,
+      );
     }
     final receivedAt = DateTime.now().toUtc();
     return RemoteRelaySosSnapshot(
@@ -11072,6 +12222,12 @@ class _RecentExternalRelaySosContext {
     required this.relayNodeId,
     required this.relayHardwareId,
     required this.backendIncidentId,
+    required this.triggerDeviceId,
+    required this.triggerObservedAt,
+    required this.baselineTerminal,
+    required this.baselineTerminalSignature,
+    required this.baselineTerminalObservedAt,
+    required this.baselineEventSequence,
     required this.expiresAt,
   });
 
@@ -11079,7 +12235,37 @@ class _RecentExternalRelaySosContext {
   final int? relayNodeId;
   final String? relayHardwareId;
   final String? backendIncidentId;
+  final String? triggerDeviceId;
+  final DateTime triggerObservedAt;
+  final String? baselineTerminal;
+  final String? baselineTerminalSignature;
+  final DateTime? baselineTerminalObservedAt;
+  final int baselineEventSequence;
   final DateTime expiresAt;
+}
+
+class _RemoteRelayTerminalBaseline {
+  const _RemoteRelayTerminalBaseline({
+    required this.terminal,
+    required this.signature,
+    required this.observedAt,
+    required this.eventSequence,
+  });
+
+  final String? terminal;
+  final String? signature;
+  final DateTime? observedAt;
+  final int eventSequence;
+}
+
+class _RemoteRelayCancelDeviceIdentity {
+  const _RemoteRelayCancelDeviceIdentity({
+    required this.deviceId,
+    required this.source,
+  });
+
+  final String? deviceId;
+  final String source;
 }
 
 class _PendingExternalRelayCancel {
@@ -11087,10 +12273,12 @@ class _PendingExternalRelayCancel {
     required this.snapshot,
     required this.relayHardwareId,
     required this.expiresAt,
+    this.nativePendingSignature,
   });
 
   final RemoteRelaySosSnapshot snapshot;
   final String? relayHardwareId;
+  final String? nativePendingSignature;
   final DateTime expiresAt;
 }
 

@@ -75,7 +75,7 @@ class RemoteRelaySosBackendHandoffResultEvent extends EixamSdkEvent {
 class RemoteRelaySosCancelHandoffResultEvent extends EixamSdkEvent {
   final int originatorNodeId;
   final int? relayNodeId;
-  final String deviceId;
+  final String? deviceId;
   final RemoteRelaySosBackendHandoffStatus status;
   final String? reason;
   final String? errorMessage;

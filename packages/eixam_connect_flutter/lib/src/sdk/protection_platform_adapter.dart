@@ -262,6 +262,26 @@ class ProtectionPlatformEvent {
   final String? classification;
 }
 
+class ProtectionPendingExternalRelayCancelEvent {
+  const ProtectionPendingExternalRelayCancelEvent({
+    required this.signature,
+    required this.originatorNodeId,
+    required this.timestamp,
+    this.relayNodeId,
+    this.relayHardwareId,
+    this.payloadHex,
+    this.source = 'remote_lora_relay',
+  });
+
+  final String signature;
+  final int originatorNodeId;
+  final int? relayNodeId;
+  final String? relayHardwareId;
+  final String? payloadHex;
+  final String source;
+  final DateTime timestamp;
+}
+
 abstract class ProtectionPlatformAdapter {
   ProtectionPlatform get platform;
   Future<ProtectionPlatformSnapshot> getPlatformSnapshot();
@@ -273,6 +293,9 @@ abstract class ProtectionPlatformAdapter {
     String reason = 'app_foreground_resume',
   });
   Future<ProtectionPlatformFlushResult> flushProtectionQueues();
+  Future<List<ProtectionPendingExternalRelayCancelEvent>>
+      peekPendingExternalRelayCancels();
+  Future<bool> ackPendingExternalRelayCancel(String signature);
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({
     required ProtectionPlatformCommandRequest request,
   });
@@ -319,6 +342,15 @@ class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   Future<ProtectionPlatformFlushResult> flushProtectionQueues() async {
     return const ProtectionPlatformFlushResult();
   }
+
+  @override
+  Future<List<ProtectionPendingExternalRelayCancelEvent>>
+      peekPendingExternalRelayCancels() async {
+    return const <ProtectionPendingExternalRelayCancelEvent>[];
+  }
+
+  @override
+  Future<bool> ackPendingExternalRelayCancel(String signature) async => true;
 
   @override
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({

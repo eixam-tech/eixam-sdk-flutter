@@ -170,6 +170,17 @@ internal object ProtectionRuntimeBridge {
                 val flushed = ensureRuntimeOwner(context).flushPendingBackendActions("manual_flush")
                 result.success(flushed)
             }
+            "peekPendingExternalRelayCancels" -> {
+                result.success(store.peekPendingExternalRelayCancels())
+            }
+            "ackPendingExternalRelayCancel" -> {
+                val signature =
+                    (call.arguments as? Map<*, *>)?.get("signature") as? String
+                result.success(
+                    if (signature == null) false
+                    else store.ackPendingExternalRelayCancel(signature),
+                )
+            }
             "resumeProtectionRuntime" -> {
                 val reason =
                     (call.arguments as? Map<*, *>)?.get("reason") as? String

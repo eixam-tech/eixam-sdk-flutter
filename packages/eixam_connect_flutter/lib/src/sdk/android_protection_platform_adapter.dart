@@ -118,6 +118,74 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }
 
   @override
+  Future<List<ProtectionPendingExternalRelayCancelEvent>>
+      peekPendingExternalRelayCancels() async {
+    final raw = await _methodChannel.invokeListMethod<dynamic>(
+      'peekPendingExternalRelayCancels',
+    );
+    return (raw ?? const <dynamic>[])
+        .map(_mapPendingExternalRelayCancel)
+        .whereType<ProtectionPendingExternalRelayCancelEvent>()
+        .toList(growable: false);
+  }
+
+  @override
+  Future<bool> ackPendingExternalRelayCancel(String signature) async {
+    final acknowledged = await _methodChannel.invokeMethod<bool>(
+      'ackPendingExternalRelayCancel',
+      <String, dynamic>{'signature': signature},
+    );
+    return acknowledged == true;
+  }
+
+  ProtectionPendingExternalRelayCancelEvent? _mapPendingExternalRelayCancel(
+    dynamic value,
+  ) {
+    if (value is! Map) {
+      return null;
+    }
+    final rawOriginatorNodeId = (value['originatorNodeId'] as num?)?.toInt();
+    if (rawOriginatorNodeId == null) {
+      return null;
+    }
+    final originatorNodeId = _normalizeNodeId(rawOriginatorNodeId);
+    final payloadHex = (value['payloadHex'] as String?)?.trim();
+    final rawRelayNodeId = (value['relayNodeId'] as num?)?.toInt();
+    final relayNodeId =
+        rawRelayNodeId == null ? null : _normalizeNodeId(rawRelayNodeId);
+    final rawSignature = (value['signature'] as String?)?.trim();
+    final rawDedupeKey = (value['dedupeKey'] as String?)?.trim();
+    final fallbackSignature = <String>[
+      originatorNodeId.toString(),
+      relayNodeId?.toString() ?? 'none',
+      payloadHex?.isNotEmpty == true ? payloadHex! : 'none',
+    ].join(':');
+    final signature = rawSignature?.isNotEmpty == true
+        ? rawSignature!
+        : rawDedupeKey?.isNotEmpty == true
+            ? rawDedupeKey!
+            : fallbackSignature;
+    final timestampMs = (value['timestamp'] as num?)?.toInt();
+    return ProtectionPendingExternalRelayCancelEvent(
+      signature: signature,
+      originatorNodeId: originatorNodeId,
+      relayNodeId: relayNodeId,
+      relayHardwareId: (value['relayHardwareId'] as String?)?.trim(),
+      payloadHex: payloadHex,
+      source:
+          (value['source'] as String?)?.trim().isNotEmpty == true
+              ? (value['source'] as String).trim()
+              : 'remote_lora_relay',
+      timestamp: DateTime.fromMillisecondsSinceEpoch(
+        timestampMs ?? DateTime.now().millisecondsSinceEpoch,
+        isUtc: true,
+      ),
+    );
+  }
+
+  int _normalizeNodeId(int nodeId) => nodeId & 0xFFFFFFFF;
+
+  @override
   Future<ProtectionPermissionResult> requestProtectionPermissions() async {
     final statuses = await <permission_handler.Permission>[
       permission_handler.Permission.location,

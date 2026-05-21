@@ -97,6 +97,15 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }
 
   @override
+  Future<List<ProtectionPendingExternalRelayCancelEvent>>
+      peekPendingExternalRelayCancels() async {
+    return const <ProtectionPendingExternalRelayCancelEvent>[];
+  }
+
+  @override
+  Future<bool> ackPendingExternalRelayCancel(String signature) async => true;
+
+  @override
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({
     required ProtectionPlatformCommandRequest request,
   }) async {

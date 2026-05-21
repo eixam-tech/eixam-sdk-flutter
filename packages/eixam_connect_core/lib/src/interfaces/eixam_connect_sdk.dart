@@ -131,6 +131,11 @@ abstract class EixamConnectSdk {
     required String hardwareModel,
     required DateTime pairedAt,
   });
+  Future<void> registerDeviceIdentityMapping({
+    required String hardwareId,
+    required int nodeId,
+    String? source,
+  });
   Future<void> deleteRegisteredDevice(String deviceId);
 
   Future<void> startPreSos({
