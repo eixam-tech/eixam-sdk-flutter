@@ -46,6 +46,24 @@ class RemoteRelaySosObservedEvent extends EixamSdkEvent {
   RemoteRelaySosObservedEvent(this.snapshot);
 }
 
+class RemoteRelaySosCancelledEvent extends EixamSdkEvent {
+  final int originatorNodeId;
+  final int? relayNodeId;
+  final String? backendIncidentId;
+  final String source;
+  final String terminal;
+  final bool externalOnly;
+
+  RemoteRelaySosCancelledEvent({
+    required this.originatorNodeId,
+    required this.relayNodeId,
+    required this.backendIncidentId,
+    this.source = 'remote_lora_relay',
+    this.terminal = 'cancelled',
+    this.externalOnly = true,
+  });
+}
+
 enum RemoteRelaySosBackendHandoffStatus { submitted, skipped, failed }
 
 class RemoteRelaySosBackendHandoffResultEvent extends EixamSdkEvent {
