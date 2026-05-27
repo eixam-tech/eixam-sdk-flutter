@@ -34,6 +34,7 @@ import 'background_telemetry_platform_adapter_factory.dart';
 import 'ble_operational_runtime_bridge.dart';
 import 'ble_auto_reconnect_coordinator.dart';
 import 'ble_sos_notification_payload.dart';
+import 'firmware_update_coordinator.dart';
 import 'operational_telemetry_coordinator.dart';
 import 'operational_realtime_client.dart';
 import 'protection_mode_controller.dart';
@@ -78,6 +79,7 @@ class EixamConnectSdkImpl
   final EixamNotificationTexts notificationTexts;
   final ProtectionPlatformAdapter protectionPlatformAdapter;
   final BackgroundTelemetryPlatformAdapter backgroundTelemetryPlatformAdapter;
+  final FirmwareUpdateCoordinator? firmwareUpdateCoordinator;
   final SharedPrefsSdkStore _localStore;
   final Future<void> Function()? disposeCallback;
 
@@ -122,6 +124,7 @@ class EixamConnectSdkImpl
   StreamSubscription<ProtectionPlatformEvent>? _protectionRawSosEventsSub;
   Timer? _protectionDisconnectGraceTimer;
   bool _lastProtectionDeviceConnected = false;
+  bool _firmwareOtaInProgress = false;
 
   Timer? _deathManTimer;
   bool _deathManCheckInNotified = false;
@@ -279,6 +282,7 @@ class EixamConnectSdkImpl
     this.identityRemoteDataSource,
     this.profileRemoteDataSource,
     this.feedbackRemoteDataSource,
+    this.firmwareUpdateCoordinator,
     this.notificationPolicy = EixamNotificationPolicy.sdkManaged,
     this.notificationTexts = _fallbackNotificationTexts,
     ProtectionPlatformAdapter? protectionPlatformAdapter,
@@ -1348,6 +1352,230 @@ class EixamConnectSdkImpl
   }
 
   @override
+  Future<DeviceFirmwareInfo> getFirmwareInfo({String? deviceId}) {
+    return _firmwareUpdates().getFirmwareInfo(deviceId: deviceId);
+  }
+
+  @override
+  Future<FirmwareUpdateCheck> checkFirmwareUpdate({
+    String? deviceId,
+    FirmwareUpdatePolicy policy = const FirmwareUpdatePolicy(),
+  }) {
+    return _firmwareUpdates().checkFirmwareUpdate(
+      deviceId: deviceId,
+      policy: policy,
+    );
+  }
+
+  @override
+  Future<FirmwareUpdateSession> startFirmwareUpdate({
+    required String deviceId,
+    required String releaseId,
+    FirmwareUpdatePolicy policy = const FirmwareUpdatePolicy(),
+  }) {
+    _firmwareOtaInProgress = true;
+    return _firmwareUpdates()
+        .startFirmwareUpdate(
+          deviceId: deviceId,
+          releaseId: releaseId,
+          policy: policy,
+        )
+        .whenComplete(() {
+      _firmwareOtaInProgress = false;
+    });
+  }
+
+  @override
+  Stream<FirmwareUpdateProgress> watchFirmwareUpdateProgress({
+    String? deviceId,
+  }) {
+    return _firmwareUpdates().watchProgress(deviceId: deviceId);
+  }
+
+  @override
+  Future<void> cancelFirmwareUpdate(String sessionId) {
+    return _firmwareUpdates().cancelFirmwareUpdate(sessionId);
+  }
+
+  FirmwareUpdateCoordinator _firmwareUpdates() {
+    final coordinator = firmwareUpdateCoordinator;
+    if (coordinator == null) {
+      throw const FirmwareUpdateException(
+        'E_FIRMWARE_OTA_UNAVAILABLE',
+        'Firmware OTA is not configured for this SDK instance.',
+      );
+    }
+    return coordinator;
+  }
+
+  Future<DeviceStatus> prepareForFirmwareDfuTransfer({
+    required String deviceId,
+  }) async {
+    final protection = await _protectionModeController.getStatus();
+    BleDebugRegistry.instance.recordEvent(
+      'OTA_COORDINATOR pre_transfer_prepare_requested '
+      'deviceId=$deviceId protection=${protection.modeState.name}/${protection.runtimeState.name}/${protection.bleOwner.name} '
+      'pendingSos=${protection.pendingSosCount} pendingTelemetry=${protection.pendingTelemetryCount}',
+    );
+    if (_isFirmwareOtaProtectionOwnershipBlock(protection)) {
+      BleDebugRegistry.instance.recordEvent(
+        'OTA_COORDINATOR protection_exit_requested deviceId=$deviceId',
+      );
+      await _protectionModeController.exit();
+      BleDebugRegistry.instance.recordEvent(
+        'OTA_COORDINATOR protection_exit_result deviceId=$deviceId',
+      );
+    }
+    _bleAutoReconnectCoordinator.setAppForeground(true);
+    var status = await _refreshFirmwareDfuPreparationStatus(
+      deviceId: deviceId,
+      attempt: 0,
+    );
+    const maxAttempts = 5;
+    const retryDelay = Duration(seconds: 2);
+    for (var attempt = 1;
+        !_isFirmwareDfuPreTransferStatusReady(status) &&
+            attempt <= maxAttempts;
+        attempt++) {
+      BleDebugRegistry.instance.recordEvent(
+        'OTA_COORDINATOR status_refresh_wait '
+        'deviceId=$deviceId attempt=$attempt '
+        'connected=${status.connected} '
+        'battery=${status.approximateBatteryPercentage?.toString() ?? "unknown"} '
+        'firmware=${status.firmwareVersion ?? "unknown"} '
+        'model=${status.model ?? "unknown"}',
+      );
+      await Future<void>.delayed(retryDelay);
+      status = await _refreshFirmwareDfuPreparationStatus(
+        deviceId: deviceId,
+        attempt: attempt,
+      );
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'OTA_COORDINATOR status_refresh_result '
+      'deviceId=${status.deviceId} connected=${status.connected} '
+      'battery=${status.approximateBatteryPercentage?.toString() ?? "unknown"} '
+      'firmware=${status.firmwareVersion ?? "unknown"} '
+      'model=${status.model ?? "unknown"} '
+      'ready=${_isFirmwareDfuPreTransferStatusReady(status)}',
+    );
+    return status;
+  }
+
+  Future<void> releaseBleForFirmwareDfuTransfer({
+    required String deviceId,
+  }) async {
+    BleDebugRegistry.instance.recordEvent(
+      'OTA_COORDINATOR dfu_ble_release_requested deviceId=$deviceId',
+    );
+    _bleAutoReconnectCoordinator.setAppForeground(false);
+    final repository = deviceRepository;
+    if (repository is InMemoryDeviceRepository) {
+      _lastDeviceStatus = await repository.releaseBleOwnershipToProtectionMode(
+        reason: 'firmware_ota_dfu_transfer',
+      );
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'OTA_COORDINATOR dfu_ble_release_result '
+      'deviceId=${_lastDeviceStatus?.deviceId ?? deviceId} '
+      'connected=${_lastDeviceStatus?.connected.toString() ?? "unknown"}',
+    );
+  }
+
+  Future<void> restoreBleAfterFirmwareDfuTransfer({
+    required String deviceId,
+  }) async {
+    BleDebugRegistry.instance.recordEvent(
+      'OTA_COORDINATOR restore_ble_after_dfu_start deviceId=$deviceId',
+    );
+    final repository = deviceRepository;
+    if (repository is InMemoryDeviceRepository) {
+      _lastDeviceStatus = await repository.reclaimBleOwnershipFromProtectionMode(
+        reason: 'firmware_ota_dfu_transfer_complete',
+      );
+    }
+    _bleAutoReconnectCoordinator.setAppForeground(true);
+    await _bleAutoReconnectCoordinator.tryAutoConnectOnResume();
+  }
+
+  Future<DeviceStatus> refreshFirmwareDfuInstalledVersionStatus({
+    required String deviceId,
+    required int attempt,
+    required String targetVersion,
+  }) async {
+    await _bleAutoReconnectCoordinator.tryAutoConnectOnResume();
+    final repository = deviceRepository;
+    final status = repository is InMemoryDeviceRepository
+        ? await repository.refreshDeviceStatusForFirmwareValidation(
+            reason: 'firmware_ota_post_dfu_verify',
+          )
+        : await repository.refreshDeviceStatus();
+    _lastDeviceStatus = status;
+    debugPrint(
+      'OTA_COORDINATOR post_dfu_forced_firmware_read_result '
+      'deviceId=${status.deviceId} requestedDeviceId=$deviceId '
+      'attempt=$attempt connected=${status.connected} '
+      'ready=${status.isReadyForSafety} '
+      'firmware=${status.firmwareVersion ?? "unknown"} '
+      'target=$targetVersion '
+      'eixamService=${BleDebugRegistry.instance.currentState.eixamServiceFound} '
+      'cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound} '
+      'inetAvailable=${BleDebugRegistry.instance.currentState.inetFound}',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'OTA_COORDINATOR post_dfu_forced_firmware_read_result '
+      'deviceId=${status.deviceId} requestedDeviceId=$deviceId '
+      'attempt=$attempt connected=${status.connected} '
+      'ready=${status.isReadyForSafety} '
+      'firmware=${status.firmwareVersion ?? "unknown"} '
+      'target=$targetVersion '
+      'eixamService=${BleDebugRegistry.instance.currentState.eixamServiceFound} '
+      'cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound} '
+      'inetAvailable=${BleDebugRegistry.instance.currentState.inetFound}',
+    );
+    return status;
+  }
+
+  bool _isFirmwareOtaProtectionOwnershipBlock(ProtectionStatus status) {
+    return status.modeState != ProtectionModeState.off ||
+        status.runtimeState == ProtectionRuntimeState.starting ||
+        status.runtimeState == ProtectionRuntimeState.active ||
+        status.runtimeState == ProtectionRuntimeState.recovering ||
+        status.bleOwner != ProtectionBleOwner.flutter;
+  }
+
+  Future<DeviceStatus> _refreshFirmwareDfuPreparationStatus({
+    required String deviceId,
+    required int attempt,
+  }) async {
+    await _bleAutoReconnectCoordinator.tryAutoConnectOnResume();
+    final status = await _cacheDeviceStatus(
+      deviceRepository.refreshDeviceStatus(),
+      reason: 'firmware_ota_prepare_dfu',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'OTA_COORDINATOR status_refresh_result '
+      'deviceId=${status.deviceId} requestedDeviceId=$deviceId '
+      'attempt=$attempt connected=${status.connected} '
+      'battery=${status.approximateBatteryPercentage?.toString() ?? "unknown"} '
+      'firmware=${status.firmwareVersion ?? "unknown"} '
+      'model=${status.model ?? "unknown"}',
+    );
+    return status;
+  }
+
+  bool _isFirmwareDfuPreTransferStatusReady(DeviceStatus status) {
+    final firmware = status.firmwareVersion?.trim();
+    final model = status.model?.trim();
+    return status.connected &&
+        status.approximateBatteryPercentage != null &&
+        firmware != null &&
+        firmware.isNotEmpty &&
+        model != null &&
+        model.isNotEmpty;
+  }
+
+  @override
   Future<void> unpairDevice() async {
     _manualDisconnectRequested = true;
     _clearDeviceRuntimeResidueAfterManualDisconnect();
@@ -1906,7 +2134,24 @@ class EixamConnectSdkImpl
   @override
   Future<EnterProtectionModeResult> enterProtectionMode({
     ProtectionModeOptions options = const ProtectionModeOptions(),
-  }) {
+  }) async {
+    if (_firmwareOtaInProgress) {
+      final status = await _protectionModeController.getStatus();
+      BleDebugRegistry.instance.recordEvent(
+        'OTA_COORDINATOR protection_enter_blocked reason=firmware_ota_in_progress',
+      );
+      return EnterProtectionModeResult(
+        success: false,
+        status: status,
+        blockingIssues: const <ProtectionBlockingIssue>[
+          ProtectionBlockingIssue(
+            type: ProtectionBlockingIssueType.hostRuntimeStartFailed,
+            message: 'Firmware OTA is in progress.',
+            canBeResolvedInline: false,
+          ),
+        ],
+      );
+    }
     return _protectionModeController.enter(options: options);
   }
 
@@ -12200,6 +12445,7 @@ class EixamConnectSdkImpl
     await _protectionRawSosEventsSub?.cancel();
     await _bleOperationalRuntimeBridge.dispose();
     await _protectionModeController.dispose();
+    await firmwareUpdateCoordinator?.dispose();
     await _operationalTelemetryCoordinator.stop();
     await deviceSosController.dispose();
     await realtimeClient.disconnect();

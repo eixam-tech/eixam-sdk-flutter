@@ -12,6 +12,7 @@ export 'src/entities/device_tel_relay_rx.dart';
 export 'src/entities/eixam_notification_intent.dart';
 export 'src/entities/app_feedback.dart';
 export 'src/entities/backend_registered_device.dart';
+export 'src/entities/firmware_update.dart';
 export 'src/entities/preferred_device.dart';
 export 'src/entities/device_sos_status.dart';
 export 'src/entities/remote_relay_sos_snapshot.dart';

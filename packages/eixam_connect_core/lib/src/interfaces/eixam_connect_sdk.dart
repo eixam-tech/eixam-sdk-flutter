@@ -10,6 +10,7 @@ import '../entities/device_runtime_status.dart';
 import '../entities/emergency_contact.dart';
 import '../entities/eixam_notification_intent.dart';
 import '../entities/app_feedback.dart';
+import '../entities/firmware_update.dart';
 import '../entities/permission_state.dart';
 import '../entities/preferred_device.dart';
 import '../entities/protection_mode_models.dart';
@@ -171,6 +172,20 @@ abstract class EixamConnectSdk {
   Future<DeviceStatus> activateDevice({required String activationCode});
   Future<DeviceStatus> getDeviceStatus();
   Future<DeviceStatus> refreshDeviceStatus();
+  Future<DeviceFirmwareInfo> getFirmwareInfo({String? deviceId});
+  Future<FirmwareUpdateCheck> checkFirmwareUpdate({
+    String? deviceId,
+    FirmwareUpdatePolicy policy = const FirmwareUpdatePolicy(),
+  });
+  Future<FirmwareUpdateSession> startFirmwareUpdate({
+    required String deviceId,
+    required String releaseId,
+    FirmwareUpdatePolicy policy = const FirmwareUpdatePolicy(),
+  });
+  Stream<FirmwareUpdateProgress> watchFirmwareUpdateProgress({
+    String? deviceId,
+  });
+  Future<void> cancelFirmwareUpdate(String sessionId);
   @Deprecated('Use disconnectDevice instead.')
   Future<void> unpairDevice();
   @Deprecated('Use deviceStatusStream instead.')

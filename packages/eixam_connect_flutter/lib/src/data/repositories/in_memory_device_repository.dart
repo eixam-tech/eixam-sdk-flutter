@@ -161,6 +161,21 @@ class InMemoryDeviceRepository
     return _status;
   }
 
+  Future<DeviceStatus> refreshDeviceStatusForFirmwareValidation({
+    required String reason,
+  }) async {
+    final previous = _status;
+    _status = await _runtimeProvider.refresh(
+      _status,
+      forceFirmwareRead: true,
+    );
+    await _persistAndEmitIfChanged(
+      previous: previous,
+      source: reason,
+    );
+    return _status;
+  }
+
   Future<DeviceStatus> markDeviceDisconnected({required String reason}) async {
     _stopHeartbeat();
     final previous = _status;

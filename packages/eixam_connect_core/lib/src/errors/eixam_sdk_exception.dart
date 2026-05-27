@@ -53,6 +53,10 @@ class DeviceException extends EixamSdkException {
       : this('E_DEVICE_NOT_ACTIVATED', 'E_DEVICE_NOT_ACTIVATED');
 }
 
+class FirmwareUpdateException extends EixamSdkException {
+  const FirmwareUpdateException(super.code, super.message);
+}
+
 class FeedbackException extends EixamSdkException {
   const FeedbackException(super.code, super.message);
 }

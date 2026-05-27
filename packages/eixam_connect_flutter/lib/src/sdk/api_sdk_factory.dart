@@ -1,4 +1,5 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:flutter/widgets.dart';
 import 'package:http/http.dart' as http;
 
 import '../data/datasources_local/shared_prefs_sdk_store.dart';
@@ -11,6 +12,7 @@ import '../data/datasources_remote/sdk_profile_remote_data_source.dart';
 import '../data/datasources_remote/sdk_session_context.dart';
 import '../data/datasources_remote/sdk_contacts_remote_data_source.dart';
 import '../data/datasources_remote/sdk_devices_remote_data_source.dart';
+import '../data/datasources_remote/sdk_firmware_remote_data_source.dart';
 import '../data/datasources_remote/sdk_http_transport.dart';
 import '../data/repositories/api_contacts_repository.dart';
 import '../data/repositories/api_sdk_device_registry_repository.dart';
@@ -25,6 +27,8 @@ import '../device/ble_device_runtime_provider.dart';
 import '../device/ble_debug_registry.dart';
 import '../device/real_ble_client.dart';
 import 'eixam_connect_sdk_impl.dart';
+import 'firmware_dfu_transport_factory.dart';
+import 'firmware_update_coordinator.dart';
 import 'mqtt5_sdk_transport.dart';
 import 'mqtt_realtime_client.dart';
 import 'eixam_bootstrap_resolver.dart';
@@ -67,6 +71,8 @@ class ApiSdkFactory {
         HttpSdkProfileRemoteDataSource(transport: httpTransport);
     final feedbackRemoteDataSource =
         HttpSdkFeedbackRemoteDataSource(transport: httpTransport);
+    final firmwareRemoteDataSource =
+        HttpSdkFirmwareRemoteDataSource(transport: httpTransport);
     final realtimeClient = MqttRealtimeClient(
       config: config,
       sessionContext: sessionContext,
@@ -118,7 +124,8 @@ class ApiSdkFactory {
       ),
     );
 
-    final sdk = EixamConnectSdkImpl(
+    late final EixamConnectSdkImpl sdk;
+    sdk = EixamConnectSdkImpl(
       sosRepository: sosRepository,
       trackingRepository: trackingRepository,
       telemetryRepository: telemetryRepository,
@@ -143,6 +150,34 @@ class ApiSdkFactory {
       ),
       profileRemoteDataSource: profileRemoteDataSource,
       feedbackRemoteDataSource: feedbackRemoteDataSource,
+      firmwareUpdateCoordinator: FirmwareUpdateCoordinator(
+        deviceRepository: deviceRepository,
+        sosRepository: sosRepository,
+        deathManRepository: deathManRepository,
+        remoteDataSource: firmwareRemoteDataSource,
+        dfuTransport: buildDefaultFirmwareDfuTransport(),
+        protectionStatusProvider: () => sdk.getProtectionStatus(),
+        deviceSosStatusProvider:
+            deviceRuntimeProvider.deviceSosController.getStatus,
+        preSosStatusProvider: () => sdk.getPreSosStatus(),
+        appLifecycleStateProvider: () => WidgetsBinding.instance.lifecycleState,
+        prepareForDfuTransfer: ({required deviceId}) =>
+            sdk.prepareForFirmwareDfuTransfer(deviceId: deviceId),
+        releaseBleForDfuTransfer: ({required deviceId}) =>
+            sdk.releaseBleForFirmwareDfuTransfer(deviceId: deviceId),
+        restoreBleAfterDfuTransfer: ({required deviceId}) =>
+            sdk.restoreBleAfterFirmwareDfuTransfer(deviceId: deviceId),
+        postDfuStatusRefresh: ({
+          required deviceId,
+          required attempt,
+          required targetVersion,
+        }) =>
+            sdk.refreshFirmwareDfuInstalledVersionStatus(
+          deviceId: deviceId,
+          attempt: attempt,
+          targetVersion: targetVersion,
+        ),
+      ),
       notificationPolicy: notificationPolicy,
       notificationTexts: notificationTexts,
       protectionPlatformAdapter:
