@@ -165,6 +165,18 @@ ProtectionPlatformSnapshot mapAndroidProtectionPlatformSnapshot(
     lastCommandRoute: snapshot['lastCommandRoute'] as String?,
     lastCommandResult: snapshot['lastCommandResult'] as String?,
     lastCommandError: snapshot['lastCommandError'] as String?,
+    preSosLifecycleState: snapshot['preSosLifecycleState'] as String?,
+    preSosCycleKey: snapshot['preSosCycleKey'] as String?,
+    preSosOwner: snapshot['preSosOwner'] as String?,
+    preSosStartedAt: readProtectionPlatformDateTime(
+      snapshot['preSosStartedAt'],
+    ),
+    preSosExpectedActivationAt: readProtectionPlatformDateTime(
+      snapshot['preSosExpectedActivationAt'],
+    ),
+    preSosRemainingSeconds: snapshot['preSosRemainingSeconds'] as int?,
+    preSosOriginatorNodeId: snapshot['preSosOriginatorNodeId'] as int?,
+    preSosPacketId: snapshot['preSosPacketId'] as int?,
   );
 }
 

@@ -58,6 +58,31 @@ internal object BackgroundTelemetryBridge {
             "getBackgroundTelemetryDiagnostics" -> {
                 result.success(store.snapshot(context))
             }
+            "peekQueuedBackgroundTelemetry" -> {
+                val limit = ((call.arguments as? Map<*, *>)?.get("limit") as? Number)
+                    ?.toInt()
+                    ?: 25
+                result.success(store.peekQueuedTelemetry(limit))
+            }
+            "ackQueuedBackgroundTelemetry" -> {
+                val signature =
+                    (call.arguments as? Map<*, *>)?.get("signature") as? String
+                result.success(
+                    if (signature == null) false
+                    else store.ackQueuedTelemetry(signature),
+                )
+            }
+            "markQueuedBackgroundTelemetryFlushFailed" -> {
+                val arguments = call.arguments as? Map<*, *>
+                val signature = arguments?.get("signature") as? String
+                val error = arguments?.get("error") as? String ?: "mqtt_flush_failed"
+                if (signature != null) {
+                    store.markQueuedTelemetryFlushFailed(signature, error)
+                } else {
+                    store.markError(error)
+                }
+                result.success(null)
+            }
             else -> result.notImplemented()
         }
     }

@@ -3,6 +3,8 @@ package dev.eixam.connect.flutter.telemetry
 import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
+import org.json.JSONArray
+import org.json.JSONObject
 
 internal class BackgroundTelemetryStore(context: Context) {
     private val preferences =
@@ -88,6 +90,116 @@ internal class BackgroundTelemetryStore(context: Context) {
             .apply()
     }
 
+    fun queueTelemetry(
+        payload: JSONObject,
+        reason: String,
+        locationMode: String?,
+        sosContext: Boolean,
+    ): QueueResult {
+        val now = System.currentTimeMillis()
+        val sample = JSONObject(payload.toString())
+        val signature = telemetrySignature(sample)
+        val fresh = pendingTelemetryQueue(now)
+        if (fresh.any { item -> item.signature == signature }) {
+            preferences.edit()
+                .putString(keyLastError, "TELEMETRY_NATIVE_DUPLICATE_SUPPRESSED")
+                .putString(keyLastPublishReason, reason)
+                .apply()
+            return QueueResult(
+                queued = false,
+                duplicate = true,
+                droppedOldest = false,
+                signature = signature,
+                queueSize = fresh.size,
+            )
+        }
+        val updated = fresh.toMutableList()
+        var droppedOldest = false
+        while (updated.size >= maxQueuedTelemetrySamples) {
+            val dropIndex = updated.indexOfFirst { !it.sosContext }
+                .takeIf { it >= 0 }
+                ?: 0
+            updated.removeAt(dropIndex)
+            droppedOldest = true
+        }
+        updated += QueuedTelemetry(
+            signature = signature,
+            payload = sample,
+            enqueuedAt = now,
+            retryCount = 0,
+            reason = reason,
+            locationMode = locationMode,
+            sosContext = sosContext,
+        )
+        saveTelemetryQueue(updated)
+        preferences.edit()
+            .putString(keyLastError, "TELEMETRY_NATIVE_QUEUED")
+            .putString(keyLastPublishReason, reason)
+            .apply {
+                if (locationMode != null) {
+                    putString(keyLastLocationMode, locationMode)
+                }
+            }
+            .apply()
+        return QueueResult(
+            queued = true,
+            duplicate = false,
+            droppedOldest = droppedOldest,
+            signature = signature,
+            queueSize = updated.size,
+        )
+    }
+
+    fun peekQueuedTelemetry(limit: Int): List<Map<String, Any?>> {
+        val fresh = pendingTelemetryQueue(System.currentTimeMillis())
+        if (fresh.size != rawTelemetryQueueSize()) {
+            saveTelemetryQueue(fresh)
+        }
+        return fresh.take(limit.coerceIn(1, maxQueuedTelemetrySamples)).map { item ->
+            mapOf(
+                "signature" to item.signature,
+                "payload" to jsonObjectToMap(item.payload),
+                "enqueuedAt" to item.enqueuedAt,
+                "retryCount" to item.retryCount,
+                "reason" to item.reason,
+                "locationMode" to item.locationMode,
+                "sosContext" to item.sosContext,
+            )
+        }
+    }
+
+    fun ackQueuedTelemetry(signature: String): Boolean {
+        val normalized = signature.trim()
+        if (normalized.isBlank()) {
+            return false
+        }
+        val pending = pendingTelemetryQueue(System.currentTimeMillis())
+        val remaining = pending.filterNot { it.signature == normalized }
+        if (remaining.size == pending.size) {
+            return false
+        }
+        saveTelemetryQueue(remaining)
+        markPublished()
+        return true
+    }
+
+    fun markQueuedTelemetryFlushFailed(signature: String, error: String) {
+        val normalized = signature.trim()
+        if (normalized.isBlank()) {
+            markError(error)
+            return
+        }
+        val pending = pendingTelemetryQueue(System.currentTimeMillis()).map { item ->
+            if (item.signature == normalized) {
+                item.copy(retryCount = item.retryCount + 1)
+            } else {
+                item
+            }
+        }
+        saveTelemetryQueue(pending)
+        markError(error)
+    }
+
     fun markActiveLocationRequest(value: Boolean) {
         preferences.edit().putBoolean(keyActiveLocationRequest, value).apply()
     }
@@ -106,6 +218,7 @@ internal class BackgroundTelemetryStore(context: Context) {
             "lastBackgroundTelemetryReason" to
                 preferences.getString(keyLastPublishReason, null),
             "activeLocationRequest" to preferences.getBoolean(keyActiveLocationRequest, false),
+            "pendingNativeTelemetryCount" to pendingTelemetryQueue(System.currentTimeMillis()).size,
         )
     }
 
@@ -149,8 +262,126 @@ internal class BackgroundTelemetryStore(context: Context) {
 
     private fun compactJson(value: Any?): String? {
         val map = value as? Map<*, *> ?: return null
-        return org.json.JSONObject(map).toString()
+        return JSONObject(map).toString()
     }
+
+    private fun pendingTelemetryQueue(now: Long): List<QueuedTelemetry> {
+        val raw = preferences.getString(keyPendingTelemetryQueue, null)
+            ?: return emptyList()
+        return try {
+            val array = JSONArray(raw)
+            buildList {
+                for (index in 0 until array.length()) {
+                    val item = array.optJSONObject(index) ?: continue
+                    val payload = item.optJSONObject("payload") ?: continue
+                    val enqueuedAt = item.optLong("enqueuedAt", 0L)
+                    if (enqueuedAt <= 0L || now - enqueuedAt > maxQueuedTelemetryAgeMs) {
+                        continue
+                    }
+                    val signature = item.optString("signature").trim()
+                        .takeIf { it.isNotBlank() }
+                        ?: telemetrySignature(payload)
+                    add(
+                        QueuedTelemetry(
+                            signature = signature,
+                            payload = payload,
+                            enqueuedAt = enqueuedAt,
+                            retryCount = item.optInt("retryCount", 0),
+                            reason = item.optString("reason").takeIf { it.isNotBlank() },
+                            locationMode = item.optString("locationMode").takeIf { it.isNotBlank() },
+                            sosContext = item.optBoolean("sosContext", false),
+                        ),
+                    )
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun saveTelemetryQueue(pending: List<QueuedTelemetry>) {
+        val editor = preferences.edit()
+        if (pending.isEmpty()) {
+            editor.remove(keyPendingTelemetryQueue)
+        } else {
+            val array = JSONArray()
+            pending.forEach { item ->
+                array.put(
+                    JSONObject()
+                        .put("signature", item.signature)
+                        .put("payload", item.payload)
+                        .put("enqueuedAt", item.enqueuedAt)
+                        .put("retryCount", item.retryCount)
+                        .put("reason", item.reason)
+                        .put("locationMode", item.locationMode)
+                        .put("sosContext", item.sosContext),
+                )
+            }
+            editor.putString(keyPendingTelemetryQueue, array.toString())
+        }
+        editor.apply()
+    }
+
+    private fun rawTelemetryQueueSize(): Int {
+        val raw = preferences.getString(keyPendingTelemetryQueue, null)
+            ?: return 0
+        return try {
+            JSONArray(raw).length()
+        } catch (_: Exception) {
+            0
+        }
+    }
+
+    private fun telemetrySignature(payload: JSONObject): String {
+        payload.optString("eventId").trim().takeIf { it.isNotBlank() }?.let {
+            return it
+        }
+        val timestamp = payload.optString("timestamp").trim().ifBlank { "none" }
+        val deviceId = payload.optString("deviceId").trim().ifBlank { "none" }
+        val latitude = payload.optDouble("latitude", Double.NaN)
+        val longitude = payload.optDouble("longitude", Double.NaN)
+        return listOf(timestamp, deviceId, latitude, longitude).joinToString(":")
+    }
+
+    private fun jsonObjectToMap(payload: JSONObject): Map<String, Any?> {
+        val output = mutableMapOf<String, Any?>()
+        val keys = payload.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            output[key] = jsonValueToDartValue(payload.get(key))
+        }
+        return output
+    }
+
+    private fun jsonValueToDartValue(value: Any?): Any? =
+        when (value) {
+            JSONObject.NULL -> null
+            is JSONObject -> jsonObjectToMap(value)
+            is JSONArray -> buildList {
+                for (index in 0 until value.length()) {
+                    add(jsonValueToDartValue(value.get(index)))
+                }
+            }
+            else -> value
+        }
+
+    data class QueueResult(
+        val queued: Boolean,
+        val duplicate: Boolean,
+        val droppedOldest: Boolean,
+        val signature: String,
+        val queueSize: Int,
+    )
+
+    private data class QueuedTelemetry(
+        val signature: String,
+        val payload: JSONObject,
+        val enqueuedAt: Long,
+        val retryCount: Int,
+        val reason: String?,
+        val locationMode: String?,
+        val sosContext: Boolean,
+    )
 
     private fun permissionStatus(context: Context): String {
         val fine = ContextCompat.checkSelfPermission(
@@ -199,5 +430,8 @@ internal class BackgroundTelemetryStore(context: Context) {
         private const val keyLastHttpStatusCode = "last_http_status_code"
         private const val keyLastPublishReason = "last_publish_reason"
         private const val keyActiveLocationRequest = "active_location_request"
+        private const val keyPendingTelemetryQueue = "pending_telemetry_queue"
+        private const val maxQueuedTelemetrySamples = 100
+        private const val maxQueuedTelemetryAgeMs = 24 * 60 * 60 * 1000L
     }
 }

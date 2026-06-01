@@ -429,12 +429,42 @@ internal class ProtectionRuntimeStore(context: Context) {
             .apply()
     }
 
-    fun markPendingSosCreate() {
+    fun markPendingSosCreate(reason: String): Map<String, Any?> {
+        val now = System.currentTimeMillis()
+        val existing = pendingNativeSosCreateJson()
+        val cycleKey = existing?.optNullableString("cycleKey")
+            ?: preferences.getString(keyPreSosCycleKey, null)
+            ?: "native-sos-cycle-$now"
+        val incidentId = existing?.optNullableString("incidentId")
+            ?: "native-sos-${sanitizeStableId(cycleKey)}"
+        val correlationId = existing?.optNullableString("correlationId")
+            ?: "native-sos-$now"
+        val nodeId = currentBoundNodeId()
+        val hardwareId = currentBleHardwareId()
+            ?: currentBackendHardwareId()
+        val payload = JSONObject()
+            .put("incidentId", incidentId)
+            .put("cycleKey", cycleKey)
+            .put("correlationId", correlationId)
+            .put("source", "native_protection_sos")
+            .put("triggerSource", "native_protection_sos")
+            .put("deviceId", nodeId?.toString() ?: currentTargetDeviceId())
+            .put("hardwareId", hardwareId)
+            .put("nodeId", nodeId)
+            .put("createdAt", existing?.optLong("createdAt", now) ?: now)
+            .put("updatedAt", now)
+            .put("state", "pending_mqtt")
+            .put("retryCount", existing?.optInt("retryCount", 0) ?: 0)
+            .put("lastAttemptAt", existing?.optLongOrNull("lastAttemptAt"))
+            .put("reason", reason)
+            .put("dedupeKey", nativeSosDedupeKey(incidentId, cycleKey, correlationId))
         preferences.edit()
             .putInt(keyPendingNativeSosCreateCount, 1)
             .putString(keyPendingSosState, "create_pending")
             .putString(keyPreSosLifecycleState, "createPending")
+            .putString(keyPendingNativeSosCreate, payload.toString())
             .apply()
+        return mapPendingNativeSosCreate(payload)
     }
 
     fun markPendingSosCancel() {
@@ -448,6 +478,7 @@ internal class ProtectionRuntimeStore(context: Context) {
     fun clearPendingSosCreate() {
         preferences.edit()
             .putInt(keyPendingNativeSosCreateCount, 0)
+            .remove(keyPendingNativeSosCreate)
             .apply()
     }
 
@@ -464,6 +495,7 @@ internal class ProtectionRuntimeStore(context: Context) {
             .putInt(keyPendingNativeSosCancelCount, 0)
             .putString(keyPendingSosState, "idle")
             .putString(keyPreSosLifecycleState, "idle")
+            .remove(keyPendingNativeSosCreate)
             .remove(keyPreSosCycleKey)
             .remove(keyPreSosOwner)
             .remove(keyPreSosStartedAt)
@@ -657,6 +689,84 @@ internal class ProtectionRuntimeStore(context: Context) {
     fun hasPendingNativeSosCreate(): Boolean =
         preferences.getInt(keyPendingNativeSosCreateCount, 0) > 0
 
+    fun peekPendingNativeSosCreate(): Map<String, Any?>? =
+        pendingNativeSosCreateJson()?.let(::mapPendingNativeSosCreate)
+
+    fun markPendingNativeSosCreateRestBlocked(): Map<String, Any?>? =
+        updatePendingNativeSosCreate(
+            state = "pending_mqtt",
+            result = "NATIVE_SOS_REST_RETRY_BLOCKED",
+            incrementRetry = true,
+        )
+
+    fun markPendingNativeSosCreateMqttFlushStarted(signature: String): Map<String, Any?>? =
+        updatePendingNativeSosCreate(
+            signature = signature,
+            state = "mqtt_flush_started",
+            result = "NATIVE_SOS_MQTT_FLUSH_START",
+            incrementRetry = true,
+        )
+
+    fun markPendingNativeSosCreateMqttPublished(signature: String): Map<String, Any?>? =
+        updatePendingNativeSosCreate(
+            signature = signature,
+            state = "mqtt_published_pending_backend_confirm",
+            result = "NATIVE_SOS_MQTT_FLUSH_RESULT",
+            published = true,
+        )
+
+    fun retainPendingNativeSosCreate(
+        signature: String,
+        reason: String,
+    ): Map<String, Any?>? =
+        updatePendingNativeSosCreate(
+            signature = signature,
+            result = "NATIVE_SOS_PENDING_RETAINED:$reason",
+        )
+
+    fun ackPendingNativeSosCreate(
+        signature: String,
+        backendIncidentId: String?,
+    ): Boolean {
+        val pending = pendingNativeSosCreateJson() ?: return false
+        if (!matchesNativeSosSignature(pending, signature)) {
+            return false
+        }
+        val editor = preferences.edit()
+            .putInt(keyPendingNativeSosCreateCount, 0)
+            .putString(keyPendingSosState, "idle")
+            .putString(keyLastNativeBackendHandoffResult, "NATIVE_SOS_PENDING_ACKED")
+            .remove(keyPendingNativeSosCreate)
+            .remove(keyLastNativeBackendHandoffError)
+        val incidentId = backendIncidentId?.trim()?.takeIf { it.isNotBlank() }
+            ?: pending.optNullableString("incidentId")
+        if (incidentId != null) {
+            editor
+                .putString(keyActiveBackendIncidentId, incidentId)
+                .putString(keyActiveBackendIncidentState, "sent")
+                .putLong(keyActiveBackendIncidentAt, System.currentTimeMillis())
+        }
+        editor.apply()
+        return true
+    }
+
+    fun dropPendingNativeSosCreate(
+        signature: String,
+        reason: String,
+    ): Boolean {
+        val pending = pendingNativeSosCreateJson() ?: return false
+        if (!matchesNativeSosSignature(pending, signature)) {
+            return false
+        }
+        preferences.edit()
+            .putInt(keyPendingNativeSosCreateCount, 0)
+            .putString(keyPendingSosState, "idle")
+            .putString(keyLastNativeBackendHandoffResult, "NATIVE_SOS_PENDING_DROPPED_CANCELLED:$reason")
+            .remove(keyPendingNativeSosCreate)
+            .apply()
+        return true
+    }
+
     fun hasPendingNativeSosCancel(): Boolean =
         preferences.getInt(keyPendingNativeSosCancelCount, 0) > 0
 
@@ -685,6 +795,8 @@ internal class ProtectionRuntimeStore(context: Context) {
             .remove(keyActiveBackendIncidentId)
             .remove(keyActiveBackendIncidentState)
             .remove(keyActiveBackendIncidentAt)
+            .remove(keyPendingNativeSosCreate)
+            .putInt(keyPendingNativeSosCreateCount, 0)
             .putString(keyLastNativeBackendHandoffResult, result)
             .putString(keyPreSosLifecycleState, "idle")
             .putString(keyPendingSosState, "idle")
@@ -858,12 +970,115 @@ internal class ProtectionRuntimeStore(context: Context) {
         }
     }
 
+    private fun pendingNativeSosCreateJson(): JSONObject? {
+        val raw = preferences.getString(keyPendingNativeSosCreate, null)
+            ?: return null
+        return try {
+            JSONObject(raw)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun updatePendingNativeSosCreate(
+        signature: String? = null,
+        state: String? = null,
+        result: String,
+        incrementRetry: Boolean = false,
+        published: Boolean = false,
+    ): Map<String, Any?>? {
+        val pending = pendingNativeSosCreateJson() ?: return null
+        if (signature != null && !matchesNativeSosSignature(pending, signature)) {
+            return null
+        }
+        val now = System.currentTimeMillis()
+        if (state != null) {
+            pending.put("state", state)
+        }
+        pending.put("updatedAt", now)
+        pending.put("lastResult", result)
+        if (incrementRetry) {
+            pending.put("retryCount", pending.optInt("retryCount", 0) + 1)
+            pending.put("lastAttemptAt", now)
+        }
+        if (published) {
+            pending.put("lastPublishedAt", now)
+        }
+        preferences.edit()
+            .putInt(keyPendingNativeSosCreateCount, 1)
+            .putString(keyPendingNativeSosCreate, pending.toString())
+            .putString(keyLastNativeBackendHandoffResult, result)
+            .remove(keyLastNativeBackendHandoffError)
+            .apply()
+        return mapPendingNativeSosCreate(pending)
+    }
+
+    private fun matchesNativeSosSignature(
+        pending: JSONObject,
+        signature: String,
+    ): Boolean {
+        val normalized = signature.trim()
+        if (normalized.isBlank()) {
+            return false
+        }
+        return pending.optNullableString("dedupeKey") == normalized ||
+            pending.optNullableString("correlationId") == normalized ||
+            nativeSosDedupeKey(
+                pending.optNullableString("incidentId"),
+                pending.optNullableString("cycleKey"),
+                pending.optNullableString("correlationId"),
+            ) == normalized
+    }
+
+    private fun mapPendingNativeSosCreate(
+        pending: JSONObject,
+    ): Map<String, Any?> {
+        val incidentId = pending.optNullableString("incidentId")
+        val cycleKey = pending.optNullableString("cycleKey")
+        val correlationId = pending.optNullableString("correlationId")
+        val dedupeKey = pending.optNullableString("dedupeKey")
+            ?: nativeSosDedupeKey(incidentId, cycleKey, correlationId)
+        return mapOf(
+            "incidentId" to incidentId,
+            "cycleKey" to cycleKey,
+            "correlationId" to correlationId,
+            "signature" to dedupeKey,
+            "dedupeKey" to dedupeKey,
+            "source" to (pending.optNullableString("source") ?: "native_protection_sos"),
+            "triggerSource" to (pending.optNullableString("triggerSource") ?: "native_protection_sos"),
+            "deviceId" to pending.optNullableString("deviceId"),
+            "hardwareId" to pending.optNullableString("hardwareId"),
+            "nodeId" to pending.optIntOrNull("nodeId"),
+            "createdAt" to pending.optLong("createdAt", System.currentTimeMillis()),
+            "updatedAt" to pending.optLong("updatedAt", System.currentTimeMillis()),
+            "lastAttemptAt" to pending.optLongOrNull("lastAttemptAt"),
+            "lastPublishedAt" to pending.optLongOrNull("lastPublishedAt"),
+            "retryCount" to pending.optInt("retryCount", 0),
+            "state" to (pending.optNullableString("state") ?: "pending_mqtt"),
+            "reason" to pending.optNullableString("reason"),
+            "lastResult" to pending.optNullableString("lastResult"),
+        )
+    }
+
+    private fun nativeSosDedupeKey(
+        incidentId: String?,
+        cycleKey: String?,
+        correlationId: String?,
+    ): String =
+        listOf(
+            incidentId?.trim()?.takeIf { it.isNotBlank() } ?: "none",
+            cycleKey?.trim()?.takeIf { it.isNotBlank() } ?: "none",
+            correlationId?.trim()?.takeIf { it.isNotBlank() } ?: "none",
+        ).joinToString(":")
+
+    private fun sanitizeStableId(value: String): String =
+        value.replace(Regex("[^A-Za-z0-9_.-]"), "-")
+
     fun flushQueues(): Map<String, Any> {
         val flushedSosCount = preferences.getInt(keyPendingSosCount, 0)
         val flushedTelemetryCount = preferences.getInt(keyPendingTelemetryCount, 0)
         preferences.edit()
             .putInt(keyPendingSosCount, 0)
-            .putInt(keyPendingNativeSosCreateCount, 0)
             .putInt(keyPendingNativeSosCancelCount, 0)
             .putInt(keyPendingTelemetryCount, 0)
             .apply()
@@ -909,6 +1124,7 @@ internal class ProtectionRuntimeStore(context: Context) {
         private const val keyPendingSosCount = "pending_sos_count"
         private const val keyPendingSosState = "pending_sos_state"
         private const val keyPendingTelemetryCount = "pending_telemetry_count"
+        private const val keyPendingNativeSosCreate = "pending_native_sos_create"
         private const val keyPendingNativeSosCreateCount = "pending_native_sos_create_count"
         private const val keyPendingNativeSosCancelCount = "pending_native_sos_cancel_count"
         private const val keyPendingExternalRelayCancels = "pending_external_relay_cancels"
@@ -967,6 +1183,12 @@ private fun android.content.SharedPreferences.getIntOrNull(key: String): Int? =
 
 private fun JSONObject.optNullableString(key: String): String? =
     if (has(key) && !isNull(key)) optString(key).trim().takeIf { it.isNotBlank() } else null
+
+private fun JSONObject.optLongOrNull(key: String): Long? =
+    if (has(key) && !isNull(key)) optLong(key, 0L).takeIf { it > 0L } else null
+
+private fun JSONObject.optIntOrNull(key: String): Int? =
+    if (has(key) && !isNull(key)) optInt(key, 0) else null
 
 private fun android.content.SharedPreferences.Editor.putNotificationText(
     preferenceKey: String,

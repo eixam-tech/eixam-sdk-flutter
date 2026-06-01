@@ -106,6 +106,43 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   Future<bool> ackPendingExternalRelayCancel(String signature) async => true;
 
   @override
+  Future<ProtectionPendingNativeSosCreate?> peekPendingNativeSosCreate() async {
+    return null;
+  }
+
+  @override
+  Future<void> markPendingNativeSosCreateMqttFlushStarted(
+    String signature,
+  ) async {}
+
+  @override
+  Future<void> markPendingNativeSosCreateMqttPublished(
+    String signature,
+  ) async {}
+
+  @override
+  Future<void> retainPendingNativeSosCreate(
+    String signature, {
+    required String reason,
+  }) async {}
+
+  @override
+  Future<bool> ackPendingNativeSosCreate(
+    String signature, {
+    String? backendIncidentId,
+  }) async {
+    return false;
+  }
+
+  @override
+  Future<bool> dropPendingNativeSosCreate(
+    String signature, {
+    required String reason,
+  }) async {
+    return false;
+  }
+
+  @override
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({
     required ProtectionPlatformCommandRequest request,
   }) async {

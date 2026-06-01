@@ -47,6 +47,7 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
     private var lastPublishedSosLocation: Location? = null
     private var lastDebugAcceptedLocation: Location? = null
     private var lastDebugAcceptedSource: String? = null
+    private var lastRestBlockedLogAtMs = 0L
     private val singleLocationListeners = mutableListOf<Pair<String, LocationListener>>()
     private var singleLocationTimeout: Runnable? = null
     private var sosLocationUpdatesActive = false
@@ -156,8 +157,13 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             return
         }
         publishInFlight = true
-        val mode = if (store.isSosOpen()) "sos" else "normal"
         store.markPublishAttempt(reason)
+        if (shouldBlockRestTelemetry()) {
+            logTelemetryRestBlocked(reason)
+            store.markHttpStatusCode(null)
+            queueTelemetryForMqtt(reason)
+            return
+        }
         getBestEffortLocationForTick(locationTimeoutMs) { location, locationMode ->
             if (location == null) {
                 val skipReason = when (locationMode) {
@@ -173,7 +179,7 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             }
             thread(name = "eixam-bg-telemetry") {
                 try {
-                    val body = buildPayload(location)
+                    val body = buildPayload(location, reason = reason)
                     logLocationAuth(
                         flow = "native_foreground_final",
                         source = locationMode,
@@ -204,13 +210,77 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         }
     }
 
-    private fun buildPayload(location: Location): JSONObject {
+    private fun queueTelemetryForMqtt(reason: String) {
+        getBestEffortLocationForTick(locationTimeoutMs) { location, locationMode ->
+            if (location == null) {
+                val skipReason = when (locationMode) {
+                    "timeout" -> "location_timeout"
+                    "permission_missing" -> "location_permission_missing"
+                    "provider_missing" -> "no_location_provider"
+                    else -> "no_valid_location"
+                }
+                store.markError(skipReason)
+                store.markLocationMode(locationMode)
+                publishInFlight = false
+                return@getBestEffortLocationForTick
+            }
+            thread(name = "eixam-bg-telemetry-queue") {
+                try {
+                    val body = buildPayload(location, reason = reason)
+                    logLocationAuth(
+                        flow = "native_foreground_final",
+                        source = locationMode,
+                        location = location,
+                        accepted = true,
+                        sentToBackend = false,
+                    )
+                    val queued = store.queueTelemetry(
+                        payload = body,
+                        reason = reason,
+                        locationMode = locationMode,
+                        sosContext = store.isSosOpen(),
+                    )
+                    if (queued.duplicate) {
+                        Log.i(
+                            logTag,
+                            "TELEMETRY_NATIVE_DUPLICATE_SUPPRESSED " +
+                                "handoffId=${queued.signature} queueSize=${queued.queueSize}",
+                        )
+                    } else {
+                        Log.i(
+                            logTag,
+                            "TELEMETRY_NATIVE_QUEUED " +
+                                "handoffId=${queued.signature} queueSize=${queued.queueSize}",
+                        )
+                        if (queued.droppedOldest) {
+                            Log.w(
+                                logTag,
+                                "TELEMETRY_NATIVE_QUEUE_DROPPED_OLDEST " +
+                                    "queueSize=${queued.queueSize}",
+                            )
+                        }
+                    }
+                } catch (error: Exception) {
+                    store.markError(error.message ?: error.javaClass.simpleName)
+                } finally {
+                    publishInFlight = false
+                }
+            }
+        }
+    }
+
+    private fun buildPayload(location: Location, reason: String): JSONObject {
+        val timestamp = isoNow()
+        val deviceId = store.deviceId()?.takeIf { it.isNotBlank() && !looksLikeBleMac(it) }
         val payload = JSONObject()
-            .put("timestamp", isoNow())
+            .put("timestamp", timestamp)
             .put("latitude", location.latitude)
             .put("longitude", location.longitude)
             .put("altitude", location.altitude)
-        store.deviceId()?.takeIf { it.isNotBlank() && !looksLikeBleMac(it) }?.let {
+            .put("eventId", nativeTelemetryEventId(timestamp, deviceId, reason))
+            .put("kind", "background")
+            .put("identitySource", "native_background")
+        deviceId?.let {
             payload.put("deviceId", it)
         }
         store.deviceBatteryJson()?.let {
@@ -221,6 +291,18 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         }
         return payload
     }
+
+    private fun nativeTelemetryEventId(
+        timestamp: String,
+        deviceId: String?,
+        reason: String,
+    ): String =
+        listOf(
+            "native-bg",
+            timestamp.replace(Regex("[^A-Za-z0-9]"), ""),
+            deviceId?.replace(Regex("[^A-Za-z0-9_.-]"), "-") ?: "phone",
+            reason.replace(Regex("[^A-Za-z0-9_.-]"), "-"),
+        ).joinToString("-")
 
     private fun postTelemetry(
         apiBaseUrl: String,
@@ -911,6 +993,21 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
     private fun logStop(reason: String) {
     }
 
+    private fun logTelemetryRestBlocked(reason: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastRestBlockedLogAtMs < restBlockedLogIntervalMs) {
+            return
+        }
+        lastRestBlockedLogAtMs = now
+        Log.w(
+            logTag,
+            "TELEMETRY_REST_BLOCKED source=native_background " +
+                "reason=telemetry_must_use_mqtt trigger=$reason",
+        )
+    }
+
+    private fun shouldBlockRestTelemetry(): Boolean = true
+
     private fun nextCorrelationId(prefix: String): String =
         "$prefix-${System.currentTimeMillis()}"
 
@@ -978,6 +1075,7 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         private const val resolvedLocationMaxAgeMs = 120000L
         private const val suspiciousJumpKm = 50.0
         private const val suspiciousJumpWindowMs = 600000L
+        private const val restBlockedLogIntervalMs = 300000L
 
         fun start(context: Context) {
             val intent = Intent(context, EixamTelemetryForegroundService::class.java).apply {

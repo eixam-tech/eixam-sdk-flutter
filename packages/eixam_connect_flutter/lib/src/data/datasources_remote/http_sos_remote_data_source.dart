@@ -37,6 +37,19 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     int? mobileBattery,
     SdkCoverageSnapshot? mobileCoverage,
   }) async {
+    final source = relaySource?.trim().isNotEmpty == true
+        ? relaySource!.trim()
+        : triggerSource;
+    if (_shouldBlockRestTrigger()) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_TRIGGER_REST_BLOCKED source=$source '
+        'reason=trigger_must_use_mqtt',
+      );
+      throw const SosException(
+        'E_HTTP_SOS_TRIGGER_BLOCKED',
+        'SOS trigger must use MQTT transport.',
+      );
+    }
     final allowsMissingPosition =
         triggerSource == 'remote_lora_relay' || originatorNodeId == null;
     if (positionSnapshot == null && !allowsMissingPosition) {
@@ -733,6 +746,8 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
 
   String _nextCorrelationId(String prefix) =>
       '$prefix-${DateTime.now().toUtc().microsecondsSinceEpoch}';
+
+  bool _shouldBlockRestTrigger() => true;
 
   String _redactedCompactJson(String payload) {
     try {

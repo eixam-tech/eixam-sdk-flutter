@@ -231,6 +231,8 @@ class EixamConnectSdkImpl
   String? _backgroundTelemetryNotificationBody;
   BackgroundTelemetryDiagnostics _backgroundTelemetryDiagnostics =
       const BackgroundTelemetryDiagnostics();
+  bool _nativeBackgroundTelemetryFlushInFlight = false;
+  final Set<String> _nativeSosCreateFlushInFlight = <String>{};
 
   static const String _openAppActionId = 'open_app';
   static const String _cancelSosActionId = 'cancel_sos';
@@ -243,6 +245,9 @@ class EixamConnectSdkImpl
   static const Duration _preSosTickInterval = Duration(milliseconds: 50);
   static const Duration _terminalSosSuppressionWindow = Duration(seconds: 10);
   static const Duration _osSosWidgetActionDedupeWindow = Duration(minutes: 10);
+  static const Duration _nativePendingSosCreateTtl = Duration(hours: 24);
+  static const Duration _nativePendingSosBackendConfirmTtl =
+      Duration(hours: 24);
   static const int _maxPendingNotificationIntents = 20;
   static const int _maxRememberedNotificationIntentKeys = 100;
   static const EixamNotificationTexts _fallbackNotificationTexts =
@@ -1152,6 +1157,9 @@ class EixamConnectSdkImpl
     if (_backgroundTelemetryStarted &&
         _backgroundTelemetryStartFingerprint == fingerprint) {
       await _updateBackgroundTelemetryState(reason: reason);
+      await _flushNativeBackgroundTelemetryQueue(
+        reason: 'reconcile_existing:$reason',
+      );
       return;
     }
     try {
@@ -1172,6 +1180,9 @@ class EixamConnectSdkImpl
       await _refreshBackgroundTelemetryDiagnostics();
       BleDebugRegistry.instance.recordEvent(
         '[SDK_BACKGROUND_TELEMETRY] action=start reason=$reason',
+      );
+      await _flushNativeBackgroundTelemetryQueue(
+        reason: 'background_telemetry_started:$reason',
       );
     } catch (error) {
       _backgroundTelemetryStarted = false;
@@ -1213,6 +1224,9 @@ class EixamConnectSdkImpl
         deviceCoverage: _buildDeviceCoverageSnapshot(status),
       );
       await _refreshBackgroundTelemetryDiagnostics();
+      await _flushNativeBackgroundTelemetryQueue(
+        reason: 'background_telemetry_updated:$reason',
+      );
     } catch (error) {
       _backgroundTelemetryDiagnostics = BackgroundTelemetryDiagnostics(
         enabled: _backgroundTelemetryEnabled,
@@ -1227,6 +1241,56 @@ class EixamConnectSdkImpl
       BleDebugRegistry.instance.recordEvent(
         '[SDK_BACKGROUND_TELEMETRY] action=update_failed reason=$reason error=$error',
       );
+    }
+  }
+
+  Future<void> _flushNativeBackgroundTelemetryQueue({
+    required String reason,
+  }) async {
+    if (_nativeBackgroundTelemetryFlushInFlight) {
+      return;
+    }
+    _nativeBackgroundTelemetryFlushInFlight = true;
+    try {
+      final pending = await backgroundTelemetryPlatformAdapter
+          .peekQueuedBackgroundTelemetry(limit: 25);
+      if (pending.isEmpty) {
+        return;
+      }
+      BleDebugRegistry.instance.recordEvent(
+        'TELEMETRY_NATIVE_MQTT_FLUSH_START reason=$reason '
+        'count=${pending.length}',
+      );
+      for (final item in pending) {
+        try {
+          await telemetryRepository.publishTelemetry(
+            await _enrichOperationalTelemetryPayload(item.payload),
+          );
+          await backgroundTelemetryPlatformAdapter
+              .ackQueuedBackgroundTelemetry(item.signature);
+          BleDebugRegistry.instance.recordEvent(
+            'TELEMETRY_NATIVE_QUEUE_ACKED handoffId=${item.signature}',
+          );
+        } catch (error) {
+          await backgroundTelemetryPlatformAdapter
+              .markQueuedBackgroundTelemetryFlushFailed(
+            item.signature,
+            error: _compactDiagnosticValue(error),
+          );
+          BleDebugRegistry.instance.recordEvent(
+            'TELEMETRY_NATIVE_MQTT_FLUSH_RESULT success=false '
+            'handoffId=${item.signature} error=${_compactDiagnosticValue(error)}',
+          );
+          return;
+        }
+      }
+      BleDebugRegistry.instance.recordEvent(
+        'TELEMETRY_NATIVE_MQTT_FLUSH_RESULT success=true '
+        'count=${pending.length}',
+      );
+    } finally {
+      _nativeBackgroundTelemetryFlushInFlight = false;
+      await _refreshBackgroundTelemetryDiagnostics();
     }
   }
 
@@ -1376,10 +1440,10 @@ class EixamConnectSdkImpl
     _firmwareOtaInProgress = true;
     return _firmwareUpdates()
         .startFirmwareUpdate(
-          deviceId: deviceId,
-          releaseId: releaseId,
-          policy: policy,
-        )
+      deviceId: deviceId,
+      releaseId: releaseId,
+      policy: policy,
+    )
         .whenComplete(() {
       _firmwareOtaInProgress = false;
     });
@@ -1434,8 +1498,7 @@ class EixamConnectSdkImpl
     const maxAttempts = 5;
     const retryDelay = Duration(seconds: 2);
     for (var attempt = 1;
-        !_isFirmwareDfuPreTransferStatusReady(status) &&
-            attempt <= maxAttempts;
+        !_isFirmwareDfuPreTransferStatusReady(status) && attempt <= maxAttempts;
         attempt++) {
       BleDebugRegistry.instance.recordEvent(
         'OTA_COORDINATOR status_refresh_wait '
@@ -1490,7 +1553,8 @@ class EixamConnectSdkImpl
     );
     final repository = deviceRepository;
     if (repository is InMemoryDeviceRepository) {
-      _lastDeviceStatus = await repository.reclaimBleOwnershipFromProtectionMode(
+      _lastDeviceStatus =
+          await repository.reclaimBleOwnershipFromProtectionMode(
         reason: 'firmware_ota_dfu_transfer_complete',
       );
     }
@@ -1704,6 +1768,9 @@ class EixamConnectSdkImpl
         } else {
           unawaited(_bleAutoReconnectCoordinator.tryAutoConnectOnResume());
         }
+        unawaited(
+          _flushNativeBackgroundTelemetryQueue(reason: 'app_foreground_resume'),
+        );
         break;
       case AppLifecycleState.inactive:
       case AppLifecycleState.hidden:
@@ -5677,6 +5744,23 @@ class EixamConnectSdkImpl
             incident: incident.copyWith(deliveryChannel: deliveryChannel),
             deliveryChannel: deliveryChannel,
           );
+          final pending =
+              await protectionPlatformAdapter.peekPendingNativeSosCreate();
+          if (pending != null &&
+              !await _ackPendingNativeSosCreateIfMatchesIncident(
+                pending: pending,
+                incident: incident,
+                source: 'sync_native_pending',
+                reason: 'current_incident_confirmed',
+              )) {
+            await _reconcileUnmatchedPendingNativeSosCreate(
+              pending,
+              confirmedIncident: incident,
+              trigger: trigger,
+              source: 'sync_native_pending',
+              reason: 'current_incident_mismatch',
+            );
+          }
           BleDebugRegistry.instance.recordEvent(
             '[NATIVE_PRE_SOS_BACKEND] action=backend_confirmed '
             'trigger=$trigger incidentId=${incident.id} '
@@ -5684,6 +5768,10 @@ class EixamConnectSdkImpl
           );
           return;
         }
+        await _publishNativePreSosPendingOverMqtt(
+          trigger: trigger,
+          attempt: attempt,
+        );
         BleDebugRegistry.instance.recordEvent(
           '[NATIVE_PRE_SOS_BACKEND] action=await_backend_confirmation '
           'trigger=$trigger reason=no_backend_incident attempt=$attempt',
@@ -5708,6 +5796,406 @@ class EixamConnectSdkImpl
       );
     }
     _emitPublicSosState(SosState.sending, source: trigger);
+  }
+
+  Future<void> _publishNativePreSosPendingOverMqtt({
+    required String trigger,
+    required int attempt,
+  }) async {
+    try {
+      await _flushPendingNativeSosCreateOverMqtt(
+        trigger: trigger,
+        attempt: attempt,
+      );
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        '[NATIVE_PRE_SOS_BACKEND] action=mqtt_publish_failed '
+        'trigger=$trigger attempt=$attempt '
+        'error=${_compactDiagnosticValue(error)}',
+      );
+    }
+  }
+
+  Future<void> _flushPendingNativeSosCreateOverMqtt({
+    required String trigger,
+    required int attempt,
+  }) async {
+    final pending =
+        await protectionPlatformAdapter.peekPendingNativeSosCreate();
+    if (pending == null) {
+      return;
+    }
+    if (!_nativeSosCreateFlushInFlight.add(pending.signature)) {
+      BleDebugRegistry.instance.recordEvent(
+        'NATIVE_SOS_DUPLICATE_SUPPRESSED signature=${pending.signature} '
+        'reason=flush_in_flight trigger=$trigger',
+      );
+      return;
+    }
+    try {
+      if (await _dropPendingNativeSosCreateIfCancelled(
+        pending,
+        trigger: trigger,
+      )) {
+        return;
+      }
+      final confirmedIncident = await sosRepository.getCurrentIncident();
+      if (_hasNonRuntimeVisibleSosIncident(confirmedIncident)) {
+        final acked = await _ackPendingNativeSosCreateIfMatchesIncident(
+          pending: pending,
+          incident: confirmedIncident!,
+          source: 'mqtt_flush',
+          reason: 'already_confirmed',
+        );
+        if (!acked) {
+          await _reconcileUnmatchedPendingNativeSosCreate(
+            pending,
+            confirmedIncident: confirmedIncident,
+            trigger: trigger,
+            source: 'mqtt_flush',
+            reason: 'current_incident_mismatch',
+          );
+        }
+        return;
+      }
+      if (pending.state == 'mqtt_published_pending_backend_confirm') {
+        if (await _dropExpiredPendingNativeSosCreate(
+          pending,
+          source: 'mqtt_published_pending_backend_confirm',
+          reason: 'backend_confirm_timeout',
+          ttl: _nativePendingSosBackendConfirmTtl,
+          referenceAt: pending.lastPublishedAt ?? pending.updatedAt,
+        )) {
+          return;
+        }
+        await _retainPendingNativeSosCreate(
+          pending,
+          source: 'mqtt_published_pending_backend_confirm',
+          reason: 'await_backend_confirm',
+          trigger: trigger,
+        );
+        return;
+      }
+      if (await _dropStalePendingNativeSosCreate(
+        pending,
+        trigger: trigger,
+      )) {
+        return;
+      }
+
+      await protectionPlatformAdapter
+          .markPendingNativeSosCreateMqttFlushStarted(pending.signature);
+      final status = await deviceSosController.getStatus();
+      BleDebugRegistry.instance.recordEvent(
+        'NATIVE_SOS_MQTT_FLUSH_START signature=${pending.signature} '
+        'incidentId=${pending.incidentId} cycleKey=${pending.cycleKey} '
+        'trigger=$trigger attempt=$attempt state=${status.state.name}',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_TRANSPORT_DECISION flow=sos_trigger transport=mqtt '
+        'source=${pending.triggerSource} reason=native_pending_create_flush '
+        'trigger=$trigger attempt=$attempt state=${status.state.name}',
+      );
+
+      final positionSnapshot = await _loadPositionSnapshotForSos();
+      if (positionSnapshot == null) {
+        await protectionPlatformAdapter.retainPendingNativeSosCreate(
+          pending.signature,
+          reason: 'missing_position_snapshot',
+        );
+        BleDebugRegistry.instance.recordEvent(
+          'NATIVE_SOS_PENDING_RETAINED signature=${pending.signature} '
+          'reason=missing_position_snapshot',
+        );
+        return;
+      }
+
+      final localIdentity = await _resolveLocalOperationalSosIdentity();
+      final originatorNodeId =
+          pending.nodeId ?? status.nodeId ?? _knownLocalDeviceNodeId;
+      if (originatorNodeId != null) {
+        _promoteDeviceNodeIdFromSos(
+          nodeId: originatorNodeId,
+          source: 'native_pending_sos_create',
+        );
+      }
+      await sosRepository.triggerSos(
+        message: 'E_SOS_NATIVE_PENDING_BACKEND_SYNC_MQTT',
+        triggerSource: pending.triggerSource,
+        positionSnapshot: positionSnapshot,
+        deviceId: pending.deviceId ??
+            originatorNodeId?.toString() ??
+            localIdentity.deviceId,
+        hardwareId: pending.hardwareId ?? localIdentity.hardwareId,
+        originatorNodeId: originatorNodeId,
+        incidentId: pending.incidentId,
+        cycleKey: pending.cycleKey,
+      );
+      await protectionPlatformAdapter
+          .markPendingNativeSosCreateMqttPublished(pending.signature);
+      BleDebugRegistry.instance.recordEvent(
+        'NATIVE_SOS_MQTT_FLUSH_RESULT signature=${pending.signature} '
+        'success=true incidentId=${pending.incidentId}',
+      );
+
+      final afterPublishIncident = await sosRepository.getCurrentIncident();
+      if (_hasNonRuntimeVisibleSosIncident(afterPublishIncident)) {
+        final acked = await _ackPendingNativeSosCreateIfMatchesIncident(
+          pending: pending,
+          incident: afterPublishIncident!,
+          source: 'mqtt_flush',
+          reason: 'backend_confirmed',
+        );
+        if (!acked) {
+          await _reconcileUnmatchedPendingNativeSosCreate(
+            pending,
+            confirmedIncident: afterPublishIncident,
+            trigger: trigger,
+            source: 'mqtt_flush',
+            reason: 'post_publish_current_incident_mismatch',
+          );
+        }
+      } else {
+        await _retainPendingNativeSosCreate(
+          pending,
+          source: 'mqtt_flush',
+          reason: 'mqtt_published_pending_backend_confirm',
+          trigger: trigger,
+        );
+      }
+    } catch (error) {
+      await protectionPlatformAdapter.retainPendingNativeSosCreate(
+        pending.signature,
+        reason: 'mqtt_flush_failed',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'NATIVE_SOS_MQTT_FLUSH_RESULT signature=${pending.signature} '
+        'success=false error=${_compactDiagnosticValue(error)}',
+      );
+      rethrow;
+    } finally {
+      _nativeSosCreateFlushInFlight.remove(pending.signature);
+    }
+  }
+
+  Future<bool> _ackPendingNativeSosCreateIfMatchesIncident({
+    required ProtectionPendingNativeSosCreate pending,
+    required SosIncident incident,
+    required String source,
+    required String reason,
+  }) async {
+    if (!_pendingNativeSosCreateMatchesIncident(
+      pending: pending,
+      incident: incident,
+    )) {
+      return false;
+    }
+    await protectionPlatformAdapter.ackPendingNativeSosCreate(
+      pending.signature,
+      backendIncidentId: incident.id,
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'NATIVE_SOS_PENDING_ACKED source=$source reason=$reason '
+      'incidentId=${incident.id} cycleKey=${incident.cycleKey ?? pending.cycleKey} '
+      'signature=${pending.signature}',
+    );
+    return true;
+  }
+
+  bool _pendingNativeSosCreateMatchesIncident({
+    required ProtectionPendingNativeSosCreate pending,
+    required SosIncident incident,
+  }) {
+    if (_sameNonEmptyIdentifier(pending.incidentId, incident.id)) {
+      return true;
+    }
+    if (_sameNonEmptyIdentifier(pending.cycleKey, incident.cycleKey)) {
+      return true;
+    }
+    if (_sameNonEmptyIdentifier(pending.correlationId, incident.message)) {
+      return true;
+    }
+    if (_sameNonEmptyIdentifier(pending.deviceId, incident.deviceId)) {
+      return true;
+    }
+    if (_sameNonEmptyIdentifier(pending.hardwareId, incident.hardwareId)) {
+      return true;
+    }
+    return pending.nodeId != null &&
+        incident.originatorNodeId != null &&
+        _normalizeNodeId(pending.nodeId!) ==
+            _normalizeNodeId(incident.originatorNodeId!);
+  }
+
+  bool _sameNonEmptyIdentifier(String? left, String? right) {
+    final normalizedLeft = left?.trim();
+    final normalizedRight = right?.trim();
+    return normalizedLeft != null &&
+        normalizedLeft.isNotEmpty &&
+        normalizedRight != null &&
+        normalizedRight.isNotEmpty &&
+        normalizedLeft == normalizedRight;
+  }
+
+  Future<void> _reconcileUnmatchedPendingNativeSosCreate(
+    ProtectionPendingNativeSosCreate pending, {
+    required SosIncident confirmedIncident,
+    required String trigger,
+    required String source,
+    required String reason,
+  }) async {
+    if (await _dropExpiredPendingNativeSosCreate(
+      pending,
+      source: source,
+      reason: reason,
+    )) {
+      return;
+    }
+    await _retainPendingNativeSosCreate(
+      pending,
+      source: source,
+      reason: reason,
+      trigger: trigger,
+      extra: 'currentIncidentId=${confirmedIncident.id}',
+    );
+  }
+
+  Future<bool> _dropStalePendingNativeSosCreate(
+    ProtectionPendingNativeSosCreate pending, {
+    required String trigger,
+  }) async {
+    if (_publicSosState != SosState.idle &&
+        _publicSosState != SosState.failed) {
+      return _dropExpiredPendingNativeSosCreate(
+        pending,
+        source: 'native_pending_cleanup',
+        reason: 'pending_create_ttl',
+      );
+    }
+    final status = deviceSosController.currentStatus;
+    final runtimeOpen = status.state == DeviceSosState.preConfirm ||
+        status.state == DeviceSosState.active ||
+        status.state == DeviceSosState.acknowledged ||
+        _hasActivePreSosSession ||
+        _hasActiveDeviceRuntimeSosOwnership();
+    if (runtimeOpen) {
+      return _dropExpiredPendingNativeSosCreate(
+        pending,
+        source: 'native_pending_cleanup',
+        reason: 'pending_create_ttl',
+      );
+    }
+    if (DateTime.now().toUtc().difference(pending.createdAt.toUtc()) <
+        _nativePendingSosCreateTtl) {
+      await _retainPendingNativeSosCreate(
+        pending,
+        source: 'native_pending_cleanup',
+        reason: 'recent_idle_or_failed_without_active_incident',
+        trigger: trigger,
+      );
+      return false;
+    }
+    final dropped = await protectionPlatformAdapter.dropPendingNativeSosCreate(
+      pending.signature,
+      reason: 'stale_idle_or_failed_without_active_incident',
+    );
+    if (dropped) {
+      BleDebugRegistry.instance.recordEvent(
+        'NATIVE_SOS_PENDING_STALE_DROPPED source=native_pending_cleanup '
+        'reason=idle_or_failed_without_active_incident '
+        'signature=${pending.signature} incidentId=${pending.incidentId} '
+        'cycleKey=${pending.cycleKey} trigger=$trigger',
+      );
+    }
+    return dropped;
+  }
+
+  Future<bool> _dropExpiredPendingNativeSosCreate(
+    ProtectionPendingNativeSosCreate pending, {
+    required String source,
+    required String reason,
+    Duration ttl = _nativePendingSosCreateTtl,
+    DateTime? referenceAt,
+  }) async {
+    final reference = (referenceAt ?? pending.createdAt).toUtc();
+    final age = DateTime.now().toUtc().difference(reference);
+    if (age < ttl) {
+      return false;
+    }
+    final dropped = await protectionPlatformAdapter.dropPendingNativeSosCreate(
+      pending.signature,
+      reason: reason,
+    );
+    if (dropped) {
+      BleDebugRegistry.instance.recordEvent(
+        'NATIVE_SOS_PENDING_EXPIRED source=$source reason=$reason '
+        'signature=${pending.signature} incidentId=${pending.incidentId} '
+        'cycleKey=${pending.cycleKey} ageSeconds=${age.inSeconds}',
+      );
+    }
+    return dropped;
+  }
+
+  Future<void> _retainPendingNativeSosCreate(
+    ProtectionPendingNativeSosCreate pending, {
+    required String source,
+    required String reason,
+    required String trigger,
+    String? extra,
+  }) async {
+    await protectionPlatformAdapter.retainPendingNativeSosCreate(
+      pending.signature,
+      reason: reason,
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'NATIVE_SOS_PENDING_RETAINED source=$source reason=$reason '
+      'signature=${pending.signature} incidentId=${pending.incidentId} '
+      'cycleKey=${pending.cycleKey} state=${pending.state} trigger=$trigger'
+      '${extra == null ? "" : " $extra"}',
+    );
+  }
+
+  Future<bool> _dropPendingNativeSosCreateIfCancelled(
+    ProtectionPendingNativeSosCreate pending, {
+    required String trigger,
+  }) async {
+    if (_publicSosState == SosState.cancelled ||
+        _publicSosState == SosState.resolved) {
+      final dropped =
+          await protectionPlatformAdapter.dropPendingNativeSosCreate(
+        pending.signature,
+        reason: 'public_terminal:${_publicSosState.name}',
+      );
+      if (dropped) {
+        BleDebugRegistry.instance.recordEvent(
+          'NATIVE_SOS_PENDING_DROPPED_CANCELLED '
+          'signature=${pending.signature} trigger=$trigger '
+          'state=${_publicSosState.name}',
+        );
+      }
+      return dropped;
+    }
+    try {
+      final snapshot = await protectionPlatformAdapter.getPlatformSnapshot();
+      if (snapshot.preSosLifecycleState == 'cancelPending') {
+        final dropped =
+            await protectionPlatformAdapter.dropPendingNativeSosCreate(
+          pending.signature,
+          reason: 'native_cancel_pending',
+        );
+        if (dropped) {
+          BleDebugRegistry.instance.recordEvent(
+            'NATIVE_SOS_PENDING_DROPPED_CANCELLED '
+            'signature=${pending.signature} trigger=$trigger '
+            'state=native_cancel_pending',
+          );
+        }
+        return dropped;
+      }
+    } catch (_) {
+      // Keep the pending create if the native snapshot is temporarily unavailable.
+    }
+    return false;
   }
 
   void _syncPreSosSession({
@@ -7598,9 +8086,8 @@ class EixamConnectSdkImpl
       final relayNodeId = (value['relayNodeId'] as num?)?.toInt();
       final relayHardwareId = value['relayHardwareId'] as String?;
       final backendIncidentId = value['backendIncidentId'] as String?;
-      final triggerDeviceId =
-          (value['acceptedTriggerDeviceId'] as String?) ??
-              (value['triggerDeviceId'] as String?);
+      final triggerDeviceId = (value['acceptedTriggerDeviceId'] as String?) ??
+          (value['triggerDeviceId'] as String?);
       final triggerObservedAtRaw = value['triggerObservedAt'] as String?;
       final triggerObservedAt = triggerObservedAtRaw == null
           ? null
@@ -7610,10 +8097,9 @@ class EixamConnectSdkImpl
           value['baselineTerminalSignature'] as String?;
       final baselineTerminalObservedAtRaw =
           value['baselineTerminalObservedAt'] as String?;
-      final baselineTerminalObservedAt =
-          baselineTerminalObservedAtRaw == null
-              ? null
-              : DateTime.tryParse(baselineTerminalObservedAtRaw)?.toUtc();
+      final baselineTerminalObservedAt = baselineTerminalObservedAtRaw == null
+          ? null
+          : DateTime.tryParse(baselineTerminalObservedAtRaw)?.toUtc();
       final baselineEventSequence =
           (value['baselineEventSequence'] as num?)?.toInt() ?? 0;
       final expiresAtRaw = value['expiresAt'] as String?;
@@ -8353,14 +8839,13 @@ class EixamConnectSdkImpl
       originatorNodeId: originatorNodeId,
       relayNodeId: relayNodeId,
     );
-    final existing =
-        exactExisting?.backendIncidentId?.trim().isNotEmpty == true
-            ? exactExisting
-            : bestExisting?.backendIncidentId?.trim().isNotEmpty == true
-                ? bestExisting
-                : exactExisting ?? bestExisting;
-    final triggerObservedAt = existing?.triggerObservedAt ??
-        snapshot.receivedAt.toUtc();
+    final existing = exactExisting?.backendIncidentId?.trim().isNotEmpty == true
+        ? exactExisting
+        : bestExisting?.backendIncidentId?.trim().isNotEmpty == true
+            ? bestExisting
+            : exactExisting ?? bestExisting;
+    final triggerObservedAt =
+        existing?.triggerObservedAt ?? snapshot.receivedAt.toUtc();
     final normalizedBackendIncidentId = backendIncidentId?.trim();
     final acceptedTriggerDeviceId =
         _normalizeNodeIdDeviceIdString(triggerDeviceId) ??
@@ -8392,8 +8877,7 @@ class EixamConnectSdkImpl
           : existing?.backendIncidentId,
       triggerDeviceId: acceptedTriggerDeviceId,
       triggerObservedAt: triggerObservedAt,
-      baselineTerminal:
-          baseline?.terminal ?? existing?.baselineTerminal,
+      baselineTerminal: baseline?.terminal ?? existing?.baselineTerminal,
       baselineTerminalSignature:
           baseline?.signature ?? existing?.baselineTerminalSignature,
       baselineTerminalObservedAt:
@@ -8552,8 +9036,7 @@ class EixamConnectSdkImpl
       )
           ? previous.triggerObservedAt
           : incoming.triggerObservedAt,
-      baselineTerminal:
-          previous.baselineTerminal ?? incoming.baselineTerminal,
+      baselineTerminal: previous.baselineTerminal ?? incoming.baselineTerminal,
       baselineTerminalSignature: previous.baselineTerminalSignature ??
           incoming.baselineTerminalSignature,
       baselineTerminalObservedAt: previous.baselineTerminalObservedAt ??
@@ -8798,7 +9281,8 @@ class EixamConnectSdkImpl
     if (backendIncidentId == null || backendIncidentId.isEmpty) {
       return false;
     }
-    if (context.originatorNodeId != _normalizeNodeId(snapshot.originatorNodeId)) {
+    if (context.originatorNodeId !=
+        _normalizeNodeId(snapshot.originatorNodeId)) {
       return false;
     }
     final snapshotRelayNodeId = _normalizeNodeIdOrNull(snapshot.relayNodeId);
@@ -10325,6 +10809,12 @@ class EixamConnectSdkImpl
             SosState.sending,
             source: 'native_backend_sync_queued',
           );
+          unawaited(
+            _syncNativePreSosBackendPending(
+              trigger: 'native_backend_sync_queued',
+              maxAttempts: 1,
+            ),
+          );
         }
         return true;
       case ProtectionPlatformEventType.nativeBackendSyncSucceeded:
@@ -11369,16 +11859,14 @@ class EixamConnectSdkImpl
       _remoteRelaySosCancelSucceededBySignature[signature] =
           DateTime.now().toUtc();
       _remoteRelaySosCancelSucceededBySignature[
-        _remoteRelaySosCancelHandoffSignature(
-          snapshot: snapshot,
-          backendIncidentId: null,
-          relayHardwareId: relayHardwareId,
-        )
-      ] = DateTime.now().toUtc();
+          _remoteRelaySosCancelHandoffSignature(
+        snapshot: snapshot,
+        backendIncidentId: null,
+        relayHardwareId: relayHardwareId,
+      )] = DateTime.now().toUtc();
       final completedOriginatorNodeId =
           _normalizeNodeId(snapshot.originatorNodeId);
-      final completedRelayNodeId =
-          _normalizeNodeIdOrNull(snapshot.relayNodeId);
+      final completedRelayNodeId = _normalizeNodeIdOrNull(snapshot.relayNodeId);
       _pendingExternalRelayCancels.removeWhere((_, pending) {
         if (_normalizeNodeId(pending.snapshot.originatorNodeId) !=
             completedOriginatorNodeId) {

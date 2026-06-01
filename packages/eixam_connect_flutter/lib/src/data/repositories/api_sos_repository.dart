@@ -96,6 +96,16 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
         current != SosState.resolved) {
       throw const SosException('E_SOS_ALREADY_ACTIVE', 'E_SOS_ALREADY_ACTIVE');
     }
+    if (_shouldBlockRestTrigger()) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_TRIGGER_REST_BLOCKED source=$triggerSource '
+        'reason=trigger_must_use_mqtt',
+      );
+      throw const SosException(
+        'E_API_SOS_TRIGGER_REST_BLOCKED',
+        'SOS trigger must use MQTT transport.',
+      );
+    }
     if (originDecision.isExternalOnly) {
       BleDebugRegistry.instance.recordEvent(
         'SOS_ORIGIN_DECISION source=api_repository_trigger '
@@ -427,6 +437,8 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
     }
     return summary.length <= 240 ? summary : '${summary.substring(0, 240)}...';
   }
+
+  bool _shouldBlockRestTrigger() => true;
 
   void _emit(SosState state) {
     _stateMachine.transitionTo(state);

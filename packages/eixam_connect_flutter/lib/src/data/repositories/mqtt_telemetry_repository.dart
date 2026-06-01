@@ -12,48 +12,87 @@ class MqttTelemetryRepository implements TelemetryRepository {
   });
 
   final OperationalRealtimeClient realtimeClient;
+  final Set<String> _inFlightTelemetryKeys = <String>{};
+  final Map<String, DateTime> _recentTelemetryPublishes = <String, DateTime>{};
 
   @override
-  Future<void> publishTelemetry(SdkTelemetryPayload payload) {
+  Future<void> publishTelemetry(SdkTelemetryPayload payload) async {
     final identity = normalizeTelemetryBackendIdentity(payload: payload);
-    if (identity.normalized) {
+    final telemetryKey = _telemetryDedupeKey(identity.payload);
+    final now = DateTime.now().toUtc();
+    _recentTelemetryPublishes.removeWhere(
+      (_, seenAt) => now.difference(seenAt) > _recentTelemetryDedupeWindow,
+    );
+    if (_inFlightTelemetryKeys.contains(telemetryKey) ||
+        _recentTelemetryPublishes.containsKey(telemetryKey)) {
       BleDebugRegistry.instance.recordEvent(
-        'BACKEND_DEVICE_ID_NORMALIZED '
-        'previousDeviceId=${identity.previousDeviceId} '
-        'normalizedDeviceId=${identity.payload.deviceId} source=telemetry',
+        'TELEMETRY_NATIVE_DUPLICATE_SUPPRESSED handoffId=$telemetryKey',
       );
+      return;
     }
-    if (identity.invalidDeviceId) {
+    _inFlightTelemetryKeys.add(telemetryKey);
+    final source = identity.payload.identitySource?.trim().isNotEmpty == true
+        ? identity.payload.identitySource!.trim()
+        : 'sdk_telemetry';
+    try {
       BleDebugRegistry.instance.recordEvent(
-        'BACKEND_DEVICE_ID_INVALID '
-        'invalidBackendDeviceId=${identity.previousDeviceId} source=telemetry',
+        'TELEMETRY_TRANSPORT_DECISION transport=mqtt source=$source '
+        'reason=telemetry_must_use_mqtt',
       );
+      if (identity.normalized) {
+        BleDebugRegistry.instance.recordEvent(
+          'BACKEND_DEVICE_ID_NORMALIZED '
+          'previousDeviceId=${identity.previousDeviceId} '
+          'normalizedDeviceId=${identity.payload.deviceId} source=telemetry',
+        );
+      }
+      if (identity.invalidDeviceId) {
+        BleDebugRegistry.instance.recordEvent(
+          'BACKEND_DEVICE_ID_INVALID '
+          'invalidBackendDeviceId=${identity.previousDeviceId} source=telemetry',
+        );
+      }
+      BleDebugRegistry.instance.recordEvent(
+        'TELEMETRY_BACKEND_PAYLOAD_FINAL source=mqtt '
+        'deviceId=${identity.payload.deviceId ?? "none"} '
+        'nodeId=${identity.nodeId?.toString() ?? "none"} '
+        'hardwareId=${identity.payload.hardwareId ?? "none"} '
+        'identitySource=${identity.identitySource} '
+        'lat=${identity.payload.latitude} lon=${identity.payload.longitude} '
+        'timestamp=${identity.payload.timestamp.toUtc().toIso8601String()}',
+      );
+      final rejectionReason = _telemetryRejectionReason(identity.payload);
+      LocationDebugLog.telemetryPayload(
+        flow: 'mqtt_outbound',
+        payload: identity.payload,
+        accepted: rejectionReason == null,
+        rejectionReason: rejectionReason,
+        sentToBackend: false,
+      );
+      _validate(identity.payload);
+      LocationDebugLog.telemetryPayload(
+        flow: 'mqtt_outbound',
+        payload: identity.payload,
+        accepted: true,
+        sentToBackend: true,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'TELEMETRY_MQTT_PUBLISH_START source=$source '
+        'handoffId=${identity.payload.eventId ?? telemetryKey} incidentId=none',
+      );
+      await realtimeClient.publishTelemetry(identity.payload);
+      _recentTelemetryPublishes[telemetryKey] = DateTime.now().toUtc();
+      BleDebugRegistry.instance.recordEvent(
+        'TELEMETRY_MQTT_PUBLISH_RESULT source=$source success=true',
+      );
+    } catch (_) {
+      BleDebugRegistry.instance.recordEvent(
+        'TELEMETRY_MQTT_PUBLISH_RESULT source=$source success=false',
+      );
+      rethrow;
+    } finally {
+      _inFlightTelemetryKeys.remove(telemetryKey);
     }
-    BleDebugRegistry.instance.recordEvent(
-      'TELEMETRY_BACKEND_PAYLOAD_FINAL source=mqtt '
-      'deviceId=${identity.payload.deviceId ?? "none"} '
-      'nodeId=${identity.nodeId?.toString() ?? "none"} '
-      'hardwareId=${identity.payload.hardwareId ?? "none"} '
-      'identitySource=${identity.identitySource} '
-      'lat=${identity.payload.latitude} lon=${identity.payload.longitude} '
-      'timestamp=${identity.payload.timestamp.toUtc().toIso8601String()}',
-    );
-    final rejectionReason = _telemetryRejectionReason(identity.payload);
-    LocationDebugLog.telemetryPayload(
-      flow: 'mqtt_outbound',
-      payload: identity.payload,
-      accepted: rejectionReason == null,
-      rejectionReason: rejectionReason,
-      sentToBackend: false,
-    );
-    _validate(identity.payload);
-    LocationDebugLog.telemetryPayload(
-      flow: 'mqtt_outbound',
-      payload: identity.payload,
-      accepted: true,
-      sentToBackend: true,
-    );
-    return realtimeClient.publishTelemetry(identity.payload);
   }
 
   @override
@@ -128,4 +167,24 @@ class MqttTelemetryRepository implements TelemetryRepository {
   }
 
   bool _isFinite(double value) => value.isFinite && !value.isNaN;
+
+  String _telemetryDedupeKey(SdkTelemetryPayload payload) {
+    final eventId = payload.eventId?.trim();
+    if (eventId != null && eventId.isNotEmpty) {
+      return eventId;
+    }
+    return <String>[
+      payload.timestamp.toUtc().toIso8601String(),
+      payload.deviceId?.trim().isNotEmpty == true
+          ? payload.deviceId!.trim()
+          : 'none',
+      payload.hardwareId?.trim().isNotEmpty == true
+          ? payload.hardwareId!.trim()
+          : 'none',
+      payload.latitude.toStringAsFixed(6),
+      payload.longitude.toStringAsFixed(6),
+    ].join(':');
+  }
+
+  static const Duration _recentTelemetryDedupeWindow = Duration(minutes: 5);
 }

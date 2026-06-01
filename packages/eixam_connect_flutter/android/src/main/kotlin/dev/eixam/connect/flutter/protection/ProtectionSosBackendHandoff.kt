@@ -25,13 +25,21 @@ internal class ProtectionSosBackendHandoff(
     private val flutterPreferences =
         context.getSharedPreferences(flutterPrefsName, Context.MODE_PRIVATE)
     private val registeredBackendNodeIds = mutableSetOf<Int>()
+    private var lastSosCreateRestBlockedLogAtMs = 0L
 
     fun dispose() {
         executor.shutdownNow()
     }
 
     fun queueCreate(reason: String) {
-        runtimeStore.markPendingSosCreate()
+        val pending = runtimeStore.markPendingSosCreate(reason)
+        Log.i(
+            logTag,
+            "NATIVE_SOS_PENDING_STORED " +
+                "incidentId=${pending["incidentId"] ?: "none"} " +
+                "cycleKey=${pending["cycleKey"] ?: "none"} " +
+                "correlationId=${pending["correlationId"] ?: "none"}",
+        )
         runtimeStore.markBackendHandoffQueued("create_queued")
         ProtectionRuntimeBridge.recordPlatformEvent(
             context = context,
@@ -155,18 +163,30 @@ internal class ProtectionSosBackendHandoff(
                     )
                     true
                 } else {
-                    val createdIncident = createIncident(apiBaseUrl, session, position)
-                    runtimeStore.markBackendIncidentActive(
-                        incidentId = createdIncident.id,
-                        incidentState = createdIncident.state,
-                    )
-                    runtimeStore.clearPendingSosCreate()
-                    ProtectionRuntimeBridge.recordPlatformEvent(
-                        context = context,
-                        type = "nativeBackendSyncSucceeded",
-                        reason = "create_synced:${createdIncident.id ?: "unknown"}",
-                    )
-                    true
+                    if (shouldBlockRestTrigger()) {
+                        logSosCreateRestBlocked()
+                        runtimeStore.markPendingNativeSosCreateRestBlocked()
+                        runtimeStore.markBackendHandoffQueued("NATIVE_SOS_REST_RETRY_BLOCKED")
+                        ProtectionRuntimeBridge.recordPlatformEvent(
+                            context = context,
+                            type = "nativeBackendSyncQueued",
+                            reason = "create_mqtt_handoff_pending:$reason",
+                        )
+                        false
+                    } else {
+                        val createdIncident = createIncident(apiBaseUrl, session, position)
+                        runtimeStore.markBackendIncidentActive(
+                            incidentId = createdIncident.id,
+                            incidentState = createdIncident.state,
+                        )
+                        runtimeStore.clearPendingSosCreate()
+                        ProtectionRuntimeBridge.recordPlatformEvent(
+                            context = context,
+                            type = "nativeBackendSyncSucceeded",
+                            reason = "create_synced:${createdIncident.id ?: "unknown"}",
+                        )
+                        true
+                    }
                 }
             }
         } catch (error: Exception) {
@@ -233,6 +253,21 @@ internal class ProtectionSosBackendHandoff(
         )
         scheduleRetry("${action}_handoff_retry:$reason")
     }
+
+    private fun logSosCreateRestBlocked() {
+        val now = System.currentTimeMillis()
+        if (now - lastSosCreateRestBlockedLogAtMs < restBlockedLogIntervalMs) {
+            return
+        }
+        lastSosCreateRestBlockedLogAtMs = now
+        Log.w(
+            logTag,
+            "SOS_TRIGGER_REST_BLOCKED source=native_protection_sos " +
+                "reason=trigger_must_use_mqtt",
+        )
+    }
+
+    private fun shouldBlockRestTrigger(): Boolean = true
 
     private fun createIncident(
         apiBaseUrl: String,
@@ -900,5 +935,6 @@ internal class ProtectionSosBackendHandoff(
         private const val geoDecoderVersionKey = "geoDecoderVersion"
         private const val expectedGeoDecoderVersion = "firmware_tel_sos_v2"
         private const val resolvedLocationMaxAgeMs = 120_000L
+        private const val restBlockedLogIntervalMs = 300_000L
     }
 }

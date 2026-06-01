@@ -173,6 +173,52 @@ internal object ProtectionRuntimeBridge {
             "peekPendingExternalRelayCancels" -> {
                 result.success(store.peekPendingExternalRelayCancels())
             }
+            "peekPendingNativeSosCreate" -> {
+                result.success(store.peekPendingNativeSosCreate())
+            }
+            "markPendingNativeSosCreateMqttFlushStarted" -> {
+                val signature =
+                    (call.arguments as? Map<*, *>)?.get("signature") as? String
+                result.success(
+                    if (signature == null) null
+                    else store.markPendingNativeSosCreateMqttFlushStarted(signature),
+                )
+            }
+            "markPendingNativeSosCreateMqttPublished" -> {
+                val signature =
+                    (call.arguments as? Map<*, *>)?.get("signature") as? String
+                result.success(
+                    if (signature == null) null
+                    else store.markPendingNativeSosCreateMqttPublished(signature),
+                )
+            }
+            "retainPendingNativeSosCreate" -> {
+                val arguments = call.arguments as? Map<*, *>
+                val signature = arguments?.get("signature") as? String
+                val reason = arguments?.get("reason") as? String ?: "pending_backend_confirm"
+                result.success(
+                    if (signature == null) null
+                    else store.retainPendingNativeSosCreate(signature, reason),
+                )
+            }
+            "ackPendingNativeSosCreate" -> {
+                val arguments = call.arguments as? Map<*, *>
+                val signature = arguments?.get("signature") as? String
+                val backendIncidentId = arguments?.get("backendIncidentId") as? String
+                result.success(
+                    if (signature == null) false
+                    else store.ackPendingNativeSosCreate(signature, backendIncidentId),
+                )
+            }
+            "dropPendingNativeSosCreate" -> {
+                val arguments = call.arguments as? Map<*, *>
+                val signature = arguments?.get("signature") as? String
+                val reason = arguments?.get("reason") as? String ?: "cancelled"
+                result.success(
+                    if (signature == null) false
+                    else store.dropPendingNativeSosCreate(signature, reason),
+                )
+            }
             "ackPendingExternalRelayCancel" -> {
                 val signature =
                     (call.arguments as? Map<*, *>)?.get("signature") as? String

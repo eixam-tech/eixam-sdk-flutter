@@ -46,6 +46,7 @@ class MqttOperationalSosRequest {
     this.triggerSource,
     this.relaySource,
     this.owner,
+    this.message,
     this.incidentId,
     this.cycleKey,
     this.osWidgetActivation,
@@ -68,6 +69,7 @@ class MqttOperationalSosRequest {
   final String? triggerSource;
   final String? relaySource;
   final String? owner;
+  final String? message;
   final String? incidentId;
   final String? cycleKey;
   final OsSosWidgetActivation? osWidgetActivation;
@@ -90,6 +92,7 @@ class MqttOperationalSosRequest {
     Object? triggerSource = _unset,
     Object? relaySource = _unset,
     Object? owner = _unset,
+    Object? message = _unset,
     Object? incidentId = _unset,
     Object? cycleKey = _unset,
     Object? osWidgetActivation = _unset,
@@ -129,6 +132,7 @@ class MqttOperationalSosRequest {
           ? this.relaySource
           : relaySource as String?,
       owner: identical(owner, _unset) ? this.owner : owner as String?,
+      message: identical(message, _unset) ? this.message : message as String?,
       incidentId: identical(incidentId, _unset)
           ? this.incidentId
           : incidentId as String?,
@@ -252,6 +256,8 @@ class SdkMqttContract {
         'relaySource': request.relaySource!.trim(),
       if (request.owner != null && request.owner!.trim().isNotEmpty)
         'owner': request.owner!.trim(),
+      if (request.message != null && request.message!.trim().isNotEmpty)
+        'message': request.message!.trim(),
       if (request.osWidgetActivation != null) ...{
         'source': OsSosWidgetActivation.source,
         'triggerSource': OsSosWidgetActivation.source,

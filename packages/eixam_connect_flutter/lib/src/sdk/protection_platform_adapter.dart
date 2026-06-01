@@ -282,6 +282,42 @@ class ProtectionPendingExternalRelayCancelEvent {
   final DateTime timestamp;
 }
 
+class ProtectionPendingNativeSosCreate {
+  const ProtectionPendingNativeSosCreate({
+    required this.signature,
+    required this.incidentId,
+    required this.cycleKey,
+    required this.correlationId,
+    required this.createdAt,
+    required this.retryCount,
+    required this.state,
+    this.source = 'native_protection_sos',
+    this.triggerSource = 'native_protection_sos',
+    this.deviceId,
+    this.hardwareId,
+    this.nodeId,
+    this.updatedAt,
+    this.lastAttemptAt,
+    this.lastPublishedAt,
+  });
+
+  final String signature;
+  final String incidentId;
+  final String cycleKey;
+  final String correlationId;
+  final String source;
+  final String triggerSource;
+  final String? deviceId;
+  final String? hardwareId;
+  final int? nodeId;
+  final DateTime createdAt;
+  final DateTime? updatedAt;
+  final DateTime? lastAttemptAt;
+  final DateTime? lastPublishedAt;
+  final int retryCount;
+  final String state;
+}
+
 abstract class ProtectionPlatformAdapter {
   ProtectionPlatform get platform;
   Future<ProtectionPlatformSnapshot> getPlatformSnapshot();
@@ -296,6 +332,21 @@ abstract class ProtectionPlatformAdapter {
   Future<List<ProtectionPendingExternalRelayCancelEvent>>
       peekPendingExternalRelayCancels();
   Future<bool> ackPendingExternalRelayCancel(String signature);
+  Future<ProtectionPendingNativeSosCreate?> peekPendingNativeSosCreate();
+  Future<void> markPendingNativeSosCreateMqttFlushStarted(String signature);
+  Future<void> markPendingNativeSosCreateMqttPublished(String signature);
+  Future<void> retainPendingNativeSosCreate(
+    String signature, {
+    required String reason,
+  });
+  Future<bool> ackPendingNativeSosCreate(
+    String signature, {
+    String? backendIncidentId,
+  });
+  Future<bool> dropPendingNativeSosCreate(
+    String signature, {
+    required String reason,
+  });
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({
     required ProtectionPlatformCommandRequest request,
   });
@@ -351,6 +402,43 @@ class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
 
   @override
   Future<bool> ackPendingExternalRelayCancel(String signature) async => true;
+
+  @override
+  Future<ProtectionPendingNativeSosCreate?> peekPendingNativeSosCreate() async {
+    return null;
+  }
+
+  @override
+  Future<void> markPendingNativeSosCreateMqttFlushStarted(
+    String signature,
+  ) async {}
+
+  @override
+  Future<void> markPendingNativeSosCreateMqttPublished(
+    String signature,
+  ) async {}
+
+  @override
+  Future<void> retainPendingNativeSosCreate(
+    String signature, {
+    required String reason,
+  }) async {}
+
+  @override
+  Future<bool> ackPendingNativeSosCreate(
+    String signature, {
+    String? backendIncidentId,
+  }) async {
+    return true;
+  }
+
+  @override
+  Future<bool> dropPendingNativeSosCreate(
+    String signature, {
+    required String reason,
+  }) async {
+    return true;
+  }
 
   @override
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({
