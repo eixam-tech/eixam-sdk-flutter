@@ -1,6 +1,7 @@
 import 'eixam_custom_endpoints.dart';
 import 'eixam_environment.dart';
 import 'eixam_session.dart';
+import '../entities/permission_disclosure.dart';
 
 enum EixamNotificationPolicy {
   sdkManaged,
@@ -15,6 +16,7 @@ class EixamBootstrapConfig {
     this.initialSession,
     this.customEndpoints,
     this.notificationPolicy = EixamNotificationPolicy.sdkManaged,
+    this.permissionDisclosureConfig = const EixamPermissionDisclosureConfig(),
     this.featureFlags = const <String, bool>{},
     this.enableLogging = false,
   });
@@ -25,6 +27,7 @@ class EixamBootstrapConfig {
   final EixamSession? initialSession;
   final EixamCustomEndpoints? customEndpoints;
   final EixamNotificationPolicy notificationPolicy;
+  final EixamPermissionDisclosureConfig permissionDisclosureConfig;
   final Map<String, bool> featureFlags;
   final bool enableLogging;
 }

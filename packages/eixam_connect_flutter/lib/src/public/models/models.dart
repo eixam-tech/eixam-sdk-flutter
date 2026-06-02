@@ -12,6 +12,7 @@ export 'package:eixam_connect_core/src/entities/emergency_contact.dart';
 export 'package:eixam_connect_core/src/entities/app_feedback.dart';
 export 'package:eixam_connect_core/src/entities/firmware_update.dart';
 export 'package:eixam_connect_core/src/entities/permission_state.dart';
+export 'package:eixam_connect_core/src/entities/permission_disclosure.dart';
 export 'package:eixam_connect_core/src/entities/preferred_device.dart';
 export 'package:eixam_connect_core/src/entities/protection_mode_models.dart';
 export 'package:eixam_connect_core/src/entities/public_pre_sos_status.dart';

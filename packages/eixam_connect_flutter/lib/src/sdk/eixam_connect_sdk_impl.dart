@@ -77,6 +77,7 @@ class EixamConnectSdkImpl
   final SdkFeedbackRemoteDataSource? feedbackRemoteDataSource;
   final EixamNotificationPolicy notificationPolicy;
   final EixamNotificationTexts notificationTexts;
+  final EixamPermissionDisclosureConfig permissionDisclosureConfig;
   final ProtectionPlatformAdapter protectionPlatformAdapter;
   final BackgroundTelemetryPlatformAdapter backgroundTelemetryPlatformAdapter;
   final FirmwareUpdateCoordinator? firmwareUpdateCoordinator;
@@ -251,6 +252,8 @@ class EixamConnectSdkImpl
       Duration(hours: 24);
   static const int _maxPendingNotificationIntents = 20;
   static const int _maxRememberedNotificationIntentKeys = 100;
+  static const String _permissionDisclosureAcksKey =
+      'eixam.permissions.disclosure_acks';
   static const EixamNotificationTexts _fallbackNotificationTexts =
       EixamNotificationTexts(
     protectionActiveTitle: '',
@@ -291,6 +294,7 @@ class EixamConnectSdkImpl
     this.firmwareUpdateCoordinator,
     this.notificationPolicy = EixamNotificationPolicy.sdkManaged,
     this.notificationTexts = _fallbackNotificationTexts,
+    this.permissionDisclosureConfig = const EixamPermissionDisclosureConfig(),
     ProtectionPlatformAdapter? protectionPlatformAdapter,
     BackgroundTelemetryPlatformAdapter? backgroundTelemetryPlatformAdapter,
     SharedPrefsSdkStore? localStore,
@@ -2085,6 +2089,46 @@ class EixamConnectSdkImpl
   @override
   Future<PermissionState> getPermissionState() {
     return permissionsRepository.getPermissionState();
+  }
+
+  @override
+  Future<EixamPermissionPreflightResult> preparePermissionPreflight(
+    EixamPermissionRequirement requirement,
+  ) async {
+    final state = await permissionsRepository.getPermissionState();
+    return _buildPermissionPreflight(
+      requirement: requirement,
+      state: state,
+      disclosureAcceptedNow: false,
+      disclosureDeclinedNow: false,
+    );
+  }
+
+  @override
+  Future<EixamPermissionPreflightResult> acceptPermissionDisclosure(
+    EixamPermissionRequirement requirement,
+  ) async {
+    final state = await permissionsRepository.getPermissionState();
+    await _savePermissionDisclosureAck(requirement, state);
+    return _buildPermissionPreflight(
+      requirement: requirement,
+      state: state,
+      disclosureAcceptedNow: true,
+      disclosureDeclinedNow: false,
+    );
+  }
+
+  @override
+  Future<EixamPermissionPreflightResult> declinePermissionDisclosure(
+    EixamPermissionRequirement requirement,
+  ) async {
+    final state = await permissionsRepository.getPermissionState();
+    return _buildPermissionPreflight(
+      requirement: requirement,
+      state: state,
+      disclosureAcceptedNow: false,
+      disclosureDeclinedNow: true,
+    );
   }
 
   @override
@@ -13599,6 +13643,163 @@ class EixamConnectSdkImpl
     await _publicPreSosStatusController.close();
     await _notificationIntentController.close();
     await _eventsController.close();
+  }
+
+  Future<EixamPermissionPreflightResult> _buildPermissionPreflight({
+    required EixamPermissionRequirement requirement,
+    required PermissionState state,
+    required bool disclosureAcceptedNow,
+    required bool disclosureDeclinedNow,
+  }) async {
+    final status = _permissionStatusForPurpose(requirement.purpose, state);
+    final nativeAction = requirement.nativeAction ??
+        _defaultNativeActionForPurpose(requirement.purpose);
+    final alreadySatisfied = _isPermissionSatisfied(
+      requirement.purpose,
+      state,
+    );
+    final texts = permissionDisclosureConfig.textsFor(requirement.purpose);
+    final disclosure = EixamPermissionDisclosure.fromTexts(
+      purpose: requirement.purpose,
+      texts: texts,
+      visibleFeatures: _visibleFeaturesForPurpose(requirement.purpose),
+    );
+    final ackMatchesCurrentStatus = disclosureAcceptedNow ||
+        await _permissionDisclosureAckMatches(requirement, state);
+    final requiresDisclosure =
+        !alreadySatisfied && !ackMatchesCurrentStatus && !disclosureDeclinedNow;
+    final nativePromptAllowed =
+        alreadySatisfied || disclosureAcceptedNow || ackMatchesCurrentStatus;
+
+    return EixamPermissionPreflightResult(
+      requirement: requirement,
+      permissionState: state,
+      permissionStatus: status,
+      nativeAction: nativeAction,
+      nativePermissionAlreadySatisfied: alreadySatisfied,
+      requiresDisclosure: requiresDisclosure,
+      nativePromptAllowed: nativePromptAllowed,
+      disclosure:
+          requiresDisclosure || disclosureDeclinedNow ? disclosure : null,
+      limitedFeatureMessage:
+          alreadySatisfied ? null : texts.limitedFeatureMessage,
+    );
+  }
+
+  SdkPermissionStatus _permissionStatusForPurpose(
+    EixamPermissionPurpose purpose,
+    PermissionState state,
+  ) {
+    return switch (purpose) {
+      EixamPermissionPurpose.locationForeground ||
+      EixamPermissionPurpose.locationBackground =>
+        state.location,
+      EixamPermissionPurpose.nearbyDevicesBluetooth => state.bluetooth,
+      EixamPermissionPurpose.notifications => state.notifications,
+    };
+  }
+
+  bool _isPermissionSatisfied(
+    EixamPermissionPurpose purpose,
+    PermissionState state,
+  ) {
+    return switch (purpose) {
+      EixamPermissionPurpose.locationForeground => state.hasLocationAccess,
+      EixamPermissionPurpose.locationBackground => false,
+      EixamPermissionPurpose.nearbyDevicesBluetooth => state.canUseBluetooth,
+      EixamPermissionPurpose.notifications => state.hasNotificationAccess,
+    };
+  }
+
+  EixamPermissionNativeAction _defaultNativeActionForPurpose(
+    EixamPermissionPurpose purpose,
+  ) {
+    return switch (purpose) {
+      EixamPermissionPurpose.locationForeground =>
+        EixamPermissionNativeAction.requestLocationWhenInUse,
+      EixamPermissionPurpose.locationBackground =>
+        EixamPermissionNativeAction.openAppSettings,
+      EixamPermissionPurpose.nearbyDevicesBluetooth =>
+        EixamPermissionNativeAction.requestBluetoothNearbyDevices,
+      EixamPermissionPurpose.notifications =>
+        EixamPermissionNativeAction.requestNotifications,
+    };
+  }
+
+  List<String> _visibleFeaturesForPurpose(EixamPermissionPurpose purpose) {
+    return switch (purpose) {
+      EixamPermissionPurpose.locationForeground => const <String>[
+          'SOS',
+          'safety status',
+        ],
+      EixamPermissionPurpose.locationBackground => const <String>[
+          'SOS',
+          'protection mode',
+          'safety tracking',
+          'connected TAG monitoring',
+        ],
+      EixamPermissionPurpose.nearbyDevicesBluetooth => const <String>[
+          'TAG pairing',
+          'device monitoring',
+          'physical SOS trigger',
+          'physical SOS cancel',
+        ],
+      EixamPermissionPurpose.notifications => const <String>[
+          'SOS status',
+          'device alerts',
+          'protection events',
+          'safety updates',
+        ],
+    };
+  }
+
+  Future<bool> _permissionDisclosureAckMatches(
+    EixamPermissionRequirement requirement,
+    PermissionState state,
+  ) async {
+    final acks = await _localStore.readJson(_permissionDisclosureAcksKey);
+    final stored = acks?[_permissionDisclosureAckKey(requirement)];
+    if (stored is! Map<String, dynamic>) {
+      return false;
+    }
+    return stored['permissionSignature'] ==
+        _permissionDisclosureSignature(requirement, state);
+  }
+
+  Future<void> _savePermissionDisclosureAck(
+    EixamPermissionRequirement requirement,
+    PermissionState state,
+  ) async {
+    final existing = await _localStore.readJson(_permissionDisclosureAcksKey) ??
+        <String, dynamic>{};
+    existing[_permissionDisclosureAckKey(requirement)] = <String, dynamic>{
+      'permissionSignature': _permissionDisclosureSignature(
+        requirement,
+        state,
+      ),
+      'acceptedAt': DateTime.now().toUtc().toIso8601String(),
+    };
+    await _localStore.saveJson(_permissionDisclosureAcksKey, existing);
+  }
+
+  String _permissionDisclosureAckKey(EixamPermissionRequirement requirement) {
+    final featureKey = requirement.featureKey?.trim();
+    if (featureKey == null || featureKey.isEmpty) {
+      return requirement.purpose.name;
+    }
+    return '${requirement.purpose.name}:$featureKey';
+  }
+
+  String _permissionDisclosureSignature(
+    EixamPermissionRequirement requirement,
+    PermissionState state,
+  ) {
+    final status = _permissionStatusForPurpose(requirement.purpose, state);
+    final service =
+        requirement.purpose == EixamPermissionPurpose.nearbyDevicesBluetooth
+            ? 'bt:${state.bluetoothEnabled}'
+            : 'loc:${state.location != SdkPermissionStatus.serviceDisabled}';
+    return '${requirement.purpose.name}:${status.name}:$service';
   }
 }
 

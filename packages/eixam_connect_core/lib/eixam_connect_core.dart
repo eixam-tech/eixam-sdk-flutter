@@ -33,6 +33,7 @@ export 'src/entities/sdk_me_response_parser.dart';
 export 'src/profile/sdk_profile_validation.dart';
 export 'src/entities/death_man_plan.dart';
 export 'src/entities/permission_state.dart';
+export 'src/entities/permission_disclosure.dart';
 export 'src/entities/public_pre_sos_status.dart';
 export 'src/entities/os_sos_widget_activation.dart';
 export 'src/enums/sos_state.dart';

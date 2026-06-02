@@ -9,3 +9,4 @@ export 'src/public/enums/enums.dart';
 export 'src/public/events/events.dart';
 export 'src/public/errors/errors.dart';
 export 'src/public/factory/factory.dart';
+export 'src/public/widgets/widgets.dart';

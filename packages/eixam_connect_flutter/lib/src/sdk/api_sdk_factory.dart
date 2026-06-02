@@ -47,6 +47,8 @@ class ApiSdkFactory {
     EixamNotificationPolicy notificationPolicy =
         EixamNotificationPolicy.sdkManaged,
     required EixamNotificationTexts notificationTexts,
+    EixamPermissionDisclosureConfig permissionDisclosureConfig =
+        const EixamPermissionDisclosureConfig(),
     bool enableLogging = false,
   }) async {
     BleDebugRegistry.instance.reset();
@@ -180,6 +182,7 @@ class ApiSdkFactory {
       ),
       notificationPolicy: notificationPolicy,
       notificationTexts: notificationTexts,
+      permissionDisclosureConfig: permissionDisclosureConfig,
       protectionPlatformAdapter:
           protectionPlatformAdapter ?? buildDefaultProtectionPlatformAdapter(),
       disposeCallback: () async {
@@ -203,6 +206,7 @@ class ApiSdkFactory {
       websocketUrl: resolved.sdkConfig.websocketUrl ?? '',
       notificationPolicy: config.notificationPolicy,
       notificationTexts: config.notificationTexts,
+      permissionDisclosureConfig: config.permissionDisclosureConfig,
       enableLogging: resolved.sdkConfig.enableLogging,
     );
 

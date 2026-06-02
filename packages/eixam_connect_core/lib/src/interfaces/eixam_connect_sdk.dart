@@ -17,6 +17,7 @@ import '../entities/protection_mode_models.dart';
 import '../entities/public_pre_sos_status.dart';
 import '../entities/os_sos_widget_activation.dart';
 import '../entities/runtime_identity_snapshot.dart';
+import '../entities/permission_disclosure.dart';
 import '../entities/sdk_operational_diagnostics.dart';
 import '../entities/sdk_resolved_location.dart';
 import '../entities/sdk_user_profile.dart';
@@ -214,6 +215,15 @@ abstract class EixamConnectSdk {
   Stream<EixamNotificationIntent> watchNotificationIntents();
 
   Future<PermissionState> getPermissionState();
+  Future<EixamPermissionPreflightResult> preparePermissionPreflight(
+    EixamPermissionRequirement requirement,
+  );
+  Future<EixamPermissionPreflightResult> acceptPermissionDisclosure(
+    EixamPermissionRequirement requirement,
+  );
+  Future<EixamPermissionPreflightResult> declinePermissionDisclosure(
+    EixamPermissionRequirement requirement,
+  );
   Future<PermissionState> requestLocationPermission();
   Future<PermissionState> requestNotificationPermission();
   Future<PermissionState> requestBluetoothPermission();
