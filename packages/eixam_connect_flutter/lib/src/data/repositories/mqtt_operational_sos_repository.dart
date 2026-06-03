@@ -852,10 +852,53 @@ class MqttOperationalSosRepository
 
   void _handleRealtimeEvent(RealtimeEvent event) {
     final update = MqttSosLifecycleUpdate.fromRealtimeEvent(event);
-    if (update == null || _activeIncident == null) {
+    if (update == null) {
+      if (_isActuatorUpdateEvent(event)) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_ACTUATOR_UPDATE_IGNORED reason=missing_snapshot '
+          'incidentId=${_eventIncidentId(event) ?? "none"} version=none',
+        );
+      }
+      return;
+    }
+    final actuators = update.actuators;
+    if (actuators != null) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_ACTUATOR_UPDATE_RECEIVED incidentId=${update.incidentId} '
+        'version=${actuators.snapshotVersion} '
+        'items=${_actuatorItemsSummary(actuators)}',
+      );
+    }
+    if (_activeIncident == null) {
+      if (actuators != null) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_ACTUATOR_UPDATE_IGNORED reason=incident_mismatch '
+          'incidentId=${update.incidentId} activeIncidentId=none '
+          'version=${actuators.snapshotVersion}',
+        );
+      }
       return;
     }
     if (update.incidentId != _activeIncident!.id) {
+      if (actuators != null) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_ACTUATOR_UPDATE_IGNORED reason=incident_mismatch '
+          'incidentId=${update.incidentId} '
+          'activeIncidentId=${_activeIncident!.id} '
+          'version=${actuators.snapshotVersion}',
+        );
+      }
+      return;
+    }
+    if (!_isActiveLikeState(_stateMachine.current)) {
+      if (actuators != null) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_ACTUATOR_UPDATE_IGNORED reason=stale '
+          'incidentId=${update.incidentId} '
+          'currentState=${_stateMachine.current.name} '
+          'version=${actuators.snapshotVersion}',
+        );
+      }
       return;
     }
 
@@ -863,21 +906,36 @@ class MqttOperationalSosRepository
     var currentIncident = previousIncident;
     var shouldPersist = false;
 
-    final actuators = update.actuators;
-    if (actuators != null &&
-        _shouldAcceptActuatorSnapshot(
-          current: currentIncident.actuators,
-          incoming: actuators,
-        )) {
-      currentIncident = currentIncident.copyWith(actuators: actuators);
-      _activeIncident = currentIncident;
-      shouldPersist = true;
+    if (actuators != null) {
+      if (!_shouldAcceptActuatorSnapshot(
+        current: currentIncident.actuators,
+        incoming: actuators,
+      )) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_ACTUATOR_UPDATE_IGNORED reason=stale '
+          'incidentId=${update.incidentId} '
+          'incomingVersion=${actuators.snapshotVersion} '
+          'currentVersion=${currentIncident.actuators?.snapshotVersion ?? -1}',
+        );
+      } else {
+        currentIncident = currentIncident.copyWith(actuators: actuators);
+        _activeIncident = currentIncident;
+        shouldPersist = true;
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_ACTUATOR_UPDATE_ACCEPTED incidentId=${update.incidentId} '
+          'version=${actuators.snapshotVersion}',
+        );
+      }
     }
 
     final state = update.state;
     if (state == null) {
       if (shouldPersist) {
         unawaited(_persistState());
+        _emitActuatorOnlyUpdate(
+          incidentId: update.incidentId,
+          version: actuators?.snapshotVersion,
+        );
       }
       return;
     }
@@ -892,6 +950,10 @@ class MqttOperationalSosRepository
     if (!accepted) {
       if (shouldPersist) {
         unawaited(_persistState());
+        _emitActuatorOnlyUpdate(
+          incidentId: update.incidentId,
+          version: actuators?.snapshotVersion,
+        );
       }
       return;
     }
@@ -905,6 +967,59 @@ class MqttOperationalSosRepository
     required SosActuatorSnapshot incoming,
   }) {
     return incoming.snapshotVersion > (current?.snapshotVersion ?? -1);
+  }
+
+  void _emitActuatorOnlyUpdate({
+    required String incidentId,
+    required int? version,
+  }) {
+    _stateController.add(_stateMachine.current);
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_ACTUATOR_UPDATE_EMITTED incidentId=$incidentId '
+      'version=${version?.toString() ?? "none"}',
+    );
+  }
+
+  bool _isActuatorUpdateEvent(RealtimeEvent event) {
+    return event.type.trim().toLowerCase() == 'sos.actuator_update' ||
+        (event.payload?['type']?.toString().trim().toLowerCase() ==
+            'sos.actuator_update');
+  }
+
+  String? _eventIncidentId(RealtimeEvent event) {
+    final payload = event.payload;
+    if (payload == null) {
+      return null;
+    }
+    final direct = payload['incidentId'] ?? payload['id'];
+    if (direct is String && direct.trim().isNotEmpty) {
+      return direct.trim();
+    }
+    final incident = payload['incident'];
+    if (incident is Map) {
+      final nested = incident['id'];
+      if (nested is String && nested.trim().isNotEmpty) {
+        return nested.trim();
+      }
+    }
+    return null;
+  }
+
+  String _actuatorItemsSummary(SosActuatorSnapshot snapshot) {
+    if (snapshot.items.isEmpty) {
+      return 'none';
+    }
+    return snapshot.items.map((item) {
+      final type =
+          item.rawType.trim().isNotEmpty ? item.rawType.trim() : item.type.name;
+      final status = item.rawStatus.trim().isNotEmpty
+          ? item.rawStatus.trim()
+          : item.status.name;
+      final outcome = item.rawOutcome.trim().isNotEmpty
+          ? item.rawOutcome.trim()
+          : item.outcome.name;
+      return '$type:$status:$outcome';
+    }).join(',');
   }
 
   bool _emit(
