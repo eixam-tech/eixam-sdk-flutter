@@ -883,6 +883,42 @@ class EixamConnectSdkImpl
   }
 
   @override
+  Future<void> deleteUserData({
+    required String userHash,
+    required String externalUserId,
+  }) async {
+    final ds = profileRemoteDataSource;
+    if (ds == null) {
+      throw const AuthException(
+        'E_SDK_PROFILE_HTTP_UNAVAILABLE',
+        'SDK profile HTTP API is not configured for this runtime.',
+      );
+    }
+    final session = _session;
+    if (session == null) {
+      throw const AuthException(
+        'E_SDK_SESSION_REQUIRED',
+        'An SDK session must be configured before deleting user data.',
+      );
+    }
+    final trimmedUserHash = userHash.trim();
+    final trimmedExternalUserId = externalUserId.trim();
+    if (trimmedUserHash.isEmpty || trimmedExternalUserId.isEmpty) {
+      throw const AuthException(
+        'E_SDK_DELETE_USER_DATA_SIGNING_REQUIRED',
+        'Signed SDK user identity is required before deleting user data.',
+      );
+    }
+    await ds.deleteUserData(
+      sessionOverride: EixamSession.signed(
+        appId: session.appId,
+        externalUserId: trimmedExternalUserId,
+        userHash: trimmedUserHash,
+      ),
+    );
+  }
+
+  @override
   Future<AppFeedbackSubmission> submitAppFeedback({
     required String description,
     required String userAccessToken,

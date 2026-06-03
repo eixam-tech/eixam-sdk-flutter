@@ -86,6 +86,16 @@ abstract class EixamConnectSdk {
   /// Updates the authenticated SDK user's profile via `PUT /v1/sdk/me`.
   Future<SdkUserProfile> updateSdkUserProfile(SdkUserProfileUpdate update);
 
+  /// Deletes SDK-owned data for the authenticated user via `DELETE /v1/sdk/me`.
+  ///
+  /// Host apps still orchestrate account deletion across SDK erasure, auth
+  /// deletion, and local wipe. This method owns only the SDK data-erasure
+  /// transport.
+  Future<void> deleteUserData({
+    required String userHash,
+    required String externalUserId,
+  });
+
   /// Submits authenticated in-app feedback to `POST /v1/feedback`.
   ///
   /// The SDK uses the current SDK session for `app_id` and `sdk_user_id`.

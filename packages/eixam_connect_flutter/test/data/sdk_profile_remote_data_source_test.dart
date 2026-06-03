@@ -1,5 +1,7 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_http_transport.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_profile_remote_data_source.dart';
+import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_session_context.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
@@ -59,4 +61,57 @@ void main() {
       expect(error, isNull);
     });
   });
+
+  group('HttpSdkProfileRemoteDataSource.deleteUserData', () {
+    test('sends SDK signed headers and accepts 404', () async {
+      final client = _RecordingHttpClient(
+        response: http.Response('', 404),
+      );
+      final dataSource = HttpSdkProfileRemoteDataSource(
+        transport: SdkHttpTransport(
+          client: client,
+          config: const EixamSdkConfig(
+            apiBaseUrl: 'https://api.staging.eixam.io',
+            websocketUrl: 'wss://mqtt.staging.eixam.io',
+          ),
+          sessionContext: SdkSessionContext(),
+        ),
+      );
+
+      await dataSource.deleteUserData(
+        sessionOverride: const EixamSession.signed(
+          appId: 'app-demo',
+          externalUserId: 'canonical-user-1',
+          userHash: 'sdk-user-hash',
+        ),
+      );
+
+      expect(client.requests, hasLength(1));
+      final request = client.requests.single;
+      expect(request.method, 'DELETE');
+      expect(request.url.path, '/v1/sdk/me');
+      expect(request.headers['X-App-ID'], 'app-demo');
+      expect(request.headers['X-User-ID'], 'canonical-user-1');
+      expect(request.headers['Authorization'], 'Bearer sdk-user-hash');
+    });
+  });
+}
+
+final class _RecordingHttpClient extends http.BaseClient {
+  _RecordingHttpClient({required this.response});
+
+  final http.Response response;
+  final List<http.BaseRequest> requests = <http.BaseRequest>[];
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    requests.add(request);
+    return http.StreamedResponse(
+      Stream<List<int>>.value(response.bodyBytes),
+      response.statusCode,
+      headers: response.headers,
+      reasonPhrase: response.reasonPhrase,
+      request: request,
+    );
+  }
 }

@@ -12,6 +12,8 @@ abstract class SdkProfileRemoteDataSource {
     SdkUserProfileUpdate update, {
     EixamSession? sessionOverride,
   });
+
+  Future<void> deleteUserData({required EixamSession sessionOverride});
 }
 
 /// HTTP implementation for `GET`/`PUT /v1/sdk/me`.
@@ -46,6 +48,22 @@ final class HttpSdkProfileRemoteDataSource
       body: jsonEncode(update.toRequestJson()),
     );
     return _readProfileResponse(response);
+  }
+
+  @override
+  Future<void> deleteUserData({required EixamSession sessionOverride}) async {
+    final response = await transport.delete(
+      _mePath,
+      sessionOverride: sessionOverride,
+    );
+    final statusCode = response.statusCode;
+    if (statusCode == 404 || (statusCode >= 200 && statusCode < 300)) {
+      return;
+    }
+    final error = SdkProfileHttpSupport.tryMapHttpFailure(response);
+    if (error != null) {
+      throw error;
+    }
   }
 
   SdkUserProfile _readProfileResponse(http.Response response) {
