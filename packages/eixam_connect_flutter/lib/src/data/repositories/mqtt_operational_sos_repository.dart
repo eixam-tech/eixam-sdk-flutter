@@ -728,6 +728,7 @@ class MqttOperationalSosRepository
                 incident.relaySource,
             message: incident.message,
             deliveryChannel: incident.deliveryChannel,
+            actuators: incident.actuators,
             creationTelemetry: item.creationTelemetry == null
                 ? null
                 : SosHistoryTelemetry(
@@ -858,20 +859,52 @@ class MqttOperationalSosRepository
       return;
     }
 
-    final previousIncident = _activeIncident;
-    final nextIncident = previousIncident!.copyWith(state: update.state);
+    final previousIncident = _activeIncident!;
+    var currentIncident = previousIncident;
+    var shouldPersist = false;
+
+    final actuators = update.actuators;
+    if (actuators != null &&
+        _shouldAcceptActuatorSnapshot(
+          current: currentIncident.actuators,
+          incoming: actuators,
+        )) {
+      currentIncident = currentIncident.copyWith(actuators: actuators);
+      _activeIncident = currentIncident;
+      shouldPersist = true;
+    }
+
+    final state = update.state;
+    if (state == null) {
+      if (shouldPersist) {
+        unawaited(_persistState());
+      }
+      return;
+    }
+
+    final nextIncident = currentIncident.copyWith(state: state);
     final accepted = _emit(
-      update.state,
-      previousIncident: previousIncident,
+      state,
+      previousIncident: currentIncident,
       incomingIncident: nextIncident,
       reason: 'realtime_event',
     );
     if (!accepted) {
+      if (shouldPersist) {
+        unawaited(_persistState());
+      }
       return;
     }
     _activeIncident = nextIncident;
-    _rememberActiveLikeStateIfNeeded(update.state);
+    _rememberActiveLikeStateIfNeeded(state);
     unawaited(_persistState());
+  }
+
+  bool _shouldAcceptActuatorSnapshot({
+    required SosActuatorSnapshot? current,
+    required SosActuatorSnapshot incoming,
+  }) {
+    return incoming.snapshotVersion > (current?.snapshotVersion ?? -1);
   }
 
   bool _emit(

@@ -1,5 +1,6 @@
 import '../enums/sos_delivery_channel.dart';
 import '../enums/sos_state.dart';
+import 'sos_actuator_snapshot.dart';
 import 'tracking_position.dart';
 
 /// Telemetry snapshot attached to an SOS history item.
@@ -38,6 +39,7 @@ class SosHistoryItem {
     this.triggerSource,
     this.message,
     this.deliveryChannel,
+    this.actuators,
     this.creationTelemetry,
     this.trail = const [],
   });
@@ -49,6 +51,7 @@ class SosHistoryItem {
   final String? triggerSource;
   final String? message;
   final SosDeliveryChannel? deliveryChannel;
+  final SosActuatorSnapshot? actuators;
   final SosHistoryTelemetry? creationTelemetry;
   final List<TrackingPosition> trail;
 }

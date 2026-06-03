@@ -1,5 +1,6 @@
 import '../enums/sos_state.dart';
 import '../enums/sos_delivery_channel.dart';
+import 'sos_actuator_snapshot.dart';
 import 'tracking_position.dart';
 
 class SosIncident {
@@ -18,6 +19,7 @@ class SosIncident {
   final String? cycleKey;
   final String? message;
   final SosDeliveryChannel? deliveryChannel;
+  final SosActuatorSnapshot? actuators;
 
   const SosIncident({
     required this.id,
@@ -35,6 +37,7 @@ class SosIncident {
     this.cycleKey,
     this.message,
     this.deliveryChannel,
+    this.actuators,
   });
 
   SosIncident copyWith({
@@ -52,6 +55,7 @@ class SosIncident {
     String? cycleKey,
     String? message,
     Object? deliveryChannel = _unset,
+    Object? actuators = _unset,
   }) {
     return SosIncident(
       id: id,
@@ -71,6 +75,9 @@ class SosIncident {
       deliveryChannel: identical(deliveryChannel, _unset)
           ? this.deliveryChannel
           : deliveryChannel as SosDeliveryChannel?,
+      actuators: identical(actuators, _unset)
+          ? this.actuators
+          : actuators as SosActuatorSnapshot?,
     );
   }
 

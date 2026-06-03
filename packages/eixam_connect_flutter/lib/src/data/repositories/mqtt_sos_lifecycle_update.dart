@@ -3,11 +3,13 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 class MqttSosLifecycleUpdate {
   const MqttSosLifecycleUpdate({
     required this.incidentId,
-    required this.state,
+    this.state,
+    this.actuators,
   });
 
   final String incidentId;
-  final SosState state;
+  final SosState? state;
+  final SosActuatorSnapshot? actuators;
 
   static MqttSosLifecycleUpdate? fromRealtimeEvent(RealtimeEvent event) {
     final payload = event.payload;
@@ -17,13 +19,15 @@ class MqttSosLifecycleUpdate {
 
     final incidentId = _incidentIdFrom(payload);
     final state = _stateFrom(payload);
-    if (incidentId == null || state == null) {
+    final actuators = _actuatorsFrom(payload);
+    if (incidentId == null || (state == null && actuators == null)) {
       return null;
     }
 
     return MqttSosLifecycleUpdate(
       incidentId: incidentId,
       state: state,
+      actuators: actuators,
     );
   }
 
@@ -45,6 +49,12 @@ class MqttSosLifecycleUpdate {
   }
 
   static SosState? _stateFrom(Map<String, dynamic> payload) {
+    final eventType = payload['type'];
+    if (eventType is String &&
+        eventType.trim().toLowerCase() == 'sos.actuator_update') {
+      return null;
+    }
+
     final raw = payload['status'] ?? payload['state'] ?? payload['type'];
     if (raw is! String) {
       return null;
@@ -69,5 +79,51 @@ class MqttSosLifecycleUpdate {
         SosState.resolved,
       _ => null,
     };
+  }
+
+  static SosActuatorSnapshot? _actuatorsFrom(Map<String, dynamic> payload) {
+    final direct = _snapshotFromEnvelope(
+      actuators: payload['actuators'],
+      snapshotVersion:
+          payload['snapshotVersion'] ?? payload['snapshot_version'],
+    );
+    if (direct != null) {
+      return direct;
+    }
+
+    final incident = payload['incident'];
+    if (incident is Map) {
+      return _snapshotFromEnvelope(
+        actuators: incident['actuators'],
+        snapshotVersion:
+            incident['snapshotVersion'] ?? incident['snapshot_version'],
+      );
+    }
+    return null;
+  }
+
+  static SosActuatorSnapshot? _snapshotFromEnvelope({
+    required Object? actuators,
+    required Object? snapshotVersion,
+  }) {
+    if (actuators is List) {
+      return SosActuatorSnapshot.fromJson(<String, dynamic>{
+        'snapshotVersion': snapshotVersion,
+        'items': actuators,
+      });
+    }
+    if (actuators is Map<String, dynamic>) {
+      return SosActuatorSnapshot.fromJson(<String, dynamic>{
+        if (snapshotVersion != null) 'snapshotVersion': snapshotVersion,
+        ...actuators,
+      });
+    }
+    if (actuators is Map) {
+      return SosActuatorSnapshot.fromJson(<String, dynamic>{
+        if (snapshotVersion != null) 'snapshotVersion': snapshotVersion,
+        ...Map<String, dynamic>.from(actuators),
+      });
+    }
+    return null;
   }
 }

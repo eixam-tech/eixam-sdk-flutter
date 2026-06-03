@@ -24,6 +24,7 @@ export 'package:eixam_connect_core/src/entities/sdk_resolved_location.dart';
 export 'package:eixam_connect_core/src/entities/sdk_user_profile.dart';
 export 'package:eixam_connect_core/src/profile/sdk_profile_validation.dart';
 export 'package:eixam_connect_core/src/entities/sdk_telemetry_payload.dart';
+export 'package:eixam_connect_core/src/entities/sos_actuator_snapshot.dart';
 export 'package:eixam_connect_core/src/entities/sos_incident.dart';
 export 'package:eixam_connect_core/src/entities/sos_trigger_payload.dart';
 export 'package:eixam_connect_core/src/entities/tracking_position.dart';

@@ -16,6 +16,7 @@ class SosIncidentDto {
   final String? cycleKey;
   final String? message;
   final Map<String, dynamic>? positionSnapshot;
+  final SosActuatorSnapshot? actuators;
   final int? statusCode;
 
   /// References the telemetry row inserted when this incident was first opened.
@@ -36,6 +37,7 @@ class SosIncidentDto {
     this.cycleKey,
     this.message,
     this.positionSnapshot,
+    this.actuators,
     this.statusCode,
     this.creationTelemetryId,
   });
@@ -65,6 +67,7 @@ class SosIncidentDto {
       cycleKey: _stringFromJson(json, const ['cycleKey', 'cycle_key']),
       message: json['message'] as String?,
       positionSnapshot: _positionSnapshotFromJson(json),
+      actuators: _actuatorsFromJson(json['actuators']),
       creationTelemetryId: json['creationTelemetryId'] as String? ??
           json['creation_telemetry_id'] as String?,
     );
@@ -85,6 +88,7 @@ class SosIncidentDto {
     String? cycleKey,
     String? message,
     Map<String, dynamic>? positionSnapshot,
+    Object? actuators = _unset,
     int? statusCode,
     String? creationTelemetryId,
   }) {
@@ -103,10 +107,15 @@ class SosIncidentDto {
       cycleKey: cycleKey ?? this.cycleKey,
       message: message ?? this.message,
       positionSnapshot: positionSnapshot ?? this.positionSnapshot,
+      actuators: identical(actuators, _unset)
+          ? this.actuators
+          : actuators as SosActuatorSnapshot?,
       statusCode: statusCode ?? this.statusCode,
       creationTelemetryId: creationTelemetryId ?? this.creationTelemetryId,
     );
   }
+
+  static const Object _unset = Object();
 
   static String? _stringFromJson(
     Map<String, dynamic> json,
@@ -168,5 +177,15 @@ class SosIncidentDto {
           (json['createdAt'] as String?) ??
           DateTime.now().toIso8601String(),
     };
+  }
+
+  static SosActuatorSnapshot? _actuatorsFromJson(Object? value) {
+    if (value is Map<String, dynamic>) {
+      return SosActuatorSnapshot.fromJson(value);
+    }
+    if (value is Map) {
+      return SosActuatorSnapshot.fromJson(Map<String, dynamic>.from(value));
+    }
+    return null;
   }
 }

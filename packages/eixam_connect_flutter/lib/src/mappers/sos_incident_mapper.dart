@@ -22,6 +22,7 @@ class SosIncidentMapper {
       owner: dto.owner,
       cycleKey: dto.cycleKey,
       message: dto.message,
+      actuators: dto.actuators,
       positionSnapshot: dto.positionSnapshot == null
           ? null
           : LocalStateSerializers.trackingPositionFromJson(

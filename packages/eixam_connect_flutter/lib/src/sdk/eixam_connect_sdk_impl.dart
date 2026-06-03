@@ -5144,6 +5144,7 @@ class EixamConnectSdkImpl
               triggerSource: 'ble_device_runtime_status',
               positionSnapshot: incoming.positionSnapshot,
               deliveryChannel: SosDeliveryChannel.deviceOnly,
+              actuators: incoming.actuators,
             );
     }
     return incoming;
@@ -5164,6 +5165,7 @@ class EixamConnectSdkImpl
       triggerSource: triggerSource ?? incident.triggerSource,
       message: incident.message,
       deliveryChannel: deliveryChannel ?? incident.deliveryChannel,
+      actuators: incident.actuators,
     );
   }
 
@@ -11713,6 +11715,7 @@ class EixamConnectSdkImpl
       message: referenceIncident?.message,
       deliveryChannel:
           referenceIncident?.deliveryChannel ?? SosDeliveryChannel.deviceOnly,
+      actuators: referenceIncident?.actuators,
     );
     _publicSosFallbackIncident = terminalIncident;
     _lastKnownActiveSosIncident = null;
