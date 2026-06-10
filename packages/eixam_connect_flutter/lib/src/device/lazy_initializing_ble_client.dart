@@ -2,12 +2,15 @@ import 'dart:async';
 
 import 'ble_adapter_state.dart';
 import 'ble_client.dart';
+import 'ble_debug_registry.dart';
 import 'ble_scan_result.dart';
 import 'eixam_ble_command.dart';
 import 'eixam_ble_notification.dart';
 
 final class LazyInitializingBleClient implements BleClient {
-  LazyInitializingBleClient(this._delegate);
+  LazyInitializingBleClient(this._delegate) {
+    BleDebugRegistry.instance.registerScanner(scan);
+  }
 
   final BleClient _delegate;
   Future<void>? _initializeFuture;

@@ -16,10 +16,55 @@ import 'eixam_ble_mesh_port_inference.dart';
 import 'eixam_ble_notification.dart';
 import 'eixam_ble_protocol.dart';
 
+typedef NativeBleStartScan = Future<void> Function(Duration timeout);
+typedef NativeBleStopScan = Future<void> Function();
+
+final class _SdkDiscoveryPrecheck {
+  const _SdkDiscoveryPrecheck({
+    required this.supported,
+    required this.adapterState,
+    required this.scannerReady,
+    required this.allowed,
+    required this.reason,
+  });
+
+  final bool supported;
+  final BleAdapterState adapterState;
+  final String scannerReady;
+  final bool allowed;
+  final String reason;
+}
+
 class RealBleClient implements BleClient {
   RealBleClient({
     int? Function(EixamBleChannel channel, List<int> payload)? meshPortResolver,
-  }) : _meshPortResolver = meshPortResolver;
+    @visibleForTesting Future<bool> Function()? isSupportedProvider,
+    @visibleForTesting BluetoothAdapterState Function()? adapterStateProvider,
+    @visibleForTesting bool Function()? isScanningProvider,
+    @visibleForTesting
+    Stream<BluetoothAdapterState> Function()? adapterStateStreamProvider,
+    @visibleForTesting Stream<List<ScanResult>> Function()? scanResultsProvider,
+    @visibleForTesting NativeBleStartScan? startScan,
+    @visibleForTesting NativeBleStopScan? stopScan,
+  })  : _meshPortResolver = meshPortResolver,
+        _isSupportedProvider =
+            isSupportedProvider ?? (() => FlutterBluePlus.isSupported),
+        _adapterStateProvider =
+            adapterStateProvider ?? (() => FlutterBluePlus.adapterStateNow),
+        _isScanningProvider =
+            isScanningProvider ?? (() => FlutterBluePlus.isScanningNow),
+        _adapterStateStreamProvider =
+            adapterStateStreamProvider ?? (() => FlutterBluePlus.adapterState),
+        _scanResultsProvider =
+            scanResultsProvider ?? (() => FlutterBluePlus.scanResults),
+        _startScan = startScan ??
+            ((timeout) => FlutterBluePlus.startScan(
+                  timeout: timeout,
+                  androidScanMode: AndroidScanMode.lowLatency,
+                  androidUsesFineLocation: true,
+                  androidCheckLocationServices: true,
+                )),
+        _stopScan = stopScan ?? (() => FlutterBluePlus.stopScan());
 
   static const Duration _connectTimeout = Duration(seconds: 10);
   static const Duration _postConnectStabilizationDelay =
@@ -32,6 +77,13 @@ class RealBleClient implements BleClient {
   StreamSubscription<BluetoothAdapterState>? _adapterStateSub;
   final int? Function(EixamBleChannel channel, List<int> payload)?
       _meshPortResolver;
+  final Future<bool> Function() _isSupportedProvider;
+  final BluetoothAdapterState Function() _adapterStateProvider;
+  final bool Function() _isScanningProvider;
+  final Stream<BluetoothAdapterState> Function() _adapterStateStreamProvider;
+  final Stream<List<ScanResult>> Function() _scanResultsProvider;
+  final NativeBleStartScan _startScan;
+  final NativeBleStopScan _stopScan;
 
   static final Guid eixamServiceUuid = Guid(EixamBleProtocol.serviceUuid);
   static final Guid telNotifyCharUuid =
@@ -61,11 +113,11 @@ class RealBleClient implements BleClient {
 
   @override
   Future<void> initialize() async {
-    if (await FlutterBluePlus.isSupported == false) {
+    if (await _isSupportedProvider() == false) {
       throw Exception('E_BLE_UNSUPPORTED');
     }
     _adapterStateSub?.cancel();
-    _adapterStateSub = FlutterBluePlus.adapterState.listen((state) {
+    _adapterStateSub = _adapterStateStreamProvider().listen((state) {
       final mapped = _mapAdapterState(state);
       BleDebugRegistry.instance.update(adapterState: mapped);
       if (mapped == BleAdapterState.poweredOn) {
@@ -76,8 +128,7 @@ class RealBleClient implements BleClient {
       }
       _log('BLE adapter -> $mapped');
     });
-    final initialAdapterState =
-        _mapAdapterState(FlutterBluePlus.adapterStateNow);
+    final initialAdapterState = _mapAdapterState(_adapterStateProvider());
     BleDebugRegistry.instance.update(adapterState: initialAdapterState);
     if (initialAdapterState == BleAdapterState.poweredOn) {
       debugPrint(
@@ -93,7 +144,7 @@ class RealBleClient implements BleClient {
   @override
   Future<BleAdapterState> getAdapterState() async {
     _ensureInitialized();
-    final state = _mapAdapterState(FlutterBluePlus.adapterStateNow);
+    final state = _mapAdapterState(_adapterStateProvider());
     BleDebugRegistry.instance.update(adapterState: state);
     if (state == BleAdapterState.poweredOn) {
       debugPrint(
@@ -107,7 +158,7 @@ class RealBleClient implements BleClient {
   @override
   Stream<BleAdapterState> watchAdapterState() {
     _ensureInitialized();
-    return FlutterBluePlus.adapterState.map((state) {
+    return _adapterStateStreamProvider().map((state) {
       final mapped = _mapAdapterState(state);
       BleDebugRegistry.instance.update(adapterState: mapped);
       if (mapped == BleAdapterState.poweredOn) {
@@ -125,11 +176,37 @@ class RealBleClient implements BleClient {
     Duration timeout = const Duration(seconds: 8),
   }) async {
     _ensureInitialized();
+    final isIos = defaultTargetPlatform == TargetPlatform.iOS;
+    debugPrint(
+      'SDK_DISCOVERY_START_ENTRY '
+      'source=ble_client_scan platform=${isIos ? 'ios' : 'other'}',
+    );
+    final precheck = await _precheckNativeScanStart();
+    if (isIos) {
+      debugPrint(
+        'SDK_DISCOVERY_PRECHECK '
+        'adapterState=${precheck.adapterState.name} '
+        'supported=${precheck.supported} '
+        'scannerReady=${precheck.scannerReady}',
+      );
+      if (!precheck.allowed) {
+        debugPrint(
+          'SDK_DISCOVERY_PRECHECK_BLOCKED reason=${precheck.reason}',
+        );
+        throw StateError('E_BLE_SCANNER_NOT_READY');
+      }
+      if (precheck.scannerReady == 'unknown') {
+        debugPrint(
+          'SDK_DISCOVERY_PRECHECK_ALLOW_UNKNOWN '
+          'reason=adapter_powered_on_supported',
+        );
+      }
+    }
 
     final Map<String, BleScanResult> deduped = {};
     BleDebugRegistry.instance.update(isScanning: true, scanResults: const []);
 
-    final sub = FlutterBluePlus.scanResults.listen((scanResults) {
+    final sub = _scanResultsProvider().listen((scanResults) {
       for (final r in scanResults) {
         final id = r.device.remoteId.str;
         _devices[id] = r.device;
@@ -167,15 +244,23 @@ class RealBleClient implements BleClient {
       }
     });
 
-    await FlutterBluePlus.startScan(
-      timeout: timeout,
-      androidScanMode: AndroidScanMode.lowLatency,
-      androidUsesFineLocation: true,
-      androidCheckLocationServices: true,
-    );
-    await Future.delayed(timeout);
-    await FlutterBluePlus.stopScan();
-    await sub.cancel();
+    try {
+      debugPrint('SDK_DISCOVERY_NATIVE_START_SCAN_CALL_BEGIN');
+      await _startScan(timeout);
+      debugPrint('SDK_DISCOVERY_NATIVE_START_SCAN_CALL_DONE');
+      await Future.delayed(timeout);
+      await _stopScan();
+      await sub.cancel();
+    } catch (error) {
+      debugPrint('SDK_DISCOVERY_NATIVE_START_SCAN_CALL_FAILED error=$error');
+      debugPrint(
+        'SDK_DISCOVERY_ERROR_ORIGIN '
+        'origin=flutter_blue_plus_native error=$error',
+      );
+      BleDebugRegistry.instance.update(isScanning: false);
+      await sub.cancel();
+      rethrow;
+    }
 
     final results = deduped.values.toList()
       ..sort((a, b) => b.rssi.compareTo(a.rssi));
@@ -185,6 +270,59 @@ class RealBleClient implements BleClient {
     BleDebugRegistry.instance.update(isScanning: false, scanResults: results);
 
     return results;
+  }
+
+  Future<_SdkDiscoveryPrecheck> _precheckNativeScanStart() async {
+    if (defaultTargetPlatform != TargetPlatform.iOS) {
+      return const _SdkDiscoveryPrecheck(
+        supported: true,
+        adapterState: BleAdapterState.unknown,
+        scannerReady: 'unknown',
+        allowed: true,
+        reason: 'non_ios',
+      );
+    }
+    final supported = await _isSupportedProvider();
+    final adapterState = _mapAdapterState(_adapterStateProvider());
+    final scannerReady = _isScanningProvider()
+        ? 'ready'
+        : supported && adapterState == BleAdapterState.poweredOn
+            ? 'unknown'
+            : 'false';
+    if (!supported) {
+      return _SdkDiscoveryPrecheck(
+        supported: supported,
+        adapterState: adapterState,
+        scannerReady: scannerReady,
+        allowed: false,
+        reason: 'unsupported',
+      );
+    }
+    if (adapterState != BleAdapterState.poweredOn) {
+      return _SdkDiscoveryPrecheck(
+        supported: supported,
+        adapterState: adapterState,
+        scannerReady: scannerReady,
+        allowed: false,
+        reason: 'adapter_not_powered_on',
+      );
+    }
+    if (scannerReady == 'false') {
+      return _SdkDiscoveryPrecheck(
+        supported: supported,
+        adapterState: adapterState,
+        scannerReady: scannerReady,
+        allowed: false,
+        reason: 'scanner_not_ready',
+      );
+    }
+    return _SdkDiscoveryPrecheck(
+      supported: supported,
+      adapterState: adapterState,
+      scannerReady: scannerReady,
+      allowed: true,
+      reason: 'adapter_powered_on_supported',
+    );
   }
 
   @override
