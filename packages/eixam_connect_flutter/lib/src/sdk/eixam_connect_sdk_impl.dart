@@ -1,8 +1,6 @@
 import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
-import 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
-import 'package:eixam_connect_core/src/events/realtime_event.dart';
 import 'package:eixam_connect_core/src/interfaces/realtime_client.dart';
 import 'package:flutter/widgets.dart';
 
@@ -55,6 +53,94 @@ import 'sos_origin_classifier.dart';
 class EixamConnectSdkImpl
     with WidgetsBindingObserver
     implements EixamConnectSdk {
+  EixamConnectSdkImpl({
+    required this.sosRepository,
+    required this.trackingRepository,
+    required this.telemetryRepository,
+    required this.contactsRepository,
+    required this.deviceRepository,
+    required this.deviceRegistryRepository,
+    required this.deathManRepository,
+    required this.permissionsRepository,
+    required this.notificationsRepository,
+    required this.realtimeClient,
+    required this.deviceSosController,
+    required this.bleIncomingEvents,
+    required this.preferredBleDeviceStore,
+    this.sessionStore,
+    this.sessionContext,
+    this.identityRemoteDataSource,
+    this.profileRemoteDataSource,
+    this.feedbackRemoteDataSource,
+    this.firmwareUpdateCoordinator,
+    this.notificationPolicy = EixamNotificationPolicy.sdkManaged,
+    this.notificationTexts = _fallbackNotificationTexts,
+    this.permissionDisclosureConfig = const EixamPermissionDisclosureConfig(),
+    ProtectionPlatformAdapter? protectionPlatformAdapter,
+    BackgroundTelemetryPlatformAdapter? backgroundTelemetryPlatformAdapter,
+    SharedPrefsSdkStore? localStore,
+    Duration appTriggeredSosBridgeWindow = _defaultAppTriggeredSosBridgeWindow,
+    this.disposeCallback,
+  })  : _appTriggeredSosBridgeWindow = appTriggeredSosBridgeWindow,
+        _localStore = localStore ?? SharedPrefsSdkStore(),
+        protectionPlatformAdapter = protectionPlatformAdapter ??
+            buildDefaultProtectionPlatformAdapter(),
+        backgroundTelemetryPlatformAdapter =
+            backgroundTelemetryPlatformAdapter ??
+                buildDefaultBackgroundTelemetryPlatformAdapter() {
+    _bleAutoReconnectCoordinator = BleAutoReconnectCoordinator(
+      deviceRepository: deviceRepository,
+      preferredDeviceStore: preferredBleDeviceStore,
+    );
+    _bleOperationalRuntimeBridge = BleOperationalRuntimeBridge(
+      bleIncomingEvents: bleIncomingEvents,
+      connectionStates: realtimeClient.watchConnectionState(),
+      realtimeEvents: realtimeClient.watchEvents(),
+      telemetryRepository: telemetryRepository,
+      sosRepository: sosRepository,
+      deviceSosController: deviceSosController,
+      sessionProvider: () => _session,
+      backendHardwareIdResolver: (runtimeDeviceId) =>
+          _loadBackendHardwareIdForOperationalPayloads(
+        runtimeStatus: _lastDeviceStatus,
+      ),
+      sosBackendDeviceRegisterRetry: _retrySosAfterBackendDeviceRegistration,
+    );
+    _protectionModeController = ProtectionModeController(
+      platformAdapter: this.protectionPlatformAdapter,
+      sessionProvider: () async => _session,
+      sdkConfigProvider: () => _sdkConfig,
+      deviceStatusProvider: () async =>
+          _lastDeviceStatus ?? await deviceRepository.getDeviceStatus(),
+      permissionStateProvider: permissionsRepository.getPermissionState,
+      operationalDiagnosticsProvider: () async => _buildOperationalDiagnostics(
+        reason: 'protection_mode_controller',
+      ),
+      backendHardwareIdProvider: () =>
+          _loadBackendHardwareIdForOperationalPayloads(
+        runtimeStatus: _lastDeviceStatus,
+      ),
+      hostAppManagedNotificationsProvider: () =>
+          notificationPolicy == EixamNotificationPolicy.hostAppManaged,
+      notificationTextsProvider: () => notificationTexts,
+      onBleOwnershipChanged: _handleProtectionBleOwnershipChanged,
+    );
+    _resolvedLocationResolver = SdkResolvedLocationResolver(
+      trackingRepository: trackingRepository,
+      deviceStatusProvider: () => _lastPublicDeviceStatus ?? _lastDeviceStatus,
+      bridgeDiagnosticsProvider: () => _bridgeDiagnostics,
+    );
+    _operationalTelemetryCoordinator = OperationalTelemetryCoordinator(
+      trackingRepository: trackingRepository,
+      sosStateStream: _publicSosStateController.stream,
+      sessionProvider: () => _session,
+      publishTelemetry: publishTelemetry,
+      resolvedLocationProvider: () => _resolveLocation(
+        useCase: SdkResolvedLocationUseCase.telemetryBackend,
+      ),
+    );
+    _bindSosStreams();
+  }
   static bool _externalLoraBuildMarkerLogged = false;
 
   final SosRepository sosRepository;
@@ -212,7 +298,7 @@ class EixamConnectSdkImpl
   final Map<String, DateTime> _recentOsSosWidgetActions = <String, DateTime>{};
   final Set<String> _deviceOriginatedBackendSyncInFlight = <String>{};
   EixamSdkConfig? _sdkConfig;
-  bool _registeredDeviceAutoSyncInFlight = false;
+  final bool _registeredDeviceAutoSyncInFlight = false;
   final Set<String> _backendRegisteredNodeIdsForSession = <String>{};
   final Map<String, Future<void>> _backendDeviceRegistrationInFlightByNodeId =
       <String, Future<void>>{};
@@ -226,6 +312,7 @@ class EixamConnectSdkImpl
   late final OperationalTelemetryCoordinator _operationalTelemetryCoordinator;
   late final SdkResolvedLocationResolver _resolvedLocationResolver;
   final Duration _appTriggeredSosBridgeWindow;
+  bool _deferredRuntimeWorkPending = false;
   bool _backgroundTelemetryEnabled = true;
   bool _backgroundTelemetryStarted = false;
   String? _backgroundTelemetryStartFingerprint;
@@ -271,95 +358,6 @@ class EixamConnectSdkImpl
     protectionSosResolvedTitle: '',
     protectionSosResolvedBody: '',
   );
-
-  EixamConnectSdkImpl({
-    required this.sosRepository,
-    required this.trackingRepository,
-    required this.telemetryRepository,
-    required this.contactsRepository,
-    required this.deviceRepository,
-    required this.deviceRegistryRepository,
-    required this.deathManRepository,
-    required this.permissionsRepository,
-    required this.notificationsRepository,
-    required this.realtimeClient,
-    required this.deviceSosController,
-    required this.bleIncomingEvents,
-    required this.preferredBleDeviceStore,
-    this.sessionStore,
-    this.sessionContext,
-    this.identityRemoteDataSource,
-    this.profileRemoteDataSource,
-    this.feedbackRemoteDataSource,
-    this.firmwareUpdateCoordinator,
-    this.notificationPolicy = EixamNotificationPolicy.sdkManaged,
-    this.notificationTexts = _fallbackNotificationTexts,
-    this.permissionDisclosureConfig = const EixamPermissionDisclosureConfig(),
-    ProtectionPlatformAdapter? protectionPlatformAdapter,
-    BackgroundTelemetryPlatformAdapter? backgroundTelemetryPlatformAdapter,
-    SharedPrefsSdkStore? localStore,
-    Duration appTriggeredSosBridgeWindow = _defaultAppTriggeredSosBridgeWindow,
-    this.disposeCallback,
-  })  : _appTriggeredSosBridgeWindow = appTriggeredSosBridgeWindow,
-        _localStore = localStore ?? SharedPrefsSdkStore(),
-        protectionPlatformAdapter = protectionPlatformAdapter ??
-            buildDefaultProtectionPlatformAdapter(),
-        backgroundTelemetryPlatformAdapter =
-            backgroundTelemetryPlatformAdapter ??
-                buildDefaultBackgroundTelemetryPlatformAdapter() {
-    _bleAutoReconnectCoordinator = BleAutoReconnectCoordinator(
-      deviceRepository: deviceRepository,
-      preferredDeviceStore: preferredBleDeviceStore,
-    );
-    _bleOperationalRuntimeBridge = BleOperationalRuntimeBridge(
-      bleIncomingEvents: bleIncomingEvents,
-      connectionStates: realtimeClient.watchConnectionState(),
-      realtimeEvents: realtimeClient.watchEvents(),
-      telemetryRepository: telemetryRepository,
-      sosRepository: sosRepository,
-      deviceSosController: deviceSosController,
-      sessionProvider: () => _session,
-      backendHardwareIdResolver: (runtimeDeviceId) =>
-          _loadBackendHardwareIdForOperationalPayloads(
-        runtimeStatus: _lastDeviceStatus,
-      ),
-      sosBackendDeviceRegisterRetry: _retrySosAfterBackendDeviceRegistration,
-    );
-    _protectionModeController = ProtectionModeController(
-      platformAdapter: this.protectionPlatformAdapter,
-      sessionProvider: () async => _session,
-      sdkConfigProvider: () => _sdkConfig,
-      deviceStatusProvider: () async =>
-          _lastDeviceStatus ?? await deviceRepository.getDeviceStatus(),
-      permissionStateProvider: permissionsRepository.getPermissionState,
-      operationalDiagnosticsProvider: () async => _buildOperationalDiagnostics(
-        reason: 'protection_mode_controller',
-      ),
-      backendHardwareIdProvider: () =>
-          _loadBackendHardwareIdForOperationalPayloads(
-        runtimeStatus: _lastDeviceStatus,
-      ),
-      hostAppManagedNotificationsProvider: () =>
-          notificationPolicy == EixamNotificationPolicy.hostAppManaged,
-      notificationTextsProvider: () => notificationTexts,
-      onBleOwnershipChanged: _handleProtectionBleOwnershipChanged,
-    );
-    _resolvedLocationResolver = SdkResolvedLocationResolver(
-      trackingRepository: trackingRepository,
-      deviceStatusProvider: () => _lastPublicDeviceStatus ?? _lastDeviceStatus,
-      bridgeDiagnosticsProvider: () => _bridgeDiagnostics,
-    );
-    _operationalTelemetryCoordinator = OperationalTelemetryCoordinator(
-      trackingRepository: trackingRepository,
-      sosStateStream: _publicSosStateController.stream,
-      sessionProvider: () => _session,
-      publishTelemetry: publishTelemetry,
-      resolvedLocationProvider: () => _resolveLocation(
-        useCase: SdkResolvedLocationUseCase.telemetryBackend,
-      ),
-    );
-    _bindSosStreams();
-  }
 
   @override
   Future<void> initialize(EixamSdkConfig config) async {
@@ -758,7 +756,10 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Future<void> setSession(EixamSession session) async {
+  Future<void> setSession(
+    EixamSession session, {
+    bool deferRuntimeWork = false,
+  }) async {
     _bleOperationalRuntimeBridge.resetForSessionChange();
     _clearBackendDeviceRegistrationSessionCache();
     _session = await _bootstrapSessionIfNeeded(session);
@@ -774,19 +775,43 @@ class EixamConnectSdkImpl
     );
     await sessionStore?.save(_session!);
     _emitOperationalDiagnostics();
+    if (deferRuntimeWork) {
+      _deferredRuntimeWorkPending = true;
+      return;
+    }
+    await _startSessionRuntimeWork(trigger: 'set_session', session: _session!);
+  }
+
+  @override
+  Future<void> startDeferredRuntime() async {
+    final session = _session;
+    if (session == null || !_deferredRuntimeWorkPending) {
+      return;
+    }
+    _deferredRuntimeWorkPending = false;
+    await _startSessionRuntimeWork(
+      trigger: 'deferred_runtime',
+      session: session,
+    );
+  }
+
+  Future<void> _startSessionRuntimeWork({
+    required String trigger,
+    required EixamSession session,
+  }) async {
     _operationalTelemetryCoordinator.start(initialSosState: _publicSosState);
-    await _reconcileBackgroundTelemetry(reason: 'set_session');
+    await _reconcileBackgroundTelemetry(reason: trigger);
     _scheduleRegisteredDeviceAutoSync(
-      trigger: 'set_session',
+      trigger: trigger,
       status: _lastDeviceStatus,
     );
     await _seedPreferredBleDeviceFromBackendRegistryIfNeeded(
-      trigger: 'set_session',
+      trigger: trigger,
     );
     await _bleAutoReconnectCoordinator.tryAutoConnectOnResume();
     final realtime = realtimeClient;
     if (realtime is OperationalRealtimeClient) {
-      await realtime.reconnectIfSessionChanged(_session!);
+      await realtime.reconnectIfSessionChanged(session);
       return;
     }
     await realtimeClient.connect();
@@ -824,21 +849,11 @@ class EixamConnectSdkImpl
     );
     await sessionStore?.save(refreshed);
     _emitOperationalDiagnostics();
-    _operationalTelemetryCoordinator.start(initialSosState: _publicSosState);
-    await _reconcileBackgroundTelemetry(reason: 'refresh_identity');
-    _scheduleRegisteredDeviceAutoSync(
-      trigger: 'refresh_identity',
-      status: _lastDeviceStatus,
-    );
-    await _seedPreferredBleDeviceFromBackendRegistryIfNeeded(
-      trigger: 'refresh_identity',
-    );
-    await _bleAutoReconnectCoordinator.tryAutoConnectOnResume();
-    final realtime = realtimeClient;
-    if (realtime is OperationalRealtimeClient) {
-      await realtime.reconnectIfSessionChanged(refreshed);
-    } else {
-      await realtime.connect();
+    if (!_deferredRuntimeWorkPending) {
+      await _startSessionRuntimeWork(
+        trigger: 'refresh_identity',
+        session: refreshed,
+      );
     }
     return refreshed;
   }

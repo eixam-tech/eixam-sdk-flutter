@@ -4,9 +4,9 @@ import 'package:flutter/material.dart';
 import '../localization/eixam_ui_scope.dart';
 
 class SosStatusBanner extends StatelessWidget {
-  final SosState state;
 
   const SosStatusBanner({super.key, required this.state});
+  final SosState state;
 
   @override
   Widget build(BuildContext context) {

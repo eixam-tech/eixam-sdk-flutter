@@ -3,16 +3,6 @@
 /// The model intentionally stays UI-agnostic so it can be reused by host
 /// applications, backend adapters and internal SDK workflows.
 class EmergencyContact {
-  final String id;
-  final String name;
-  final String phone;
-  final String email;
-  final int priority;
-
-  /// ISO 639-1 language code for cascade notifications (default `en`).
-  final String language;
-  final DateTime createdAt;
-  final DateTime updatedAt;
 
   const EmergencyContact({
     required this.id,
@@ -24,6 +14,16 @@ class EmergencyContact {
     required this.createdAt,
     required this.updatedAt,
   });
+  final String id;
+  final String name;
+  final String phone;
+  final String email;
+  final int priority;
+
+  /// ISO 639-1 language code for cascade notifications (default `en`).
+  final String language;
+  final DateTime createdAt;
+  final DateTime updatedAt;
 
   EmergencyContact copyWith({
     String? id,

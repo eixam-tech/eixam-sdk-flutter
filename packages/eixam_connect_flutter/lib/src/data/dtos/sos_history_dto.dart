@@ -2,15 +2,6 @@ import 'sos_incident_dto.dart';
 
 /// DTO for one SOS history item from the backend.
 class SosHistoryItemDto {
-  const SosHistoryItemDto({
-    required this.incident,
-    this.creationTelemetry,
-    this.trail = const [],
-  });
-
-  final SosIncidentDto incident;
-  final SosHistoryTelemetryDto? creationTelemetry;
-  final List<SosHistoryTrailPointDto> trail;
 
   factory SosHistoryItemDto.fromJson(Map<String, dynamic> json) {
     final incidentJson = json['incident'] as Map<String, dynamic>? ?? json;
@@ -27,31 +18,19 @@ class SosHistoryItemDto {
           const [],
     );
   }
+  const SosHistoryItemDto({
+    required this.incident,
+    this.creationTelemetry,
+    this.trail = const [],
+  });
+
+  final SosIncidentDto incident;
+  final SosHistoryTelemetryDto? creationTelemetry;
+  final List<SosHistoryTrailPointDto> trail;
 }
 
 /// DTO for creation telemetry inline in a history item.
 class SosHistoryTelemetryDto {
-  const SosHistoryTelemetryDto({
-    required this.id,
-    required this.occurredAt,
-    this.latitude,
-    this.longitude,
-    this.altitude,
-    this.deviceBattery,
-    this.deviceCoverage,
-    this.mobileBattery,
-    this.mobileCoverage,
-  });
-
-  final String id;
-  final String occurredAt;
-  final double? latitude;
-  final double? longitude;
-  final double? altitude;
-  final int? deviceBattery;
-  final int? deviceCoverage;
-  final int? mobileBattery;
-  final int? mobileCoverage;
 
   factory SosHistoryTelemetryDto.fromJson(Map<String, dynamic> json) {
     return SosHistoryTelemetryDto(
@@ -73,21 +52,31 @@ class SosHistoryTelemetryDto {
               (json['mobile_coverage'] as num?)?.round(),
     );
   }
+  const SosHistoryTelemetryDto({
+    required this.id,
+    required this.occurredAt,
+    this.latitude,
+    this.longitude,
+    this.altitude,
+    this.deviceBattery,
+    this.deviceCoverage,
+    this.mobileBattery,
+    this.mobileCoverage,
+  });
+
+  final String id;
+  final String occurredAt;
+  final double? latitude;
+  final double? longitude;
+  final double? altitude;
+  final int? deviceBattery;
+  final int? deviceCoverage;
+  final int? mobileBattery;
+  final int? mobileCoverage;
 }
 
 /// DTO for one trail point in a history item.
 class SosHistoryTrailPointDto {
-  const SosHistoryTrailPointDto({
-    required this.occurredAt,
-    required this.latitude,
-    required this.longitude,
-    this.altitude,
-  });
-
-  final String occurredAt;
-  final double latitude;
-  final double longitude;
-  final double? altitude;
 
   factory SosHistoryTrailPointDto.fromJson(Map<String, dynamic> json) {
     return SosHistoryTrailPointDto(
@@ -99,19 +88,21 @@ class SosHistoryTrailPointDto {
       altitude: (json['altitude'] as num?)?.toDouble(),
     );
   }
+  const SosHistoryTrailPointDto({
+    required this.occurredAt,
+    required this.latitude,
+    required this.longitude,
+    this.altitude,
+  });
+
+  final String occurredAt;
+  final double latitude;
+  final double longitude;
+  final double? altitude;
 }
 
 /// DTO for the paginated history response.
 class SosHistoryPageDto {
-  const SosHistoryPageDto({
-    required this.items,
-    this.nextCursor,
-    required this.hasMore,
-  });
-
-  final List<SosHistoryItemDto> items;
-  final String? nextCursor;
-  final bool hasMore;
 
   factory SosHistoryPageDto.fromJson(Map<String, dynamic> json) {
     final incidents = (json['incidents'] as List<dynamic>?)
@@ -125,4 +116,13 @@ class SosHistoryPageDto {
       hasMore: pagination?['has_more'] as bool? ?? false,
     );
   }
+  const SosHistoryPageDto({
+    required this.items,
+    this.nextCursor,
+    required this.hasMore,
+  });
+
+  final List<SosHistoryItemDto> items;
+  final String? nextCursor;
+  final bool hasMore;
 }

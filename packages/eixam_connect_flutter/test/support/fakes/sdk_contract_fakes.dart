@@ -505,13 +505,13 @@ class FakeDeathManRepository implements DeathManRepository {
 }
 
 class FakePermissionsRepository implements PermissionsRepository {
-  PermissionState permissionState;
-  Object? getPermissionStateError;
-  int requestNotificationPermissionCallCount = 0;
 
   FakePermissionsRepository({
     this.permissionState = const PermissionState(),
   });
+  PermissionState permissionState;
+  Object? getPermissionStateError;
+  int requestNotificationPermissionCallCount = 0;
 
   @override
   Future<PermissionState> getPermissionState() async {

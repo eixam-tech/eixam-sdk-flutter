@@ -2,8 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
-import 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
-import 'package:eixam_connect_core/src/events/realtime_event.dart';
 import 'package:eixam_connect_core/src/interfaces/realtime_client.dart';
 
 import '../data/datasources_remote/sdk_session_context.dart';

@@ -596,12 +596,6 @@ class ProtectionReadinessReport {
 }
 
 class ProtectionModeOptions {
-  final bool enableStoreAndForward;
-  final bool autoReconnectBle;
-  final bool autoFlushOnReconnect;
-  final bool allowDegradedMode;
-  final Duration reconnectBackoff;
-  final Duration healthCheckInterval;
 
   const ProtectionModeOptions({
     this.enableStoreAndForward = true,
@@ -611,6 +605,12 @@ class ProtectionModeOptions {
     this.reconnectBackoff = const Duration(seconds: 10),
     this.healthCheckInterval = const Duration(seconds: 30),
   });
+  final bool enableStoreAndForward;
+  final bool autoReconnectBle;
+  final bool autoFlushOnReconnect;
+  final bool allowDegradedMode;
+  final Duration reconnectBackoff;
+  final Duration healthCheckInterval;
 }
 
 class EnterProtectionModeResult {

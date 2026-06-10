@@ -4,22 +4,6 @@ import 'sos_actuator_snapshot.dart';
 import 'tracking_position.dart';
 
 class SosIncident {
-  final String id;
-  final SosState state;
-  final TrackingPosition? positionSnapshot;
-  final DateTime createdAt;
-  final String? source;
-  final String? triggerSource;
-  final String? relaySource;
-  final int? originatorNodeId;
-  final int? relayNodeId;
-  final String? deviceId;
-  final String? hardwareId;
-  final String? owner;
-  final String? cycleKey;
-  final String? message;
-  final SosDeliveryChannel? deliveryChannel;
-  final SosActuatorSnapshot? actuators;
 
   const SosIncident({
     required this.id,
@@ -39,6 +23,22 @@ class SosIncident {
     this.deliveryChannel,
     this.actuators,
   });
+  final String id;
+  final SosState state;
+  final TrackingPosition? positionSnapshot;
+  final DateTime createdAt;
+  final String? source;
+  final String? triggerSource;
+  final String? relaySource;
+  final int? originatorNodeId;
+  final int? relayNodeId;
+  final String? deviceId;
+  final String? hardwareId;
+  final String? owner;
+  final String? cycleKey;
+  final String? message;
+  final SosDeliveryChannel? deliveryChannel;
+  final SosActuatorSnapshot? actuators;
 
   SosIncident copyWith({
     SosState? state,

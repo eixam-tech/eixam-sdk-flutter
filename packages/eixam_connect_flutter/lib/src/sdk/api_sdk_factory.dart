@@ -25,6 +25,7 @@ import '../data/repositories/mqtt_telemetry_repository.dart';
 import '../data/repositories/platform_permissions_repository.dart';
 import '../device/ble_device_runtime_provider.dart';
 import '../device/ble_debug_registry.dart';
+import '../device/lazy_initializing_ble_client.dart';
 import '../device/real_ble_client.dart';
 import 'eixam_connect_sdk_impl.dart';
 import 'firmware_dfu_transport_factory.dart';
@@ -57,7 +58,10 @@ class ApiSdkFactory {
     final sessionStore = SdkSessionStore(localStore: store);
     final sessionContext = SdkSessionContext();
     final preferredBleDeviceStore = PreferredBleDeviceStore(localStore: store);
-    final permissionsRepository = PlatformPermissionsRepository();
+    final bleClient = LazyInitializingBleClient(RealBleClient());
+    final permissionsRepository = PlatformPermissionsRepository(
+      bleClient: bleClient,
+    );
     final config = EixamSdkConfig(
       apiBaseUrl: apiBaseUrl,
       websocketUrl: websocketUrl,
@@ -100,13 +104,6 @@ class ApiSdkFactory {
     );
 
     final deathManRepository = InMemoryDeathManRepository(localStore: store);
-
-    final bleClient = RealBleClient();
-    try {
-      await bleClient.initialize();
-    } catch (_) {
-      // Keep SDK bootstrap resilient even when BLE is temporarily unavailable.
-    }
 
     final deviceRuntimeProvider =
         BleDeviceRuntimeProvider(bleClient: bleClient);

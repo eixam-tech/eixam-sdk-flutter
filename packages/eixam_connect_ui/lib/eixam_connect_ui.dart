@@ -1,4 +1,4 @@
-library eixam_connect_ui;
+library;
 
 export 'src/localization/eixam_ui_texts.dart';
 export 'src/localization/eixam_ui_scope.dart';

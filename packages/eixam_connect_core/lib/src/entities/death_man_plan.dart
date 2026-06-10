@@ -1,12 +1,6 @@
 import '../enums/death_man_status.dart';
 
 class DeathManPlan {
-  final String id;
-  final DateTime expectedReturnAt;
-  final Duration gracePeriod;
-  final Duration checkInWindow;
-  final bool autoTriggerSos;
-  final DeathManStatus status;
 
   const DeathManPlan({
     required this.id,
@@ -16,6 +10,12 @@ class DeathManPlan {
     required this.autoTriggerSos,
     required this.status,
   });
+  final String id;
+  final DateTime expectedReturnAt;
+  final Duration gracePeriod;
+  final Duration checkInWindow;
+  final bool autoTriggerSos;
+  final DeathManStatus status;
 
   DeathManPlan copyWith({
     DateTime? expectedReturnAt,

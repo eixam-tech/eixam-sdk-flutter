@@ -35,6 +35,17 @@ enum SosActuatorChannelKind {
 }
 
 class SosActuatorSnapshot {
+
+  factory SosActuatorSnapshot.fromJson(Map<String, dynamic> json) {
+    return SosActuatorSnapshot(
+      snapshotVersion: _intFromJson(json['snapshotVersion']) ??
+          _intFromJson(json['snapshot_version']) ??
+          0,
+      items: _listFromJson(json['items'])
+          .map(SosActuatorItem.fromJson)
+          .toList(growable: false),
+    );
+  }
   const SosActuatorSnapshot({
     required this.snapshotVersion,
     this.items = const [],
@@ -52,17 +63,6 @@ class SosActuatorSnapshot {
   bool get hasSuccesses => successCount > 0;
   bool get hasFailures => failureCount > 0;
 
-  factory SosActuatorSnapshot.fromJson(Map<String, dynamic> json) {
-    return SosActuatorSnapshot(
-      snapshotVersion: _intFromJson(json['snapshotVersion']) ??
-          _intFromJson(json['snapshot_version']) ??
-          0,
-      items: _listFromJson(json['items'])
-          .map(SosActuatorItem.fromJson)
-          .toList(growable: false),
-    );
-  }
-
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
       'snapshotVersion': snapshotVersion,
@@ -76,29 +76,6 @@ class SosActuatorSnapshot {
 }
 
 class SosActuatorItem {
-  const SosActuatorItem({
-    required this.id,
-    required this.type,
-    required this.rawType,
-    required this.status,
-    required this.rawStatus,
-    required this.outcome,
-    required this.rawOutcome,
-    this.updatedAt,
-    this.contacts = const [],
-    this.deliveries = const [],
-  });
-
-  final String id;
-  final SosActuatorType type;
-  final String rawType;
-  final SosActuatorStatus status;
-  final String rawStatus;
-  final SosActuatorOutcome outcome;
-  final String rawOutcome;
-  final DateTime? updatedAt;
-  final List<SosActuatorContact> contacts;
-  final List<SosActuatorDelivery> deliveries;
 
   factory SosActuatorItem.fromJson(Map<String, dynamic> json) {
     final rawType = _stringFromJson(json['type']) ?? '';
@@ -124,6 +101,29 @@ class SosActuatorItem {
           .toList(growable: false),
     );
   }
+  const SosActuatorItem({
+    required this.id,
+    required this.type,
+    required this.rawType,
+    required this.status,
+    required this.rawStatus,
+    required this.outcome,
+    required this.rawOutcome,
+    this.updatedAt,
+    this.contacts = const [],
+    this.deliveries = const [],
+  });
+
+  final String id;
+  final SosActuatorType type;
+  final String rawType;
+  final SosActuatorStatus status;
+  final String rawStatus;
+  final SosActuatorOutcome outcome;
+  final String rawOutcome;
+  final DateTime? updatedAt;
+  final List<SosActuatorContact> contacts;
+  final List<SosActuatorDelivery> deliveries;
 
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
@@ -142,6 +142,33 @@ class SosActuatorItem {
 }
 
 class SosActuatorContact {
+
+  factory SosActuatorContact.fromJson(Map<String, dynamic> json) {
+    final rawStatus = _stringFromJson(json['status']);
+    final status = _statusFromRaw(rawStatus);
+    final rawOutcome = _stringFromJson(json['outcome']);
+    final rawChannel = _stringFromJson(json['channel']);
+    return SosActuatorContact(
+      id: _stringFromJson(json['id']),
+      name: _stringFromJson(json['name']),
+      phone: _stringFromJson(json['phone']),
+      email: _stringFromJson(json['email']),
+      channel: _channelFromRaw(rawChannel),
+      rawChannel: rawChannel,
+      status: status,
+      rawStatus: rawStatus,
+      outcome: rawOutcome == null
+          ? _outcomeFromStatus(status)
+          : _outcomeFromRaw(rawOutcome),
+      rawOutcome: rawOutcome ?? _rawOutcomeFromStatus(status),
+      updatedAt: _dateTimeFromJson(json['updatedAt'] ?? json['updated_at']),
+      acknowledgedAt:
+          _dateTimeFromJson(json['acknowledgedAt'] ?? json['acknowledged_at']),
+      channels: _listFromJson(json['channels'])
+          .map(SosActuatorChannel.fromJson)
+          .toList(growable: false),
+    );
+  }
   const SosActuatorContact({
     this.id,
     this.name,
@@ -172,33 +199,6 @@ class SosActuatorContact {
   final DateTime? acknowledgedAt;
   final List<SosActuatorChannel> channels;
 
-  factory SosActuatorContact.fromJson(Map<String, dynamic> json) {
-    final rawStatus = _stringFromJson(json['status']);
-    final status = _statusFromRaw(rawStatus);
-    final rawOutcome = _stringFromJson(json['outcome']);
-    final rawChannel = _stringFromJson(json['channel']);
-    return SosActuatorContact(
-      id: _stringFromJson(json['id']),
-      name: _stringFromJson(json['name']),
-      phone: _stringFromJson(json['phone']),
-      email: _stringFromJson(json['email']),
-      channel: _channelFromRaw(rawChannel),
-      rawChannel: rawChannel,
-      status: status,
-      rawStatus: rawStatus,
-      outcome: rawOutcome == null
-          ? _outcomeFromStatus(status)
-          : _outcomeFromRaw(rawOutcome),
-      rawOutcome: rawOutcome ?? _rawOutcomeFromStatus(status),
-      updatedAt: _dateTimeFromJson(json['updatedAt'] ?? json['updated_at']),
-      acknowledgedAt:
-          _dateTimeFromJson(json['acknowledgedAt'] ?? json['acknowledged_at']),
-      channels: _listFromJson(json['channels'])
-          .map(SosActuatorChannel.fromJson)
-          .toList(growable: false),
-    );
-  }
-
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
       'id': id,
@@ -217,6 +217,30 @@ class SosActuatorContact {
 }
 
 class SosActuatorChannel {
+
+  factory SosActuatorChannel.fromJson(Map<String, dynamic> json) {
+    final rawStatus = _stringFromJson(json['status']);
+    final status = _statusFromRaw(rawStatus);
+    final rawOutcome = _stringFromJson(json['outcome']);
+    final rawKind =
+        _stringFromJson(json['channel']) ?? _stringFromJson(json['type']);
+    return SosActuatorChannel(
+      id: _stringFromJson(json['id']),
+      kind: _channelFromRaw(rawKind),
+      rawKind: rawKind,
+      address: _stringFromJson(json['address']),
+      target: _stringFromJson(json['target']),
+      status: status,
+      rawStatus: rawStatus,
+      outcome: rawOutcome == null
+          ? _outcomeFromStatus(status)
+          : _outcomeFromRaw(rawOutcome),
+      rawOutcome: rawOutcome ?? _rawOutcomeFromStatus(status),
+      updatedAt: _dateTimeFromJson(json['updatedAt'] ?? json['updated_at']),
+      acknowledgedAt:
+          _dateTimeFromJson(json['acknowledgedAt'] ?? json['acknowledged_at']),
+    );
+  }
   const SosActuatorChannel({
     this.id,
     required this.kind,
@@ -243,30 +267,6 @@ class SosActuatorChannel {
   final DateTime? updatedAt;
   final DateTime? acknowledgedAt;
 
-  factory SosActuatorChannel.fromJson(Map<String, dynamic> json) {
-    final rawStatus = _stringFromJson(json['status']);
-    final status = _statusFromRaw(rawStatus);
-    final rawOutcome = _stringFromJson(json['outcome']);
-    final rawKind =
-        _stringFromJson(json['channel']) ?? _stringFromJson(json['type']);
-    return SosActuatorChannel(
-      id: _stringFromJson(json['id']),
-      kind: _channelFromRaw(rawKind),
-      rawKind: rawKind,
-      address: _stringFromJson(json['address']),
-      target: _stringFromJson(json['target']),
-      status: status,
-      rawStatus: rawStatus,
-      outcome: rawOutcome == null
-          ? _outcomeFromStatus(status)
-          : _outcomeFromRaw(rawOutcome),
-      rawOutcome: rawOutcome ?? _rawOutcomeFromStatus(status),
-      updatedAt: _dateTimeFromJson(json['updatedAt'] ?? json['updated_at']),
-      acknowledgedAt:
-          _dateTimeFromJson(json['acknowledgedAt'] ?? json['acknowledged_at']),
-    );
-  }
-
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
       'id': id,
@@ -282,6 +282,31 @@ class SosActuatorChannel {
 }
 
 class SosActuatorDelivery {
+
+  factory SosActuatorDelivery.fromJson(Map<String, dynamic> json) {
+    final rawStatus = _stringFromJson(json['status']);
+    final status = _statusFromRaw(rawStatus);
+    final rawOutcome = _stringFromJson(json['outcome']);
+    final rawChannel =
+        _stringFromJson(json['channel']) ?? _stringFromJson(json['type']);
+    return SosActuatorDelivery(
+      id: _stringFromJson(json['id']),
+      channel: _channelFromRaw(rawChannel),
+      rawChannel: rawChannel,
+      status: status,
+      rawStatus: rawStatus,
+      outcome: rawOutcome == null
+          ? _outcomeFromStatus(status)
+          : _outcomeFromRaw(rawOutcome),
+      rawOutcome: rawOutcome ?? _rawOutcomeFromStatus(status),
+      updatedAt: _dateTimeFromJson(json['updatedAt'] ?? json['updated_at']),
+      deliveredAt:
+          _dateTimeFromJson(json['deliveredAt'] ?? json['delivered_at']),
+      failedAt: _dateTimeFromJson(json['failedAt'] ?? json['failed_at']),
+      target: _stringFromJson(json['target']),
+      error: _stringFromJson(json['error']),
+    );
+  }
   const SosActuatorDelivery({
     this.id,
     required this.channel,
@@ -309,31 +334,6 @@ class SosActuatorDelivery {
   final DateTime? failedAt;
   final String? target;
   final String? error;
-
-  factory SosActuatorDelivery.fromJson(Map<String, dynamic> json) {
-    final rawStatus = _stringFromJson(json['status']);
-    final status = _statusFromRaw(rawStatus);
-    final rawOutcome = _stringFromJson(json['outcome']);
-    final rawChannel =
-        _stringFromJson(json['channel']) ?? _stringFromJson(json['type']);
-    return SosActuatorDelivery(
-      id: _stringFromJson(json['id']),
-      channel: _channelFromRaw(rawChannel),
-      rawChannel: rawChannel,
-      status: status,
-      rawStatus: rawStatus,
-      outcome: rawOutcome == null
-          ? _outcomeFromStatus(status)
-          : _outcomeFromRaw(rawOutcome),
-      rawOutcome: rawOutcome ?? _rawOutcomeFromStatus(status),
-      updatedAt: _dateTimeFromJson(json['updatedAt'] ?? json['updated_at']),
-      deliveredAt:
-          _dateTimeFromJson(json['deliveredAt'] ?? json['delivered_at']),
-      failedAt: _dateTimeFromJson(json['failedAt'] ?? json['failed_at']),
-      target: _stringFromJson(json['target']),
-      error: _stringFromJson(json['error']),
-    );
-  }
 
   Map<String, dynamic> toJson() {
     return <String, dynamic>{

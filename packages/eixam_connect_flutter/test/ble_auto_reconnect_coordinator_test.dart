@@ -146,6 +146,49 @@ void main() {
       await coordinator.dispose();
     });
 
+    test(
+        'iOS skips auto-connect and requires scan when preferred id is not a CoreBluetooth UUID',
+        () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _FakeDeviceRepository();
+      final store = PreferredBleDeviceStore(
+        localStore: SharedPrefsSdkStore(),
+      );
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: 'ble-demo-r1',
+          displayName: 'EIXAM Demo',
+          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+        ),
+      );
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+        isIosPlatform: () => true,
+      );
+
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+      repository.setDisconnected();
+
+      await coordinator.tryAutoConnectOnResume();
+
+      expect(repository.reconnectCallCount, 0);
+      expect(repository.lastReconnectedDeviceId, isNull);
+      expect(
+        BleDebugRegistry.instance.currentState.events
+            .map((event) => event.message),
+        containsAll(<String>[
+          'DEVICE_IDENTITY_RESOLVED platform=ios logicalId=ble-demo-r1 remoteIdPresent=false',
+          'BLE_RECONNECT_REQUIRES_SCAN platform=ios reason=missing_valid_remote_id',
+        ]),
+      );
+      await coordinator.dispose();
+    });
+
     test('stops auto-connect when phone Bluetooth bond was removed', () async {
       SharedPreferences.setMockInitialValues(<String, Object>{});
       BleDebugRegistry.instance.reset();
@@ -455,8 +498,10 @@ class _FakeDeviceRepository
   }
 
   @override
-  Future<DeviceStatus> reconnectDevice(
-      {required PreferredDevice device}) async {
+  Future<DeviceStatus> reconnectDevice({
+    required PreferredDevice device,
+    String? attemptId,
+  }) async {
     reconnectCallCount++;
     lastReconnectedDeviceId = device.deviceId;
     if (pairErrors.isNotEmpty) {

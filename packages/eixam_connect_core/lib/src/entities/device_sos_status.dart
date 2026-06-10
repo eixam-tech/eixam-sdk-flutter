@@ -3,35 +3,6 @@ import '../enums/device_sos_transition_source.dart';
 import '../enums/device_battery_level.dart';
 
 class DeviceSosStatus {
-  static const Object _unset = Object();
-
-  final DeviceSosState state;
-  final DeviceSosState? previousState;
-  final DeviceSosTransitionSource transitionSource;
-  final DeviceSosTransitionSource triggerOrigin;
-  final String lastEvent;
-  final DateTime updatedAt;
-  final bool optimistic;
-  final bool derivedFromBlePacket;
-  final int? lastOpcode;
-  final String? lastPacketHex;
-  final int? lastPacketLength;
-  final DateTime? lastPacketAt;
-  final String? lastPacketSignature;
-  final int? nodeId;
-  final int? flags;
-  final int? sosType;
-  final int? retryCount;
-  final int? relayCount;
-  final int? batteryLevel;
-  final DeviceBatteryLevel? batteryState;
-  final int? gpsQuality;
-  final int? packetId;
-  final bool? hasLocation;
-  final String? decoderNote;
-  final DateTime? countdownStartedAt;
-  final DateTime? expectedActivationAt;
-  final int? countdownRemainingSeconds;
 
   const DeviceSosStatus({
     required this.state,
@@ -73,6 +44,35 @@ class DeviceSosStatus {
       updatedAt: DateTime.now(),
     );
   }
+  static const Object _unset = Object();
+
+  final DeviceSosState state;
+  final DeviceSosState? previousState;
+  final DeviceSosTransitionSource transitionSource;
+  final DeviceSosTransitionSource triggerOrigin;
+  final String lastEvent;
+  final DateTime updatedAt;
+  final bool optimistic;
+  final bool derivedFromBlePacket;
+  final int? lastOpcode;
+  final String? lastPacketHex;
+  final int? lastPacketLength;
+  final DateTime? lastPacketAt;
+  final String? lastPacketSignature;
+  final int? nodeId;
+  final int? flags;
+  final int? sosType;
+  final int? retryCount;
+  final int? relayCount;
+  final int? batteryLevel;
+  final DeviceBatteryLevel? batteryState;
+  final int? gpsQuality;
+  final int? packetId;
+  final bool? hasLocation;
+  final String? decoderNote;
+  final DateTime? countdownStartedAt;
+  final DateTime? expectedActivationAt;
+  final int? countdownRemainingSeconds;
 
   DeviceSosStatus copyWith({
     DeviceSosState? state,

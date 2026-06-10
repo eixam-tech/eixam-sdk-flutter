@@ -1,17 +1,6 @@
 import 'eixam_ble_protocol.dart';
 
 class EixamDeviceCommand {
-  const EixamDeviceCommand._({
-    required this.opcode,
-    required this.label,
-    required this.bytes,
-    this.forceCmdCharacteristic = false,
-  });
-
-  final int opcode;
-  final String label;
-  final List<int> bytes;
-  final bool forceCmdCharacteristic;
 
   factory EixamDeviceCommand.inetOk() => const EixamDeviceCommand._(
         opcode: 0x01,
@@ -110,6 +99,17 @@ class EixamDeviceCommand {
         bytes: <int>[0x23],
         forceCmdCharacteristic: true,
       );
+  const EixamDeviceCommand._({
+    required this.opcode,
+    required this.label,
+    required this.bytes,
+    this.forceCmdCharacteristic = false,
+  });
+
+  final int opcode;
+  final String label;
+  final List<int> bytes;
+  final bool forceCmdCharacteristic;
 
   List<int> encode() => List<int>.unmodifiable(bytes);
 

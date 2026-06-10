@@ -68,11 +68,23 @@ class RealBleClient implements BleClient {
     _adapterStateSub = FlutterBluePlus.adapterState.listen((state) {
       final mapped = _mapAdapterState(state);
       BleDebugRegistry.instance.update(adapterState: mapped);
+      if (mapped == BleAdapterState.poweredOn) {
+        debugPrint(
+          'IOS_BLE_POWERED_CACHE_UPDATED '
+          'source=adapter_state value=poweredOn',
+        );
+      }
       _log('BLE adapter -> $mapped');
     });
-    BleDebugRegistry.instance.update(
-      adapterState: _mapAdapterState(FlutterBluePlus.adapterStateNow),
-    );
+    final initialAdapterState =
+        _mapAdapterState(FlutterBluePlus.adapterStateNow);
+    BleDebugRegistry.instance.update(adapterState: initialAdapterState);
+    if (initialAdapterState == BleAdapterState.poweredOn) {
+      debugPrint(
+        'IOS_BLE_POWERED_CACHE_UPDATED '
+        'source=adapter_state value=poweredOn',
+      );
+    }
     BleDebugRegistry.instance.registerScanner(scan);
     BleDebugRegistry.instance.recordEvent('Real BLE client initialized');
     _initialized = true;
@@ -83,6 +95,12 @@ class RealBleClient implements BleClient {
     _ensureInitialized();
     final state = _mapAdapterState(FlutterBluePlus.adapterStateNow);
     BleDebugRegistry.instance.update(adapterState: state);
+    if (state == BleAdapterState.poweredOn) {
+      debugPrint(
+        'IOS_BLE_POWERED_CACHE_UPDATED '
+        'source=adapter_state value=poweredOn',
+      );
+    }
     return state;
   }
 
@@ -92,6 +110,12 @@ class RealBleClient implements BleClient {
     return FlutterBluePlus.adapterState.map((state) {
       final mapped = _mapAdapterState(state);
       BleDebugRegistry.instance.update(adapterState: mapped);
+      if (mapped == BleAdapterState.poweredOn) {
+        debugPrint(
+          'IOS_BLE_POWERED_CACHE_UPDATED '
+          'source=adapter_state value=poweredOn',
+        );
+      }
       return mapped;
     });
   }

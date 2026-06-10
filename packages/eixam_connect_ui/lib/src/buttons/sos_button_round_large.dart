@@ -3,9 +3,6 @@ import 'package:flutter/material.dart';
 import '../localization/eixam_ui_scope.dart';
 
 class SosButtonRoundLarge extends StatelessWidget {
-  final VoidCallback? onPressed;
-  final bool loading;
-  final String? label;
 
   const SosButtonRoundLarge({
     super.key,
@@ -13,6 +10,9 @@ class SosButtonRoundLarge extends StatelessWidget {
     this.loading = false,
     this.label,
   });
+  final VoidCallback? onPressed;
+  final bool loading;
+  final String? label;
 
   @override
   Widget build(BuildContext context) {

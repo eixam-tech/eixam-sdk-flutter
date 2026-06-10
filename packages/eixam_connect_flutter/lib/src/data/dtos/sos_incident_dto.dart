@@ -1,26 +1,8 @@
 /// DTO representation of an SOS incident returned by the backend layer.
+library;
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 class SosIncidentDto {
-  final String id;
-  final String state;
-  final String createdAt;
-  final String? source;
-  final String? triggerSource;
-  final String? relaySource;
-  final int? originatorNodeId;
-  final int? relayNodeId;
-  final String? deviceId;
-  final String? hardwareId;
-  final String? owner;
-  final String? cycleKey;
-  final String? message;
-  final Map<String, dynamic>? positionSnapshot;
-  final SosActuatorSnapshot? actuators;
-  final int? statusCode;
-
-  /// References the telemetry row inserted when this incident was first opened.
-  final String? creationTelemetryId;
 
   const SosIncidentDto({
     required this.id,
@@ -72,6 +54,25 @@ class SosIncidentDto {
           json['creation_telemetry_id'] as String?,
     );
   }
+  final String id;
+  final String state;
+  final String createdAt;
+  final String? source;
+  final String? triggerSource;
+  final String? relaySource;
+  final int? originatorNodeId;
+  final int? relayNodeId;
+  final String? deviceId;
+  final String? hardwareId;
+  final String? owner;
+  final String? cycleKey;
+  final String? message;
+  final Map<String, dynamic>? positionSnapshot;
+  final SosActuatorSnapshot? actuators;
+  final int? statusCode;
+
+  /// References the telemetry row inserted when this incident was first opened.
+  final String? creationTelemetryId;
 
   SosIncidentDto copyWith({
     String? id,

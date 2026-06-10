@@ -3,8 +3,6 @@ import 'package:flutter/widgets.dart';
 import 'eixam_ui_texts.dart';
 
 class EixamUiScope extends InheritedWidget {
-  final String localeCode;
-  final EixamUiTexts? overrides;
 
   const EixamUiScope({
     super.key,
@@ -12,6 +10,8 @@ class EixamUiScope extends InheritedWidget {
     this.localeCode = 'es',
     this.overrides,
   });
+  final String localeCode;
+  final EixamUiTexts? overrides;
 
   static EixamUiTexts textsOf(BuildContext context) {
     final scope = context.dependOnInheritedWidgetOfExactType<EixamUiScope>();
