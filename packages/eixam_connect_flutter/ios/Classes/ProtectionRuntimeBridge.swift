@@ -325,13 +325,18 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     recordEvent(type: type, reason: nil)
   }
 
-  private func emitEvent(type: String, reason: String?, timestamp: Int? = nil) {
-    eventSink?([
-      "type": type,
-      "timestamp": timestamp ?? Date().millisecondsSince1970,
-      "reason": reason,
-    ])
-  }
+    private func emitEvent(type: String, reason: String?, timestamp: Int? = nil) {
+        var event: [String: Any] = [
+            "type": type,
+            "timestamp": timestamp ?? Date().millisecondsSince1970,
+        ]
+
+        if let reason {
+            event["reason"] = reason
+        }
+
+        eventSink?(event)
+    }
 
   private func currentCoverageLevel() -> String {
     guard isArmed else {
