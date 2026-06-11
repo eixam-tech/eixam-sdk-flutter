@@ -80,6 +80,20 @@ ProtectionPlatformSnapshot mapIosProtectionPlatformSnapshot(
     preSosRemainingSeconds: snapshot['preSosRemainingSeconds'] as int?,
     preSosOriginatorNodeId: snapshot['preSosOriginatorNodeId'] as int?,
     preSosPacketId: snapshot['preSosPacketId'] as int?,
+    iosBleSosSnapshotKind: snapshot['iosBleSosSnapshotKind'] as String?,
+    iosBleSosPayloadHex: snapshot['iosBleSosPayloadHex'] as String?,
+    iosBleSosSource: snapshot['iosBleSosSource'] as String?,
+    iosBleSosCharacteristicUuid:
+        snapshot['iosBleSosCharacteristicUuid'] as String?,
+    iosBleSosReceivedAt: readProtectionPlatformDateTime(
+      snapshot['iosBleSosReceivedAt'],
+    ),
+    iosBleSosDeadlineAt: readProtectionPlatformDateTime(
+      snapshot['iosBleSosDeadlineAt'],
+    ),
+    iosBleSosNodeId: snapshot['iosBleSosNodeId'] as int?,
+    iosBleSosPacketId: snapshot['iosBleSosPacketId'] as int?,
+    iosBleSosCycleKey: snapshot['iosBleSosCycleKey'] as String?,
   );
 }
 
@@ -272,6 +286,10 @@ ProtectionPlatformEventType parseIosProtectionPlatformEventType(String? value) {
       return ProtectionPlatformEventType.subscriptionsActive;
     case 'packetReceived':
       return ProtectionPlatformEventType.packetReceived;
+    case 'sosEventReceived':
+      return ProtectionPlatformEventType.sosEventReceived;
+    case 'ownDeviceSosLifecycleObserved':
+      return ProtectionPlatformEventType.ownDeviceSosLifecycleObserved;
     case 'restorationDetected':
       return ProtectionPlatformEventType.restorationDetected;
     case 'restorationRehydrated':

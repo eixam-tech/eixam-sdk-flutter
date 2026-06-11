@@ -46,6 +46,21 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     static let lastCommandRoute = "last_command_route"
     static let lastCommandResult = "last_command_result"
     static let lastCommandError = "last_command_error"
+    static let iosBleSosSnapshotKind = "ios_ble_sos_snapshot_kind"
+    static let iosBleSosPayloadHex = "ios_ble_sos_payload_hex"
+    static let iosBleSosSource = "ios_ble_sos_source"
+    static let iosBleSosCharacteristicUuid = "ios_ble_sos_characteristic_uuid"
+    static let iosBleSosReceivedAt = "ios_ble_sos_received_at"
+    static let iosBleSosDeadlineAt = "ios_ble_sos_deadline_at"
+    static let iosBleSosNodeId = "ios_ble_sos_node_id"
+    static let iosBleSosPacketId = "ios_ble_sos_packet_id"
+    static let iosBleSosCycleKey = "ios_ble_sos_cycle_key"
+  }
+
+  private enum IosBleSosSnapshotKind: String {
+    case preSos
+    case active
+    case cancelled
   }
 
   private var eventSink: FlutterEventSink?
@@ -325,18 +340,28 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     recordEvent(type: type, reason: nil)
   }
 
-    private func emitEvent(type: String, reason: String?, timestamp: Int? = nil) {
-        var event: [String: Any] = [
-            "type": type,
-            "timestamp": timestamp ?? Date().millisecondsSince1970,
-        ]
+  private func emitEvent(
+    type: String,
+    reason: String?,
+    timestamp: Int? = nil,
+    payload: [String: Any]? = nil
+  ) {
+    var event: [String: Any] = [
+      "type": type,
+      "timestamp": timestamp ?? Date().millisecondsSince1970,
+    ]
 
-        if let reason {
-            event["reason"] = reason
-        }
-
-        eventSink?(event)
+    if let reason {
+      event["reason"] = reason
     }
+    if let payload {
+      for (key, value) in payload {
+        event[key] = value
+      }
+    }
+
+    eventSink?(event)
+  }
 
   private func currentCoverageLevel() -> String {
     guard isArmed else {
@@ -438,7 +463,53 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       "lastCommandRoute": defaults.string(forKey: Keys.lastCommandRoute),
       "lastCommandResult": defaults.string(forKey: Keys.lastCommandResult),
       "lastCommandError": defaults.string(forKey: Keys.lastCommandError),
+      "iosBleSosSnapshotKind": defaults.string(forKey: Keys.iosBleSosSnapshotKind),
+      "iosBleSosPayloadHex": defaults.string(forKey: Keys.iosBleSosPayloadHex),
+      "iosBleSosSource": defaults.string(forKey: Keys.iosBleSosSource),
+      "iosBleSosCharacteristicUuid": defaults.string(forKey: Keys.iosBleSosCharacteristicUuid),
+      "iosBleSosReceivedAt": defaults.object(forKey: Keys.iosBleSosReceivedAt) as? Int,
+      "iosBleSosDeadlineAt": defaults.object(forKey: Keys.iosBleSosDeadlineAt) as? Int,
+      "iosBleSosNodeId": defaults.object(forKey: Keys.iosBleSosNodeId) as? Int,
+      "iosBleSosPacketId": defaults.object(forKey: Keys.iosBleSosPacketId) as? Int,
+      "iosBleSosCycleKey": defaults.string(forKey: Keys.iosBleSosCycleKey),
+      "preSosLifecycleState": preSosLifecycleStateFromSnapshot(),
+      "preSosCycleKey": defaults.string(forKey: Keys.iosBleSosCycleKey),
+      "preSosOwner": "device",
+      "preSosStartedAt": preSosStartedAtFromSnapshot(),
+      "preSosExpectedActivationAt": preSosExpectedActivationAtFromSnapshot(),
+      "preSosRemainingSeconds": preSosRemainingSecondsFromSnapshot(),
+      "preSosOriginatorNodeId": defaults.object(forKey: Keys.iosBleSosNodeId) as? Int,
+      "preSosPacketId": defaults.object(forKey: Keys.iosBleSosPacketId) as? Int,
     ]
+  }
+
+  private func preSosLifecycleStateFromSnapshot() -> String? {
+    guard defaults.string(forKey: Keys.iosBleSosSnapshotKind) == IosBleSosSnapshotKind.preSos.rawValue else {
+      return nil
+    }
+    return "preConfirmSeen"
+  }
+
+  private func preSosStartedAtFromSnapshot() -> Int? {
+    guard defaults.string(forKey: Keys.iosBleSosSnapshotKind) == IosBleSosSnapshotKind.preSos.rawValue,
+          let deadlineAt = defaults.object(forKey: Keys.iosBleSosDeadlineAt) as? Int else {
+      return nil
+    }
+    return deadlineAt - 20_000
+  }
+
+  private func preSosExpectedActivationAtFromSnapshot() -> Int? {
+    guard defaults.string(forKey: Keys.iosBleSosSnapshotKind) == IosBleSosSnapshotKind.preSos.rawValue else {
+      return nil
+    }
+    return defaults.object(forKey: Keys.iosBleSosDeadlineAt) as? Int
+  }
+
+  private func preSosRemainingSecondsFromSnapshot() -> Int? {
+    guard let deadlineAt = preSosExpectedActivationAtFromSnapshot() else {
+      return nil
+    }
+    return max(0, Int(ceil(Double(deadlineAt - Date().millisecondsSince1970) / 1000.0)))
   }
 
   private func sendProtectionCommand(
@@ -720,9 +791,140 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       return
     }
 
-    if characteristic.value != nil {
+    if let value = characteristic.value {
       recordBleEvent(type: "packetReceived")
+      captureBleSosPayload(value, characteristic: characteristic)
     }
+  }
+
+  private func captureBleSosPayload(_ data: Data, characteristic: CBCharacteristic) {
+    let bytes = [UInt8](data)
+    guard !bytes.isEmpty else {
+      return
+    }
+    let source = sourceName(for: characteristic)
+    let characteristicUuid = characteristic.uuid.uuidString.lowercased()
+    let timestamp = Date().millisecondsSince1970
+    let payloadHex = bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
+    print("IOS_BLE_SOS_PAYLOAD_RECEIVED source=\(source) characteristic=\(characteristicUuid) len=\(bytes.count) payload=\(payloadHex)")
+
+    guard let parsed = parseIosBleSosSnapshot(bytes: bytes, receivedAt: timestamp) else {
+      return
+    }
+    if shouldSuppressAfterTerminalSnapshot(parsed: parsed, receivedAt: timestamp) {
+      print("IOS_BLE_SOS_STALE_ACTIVE_SUPPRESSED source=native_snapshot kind=\(parsed.kind.rawValue) nodeId=\(parsed.nodeId.map(String.init) ?? "none") packetId=\(parsed.packetId.map(String.init) ?? "none")")
+      return
+    }
+
+    defaults.set(parsed.kind.rawValue, forKey: Keys.iosBleSosSnapshotKind)
+    defaults.set(payloadHex, forKey: Keys.iosBleSosPayloadHex)
+    defaults.set(source, forKey: Keys.iosBleSosSource)
+    defaults.set(characteristicUuid, forKey: Keys.iosBleSosCharacteristicUuid)
+    defaults.set(timestamp, forKey: Keys.iosBleSosReceivedAt)
+    defaults.set(parsed.nodeId, forKey: Keys.iosBleSosNodeId)
+    defaults.set(parsed.packetId, forKey: Keys.iosBleSosPacketId)
+    defaults.set(parsed.cycleKey, forKey: Keys.iosBleSosCycleKey)
+    if let deadlineAt = parsed.deadlineAt {
+      defaults.set(deadlineAt, forKey: Keys.iosBleSosDeadlineAt)
+    } else {
+      defaults.removeObject(forKey: Keys.iosBleSosDeadlineAt)
+    }
+    defaults.synchronize()
+
+    print("IOS_BLE_SOS_SNAPSHOT_PERSISTED kind=\(parsed.kind.rawValue) nodeId=\(parsed.nodeId.map(String.init) ?? "none") packetId=\(parsed.packetId.map(String.init) ?? "none") cycle=\(parsed.cycleKey ?? "none") deadline=\(parsed.deadlineAt.map(String.init) ?? "none")")
+    var eventPayload: [String: Any] = [
+      "payloadHex": payloadHex,
+      "source": source,
+      "classification": "ownDeviceSos",
+      "identity": "own",
+    ]
+    if let nodeId = parsed.nodeId {
+      eventPayload["relayNodeId"] = nodeId
+    }
+    emitEvent(
+      type: "ownDeviceSosLifecycleObserved",
+      reason: "ios_ble_sos_snapshot_persisted",
+      timestamp: timestamp,
+      payload: eventPayload
+    )
+  }
+
+  private func sourceName(for characteristic: CBCharacteristic) -> String {
+    if characteristic.uuid == Self.telCharacteristicUuid {
+      return "tel"
+    }
+    if characteristic.uuid == Self.sosCharacteristicUuid {
+      return "sos"
+    }
+    return characteristic.uuid.uuidString.lowercased()
+  }
+
+  private func shouldSuppressAfterTerminalSnapshot(
+    parsed: (kind: IosBleSosSnapshotKind, nodeId: Int?, packetId: Int?, cycleKey: String?, deadlineAt: Int?),
+    receivedAt: Int
+  ) -> Bool {
+    guard parsed.kind != .cancelled,
+          defaults.string(forKey: Keys.iosBleSosSnapshotKind) == IosBleSosSnapshotKind.cancelled.rawValue,
+          let cancelledAt = defaults.object(forKey: Keys.iosBleSosReceivedAt) as? Int,
+          receivedAt - cancelledAt <= 30_000 else {
+      return false
+    }
+    let cancelledNodeId = defaults.object(forKey: Keys.iosBleSosNodeId) as? Int
+    let cancelledCycleKey = defaults.string(forKey: Keys.iosBleSosCycleKey)
+    if let parsedNodeId = parsed.nodeId,
+       let cancelledNodeId,
+       parsedNodeId == cancelledNodeId {
+      return true
+    }
+    if let parsedCycleKey = parsed.cycleKey,
+       let cancelledCycleKey,
+       parsedCycleKey == cancelledCycleKey || parsedCycleKey.hasPrefix("\(cancelledCycleKey):") {
+      return true
+    }
+    return false
+  }
+
+  private func parseIosBleSosSnapshot(bytes: [UInt8], receivedAt: Int) -> (kind: IosBleSosSnapshotKind, nodeId: Int?, packetId: Int?, cycleKey: String?, deadlineAt: Int?)? {
+    if bytes.count == 6,
+       (bytes[0] == 0xE1 || bytes[0] == 0xE2) {
+      let nodeId = readUInt32(bytes, offset: 2)
+      return (.cancelled, nodeId, nil, nodeId.map { "sos:\($0)" }, nil)
+    }
+
+    let packetLength: Int
+    if bytes.count == 18 {
+      packetLength = 12
+    } else if bytes.count == 13 {
+      packetLength = 7
+    } else {
+      packetLength = bytes.count
+    }
+    guard packetLength == 7 || packetLength == 12,
+          let nodeId = readUInt32(bytes, offset: 0) else {
+      return nil
+    }
+    let flagsOffset = packetLength == 12 ? 10 : 4
+    let flagsWord = Int(bytes[flagsOffset]) | (Int(bytes[flagsOffset + 1]) << 8)
+    let sosType = (flagsWord >> 14) & 0x03
+    let packetId = flagsWord & 0x0F
+    let cycleKey = "sos:\(nodeId):\(packetId)"
+    if sosType == 0 {
+      return (.cancelled, nodeId, packetId, cycleKey, nil)
+    }
+    if sosType == 1 {
+      return (.preSos, nodeId, packetId, cycleKey, receivedAt + 20_000)
+    }
+    return (.active, nodeId, packetId, cycleKey, nil)
+  }
+
+  private func readUInt32(_ bytes: [UInt8], offset: Int) -> Int? {
+    guard bytes.count >= offset + 4 else {
+      return nil
+    }
+    return Int(bytes[offset])
+      | (Int(bytes[offset + 1]) << 8)
+      | (Int(bytes[offset + 2]) << 16)
+      | (Int(bytes[offset + 3]) << 24)
   }
 
   func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {

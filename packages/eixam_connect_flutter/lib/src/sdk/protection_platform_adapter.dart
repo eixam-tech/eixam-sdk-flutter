@@ -131,6 +131,15 @@ class ProtectionPlatformSnapshot {
     this.preSosRemainingSeconds,
     this.preSosOriginatorNodeId,
     this.preSosPacketId,
+    this.iosBleSosSnapshotKind,
+    this.iosBleSosPayloadHex,
+    this.iosBleSosSource,
+    this.iosBleSosCharacteristicUuid,
+    this.iosBleSosReceivedAt,
+    this.iosBleSosDeadlineAt,
+    this.iosBleSosNodeId,
+    this.iosBleSosPacketId,
+    this.iosBleSosCycleKey,
   });
 
   final bool backgroundCapabilityReady;
@@ -188,6 +197,15 @@ class ProtectionPlatformSnapshot {
   final int? preSosRemainingSeconds;
   final int? preSosOriginatorNodeId;
   final int? preSosPacketId;
+  final String? iosBleSosSnapshotKind;
+  final String? iosBleSosPayloadHex;
+  final String? iosBleSosSource;
+  final String? iosBleSosCharacteristicUuid;
+  final DateTime? iosBleSosReceivedAt;
+  final DateTime? iosBleSosDeadlineAt;
+  final int? iosBleSosNodeId;
+  final int? iosBleSosPacketId;
+  final String? iosBleSosCycleKey;
 }
 
 class ProtectionPlatformCommandRequest {
