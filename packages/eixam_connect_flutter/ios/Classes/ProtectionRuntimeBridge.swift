@@ -832,6 +832,7 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     defaults.synchronize()
 
     print("IOS_BLE_SOS_SNAPSHOT_PERSISTED kind=\(parsed.kind.rawValue) nodeId=\(parsed.nodeId.map(String.init) ?? "none") packetId=\(parsed.packetId.map(String.init) ?? "none") cycle=\(parsed.cycleKey ?? "none") deadline=\(parsed.deadlineAt.map(String.init) ?? "none")")
+    requestBackgroundSosNotification(for: parsed)
     var eventPayload: [String: Any] = [
       "payloadHex": payloadHex,
       "source": source,
@@ -882,6 +883,42 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       return true
     }
     return false
+  }
+
+  private func requestBackgroundSosNotification(
+    for parsed: (kind: IosBleSosSnapshotKind, nodeId: Int?, packetId: Int?, cycleKey: String?, deadlineAt: Int?)
+  ) {
+    guard parsed.kind == .preSos || parsed.kind == .active else {
+      return
+    }
+    UNUserNotificationCenter.current().getNotificationSettings { settings in
+      guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
+        print("IOS_BLE_SOS_BACKGROUND_NOTIFICATION_REQUESTED result=blocked kind=\(parsed.kind.rawValue) reason=permission_missing")
+        return
+      }
+      let content = UNMutableNotificationContent()
+      content.sound = .default
+      if parsed.kind == .preSos {
+        content.title = "SOS countdown started"
+        content.body = "Your EIXAM device started an SOS countdown."
+      } else {
+        content.title = "SOS sent"
+        content.body = "Your EIXAM device reported an active SOS."
+      }
+      let identifier = "ios-ble-sos-\(parsed.kind.rawValue)-\(parsed.cycleKey ?? parsed.nodeId.map(String.init) ?? "unknown")"
+      let request = UNNotificationRequest(
+        identifier: identifier,
+        content: content,
+        trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+      )
+      UNUserNotificationCenter.current().add(request) { error in
+        if let error {
+          print("IOS_BLE_SOS_BACKGROUND_NOTIFICATION_REQUESTED result=failed kind=\(parsed.kind.rawValue) cycle=\(parsed.cycleKey ?? "none") error=\(error.localizedDescription)")
+        } else {
+          print("IOS_BLE_SOS_BACKGROUND_NOTIFICATION_REQUESTED result=scheduled kind=\(parsed.kind.rawValue) cycle=\(parsed.cycleKey ?? "none")")
+        }
+      }
+    }
   }
 
   private func parseIosBleSosSnapshot(bytes: [UInt8], receivedAt: Int) -> (kind: IosBleSosSnapshotKind, nodeId: Int?, packetId: Int?, cycleKey: String?, deadlineAt: Int?)? {

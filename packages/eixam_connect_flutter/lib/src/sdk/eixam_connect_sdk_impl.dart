@@ -305,6 +305,7 @@ class EixamConnectSdkImpl
   bool _preSosExpirySettlementInFlight = false;
   final Map<String, DateTime> _recentOsSosWidgetActions = <String, DateTime>{};
   final Set<String> _deviceOriginatedBackendSyncInFlight = <String>{};
+  final Set<String> _iosExpiredPreSosPromotionKeys = <String>{};
   EixamSdkConfig? _sdkConfig;
   final bool _registeredDeviceAutoSyncInFlight = false;
   final Set<String> _backendRegisteredNodeIdsForSession = <String>{};
@@ -341,14 +342,13 @@ class EixamConnectSdkImpl
       Duration(seconds: 15);
   static const Duration _preSosTickInterval = Duration(milliseconds: 50);
   static const Duration _terminalSosSuppressionWindow = Duration(seconds: 10);
-  static const Duration _preSosTerminalCancelGraceWindow =
-      Duration(seconds: 5);
-  static const Duration _preSosTerminalCancelContextTtl =
-      Duration(seconds: 30);
+  static const Duration _preSosTerminalCancelGraceWindow = Duration(seconds: 5);
+  static const Duration _preSosTerminalCancelContextTtl = Duration(seconds: 30);
   static const Duration _osSosWidgetActionDedupeWindow = Duration(minutes: 10);
   static const Duration _nativePendingSosCreateTtl = Duration(hours: 24);
   static const Duration _nativePendingSosBackendConfirmTtl =
       Duration(hours: 24);
+  static const Duration _iosExpiredPreSosPromotionTtl = Duration(minutes: 10);
   static const int _maxPendingNotificationIntents = 20;
   static const int _maxRememberedNotificationIntentKeys = 100;
   static const String _permissionDisclosureAcksKey =
@@ -6299,9 +6299,16 @@ class EixamConnectSdkImpl
           reason: 'native_pre_sos_elapsed',
           emitIdleState: false,
         );
-        await _syncNativePreSosBackendPending(
-          trigger: 'native_pre_sos_elapsed',
-        );
+        if (snapshot.platform == ProtectionPlatform.ios) {
+          await _promoteExpiredIosBlePreSosSnapshot(
+            snapshot,
+            trigger: 'native_pre_sos_elapsed',
+          );
+        } else {
+          await _syncNativePreSosBackendPending(
+            trigger: 'native_pre_sos_elapsed',
+          );
+        }
       }
       return;
     }
@@ -6494,6 +6501,125 @@ class EixamConnectSdkImpl
       return 'sos:$raw';
     }
     return null;
+  }
+
+  Future<void> _promoteExpiredIosBlePreSosSnapshot(
+    ProtectionPlatformSnapshot snapshot, {
+    required String trigger,
+  }) async {
+    final kind = snapshot.iosBleSosSnapshotKind?.trim();
+    final cycleKey = snapshot.iosBleSosCycleKey ??
+        _iosBleSosCycleKey(
+          nodeId: snapshot.iosBleSosNodeId,
+          packetId: snapshot.iosBleSosPacketId,
+          payloadHex: snapshot.iosBleSosPayloadHex,
+        );
+    final deadline = snapshot.iosBleSosDeadlineAt ??
+        snapshot.preSosExpectedActivationAt ??
+        snapshot.iosBleSosReceivedAt
+            ?.add(EixamConnectSdk.defaultPreSosCountdown);
+    final nodeId = snapshot.iosBleSosNodeId ?? snapshot.preSosOriginatorNodeId;
+    final packetId = snapshot.iosBleSosPacketId ?? snapshot.preSosPacketId;
+    final incidentId = cycleKey == null ? null : 'device-runtime-$cycleKey';
+
+    BleDebugRegistry.instance.recordEvent(
+      'IOS_BLE_SOS_EXPIRED_PRESOS_DETECTED trigger=$trigger '
+      'kind=${kind ?? "none"} cycle=${cycleKey ?? "none"} '
+      'nodeId=${nodeId ?? "none"} packetId=${packetId ?? "none"} '
+      'deadline=${deadline?.toUtc().toIso8601String() ?? "none"}',
+    );
+
+    String? blockedReason;
+    if (snapshot.platform != ProtectionPlatform.ios) {
+      blockedReason = 'non_ios_platform';
+    } else if (kind != 'preSos') {
+      blockedReason = 'not_presos_snapshot';
+    } else if (deadline == null || DateTime.now().isBefore(deadline)) {
+      blockedReason = 'deadline_not_expired';
+    } else if (DateTime.now().difference(deadline) >
+        _iosExpiredPreSosPromotionTtl) {
+      blockedReason = 'stale_presos_snapshot';
+    } else if (cycleKey == null || nodeId == null) {
+      blockedReason = 'missing_device_cycle_identity';
+    } else if (_isClosedDeviceRuntimeIncidentId(incidentId)) {
+      blockedReason = 'terminal_cancel_snapshot_wins';
+    } else if (_iosExpiredPreSosPromotionKeys.contains(cycleKey)) {
+      blockedReason = 'duplicate_cycle';
+    } else if (_deviceOriginatedBackendSyncInFlight.contains(cycleKey)) {
+      blockedReason = 'backend_publish_in_flight';
+    }
+    if (blockedReason != null) {
+      BleDebugRegistry.instance.recordEvent(
+        'IOS_BLE_SOS_EXPIRED_PRESOS_SKIPPED trigger=$trigger '
+        'reason=$blockedReason cycle=${cycleKey ?? "none"}',
+      );
+      return;
+    }
+
+    final existingIncident = await sosRepository.getCurrentIncident();
+    if (_hasNonRuntimeVisibleSosIncident(existingIncident)) {
+      final deliveryChannel = existingIncident!.deliveryChannel ??
+          SosDeliveryChannel.backendAndDevice;
+      _recordPublicSosResult(
+        incident: existingIncident.copyWith(deliveryChannel: deliveryChannel),
+        deliveryChannel: deliveryChannel,
+      );
+      _iosExpiredPreSosPromotionKeys.add(cycleKey!);
+      BleDebugRegistry.instance.recordEvent(
+        'IOS_BLE_SOS_EXPIRED_PRESOS_SKIPPED trigger=$trigger '
+        'reason=backend_incident_already_active cycle=$cycleKey '
+        'incidentId=${existingIncident.id}',
+      );
+      return;
+    }
+
+    _iosExpiredPreSosPromotionKeys.add(cycleKey!);
+    _deviceOriginatedBackendSyncInFlight.add(cycleKey);
+    _emitPublicSosState(SosState.sending, source: trigger);
+    BleDebugRegistry.instance.recordEvent(
+      'IOS_BLE_SOS_EXPIRED_PRESOS_PROMOTE trigger=$trigger '
+      'cycle=$cycleKey nodeId=$nodeId packetId=${packetId ?? "none"}',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'IOS_BLE_SOS_EXPIRED_PRESOS_BACKEND_PUBLISH_START trigger=$trigger '
+      'cycle=$cycleKey nodeId=$nodeId',
+    );
+    try {
+      final incident = await sosRepository.triggerSos(
+        message: 'Device SOS countdown elapsed',
+        triggerSource: 'ble_device_runtime_status',
+        deviceId: nodeId.toString(),
+        originatorNodeId: nodeId,
+        incidentId: incidentId,
+        cycleKey: cycleKey,
+      );
+      final deliveryChannel =
+          incident.deliveryChannel ?? SosDeliveryChannel.backendAndDevice;
+      _recordPublicSosResult(
+        incident: incident.copyWith(
+          deliveryChannel: deliveryChannel,
+          originatorNodeId: incident.originatorNodeId ?? nodeId,
+          cycleKey: incident.cycleKey ?? cycleKey,
+        ),
+        deliveryChannel: deliveryChannel,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'IOS_BLE_SOS_EXPIRED_PRESOS_PROMOTE result=backend_published '
+        'trigger=$trigger cycle=$cycleKey '
+        'incidentId=${incident.id}',
+      );
+    } catch (error) {
+      _iosExpiredPreSosPromotionKeys.remove(cycleKey);
+      BleDebugRegistry.instance.recordEvent(
+        'IOS_BLE_SOS_EXPIRED_PRESOS_BACKEND_PUBLISH_BLOCKED '
+        'trigger=$trigger cycle=$cycleKey '
+        'error=${_compactDiagnosticValue(error)}',
+      );
+      _emitPublicSosState(SosState.sending,
+          source: '${trigger}_publish_failed');
+    } finally {
+      _deviceOriginatedBackendSyncInFlight.remove(cycleKey);
+    }
   }
 
   Future<void> _syncNativePreSosBackendPending({
@@ -7608,9 +7734,8 @@ class EixamConnectSdkImpl
     required DateTime? expectedActivationAt,
   }) {
     final now = DateTime.now().toUtc();
-    final expiresAt =
-        (expectedActivationAt?.toUtc() ?? now)
-            .add(_preSosTerminalCancelGraceWindow);
+    final expiresAt = (expectedActivationAt?.toUtc() ?? now)
+        .add(_preSosTerminalCancelGraceWindow);
     final context = _PreSosTerminalCancelContext(
       cycleKey: cycleKey,
       originatorNodeId: originatorNodeId,
