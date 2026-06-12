@@ -13,6 +13,7 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
   private static let sosCharacteristicUuid = CBUUID(string: "EA02")
   private static let inetCharacteristicUuid = CBUUID(string: "EA03")
   private static let cmdCharacteristicUuid = CBUUID(string: "EA04")
+  private static let sosNotificationDedupeWindowMs = 10 * 60 * 1000
 
   private enum RuntimeState: String {
     case inactive
@@ -55,6 +56,15 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     static let iosBleSosNodeId = "ios_ble_sos_node_id"
     static let iosBleSosPacketId = "ios_ble_sos_packet_id"
     static let iosBleSosCycleKey = "ios_ble_sos_cycle_key"
+    static let iosBleSosNotifiedKeys = "ios_ble_sos_notified_keys"
+    static let notificationProtectionPreSosTitle = "notification_protection_pre_sos_title"
+    static let notificationProtectionPreSosBody = "notification_protection_pre_sos_body"
+    static let notificationProtectionSosActiveTitle = "notification_protection_sos_active_title"
+    static let notificationProtectionSosActiveBody = "notification_protection_sos_active_body"
+    static let notificationProtectionSosResolvedTitle = "notification_protection_sos_resolved_title"
+    static let notificationProtectionSosResolvedBody = "notification_protection_sos_resolved_body"
+    static let notificationProtectionSosCancelledTitle = "notification_protection_sos_cancelled_title"
+    static let notificationProtectionSosCancelledBody = "notification_protection_sos_cancelled_body"
   }
 
   private enum IosBleSosSnapshotKind: String {
@@ -135,6 +145,7 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       }
       defaults.set(true, forKey: Keys.isArmed)
       defaults.set(activeDeviceId, forKey: Keys.protectedDeviceId)
+      storeNotificationTexts(arguments?["notificationTexts"] as? [String: Any])
       defaults.removeObject(forKey: Keys.lastFailureReason)
       defaults.removeObject(forKey: Keys.readinessFailureReason)
       ensureCentralManager()
@@ -226,6 +237,51 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     defaults.set("Protection Mode is off on iOS, so the existing Flutter BLE path remains the owner.", forKey: Keys.degradationReason)
     defaults.removeObject(forKey: Keys.readinessFailureReason)
     recordEvent(type: "runtimeStopped", reason: reason)
+  }
+
+  private func storeNotificationTexts(_ texts: [String: Any]?) {
+    guard let texts else {
+      return
+    }
+    setNotificationText(
+      texts["protectionPreSosTitle"] as? String,
+      forKey: Keys.notificationProtectionPreSosTitle
+    )
+    setNotificationText(
+      texts["protectionPreSosBody"] as? String,
+      forKey: Keys.notificationProtectionPreSosBody
+    )
+    setNotificationText(
+      texts["protectionSosActiveTitle"] as? String,
+      forKey: Keys.notificationProtectionSosActiveTitle
+    )
+    setNotificationText(
+      texts["protectionSosActiveBody"] as? String,
+      forKey: Keys.notificationProtectionSosActiveBody
+    )
+    setNotificationText(
+      texts["protectionSosResolvedTitle"] as? String,
+      forKey: Keys.notificationProtectionSosResolvedTitle
+    )
+    setNotificationText(
+      texts["protectionSosResolvedBody"] as? String,
+      forKey: Keys.notificationProtectionSosResolvedBody
+    )
+    setNotificationText(
+      texts["notificationSosCancelledTitle"] as? String,
+      forKey: Keys.notificationProtectionSosCancelledTitle
+    )
+    setNotificationText(
+      texts["notificationSosCancelledBody"] as? String,
+      forKey: Keys.notificationProtectionSosCancelledBody
+    )
+  }
+
+  private func setNotificationText(_ value: String?, forKey key: String) {
+    let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let normalized, !normalized.isEmpty {
+      defaults.set(normalized, forKey: key)
+    }
   }
 
   private func attemptProtectionReconnect(trigger: String) {
@@ -815,6 +871,7 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       print("IOS_BLE_SOS_STALE_ACTIVE_SUPPRESSED source=native_snapshot kind=\(parsed.kind.rawValue) nodeId=\(parsed.nodeId.map(String.init) ?? "none") packetId=\(parsed.packetId.map(String.init) ?? "none")")
       return
     }
+    let previousNotificationContext = currentSosNotificationContext()
 
     defaults.set(parsed.kind.rawValue, forKey: Keys.iosBleSosSnapshotKind)
     defaults.set(payloadHex, forKey: Keys.iosBleSosPayloadHex)
@@ -832,7 +889,10 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     defaults.synchronize()
 
     print("IOS_BLE_SOS_SNAPSHOT_PERSISTED kind=\(parsed.kind.rawValue) nodeId=\(parsed.nodeId.map(String.init) ?? "none") packetId=\(parsed.packetId.map(String.init) ?? "none") cycle=\(parsed.cycleKey ?? "none") deadline=\(parsed.deadlineAt.map(String.init) ?? "none")")
-    requestBackgroundSosNotification(for: parsed)
+    requestBackgroundSosNotification(
+      for: parsed,
+      previous: previousNotificationContext
+    )
     var eventPayload: [String: Any] = [
       "payloadHex": payloadHex,
       "source": source,
@@ -886,26 +946,51 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
   }
 
   private func requestBackgroundSosNotification(
-    for parsed: (kind: IosBleSosSnapshotKind, nodeId: Int?, packetId: Int?, cycleKey: String?, deadlineAt: Int?)
+    for parsed: (kind: IosBleSosSnapshotKind, nodeId: Int?, packetId: Int?, cycleKey: String?, deadlineAt: Int?),
+    previous: (kind: IosBleSosSnapshotKind?, nodeId: Int?, cycleKey: String?)
   ) {
-    guard parsed.kind == .preSos || parsed.kind == .active else {
+    print("IOS_SOS_NOTIFICATION_REQUESTED kind=\(parsed.kind.rawValue) cycle=\(parsed.cycleKey ?? "none") nodeId=\(parsed.nodeId.map(String.init) ?? "none")")
+    guard parsed.kind == .preSos || parsed.kind == .active || parsed.kind == .cancelled else {
+      print("IOS_SOS_NOTIFICATION_SKIPPED kind=\(parsed.kind.rawValue) reason=unsupported_kind")
+      return
+    }
+    guard shouldNotifySosSnapshot(parsed, previous: previous) else {
       return
     }
     UNUserNotificationCenter.current().getNotificationSettings { settings in
-      guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
-        print("IOS_BLE_SOS_BACKGROUND_NOTIFICATION_REQUESTED result=blocked kind=\(parsed.kind.rawValue) reason=permission_missing")
+      guard self.isNotificationAuthorized(settings.authorizationStatus) else {
+        print("IOS_SOS_NOTIFICATION_PERMISSION_MISSING kind=\(parsed.kind.rawValue) cycle=\(parsed.cycleKey ?? "none") status=\(settings.authorizationStatus.rawValue)")
+        return
+      }
+      let dedupeKey = self.sosNotificationDedupeKey(for: parsed)
+      guard self.rememberSosNotificationKey(dedupeKey) else {
+        print("IOS_SOS_NOTIFICATION_DEDUPED kind=\(parsed.kind.rawValue) cycle=\(parsed.cycleKey ?? "none") key=\(dedupeKey)")
         return
       }
       let content = UNMutableNotificationContent()
       content.sound = .default
-      if parsed.kind == .preSos {
-        content.title = "SOS countdown started"
-        content.body = "Your EIXAM device started an SOS countdown."
-      } else {
-        content.title = "SOS sent"
-        content.body = "Your EIXAM device reported an active SOS."
+      content.categoryIdentifier = "ios_sos_notification"
+      content.userInfo = [
+        "NotificationId": self.sosNotificationId(for: parsed.kind),
+        "payload": "sos:\(parsed.kind.rawValue)",
+        "presentAlert": true,
+        "presentSound": true,
+        "presentBadge": true,
+        "presentBanner": true,
+        "presentList": true,
+        "source": "ios_sos_notification",
+        "route": "sos",
+        "kind": parsed.kind.rawValue,
+        "cycleKey": parsed.cycleKey ?? "",
+        "nodeId": parsed.nodeId.map(String.init) ?? "",
+      ]
+      if #available(iOS 15.0, *) {
+        content.interruptionLevel = parsed.kind == .active ? .timeSensitive : .active
       }
-      let identifier = "ios-ble-sos-\(parsed.kind.rawValue)-\(parsed.cycleKey ?? parsed.nodeId.map(String.init) ?? "unknown")"
+      let text = self.sosNotificationText(for: parsed.kind)
+      content.title = text.title
+      content.body = text.body
+      let identifier = "\(self.sosNotificationId(for: parsed.kind))"
       let request = UNNotificationRequest(
         identifier: identifier,
         content: content,
@@ -913,12 +998,132 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       )
       UNUserNotificationCenter.current().add(request) { error in
         if let error {
-          print("IOS_BLE_SOS_BACKGROUND_NOTIFICATION_REQUESTED result=failed kind=\(parsed.kind.rawValue) cycle=\(parsed.cycleKey ?? "none") error=\(error.localizedDescription)")
+          print("IOS_SOS_NOTIFICATION_SKIPPED kind=\(parsed.kind.rawValue) cycle=\(parsed.cycleKey ?? "none") reason=schedule_failed error=\(error.localizedDescription)")
         } else {
-          print("IOS_BLE_SOS_BACKGROUND_NOTIFICATION_REQUESTED result=scheduled kind=\(parsed.kind.rawValue) cycle=\(parsed.cycleKey ?? "none")")
+          print("IOS_SOS_NOTIFICATION_SCHEDULED kind=\(parsed.kind.rawValue) cycle=\(parsed.cycleKey ?? "none") identifier=\(identifier)")
         }
       }
     }
+  }
+
+  private func currentSosNotificationContext() -> (
+    kind: IosBleSosSnapshotKind?,
+    nodeId: Int?,
+    cycleKey: String?
+  ) {
+    let rawKind = defaults.string(forKey: Keys.iosBleSosSnapshotKind)
+    return (
+      rawKind.flatMap(IosBleSosSnapshotKind.init(rawValue:)),
+      defaults.object(forKey: Keys.iosBleSosNodeId) as? Int,
+      defaults.string(forKey: Keys.iosBleSosCycleKey)
+    )
+  }
+
+  private func shouldNotifySosSnapshot(
+    _ parsed: (kind: IosBleSosSnapshotKind, nodeId: Int?, packetId: Int?, cycleKey: String?, deadlineAt: Int?),
+    previous: (kind: IosBleSosSnapshotKind?, nodeId: Int?, cycleKey: String?)
+  ) -> Bool {
+    if parsed.kind != .cancelled {
+      return true
+    }
+    guard previous.kind == .preSos || previous.kind == .active else {
+      print("IOS_SOS_NOTIFICATION_SKIPPED kind=\(parsed.kind.rawValue) reason=terminal_without_open_cycle cycle=\(parsed.cycleKey ?? "none")")
+      return false
+    }
+    if let parsedNodeId = parsed.nodeId, let previousNodeId = previous.nodeId {
+      if parsedNodeId == previousNodeId {
+        return true
+      }
+      print("IOS_SOS_NOTIFICATION_SKIPPED kind=\(parsed.kind.rawValue) reason=terminal_node_mismatch incomingNodeId=\(parsedNodeId) previousNodeId=\(previousNodeId)")
+      return false
+    }
+    if let parsedCycle = parsed.cycleKey, let previousCycle = previous.cycleKey {
+      if parsedCycle == previousCycle || previousCycle.hasPrefix(parsedCycle) || parsedCycle.hasPrefix(previousCycle) {
+        return true
+      }
+      print("IOS_SOS_NOTIFICATION_SKIPPED kind=\(parsed.kind.rawValue) reason=terminal_cycle_mismatch incomingCycle=\(parsedCycle) previousCycle=\(previousCycle)")
+      return false
+    }
+    return true
+  }
+
+  private func isNotificationAuthorized(_ status: UNAuthorizationStatus) -> Bool {
+    if status == .authorized || status == .provisional {
+      return true
+    }
+    if #available(iOS 14.0, *), status == .ephemeral {
+      return true
+    }
+    return false
+  }
+
+  private func sosNotificationDedupeKey(
+    for parsed: (kind: IosBleSosSnapshotKind, nodeId: Int?, packetId: Int?, cycleKey: String?, deadlineAt: Int?)
+  ) -> String {
+    let identity = parsed.cycleKey ?? parsed.nodeId.map(String.init) ?? "unknown"
+    return "\(parsed.kind.rawValue)-\(identity)"
+  }
+
+  private func sosNotificationId(for kind: IosBleSosSnapshotKind) -> Int {
+    switch kind {
+    case .preSos:
+      return 42001
+    case .active:
+      return 42002
+    case .cancelled:
+      return 42004
+    }
+  }
+
+  private func rememberSosNotificationKey(_ key: String) -> Bool {
+    let now = Date().millisecondsSince1970
+    var entries = (defaults.stringArray(forKey: Keys.iosBleSosNotifiedKeys) ?? [])
+      .compactMap { entry -> (key: String, timestamp: Int)? in
+        let parts = entry.split(separator: "|", maxSplits: 1).map(String.init)
+        guard parts.count == 2, let timestamp = Int(parts[1]) else {
+          return nil
+        }
+        return now - timestamp <= Self.sosNotificationDedupeWindowMs
+          ? (key: parts[0], timestamp: timestamp)
+          : nil
+      }
+    if entries.contains(where: { $0.key == key }) {
+      return false
+    }
+    entries.append((key, now))
+    if entries.count > 50 {
+      entries = Array(entries.suffix(50))
+    }
+    defaults.set(
+      entries.map { "\($0.key)|\($0.timestamp)" },
+      forKey: Keys.iosBleSosNotifiedKeys
+    )
+    return true
+  }
+
+  private func sosNotificationText(for kind: IosBleSosSnapshotKind) -> (title: String, body: String) {
+    switch kind {
+    case .preSos:
+      return (
+        notificationText(Keys.notificationProtectionPreSosTitle, fallback: "SOS countdown started"),
+        notificationText(Keys.notificationProtectionPreSosBody, fallback: "Your EIXAM device started an SOS countdown.")
+      )
+    case .active:
+      return (
+        notificationText(Keys.notificationProtectionSosActiveTitle, fallback: "SOS sent"),
+        notificationText(Keys.notificationProtectionSosActiveBody, fallback: "Your EIXAM device reported an active SOS.")
+      )
+    case .cancelled:
+      return (
+        notificationText(Keys.notificationProtectionSosCancelledTitle, fallback: notificationText(Keys.notificationProtectionSosResolvedTitle, fallback: "SOS cancelled")),
+        notificationText(Keys.notificationProtectionSosCancelledBody, fallback: notificationText(Keys.notificationProtectionSosResolvedBody, fallback: "The SOS incident was cancelled."))
+      )
+    }
+  }
+
+  private func notificationText(_ key: String, fallback: String) -> String {
+    let value = defaults.string(forKey: key)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    return value?.isEmpty == false ? value! : fallback
   }
 
   private func parseIosBleSosSnapshot(bytes: [UInt8], receivedAt: Int) -> (kind: IosBleSosSnapshotKind, nodeId: Int?, packetId: Int?, cycleKey: String?, deadlineAt: Int?)? {
