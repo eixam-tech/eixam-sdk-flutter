@@ -21,6 +21,7 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
     required this.sessionContext,
     required this.transportFactory,
     this.reconnectDelay = const Duration(seconds: 2),
+    this.connectTimeout = const Duration(seconds: 8),
   }) {
     _connectionController.add(_state);
   }
@@ -29,6 +30,7 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
   final SdkSessionContext sessionContext;
   final SdkMqttTransportFactory transportFactory;
   final Duration reconnectDelay;
+  final Duration connectTimeout;
 
   final StreamController<RealtimeConnectionState> _connectionController =
       StreamController<RealtimeConnectionState>.broadcast();
@@ -340,6 +342,7 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
     }
 
     final completer = Completer<void>();
+    final connectStopwatch = Stopwatch()..start();
     _connectFuture = completer.future;
     unawaited(() async {
       try {
@@ -355,7 +358,13 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
         _logRealtime('connect_success session=${session.externalUserId}');
         completer.complete();
       } catch (error) {
+        _recordRealtime(
+          'SDK_CLIENT_CREATION_TIMEOUT_GUARD '
+          'step=mqtt_connect elapsedMs=${connectStopwatch.elapsedMilliseconds} '
+          'errorType=${error.runtimeType}',
+        );
         _logRealtime('connect_failure error=$error');
+        await _disconnectTransport();
         _setState(RealtimeConnectionState.error);
         _scheduleReconnect();
         completer.complete();
@@ -379,11 +388,27 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
     _subscribedTopics = SdkMqttTopics.eventTopicsFor(session);
 
     _messageSub = transport.watchMessages().listen((message) {
-      final event = SdkMqttContract.parseRealtimeEvent(
-        topic: message.topic,
-        payload: message.payload,
+      try {
+        final event = SdkMqttContract.parseRealtimeEvent(
+          topic: message.topic,
+          payload: message.payload,
+        );
+        if (!_eventsController.isClosed) {
+          _eventsController.add(event);
+        }
+      } catch (error) {
+        _recordRealtime(
+          'MQTT_TRANSPORT_DISCONNECT_HANDLED '
+          'phase=realtime_message_parse errorType=${error.runtimeType}',
+        );
+      }
+    }, onError: (Object error, StackTrace stackTrace) {
+      _recordRealtime(
+        'MQTT_TRANSPORT_DISCONNECT_HANDLED '
+        'phase=realtime_message_stream errorType=${error.runtimeType}',
       );
-      _eventsController.add(event);
+      _setState(RealtimeConnectionState.reconnecting);
+      _scheduleReconnect();
     });
     _disconnectSub = transport.watchDisconnects().listen((event) {
       if (_manualDisconnect || _disposed || event.solicited) {
@@ -396,9 +421,16 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
       _logRealtime('disconnect unexpected reconnect_scheduled=true');
       _setState(RealtimeConnectionState.reconnecting);
       _scheduleReconnect();
+    }, onError: (Object error, StackTrace stackTrace) {
+      _recordRealtime(
+        'MQTT_TRANSPORT_DISCONNECT_HANDLED '
+        'phase=realtime_disconnect_stream errorType=${error.runtimeType}',
+      );
+      _setState(RealtimeConnectionState.reconnecting);
+      _scheduleReconnect();
     });
 
-    await transport.connect();
+    await transport.connect().timeout(connectTimeout);
     for (final topic in _subscribedTopics) {
       await transport.subscribe(topic);
     }
@@ -424,6 +456,10 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
     if (sessionContext.currentSession == null) {
       return;
     }
+    _recordRealtime(
+      'MQTT_TRANSPORT_RECONNECT_SCHEDULED '
+      'delayMs=${reconnectDelay.inMilliseconds}',
+    );
     _reconnectTimer = Timer(reconnectDelay, () {
       _reconnectTimer = null;
       unawaited(_ensureConnected(initialConnect: false));
@@ -436,13 +472,19 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
     }
     _logRealtime('state ${_state.name}->${next.name}');
     _state = next;
-    _connectionController.add(next);
+    if (!_connectionController.isClosed) {
+      _connectionController.add(next);
+    }
   }
 
   void _logRealtime(String message) {
     if (!config.enableLogging) {
       return;
     }
+  }
+
+  void _recordRealtime(String message) {
+    BleDebugRegistry.instance.recordEvent(message);
   }
 
   String _nextCorrelationId(String prefix) =>

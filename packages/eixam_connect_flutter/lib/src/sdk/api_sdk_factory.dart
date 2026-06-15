@@ -51,6 +51,7 @@ class ApiSdkFactory {
     EixamPermissionDisclosureConfig permissionDisclosureConfig =
         const EixamPermissionDisclosureConfig(),
     bool enableLogging = false,
+    bool deferRuntimeStartup = false,
   }) async {
     BleDebugRegistry.instance.reset();
 
@@ -66,6 +67,7 @@ class ApiSdkFactory {
       apiBaseUrl: apiBaseUrl,
       websocketUrl: websocketUrl,
       enableLogging: enableLogging,
+      deferRuntimeStartup: deferRuntimeStartup,
     );
     final httpClient = http.Client();
     final httpTransport = SdkHttpTransport(
@@ -205,6 +207,7 @@ class ApiSdkFactory {
       notificationTexts: config.notificationTexts,
       permissionDisclosureConfig: config.permissionDisclosureConfig,
       enableLogging: resolved.sdkConfig.enableLogging,
+      deferRuntimeStartup: config.featureFlags['defer_runtime_startup'] == true,
     );
 
     final restoredSession = await sdk.getCurrentSession();
@@ -217,7 +220,10 @@ class ApiSdkFactory {
 
     final initialSession = resolved.initialSession;
     if (initialSession != null) {
-      await sdk.setSession(initialSession);
+      await sdk.setSession(
+        initialSession,
+        deferRuntimeWork: config.featureFlags['defer_runtime_startup'] == true,
+      );
     }
 
     return sdk;

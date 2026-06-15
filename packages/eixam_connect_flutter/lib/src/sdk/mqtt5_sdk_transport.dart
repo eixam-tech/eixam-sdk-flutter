@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:mqtt5_client/mqtt5_client.dart';
 import 'package:mqtt5_client/mqtt5_server_client.dart';
 
@@ -23,9 +24,14 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
 
   MqttServerClient? _client;
   StreamSubscription<List<MqttReceivedMessage<MqttMessage>>>? _updatesSub;
+  bool _disposed = false;
 
   @override
   Future<void> connect() async {
+    if (_disposed) {
+      _logTransport('connect_skipped reason=disposed');
+      return;
+    }
     await disconnect();
 
     final brokerUri = request.brokerUri;
@@ -46,8 +52,12 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
     client.onDisconnected = () {
       final solicited = client.connectionStatus?.disconnectionOrigin ==
           MqttDisconnectionOrigin.solicited;
-      _disconnectController.add(
+      _logTransport(
+        'MQTT_TRANSPORT_DISCONNECT_HANDLED solicited=$solicited',
+      );
+      _safeAddDisconnect(
         SdkMqttDisconnectEvent(solicited: solicited),
+        source: 'on_disconnected',
       );
     };
     client.onBadCertificate = (_) => false;
@@ -63,10 +73,21 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
     try {
       await client.connect();
     } on SocketException catch (error) {
-      _logTransport('connect_socket_failure error=${error.message}');
+      _logTransport(
+        'MQTT_TRANSPORT_SOCKET_ERROR_HANDLED '
+        'phase=connect error=${error.message}',
+      );
       throw StateError('MQTT socket connect failed: ${error.message}');
+    } on TimeoutException catch (error) {
+      _logTransport(
+        'MQTT_TRANSPORT_SOCKET_ERROR_HANDLED '
+        'phase=connect_timeout error=${error.message ?? error.toString()}',
+      );
+      throw StateError('MQTT connect timed out: $error');
     } on Exception catch (error) {
-      _logTransport('connect_failure error=$error');
+      _logTransport(
+        'MQTT_TRANSPORT_DISCONNECT_HANDLED phase=connect_failure error=$error',
+      );
       throw StateError('MQTT connect failed: $error');
     }
 
@@ -84,30 +105,66 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
 
     _client = client;
     _updatesSub = client.updates.listen((messages) {
-      for (final message in messages) {
-        final publishMessage = message.payload;
-        if (publishMessage is! MqttPublishMessage) {
-          continue;
+      try {
+        for (final message in messages) {
+          final publishMessage = message.payload;
+          if (publishMessage is! MqttPublishMessage) {
+            continue;
+          }
+          final payload = MqttUtilities.bytesToStringAsString(
+              publishMessage.payload.message!);
+          _safeAddMessage(
+            SdkMqttIncomingMessage(
+              topic: message.topic ?? '',
+              payload: payload,
+            ),
+          );
         }
-        final payload = MqttUtilities.bytesToStringAsString(
-            publishMessage.payload.message!);
-        _messageController.add(
-          SdkMqttIncomingMessage(
-            topic: message.topic ?? '',
-            payload: payload,
-          ),
+      } catch (error, stackTrace) {
+        _logTransport(
+          'MQTT_TRANSPORT_DISCONNECT_HANDLED '
+          'phase=message_handler error=$error stack=${_stackSummary(stackTrace)}',
         );
       }
+    }, onError: (Object error, StackTrace stackTrace) {
+      final marker = error is SocketException
+          ? 'MQTT_TRANSPORT_SOCKET_ERROR_HANDLED'
+          : 'MQTT_TRANSPORT_DISCONNECT_HANDLED';
+      _logTransport(
+        '$marker phase=updates_stream error=$error '
+        'stack=${_stackSummary(stackTrace)}',
+      );
+      _safeAddDisconnect(
+        const SdkMqttDisconnectEvent(solicited: false),
+        source: 'updates_error',
+      );
     });
   }
 
   @override
   Future<void> disconnect() async {
-    await _updatesSub?.cancel();
+    try {
+      await _updatesSub?.cancel();
+    } catch (error) {
+      _logTransport(
+        'MQTT_TRANSPORT_DISCONNECT_HANDLED phase=cancel_updates error=$error',
+      );
+    }
     _updatesSub = null;
     final client = _client;
     _client = null;
-    client?.disconnect();
+    try {
+      client?.disconnect();
+      if (client != null) {
+        _logTransport(
+          'MQTT_TRANSPORT_DISCONNECT_HANDLED solicited=true phase=disconnect',
+        );
+      }
+    } catch (error) {
+      _logTransport(
+        'MQTT_TRANSPORT_DISCONNECT_HANDLED phase=disconnect error=$error',
+      );
+    }
   }
 
   @override
@@ -142,9 +199,14 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
 
   @override
   Future<void> dispose() async {
+    _disposed = true;
     await disconnect();
-    await _messageController.close();
-    await _disconnectController.close();
+    if (!_messageController.isClosed) {
+      await _messageController.close();
+    }
+    if (!_disconnectController.isClosed) {
+      await _disconnectController.close();
+    }
   }
 
   MqttServerClient _requireClient() {
@@ -157,9 +219,51 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
   }
 
   void _logTransport(String message) {
-    if (!enableLogging) {
+    debugPrint(message);
+  }
+
+  void _safeAddMessage(SdkMqttIncomingMessage message) {
+    if (_messageController.isClosed) {
+      _logTransport(
+        'MQTT_TRANSPORT_EVENT_DROPPED_CLOSED_CONTROLLER type=message',
+      );
       return;
     }
+    try {
+      _messageController.add(message);
+    } catch (error) {
+      _logTransport(
+        'MQTT_TRANSPORT_EVENT_DROPPED_CLOSED_CONTROLLER '
+        'type=message error=$error',
+      );
+    }
+  }
+
+  void _safeAddDisconnect(
+    SdkMqttDisconnectEvent event, {
+    required String source,
+  }) {
+    if (_disconnectController.isClosed) {
+      _logTransport(
+        'MQTT_TRANSPORT_EVENT_DROPPED_CLOSED_CONTROLLER '
+        'type=disconnect source=$source',
+      );
+      return;
+    }
+    try {
+      _disconnectController.add(event);
+    } catch (error) {
+      _logTransport(
+        'MQTT_TRANSPORT_EVENT_DROPPED_CLOSED_CONTROLLER '
+        'type=disconnect source=$source error=$error',
+      );
+    }
+  }
+
+  String _stackSummary(StackTrace stackTrace) {
+    final text = stackTrace.toString();
+    final newline = text.indexOf('\n');
+    return newline == -1 ? text : text.substring(0, newline);
   }
 
   String _redactedUri(Uri uri) {

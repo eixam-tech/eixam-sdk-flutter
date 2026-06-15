@@ -436,9 +436,17 @@ class EixamConnectSdkImpl
     _bindOperationalDiagnostics();
     _bleOperationalRuntimeBridge.start();
     _emitOperationalDiagnostics();
+    if ((_sdkConfig?.deferRuntimeStartup ?? false) && _session != null) {
+      _deferredRuntimeWorkPending = true;
+      BleDebugRegistry.instance.recordEvent(
+        'SDK_CLIENT_CREATION_READY_WITH_TRANSPORT_PENDING '
+        'trigger=initialize transport=mqtt status=runtime_deferred',
+      );
+      return;
+    }
     _operationalTelemetryCoordinator.start(initialSosState: _publicSosState);
     await _reconcileBackgroundTelemetry(reason: 'initialize');
-    await realtimeClient.connect();
+    _connectRealtimeInBackground(trigger: 'initialize');
     await _resumeDeathManMonitoringIfNeeded();
     await _seedPreferredBleDeviceFromBackendRegistryIfNeeded(
       trigger: 'initialize',
@@ -821,12 +829,46 @@ class EixamConnectSdkImpl
       trigger: trigger,
     );
     await _bleAutoReconnectCoordinator.tryAutoConnectOnResume();
-    final realtime = realtimeClient;
-    if (realtime is OperationalRealtimeClient) {
-      await realtime.reconnectIfSessionChanged(session);
-      return;
-    }
-    await realtimeClient.connect();
+    _connectRealtimeInBackground(
+      trigger: trigger,
+      sessionForReconnect: session,
+    );
+  }
+
+  void _connectRealtimeInBackground({
+    required String trigger,
+    EixamSession? sessionForReconnect,
+  }) {
+    BleDebugRegistry.instance.recordEvent(
+      'SDK_CLIENT_CREATION_MQTT_CONNECT_DEFERRED trigger=$trigger',
+    );
+    unawaited(() async {
+      try {
+        final stopwatch = Stopwatch()..start();
+        final realtime = realtimeClient;
+        if (sessionForReconnect != null &&
+            realtime is OperationalRealtimeClient) {
+          await realtime.reconnectIfSessionChanged(sessionForReconnect);
+        } else {
+          await realtime.connect();
+        }
+        BleDebugRegistry.instance.recordEvent(
+          'SDK_CLIENT_CREATION_READY_WITH_TRANSPORT_PENDING '
+          'trigger=$trigger transport=mqtt status=connect_attempt_finished '
+          'elapsedMs=${stopwatch.elapsedMilliseconds}',
+        );
+      } catch (error) {
+        BleDebugRegistry.instance.recordEvent(
+          'SDK_CLIENT_CREATION_READY_WITH_TRANSPORT_PENDING '
+          'trigger=$trigger transport=mqtt status=pending '
+          'errorType=${error.runtimeType}',
+        );
+      }
+    }());
+    BleDebugRegistry.instance.recordEvent(
+      'SDK_CLIENT_CREATION_READY_WITH_TRANSPORT_PENDING '
+      'trigger=$trigger transport=mqtt status=background_connecting',
+    );
   }
 
   @override
