@@ -1,18 +1,29 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:mqtt5_client/mqtt5_client.dart';
 import 'package:mqtt5_client/mqtt5_server_client.dart';
 
 import 'sdk_mqtt_contract.dart';
 import 'sdk_mqtt_transport.dart';
+import 'transport_security_validator.dart';
 
 class Mqtt5SdkTransport implements SdkMqttTransport {
   Mqtt5SdkTransport({
     required this.request,
     required this.enableLogging,
-  });
+  }) {
+    SdkTransportSecurityValidator.validateRealtimeEndpoint(
+      EixamSdkConfig(
+        apiBaseUrl: 'https://transport-validation.local',
+        websocketUrl: request.brokerUri.toString(),
+        allowInsecureLocalEndpoints: request.allowInsecureLocalEndpoint,
+      ),
+      endpoint: request.brokerUri.toString(),
+    );
+  }
 
   final SdkMqttConnectRequest request;
   final bool enableLogging;
@@ -43,7 +54,7 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
       'websocket=${brokerUri.scheme == 'ws' || brokerUri.scheme == 'wss'} '
       'secure=${brokerUri.scheme == 'ssl' || brokerUri.scheme == 'tls'}',
     );
-    client.logging(on: enableLogging, logPayloads: enableLogging);
+    client.logging(on: kDebugMode && enableLogging, logPayloads: false);
     client.keepAlivePeriod = 30;
     client.port =
         brokerUri.hasPort ? brokerUri.port : _defaultPortFor(brokerUri);
@@ -219,6 +230,9 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
   }
 
   void _logTransport(String message) {
+    if (!kDebugMode || !enableLogging) {
+      return;
+    }
     debugPrint(message);
   }
 

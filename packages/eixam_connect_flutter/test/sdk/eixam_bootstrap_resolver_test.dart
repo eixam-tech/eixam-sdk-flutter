@@ -81,6 +81,43 @@ void main() {
       expect(resolved.sdkConfig.websocketUrl, 'wss://custom.example/mqtt');
     });
 
+    test('rejects insecure custom endpoints by default', () {
+      expect(
+        () => EixamBootstrapResolver.resolve(
+          const EixamBootstrapConfig(
+            appId: 'partner-app',
+            environment: EixamEnvironment.custom,
+            notificationTexts: _notificationTexts,
+            customEndpoints: EixamCustomEndpoints(
+              apiBaseUrl: 'http://api.example.test',
+              websocketUrl: 'ws://mqtt.example.test/ws',
+            ),
+          ),
+        ),
+        throwsA(isA<TransportSecurityException>()),
+      );
+    });
+
+    test('allows insecure localhost custom endpoints with explicit debug flag',
+        () {
+      final resolved = EixamBootstrapResolver.resolve(
+        const EixamBootstrapConfig(
+          appId: 'partner-app',
+          environment: EixamEnvironment.custom,
+          notificationTexts: _notificationTexts,
+          allowInsecureLocalEndpoints: true,
+          customEndpoints: EixamCustomEndpoints(
+            apiBaseUrl: 'http://localhost:8080',
+            websocketUrl: 'ws://localhost:9001/mqtt',
+          ),
+        ),
+      );
+
+      expect(resolved.sdkConfig.apiBaseUrl, 'http://localhost:8080');
+      expect(resolved.sdkConfig.websocketUrl, 'ws://localhost:9001/mqtt');
+      expect(resolved.sdkConfig.allowInsecureLocalEndpoints, isTrue);
+    });
+
     test('rejects missing custom endpoints', () {
       expect(
         () => EixamBootstrapResolver.resolve(

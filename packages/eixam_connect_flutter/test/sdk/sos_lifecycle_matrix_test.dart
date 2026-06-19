@@ -22,6 +22,9 @@ void main() {
   const protectionMethodChannel = MethodChannel(
     'dev.eixam.connect_flutter/protection_runtime/methods',
   );
+  const backgroundTelemetryMethodChannel = MethodChannel(
+    'dev.eixam.connect_flutter/background_telemetry/methods',
+  );
 
   setUp(() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -43,11 +46,40 @@ void main() {
       }
       return null;
     });
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(backgroundTelemetryMethodChannel,
+            (call) async {
+      switch (call.method) {
+        case 'startBackgroundTelemetry':
+        case 'updateBackgroundTelemetry':
+        case 'stopBackgroundTelemetry':
+        case 'markQueuedBackgroundTelemetryFlushFailed':
+          return null;
+        case 'getBackgroundTelemetryDiagnostics':
+          return <String, dynamic>{
+            'backgroundTelemetryEnabled': false,
+            'androidForegroundServiceRunning': false,
+            'backgroundPermissionStatus': 'unknown',
+            'lastBackgroundTelemetryAt': null,
+            'lastBackgroundTelemetryError': null,
+            'lastBackgroundLocationMode': null,
+            'activeLocationRequest': false,
+            'pendingNativeTelemetryCount': 0,
+          };
+        case 'peekQueuedBackgroundTelemetry':
+          return <dynamic>[];
+        case 'ackQueuedBackgroundTelemetry':
+          return true;
+      }
+      return null;
+    });
   });
 
   tearDown(() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(protectionMethodChannel, null);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(backgroundTelemetryMethodChannel, null);
   });
 
   group('SOS-01..SOS-16 SDK lifecycle matrix', () {
@@ -113,6 +145,82 @@ void main() {
         expect(cancelled.state, SosState.cancelled);
         expect(await harness.sdk.getSosState(), SosState.idle);
         expect(await harness.sdk.getCurrentSosIncident(), isNull);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('backend unavailable with device available returns device-only SOS',
+        () async {
+      final harness = _SdkSosHarness(connectedBle: true);
+      try {
+        harness.deviceRepository.emitStatus(
+          buildDeviceStatus(
+            deviceId: 'ble-1',
+            nodeId: 0x1234,
+            canonicalHardwareId: 'CF:82:00:00:00:01',
+            connected: true,
+            paired: true,
+            activated: true,
+          ),
+        );
+        await harness.attachObservedAppActivation();
+        harness.sosRepository.triggerError =
+            const NetworkException('E_NETWORK', 'offline');
+
+        final stateStreamExpectation = expectLater(
+          harness.sdk.currentSosStateStream,
+          emitsThrough(SosState.sent),
+        );
+        final incident = await harness.sdk.triggerSos(
+          const SosTriggerPayload(),
+        );
+        await stateStreamExpectation;
+
+        expect(incident.state, SosState.sent);
+        expect(incident.deliveryChannel, SosDeliveryChannel.deviceOnly);
+        expect(await harness.sdk.getSosState(), SosState.sent);
+        final currentIncident = await harness.sdk.getCurrentSosIncident();
+        expect(currentIncident?.state, SosState.sent);
+        expect(currentIncident?.deliveryChannel, SosDeliveryChannel.deviceOnly);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('backend unavailable with device unavailable throws SOS failure',
+        () async {
+      final harness = _SdkSosHarness();
+      try {
+        harness.sosRepository.triggerError =
+            const NetworkException('E_NETWORK', 'offline');
+
+        await expectLater(
+          harness.sdk.triggerSos(const SosTriggerPayload()),
+          throwsA(
+            isA<SosException>().having(
+              (error) => error.code,
+              'code',
+              'E_SOS_NOT_AVAILABLE',
+            ),
+          ),
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('backend available with device unavailable returns backend SOS',
+        () async {
+      final harness = _SdkSosHarness();
+      try {
+        final incident = await harness.sdk.triggerSos(
+          const SosTriggerPayload(),
+        );
+
+        expect(incident.state, SosState.sent);
+        expect(incident.deliveryChannel, SosDeliveryChannel.backendOnly);
+        expect(harness.sosRepository.triggerCallCount, 1);
       } finally {
         await harness.dispose();
       }
@@ -674,6 +782,29 @@ final class _SdkSosHarness {
           scheduleMicrotask(() {
             deviceSosController.handleIncomingSosEventPacket(
               _deviceResolveAckPacket(),
+              source: DeviceSosTransitionSource.device,
+            );
+          });
+        }
+      },
+    );
+  }
+
+  Future<void> attachObservedAppActivation() {
+    return deviceSosController.attach(
+      commandWriter: (command) async {
+        if (command.opcode == 0x06) {
+          Future<void>.delayed(const Duration(milliseconds: 5), () {
+            deviceSosController.handleIncomingSosPacket(
+              _deviceOriginCountdownPacket(),
+              source: DeviceSosTransitionSource.device,
+            );
+          });
+        }
+        if (command.opcode == 0x05) {
+          Future<void>.delayed(const Duration(milliseconds: 5), () {
+            deviceSosController.handleIncomingSosPacket(
+              _deviceOriginActivePacket(),
               source: DeviceSosTransitionSource.device,
             );
           });

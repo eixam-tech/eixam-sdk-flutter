@@ -862,13 +862,17 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     let characteristicUuid = characteristic.uuid.uuidString.lowercased()
     let timestamp = Date().millisecondsSince1970
     let payloadHex = bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
+#if DEBUG
     print("IOS_BLE_SOS_PAYLOAD_RECEIVED source=\(source) characteristic=\(characteristicUuid) len=\(bytes.count) payload=\(payloadHex)")
+#endif
 
     guard let parsed = parseIosBleSosSnapshot(bytes: bytes, receivedAt: timestamp) else {
       return
     }
     if shouldSuppressAfterTerminalSnapshot(parsed: parsed, receivedAt: timestamp) {
+#if DEBUG
       print("IOS_BLE_SOS_STALE_ACTIVE_SUPPRESSED source=native_snapshot kind=\(parsed.kind.rawValue) nodeId=\(parsed.nodeId.map(String.init) ?? "none") packetId=\(parsed.packetId.map(String.init) ?? "none")")
+#endif
       return
     }
     let previousNotificationContext = currentSosNotificationContext()
@@ -888,7 +892,9 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     }
     defaults.synchronize()
 
+#if DEBUG
     print("IOS_BLE_SOS_SNAPSHOT_PERSISTED kind=\(parsed.kind.rawValue) nodeId=\(parsed.nodeId.map(String.init) ?? "none") packetId=\(parsed.packetId.map(String.init) ?? "none") cycle=\(parsed.cycleKey ?? "none") deadline=\(parsed.deadlineAt.map(String.init) ?? "none")")
+#endif
     requestBackgroundSosNotification(
       for: parsed,
       previous: previousNotificationContext
@@ -949,9 +955,13 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     for parsed: (kind: IosBleSosSnapshotKind, nodeId: Int?, packetId: Int?, cycleKey: String?, deadlineAt: Int?),
     previous: (kind: IosBleSosSnapshotKind?, nodeId: Int?, cycleKey: String?)
   ) {
+#if DEBUG
     print("IOS_SOS_NOTIFICATION_REQUESTED kind=\(parsed.kind.rawValue) cycle=\(parsed.cycleKey ?? "none") nodeId=\(parsed.nodeId.map(String.init) ?? "none")")
+#endif
     guard parsed.kind == .preSos || parsed.kind == .active || parsed.kind == .cancelled else {
+#if DEBUG
       print("IOS_SOS_NOTIFICATION_SKIPPED kind=\(parsed.kind.rawValue) reason=unsupported_kind")
+#endif
       return
     }
     guard shouldNotifySosSnapshot(parsed, previous: previous) else {
@@ -959,12 +969,16 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     }
     UNUserNotificationCenter.current().getNotificationSettings { settings in
       guard self.isNotificationAuthorized(settings.authorizationStatus) else {
+#if DEBUG
         print("IOS_SOS_NOTIFICATION_PERMISSION_MISSING kind=\(parsed.kind.rawValue) cycle=\(parsed.cycleKey ?? "none") status=\(settings.authorizationStatus.rawValue)")
+#endif
         return
       }
       let dedupeKey = self.sosNotificationDedupeKey(for: parsed)
       guard self.rememberSosNotificationKey(dedupeKey) else {
+#if DEBUG
         print("IOS_SOS_NOTIFICATION_DEDUPED kind=\(parsed.kind.rawValue) cycle=\(parsed.cycleKey ?? "none") key=\(dedupeKey)")
+#endif
         return
       }
       let content = UNMutableNotificationContent()
@@ -998,9 +1012,13 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       )
       UNUserNotificationCenter.current().add(request) { error in
         if let error {
+#if DEBUG
           print("IOS_SOS_NOTIFICATION_SKIPPED kind=\(parsed.kind.rawValue) cycle=\(parsed.cycleKey ?? "none") reason=schedule_failed error=\(error.localizedDescription)")
+#endif
         } else {
+#if DEBUG
           print("IOS_SOS_NOTIFICATION_SCHEDULED kind=\(parsed.kind.rawValue) cycle=\(parsed.cycleKey ?? "none") identifier=\(identifier)")
+#endif
         }
       }
     }
@@ -1027,21 +1045,27 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       return true
     }
     guard previous.kind == .preSos || previous.kind == .active else {
+#if DEBUG
       print("IOS_SOS_NOTIFICATION_SKIPPED kind=\(parsed.kind.rawValue) reason=terminal_without_open_cycle cycle=\(parsed.cycleKey ?? "none")")
+#endif
       return false
     }
     if let parsedNodeId = parsed.nodeId, let previousNodeId = previous.nodeId {
       if parsedNodeId == previousNodeId {
         return true
       }
+#if DEBUG
       print("IOS_SOS_NOTIFICATION_SKIPPED kind=\(parsed.kind.rawValue) reason=terminal_node_mismatch incomingNodeId=\(parsedNodeId) previousNodeId=\(previousNodeId)")
+#endif
       return false
     }
     if let parsedCycle = parsed.cycleKey, let previousCycle = previous.cycleKey {
       if parsedCycle == previousCycle || previousCycle.hasPrefix(parsedCycle) || parsedCycle.hasPrefix(previousCycle) {
         return true
       }
+#if DEBUG
       print("IOS_SOS_NOTIFICATION_SKIPPED kind=\(parsed.kind.rawValue) reason=terminal_cycle_mismatch incomingCycle=\(parsedCycle) previousCycle=\(previousCycle)")
+#endif
       return false
     }
     return true

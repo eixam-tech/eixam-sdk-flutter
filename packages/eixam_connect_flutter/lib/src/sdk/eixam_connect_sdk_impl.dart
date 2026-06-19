@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_core/src/interfaces/realtime_client.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/widgets.dart';
 
 import '../data/datasources_local/preferred_ble_device_store.dart';
@@ -262,6 +263,8 @@ class EixamConnectSdkImpl
   final Map<String, _ObservedRelaySosContext> _observedRelaySosBySignature =
       <String, _ObservedRelaySosContext>{};
   final Map<String, DateTime> _remoteRelaySosBackendHandoffBySignature =
+      <String, DateTime>{};
+  final Map<String, DateTime> _remoteRelaySosBackendHandoffInFlightBySignature =
       <String, DateTime>{};
   final Map<String, DateTime> _remoteRelaySosCancelSucceededBySignature =
       <String, DateTime>{};
@@ -1204,6 +1207,18 @@ class EixamConnectSdkImpl
           incident,
           source: 'sos_rehydrate:$trigger',
         )) {
+          if (_isTerminalPublicSosState(state)) {
+            final reason =
+                'backend_rehydration_external_terminal:${state.name}';
+            _clearPreSosSession(
+              reason: reason,
+              emitIdleState: false,
+            );
+            if (deviceSosController.currentStatus.state ==
+                DeviceSosState.preConfirm) {
+              deviceSosController.clearPreSosLocally(reason: reason);
+            }
+          }
           _clearExternalOnlyPublicSosResidue(
             reason: 'backend_rehydration_external_only',
           );
@@ -1685,17 +1700,19 @@ class EixamConnectSdkImpl
           )
         : await repository.refreshDeviceStatus();
     _lastDeviceStatus = status;
-    debugPrint(
-      'OTA_COORDINATOR post_dfu_forced_firmware_read_result '
-      'deviceId=${status.deviceId} requestedDeviceId=$deviceId '
-      'attempt=$attempt connected=${status.connected} '
-      'ready=${status.isReadyForSafety} '
-      'firmware=${status.firmwareVersion ?? "unknown"} '
-      'target=$targetVersion '
-      'eixamService=${BleDebugRegistry.instance.currentState.eixamServiceFound} '
-      'cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound} '
-      'inetAvailable=${BleDebugRegistry.instance.currentState.inetFound}',
-    );
+    if (kDebugMode) {
+      debugPrint(
+        'OTA_COORDINATOR post_dfu_forced_firmware_read_result '
+        'deviceId=${status.deviceId} requestedDeviceId=$deviceId '
+        'attempt=$attempt connected=${status.connected} '
+        'ready=${status.isReadyForSafety} '
+        'firmware=${status.firmwareVersion ?? "unknown"} '
+        'target=$targetVersion '
+        'eixamService=${BleDebugRegistry.instance.currentState.eixamServiceFound} '
+        'cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound} '
+        'inetAvailable=${BleDebugRegistry.instance.currentState.inetFound}',
+      );
+    }
     BleDebugRegistry.instance.recordEvent(
       'OTA_COORDINATOR post_dfu_forced_firmware_read_result '
       'deviceId=${status.deviceId} requestedDeviceId=$deviceId '
@@ -3735,6 +3752,22 @@ class EixamConnectSdkImpl
         capabilitySnapshot: capabilitySnapshot,
       );
       if (backendIncident == null) {
+        if (deliveryChannel == SosDeliveryChannel.deviceOnly) {
+          const successfulDeliveryChannel = SosDeliveryChannel.deviceOnly;
+          final incident = await _updateFallbackPublicSosIncident(
+            state: SosState.sent,
+            deliveryChannel: successfulDeliveryChannel,
+          );
+          _recordPublicSosResult(
+            incident: incident,
+            deliveryChannel: successfulDeliveryChannel,
+            fallbackState: SosState.sent,
+          );
+          _emitSosActiveNotificationIntent(incident);
+          _registerPendingAppTriggeredSosBridge(incident);
+          _publishSdkEvent(SOSTriggeredEvent(incident.id));
+          return incident;
+        }
         BleDebugRegistry.instance.recordEvent(
           '[BACKGROUND_SOS] backend_required_failed '
           'deviceAvailable=${deviceSync.available} '
@@ -3988,10 +4021,12 @@ class EixamConnectSdkImpl
         emitResolvedState: false,
       );
     } catch (error) {
-      debugPrint(
-        '[BACKGROUND_SOS] get_current_sos_device_status_failed '
-        'error=$error',
-      );
+      if (kDebugMode) {
+        debugPrint(
+          '[BACKGROUND_SOS] get_current_sos_device_status_failed '
+          'error=$error',
+        );
+      }
     }
     final repositoryIncident = await sosRepository.getCurrentIncident();
     if (_isExternalOnlySosIncident(
@@ -5514,6 +5549,13 @@ class EixamConnectSdkImpl
     _rememberActiveSosIncident(recordedIncident);
     _lastPublicSosIncidentId = recordedIncident.id;
     _lastPublicSosDeliveryChannel = deliveryChannel;
+    if (deliveryChannel == SosDeliveryChannel.deviceOnly &&
+        _isOpenSosState(recordedIncident.state)) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_DEVICE_ONLY_INCIDENT_RECORDED '
+        'incidentId=${recordedIncident.id} state=${recordedIncident.state.name}',
+      );
+    }
     if (fallbackState != null) {
       _publicSosFallbackIncident = recordedIncident;
       _emitPublicSosState(fallbackState, source: 'public_sos_result');
@@ -5522,6 +5564,14 @@ class EixamConnectSdkImpl
       _emitPublicSosState(
         recordedIncident.state,
         source: 'public_sos_result',
+      );
+    }
+    final emittedState = fallbackState ?? recordedIncident.state;
+    if (deliveryChannel == SosDeliveryChannel.deviceOnly &&
+        _isOpenSosState(emittedState)) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_DEVICE_ONLY_PUBLIC_STATE_EMITTED '
+        'incidentId=${recordedIncident.id} state=${emittedState.name}',
       );
     }
     _emitOperationalDiagnostics();
@@ -8111,7 +8161,9 @@ class EixamConnectSdkImpl
       BleDebugRegistry.instance.recordEvent(
         'SOS notification cleanup failed -> reason=$reason error=$error',
       );
-      debugPrint('SOS notification cleanup failed: $error');
+      if (kDebugMode) {
+        debugPrint('SOS notification cleanup failed: $error');
+      }
     }
   }
 
@@ -10756,6 +10808,15 @@ class EixamConnectSdkImpl
       return parts[0] == originatorNodeId.toString() &&
           parts[2] == (relayNodeId?.toString() ?? 'none');
     });
+    _remoteRelaySosBackendHandoffInFlightBySignature
+        .removeWhere((signature, _) {
+      final parts = signature.split(':');
+      if (parts.length < 4) {
+        return false;
+      }
+      return parts[0] == originatorNodeId.toString() &&
+          parts[2] == (relayNodeId?.toString() ?? 'none');
+    });
     _pendingExternalRelayCancels.removeWhere((_, pending) {
       if (_normalizeNodeId(pending.snapshot.originatorNodeId) !=
           originatorNodeId) {
@@ -12740,6 +12801,9 @@ class EixamConnectSdkImpl
     _remoteRelaySosBackendHandoffBySignature.removeWhere(
       (_, seenAt) => now.difference(seenAt) > const Duration(minutes: 5),
     );
+    _remoteRelaySosBackendHandoffInFlightBySignature.removeWhere(
+      (_, seenAt) => now.difference(seenAt) > const Duration(seconds: 30),
+    );
     _externalRelayRearmedAtByKey.removeWhere(
       (_, seenAt) => now.difference(seenAt) > const Duration(minutes: 5),
     );
@@ -12761,7 +12825,19 @@ class EixamConnectSdkImpl
       }
       return;
     }
-    _remoteRelaySosBackendHandoffBySignature[signature] = now;
+    if (_remoteRelaySosBackendHandoffInFlightBySignature
+        .containsKey(signature)) {
+      _logSosTrace(
+        'remote_backend_handoff_decision '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'relayNodeId=${snapshot.relayNodeId ?? "none"} '
+        'hasLocation=${snapshot.location != null} '
+        'locationSource=none willAttemptBackend=false '
+        'skipReason=in_flight',
+      );
+      return;
+    }
+    _remoteRelaySosBackendHandoffInFlightBySignature[signature] = now;
     if (_externalRelayRearmedAtByKey.remove(rearmKey) != null) {
       BleDebugRegistry.instance.recordEvent(
         'EXTERNAL_SOS external_trigger_allowed_after_cancel '
@@ -12806,6 +12882,16 @@ class EixamConnectSdkImpl
       'hasLocation=${positionSnapshot != null} '
       'locationSource=$locationSource willAttemptBackend=true skipReason=none',
     );
+    _logSosOriginDecision(
+      source: 'remote_lora_relay',
+      decision: const SosOriginDecision(
+        actionability: SosActionability.externalOnly,
+        localStateMutation: false,
+        publicIncident: false,
+        backendPublish: true,
+        reason: 'remote_lora_relay_backend_handoff',
+      ),
+    );
     BleDebugRegistry.instance.recordEvent(
       '[REMOTE_RELAY_SOS] backend_handoff_start '
       'originatorNodeId=${snapshot.originatorNodeId} '
@@ -12842,6 +12928,9 @@ class EixamConnectSdkImpl
         relayDeviceId: relayDeviceId,
         relayHardwareId: relayHardwareId,
       );
+      _remoteRelaySosBackendHandoffInFlightBySignature.remove(signature);
+      _remoteRelaySosBackendHandoffBySignature[signature] =
+          DateTime.now().toUtc();
       _correlateRemoteRelayBackendIncident(
         snapshot: snapshot,
         backendIncidentId: backendResult.incidentId,
@@ -12936,6 +13025,7 @@ class EixamConnectSdkImpl
         incidentId: backendResult.incidentId,
       );
     } catch (error) {
+      _remoteRelaySosBackendHandoffInFlightBySignature.remove(signature);
       _logRemoteRelayBackendResponse(
         correlationId: _remoteRelayCorrelationId(snapshot),
         snapshot: snapshot,

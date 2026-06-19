@@ -21,6 +21,7 @@ import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
 import 'package:eixam_connect_flutter/src/sdk/operational_realtime_client.dart';
 import 'package:eixam_connect_flutter/src/sdk/protection_platform_adapter.dart';
 import 'package:eixam_connect_flutter/src/sdk/sdk_mqtt_contract.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
@@ -30,6 +31,13 @@ import '../support/fakes/sdk_contract_fakes.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  const protectionMethodChannel = MethodChannel(
+    'dev.eixam.connect_flutter/protection_runtime/methods',
+  );
+  const backgroundTelemetryMethodChannel = MethodChannel(
+    'dev.eixam.connect_flutter/background_telemetry/methods',
+  );
 
   group('remote relay SOS backend handoff', () {
     late StreamController<BleIncomingEvent> bleEvents;
@@ -50,6 +58,70 @@ void main() {
     late List<EixamDeviceCommand> deviceCommands;
 
     setUp(() async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(protectionMethodChannel, (call) async {
+        switch (call.method) {
+          case 'getPlatformSnapshot':
+            return <String, dynamic>{
+              'backgroundCapabilityReady': false,
+              'platformRuntimeConfigured': false,
+              'foregroundServiceConfigured': false,
+              'serviceRunning': false,
+              'runtimeActive': false,
+              'runtimeState': 'inactive',
+              'coverageLevel': 'none',
+            };
+          case 'flushProtectionQueues':
+            return <String, dynamic>{
+              'flushedSosCount': 0,
+              'flushedTelemetryCount': 0,
+              'success': true,
+            };
+          case 'peekPendingExternalRelayCancels':
+            return <dynamic>[];
+          case 'ackPendingExternalRelayCancel':
+            return true;
+          case 'peekPendingNativeSosCreate':
+            return null;
+          case 'markPendingNativeSosCreateMqttFlushStarted':
+          case 'markPendingNativeSosCreateMqttPublished':
+          case 'retainPendingNativeSosCreate':
+          case 'ensureProtectionRuntimeActive':
+          case 'stopProtectionRuntime':
+            return null;
+          case 'ackPendingNativeSosCreate':
+          case 'dropPendingNativeSosCreate':
+            return true;
+        }
+        return null;
+      });
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(backgroundTelemetryMethodChannel,
+              (call) async {
+        switch (call.method) {
+          case 'startBackgroundTelemetry':
+          case 'updateBackgroundTelemetry':
+          case 'stopBackgroundTelemetry':
+          case 'markQueuedBackgroundTelemetryFlushFailed':
+            return null;
+          case 'getBackgroundTelemetryDiagnostics':
+            return <String, dynamic>{
+              'backgroundTelemetryEnabled': false,
+              'androidForegroundServiceRunning': false,
+              'backgroundPermissionStatus': 'unknown',
+              'lastBackgroundTelemetryAt': null,
+              'lastBackgroundTelemetryError': null,
+              'lastBackgroundLocationMode': null,
+              'activeLocationRequest': false,
+              'pendingNativeTelemetryCount': 0,
+            };
+          case 'peekQueuedBackgroundTelemetry':
+            return <dynamic>[];
+          case 'ackQueuedBackgroundTelemetry':
+            return true;
+        }
+        return null;
+      });
       bleEvents = StreamController<BleIncomingEvent>.broadcast();
       realtimeClient = _FakeOperationalRealtimeClient();
       sosRepository = _MissingCurrentIncidentSosRepository();
@@ -101,6 +173,10 @@ void main() {
     });
 
     tearDown(() async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(protectionMethodChannel, null);
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(backgroundTelemetryMethodChannel, null);
       await sdk.dispose();
       await bleEvents.close();
       await trackingRepository.dispose();
@@ -178,7 +254,6 @@ void main() {
             .status,
         RemoteRelaySosBackendHandoffStatus.submitted,
       );
-
       await subscription.cancel();
     });
 
@@ -266,6 +341,8 @@ void main() {
 
     test('backend success sends SOS_ACK_RELAY 0x08 to originator node',
         () async {
+      BleDebugRegistry.instance.reset();
+
       bleEvents.add(
         _remoteRelayEvent(snapshot: _snapshot(originatorNodeId: 0x01020304)),
       );
@@ -274,6 +351,19 @@ void main() {
       final command = deviceCommands.single;
       expect(command.opcode, 0x08);
       expect(command.bytes, <int>[0x08, 0x04, 0x03, 0x02, 0x01]);
+      expect(
+        BleDebugRegistry.instance.currentState.events.any(
+          (event) =>
+              event.message.contains(
+                'SOS_ORIGIN_DECISION source=remote_lora_relay',
+              ) &&
+              event.message.contains('actionability=externalOnly') &&
+              event.message.contains('localStateMutation=false') &&
+              event.message.contains('publicIncident=false') &&
+              event.message.contains('backendPublish=true'),
+        ),
+        isTrue,
+      );
     });
 
     test('backend failure emits failed event and leaves local SOS state idle',
@@ -292,11 +382,69 @@ void main() {
                 event.status == RemoteRelaySosBackendHandoffStatus.failed),
       );
 
+      sosRepository.hideCurrentIncident = true;
+
       expect(deviceCommands, isEmpty);
       expect(await sdk.getSosState(), SosState.idle);
       expect((await deviceSosController.getStatus()).state,
           DeviceSosState.inactive);
+      expect(await sdk.getCurrentSosIncident(), isNull);
       expect(sosRepository.triggerCallCount, 0);
+
+      await subscription.cancel();
+    });
+
+    test('backend failure allows repeated relay packet to retry', () async {
+      realtimeClient.publishSosError = const SosException(
+        'E_BACKEND_DOWN',
+        'backend unavailable',
+      );
+      final events = <EixamSdkEvent>[];
+      final subscription = sdk.watchEvents().listen(events.add);
+      final event = _remoteRelayEvent();
+
+      bleEvents.add(event);
+      await _eventually(
+        () => events.whereType<RemoteRelaySosBackendHandoffResultEvent>().any(
+            (event) =>
+                event.status == RemoteRelaySosBackendHandoffStatus.failed),
+      );
+
+      expect(realtimeClient.publishedSos, isEmpty);
+      expect(deviceCommands, isEmpty);
+      expect(await sdk.getSosState(), SosState.idle);
+      expect((await deviceSosController.getStatus()).state,
+          DeviceSosState.inactive);
+
+      realtimeClient.publishSosError = null;
+      bleEvents.add(event);
+
+      await _eventually(() => realtimeClient.publishedSos.length == 1);
+      await _eventually(
+        () => events.whereType<RemoteRelaySosBackendHandoffResultEvent>().any(
+            (event) =>
+                event.status == RemoteRelaySosBackendHandoffStatus.submitted),
+      );
+
+      final handoffResults =
+          events.whereType<RemoteRelaySosBackendHandoffResultEvent>();
+      expect(
+        handoffResults.where(
+          (event) => event.status == RemoteRelaySosBackendHandoffStatus.failed,
+        ),
+        hasLength(1),
+      );
+      expect(
+        handoffResults.where(
+          (event) =>
+              event.status == RemoteRelaySosBackendHandoffStatus.submitted,
+        ),
+        hasLength(1),
+      );
+      expect(realtimeClient.publishedSos.single.deviceId, '16909060');
+      expect(await sdk.getSosState(), SosState.idle);
+      expect((await deviceSosController.getStatus()).state,
+          DeviceSosState.inactive);
 
       await subscription.cancel();
     });
@@ -317,7 +465,7 @@ void main() {
     });
 
     test(
-        'same originator and event signature with different BLE MAC is not submitted twice',
+        'successful handoff dedupes same originator and event signature with different BLE MAC',
         () async {
       final snapshot = _snapshot(originatorNodeId: 0x01020304);
       final event = _remoteRelayEvent(
@@ -2306,6 +2454,43 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
 
   @override
   Future<bool> ackPendingExternalRelayCancel(String signature) async => true;
+
+  @override
+  Future<ProtectionPendingNativeSosCreate?> peekPendingNativeSosCreate() async {
+    return null;
+  }
+
+  @override
+  Future<void> markPendingNativeSosCreateMqttFlushStarted(
+    String signature,
+  ) async {}
+
+  @override
+  Future<void> markPendingNativeSosCreateMqttPublished(
+    String signature,
+  ) async {}
+
+  @override
+  Future<void> retainPendingNativeSosCreate(
+    String signature, {
+    required String reason,
+  }) async {}
+
+  @override
+  Future<bool> ackPendingNativeSosCreate(
+    String signature, {
+    String? backendIncidentId,
+  }) async {
+    return true;
+  }
+
+  @override
+  Future<bool> dropPendingNativeSosCreate(
+    String signature, {
+    required String reason,
+  }) async {
+    return true;
+  }
 
   @override
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({

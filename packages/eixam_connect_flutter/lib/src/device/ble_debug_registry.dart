@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../diagnostics/security_diagnostics_redactor.dart';
 import 'ble_adapter_state.dart';
 import 'ble_connection_status.dart';
 import 'eixam_ble_command.dart';
@@ -23,6 +24,7 @@ class BleDebugRegistry {
   BleDebugState _state = const BleDebugState();
   BleCommandWriter? _commandWriter;
   BleScanner? _scanner;
+  bool? _allowSensitiveDiagnosticsOverride;
 
   Stream<BleDebugState> watch() => _controller.stream;
 
@@ -54,6 +56,7 @@ class BleDebugRegistry {
   void reset() {
     _commandWriter = null;
     _scanner = null;
+    _allowSensitiveDiagnosticsOverride = null;
     _state = const BleDebugState();
     _controller.add(_state);
   }
@@ -99,15 +102,16 @@ class BleDebugRegistry {
       telNotifySubscribed: telNotifySubscribed,
       sosNotifySubscribed: sosNotifySubscribed,
       commandWriterReady: commandWriterReady,
-      lastCommandSent: lastCommandSent,
+      lastCommandSent: _safeDiagnosticHexField(lastCommandSent),
       lastWriteTargetCharacteristic: lastWriteTargetCharacteristic,
       lastWriteResult: lastWriteResult,
       lastWriteAt: lastWriteAt,
       lastWriteError: lastWriteError,
-      lastPacketReceived: lastPacketReceived,
+      lastPacketReceived: _safeDiagnosticHexField(lastPacketReceived),
       lastRawNotificationChannel: lastRawNotificationChannel,
       lastRawNotificationCharacteristic: lastRawNotificationCharacteristic,
-      lastRawNotificationPayloadHex: lastRawNotificationPayloadHex,
+      lastRawNotificationPayloadHex:
+          _safeDiagnosticHexField(lastRawNotificationPayloadHex),
       lastRawNotificationAt: lastRawNotificationAt,
       lastDecodedIncomingEventType: lastDecodedIncomingEventType,
       lastDecodeOutcome: lastDecodeOutcome,
@@ -122,11 +126,15 @@ class BleDebugRegistry {
   }
 
   void recordEvent(String message) {
-    if (kDebugMode && _shouldPrintDiagnosticEvent(message)) {
-      debugPrint(message);
+    final safeMessage = SecurityDiagnosticsRedactor.sanitizeEventMessage(
+      message,
+      allowSensitive: _allowSensitiveDiagnostics,
+    );
+    if (kDebugMode && _shouldPrintDiagnosticEvent(safeMessage)) {
+      debugPrint(safeMessage);
     }
     final events = List<BleDebugEvent>.from(_state.events)
-      ..add(BleDebugEvent(timestamp: DateTime.now(), message: message));
+      ..add(BleDebugEvent(timestamp: DateTime.now(), message: safeMessage));
     if (events.length > 30) {
       events.removeRange(0, events.length - 30);
     }
@@ -144,11 +152,17 @@ class BleDebugRegistry {
     required String payloadHex,
     required DateTime receivedAt,
   }) {
+    final safePayload = _allowSensitiveDiagnostics
+        ? payloadHex
+        : SecurityDiagnosticsRedactor.sanitizeEventMessage(
+            'payloadHex=$payloadHex',
+            allowSensitive: false,
+          ).replaceFirst('payloadHex=', '');
     _state = _state.copyWith(
-      lastPacketReceived: payloadHex,
+      lastPacketReceived: safePayload,
       lastRawNotificationChannel: channel,
       lastRawNotificationCharacteristic: characteristic,
-      lastRawNotificationPayloadHex: payloadHex,
+      lastRawNotificationPayloadHex: safePayload,
       lastRawNotificationAt: receivedAt,
     );
     _controller.add(_state);
@@ -215,5 +229,23 @@ class BleDebugRegistry {
       throw StateError('E_BLE_COMMAND_CHANNEL_NOT_READY');
     }
     await writer(command);
+  }
+
+  @visibleForTesting
+  void debugSetSensitiveDiagnosticsEnabled(bool? enabled) {
+    _allowSensitiveDiagnosticsOverride = enabled;
+  }
+
+  bool get _allowSensitiveDiagnostics =>
+      _allowSensitiveDiagnosticsOverride ?? kDebugMode;
+
+  String? _safeDiagnosticHexField(String? value) {
+    if (value == null || _allowSensitiveDiagnostics) {
+      return value;
+    }
+    return SecurityDiagnosticsRedactor.sanitizeEventMessage(
+      'payloadHex=$value',
+      allowSensitive: false,
+    ).replaceFirst('payloadHex=', '');
   }
 }

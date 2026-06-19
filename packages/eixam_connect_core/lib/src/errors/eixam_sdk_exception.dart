@@ -18,6 +18,10 @@ class NetworkException extends EixamSdkException {
   const NetworkException(super.code, super.message);
 }
 
+class TransportSecurityException extends NetworkException {
+  const TransportSecurityException(super.code, super.message);
+}
+
 class SosException extends EixamSdkException {
   const SosException(super.code, super.message);
 }

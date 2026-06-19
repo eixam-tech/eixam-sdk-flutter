@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:http/http.dart' as http;
 
+import '../../sdk/transport_security_validator.dart';
 import 'sdk_session_context.dart';
 
 /// Shared authenticated HTTP transport for production SDK requests.
@@ -12,7 +13,9 @@ class SdkHttpTransport {
     required this.client,
     required this.config,
     required this.sessionContext,
-  });
+  }) {
+    SdkTransportSecurityValidator.validateApiBaseUrl(config);
+  }
 
   final http.Client client;
   final EixamSdkConfig config;
