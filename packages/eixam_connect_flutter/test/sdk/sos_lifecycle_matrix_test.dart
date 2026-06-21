@@ -4,6 +4,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/preferred_ble_device_store.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/sos_runtime_rehydration_support.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
+import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_sos_event_packet.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_sos_packet.dart';
@@ -27,6 +28,7 @@ void main() {
   );
 
   setUp(() {
+    BleDebugRegistry.instance.reset();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(protectionMethodChannel, (call) async {
       switch (call.method) {
@@ -76,6 +78,7 @@ void main() {
   });
 
   tearDown(() {
+    BleDebugRegistry.instance.reset();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(protectionMethodChannel, null);
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -179,10 +182,146 @@ void main() {
 
         expect(incident.state, SosState.sent);
         expect(incident.deliveryChannel, SosDeliveryChannel.deviceOnly);
+        expect(incident.id, startsWith('public-sos-fallback:'));
+        expect(incident.triggerSource, 'public_sos_fallback');
+        expect(incident.actionability, SosActionability.localActionable);
+        expect(incident.displaySurface, SosDisplaySurface.activeAndHistory);
         expect(await harness.sdk.getSosState(), SosState.sent);
         final currentIncident = await harness.sdk.getCurrentSosIncident();
         expect(currentIncident?.state, SosState.sent);
         expect(currentIncident?.deliveryChannel, SosDeliveryChannel.deviceOnly);
+        expect(_hasDebugMessage('SOS_TRIGGER_DEVICE_ONLY_SUCCESS'), isTrue);
+        expect(
+          _hasDebugMessage('SOS_TRIGGER_DEVICE_ONLY_SUCCESS_RETURNED'),
+          isTrue,
+        );
+        expect(
+          _hasDebugMessage('SOS_TRIGGER_FAILURE_BLOCKED_DEVICE_SUCCESS'),
+          isTrue,
+        );
+        expect(
+          _hasDebugMessage('SOS_TRIGGER_DEVICE_ONLY_BACKEND_PENDING'),
+          isTrue,
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('device activation plus MQTT publish failure returns device-only SOS',
+        () async {
+      final harness = _SdkSosHarness(connectedBle: true);
+      try {
+        harness.deviceRepository.emitStatus(
+          buildDeviceStatus(
+            deviceId: 'ble-1',
+            nodeId: 0x1234,
+            canonicalHardwareId: 'CF:82:00:00:00:01',
+            connected: true,
+            paired: true,
+            activated: true,
+          ),
+        );
+        await harness.attachObservedAppActivation();
+        harness.sosRepository.triggerError = const SosException(
+          'E_MQTT_NOT_CONNECTED',
+          'mqtt offline',
+        );
+
+        final incident = await harness.sdk.triggerSos(
+          const SosTriggerPayload(message: 'device wins'),
+        );
+
+        expect(incident.state, SosState.sent);
+        expect(incident.deliveryChannel, SosDeliveryChannel.deviceOnly);
+        expect(incident.id, startsWith('public-sos-fallback:'));
+        expect(await harness.sdk.getSosState(), SosState.sent);
+        expect(
+          _hasDebugMessage('SOS_TRIGGER_DEVICE_ONLY_BACKEND_FAILED_NON_FATAL'),
+          isTrue,
+        );
+        expect(
+          _hasDebugMessage('SOS_TRIGGER_DEVICE_ONLY_SUCCESS_RETURNED'),
+          isTrue,
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('device-only SOS can later adopt backend confirmation', () async {
+      final harness = _SdkSosHarness(connectedBle: true);
+      try {
+        harness.deviceRepository.emitStatus(
+          buildDeviceStatus(
+            deviceId: 'ble-1',
+            nodeId: 0x1234,
+            canonicalHardwareId: 'CF:82:00:00:00:01',
+            connected: true,
+            paired: true,
+            activated: true,
+          ),
+        );
+        await harness.attachObservedAppActivation();
+        harness.sosRepository.triggerError =
+            const NetworkException('E_NETWORK', 'offline');
+
+        final provisional = await harness.sdk.triggerSos(
+          const SosTriggerPayload(),
+        );
+        harness.sosRepository.triggerError = null;
+        harness.sosRepository.currentIncident = SosIncident(
+          id: 'backend-confirmed-sos',
+          state: SosState.sent,
+          createdAt: DateTime.utc(2026, 1, 1, 10, 1),
+          triggerSource: 'button_ui',
+          deliveryChannel: SosDeliveryChannel.backendOnly,
+        );
+
+        final current = await harness.sdk.getCurrentSosIncident();
+
+        expect(provisional.deliveryChannel, SosDeliveryChannel.deviceOnly);
+        expect(current?.id, 'backend-confirmed-sos');
+        expect(current?.deliveryChannel, SosDeliveryChannel.backendAndDevice);
+        expect(
+          _hasDebugMessage('SOS_TRIGGER_DEVICE_ONLY_BACKEND_CONFIRMED'),
+          isTrue,
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('device activation failure plus backend failure still throws',
+        () async {
+      final harness = _SdkSosHarness(connectedBle: true);
+      try {
+        harness.deviceRepository.emitStatus(
+          buildDeviceStatus(
+            deviceId: 'ble-1',
+            nodeId: 0x1234,
+            canonicalHardwareId: 'CF:82:00:00:00:01',
+            connected: true,
+            paired: true,
+            activated: true,
+          ),
+        );
+        await harness.deviceSosController.attach(
+          commandWriter: (_) async {
+            throw const DeviceException(
+                'E_DEVICE_WRITE_FAILED', 'write failed');
+          },
+        );
+        harness.sosRepository.triggerError =
+            const NetworkException('E_NETWORK', 'offline');
+
+        await expectLater(
+          harness.sdk.triggerSos(const SosTriggerPayload()),
+          throwsA(isA<NetworkException>()),
+        );
+
+        expect(await harness.sdk.getSosState(), SosState.idle);
+        expect(_hasDebugMessage('SOS_TRIGGER_DEVICE_ONLY_SUCCESS'), isFalse);
       } finally {
         await harness.dispose();
       }
@@ -221,6 +360,31 @@ void main() {
         expect(incident.state, SosState.sent);
         expect(incident.deliveryChannel, SosDeliveryChannel.backendOnly);
         expect(harness.sosRepository.triggerCallCount, 1);
+        expect(_hasDebugMessage('SOS_TRIGGER_DEVICE_ONLY_SUCCESS'), isFalse);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('external remote relay public trigger remains non-actionable',
+        () async {
+      final harness = _SdkSosHarness(connectedBle: true);
+      try {
+        await expectLater(
+          harness.sdk.triggerSos(
+            const SosTriggerPayload(triggerSource: 'remote_lora_relay'),
+          ),
+          throwsA(
+            isA<SosException>().having(
+              (error) => error.code,
+              'code',
+              'E_EXTERNAL_SOS_NOT_LOCAL_ACTIONABLE',
+            ),
+          ),
+        );
+
+        expect(await harness.sdk.getSosState(), SosState.idle);
+        expect(harness.sosRepository.triggerCallCount, 0);
       } finally {
         await harness.dispose();
       }
@@ -853,6 +1017,12 @@ SosIncident _incident({
     state: state,
     createdAt: DateTime.utc(2026, 3, 31, 10),
     triggerSource: triggerSource,
+  );
+}
+
+bool _hasDebugMessage(String token) {
+  return BleDebugRegistry.instance.currentState.events.any(
+    (event) => event.message.contains(token),
   );
 }
 

@@ -3754,9 +3754,33 @@ class EixamConnectSdkImpl
       if (backendIncident == null) {
         if (deliveryChannel == SosDeliveryChannel.deviceOnly) {
           const successfulDeliveryChannel = SosDeliveryChannel.deviceOnly;
+          BleDebugRegistry.instance.recordEvent(
+            'SOS_TRIGGER_FAILURE_BLOCKED_DEVICE_SUCCESS '
+            'backendError=${backendError?.runtimeType.toString() ?? "none"} '
+            'deviceAttempted=${deviceSync.attempted} '
+            'deviceSucceeded=${deviceSync.succeeded}',
+          );
+          if (backendError != null) {
+            BleDebugRegistry.instance.recordEvent(
+              'SOS_TRIGGER_DEVICE_ONLY_BACKEND_FAILED_NON_FATAL '
+              'errorType=${backendError.runtimeType} '
+              'message=${_compactDiagnosticValue(_errorMessageFor(backendError))}',
+            );
+          }
+          BleDebugRegistry.instance.recordEvent(
+            'SOS_TRIGGER_DEVICE_ONLY_BACKEND_PENDING '
+            'reason=backend_confirmation_unavailable '
+            'deviceAttempted=${deviceSync.attempted}',
+          );
           final incident = await _updateFallbackPublicSosIncident(
             state: SosState.sent,
             deliveryChannel: successfulDeliveryChannel,
+          );
+          BleDebugRegistry.instance.recordEvent(
+            'SOS_TRIGGER_DEVICE_ONLY_SUCCESS '
+            'incidentId=${incident.id} state=${incident.state.name} '
+            'delivery=${incident.deliveryChannel?.name ?? "none"} '
+            'provisional=true localDevice=true',
           );
           _recordPublicSosResult(
             incident: incident,
@@ -3766,6 +3790,10 @@ class EixamConnectSdkImpl
           _emitSosActiveNotificationIntent(incident);
           _registerPendingAppTriggeredSosBridge(incident);
           _publishSdkEvent(SOSTriggeredEvent(incident.id));
+          BleDebugRegistry.instance.recordEvent(
+            'SOS_TRIGGER_DEVICE_ONLY_SUCCESS_RETURNED '
+            'incidentId=${incident.id} state=${incident.state.name}',
+          );
           return incident;
         }
         BleDebugRegistry.instance.recordEvent(
@@ -4009,6 +4037,13 @@ class EixamConnectSdkImpl
           reason: 'get_current_sos_fallback_external_only',
         );
         return null;
+      }
+      final adoptedBackendIncident =
+          await _adoptBackendIncidentForDeviceOnlyFallback(
+        _publicSosFallbackIncident!,
+      );
+      if (adoptedBackendIncident != null) {
+        return adoptedBackendIncident;
       }
       return _publicSosFallbackIncident;
     }
@@ -5496,10 +5531,13 @@ class EixamConnectSdkImpl
     required SosState state,
     required SosDeliveryChannel deliveryChannel,
   }) async {
+    final repositoryIncident = _decorateIncidentWithPublicDeliveryChannel(
+      await sosRepository.getCurrentIncident(),
+    );
     final fallback = _publicSosFallbackIncident ??
-        _decorateIncidentWithPublicDeliveryChannel(
-          await sosRepository.getCurrentIncident(),
-        ) ??
+        (_hasBackendVisibleSosIncident(repositoryIncident)
+            ? repositoryIncident
+            : null) ??
         _decorateIncidentWithPublicDeliveryChannel(
           _lastKnownActiveSosIncident,
         );
@@ -5514,9 +5552,56 @@ class EixamConnectSdkImpl
       id: 'public-sos-fallback:${now.microsecondsSinceEpoch}',
       state: state,
       createdAt: now,
+      source: 'local_device',
       triggerSource: 'public_sos_fallback',
+      originKind: SosOriginKind.ownDevice,
+      actionability: SosActionability.localActionable,
+      displaySurface: SosDisplaySurface.activeAndHistory,
       deliveryChannel: deliveryChannel,
     );
+  }
+
+  Future<SosIncident?> _adoptBackendIncidentForDeviceOnlyFallback(
+    SosIncident fallback,
+  ) async {
+    if (fallback.deliveryChannel != SosDeliveryChannel.deviceOnly ||
+        !_isOpenSosState(fallback.state)) {
+      return null;
+    }
+    SosIncident? repositoryIncident;
+    try {
+      repositoryIncident = await sosRepository.getCurrentIncident();
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_TRIGGER_DEVICE_ONLY_BACKEND_PENDING '
+        'reason=backend_confirmation_lookup_failed '
+        'errorType=${error.runtimeType}',
+      );
+      return null;
+    }
+    if (!_hasBackendVisibleSosIncident(repositoryIncident) ||
+        repositoryIncident!.id == fallback.id) {
+      return null;
+    }
+    if (_isExternalOnlySosIncident(
+      repositoryIncident,
+      source: 'device_only_backend_adoption',
+    )) {
+      return null;
+    }
+    final adopted = repositoryIncident.copyWith(
+      state: _promotePostTriggerSosState(repositoryIncident.state),
+      deliveryChannel: SosDeliveryChannel.backendAndDevice,
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_TRIGGER_DEVICE_ONLY_BACKEND_CONFIRMED '
+      'fallbackIncidentId=${fallback.id} backendIncidentId=${adopted.id}',
+    );
+    _recordPublicSosResult(
+      incident: adopted,
+      deliveryChannel: SosDeliveryChannel.backendAndDevice,
+    );
+    return adopted;
   }
 
   void _recordPublicSosResult({
