@@ -8,6 +8,47 @@ class SecurityDiagnosticsRedactor {
   static const String redactedPayload = '<redacted-payload>';
   static const String redactedTopic = '<redacted-topic>';
 
+  static String formatHexPayloadForDiagnostics(
+    String? value, {
+    required bool allowSensitive,
+  }) {
+    final normalized = value?.trim();
+    if (normalized == null || normalized.isEmpty) {
+      return 'none';
+    }
+    if (allowSensitive) {
+      return normalized;
+    }
+    return _redactedHexSummary(normalized);
+  }
+
+  static String formatIdentifierForDiagnostics(
+    Object? value, {
+    required bool allowSensitive,
+  }) {
+    final normalized = value?.toString().trim();
+    if (normalized == null || normalized.isEmpty) {
+      return 'none';
+    }
+    if (allowSensitive) {
+      return normalized;
+    }
+    return redacted;
+  }
+
+  static String formatCoordinateForDiagnostics(
+    num? value, {
+    required bool allowSensitive,
+  }) {
+    if (value == null || !value.isFinite) {
+      return 'none';
+    }
+    if (allowSensitive) {
+      return value.toString();
+    }
+    return redacted;
+  }
+
   static String sanitizeEventMessage(
     String message, {
     required bool allowSensitive,
@@ -40,7 +81,7 @@ class SecurityDiagnosticsRedactor {
     );
     sanitized = sanitized.replaceAllMapped(
       RegExp(
-        r'\b(X-App-ID|X-User-ID|appId|userId|sdkUserId|externalUserId|deviceId|normalizedDeviceId|invalidBackendDeviceId|backendDeviceId|relayDeviceId|hardwareId|relayHardwareId|registeredHardwareId|incidentId|canonicalIncidentId|backendIncidentId|responseIncidentId|cycleKey|boundDeviceId|activeBleHardwareId)=([^\s]+)',
+        r'\b(X-App-ID|X-User-ID|appId|userId|sdkUserId|externalUserId|device|gateway|remote|deviceId|normalizedDeviceId|invalidBackendDeviceId|backendDeviceId|relayDeviceId|hardwareId|relayHardwareId|registeredHardwareId|runtimeDeviceId|backendHardwareId|bleHardwareId|logicalId|incidentId|canonicalIncidentId|backendIncidentId|responseIncidentId|cycleKey|signature|boundDeviceId|activeBleHardwareId)=([^\s]+)',
       ),
       (match) => '${match[1]}=$redacted',
     );
@@ -52,7 +93,7 @@ class SecurityDiagnosticsRedactor {
     );
     sanitized = sanitized.replaceAllMapped(
       RegExp(
-        r'\b(lat|lon|latitude|longitude|previousLat|previousLon|newLat|newLon)=(-?\d+(?:\.\d+)?)',
+        r'\b(lat|lon|lng|latitude|longitude|previousLat|previousLon|newLat|newLon)=(-?\d+(?:\.\d+)?)',
       ),
       (match) => '${match[1]}=$redacted',
     );

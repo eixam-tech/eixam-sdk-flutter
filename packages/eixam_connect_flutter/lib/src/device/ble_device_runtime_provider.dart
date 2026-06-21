@@ -447,7 +447,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         );
       }
       BleDebugRegistry.instance.recordEvent(
-        'Reconnect failed for known BLE device $deviceId: $error',
+        'Reconnect failed for known BLE device hardwareId=$deviceId '
+        'error=$error',
       );
       if (kDebugMode) {
         debugPrint('BLE reconnect failed -> hardwareId=$deviceId error=$error');

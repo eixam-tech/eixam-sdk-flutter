@@ -152,12 +152,11 @@ class BleDebugRegistry {
     required String payloadHex,
     required DateTime receivedAt,
   }) {
-    final safePayload = _allowSensitiveDiagnostics
-        ? payloadHex
-        : SecurityDiagnosticsRedactor.sanitizeEventMessage(
-            'payloadHex=$payloadHex',
-            allowSensitive: false,
-          ).replaceFirst('payloadHex=', '');
+    final safePayload =
+        SecurityDiagnosticsRedactor.formatHexPayloadForDiagnostics(
+      payloadHex,
+      allowSensitive: _allowSensitiveDiagnostics,
+    );
     _state = _state.copyWith(
       lastPacketReceived: safePayload,
       lastRawNotificationChannel: channel,
@@ -197,7 +196,7 @@ class BleDebugRegistry {
       connectionStatus: BleConnectionStatus.idle,
       connectionError: null,
     );
-    recordEvent('Selected BLE device $deviceId');
+    recordEvent('Selected BLE device hardwareId=$deviceId');
   }
 
   void registerScanner(BleScanner scanner) {
@@ -243,9 +242,9 @@ class BleDebugRegistry {
     if (value == null || _allowSensitiveDiagnostics) {
       return value;
     }
-    return SecurityDiagnosticsRedactor.sanitizeEventMessage(
-      'payloadHex=$value',
+    return SecurityDiagnosticsRedactor.formatHexPayloadForDiagnostics(
+      value,
       allowSensitive: false,
-    ).replaceFirst('payloadHex=', '');
+    );
   }
 }

@@ -341,7 +341,9 @@ class RealBleClient implements BleClient {
       telNotifySubscribed: false,
       sosNotifySubscribed: false,
     );
-    BleDebugRegistry.instance.recordEvent('Connecting to $deviceId');
+    BleDebugRegistry.instance.recordEvent(
+      'Connecting to hardwareId=$deviceId',
+    );
     BleDebugRegistry.instance.recordEvent(
       'BLE connect selected device found -> hardwareId=$deviceId platformName="${device.platformName}"',
     );
@@ -741,7 +743,10 @@ class RealBleClient implements BleClient {
         lastPacketReceived: notification.payloadHex,
       );
       BleDebugRegistry.instance.recordEvent(
-        'Notify packet received from $deviceId channel=${notification.channel.name} meshPort=${notification.meshPort?.toString() ?? "-"} (${notification.payload.length} bytes)',
+        'Notify packet received from hardwareId=$deviceId '
+        'channel=${notification.channel.name} '
+        'meshPort=${notification.meshPort?.toString() ?? "-"} '
+        'bytes=${notification.payload.length}',
       );
       _log(
         'BLE notify packet -> hardwareId=$deviceId channel=${notification.channel.name} meshPort=${notification.meshPort?.toString() ?? "-"} payload=${notification.payloadHex}',

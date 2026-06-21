@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:crypto/crypto.dart';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/widgets.dart';
 
 import '../data/datasources_remote/sdk_firmware_remote_data_source.dart';
@@ -55,8 +56,7 @@ class FirmwareUpdateCoordinator {
   final FirmwareDfuStatusRefreshHook? postDfuStatusRefresh;
 
   static const Duration _postDfuVerificationTimeout = Duration(seconds: 180);
-  static const Duration _postDfuVerificationPollInterval =
-      Duration(seconds: 5);
+  static const Duration _postDfuVerificationPollInterval = Duration(seconds: 5);
 
   final StreamController<FirmwareUpdateProgress> _progressController =
       StreamController<FirmwareUpdateProgress>.broadcast();
@@ -142,7 +142,7 @@ class FirmwareUpdateCoordinator {
     if ((!check.eligibility.eligible || release == null) &&
         release != null &&
         _canAttemptDfuPreparation(check)) {
-      debugPrint(
+      _debugLog(
         'OTA_COORDINATOR pre_transfer_prepare_requested '
         'deviceId=${check.device.deviceId} '
         'blockers=${check.eligibility.blockers.map((b) => b.name).join(",")} '
@@ -152,7 +152,7 @@ class FirmwareUpdateCoordinator {
       final preparedStatus = await prepareForDfuTransfer!(
         deviceId: check.device.deviceId,
       );
-      debugPrint(
+      _debugLog(
         'OTA_COORDINATOR status_refresh_result '
         'deviceId=${preparedStatus.deviceId} '
         'connected=${preparedStatus.connected} '
@@ -169,7 +169,7 @@ class FirmwareUpdateCoordinator {
       release = check.release;
     }
     if (check.eligibility.eligible && release != null) {
-      debugPrint(
+      _debugLog(
         'OTA_COORDINATOR pre_transfer_eligibility_passed '
         'deviceId=${check.device.deviceId} '
         'firmware=${check.device.currentVersion ?? "unknown"} '
@@ -202,7 +202,7 @@ class FirmwareUpdateCoordinator {
 
     try {
       _emit(session, FirmwareUpdateState.downloading);
-      debugPrint(
+      _debugLog(
         'OTA_COORDINATOR artifact_download_start '
         'sessionId=${session.sessionId} release=$releaseId',
       );
@@ -227,7 +227,7 @@ class FirmwareUpdateCoordinator {
 
       _emit(session, FirmwareUpdateState.verifying);
       _verifySha256(artifactBytes, expectedHash);
-      debugPrint(
+      _debugLog(
         'OTA_COORDINATOR artifact_hash_verified '
         'sessionId=${session.sessionId} release=$releaseId '
         'bytes=${artifactBytes.length}',
@@ -246,7 +246,7 @@ class FirmwareUpdateCoordinator {
           );
       try {
         await releaseBleForDfuTransfer?.call(deviceId: session.deviceId);
-        debugPrint(
+        _debugLog(
           'OTA_COORDINATOR native_dfu_start '
           'sessionId=${session.sessionId} deviceId=${session.deviceId} '
           'release=$releaseId target=${release.version}',
@@ -259,7 +259,7 @@ class FirmwareUpdateCoordinator {
             artifactBytes: artifactBytes,
           ),
         );
-        debugPrint(
+        _debugLog(
           'OTA_COORDINATOR native_dfu_completed '
           'sessionId=${session.sessionId} deviceId=${session.deviceId} '
           'target=${release.version}',
@@ -270,7 +270,7 @@ class FirmwareUpdateCoordinator {
       }
 
       _emit(session, FirmwareUpdateState.reconnecting);
-      debugPrint(
+      _debugLog(
         'OTA_COORDINATOR post_dfu_reconnect_wait_start '
         'sessionId=${session.sessionId} deviceId=${session.deviceId} '
         'target=${release.version} timeoutSeconds='
@@ -287,8 +287,9 @@ class FirmwareUpdateCoordinator {
           state: requiresRecovery
               ? FirmwareUpdateState.recoveryRequired
               : FirmwareUpdateState.failed,
-          failureCode:
-              requiresRecovery ? 'deviceNotReconnected' : 'installedVersionMismatch',
+          failureCode: requiresRecovery
+              ? 'deviceNotReconnected'
+              : 'installedVersionMismatch',
           failureMessage: requiresRecovery
               ? 'Device did not reconnect after DFU completion.'
               : 'Expected ${release.version}, found '
@@ -461,7 +462,7 @@ class FirmwareUpdateCoordinator {
       );
     }
 
-    debugPrint(
+    _debugLog(
       'OTA_COORDINATOR eligibility_inputs '
       'deviceId=${status.deviceId} connected=${status.connected} '
       'firmware=${firmwareVersion ?? "unknown"} '
@@ -614,7 +615,7 @@ class FirmwareUpdateCoordinator {
             );
       latest = status;
       final installed = status.firmwareVersion?.trim();
-      debugPrint(
+      _debugLog(
         'OTA_COORDINATOR post_dfu_verification_attempt '
         'sessionId=${session.sessionId} attempt=$attempt '
         'source=${postDfuStatusRefresh == null ? "repository_refresh" : "forced_firmware_read"} '
@@ -748,6 +749,13 @@ class FirmwareUpdateCoordinator {
     }
     return true;
   }
+}
+
+void _debugLog(String message) {
+  if (!kDebugMode) {
+    return;
+  }
+  debugPrint(message);
 }
 
 class _InstalledVersionVerification {

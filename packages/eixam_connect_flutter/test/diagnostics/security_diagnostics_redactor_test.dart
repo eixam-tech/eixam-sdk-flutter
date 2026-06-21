@@ -17,8 +17,9 @@ void main() {
     test('redacts raw payload, identity, location, headers, and topics', () {
       final message = SecurityDiagnosticsRedactor.sanitizeEventMessage(
         'payloadHex=01 02 aa bb deviceId=device-secret nodeId=4242 '
-        'lat=41.387400 lon=2.168600 X-App-ID=app-secret '
-        'X-User-ID=user-secret topic=sos/alerts/sdk-user-secret',
+        'lat=41.387400 lon=2.168600 lng=2.168600 X-App-ID=app-secret '
+        'X-User-ID=user-secret signature=sos:device-secret:deadbeef '
+        'topic=sos/alerts/sdk-user-secret',
         allowSensitive: false,
       );
 
@@ -30,8 +31,68 @@ void main() {
       expect(message, isNot(contains('app-secret')));
       expect(message, isNot(contains('user-secret')));
       expect(message, isNot(contains('sdk-user-secret')));
+      expect(message, isNot(contains('deadbeef')));
       expect(message, contains('<redacted-hex bytes=4>'));
+      expect(message, contains('signature=<redacted>'));
       expect(message, contains('topic=<redacted-topic>'));
+    });
+
+    test('redacts bridge-style summaries with raw BLE payloads', () {
+      final message = SecurityDiagnosticsRedactor.sanitizeEventMessage(
+        'device=AA:BB:CC:DD:EE:FF lat=41.3874 lng=2.1686 '
+        'raw=de ad be ef',
+        allowSensitive: false,
+      );
+
+      expect(message, isNot(contains('AA:BB:CC:DD:EE:FF')));
+      expect(message, isNot(contains('41.3874')));
+      expect(message, isNot(contains('2.1686')));
+      expect(message, isNot(contains('de ad be ef')));
+      expect(message, contains('device=<redacted>'));
+      expect(message, contains('raw=<redacted-hex bytes=4>'));
+    });
+
+    test('formatters suppress raw BLE payloads, identifiers, and coordinates',
+        () {
+      expect(
+        SecurityDiagnosticsRedactor.formatHexPayloadForDiagnostics(
+          'de ad be ef',
+          allowSensitive: false,
+        ),
+        '<redacted-hex bytes=4>',
+      );
+      expect(
+        SecurityDiagnosticsRedactor.formatIdentifierForDiagnostics(
+          'device-secret',
+          allowSensitive: false,
+        ),
+        '<redacted>',
+      );
+      expect(
+        SecurityDiagnosticsRedactor.formatCoordinateForDiagnostics(
+          41.3874,
+          allowSensitive: false,
+        ),
+        '<redacted>',
+      );
+    });
+
+    test('formatters keep detailed diagnostics when sensitive mode is allowed',
+        () {
+      expect(
+        SecurityDiagnosticsRedactor.formatHexPayloadForDiagnostics(
+          'de ad be ef',
+          allowSensitive: true,
+        ),
+        'de ad be ef',
+      );
+      expect(
+        SecurityDiagnosticsRedactor.formatCoordinateForDiagnostics(
+          41.3874,
+          allowSensitive: true,
+        ),
+        '41.3874',
+      );
     });
 
     test('redacts sensitive JSON values directly', () {
@@ -71,6 +132,17 @@ void main() {
       expect(state.lastCommandSent, isNot('04'));
       expect(state.lastPacketReceived, contains('<redacted-hex bytes=4>'));
       expect(state.lastCommandSent, contains('<redacted-hex bytes=1>'));
+    });
+
+    test('redacts selected device identifiers in release-like events', () {
+      BleDebugRegistry.instance.debugSetSensitiveDiagnosticsEnabled(false);
+
+      BleDebugRegistry.instance.selectDevice('AA:BB:CC:DD:EE:FF');
+
+      final message =
+          BleDebugRegistry.instance.currentState.events.single.message;
+      expect(message, isNot(contains('AA:BB:CC:DD:EE:FF')));
+      expect(message, contains('hardwareId=<redacted>'));
     });
   });
 
