@@ -366,6 +366,72 @@ void main() {
       );
     });
 
+    test(
+        'successful handoff records dedup after backend success and suppresses in-flight duplicate',
+        () async {
+      BleDebugRegistry.instance.reset();
+      realtimeClient.publishSosCompleter = Completer<void>();
+      final event = _remoteRelayEvent();
+
+      bleEvents.add(event);
+      await _eventually(() => realtimeClient.publishSosCallCount == 1);
+
+      expect(
+        _debugMessagesContaining(
+          'REMOTE_RELAY_SOS_HANDOFF_IN_FLIGHT_SET',
+        ),
+        hasLength(1),
+      );
+      expect(
+        _debugMessagesContaining(
+          'REMOTE_RELAY_SOS_HANDOFF_DEDUP_RECORDED_AFTER_SUCCESS',
+        ),
+        isEmpty,
+      );
+
+      bleEvents.add(event);
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+
+      expect(realtimeClient.publishSosCallCount, 1);
+      expect(realtimeClient.publishedSos, isEmpty);
+
+      realtimeClient.publishSosCompleter!.complete();
+      await _eventually(() => realtimeClient.publishedSos.length == 1);
+      await _eventually(
+        () => _hasDebugMessage(
+          'REMOTE_RELAY_SOS_HANDOFF_DEDUP_RECORDED_AFTER_SUCCESS',
+        ),
+      );
+
+      expect(
+        _hasDebugMessage(
+          'REMOTE_RELAY_SOS_HANDOFF_IN_FLIGHT_CLEARED',
+          allOf(contains('reason=success'), contains('signature=')),
+        ),
+        isTrue,
+      );
+
+      final messages = _debugMessages();
+      final setIndex = messages.indexWhere(
+        (message) => message.contains(
+          'REMOTE_RELAY_SOS_HANDOFF_IN_FLIGHT_SET',
+        ),
+      );
+      final clearIndex = messages.indexWhere(
+        (message) => message.contains(
+          'REMOTE_RELAY_SOS_HANDOFF_IN_FLIGHT_CLEARED',
+        ),
+      );
+      final dedupIndex = messages.indexWhere(
+        (message) => message.contains(
+          'REMOTE_RELAY_SOS_HANDOFF_DEDUP_RECORDED_AFTER_SUCCESS',
+        ),
+      );
+      expect(setIndex, greaterThanOrEqualTo(0));
+      expect(clearIndex, greaterThan(setIndex));
+      expect(dedupIndex, greaterThan(clearIndex));
+    });
+
     test('backend failure emits failed event and leaves local SOS state idle',
         () async {
       realtimeClient.publishSosError = const SosException(
@@ -395,6 +461,7 @@ void main() {
     });
 
     test('backend failure allows repeated relay packet to retry', () async {
+      BleDebugRegistry.instance.reset();
       realtimeClient.publishSosError = const SosException(
         'E_BACKEND_DOWN',
         'backend unavailable',
@@ -411,6 +478,32 @@ void main() {
       );
 
       expect(realtimeClient.publishedSos, isEmpty);
+      expect(realtimeClient.publishSosCallCount, 1);
+      expect(
+        _debugMessagesContaining(
+          'REMOTE_RELAY_SOS_HANDOFF_DEDUP_RECORDED_AFTER_SUCCESS',
+        ),
+        isEmpty,
+      );
+      expect(
+        _hasDebugMessage(
+          'REMOTE_RELAY_SOS_HANDOFF_IN_FLIGHT_CLEARED',
+          contains('reason=failure'),
+        ),
+        isTrue,
+      );
+      expect(
+        _hasDebugMessage(
+          'REMOTE_RELAY_SOS_HANDOFF_DEDUP_NOT_RECORDED_ON_FAILURE',
+        ),
+        isTrue,
+      );
+      expect(
+        _hasDebugMessage(
+          'REMOTE_RELAY_SOS_HANDOFF_RETRY_ALLOWED_AFTER_FAILURE',
+        ),
+        isTrue,
+      );
       expect(deviceCommands, isEmpty);
       expect(await sdk.getSosState(), SosState.idle);
       expect((await deviceSosController.getStatus()).state,
@@ -426,6 +519,7 @@ void main() {
                 event.status == RemoteRelaySosBackendHandoffStatus.submitted),
       );
 
+      expect(realtimeClient.publishSosCallCount, 2);
       final handoffResults =
           events.whereType<RemoteRelaySosBackendHandoffResultEvent>();
       expect(
@@ -442,6 +536,12 @@ void main() {
         hasLength(1),
       );
       expect(realtimeClient.publishedSos.single.deviceId, '16909060');
+      expect(
+        _hasDebugMessage(
+          'REMOTE_RELAY_SOS_HANDOFF_DEDUP_RECORDED_AFTER_SUCCESS',
+        ),
+        isTrue,
+      );
       expect(await sdk.getSosState(), SosState.idle);
       expect((await deviceSosController.getStatus()).state,
           DeviceSosState.inactive);
@@ -467,6 +567,7 @@ void main() {
     test(
         'successful handoff dedupes same originator and event signature with different BLE MAC',
         () async {
+      BleDebugRegistry.instance.reset();
       final snapshot = _snapshot(originatorNodeId: 0x01020304);
       final event = _remoteRelayEvent(
         snapshot: snapshot,
@@ -480,12 +581,25 @@ void main() {
       );
 
       bleEvents.add(event);
-      bleEvents.add(sameEventViaDifferentBleHardware);
       await _eventually(() => realtimeClient.publishedSos.length == 1);
+      await _eventually(
+        () => _hasDebugMessage(
+          'REMOTE_RELAY_SOS_HANDOFF_DEDUP_RECORDED_AFTER_SUCCESS',
+        ),
+      );
+
+      bleEvents.add(sameEventViaDifferentBleHardware);
       await Future<void>.delayed(const Duration(milliseconds: 25));
 
       expect(realtimeClient.publishedSos.length, 1);
+      expect(realtimeClient.publishSosCallCount, 1);
       expect(realtimeClient.publishedSos.single.deviceId, '16909060');
+      expect(
+        _hasDebugMessage(
+          'REMOTE_RELAY_SOS_HANDOFF_DUPLICATE_SUPPRESSED_AFTER_SUCCESS',
+        ),
+        isTrue,
+      );
     });
 
     test('local SOS from connected BLE device uses nodeId as backend deviceId',
@@ -2531,6 +2645,25 @@ Future<void> _eventually(
   fail('Timed out waiting for condition.');
 }
 
+List<String> _debugMessages() {
+  return BleDebugRegistry.instance.currentState.events
+      .map((event) => event.message)
+      .toList();
+}
+
+List<String> _debugMessagesContaining(String token) {
+  return _debugMessages().where((message) => message.contains(token)).toList();
+}
+
+bool _hasDebugMessage(String token, [Matcher? matcher]) {
+  final messages = _debugMessagesContaining(token);
+  if (matcher == null) {
+    return messages.isNotEmpty;
+  }
+  return messages
+      .any((message) => matcher.matches(message, <Object?, Object?>{}));
+}
+
 class _FakeOperationalRealtimeClient implements OperationalRealtimeClient {
   final List<MqttOperationalSosRequest> publishedSos =
       <MqttOperationalSosRequest>[];
@@ -2540,9 +2673,16 @@ class _FakeOperationalRealtimeClient implements OperationalRealtimeClient {
   final StreamController<RealtimeEvent> _eventController =
       StreamController<RealtimeEvent>.broadcast();
   Object? publishSosError;
+  Completer<void>? publishSosCompleter;
+  int publishSosCallCount = 0;
 
   @override
   Future<void> publishOperationalSos(MqttOperationalSosRequest request) async {
+    publishSosCallCount += 1;
+    final completer = publishSosCompleter;
+    if (completer != null) {
+      await completer.future;
+    }
     final error = publishSosError;
     if (error != null) {
       throw error;

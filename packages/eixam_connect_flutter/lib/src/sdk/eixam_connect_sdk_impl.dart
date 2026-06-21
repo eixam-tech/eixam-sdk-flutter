@@ -12810,6 +12810,12 @@ class EixamConnectSdkImpl
       (_, seenAt) => now.difference(seenAt) > const Duration(minutes: 5),
     );
     if (_remoteRelaySosBackendHandoffBySignature.containsKey(signature)) {
+      BleDebugRegistry.instance.recordEvent(
+        'REMOTE_RELAY_SOS_HANDOFF_DUPLICATE_SUPPRESSED_AFTER_SUCCESS '
+        'signature=$signature '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"}',
+      );
       _logSosTrace(
         'remote_backend_handoff_decision '
         'originatorNodeId=${snapshot.originatorNodeId} '
@@ -12840,6 +12846,12 @@ class EixamConnectSdkImpl
       return;
     }
     _remoteRelaySosBackendHandoffInFlightBySignature[signature] = now;
+    BleDebugRegistry.instance.recordEvent(
+      'REMOTE_RELAY_SOS_HANDOFF_IN_FLIGHT_SET '
+      'signature=$signature '
+      'originatorNodeId=${snapshot.originatorNodeId} '
+      'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"}',
+    );
     if (_externalRelayRearmedAtByKey.remove(rearmKey) != null) {
       BleDebugRegistry.instance.recordEvent(
         'EXTERNAL_SOS external_trigger_allowed_after_cancel '
@@ -12933,8 +12945,20 @@ class EixamConnectSdkImpl
         relayHardwareId: relayHardwareId,
       );
       _remoteRelaySosBackendHandoffInFlightBySignature.remove(signature);
+      BleDebugRegistry.instance.recordEvent(
+        'REMOTE_RELAY_SOS_HANDOFF_IN_FLIGHT_CLEARED '
+        'signature=$signature reason=success '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"}',
+      );
       _remoteRelaySosBackendHandoffBySignature[signature] =
           DateTime.now().toUtc();
+      BleDebugRegistry.instance.recordEvent(
+        'REMOTE_RELAY_SOS_HANDOFF_DEDUP_RECORDED_AFTER_SUCCESS '
+        'signature=$signature '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"}',
+      );
       _correlateRemoteRelayBackendIncident(
         snapshot: snapshot,
         backendIncidentId: backendResult.incidentId,
@@ -13030,6 +13054,25 @@ class EixamConnectSdkImpl
       );
     } catch (error) {
       _remoteRelaySosBackendHandoffInFlightBySignature.remove(signature);
+      BleDebugRegistry.instance.recordEvent(
+        'REMOTE_RELAY_SOS_HANDOFF_IN_FLIGHT_CLEARED '
+        'signature=$signature reason=failure '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"}',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'REMOTE_RELAY_SOS_HANDOFF_DEDUP_NOT_RECORDED_ON_FAILURE '
+        'signature=$signature '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"} '
+        'error=${_compactDiagnosticValue(error)}',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'REMOTE_RELAY_SOS_HANDOFF_RETRY_ALLOWED_AFTER_FAILURE '
+        'signature=$signature '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"}',
+      );
       _logRemoteRelayBackendResponse(
         correlationId: _remoteRelayCorrelationId(snapshot),
         snapshot: snapshot,
