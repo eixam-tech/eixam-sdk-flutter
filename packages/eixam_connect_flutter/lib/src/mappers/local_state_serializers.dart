@@ -96,6 +96,9 @@ class LocalStateSerializers {
       'cycleKey': incident.cycleKey,
       'message': incident.message,
       'deliveryChannel': incident.deliveryChannel?.name,
+      'originKind': incident.originKind.name,
+      'actionability': incident.actionability.name,
+      'displaySurface': incident.displaySurface.name,
       'actuators': incident.actuators?.toJson(),
       'positionSnapshot': incident.positionSnapshot == null
           ? null
@@ -130,6 +133,21 @@ class LocalStateSerializers {
               (value) => value.name == deliveryChannelName,
               orElse: () => SosDeliveryChannel.backendOnly,
             ),
+      originKind: _enumFromName(
+        SosOriginKind.values,
+        json['originKind'] as String?,
+        SosOriginKind.unknown,
+      ),
+      actionability: _enumFromName(
+        SosActionability.values,
+        json['actionability'] as String?,
+        SosActionability.unknown,
+      ),
+      displaySurface: _enumFromName(
+        SosDisplaySurface.values,
+        json['displaySurface'] as String?,
+        SosDisplaySurface.unknown,
+      ),
       actuators: actuators is Map
           ? SosActuatorSnapshot.fromJson(
               Map<String, dynamic>.from(actuators),
@@ -138,6 +156,20 @@ class LocalStateSerializers {
       positionSnapshot: snapshot is Map<String, dynamic>
           ? trackingPositionFromJson(snapshot)
           : null,
+    );
+  }
+
+  static T _enumFromName<T extends Enum>(
+    List<T> values,
+    String? name,
+    T fallback,
+  ) {
+    if (name == null) {
+      return fallback;
+    }
+    return values.firstWhere(
+      (value) => value.name == name,
+      orElse: () => fallback,
     );
   }
 

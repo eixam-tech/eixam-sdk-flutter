@@ -10200,6 +10200,8 @@ class EixamConnectSdkImpl
   SosOriginDecision _externalSosOriginDecision(String reason) {
     return SosOriginDecision(
       actionability: SosActionability.externalOnly,
+      originKind: SosOriginKind.remoteRelay,
+      displaySurface: SosDisplaySurface.historyOnly,
       localStateMutation: false,
       publicIncident: false,
       backendPublish: false,
@@ -12886,6 +12888,8 @@ class EixamConnectSdkImpl
       source: 'remote_lora_relay',
       decision: const SosOriginDecision(
         actionability: SosActionability.externalOnly,
+        originKind: SosOriginKind.remoteRelay,
+        displaySurface: SosDisplaySurface.historyOnly,
         localStateMutation: false,
         publicIncident: false,
         backendPublish: true,

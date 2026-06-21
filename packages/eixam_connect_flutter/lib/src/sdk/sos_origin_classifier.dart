@@ -1,14 +1,10 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
-enum SosActionability {
-  localActionable,
-  externalOnly,
-  unknown,
-}
-
 class SosOriginDecision {
   const SosOriginDecision({
     required this.actionability,
+    required this.originKind,
+    required this.displaySurface,
     required this.localStateMutation,
     required this.publicIncident,
     required this.backendPublish,
@@ -16,6 +12,8 @@ class SosOriginDecision {
   });
 
   final SosActionability actionability;
+  final SosOriginKind originKind;
+  final SosDisplaySurface displaySurface;
   final bool localStateMutation;
   final bool publicIncident;
   final bool backendPublish;
@@ -142,6 +140,8 @@ SosOriginDecision classifySosOrigin({
 
   return const SosOriginDecision(
     actionability: SosActionability.unknown,
+    originKind: SosOriginKind.unknown,
+    displaySurface: SosDisplaySurface.unknown,
     localStateMutation: false,
     publicIncident: false,
     backendPublish: false,
@@ -152,6 +152,10 @@ SosOriginDecision classifySosOrigin({
 SosOriginDecision _local(String reason, bool forBackendPublish) {
   return SosOriginDecision(
     actionability: SosActionability.localActionable,
+    originKind: reason == 'local_app_source'
+        ? SosOriginKind.app
+        : SosOriginKind.ownDevice,
+    displaySurface: SosDisplaySurface.activeAndHistory,
     localStateMutation: true,
     publicIncident: true,
     backendPublish: forBackendPublish,
@@ -162,6 +166,10 @@ SosOriginDecision _local(String reason, bool forBackendPublish) {
 SosOriginDecision _external(String reason, bool forBackendPublish) {
   return SosOriginDecision(
     actionability: SosActionability.externalOnly,
+    originKind: reason == 'external_owner'
+        ? SosOriginKind.external
+        : SosOriginKind.remoteRelay,
+    displaySurface: SosDisplaySurface.historyOnly,
     localStateMutation: false,
     publicIncident: false,
     backendPublish: forBackendPublish,

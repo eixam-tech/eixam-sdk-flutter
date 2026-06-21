@@ -49,6 +49,7 @@ export 'src/enums/delivery_mode.dart';
 export 'src/enums/realtime_connection_state.dart';
 export 'src/enums/sdk_permission_status.dart';
 export 'src/enums/sos_delivery_channel.dart';
+export 'src/enums/sos_actionability.dart';
 export 'src/errors/eixam_sdk_exception.dart';
 export 'src/events/eixam_sdk_event.dart';
 export 'src/events/realtime_event.dart';

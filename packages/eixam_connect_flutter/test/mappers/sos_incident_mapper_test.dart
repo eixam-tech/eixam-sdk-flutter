@@ -13,6 +13,9 @@ void main() {
         createdAt: '2026-03-24T09:00:00.000Z',
         triggerSource: 'backend',
         message: 'Incident acknowledged',
+        actionability: 'localActionable',
+        originKind: 'app',
+        displaySurface: 'activeAndHistory',
         positionSnapshot: <String, dynamic>{
           'latitude': 41.38,
           'longitude': 2.17,
@@ -27,8 +30,27 @@ void main() {
       expect(incident.state, SosState.acknowledged);
       expect(incident.triggerSource, dto.triggerSource);
       expect(incident.message, dto.message);
+      expect(incident.actionability, SosActionability.localActionable);
+      expect(incident.originKind, SosOriginKind.app);
+      expect(incident.displaySurface, SosDisplaySurface.activeAndHistory);
       expect(incident.positionSnapshot, isNotNull);
       expect(incident.positionSnapshot?.source, DeliveryMode.mobile);
+    });
+
+    test('classifies relay source as external only when typed fields absent',
+        () {
+      const dto = SosIncidentDto(
+        id: 'remote-3',
+        state: 'sent',
+        createdAt: '2026-03-24T09:00:00.000Z',
+        triggerSource: 'remote_lora_relay',
+      );
+
+      final incident = const SosIncidentMapper().toDomain(dto);
+
+      expect(incident.actionability, SosActionability.externalOnly);
+      expect(incident.originKind, SosOriginKind.remoteRelay);
+      expect(incident.displaySurface, SosDisplaySurface.historyOnly);
     });
 
     test('falls back to failed when dto state is unknown', () {
