@@ -5,11 +5,29 @@ class MqttSosLifecycleUpdate {
     required this.incidentId,
     this.state,
     this.actuators,
+    this.clientIncidentId,
+    this.correlationId,
+    this.cycleKey,
+    this.source,
+    this.triggerSource,
+    this.relaySource,
+    this.owner,
+    this.actionability,
+    this.displaySurface,
   });
 
   final String incidentId;
   final SosState? state;
   final SosActuatorSnapshot? actuators;
+  final String? clientIncidentId;
+  final String? correlationId;
+  final String? cycleKey;
+  final String? source;
+  final String? triggerSource;
+  final String? relaySource;
+  final String? owner;
+  final String? actionability;
+  final String? displaySurface;
 
   static MqttSosLifecycleUpdate? fromRealtimeEvent(RealtimeEvent event) {
     final payload = event.payload;
@@ -28,6 +46,33 @@ class MqttSosLifecycleUpdate {
       incidentId: incidentId,
       state: state,
       actuators: actuators,
+      clientIncidentId: _stringFromPayload(
+        payload,
+        const ['clientIncidentId', 'client_incident_id'],
+      ),
+      correlationId: _stringFromPayload(
+        payload,
+        const ['correlationId', 'correlation_id'],
+      ),
+      cycleKey: _stringFromPayload(payload, const ['cycleKey', 'cycle_key']),
+      source: _stringFromPayload(payload, const ['source']),
+      triggerSource: _stringFromPayload(
+        payload,
+        const ['triggerSource', 'trigger_source'],
+      ),
+      relaySource: _stringFromPayload(
+        payload,
+        const ['relaySource', 'relay_source'],
+      ),
+      owner: _stringFromPayload(payload, const ['owner']),
+      actionability: _stringFromPayload(
+        payload,
+        const ['actionability', 'sosActionability'],
+      ),
+      displaySurface: _stringFromPayload(
+        payload,
+        const ['displaySurface', 'display_surface', 'sosDisplaySurface'],
+      ),
     );
   }
 
@@ -123,6 +168,34 @@ class MqttSosLifecycleUpdate {
         if (snapshotVersion != null) 'snapshotVersion': snapshotVersion,
         ...Map<String, dynamic>.from(actuators),
       });
+    }
+    return null;
+  }
+
+  static String? _stringFromPayload(
+    Map<String, dynamic> payload,
+    List<String> keys,
+  ) {
+    final direct = _stringFromMap(payload, keys);
+    if (direct != null) {
+      return direct;
+    }
+    final incident = payload['incident'];
+    if (incident is Map<String, dynamic>) {
+      return _stringFromMap(incident, keys);
+    }
+    if (incident is Map) {
+      return _stringFromMap(Map<String, dynamic>.from(incident), keys);
+    }
+    return null;
+  }
+
+  static String? _stringFromMap(Map<String, dynamic> map, List<String> keys) {
+    for (final key in keys) {
+      final value = map[key];
+      if (value is String && value.trim().isNotEmpty) {
+        return value.trim();
+      }
     }
     return null;
   }

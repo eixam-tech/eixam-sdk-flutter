@@ -50,6 +50,8 @@ class MqttOperationalSosRepository
   StreamSubscription<RealtimeEvent>? _realtimeSub;
   SosIncident? _activeIncident;
   String? _locallyClosedIncidentId;
+  final Map<String, String?> _trustedLifecycleCorrelationIds =
+      <String, String?>{};
   final Map<String, DateTime> _externalRelaySosPublishDedupe =
       <String, DateTime>{};
 
@@ -254,6 +256,7 @@ class MqttOperationalSosRepository
       state: SosState.sent,
       createdAt: DateTime.now().toUtc(),
       triggerSource: triggerSource,
+      cycleKey: cycleKey,
       message: message,
       positionSnapshot: positionSnapshot,
     );
@@ -360,6 +363,11 @@ class MqttOperationalSosRepository
       return;
     }
     final correlationId = _nextCorrelationId('sos-mqtt');
+    if (!externalDecision.isExternalOnly) {
+      _trustedLifecycleCorrelationIds[correlationId] = _normalizeIdentity(
+        incidentId,
+      );
+    }
     BleDebugRegistry.instance.recordEvent(
       'SOS_TRANSPORT_DECISION flow=sos_trigger transport=mqtt '
       'source=$sourceLabel reason=operational_sos_publish',
@@ -877,6 +885,13 @@ class MqttOperationalSosRepository
   void _handleRealtimeEvent(RealtimeEvent event) {
     final update = MqttSosLifecycleUpdate.fromRealtimeEvent(event);
     if (update == null) {
+      if (_isSosLifecycleEvent(event)) {
+        BleDebugRegistry.instance.recordEvent(
+          'MQTT_SOS_LIFECYCLE_REJECTED_IDENTITY_MISMATCH '
+          'reason=missing_incident_id incidentId=none activeIncidentId='
+          '${_activeIncident?.id ?? "none"}',
+        );
+      }
       if (_isActuatorUpdateEvent(event)) {
         BleDebugRegistry.instance.recordEvent(
           'SOS_ACTUATOR_UPDATE_IGNORED reason=missing_snapshot '
@@ -893,22 +908,13 @@ class MqttOperationalSosRepository
         'items=${_actuatorItemsSummary(actuators)}',
       );
     }
-    if (_activeIncident == null) {
-      if (actuators != null) {
-        BleDebugRegistry.instance.recordEvent(
-          'SOS_ACTUATOR_UPDATE_IGNORED reason=incident_mismatch '
-          'incidentId=${update.incidentId} activeIncidentId=none '
-          'version=${actuators.snapshotVersion}',
-        );
-      }
-      return;
-    }
-    if (update.incidentId != _activeIncident!.id) {
+    final authority = _lifecycleAuthorityFor(update);
+    if (!authority.accepted) {
       if (actuators != null) {
         BleDebugRegistry.instance.recordEvent(
           'SOS_ACTUATOR_UPDATE_IGNORED reason=incident_mismatch '
           'incidentId=${update.incidentId} '
-          'activeIncidentId=${_activeIncident!.id} '
+          'activeIncidentId=${_activeIncident?.id ?? "none"} '
           'version=${actuators.snapshotVersion}',
         );
       }
@@ -927,7 +933,10 @@ class MqttOperationalSosRepository
     }
 
     final previousIncident = _activeIncident!;
-    var currentIncident = previousIncident;
+    if (previousIncident.id != update.incidentId) {
+      _activeIncident = _incidentWithId(previousIncident, update.incidentId);
+    }
+    var currentIncident = _activeIncident!;
     var shouldPersist = false;
 
     if (actuators != null) {
@@ -986,6 +995,160 @@ class MqttOperationalSosRepository
     unawaited(_persistState());
   }
 
+  _LifecycleAuthorityDecision _lifecycleAuthorityFor(
+    MqttSosLifecycleUpdate update,
+  ) {
+    final activeIncident = _activeIncident;
+    final activeIncidentId = activeIncident?.id;
+    if (_isExternalOnlyLifecycle(update)) {
+      _logLifecycleAuthorityRejected(
+        update: update,
+        activeIncidentId: activeIncidentId,
+        reason: 'external_only',
+        diagnostic: 'MQTT_SOS_LIFECYCLE_REJECTED_EXTERNAL_ONLY',
+      );
+      return const _LifecycleAuthorityDecision.rejected('external_only');
+    }
+
+    if (activeIncident == null) {
+      _logLifecycleAuthorityRejected(
+        update: update,
+        activeIncidentId: null,
+        reason: 'missing_active_incident',
+        diagnostic: 'MQTT_SOS_LIFECYCLE_REJECTED_IDENTITY_MISMATCH',
+      );
+      return const _LifecycleAuthorityDecision.rejected(
+        'missing_active_incident',
+      );
+    }
+
+    if (_sameIdentity(update.incidentId, activeIncident.id)) {
+      _logLifecycleAuthorityAccepted(
+        update: update,
+        activeIncidentId: activeIncident.id,
+        reason: 'active_incident_match',
+        diagnostic: 'MQTT_SOS_LIFECYCLE_ACCEPTED_ACTIVE_INCIDENT_MATCH',
+      );
+      return const _LifecycleAuthorityDecision.accepted(
+        'active_incident_match',
+      );
+    }
+
+    if (_sameIdentity(update.clientIncidentId, activeIncident.id)) {
+      _logLifecycleAuthorityAccepted(
+        update: update,
+        activeIncidentId: activeIncident.id,
+        reason: 'client_incident_match',
+        diagnostic: 'MQTT_SOS_LIFECYCLE_AUTHORITY_ACCEPTED',
+      );
+      return const _LifecycleAuthorityDecision.accepted(
+        'client_incident_match',
+      );
+    }
+
+    if (_hasTrustedCorrelationMatch(update, activeIncident)) {
+      _logLifecycleAuthorityAccepted(
+        update: update,
+        activeIncidentId: activeIncident.id,
+        reason: 'correlation_match',
+        diagnostic: 'MQTT_SOS_LIFECYCLE_ACCEPTED_CORRELATION_MATCH',
+      );
+      return const _LifecycleAuthorityDecision.accepted('correlation_match');
+    }
+
+    if (_sameIdentity(update.cycleKey, activeIncident.cycleKey)) {
+      _logLifecycleAuthorityAccepted(
+        update: update,
+        activeIncidentId: activeIncident.id,
+        reason: 'cycle_match',
+        diagnostic: 'MQTT_SOS_LIFECYCLE_ACCEPTED_CYCLE_MATCH',
+      );
+      return const _LifecycleAuthorityDecision.accepted('cycle_match');
+    }
+
+    _logLifecycleAuthorityRejected(
+      update: update,
+      activeIncidentId: activeIncident.id,
+      reason: 'identity_mismatch',
+      diagnostic: 'MQTT_SOS_LIFECYCLE_REJECTED_IDENTITY_MISMATCH',
+    );
+    return const _LifecycleAuthorityDecision.rejected('identity_mismatch');
+  }
+
+  bool _hasTrustedCorrelationMatch(
+    MqttSosLifecycleUpdate update,
+    SosIncident activeIncident,
+  ) {
+    final correlationId = _normalizeIdentity(update.correlationId);
+    if (correlationId == null) {
+      return false;
+    }
+    if (!_trustedLifecycleCorrelationIds.containsKey(correlationId)) {
+      return false;
+    }
+    final expectedIncidentId = _trustedLifecycleCorrelationIds[correlationId];
+    return expectedIncidentId == null ||
+        _sameIdentity(expectedIncidentId, activeIncident.id) ||
+        _sameIdentity(expectedIncidentId, update.clientIncidentId);
+  }
+
+  bool _isExternalOnlyLifecycle(MqttSosLifecycleUpdate update) {
+    if (_normalizeLifecycleToken(update.actionability) == 'externalonly' ||
+        _normalizeLifecycleToken(update.displaySurface) == 'historyonly') {
+      return true;
+    }
+    return classifySosOrigin(
+      source: update.source,
+      triggerSource: update.triggerSource,
+      relaySource: update.relaySource,
+      owner: update.owner,
+    ).isExternalOnly;
+  }
+
+  void _logLifecycleAuthorityAccepted({
+    required MqttSosLifecycleUpdate update,
+    required String activeIncidentId,
+    required String reason,
+    required String diagnostic,
+  }) {
+    BleDebugRegistry.instance.recordEvent(
+      'MQTT_SOS_LIFECYCLE_AUTHORITY_ACCEPTED reason=$reason '
+      'incidentId=${update.incidentId} activeIncidentId=$activeIncidentId '
+      'clientIncidentId=${update.clientIncidentId ?? "none"} '
+      'correlationId=${update.correlationId ?? "none"} '
+      'cycleKey=${update.cycleKey ?? "none"}',
+    );
+    if (diagnostic != 'MQTT_SOS_LIFECYCLE_AUTHORITY_ACCEPTED') {
+      BleDebugRegistry.instance.recordEvent(
+        '$diagnostic incidentId=${update.incidentId} '
+        'activeIncidentId=$activeIncidentId',
+      );
+    }
+  }
+
+  void _logLifecycleAuthorityRejected({
+    required MqttSosLifecycleUpdate update,
+    required String? activeIncidentId,
+    required String reason,
+    required String diagnostic,
+  }) {
+    BleDebugRegistry.instance.recordEvent(
+      'MQTT_SOS_LIFECYCLE_AUTHORITY_REJECTED reason=$reason '
+      'incidentId=${update.incidentId} '
+      'activeIncidentId=${activeIncidentId ?? "none"} '
+      'clientIncidentId=${update.clientIncidentId ?? "none"} '
+      'correlationId=${update.correlationId ?? "none"} '
+      'cycleKey=${update.cycleKey ?? "none"} '
+      'source=${update.source ?? "none"} '
+      'triggerSource=${update.triggerSource ?? "none"} '
+      'relaySource=${update.relaySource ?? "none"}',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      '$diagnostic reason=$reason incidentId=${update.incidentId} '
+      'activeIncidentId=${activeIncidentId ?? "none"}',
+    );
+  }
+
   bool _shouldAcceptActuatorSnapshot({
     required SosActuatorSnapshot? current,
     required SosActuatorSnapshot incoming,
@@ -1008,6 +1171,12 @@ class MqttOperationalSosRepository
     return event.type.trim().toLowerCase() == 'sos.actuator_update' ||
         (event.payload?['type']?.toString().trim().toLowerCase() ==
             'sos.actuator_update');
+  }
+
+  bool _isSosLifecycleEvent(RealtimeEvent event) {
+    return event.type.trim().toLowerCase() == 'sos.lifecycle' ||
+        (event.payload?['type']?.toString().trim().toLowerCase() ==
+            'sos.lifecycle');
   }
 
   String? _eventIncidentId(RealtimeEvent event) {
@@ -1300,6 +1469,54 @@ class MqttOperationalSosRepository
 
   void _rememberActiveLikeState() {}
 
+  SosIncident _incidentWithId(SosIncident incident, String id) {
+    return SosIncident(
+      id: id,
+      state: incident.state,
+      createdAt: incident.createdAt,
+      positionSnapshot: incident.positionSnapshot,
+      source: incident.source,
+      triggerSource: incident.triggerSource,
+      relaySource: incident.relaySource,
+      originatorNodeId: incident.originatorNodeId,
+      relayNodeId: incident.relayNodeId,
+      deviceId: incident.deviceId,
+      hardwareId: incident.hardwareId,
+      owner: incident.owner,
+      cycleKey: incident.cycleKey,
+      message: incident.message,
+      deliveryChannel: incident.deliveryChannel,
+      originKind: incident.originKind,
+      actionability: incident.actionability,
+      displaySurface: incident.displaySurface,
+      actuators: incident.actuators,
+    );
+  }
+
+  bool _sameIdentity(String? left, String? right) {
+    final normalizedLeft = _normalizeIdentity(left);
+    final normalizedRight = _normalizeIdentity(right);
+    return normalizedLeft != null &&
+        normalizedRight != null &&
+        normalizedLeft == normalizedRight;
+  }
+
+  String? _normalizeIdentity(String? value) {
+    final trimmed = value?.trim();
+    if (trimmed == null || trimmed.isEmpty) {
+      return null;
+    }
+    return trimmed;
+  }
+
+  String? _normalizeLifecycleToken(String? value) {
+    final trimmed = value?.trim();
+    if (trimmed == null || trimmed.isEmpty) {
+      return null;
+    }
+    return trimmed.toLowerCase().replaceAll(RegExp(r'[-_\s]+'), '');
+  }
+
   String _errorMessageFor(Object error) {
     if (error is EixamSdkException) {
       return error.message;
@@ -1338,4 +1555,12 @@ class MqttOperationalSosRepository
       _rememberActiveLikeState();
     }
   }
+}
+
+class _LifecycleAuthorityDecision {
+  const _LifecycleAuthorityDecision.accepted(this.reason) : accepted = true;
+  const _LifecycleAuthorityDecision.rejected(this.reason) : accepted = false;
+
+  final bool accepted;
+  final String reason;
 }
