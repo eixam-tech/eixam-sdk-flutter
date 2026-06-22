@@ -28,4 +28,11 @@ export 'package:eixam_connect_core/src/entities/sos_actuator_snapshot.dart';
 export 'package:eixam_connect_core/src/entities/sos_incident.dart';
 export 'package:eixam_connect_core/src/entities/sos_trigger_payload.dart';
 export 'package:eixam_connect_core/src/entities/tracking_position.dart';
+export '../../device/ble_security_policy.dart'
+    show
+        BleCommandCriticality,
+        BleCommandSecurityDecision,
+        BleSecurityCapability,
+        BleSecurityDiagnostics,
+        BleSecurityPolicy;
 export '../../device/ble_scan_result.dart';
