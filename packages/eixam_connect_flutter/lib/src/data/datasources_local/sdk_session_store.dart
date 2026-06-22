@@ -10,9 +10,10 @@ class SdkSessionStore {
   final SharedPrefsSdkStore _localStore;
 
   Future<void> save(EixamSession session) {
+    final payload = session.toJson()..remove('refreshToken');
     return _localStore.saveJson(
       SharedPrefsSdkStore.sdkSessionKey,
-      session.toJson(),
+      payload,
     );
   }
 
