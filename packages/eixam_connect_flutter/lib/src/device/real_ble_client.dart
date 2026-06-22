@@ -9,6 +9,7 @@ import 'ble_adapter_state.dart';
 import 'ble_client.dart';
 import 'canonical_hardware_id.dart';
 import 'ble_debug_registry.dart';
+import 'ble_security_policy.dart';
 import 'ble_scan_result.dart';
 import 'ble_scan_result_brand_classifier.dart';
 import 'eixam_ble_command.dart';
@@ -604,6 +605,18 @@ class RealBleClient implements BleClient {
     String deviceId,
     EixamDeviceCommand command,
   ) async {
+    final securityDecision = BleSecurityPolicy.defaultPolicy.evaluate(
+      criticality: command.criticality,
+      capability: BleSecurityCapability.legacyUnknown,
+    );
+    for (final diagnostic in securityDecision.diagnostics) {
+      BleDebugRegistry.instance.recordEvent(
+        '$diagnostic command=${command.label} '
+        'criticality=${securityDecision.criticality.name} '
+        'capability=${securityDecision.capability.name} '
+        'allowed=${securityDecision.allowed}',
+      );
+    }
     final data = command.encode();
     if (data.isEmpty) {
       throw Exception('E_BLE_COMMAND_PAYLOAD_EMPTY');

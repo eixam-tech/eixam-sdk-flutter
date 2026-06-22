@@ -1,7 +1,7 @@
+import 'ble_command_criticality.dart';
 import 'eixam_ble_protocol.dart';
 
 class EixamDeviceCommand {
-
   factory EixamDeviceCommand.inetOk() => const EixamDeviceCommand._(
         opcode: 0x01,
         label: 'INET OK',
@@ -112,6 +112,15 @@ class EixamDeviceCommand {
   final bool forceCmdCharacteristic;
 
   List<int> encode() => List<int>.unmodifiable(bytes);
+
+  BleCommandCriticality get criticality {
+    return switch (opcode) {
+      0x04 || 0x06 || 0x10 || 0x22 => BleCommandCriticality.critical,
+      _ => BleCommandCriticality.nonCritical,
+    };
+  }
+
+  bool get isCritical => criticality == BleCommandCriticality.critical;
 
   bool get usesCmdCharacteristic =>
       forceCmdCharacteristic ||
