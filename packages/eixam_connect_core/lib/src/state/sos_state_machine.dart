@@ -6,8 +6,25 @@ class SosStateMachine {
 
   SosState get current => _state;
 
+  static bool canTransition({
+    required SosState from,
+    required SosState to,
+  }) {
+    return _allowedTransitions(from).contains(to);
+  }
+
   SosState transitionTo(SosState next) {
-    final allowed = switch (_state) {
+    if (!canTransition(from: _state, to: next)) {
+      throw const SosException(
+          'E_SOS_INVALID_TRANSITION', 'Invalid SOS state transition');
+    }
+
+    _state = next;
+    return _state;
+  }
+
+  static Set<SosState> _allowedTransitions(SosState state) {
+    return switch (state) {
       SosState.idle => {SosState.arming, SosState.triggerRequested},
       SosState.arming => {SosState.triggerRequested, SosState.idle},
       SosState.triggerRequested => {SosState.triggeredLocal, SosState.failed},
@@ -28,13 +45,5 @@ class SosStateMachine {
       SosState.resolved => {SosState.idle},
       SosState.failed => {SosState.idle, SosState.triggerRequested},
     };
-
-    if (!allowed.contains(next)) {
-      throw const SosException(
-          'E_SOS_INVALID_TRANSITION', 'Invalid SOS state transition');
-    }
-
-    _state = next;
-    return _state;
   }
 }

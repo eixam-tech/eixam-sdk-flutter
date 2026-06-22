@@ -413,9 +413,13 @@ class EixamConnectSdkImpl
     await _restoreDeviceIdentityMappings();
     await _restoreRecentExternalRelaySosContexts();
     await _rehydrateSosRuntimeState();
-    _publicSosState = _publicSosStateFromRepositoryLoad(
-      incoming: await sosRepository.getSosState(),
+    _applyPublicSosState(
+      _publicSosStateFromRepositoryLoad(
+        incoming: await sosRepository.getSosState(),
+        source: 'repository_load:initialize',
+      ),
       source: 'repository_load:initialize',
+      emit: false,
     );
     _lastDeviceStatus = await deviceRepository.getDeviceStatus();
     final deviceSosStatus = await deviceSosController.getStatus();
@@ -792,9 +796,13 @@ class EixamConnectSdkImpl
     await _rehydrateSosRuntimeState();
     _publicSosFallbackIncident = null;
     _clearPendingAppTriggeredSosBridge(reason: 'session_replaced');
-    _publicSosState = _publicSosStateFromRepositoryLoad(
-      incoming: await sosRepository.getSosState(),
+    _applyPublicSosState(
+      _publicSosStateFromRepositoryLoad(
+        incoming: await sosRepository.getSosState(),
+        source: 'repository_load:set_session',
+      ),
       source: 'repository_load:set_session',
+      emit: false,
     );
     await sessionStore?.save(_session!);
     _emitOperationalDiagnostics();
@@ -900,9 +908,13 @@ class EixamConnectSdkImpl
     await _rehydrateSosRuntimeState();
     _publicSosFallbackIncident = null;
     _clearPendingAppTriggeredSosBridge(reason: 'identity_refreshed');
-    _publicSosState = _publicSosStateFromRepositoryLoad(
-      incoming: await sosRepository.getSosState(),
+    _applyPublicSosState(
+      _publicSosStateFromRepositoryLoad(
+        incoming: await sosRepository.getSosState(),
+        source: 'repository_load:refresh_identity',
+      ),
       source: 'repository_load:refresh_identity',
+      emit: false,
     );
     await sessionStore?.save(refreshed);
     _emitOperationalDiagnostics();
@@ -8319,6 +8331,12 @@ class EixamConnectSdkImpl
         'decision=block_post_terminal_regression '
         'current=${_publicSosState.name} incoming=${state.name}',
       );
+      _logPublicSosStateMachineBypassBlocked(
+        from: _publicSosState,
+        to: state,
+        source: source,
+        reason: 'post_terminal_regression_guard',
+      );
       return;
     }
     final stateAfterRuntimePrecedence = _applyPublicSosRuntimePrecedence(
@@ -8332,6 +8350,24 @@ class EixamConnectSdkImpl
     if (nextState == _publicSosState) {
       return;
     }
+    _applyPublicSosState(nextState, source: source, emit: true);
+  }
+
+  bool _applyPublicSosState(
+    SosState nextState, {
+    required String source,
+    required bool emit,
+  }) {
+    if (nextState == _publicSosState) {
+      return false;
+    }
+    if (!_validatePublicSosTransition(
+      from: _publicSosState,
+      to: nextState,
+      source: source,
+    )) {
+      return false;
+    }
     if (_isOpenSosState(_publicSosState) &&
         _isTerminalPublicSosState(nextState)) {
       _lastTerminalPublicSosAt = DateTime.now();
@@ -8340,11 +8376,147 @@ class EixamConnectSdkImpl
       _lastTerminalPublicSosAt = null;
     }
     _publicSosState = nextState;
-    if (!_publicSosStateController.isClosed) {
+    if (emit && !_publicSosStateController.isClosed) {
       _publicSosStateController.add(nextState);
     }
     unawaited(
       _updateBackgroundTelemetryState(reason: 'sos_state:${nextState.name}'),
+    );
+    return true;
+  }
+
+  bool _validatePublicSosTransition({
+    required SosState from,
+    required SosState to,
+    required String source,
+  }) {
+    if (from == to) {
+      return true;
+    }
+    if (SosStateMachine.canTransition(from: from, to: to)) {
+      BleDebugRegistry.instance.recordEvent(
+        'SDK_SOS_STATE_MACHINE_TRANSITION_ACCEPTED '
+        'source=$source from=${from.name} to=${to.name}',
+      );
+      return true;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'SDK_SOS_STATE_MACHINE_TRANSITION_REJECTED '
+      'source=$source from=${from.name} to=${to.name}',
+    );
+    if (_shouldRetainPublicSosStateMachineBypass(
+      to: to,
+      source: source,
+    )) {
+      BleDebugRegistry.instance.recordEvent(
+        'SDK_SOS_STATE_MACHINE_BYPASS_RETAINED '
+        'source=$source from=${from.name} to=${to.name} '
+        'reason=${_publicSosStateMachineBypassReason(to: to)}',
+      );
+      return true;
+    }
+    _logPublicSosStateMachineBypassBlocked(
+      from: from,
+      to: to,
+      source: source,
+      reason: 'invalid_public_sos_transition',
+    );
+    return false;
+  }
+
+  bool _shouldRetainPublicSosStateMachineBypass({
+    required SosState to,
+    required String source,
+  }) {
+    if (_isAuthoritativePublicSosTerminalBypass(to: to, source: source)) {
+      return true;
+    }
+    if (to == SosState.failed && _isAuthoritativePublicSosFailure(source)) {
+      return true;
+    }
+    if (to == SosState.idle && _isAuthoritativePublicSosClear(source)) {
+      return true;
+    }
+    if (_isAuthoritativePublicSosOpenBypass(source)) {
+      return true;
+    }
+    return false;
+  }
+
+  bool _isAuthoritativePublicSosTerminalBypass({
+    required SosState to,
+    required String source,
+  }) {
+    if (!_isTerminalPublicSosState(to)) {
+      return false;
+    }
+    return source == 'sos_state_stream' ||
+        source.startsWith('repository_load:') ||
+        source.startsWith('sos_rehydrate:') ||
+        source.startsWith('fetch_sos_state') ||
+        source.startsWith('device_sos_status:') ||
+        source.startsWith('public_') ||
+        source.contains('terminal') ||
+        source.contains('cancel') ||
+        source.contains('resolve');
+  }
+
+  bool _isAuthoritativePublicSosFailure(String source) {
+    return source.contains('backend_failed') ||
+        source.contains('activation_failed') ||
+        source.startsWith('public_');
+  }
+
+  bool _isAuthoritativePublicSosClear(String source) {
+    return source == 'clear_session' ||
+        source.startsWith('repository_load:') ||
+        source.startsWith('sos_rehydrate:') ||
+        source.startsWith('fetch_sos_state') ||
+        source.contains('external_only') ||
+        source.contains('acknowledged') ||
+        source.contains('session') ||
+        source.contains('clear') ||
+        source.contains('cleanup') ||
+        source.contains('cancel') ||
+        source.contains('terminal');
+  }
+
+  bool _isAuthoritativePublicSosOpenBypass(String source) {
+    return source == 'public_sos_backend_publish_start' ||
+        source == 'public_sos_result' ||
+        source.startsWith('repository_load:') ||
+        source.startsWith('sos_rehydrate:') ||
+        source == 'fetch_sos_state:device_override' ||
+        source.startsWith('device_sos_status:') ||
+        source == 'sos_state_stream:device_override' ||
+        source == 'app_origin_ble_runtime_active' ||
+        source == 'ios_ble_sos_snapshot_active';
+  }
+
+  String _publicSosStateMachineBypassReason({
+    required SosState to,
+  }) {
+    if (_isTerminalPublicSosState(to)) {
+      return 'authoritative_terminal';
+    }
+    if (to == SosState.failed) {
+      return 'authoritative_failure';
+    }
+    if (to == SosState.idle) {
+      return 'authoritative_clear';
+    }
+    return 'sdk_public_lifecycle_shortcut';
+  }
+
+  void _logPublicSosStateMachineBypassBlocked({
+    required SosState from,
+    required SosState to,
+    required String source,
+    required String reason,
+  }) {
+    BleDebugRegistry.instance.recordEvent(
+      'SDK_SOS_STATE_MACHINE_BYPASS_BLOCKED '
+      'source=$source from=${from.name} to=${to.name} reason=$reason',
     );
   }
 
@@ -11328,9 +11500,14 @@ class EixamConnectSdkImpl
       emitResolvedState: false,
     );
     if (deviceOverride != null) {
-      _publicSosState = _applyPublicSosRuntimePrecedence(
+      final effectiveState = _applyPublicSosRuntimePrecedence(
         incoming: deviceOverride,
         source: 'fetch_sos_state:device_override',
+      );
+      _applyPublicSosState(
+        effectiveState,
+        source: 'fetch_sos_state:device_override',
+        emit: false,
       );
       BleDebugRegistry.instance.recordEvent(
         'getSosState() -> deviceOverride=${deviceOverride.name} '
@@ -11385,7 +11562,11 @@ class EixamConnectSdkImpl
       source: 'fetch_sos_state',
     );
     if (runtimePrecedenceState != repositoryState) {
-      _publicSosState = runtimePrecedenceState;
+      _applyPublicSosState(
+        runtimePrecedenceState,
+        source: 'fetch_sos_state',
+        emit: false,
+      );
       BleDebugRegistry.instance.recordEvent(
         'getSosState() -> repositoryState=${repositoryState.name} '
         'effectiveState=${_publicSosState.name} '
@@ -11412,7 +11593,11 @@ class EixamConnectSdkImpl
         decision: 'apply_terminal',
         reason: 'current_cycle_terminal_acknowledged',
       );
-      _publicSosState = SosState.idle;
+      _applyPublicSosState(
+        SosState.idle,
+        source: 'fetch_sos_state:terminal_acknowledged',
+        emit: false,
+      );
       BleDebugRegistry.instance.recordEvent(
         'getSosState() -> repositoryState=${repositoryState.name} '
         'effectiveState=idle reason=terminal_summary_acknowledged',
@@ -11429,9 +11614,14 @@ class EixamConnectSdkImpl
             : 'runtime_inactive',
       );
     }
-    _publicSosState = _preserveDeviceRuntimeSosStateIfNeeded(
+    final effectiveState = _preserveDeviceRuntimeSosStateIfNeeded(
       incoming: repositoryState,
       source: 'fetch_sos_state',
+    );
+    _applyPublicSosState(
+      effectiveState,
+      source: 'fetch_sos_state',
+      emit: false,
     );
     BleDebugRegistry.instance.recordEvent(
       'getSosState() -> repositoryState=${repositoryState.name} '

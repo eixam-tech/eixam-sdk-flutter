@@ -31,6 +31,13 @@ void main() {
       test('allows ${transition.from.name} -> ${transition.to.name}', () {
         final machine = machineAt(transition.from);
 
+        expect(
+          SosStateMachine.canTransition(
+            from: transition.from,
+            to: transition.to,
+          ),
+          isTrue,
+        );
         expect(machine.transitionTo(transition.to), transition.to);
         expect(machine.current, transition.to);
       });
@@ -50,6 +57,13 @@ void main() {
       test('rejects ${transition.from.name} -> ${transition.to.name}', () {
         final machine = machineAt(transition.from);
 
+        expect(
+          SosStateMachine.canTransition(
+            from: transition.from,
+            to: transition.to,
+          ),
+          isFalse,
+        );
         expect(
           () => machine.transitionTo(transition.to),
           throwsA(

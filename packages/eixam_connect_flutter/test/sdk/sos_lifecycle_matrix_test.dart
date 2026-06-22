@@ -135,6 +135,96 @@ void main() {
       }
     });
 
+    test(
+        'public SOS stream blocks raw repository open transition rejected by machine',
+        () async {
+      final harness = _SdkSosHarness();
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        harness.sosRepository.currentIncident = _incident(
+          state: SosState.acknowledged,
+          triggerSource: 'button_ui',
+        );
+
+        harness.sosRepository.stateController.add(SosState.acknowledged);
+        await pumpEventQueue(times: 2);
+
+        expect(await harness.sdk.getSosState(), SosState.idle);
+        expect(
+          _hasDebugMessage('SDK_SOS_STATE_MACHINE_TRANSITION_REJECTED'),
+          isTrue,
+        );
+        expect(
+          _hasDebugMessage('SDK_SOS_STATE_MACHINE_BYPASS_BLOCKED'),
+          isTrue,
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('public SOS stream accepts canonical sent acknowledge resolve chain',
+        () async {
+      final harness = _SdkSosHarness();
+      try {
+        await harness.sdk.triggerSos(const SosTriggerPayload());
+        expect(await harness.sdk.getSosState(), SosState.sent);
+
+        harness.sosRepository.currentIncident =
+            harness.sosRepository.currentIncident.copyWith(
+          state: SosState.acknowledged,
+        );
+        harness.sosRepository.stateController.add(SosState.acknowledged);
+        await pumpEventQueue(times: 2);
+
+        expect(await harness.sdk.getSosState(), SosState.acknowledged);
+
+        harness.sosRepository.currentIncident =
+            harness.sosRepository.currentIncident.copyWith(
+          state: SosState.resolved,
+        );
+        harness.sosRepository.stateController.add(SosState.resolved);
+        await pumpEventQueue(times: 2);
+
+        expect(await harness.sdk.getSosState(), SosState.resolved);
+        expect(
+          _hasDebugMessage('SDK_SOS_STATE_MACHINE_TRANSITION_ACCEPTED'),
+          isTrue,
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('authoritative terminal cancelled state still wins', () async {
+      final harness = _SdkSosHarness();
+      try {
+        await harness.sdk.triggerSos(const SosTriggerPayload());
+        expect(await harness.sdk.getSosState(), SosState.sent);
+
+        harness.sosRepository.currentIncident =
+            harness.sosRepository.currentIncident.copyWith(
+          state: SosState.cancelled,
+        );
+        harness.sosRepository.stateController.add(SosState.cancelled);
+        await pumpEventQueue(times: 2);
+
+        expect(await harness.sdk.getSosState(), SosState.cancelled);
+        expect(
+          _hasDebugMessage('SDK_SOS_STATE_MACHINE_TRANSITION_REJECTED'),
+          isTrue,
+        );
+        expect(
+          _hasDebugMessage('SDK_SOS_STATE_MACHINE_BYPASS_RETAINED'),
+          isTrue,
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
     test('SOS-02 app-origin cancel active SOS cancels and clears', () async {
       final harness = _SdkSosHarness();
       try {
@@ -829,7 +919,7 @@ void main() {
       );
       await first.sdk.startPreSos(countdown: const Duration(milliseconds: 5));
       expect(await first.sdk.getPreSosStatus(), isNotNull);
-      await first.dispose();
+      await first.dispose(disposeSosRepository: false);
       await Future<void>.delayed(const Duration(milliseconds: 20));
 
       final restored = _SdkSosHarness(
@@ -977,9 +1067,11 @@ final class _SdkSosHarness {
     );
   }
 
-  Future<void> dispose() async {
+  Future<void> dispose({bool disposeSosRepository = true}) async {
     await sdk.dispose();
-    await sosRepository.dispose();
+    if (disposeSosRepository) {
+      await sosRepository.dispose();
+    }
     await trackingRepository.dispose();
     await contactsRepository.dispose();
     await deviceRepository.dispose();
