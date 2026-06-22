@@ -3,6 +3,7 @@ import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_http_trans
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_session_context.dart';
 import 'package:eixam_connect_flutter/src/sdk/mqtt5_sdk_transport.dart';
 import 'package:eixam_connect_flutter/src/sdk/sdk_mqtt_contract.dart';
+import 'package:eixam_connect_flutter/src/sdk/transport_security_validator.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/testing.dart';
 
@@ -40,6 +41,34 @@ void main() {
       );
     });
 
+    test('rejects HTTP API endpoints outside debug even with local override',
+        () {
+      for (final buildMode in [SdkBuildMode.profile, SdkBuildMode.release]) {
+        expect(
+          () => SdkTransportSecurityValidator.validateApiBaseUrl(
+            const EixamSdkConfig(
+              apiBaseUrl: 'http://localhost:8080',
+              allowInsecureLocalEndpoints: true,
+            ),
+            buildMode: buildMode,
+          ),
+          throwsA(
+            isA<TransportSecurityException>()
+                .having(
+                  (error) => error.code,
+                  'code',
+                  'E_SDK_INSECURE_API_ENDPOINT',
+                )
+                .having(
+                  (error) => error.message,
+                  'message',
+                  contains('HTTPS'),
+                ),
+          ),
+        );
+      }
+    });
+
     test('accepts WSS MQTT endpoints', () {
       final request = SdkMqttContract.connectRequest(
         config: const EixamSdkConfig(
@@ -72,6 +101,42 @@ void main() {
           session: _session,
         ),
         throwsA(isA<TransportSecurityException>()),
+      );
+    });
+
+    test('rejects WS realtime endpoints outside debug', () {
+      for (final buildMode in [SdkBuildMode.profile, SdkBuildMode.release]) {
+        expect(
+          () => SdkTransportSecurityValidator.validateRealtimeEndpoint(
+            const EixamSdkConfig(
+              apiBaseUrl: 'https://api.example.test',
+              websocketUrl: 'ws://localhost:9001/mqtt',
+              allowInsecureLocalEndpoints: true,
+            ),
+            endpoint: 'ws://localhost:9001/mqtt',
+            buildMode: buildMode,
+          ),
+          throwsA(
+            isA<TransportSecurityException>().having(
+              (error) => error.code,
+              'code',
+              'E_SDK_INSECURE_REALTIME_ENDPOINT',
+            ),
+          ),
+        );
+      }
+    });
+
+    test('accepts secure API and realtime endpoints outside debug', () {
+      expect(
+        () => SdkTransportSecurityValidator.validateConfig(
+          const EixamSdkConfig(
+            apiBaseUrl: 'https://api.example.test',
+            websocketUrl: 'wss://mqtt.example.test/ws',
+          ),
+          buildMode: SdkBuildMode.release,
+        ),
+        returnsNormally,
       );
     });
 
