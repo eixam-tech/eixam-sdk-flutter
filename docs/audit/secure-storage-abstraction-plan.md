@@ -2,9 +2,9 @@
 
 Date: 2026-06-22
 
-Scope: SEC-STORAGE Phase 1 SDK/app audit remediation for `/Users/roger/flutterdev/eixam-sdk-flutter` and `/Users/roger/flutterdev/eixam_commecial_app/eixam-app`.
+Scope: SEC-STORAGE Phase 1 plus Phase 2A SDK/app audit remediation prep for `/Users/roger/flutterdev/eixam-sdk-flutter` and `/Users/roger/flutterdev/eixam_commecial_app/eixam-app`.
 
-This document does not change runtime behavior. Phase 1 adds a pure Dart abstraction and test implementations only. It does not add a dependency, migrate user data, change token format, change login/session restore behavior, change backend API contracts, touch native Android/iOS project files, or touch SOS/MQTT/BLE behavior.
+Phase 1 added a pure Dart abstraction and test implementations only. Phase 2A adds a disabled-by-default app auth-session secure-storage seam and focused tests so the real migration can be enabled deliberately later. Phase 2A does not add a secure-storage dependency, migrate user data, change token format, change default login/session restore behavior, change backend API contracts, touch native Android/iOS project files, or touch SOS/MQTT/BLE behavior.
 
 ## Current Mitigation Already Done
 
@@ -25,7 +25,9 @@ Neither allowed repo currently has an approved secure-storage dependency. Phase 
 | --- | --- | --- | --- |
 | SDK `packages/eixam_connect_flutter` | `shared_preferences: ^2.3.2` | No | `SharedPrefsSdkStore`, `SdkSessionStore` |
 | SDK `packages/eixam_connect_core` | None in runtime dependencies | No | `SecureKeyValueStore`, `InMemorySecureKeyValueStore`, `UnavailableSecureKeyValueStore`, key namespace helpers |
-| App `eixam-app` | `shared_preferences: ^2.5.3` | No | `AuthSessionStore`, feature stores such as telemetry/DMP/device/profile stores |
+| App `eixam-app` | `shared_preferences: ^2.5.3` | No | `AuthSessionStore`, `SecureStorageAuthSessionStore`, `SecureStorageBackedAuthSessionStore`, feature stores such as telemetry/DMP/device/profile stores |
+
+Phase 2A dependency decision: do not add `flutter_secure_storage` or another platform-backed secure-storage dependency in this pass. The dependency is low code-size effort, but it can carry platform policy choices for Keychain accessibility, Android backup/keystore behavior, and native test/runtime availability. Keep the production implementation on `UnavailableSecureKeyValueStore` until those decisions are approved.
 
 ## Secure Storage Design
 
@@ -56,7 +58,7 @@ Non-goals:
 
 - No token redesign, wrapping, encryption format redesign, rotation policy, or backend API contract change.
 - No platform-backed secure-storage implementation in this pass.
-- No production auth/session wiring in this pass.
+- No enabled production auth/session migration in this pass.
 - No dependency selection or pubspec change in this pass.
 - No native Android/iOS file edits in this pass.
 - No migration of existing user data in this pass.
@@ -98,18 +100,19 @@ Namespace rules:
 The future migration should be staged and feature-flagged to avoid changing login/session restore behavior unexpectedly.
 
 1. Build and test the abstraction with fake/in-memory stores only.
-2. Add a production secure-store implementation behind a disabled-by-default feature flag.
-3. For app auth only, when the flag is enabled:
+2. Add a disabled-by-default app config seam before choosing a platform dependency.
+3. Add a production secure-store implementation behind the disabled-by-default feature flag.
+4. For app auth only, when the flag is enabled:
    - Read secure storage first.
    - If secure storage has no value, read the existing SharedPreferences keys.
-   - If SharedPreferences restore succeeds, write the same token/context values to secure storage without changing serialization or token format.
+   - If migration-on-read is explicitly enabled and SharedPreferences restore succeeds, write the same token/context values to secure storage without changing serialization or token format.
    - Keep legacy SharedPreferences values until the explicit cleanup phase.
-4. After app auth telemetry shows stable restore/logout behavior, repeat the same pattern for SDK `eixam.sdk.session`.
-5. Only after multiple stable releases, delete legacy SharedPreferences auth/session keys during logout, session invalidation, and a dedicated cleanup pass.
+5. After app auth telemetry shows stable restore/logout behavior, repeat the same pattern for SDK `eixam.sdk.session`.
+6. Only after multiple stable releases, delete legacy SharedPreferences auth/session keys during logout, session invalidation, and a dedicated cleanup pass.
 
 Important migration constraints:
 
-- Do not migrate existing user data in this design pass.
+- Do not migrate existing user data in Phase 2A.
 - Do not change the meaning, shape, or encoding of token/context values during the storage backend move.
 - Do not require backend API changes.
 - Do not silently drop users into a broken partial session if one backend read succeeds and the other fails; prefer existing restore semantics and explicit cleanup.
@@ -140,7 +143,14 @@ Future secure cleanup rule:
 
 ## Fallback Behavior If Secure Storage Is Unavailable
 
-Recommended rollout behavior:
+Current Phase 2A seam:
+
+- `EIXAM_SECURE_STORAGE_AUTH_SESSION_ENABLED=false` by default, so the app auth session stays on the existing SharedPreferences path.
+- `EIXAM_SECURE_STORAGE_AUTH_SESSION_LEGACY_FALLBACK=true` by default, so an explicitly enabled but unavailable secure store can keep the current SharedPreferences path during early rollout.
+- `EIXAM_SECURE_STORAGE_AUTH_SESSION_MIGRATE_LEGACY_ON_READ=false` by default, so existing sessions are not automatically migrated on first launch.
+- Logout/session invalidation calls through a wrapper that clears both the legacy store and the secure store when one is present; unavailable secure storage is ignored while legacy cleanup still runs.
+
+Recommended rollout behavior after a platform secure store is approved:
 
 - Before secure storage is mandatory, guard secure storage with a remote/build-time feature flag. If the secure store is unavailable at startup, disable the secure-storage path and keep the current SharedPreferences behavior for that release.
 - When the flag is enabled for migration, secure-store read failures should fall back to legacy SharedPreferences only if the migration mode explicitly allows fallback and no secure value has already been established.
@@ -172,7 +182,16 @@ Cross-platform/test:
 
 ## Test Plan
 
-No tests are run in this docs-only pass. Future implementation should add focused tests before production rollout:
+Phase 2A adds focused seam tests:
+
+- App config defaults keep secure auth-session storage disabled, legacy fallback enabled, and migration-on-read disabled.
+- Disabled seam keeps the auth session on the legacy SharedPreferences-compatible store.
+- Enabled seam reads secure storage first when an in-memory secure store is available.
+- Optional secure storage falls back to the legacy path when unavailable.
+- Logout/session cleanup clears both secure and legacy locations.
+- Legacy reads are not migrated unless migration-on-read is explicitly enabled.
+
+Future implementation should add focused tests before production rollout:
 
 - `SecureKeyValueStore` fake/in-memory read/write/delete/deleteAll behavior.
 - App auth store secure-first read, legacy fallback read, and migration write-through.
@@ -199,10 +218,22 @@ Phase 1: abstraction + fake/in-memory tests.
 - No app/SDK auth-session wiring was added in this phase.
 - Keep production code on SharedPreferences.
 
-Phase 2: app auth token secure storage behind feature flag.
+Phase 2A: app auth secure-storage seam prep.
+
+- Status: complete as small code + docs/tests.
+- No secure-storage dependency or platform-backed implementation is added.
+- Added app config flags:
+  - `EIXAM_SECURE_STORAGE_AUTH_SESSION_ENABLED`, default false.
+  - `EIXAM_SECURE_STORAGE_AUTH_SESSION_LEGACY_FALLBACK`, default true.
+  - `EIXAM_SECURE_STORAGE_AUTH_SESSION_MIGRATE_LEGACY_ON_READ`, default false.
+- Added app auth secure-store adapter and wrapper using the SDK core `SecureKeyValueStore` contract.
+- Production default remains legacy SharedPreferences because the injected secure store is unavailable and the feature flag is off.
+- Safest first real migration target remains the app auth access token, but Phase 2A keeps refresh/context and SDK session behavior unchanged until dependency/platform tests are approved.
+
+Phase 2B: app auth token secure storage behind feature flag.
 
 - Add approved secure-storage dependency.
-- Implement app auth secure storage behind an off-by-default flag.
+- Implement a platform-backed app auth secure store behind the off-by-default flag.
 - Read secure first, fall back to legacy SharedPreferences during migration, and write the same token/context values to secure storage.
 - Do not change login/session restore behavior, token format, or backend contract.
 
