@@ -1,8 +1,8 @@
 # BLE Security Contract
 
-Status: design contract completed for `SEC-BLE-1`, `SEC-BLE-2`, `SEC-BLE-3`, `SEC-BLE-4`, and `SEC-BLE-5`.
+Status: design contract completed and updated after SEC-BLE Phase 0 SDK-only scaffolding for `SEC-BLE-1`, `SEC-BLE-2`, `SEC-BLE-3`, `SEC-BLE-4`, and `SEC-BLE-5`.
 
-This document defines the required BLE security direction before runtime or firmware changes are implemented. SEC-BLE is not fully fixed by this document. Full remediation requires firmware/protocol support; SDK-only Phase 0 scaffolding is the next safe step.
+This document defines the required BLE security direction before secure runtime enforcement or firmware changes are implemented. SEC-BLE is not fully fixed by this document or by Phase 0 SDK-only scaffolding. Full remediation requires firmware/protocol support for authenticated BLE links, authenticated command frames, cryptographic pairing, replay rejection, and authenticated node/relay identity.
 
 ## Scope
 
@@ -152,6 +152,8 @@ GATT permissions are necessary but not sufficient. Phase 3/4 cryptographic frame
 
 ## Command Criticality
 
+Phase 0 SDK-only scaffolding centralizes BLE command criticality while keeping legacy firmware behavior compatible.
+
 Critical commands:
 
 - `0x06` SOS TRIGGER APP
@@ -176,17 +178,37 @@ Read/status or low-risk commands:
 
 Phase 1 may treat only critical commands as hard-blocked on insecure links. Phase 3 should authenticate all commands, with critical commands requiring strict replay rejection.
 
+## Phase 0 SDK Checkpoint
+
+Completed partial SDK mitigation:
+
+- added BLE security policy, capability, and decision scaffolding;
+- centralized BLE command criticality;
+- classified SOS trigger, SOS cancel, shutdown, and reboot as critical;
+- added legacy-compatible diagnostics so legacy raw-command behavior is explicit;
+- reserved stable BLE security error codes for link security, pairing, command authentication, replay rejection, and unverified identity;
+- added focused tests for policy, command criticality, diagnostics/redaction, and transport/session security coverage.
+
+Not completed by Phase 0:
+
+- firmware GATT permission changes;
+- write-time secure-link enforcement for unsupported firmware;
+- authenticated command frame verification;
+- pairing-code-backed key exchange;
+- cryptographic replay rejection;
+- authenticated TEL/SOS/event or relay origin identity.
+
 ## Staged Design
 
 ### Phase 0: Fail-Safe Checks and Documentation
 
-No firmware breakage.
+Completed SDK-only partial mitigation. No firmware breakage.
 
-- Add capability/diagnostic inventory only: firmware security capability unknown, legacy command frame, secure-link unknown.
-- Centralize command criticality in SDK design before changing write behavior.
-- Ensure all command writers are known: Dart `RealBleClient`, Android native protection, iOS native protection.
-- Ensure logs identify whether a command used legacy raw bytes or future secure frames.
-- Do not trust plaintext `nodeId` as authenticated identity; keep current conservative guardrails and document that classification remains unauthenticated.
+- Added capability/diagnostic inventory only: firmware security capability unknown, legacy command frame, secure-link unknown.
+- Centralized command criticality in SDK design before changing write behavior.
+- Kept command writers known: Dart `RealBleClient`, Android native protection, iOS native protection.
+- Kept diagnostics explicit about legacy raw bytes versus future secure frames.
+- Kept plaintext `nodeId` unauthenticated; current conservative guardrails remain, and classification remains unauthenticated until firmware/protocol identity proof exists.
 
 ### Phase 1: Require Secure/Bonded Link Where Platform Supports It
 
@@ -311,7 +333,7 @@ Compatibility must be explicit and capability-driven.
   - be allowed only behind an explicit temporary compatibility flag with clear diagnostics.
 - Firmware must advertise a security capability version through runtime status, device information, or a dedicated characteristic before SDK enables secure frames.
 - SDK rollout:
-  1. ship diagnostics and capability detection;
+  1. ship diagnostics and capability detection; completed as Phase 0 SDK-only scaffolding;
   2. ship secure-link gates for supported platforms/firmware;
   3. ship pairing handshake behind capability detection;
   4. require secure frames for firmware capability v1+;
