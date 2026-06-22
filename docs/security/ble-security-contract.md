@@ -1,8 +1,8 @@
 # BLE Security Contract
 
-Status: design/inventory pass for `SEC-BLE-1`, `SEC-BLE-2`, `SEC-BLE-3`, `SEC-BLE-4`, and `SEC-BLE-5`.
+Status: design contract completed for `SEC-BLE-1`, `SEC-BLE-2`, `SEC-BLE-3`, `SEC-BLE-4`, and `SEC-BLE-5`.
 
-This document defines the required BLE security direction before runtime or firmware changes are implemented. It is intentionally not an implementation spec for a single release; it is the contract that SDK, native protection runtimes, and firmware must converge on.
+This document defines the required BLE security direction before runtime or firmware changes are implemented. SEC-BLE is not fully fixed by this document. Full remediation requires firmware/protocol support; SDK-only Phase 0 scaffolding is the next safe step.
 
 ## Scope
 
