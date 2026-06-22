@@ -1,19 +1,19 @@
 import '../entities/remote_relay_sos_snapshot.dart';
 
 sealed class EixamSdkEvent {
-  final DateTime timestamp;
   EixamSdkEvent({DateTime? timestamp})
       : timestamp = timestamp ?? DateTime.now();
+  final DateTime timestamp;
 }
 
 class SOSTriggeredEvent extends EixamSdkEvent {
-  final String incidentId;
   SOSTriggeredEvent(this.incidentId);
+  final String incidentId;
 }
 
 class SOSCancelledEvent extends EixamSdkEvent {
-  final String incidentId;
   SOSCancelledEvent(this.incidentId);
+  final String incidentId;
 }
 
 class PositionUpdatedEvent extends EixamSdkEvent {
@@ -21,38 +21,32 @@ class PositionUpdatedEvent extends EixamSdkEvent {
 }
 
 class DeviceDisconnectedEvent extends EixamSdkEvent {
-  final String deviceId;
   DeviceDisconnectedEvent(this.deviceId);
+  final String deviceId;
 }
 
 class DeathManScheduledEvent extends EixamSdkEvent {
-  final String planId;
   DeathManScheduledEvent(this.planId);
+  final String planId;
 }
 
 class DeathManStatusChangedEvent extends EixamSdkEvent {
+  DeathManStatusChangedEvent(this.planId, this.status);
   final String planId;
   final String status;
-  DeathManStatusChangedEvent(this.planId, this.status);
 }
 
 class DeathManEscalatedEvent extends EixamSdkEvent {
-  final String planId;
   DeathManEscalatedEvent(this.planId);
+  final String planId;
 }
 
 class RemoteRelaySosObservedEvent extends EixamSdkEvent {
-  final RemoteRelaySosSnapshot snapshot;
   RemoteRelaySosObservedEvent(this.snapshot);
+  final RemoteRelaySosSnapshot snapshot;
 }
 
 class RemoteRelaySosCancelledEvent extends EixamSdkEvent {
-  final int originatorNodeId;
-  final int? relayNodeId;
-  final String? backendIncidentId;
-  final String source;
-  final String terminal;
-  final bool externalOnly;
 
   RemoteRelaySosCancelledEvent({
     required this.originatorNodeId,
@@ -62,20 +56,17 @@ class RemoteRelaySosCancelledEvent extends EixamSdkEvent {
     this.terminal = 'cancelled',
     this.externalOnly = true,
   });
+  final int originatorNodeId;
+  final int? relayNodeId;
+  final String? backendIncidentId;
+  final String source;
+  final String terminal;
+  final bool externalOnly;
 }
 
 enum RemoteRelaySosBackendHandoffStatus { submitted, skipped, failed }
 
 class RemoteRelaySosBackendHandoffResultEvent extends EixamSdkEvent {
-  final RemoteRelaySosSnapshot snapshot;
-  final RemoteRelaySosBackendHandoffStatus status;
-  final String? deviceId;
-  final int? statusCode;
-  final String? incidentId;
-  final String? reason;
-  final String? errorMessage;
-  final bool ackRelaySent;
-  final String? ackRelayErrorMessage;
 
   RemoteRelaySosBackendHandoffResultEvent({
     required this.snapshot,
@@ -88,16 +79,18 @@ class RemoteRelaySosBackendHandoffResultEvent extends EixamSdkEvent {
     this.ackRelaySent = false,
     this.ackRelayErrorMessage,
   });
+  final RemoteRelaySosSnapshot snapshot;
+  final RemoteRelaySosBackendHandoffStatus status;
+  final String? deviceId;
+  final int? statusCode;
+  final String? incidentId;
+  final String? reason;
+  final String? errorMessage;
+  final bool ackRelaySent;
+  final String? ackRelayErrorMessage;
 }
 
 class RemoteRelaySosCancelHandoffResultEvent extends EixamSdkEvent {
-  final int originatorNodeId;
-  final int? relayNodeId;
-  final String? deviceId;
-  final RemoteRelaySosBackendHandoffStatus status;
-  final String? reason;
-  final String? errorMessage;
-  final DateTime receivedAt;
 
   RemoteRelaySosCancelHandoffResultEvent({
     required this.originatorNodeId,
@@ -108,4 +101,11 @@ class RemoteRelaySosCancelHandoffResultEvent extends EixamSdkEvent {
     this.reason,
     this.errorMessage,
   });
+  final int originatorNodeId;
+  final int? relayNodeId;
+  final String? deviceId;
+  final RemoteRelaySosBackendHandoffStatus status;
+  final String? reason;
+  final String? errorMessage;
+  final DateTime receivedAt;
 }

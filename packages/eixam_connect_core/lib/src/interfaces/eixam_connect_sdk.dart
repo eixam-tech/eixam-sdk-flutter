@@ -68,7 +68,13 @@ abstract class EixamConnectSdk {
   /// Host apps are expected to obtain `appId`, `externalUserId`, and
   /// `userHash` from their own backend or partner backend. The mobile SDK does
   /// not call partner signing routes and does not compute the hash locally.
-  Future<void> setSession(EixamSession session);
+  Future<void> setSession(
+    EixamSession session, {
+    bool deferRuntimeWork = false,
+  });
+
+  /// Starts runtime work skipped by [setSession] when `deferRuntimeWork` is set.
+  Future<void> startDeferredRuntime();
 
   /// Clears the currently persisted SDK identity payload.
   Future<void> clearSession();

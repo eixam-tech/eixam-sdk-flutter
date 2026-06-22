@@ -5,10 +5,6 @@ import '../enums/sdk_permission_status.dart';
 /// The host app can use this object to paint UI, decide whether Bluetooth
 /// pairing can start and determine if location / notifications are available.
 class PermissionState {
-  final SdkPermissionStatus location;
-  final SdkPermissionStatus notifications;
-  final SdkPermissionStatus bluetooth;
-  final bool bluetoothEnabled;
 
   const PermissionState({
     this.location = SdkPermissionStatus.unknown,
@@ -16,6 +12,10 @@ class PermissionState {
     this.bluetooth = SdkPermissionStatus.unknown,
     this.bluetoothEnabled = false,
   });
+  final SdkPermissionStatus location;
+  final SdkPermissionStatus notifications;
+  final SdkPermissionStatus bluetooth;
+  final bool bluetoothEnabled;
 
   bool get hasLocationAccess =>
       location == SdkPermissionStatus.granted ||

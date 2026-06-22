@@ -3,12 +3,6 @@
 typedef EixamSignedSessionProvider = Future<EixamSession> Function();
 
 class EixamSession {
-  final String appId;
-  final String externalUserId;
-  final String userHash;
-  final String? sdkUserId;
-  final String? canonicalExternalUserId;
-  final String? refreshToken;
 
   const EixamSession({
     required this.appId,
@@ -38,6 +32,23 @@ class EixamSession {
           canonicalExternalUserId: canonicalExternalUserId,
           refreshToken: refreshToken,
         );
+
+  factory EixamSession.fromJson(Map<String, dynamic> json) {
+    return EixamSession(
+      appId: json['appId'] as String,
+      externalUserId: json['externalUserId'] as String,
+      userHash: json['userHash'] as String,
+      sdkUserId: json['sdkUserId'] as String?,
+      canonicalExternalUserId: json['canonicalExternalUserId'] as String?,
+      refreshToken: json['refreshToken'] as String?,
+    );
+  }
+  final String appId;
+  final String externalUserId;
+  final String userHash;
+  final String? sdkUserId;
+  final String? canonicalExternalUserId;
+  final String? refreshToken;
 
   @Deprecated('Use userHash instead.')
   String get accessToken => userHash;
@@ -77,17 +88,6 @@ class EixamSession {
       'canonicalExternalUserId': canonicalExternalUserId,
       'refreshToken': refreshToken,
     };
-  }
-
-  factory EixamSession.fromJson(Map<String, dynamic> json) {
-    return EixamSession(
-      appId: json['appId'] as String,
-      externalUserId: json['externalUserId'] as String,
-      userHash: json['userHash'] as String,
-      sdkUserId: json['sdkUserId'] as String?,
-      canonicalExternalUserId: json['canonicalExternalUserId'] as String?,
-      refreshToken: json['refreshToken'] as String?,
-    );
   }
 
   static const Object _unset = Object();

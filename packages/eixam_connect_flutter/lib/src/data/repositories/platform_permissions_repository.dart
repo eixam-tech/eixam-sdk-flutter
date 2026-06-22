@@ -9,6 +9,8 @@ import 'package:permission_handler/permission_handler.dart' as ph;
 /// It centralises all permission requests used by the SDK and exposes a single
 /// [PermissionState] snapshot that host apps can query at any time.
 class PlatformPermissionsRepository implements PermissionsRepository {
+  PlatformPermissionsRepository({Object? bleClient});
+
   PermissionState _state = const PermissionState();
 
   @override
@@ -131,8 +133,9 @@ class PlatformPermissionsRepository implements PermissionsRepository {
 
   SdkPermissionStatus _mapPermissionStatus(ph.PermissionStatus status) {
     if (status.isGranted) return SdkPermissionStatus.granted;
-    if (status.isPermanentlyDenied)
+    if (status.isPermanentlyDenied) {
       return SdkPermissionStatus.permanentlyDenied;
+    }
     if (status.isRestricted) return SdkPermissionStatus.restricted;
     if (status.isLimited) return SdkPermissionStatus.limited;
     if (status.isDenied) return SdkPermissionStatus.denied;

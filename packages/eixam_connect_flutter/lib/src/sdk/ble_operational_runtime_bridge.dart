@@ -1,8 +1,6 @@
 import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
-import 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
-import 'package:eixam_connect_core/src/events/realtime_event.dart';
 
 import '../data/repositories/telemetry_repository.dart';
 import '../device/ble_debug_registry.dart';

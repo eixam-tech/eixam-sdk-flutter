@@ -16,6 +16,7 @@ abstract class DeviceRuntimeProvider {
   Future<DeviceStatus> reconnect({
     required DeviceStatus currentStatus,
     required PreferredDevice preferredDevice,
+    String? attemptId,
   });
   Future<DeviceStatus> activate(
       {required DeviceStatus currentStatus, required String activationCode});

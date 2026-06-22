@@ -1,4 +1,4 @@
-library eixam_connect_core;
+library;
 
 export 'src/config/eixam_sdk_config.dart';
 export 'src/config/eixam_session.dart';

@@ -89,8 +89,10 @@ class InMemoryDeviceRepository
   }
 
   @override
-  Future<DeviceStatus> reconnectDevice(
-      {required PreferredDevice device}) async {
+  Future<DeviceStatus> reconnectDevice({
+    required PreferredDevice device,
+    String? attemptId,
+  }) async {
     if (device.deviceId.trim().isEmpty) {
       throw const DeviceException(
         'E_DEVICE_INVALID_PREFERRED_DEVICE',
@@ -115,6 +117,7 @@ class InMemoryDeviceRepository
       _status = await _runtimeProvider.reconnect(
         currentStatus: _status,
         preferredDevice: device,
+        attemptId: attemptId,
       );
       await _persistAndEmit();
       _startHeartbeat();

@@ -14,7 +14,7 @@ class InMemoryTrackingRepository implements TrackingRepository {
   final StreamController<TrackingState> _stateController =
       StreamController.broadcast();
 
-  TrackingPosition? _lastPosition;
+  final TrackingPosition? _lastPosition;
   TrackingState _state = TrackingState.idle;
 
   @override

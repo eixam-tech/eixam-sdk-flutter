@@ -1,11 +1,4 @@
 final class AppFeedbackSubmission {
-  const AppFeedbackSubmission({required this.issue});
-
-  final AppFeedbackIssue issue;
-
-  String get identifier => issue.identifier;
-
-  String get url => issue.url;
 
   factory AppFeedbackSubmission.fromJson(Map<String, dynamic> json) {
     final issue = json['issue'];
@@ -16,22 +9,16 @@ final class AppFeedbackSubmission {
       issue: AppFeedbackIssue.fromJson(issue),
     );
   }
+  const AppFeedbackSubmission({required this.issue});
+
+  final AppFeedbackIssue issue;
+
+  String get identifier => issue.identifier;
+
+  String get url => issue.url;
 }
 
 final class AppFeedbackIssue {
-  const AppFeedbackIssue({
-    required this.id,
-    required this.identifier,
-    required this.title,
-    required this.url,
-    required this.createdAt,
-  });
-
-  final String id;
-  final String identifier;
-  final String title;
-  final String url;
-  final DateTime? createdAt;
 
   factory AppFeedbackIssue.fromJson(Map<String, dynamic> json) {
     final id = _readRequiredString(json, 'id');
@@ -47,6 +34,19 @@ final class AppFeedbackIssue {
       createdAt: createdAt,
     );
   }
+  const AppFeedbackIssue({
+    required this.id,
+    required this.identifier,
+    required this.title,
+    required this.url,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String identifier;
+  final String title;
+  final String url;
+  final DateTime? createdAt;
 
   static String _readRequiredString(Map<String, dynamic> json, String key) {
     final value = _readString(json, key);

@@ -41,6 +41,7 @@ class FakeDeviceRuntimeProvider implements DeviceRuntimeProvider {
   Future<DeviceStatus> reconnect({
     required DeviceStatus currentStatus,
     required PreferredDevice preferredDevice,
+    String? attemptId,
   }) async {
     if (reconnectError != null) {
       throw reconnectError!;

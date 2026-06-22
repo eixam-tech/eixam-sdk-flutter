@@ -2,23 +2,6 @@
 ///
 /// Fields mirror the public OpenAPI schema; empty strings mean “not set”.
 final class SdkUserProfile {
-  const SdkUserProfile({
-    required this.id,
-    required this.appId,
-    required this.externalUserId,
-    required this.name,
-    required this.email,
-    required this.phone,
-    required this.address,
-  });
-
-  final String id;
-  final String appId;
-  final String externalUserId;
-  final String name;
-  final String email;
-  final String phone;
-  final String address;
 
   factory SdkUserProfile.fromMeResponseJson(Map<String, dynamic> json) {
     final user = json['user'];
@@ -47,6 +30,23 @@ final class SdkUserProfile {
       address: str(user['address']).trim(),
     );
   }
+  const SdkUserProfile({
+    required this.id,
+    required this.appId,
+    required this.externalUserId,
+    required this.name,
+    required this.email,
+    required this.phone,
+    required this.address,
+  });
+
+  final String id;
+  final String appId;
+  final String externalUserId;
+  final String name;
+  final String email;
+  final String phone;
+  final String address;
 
   /// Splits [name] into first / last segments for UI that uses separate fields.
   (String firstName, String lastName) splitDisplayNameForUi() {
@@ -75,6 +75,21 @@ final class SdkUserProfile {
 /// `null` means omit the JSON key (leave unchanged). A non-null [String]
 /// value is sent as-is; use `''` to clear per API semantics.
 final class SdkUserProfileUpdate {
+
+  /// Sends every field so the backend replaces stored profile values from this payload.
+  factory SdkUserProfileUpdate.full({
+    required String name,
+    required String email,
+    required String phone,
+    required String address,
+  }) {
+    return SdkUserProfileUpdate(
+      name: name,
+      email: email,
+      phone: phone,
+      address: address,
+    );
+  }
   const SdkUserProfileUpdate({
     this.name,
     this.email,
@@ -102,20 +117,5 @@ final class SdkUserProfileUpdate {
       m['address'] = address;
     }
     return m;
-  }
-
-  /// Sends every field so the backend replaces stored profile values from this payload.
-  factory SdkUserProfileUpdate.full({
-    required String name,
-    required String email,
-    required String phone,
-    required String address,
-  }) {
-    return SdkUserProfileUpdate(
-      name: name,
-      email: email,
-      phone: phone,
-      address: address,
-    );
   }
 }

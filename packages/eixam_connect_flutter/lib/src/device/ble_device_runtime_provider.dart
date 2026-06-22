@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:flutter/foundation.dart';
@@ -58,8 +59,12 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   Completer<DeviceRuntimeStatus>? _pendingRuntimeStatusRequest;
   bool _loggedHeartbeatFirmwareSkip = false;
   bool _loggedHeartbeatSignalSkip = false;
+  DateTime? _lastIosSignalQualityReadAt;
+  int? _lastIosSignalQuality;
+  String? _lastIosSignalQualityThrottleLog;
 
   static const Duration _recentSosDedupWindow = Duration(seconds: 2);
+  static const Duration _iosSignalQualityThrottleWindow = Duration(seconds: 5);
   static const String _deviceCommandNotReadyCode = 'E_DEVICE_COMMAND_NOT_READY';
   static const String _deviceStatusTimeoutCode = 'E_DEVICE_STATUS_TIMEOUT';
   static const String _mobileBondRequiredCode = 'E_DEVICE_MOBILE_BOND_REQUIRED';
@@ -268,6 +273,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   Future<DeviceStatus> reconnect({
     required DeviceStatus currentStatus,
     required PreferredDevice preferredDevice,
+    String? attemptId,
   }) async {
     final deviceId = preferredDevice.deviceId.trim();
     if (deviceId.isEmpty) {
@@ -276,15 +282,46 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         'E_DEVICE_INVALID_PREFERRED_DEVICE',
       );
     }
+    if (Platform.isIOS && !_isValidIosBleRemoteId(deviceId)) {
+      final hardwareId =
+          currentStatus.canonicalHardwareId?.trim().isNotEmpty == true
+              ? currentStatus.canonicalHardwareId!.trim()
+              : currentStatus.deviceId;
+      BleDebugRegistry.instance.recordEvent(
+        'BLE_RECONNECT_SKIPPED_INVALID_REMOTE_ID '
+        'platform=ios hardwareId=$hardwareId remoteId=$deviceId',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'BLE_RECONNECT_ID_DROPPED source=ble_runtime_provider '
+        'attemptId=${attemptId ?? 'none'} length=${deviceId.length} '
+        'uuidShape=${_isValidIosBleRemoteId(deviceId)}',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'BLE_RECONNECT_FAILED_NO_PROVIDER_CALL '
+        'reason=missing_remote_id attemptId=${attemptId ?? 'none'}',
+      );
+      throw const DeviceException(
+        'E_DEVICE_INVALID_BLE_REMOTE_ID',
+        'E_DEVICE_INVALID_BLE_REMOTE_ID',
+      );
+    }
 
     final adapterState = await _bleClient.getAdapterState();
     if (adapterState != BleAdapterState.poweredOn) {
+      BleDebugRegistry.instance.recordEvent(
+        'BLE_RECONNECT_FAILED_NO_PROVIDER_CALL '
+        'reason=runtime_not_ready attemptId=${attemptId ?? 'none'}',
+      );
       throw const DeviceException(
         'E_DEVICE_BLUETOOTH_OFF',
         'E_DEVICE_BLUETOOTH_OFF',
       );
     }
     if (!await _bleClient.hasSystemAssociation(deviceId)) {
+      BleDebugRegistry.instance.recordEvent(
+        'BLE_RECONNECT_FAILED_NO_PROVIDER_CALL '
+        'reason=unsupported_state attemptId=${attemptId ?? 'none'}',
+      );
       throw const DeviceException(
         _mobileBondRequiredCode,
         _mobileBondRequiredCode,
@@ -300,7 +337,23 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       BleDebugRegistry.instance.recordEvent(
         'Reconnect started for known BLE device $deviceId',
       );
-      await _bleClient.connect(deviceId);
+      BleDebugRegistry.instance.recordEvent(
+        'SDK_RECONNECT_CONNECT_CALL_BEGIN '
+        'attemptId=${attemptId ?? 'none'}',
+      );
+      try {
+        await _bleClient.connect(deviceId);
+        BleDebugRegistry.instance.recordEvent(
+          'SDK_RECONNECT_CONNECT_CALL_DONE '
+          'attemptId=${attemptId ?? 'none'} connected=true',
+        );
+      } catch (error) {
+        BleDebugRegistry.instance.recordEvent(
+          'SDK_RECONNECT_CONNECT_CALL_FAILED '
+          'attemptId=${attemptId ?? 'none'} error=$error',
+        );
+        rethrow;
+      }
       BleDebugRegistry.instance.update(
         connectionStatus: BleConnectionStatus.connected,
         connectionError: null,
@@ -404,6 +457,12 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       } catch (_) {}
       rethrow;
     }
+  }
+
+  bool _isValidIosBleRemoteId(String value) {
+    return RegExp(
+      r'^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$',
+    ).hasMatch(value);
   }
 
   bool _isMobilePairingRequiredError(Object error) {
@@ -733,10 +792,44 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     String deviceId, {
     required String reason,
   }) async {
+    if (Platform.isIOS && !_shouldReadIosSignalQuality(reason)) {
+      _logIosSignalQualityThrottle(reason);
+      return _lastIosSignalQuality;
+    }
     BleDebugRegistry.instance.recordEvent(
       '[BATTERY_FLOW] ble_signal_read reason=$reason',
     );
-    return _bleClient.readSignalQuality(deviceId);
+    final signalQuality = await _bleClient.readSignalQuality(deviceId);
+    if (Platform.isIOS) {
+      _lastIosSignalQualityReadAt = DateTime.now();
+      _lastIosSignalQuality = signalQuality;
+    }
+    return signalQuality;
+  }
+
+  bool _shouldReadIosSignalQuality(String reason) {
+    if (reason == 'activation' ||
+        reason == 'connect' ||
+        reason == 'reconnect') {
+      return true;
+    }
+    final lastRead = _lastIosSignalQualityReadAt;
+    if (lastRead == null) {
+      return true;
+    }
+    return DateTime.now().difference(lastRead) >=
+        _iosSignalQualityThrottleWindow;
+  }
+
+  void _logIosSignalQualityThrottle(String reason) {
+    final signature = 'platform=ios reason=$reason';
+    if (_lastIosSignalQualityThrottleLog == signature) {
+      return;
+    }
+    _lastIosSignalQualityThrottleLog = signature;
+    BleDebugRegistry.instance.recordEvent(
+      'PERF_RSSI_THROTTLED $signature',
+    );
   }
 
   Future<DeviceRuntimeStatus?> _readRuntimeStatusAfterConnection({

@@ -8,25 +8,6 @@ import '../enums/device_battery_source.dart';
 /// connectivity and support information without being coupled to any BLE or
 /// backend implementation detail.
 class DeviceStatus {
-  final String deviceId;
-  final int? nodeId;
-  final String? canonicalHardwareId;
-  final String? deviceAlias;
-  final String? model;
-  final bool paired;
-  final bool activated;
-  final bool connected;
-
-  /// Raw EIXAM protocol battery value (`0..3`), not a true percentage.
-  final int? batteryLevel;
-  final DeviceBatteryLevel? batteryState;
-  final DeviceBatterySource? batterySource;
-  final String? firmwareVersion;
-  final DateTime? lastSeen;
-  final DateTime? lastSyncedAt;
-  final int? signalQuality;
-  final DeviceLifecycleState lifecycleState;
-  final String? provisioningError;
 
   const DeviceStatus({
     required this.deviceId,
@@ -47,6 +28,25 @@ class DeviceStatus {
     this.lifecycleState = DeviceLifecycleState.unpaired,
     this.provisioningError,
   });
+  final String deviceId;
+  final int? nodeId;
+  final String? canonicalHardwareId;
+  final String? deviceAlias;
+  final String? model;
+  final bool paired;
+  final bool activated;
+  final bool connected;
+
+  /// Raw EIXAM protocol battery value (`0..3`), not a true percentage.
+  final int? batteryLevel;
+  final DeviceBatteryLevel? batteryState;
+  final DeviceBatterySource? batterySource;
+  final String? firmwareVersion;
+  final DateTime? lastSeen;
+  final DateTime? lastSyncedAt;
+  final int? signalQuality;
+  final DeviceLifecycleState lifecycleState;
+  final String? provisioningError;
 
   /// Returns `true` when the device can be considered operational for safety
   /// workflows such as location tracking and SOS triggering.

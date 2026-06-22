@@ -22,6 +22,7 @@ class MqttOperationalSosRepository
     SosRemoteDataSource? remoteDataSource,
     this.cancelRemoteDataSource,
     SharedPrefsSdkStore? localStore,
+    this.preSosBackendPublishBlocker,
     Duration destructiveRehydrationGracePeriod = const Duration(seconds: 5),
     DateTime Function()? nowProvider,
   })  : remoteDataSource = remoteDataSource ?? cancelRemoteDataSource,
@@ -34,6 +35,13 @@ class MqttOperationalSosRepository
   final SosRemoteDataSource? remoteDataSource;
   final SosRemoteDataSource? cancelRemoteDataSource;
   final SharedPrefsSdkStore? _localStore;
+  bool Function({
+    required String source,
+    required String? triggerSource,
+    required String? cycleKey,
+    required int? originatorNodeId,
+    required int? packetId,
+  })? preSosBackendPublishBlocker;
   final SosIncidentMapper _mapper = const SosIncidentMapper();
   SosStateMachine _stateMachine = SosStateMachine();
   final StreamController<SosState> _stateController =
@@ -335,6 +343,22 @@ class MqttOperationalSosRepository
       relaySource: relaySource,
       triggerSource: triggerSource,
     );
+    if (preSosBackendPublishBlocker?.call(
+          source: 'mqtt_operational_sos_repository.submitSosToBackend',
+          triggerSource: sourceLabel,
+          cycleKey: cycleKey,
+          originatorNodeId: identity.originatorNodeId,
+          packetId: null,
+        ) ??
+        false) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_PRE_SOS_BACKEND_PUBLISH_BLOCKED_BY_TERMINAL_CANCEL '
+        'source=mqtt triggerSource=$sourceLabel '
+        'cycleKey=${cycleKey ?? "none"} '
+        'originatorNodeId=${identity.originatorNodeId?.toString() ?? "none"}',
+      );
+      return;
+    }
     final correlationId = _nextCorrelationId('sos-mqtt');
     BleDebugRegistry.instance.recordEvent(
       'SOS_TRANSPORT_DECISION flow=sos_trigger transport=mqtt '

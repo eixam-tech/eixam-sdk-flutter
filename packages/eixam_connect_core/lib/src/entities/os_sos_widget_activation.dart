@@ -103,6 +103,27 @@ class OsSosWidgetActivation {
 }
 
 class OsSosWidgetActivationResult {
+
+  factory OsSosWidgetActivationResult.fromActivation({
+    required OsSosWidgetActivation activation,
+    required OsSosWidgetActivationOutcome outcome,
+    SosState? sosState,
+    SosIncident? incident,
+    PublicPreSosStatus? preSosStatus,
+  }) {
+    return OsSosWidgetActivationResult(
+      outcome: outcome,
+      source: OsSosWidgetActivation.source,
+      platform: activation.platform,
+      actionId: activation.actionId,
+      nonce: activation.nonce,
+      timestamp: activation.timestamp,
+      confirmationMode: activation.confirmationMode,
+      sosState: sosState,
+      incident: incident,
+      preSosStatus: preSosStatus,
+    );
+  }
   const OsSosWidgetActivationResult({
     required this.outcome,
     required this.source,
@@ -136,25 +157,4 @@ class OsSosWidgetActivationResult {
 
   bool get shouldOpenConfirmation =>
       outcome == OsSosWidgetActivationOutcome.confirmationRequired;
-
-  factory OsSosWidgetActivationResult.fromActivation({
-    required OsSosWidgetActivation activation,
-    required OsSosWidgetActivationOutcome outcome,
-    SosState? sosState,
-    SosIncident? incident,
-    PublicPreSosStatus? preSosStatus,
-  }) {
-    return OsSosWidgetActivationResult(
-      outcome: outcome,
-      source: OsSosWidgetActivation.source,
-      platform: activation.platform,
-      actionId: activation.actionId,
-      nonce: activation.nonce,
-      timestamp: activation.timestamp,
-      confirmationMode: activation.confirmationMode,
-      sosState: sosState,
-      incident: incident,
-      preSosStatus: preSosStatus,
-    );
-  }
 }

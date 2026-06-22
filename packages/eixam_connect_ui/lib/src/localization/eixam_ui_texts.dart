@@ -1,16 +1,6 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 class EixamUiTexts {
-  final String sosButtonLabel;
-  final String sosIdle;
-  final String sosSending;
-  final String sosSent;
-  final String sosCancelled;
-  final String sosFailed;
-  final String sosUnknownPrefix;
-  final String deathManCheckInTitle;
-  final String deathManCheckInMessage;
-  final String confirmSafety;
 
   const EixamUiTexts({
     required this.sosButtonLabel,
@@ -94,6 +84,16 @@ class EixamUiTexts {
         return EixamUiTexts.es();
     }
   }
+  final String sosButtonLabel;
+  final String sosIdle;
+  final String sosSending;
+  final String sosSent;
+  final String sosCancelled;
+  final String sosFailed;
+  final String sosUnknownPrefix;
+  final String deathManCheckInTitle;
+  final String deathManCheckInMessage;
+  final String confirmSafety;
 
   EixamUiTexts copyWith({
     String? sosButtonLabel,
