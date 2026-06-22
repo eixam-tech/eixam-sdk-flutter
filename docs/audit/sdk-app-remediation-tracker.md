@@ -37,7 +37,7 @@ Allowed finding classifications:
 - Remote relay SOS test-debt cleanup is complete: stale decoder expectations, HTTP-era assertions, active-device PRE-SOS countdown behavior, and correlated backend cancel setup are aligned with current SDK behavior.
 - SEC-NET endpoint hardening is complete for the SDK/app boundary.
 - Local storage hardening is partially mitigated: app auth orphan fragments are cleaned up, telemetry is latest-only, telemetry auth-token/header persistence is blocked, the SDK no longer writes the unused refresh token, and the local-storage security inventory is documented.
-- Secure storage migration is a documented next action, not fixed, because no secure-storage abstraction/dependency exists yet.
+- Secure storage migration is now designed/planned in `docs/audit/secure-storage-abstraction-plan.md`, not implemented and not fixed; no secure-storage dependency or runtime migration exists yet.
 
 ## Completed SDK/App Mitigations
 
@@ -65,7 +65,7 @@ These findings are reduced from SDK/app, but they are not fully fixed in the cur
 | Finding id | Classification | Repo scope | Risk level | What has been done | What remains | Next recommended action |
 | --- | --- | --- | --- | --- | --- | --- |
 | SEC-NET-LOCAL-STORAGE | Partially mitigated SDK/App | SDK+app | High | Added `docs/audit/local-storage-security-inventory.md`; reduced app telemetry persistence from a 64-entry location history to latest-only; blocked auth-looking strings from app telemetry persistence; cleared orphan app auth fragments when restore cannot authenticate; stopped new SDK session writes from persisting the unused SDK refresh token while keeping legacy reads compatible. | App auth tokens, SDK signed identity, location/SOS/DMP/device/contact state still use SharedPreferences because no secure-storage dependency/abstraction exists in this pass. | Design and approve a secure-storage abstraction before moving highest-risk auth/session secrets; keep backend auth format unchanged. |
-| SEC-STORAGE-SECURE-MIGRATION | Partially mitigated SDK/App | SDK+app | High | Secure-storage migration is documented as the next local-storage action. | It is not fixed: there is no approved secure-storage abstraction/dependency in either current SDK/app scope. | Create a dedicated secure-storage abstraction design pass before implementation. |
+| SEC-STORAGE-SECURE-MIGRATION | Partially mitigated SDK/App | SDK+app | High | Secure-storage migration is designed/planned in `docs/audit/secure-storage-abstraction-plan.md`: it defines a `SecureKeyValueStore` style abstraction, candidate key classification, SharedPreferences migration strategy, logout/session cleanup, fallback behavior, platform considerations, tests, risks, blocked decisions, and phases 0-4. | It is not implemented and not fixed: no dependency has been added, no production Dart code has changed, no data has migrated, and app auth tokens plus SDK signed identity still use SharedPreferences today. | Treat this as the next implementation candidate after dependency/platform decisions; start with Phase 1 abstraction plus fake/in-memory tests, then app auth behind a feature flag. |
 | SEC-BLE-1 | Partially mitigated SDK/App | SDK | Critical | Design contract completed in `docs/security/ble-security-contract.md`; Phase 0 SDK-only policy/capability/decision scaffolding and legacy-compatible diagnostics are in place; critical command classification now covers SOS trigger/cancel, shutdown, and reboot. | BLE critical writes are still not guaranteed authenticated/encrypted end to end; firmware GATT permissions and secure-link enforcement are required for full fix. | Use the Phase 0 scaffolding to support firmware/protocol planning; do not enable breaking secure-link enforcement until firmware capability exists. |
 | SEC-BLE-2 | Partially mitigated SDK/App | SDK | Critical | Design contract defines a versioned command frame with counter/nonce and MAC/auth tag; SDK Phase 0 reserves stable BLE auth/replay/pairing error codes and keeps legacy diagnostics explicit. | Current command writes remain legacy raw opcodes; firmware must verify authenticated frames before command side effects. | Prepare frame encoder/test-vector work behind capability flags, but do not enable until firmware supports verification. |
 | SEC-BLE-3 | Partially mitigated SDK/App | SDK+app | High | SDK/app guardrails avoid trusting backend/history-only authority as local SOS authority; Android native classifier treats metadata-only identity as insufficient proof; Phase 0 reserves unverified BLE identity error semantics. | Own-vs-relay BLE identity still ultimately depends on plaintext `nodeId` until firmware/protocol authenticates origin identity. | Keep unknown/unverified identity conservative and wire stronger behavior only after authenticated identity capability exists. |
@@ -79,6 +79,7 @@ These findings are reduced from SDK/app, but they are not fully fixed in the cur
 | SEC-BLE-DESIGN | Design-only | SDK | High | Added `docs/security/ble-security-contract.md` covering current flow, enforcement points, phases 0-4, command frame, pairing, errors, compatibility, tests, and required firmware/SDK changes. | The design document itself does not provide full SEC-BLE remediation. Full remediation requires firmware/protocol support. | Keep the contract aligned with Phase 0 SDK scaffolding and use it for separate firmware/protocol implementation tickets. |
 | SDK-APP-TRACKER | Design-only | SDK | Medium | This tracker classifies completed, partial, blocked, and design-only findings under the SDK/app-only boundary. | It must be maintained as audit scope changes. | Update this document before starting implementation work in a new remediation phase. |
 | LOCAL-STORAGE-INVENTORY | Design-only | SDK+app | Medium | Added `docs/audit/local-storage-security-inventory.md` to inventory SharedPreferences keys, sensitivity, mitigations, and secure-storage next actions. | Inventory does not move secrets by itself. | Use it as input to the secure storage abstraction design pass. |
+| SEC-STORAGE-ABSTRACTION-DESIGN | Design-only | SDK+app | High | Added `docs/audit/secure-storage-abstraction-plan.md` covering current mitigations, inspection results, `SecureKeyValueStore` responsibilities/non-goals, key namespaces, candidate key classification, migration strategy, cleanup paths, fallback behavior, iOS Keychain / Android Keystore considerations, test plan, rollout phases, risks, and blocked decisions. | Design only; no secure-storage dependency, abstraction implementation, production Dart wiring, feature flag, or user-data migration exists yet. | Use this as the next implementation candidate, beginning with Phase 1 fake/in-memory abstraction tests before any app auth or SDK session migration. |
 
 ## Findings Blocked By Firmware/Backend
 
@@ -108,8 +109,9 @@ These are not fixed in the SDK/app boundary.
    - Keep app code thin and SDK API-driven.
 
 3. Secure storage abstraction design.
-   - Treat secure storage migration as documented next action, not fixed.
-   - Choose or approve a secure-storage dependency/abstraction before moving app auth tokens or SDK signed identity.
+   - Status: designed/planned in `docs/audit/secure-storage-abstraction-plan.md`, not implemented and not fixed.
+   - Next implementation candidate: Phase 1 abstraction plus fake/in-memory tests.
+   - Choose or approve a secure-storage dependency/platform policy before moving app auth tokens or SDK signed identity.
 
 4. QA gate maintenance.
    - Keep SOS lifecycle, MQTT lifecycle authority, remote relay SOS handoff, BLE security policy/command, diagnostics redaction, session store, and smoke coverage in the current QA gate list.
@@ -126,7 +128,7 @@ These are not fixed in the SDK/app boundary.
 - Full SEC-BLE remediation requires firmware/protocol support for authenticated BLE links, command integrity, cryptographic pairing, replay rejection, and authenticated node/relay identity.
 - SDK-only SEC-BLE Phase 0 is completed partial mitigation: diagnostics, capability modeling, command criticality, and public-error scaffolding are in place without breaking unsupported firmware.
 - SEC-FW is blocked by firmware/release pipeline work.
-- Secure storage migration is documented as a next action, not fixed, because no secure-storage abstraction/dependency exists yet.
+- Secure storage migration is designed/planned, not implemented and not fixed, because no secure-storage dependency, production abstraction, feature flag, or user-data migration exists yet.
 - Backend/server must participate for server-side authorization and backend-owned lifecycle authority guarantees.
 
 ## Current QA Gate List

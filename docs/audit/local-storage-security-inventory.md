@@ -4,7 +4,7 @@ Date: 2026-06-22
 
 Scope: SDK/app-only audit remediation for `/Users/roger/flutterdev/eixam-sdk-flutter` and `/Users/roger/flutterdev/eixam_commecial_app/eixam-app`. Backend, firmware, native Android/iOS project files, generated files, and build/test cache are intentionally out of scope.
 
-Checkpoint status: local storage is partially mitigated, not fully fixed. Secure storage migration is a documented next action because no secure-storage abstraction/dependency exists yet in this SDK/app boundary.
+Checkpoint status: local storage is partially mitigated, not fully fixed. Secure storage migration is designed/planned in `docs/audit/secure-storage-abstraction-plan.md`, but no secure-storage dependency, production abstraction, runtime migration, or user-data migration exists yet in this SDK/app boundary.
 
 Classification:
 
@@ -55,7 +55,7 @@ Classification:
 
 ## Out of Scope / Next Actions
 
-- Secure storage migration is not fixed in this checkpoint: neither app nor SDK currently declares a secure-storage dependency or abstraction. Move app auth tokens and SDK signed session identity to an existing or newly approved secure-storage abstraction in a separate low-risk pass.
+- Secure storage migration is designed/planned in `docs/audit/secure-storage-abstraction-plan.md` but not fixed in this checkpoint: neither app nor SDK currently declares a secure-storage dependency or production abstraction. Move app auth tokens and SDK signed session identity to an existing or newly approved secure-storage abstraction in a separate low-risk pass.
 - Backend token redesign, token rotation, token shape changes, and MQTT/server authorization changes are out of scope.
 - Firmware/native storage behavior is out of scope.
 - Remaining sensitive-but-required location, SOS, DMP, relay, emergency contact, and device-id persistence should be encrypted or minimized further once a secure local storage abstraction is available.
