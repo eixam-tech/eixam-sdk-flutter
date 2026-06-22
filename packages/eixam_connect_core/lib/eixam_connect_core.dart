@@ -63,6 +63,7 @@ export 'src/interfaces/sdk_device_registry_repository.dart';
 export 'src/interfaces/death_man_repository.dart';
 export 'src/interfaces/permissions_repository.dart';
 export 'src/interfaces/notifications_repository.dart';
+export 'src/storage/secure_key_value_store.dart';
 export 'src/state/sos_state_machine.dart';
 export 'src/state/death_man_state_machine.dart';
 

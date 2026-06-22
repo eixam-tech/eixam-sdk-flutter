@@ -2,9 +2,9 @@
 
 Date: 2026-06-22
 
-Scope: design-only SDK/app audit remediation for `/Users/roger/flutterdev/eixam-sdk-flutter` and `/Users/roger/flutterdev/eixam_commecial_app/eixam-app`.
+Scope: SEC-STORAGE Phase 1 SDK/app audit remediation for `/Users/roger/flutterdev/eixam-sdk-flutter` and `/Users/roger/flutterdev/eixam_commecial_app/eixam-app`.
 
-This document does not change runtime behavior. It does not add a dependency, migrate user data, change token format, change login/session restore behavior, change backend API contracts, touch native Android/iOS project files, or touch SOS/MQTT/BLE behavior.
+This document does not change runtime behavior. Phase 1 adds a pure Dart abstraction and test implementations only. It does not add a dependency, migrate user data, change token format, change login/session restore behavior, change backend API contracts, touch native Android/iOS project files, or touch SOS/MQTT/BLE behavior.
 
 ## Current Mitigation Already Done
 
@@ -19,27 +19,27 @@ These mitigations reduce exposure but do not fully fix local secret storage beca
 
 ## Inspection Result
 
-Neither allowed repo currently has an approved secure-storage dependency or shared secure-storage abstraction in the inspected scope.
+Neither allowed repo currently has an approved secure-storage dependency. Phase 1 adds the shared pure Dart abstraction to SDK core so the SDK and app can reuse the same contract later without platform wiring in this pass.
 
 | Repo | Current local storage dependency | Secure storage dependency found | Existing relevant abstraction |
 | --- | --- | --- | --- |
 | SDK `packages/eixam_connect_flutter` | `shared_preferences: ^2.3.2` | No | `SharedPrefsSdkStore`, `SdkSessionStore` |
-| SDK `packages/eixam_connect_core` | None in runtime dependencies | No | Domain interfaces only |
+| SDK `packages/eixam_connect_core` | None in runtime dependencies | No | `SecureKeyValueStore`, `InMemorySecureKeyValueStore`, `UnavailableSecureKeyValueStore`, key namespace helpers |
 | App `eixam-app` | `shared_preferences: ^2.5.3` | No | `AuthSessionStore`, feature stores such as telemetry/DMP/device/profile stores |
 
 ## Secure Storage Design
 
-Introduce a narrow `SecureKeyValueStore` style abstraction in a future implementation pass, with fake/in-memory test implementations before any production token migration.
+Phase 1 introduces a narrow `SecureKeyValueStore` abstraction in `packages/eixam_connect_core/lib/src/storage/secure_key_value_store.dart`, with fake/in-memory and unavailable implementations before any production token migration.
 
 Proposed shape:
 
 ```dart
 abstract interface class SecureKeyValueStore {
-  Future<String?> readString(String key);
-  Future<void> writeString(String key, String value);
+  Future<String?> read(String key);
+  Future<void> write(String key, String value);
   Future<void> delete(String key);
-  Future<void> deleteAll({required Iterable<String> keys});
-  Future<bool> get isAvailable;
+  Future<void> deleteAll({String? namespace});
+  Future<bool> containsKey(String key);
 }
 ```
 
@@ -55,7 +55,8 @@ Intended responsibilities:
 Non-goals:
 
 - No token redesign, wrapping, encryption format redesign, rotation policy, or backend API contract change.
-- No production Dart implementation in this pass.
+- No platform-backed secure-storage implementation in this pass.
+- No production auth/session wiring in this pass.
 - No dependency selection or pubspec change in this pass.
 - No native Android/iOS file edits in this pass.
 - No migration of existing user data in this pass.
@@ -192,8 +193,10 @@ Phase 0: current mitigation complete.
 
 Phase 1: abstraction + fake/in-memory tests.
 
-- Add `SecureKeyValueStore` interface and fake/in-memory implementations.
-- Add app/SDK wiring tests without production secure-storage dependency.
+- Status: complete for the shared SDK core abstraction.
+- Added `SecureKeyValueStore`, `InMemorySecureKeyValueStore`, `UnavailableSecureKeyValueStore`, and stable key namespace helpers.
+- Added focused SDK core tests for read/write/delete, namespace cleanup, unavailable failures, and key stability.
+- No app/SDK auth-session wiring was added in this phase.
 - Keep production code on SharedPreferences.
 
 Phase 2: app auth token secure storage behind feature flag.
@@ -227,7 +230,7 @@ Phase 4: migration cleanup and old key deletion.
 ## Blocked / Needs Decision
 
 - Select and approve the secure-storage dependency or internal implementation.
-- Decide whether the abstraction lives in SDK, app, or both with a shared package boundary.
+- Decide whether app production code should consume the SDK core abstraction directly or through an app-local adapter when Phase 2 starts.
 - Decide iOS Keychain accessibility, migration/synchronization policy, and reinstall behavior.
 - Decide Android backup exclusion and keystore invalidation handling; native-file edits, if any, need a separate approved pass.
 - Decide feature flag owner, rollout telemetry, and rollback policy.
