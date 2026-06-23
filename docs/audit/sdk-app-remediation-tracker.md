@@ -1,6 +1,6 @@
 # SDK/App Audit Remediation Tracker
 
-Status: SDK/app-only checkpoint for Dani audit remediation after SEC-BLE Phase 0 SDK-only scaffolding, ARCH-APP-5 second pass, and remote relay SOS test-debt cleanup.
+Status: SDK/app-only checkpoint for Dani audit remediation after SEC-BLE Phase 0 SDK-only scaffolding, ARCH-APP-5.3 `LiveEixamSdkClient` typed seam audit, stale override cleanup, and aggregate QA gate pass.
 
 This tracker is intentionally scoped to:
 
@@ -32,7 +32,9 @@ Allowed finding classifications:
 - SEC-BLE Phase 0 SDK-only scaffolding is complete as a partial mitigation: policy/capability/decision scaffolding, command criticality, legacy-compatible diagnostics, stable BLE error-code reservations, and focused tests are in place.
 - SEC-BLE full remediation remains blocked by firmware/protocol support for authenticated BLE links, command integrity, cryptographic pairing, replay rejection, and authenticated identity.
 - SDK/app-only audit tracker is current for this checkpoint.
-- ARCH-APP-5 typed SDK boundary second pass is complete and strongly mitigated app-side: the SOS adapter path uses `SdkSosSnapshot`, remaining remote-relay SDK event dynamic access is centralized behind `_legacySdkEventStream()`, and `LiveEixamSdkClient` typed runtime seam work remains future scope.
+- ARCH-APP-5.3 `LiveEixamSdkClient` typed seam audit is complete and strongly mitigated app-side: remaining dynamic/Object?/Map/`NoSuchMethodError` usage is inventoried at the injected SDK runtime boundary, one critical pre-typed/test fake SOS authority fallback is centralized in `_legacyDynamicSdkFallbackSosAuthorityFromIncident(...)`, and significant typed runtime seam work remains future scope.
+- Stale override cleanup is complete in `live_eixam_sdk_client.dart`: four stale `@override` annotations were removed without changing method bodies, names, signatures, or runtime behavior.
+- Aggregate QA passed before this docs-only checkpoint across the app, SDK core, and SDK Flutter gate list below; no tests were run as part of this docs-only update.
 - ARCH-SDK-2 public SOS stream guard first pass is complete; cleanup remains.
 - Remote relay SOS test-debt cleanup is complete: stale decoder expectations, HTTP-era assertions, active-device PRE-SOS countdown behavior, and correlated backend cancel setup are aligned with current SDK behavior.
 - SEC-NET endpoint hardening is complete for the SDK/app boundary.
@@ -54,7 +56,8 @@ Allowed finding classifications:
 | SEC-NET-ENDPOINT | Strongly mitigated SDK/App | SDK+app | High | Endpoint handling was hardened within the SDK/app boundary so callers use the intended configured endpoints and avoid unsafe endpoint drift. | Server-side endpoint authorization and infrastructure controls remain backend-owned. | Preserve centralized endpoint construction and review any future dynamic endpoint inputs. |
 | SOS-SDK-1 | Fixed SDK/App | SDK | High | SDK supports device-only SOS success when backend is unavailable but a valid device SOS path succeeds. | Device command path security remains subject to SEC-BLE limitations. | Keep one-successful-channel semantics covered by SDK tests. |
 | SEC-DIAG-PII | Fixed SDK/App | SDK+app | Medium | Sensitive diagnostics and PII redaction were added for SDK/app logs, raw payloads, identity values, topics, headers, and payload bodies. | New diagnostic fields can reintroduce sensitive data if not routed through redactors. | Require redaction review for all new diagnostics. |
-| ARCH-APP-5 | Strongly mitigated SDK/App | app | Medium | Typed SDK boundary second pass is complete in `partner_sdk_adapter.dart`: the SOS adapter path now uses `SdkSosSnapshot`, and remaining remote-relay SDK event dynamic access is centralized behind `_legacySdkEventStream()`. | `LiveEixamSdkClient` still has documented dynamic runtime seam work that belongs to a larger future pass. | Keep app code on typed SDK APIs and plan the `LiveEixamSdkClient` seam separately; do not claim dynamic access is fully eliminated. |
+| ARCH-APP-5 | Strongly mitigated SDK/App | app | Medium | Typed SDK boundary second pass is complete in `partner_sdk_adapter.dart`: the SOS adapter path now uses `SdkSosSnapshot`, and remaining remote-relay SDK event dynamic access is centralized behind `_legacySdkEventStream()`. ARCH-APP-5.3 is also complete in `live_eixam_sdk_client.dart`: remaining dynamic/Object?/Map/`NoSuchMethodError` usage is inventoried at the injected SDK runtime boundary, and the critical pre-typed/test fake SOS authority fallback is centralized in `_legacyDynamicSdkFallbackSosAuthorityFromIncident(...)`. | `LiveEixamSdkClient` still has significant dynamic runtime seam work that belongs to a larger future pass. It is not fully typed. | Keep app code on typed SDK APIs and plan remaining `LiveEixamSdkClient` seam work separately; do not claim dynamic access is fully eliminated. |
+| APP-STALE-OVERRIDE-CLEANUP | Fixed SDK/App | app | Low | Removed four stale `@override` annotations from `live_eixam_sdk_client.dart` after the typed seam audit. No method bodies, names, signatures, or runtime behavior changed. | None for the stale override warnings identified in this checkpoint. | Keep analyzer clean when adapter interfaces or implementation signatures change. |
 | ARCH-SDK-2 | Strongly mitigated SDK/App | SDK | Medium | Public SOS stream guard first pass is complete, keeping public stream consumers aligned to guarded SDK state. | Remaining public-boundary cleanup and regression coverage may still be needed. | Continue cleanup in a dedicated public-boundary pass. |
 | REMOTE-RELAY-SOS-TEST-DEBT | Fixed SDK/App | SDK tests | Medium | `remote_relay_sos_backend_handoff_test.dart` now matches current decoder output, MQTT contract/repository paths, active-device PRE-SOS countdown promotion, and backend cancel correlation requirements. The remote relay SOS handoff test debt is cleaned up without runtime behavior changes. | Continue keeping relay tests aligned to SDK contract changes. | Keep this test in the QA gate list for future relay/SOS work. |
 
@@ -103,8 +106,8 @@ These are not fixed in the SDK/app boundary.
    - Keep behavior firmware-compatible until firmware capability is available.
 
 2. Remaining typed runtime boundary cleanup.
-   - Keep ARCH-APP-5 second pass marked strongly mitigated app-side.
-   - Track `LiveEixamSdkClient` dynamic runtime seam as future work, not fixed.
+   - Keep ARCH-APP-5.3 marked strongly mitigated app-side.
+   - Track remaining `LiveEixamSdkClient` dynamic runtime seam work as future work, not fixed.
    - Continue ARCH-SDK-2 public SOS stream guard cleanup.
    - Keep app code thin and SDK API-driven.
 
@@ -115,8 +118,8 @@ These are not fixed in the SDK/app boundary.
    - Only after that dependency/platform decision should Phase 3 app token/session migration be considered.
 
 4. QA gate maintenance.
-   - Keep SOS lifecycle, MQTT lifecycle authority, remote relay SOS handoff, BLE security policy/command, diagnostics redaction, session store, and smoke coverage in the current QA gate list.
-   - Do not use this checkpoint as approval to run tests during this docs-only update.
+   - Keep app repository/adapter/smoke/session/config/diagnostics coverage, SDK core secure storage/SOS state-machine coverage, and SDK Flutter SOS lifecycle, MQTT authority, relay handoff, BLE security, transport security, diagnostics redaction, and session-store coverage in the current QA gate list.
+   - Treat the aggregate QA list below as passed before this docs-only checkpoint; do not use this checkpoint as approval to rerun tests during docs-only updates.
 
 5. Firmware/backend-blocked items documented for later.
    - SEC-BLE full remediation requires firmware/protocol support.
@@ -134,7 +137,25 @@ These are not fixed in the SDK/app boundary.
 
 ## Current QA Gate List
 
-These tests are the current audit checkpoint QA gate list. This docs-only update does not claim they were run in this pass.
+These tests are the current audit checkpoint QA gate list. They passed before this docs-only checkpoint; this docs-only update did not rerun tests.
+
+App:
+
+- `live_eixam_sdk_client_test`
+- `partner_sdk_adapter_test`
+- `smoke_test`
+- `shared_preferences_auth_session_store_test`
+- `secure_storage_backed_auth_session_store_test`
+- `app_config_test`
+- `session_controller_test`
+- `app_diagnostics_redactor_test`
+
+SDK core:
+
+- `secure_key_value_store_test`
+- `sos_state_machine_test`
+
+SDK Flutter:
 
 - `sos_lifecycle_matrix_test`
 - `mqtt_operational_sos_repository_lifecycle_authority_test`
@@ -144,4 +165,3 @@ These tests are the current audit checkpoint QA gate list. This docs-only update
 - `transport_security_validator_test`
 - `security_diagnostics_redactor_test`
 - `sdk_session_store_test`
-- `smoke_test`
