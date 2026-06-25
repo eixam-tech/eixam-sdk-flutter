@@ -1,6 +1,6 @@
 # SDK/App Audit Remediation Tracker
 
-Status: SDK/app-only checkpoint for Dani audit remediation after SEC-BLE Phase 0 SDK-only scaffolding, ARCH-APP-5.3 `LiveEixamSdkClient` typed seam audit, stale override cleanup, and aggregate QA gate pass.
+Status: SDK/app-only checkpoint for Dani audit remediation after SEC-BLE Phase 0 SDK-only scaffolding, ARCH-APP-5.3 `LiveEixamSdkClient` typed seam audit, stale override cleanup, aggregate QA gate pass, and Android manual QA checkpoint.
 
 This tracker is intentionally scoped to:
 
@@ -40,6 +40,7 @@ Allowed finding classifications:
 - SEC-NET endpoint hardening is complete for the SDK/app boundary.
 - Local storage hardening is partially mitigated: app auth orphan fragments are cleaned up, telemetry is latest-only, telemetry auth-token/header persistence is blocked, the SDK no longer writes the unused refresh token, and the local-storage security inventory is documented.
 - Secure storage migration is now designed/planned in `docs/audit/secure-storage-abstraction-plan.md`; Phase 1 adds a pure Dart SDK core abstraction, Phase 2A adds a disabled-by-default app auth-session config seam with tests, and Phase 2B completes app-only fallback/kill-switch guardrails around that seam. It is not fixed because no secure-storage dependency, platform-backed implementation, enabled flag, real token/session migration, or user-data migration exists yet.
+- Android manual QA checkpoint passed for login/session restore, logout/session cleanup, SOS without device, Devices/BLE basic behavior, and SOS with connected device. Remote relay/LoRa manual QA is deferred/not tested and must not be treated as passed.
 
 ## Completed SDK/App Mitigations
 
@@ -113,13 +114,14 @@ These are not fixed in the SDK/app boundary.
 
 3. Secure storage abstraction design.
    - Status: Phase 1 abstraction complete in SDK core, Phase 2A app config seam complete in the app, and Phase 2B fallback/kill-switch guardrails complete; real secure storage migration is not fixed.
-   - Next recommended action: manual QA login/session behavior on Android and iOS.
+   - Android login/session restore and logout/session cleanup manual QA passed in the checkpoint below; iOS manual QA remains needed before any rollout decision.
    - Then decide whether to add a real platform secure-storage dependency behind the existing disabled flag.
    - Only after that dependency/platform decision should Phase 3 app token/session migration be considered.
 
 4. QA gate maintenance.
    - Keep app repository/adapter/smoke/session/config/diagnostics coverage, SDK core secure storage/SOS state-machine coverage, and SDK Flutter SOS lifecycle, MQTT authority, relay handoff, BLE security, transport security, diagnostics redaction, and session-store coverage in the current QA gate list.
    - Treat the aggregate QA list below as passed before this docs-only checkpoint; do not use this checkpoint as approval to rerun tests during docs-only updates.
+   - Treat the Android manual QA checkpoint below as app-device coverage for the listed cases only; remote relay/LoRa is deferred and not release-ready evidence.
 
 5. Firmware/backend-blocked items documented for later.
    - SEC-BLE full remediation requires firmware/protocol support.
@@ -134,6 +136,27 @@ These are not fixed in the SDK/app boundary.
 - SEC-FW is blocked by firmware/release pipeline work.
 - Secure storage migration is designed/planned, Phase 1 abstraction is complete, Phase 2A feature/config seam is complete, and Phase 2B fallback/kill-switch guardrails are complete, but real secure storage is not fixed because no secure-storage dependency, platform-backed implementation, enabled flag, token/session migration, or user-data migration exists yet.
 - Backend/server must participate for server-side authorization and backend-owned lifecycle authority guarantees.
+
+## Manual QA Checkpoint - Android
+
+Date: 2026-06-25
+
+Scope: Android manual QA after the recent SDK/app audit remediation work. This checkpoint records observed app-device behavior only; it does not change the automated QA gate list and does not claim release readiness for unresolved firmware/backend-blocked items.
+
+| Case | Result | Notes |
+| --- | --- | --- |
+| Login / session restore | PASS | Login and restored session behavior passed on Android. |
+| Logout / session cleanup | PASS | Logout, reopen, and return to login screen passed on Android. |
+| SOS without device | PASS | SOS flow without a connected device passed on Android. |
+| Devices / BLE basic | PASS | Basic devices/BLE behavior passed on Android. |
+| SOS with connected device | PASS | SOS flow with a connected device passed on Android. |
+| Remote relay / LoRa | Deferred / not tested | Not passed in this checkpoint; still requires dedicated manual QA before it can be used as release evidence. |
+
+Checkpoint constraints:
+
+- SEC-BLE full remediation remains blocked by firmware/protocol support for authenticated BLE links, command integrity, cryptographic pairing, replay rejection, and authenticated node/relay identity.
+- Secure storage real migration remains pending: there is still no secure-storage dependency, platform-backed implementation, enabled flag, real token/session migration, or user-data migration.
+- Backend/server authorization and backend-owned lifecycle authority guarantees remain outside this SDK/app-only checkpoint.
 
 ## Current QA Gate List
 
