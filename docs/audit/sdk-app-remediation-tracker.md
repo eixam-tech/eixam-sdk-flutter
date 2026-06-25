@@ -2,6 +2,8 @@
 
 Status: SDK/app-only checkpoint for Dani audit remediation after SEC-BLE Phase 0 SDK-only scaffolding, ARCH-APP-5.3 `LiveEixamSdkClient` typed seam audit, stale override cleanup, aggregate QA gate pass, and Android manual QA checkpoint.
 
+Global checkpoint: `docs/audit/sdk-app-audit-global-checkpoint.md`.
+
 This tracker is intentionally scoped to:
 
 - SDK: `/Users/roger/flutterdev/eixam-sdk-flutter`
