@@ -4,6 +4,8 @@ Status: SDK/app-only checkpoint for Dani audit remediation after SEC-BLE Phase 0
 
 Global checkpoint: `docs/audit/sdk-app-audit-global-checkpoint.md`.
 
+Future PR/patch guardrails checklist: `docs/audit/sdk-app-audit-guardrails-checklist.md`.
+
 This tracker is intentionally scoped to:
 
 - SDK: `/Users/roger/flutterdev/eixam-sdk-flutter`
