@@ -16,6 +16,8 @@ Allowed finding classifications:
 - Partially mitigated SDK/App
 - Design-only
 - Blocked by firmware/backend
+- Blocked by backend/platform
+- Future hardening
 
 ## Current Checkpoint Summary
 
@@ -38,6 +40,7 @@ Allowed finding classifications:
 - ARCH-SDK-2 public SOS stream guard first pass is complete; cleanup remains.
 - Remote relay SOS test-debt cleanup is complete: stale decoder expectations, HTTP-era assertions, active-device PRE-SOS countdown behavior, and correlated backend cancel setup are aligned with current SDK behavior.
 - SEC-NET endpoint hardening is complete for the SDK/app boundary.
+- SEC-NET hardening inventory is documented in `docs/audit/network-security-hardening-inventory.md`. It confirms SDK/app endpoint and transport guardrails, MQTT-only SOS trigger policy, HTTP cancel/read-only preservation, MQTT lifecycle authority gating, auth/token handling, diagnostics redaction, and local/secure-storage interaction without changing runtime behavior.
 - Local storage hardening is partially mitigated: app auth orphan fragments are cleaned up, telemetry is latest-only, telemetry auth-token/header persistence is blocked, the SDK no longer writes the unused refresh token, and the local-storage security inventory is documented.
 - Secure storage migration is now designed/planned in `docs/audit/secure-storage-abstraction-plan.md`; Phase 1 adds a pure Dart SDK core abstraction, Phase 2A adds a disabled-by-default app auth-session config seam with tests, and Phase 2B completes app-only fallback/kill-switch guardrails around that seam. It is not fixed because no secure-storage dependency, platform-backed implementation, enabled flag, real token/session migration, or user-data migration exists yet.
 - Android manual QA checkpoint passed for login/session restore, logout/session cleanup, SOS without device, Devices/BLE basic behavior, and SOS with connected device. Remote relay/LoRa manual QA is deferred/not tested and must not be treated as passed.
@@ -54,7 +57,7 @@ Allowed finding classifications:
 | ARCH-APP-3 / SOS-REPO-12 | Fixed SDK/App | SDK+app | High | Guardrails keep SOS orchestration, relay routing, and raw BLE handling in SDK/runtime layers rather than app widgets. | Future app changes can regress this boundary. | Enforce via review: app may call typed SDK APIs only. |
 | SOS-REPO-12.1 | Strongly mitigated SDK/App | app | High | App guards are identity-bounded, preventing backend/history snapshots without SDK authority from recreating local active SOS. | BLE node identity is still not cryptographically authenticated. | Keep repository guards tied to SDK authority and known identity evidence. |
 | SEC-NET-3 | Strongly mitigated SDK/App | SDK | High | MQTT lifecycle authority gate prevents unrelated realtime/backend lifecycle events from taking local SOS authority. | Backend/server authorization is outside this SDK/app boundary. | Preserve topic/session authority checks during realtime refactors. |
-| SEC-NET-ENDPOINT | Strongly mitigated SDK/App | SDK+app | High | Endpoint handling was hardened within the SDK/app boundary so callers use the intended configured endpoints and avoid unsafe endpoint drift. | Server-side endpoint authorization and infrastructure controls remain backend-owned. | Preserve centralized endpoint construction and review any future dynamic endpoint inputs. |
+| SEC-NET-ENDPOINT | Strongly mitigated SDK/App | SDK+app | High | Endpoint handling was hardened within the SDK/app boundary so callers use HTTPS/WSS or secure MQTT schemes outside explicit debug-local overrides and avoid unsafe endpoint drift. | Server-side endpoint authorization, infrastructure controls, certificate pinning, custom TLS trust, and broker/topic ACLs remain backend/platform-owned or future hardening. | Preserve centralized endpoint construction and review any future dynamic endpoint inputs; use `docs/audit/network-security-hardening-inventory.md` before selecting the next SEC-NET implementation. |
 | SOS-SDK-1 | Fixed SDK/App | SDK | High | SDK supports device-only SOS success when backend is unavailable but a valid device SOS path succeeds. | Device command path security remains subject to SEC-BLE limitations. | Keep one-successful-channel semantics covered by SDK tests. |
 | SEC-DIAG-PII | Fixed SDK/App | SDK+app | Medium | Sensitive diagnostics and PII redaction were added for SDK/app logs, raw payloads, identity values, topics, headers, and payload bodies. | New diagnostic fields can reintroduce sensitive data if not routed through redactors. | Require redaction review for all new diagnostics. |
 | ARCH-APP-5 | Strongly mitigated SDK/App | app | Medium | Typed SDK boundary second pass is complete in `partner_sdk_adapter.dart`: the SOS adapter path now uses `SdkSosSnapshot`, and remaining remote-relay SDK event dynamic access is centralized behind `_legacySdkEventStream()`. ARCH-APP-5.3 is also complete in `live_eixam_sdk_client.dart`: remaining dynamic/Object?/Map/`NoSuchMethodError` usage is inventoried at the injected SDK runtime boundary, and the critical pre-typed/test fake SOS authority fallback is centralized in `_legacyDynamicSdkFallbackSosAuthorityFromIncident(...)`. | `LiveEixamSdkClient` still has significant dynamic runtime seam work that belongs to a larger future pass. It is not fully typed. | Keep app code on typed SDK APIs and plan remaining `LiveEixamSdkClient` seam work separately; do not claim dynamic access is fully eliminated. |
@@ -84,6 +87,7 @@ These findings are reduced from SDK/app, but they are not fully fixed in the cur
 | SDK-APP-TRACKER | Design-only | SDK | Medium | This tracker classifies completed, partial, blocked, and design-only findings under the SDK/app-only boundary. | It must be maintained as audit scope changes. | Update this document before starting implementation work in a new remediation phase. |
 | LOCAL-STORAGE-INVENTORY | Design-only | SDK+app | Medium | Added `docs/audit/local-storage-security-inventory.md` to inventory SharedPreferences keys, sensitivity, mitigations, and secure-storage next actions. | Inventory does not move secrets by itself. | Use it as input to the secure storage abstraction design pass. |
 | SEC-STORAGE-ABSTRACTION-DESIGN | Phase 2B guardrails complete | SDK+app | High | Added `docs/audit/secure-storage-abstraction-plan.md` covering current mitigations, inspection results, `SecureKeyValueStore` responsibilities/non-goals, key namespaces, candidate key classification, migration strategy, cleanup paths, fallback behavior, iOS Keychain / Android Keystore considerations, test plan, rollout phases, risks, and blocked decisions. Added the SDK core abstraction and fake/unavailable implementations with focused tests. Added the app auth-session config seam and Phase 2B fallback/kill-switch guardrail tests without enabling migration. | No secure-storage dependency, platform-backed implementation, enabled production auth/session migration, or user-data migration exists yet. | Use this as the basis for manual Android/iOS login/session QA and a later dependency/platform decision; do not treat Phase 2B as secure-storage rollout. |
+| SEC-NET-INVENTORY | Design-only | SDK+app | High | Added `docs/audit/network-security-hardening-inventory.md` to inventory API endpoint validation, MQTT/WebSocket endpoint validation, SOS trigger transport policy, HTTP cancel/read-only behavior, MQTT lifecycle authority, auth header/token handling, diagnostics redaction, and local/secure-storage interaction. | Inventory does not implement certificate pinning, broker credential rotation, backend token refresh/rotation policy, real secure storage, platform TLS trust changes, backend authorization, or remote relay/LoRa QA. | Use the inventory to select the next safe SEC-NET implementation without overclaiming backend/platform work. |
 
 ## Findings Blocked By Firmware/Backend
 
@@ -98,6 +102,8 @@ These are not fixed in the SDK/app boundary.
 | SEC-BLE-5 full fix | Blocked by firmware/backend | firmware/protocol | High | SDK design states pairing-code semantics and key derivation goals; pairing-required errors are reserved for future enforcement. | Firmware must implement pairing-code-backed authentication, key creation, key rotation, and reset behavior. | Choose pairing primitive with firmware constraints, preferably PAKE or an explicitly documented fallback. |
 | SEC-FW | Blocked by firmware/backend | firmware/release pipeline | High | SDK/app tracker records the boundary and does not claim firmware remediation. | Firmware fixes and release-pipeline validation are required outside this remediation scope. | Track in the firmware/release queue; do not modify firmware from this SDK/app-only pass. |
 | BACKEND-AUTHZ-SERVER | Blocked by firmware/backend | backend/server | High | SDK/app now gate local authority and redact diagnostics. | Server-side authorization, topic enforcement, backend incident authority, and backend relay validation cannot be proven from SDK/app changes alone. | Track in backend audit queue; do not modify backend from this remediation boundary. |
+| SEC-NET-PINNING-TLS | Blocked by backend/platform | platform/native/infrastructure | High | SDK/app now reject insecure endpoint schemes outside debug-local overrides and MQTT bad-certificate callbacks reject invalid certificates. | Certificate pinning is not implemented; TLS trust remains platform/default-library trust unless a later native/platform review proves otherwise. | Decide whether pinning/custom trust is required for HTTP and MQTT, then design platform impact before implementation. |
+| SEC-NET-CREDENTIAL-ROTATION | Blocked by backend/platform | backend/broker | High | SDK/app currently pass existing Bearer/userHash and MQTT username/password material through the established backend contract. | Broker credential rotation and backend token refresh/rotation policy are not addressed in this SDK/app pass. | Open backend/broker follow-up for token lifetime, refresh/rotation policy, broker credentials, and topic ACLs. |
 
 ## Recommended Next Execution Order
 
@@ -128,6 +134,11 @@ These are not fixed in the SDK/app boundary.
    - SEC-FW requires firmware/release pipeline work.
    - Backend/server authorization and authority guarantees stay in the backend audit queue.
 
+6. SEC-NET next implementation decision.
+   - Use `docs/audit/network-security-hardening-inventory.md` as the source inventory.
+   - Do not claim certificate pinning, custom TLS trust, broker credential rotation, backend token policy, real secure storage, or remote relay/LoRa QA as fixed.
+   - First safe decision points are MQTT WebSocket TLS confirmation, pinning/custom trust design, backend/broker rotation and ACL tickets, secure-storage dependency approval, and dedicated remote relay/LoRa manual QA.
+
 ## Boundary Notes
 
 - SEC-BLE design contract is completed, but SEC-BLE is not fully fixed.
@@ -136,6 +147,7 @@ These are not fixed in the SDK/app boundary.
 - SEC-FW is blocked by firmware/release pipeline work.
 - Secure storage migration is designed/planned, Phase 1 abstraction is complete, Phase 2A feature/config seam is complete, and Phase 2B fallback/kill-switch guardrails are complete, but real secure storage is not fixed because no secure-storage dependency, platform-backed implementation, enabled flag, token/session migration, or user-data migration exists yet.
 - Backend/server must participate for server-side authorization and backend-owned lifecycle authority guarantees.
+- SEC-NET inventory is documentation-only. Certificate pinning is not implemented, broker credential rotation is not addressed, backend token refresh/rotation policy is not addressed, real secure storage is not added or enabled, TLS trust remains platform/default-library trust unless separately proven, and remote relay/LoRa manual QA is deferred.
 
 ## Manual QA Checkpoint - Android
 
