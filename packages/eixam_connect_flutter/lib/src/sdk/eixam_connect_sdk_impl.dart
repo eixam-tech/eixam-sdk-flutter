@@ -8418,14 +8418,18 @@ class EixamConnectSdkImpl
       'SDK_SOS_STATE_MACHINE_TRANSITION_REJECTED '
       'source=$source from=${from.name} to=${to.name}',
     );
-    if (_shouldRetainPublicSosStateMachineBypass(
+    final retainedBypass = _retainedPublicSosStateMachineBypass(
       to: to,
       source: source,
-    )) {
+    );
+    if (retainedBypass != null) {
       BleDebugRegistry.instance.recordEvent(
         'SDK_SOS_STATE_MACHINE_BYPASS_RETAINED '
         'source=$source from=${from.name} to=${to.name} '
-        'reason=${_publicSosStateMachineBypassReason(to: to)}',
+        'reason=${retainedBypass.reason} '
+        'authority=${retainedBypass.authority} '
+        'origin=${retainedBypass.origin} '
+        'policy=${retainedBypass.policy}',
       );
       return true;
     }
@@ -8438,23 +8442,43 @@ class EixamConnectSdkImpl
     return false;
   }
 
-  bool _shouldRetainPublicSosStateMachineBypass({
+  _PublicSosStateMachineBypass? _retainedPublicSosStateMachineBypass({
     required SosState to,
     required String source,
   }) {
     if (_isAuthoritativePublicSosTerminalBypass(to: to, source: source)) {
-      return true;
+      return _PublicSosStateMachineBypass(
+        reason: _publicSosTerminalBypassReason(source),
+        authority: _publicSosBypassAuthority(source),
+        origin: _publicSosBypassOrigin(source),
+        policy: 'authoritative_terminal',
+      );
     }
     if (to == SosState.failed && _isAuthoritativePublicSosFailure(source)) {
-      return true;
+      return _PublicSosStateMachineBypass(
+        reason: _publicSosFailureBypassReason(source),
+        authority: _publicSosBypassAuthority(source),
+        origin: _publicSosBypassOrigin(source),
+        policy: 'authoritative_failure',
+      );
     }
     if (to == SosState.idle && _isAuthoritativePublicSosClear(source)) {
-      return true;
+      return _PublicSosStateMachineBypass(
+        reason: _publicSosClearBypassReason(source),
+        authority: _publicSosBypassAuthority(source),
+        origin: _publicSosBypassOrigin(source),
+        policy: 'authoritative_clear',
+      );
     }
     if (_isAuthoritativePublicSosOpenBypass(source)) {
-      return true;
+      return _PublicSosStateMachineBypass(
+        reason: _publicSosOpenBypassReason(source),
+        authority: _publicSosBypassAuthority(source),
+        origin: _publicSosBypassOrigin(source),
+        policy: 'sdk_public_lifecycle_shortcut',
+      );
     }
-    return false;
+    return null;
   }
 
   bool _isAuthoritativePublicSosTerminalBypass({
@@ -8469,16 +8493,15 @@ class EixamConnectSdkImpl
         source.startsWith('sos_rehydrate:') ||
         source.startsWith('fetch_sos_state') ||
         source.startsWith('device_sos_status:') ||
-        source.startsWith('public_') ||
-        source.contains('terminal') ||
-        source.contains('cancel') ||
-        source.contains('resolve');
+        source == 'public_sos_result' ||
+        source == 'device_terminal_event' ||
+        source == 'protection_platform_event_terminal' ||
+        source == 'native_backend_sync_queued_cancel_backstop';
   }
 
   bool _isAuthoritativePublicSosFailure(String source) {
-    return source.contains('backend_failed') ||
-        source.contains('activation_failed') ||
-        source.startsWith('public_');
+    return source == 'public_sos_backend_failed' ||
+        source == 'countdown_zero_activation_failed';
   }
 
   bool _isAuthoritativePublicSosClear(String source) {
@@ -8486,13 +8509,21 @@ class EixamConnectSdkImpl
         source.startsWith('repository_load:') ||
         source.startsWith('sos_rehydrate:') ||
         source.startsWith('fetch_sos_state') ||
-        source.contains('external_only') ||
-        source.contains('acknowledged') ||
-        source.contains('session') ||
-        source.contains('clear') ||
-        source.contains('cleanup') ||
-        source.contains('cancel') ||
-        source.contains('terminal');
+        source.endsWith(':external_only') ||
+        source == 'record_public_sos_result:external_only' ||
+        source == 'get_current_sos_incident:external_only' ||
+        source == 'fetch_sos_state:external_fallback' ||
+        source == 'terminal_summary_acknowledged' ||
+        source == 'public_cancel_completed:clear_current_sos' ||
+        source == 'app_origin_device_terminal_cleanup' ||
+        source == 'ios_ble_sos_snapshot_cancelled' ||
+        source == 'public_pre_sos_cancelled' ||
+        source == 'device_pre_sos_cancel_blocked_backend_publish' ||
+        source == 'remembered_device_terminal_cancel_blocks_activation' ||
+        source == 'device_terminal_cancel_blocks_activation' ||
+        source.endsWith(':stale_cancelled_runtime_ignored') ||
+        source.endsWith(':pre_sos_guard') ||
+        source == 'pre_sos_clear_empty';
   }
 
   bool _isAuthoritativePublicSosOpenBypass(String source) {
@@ -8507,19 +8538,173 @@ class EixamConnectSdkImpl
         source == 'ios_ble_sos_snapshot_active';
   }
 
-  String _publicSosStateMachineBypassReason({
-    required SosState to,
-  }) {
-    if (_isTerminalPublicSosState(to)) {
-      return 'authoritative_terminal';
+  String _publicSosTerminalBypassReason(String source) {
+    if (source == 'sos_state_stream') {
+      return 'repository_terminal_stream';
     }
-    if (to == SosState.failed) {
-      return 'authoritative_failure';
+    if (source.startsWith('repository_load:')) {
+      return 'repository_rehydration_terminal';
     }
-    if (to == SosState.idle) {
-      return 'authoritative_clear';
+    if (source.startsWith('sos_rehydrate:')) {
+      return 'backend_rehydration_terminal';
+    }
+    if (source.startsWith('fetch_sos_state')) {
+      return 'repository_fetch_terminal';
+    }
+    if (source.startsWith('device_sos_status:') ||
+        source == 'device_terminal_event' ||
+        source == 'protection_platform_event_terminal' ||
+        source == 'native_backend_sync_queued_cancel_backstop') {
+      return 'device_runtime_terminal';
+    }
+    if (source == 'public_sos_result') {
+      return 'app_public_terminal_result';
+    }
+    return 'authoritative_terminal';
+  }
+
+  String _publicSosFailureBypassReason(String source) {
+    if (source == 'public_sos_backend_failed') {
+      return 'app_public_backend_failure';
+    }
+    if (source == 'countdown_zero_activation_failed') {
+      return 'countdown_zero_activation_failure';
+    }
+    return 'authoritative_failure';
+  }
+
+  String _publicSosClearBypassReason(String source) {
+    if (source.endsWith(':external_only') ||
+        source == 'record_public_sos_result:external_only' ||
+        source == 'get_current_sos_incident:external_only' ||
+        source == 'fetch_sos_state:external_fallback') {
+      return 'external_remote_relay_isolation';
+    }
+    if (source == 'clear_session' ||
+        source == 'terminal_summary_acknowledged' ||
+        source == 'pre_sos_clear_empty') {
+      return 'explicit_idle_reset';
+    }
+    if (source.startsWith('repository_load:')) {
+      return 'repository_rehydration_clear';
+    }
+    if (source.startsWith('sos_rehydrate:')) {
+      return 'backend_rehydration_clear';
+    }
+    if (source.startsWith('fetch_sos_state')) {
+      return 'repository_fetch_clear';
+    }
+    if (source == 'public_cancel_completed:clear_current_sos' ||
+        source == 'public_pre_sos_cancelled') {
+      return 'app_public_clear';
+    }
+    if (source == 'app_origin_device_terminal_cleanup' ||
+        source == 'ios_ble_sos_snapshot_cancelled' ||
+        source == 'device_pre_sos_cancel_blocked_backend_publish' ||
+        source == 'remembered_device_terminal_cancel_blocks_activation' ||
+        source == 'device_terminal_cancel_blocks_activation' ||
+        source.endsWith(':stale_cancelled_runtime_ignored') ||
+        source.endsWith(':pre_sos_guard')) {
+      return 'device_runtime_clear';
+    }
+    return 'authoritative_clear';
+  }
+
+  String _publicSosOpenBypassReason(String source) {
+    if (source == 'public_sos_backend_publish_start' ||
+        source == 'public_sos_result') {
+      return 'app_trigger_publish_shortcut';
+    }
+    if (source.startsWith('repository_load:')) {
+      return 'repository_rehydration_open';
+    }
+    if (source.startsWith('sos_rehydrate:')) {
+      return 'backend_rehydration_open';
+    }
+    if (source == 'fetch_sos_state:device_override' ||
+        source == 'sos_state_stream:device_override' ||
+        source.startsWith('device_sos_status:') ||
+        source == 'app_origin_ble_runtime_active' ||
+        source == 'ios_ble_sos_snapshot_active') {
+      return 'device_runtime_open_override';
     }
     return 'sdk_public_lifecycle_shortcut';
+  }
+
+  String _publicSosBypassAuthority(String source) {
+    if (source.startsWith('repository_load:') ||
+        source == 'sos_state_stream' ||
+        source.startsWith('fetch_sos_state') ||
+        source == 'public_sos_result') {
+      return 'repository';
+    }
+    if (source.startsWith('sos_rehydrate:')) {
+      return 'backend_rehydration';
+    }
+    if (source.startsWith('device_sos_status:') ||
+        source == 'device_terminal_event' ||
+        source == 'protection_platform_event_terminal' ||
+        source == 'native_backend_sync_queued_cancel_backstop' ||
+        source == 'app_origin_ble_runtime_active' ||
+        source == 'ios_ble_sos_snapshot_active' ||
+        source == 'ios_ble_sos_snapshot_cancelled' ||
+        source == 'app_origin_device_terminal_cleanup' ||
+        source == 'device_pre_sos_cancel_blocked_backend_publish' ||
+        source == 'remembered_device_terminal_cancel_blocks_activation' ||
+        source == 'device_terminal_cancel_blocks_activation' ||
+        source.endsWith(':stale_cancelled_runtime_ignored') ||
+        source.endsWith(':pre_sos_guard')) {
+      return 'device_runtime';
+    }
+    if (source.startsWith('public_') ||
+        source == 'terminal_summary_acknowledged' ||
+        source == 'clear_session' ||
+        source == 'countdown_zero_activation_failed' ||
+        source == 'pre_sos_clear_empty') {
+      return 'sdk_app_action';
+    }
+    if (source.endsWith(':external_only')) {
+      return 'external_relay_guard';
+    }
+    return 'sdk';
+  }
+
+  String _publicSosBypassOrigin(String source) {
+    if (source.endsWith(':external_only') ||
+        source == 'record_public_sos_result:external_only' ||
+        source == 'get_current_sos_incident:external_only' ||
+        source == 'fetch_sos_state:external_fallback') {
+      return 'external_remote_relay';
+    }
+    if (source.startsWith('device_sos_status:') ||
+        source == 'device_terminal_event' ||
+        source == 'protection_platform_event_terminal' ||
+        source == 'native_backend_sync_queued_cancel_backstop' ||
+        source == 'app_origin_ble_runtime_active' ||
+        source == 'ios_ble_sos_snapshot_active' ||
+        source == 'ios_ble_sos_snapshot_cancelled' ||
+        source == 'app_origin_device_terminal_cleanup' ||
+        source == 'device_pre_sos_cancel_blocked_backend_publish' ||
+        source == 'remembered_device_terminal_cancel_blocks_activation' ||
+        source == 'device_terminal_cancel_blocks_activation' ||
+        source.endsWith(':stale_cancelled_runtime_ignored') ||
+        source.endsWith(':pre_sos_guard')) {
+      return 'own_ble_device';
+    }
+    if (source.startsWith('public_') ||
+        source == 'terminal_summary_acknowledged' ||
+        source == 'clear_session' ||
+        source == 'countdown_zero_activation_failed' ||
+        source == 'pre_sos_clear_empty') {
+      return 'app';
+    }
+    if (source.startsWith('repository_load:') ||
+        source == 'sos_state_stream' ||
+        source.startsWith('fetch_sos_state') ||
+        source.startsWith('sos_rehydrate:')) {
+      return 'backend_repository';
+    }
+    return 'unknown';
   }
 
   void _logPublicSosStateMachineBypassBlocked({
@@ -15236,6 +15421,20 @@ class _RemoteRelayTerminalBaseline {
   final String? signature;
   final DateTime? observedAt;
   final int eventSequence;
+}
+
+class _PublicSosStateMachineBypass {
+  const _PublicSosStateMachineBypass({
+    required this.reason,
+    required this.authority,
+    required this.origin,
+    required this.policy,
+  });
+
+  final String reason;
+  final String authority;
+  final String origin;
+  final String policy;
 }
 
 class _RemoteRelayCancelDeviceIdentity {

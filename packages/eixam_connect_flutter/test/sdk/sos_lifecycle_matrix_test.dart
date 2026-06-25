@@ -220,6 +220,15 @@ void main() {
           _hasDebugMessage('SDK_SOS_STATE_MACHINE_BYPASS_RETAINED'),
           isTrue,
         );
+        expect(
+          _hasDebugMessage(
+            'SDK_SOS_STATE_MACHINE_BYPASS_RETAINED '
+            'source=sos_state_stream from=sent to=cancelled '
+            'reason=repository_terminal_stream authority=repository '
+            'origin=backend_repository policy=authoritative_terminal',
+          ),
+          isTrue,
+        );
       } finally {
         await harness.dispose();
       }
