@@ -47,6 +47,153 @@ void main() {
       await coordinator.dispose();
     });
 
+    test('handoff reconnect uses known-device reconnect path', () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _FakeDeviceRepository();
+      final store = PreferredBleDeviceStore(
+        localStore: SharedPrefsSdkStore(),
+      );
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: 'ble-demo-r1',
+          displayName: 'EIXAM Demo',
+          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+        ),
+      );
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+      );
+
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+      final result = await coordinator.tryAutoConnectForHandoff(
+        trigger: 'startup',
+        attemptId: 'attempt-1',
+      );
+
+      expect(result.status, PreferredDeviceReconnectResultStatus.connected);
+      expect(repository.reconnectCallCount, 1);
+      expect(repository.pairCallCount, 0);
+      expect(repository.lastReconnectedDeviceId, 'ble-demo-r1');
+      expect(repository.lastReconnectAttemptId, 'attempt-1');
+      await coordinator.dispose();
+    });
+
+    test('handoff reconnect returns bluetoothOff when BLE is not ready',
+        () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _FakeDeviceRepository();
+      final store = PreferredBleDeviceStore(
+        localStore: SharedPrefsSdkStore(),
+      );
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: 'ble-demo-r1',
+          displayName: 'EIXAM Demo',
+          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+        ),
+      );
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+        permissionStateProvider: () async => const PermissionState(
+          bluetooth: SdkPermissionStatus.granted,
+          bluetoothEnabled: false,
+        ),
+      );
+
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+      final result = await coordinator.tryAutoConnectForHandoff(
+        trigger: 'startup',
+        attemptId: 'attempt-1',
+      );
+
+      expect(result.status, PreferredDeviceReconnectResultStatus.bluetoothOff);
+      expect(repository.reconnectCallCount, 0);
+      expect(
+        BleDebugRegistry.instance.currentState.events
+            .map((event) => event.message),
+        contains('BLE_READINESS_BLOCKED bluetoothOff'),
+      );
+      await coordinator.dispose();
+    });
+
+    test('handoff reconnect returns noKnownDevice without scanning loop',
+        () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _FakeDeviceRepository();
+      final store = PreferredBleDeviceStore(
+        localStore: SharedPrefsSdkStore(),
+      );
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+      );
+
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+      final result = await coordinator.tryAutoConnectForHandoff(
+        trigger: 'startup',
+        attemptId: 'attempt-1',
+      );
+
+      expect(result.status, PreferredDeviceReconnectResultStatus.noKnownDevice);
+      expect(repository.reconnectCallCount, 0);
+      expect(repository.pairCallCount, 0);
+      await coordinator.dispose();
+    });
+
+    test('handoff reconnect is single-flight', () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _FakeDeviceRepository()
+        ..reconnectDelay = const Duration(milliseconds: 20);
+      final store = PreferredBleDeviceStore(
+        localStore: SharedPrefsSdkStore(),
+      );
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: 'ble-demo-r1',
+          displayName: 'EIXAM Demo',
+          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+        ),
+      );
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+      );
+
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+      final first = coordinator.tryAutoConnectForHandoff(
+        trigger: 'startup',
+        attemptId: 'attempt-1',
+      );
+      final second = await coordinator.tryAutoConnectForHandoff(
+        trigger: 'startup',
+        attemptId: 'attempt-2',
+      );
+
+      expect(second.status, PreferredDeviceReconnectResultStatus.reconnecting);
+      expect(
+          (await first).status, PreferredDeviceReconnectResultStatus.connected);
+      expect(repository.reconnectCallCount, 1);
+      await coordinator.dispose();
+    });
+
     test('skips auto-connect when manual disconnect is active', () async {
       SharedPreferences.setMockInitialValues(<String, Object>{});
       BleDebugRegistry.instance.reset();
@@ -444,7 +591,9 @@ class _FakeDeviceRepository
   int refreshCallCount = 0;
   String? lastPairingCode;
   String? lastReconnectedDeviceId;
+  String? lastReconnectAttemptId;
   List<Object> pairErrors = <Object>[];
+  Duration reconnectDelay = Duration.zero;
   bool _commandCapable = false;
 
   void setDisconnected() {
@@ -504,6 +653,10 @@ class _FakeDeviceRepository
   }) async {
     reconnectCallCount++;
     lastReconnectedDeviceId = device.deviceId;
+    lastReconnectAttemptId = attemptId;
+    if (reconnectDelay > Duration.zero) {
+      await Future<void>.delayed(reconnectDelay);
+    }
     if (pairErrors.isNotEmpty) {
       throw pairErrors.removeAt(0);
     }

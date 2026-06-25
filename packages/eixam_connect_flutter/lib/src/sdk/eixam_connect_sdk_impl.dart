@@ -92,6 +92,7 @@ class EixamConnectSdkImpl
     _bleAutoReconnectCoordinator = BleAutoReconnectCoordinator(
       deviceRepository: deviceRepository,
       preferredDeviceStore: preferredBleDeviceStore,
+      permissionStateProvider: permissionsRepository.getPermissionState,
     );
     _bleOperationalRuntimeBridge = BleOperationalRuntimeBridge(
       bleIncomingEvents: bleIncomingEvents,
@@ -1526,6 +1527,19 @@ class EixamConnectSdkImpl
 
   @override
   Stream<DeviceStatus> get deviceStatusStream => watchDeviceStatus();
+
+  @override
+  Future<PreferredDeviceReconnectResult> reconnectPreferredDevice({
+    required String reason,
+    String? attemptId,
+    String? platformRemoteId,
+  }) {
+    return _bleAutoReconnectCoordinator.tryAutoConnectForHandoff(
+      trigger: reason,
+      attemptId: attemptId,
+      platformRemoteId: platformRemoteId,
+    );
+  }
 
   @override
   Future<DeviceStatus> activateDevice({required String activationCode}) {

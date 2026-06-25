@@ -13,6 +13,7 @@ import '../entities/app_feedback.dart';
 import '../entities/firmware_update.dart';
 import '../entities/permission_state.dart';
 import '../entities/preferred_device.dart';
+import '../entities/preferred_device_reconnect_result.dart';
 import '../entities/protection_mode_models.dart';
 import '../entities/public_pre_sos_status.dart';
 import '../entities/os_sos_widget_activation.dart';
@@ -141,6 +142,11 @@ abstract class EixamConnectSdk {
   Future<void> disconnectDevice();
   Future<PreferredDevice?> get preferredDevice;
   Stream<DeviceStatus> get deviceStatusStream;
+  Future<PreferredDeviceReconnectResult> reconnectPreferredDevice({
+    required String reason,
+    String? attemptId,
+    String? platformRemoteId,
+  });
 
   Future<List<BackendRegisteredDevice>> listRegisteredDevices();
   Future<BackendRegisteredDevice> upsertRegisteredDevice({

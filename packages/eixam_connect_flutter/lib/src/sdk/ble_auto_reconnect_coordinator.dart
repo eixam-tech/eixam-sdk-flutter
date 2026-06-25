@@ -15,9 +15,11 @@ class BleAutoReconnectCoordinator {
     required DeviceRepository deviceRepository,
     required PreferredBleDeviceStore preferredDeviceStore,
     this.autoReconnectPairingCode = 'AUTO-RECONNECT',
+    Future<PermissionState> Function()? permissionStateProvider,
     bool Function()? isIosPlatform,
   })  : _deviceRepository = deviceRepository,
         _preferredDeviceStore = preferredDeviceStore,
+        _permissionStateProvider = permissionStateProvider,
         _isIosPlatform = isIosPlatform ?? (() => Platform.isIOS);
 
   // The first retry waits longer than flutter_blue_plus's internal 2 s
@@ -34,6 +36,7 @@ class BleAutoReconnectCoordinator {
 
   final DeviceRepository _deviceRepository;
   final PreferredBleDeviceStore _preferredDeviceStore;
+  final Future<PermissionState> Function()? _permissionStateProvider;
   final String autoReconnectPairingCode;
   final bool Function() _isIosPlatform;
 
@@ -87,9 +90,9 @@ class BleAutoReconnectCoordinator {
     await _tryAutoConnect(trigger: trigger);
   }
 
-  Future<bool> tryAutoConnectForHandoff({
+  Future<PreferredDeviceReconnectResult> tryAutoConnectForHandoff({
     required String trigger,
-    required String attemptId,
+    String? attemptId,
     String? platformRemoteId,
   }) {
     return _tryAutoConnect(
@@ -185,7 +188,7 @@ class BleAutoReconnectCoordinator {
     await _deviceStatusSub?.cancel();
   }
 
-  Future<bool> _tryAutoConnect({
+  Future<PreferredDeviceReconnectResult> _tryAutoConnect({
     required String trigger,
     String? attemptId,
     String? platformRemoteId,
@@ -198,7 +201,9 @@ class BleAutoReconnectCoordinator {
         attemptId: attemptId,
         reason: 'connect_guard_blocked',
       );
-      return false;
+      return const PreferredDeviceReconnectResult.failed(
+        reason: 'manual_disconnect_requested',
+      );
     }
     if (!_isAppForeground && trigger != 'startup') {
       BleDebugRegistry.instance.recordEvent(
@@ -208,14 +213,41 @@ class BleAutoReconnectCoordinator {
         attemptId: attemptId,
         reason: 'connect_guard_blocked',
       );
-      return false;
+      return const PreferredDeviceReconnectResult.failed(
+        reason: 'app_not_foreground',
+      );
     }
     if (_isConnectionAttemptInProgress) {
       BleDebugRegistry.instance.recordEvent(
         '$trigger auto-connect skipped because connection is already in progress',
       );
       _recordNoProviderCall(attemptId: attemptId, reason: 'inflight_blocked');
-      return false;
+      return const PreferredDeviceReconnectResult.reconnecting(
+        reason: 'inflight',
+      );
+    }
+
+    final readiness = await _readReconnectReadiness();
+    if (readiness != null && !readiness.canUseBluetooth) {
+      if (readiness.bluetoothEnabled) {
+        BleDebugRegistry.instance.recordEvent(
+          'BLE_READINESS_BLOCKED permissionMissing',
+        );
+        _recordNoProviderCall(
+          attemptId: attemptId,
+          reason: 'permission_missing',
+        );
+        return const PreferredDeviceReconnectResult.permissionMissing(
+          reason: 'bluetooth_permission_missing',
+        );
+      }
+      BleDebugRegistry.instance.recordEvent(
+        'BLE_READINESS_BLOCKED bluetoothOff',
+      );
+      _recordNoProviderCall(attemptId: attemptId, reason: 'runtime_not_ready');
+      return const PreferredDeviceReconnectResult.bluetoothOff(
+        reason: 'bluetooth_off',
+      );
     }
 
     final currentStatus = await _deviceRepository.getDeviceStatus();
@@ -230,7 +262,9 @@ class BleAutoReconnectCoordinator {
           attemptId: attemptId,
           reason: 'unsupported_state',
         );
-        return false;
+        return const PreferredDeviceReconnectResult.connected(
+          reason: 'already_connected',
+        );
       }
       if (refreshedStatus.connected) {
         BleDebugRegistry.instance.recordEvent(
@@ -256,7 +290,9 @@ class BleAutoReconnectCoordinator {
         '$trigger auto-connect skipped because no preferred device is stored',
       );
       _recordNoProviderCall(attemptId: attemptId, reason: 'missing_remote_id');
-      return false;
+      return const PreferredDeviceReconnectResult.noKnownDevice(
+        reason: 'missing_preferred_device',
+      );
     }
     final remoteId = reconnectDevice.deviceId.trim();
     if (_isIosPlatform() && !_isValidIosBleRemoteId(reconnectDevice.deviceId)) {
@@ -274,7 +310,9 @@ class BleAutoReconnectCoordinator {
         'platform=ios reason=${_missingRemoteIdReconnectReason(trigger)}',
       );
       _recordNoProviderCall(attemptId: attemptId, reason: 'missing_remote_id');
-      return false;
+      return const PreferredDeviceReconnectResult.noKnownDevice(
+        reason: 'missing_valid_remote_id',
+      );
     }
     if (_isIosPlatform()) {
       BleDebugRegistry.instance.recordEvent(
@@ -307,7 +345,9 @@ class BleAutoReconnectCoordinator {
         attemptId: attemptId,
         reason: 'unsupported_state',
       );
-      return false;
+      return const PreferredDeviceReconnectResult.failed(
+        reason: 'unsupported_repository',
+      );
     }
     final knownDeviceReconnectRepository =
         reconnectRepository as KnownDeviceReconnectRepository;
@@ -320,7 +360,9 @@ class BleAutoReconnectCoordinator {
           attemptId: attemptId,
         ),
       );
-      return true;
+      return const PreferredDeviceReconnectResult.connected(
+        reason: 'reconnect_succeeded',
+      );
     } catch (error) {
       if (_isMobileBondRequired(error)) {
         await _handleMissingMobileBond(reconnectDevice.deviceId);
@@ -328,7 +370,9 @@ class BleAutoReconnectCoordinator {
           attemptId: attemptId,
           reason: 'unsupported_state',
         );
-        return false;
+        return const PreferredDeviceReconnectResult.noKnownDevice(
+          reason: 'mobile_bond_missing',
+        );
       }
       if (_isInvalidBleRemoteId(error)) {
         BleDebugRegistry.instance.recordEvent(
@@ -338,17 +382,41 @@ class BleAutoReconnectCoordinator {
           attemptId: attemptId,
           reason: 'missing_remote_id',
         );
-        return false;
+        return const PreferredDeviceReconnectResult.noKnownDevice(
+          reason: 'invalid_remote_id',
+        );
       }
       if (_isRuntimeNotReady(error)) {
         _recordNoProviderCall(
           attemptId: attemptId,
           reason: 'runtime_not_ready',
         );
-        return false;
+        BleDebugRegistry.instance.recordEvent(
+          'BLE_READINESS_BLOCKED bluetoothOff',
+        );
+        return const PreferredDeviceReconnectResult.bluetoothOff(
+          reason: 'bluetooth_off',
+        );
       }
       onUnexpectedDisconnect();
-      return true;
+      return const PreferredDeviceReconnectResult.reconnecting(
+        reason: 'retry_scheduled',
+      );
+    }
+  }
+
+  Future<PermissionState?> _readReconnectReadiness() async {
+    final provider = _permissionStateProvider;
+    if (provider == null) {
+      return null;
+    }
+    try {
+      return await provider();
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'BLE_READINESS_CHECK_FAILED error=$error',
+      );
+      return null;
     }
   }
 
