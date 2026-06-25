@@ -13,7 +13,7 @@ Do not use this checkpoint as evidence that backend, firmware, platform-native, 
 
 ## Executive Summary
 
-The SDK/app audit remediation is now materially safer than the starting point, especially around SOS lifecycle authority, app-side state ownership, MQTT-only SOS trigger behavior, sensitive diagnostics redaction, endpoint guardrails, local-storage exposure reduction, and typed SDK/app boundary cleanup.
+The SDK/app audit remediation is now materially safer than the starting point, especially around SOS lifecycle authority, public SOS stream state ownership, app-side state ownership, MQTT-only SOS trigger behavior, sensitive diagnostics redaction, endpoint guardrails, local-storage exposure reduction, and typed SDK/app boundary cleanup.
 
 Approximate status:
 
@@ -42,7 +42,7 @@ Most urgent SDK/app risks have either been fixed or strongly mitigated where the
 
 - SDK typed SOS authority metadata is in place.
 - App conservative SOS authority fallback prevents backend/history-only incidents from becoming active local SOS without typed SDK authority.
-- Public SDK SOS stream is guarded by `SosStateMachine`.
+- Public SDK SOS stream state writes are centralized through `_emitPublicSosState` / `_applyPublicSosState`, with canonical transitions still guarded by `SosStateMachine.canTransition(...)`.
 - App synthetic `sending` / `active` SOS state has been removed.
 - Device-only SOS success is handled correctly when the device path succeeds even if backend is unavailable.
 - SOS trigger uses MQTT; HTTP SOS trigger remains blocked.
@@ -58,8 +58,11 @@ Most urgent SDK/app risks have either been fixed or strongly mitigated where the
 ### Strongly Mitigated SDK/App
 
 - SOS lifecycle and local authority are now SDK-owned and guarded by typed authority.
+- ARCH-SDK-2 second-pass public SOS stream boundary cleanup is complete and strongly mitigated: direct `_publicSosState` and `_publicSosStateController.add(...)` mutation is centralized, broad source-string bypass predicates were replaced with explicit source allow-lists, and retained bypass diagnostics include `reason`, `authority`, `origin`, and `policy`.
+- Retained public SOS transition bypasses are intentional and constrained to authoritative/compatibility classes: repository/backend terminal authority, repository rehydration, device runtime overrides, app-trigger publish shortcut, explicit idle clears, and external/remote-relay isolation clears.
 - Backend/open history cannot promote active local SOS without SDK authority.
 - External/remote LoRa events remain external/history-only for local UI unless there is valid local SDK authority.
+- External/remote relay paths continue to clear or remain idle as `external_remote_relay_isolation`; they do not become local active SOS through the public stream boundary.
 - MQTT lifecycle inbound events are authority-gated.
 - App compatibility guards are bounded by strong identity evidence.
 - Partner SDK adapter typed SOS path is tightened.
@@ -88,6 +91,16 @@ Most urgent SDK/app risks have either been fixed or strongly mitigated where the
 ## QA Status
 
 Automated QA gates passed before this docs-only checkpoint. Tests were not rerun for this checkpoint.
+
+Most recent ARCH-SDK-2 second-pass validation recorded before this docs update:
+
+- `dart format` on touched SDK files.
+- `dart analyze` on touched SDK files with only the existing `implementation_imports` info.
+- `cd packages/eixam_connect_core && dart test test/state/sos_state_machine_test.dart -r expanded`
+- `cd packages/eixam_connect_flutter && flutter test test/sdk/sos_lifecycle_matrix_test.dart --concurrency=1 -r expanded`
+- `cd packages/eixam_connect_flutter && flutter test test/sdk/remote_relay_sos_backend_handoff_test.dart --concurrency=1 -r expanded`
+- `git diff --check`
+- Only intended SDK files were modified during the ARCH-SDK-2 implementation pass.
 
 SDK core:
 
@@ -148,7 +161,7 @@ Deferred / not passed:
 - Real token/session migration after platform secure storage is approved and implemented.
 - User-data migration for sensitive persisted app/SDK state.
 - Remaining `LiveEixamSdkClient` typed runtime seam cleanup.
-- Continued public SDK SOS stream boundary cleanup.
+- Future public SDK SOS stream work should preserve the completed centralized boundary and explicit allow-lists, not broaden retained bypass classes.
 - Manual QA expansion after any secure-storage or BLE enforcement rollout.
 
 ## Blocked Firmware/Backend/Platform Items
@@ -177,7 +190,7 @@ Deferred / not passed:
 
 | Area | Current status | Remaining risk |
 | --- | --- | --- |
-| SOS lifecycle / authority | Strongly mitigated SDK/App | Future regressions could reintroduce app-side authority if typed SDK authority is bypassed. |
+| SOS lifecycle / authority | Strongly mitigated SDK/App | Future regressions could reintroduce app-side authority if typed SDK authority or the centralized public SOS stream boundary is bypassed. Intentional public transition bypasses remain for constrained authoritative/compatibility paths. |
 | SOS transport | Fixed SDK/App | Backend/server-side authorization remains outside the SDK/app scope. |
 | Remote relay / LoRa | Strongly mitigated SDK/App for automated gate; manual QA deferred | Remote relay/LoRa cannot be release evidence until manual QA is run. |
 | BLE security | Partially mitigated SDK/App | Full fix requires firmware/protocol support for auth, integrity, replay rejection, pairing, and identity. |
@@ -201,5 +214,6 @@ Deferred / not passed:
 - SEC-BLE is not fully fixed.
 - Secure storage migration is not complete.
 - Backend, broker, infrastructure, native platform, and firmware items are not fixed by this SDK/app checkpoint.
+- Public SOS transition bypasses are not fully eliminated; retained bypasses are explicit, constrained, and diagnostic-rich.
 - Remote relay/LoRa manual QA has not passed.
 - This docs-only checkpoint did not run tests and did not change production behavior.

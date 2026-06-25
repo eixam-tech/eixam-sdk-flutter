@@ -1,6 +1,6 @@
 # SDK/App Audit Remediation Tracker
 
-Status: SDK/app-only checkpoint for Dani audit remediation after SEC-BLE Phase 0 SDK-only scaffolding, ARCH-APP-5.3 `LiveEixamSdkClient` typed seam audit, stale override cleanup, aggregate QA gate pass, and Android manual QA checkpoint.
+Status: SDK/app-only checkpoint for Dani audit remediation after SEC-BLE Phase 0 SDK-only scaffolding, ARCH-APP-5.3 `LiveEixamSdkClient` typed seam audit, ARCH-SDK-2 second-pass public SOS stream boundary cleanup, stale override cleanup, aggregate QA gate pass, and Android manual QA checkpoint.
 
 Global checkpoint: `docs/audit/sdk-app-audit-global-checkpoint.md`.
 
@@ -39,7 +39,9 @@ Allowed finding classifications:
 - ARCH-APP-5.3 `LiveEixamSdkClient` typed seam audit is complete and strongly mitigated app-side: remaining dynamic/Object?/Map/`NoSuchMethodError` usage is inventoried at the injected SDK runtime boundary, one critical pre-typed/test fake SOS authority fallback is centralized in `_legacyDynamicSdkFallbackSosAuthorityFromIncident(...)`, and significant typed runtime seam work remains future scope.
 - Stale override cleanup is complete in `live_eixam_sdk_client.dart`: four stale `@override` annotations were removed without changing method bodies, names, signatures, or runtime behavior.
 - Aggregate QA passed before this docs-only checkpoint across the app, SDK core, and SDK Flutter gate list below; no tests were run as part of this docs-only update.
-- ARCH-SDK-2 public SOS stream guard first pass is complete; cleanup remains.
+- ARCH-SDK-2 second-pass public SOS stream boundary cleanup is complete and strongly mitigated: public SOS state writes are centralized through `_emitPublicSosState` / `_applyPublicSosState`, canonical transitions still route through `SosStateMachine.canTransition(...)`, and retained bypasses are explicit source allow-lists with diagnostic context rather than broad source-string predicates.
+- Some public SOS state-machine bypasses remain intentional for authoritative/compatibility paths: repository/backend terminal authority, repository rehydration, device runtime overrides, app-trigger publish shortcut, explicit idle clears, and external/remote-relay isolation clears. These are not eliminated; they are constrained and diagnostic-rich with `reason`, `authority`, `origin`, and `policy`.
+- External/remote relay paths continue to clear or remain idle as `external_remote_relay_isolation`; they do not become local active SOS through the public stream boundary.
 - Remote relay SOS test-debt cleanup is complete: stale decoder expectations, HTTP-era assertions, active-device PRE-SOS countdown behavior, and correlated backend cancel setup are aligned with current SDK behavior.
 - SEC-NET endpoint hardening is complete for the SDK/app boundary.
 - SEC-NET hardening inventory is documented in `docs/audit/network-security-hardening-inventory.md`. It confirms SDK/app endpoint and transport guardrails, MQTT-only SOS trigger policy, HTTP cancel/read-only preservation, MQTT lifecycle authority gating, auth/token handling, diagnostics redaction, and local/secure-storage interaction without changing runtime behavior.
@@ -64,7 +66,7 @@ Allowed finding classifications:
 | SEC-DIAG-PII | Fixed SDK/App | SDK+app | Medium | Sensitive diagnostics and PII redaction were added for SDK/app logs, raw payloads, identity values, topics, headers, and payload bodies. | New diagnostic fields can reintroduce sensitive data if not routed through redactors. | Require redaction review for all new diagnostics. |
 | ARCH-APP-5 | Strongly mitigated SDK/App | app | Medium | Typed SDK boundary second pass is complete in `partner_sdk_adapter.dart`: the SOS adapter path now uses `SdkSosSnapshot`, and remaining remote-relay SDK event dynamic access is centralized behind `_legacySdkEventStream()`. ARCH-APP-5.3 is also complete in `live_eixam_sdk_client.dart`: remaining dynamic/Object?/Map/`NoSuchMethodError` usage is inventoried at the injected SDK runtime boundary, and the critical pre-typed/test fake SOS authority fallback is centralized in `_legacyDynamicSdkFallbackSosAuthorityFromIncident(...)`. | `LiveEixamSdkClient` still has significant dynamic runtime seam work that belongs to a larger future pass. It is not fully typed. | Keep app code on typed SDK APIs and plan remaining `LiveEixamSdkClient` seam work separately; do not claim dynamic access is fully eliminated. |
 | APP-STALE-OVERRIDE-CLEANUP | Fixed SDK/App | app | Low | Removed four stale `@override` annotations from `live_eixam_sdk_client.dart` after the typed seam audit. No method bodies, names, signatures, or runtime behavior changed. | None for the stale override warnings identified in this checkpoint. | Keep analyzer clean when adapter interfaces or implementation signatures change. |
-| ARCH-SDK-2 | Strongly mitigated SDK/App | SDK | Medium | Public SOS stream guard first pass is complete, keeping public stream consumers aligned to guarded SDK state. | Remaining public-boundary cleanup and regression coverage may still be needed. | Continue cleanup in a dedicated public-boundary pass. |
+| ARCH-SDK-2 | Strongly mitigated SDK/App | SDK | Medium | Public SOS stream guard second pass is complete. Public state writes now flow through `_emitPublicSosState` / `_applyPublicSosState`, direct `_publicSosState` and `_publicSosStateController.add(...)` mutation is centralized, canonical transitions still use `SosStateMachine.canTransition(...)`, broad bypass predicates were replaced with explicit source allow-lists, retained bypass diagnostics include `reason`, `authority`, `origin`, and `policy`, and focused lifecycle coverage asserts the retained repository terminal bypass diagnostic. External/remote relay paths still clear or remain idle as `external_remote_relay_isolation` instead of becoming local active. | Intentional bypasses remain for repository/backend terminal authority, repository rehydration, device runtime overrides, app-trigger publish shortcut, explicit idle clears, and external/remote-relay isolation clears. These are constrained and diagnostic-rich, not eliminated. | Preserve the centralized public SOS boundary and explicit allow-lists during future lifecycle work; extend focused regression coverage when a retained bypass class changes. |
 | REMOTE-RELAY-SOS-TEST-DEBT | Fixed SDK/App | SDK tests | Medium | `remote_relay_sos_backend_handoff_test.dart` now matches current decoder output, MQTT contract/repository paths, active-device PRE-SOS countdown promotion, and backend cancel correlation requirements. The remote relay SOS handoff test debt is cleaned up without runtime behavior changes. | Continue keeping relay tests aligned to SDK contract changes. | Keep this test in the QA gate list for future relay/SOS work. |
 
 ## Partial SDK/App Mitigations
@@ -117,7 +119,7 @@ These are not fixed in the SDK/app boundary.
 2. Remaining typed runtime boundary cleanup.
    - Keep ARCH-APP-5.3 marked strongly mitigated app-side.
    - Track remaining `LiveEixamSdkClient` dynamic runtime seam work as future work, not fixed.
-   - Continue ARCH-SDK-2 public SOS stream guard cleanup.
+   - Preserve the completed ARCH-SDK-2 public SOS stream boundary cleanup: keep public state writes centralized, keep bypasses on explicit allow-lists, and do not broaden the retained authoritative bypass classes.
    - Keep app code thin and SDK API-driven.
 
 3. Secure storage abstraction design.
@@ -175,6 +177,16 @@ Checkpoint constraints:
 ## Current QA Gate List
 
 These tests are the current audit checkpoint QA gate list. They passed before this docs-only checkpoint; this docs-only update did not rerun tests.
+
+Most recent ARCH-SDK-2 second-pass validation recorded before this docs update:
+
+- `dart format` on touched SDK files.
+- `dart analyze` on touched SDK files with only the existing `implementation_imports` info.
+- `cd packages/eixam_connect_core && dart test test/state/sos_state_machine_test.dart -r expanded`
+- `cd packages/eixam_connect_flutter && flutter test test/sdk/sos_lifecycle_matrix_test.dart --concurrency=1 -r expanded`
+- `cd packages/eixam_connect_flutter && flutter test test/sdk/remote_relay_sos_backend_handoff_test.dart --concurrency=1 -r expanded`
+- `git diff --check`
+- Only intended SDK files were modified during the ARCH-SDK-2 implementation pass.
 
 App:
 
