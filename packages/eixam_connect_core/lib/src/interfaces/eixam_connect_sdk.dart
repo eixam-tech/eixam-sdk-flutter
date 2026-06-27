@@ -147,6 +147,10 @@ abstract class EixamConnectSdk {
     String? attemptId,
     String? platformRemoteId,
   });
+  Future<void> startPreferredDeviceReconnectMonitor({
+    String reason = 'ble_ready',
+  });
+  Future<void> stopPreferredDeviceReconnectMonitor();
   Future<PreferredDeviceReconnectResult> reconnectPreferredDevice({
     required String reason,
     String? attemptId,

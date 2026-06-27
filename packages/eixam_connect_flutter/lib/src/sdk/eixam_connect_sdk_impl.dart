@@ -1534,11 +1534,35 @@ class EixamConnectSdkImpl
     String? attemptId,
     String? platformRemoteId,
   }) {
+    BleDebugRegistry.instance.recordEvent(
+      'EIXAM_RECONNECT_TRACE sdk_bootstrap_called '
+      'source=$reason alreadyInFlight=unknown connectedKnown=unknown',
+    );
     return _bleAutoReconnectCoordinator.tryAutoConnectForHandoff(
       trigger: reason,
       attemptId: attemptId,
       platformRemoteId: platformRemoteId,
     );
+  }
+
+  @override
+  Future<void> startPreferredDeviceReconnectMonitor({
+    String reason = 'ble_ready',
+  }) {
+    BleDebugRegistry.instance.recordEvent(
+      'EIXAM_RECONNECT_TRACE sdk_ble_ready_monitor_start source=$reason',
+    );
+    return _bleAutoReconnectCoordinator.startBleReadinessReconnectMonitor(
+      trigger: reason,
+    );
+  }
+
+  @override
+  Future<void> stopPreferredDeviceReconnectMonitor() {
+    BleDebugRegistry.instance.recordEvent(
+      'EIXAM_RECONNECT_TRACE sdk_ble_ready_monitor_stop',
+    );
+    return _bleAutoReconnectCoordinator.stopBleReadinessReconnectMonitor();
   }
 
   @override
