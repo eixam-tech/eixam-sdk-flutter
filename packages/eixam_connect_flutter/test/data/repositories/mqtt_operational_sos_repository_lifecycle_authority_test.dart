@@ -1,11 +1,17 @@
 import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:eixam_connect_flutter/src/data/datasources_local/shared_prefs_sdk_store.dart';
+import 'package:eixam_connect_flutter/src/data/datasources_remote/sos_remote_data_source.dart';
+import 'package:eixam_connect_flutter/src/data/dtos/sos_history_dto.dart';
+import 'package:eixam_connect_flutter/src/data/dtos/sos_incident_dto.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/mqtt_operational_sos_repository.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/sdk/operational_realtime_client.dart';
 import 'package:eixam_connect_flutter/src/sdk/sdk_mqtt_contract.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../../support/fakes/memory_shared_prefs_sdk_store.dart';
 
 void main() {
   group('MqttOperationalSosRepository lifecycle authority', () {
@@ -24,6 +30,143 @@ void main() {
       await repository.dispose();
       await realtimeClient.dispose();
       BleDebugRegistry.instance.reset();
+    });
+
+    test('clears stale restored open state without incident and publishes SOS',
+        () async {
+      final remoteDataSource = _FakeSosRemoteDataSource();
+      final store = MemorySharedPrefsSdkStore()
+        ..stringValues[SharedPrefsSdkStore.sosStateKey] = SosState.sent.name;
+      await repository.dispose();
+      repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        remoteDataSource: remoteDataSource,
+        localStore: store,
+      );
+      await repository.restoreState();
+
+      final incident = await repository.triggerSos(
+        triggerSource: 'commercial_app',
+      );
+
+      expect(incident.state, SosState.sent);
+      expect(realtimeClient.publishedSos, hasLength(1));
+      expect(remoteDataSource.getActiveSosCalls, 1);
+      expect(await repository.getSosState(), SosState.sent);
+      expect(_hasDiagnostic('SOS_ALREADY_ACTIVE_GUARD_CHECK'), isTrue);
+      expect(_hasDiagnostic('SOS_ALREADY_ACTIVE_GUARD_STALE_CLEARED'), isTrue);
+      expect(_hasDiagnostic('SOS_TRIGGER_CONTINUES_AFTER_STALE_GUARD_CLEAR'),
+          isTrue);
+    });
+
+    test('keeps duplicate protection for real active local incident', () async {
+      await _triggerAppSos(repository);
+      final publishCount = realtimeClient.publishedSos.length;
+
+      await expectLater(
+        repository.triggerSos(triggerSource: 'commercial_app'),
+        throwsA(
+          isA<SosException>().having(
+            (error) => error.code,
+            'code',
+            'E_SOS_ALREADY_ACTIVE',
+          ),
+        ),
+      );
+
+      expect(realtimeClient.publishedSos, hasLength(publishCount));
+      expect(await repository.getSosState(), SosState.sent);
+      expect(_hasDiagnostic('SOS_ALREADY_ACTIVE_GUARD_BLOCKED'), isTrue);
+    });
+
+    test('keeps duplicate protection when backend rehydrates active SOS',
+        () async {
+      final remoteDataSource = _FakeSosRemoteDataSource()
+        ..active = _localActiveDto(id: 'backend-active-sos');
+      final store = MemorySharedPrefsSdkStore()
+        ..stringValues[SharedPrefsSdkStore.sosStateKey] = SosState.sent.name;
+      await repository.dispose();
+      repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        remoteDataSource: remoteDataSource,
+        localStore: store,
+      );
+      await repository.restoreState();
+
+      await expectLater(
+        repository.triggerSos(triggerSource: 'commercial_app'),
+        throwsA(
+          isA<SosException>().having(
+            (error) => error.code,
+            'code',
+            'E_SOS_ALREADY_ACTIVE',
+          ),
+        ),
+      );
+
+      expect(realtimeClient.publishedSos, isEmpty);
+      expect(await repository.getSosState(), SosState.sent);
+      expect((await repository.getCurrentIncident())!.id, 'backend-active-sos');
+      expect(_hasDiagnostic('SOS_ALREADY_ACTIVE_GUARD_BLOCKED'), isTrue);
+    });
+
+    test('does not clear cancel-pending state as stale', () async {
+      final remoteDataSource = _FakeSosRemoteDataSource();
+      final store = MemorySharedPrefsSdkStore()
+        ..stringValues[SharedPrefsSdkStore.sosStateKey] =
+            SosState.cancelRequested.name;
+      await repository.dispose();
+      repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        remoteDataSource: remoteDataSource,
+        localStore: store,
+      );
+      await repository.restoreState();
+
+      await expectLater(
+        repository.triggerSos(triggerSource: 'commercial_app'),
+        throwsA(
+          isA<SosException>().having(
+            (error) => error.code,
+            'code',
+            'E_SOS_ALREADY_ACTIVE',
+          ),
+        ),
+      );
+
+      expect(realtimeClient.publishedSos, isEmpty);
+      expect(await repository.getSosState(), SosState.cancelRequested);
+      expect(_hasDiagnostic('SOS_ALREADY_ACTIVE_GUARD_BLOCKED'), isTrue);
+    });
+
+    test(
+        'does not promote external backend evidence while clearing stale guard',
+        () async {
+      final remoteDataSource = _FakeSosRemoteDataSource()
+        ..active = _externalActiveDto(id: 'remote-relay-history-sos');
+      final store = MemorySharedPrefsSdkStore()
+        ..stringValues[SharedPrefsSdkStore.sosStateKey] = SosState.sent.name;
+      await repository.dispose();
+      repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        remoteDataSource: remoteDataSource,
+        localStore: store,
+      );
+      await repository.restoreState();
+
+      final incident = await repository.triggerSos(
+        triggerSource: 'commercial_app',
+      );
+
+      expect(realtimeClient.publishedSos, hasLength(1));
+      expect(incident.id, isNot('remote-relay-history-sos'));
+      final current = await repository.getCurrentIncident();
+      expect(current?.id, isNot('remote-relay-history-sos'));
+      expect(_hasDiagnostic('SOS_ALREADY_ACTIVE_GUARD_STALE_CLEARED'), isTrue);
+      expect(
+          _hasDiagnostic(
+              'SOS_ORIGIN_DECISION source=mqtt_repository_rehydrate'),
+          isTrue);
     });
 
     test('accepts matching active incidentId lifecycle update', () async {
@@ -288,9 +431,104 @@ bool _hasDiagnostic(String token) {
   );
 }
 
+SosIncidentDto _localActiveDto({required String id}) {
+  return SosIncidentDto(
+    id: id,
+    state: SosState.sent.name,
+    createdAt: DateTime.utc(2026, 6, 21).toIso8601String(),
+    triggerSource: 'commercial_app',
+    owner: 'app',
+    originKind: SosOriginKind.app.name,
+    actionability: SosActionability.localActionable.name,
+    displaySurface: SosDisplaySurface.activeAndHistory.name,
+  );
+}
+
+SosIncidentDto _externalActiveDto({required String id}) {
+  return SosIncidentDto(
+    id: id,
+    state: SosState.sent.name,
+    createdAt: DateTime.utc(2026, 6, 21).toIso8601String(),
+    source: 'remote_lora_relay',
+    triggerSource: 'remote_lora_relay',
+    relaySource: 'remote_lora_relay',
+    owner: 'external',
+    originKind: SosOriginKind.remoteRelay.name,
+    actionability: SosActionability.externalOnly.name,
+    displaySurface: SosDisplaySurface.historyOnly.name,
+  );
+}
+
 Future<void> _pumpRealtime() async {
   await Future<void>.delayed(Duration.zero);
   await Future<void>.delayed(Duration.zero);
+}
+
+final class _FakeSosRemoteDataSource implements SosRemoteDataSource {
+  SosIncidentDto? active;
+  int getActiveSosCalls = 0;
+
+  @override
+  Future<SosIncidentDto> triggerSos({
+    String? message,
+    required String triggerSource,
+    TrackingPosition? positionSnapshot,
+    String? deviceId,
+    String? hardwareId,
+    int? originatorNodeId,
+    int? relayNodeId,
+    String? relayDeviceId,
+    String? relayHardwareId,
+    String? relaySource,
+    String? incidentId,
+    String? cycleKey,
+    OsSosWidgetActivation? osWidgetActivation,
+    SdkDeviceBatterySnapshot? deviceBattery,
+    SdkCoverageSnapshot? deviceCoverage,
+    int? mobileBattery,
+    SdkCoverageSnapshot? mobileCoverage,
+  }) async {
+    active = _localActiveDto(id: incidentId ?? 'backend-triggered-sos');
+    return active!;
+  }
+
+  @override
+  Future<SosIncidentDto?> cancelSos({
+    String? deviceId,
+    String? source,
+    String? triggerSource,
+    String? relaySource,
+    int? originatorNodeId,
+    int? relayNodeId,
+    String? relayHardwareId,
+    String? incidentId,
+    String? cycleKey,
+  }) async {
+    final cancelled = active?.copyWith(state: SosState.cancelled.name);
+    active = cancelled;
+    return cancelled;
+  }
+
+  @override
+  Future<SosIncidentDto?> resolveSos() async {
+    final resolved = active?.copyWith(state: SosState.resolved.name);
+    active = resolved;
+    return resolved;
+  }
+
+  @override
+  Future<SosIncidentDto?> getActiveSos() async {
+    getActiveSosCalls += 1;
+    return active;
+  }
+
+  @override
+  Future<SosHistoryPageDto> listSosHistory({
+    String? cursor,
+    int limit = 20,
+  }) async {
+    return const SosHistoryPageDto(items: [], hasMore: false);
+  }
 }
 
 class _FakeOperationalRealtimeClient implements OperationalRealtimeClient {

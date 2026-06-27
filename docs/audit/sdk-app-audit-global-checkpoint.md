@@ -25,6 +25,8 @@ Approximate status:
 
 Most urgent SDK/app risks have either been fixed or strongly mitigated where they were controllable from the SDK/app boundary. Remaining high-risk areas are concentrated in firmware/protocol BLE security, backend/server authorization and broker credential policy, platform TLS/pinning decisions, real secure-storage rollout, and deferred remote relay/LoRa manual QA.
 
+Expanded Android manual QA passed on 2026-06-27 for the listed app-device cases below. This is a checkpoint for those Android cases only; it does not claim remote relay/LoRa coverage, iOS acceptance, or overall release readiness.
+
 ## Status Categories
 
 | Category | Meaning |
@@ -139,6 +141,25 @@ App:
 - `partner_app_repository_sos_sync_test`
 
 ## Manual QA Status
+
+Expanded Android manual QA checkpoint:
+
+Date: 2026-06-27
+
+Passed Android cases:
+
+- Auth/session.
+- SOS without device.
+- Devices/BLE.
+- SOS with connected device.
+- Background/resume.
+
+Not tested / deferred in this round:
+
+- Remote relay/LoRa manual QA was not tested and must not be treated as passed.
+- iOS QA remains deferred to final acceptance.
+
+Previous Android manual QA checkpoint:
 
 Android manual QA passed for:
 

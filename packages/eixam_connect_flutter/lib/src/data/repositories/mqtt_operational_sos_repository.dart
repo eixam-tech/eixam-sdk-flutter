@@ -115,10 +115,27 @@ class MqttOperationalSosRepository
         current != SosState.failed &&
         current != SosState.cancelled &&
         current != SosState.resolved) {
-      throw const SosException(
-        'E_SOS_ALREADY_ACTIVE',
-        'E_SOS_ALREADY_ACTIVE',
+      final staleGuardCleared = await _clearStaleAlreadyActiveGuardIfSafe(
+        current: current,
+        triggerSource: triggerSource,
+        relaySource: relaySource,
+        originatorNodeId: originatorNodeId,
+        relayNodeId: relayNodeId,
+        deviceId: deviceId,
+        hardwareId: hardwareId,
       );
+      if (staleGuardCleared) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_TRIGGER_CONTINUES_AFTER_STALE_GUARD_CLEAR '
+          'stage=${_stateMachine.current.name} '
+          'triggerSource=$triggerSource',
+        );
+      } else {
+        throw const SosException(
+          'E_SOS_ALREADY_ACTIVE',
+          'E_SOS_ALREADY_ACTIVE',
+        );
+      }
     }
     final appOwnedSos = _isAppOwnedTriggerSource(triggerSource) ||
         (originatorNodeId == null && relayNodeId == null);
@@ -230,6 +247,179 @@ class MqttOperationalSosRepository
       default:
         return false;
     }
+  }
+
+  Future<bool> _clearStaleAlreadyActiveGuardIfSafe({
+    required SosState current,
+    required String triggerSource,
+    required String? relaySource,
+    required int? originatorNodeId,
+    required int? relayNodeId,
+    required String? deviceId,
+    required String? hardwareId,
+  }) async {
+    _logAlreadyActiveGuardDecision(
+      'SOS_ALREADY_ACTIVE_GUARD_CHECK',
+      stage: current,
+      triggerSource: triggerSource,
+      relaySource: relaySource,
+      originatorNodeId: originatorNodeId,
+      relayNodeId: relayNodeId,
+      deviceId: deviceId,
+      hardwareId: hardwareId,
+      incident: _activeIncident,
+      hasBackendActive: false,
+      reason: 'open_local_state',
+    );
+
+    if (current == SosState.cancelRequested) {
+      _logAlreadyActiveGuardDecision(
+        'SOS_ALREADY_ACTIVE_GUARD_BLOCKED',
+        stage: current,
+        triggerSource: triggerSource,
+        relaySource: relaySource,
+        originatorNodeId: originatorNodeId,
+        relayNodeId: relayNodeId,
+        deviceId: deviceId,
+        hardwareId: hardwareId,
+        incident: _activeIncident,
+        hasBackendActive: false,
+        reason: 'cancel_pending',
+      );
+      return false;
+    }
+
+    if (_hasReliableOpenIncidentIdentity(_activeIncident)) {
+      _logAlreadyActiveGuardDecision(
+        'SOS_ALREADY_ACTIVE_GUARD_BLOCKED',
+        stage: current,
+        triggerSource: triggerSource,
+        relaySource: relaySource,
+        originatorNodeId: originatorNodeId,
+        relayNodeId: relayNodeId,
+        deviceId: deviceId,
+        hardwareId: hardwareId,
+        incident: _activeIncident,
+        hasBackendActive: false,
+        reason: 'active_incident_identity_present',
+      );
+      return false;
+    }
+
+    final rehydration = await rehydrateRuntimeStateFromBackend();
+    final rehydratedState = _stateMachine.current;
+    final rehydratedIncident = _activeIncident;
+    final hasBackendActive = rehydration.outcome ==
+            SosRuntimeRehydrationOutcome.hydratedFromBackend &&
+        rehydratedIncident != null &&
+        _isActiveLikeState(rehydratedState);
+    if (hasBackendActive ||
+        _hasReliableOpenIncidentIdentity(rehydratedIncident)) {
+      _logAlreadyActiveGuardDecision(
+        'SOS_ALREADY_ACTIVE_GUARD_BLOCKED',
+        stage: rehydratedState,
+        triggerSource: triggerSource,
+        relaySource: relaySource,
+        originatorNodeId: originatorNodeId,
+        relayNodeId: relayNodeId,
+        deviceId: deviceId,
+        hardwareId: hardwareId,
+        incident: rehydratedIncident,
+        hasBackendActive: hasBackendActive,
+        reason: hasBackendActive
+            ? 'backend_active_rehydrated'
+            : 'rehydrated_incident_identity_present',
+      );
+      return false;
+    }
+
+    if (_isActiveLikeState(rehydratedState)) {
+      if (rehydration.outcome != SosRuntimeRehydrationOutcome.clearedToIdle) {
+        _logAlreadyActiveGuardDecision(
+          'SOS_ALREADY_ACTIVE_GUARD_BLOCKED',
+          stage: rehydratedState,
+          triggerSource: triggerSource,
+          relaySource: relaySource,
+          originatorNodeId: originatorNodeId,
+          relayNodeId: relayNodeId,
+          deviceId: deviceId,
+          hardwareId: hardwareId,
+          incident: rehydratedIncident,
+          hasBackendActive: false,
+          reason: 'rehydration_did_not_clear_open_state',
+        );
+        return false;
+      }
+      _activeIncident = null;
+      _setState(SosState.idle);
+      await _persistState();
+    }
+
+    _logAlreadyActiveGuardDecision(
+      'SOS_ALREADY_ACTIVE_GUARD_STALE_CLEARED',
+      stage: _stateMachine.current,
+      triggerSource: triggerSource,
+      relaySource: relaySource,
+      originatorNodeId: originatorNodeId,
+      relayNodeId: relayNodeId,
+      deviceId: deviceId,
+      hardwareId: hardwareId,
+      incident: _activeIncident,
+      hasBackendActive: false,
+      reason: 'no_active_incident_after_rehydrate',
+    );
+    return true;
+  }
+
+  void _logAlreadyActiveGuardDecision(
+    String event, {
+    required SosState stage,
+    required String triggerSource,
+    required String? relaySource,
+    required int? originatorNodeId,
+    required int? relayNodeId,
+    required String? deviceId,
+    required String? hardwareId,
+    required SosIncident? incident,
+    required bool hasBackendActive,
+    required String reason,
+  }) {
+    final incidentIdPresent = _normalizeIdentity(incident?.id) != null;
+    final hasDeviceIdentity = originatorNodeId != null ||
+        relayNodeId != null ||
+        _normalizeIdentity(deviceId) != null ||
+        _normalizeIdentity(hardwareId) != null ||
+        incident?.originatorNodeId != null ||
+        incident?.relayNodeId != null ||
+        _normalizeIdentity(incident?.deviceId) != null ||
+        _normalizeIdentity(incident?.hardwareId) != null;
+    final owner = incident?.owner?.trim().isNotEmpty == true
+        ? incident!.owner!.trim()
+        : (originatorNodeId == null ? 'app' : 'device');
+    BleDebugRegistry.instance.recordEvent(
+      '$event '
+      'stage=${stage.name} '
+      'terminal=${_terminalLabel(stage)} '
+      'incidentIdPresent=$incidentIdPresent '
+      'source=${_sourceLabel(relaySource: relaySource, triggerSource: triggerSource)} '
+      'owner=$owner '
+      'triggerSource=$triggerSource '
+      'hasDeviceIdentity=$hasDeviceIdentity '
+      'hasBackendActive=$hasBackendActive '
+      'reason=$reason',
+    );
+  }
+
+  bool _hasReliableOpenIncidentIdentity(SosIncident? incident) {
+    if (incident == null || !_isActiveLikeState(incident.state)) {
+      return false;
+    }
+    return _normalizeIdentity(incident.id) != null ||
+        _normalizeIdentity(incident.cycleKey) != null ||
+        incident.originatorNodeId != null ||
+        incident.relayNodeId != null ||
+        _normalizeIdentity(incident.deviceId) != null ||
+        _normalizeIdentity(incident.hardwareId) != null;
   }
 
   Future<SosIncident> _triggerSosOverMqtt({
