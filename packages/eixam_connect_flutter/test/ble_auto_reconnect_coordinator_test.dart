@@ -126,6 +126,52 @@ void main() {
       await coordinator.dispose();
     });
 
+    test('handoff reconnect returns permissionMissing without provider call',
+        () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _FakeDeviceRepository();
+      final store = PreferredBleDeviceStore(
+        localStore: SharedPrefsSdkStore(),
+      );
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: 'ble-demo-r1',
+          displayName: 'EIXAM Demo',
+          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+        ),
+      );
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+        permissionStateProvider: () async => const PermissionState(
+          bluetooth: SdkPermissionStatus.denied,
+          bluetoothEnabled: true,
+        ),
+      );
+
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+      final result = await coordinator.tryAutoConnectForHandoff(
+        trigger: 'startup',
+        attemptId: 'attempt-1',
+      );
+
+      expect(
+        result.status,
+        PreferredDeviceReconnectResultStatus.permissionMissing,
+      );
+      expect(repository.reconnectCallCount, 0);
+      expect(
+        BleDebugRegistry.instance.currentState.events
+            .map((event) => event.message),
+        contains('BLE_READINESS_BLOCKED permissionMissing'),
+      );
+      await coordinator.dispose();
+    });
+
     test('handoff reconnect returns noKnownDevice without scanning loop',
         () async {
       SharedPreferences.setMockInitialValues(<String, Object>{});

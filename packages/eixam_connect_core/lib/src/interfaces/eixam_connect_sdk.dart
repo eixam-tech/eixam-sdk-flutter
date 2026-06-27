@@ -142,6 +142,11 @@ abstract class EixamConnectSdk {
   Future<void> disconnectDevice();
   Future<PreferredDevice?> get preferredDevice;
   Stream<DeviceStatus> get deviceStatusStream;
+  Future<PreferredDeviceReconnectResult> bootstrapPreferredDeviceReconnect({
+    String reason = 'startup',
+    String? attemptId,
+    String? platformRemoteId,
+  });
   Future<PreferredDeviceReconnectResult> reconnectPreferredDevice({
     required String reason,
     String? attemptId,

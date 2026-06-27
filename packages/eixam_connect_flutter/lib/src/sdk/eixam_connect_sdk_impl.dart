@@ -1529,13 +1529,26 @@ class EixamConnectSdkImpl
   Stream<DeviceStatus> get deviceStatusStream => watchDeviceStatus();
 
   @override
-  Future<PreferredDeviceReconnectResult> reconnectPreferredDevice({
-    required String reason,
+  Future<PreferredDeviceReconnectResult> bootstrapPreferredDeviceReconnect({
+    String reason = 'startup',
     String? attemptId,
     String? platformRemoteId,
   }) {
     return _bleAutoReconnectCoordinator.tryAutoConnectForHandoff(
       trigger: reason,
+      attemptId: attemptId,
+      platformRemoteId: platformRemoteId,
+    );
+  }
+
+  @override
+  Future<PreferredDeviceReconnectResult> reconnectPreferredDevice({
+    required String reason,
+    String? attemptId,
+    String? platformRemoteId,
+  }) {
+    return bootstrapPreferredDeviceReconnect(
+      reason: reason,
       attemptId: attemptId,
       platformRemoteId: platformRemoteId,
     );
