@@ -608,6 +608,22 @@ class BleAutoReconnectCoordinator {
         'alreadyConnected=${_lastStatus?.connected == true} '
         'unsupportedRepository=false canStartCampaign=false',
       );
+      if (_isRetryableIosReadinessWarmup(readiness)) {
+        _traceReconnect(
+          'sdk_campaign_attempt_transient '
+          'reason=ios_readiness_warmup_retry',
+        );
+        BleDebugRegistry.instance.recordEvent(
+          'BLE_READINESS_PENDING_IOS reason=adapter_state_warmup',
+        );
+        _recordNoProviderCall(
+          attemptId: attemptId,
+          reason: 'runtime_not_ready',
+        );
+        return const PreferredDeviceReconnectResult.bluetoothOff(
+          reason: 'ios_readiness_warmup_retry',
+        );
+      }
       if (readiness.bluetoothEnabled) {
         _traceReconnect(
           'sdk_campaign_cancelled reason=permission_missing',
@@ -701,17 +717,6 @@ class BleAutoReconnectCoordinator {
     }
     final remoteId = reconnectDevice.deviceId.trim();
     if (_isIosPlatform() && !_isValidIosBleRemoteId(reconnectDevice.deviceId)) {
-      _traceReconnect(
-        'sdk_preflight '
-        'hasPermission=${_hasReconnectPermission(readiness)} '
-        'bluetoothReady=${_isReconnectBluetoothReady(readiness)} '
-        'hasPreferredDevice=true hasRemoteIdentity=false '
-        'alreadyConnected=${currentStatus.connected} '
-        'unsupportedRepository=false canStartCampaign=false',
-      );
-      _traceReconnect(
-        'sdk_campaign_cancelled reason=no_preferred_device',
-      );
       BleDebugRegistry.instance.recordEvent(
         'DEVICE_IDENTITY_RESOLVED platform=ios '
         'logicalId=${reconnectDevice.deviceId} remoteIdPresent=false',
@@ -725,12 +730,7 @@ class BleAutoReconnectCoordinator {
         'BLE_RECONNECT_REQUIRES_SCAN '
         'platform=ios reason=${_missingRemoteIdReconnectReason(trigger)}',
       );
-      _recordNoProviderCall(attemptId: attemptId, reason: 'missing_remote_id');
-      return const PreferredDeviceReconnectResult.noKnownDevice(
-        reason: 'missing_valid_remote_id',
-      );
-    }
-    if (_isIosPlatform()) {
+    } else if (_isIosPlatform()) {
       BleDebugRegistry.instance.recordEvent(
         'DEVICE_IDENTITY_RESOLVED platform=ios '
         'logicalId=${currentStatus.deviceId} remoteIdPresent=true',
@@ -854,6 +854,9 @@ class BleAutoReconnectCoordinator {
     if (_isTransientAttemptBluetoothOff(result)) {
       return true;
     }
+    if (_isRetryableIosReadinessWarmupResult(result)) {
+      return true;
+    }
     if (result.connected || result.blocked) {
       return false;
     }
@@ -875,6 +878,21 @@ class BleAutoReconnectCoordinator {
   bool _isTransientAttemptBluetoothOff(PreferredDeviceReconnectResult result) {
     return result.status == PreferredDeviceReconnectResultStatus.bluetoothOff &&
         result.reason == 'attempt_bluetooth_off_transient_retry';
+  }
+
+  bool _isRetryableIosReadinessWarmup(PermissionState readiness) {
+    if (!_isIosPlatform() || readiness.bluetoothEnabled) {
+      return false;
+    }
+    return readiness.bluetooth == SdkPermissionStatus.unknown ||
+        readiness.bluetooth == SdkPermissionStatus.denied;
+  }
+
+  bool _isRetryableIosReadinessWarmupResult(
+    PreferredDeviceReconnectResult result,
+  ) {
+    return result.status == PreferredDeviceReconnectResultStatus.bluetoothOff &&
+        result.reason == 'ios_readiness_warmup_retry';
   }
 
   Duration _preferredReconnectDelayForAttempt(int completedAttempt) {

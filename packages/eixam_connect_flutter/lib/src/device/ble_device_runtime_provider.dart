@@ -31,11 +31,14 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   BleDeviceRuntimeProvider({
     required BleClient bleClient,
     DeviceSosController? deviceSosController,
+    @visibleForTesting bool Function()? isIosPlatform,
   })  : _bleClient = bleClient,
-        _deviceSosController = deviceSosController ?? DeviceSosController();
+        _deviceSosController = deviceSosController ?? DeviceSosController(),
+        _isIosPlatform = isIosPlatform ?? (() => Platform.isIOS);
 
   final BleClient _bleClient;
   final DeviceSosController _deviceSosController;
+  final bool Function() _isIosPlatform;
   final StreamController<BleIncomingEvent> _incomingEventsController =
       StreamController<BleIncomingEvent>.broadcast();
   final StreamController<DeviceStatus> _runtimeStatusController =
@@ -62,9 +65,11 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   DateTime? _lastIosSignalQualityReadAt;
   int? _lastIosSignalQuality;
   String? _lastIosSignalQualityThrottleLog;
+  final Map<String, String> _iosResolvedReconnectRemoteIds = <String, String>{};
 
   static const Duration _recentSosDedupWindow = Duration(seconds: 2);
   static const Duration _iosSignalQualityThrottleWindow = Duration(seconds: 5);
+  static const Duration _iosReconnectScanTimeout = Duration(seconds: 4);
   static const String _deviceCommandNotReadyCode = 'E_DEVICE_COMMAND_NOT_READY';
   static const String _deviceStatusTimeoutCode = 'E_DEVICE_STATUS_TIMEOUT';
   static const String _mobileBondRequiredCode = 'E_DEVICE_MOBILE_BOND_REQUIRED';
@@ -275,34 +280,11 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     required PreferredDevice preferredDevice,
     String? attemptId,
   }) async {
-    final deviceId = preferredDevice.deviceId.trim();
+    var deviceId = preferredDevice.deviceId.trim();
     if (deviceId.isEmpty) {
       throw const DeviceException(
         'E_DEVICE_INVALID_PREFERRED_DEVICE',
         'E_DEVICE_INVALID_PREFERRED_DEVICE',
-      );
-    }
-    if (Platform.isIOS && !_isValidIosBleRemoteId(deviceId)) {
-      final hardwareId =
-          currentStatus.canonicalHardwareId?.trim().isNotEmpty == true
-              ? currentStatus.canonicalHardwareId!.trim()
-              : currentStatus.deviceId;
-      BleDebugRegistry.instance.recordEvent(
-        'BLE_RECONNECT_SKIPPED_INVALID_REMOTE_ID '
-        'platform=ios hardwareId=$hardwareId remoteId=$deviceId',
-      );
-      BleDebugRegistry.instance.recordEvent(
-        'BLE_RECONNECT_ID_DROPPED source=ble_runtime_provider '
-        'attemptId=${attemptId ?? 'none'} length=${deviceId.length} '
-        'uuidShape=${_isValidIosBleRemoteId(deviceId)}',
-      );
-      BleDebugRegistry.instance.recordEvent(
-        'BLE_RECONNECT_FAILED_NO_PROVIDER_CALL '
-        'reason=missing_remote_id attemptId=${attemptId ?? 'none'}',
-      );
-      throw const DeviceException(
-        'E_DEVICE_INVALID_BLE_REMOTE_ID',
-        'E_DEVICE_INVALID_BLE_REMOTE_ID',
       );
     }
 
@@ -317,6 +299,12 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         'E_DEVICE_BLUETOOTH_OFF',
       );
     }
+    deviceId = await _resolveIosReconnectDeviceIdIfNeeded(
+      deviceId: deviceId,
+      currentStatus: currentStatus,
+      preferredDevice: preferredDevice,
+      attemptId: attemptId,
+    );
     if (!await _bleClient.hasSystemAssociation(deviceId)) {
       BleDebugRegistry.instance.recordEvent(
         'BLE_RECONNECT_FAILED_NO_PROVIDER_CALL '
@@ -491,6 +479,197 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       }
     }
     return null;
+  }
+
+  Future<String> _resolveIosReconnectDeviceIdIfNeeded({
+    required String deviceId,
+    required DeviceStatus currentStatus,
+    required PreferredDevice preferredDevice,
+    required String? attemptId,
+  }) async {
+    if (!_isIosPlatform() || _isValidIosBleRemoteId(deviceId)) {
+      return deviceId;
+    }
+    final cacheKey = _iosReconnectCacheKey(
+      deviceId: deviceId,
+      currentStatus: currentStatus,
+      preferredDevice: preferredDevice,
+    );
+    final cached = _iosResolvedReconnectRemoteIds[cacheKey];
+    if (cached != null && _isValidIosBleRemoteId(cached)) {
+      BleDebugRegistry.instance.recordEvent(
+        'IOS_RECONNECT_REMOTE_ID_CACHE_HIT '
+        'attemptId=${attemptId ?? 'none'} '
+        'remoteId=${_redactedBleIdentifier(cached)}',
+      );
+      return cached;
+    }
+
+    final hardwareId =
+        currentStatus.canonicalHardwareId?.trim().isNotEmpty == true
+            ? currentStatus.canonicalHardwareId!.trim()
+            : currentStatus.deviceId;
+    BleDebugRegistry.instance.recordEvent(
+      'BLE_RECONNECT_SKIPPED_INVALID_REMOTE_ID '
+      'platform=ios hardwareId=${_redactedBleIdentifier(hardwareId)} '
+      'remoteId=${_redactedBleIdentifier(deviceId)}',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'BLE_RECONNECT_ID_DROPPED source=ble_runtime_provider '
+      'attemptId=${attemptId ?? 'none'} length=${deviceId.length} '
+      'uuidShape=${_isValidIosBleRemoteId(deviceId)}',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'IOS_RECONNECT_SCAN_RESOLVE_BEGIN '
+      'attemptId=${attemptId ?? 'none'}',
+    );
+    final scans = await _bleClient.scan(timeout: _iosReconnectScanTimeout);
+    final candidate = _selectIosReconnectCandidate(
+      scans,
+      currentStatus: currentStatus,
+      preferredDevice: preferredDevice,
+    );
+    if (candidate == null) {
+      BleDebugRegistry.instance.recordEvent(
+        'IOS_RECONNECT_SCAN_RESOLVE_FAILED '
+        'reason=no_unique_eixam_candidate attemptId=${attemptId ?? 'none'}',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'BLE_RECONNECT_FAILED_NO_PROVIDER_CALL '
+        'reason=missing_remote_id attemptId=${attemptId ?? 'none'}',
+      );
+      throw const DeviceException(
+        'E_DEVICE_INVALID_BLE_REMOTE_ID',
+        'E_DEVICE_INVALID_BLE_REMOTE_ID',
+      );
+    }
+    final resolvedId = candidate.scan.deviceId.trim();
+    _iosResolvedReconnectRemoteIds[cacheKey] = resolvedId;
+    BleDebugRegistry.instance.recordEvent(
+      'IOS_RECONNECT_SCAN_RESOLVE_DONE '
+      'reason=${candidate.reason} attemptId=${attemptId ?? 'none'} '
+      'remoteId=${_redactedBleIdentifier(resolvedId)}',
+    );
+    return resolvedId;
+  }
+
+  _IosReconnectCandidate? _selectIosReconnectCandidate(
+    List<BleScanResult> scans, {
+    required DeviceStatus currentStatus,
+    required PreferredDevice preferredDevice,
+  }) {
+    final candidates = <_IosReconnectCandidate>[];
+    for (final scan in scans) {
+      if (!scan.connectable ||
+          !_isValidIosBleRemoteId(scan.deviceId.trim()) ||
+          !_isEixamScanCandidate(scan)) {
+        continue;
+      }
+      final identityMatch = _iosReconnectScanHasIdentityMatch(
+        scan,
+        currentStatus: currentStatus,
+        preferredDevice: preferredDevice,
+      );
+      final nameMatch = _normalizedReconnectText(scan.name).isNotEmpty &&
+          _normalizedReconnectText(scan.name) ==
+              _normalizedReconnectText(
+                preferredDevice.displayName ?? currentStatus.deviceAlias ?? '',
+              );
+      candidates.add(
+        _IosReconnectCandidate(
+          scan: scan,
+          rank: identityMatch ? 0 : (nameMatch ? 1 : 2),
+          reason: identityMatch
+              ? 'known_identity_match'
+              : nameMatch
+                  ? 'display_name_match'
+                  : 'single_eixam_candidate',
+        ),
+      );
+    }
+    if (candidates.isEmpty) {
+      return null;
+    }
+    candidates.sort((a, b) {
+      final byRank = a.rank.compareTo(b.rank);
+      if (byRank != 0) {
+        return byRank;
+      }
+      return b.scan.rssi.compareTo(a.scan.rssi);
+    });
+    final bestRank = candidates.first.rank;
+    final bestRankCount =
+        candidates.where((candidate) => candidate.rank == bestRank).length;
+    if (bestRankCount != 1) {
+      return null;
+    }
+    if (bestRank == 2 && candidates.length != 1) {
+      return null;
+    }
+    return candidates.first;
+  }
+
+  bool _iosReconnectScanHasIdentityMatch(
+    BleScanResult scan, {
+    required DeviceStatus currentStatus,
+    required PreferredDevice preferredDevice,
+  }) {
+    final scanKeys = _normalizedReconnectKeys(<String?>[
+      scan.deviceId,
+      scan.canonicalHardwareId,
+    ]);
+    final knownKeys = _normalizedReconnectKeys(<String?>[
+      preferredDevice.deviceId,
+      currentStatus.deviceId,
+      currentStatus.canonicalHardwareId,
+    ]);
+    return scanKeys.any(knownKeys.contains);
+  }
+
+  bool _isEixamScanCandidate(BleScanResult scan) {
+    final hasEixamService = scan.advertisedServiceUuids.any(
+      (uuid) =>
+          uuid.trim().toLowerCase() ==
+          EixamBleProtocol.serviceUuid.toLowerCase(),
+    );
+    return hasEixamService ||
+        scan.brandClassification.name == 'eixam' ||
+        scan.name.trim().toLowerCase().contains('eixam');
+  }
+
+  Set<String> _normalizedReconnectKeys(Iterable<String?> values) {
+    return values
+        .map(_normalizedReconnectText)
+        .where((value) => value.isNotEmpty)
+        .toSet();
+  }
+
+  String _normalizedReconnectText(String? value) {
+    return value?.trim().toLowerCase() ?? '';
+  }
+
+  String _iosReconnectCacheKey({
+    required String deviceId,
+    required DeviceStatus currentStatus,
+    required PreferredDevice preferredDevice,
+  }) {
+    final keys = _normalizedReconnectKeys(<String?>[
+      deviceId,
+      preferredDevice.displayName,
+      currentStatus.deviceId,
+      currentStatus.canonicalHardwareId,
+      currentStatus.deviceAlias,
+    ]).toList()
+      ..sort();
+    return keys.join('|');
+  }
+
+  String _redactedBleIdentifier(String value) {
+    final trimmed = value.trim();
+    if (trimmed.length <= 8) {
+      return trimmed;
+    }
+    return '${trimmed.substring(0, 4)}...${trimmed.substring(trimmed.length - 4)}';
   }
 
   Future<bool> _resolveConnection(String deviceId) async {
@@ -795,7 +974,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     String deviceId, {
     required String reason,
   }) async {
-    if (Platform.isIOS && !_shouldReadIosSignalQuality(reason)) {
+    if (_isIosPlatform() && !_shouldReadIosSignalQuality(reason)) {
       _logIosSignalQualityThrottle(reason);
       return _lastIosSignalQuality;
     }
@@ -803,7 +982,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       '[BATTERY_FLOW] ble_signal_read reason=$reason',
     );
     final signalQuality = await _bleClient.readSignalQuality(deviceId);
-    if (Platform.isIOS) {
+    if (_isIosPlatform()) {
       _lastIosSignalQualityReadAt = DateTime.now();
       _lastIosSignalQuality = signalQuality;
     }
@@ -2390,4 +2569,16 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     await _runtimeStatusController.close();
     await _incomingEventsController.close();
   }
+}
+
+final class _IosReconnectCandidate {
+  const _IosReconnectCandidate({
+    required this.scan,
+    required this.rank,
+    required this.reason,
+  });
+
+  final BleScanResult scan;
+  final int rank;
+  final String reason;
 }

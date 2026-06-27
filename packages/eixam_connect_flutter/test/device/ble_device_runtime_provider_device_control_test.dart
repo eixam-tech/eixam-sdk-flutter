@@ -2,6 +2,10 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/device/ble_adapter_state.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/ble_device_runtime_provider.dart';
+import 'package:eixam_connect_flutter/src/device/ble_scan_result.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_ble_notification.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
 import '../support/device/mock_ble_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -231,6 +235,123 @@ void main() {
 
       expect(await bleClient.isConnected(MockBleClient.demoDeviceId), isFalse);
     });
+
+    test('iOS reconnect resolves logical preferred id through unique scan',
+        () async {
+      await runtimeProvider.dispose();
+      await bleClient.dispose();
+      bleClient = _IosReconnectMockBleClient(
+        scanResults: <BleScanResult>[
+          _iosScanResult(
+            deviceId: _IosReconnectMockBleClient.resolvedRemoteId,
+            name: 'EIXAM R1 Demo',
+          ),
+        ],
+      );
+      await bleClient.initialize();
+      runtimeProvider = BleDeviceRuntimeProvider(
+        bleClient: bleClient,
+        isIosPlatform: () => true,
+      );
+
+      final status = await runtimeProvider.reconnect(
+        currentStatus: buildDeviceStatus(
+          deviceId: 'EA04',
+          canonicalHardwareId: 'EA04',
+          paired: true,
+          activated: true,
+          connected: false,
+          lifecycleState: DeviceLifecycleState.paired,
+        ),
+        preferredDevice: PreferredDevice(
+          deviceId: 'EA04',
+          displayName: 'EIXAM R1 Demo',
+          lastConnectedAt: DateTime.utc(2026, 5, 7),
+        ),
+        attemptId: 'attempt-ios-1',
+      );
+
+      final iosClient = bleClient as _IosReconnectMockBleClient;
+      expect(iosClient.scanCallCount, 1);
+      expect(iosClient.connectCalls, <String>[
+        _IosReconnectMockBleClient.resolvedRemoteId,
+      ]);
+      expect(status.connected, isTrue);
+      expect(status.deviceId, _IosReconnectMockBleClient.resolvedRemoteId);
+      expect(
+        BleDebugRegistry.instance.currentState.events
+            .map((event) => event.message),
+        contains(
+          'IOS_RECONNECT_SCAN_RESOLVE_DONE '
+          'reason=known_identity_match attemptId=attempt-ios-1 '
+          'remoteId=1111...1111',
+        ),
+      );
+    });
+
+    test('iOS reconnect fails closed when scan candidates are ambiguous',
+        () async {
+      await runtimeProvider.dispose();
+      await bleClient.dispose();
+      bleClient = _IosReconnectMockBleClient(
+        scanResults: <BleScanResult>[
+          _iosScanResult(
+            deviceId: _IosReconnectMockBleClient.resolvedRemoteId,
+            name: 'EIXAM R1 Demo',
+            canonicalHardwareId: null,
+          ),
+          _iosScanResult(
+            deviceId: '22222222-2222-2222-2222-222222222222',
+            name: 'EIXAM R1 Other',
+            canonicalHardwareId: null,
+          ),
+        ],
+      );
+      await bleClient.initialize();
+      runtimeProvider = BleDeviceRuntimeProvider(
+        bleClient: bleClient,
+        isIosPlatform: () => true,
+      );
+
+      await expectLater(
+        runtimeProvider.reconnect(
+          currentStatus: buildDeviceStatus(
+            deviceId: 'EA04',
+            canonicalHardwareId: 'EA04',
+            paired: true,
+            activated: true,
+            connected: false,
+            lifecycleState: DeviceLifecycleState.paired,
+          ),
+          preferredDevice: PreferredDevice(
+            deviceId: 'EA04',
+            displayName: 'Stored EIXAM Device',
+            lastConnectedAt: DateTime.utc(2026, 5, 7),
+          ),
+          attemptId: 'attempt-ios-ambiguous',
+        ),
+        throwsA(
+          isA<DeviceException>().having(
+            (error) => error.code,
+            'code',
+            'E_DEVICE_INVALID_BLE_REMOTE_ID',
+          ),
+        ),
+      );
+
+      final iosClient = bleClient as _IosReconnectMockBleClient;
+      expect(iosClient.scanCallCount, 1);
+      expect(iosClient.connectCalls, isEmpty);
+      expect(
+        BleDebugRegistry.instance.currentState.events
+            .map((event) => event.message),
+        contains(
+          'IOS_RECONNECT_SCAN_RESOLVE_FAILED '
+          'reason=no_unique_eixam_candidate '
+          'attemptId=attempt-ios-ambiguous',
+        ),
+      );
+    });
   });
 }
 
@@ -248,4 +369,89 @@ Future<DeviceStatus> _pairDemoDevice(
     ),
     pairingCode: '1234',
   );
+}
+
+BleScanResult _iosScanResult({
+  required String deviceId,
+  required String name,
+  String? canonicalHardwareId = 'EA04',
+}) {
+  return BleScanResult(
+    deviceId: deviceId,
+    canonicalHardwareId: canonicalHardwareId,
+    name: name,
+    rssi: -48,
+    connectable: true,
+    advertisedServiceUuids: const <String>[EixamBleProtocol.serviceUuid],
+    discoveredAt: DateTime.utc(2026, 5, 7),
+  );
+}
+
+final class _IosReconnectMockBleClient extends MockBleClient {
+  _IosReconnectMockBleClient({required this.scanResults});
+
+  static const resolvedRemoteId = '11111111-1111-1111-1111-111111111111';
+
+  final List<BleScanResult> scanResults;
+  final List<String> connectCalls = <String>[];
+  int scanCallCount = 0;
+
+  @override
+  Future<List<BleScanResult>> scan({
+    Duration timeout = const Duration(seconds: 8),
+  }) async {
+    scanCallCount++;
+    return scanResults;
+  }
+
+  @override
+  Future<void> connect(String deviceId) async {
+    connectCalls.add(deviceId);
+    await super.connect(MockBleClient.demoDeviceId);
+  }
+
+  @override
+  Future<void> disconnect(String deviceId) {
+    return super.disconnect(MockBleClient.demoDeviceId);
+  }
+
+  @override
+  Future<bool> isConnected(String deviceId) {
+    return super.isConnected(MockBleClient.demoDeviceId);
+  }
+
+  @override
+  Stream<bool> watchConnection(String deviceId) {
+    return super.watchConnection(MockBleClient.demoDeviceId);
+  }
+
+  @override
+  Future<Stream<EixamBleNotification>> subscribeEixamNotifications(
+    String deviceId,
+  ) {
+    return super.subscribeEixamNotifications(MockBleClient.demoDeviceId);
+  }
+
+  @override
+  Future<void> writeDeviceCommand(String deviceId, EixamDeviceCommand command) {
+    return super.writeDeviceCommand(MockBleClient.demoDeviceId, command);
+  }
+
+  @override
+  Future<bool> isEixamCompatible(String deviceId) async => true;
+
+  @override
+  Future<int?> readBatteryLevel(String deviceId) {
+    return super.readBatteryLevel(MockBleClient.demoDeviceId);
+  }
+
+  @override
+  Future<int?> readSignalQuality(String deviceId) {
+    return super.readSignalQuality(MockBleClient.demoDeviceId);
+  }
+
+  @override
+  Future<String?> readFirmwareVersion(String deviceId) {
+    return super.readFirmwareVersion(MockBleClient.demoDeviceId);
+  }
 }
