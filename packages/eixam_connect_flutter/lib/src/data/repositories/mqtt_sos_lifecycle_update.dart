@@ -14,6 +14,7 @@ class MqttSosLifecycleUpdate {
     this.owner,
     this.actionability,
     this.displaySurface,
+    this.terminalReason,
   });
 
   final String incidentId;
@@ -28,6 +29,7 @@ class MqttSosLifecycleUpdate {
   final String? owner;
   final String? actionability;
   final String? displaySurface;
+  final SosTerminalReason? terminalReason;
 
   static MqttSosLifecycleUpdate? fromRealtimeEvent(RealtimeEvent event) {
     final payload = event.payload;
@@ -73,6 +75,7 @@ class MqttSosLifecycleUpdate {
         payload,
         const ['displaySurface', 'display_surface', 'sosDisplaySurface'],
       ),
+      terminalReason: _terminalReasonFromPayload(payload),
     );
   }
 
@@ -198,5 +201,23 @@ class MqttSosLifecycleUpdate {
       }
     }
     return null;
+  }
+
+  static SosTerminalReason? _terminalReasonFromPayload(
+    Map<String, dynamic> payload,
+  ) {
+    final raw = _stringFromPayload(
+      payload,
+      const ['terminalReason', 'terminal_reason', 'reason'],
+    );
+    if (raw == null) {
+      return null;
+    }
+    final normalized =
+        raw.replaceAll('-', '').replaceAll('_', '').toLowerCase();
+    return SosTerminalReason.values.firstWhere(
+      (candidate) => candidate.name.toLowerCase() == normalized,
+      orElse: () => SosTerminalReason.unknown,
+    );
   }
 }

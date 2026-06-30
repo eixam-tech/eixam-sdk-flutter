@@ -196,7 +196,7 @@ class DeviceSosController {
     String commandRouteLabel = 'attached_writer',
     String terminalAction = 'cancel',
     bool? terminalCmdAvailable,
-    bool waitForCloseAcknowledgement = false,
+    bool? waitForCloseAcknowledgement,
   }) async {
     final writer = commandWriterOverride ?? _commandWriter;
     if (writer == null) {
@@ -228,7 +228,9 @@ class DeviceSosController {
     if (_isClosedState(previous.state)) {
       return _status;
     }
-    if (!waitForCloseAcknowledgement) {
+    final shouldWaitForCloseAcknowledgement =
+        waitForCloseAcknowledgement ?? _isOpenSosState(previous.state);
+    if (!shouldWaitForCloseAcknowledgement) {
       BleDebugRegistry.instance.recordEvent(
         'DEVICE_SOS_CLOSE_COMMAND_DISPATCHED_WITHOUT_ACK_WAIT route=$commandRouteLabel previousState=${previous.state.name}',
       );
@@ -269,7 +271,12 @@ class DeviceSosController {
       BleDebugRegistry.instance.recordEvent(
         'DEVICE_SOS_CLOSE_COMMAND_ACK_TIMEOUT_OR_FAILED route=$commandRouteLabel lastState=${_status.state.name} previousState=${previous.state.name} error=$error',
       );
-      rethrow;
+      return _forceTerminalStateAfterMissingCloseAcknowledgement(
+        previous: previous,
+        terminalAction: terminalAction,
+        commandRouteLabel: commandRouteLabel,
+        error: error,
+      );
     }
   }
 
@@ -385,7 +392,10 @@ class DeviceSosController {
   }) async {
     final writer = commandWriterOverride ?? _commandWriter;
     if (writer == null) {
-      throw StateError('E_DEVICE_SOS_COMMAND_CHANNEL_NOT_READY');
+      throw const DeviceException(
+        'E_DEVICE_SOS_COMMAND_CHANNEL_NOT_READY',
+        'E_DEVICE_SOS_COMMAND_CHANNEL_NOT_READY',
+      );
     }
     if (commandWriterOverride == null) {
       _ensureCommandAvailable(command: command);
@@ -624,11 +634,17 @@ class DeviceSosController {
     required String commandRouteLabel,
   }) async {
     if (_status.state != DeviceSosState.preConfirm) {
-      throw StateError('E_DEVICE_SOS_CONFIRM_STATE_REQUIRED');
+      throw const DeviceException(
+        'E_DEVICE_SOS_CONFIRM_STATE_REQUIRED',
+        'E_DEVICE_SOS_CONFIRM_STATE_REQUIRED',
+      );
     }
     final writer = commandWriterOverride ?? _commandWriter;
     if (writer == null) {
-      throw StateError('E_DEVICE_SOS_COMMAND_CHANNEL_NOT_READY');
+      throw const DeviceException(
+        'E_DEVICE_SOS_COMMAND_CHANNEL_NOT_READY',
+        'E_DEVICE_SOS_COMMAND_CHANNEL_NOT_READY',
+      );
     }
     final command = EixamDeviceCommand.sosConfirm();
     if (commandWriterOverride == null) {
@@ -652,7 +668,10 @@ class DeviceSosController {
   }) async {
     final writer = commandWriterOverride ?? _commandWriter;
     if (writer == null) {
-      throw StateError('E_BLE_COMMAND_CHANNEL_NOT_READY');
+      throw const DeviceException(
+        'E_BLE_COMMAND_CHANNEL_NOT_READY',
+        'E_BLE_COMMAND_CHANNEL_NOT_READY',
+      );
     }
     if (commandWriterOverride == null) {
       _ensureCommandAvailable(command: command);
@@ -676,7 +695,8 @@ class DeviceSosController {
     final readiness = command.usesCmdCharacteristic
         ? 'longCommandAvailable=$longCommandAvailable'
         : 'shortCommandAvailable=$shortCommandAvailable';
-    throw StateError(
+    throw DeviceException(
+      'E_BLE_COMMAND_PATH_NOT_READY',
       'E_BLE_COMMAND_PATH_NOT_READY ($readiness)',
     );
   }
@@ -871,6 +891,7 @@ class DeviceSosController {
         nextState == DeviceSosState.resolved) {
       _cancelCountdownTimer();
       _awaitingObservedAppActivation = false;
+      _pendingTerminalCommand = null;
     }
     _emit(
       _status.copyWith(
@@ -1263,6 +1284,41 @@ class DeviceSosController {
     return state == DeviceSosState.inactive || state == DeviceSosState.resolved;
   }
 
+  DeviceSosStatus _forceTerminalStateAfterMissingCloseAcknowledgement({
+    required DeviceSosStatus previous,
+    required String terminalAction,
+    required String commandRouteLabel,
+    required Object error,
+  }) {
+    final now = _now();
+    final nextState = terminalAction == 'resolve'
+        ? DeviceSosState.resolved
+        : DeviceSosState.inactive;
+    _pendingTerminalCommand = null;
+    _cancelCountdownTimer();
+    _awaitingObservedAppActivation = false;
+    BleDebugRegistry.instance.recordEvent(
+      'DEVICE_SOS_CLOSE_COMMAND_ACK_TIMEOUT_FORCED_TERMINAL route=$commandRouteLabel action=$terminalAction previousState=${previous.state.name} forcedState=${nextState.name} error=$error',
+    );
+    _emit(
+      _status.copyWith(
+        state: nextState,
+        previousState: previous.state,
+        transitionSource: DeviceSosTransitionSource.app,
+        triggerOrigin: previous.triggerOrigin,
+        lastEvent:
+            'DEVICE_SOS_CLOSE_COMMAND_FORCED_TERMINAL_AFTER_MISSING_ACK action=$terminalAction',
+        updatedAt: now,
+        optimistic: false,
+        derivedFromBlePacket: false,
+        countdownStartedAt: null,
+        expectedActivationAt: null,
+        countdownRemainingSeconds: null,
+      ),
+    );
+    return _status;
+  }
+
   bool _shouldSuppressForPendingTerminalCommand(
     int nodeId, {
     required DeviceSosTransitionSource source,
@@ -1578,7 +1634,8 @@ class DeviceSosController {
     try {
       return await completer.future.timeout(
         _appActivationObservationTimeout,
-        onTimeout: () => throw StateError(
+        onTimeout: () => throw DeviceException(
+          'E_DEVICE_SOS_STATUS_WAIT_TIMEOUT',
           'E_DEVICE_SOS_STATUS_WAIT_TIMEOUT description=$description last_state=${_status.state.name} optimistic=${_status.optimistic} derivedFromBle=${_status.derivedFromBlePacket}',
         ),
       );

@@ -203,9 +203,11 @@ class MockBleClient implements BleClient {
     BleDebugRegistry.instance.recordEvent(
       'Mock notify subscription enabled for $deviceId',
     );
-    final controller = _notifyControllers[deviceId] ??
-        StreamController<EixamBleNotification>.broadcast();
-    _notifyControllers[deviceId] = controller;
+    // ignore: close_sinks, controller is owned by _notifyControllers and closed by disconnect/dispose.
+    final controller = _notifyControllers.putIfAbsent(
+      deviceId,
+      () => StreamController<EixamBleNotification>.broadcast(),
+    );
     return controller.stream.map((notification) {
       BleDebugRegistry.instance.update(
         lastPacketReceived: notification.payloadHex,
@@ -256,8 +258,7 @@ class MockBleClient implements BleClient {
   }
 
   void _emitMockPackets(String deviceId, EixamDeviceCommand command) {
-    final controller = _notifyControllers[deviceId];
-    if (controller == null || controller.isClosed) {
+    if (_notifyControllers[deviceId]?.isClosed ?? true) {
       return;
     }
 
@@ -337,11 +338,10 @@ class MockBleClient implements BleClient {
     required List<int> payload,
     int? meshPort,
   }) {
-    final controller = _notifyControllers[deviceId];
-    if (controller == null || controller.isClosed) {
+    if (_notifyControllers[deviceId]?.isClosed ?? true) {
       return;
     }
-    controller.add(
+    _notifyControllers[deviceId]?.add(
       EixamBleNotification(
         channel: channel,
         payload: payload,

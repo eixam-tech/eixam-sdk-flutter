@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_http_transport.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_profile_remote_data_source.dart';
@@ -95,6 +97,42 @@ void main() {
       expect(request.headers['Authorization'], 'Bearer sdk-user-hash');
     });
   });
+
+  group('SdkHttpTransport', () {
+    test('maps backend socket failures to NetworkException with stable code',
+        () async {
+      final transport = SdkHttpTransport(
+        client: _ThrowingHttpClient(const SocketException('offline')),
+        config: const EixamSdkConfig(
+          apiBaseUrl: 'https://api.staging.eixam.io',
+          websocketUrl: 'wss://mqtt.staging.eixam.io',
+        ),
+        sessionContext: SdkSessionContext()
+          ..currentSession = const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'canonical-user-1',
+            userHash: 'sdk-user-hash',
+          ),
+      );
+
+      await expectLater(
+        transport.get('/v1/sdk/me'),
+        throwsA(
+          isA<NetworkException>()
+              .having(
+                (error) => error.code,
+                'code',
+                'E_SDK_HTTP_GET_FAILED',
+              )
+              .having(
+                (error) => error.message,
+                'message',
+                'offline',
+              ),
+        ),
+      );
+    });
+  });
 }
 
 final class _RecordingHttpClient extends http.BaseClient {
@@ -113,5 +151,16 @@ final class _RecordingHttpClient extends http.BaseClient {
       reasonPhrase: response.reasonPhrase,
       request: request,
     );
+  }
+}
+
+final class _ThrowingHttpClient extends http.BaseClient {
+  _ThrowingHttpClient(this.error);
+
+  final Object error;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    throw error;
   }
 }

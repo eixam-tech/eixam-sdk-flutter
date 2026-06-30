@@ -170,8 +170,9 @@ class MqttOperationalSosRepository
         mobileBattery: mobileBattery,
         mobileCoverage: mobileCoverage,
       );
-      _activeIncident = null;
-      _setState(SosState.idle);
+      if (_stateMachine.current == SosState.idle) {
+        _activeIncident = null;
+      }
       await _persistState();
       return SosIncident(
         id: incidentId ??
@@ -887,25 +888,48 @@ class MqttOperationalSosRepository
     }
 
     _activeIncident = _activeIncident!.copyWith(state: SosState.resolved);
-    _setState(SosState.resolved);
+    _emit(
+      SosState.resolved,
+      previousIncident: _activeIncident,
+      incomingIncident: _activeIncident,
+      reason: 'resolve_terminal_settle',
+    );
     return _activeIncident!;
   }
 
   SosIncident _applyBackendIncident(SosIncidentDto dto) {
-    _activeIncident = _mapper.toDomain(dto);
-    if (_isActiveLikeState(_activeIncident!.state)) {
+    final nextIncident = _mapper.toDomain(dto);
+    final accepted = _emit(
+      nextIncident.state,
+      previousIncident: _activeIncident,
+      incomingIncident: nextIncident,
+      reason: 'backend_incident_settle',
+    );
+    if (!accepted && _stateMachine.current != nextIncident.state) {
+      return _activeIncident ?? nextIncident;
+    }
+    _activeIncident = nextIncident;
+    if (_isActiveLikeState(nextIncident.state)) {
       _rememberActiveLikeState();
     }
-    _setState(_activeIncident!.state);
     return _activeIncident!;
   }
 
   void _clearCurrentIncidentAfterCancellation(SosIncident cancelledIncident) {
     _activeIncident = cancelledIncident;
     _locallyClosedIncidentId = cancelledIncident.id;
-    _setState(SosState.cancelled);
+    _emit(
+      SosState.cancelled,
+      previousIncident: cancelledIncident,
+      incomingIncident: cancelledIncident,
+      reason: 'cancel_terminal_settle',
+    );
     _activeIncident = null;
-    _setState(SosState.idle);
+    _emit(
+      SosState.idle,
+      previousIncident: cancelledIncident,
+      reason: 'cancel_terminal_settle',
+    );
   }
 
   bool _shouldIgnoreLocallyClosedIncident(SosIncident incident) {
@@ -1163,7 +1187,14 @@ class MqttOperationalSosRepository
       return;
     }
 
-    final nextIncident = currentIncident.copyWith(state: state);
+    final nextIncident = currentIncident.copyWith(
+      state: state,
+      terminalReason: _terminalReasonForUpdate(
+        update: update,
+        previousIncident: currentIncident,
+        state: state,
+      ),
+    );
     final accepted = _emit(
       state,
       previousIncident: currentIncident,
@@ -1448,6 +1479,27 @@ class MqttOperationalSosRepository
     final previousTerminal = _terminalLabel(previousState);
     final incomingTerminal = _terminalLabel(incomingState);
     if (_isTerminalState(previousState) && _isActiveLikeState(incomingState)) {
+      final restartPath = _terminalRestartPath(
+        from: previousState,
+        to: incomingState,
+        reason: reason,
+      );
+      if (restartPath != null) {
+        for (final next in restartPath) {
+          _stateMachine.transitionTo(next);
+          _rememberActiveLikeStateIfNeeded(next);
+          _stateController.add(_stateMachine.current);
+        }
+        _logTransitionGuard(
+          decision: 'accepted_via_valid_path',
+          previousState: previousState,
+          incomingState: incomingState,
+          previousIncident: previousIncident,
+          incomingIncident: incomingIncident,
+          reason: reason,
+        );
+        return true;
+      }
       _logTransitionGuard(
         decision: 'ignore_invalid_transition',
         previousState: previousState,
@@ -1460,8 +1512,13 @@ class MqttOperationalSosRepository
     }
     if (_isTerminalState(incomingState) ||
         incomingState == SosState.cancelRequested) {
-      _setState(incomingState);
-      return true;
+      return _transitionLiveThroughKnownPath(
+        previousState: previousState,
+        incomingState: incomingState,
+        previousIncident: previousIncident,
+        incomingIncident: incomingIncident,
+        reason: reason,
+      );
     }
     _logTransitionGuard(
       decision: 'ignore_invalid_transition',
@@ -1473,6 +1530,89 @@ class MqttOperationalSosRepository
           'previousTerminal=$previousTerminal incomingTerminal=$incomingTerminal',
     );
     return false;
+  }
+
+  List<SosState>? _terminalRestartPath({
+    required SosState from,
+    required SosState to,
+    required String reason,
+  }) {
+    if (reason == 'realtime_event' || !_isTerminalState(from)) {
+      return null;
+    }
+    if (to == SosState.triggerRequested) {
+      return const <SosState>[
+        SosState.idle,
+        SosState.triggerRequested,
+      ];
+    }
+    return null;
+  }
+
+  bool _transitionLiveThroughKnownPath({
+    required SosState previousState,
+    required SosState incomingState,
+    required SosIncident? previousIncident,
+    required SosIncident? incomingIncident,
+    required String reason,
+  }) {
+    final path = _liveTransitionPath(
+      from: previousState,
+      to: incomingState,
+    );
+    if (path == null) {
+      _logTransitionGuard(
+        decision: 'ignore_invalid_transition',
+        previousState: previousState,
+        incomingState: incomingState,
+        previousIncident: previousIncident,
+        incomingIncident: incomingIncident,
+        reason: 'invalid_live_transition:$reason',
+      );
+      return false;
+    }
+
+    for (final next in path) {
+      _stateMachine.transitionTo(next);
+      _rememberActiveLikeStateIfNeeded(next);
+      _stateController.add(_stateMachine.current);
+    }
+    _logTransitionGuard(
+      decision: 'accepted_via_valid_path',
+      previousState: previousState,
+      incomingState: incomingState,
+      previousIncident: previousIncident,
+      incomingIncident: incomingIncident,
+      reason: reason,
+    );
+    return true;
+  }
+
+  List<SosState>? _liveTransitionPath({
+    required SosState from,
+    required SosState to,
+  }) {
+    if (SosStateMachine.canTransition(from: from, to: to)) {
+      return <SosState>[to];
+    }
+    if (from == SosState.sent && to == SosState.cancelled) {
+      return const <SosState>[
+        SosState.cancelRequested,
+        SosState.cancelled,
+      ];
+    }
+    return null;
+  }
+
+  SosTerminalReason? _terminalReasonForUpdate({
+    required MqttSosLifecycleUpdate update,
+    required SosIncident previousIncident,
+    required SosState state,
+  }) {
+    if (!_isTerminalState(state) && state != SosState.failed) {
+      return previousIncident.terminalReason;
+    }
+    return update.terminalReason ?? previousIncident.terminalReason;
   }
 
   void _logTransitionGuard({
@@ -1676,6 +1816,7 @@ class MqttOperationalSosRepository
       cycleKey: incident.cycleKey,
       message: incident.message,
       deliveryChannel: incident.deliveryChannel,
+      terminalReason: incident.terminalReason,
       originKind: incident.originKind,
       actionability: incident.actionability,
       displaySurface: incident.displaySurface,

@@ -4,9 +4,12 @@ import '../config/eixam_session.dart';
 import '../entities/death_man_plan.dart';
 import '../entities/ble_notification_navigation_request.dart';
 import '../entities/backend_registered_device.dart';
+import '../entities/ble_command_channel_status.dart';
 import '../entities/device_sos_status.dart';
 import '../entities/device_status.dart';
 import '../entities/device_runtime_status.dart';
+import '../entities/eixam_ble_diagnostics.dart';
+import '../entities/eixam_ble_scan_result.dart';
 import '../entities/emergency_contact.dart';
 import '../entities/eixam_notification_intent.dart';
 import '../entities/app_feedback.dart';
@@ -29,6 +32,7 @@ import '../entities/sos_trigger_payload.dart';
 import '../entities/tracking_position.dart';
 import '../enums/realtime_connection_state.dart';
 import '../enums/sos_state.dart';
+import '../enums/sos_terminal_reason.dart';
 import '../enums/tracking_state.dart';
 import '../events/eixam_sdk_event.dart';
 import '../events/realtime_event.dart';
@@ -77,7 +81,14 @@ abstract class EixamConnectSdk {
   /// Starts runtime work skipped by [setSession] when `deferRuntimeWork` is set.
   Future<void> startDeferredRuntime();
 
-  /// Clears the currently persisted SDK identity payload.
+  /// Clears SDK-owned local user/session data from device storage only.
+  ///
+  /// This does not call remote deletion endpoints and is safe to call multiple
+  /// times during logout or account-deletion cleanup.
+  Future<void> clearLocalUserData();
+
+  /// Clears the currently persisted SDK identity payload and local SDK user
+  /// data for logout semantics.
   Future<void> clearSession();
 
   Future<EixamSession?> getCurrentSession();
@@ -96,8 +107,8 @@ abstract class EixamConnectSdk {
   /// Deletes SDK-owned data for the authenticated user via `DELETE /v1/sdk/me`.
   ///
   /// Host apps still orchestrate account deletion across SDK erasure, auth
-  /// deletion, and local wipe. This method owns only the SDK data-erasure
-  /// transport.
+  /// deletion, and app-local wipe. This method also clears SDK-owned local
+  /// user data in a `finally` block, even when the remote erasure fails.
   Future<void> deleteUserData({
     required String userHash,
     required String externalUserId,
@@ -140,6 +151,13 @@ abstract class EixamConnectSdk {
 
   Future<DeviceStatus> connectDevice({required String pairingCode});
   Future<void> disconnectDevice();
+  Future<List<EixamBleScanResult>> scanBleDevices({
+    Duration timeout = const Duration(seconds: 8),
+  });
+  Future<EixamBleDiagnostics> getBleDiagnostics();
+  Stream<EixamBleDiagnostics> watchBleDiagnostics();
+  Future<BleCommandChannelStatus> getDeviceCommandChannelStatus();
+  Stream<BleCommandChannelStatus> watchDeviceCommandChannelStatus();
   Future<PreferredDevice?> get preferredDevice;
   Stream<DeviceStatus> get deviceStatusStream;
   Future<PreferredDeviceReconnectResult> bootstrapPreferredDeviceReconnect({
@@ -184,6 +202,7 @@ abstract class EixamConnectSdk {
   });
   Future<SosIncident> triggerSos(SosTriggerPayload payload);
   Future<SosIncident?> getCurrentSosIncident();
+  Future<SosTerminalReason?> getCurrentSosTerminalReason();
   Stream<SosState> get currentSosStateStream;
   Stream<EixamSdkEvent> get lastSosEventStream;
 

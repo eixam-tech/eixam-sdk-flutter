@@ -446,6 +446,7 @@ class FakeDeathManRepository implements DeathManRepository {
 
   DeathManPlan? activePlan;
   int updateCallCount = 0;
+  final List<DeathManStatus> updatedStatuses = <DeathManStatus>[];
 
   @override
   Future<void> cancelDeathMan(String planId) async {
@@ -491,6 +492,7 @@ class FakeDeathManRepository implements DeathManRepository {
     DeathManStatus status,
   ) async {
     updateCallCount++;
+    updatedStatuses.add(status);
     activePlan = activePlan!.copyWith(status: status);
     _controller.add(activePlan!);
     return activePlan!;

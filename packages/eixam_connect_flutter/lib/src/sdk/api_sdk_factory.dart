@@ -191,8 +191,12 @@ class ApiSdkFactory {
       disposeCallback: () async {
         httpClient.close();
         await contactsRepository.dispose();
+        await trackingRepository.dispose();
+        await deviceRepository.dispose();
+        await deviceRuntimeProvider.dispose();
         await sosRepository.dispose();
         await realtimeClient.dispose();
+        await BleDebugRegistry.instance.resetForLifecycle();
       },
     );
 

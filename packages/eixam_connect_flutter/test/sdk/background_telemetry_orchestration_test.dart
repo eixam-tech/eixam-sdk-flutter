@@ -203,4 +203,19 @@ class _FakeBackgroundTelemetryAdapter
       permissionStatus: 'granted',
     );
   }
+
+  @override
+  Future<List<NativeBackgroundTelemetryItem>> peekQueuedBackgroundTelemetry({
+    int limit = 25,
+  }) async =>
+      const <NativeBackgroundTelemetryItem>[];
+
+  @override
+  Future<bool> ackQueuedBackgroundTelemetry(String signature) async => false;
+
+  @override
+  Future<void> markQueuedBackgroundTelemetryFlushFailed(
+    String signature, {
+    required String error,
+  }) async {}
 }

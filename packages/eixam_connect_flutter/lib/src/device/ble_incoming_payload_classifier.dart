@@ -252,7 +252,7 @@ class BleIncomingPayloadClassifier {
           ? BleIncomingPayloadKind.ownDeviceSos
           : BleIncomingPayloadKind.remoteRelaySos;
     }
-    return BleIncomingPayloadKind.unknownOriginSos;
+    return fallbackOnUnknownConnectedNode.kind;
   }
 
   BleIncomingPayloadKind _classifySosEvent(EixamSosEventPacket packet) {

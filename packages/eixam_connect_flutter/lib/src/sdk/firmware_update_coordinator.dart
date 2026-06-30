@@ -222,8 +222,15 @@ class FirmwareUpdateCoordinator {
           'Firmware artifact SHA-256 is missing.',
         );
       }
-      final artifactBytes =
-          await remoteDataSource.downloadArtifact(download.downloadUrl);
+      validateFirmwareArtifactMetadataSize(release.fileSizeBytes);
+      final artifactBytes = await remoteDataSource.downloadArtifact(
+        download.downloadUrl,
+        expectedSizeBytes: release.fileSizeBytes,
+      );
+      validateFirmwareArtifactDownloadedSize(
+        artifactBytes.length,
+        expectedSizeBytes: release.fileSizeBytes,
+      );
 
       _emit(session, FirmwareUpdateState.verifying);
       _verifySha256(artifactBytes, expectedHash);

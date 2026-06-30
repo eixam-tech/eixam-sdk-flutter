@@ -60,6 +60,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   final Map<String, DateTime> _recentSosPacketSignatures = <String, DateTime>{};
   bool _ownershipSuspended = false;
   Completer<DeviceRuntimeStatus>? _pendingRuntimeStatusRequest;
+  bool _disposed = false;
   bool _loggedHeartbeatFirmwareSkip = false;
   bool _loggedHeartbeatSignalSkip = false;
   DateTime? _lastIosSignalQualityReadAt;
@@ -265,10 +266,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         await _bleClient.disconnect(candidate.deviceId);
       } catch (_) {}
       if (_isMobilePairingRequiredError(error)) {
-        throw const DeviceException(
-          _mobileBondRequiredCode,
-          _mobileBondRequiredCode,
-        );
+        throw _mobilePairingRequiredExceptionFor(error);
       }
       rethrow;
     }
@@ -421,10 +419,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         try {
           await _bleClient.disconnect(deviceId);
         } catch (_) {}
-        throw const DeviceException(
-          _mobileBondRequiredCode,
-          _mobileBondRequiredCode,
-        );
+        throw _mobilePairingRequiredExceptionFor(error);
       }
       final currentConnectionStatus =
           BleDebugRegistry.instance.currentState.connectionStatus;
@@ -458,7 +453,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
   bool _isMobilePairingRequiredError(Object error) {
     if (error is DeviceException) {
-      return error.code == _mobileBondRequiredCode;
+      return error.code == _mobileBondRequiredCode ||
+          error.code == DeviceException.bleIosPairingInformationRemovedCode;
     }
     if (error is PlatformException) {
       return error.code == _mobileBondRequiredCode ||
@@ -467,6 +463,17 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
           error.code == 'insufficientAuthentication';
     }
     return false;
+  }
+
+  DeviceException _mobilePairingRequiredExceptionFor(Object error) {
+    if (error is DeviceException &&
+        error.code == DeviceException.bleIosPairingInformationRemovedCode) {
+      return error;
+    }
+    return const DeviceException(
+      _mobileBondRequiredCode,
+      _mobileBondRequiredCode,
+    );
   }
 
   BleScanResult? _findSelectedCandidate(
@@ -1291,7 +1298,9 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       case BleIncomingPayloadKind.ownDeviceSos:
         return 'originator_matches_connected_ble_node';
       case BleIncomingPayloadKind.remoteRelaySos:
-        return 'originator_differs_from_connected_ble_node';
+        return classification.remoteRelaySosSnapshot?.relayNodeId == null
+            ? 'fallback_remote_relay_connected_node_unknown'
+            : 'originator_differs_from_connected_ble_node';
       case BleIncomingPayloadKind.unknownOriginSos:
         return 'connected_ble_node_unknown';
       case BleIncomingPayloadKind.sosCancel:
@@ -1684,7 +1693,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       channel: notification.channel,
       connectedBleTagNodeId: _connectedBleTagNodeId,
       fallbackOnUnknownConnectedNode: const BleIncomingPayloadClassification(
-        kind: BleIncomingPayloadKind.remoteRelaySos,
+        kind: BleIncomingPayloadKind.unknownOriginSos,
       ),
     );
     classification = await _resolveUnknownOriginSosClassification(
@@ -2074,7 +2083,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       channel: notification.channel,
       connectedBleTagNodeId: _connectedBleTagNodeId,
       fallbackOnUnknownConnectedNode: const BleIncomingPayloadClassification(
-        kind: BleIncomingPayloadKind.remoteRelaySos,
+        kind: BleIncomingPayloadKind.unknownOriginSos,
       ),
     );
     sosClassification = await _resolveUnknownOriginSosClassification(
@@ -2273,7 +2282,23 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       reason: reason,
     );
     if (resolvedNodeId == null) {
-      return classification;
+      final fallback = _payloadClassifier.classifySosPayload(
+        payload: payload,
+        payloadHex: payloadHex,
+        receivedAt: receivedAt,
+        source: source,
+        channel: channel,
+        connectedBleTagNodeId: null,
+        fallbackOnUnknownConnectedNode: const BleIncomingPayloadClassification(
+          kind: BleIncomingPayloadKind.remoteRelaySos,
+        ),
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'SOS unknown origin fallback -> reason=$reason '
+        'originatorNodeId=${_formatNodeId(packet.nodeId)} '
+        'role=${fallback.kind.name}',
+      );
+      return fallback;
     }
 
     final resolved = _payloadClassifier.classifySosPayload(
@@ -2557,15 +2582,25 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   }
 
   Future<void> dispose() async {
-    _pendingRuntimeStatusRequest?.completeError(
-      const DeviceException(
-        _deviceStatusTimeoutCode,
-        _deviceStatusTimeoutCode,
-      ),
-    );
+    if (_disposed) {
+      return;
+    }
+    _disposed = true;
+    final pendingRuntimeStatusRequest = _pendingRuntimeStatusRequest;
+    if (pendingRuntimeStatusRequest != null &&
+        !pendingRuntimeStatusRequest.isCompleted) {
+      pendingRuntimeStatusRequest.completeError(
+        const DeviceException(
+          _deviceStatusTimeoutCode,
+          _deviceStatusTimeoutCode,
+        ),
+      );
+    }
     _pendingRuntimeStatusRequest = null;
     await _connectionStateSubscription?.cancel();
+    _connectionStateSubscription = null;
     await _notificationSubscription?.cancel();
+    _notificationSubscription = null;
     await _runtimeStatusController.close();
     await _incomingEventsController.close();
   }

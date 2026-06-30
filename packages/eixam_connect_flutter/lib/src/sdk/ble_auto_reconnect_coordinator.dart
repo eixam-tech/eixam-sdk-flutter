@@ -88,12 +88,22 @@ class BleAutoReconnectCoordinator {
 
   Future<DeviceStatus> pairDeviceManually({required String pairingCode}) async {
     await onManualConnectRequested();
-    return _runConnectionAttempt(
-      reason: 'manual_connect',
-      status: BleConnectionStatus.connecting,
-      action: () => _deviceRepository.pairDevice(pairingCode: pairingCode),
-      allowSingleTransientDisconnectRetry: true,
-    );
+    try {
+      return await _runConnectionAttempt(
+        reason: 'manual_connect',
+        status: BleConnectionStatus.connecting,
+        action: () => _deviceRepository.pairDevice(pairingCode: pairingCode),
+        allowSingleTransientDisconnectRetry: true,
+      );
+    } catch (error) {
+      if (_isMobileBondRequired(error)) {
+        await _handleMissingMobileBond(
+          _manualConnectFailureDeviceId(),
+          reason: _mobileBondStopReason(error),
+        );
+      }
+      rethrow;
+    }
   }
 
   Future<void> unpairDeviceManually(Future<void> Function() action) async {
@@ -795,7 +805,10 @@ class BleAutoReconnectCoordinator {
       );
     } catch (error) {
       if (_isMobileBondRequired(error)) {
-        await _handleMissingMobileBond(reconnectDevice.deviceId);
+        await _handleMissingMobileBond(
+          reconnectDevice.deviceId,
+          reason: _mobileBondStopReason(error),
+        );
         _traceReconnect(
           'sdk_campaign_cancelled reason=no_preferred_device',
         );
@@ -1117,7 +1130,29 @@ class BleAutoReconnectCoordinator {
 
   bool _isMobileBondRequired(Object error) {
     return error is DeviceException &&
-        error.code == 'E_DEVICE_MOBILE_BOND_REQUIRED';
+        (error.code == 'E_DEVICE_MOBILE_BOND_REQUIRED' ||
+            error.code == DeviceException.bleIosPairingInformationRemovedCode);
+  }
+
+  String _mobileBondStopReason(Object error) {
+    if (error is DeviceException &&
+        error.code == DeviceException.bleIosPairingInformationRemovedCode) {
+      return 'ios_pairing_information_removed';
+    }
+    return 'android_bond_missing';
+  }
+
+  String _manualConnectFailureDeviceId() {
+    final selectedDeviceId =
+        BleDebugRegistry.instance.currentState.selectedDeviceId;
+    if (selectedDeviceId != null && selectedDeviceId.trim().isNotEmpty) {
+      return selectedDeviceId.trim();
+    }
+    final statusDeviceId = _lastStatus?.deviceId.trim();
+    if (statusDeviceId != null && statusDeviceId.isNotEmpty) {
+      return statusDeviceId;
+    }
+    return 'unknown';
   }
 
   bool _isInvalidBleRemoteId(Object error) {
@@ -1190,7 +1225,10 @@ class BleAutoReconnectCoordinator {
     return '${trimmed.substring(0, 4)}...${trimmed.substring(trimmed.length - 4)}';
   }
 
-  Future<void> _handleMissingMobileBond(String deviceId) async {
+  Future<void> _handleMissingMobileBond(
+    String deviceId, {
+    String reason = 'android_bond_missing',
+  }) async {
     _manualDisconnectRequested = true;
     await _preferredDeviceStore.saveManualDisconnectRequested(true);
     await _preferredDeviceStore.clearPreferredDevice();
@@ -1202,7 +1240,7 @@ class BleAutoReconnectCoordinator {
       connectionError: null,
     );
     BleDebugRegistry.instance.recordEvent(
-      'BLE_AUTO_RECONNECT_STOPPED reason=android_bond_missing hardwareId=$deviceId',
+      'BLE_AUTO_RECONNECT_STOPPED reason=$reason hardwareId=$deviceId',
     );
   }
 

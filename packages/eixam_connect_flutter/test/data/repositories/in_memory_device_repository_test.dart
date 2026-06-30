@@ -1,6 +1,7 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/shared_prefs_sdk_store.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/in_memory_device_repository.dart';
+import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/builders/device_status_builder.dart';
@@ -9,6 +10,10 @@ import '../../support/fakes/memory_shared_prefs_sdk_store.dart';
 
 void main() {
   group('InMemoryDeviceRepository', () {
+    tearDown(() async {
+      await BleDebugRegistry.instance.resetForLifecycle();
+    });
+
     test('pairDevice emits lifecycle progress and persists runtime status',
         () async {
       final store = MemorySharedPrefsSdkStore();
@@ -249,6 +254,42 @@ void main() {
       await runtimeProvider.dispose();
     });
 
+    test('reconnectDevice clears paired state when iOS pairing info is removed',
+        () async {
+      final runtimeProvider = FakeDeviceRuntimeProvider()
+        ..reconnectError =
+            const DeviceException.bleIosPairingInformationRemoved();
+      final repository = InMemoryDeviceRepository(
+        runtimeProvider: runtimeProvider,
+        localStore: MemorySharedPrefsSdkStore(),
+      );
+
+      await expectLater(
+        repository.reconnectDevice(
+          device: PreferredDevice(
+            deviceId: 'ios-corebluetooth-id',
+            displayName: 'Field Unit',
+            lastConnectedAt: DateTime.utc(2026, 1, 1),
+          ),
+        ),
+        throwsA(
+          isA<DeviceException>().having(
+            (error) => error.code,
+            'code',
+            DeviceException.bleIosPairingInformationRemovedCode,
+          ),
+        ),
+      );
+
+      final status = await repository.getDeviceStatus();
+      expect(status.paired, isFalse);
+      expect(status.activated, isFalse);
+      expect(status.connected, isFalse);
+      expect(status.lifecycleState, DeviceLifecycleState.unpaired);
+      expect(status.provisioningError, isNull);
+      await runtimeProvider.dispose();
+    });
+
     test(
         'markDeviceDisconnected keeps paired state and clears command readiness',
         () async {
@@ -325,6 +366,41 @@ void main() {
         expect(emittedStatuses, isEmpty);
       } finally {
         await subscription.cancel();
+        await runtimeProvider.dispose();
+      }
+    });
+
+    test('heartbeat catches refresh errors and keeps future ticks alive',
+        () async {
+      final runtimeProvider = FakeDeviceRuntimeProvider()
+        ..pairResult = buildDeviceStatus(
+          paired: true,
+          activated: true,
+          connected: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        )
+        ..refreshErrors.add(StateError('transient heartbeat failure'));
+      final repository = InMemoryDeviceRepository(
+        runtimeProvider: runtimeProvider,
+        localStore: MemorySharedPrefsSdkStore(),
+        heartbeatInterval: const Duration(milliseconds: 10),
+      );
+
+      try {
+        await repository.pairDevice(pairingCode: '1234');
+        await Future<void>.delayed(const Duration(milliseconds: 45));
+
+        expect(runtimeProvider.refreshCallCount, greaterThanOrEqualTo(2));
+        expect(
+          BleDebugRegistry.instance.currentState.events.map((event) {
+            return event.message;
+          }),
+          contains(
+            'InMemoryDeviceRepository.heartbeat_failed -> errorType=StateError',
+          ),
+        );
+      } finally {
+        await repository.dispose();
         await runtimeProvider.dispose();
       }
     });

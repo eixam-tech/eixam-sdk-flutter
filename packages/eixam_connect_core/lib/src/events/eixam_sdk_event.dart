@@ -1,4 +1,5 @@
 import '../entities/remote_relay_sos_snapshot.dart';
+import '../enums/sos_terminal_reason.dart';
 
 sealed class EixamSdkEvent {
   EixamSdkEvent({DateTime? timestamp})
@@ -47,7 +48,6 @@ class RemoteRelaySosObservedEvent extends EixamSdkEvent {
 }
 
 class RemoteRelaySosCancelledEvent extends EixamSdkEvent {
-
   RemoteRelaySosCancelledEvent({
     required this.originatorNodeId,
     required this.relayNodeId,
@@ -67,7 +67,6 @@ class RemoteRelaySosCancelledEvent extends EixamSdkEvent {
 enum RemoteRelaySosBackendHandoffStatus { submitted, skipped, failed }
 
 class RemoteRelaySosBackendHandoffResultEvent extends EixamSdkEvent {
-
   RemoteRelaySosBackendHandoffResultEvent({
     required this.snapshot,
     required this.status,
@@ -75,6 +74,7 @@ class RemoteRelaySosBackendHandoffResultEvent extends EixamSdkEvent {
     this.statusCode,
     this.incidentId,
     this.reason,
+    this.terminalReason,
     this.errorMessage,
     this.ackRelaySent = false,
     this.ackRelayErrorMessage,
@@ -85,13 +85,13 @@ class RemoteRelaySosBackendHandoffResultEvent extends EixamSdkEvent {
   final int? statusCode;
   final String? incidentId;
   final String? reason;
+  final SosTerminalReason? terminalReason;
   final String? errorMessage;
   final bool ackRelaySent;
   final String? ackRelayErrorMessage;
 }
 
 class RemoteRelaySosCancelHandoffResultEvent extends EixamSdkEvent {
-
   RemoteRelaySosCancelHandoffResultEvent({
     required this.originatorNodeId,
     required this.deviceId,
@@ -99,6 +99,7 @@ class RemoteRelaySosCancelHandoffResultEvent extends EixamSdkEvent {
     required this.receivedAt,
     this.relayNodeId,
     this.reason,
+    this.terminalReason,
     this.errorMessage,
   });
   final int originatorNodeId;
@@ -106,6 +107,7 @@ class RemoteRelaySosCancelHandoffResultEvent extends EixamSdkEvent {
   final String? deviceId;
   final RemoteRelaySosBackendHandoffStatus status;
   final String? reason;
+  final SosTerminalReason? terminalReason;
   final String? errorMessage;
   final DateTime receivedAt;
 }

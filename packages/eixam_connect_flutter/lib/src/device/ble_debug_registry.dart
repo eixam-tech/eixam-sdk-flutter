@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:flutter/foundation.dart';
 
 import '../diagnostics/security_diagnostics_redactor.dart';
@@ -18,7 +19,7 @@ class BleDebugRegistry {
 
   static final BleDebugRegistry instance = BleDebugRegistry._();
 
-  final StreamController<BleDebugState> _controller =
+  StreamController<BleDebugState> _controller =
       StreamController<BleDebugState>.broadcast();
 
   BleDebugState _state = const BleDebugState();
@@ -55,10 +56,17 @@ class BleDebugRegistry {
   ];
 
   void reset() {
+    unawaited(resetForLifecycle());
+  }
+
+  Future<void> resetForLifecycle() async {
+    final previousController = _controller;
     _commandWriter = null;
     _scanner = null;
     _allowSensitiveDiagnosticsOverride = null;
     _state = const BleDebugState();
+    _controller = StreamController<BleDebugState>.broadcast();
+    await previousController.close();
     _controller.add(_state);
   }
 
@@ -207,7 +215,10 @@ class BleDebugRegistry {
   Future<List<BleScanResult>> startScan() async {
     final scanner = _scanner;
     if (scanner == null) {
-      throw StateError('E_BLE_SCANNER_NOT_READY');
+      throw const DeviceException(
+        'E_BLE_SCANNER_NOT_READY',
+        'E_BLE_SCANNER_NOT_READY',
+      );
     }
     update(isScanning: true, scanResults: const <BleScanResult>[]);
     recordEvent('Starting BLE scan');
@@ -226,7 +237,10 @@ class BleDebugRegistry {
   Future<void> sendCommand(EixamDeviceCommand command) async {
     final writer = _commandWriter;
     if (writer == null) {
-      throw StateError('E_BLE_COMMAND_CHANNEL_NOT_READY');
+      throw const DeviceException(
+        'E_BLE_COMMAND_CHANNEL_NOT_READY',
+        'E_BLE_COMMAND_CHANNEL_NOT_READY',
+      );
     }
     await writer(command);
   }

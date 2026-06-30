@@ -1,4 +1,5 @@
 import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
+import 'package:eixam_connect_flutter/src/device/ble_scan_result.dart';
 import 'package:eixam_connect_flutter/src/device/ble_scan_result_brand_classifier.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
 import 'package:flutter_test/flutter_test.dart';

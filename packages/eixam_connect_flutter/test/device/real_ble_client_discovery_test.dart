@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/device/ble_adapter_state.dart';
 import 'package:eixam_connect_flutter/src/device/ble_client.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
@@ -109,7 +110,13 @@ void main() {
     await client.initialize();
     await expectLater(
       client.scan(timeout: Duration.zero),
-      throwsA(isA<StateError>()),
+      throwsA(
+        isA<DeviceException>().having(
+          (error) => error.code,
+          'code',
+          'E_BLE_SCANNER_NOT_READY',
+        ),
+      ),
     );
 
     expect(startScanCalls, 0);
@@ -157,7 +164,13 @@ void main() {
     supported = false;
     await expectLater(
       client.scan(timeout: Duration.zero),
-      throwsA(isA<StateError>()),
+      throwsA(
+        isA<DeviceException>().having(
+          (error) => error.code,
+          'code',
+          'E_BLE_SCANNER_NOT_READY',
+        ),
+      ),
     );
 
     expect(startScanCalls, 0);
@@ -174,7 +187,7 @@ void main() {
     );
   });
 
-  test('native startScan E_BLE_SCANNER_NOT_READY propagates native origin',
+  test('native startScan E_BLE_SCANNER_NOT_READY maps to typed exception',
       () async {
     debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
     final logs = <String>[];
@@ -196,7 +209,13 @@ void main() {
     await client.initialize();
     await expectLater(
       client.scan(timeout: Duration.zero),
-      throwsA(isA<StateError>()),
+      throwsA(
+        isA<DeviceException>().having(
+          (error) => error.code,
+          'code',
+          'E_BLE_SCANNER_NOT_READY',
+        ),
+      ),
     );
 
     expect(logs, contains('SDK_DISCOVERY_NATIVE_START_SCAN_CALL_BEGIN'));
@@ -215,6 +234,35 @@ void main() {
         'error=Bad state: E_BLE_SCANNER_NOT_READY',
       ),
     );
+  });
+
+  test('iOS apple-code 14 connect failure maps to typed exception', () {
+    final mapped = RealBleClient.mapConnectionFailureForTesting(
+      FlutterBluePlusException(
+        ErrorPlatform.apple,
+        'connect',
+        14,
+        'Peer removed pairing information',
+      ),
+    );
+
+    expect(mapped, isNotNull);
+    expect(mapped?.code, DeviceException.bleIosPairingInformationRemovedCode);
+    expect(mapped?.message, contains('apple-code: 14'));
+    expect(mapped?.message, contains('Peer removed pairing information'));
+  });
+
+  test('generic connect failure is not remapped', () {
+    final mapped = RealBleClient.mapConnectionFailureForTesting(
+      FlutterBluePlusException(
+        ErrorPlatform.apple,
+        'connect',
+        7,
+        'Connection timeout',
+      ),
+    );
+
+    expect(mapped, isNull);
   });
 }
 

@@ -501,6 +501,50 @@ void main() {
       await subscription.cancel();
     });
 
+    test(
+        'remote relay arriving while local SOS active stays external and does not overwrite local state',
+        () async {
+      final events = <EixamSdkEvent>[];
+      final subscription = sdk.watchEvents().listen(events.add);
+
+      final localIncident =
+          await sdk.triggerSos(const SosTriggerPayload(message: 'local SOS'));
+      expect(localIncident.state, SosState.sent);
+      expect(localIncident.triggerSource, 'button_ui');
+      expect(await sdk.getSosState(), SosState.sent);
+      expect(sosRepository.triggerCallCount, 1);
+
+      bleEvents.add(_remoteRelayEvent());
+      await _eventually(() => realtimeClient.publishedSos.length == 1);
+      await _eventually(
+        () => events.whereType<RemoteRelaySosObservedEvent>().isNotEmpty,
+      );
+
+      final relayRequest = realtimeClient.publishedSos.single;
+      expect(relayRequest.triggerSource, 'remote_lora_relay');
+      expect(relayRequest.deviceId, '16909060');
+      expect(relayRequest.originatorNodeId, 16909060);
+      expect(relayRequest.relayDeviceId, 0x0A0B0C0D.toString());
+      expect(relayRequest.relayHardwareId, 'relay-node');
+      expect(sosRepository.triggerCallCount, 1);
+      expect(await sdk.getSosState(), SosState.sent);
+      expect((await sdk.getCurrentSosIncident())?.id, localIncident.id);
+      expect((await sdk.getCurrentSosIncident())?.triggerSource, 'button_ui');
+      expect((await deviceSosController.getStatus()).state,
+          DeviceSosState.inactive);
+      expect(deviceCommands.single.bytes, <int>[0x08, 0x04, 0x03, 0x02, 0x01]);
+
+      final observed = events.whereType<RemoteRelaySosObservedEvent>().single;
+      expect(observed.snapshot.originatorNodeId, 0x01020304);
+      expect(observed.snapshot.relayNodeId, 0x0A0B0C0D);
+      final handoff =
+          events.whereType<RemoteRelaySosBackendHandoffResultEvent>().single;
+      expect(handoff.status, RemoteRelaySosBackendHandoffStatus.submitted);
+      expect(handoff.ackRelaySent, isTrue);
+
+      await subscription.cancel();
+    });
+
     test('backend failure allows repeated relay packet to retry', () async {
       BleDebugRegistry.instance.reset();
       realtimeClient.publishSosError = const SosException(
@@ -1960,6 +2004,7 @@ void main() {
         final result =
             events.whereType<RemoteRelaySosCancelHandoffResultEvent>().single;
         expect(result.reason, 'unknown_device');
+        expect(result.terminalReason, SosTerminalReason.relayTerminalRejected);
 
         await subscription.cancel();
       });

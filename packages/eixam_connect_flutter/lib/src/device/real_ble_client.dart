@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:async/async.dart';
+import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter/services.dart';
@@ -117,7 +118,7 @@ class RealBleClient implements BleClient {
     if (await _isSupportedProvider() == false) {
       throw Exception('E_BLE_UNSUPPORTED');
     }
-    _adapterStateSub?.cancel();
+    unawaited(_adapterStateSub?.cancel());
     _adapterStateSub = _adapterStateStreamProvider().listen((state) {
       final mapped = _mapAdapterState(state);
       BleDebugRegistry.instance.update(adapterState: mapped);
@@ -194,7 +195,10 @@ class RealBleClient implements BleClient {
         debugPrint(
           'SDK_DISCOVERY_PRECHECK_BLOCKED reason=${precheck.reason}',
         );
-        throw StateError('E_BLE_SCANNER_NOT_READY');
+        throw const DeviceException(
+          'E_BLE_SCANNER_NOT_READY',
+          'E_BLE_SCANNER_NOT_READY',
+        );
       }
       if (precheck.scannerReady == 'unknown') {
         debugPrint(
@@ -260,6 +264,10 @@ class RealBleClient implements BleClient {
       );
       BleDebugRegistry.instance.update(isScanning: false);
       await sub.cancel();
+      final sdkError = _mapNativeStateError(error);
+      if (sdkError != null) {
+        throw sdkError;
+      }
       rethrow;
     }
 
@@ -374,6 +382,10 @@ class RealBleClient implements BleClient {
             'BLE connect() failure -> hardwareId=$deviceId error=$error',
           );
           _log('BLE connect() failure -> hardwareId=$deviceId error=$error');
+          final typedError = _mapBleConnectionFailure(error);
+          if (typedError != null) {
+            throw typedError;
+          }
           rethrow;
         }
       } else {
@@ -444,6 +456,10 @@ class RealBleClient implements BleClient {
         'BLE connect/discoverServices failed -> hardwareId=$deviceId error=$error',
       );
 
+      final typedError = _mapBleConnectionFailure(error);
+      if (typedError != null) {
+        throw typedError;
+      }
       rethrow;
     }
   }
@@ -1099,5 +1115,39 @@ class RealBleClient implements BleClient {
       default:
         return BleAdapterState.unknown;
     }
+  }
+
+  DeviceException? _mapNativeStateError(Object error) {
+    if (error is! StateError) {
+      return null;
+    }
+    final message = error.message;
+    if (!message.startsWith('E_')) {
+      return null;
+    }
+    return DeviceException(message, message);
+  }
+
+  @visibleForTesting
+  static DeviceException? mapConnectionFailureForTesting(Object error) =>
+      _mapBleConnectionFailure(error);
+
+  static DeviceException? _mapBleConnectionFailure(Object error) {
+    if (_isIosPairingInformationRemoved(error)) {
+      return const DeviceException.bleIosPairingInformationRemoved();
+    }
+    return null;
+  }
+
+  static bool _isIosPairingInformationRemoved(Object error) {
+    if (error is FlutterBluePlusException) {
+      final description = error.description?.toLowerCase() ?? '';
+      return error.platform == ErrorPlatform.apple &&
+          error.code == 14 &&
+          description.contains('peer removed pairing information');
+    }
+    final text = error.toString().toLowerCase();
+    return text.contains('apple-code: 14') &&
+        text.contains('peer removed pairing information');
   }
 }

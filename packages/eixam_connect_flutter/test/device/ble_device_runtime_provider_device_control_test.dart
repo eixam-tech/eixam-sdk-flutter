@@ -236,6 +236,50 @@ void main() {
       expect(await bleClient.isConnected(MockBleClient.demoDeviceId), isFalse);
     });
 
+    test('reconnect preserves typed iOS pairing information removed error',
+        () async {
+      await runtimeProvider.dispose();
+      await bleClient.dispose();
+      bleClient = _FailingConnectMockBleClient(
+        const DeviceException.bleIosPairingInformationRemoved(),
+      );
+      await bleClient.initialize();
+      runtimeProvider = BleDeviceRuntimeProvider(bleClient: bleClient);
+
+      await expectLater(
+        runtimeProvider.reconnect(
+          currentStatus: buildDeviceStatus(
+            deviceId: MockBleClient.demoDeviceId,
+            paired: true,
+            activated: true,
+            connected: false,
+            lifecycleState: DeviceLifecycleState.paired,
+          ),
+          preferredDevice: PreferredDevice(
+            deviceId: MockBleClient.demoDeviceId,
+            displayName: 'EIXAM R1 Demo',
+            lastConnectedAt: DateTime.utc(2026, 5, 7),
+          ),
+        ),
+        throwsA(
+          isA<DeviceException>().having(
+            (error) => error.code,
+            'code',
+            DeviceException.bleIosPairingInformationRemovedCode,
+          ),
+        ),
+      );
+
+      expect(await bleClient.isConnected(MockBleClient.demoDeviceId), isFalse);
+      expect(
+        BleDebugRegistry.instance.currentState.events
+            .map((event) => event.message),
+        contains(
+          'BLE_RECONNECT_STOPPED reason=mobile_bond_missing hardwareId=${MockBleClient.demoDeviceId}',
+        ),
+      );
+    });
+
     test('iOS reconnect resolves logical preferred id through unique scan',
         () async {
       await runtimeProvider.dispose();
@@ -453,5 +497,16 @@ final class _IosReconnectMockBleClient extends MockBleClient {
   @override
   Future<String?> readFirmwareVersion(String deviceId) {
     return super.readFirmwareVersion(MockBleClient.demoDeviceId);
+  }
+}
+
+final class _FailingConnectMockBleClient extends MockBleClient {
+  _FailingConnectMockBleClient(this.error);
+
+  final Object error;
+
+  @override
+  Future<void> connect(String deviceId) async {
+    throw error;
   }
 }

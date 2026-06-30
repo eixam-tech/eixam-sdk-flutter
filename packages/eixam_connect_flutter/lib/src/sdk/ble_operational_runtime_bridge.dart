@@ -1536,7 +1536,19 @@ class BleOperationalRuntimeBridge {
         );
         return false;
       }
-      if (allowPendingFallback && _isBackendValidationError(error)) {
+      if (relayContext != null && _isRelayTerminalError(error)) {
+        _recordRelayTerminalError(relayContext: relayContext, error: error);
+        _emitDiagnostics(
+          _diagnostics.copyWith(
+            lastRelaySosPublishResult:
+                'terminal_failure remote=${relayContext.remoteDeviceId}',
+            lastDecision: 'Relay SOS rejected: ${error.code}',
+          ),
+        );
+        return false;
+      }
+      if (allowPendingFallback &&
+          _isBackendValidationError(error, relayContext: relayContext)) {
         final validationStatus = _backendValidationStatus(error);
         final retry = _sosBackendDeviceRegisterRetry;
         if (retry != null && originatorNodeId != null) {
@@ -1602,17 +1614,6 @@ class BleOperationalRuntimeBridge {
           'localSosPreserved=true signature=$signature '
           'originatorNodeId=${originatorNodeId?.toString() ?? "none"} '
           'deviceId=${deviceId ?? "none"}',
-        );
-        return false;
-      }
-      if (relayContext != null && _isRelayTerminalError(error)) {
-        _recordRelayTerminalError(relayContext: relayContext, error: error);
-        _emitDiagnostics(
-          _diagnostics.copyWith(
-            lastRelaySosPublishResult:
-                'terminal_failure remote=${relayContext.remoteDeviceId}',
-            lastDecision: 'Relay SOS rejected: ${error.code}',
-          ),
         );
         return false;
       }
@@ -1683,7 +1684,13 @@ class BleOperationalRuntimeBridge {
         error.code == 'E_SOS_TRIGGER_FAILED';
   }
 
-  bool _isBackendValidationError(EixamSdkException error) {
+  bool _isBackendValidationError(
+    EixamSdkException error, {
+    RelayIngestContext? relayContext,
+  }) {
+    if (relayContext != null && _isRelayTerminalError(error)) {
+      return false;
+    }
     final code = error.code.toUpperCase();
     return code.contains('422') ||
         code.contains('402') ||

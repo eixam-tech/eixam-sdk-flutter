@@ -71,11 +71,19 @@ class DeviceException extends EixamSdkException {
   const DeviceException.bleDeviceIdUnverified()
       : this(bleDeviceIdUnverifiedCode, bleDeviceIdUnverifiedCode);
 
+  const DeviceException.bleIosPairingInformationRemoved()
+      : this(
+          bleIosPairingInformationRemovedCode,
+          'E_BLE_IOS_PAIRING_INFORMATION_REMOVED apple-code: 14 Peer removed pairing information',
+        );
+
   static const String bleLinkNotSecureCode = 'E_BLE_LINK_NOT_SECURE';
   static const String blePairingRequiredCode = 'E_BLE_PAIRING_REQUIRED';
   static const String bleCommandAuthFailedCode = 'E_BLE_COMMAND_AUTH_FAILED';
   static const String bleReplayRejectedCode = 'E_BLE_REPLAY_REJECTED';
   static const String bleDeviceIdUnverifiedCode = 'E_BLE_DEVICE_ID_UNVERIFIED';
+  static const String bleIosPairingInformationRemovedCode =
+      'E_BLE_IOS_PAIRING_INFORMATION_REMOVED';
 }
 
 class FirmwareUpdateException extends EixamSdkException {

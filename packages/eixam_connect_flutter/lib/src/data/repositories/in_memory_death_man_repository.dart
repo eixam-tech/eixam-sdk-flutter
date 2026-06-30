@@ -103,7 +103,11 @@ class InMemoryDeathManRepository implements DeathManRepository {
     }
     final updatedPlan = _activePlan!.copyWith(status: status);
     _controller.add(updatedPlan);
-    _activePlan = _isActiveStatus(status) ? updatedPlan : null;
+    _activePlan = _keepsPlanMutableUntilNextTransition(status)
+        ? updatedPlan
+        : _isActiveStatus(status)
+            ? updatedPlan
+            : null;
     await _persistState();
     return updatedPlan;
   }
@@ -127,4 +131,7 @@ class InMemoryDeathManRepository implements DeathManRepository {
 
   bool _isActiveStatus(DeathManStatus status) =>
       _activeStatuses.contains(status);
+
+  bool _keepsPlanMutableUntilNextTransition(DeathManStatus status) =>
+      status == DeathManStatus.escalated;
 }

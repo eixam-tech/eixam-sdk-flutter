@@ -1093,6 +1093,113 @@ void main() {
       await coordinator.dispose();
     });
 
+    test('stops auto-connect when iOS pairing information was removed',
+        () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _FakeDeviceRepository()
+        ..pairErrors = <Object>[
+          const DeviceException.bleIosPairingInformationRemoved(),
+        ];
+      final store = PreferredBleDeviceStore(
+        localStore: SharedPrefsSdkStore(),
+      );
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: '97BA8682-44B7-5BA3-2257-381176EB6AAB',
+          displayName: 'EIXAM Demo',
+          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+        ),
+      );
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+        isIosPlatform: () => true,
+      );
+
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+      final firstResult = await coordinator.tryAutoConnectForHandoff(
+        trigger: 'resume',
+      );
+      await coordinator.tryAutoConnectOnResume();
+
+      expect(
+        firstResult.status,
+        PreferredDeviceReconnectResultStatus.noKnownDevice,
+      );
+      expect(firstResult.reason, 'mobile_bond_missing');
+      expect(repository.reconnectCallCount, 1);
+      expect(await store.getPreferredDevice(), isNull);
+      expect(await store.readManualDisconnectRequested(), isTrue);
+      expect(
+        BleDebugRegistry.instance.currentState.events
+            .map((event) => event.message),
+        contains(
+          'BLE_AUTO_RECONNECT_STOPPED reason=ios_pairing_information_removed hardwareId=97BA8682-44B7-5BA3-2257-381176EB6AAB',
+        ),
+      );
+      await coordinator.dispose();
+    });
+
+    test('manual connect clears stale preferred device on iOS pairing removal',
+        () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      BleDebugRegistry.instance.selectDevice(
+        '97BA8682-44B7-5BA3-2257-381176EB6AAB',
+      );
+      final repository = _FakeDeviceRepository()
+        ..pairErrors = <Object>[
+          const DeviceException.bleIosPairingInformationRemoved(),
+        ];
+      final store = PreferredBleDeviceStore(
+        localStore: SharedPrefsSdkStore(),
+      );
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: '97BA8682-44B7-5BA3-2257-381176EB6AAB',
+          displayName: 'EIXAM Demo',
+          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+        ),
+      );
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+        isIosPlatform: () => true,
+      );
+
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+
+      await expectLater(
+        coordinator.pairDeviceManually(pairingCode: '1234'),
+        throwsA(
+          isA<DeviceException>().having(
+            (error) => error.code,
+            'code',
+            DeviceException.bleIosPairingInformationRemovedCode,
+          ),
+        ),
+      );
+
+      expect(repository.pairCallCount, 1);
+      expect(await store.getPreferredDevice(), isNull);
+      expect(await store.readManualDisconnectRequested(), isTrue);
+      expect(
+        BleDebugRegistry.instance.currentState.events
+            .map((event) => event.message),
+        contains(
+          'BLE_AUTO_RECONNECT_STOPPED reason=ios_pairing_information_removed hardwareId=97BA8682-44B7-5BA3-2257-381176EB6AAB',
+        ),
+      );
+      await coordinator.dispose();
+    });
+
     test('uses restored paired device id when preferred store is empty',
         () async {
       SharedPreferences.setMockInitialValues(<String, Object>{});

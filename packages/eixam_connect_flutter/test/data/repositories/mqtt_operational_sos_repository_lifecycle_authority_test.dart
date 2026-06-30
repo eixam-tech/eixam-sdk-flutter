@@ -219,6 +219,90 @@ void main() {
       expect(_hasDiagnostic('MQTT_SOS_LIFECYCLE_ACCEPTED_CYCLE_MATCH'), isTrue);
     });
 
+    test('settles active to cancelled through validated transition path',
+        () async {
+      final incident = await _triggerAppSos(repository);
+      final states = <SosState>[];
+      final subscription = repository.watchSosState().listen(states.add);
+
+      realtimeClient.emitEvent(_lifecycleEvent(
+        incidentId: incident.id,
+        state: 'cancelled',
+        terminalReason: SosTerminalReason.cancelledByUser.name,
+      ));
+      await _pumpRealtime();
+
+      expect(await repository.getSosState(), SosState.cancelled);
+      expect(
+          states,
+          containsAllInOrder(<SosState>[
+            SosState.cancelRequested,
+            SosState.cancelled,
+          ]));
+      final current = await repository.getCurrentIncident();
+      expect(current!.state, SosState.cancelled);
+      expect(current.terminalReason, SosTerminalReason.cancelledByUser);
+      expect(_hasDiagnostic('accepted_via_valid_path'), isTrue);
+      await subscription.cancel();
+    });
+
+    test('settles active to resolved with typed terminal reason', () async {
+      final incident = await _triggerAppSos(repository);
+
+      realtimeClient.emitEvent(_lifecycleEvent(
+        incidentId: incident.id,
+        state: 'resolved',
+        terminalReason: SosTerminalReason.backendRejected.name,
+      ));
+      await _pumpRealtime();
+
+      expect(await repository.getSosState(), SosState.resolved);
+      final current = await repository.getCurrentIncident();
+      expect(current!.state, SosState.resolved);
+      expect(current.terminalReason, SosTerminalReason.backendRejected);
+    });
+
+    test('rejects unsupported live terminal transition without mutation',
+        () async {
+      final incident = await _triggerAppSos(repository);
+
+      realtimeClient.emitEvent(_lifecycleEvent(
+        incidentId: incident.id,
+        state: 'acknowledged',
+      ));
+      await _pumpRealtime();
+      expect(await repository.getSosState(), SosState.acknowledged);
+
+      realtimeClient.emitEvent(_lifecycleEvent(
+        incidentId: incident.id,
+        state: 'cancelled',
+        terminalReason: SosTerminalReason.cancelledByUser.name,
+      ));
+      await _pumpRealtime();
+
+      expect(await repository.getSosState(), SosState.acknowledged);
+      final current = await repository.getCurrentIncident();
+      expect(current!.state, SosState.acknowledged);
+      expect(current.terminalReason, isNull);
+      expect(_hasDiagnostic('invalid_live_transition:realtime_event'), isTrue);
+    });
+
+    test('cold restore can seed terminal state without live validation',
+        () async {
+      final store = MemorySharedPrefsSdkStore()
+        ..stringValues[SharedPrefsSdkStore.sosStateKey] =
+            SosState.cancelled.name;
+      await repository.dispose();
+      repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        localStore: store,
+      );
+
+      await repository.restoreState();
+
+      expect(await repository.getSosState(), SosState.cancelled);
+    });
+
     test('rejects mismatched incidentId without correlation or cycle proof',
         () async {
       final incident = await _triggerAppSos(repository);
@@ -231,6 +315,31 @@ void main() {
 
       final current = await repository.getCurrentIncident();
       expect(current!.id, incident.id);
+      expect(current.state, SosState.sent);
+      expect(await repository.getSosState(), SosState.sent);
+      expect(_hasDiagnostic('MQTT_SOS_LIFECYCLE_REJECTED_IDENTITY_MISMATCH'),
+          isTrue);
+    });
+
+    test('rejects stale terminal replay after newer active incident', () async {
+      final staleIncident = await _triggerAppSos(repository);
+
+      realtimeClient.emitEvent(_lifecycleEvent(
+        incidentId: staleIncident.id,
+        state: 'cancelled',
+      ));
+      await _pumpRealtime();
+      expect(await repository.getSosState(), SosState.cancelled);
+
+      final newerIncident = await _triggerAppSos(repository);
+      realtimeClient.emitEvent(_lifecycleEvent(
+        incidentId: staleIncident.id,
+        state: 'resolved',
+      ));
+      await _pumpRealtime();
+
+      final current = await repository.getCurrentIncident();
+      expect(current!.id, newerIncident.id);
       expect(current.state, SosState.sent);
       expect(await repository.getSosState(), SosState.sent);
       expect(_hasDiagnostic('MQTT_SOS_LIFECYCLE_REJECTED_IDENTITY_MISMATCH'),
@@ -363,6 +472,7 @@ RealtimeEvent _lifecycleEvent({
   String? triggerSource,
   String? actionability,
   String? displaySurface,
+  String? terminalReason,
 }) {
   return RealtimeEvent(
     type: 'sos.lifecycle',
@@ -378,6 +488,7 @@ RealtimeEvent _lifecycleEvent({
       if (triggerSource != null) 'triggerSource': triggerSource,
       if (actionability != null) 'actionability': actionability,
       if (displaySurface != null) 'displaySurface': displaySurface,
+      if (terminalReason != null) 'terminalReason': terminalReason,
     },
   );
 }

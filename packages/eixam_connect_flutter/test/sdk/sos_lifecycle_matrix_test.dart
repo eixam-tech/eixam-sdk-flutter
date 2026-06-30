@@ -135,6 +135,35 @@ void main() {
       }
     });
 
+    test('terminal notification intent includes typed terminal reason only',
+        () async {
+      final harness = _SdkSosHarness();
+      final notificationIntents = <EixamNotificationIntent>[];
+      final subscription = harness.sdk
+          .watchNotificationIntents()
+          .listen(notificationIntents.add);
+      try {
+        await harness.sdk.triggerSos(const SosTriggerPayload());
+        await harness.sdk.cancelSos();
+        await pumpEventQueue(times: 2);
+
+        final terminalIntent = notificationIntents
+            .where((intent) =>
+                intent.type == EixamNotificationIntentType.sosCancelled)
+            .single;
+
+        expect(
+          terminalIntent.payload['terminalReason'],
+          SosTerminalReason.cancelledByUser.name,
+        );
+        expect(terminalIntent.payload, isNot(contains('userHash')));
+        expect(terminalIntent.payload, isNot(contains('externalUserId')));
+      } finally {
+        await subscription.cancel();
+        await harness.dispose();
+      }
+    });
+
     test(
         'public SOS stream blocks raw repository open transition rejected by machine',
         () async {
@@ -419,7 +448,11 @@ void main() {
           throwsA(isA<NetworkException>()),
         );
 
-        expect(await harness.sdk.getSosState(), SosState.idle);
+        expect(await harness.sdk.getSosState(), SosState.failed);
+        expect(
+          await harness.sdk.getCurrentSosTerminalReason(),
+          SosTerminalReason.deliveryFailed,
+        );
         expect(_hasDebugMessage('SOS_TRIGGER_DEVICE_ONLY_SUCCESS'), isFalse);
       } finally {
         await harness.dispose();
@@ -432,6 +465,9 @@ void main() {
       try {
         harness.sosRepository.triggerError =
             const NetworkException('E_NETWORK', 'offline');
+        final failedState = harness.sdk.currentSosStateStream.firstWhere(
+          (state) => state == SosState.failed,
+        );
 
         await expectLater(
           harness.sdk.triggerSos(const SosTriggerPayload()),
@@ -442,6 +478,59 @@ void main() {
               'E_SOS_NOT_AVAILABLE',
             ),
           ),
+        );
+        expect(await harness.sdk.getSosState(), SosState.failed);
+        expect(await failedState, SosState.failed);
+        expect(
+          await harness.sdk.getCurrentSosTerminalReason(),
+          SosTerminalReason.notAvailable,
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('backend validation failure exposes typed terminal reason', () async {
+      final harness = _SdkSosHarness();
+      try {
+        harness.sosRepository.triggerError = const SosHttpException(
+          'E_HTTP_SOS_TRIGGER_FAILED',
+          'validation failed',
+          statusCode: 422,
+        );
+
+        await expectLater(
+          harness.sdk.triggerSos(const SosTriggerPayload()),
+          throwsA(isA<SosHttpException>()),
+        );
+
+        expect(await harness.sdk.getSosState(), SosState.failed);
+        expect(
+          await harness.sdk.getCurrentSosTerminalReason(),
+          SosTerminalReason.backendValidationFailed,
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('backend rejection exposes typed terminal reason', () async {
+      final harness = _SdkSosHarness();
+      try {
+        harness.sosRepository.triggerError = const SosHttpException(
+          'E_HTTP_SOS_TRIGGER_FAILED',
+          'backend rejected SOS',
+          statusCode: 409,
+        );
+
+        await expectLater(
+          harness.sdk.triggerSos(const SosTriggerPayload()),
+          throwsA(isA<SosHttpException>()),
+        );
+
+        expect(
+          await harness.sdk.getCurrentSosTerminalReason(),
+          SosTerminalReason.backendRejected,
         );
       } finally {
         await harness.dispose();
@@ -503,6 +592,69 @@ void main() {
         expect(await harness.sdk.getPreSosStatus(), isNull);
         expect(await harness.sdk.getSosState(), SosState.idle);
       } finally {
+        await harness.dispose();
+      }
+    });
+
+    test(
+        'SOS-03b app-origin BLE countdown success is not cleared by stale idle',
+        () async {
+      final harness = _SdkSosHarness(
+        connectedBle: true,
+        deviceCountdown: const Duration(milliseconds: 35),
+      );
+      final states = <SosState>[];
+      final subscription = harness.sdk.currentSosStateStream.listen(states.add);
+      try {
+        harness.deviceRepository.emitStatus(
+          buildDeviceStatus(
+            deviceId: 'ble-1',
+            nodeId: 0x1234,
+            canonicalHardwareId: 'CF:82:00:00:00:01',
+            connected: true,
+            paired: true,
+            activated: true,
+          ),
+        );
+        harness.trackingRepository.emitPosition(
+          TrackingPosition(
+            latitude: 41.38,
+            longitude: 2.17,
+            timestamp: DateTime.now().toUtc(),
+            source: DeliveryMode.mobile,
+          ),
+        );
+        await harness.attachObservedAppActivation();
+
+        await harness.sdk.startPreSos(
+          countdown: const Duration(milliseconds: 35),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 140));
+
+        expect(harness.sosRepository.triggerCallCount, 1);
+        expect(harness.sosRepository.lastOriginatorNodeId, 0x1234);
+        expect(harness.sosRepository.lastPositionSnapshot?.latitude, 41.38);
+        expect(harness.sosRepository.lastPositionSnapshot?.longitude, 2.17);
+        expect(states, contains(SosState.arming));
+        expect(states, contains(SosState.sent));
+        expect(await harness.sdk.getPreSosStatus(), isNull);
+        expect(await harness.sdk.getSosState(), SosState.sent);
+
+        harness.sosRepository.currentIncident =
+            harness.sosRepository.currentIncident.copyWith(
+          state: SosState.idle,
+        );
+        harness.sosRepository.stateController.add(SosState.idle);
+        await pumpEventQueue(times: 3);
+
+        expect(await harness.sdk.getSosState(), SosState.sent);
+        expect(states.last, SosState.sent);
+        expect(
+          _hasDebugMessage('SOS_APP_ORIGIN_ACTIVE_BRIDGE_REGISTERED'),
+          isTrue,
+        );
+      } finally {
+        await subscription.cancel();
         await harness.dispose();
       }
     });
@@ -589,6 +741,10 @@ void main() {
         expect(harness.sosRepository.cancelCallCount, 1);
         expect(await harness.sdk.getPreSosStatus(), isNull);
         expect(await harness.sdk.getSosState(), SosState.cancelled);
+        expect(
+          await harness.sdk.getCurrentSosTerminalReason(),
+          SosTerminalReason.preSosCancelledByDevice,
+        );
       } finally {
         await harness.dispose();
       }
@@ -657,6 +813,44 @@ void main() {
         expect(
           <SosState>[SosState.idle, SosState.cancelled],
           contains(await harness.sdk.getSosState()),
+        );
+        expect(
+          await harness.sdk.getCurrentSosTerminalReason(),
+          SosTerminalReason.cancelledByUser,
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('device ACK timeout forced terminal exposes typed reason', () async {
+      final harness = _SdkSosHarness(
+        connectedBle: true,
+        deviceCountdown: const Duration(milliseconds: 5),
+        appActivationObservationTimeout: const Duration(milliseconds: 10),
+      );
+      try {
+        await harness.deviceSosController.attach(commandWriter: (_) async {});
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        harness.sosRepository.currentIncident =
+            harness.sosRepository.currentIncident.copyWith(
+          state: SosState.sent,
+          triggerSource: 'ble_device_runtime',
+        );
+        harness.deviceSosController.handleIncomingSosPacket(
+          _deviceOriginActivePacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 15));
+
+        await harness.sdk.cancelSos();
+        await pumpEventQueue(times: 2);
+
+        expect(
+          await harness.sdk.getCurrentSosTerminalReason(),
+          SosTerminalReason.deviceAckTimeout,
         );
       } finally {
         await harness.dispose();
@@ -955,6 +1149,7 @@ final class _SdkSosHarness {
     FakeSosRepository? sosRepository,
     bool connectedBle = false,
     Duration deviceCountdown = const Duration(seconds: 20),
+    Duration appActivationObservationTimeout = const Duration(seconds: 3),
     MemorySharedPrefsSdkStore? localStore,
   })  : sosRepository = sosRepository ?? FakeSosRepository(),
         trackingRepository = FakeTrackingRepository(
@@ -990,6 +1185,7 @@ final class _SdkSosHarness {
         deviceSosController = DeviceSosController(
           countdownDuration: deviceCountdown,
           countdownTick: const Duration(milliseconds: 5),
+          appActivationObservationTimeout: appActivationObservationTimeout,
         ),
         localStore = localStore ?? MemorySharedPrefsSdkStore(),
         preferredBleDeviceStore = PreferredBleDeviceStore(
