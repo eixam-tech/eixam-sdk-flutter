@@ -195,5 +195,57 @@ void main() {
       expect(diagnostics, contains('X-User-ID=<redacted>'));
       expect(diagnostics, contains('body='));
     });
+
+    test('logs redacted external cancel failure response body', () async {
+      BleDebugRegistry.instance.debugSetSensitiveDiagnosticsEnabled(false);
+      final sessionContext = SdkSessionContext()
+        ..currentSession = const EixamSession.signed(
+          appId: 'app-secret',
+          externalUserId: 'gateway-secret@example.com',
+          userHash: 'hash-secret',
+        );
+      final transport = SdkHttpTransport(
+        client: MockClient((request) async {
+          expect(request.url.path, '/v1/sdk/sos/cancel');
+          expect(request.body, contains('"deviceId":"device-secret"'));
+          return http.Response(
+            '{"error":{"code":"validation_error",'
+            '"message":"Referenced device does not exist",'
+            '"deviceId":"device-secret"}}',
+            422,
+          );
+        }),
+        config: const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
+        sessionContext: sessionContext,
+      );
+      final dataSource = HttpSosRemoteDataSource(transport: transport);
+
+      await expectLater(
+        dataSource.cancelSos(
+          deviceId: 'device-secret',
+          source: 'remote_lora_relay',
+          triggerSource: 'remote_lora_relay',
+          relaySource: 'remote_lora_relay',
+          originatorNodeId: 4242,
+        ),
+        throwsA(isA<SosHttpException>()),
+      );
+
+      final diagnostics = BleDebugRegistry.instance.currentState.events
+          .map((event) => event.message)
+          .join('\n');
+      expect(diagnostics, contains('EXTERNAL_SOS cancel_response'));
+      expect(diagnostics, contains('httpStatus=422'));
+      expect(diagnostics, contains('endpoint=/v1/sdk/sos/cancel'));
+      expect(diagnostics, contains('responseBody='));
+      expect(diagnostics, contains('backendErrorCode=validation_error'));
+      expect(
+        diagnostics,
+        contains('backendErrorMessage=Referenced device does not exist'),
+      );
+      expect(diagnostics, isNot(contains('device-secret')));
+      expect(diagnostics, isNot(contains('gateway-secret@example.com')));
+      expect(diagnostics, isNot(contains('hash-secret')));
+    });
   });
 }

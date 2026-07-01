@@ -11072,10 +11072,6 @@ class EixamConnectSdkImpl
     );
   }
 
-  bool _matchesRecentExternalRelaySosContext(SosIncident incident) {
-    return _recentExternalRelaySosContextForIncident(incident) != null;
-  }
-
   _RecentExternalRelaySosContext? _recentExternalRelaySosContextForIncident(
     SosIncident incident,
   ) {
@@ -11534,9 +11530,27 @@ class EixamConnectSdkImpl
     return triggerDeviceId;
   }
 
+  String? _remoteRelayAcceptedTriggerDeviceIdForContext(
+    _RecentExternalRelaySosContext? context,
+  ) {
+    final triggerDeviceId = _normalizeNodeIdDeviceIdString(
+      context?.triggerDeviceId,
+    );
+    if (triggerDeviceId == null || triggerDeviceId.isEmpty) {
+      return null;
+    }
+    return triggerDeviceId;
+  }
+
   bool _isNumericNodeDeviceId(String deviceId) {
     final parsed = int.tryParse(deviceId.trim());
     return parsed != null;
+  }
+
+  bool _isKnownRegisteredBackendHardwareId(String deviceId) {
+    final normalizedDeviceId = _normalizeNodeIdDeviceIdString(deviceId);
+    return normalizedDeviceId != null &&
+        _backendRegisteredNodeIdsForSession.contains(normalizedDeviceId);
   }
 
   String? _normalizeNodeIdDeviceIdString(String? deviceId) {
@@ -11558,9 +11572,29 @@ class EixamConnectSdkImpl
     final hardwareId =
         (await _resolveOriginatorHardwareId(snapshot.originatorNodeId))?.trim();
     if (hardwareId != null && hardwareId.isNotEmpty) {
+      if (_isNumericNodeDeviceId(hardwareId) &&
+          !_isKnownRegisteredBackendHardwareId(hardwareId)) {
+        BleDebugRegistry.instance.recordEvent(
+          'EXTERNAL_SOS remote_cancel_numeric_device_id_rejected '
+          'originatorNodeId=${_normalizeNodeId(snapshot.originatorNodeId)} '
+          'relayNodeId=${_normalizeNodeIdOrNull(snapshot.relayNodeId)?.toString() ?? "none"} '
+          'deviceId=$hardwareId reason=not_registered_backend_hardware_id',
+        );
+      } else {
+        return _RemoteRelayCancelDeviceIdentity(
+          deviceId: hardwareId,
+          source: 'originator_hardware_id',
+        );
+      }
+    }
+    final acceptedTriggerDeviceId =
+        _remoteRelayAcceptedTriggerDeviceIdForContext(context);
+    if (acceptedTriggerDeviceId != null &&
+        _isNumericNodeDeviceId(acceptedTriggerDeviceId) &&
+        _isKnownRegisteredBackendHardwareId(acceptedTriggerDeviceId)) {
       return _RemoteRelayCancelDeviceIdentity(
-        deviceId: hardwareId,
-        source: 'originator_hardware_id',
+        deviceId: acceptedTriggerDeviceId,
+        source: 'registered_numeric_trigger_device_id',
       );
     }
     final triggerDeviceId = _remoteRelayTriggerDeviceIdForContext(context);
@@ -11570,19 +11604,143 @@ class EixamConnectSdkImpl
         source: 'correlated_trigger_device_id',
       );
     }
-    if (_canUseCallerActiveIncidentForRemoteRelayCancel(
+    if (_canUseBackendIncidentForRemoteRelayCancel(
       snapshot: snapshot,
       context: context,
     )) {
       return const _RemoteRelayCancelDeviceIdentity(
         deviceId: null,
-        source: 'caller_active_incident_no_device_id',
+        source: 'backend_incident_id',
+      );
+    }
+    final originatorDeviceId = _remoteRelayOriginatorDeviceId(snapshot);
+    if (acceptedTriggerDeviceId != null &&
+        !_isNumericNodeDeviceId(acceptedTriggerDeviceId) &&
+        acceptedTriggerDeviceId != originatorDeviceId &&
+        _canUseTrustedRemoteRelayContextForCancel(
+          snapshot: snapshot,
+          context: context,
+        )) {
+      return _RemoteRelayCancelDeviceIdentity(
+        deviceId: acceptedTriggerDeviceId,
+        source: 'accepted_trigger_device_id',
+      );
+    }
+    if (_canUseGatewayScopeRemoteRelayCancelFallback(
+      snapshot: snapshot,
+      context: context,
+    )) {
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS remote_cancel_gateway_scope_fallback '
+        'originatorNodeId=${_normalizeNodeId(snapshot.originatorNodeId)} '
+        'relayNodeId=${_normalizeNodeIdOrNull(snapshot.relayNodeId)?.toString() ?? "none"} '
+        'reason=unknown_discovered_remote_device localSosInactive=true',
+      );
+      return const _RemoteRelayCancelDeviceIdentity(
+        deviceId: null,
+        source: 'gateway_scope_fallback',
       );
     }
     return null;
   }
 
-  bool _canUseCallerActiveIncidentForRemoteRelayCancel({
+  bool _canUseBackendIncidentForRemoteRelayCancel({
+    required RemoteRelaySosSnapshot snapshot,
+    required _RecentExternalRelaySosContext? context,
+  }) {
+    if (!_remoteRelayCancelMatchesContext(
+        snapshot: snapshot, context: context)) {
+      return false;
+    }
+    final backendIncidentId = context?.backendIncidentId?.trim();
+    return backendIncidentId != null && backendIncidentId.isNotEmpty;
+  }
+
+  bool _canUseTrustedRemoteRelayContextForCancel({
+    required RemoteRelaySosSnapshot snapshot,
+    required _RecentExternalRelaySosContext? context,
+  }) {
+    if (!_remoteRelayCancelMatchesContext(
+        snapshot: snapshot, context: context)) {
+      return false;
+    }
+    final acceptedTriggerDeviceId =
+        _remoteRelayAcceptedTriggerDeviceIdForContext(context);
+    if (acceptedTriggerDeviceId != null) {
+      return true;
+    }
+    final backendIncidentId = context?.backendIncidentId?.trim();
+    return backendIncidentId != null && backendIncidentId.isNotEmpty;
+  }
+
+  bool _canUseGatewayScopeRemoteRelayCancelFallback({
+    required RemoteRelaySosSnapshot snapshot,
+    required _RecentExternalRelaySosContext? context,
+  }) {
+    if (!_remoteRelayCancelMatchesContext(
+      snapshot: snapshot,
+      context: context,
+    )) {
+      return false;
+    }
+    final backendIncidentId = context?.backendIncidentId?.trim();
+    if (backendIncidentId != null && backendIncidentId.isNotEmpty) {
+      return false;
+    }
+    final acceptedTriggerDeviceId =
+        _remoteRelayAcceptedTriggerDeviceIdForContext(context);
+    final originatorDeviceId = _remoteRelayOriginatorDeviceId(snapshot);
+    if (acceptedTriggerDeviceId == null ||
+        acceptedTriggerDeviceId != originatorDeviceId ||
+        !_isNumericNodeDeviceId(acceptedTriggerDeviceId)) {
+      return false;
+    }
+    if (_hasLocalSosActiveForRemoteRelayGatewayScopeFallback(context)) {
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS remote_cancel_gateway_scope_blocked_local_sos_active '
+        'originatorNodeId=${_normalizeNodeId(snapshot.originatorNodeId)} '
+        'relayNodeId=${_normalizeNodeIdOrNull(snapshot.relayNodeId)?.toString() ?? "none"} '
+        'reason=local_sos_active localSosInactive=false',
+      );
+      return false;
+    }
+    return true;
+  }
+
+  bool _hasLocalSosActiveForRemoteRelayGatewayScopeFallback(
+    _RecentExternalRelaySosContext? context,
+  ) {
+    if (_publicSosActionInFlight || _publicSosClosureInFlight != null) {
+      return true;
+    }
+    if (_isOpenSosState(_publicSosState)) {
+      return true;
+    }
+    final candidates = <SosIncident?>[
+      _lastKnownActiveSosIncident,
+      _publicSosFallbackIncident,
+    ];
+    for (final incident in candidates) {
+      if (incident == null || !_isOpenSosState(incident.state)) {
+        continue;
+      }
+      if (_hasPositiveLocalSosOriginProof(incident)) {
+        return true;
+      }
+      final incidentContext = _recentExternalRelaySosContextForIncident(
+        incident,
+      );
+      if (context == null ||
+          incidentContext == null ||
+          incidentContext.originatorNodeId != context.originatorNodeId ||
+          incidentContext.relayNodeId != context.relayNodeId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool _remoteRelayCancelMatchesContext({
     required RemoteRelaySosSnapshot snapshot,
     required _RecentExternalRelaySosContext? context,
   }) {
@@ -11590,10 +11748,6 @@ class EixamConnectSdkImpl
       return false;
     }
     if (!_isRemoteRelayCancelSnapshot(snapshot)) {
-      return false;
-    }
-    final backendIncidentId = context.backendIncidentId?.trim();
-    if (backendIncidentId == null || backendIncidentId.isEmpty) {
       return false;
     }
     if (context.originatorNodeId !=
@@ -11605,19 +11759,6 @@ class EixamConnectSdkImpl
         context.relayNodeId != null &&
         context.relayNodeId != snapshotRelayNodeId) {
       return false;
-    }
-    final candidates = <SosIncident?>[
-      _lastKnownActiveSosIncident,
-      _publicSosFallbackIncident,
-    ];
-    for (final incident in candidates) {
-      if (incident == null || !_isOpenSosState(incident.state)) {
-        continue;
-      }
-      if (_hasPositiveLocalSosOriginProof(incident) &&
-          !_matchesRecentExternalRelaySosContext(incident)) {
-        return false;
-      }
     }
     return true;
   }
@@ -14465,7 +14606,8 @@ class EixamConnectSdkImpl
       );
       BleDebugRegistry.instance.recordEvent(
         'EXTERNAL_SOS cancel_result httpStatus=none success=true '
-        'responseIncidentId=${cancelledIncident?.id ?? "none"}',
+        'responseIncidentId=${cancelledIncident?.id ?? "none"}'
+        '${resolvedIdentity.source == "gateway_scope_fallback" ? " fallback=gateway_scope" : ""}',
       );
       _remoteRelaySosCancelInFlightBySignature.remove(signature);
       _remoteRelaySosCancelSucceededBySignature[signature] =

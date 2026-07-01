@@ -1867,6 +1867,10 @@ void main() {
       Future<void> establishRemoteRelaySosContext({
         int originatorNodeId = 0x01020304,
         int? relayNodeId = 0x0A0B0C0D,
+        bool includeBackendIncidentId = true,
+        bool includeIdentityMapping = true,
+        String? acceptedTriggerDeviceId,
+        String? mappedHardwareId,
       }) async {
         await sdk.dispose();
         final now = DateTime.now().toUtc();
@@ -1886,8 +1890,10 @@ void main() {
               if (normalizedRelayNodeId != null)
                 'relayNodeId': normalizedRelayNodeId,
               'relayHardwareId': relayHardwareId,
-              'backendIncidentId': 'backend-sos-$originatorNodeId',
-              'acceptedTriggerDeviceId': originatorNodeId.toString(),
+              if (includeBackendIncidentId)
+                'backendIncidentId': 'backend-sos-$originatorNodeId',
+              'acceptedTriggerDeviceId':
+                  acceptedTriggerDeviceId ?? originatorNodeId.toString(),
               'triggerObservedAt':
                   DateTime.utc(2026, 4, 28, 10, 15).toIso8601String(),
               'baselineEventSequence': 0,
@@ -1898,15 +1904,15 @@ void main() {
         );
         await localStore.saveJson(
           SharedPrefsSdkStore.deviceIdentityMappingsKey,
-          <String, dynamic>{
-            originatorNodeId.toUnsigned(32).toString(): <String, dynamic>{
-              // Current remote cancel requires a correlated backend incident and
-              // a resolvable originator identity; this numeric hardware id keeps
-              // the test focused on originator-node identity, not relay identity.
-              'hardwareId': originatorNodeId.toUnsigned(32).toString(),
-              'observedAt': now.toIso8601String(),
-            },
-          },
+          includeIdentityMapping
+              ? <String, dynamic>{
+                  originatorNodeId.toUnsigned(32).toString(): <String, dynamic>{
+                    'hardwareId': mappedHardwareId ??
+                        originatorNodeId.toUnsigned(32).toString(),
+                    'observedAt': now.toIso8601String(),
+                  },
+                }
+              : <String, dynamic>{},
         );
         await useSdkWithCancelDataSource();
         realtimeClient.publishedSos.clear();
@@ -1917,12 +1923,14 @@ void main() {
         cancelDataSource = _FakeCancelRemoteDataSource();
       });
 
-      test('remote 0xE1/0x02 cancel posts cancel with originator node deviceId',
+      test('remote 0xE1/0x02 cancel uses gateway-scope fallback when safe',
           () async {
         await useSdkWithCancelDataSource();
         await establishRemoteRelaySosContext(
           originatorNodeId: 1234,
           relayNodeId: 9999,
+          includeBackendIncidentId: false,
+          includeIdentityMapping: false,
         );
         final events = <EixamSdkEvent>[];
         final subscription = sdk.watchEvents().listen(events.add);
@@ -1937,19 +1945,291 @@ void main() {
         );
         await _eventually(() => cancelDataSource.cancelDeviceIds.length == 1);
 
-        expect(cancelDataSource.cancelDeviceIds.single, '1234');
+        expect(cancelDataSource.cancelDeviceIds.single, isNull);
         expect(cancelDataSource.cancelDeviceIds.single, isNot('9999'));
-        expect(cancelDataSource.sentCancelWithoutDeviceId, isFalse);
+        expect(cancelDataSource.sentCancelWithoutDeviceId, isTrue);
         expect(sosRepository.cancelCallCount, 0);
         expect(await sdk.getSosState(), SosState.idle);
         expect((await deviceSosController.getStatus()).state,
             DeviceSosState.inactive);
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) => event.message.contains(
+              'remote_cancel_gateway_scope_fallback',
+            ),
+          ),
+          isTrue,
+        );
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) =>
+                event.message.contains('cancel_result') &&
+                event.message.contains('success=true') &&
+                event.message.contains('fallback=gateway_scope'),
+          ),
+          isTrue,
+        );
         final result =
             events.whereType<RemoteRelaySosCancelHandoffResultEvent>().single;
         expect(result.status, RemoteRelaySosBackendHandoffStatus.submitted);
-        expect(result.deviceId, '1234');
+        expect(result.deviceId, isNull);
         expect(result.originatorNodeId, 1234);
         expect(result.relayNodeId, 9999);
+
+        await subscription.cancel();
+      });
+
+      test(
+          'MQTT relay SOS without backend id cancels by gateway scope fallback',
+          () async {
+        await useSdkWithCancelDataSource();
+        final events = <EixamSdkEvent>[];
+        final subscription = sdk.watchEvents().listen(events.add);
+
+        bleEvents.add(
+          _remoteRelayEvent(
+            snapshot: _snapshot(originatorNodeId: 4321, relayNodeId: 8765),
+          ),
+        );
+        await _eventually(() => realtimeClient.publishedSos.length == 1);
+        expect(realtimeClient.publishedSos.single.deviceId, '4321');
+        expect(realtimeClient.publishedSos.single.originatorNodeId, 4321);
+
+        bleEvents.add(
+          _remoteRelayEvent(
+            snapshot:
+                _cancelSnapshot(originatorNodeId: 4321, relayNodeId: 8765),
+          ),
+        );
+        await _eventually(() => cancelDataSource.cancelDeviceIds.length == 1);
+
+        expect(cancelDataSource.cancelDeviceIds.single, isNull);
+        expect(cancelDataSource.cancelIncidentIds.single, isNull);
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) =>
+                event.message.contains(
+                  'remote_cancel_gateway_scope_fallback',
+                ) &&
+                event.message.contains('originatorNodeId=4321') &&
+                event.message.contains('relayNodeId=8765') &&
+                event.message.contains('localSosInactive=true'),
+          ),
+          isTrue,
+        );
+        final result =
+            events.whereType<RemoteRelaySosCancelHandoffResultEvent>().single;
+        expect(result.status, RemoteRelaySosBackendHandoffStatus.submitted);
+        expect(result.deviceId, isNull);
+
+        await subscription.cancel();
+      });
+
+      test('gateway-scope fallback is blocked while local SOS is active',
+          () async {
+        await useSdkWithCancelDataSource();
+        final events = <EixamSdkEvent>[];
+        final subscription = sdk.watchEvents().listen(events.add);
+
+        bleEvents.add(
+          _remoteRelayEvent(
+            snapshot: _snapshot(originatorNodeId: 13579, relayNodeId: 24680),
+          ),
+        );
+        await _eventually(() => realtimeClient.publishedSos.length == 1);
+        await sdk.triggerSos(const SosTriggerPayload(message: 'local SOS'));
+        expect(await sdk.getSosState(), SosState.sent);
+
+        bleEvents.add(
+          _remoteRelayEvent(
+            snapshot:
+                _cancelSnapshot(originatorNodeId: 13579, relayNodeId: 24680),
+          ),
+        );
+        await _eventually(
+          () => events.whereType<RemoteRelaySosCancelHandoffResultEvent>().any(
+                (event) =>
+                    event.status == RemoteRelaySosBackendHandoffStatus.skipped,
+              ),
+        );
+
+        expect(cancelDataSource.cancelDeviceIds, isEmpty);
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) =>
+                event.message.contains(
+                  'remote_cancel_gateway_scope_blocked_local_sos_active',
+                ) &&
+                event.message.contains('originatorNodeId=13579') &&
+                event.message.contains('localSosInactive=false'),
+          ),
+          isTrue,
+        );
+        final result =
+            events.whereType<RemoteRelaySosCancelHandoffResultEvent>().single;
+        expect(result.reason, 'missing_device_id');
+
+        await subscription.cancel();
+      });
+
+      test('unknown remote cancel remains pending without numeric fallback',
+          () async {
+        await useSdkWithCancelDataSource();
+        final events = <EixamSdkEvent>[];
+        final subscription = sdk.watchEvents().listen(events.add);
+
+        bleEvents.add(
+          _remoteRelayEvent(
+            snapshot:
+                _cancelSnapshot(originatorNodeId: 5555, relayNodeId: 6666),
+          ),
+        );
+        await _eventually(
+          () => events.whereType<RemoteRelaySosCancelHandoffResultEvent>().any(
+                (event) =>
+                    event.status == RemoteRelaySosBackendHandoffStatus.skipped,
+              ),
+        );
+
+        expect(cancelDataSource.cancelDeviceIds, isEmpty);
+        final result =
+            events.whereType<RemoteRelaySosCancelHandoffResultEvent>().single;
+        expect(result.reason, 'missing_device_id');
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) => event.message.contains(
+              'pending_cancel_kept reason=identity_missing',
+            ),
+          ),
+          isTrue,
+        );
+
+        await subscription.cancel();
+      });
+
+      test('mapped originator hardware id wins over numeric fallback',
+          () async {
+        await useSdkWithCancelDataSource();
+        await establishRemoteRelaySosContext(
+          originatorNodeId: 7777,
+          relayNodeId: 8888,
+          includeBackendIncidentId: false,
+          mappedHardwareId: 'originator-hardware-7777',
+        );
+
+        bleEvents.add(
+          _remoteRelayEvent(
+            snapshot:
+                _cancelSnapshot(originatorNodeId: 7777, relayNodeId: 8888),
+          ),
+        );
+        await _eventually(() => cancelDataSource.cancelDeviceIds.length == 1);
+
+        expect(cancelDataSource.cancelDeviceIds.single,
+            'originator-hardware-7777');
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) =>
+                event.message.contains('cancel_identity_resolved') &&
+                event.message.contains('identitySource=originator_hardware_id'),
+          ),
+          isTrue,
+        );
+      });
+
+      test(
+          'registered numeric backend hardware id may still cancel by deviceId',
+          () async {
+        await useSdkWithCancelDataSource();
+        await establishRemoteRelaySosContext(
+          originatorNodeId: 9090,
+          relayNodeId: 8080,
+          includeBackendIncidentId: false,
+          includeIdentityMapping: false,
+        );
+        await sdk.ensureBackendDeviceRegistered(
+          nodeId: 9090,
+          reason: 'test_registered_numeric_remote_cancel',
+        );
+
+        bleEvents.add(
+          _remoteRelayEvent(
+            snapshot:
+                _cancelSnapshot(originatorNodeId: 9090, relayNodeId: 8080),
+          ),
+        );
+        await _eventually(() => cancelDataSource.cancelDeviceIds.length == 1);
+
+        expect(cancelDataSource.cancelDeviceIds.single, '9090');
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) =>
+                event.message.contains('cancel_identity_resolved') &&
+                event.message.contains(
+                    'identitySource=registered_numeric_trigger_device_id'),
+          ),
+          isTrue,
+        );
+      });
+
+      test('backend incident id path wins over numeric originator fallback',
+          () async {
+        await useSdkWithCancelDataSource();
+        await establishRemoteRelaySosContext(
+          originatorNodeId: 2468,
+          relayNodeId: 1357,
+          includeIdentityMapping: false,
+        );
+
+        bleEvents.add(
+          _remoteRelayEvent(
+            snapshot:
+                _cancelSnapshot(originatorNodeId: 2468, relayNodeId: 1357),
+          ),
+        );
+        await _eventually(() => cancelDataSource.cancelDeviceIds.length == 1);
+
+        expect(cancelDataSource.cancelDeviceIds.single, isNull);
+        expect(cancelDataSource.cancelIncidentIds.single, 'backend-sos-2468');
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) =>
+                event.message.contains('cancel_identity_resolved') &&
+                event.message.contains('identitySource=backend_incident_id'),
+          ),
+          isTrue,
+        );
+      });
+
+      test('remote cancel with wrong relay does not cancel remembered incident',
+          () async {
+        await useSdkWithCancelDataSource();
+        await establishRemoteRelaySosContext(
+          originatorNodeId: 1111,
+          relayNodeId: 2222,
+          includeBackendIncidentId: false,
+          includeIdentityMapping: false,
+        );
+        final events = <EixamSdkEvent>[];
+        final subscription = sdk.watchEvents().listen(events.add);
+
+        bleEvents.add(
+          _remoteRelayEvent(
+            snapshot:
+                _cancelSnapshot(originatorNodeId: 1111, relayNodeId: 3333),
+          ),
+        );
+        await _eventually(
+          () => events.whereType<RemoteRelaySosCancelHandoffResultEvent>().any(
+                (event) =>
+                    event.status == RemoteRelaySosBackendHandoffStatus.skipped,
+              ),
+        );
+
+        expect(cancelDataSource.cancelDeviceIds, isEmpty);
+        final result =
+            events.whereType<RemoteRelaySosCancelHandoffResultEvent>().single;
+        expect(result.reason, 'missing_device_id');
 
         await subscription.cancel();
       });
@@ -1976,7 +2256,7 @@ void main() {
         final result =
             events.whereType<RemoteRelaySosCancelHandoffResultEvent>().single;
         expect(result.reason, 'conflict_not_associated');
-        expect(cancelDataSource.cancelDeviceIds.single, '16909060');
+        expect(cancelDataSource.cancelDeviceIds.single, isNull);
 
         await subscription.cancel();
       });
@@ -2354,6 +2634,7 @@ class _MissingCurrentIncidentSosRepository extends FakeSosRepository {
 
 class _FakeCancelRemoteDataSource implements SosRemoteDataSource {
   final List<String?> cancelDeviceIds = <String?>[];
+  final List<String?> cancelIncidentIds = <String?>[];
   Object? cancelError;
 
   bool get sentCancelWithoutDeviceId =>
@@ -2395,6 +2676,7 @@ class _FakeCancelRemoteDataSource implements SosRemoteDataSource {
     String? cycleKey,
   }) async {
     cancelDeviceIds.add(deviceId);
+    cancelIncidentIds.add(incidentId);
     final error = cancelError;
     if (error != null) {
       throw error;

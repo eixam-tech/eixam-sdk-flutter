@@ -420,6 +420,34 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     }
   }
 
+  String? _errorMessageFromBody(String body) {
+    try {
+      final payload = jsonDecode(body);
+      if (payload is! Map<String, dynamic>) {
+        return null;
+      }
+      final error = payload['error'];
+      if (error is! Map<String, dynamic>) {
+        return null;
+      }
+      final message = error['message'];
+      return _safeBackendErrorDiagnostic(message);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String? _safeBackendErrorDiagnostic(Object? value) {
+    final text = value?.toString().trim();
+    if (text == null || text.isEmpty) {
+      return null;
+    }
+    if (!RegExp(r'^[A-Za-z0-9 _.,-]+$').hasMatch(text)) {
+      return '<redacted>';
+    }
+    return SecurityDiagnosticsRedactor.compactSummary(text, maxLength: 120);
+  }
+
   String? _incidentIdFromResponseBody(String body) {
     try {
       final payload = jsonDecode(body);
@@ -534,6 +562,14 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
         BleDebugRegistry.instance.recordEvent(
           'EXTERNAL_SOS cancel_result httpStatus=${response.statusCode} '
           'success=false responseIncidentId=none',
+        );
+        BleDebugRegistry.instance.recordEvent(
+          'EXTERNAL_SOS cancel_response '
+          'httpStatus=${response.statusCode} '
+          'endpoint=/v1/sdk/sos/cancel '
+          'backendErrorCode=${_errorCodeFromBody(response.body) ?? "none"} '
+          'backendErrorMessage=${_errorMessageFromBody(response.body) ?? "none"} '
+          'responseBody=${_redactedCompactJson(response.body)}',
         );
       }
       _logError(
