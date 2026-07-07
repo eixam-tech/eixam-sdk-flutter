@@ -3,13 +3,13 @@
   "packages": [
     {
       "name": "flutter_lints",
-      "rootUri": "file:///Users/roger/.pub-cache/hosted/pub.dev/flutter_lints-5.0.0",
+      "rootUri": "file:///Users/dbalas/.pub-cache/hosted/pub.dev/flutter_lints-5.0.0",
       "packageUri": "lib/",
       "languageVersion": "3.5"
     },
     {
       "name": "lints",
-      "rootUri": "file:///Users/roger/.pub-cache/hosted/pub.dev/lints-5.1.1",
+      "rootUri": "file:///Users/dbalas/.pub-cache/hosted/pub.dev/lints-5.1.1",
       "packageUri": "lib/",
       "languageVersion": "3.6"
     },
@@ -21,8 +21,8 @@
     }
   ],
   "generator": "pub",
-  "generatorVersion": "3.12.1",
+  "generatorVersion": "3.11.5",
   "flutterRoot": "file:///opt/homebrew/share/flutter",
-  "flutterVersion": "3.44.1",
-  "pubCache": "file:///Users/roger/.pub-cache"
+  "flutterVersion": "3.41.9",
+  "pubCache": "file:///Users/dbalas/.pub-cache"
 }

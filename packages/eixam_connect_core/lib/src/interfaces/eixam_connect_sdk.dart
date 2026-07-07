@@ -5,6 +5,7 @@ import '../entities/death_man_plan.dart';
 import '../entities/ble_notification_navigation_request.dart';
 import '../entities/backend_registered_device.dart';
 import '../entities/ble_command_channel_status.dart';
+import '../entities/device_country_config_status.dart';
 import '../entities/device_sos_status.dart';
 import '../entities/device_status.dart';
 import '../entities/device_runtime_status.dart';
@@ -257,6 +258,22 @@ abstract class EixamConnectSdk {
   Future<DeviceRuntimeStatus> getDeviceRuntimeStatus();
   Future<RuntimeIdentitySnapshot> getRuntimeIdentitySnapshot();
   Future<void> rebootDevice();
+
+  /// Most recent per-country radio-config (LoRa region) apply outcome.
+  Future<DeviceCountryConfigStatus> getDeviceCountryConfigStatus();
+
+  /// Emits each per-country radio-config apply outcome as it is produced.
+  Stream<DeviceCountryConfigStatus> watchDeviceCountryConfigStatus();
+
+  /// Ensures the connected device runs the radio config legal for the country
+  /// it is physically in, applying it if the country changed. Best-effort and
+  /// safety-gated: never interrupts an active SOS/DMP flow. SDK lifecycle
+  /// (startup, resume, pairing) triggers this automatically; hosts may call it
+  /// to force a re-check.
+  Future<DeviceCountryConfigStatus> ensureDeviceCountryConfig({
+    String reason,
+  });
+
   Future<BleNotificationNavigationRequest?>
       consumePendingBleNotificationNavigationRequest();
   Stream<BleNotificationNavigationRequest>

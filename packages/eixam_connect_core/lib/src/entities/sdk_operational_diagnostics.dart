@@ -1,6 +1,7 @@
 import '../config/eixam_session.dart';
 import '../enums/realtime_connection_state.dart';
 import '../enums/sos_delivery_channel.dart';
+import 'device_country_config_status.dart';
 import 'device_tel_relay_rx.dart';
 import 'sdk_bridge_diagnostics.dart';
 import 'sdk_resolved_location.dart';
@@ -28,6 +29,7 @@ class SdkOperationalDiagnostics {
     this.lastBackgroundLocationMode,
     this.activeBackgroundLocationRequest = false,
     this.resolvedLocation,
+    this.deviceCountryConfig,
   });
 
   final EixamSession? session;
@@ -55,6 +57,9 @@ class SdkOperationalDiagnostics {
   final String? lastBackgroundLocationMode;
   final bool activeBackgroundLocationRequest;
   final SdkResolvedLocation? resolvedLocation;
+
+  /// Most recent per-country radio-config apply outcome (support diagnostics).
+  final DeviceCountryConfigStatus? deviceCountryConfig;
   final SdkBridgeDiagnostics bridge;
 
   bool get hasActiveSession => session != null;
@@ -106,6 +111,7 @@ class SdkOperationalDiagnostics {
     Object? lastBackgroundLocationMode = _unset,
     bool? activeBackgroundLocationRequest,
     Object? resolvedLocation = _unset,
+    Object? deviceCountryConfig = _unset,
     SdkBridgeDiagnostics? bridge,
   }) {
     return SdkOperationalDiagnostics(
@@ -152,6 +158,9 @@ class SdkOperationalDiagnostics {
       resolvedLocation: identical(resolvedLocation, _unset)
           ? this.resolvedLocation
           : resolvedLocation as SdkResolvedLocation?,
+      deviceCountryConfig: identical(deviceCountryConfig, _unset)
+          ? this.deviceCountryConfig
+          : deviceCountryConfig as DeviceCountryConfigStatus?,
       bridge: bridge ?? this.bridge,
     );
   }

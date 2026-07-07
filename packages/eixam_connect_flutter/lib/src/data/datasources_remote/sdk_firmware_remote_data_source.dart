@@ -42,10 +42,15 @@ class HttpSdkFirmwareRemoteDataSource implements SdkFirmwareRemoteDataSource {
       if (hardwareModel != null && hardwareModel.trim().isNotEmpty)
         'hardware_model': hardwareModel.trim(),
     };
-    final path = Uri(
-      path: '/v1/sdk/firmware/check',
-      queryParameters: query,
-    ).toString();
+    // Encode values with %20 for spaces (Uri.queryParameters emits `+`, which
+    // some backends do not decode back to a space — a hardware model like
+    // "EIXAM R1" would then miss its release).
+    final encodedQuery = query.entries
+        .map((entry) =>
+            '${Uri.encodeQueryComponent(entry.key)}='
+            '${Uri.encodeComponent(entry.value)}')
+        .join('&');
+    final path = '/v1/sdk/firmware/check?$encodedQuery';
     final response = await transport.get(path);
     if (response.statusCode != 200) {
       throw FirmwareUpdateException(

@@ -2,11 +2,14 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:flutter/widgets.dart';
 import 'package:http/http.dart' as http;
 
+import '../data/datasources_local/device_config_store.dart';
 import '../data/datasources_local/shared_prefs_sdk_store.dart';
 import '../data/datasources_local/preferred_ble_device_store.dart';
 import '../data/datasources_local/sdk_session_store.dart';
 import '../data/datasources_remote/http_sos_remote_data_source.dart';
+import '../data/datasources_remote/sdk_device_config_remote_data_source.dart';
 import '../data/datasources_remote/sdk_feedback_remote_data_source.dart';
+import '../data/datasources_remote/sdk_geo_country_remote_data_source.dart';
 import '../data/datasources_remote/sdk_identity_remote_data_source.dart';
 import '../data/datasources_remote/sdk_profile_remote_data_source.dart';
 import '../data/datasources_remote/sdk_session_context.dart';
@@ -85,6 +88,11 @@ class ApiSdkFactory {
         HttpSdkFeedbackRemoteDataSource(transport: httpTransport);
     final firmwareRemoteDataSource =
         HttpSdkFirmwareRemoteDataSource(transport: httpTransport);
+    final deviceConfigRemoteDataSource =
+        HttpSdkDeviceConfigRemoteDataSource(transport: httpTransport);
+    final geoCountryRemoteDataSource =
+        HttpSdkGeoCountryRemoteDataSource(transport: httpTransport);
+    final deviceConfigStore = DeviceConfigStore(localStore: store);
     final realtimeClient = MqttRealtimeClient(
       config: config,
       sessionContext: sessionContext,
@@ -155,6 +163,9 @@ class ApiSdkFactory {
       ),
       profileRemoteDataSource: profileRemoteDataSource,
       feedbackRemoteDataSource: feedbackRemoteDataSource,
+      geoCountryRemoteDataSource: geoCountryRemoteDataSource,
+      deviceConfigRemoteDataSource: deviceConfigRemoteDataSource,
+      deviceConfigStore: deviceConfigStore,
       firmwareUpdateCoordinator: FirmwareUpdateCoordinator(
         deviceRepository: deviceRepository,
         sosRepository: sosRepository,

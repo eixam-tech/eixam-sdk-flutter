@@ -99,6 +99,16 @@ class EixamDeviceCommand {
         bytes: <int>[0x23],
         forceCmdCharacteristic: true,
       );
+
+  /// Provisions the device LoRa region (legal per-country radio config).
+  /// Payload `[0x20, regionCode]` where `regionCode` is a Meshtastic
+  /// `RegionCode` byte. The device persists it and applies it on reboot.
+  factory EixamDeviceCommand.setRegion(int regionCode) => EixamDeviceCommand._(
+        opcode: 0x20,
+        label: 'PROVISION REGION',
+        bytes: <int>[0x20, regionCode & 0xFF],
+        forceCmdCharacteristic: true,
+      );
   const EixamDeviceCommand._({
     required this.opcode,
     required this.label,
@@ -115,7 +125,7 @@ class EixamDeviceCommand {
 
   BleCommandCriticality get criticality {
     return switch (opcode) {
-      0x04 || 0x06 || 0x10 || 0x22 => BleCommandCriticality.critical,
+      0x04 || 0x06 || 0x10 || 0x20 || 0x22 => BleCommandCriticality.critical,
       _ => BleCommandCriticality.nonCritical,
     };
   }

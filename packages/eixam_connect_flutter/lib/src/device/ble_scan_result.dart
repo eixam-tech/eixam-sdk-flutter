@@ -35,6 +35,15 @@ class BleScanResult {
       brandClassification: brandClassification,
       isEixamDevice: _isEixamDevice,
       discoveredAt: discoveredAt,
+      isDfuBootloader: _isDfuBootloader,
+    );
+  }
+
+  // Nordic Secure DFU service (0xFE59): present when the device is advertising
+  // in bootloader mode rather than as a running application.
+  bool get _isDfuBootloader {
+    return advertisedServiceUuids.any(
+      (uuid) => uuid.trim().toLowerCase().contains('fe59'),
     );
   }
 

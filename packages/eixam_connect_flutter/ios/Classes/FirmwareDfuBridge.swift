@@ -68,6 +68,7 @@ final class FirmwareDfuBridge: NSObject, FlutterPlugin, FlutterStreamHandler {
       ?? ""
     let firmwareZipPath = (arguments?["firmwareZipPath"] as? String)?.trimmed ?? ""
     let targetVersion = (arguments?["targetVersion"] as? String)?.trimmed
+    let forceDfu = (arguments?["forceDfu"] as? Bool) ?? false
 
     if sessionId.isEmpty {
       result(FlutterError(code: "invalidSession", message: "DFU session id is missing.", details: nil))
@@ -91,6 +92,7 @@ final class FirmwareDfuBridge: NSObject, FlutterPlugin, FlutterStreamHandler {
       deviceId: deviceId,
       firmwareZipPath: firmwareZipPath,
       targetVersion: targetVersion,
+      forceDfu: forceDfu,
       result: result
     )
     switch centralManager?.state {
@@ -158,7 +160,16 @@ final class FirmwareDfuBridge: NSObject, FlutterPlugin, FlutterStreamHandler {
       initiator.delegate = self
       initiator.progressDelegate = self
       initiator.logger = self
-      initiator.enableUnsafeExperimentalButtonlessServiceInSecureDfu = false
+      // The Eixam tag exposes a custom (Adafruit-style) buttonless DFU service
+      // inside the FE59 Secure DFU service; without this the library does not
+      // recognise it and the "enter DFU" step / transfer never proceeds (stuck
+      // at 0%). Mirrors the Android bridge. iOS handles pairing/bonding for the
+      // MITM-protected control characteristic transparently at the OS level.
+      initiator.enableUnsafeExperimentalButtonlessServiceInSecureDfu = true
+      // Force DFU mode when recovering a device already sitting in the bootloader.
+      initiator.forceDfu = pending.forceDfu
+      // Small delay before each data object improves reliability on nRF52.
+      initiator.dataObjectPreparationDelay = 0.3
       emit(sessionId: pending.sessionId, state: "transferring", message: "DFU transfer queued.")
       dfuController = initiator.with(firmware: firmware).start(target: peripheral)
     } catch {
@@ -253,6 +264,7 @@ final class FirmwareDfuBridge: NSObject, FlutterPlugin, FlutterStreamHandler {
     let deviceId: String
     let firmwareZipPath: String
     let targetVersion: String?
+    let forceDfu: Bool
     let result: FlutterResult
   }
 

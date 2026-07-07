@@ -8,12 +8,18 @@ class FirmwareDfuTransferRequest {
     required this.deviceId,
     required this.release,
     required this.artifactBytes,
+    this.forceDfu = false,
   });
 
   final String sessionId;
   final String deviceId;
   final FirmwareRelease release;
   final List<int> artifactBytes;
+
+  /// Forces the DFU process even when the target does not expose the buttonless
+  /// entry service. Set for recovery flashes where the device is already sitting
+  /// in the DFU bootloader (`deviceId` is the bootloader address).
+  final bool forceDfu;
 }
 
 class DfuProgress {

@@ -26,5 +26,20 @@ void main() {
       expect(EixamDeviceCommand.reboot().encode(), <int>[0x22]);
       expect(EixamDeviceCommand.getDeviceStatus().encode(), <int>[0x23]);
     });
+
+    test('setRegion encodes opcode 0x20 plus the region byte', () {
+      expect(EixamDeviceCommand.setRegion(3).encode(), <int>[0x20, 0x03]);
+      expect(EixamDeviceCommand.setRegion(1).encode(), <int>[0x20, 0x01]);
+      // Masks the region byte to a single octet.
+      expect(EixamDeviceCommand.setRegion(0x1FF).encode(), <int>[0x20, 0xFF]);
+    });
+
+    test('setRegion is critical and forced onto the CMD characteristic', () {
+      final command = EixamDeviceCommand.setRegion(3);
+
+      expect(command.opcode, 0x20);
+      expect(command.isCritical, isTrue);
+      expect(command.usesCmdCharacteristic, isTrue);
+    });
   });
 }

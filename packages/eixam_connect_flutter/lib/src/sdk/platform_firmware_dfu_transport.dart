@@ -71,8 +71,8 @@ class PlatformFirmwareDfuTransport implements FirmwareDfuTransport {
           'firmwareZipPath': firmwareZipPath,
           'targetVersion': request.release.version,
           'releaseId': request.release.releaseId,
-          'forceDfu': false,
-          'enterDfuMode': true,
+          'forceDfu': request.forceDfu,
+          'enterDfuMode': !request.forceDfu,
         },
       );
       final started = raw?['success'] == true || raw?['started'] == true;

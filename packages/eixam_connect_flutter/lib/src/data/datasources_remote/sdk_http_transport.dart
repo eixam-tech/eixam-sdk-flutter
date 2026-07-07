@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -20,6 +21,10 @@ class SdkHttpTransport {
   final http.Client client;
   final EixamSdkConfig config;
   final SdkSessionContext sessionContext;
+
+  /// Upper bound for a single HTTP request so a hung/slow backend can never
+  /// leave a caller (e.g. the firmware check) waiting forever.
+  static const Duration _requestTimeout = Duration(seconds: 20);
 
   Future<Map<String, dynamic>> getJson(
     String path, {
@@ -54,9 +59,16 @@ class SdkHttpTransport {
   }) async {
     final session = _resolveSession(sessionOverride);
     try {
-      return await client.get(
-        _resolveUri(path),
-        headers: _headersFor(session, extra: headers),
+      return await client
+          .get(
+            _resolveUri(path),
+            headers: _headersFor(session, extra: headers),
+          )
+          .timeout(_requestTimeout);
+    } on TimeoutException {
+      throw const NetworkException(
+        'E_SDK_HTTP_TIMEOUT',
+        'The request timed out.',
       );
     } on SocketException catch (error) {
       throw NetworkException('E_SDK_HTTP_GET_FAILED', error.message);

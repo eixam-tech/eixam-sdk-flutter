@@ -5,6 +5,7 @@ import 'package:eixam_connect_core/src/interfaces/realtime_client.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/widgets.dart';
 
+import '../data/datasources_local/device_config_store.dart';
 import '../data/datasources_local/preferred_ble_device_store.dart';
 import '../data/datasources_local/sdk_session_store.dart';
 import '../data/datasources_local/shared_prefs_sdk_store.dart';
@@ -12,7 +13,9 @@ import '../data/datasources_remote/sos_remote_data_source.dart';
 import '../data/repositories/in_memory_device_repository.dart';
 import '../data/repositories/api_sos_repository.dart';
 import '../data/repositories/mqtt_operational_sos_repository.dart';
+import '../data/datasources_remote/sdk_device_config_remote_data_source.dart';
 import '../data/datasources_remote/sdk_feedback_remote_data_source.dart';
+import '../data/datasources_remote/sdk_geo_country_remote_data_source.dart';
 import '../data/datasources_remote/sdk_identity_remote_data_source.dart';
 import '../data/datasources_remote/sdk_profile_remote_data_source.dart';
 import '../device/ble_incoming_event.dart';
@@ -35,6 +38,7 @@ import 'background_telemetry_platform_adapter_factory.dart';
 import 'ble_operational_runtime_bridge.dart';
 import 'ble_auto_reconnect_coordinator.dart';
 import 'ble_sos_notification_payload.dart';
+import 'device_country_config_controller.dart';
 import 'firmware_update_coordinator.dart';
 import 'operational_telemetry_coordinator.dart';
 import 'operational_realtime_client.dart';
@@ -75,6 +79,9 @@ class EixamConnectSdkImpl
     this.identityRemoteDataSource,
     this.profileRemoteDataSource,
     this.feedbackRemoteDataSource,
+    this.geoCountryRemoteDataSource,
+    this.deviceConfigRemoteDataSource,
+    this.deviceConfigStore,
     this.firmwareUpdateCoordinator,
     this.notificationPolicy = EixamNotificationPolicy.sdkManaged,
     this.notificationTexts = _fallbackNotificationTexts,
@@ -148,8 +155,43 @@ class EixamConnectSdkImpl
       repository.preSosBackendPublishBlocker =
           _shouldBlockDeviceOriginPreSosBackendPublish;
     }
+    _maybeBuildDeviceCountryConfigController();
     _bindSosStreams();
   }
+
+  void _maybeBuildDeviceCountryConfigController() {
+    final geoSource = geoCountryRemoteDataSource;
+    final configSource = deviceConfigRemoteDataSource;
+    final configStore = deviceConfigStore;
+    if (geoSource == null || configSource == null || configStore == null) {
+      return;
+    }
+    final controller = DeviceCountryConfigController(
+      geoCountrySource: geoSource,
+      deviceConfigSource: configSource,
+      store: configStore,
+      locationProvider: () => _resolveLocation(
+        useCase: SdkResolvedLocationUseCase.emergencyBackend,
+      ),
+      runtimeStatusProvider: getDeviceRuntimeStatus,
+      setRegionCommand: (regionCode) =>
+          _sendDeviceControlCommandThroughActiveOwner(
+        action: 'set_region',
+        command: EixamDeviceCommand.setRegion(regionCode),
+      ),
+      rebootCommand: rebootDevice,
+      deviceStatusProvider: () => _lastPublicDeviceStatus ?? _lastDeviceStatus,
+      safetyHoldReason: _deviceCountryConfigSafetyHold,
+    );
+    _deviceCountryConfigController = controller;
+    _deviceCountryConfigStatusSub = controller.watchStatus().listen((status) {
+      _lastDeviceCountryConfigStatus = status;
+      if (!_deviceCountryConfigStatusController.isClosed) {
+        _deviceCountryConfigStatusController.add(status);
+      }
+    });
+  }
+
   static bool _externalLoraBuildMarkerLogged = false;
 
   final SosRepository sosRepository;
@@ -170,12 +212,22 @@ class EixamConnectSdkImpl
   final SdkIdentityRemoteDataSource? identityRemoteDataSource;
   final SdkProfileRemoteDataSource? profileRemoteDataSource;
   final SdkFeedbackRemoteDataSource? feedbackRemoteDataSource;
+  final SdkGeoCountryRemoteDataSource? geoCountryRemoteDataSource;
+  final SdkDeviceConfigRemoteDataSource? deviceConfigRemoteDataSource;
+  final DeviceConfigStore? deviceConfigStore;
   final EixamNotificationPolicy notificationPolicy;
   final EixamNotificationTexts notificationTexts;
   final EixamPermissionDisclosureConfig permissionDisclosureConfig;
   final ProtectionPlatformAdapter protectionPlatformAdapter;
   final BackgroundTelemetryPlatformAdapter backgroundTelemetryPlatformAdapter;
   final FirmwareUpdateCoordinator? firmwareUpdateCoordinator;
+  DeviceCountryConfigController? _deviceCountryConfigController;
+  final StreamController<DeviceCountryConfigStatus>
+      _deviceCountryConfigStatusController =
+      StreamController<DeviceCountryConfigStatus>.broadcast();
+  DeviceCountryConfigStatus _lastDeviceCountryConfigStatus =
+      DeviceCountryConfigStatus.idle();
+  StreamSubscription<DeviceCountryConfigStatus>? _deviceCountryConfigStatusSub;
   final SharedPrefsSdkStore _localStore;
   final Future<void> Function()? disposeCallback;
 
@@ -472,6 +524,7 @@ class EixamConnectSdkImpl
       trigger: 'initialize',
       status: _lastDeviceStatus,
     );
+    unawaited(_maybeEnsureDeviceCountryConfig('initialize'));
   }
 
   void _bindDeviceStreams() {
@@ -505,6 +558,10 @@ class EixamConnectSdkImpl
         trigger: 'device_status_stream',
         status: promotedStatus,
       );
+      if (promotedStatus.connected && previousStatus?.connected != true) {
+        // Fires once per connect transition: covers first pairing and reconnect.
+        unawaited(_maybeEnsureDeviceCountryConfig('device_connected'));
+      }
     });
 
     _deviceSosSub = deviceSosController.watchStatus().listen(
@@ -531,6 +588,11 @@ class EixamConnectSdkImpl
             'device_sos_command_path_changed -> diagnostics_refresh_skipped reason=no_effective_change',
           );
           return;
+        }
+        if (available) {
+          // Command channel just became usable (post-pairing or post-rebind):
+          // the correct moment to push the per-country radio config (0x20/0x23).
+          unawaited(_maybeEnsureDeviceCountryConfig('command_path_available'));
         }
         await _refreshOperationalDiagnostics(
           trigger: 'device_sos_command_path_changed',
@@ -1738,6 +1800,26 @@ class EixamConnectSdkImpl
     });
   }
 
+  /// Re-flashes a device stranded in the DFU bootloader (recovery after an
+  /// interrupted transfer). [bootloaderDeviceId] is the address the device
+  /// advertises while in bootloader mode.
+  Future<FirmwareUpdateSession> recoverFirmwareUpdate({
+    required String bootloaderDeviceId,
+    required String releaseId,
+    String targetVersion = '',
+  }) {
+    _firmwareOtaInProgress = true;
+    return _firmwareUpdates()
+        .recoverFirmwareUpdate(
+      bootloaderDeviceId: bootloaderDeviceId,
+      releaseId: releaseId,
+      targetVersion: targetVersion,
+    )
+        .whenComplete(() {
+      _firmwareOtaInProgress = false;
+    });
+  }
+
   @override
   Stream<FirmwareUpdateProgress> watchFirmwareUpdateProgress({
     String? deviceId,
@@ -1944,6 +2026,12 @@ class EixamConnectSdkImpl
     await _bleAutoReconnectCoordinator.unpairDeviceManually(
       deviceRepository.unpairDevice,
     );
+    final unpairedStatus = currentStatus ?? _lastDeviceStatus;
+    if (unpairedStatus != null) {
+      await deviceConfigStore?.clear(
+        DeviceCountryConfigController.deviceKeyFor(unpairedStatus),
+      );
+    }
     _lastDeviceStatus = await deviceRepository.getDeviceStatus();
     _publishPublicDeviceStatus(
       rawStatus: _lastDeviceStatus!,
@@ -2063,6 +2151,7 @@ class EixamConnectSdkImpl
         unawaited(
           _flushNativeBackgroundTelemetryQueue(reason: 'app_foreground_resume'),
         );
+        unawaited(_maybeEnsureDeviceCountryConfig('app_foreground_resume'));
         break;
       case AppLifecycleState.inactive:
       case AppLifecycleState.hidden:
@@ -2360,6 +2449,73 @@ class EixamConnectSdkImpl
       action: 'reboot_device',
       command: EixamDeviceCommand.reboot(),
     );
+  }
+
+  @override
+  Future<DeviceCountryConfigStatus> getDeviceCountryConfigStatus() async {
+    return _deviceCountryConfigController?.lastStatus ??
+        _lastDeviceCountryConfigStatus;
+  }
+
+  @override
+  Stream<DeviceCountryConfigStatus> watchDeviceCountryConfigStatus() async* {
+    yield _deviceCountryConfigController?.lastStatus ??
+        _lastDeviceCountryConfigStatus;
+    yield* _deviceCountryConfigStatusController.stream;
+  }
+
+  @override
+  Future<DeviceCountryConfigStatus> ensureDeviceCountryConfig({
+    String reason = 'manual',
+  }) async {
+    final controller = _deviceCountryConfigController;
+    if (controller == null) {
+      return _lastDeviceCountryConfigStatus;
+    }
+    return controller.ensure(reason: reason);
+  }
+
+  /// Fire-and-forget best-effort trigger used by SDK lifecycle seams (startup,
+  /// device connect, app resume). The controller is internally idempotent and
+  /// safety-gated, so callers do not need to pre-check.
+  Future<void> _maybeEnsureDeviceCountryConfig(String trigger) async {
+    final controller = _deviceCountryConfigController;
+    if (controller == null) {
+      return;
+    }
+    try {
+      await controller.ensure(reason: trigger);
+    } catch (_) {
+      // Best-effort; the controller never throws, but never let this seam
+      // surface an error into a lifecycle path.
+    }
+  }
+
+  /// Reuses the firmware coordinator's safety gate so a region change (which
+  /// reboots the device) is held off during the same SOS / PreSOS / Death-Man /
+  /// protection flows that block OTA. Returns a reason when held, else null.
+  Future<String?> _deviceCountryConfigSafetyHold() async {
+    final coordinator = firmwareUpdateCoordinator;
+    final status = _lastPublicDeviceStatus ?? _lastDeviceStatus;
+    if (coordinator == null || status == null) {
+      return null;
+    }
+    final eligibility = await coordinator.evaluateEligibility(
+      status: status,
+      release: null,
+    );
+    const safetyBlockers = <FirmwareUpdateBlocker>{
+      FirmwareUpdateBlocker.sosActive,
+      FirmwareUpdateBlocker.preSosCountdownActive,
+      FirmwareUpdateBlocker.dmpActiveOrOverdue,
+      FirmwareUpdateBlocker.protectionRuntimeBusy,
+    };
+    for (final blocker in eligibility.blockers) {
+      if (safetyBlockers.contains(blocker)) {
+        return blocker.name;
+      }
+    }
+    return null;
   }
 
   @override
@@ -15417,6 +15573,7 @@ class EixamConnectSdkImpl
           _backgroundTelemetryDiagnostics.activeLocationRequest,
       resolvedLocation:
           _lastResolvedLocation ?? _bridgeDiagnostics.latestOwnDeviceLocation,
+      deviceCountryConfig: _lastDeviceCountryConfigStatus,
       bridge: _bridgeDiagnostics,
     );
   }
@@ -15705,6 +15862,8 @@ class EixamConnectSdkImpl
     await _protectionRawSosEventsSub?.cancel();
     await _bleOperationalRuntimeBridge.dispose();
     await _protectionModeController.dispose();
+    await _deviceCountryConfigStatusSub?.cancel();
+    await _deviceCountryConfigController?.dispose();
     await firmwareUpdateCoordinator?.dispose();
     await _operationalTelemetryCoordinator.stop();
     await deviceSosController.dispose();
@@ -15713,6 +15872,7 @@ class EixamConnectSdkImpl
     await _realtimeConnectionStateController.close();
     await _realtimeEventsController.close();
     await _operationalDiagnosticsController.close();
+    await _deviceCountryConfigStatusController.close();
     await _resolvedLocationController.close();
     await _bleNotificationNavigationController.close();
     await _publicDeviceStatusController.close();

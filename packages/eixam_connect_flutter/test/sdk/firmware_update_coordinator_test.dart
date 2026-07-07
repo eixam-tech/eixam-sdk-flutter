@@ -252,6 +252,84 @@ void main() {
       expect(session.state, FirmwareUpdateState.completed);
       expect(session.failureCode, isNull);
     });
+
+    test('accepts a device version that appends a build hash to the release',
+        () async {
+      // Mirrors real firmware revision strings such as `2.7.25.942a98e`: the
+      // release version is the dotted-numeric core and the device reports it
+      // with a git hash appended on a dot boundary.
+      final coordinator = buildCoordinator(
+        transport: _SuccessfulDfuTransport(
+          onStart: () {
+            deviceRepository.setCurrentStatusSilently(
+              _readyStatus(firmwareVersion: '2.0.0.942a98e'),
+            );
+          },
+        ),
+      );
+      addTearDown(coordinator.dispose);
+
+      final session = await coordinator.startFirmwareUpdate(
+        deviceId: 'demo-device',
+        releaseId: 'fw-1',
+      );
+
+      expect(session.state, FirmwareUpdateState.completed);
+      expect(session.failureCode, isNull);
+    });
+
+    test('tolerates NUL/whitespace padding and a v prefix in the device version',
+        () async {
+      final coordinator = buildCoordinator(
+        transport: _SuccessfulDfuTransport(
+          onStart: () {
+            deviceRepository.setCurrentStatusSilently(
+              _readyStatus(firmwareVersion: '  V2.0.0 '),
+            );
+          },
+        ),
+      );
+      addTearDown(coordinator.dispose);
+
+      final session = await coordinator.startFirmwareUpdate(
+        deviceId: 'demo-device',
+        releaseId: 'fw-1',
+      );
+
+      expect(session.state, FirmwareUpdateState.completed);
+      expect(session.failureCode, isNull);
+    });
+
+    test('recoverFirmwareUpdate re-flashes a bootloader device and completes',
+        () async {
+      final coordinator = buildCoordinator(transport: _SuccessfulDfuTransport());
+      addTearDown(coordinator.dispose);
+
+      final session = await coordinator.recoverFirmwareUpdate(
+        bootloaderDeviceId: 'bootloader-addr',
+        releaseId: 'fw-1',
+        targetVersion: '2.0.0',
+      );
+
+      expect(session.state, FirmwareUpdateState.completed);
+      expect(session.failureCode, isNull);
+    });
+
+    test('recoverFirmwareUpdate stays recovery-required when the flash fails',
+        () async {
+      final coordinator = buildCoordinator(
+        transport: _FailingDfuTransport(),
+      );
+      addTearDown(coordinator.dispose);
+
+      final session = await coordinator.recoverFirmwareUpdate(
+        bootloaderDeviceId: 'bootloader-addr',
+        releaseId: 'fw-1',
+        targetVersion: '2.0.0',
+      );
+
+      expect(session.state, FirmwareUpdateState.recoveryRequired);
+    });
   });
 
   group('HttpSdkFirmwareRemoteDataSource artifact limits', () {
@@ -430,6 +508,20 @@ class _SuccessfulDfuTransport implements FirmwareDfuTransport {
       ),
     );
   }
+
+  @override
+  Future<void> cancel(String sessionId) async {}
+}
+
+class _FailingDfuTransport implements FirmwareDfuTransport {
+  @override
+  Future<void> start(FirmwareDfuTransferRequest request) async {
+    throw const FirmwareUpdateException('dfuFailed', 'DFU failed.');
+  }
+
+  @override
+  Stream<DfuProgress> watchProgress(String sessionId) =>
+      const Stream<DfuProgress>.empty();
 
   @override
   Future<void> cancel(String sessionId) async {}
