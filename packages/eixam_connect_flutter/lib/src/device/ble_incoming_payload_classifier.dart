@@ -94,7 +94,7 @@ class BleIncomingPayloadClassifier {
     }
 
     final sosPacket = EixamSosPacket.tryParse(payload);
-    if (sosPacket != null && sosPacket.sosType == 0) {
+    if (sosPacket != null && sosPacket.sosType == 0 && !sosPacket.hasPosition) {
       final isRemoteClear = _isExternalBackendClearPacket(
         sosPacket,
         connectedBleTagNodeId,
