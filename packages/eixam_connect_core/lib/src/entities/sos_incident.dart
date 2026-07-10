@@ -1,10 +1,11 @@
 import '../enums/sos_state.dart';
+import '../enums/sos_actionability.dart';
 import '../enums/sos_delivery_channel.dart';
+import '../enums/sos_terminal_reason.dart';
 import 'sos_actuator_snapshot.dart';
 import 'tracking_position.dart';
 
 class SosIncident {
-
   const SosIncident({
     required this.id,
     required this.state,
@@ -21,6 +22,10 @@ class SosIncident {
     this.cycleKey,
     this.message,
     this.deliveryChannel,
+    this.terminalReason,
+    this.originKind = SosOriginKind.unknown,
+    this.actionability = SosActionability.unknown,
+    this.displaySurface = SosDisplaySurface.unknown,
     this.actuators,
   });
   final String id;
@@ -38,6 +43,10 @@ class SosIncident {
   final String? cycleKey;
   final String? message;
   final SosDeliveryChannel? deliveryChannel;
+  final SosTerminalReason? terminalReason;
+  final SosOriginKind originKind;
+  final SosActionability actionability;
+  final SosDisplaySurface displaySurface;
   final SosActuatorSnapshot? actuators;
 
   SosIncident copyWith({
@@ -55,6 +64,10 @@ class SosIncident {
     String? cycleKey,
     String? message,
     Object? deliveryChannel = _unset,
+    Object? terminalReason = _unset,
+    SosOriginKind? originKind,
+    SosActionability? actionability,
+    SosDisplaySurface? displaySurface,
     Object? actuators = _unset,
   }) {
     return SosIncident(
@@ -75,6 +88,12 @@ class SosIncident {
       deliveryChannel: identical(deliveryChannel, _unset)
           ? this.deliveryChannel
           : deliveryChannel as SosDeliveryChannel?,
+      terminalReason: identical(terminalReason, _unset)
+          ? this.terminalReason
+          : terminalReason as SosTerminalReason?,
+      originKind: originKind ?? this.originKind,
+      actionability: actionability ?? this.actionability,
+      displaySurface: displaySurface ?? this.displaySurface,
       actuators: identical(actuators, _unset)
           ? this.actuators
           : actuators as SosActuatorSnapshot?,

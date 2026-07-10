@@ -1,9 +1,9 @@
 /// DTO representation of an SOS incident returned by the backend layer.
 library;
+
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 class SosIncidentDto {
-
   const SosIncidentDto({
     required this.id,
     required this.state,
@@ -18,6 +18,9 @@ class SosIncidentDto {
     this.owner,
     this.cycleKey,
     this.message,
+    this.originKind,
+    this.actionability,
+    this.displaySurface,
     this.positionSnapshot,
     this.actuators,
     this.statusCode,
@@ -48,6 +51,18 @@ class SosIncidentDto {
       owner: _stringFromJson(json, const ['owner']),
       cycleKey: _stringFromJson(json, const ['cycleKey', 'cycle_key']),
       message: json['message'] as String?,
+      originKind: _stringFromJson(
+        json,
+        const ['originKind', 'origin_kind', 'sosOriginKind'],
+      ),
+      actionability: _stringFromJson(
+        json,
+        const ['actionability', 'sosActionability'],
+      ),
+      displaySurface: _stringFromJson(
+        json,
+        const ['displaySurface', 'display_surface', 'sosDisplaySurface'],
+      ),
       positionSnapshot: _positionSnapshotFromJson(json),
       actuators: _actuatorsFromJson(json['actuators']),
       creationTelemetryId: json['creationTelemetryId'] as String? ??
@@ -67,6 +82,9 @@ class SosIncidentDto {
   final String? owner;
   final String? cycleKey;
   final String? message;
+  final String? originKind;
+  final String? actionability;
+  final String? displaySurface;
   final Map<String, dynamic>? positionSnapshot;
   final SosActuatorSnapshot? actuators;
   final int? statusCode;
@@ -88,6 +106,9 @@ class SosIncidentDto {
     String? owner,
     String? cycleKey,
     String? message,
+    String? originKind,
+    String? actionability,
+    String? displaySurface,
     Map<String, dynamic>? positionSnapshot,
     Object? actuators = _unset,
     int? statusCode,
@@ -107,6 +128,9 @@ class SosIncidentDto {
       owner: owner ?? this.owner,
       cycleKey: cycleKey ?? this.cycleKey,
       message: message ?? this.message,
+      originKind: originKind ?? this.originKind,
+      actionability: actionability ?? this.actionability,
+      displaySurface: displaySurface ?? this.displaySurface,
       positionSnapshot: positionSnapshot ?? this.positionSnapshot,
       actuators: identical(actuators, _unset)
           ? this.actuators

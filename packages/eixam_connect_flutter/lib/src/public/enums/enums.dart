@@ -11,4 +11,5 @@ export 'package:eixam_connect_core/src/enums/realtime_connection_state.dart';
 export 'package:eixam_connect_core/src/enums/sdk_permission_status.dart';
 export 'package:eixam_connect_core/src/enums/sos_delivery_channel.dart';
 export 'package:eixam_connect_core/src/enums/sos_state.dart';
+export 'package:eixam_connect_core/src/enums/sos_terminal_reason.dart';
 export 'package:eixam_connect_core/src/enums/tracking_state.dart';

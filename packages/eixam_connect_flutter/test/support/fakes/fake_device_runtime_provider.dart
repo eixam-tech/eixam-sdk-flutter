@@ -15,6 +15,7 @@ class FakeDeviceRuntimeProvider implements DeviceRuntimeProvider {
   DeviceException? pairError;
   Object? reconnectError;
   DeviceException? activateError;
+  final List<Object> refreshErrors = <Object>[];
   int refreshCallCount = 0;
   DeviceRefreshMode? lastRefreshMode;
   bool? lastForceFirmwareRead;
@@ -79,6 +80,9 @@ class FakeDeviceRuntimeProvider implements DeviceRuntimeProvider {
     refreshCallCount++;
     lastRefreshMode = mode;
     lastForceFirmwareRead = forceFirmwareRead;
+    if (refreshErrors.isNotEmpty) {
+      throw refreshErrors.removeAt(0);
+    }
     return refreshResult ?? currentStatus;
   }
 

@@ -1,7 +1,9 @@
 import 'dart:convert';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:flutter/foundation.dart';
 
+import '../../diagnostics/security_diagnostics_redactor.dart';
 import '../../device/ble_debug_registry.dart';
 import '../../sdk/sos_backend_identity_normalizer.dart';
 import '../dtos/sos_history_dto.dart';
@@ -418,6 +420,34 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     }
   }
 
+  String? _errorMessageFromBody(String body) {
+    try {
+      final payload = jsonDecode(body);
+      if (payload is! Map<String, dynamic>) {
+        return null;
+      }
+      final error = payload['error'];
+      if (error is! Map<String, dynamic>) {
+        return null;
+      }
+      final message = error['message'];
+      return _safeBackendErrorDiagnostic(message);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String? _safeBackendErrorDiagnostic(Object? value) {
+    final text = value?.toString().trim();
+    if (text == null || text.isEmpty) {
+      return null;
+    }
+    if (!RegExp(r'^[A-Za-z0-9 _.,-]+$').hasMatch(text)) {
+      return '<redacted>';
+    }
+    return SecurityDiagnosticsRedactor.compactSummary(text, maxLength: 120);
+  }
+
   String? _incidentIdFromResponseBody(String body) {
     try {
       final payload = jsonDecode(body);
@@ -532,6 +562,14 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
         BleDebugRegistry.instance.recordEvent(
           'EXTERNAL_SOS cancel_result httpStatus=${response.statusCode} '
           'success=false responseIncidentId=none',
+        );
+        BleDebugRegistry.instance.recordEvent(
+          'EXTERNAL_SOS cancel_response '
+          'httpStatus=${response.statusCode} '
+          'endpoint=/v1/sdk/sos/cancel '
+          'backendErrorCode=${_errorCodeFromBody(response.body) ?? "none"} '
+          'backendErrorMessage=${_errorMessageFromBody(response.body) ?? "none"} '
+          'responseBody=${_redactedCompactJson(response.body)}',
         );
       }
       _logError(
@@ -707,11 +745,17 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     required String? body,
   }) {
     final headers = transport.headersForCurrentSession();
+    final bodySummary = body == null
+        ? '<empty>'
+        : SecurityDiagnosticsRedactor.compactJsonForDiagnostics(
+            body,
+            allowSensitive: kDebugMode,
+          );
     BleDebugRegistry.instance.recordEvent(
-      'SOS HTTP $action request -> method=POST url=${transport.config.apiBaseUrl}$path body=${body ?? '<empty>'}',
+      'SOS HTTP $action request -> method=POST url=${transport.config.apiBaseUrl}$path body=$bodySummary',
     );
     BleDebugRegistry.instance.recordEvent(
-      'SOS HTTP $action headers -> X-App-ID=${headers['X-App-ID']} X-User-ID=${headers['X-User-ID']} Authorization=Bearer <redacted> Content-Type=${headers['Content-Type']}',
+      'SOS HTTP $action headers -> X-App-ID=<redacted> X-User-ID=<redacted> Authorization=Bearer <redacted> Content-Type=${headers['Content-Type']}',
     );
   }
 
@@ -720,8 +764,12 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     required int statusCode,
     required String body,
   }) {
+    final bodySummary = SecurityDiagnosticsRedactor.compactJsonForDiagnostics(
+      body,
+      allowSensitive: kDebugMode,
+    );
     BleDebugRegistry.instance.recordEvent(
-      'SOS HTTP $action response -> status=$statusCode body=$body',
+      'SOS HTTP $action response -> status=$statusCode body=$bodySummary',
     );
   }
 
@@ -739,8 +787,13 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     required String code,
     required String message,
   }) {
+    final messageSummary =
+        SecurityDiagnosticsRedactor.compactJsonForDiagnostics(
+      message,
+      allowSensitive: kDebugMode,
+    );
     BleDebugRegistry.instance.recordEvent(
-      'SOS HTTP $action error -> code=$code message=$message',
+      'SOS HTTP $action error -> code=$code message=$messageSummary',
     );
   }
 
@@ -750,46 +803,13 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
   bool _shouldBlockRestTrigger() => true;
 
   String _redactedCompactJson(String payload) {
-    try {
-      return jsonEncode(_redactJsonValue(jsonDecode(payload)));
-    } catch (_) {
-      return _compactSummary(payload);
-    }
-  }
-
-  Object? _redactJsonValue(Object? value, {String? key}) {
-    final normalizedKey = key?.toLowerCase();
-    if (normalizedKey != null &&
-        (normalizedKey.contains('token') ||
-            normalizedKey.contains('secret') ||
-            normalizedKey.contains('authorization') ||
-            normalizedKey == 'password' ||
-            normalizedKey == 'userhash' ||
-            normalizedKey == 'email')) {
-      return '<redacted>';
-    }
-    if (normalizedKey == 'userid' && value is String && value.contains('@')) {
-      return '<redacted-email>';
-    }
-    if (value is Map) {
-      return value.map<String, Object?>(
-        (key, child) => MapEntry(
-          key.toString(),
-          _redactJsonValue(child, key: key.toString()),
-        ),
-      );
-    }
-    if (value is List) {
-      return value.map((child) => _redactJsonValue(child)).toList();
-    }
-    return value;
+    return SecurityDiagnosticsRedactor.compactJsonForDiagnostics(
+      payload,
+      allowSensitive: kDebugMode,
+    );
   }
 
   String _compactSummary(Object? value) {
-    final summary = value.toString().replaceAll(RegExp(r'\s+'), ' ').trim();
-    if (summary.isEmpty) {
-      return 'none';
-    }
-    return summary.length <= 240 ? summary : '${summary.substring(0, 240)}...';
+    return SecurityDiagnosticsRedactor.compactSummary(value, maxLength: 240);
   }
 }

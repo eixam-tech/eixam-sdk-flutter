@@ -1,4 +1,5 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_sos_event_packet.dart';
@@ -175,6 +176,137 @@ void main() {
       expect(status.decoderNote, contains('PRE_CONFIRM_STARTED_COUNTDOWN'));
     });
 
+    test(
+        'active device SOS cancel without ACK does not immediately mark terminal',
+        () async {
+      final commands = <EixamDeviceCommand>[];
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 5),
+        countdownTick: const Duration(milliseconds: 1),
+        appActivationObservationTimeout: const Duration(milliseconds: 45),
+      );
+      addTearDown(controller.dispose);
+      await controller.attach(
+        commandWriter: (command) async => commands.add(command),
+      );
+      await _promoteDeviceSosToActive(controller);
+
+      var completed = false;
+      final cancelFuture = controller.cancelSos().then((status) {
+        completed = true;
+        return status;
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+
+      expect(commands.map((command) => command.opcode), <int>[0x04]);
+      expect(completed, isFalse);
+      expect(controller.currentStatus.state, DeviceSosState.active);
+
+      await cancelFuture;
+    });
+
+    test('active device SOS cancel with E1 clear ACK marks terminal after ACK',
+        () async {
+      final commands = <EixamDeviceCommand>[];
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 5),
+        countdownTick: const Duration(milliseconds: 1),
+        appActivationObservationTimeout: const Duration(milliseconds: 80),
+      );
+      addTearDown(controller.dispose);
+      await controller.attach(
+        commandWriter: (command) async {
+          commands.add(command);
+          if (command.opcode == 0x04) {
+            Future<void>.delayed(const Duration(milliseconds: 5), () {
+              controller.handleIncomingSosEventPacket(
+                _deviceClearPacket(),
+                source: DeviceSosTransitionSource.device,
+              );
+            });
+          }
+        },
+      );
+      await _promoteDeviceSosToActive(controller);
+
+      final closed = await controller.cancelSos();
+
+      expect(commands.map((command) => command.opcode), <int>[0x04]);
+      expect(closed.state, DeviceSosState.inactive);
+      expect(closed.previousState, DeviceSosState.active);
+      expect(closed.derivedFromBlePacket, isTrue);
+      expect(closed.lastOpcode, 0xE1);
+      expect(controller.currentStatus.state, DeviceSosState.inactive);
+    });
+
+    test('active device SOS cancel timeout forces terminal with diagnostic',
+        () async {
+      BleDebugRegistry.instance.reset();
+      final commands = <EixamDeviceCommand>[];
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 5),
+        countdownTick: const Duration(milliseconds: 1),
+        appActivationObservationTimeout: const Duration(milliseconds: 20),
+      );
+      addTearDown(controller.dispose);
+      await controller.attach(
+        commandWriter: (command) async => commands.add(command),
+      );
+      await _promoteDeviceSosToActive(controller);
+
+      final closed = await controller.cancelSos();
+
+      expect(commands.map((command) => command.opcode), <int>[0x04]);
+      expect(closed.state, DeviceSosState.inactive);
+      expect(closed.previousState, DeviceSosState.active);
+      expect(closed.derivedFromBlePacket, isFalse);
+      expect(
+        closed.lastEvent,
+        contains('FORCED_TERMINAL_AFTER_MISSING_ACK'),
+      );
+      expect(
+        BleDebugRegistry.instance.currentState.events.any(
+          (event) => event.message
+              .contains('DEVICE_SOS_CLOSE_COMMAND_ACK_TIMEOUT_FORCED_TERMINAL'),
+        ),
+        isTrue,
+      );
+    });
+
+    test('pending cancel retry remains alive while waiting for ACK', () async {
+      final commands = <EixamDeviceCommand>[];
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 5),
+        countdownTick: const Duration(milliseconds: 1),
+        appActivationObservationTimeout: const Duration(milliseconds: 80),
+      );
+      addTearDown(controller.dispose);
+      await controller.attach(
+        commandWriter: (command) async => commands.add(command),
+      );
+      await _promoteDeviceSosToActive(controller);
+
+      final cancelFuture = controller.cancelSos();
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      controller.handleIncomingSosPacket(
+        _activePacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+
+      expect(commands.map((command) => command.opcode), <int>[0x04, 0x04]);
+      expect(controller.currentStatus.state, DeviceSosState.active);
+
+      controller.handleIncomingSosEventPacket(
+        _deviceClearPacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+      final closed = await cancelFuture;
+
+      expect(closed.state, DeviceSosState.inactive);
+      expect(controller.currentStatus.state, DeviceSosState.inactive);
+    });
+
     test('SOS ACK relay remains long-command only', () async {
       final commands = <EixamDeviceCommand>[];
       final controller = DeviceSosController();
@@ -188,11 +320,17 @@ void main() {
       await expectLater(
         controller.sendAckRelay(nodeId: 0x1234),
         throwsA(
-          isA<StateError>().having(
-            (error) => error.message,
-            'message',
-            contains('longCommandAvailable=false'),
-          ),
+          isA<DeviceException>()
+              .having(
+                (error) => error.code,
+                'code',
+                'E_BLE_COMMAND_PATH_NOT_READY',
+              )
+              .having(
+                (error) => error.message,
+                'message',
+                contains('longCommandAvailable=false'),
+              ),
         ),
       );
 
@@ -361,11 +499,17 @@ void main() {
       await expectLater(
         controller.activateSosFromApp(),
         throwsA(
-          isA<StateError>().having(
-            (error) => error.message,
-            'message',
-            contains('DEVICE_SOS_ACTIVE_OBSERVED_AFTER_CONFIRM'),
-          ),
+          isA<DeviceException>()
+              .having(
+                (error) => error.code,
+                'code',
+                'E_DEVICE_SOS_STATUS_WAIT_TIMEOUT',
+              )
+              .having(
+                (error) => error.message,
+                'message',
+                contains('DEVICE_SOS_ACTIVE_OBSERVED_AFTER_CONFIRM'),
+              ),
         ),
       );
 
@@ -999,4 +1143,19 @@ EixamSosPacket _activePacket({int packetId = 0}) {
     (flagsWord >> 8) & 0xFF,
     0x00,
   ])!;
+}
+
+Future<void> _promoteDeviceSosToActive(DeviceSosController controller) async {
+  controller.handleIncomingSosPacket(
+    _activePacket(),
+    source: DeviceSosTransitionSource.device,
+  );
+  await Future<void>.delayed(const Duration(milliseconds: 15));
+  expect(controller.currentStatus.state, DeviceSosState.active);
+}
+
+EixamSosEventPacket _deviceClearPacket() {
+  return EixamSosEventPacket.tryParse(
+    <int>[0xE1, 0x01, 0x34, 0x12, 0x00, 0x00],
+  )!;
 }

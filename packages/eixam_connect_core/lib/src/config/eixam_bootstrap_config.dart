@@ -19,6 +19,7 @@ class EixamBootstrapConfig {
     this.permissionDisclosureConfig = const EixamPermissionDisclosureConfig(),
     this.featureFlags = const <String, bool>{},
     this.enableLogging = false,
+    this.allowInsecureLocalEndpoints = false,
   });
 
   final String appId;
@@ -30,6 +31,7 @@ class EixamBootstrapConfig {
   final EixamPermissionDisclosureConfig permissionDisclosureConfig;
   final Map<String, bool> featureFlags;
   final bool enableLogging;
+  final bool allowInsecureLocalEndpoints;
 }
 
 class EixamNotificationTexts {

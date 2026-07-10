@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 
 import '../data/repositories/telemetry_repository.dart';
 import '../device/ble_debug_registry.dart';
@@ -12,6 +13,7 @@ import '../device/eixam_sos_packet.dart';
 import '../device/eixam_tel_packet.dart';
 import '../device/eixam_tel_relay_cluster_packet.dart';
 import '../device/eixam_position_data.dart';
+import '../diagnostics/security_diagnostics_redactor.dart';
 import 'location_debug_log.dart';
 import 'relay_ingest_context.dart';
 
@@ -871,7 +873,8 @@ class BleOperationalRuntimeBridge {
           break;
       }
       BleDebugRegistry.instance.recordEvent(
-        'BLE operational bridge applied backend confirmation -> $signature',
+        'BLE operational bridge applied backend confirmation -> '
+        'signature=$signature',
       );
     } catch (error) {
       BleDebugRegistry.instance.recordEvent(
@@ -1533,7 +1536,19 @@ class BleOperationalRuntimeBridge {
         );
         return false;
       }
-      if (allowPendingFallback && _isBackendValidationError(error)) {
+      if (relayContext != null && _isRelayTerminalError(error)) {
+        _recordRelayTerminalError(relayContext: relayContext, error: error);
+        _emitDiagnostics(
+          _diagnostics.copyWith(
+            lastRelaySosPublishResult:
+                'terminal_failure remote=${relayContext.remoteDeviceId}',
+            lastDecision: 'Relay SOS rejected: ${error.code}',
+          ),
+        );
+        return false;
+      }
+      if (allowPendingFallback &&
+          _isBackendValidationError(error, relayContext: relayContext)) {
         final validationStatus = _backendValidationStatus(error);
         final retry = _sosBackendDeviceRegisterRetry;
         if (retry != null && originatorNodeId != null) {
@@ -1599,17 +1614,6 @@ class BleOperationalRuntimeBridge {
           'localSosPreserved=true signature=$signature '
           'originatorNodeId=${originatorNodeId?.toString() ?? "none"} '
           'deviceId=${deviceId ?? "none"}',
-        );
-        return false;
-      }
-      if (relayContext != null && _isRelayTerminalError(error)) {
-        _recordRelayTerminalError(relayContext: relayContext, error: error);
-        _emitDiagnostics(
-          _diagnostics.copyWith(
-            lastRelaySosPublishResult:
-                'terminal_failure remote=${relayContext.remoteDeviceId}',
-            lastDecision: 'Relay SOS rejected: ${error.code}',
-          ),
         );
         return false;
       }
@@ -1680,7 +1684,13 @@ class BleOperationalRuntimeBridge {
         error.code == 'E_SOS_TRIGGER_FAILED';
   }
 
-  bool _isBackendValidationError(EixamSdkException error) {
+  bool _isBackendValidationError(
+    EixamSdkException error, {
+    RelayIngestContext? relayContext,
+  }) {
+    if (relayContext != null && _isRelayTerminalError(error)) {
+      return false;
+    }
     final code = error.code.toUpperCase();
     return code.contains('422') ||
         code.contains('402') ||
@@ -1740,10 +1750,62 @@ class BleOperationalRuntimeBridge {
   }
 
   void _emitDiagnostics(SdkBridgeDiagnostics diagnostics) {
-    _diagnostics = diagnostics;
+    _diagnostics = _safeDiagnostics(diagnostics);
     if (!_diagnosticsController.isClosed) {
       _diagnosticsController.add(_diagnostics);
     }
+  }
+
+  SdkBridgeDiagnostics _safeDiagnostics(SdkBridgeDiagnostics diagnostics) {
+    if (kDebugMode) {
+      return diagnostics;
+    }
+    return diagnostics.copyWith(
+      lastBleTelemetryEventSummary:
+          _safeDiagnosticMessage(diagnostics.lastBleTelemetryEventSummary),
+      lastBleSosEventSummary:
+          _safeDiagnosticMessage(diagnostics.lastBleSosEventSummary),
+      lastRelayRemoteDeviceId:
+          _safeDiagnosticIdentifier(diagnostics.lastRelayRemoteDeviceId),
+      lastRelayTelemetryPublishAttempt:
+          _safeDiagnosticMessage(diagnostics.lastRelayTelemetryPublishAttempt),
+      lastRelaySosPublishAttempt:
+          _safeDiagnosticMessage(diagnostics.lastRelaySosPublishAttempt),
+      lastDeviceCommandSent:
+          _safeDeviceCommand(diagnostics.lastDeviceCommandSent),
+    );
+  }
+
+  String? _safeDiagnosticMessage(String? message) {
+    if (message == null) {
+      return null;
+    }
+    return SecurityDiagnosticsRedactor.sanitizeEventMessage(
+      message,
+      allowSensitive: false,
+    );
+  }
+
+  String? _safeDiagnosticIdentifier(String? value) {
+    final normalized = value?.trim();
+    if (normalized == null || normalized.isEmpty) {
+      return null;
+    }
+    return SecurityDiagnosticsRedactor.formatIdentifierForDiagnostics(
+      normalized,
+      allowSensitive: false,
+    );
+  }
+
+  String? _safeDeviceCommand(String? value) {
+    final normalized = value?.trim();
+    if (normalized == null || normalized.isEmpty) {
+      return null;
+    }
+    if (normalized.startsWith('SOS_ACK_RELAY(')) {
+      return 'SOS_ACK_RELAY(${SecurityDiagnosticsRedactor.redacted})';
+    }
+    return normalized;
   }
 
   String _formatNodeId(int nodeId) {

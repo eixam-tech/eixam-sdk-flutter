@@ -1,0 +1,4 @@
+enum BleCommandCriticality {
+  critical,
+  nonCritical,
+}

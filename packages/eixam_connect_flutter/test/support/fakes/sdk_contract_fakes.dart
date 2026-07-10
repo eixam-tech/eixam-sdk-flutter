@@ -376,7 +376,7 @@ class FakeDeviceRepository
 
   @override
   Future<DeviceStatus> reconnectDevice(
-      {required PreferredDevice device}) async {
+      {required PreferredDevice device, String? attemptId}) async {
     reconnectCallCount++;
     _status = _status.copyWith(
       deviceId: device.deviceId,
@@ -446,6 +446,7 @@ class FakeDeathManRepository implements DeathManRepository {
 
   DeathManPlan? activePlan;
   int updateCallCount = 0;
+  final List<DeathManStatus> updatedStatuses = <DeathManStatus>[];
 
   @override
   Future<void> cancelDeathMan(String planId) async {
@@ -491,6 +492,7 @@ class FakeDeathManRepository implements DeathManRepository {
     DeathManStatus status,
   ) async {
     updateCallCount++;
+    updatedStatuses.add(status);
     activePlan = activePlan!.copyWith(status: status);
     _controller.add(activePlan!);
     return activePlan!;
@@ -505,7 +507,6 @@ class FakeDeathManRepository implements DeathManRepository {
 }
 
 class FakePermissionsRepository implements PermissionsRepository {
-
   FakePermissionsRepository({
     this.permissionState = const PermissionState(),
   });

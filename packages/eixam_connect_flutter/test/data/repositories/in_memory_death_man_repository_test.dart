@@ -113,5 +113,34 @@ void main() {
         isFalse,
       );
     });
+
+    test('allows escalated plans to be expired before clearing active storage',
+        () async {
+      final store = MemorySharedPrefsSdkStore();
+      final repository = InMemoryDeathManRepository(localStore: store);
+      final plan = await repository.scheduleDeathMan(
+        expectedReturnAt: DateTime.utc(2026, 1, 1, 12),
+        gracePeriod: const Duration(minutes: 30),
+        checkInWindow: const Duration(minutes: 10),
+        autoTriggerSos: true,
+      );
+
+      final escalated = await repository.updatePlanStatus(
+        plan.id,
+        DeathManStatus.escalated,
+      );
+      final expired = await repository.updatePlanStatus(
+        plan.id,
+        DeathManStatus.expired,
+      );
+
+      expect(escalated.status, DeathManStatus.escalated);
+      expect(expired.status, DeathManStatus.expired);
+      expect(await repository.getActiveDeathManPlan(), isNull);
+      expect(
+        store.jsonValues.containsKey(SharedPrefsSdkStore.deathManPlanKey),
+        isFalse,
+      );
+    });
   });
 }

@@ -19,8 +19,10 @@ class InMemoryDeviceRepository
   InMemoryDeviceRepository({
     required DeviceRuntimeProvider runtimeProvider,
     SharedPrefsSdkStore? localStore,
+    Duration heartbeatInterval = const Duration(seconds: 15),
   })  : _runtimeProvider = runtimeProvider,
-        _localStore = localStore {
+        _localStore = localStore,
+        _heartbeatInterval = heartbeatInterval {
     _runtimeStatusSub =
         _runtimeProvider.watchRuntimeStatus().listen((status) async {
       final previous = _status;
@@ -34,11 +36,13 @@ class InMemoryDeviceRepository
 
   final DeviceRuntimeProvider _runtimeProvider;
   final SharedPrefsSdkStore? _localStore;
+  final Duration _heartbeatInterval;
   final StreamController<DeviceStatus> _controller =
       StreamController<DeviceStatus>.broadcast();
   StreamSubscription<DeviceStatus>? _runtimeStatusSub;
 
   Timer? _heartbeatTimer;
+  bool _disposed = false;
   bool _loggedLightweightHeartbeat = false;
   DeviceStatus _status = const DeviceStatus(
     deviceId: '',
@@ -307,23 +311,31 @@ class InMemoryDeviceRepository
 
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
-      if (!_status.connected) return;
-      final previous = _status;
-      if (!_loggedLightweightHeartbeat) {
-        BleDebugRegistry.instance.recordEvent(
-          '[BATTERY_FLOW] sdk_heartbeat_refresh mode=lightweight readFirmware=false readSignalQuality=false',
+    _heartbeatTimer = Timer.periodic(_heartbeatInterval, (_) async {
+      try {
+        if (_disposed) return;
+        if (!_status.connected) return;
+        final previous = _status;
+        if (!_loggedLightweightHeartbeat) {
+          BleDebugRegistry.instance.recordEvent(
+            '[BATTERY_FLOW] sdk_heartbeat_refresh mode=lightweight readFirmware=false readSignalQuality=false',
+          );
+          _loggedLightweightHeartbeat = true;
+        }
+        _status = await _runtimeProvider.refresh(
+          _status,
+          mode: DeviceRefreshMode.heartbeat,
         );
-        _loggedLightweightHeartbeat = true;
+        if (_disposed) return;
+        await _persistAndEmitIfChanged(
+          previous: previous,
+          source: 'heartbeat',
+        );
+      } catch (error) {
+        BleDebugRegistry.instance.recordEvent(
+          'InMemoryDeviceRepository.heartbeat_failed -> errorType=${error.runtimeType}',
+        );
       }
-      _status = await _runtimeProvider.refresh(
-        _status,
-        mode: DeviceRefreshMode.heartbeat,
-      );
-      await _persistAndEmitIfChanged(
-        previous: previous,
-        source: 'heartbeat',
-      );
     });
   }
 
@@ -391,7 +403,8 @@ class InMemoryDeviceRepository
   }
 
   bool _isMobileBondRequired(DeviceException error) {
-    return error.code == 'E_DEVICE_MOBILE_BOND_REQUIRED';
+    return error.code == 'E_DEVICE_MOBILE_BOND_REQUIRED' ||
+        error.code == DeviceException.bleIosPairingInformationRemovedCode;
   }
 
   Future<void> _persistAndEmit() async {
@@ -399,6 +412,9 @@ class InMemoryDeviceRepository
       SharedPrefsSdkStore.deviceStatusKey,
       LocalStateSerializers.deviceStatusToJson(_status),
     );
+    if (_controller.isClosed) {
+      return;
+    }
     _controller.add(_status);
   }
 
@@ -410,6 +426,10 @@ class InMemoryDeviceRepository
       SharedPrefsSdkStore.deviceStatusKey,
       LocalStateSerializers.deviceStatusToJson(_status),
     );
+
+    if (_controller.isClosed) {
+      return;
+    }
 
     if (_hasEffectiveStatusChange(previous, _status)) {
       BleDebugRegistry.instance.recordEvent(
@@ -445,8 +465,13 @@ class InMemoryDeviceRepository
   /// TODO: promote disposal to a shared repository lifecycle contract if more
   /// runtime-backed repositories need explicit cleanup.
   Future<void> dispose() async {
+    if (_disposed) {
+      return;
+    }
+    _disposed = true;
     _stopHeartbeat();
     await _runtimeStatusSub?.cancel();
+    _runtimeStatusSub = null;
     await _controller.close();
   }
 }

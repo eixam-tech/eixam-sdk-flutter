@@ -204,6 +204,14 @@ class _Harness {
         }
         publishedPayloads.add(payload);
       },
+      resolvedLocationProvider: () async {
+        final position = await trackingRepository.getCurrentPosition();
+        return position == null
+            ? null
+            : SdkResolvedLocation.fromPhoneTrackingPosition(
+                position: position,
+              );
+      },
       clock: () => DateTime.utc(2026, 1, 1),
       logger: logs.add,
     );

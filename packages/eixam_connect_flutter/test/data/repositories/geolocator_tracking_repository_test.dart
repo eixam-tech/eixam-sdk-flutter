@@ -78,5 +78,52 @@ void main() {
       expect(replayed.latitude, 41.3874);
       expect(replayed.longitude, 2.1686);
     });
+
+    test('dispose closes controllers and is double-dispose safe', () async {
+      final repository = GeolocatorTrackingRepository(
+        permissionsRepository: FakePermissionsRepository(),
+      );
+      final positionsDone = expectLater(
+        repository.watchPositions(),
+        emitsDone,
+      );
+      final stateDone = expectLater(
+        repository.watchTrackingState(),
+        emitsDone,
+      );
+
+      await repository.dispose();
+      await repository.dispose();
+
+      await positionsDone;
+      await stateDone;
+    });
+
+    test('dispose prevents stale timer geolocation state emissions', () async {
+      final store = MemorySharedPrefsSdkStore()
+        ..jsonValues[SharedPrefsSdkStore.trackingPositionKey] =
+            <String, dynamic>{
+          'latitude': 41.3874,
+          'longitude': 2.1686,
+          'source': DeliveryMode.mobile.name,
+          'timestamp': DateTime.now().toIso8601String(),
+        }
+        ..stringValues[SharedPrefsSdkStore.trackingStateKey] =
+            TrackingState.tracking.name;
+      final repository = GeolocatorTrackingRepository(
+        permissionsRepository: FakePermissionsRepository(),
+        localStore: store,
+        staleAfter: const Duration(milliseconds: 10),
+      );
+      final states = <TrackingState>[];
+      final subscription = repository.watchTrackingState().listen(states.add);
+
+      await repository.restoreState();
+      await repository.dispose();
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+
+      expect(states, isNot(contains(TrackingState.stale)));
+      await subscription.cancel();
+    });
   });
 }

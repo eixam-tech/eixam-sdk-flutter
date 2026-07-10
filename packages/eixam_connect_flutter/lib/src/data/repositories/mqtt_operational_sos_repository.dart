@@ -50,6 +50,8 @@ class MqttOperationalSosRepository
   StreamSubscription<RealtimeEvent>? _realtimeSub;
   SosIncident? _activeIncident;
   String? _locallyClosedIncidentId;
+  final Map<String, String?> _trustedLifecycleCorrelationIds =
+      <String, String?>{};
   final Map<String, DateTime> _externalRelaySosPublishDedupe =
       <String, DateTime>{};
 
@@ -113,10 +115,27 @@ class MqttOperationalSosRepository
         current != SosState.failed &&
         current != SosState.cancelled &&
         current != SosState.resolved) {
-      throw const SosException(
-        'E_SOS_ALREADY_ACTIVE',
-        'E_SOS_ALREADY_ACTIVE',
+      final staleGuardCleared = await _clearStaleAlreadyActiveGuardIfSafe(
+        current: current,
+        triggerSource: triggerSource,
+        relaySource: relaySource,
+        originatorNodeId: originatorNodeId,
+        relayNodeId: relayNodeId,
+        deviceId: deviceId,
+        hardwareId: hardwareId,
       );
+      if (staleGuardCleared) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_TRIGGER_CONTINUES_AFTER_STALE_GUARD_CLEAR '
+          'stage=${_stateMachine.current.name} '
+          'triggerSource=$triggerSource',
+        );
+      } else {
+        throw const SosException(
+          'E_SOS_ALREADY_ACTIVE',
+          'E_SOS_ALREADY_ACTIVE',
+        );
+      }
     }
     final appOwnedSos = _isAppOwnedTriggerSource(triggerSource) ||
         (originatorNodeId == null && relayNodeId == null);
@@ -151,8 +170,9 @@ class MqttOperationalSosRepository
         mobileBattery: mobileBattery,
         mobileCoverage: mobileCoverage,
       );
-      _activeIncident = null;
-      _setState(SosState.idle);
+      if (_stateMachine.current == SosState.idle) {
+        _activeIncident = null;
+      }
       await _persistState();
       return SosIncident(
         id: incidentId ??
@@ -230,6 +250,179 @@ class MqttOperationalSosRepository
     }
   }
 
+  Future<bool> _clearStaleAlreadyActiveGuardIfSafe({
+    required SosState current,
+    required String triggerSource,
+    required String? relaySource,
+    required int? originatorNodeId,
+    required int? relayNodeId,
+    required String? deviceId,
+    required String? hardwareId,
+  }) async {
+    _logAlreadyActiveGuardDecision(
+      'SOS_ALREADY_ACTIVE_GUARD_CHECK',
+      stage: current,
+      triggerSource: triggerSource,
+      relaySource: relaySource,
+      originatorNodeId: originatorNodeId,
+      relayNodeId: relayNodeId,
+      deviceId: deviceId,
+      hardwareId: hardwareId,
+      incident: _activeIncident,
+      hasBackendActive: false,
+      reason: 'open_local_state',
+    );
+
+    if (current == SosState.cancelRequested) {
+      _logAlreadyActiveGuardDecision(
+        'SOS_ALREADY_ACTIVE_GUARD_BLOCKED',
+        stage: current,
+        triggerSource: triggerSource,
+        relaySource: relaySource,
+        originatorNodeId: originatorNodeId,
+        relayNodeId: relayNodeId,
+        deviceId: deviceId,
+        hardwareId: hardwareId,
+        incident: _activeIncident,
+        hasBackendActive: false,
+        reason: 'cancel_pending',
+      );
+      return false;
+    }
+
+    if (_hasReliableOpenIncidentIdentity(_activeIncident)) {
+      _logAlreadyActiveGuardDecision(
+        'SOS_ALREADY_ACTIVE_GUARD_BLOCKED',
+        stage: current,
+        triggerSource: triggerSource,
+        relaySource: relaySource,
+        originatorNodeId: originatorNodeId,
+        relayNodeId: relayNodeId,
+        deviceId: deviceId,
+        hardwareId: hardwareId,
+        incident: _activeIncident,
+        hasBackendActive: false,
+        reason: 'active_incident_identity_present',
+      );
+      return false;
+    }
+
+    final rehydration = await rehydrateRuntimeStateFromBackend();
+    final rehydratedState = _stateMachine.current;
+    final rehydratedIncident = _activeIncident;
+    final hasBackendActive = rehydration.outcome ==
+            SosRuntimeRehydrationOutcome.hydratedFromBackend &&
+        rehydratedIncident != null &&
+        _isActiveLikeState(rehydratedState);
+    if (hasBackendActive ||
+        _hasReliableOpenIncidentIdentity(rehydratedIncident)) {
+      _logAlreadyActiveGuardDecision(
+        'SOS_ALREADY_ACTIVE_GUARD_BLOCKED',
+        stage: rehydratedState,
+        triggerSource: triggerSource,
+        relaySource: relaySource,
+        originatorNodeId: originatorNodeId,
+        relayNodeId: relayNodeId,
+        deviceId: deviceId,
+        hardwareId: hardwareId,
+        incident: rehydratedIncident,
+        hasBackendActive: hasBackendActive,
+        reason: hasBackendActive
+            ? 'backend_active_rehydrated'
+            : 'rehydrated_incident_identity_present',
+      );
+      return false;
+    }
+
+    if (_isActiveLikeState(rehydratedState)) {
+      if (rehydration.outcome != SosRuntimeRehydrationOutcome.clearedToIdle) {
+        _logAlreadyActiveGuardDecision(
+          'SOS_ALREADY_ACTIVE_GUARD_BLOCKED',
+          stage: rehydratedState,
+          triggerSource: triggerSource,
+          relaySource: relaySource,
+          originatorNodeId: originatorNodeId,
+          relayNodeId: relayNodeId,
+          deviceId: deviceId,
+          hardwareId: hardwareId,
+          incident: rehydratedIncident,
+          hasBackendActive: false,
+          reason: 'rehydration_did_not_clear_open_state',
+        );
+        return false;
+      }
+      _activeIncident = null;
+      _setState(SosState.idle);
+      await _persistState();
+    }
+
+    _logAlreadyActiveGuardDecision(
+      'SOS_ALREADY_ACTIVE_GUARD_STALE_CLEARED',
+      stage: _stateMachine.current,
+      triggerSource: triggerSource,
+      relaySource: relaySource,
+      originatorNodeId: originatorNodeId,
+      relayNodeId: relayNodeId,
+      deviceId: deviceId,
+      hardwareId: hardwareId,
+      incident: _activeIncident,
+      hasBackendActive: false,
+      reason: 'no_active_incident_after_rehydrate',
+    );
+    return true;
+  }
+
+  void _logAlreadyActiveGuardDecision(
+    String event, {
+    required SosState stage,
+    required String triggerSource,
+    required String? relaySource,
+    required int? originatorNodeId,
+    required int? relayNodeId,
+    required String? deviceId,
+    required String? hardwareId,
+    required SosIncident? incident,
+    required bool hasBackendActive,
+    required String reason,
+  }) {
+    final incidentIdPresent = _normalizeIdentity(incident?.id) != null;
+    final hasDeviceIdentity = originatorNodeId != null ||
+        relayNodeId != null ||
+        _normalizeIdentity(deviceId) != null ||
+        _normalizeIdentity(hardwareId) != null ||
+        incident?.originatorNodeId != null ||
+        incident?.relayNodeId != null ||
+        _normalizeIdentity(incident?.deviceId) != null ||
+        _normalizeIdentity(incident?.hardwareId) != null;
+    final owner = incident?.owner?.trim().isNotEmpty == true
+        ? incident!.owner!.trim()
+        : (originatorNodeId == null ? 'app' : 'device');
+    BleDebugRegistry.instance.recordEvent(
+      '$event '
+      'stage=${stage.name} '
+      'terminal=${_terminalLabel(stage)} '
+      'incidentIdPresent=$incidentIdPresent '
+      'source=${_sourceLabel(relaySource: relaySource, triggerSource: triggerSource)} '
+      'owner=$owner '
+      'triggerSource=$triggerSource '
+      'hasDeviceIdentity=$hasDeviceIdentity '
+      'hasBackendActive=$hasBackendActive '
+      'reason=$reason',
+    );
+  }
+
+  bool _hasReliableOpenIncidentIdentity(SosIncident? incident) {
+    if (incident == null || !_isActiveLikeState(incident.state)) {
+      return false;
+    }
+    return _normalizeIdentity(incident.id) != null ||
+        _normalizeIdentity(incident.cycleKey) != null ||
+        incident.originatorNodeId != null ||
+        incident.relayNodeId != null ||
+        _normalizeIdentity(incident.deviceId) != null ||
+        _normalizeIdentity(incident.hardwareId) != null;
+  }
+
   Future<SosIncident> _triggerSosOverMqtt({
     String? message,
     required String triggerSource,
@@ -254,6 +447,7 @@ class MqttOperationalSosRepository
       state: SosState.sent,
       createdAt: DateTime.now().toUtc(),
       triggerSource: triggerSource,
+      cycleKey: cycleKey,
       message: message,
       positionSnapshot: positionSnapshot,
     );
@@ -360,6 +554,11 @@ class MqttOperationalSosRepository
       return;
     }
     final correlationId = _nextCorrelationId('sos-mqtt');
+    if (!externalDecision.isExternalOnly) {
+      _trustedLifecycleCorrelationIds[correlationId] = _normalizeIdentity(
+        incidentId,
+      );
+    }
     BleDebugRegistry.instance.recordEvent(
       'SOS_TRANSPORT_DECISION flow=sos_trigger transport=mqtt '
       'source=$sourceLabel reason=operational_sos_publish',
@@ -689,25 +888,48 @@ class MqttOperationalSosRepository
     }
 
     _activeIncident = _activeIncident!.copyWith(state: SosState.resolved);
-    _setState(SosState.resolved);
+    _emit(
+      SosState.resolved,
+      previousIncident: _activeIncident,
+      incomingIncident: _activeIncident,
+      reason: 'resolve_terminal_settle',
+    );
     return _activeIncident!;
   }
 
   SosIncident _applyBackendIncident(SosIncidentDto dto) {
-    _activeIncident = _mapper.toDomain(dto);
-    if (_isActiveLikeState(_activeIncident!.state)) {
+    final nextIncident = _mapper.toDomain(dto);
+    final accepted = _emit(
+      nextIncident.state,
+      previousIncident: _activeIncident,
+      incomingIncident: nextIncident,
+      reason: 'backend_incident_settle',
+    );
+    if (!accepted && _stateMachine.current != nextIncident.state) {
+      return _activeIncident ?? nextIncident;
+    }
+    _activeIncident = nextIncident;
+    if (_isActiveLikeState(nextIncident.state)) {
       _rememberActiveLikeState();
     }
-    _setState(_activeIncident!.state);
     return _activeIncident!;
   }
 
   void _clearCurrentIncidentAfterCancellation(SosIncident cancelledIncident) {
     _activeIncident = cancelledIncident;
     _locallyClosedIncidentId = cancelledIncident.id;
-    _setState(SosState.cancelled);
+    _emit(
+      SosState.cancelled,
+      previousIncident: cancelledIncident,
+      incomingIncident: cancelledIncident,
+      reason: 'cancel_terminal_settle',
+    );
     _activeIncident = null;
-    _setState(SosState.idle);
+    _emit(
+      SosState.idle,
+      previousIncident: cancelledIncident,
+      reason: 'cancel_terminal_settle',
+    );
   }
 
   bool _shouldIgnoreLocallyClosedIncident(SosIncident incident) {
@@ -877,6 +1099,13 @@ class MqttOperationalSosRepository
   void _handleRealtimeEvent(RealtimeEvent event) {
     final update = MqttSosLifecycleUpdate.fromRealtimeEvent(event);
     if (update == null) {
+      if (_isSosLifecycleEvent(event)) {
+        BleDebugRegistry.instance.recordEvent(
+          'MQTT_SOS_LIFECYCLE_REJECTED_IDENTITY_MISMATCH '
+          'reason=missing_incident_id incidentId=none activeIncidentId='
+          '${_activeIncident?.id ?? "none"}',
+        );
+      }
       if (_isActuatorUpdateEvent(event)) {
         BleDebugRegistry.instance.recordEvent(
           'SOS_ACTUATOR_UPDATE_IGNORED reason=missing_snapshot '
@@ -893,22 +1122,13 @@ class MqttOperationalSosRepository
         'items=${_actuatorItemsSummary(actuators)}',
       );
     }
-    if (_activeIncident == null) {
-      if (actuators != null) {
-        BleDebugRegistry.instance.recordEvent(
-          'SOS_ACTUATOR_UPDATE_IGNORED reason=incident_mismatch '
-          'incidentId=${update.incidentId} activeIncidentId=none '
-          'version=${actuators.snapshotVersion}',
-        );
-      }
-      return;
-    }
-    if (update.incidentId != _activeIncident!.id) {
+    final authority = _lifecycleAuthorityFor(update);
+    if (!authority.accepted) {
       if (actuators != null) {
         BleDebugRegistry.instance.recordEvent(
           'SOS_ACTUATOR_UPDATE_IGNORED reason=incident_mismatch '
           'incidentId=${update.incidentId} '
-          'activeIncidentId=${_activeIncident!.id} '
+          'activeIncidentId=${_activeIncident?.id ?? "none"} '
           'version=${actuators.snapshotVersion}',
         );
       }
@@ -927,7 +1147,10 @@ class MqttOperationalSosRepository
     }
 
     final previousIncident = _activeIncident!;
-    var currentIncident = previousIncident;
+    if (previousIncident.id != update.incidentId) {
+      _activeIncident = _incidentWithId(previousIncident, update.incidentId);
+    }
+    var currentIncident = _activeIncident!;
     var shouldPersist = false;
 
     if (actuators != null) {
@@ -964,7 +1187,14 @@ class MqttOperationalSosRepository
       return;
     }
 
-    final nextIncident = currentIncident.copyWith(state: state);
+    final nextIncident = currentIncident.copyWith(
+      state: state,
+      terminalReason: _terminalReasonForUpdate(
+        update: update,
+        previousIncident: currentIncident,
+        state: state,
+      ),
+    );
     final accepted = _emit(
       state,
       previousIncident: currentIncident,
@@ -984,6 +1214,160 @@ class MqttOperationalSosRepository
     _activeIncident = nextIncident;
     _rememberActiveLikeStateIfNeeded(state);
     unawaited(_persistState());
+  }
+
+  _LifecycleAuthorityDecision _lifecycleAuthorityFor(
+    MqttSosLifecycleUpdate update,
+  ) {
+    final activeIncident = _activeIncident;
+    final activeIncidentId = activeIncident?.id;
+    if (_isExternalOnlyLifecycle(update)) {
+      _logLifecycleAuthorityRejected(
+        update: update,
+        activeIncidentId: activeIncidentId,
+        reason: 'external_only',
+        diagnostic: 'MQTT_SOS_LIFECYCLE_REJECTED_EXTERNAL_ONLY',
+      );
+      return const _LifecycleAuthorityDecision.rejected('external_only');
+    }
+
+    if (activeIncident == null) {
+      _logLifecycleAuthorityRejected(
+        update: update,
+        activeIncidentId: null,
+        reason: 'missing_active_incident',
+        diagnostic: 'MQTT_SOS_LIFECYCLE_REJECTED_IDENTITY_MISMATCH',
+      );
+      return const _LifecycleAuthorityDecision.rejected(
+        'missing_active_incident',
+      );
+    }
+
+    if (_sameIdentity(update.incidentId, activeIncident.id)) {
+      _logLifecycleAuthorityAccepted(
+        update: update,
+        activeIncidentId: activeIncident.id,
+        reason: 'active_incident_match',
+        diagnostic: 'MQTT_SOS_LIFECYCLE_ACCEPTED_ACTIVE_INCIDENT_MATCH',
+      );
+      return const _LifecycleAuthorityDecision.accepted(
+        'active_incident_match',
+      );
+    }
+
+    if (_sameIdentity(update.clientIncidentId, activeIncident.id)) {
+      _logLifecycleAuthorityAccepted(
+        update: update,
+        activeIncidentId: activeIncident.id,
+        reason: 'client_incident_match',
+        diagnostic: 'MQTT_SOS_LIFECYCLE_AUTHORITY_ACCEPTED',
+      );
+      return const _LifecycleAuthorityDecision.accepted(
+        'client_incident_match',
+      );
+    }
+
+    if (_hasTrustedCorrelationMatch(update, activeIncident)) {
+      _logLifecycleAuthorityAccepted(
+        update: update,
+        activeIncidentId: activeIncident.id,
+        reason: 'correlation_match',
+        diagnostic: 'MQTT_SOS_LIFECYCLE_ACCEPTED_CORRELATION_MATCH',
+      );
+      return const _LifecycleAuthorityDecision.accepted('correlation_match');
+    }
+
+    if (_sameIdentity(update.cycleKey, activeIncident.cycleKey)) {
+      _logLifecycleAuthorityAccepted(
+        update: update,
+        activeIncidentId: activeIncident.id,
+        reason: 'cycle_match',
+        diagnostic: 'MQTT_SOS_LIFECYCLE_ACCEPTED_CYCLE_MATCH',
+      );
+      return const _LifecycleAuthorityDecision.accepted('cycle_match');
+    }
+
+    _logLifecycleAuthorityRejected(
+      update: update,
+      activeIncidentId: activeIncident.id,
+      reason: 'identity_mismatch',
+      diagnostic: 'MQTT_SOS_LIFECYCLE_REJECTED_IDENTITY_MISMATCH',
+    );
+    return const _LifecycleAuthorityDecision.rejected('identity_mismatch');
+  }
+
+  bool _hasTrustedCorrelationMatch(
+    MqttSosLifecycleUpdate update,
+    SosIncident activeIncident,
+  ) {
+    final correlationId = _normalizeIdentity(update.correlationId);
+    if (correlationId == null) {
+      return false;
+    }
+    if (!_trustedLifecycleCorrelationIds.containsKey(correlationId)) {
+      return false;
+    }
+    final expectedIncidentId = _trustedLifecycleCorrelationIds[correlationId];
+    return expectedIncidentId == null ||
+        _sameIdentity(expectedIncidentId, activeIncident.id) ||
+        _sameIdentity(expectedIncidentId, update.clientIncidentId);
+  }
+
+  bool _isExternalOnlyLifecycle(MqttSosLifecycleUpdate update) {
+    if (_normalizeLifecycleToken(update.actionability) == 'externalonly' ||
+        _normalizeLifecycleToken(update.displaySurface) == 'historyonly') {
+      return true;
+    }
+    return classifySosOrigin(
+      source: update.source,
+      triggerSource: update.triggerSource,
+      relaySource: update.relaySource,
+      owner: update.owner,
+    ).isExternalOnly;
+  }
+
+  void _logLifecycleAuthorityAccepted({
+    required MqttSosLifecycleUpdate update,
+    required String activeIncidentId,
+    required String reason,
+    required String diagnostic,
+  }) {
+    BleDebugRegistry.instance.recordEvent(
+      'MQTT_SOS_LIFECYCLE_AUTHORITY_ACCEPTED reason=$reason '
+      'incidentId=${update.incidentId} activeIncidentId=$activeIncidentId '
+      'clientIncidentId=${update.clientIncidentId ?? "none"} '
+      'correlationId=${update.correlationId ?? "none"} '
+      'cycleKey=${update.cycleKey ?? "none"}',
+    );
+    if (diagnostic != 'MQTT_SOS_LIFECYCLE_AUTHORITY_ACCEPTED') {
+      BleDebugRegistry.instance.recordEvent(
+        '$diagnostic incidentId=${update.incidentId} '
+        'activeIncidentId=$activeIncidentId',
+      );
+    }
+  }
+
+  void _logLifecycleAuthorityRejected({
+    required MqttSosLifecycleUpdate update,
+    required String? activeIncidentId,
+    required String reason,
+    required String diagnostic,
+  }) {
+    BleDebugRegistry.instance.recordEvent(
+      'MQTT_SOS_LIFECYCLE_AUTHORITY_REJECTED reason=$reason '
+      'incidentId=${update.incidentId} '
+      'activeIncidentId=${activeIncidentId ?? "none"} '
+      'clientIncidentId=${update.clientIncidentId ?? "none"} '
+      'correlationId=${update.correlationId ?? "none"} '
+      'cycleKey=${update.cycleKey ?? "none"} '
+      'source=${update.source ?? "none"} '
+      'triggerSource=${update.triggerSource ?? "none"} '
+      'relaySource=${update.relaySource ?? "none"}',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      '$diagnostic reason=$reason incidentId=${update.incidentId} '
+      'activeIncidentId=${activeIncidentId ?? "none"}',
+    );
   }
 
   bool _shouldAcceptActuatorSnapshot({
@@ -1008,6 +1392,12 @@ class MqttOperationalSosRepository
     return event.type.trim().toLowerCase() == 'sos.actuator_update' ||
         (event.payload?['type']?.toString().trim().toLowerCase() ==
             'sos.actuator_update');
+  }
+
+  bool _isSosLifecycleEvent(RealtimeEvent event) {
+    return event.type.trim().toLowerCase() == 'sos.lifecycle' ||
+        (event.payload?['type']?.toString().trim().toLowerCase() ==
+            'sos.lifecycle');
   }
 
   String? _eventIncidentId(RealtimeEvent event) {
@@ -1089,6 +1479,27 @@ class MqttOperationalSosRepository
     final previousTerminal = _terminalLabel(previousState);
     final incomingTerminal = _terminalLabel(incomingState);
     if (_isTerminalState(previousState) && _isActiveLikeState(incomingState)) {
+      final restartPath = _terminalRestartPath(
+        from: previousState,
+        to: incomingState,
+        reason: reason,
+      );
+      if (restartPath != null) {
+        for (final next in restartPath) {
+          _stateMachine.transitionTo(next);
+          _rememberActiveLikeStateIfNeeded(next);
+          _stateController.add(_stateMachine.current);
+        }
+        _logTransitionGuard(
+          decision: 'accepted_via_valid_path',
+          previousState: previousState,
+          incomingState: incomingState,
+          previousIncident: previousIncident,
+          incomingIncident: incomingIncident,
+          reason: reason,
+        );
+        return true;
+      }
       _logTransitionGuard(
         decision: 'ignore_invalid_transition',
         previousState: previousState,
@@ -1101,8 +1512,13 @@ class MqttOperationalSosRepository
     }
     if (_isTerminalState(incomingState) ||
         incomingState == SosState.cancelRequested) {
-      _setState(incomingState);
-      return true;
+      return _transitionLiveThroughKnownPath(
+        previousState: previousState,
+        incomingState: incomingState,
+        previousIncident: previousIncident,
+        incomingIncident: incomingIncident,
+        reason: reason,
+      );
     }
     _logTransitionGuard(
       decision: 'ignore_invalid_transition',
@@ -1114,6 +1530,89 @@ class MqttOperationalSosRepository
           'previousTerminal=$previousTerminal incomingTerminal=$incomingTerminal',
     );
     return false;
+  }
+
+  List<SosState>? _terminalRestartPath({
+    required SosState from,
+    required SosState to,
+    required String reason,
+  }) {
+    if (reason == 'realtime_event' || !_isTerminalState(from)) {
+      return null;
+    }
+    if (to == SosState.triggerRequested) {
+      return const <SosState>[
+        SosState.idle,
+        SosState.triggerRequested,
+      ];
+    }
+    return null;
+  }
+
+  bool _transitionLiveThroughKnownPath({
+    required SosState previousState,
+    required SosState incomingState,
+    required SosIncident? previousIncident,
+    required SosIncident? incomingIncident,
+    required String reason,
+  }) {
+    final path = _liveTransitionPath(
+      from: previousState,
+      to: incomingState,
+    );
+    if (path == null) {
+      _logTransitionGuard(
+        decision: 'ignore_invalid_transition',
+        previousState: previousState,
+        incomingState: incomingState,
+        previousIncident: previousIncident,
+        incomingIncident: incomingIncident,
+        reason: 'invalid_live_transition:$reason',
+      );
+      return false;
+    }
+
+    for (final next in path) {
+      _stateMachine.transitionTo(next);
+      _rememberActiveLikeStateIfNeeded(next);
+      _stateController.add(_stateMachine.current);
+    }
+    _logTransitionGuard(
+      decision: 'accepted_via_valid_path',
+      previousState: previousState,
+      incomingState: incomingState,
+      previousIncident: previousIncident,
+      incomingIncident: incomingIncident,
+      reason: reason,
+    );
+    return true;
+  }
+
+  List<SosState>? _liveTransitionPath({
+    required SosState from,
+    required SosState to,
+  }) {
+    if (SosStateMachine.canTransition(from: from, to: to)) {
+      return <SosState>[to];
+    }
+    if (from == SosState.sent && to == SosState.cancelled) {
+      return const <SosState>[
+        SosState.cancelRequested,
+        SosState.cancelled,
+      ];
+    }
+    return null;
+  }
+
+  SosTerminalReason? _terminalReasonForUpdate({
+    required MqttSosLifecycleUpdate update,
+    required SosIncident previousIncident,
+    required SosState state,
+  }) {
+    if (!_isTerminalState(state) && state != SosState.failed) {
+      return previousIncident.terminalReason;
+    }
+    return update.terminalReason ?? previousIncident.terminalReason;
   }
 
   void _logTransitionGuard({
@@ -1300,6 +1799,55 @@ class MqttOperationalSosRepository
 
   void _rememberActiveLikeState() {}
 
+  SosIncident _incidentWithId(SosIncident incident, String id) {
+    return SosIncident(
+      id: id,
+      state: incident.state,
+      createdAt: incident.createdAt,
+      positionSnapshot: incident.positionSnapshot,
+      source: incident.source,
+      triggerSource: incident.triggerSource,
+      relaySource: incident.relaySource,
+      originatorNodeId: incident.originatorNodeId,
+      relayNodeId: incident.relayNodeId,
+      deviceId: incident.deviceId,
+      hardwareId: incident.hardwareId,
+      owner: incident.owner,
+      cycleKey: incident.cycleKey,
+      message: incident.message,
+      deliveryChannel: incident.deliveryChannel,
+      terminalReason: incident.terminalReason,
+      originKind: incident.originKind,
+      actionability: incident.actionability,
+      displaySurface: incident.displaySurface,
+      actuators: incident.actuators,
+    );
+  }
+
+  bool _sameIdentity(String? left, String? right) {
+    final normalizedLeft = _normalizeIdentity(left);
+    final normalizedRight = _normalizeIdentity(right);
+    return normalizedLeft != null &&
+        normalizedRight != null &&
+        normalizedLeft == normalizedRight;
+  }
+
+  String? _normalizeIdentity(String? value) {
+    final trimmed = value?.trim();
+    if (trimmed == null || trimmed.isEmpty) {
+      return null;
+    }
+    return trimmed;
+  }
+
+  String? _normalizeLifecycleToken(String? value) {
+    final trimmed = value?.trim();
+    if (trimmed == null || trimmed.isEmpty) {
+      return null;
+    }
+    return trimmed.toLowerCase().replaceAll(RegExp(r'[-_\s]+'), '');
+  }
+
   String _errorMessageFor(Object error) {
     if (error is EixamSdkException) {
       return error.message;
@@ -1338,4 +1886,12 @@ class MqttOperationalSosRepository
       _rememberActiveLikeState();
     }
   }
+}
+
+class _LifecycleAuthorityDecision {
+  const _LifecycleAuthorityDecision.accepted(this.reason) : accepted = true;
+  const _LifecycleAuthorityDecision.rejected(this.reason) : accepted = false;
+
+  final bool accepted;
+  final String reason;
 }

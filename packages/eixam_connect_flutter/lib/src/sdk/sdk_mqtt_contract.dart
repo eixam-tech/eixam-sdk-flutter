@@ -4,6 +4,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import 'mqtt_topic_segment.dart';
 import 'sos_backend_identity_normalizer.dart';
+import 'transport_security_validator.dart';
 
 class SdkMqttConnectRequest {
   const SdkMqttConnectRequest({
@@ -12,6 +13,7 @@ class SdkMqttConnectRequest {
     required this.username,
     required this.password,
     required this.cleanSession,
+    this.allowInsecureLocalEndpoint = false,
   });
 
   final Uri brokerUri;
@@ -19,6 +21,7 @@ class SdkMqttConnectRequest {
   final String username;
   final String password;
   final bool cleanSession;
+  final bool allowInsecureLocalEndpoint;
 }
 
 class SdkMqttEnvelope {
@@ -197,13 +200,19 @@ class SdkMqttContract {
     required EixamSdkConfig config,
     required EixamSession session,
   }) {
-    final brokerUri = Uri.parse(config.websocketUrl ?? config.apiBaseUrl);
+    final endpoint = config.websocketUrl ?? config.apiBaseUrl;
+    SdkTransportSecurityValidator.validateRealtimeEndpoint(
+      config,
+      endpoint: endpoint,
+    );
+    final brokerUri = Uri.parse(endpoint.trim());
     return SdkMqttConnectRequest(
       brokerUri: brokerUri,
       clientIdentifier: _clientIdentifierFor(session),
       username: 'sdk:${session.appId}:${session.externalUserId}',
       password: session.userHash,
       cleanSession: true,
+      allowInsecureLocalEndpoint: config.allowInsecureLocalEndpoints,
     );
   }
 

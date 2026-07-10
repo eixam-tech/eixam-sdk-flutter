@@ -2,7 +2,11 @@ import '../enums/death_man_status.dart';
 import '../errors/eixam_sdk_exception.dart';
 
 class DeathManStateMachine {
-  DeathManStatus _state = DeathManStatus.scheduled;
+  DeathManStateMachine({
+    DeathManStatus initialState = DeathManStatus.scheduled,
+  }) : _state = initialState;
+
+  DeathManStatus _state;
 
   DeathManStatus get current => _state;
 
@@ -13,21 +17,17 @@ class DeathManStateMachine {
           DeathManStatus.cancelled
         },
       DeathManStatus.monitoring => {
-          DeathManStatus.overdue,
-          DeathManStatus.confirmedSafe,
+          DeathManStatus.awaitingConfirmation,
           DeathManStatus.cancelled
         },
-      DeathManStatus.overdue => {
-          DeathManStatus.awaitingConfirmation,
-          DeathManStatus.escalated
-        },
       DeathManStatus.awaitingConfirmation => {
+          DeathManStatus.overdue,
           DeathManStatus.confirmedSafe,
-          DeathManStatus.escalated,
-          DeathManStatus.expired
+          DeathManStatus.cancelled,
         },
-      DeathManStatus.confirmedSafe => {DeathManStatus.expired},
+      DeathManStatus.overdue => {DeathManStatus.escalated},
       DeathManStatus.escalated => {DeathManStatus.expired},
+      DeathManStatus.confirmedSafe => <DeathManStatus>{},
       DeathManStatus.cancelled => <DeathManStatus>{},
       DeathManStatus.expired => <DeathManStatus>{},
     };

@@ -2,11 +2,12 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/ble_device_runtime_provider.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
+import 'package:eixam_connect_flutter/src/device/ble_incoming_payload_classifier.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
-import '../support/device/mock_ble_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/builders/device_status_builder.dart';
+import '../support/device/mock_ble_client.dart';
 
 void main() {
   group('BleDeviceRuntimeProvider payload classification', () {
@@ -60,6 +61,57 @@ void main() {
         (await runtimeProvider.deviceSosController.getStatus()).state,
         isNot(DeviceSosState.inactive),
       );
+    });
+
+    test('relay origin decision table preserves own, relay, and fallback cases',
+        () {
+      final classifier = const BleIncomingPayloadClassifier();
+      final payload = _sosPayloadForNode(0x1234);
+      final payloadHex = EixamBleProtocol.hex(payload);
+
+      BleIncomingPayloadClassification classify({
+        required int? connectedNodeId,
+        required BleIncomingPayloadKind fallbackKind,
+      }) {
+        return classifier.classifySosPayload(
+          payload: payload,
+          payloadHex: payloadHex,
+          receivedAt: DateTime.utc(2026, 6, 29, 8),
+          source: DeviceSosTransitionSource.device,
+          channel: EixamBleChannel.sos,
+          connectedBleTagNodeId: connectedNodeId,
+          fallbackOnUnknownConnectedNode: BleIncomingPayloadClassification(
+            kind: fallbackKind,
+          ),
+        );
+      }
+
+      final own = classify(
+        connectedNodeId: 0x1234,
+        fallbackKind: BleIncomingPayloadKind.remoteRelaySos,
+      );
+      final relay = classify(
+        connectedNodeId: 0x5678,
+        fallbackKind: BleIncomingPayloadKind.unknownOriginSos,
+      );
+      final unknownFallback = classify(
+        connectedNodeId: null,
+        fallbackKind: BleIncomingPayloadKind.unknownOriginSos,
+      );
+      final remoteFallback = classify(
+        connectedNodeId: null,
+        fallbackKind: BleIncomingPayloadKind.remoteRelaySos,
+      );
+
+      expect(own.kind, BleIncomingPayloadKind.ownDeviceSos);
+      expect(own.remoteRelaySosSnapshot, isNull);
+      expect(relay.kind, BleIncomingPayloadKind.remoteRelaySos);
+      expect(relay.remoteRelaySosSnapshot?.relayNodeId, 0x5678);
+      expect(unknownFallback.kind, BleIncomingPayloadKind.unknownOriginSos);
+      expect(unknownFallback.remoteRelaySosSnapshot, isNull);
+      expect(remoteFallback.kind, BleIncomingPayloadKind.remoteRelaySos);
+      expect(remoteFallback.remoteRelaySosSnapshot?.originatorNodeId, 0x1234);
+      expect(remoteFallback.remoteRelaySosSnapshot?.relayNodeId, isNull);
     });
 
     test(
@@ -137,6 +189,63 @@ void main() {
           (event) =>
               event.message.contains('SOS unknown origin reclassified') &&
               event.message.contains('role=ownDeviceSos'),
+        ),
+        isTrue,
+      );
+    });
+
+    test(
+        'unresolved active relay SOS falls back to remote relay instead of ignored unknown',
+        () async {
+      await runtimeProvider.dispose();
+      await bleClient.dispose();
+      BleDebugRegistry.instance.reset();
+
+      bleClient = MockBleClient()..runtimeStatusPayload = const <int>[0x99];
+      await bleClient.initialize();
+      runtimeProvider = BleDeviceRuntimeProvider(bleClient: bleClient);
+      await _pairDemoDevice(runtimeProvider);
+
+      expect(
+        (await runtimeProvider.getRuntimeIdentitySnapshot(
+          buildDeviceStatus(connected: true),
+        ))
+            .connectedBleNodeId,
+        isNull,
+      );
+
+      final nextEvent = runtimeProvider.watchIncomingEvents().firstWhere(
+            (event) => event.type == BleIncomingEventType.sosMeshPacket,
+          );
+
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.sos,
+        payload: _sosPayloadForNode(0x12345678),
+      );
+
+      final event = await nextEvent.timeout(const Duration(seconds: 3));
+      expect(event.classification.kind, BleIncomingPayloadKind.remoteRelaySos);
+      expect(event.remoteRelaySosSnapshot, isNotNull);
+      expect(event.remoteRelaySosSnapshot!.originatorNodeId, 0x12345678);
+      expect(event.remoteRelaySosSnapshot!.relayNodeId, isNull);
+      expect(
+        (await runtimeProvider.deviceSosController.getStatus()).state,
+        DeviceSosState.inactive,
+      );
+      expect(
+        BleDebugRegistry.instance.currentState.lastDecodedIncomingEventType,
+        BleIncomingEventType.sosMeshPacket.name,
+      );
+      expect(
+        BleDebugRegistry.instance.currentState.lastDecodeOutcome,
+        BleIncomingEventType.sosMeshPacket.name,
+      );
+      expect(
+        BleDebugRegistry.instance.currentState.events.any(
+          (event) =>
+              event.message.contains('SOS unknown origin fallback') &&
+              event.message.contains('role=remoteRelaySos'),
         ),
         isTrue,
       );
@@ -494,4 +603,16 @@ Future<BleIncomingEvent> _nextIncomingEvent(
   BleDeviceRuntimeProvider runtimeProvider,
 ) {
   return runtimeProvider.watchIncomingEvents().first;
+}
+
+List<int> _sosPayloadForNode(int nodeId) {
+  return <int>[
+    nodeId & 0xFF,
+    (nodeId >> 8) & 0xFF,
+    (nodeId >> 16) & 0xFF,
+    (nodeId >> 24) & 0xFF,
+    0x00,
+    0x40,
+    0x09,
+  ];
 }

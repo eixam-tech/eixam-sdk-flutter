@@ -1,5 +1,7 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import 'transport_security_validator.dart';
+
 class ResolvedEixamBootstrapConfig {
   const ResolvedEixamBootstrapConfig({
     required this.appId,
@@ -69,9 +71,10 @@ class EixamBootstrapResolver {
           apiBaseUrl: apiBaseUrl,
           websocketUrl: websocketUrl,
           enableLogging: config.enableLogging,
+          allowInsecureLocalEndpoints: config.allowInsecureLocalEndpoints,
         ),
         initialSession: initialSession,
-      );
+      )..validateTransportSecurity();
     }
 
     if (config.customEndpoints != null) {
@@ -110,9 +113,10 @@ class EixamBootstrapResolver {
         apiBaseUrl: resolvedEndpoints.$1,
         websocketUrl: resolvedEndpoints.$2,
         enableLogging: config.enableLogging,
+        allowInsecureLocalEndpoints: config.allowInsecureLocalEndpoints,
       ),
       initialSession: initialSession,
-    );
+    )..validateTransportSecurity();
   }
 
   static bool restoredSessionMatchesApp(
@@ -177,5 +181,11 @@ class EixamBootstrapResolver {
         );
       }
     }
+  }
+}
+
+extension on ResolvedEixamBootstrapConfig {
+  void validateTransportSecurity() {
+    SdkTransportSecurityValidator.validateConfig(sdkConfig);
   }
 }

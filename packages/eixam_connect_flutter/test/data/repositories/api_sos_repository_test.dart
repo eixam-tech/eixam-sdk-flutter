@@ -4,6 +4,7 @@ import 'package:eixam_connect_flutter/src/data/datasources_remote/sos_remote_dat
 import 'package:eixam_connect_flutter/src/data/dtos/sos_history_dto.dart';
 import 'package:eixam_connect_flutter/src/data/dtos/sos_incident_dto.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/api_sos_repository.dart';
+import 'package:eixam_connect_flutter/src/mappers/local_state_serializers.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/fakes/memory_shared_prefs_sdk_store.dart';
@@ -19,7 +20,8 @@ void main() {
         localStore: store,
       );
 
-      await repository.triggerSos(triggerSource: 'button_ui');
+      final incident =
+          await _seedActiveLocalSos(repository, store, remoteDataSource);
       remoteDataSource.cancelResponseState = SosState.sent.name;
 
       final cancelled = await repository.cancelSos();
@@ -32,8 +34,9 @@ void main() {
       expect(store.jsonValues[SharedPrefsSdkStore.sosIncidentKey], isNull);
       expect(
         store.stringValues[SharedPrefsSdkStore.sosClosedIncidentKey],
-        cancelled.id,
+        incident.id,
       );
+      expect(cancelled.id, incident.id);
     });
 
     test('restore keeps a locally closed incident from being rehydrated',
@@ -45,7 +48,8 @@ void main() {
         localStore: store,
       );
 
-      final triggered = await first.triggerSos(triggerSource: 'button_ui');
+      final triggered =
+          await _seedActiveLocalSos(first, store, remoteDataSource);
       remoteDataSource.cancelResponseState = SosState.sent.name;
       await first.cancelSos();
 
@@ -63,6 +67,36 @@ void main() {
       );
     });
   });
+}
+
+Future<SosIncident> _seedActiveLocalSos(
+  ApiSosRepository repository,
+  MemorySharedPrefsSdkStore store,
+  _FakeSosRemoteDataSource remoteDataSource,
+) async {
+  final incident = SosIncident(
+    id: 'api-sos-1',
+    state: SosState.sent,
+    createdAt: DateTime.utc(2026, 1, 1, 10),
+    triggerSource: 'button_ui',
+    originKind: SosOriginKind.app,
+    actionability: SosActionability.localActionable,
+    displaySurface: SosDisplaySurface.activeAndHistory,
+  );
+  remoteDataSource.active = SosIncidentDto(
+    id: incident.id,
+    state: incident.state.name,
+    createdAt: incident.createdAt.toIso8601String(),
+    triggerSource: incident.triggerSource,
+    originKind: incident.originKind.name,
+    actionability: incident.actionability.name,
+    displaySurface: incident.displaySurface.name,
+  );
+  store.jsonValues[SharedPrefsSdkStore.sosIncidentKey] =
+      LocalStateSerializers.sosIncidentToJson(incident);
+  store.stringValues[SharedPrefsSdkStore.sosStateKey] = incident.state.name;
+  await repository.restoreState();
+  return incident;
 }
 
 final class _FakeSosRemoteDataSource implements SosRemoteDataSource {

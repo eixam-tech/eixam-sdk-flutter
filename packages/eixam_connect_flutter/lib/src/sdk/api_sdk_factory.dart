@@ -35,6 +35,7 @@ import 'mqtt_realtime_client.dart';
 import 'eixam_bootstrap_resolver.dart';
 import 'protection_platform_adapter.dart';
 import 'protection_platform_adapter_factory.dart';
+import 'transport_security_validator.dart';
 
 /// Factory helpers for API-backed SDK instances.
 class ApiSdkFactory {
@@ -51,6 +52,7 @@ class ApiSdkFactory {
     EixamPermissionDisclosureConfig permissionDisclosureConfig =
         const EixamPermissionDisclosureConfig(),
     bool enableLogging = false,
+    bool allowInsecureLocalEndpoints = false,
     bool deferRuntimeStartup = false,
   }) async {
     BleDebugRegistry.instance.reset();
@@ -67,8 +69,10 @@ class ApiSdkFactory {
       apiBaseUrl: apiBaseUrl,
       websocketUrl: websocketUrl,
       enableLogging: enableLogging,
+      allowInsecureLocalEndpoints: allowInsecureLocalEndpoints,
       deferRuntimeStartup: deferRuntimeStartup,
     );
+    SdkTransportSecurityValidator.validateConfig(config);
     final httpClient = http.Client();
     final httpTransport = SdkHttpTransport(
       client: httpClient,
@@ -187,8 +191,12 @@ class ApiSdkFactory {
       disposeCallback: () async {
         httpClient.close();
         await contactsRepository.dispose();
+        await trackingRepository.dispose();
+        await deviceRepository.dispose();
+        await deviceRuntimeProvider.dispose();
         await sosRepository.dispose();
         await realtimeClient.dispose();
+        await BleDebugRegistry.instance.resetForLifecycle();
       },
     );
 
@@ -207,6 +215,8 @@ class ApiSdkFactory {
       notificationTexts: config.notificationTexts,
       permissionDisclosureConfig: config.permissionDisclosureConfig,
       enableLogging: resolved.sdkConfig.enableLogging,
+      allowInsecureLocalEndpoints:
+          resolved.sdkConfig.allowInsecureLocalEndpoints,
       deferRuntimeStartup: config.featureFlags['defer_runtime_startup'] == true,
     );
 

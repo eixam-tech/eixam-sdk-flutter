@@ -1,4 +1,5 @@
 import '../enums/sos_delivery_channel.dart';
+import '../enums/sos_actionability.dart';
 import '../enums/sos_state.dart';
 import 'sos_actuator_snapshot.dart';
 import 'tracking_position.dart';
@@ -39,6 +40,9 @@ class SosHistoryItem {
     this.triggerSource,
     this.message,
     this.deliveryChannel,
+    this.originKind = SosOriginKind.unknown,
+    this.actionability = SosActionability.unknown,
+    this.displaySurface = SosDisplaySurface.unknown,
     this.actuators,
     this.creationTelemetry,
     this.trail = const [],
@@ -51,6 +55,9 @@ class SosHistoryItem {
   final String? triggerSource;
   final String? message;
   final SosDeliveryChannel? deliveryChannel;
+  final SosOriginKind originKind;
+  final SosActionability actionability;
+  final SosDisplaySurface displaySurface;
   final SosActuatorSnapshot? actuators;
   final SosHistoryTelemetry? creationTelemetry;
   final List<TrackingPosition> trail;

@@ -1,5 +1,6 @@
 // Public SDK models and entities exposed to partner applications.
 export 'package:eixam_connect_core/src/entities/backend_registered_device.dart';
+export 'package:eixam_connect_core/src/entities/ble_command_channel_status.dart';
 export 'package:eixam_connect_core/src/entities/ble_notification_navigation_request.dart';
 export 'package:eixam_connect_core/src/entities/death_man_plan.dart';
 export 'package:eixam_connect_core/src/entities/device_runtime.dart';
@@ -7,6 +8,8 @@ export 'package:eixam_connect_core/src/entities/device_runtime_status.dart';
 export 'package:eixam_connect_core/src/entities/device_sos_status.dart';
 export 'package:eixam_connect_core/src/entities/device_status.dart';
 export 'package:eixam_connect_core/src/entities/device_tel_relay_rx.dart';
+export 'package:eixam_connect_core/src/entities/eixam_ble_diagnostics.dart';
+export 'package:eixam_connect_core/src/entities/eixam_ble_scan_result.dart';
 export 'package:eixam_connect_core/src/entities/eixam_notification_intent.dart';
 export 'package:eixam_connect_core/src/entities/emergency_contact.dart';
 export 'package:eixam_connect_core/src/entities/app_feedback.dart';
@@ -28,4 +31,10 @@ export 'package:eixam_connect_core/src/entities/sos_actuator_snapshot.dart';
 export 'package:eixam_connect_core/src/entities/sos_incident.dart';
 export 'package:eixam_connect_core/src/entities/sos_trigger_payload.dart';
 export 'package:eixam_connect_core/src/entities/tracking_position.dart';
-export '../../device/ble_scan_result.dart';
+export '../../device/ble_security_policy.dart'
+    show
+        BleCommandCriticality,
+        BleCommandSecurityDecision,
+        BleSecurityCapability,
+        BleSecurityDiagnostics,
+        BleSecurityPolicy;

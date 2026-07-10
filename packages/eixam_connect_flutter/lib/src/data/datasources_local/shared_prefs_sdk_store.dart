@@ -21,6 +21,8 @@ class SharedPrefsSdkStore {
   static const String deathManPlanKey = 'eixam.death_man.active_plan';
   static const String emergencyContactsKey = 'eixam.contacts.list';
   static const String deviceStatusKey = 'eixam.device.status';
+  // Sensitive SDK session-restore key. Persists signed identity only; the
+  // optional refresh token is intentionally not written by SdkSessionStore.
   static const String sdkSessionKey = 'eixam.sdk.session';
   static const String preSosSessionKey = 'eixam.sos.pre_sos_session';
   static const String osSosWidgetRecentActionsKey =
@@ -29,6 +31,27 @@ class SharedPrefsSdkStore {
       'eixam.device.identity_mappings';
   static const String externalRelaySosContextsKey =
       'eixam.sos.external_relay_contexts';
+  static const String preferredBleDeviceKey = 'eixam.ble.preferred_device';
+  static const String manualDisconnectRequestedKey =
+      'eixam.ble.manual_disconnect_requested';
+  static const List<String> localUserDataKeys = <String>[
+    sosIncidentKey,
+    sosStateKey,
+    sosClosedIncidentKey,
+    trackingPositionKey,
+    resolvedLocationKey,
+    trackingStateKey,
+    deathManPlanKey,
+    emergencyContactsKey,
+    deviceStatusKey,
+    sdkSessionKey,
+    preSosSessionKey,
+    osSosWidgetRecentActionsKey,
+    deviceIdentityMappingsKey,
+    externalRelaySosContextsKey,
+    preferredBleDeviceKey,
+    manualDisconnectRequestedKey,
+  ];
 
   SharedPreferences? _prefs;
 
@@ -84,5 +107,13 @@ class SharedPrefsSdkStore {
   Future<void> remove(String key) async {
     final prefs = await _instance;
     await prefs.remove(key);
+  }
+
+  /// Removes SDK-owned local user data from SharedPreferences.
+  Future<void> clearLocalUserData() async {
+    final prefs = await _instance;
+    for (final key in localUserDataKeys) {
+      await prefs.remove(key);
+    }
   }
 }

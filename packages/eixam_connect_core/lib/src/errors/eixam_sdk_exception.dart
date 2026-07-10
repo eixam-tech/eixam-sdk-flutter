@@ -18,6 +18,10 @@ class NetworkException extends EixamSdkException {
   const NetworkException(super.code, super.message);
 }
 
+class TransportSecurityException extends NetworkException {
+  const TransportSecurityException(super.code, super.message);
+}
+
 class SosException extends EixamSdkException {
   const SosException(super.code, super.message);
 }
@@ -51,6 +55,35 @@ class DeviceException extends EixamSdkException {
 
   const DeviceException.notActivated()
       : this('E_DEVICE_NOT_ACTIVATED', 'E_DEVICE_NOT_ACTIVATED');
+
+  const DeviceException.bleLinkNotSecure()
+      : this(bleLinkNotSecureCode, bleLinkNotSecureCode);
+
+  const DeviceException.blePairingRequired()
+      : this(blePairingRequiredCode, blePairingRequiredCode);
+
+  const DeviceException.bleCommandAuthFailed()
+      : this(bleCommandAuthFailedCode, bleCommandAuthFailedCode);
+
+  const DeviceException.bleReplayRejected()
+      : this(bleReplayRejectedCode, bleReplayRejectedCode);
+
+  const DeviceException.bleDeviceIdUnverified()
+      : this(bleDeviceIdUnverifiedCode, bleDeviceIdUnverifiedCode);
+
+  const DeviceException.bleIosPairingInformationRemoved()
+      : this(
+          bleIosPairingInformationRemovedCode,
+          'E_BLE_IOS_PAIRING_INFORMATION_REMOVED apple-code: 14 Peer removed pairing information',
+        );
+
+  static const String bleLinkNotSecureCode = 'E_BLE_LINK_NOT_SECURE';
+  static const String blePairingRequiredCode = 'E_BLE_PAIRING_REQUIRED';
+  static const String bleCommandAuthFailedCode = 'E_BLE_COMMAND_AUTH_FAILED';
+  static const String bleReplayRejectedCode = 'E_BLE_REPLAY_REJECTED';
+  static const String bleDeviceIdUnverifiedCode = 'E_BLE_DEVICE_ID_UNVERIFIED';
+  static const String bleIosPairingInformationRemovedCode =
+      'E_BLE_IOS_PAIRING_INFORMATION_REMOVED';
 }
 
 class FirmwareUpdateException extends EixamSdkException {

@@ -5,9 +5,10 @@ class PreferredBleDeviceStore {
   PreferredBleDeviceStore({SharedPrefsSdkStore? localStore})
       : _localStore = localStore ?? SharedPrefsSdkStore();
 
-  static const String preferredDeviceKey = 'eixam.ble.preferred_device';
+  static const String preferredDeviceKey =
+      SharedPrefsSdkStore.preferredBleDeviceKey;
   static const String manualDisconnectRequestedKey =
-      'eixam.ble.manual_disconnect_requested';
+      SharedPrefsSdkStore.manualDisconnectRequestedKey;
 
   final SharedPrefsSdkStore _localStore;
 

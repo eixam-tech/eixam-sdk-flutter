@@ -41,4 +41,11 @@ class MemorySharedPrefsSdkStore extends SharedPrefsSdkStore {
     stringValues.remove(key);
     boolValues.remove(key);
   }
+
+  @override
+  Future<void> clearLocalUserData() async {
+    for (final key in SharedPrefsSdkStore.localUserDataKeys) {
+      await remove(key);
+    }
+  }
 }

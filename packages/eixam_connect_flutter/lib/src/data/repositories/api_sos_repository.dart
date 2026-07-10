@@ -300,6 +300,9 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
               incident.triggerSource ?? incident.source ?? incident.relaySource,
           message: incident.message,
           deliveryChannel: incident.deliveryChannel,
+          originKind: incident.originKind,
+          actionability: incident.actionability,
+          displaySurface: incident.displaySurface,
           actuators: incident.actuators,
           creationTelemetry: item.creationTelemetry == null
               ? null
