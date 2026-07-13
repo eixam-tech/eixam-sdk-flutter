@@ -89,8 +89,7 @@ void main() {
       await realtimeClient.dispose();
     });
 
-    test('start background telemetry is not duplicated for same session',
-        () async {
+    test('session initialization does not start background telemetry', () async {
       await sdk.initialize(
         const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
       );
@@ -108,6 +107,24 @@ void main() {
           userHash: 'hash-1',
         ),
       );
+
+      expect(backgroundAdapter.startCallCount, 0);
+      expect(backgroundAdapter.running, isFalse);
+    });
+
+    test('explicit enable is not duplicated for the same session', () async {
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
+      );
+      await sdk.setSession(
+        const EixamSession.signed(
+          appId: 'partner-app',
+          externalUserId: 'user-1',
+          userHash: 'hash-1',
+        ),
+      );
+      await sdk.enableBackgroundTelemetry();
+      await sdk.enableBackgroundTelemetry();
 
       expect(backgroundAdapter.startCallCount, 1);
       expect(backgroundAdapter.updateCallCount, 1);
@@ -124,6 +141,7 @@ void main() {
           userHash: 'hash-1',
         ),
       );
+      await sdk.enableBackgroundTelemetry();
 
       await sdk.clearSession();
 
@@ -145,6 +163,7 @@ void main() {
           userHash: 'hash-1',
         ),
       );
+      await sdk.enableBackgroundTelemetry();
 
       final debugMessages = BleDebugRegistry.instance.currentState.events
           .map((event) => event.message)

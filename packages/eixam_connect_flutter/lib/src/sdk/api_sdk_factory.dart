@@ -36,6 +36,7 @@ import 'eixam_bootstrap_resolver.dart';
 import 'protection_platform_adapter.dart';
 import 'protection_platform_adapter_factory.dart';
 import 'transport_security_validator.dart';
+import '../storage/platform_secure_key_value_store.dart';
 
 /// Factory helpers for API-backed SDK instances.
 class ApiSdkFactory {
@@ -58,7 +59,10 @@ class ApiSdkFactory {
     BleDebugRegistry.instance.reset();
 
     final store = SharedPrefsSdkStore();
-    final sessionStore = SdkSessionStore(localStore: store);
+    final sessionStore = SdkSessionStore(
+      localStore: store,
+      secureStore: PlatformSecureKeyValueStore(),
+    );
     final sessionContext = SdkSessionContext();
     final preferredBleDeviceStore = PreferredBleDeviceStore(localStore: store);
     final bleClient = LazyInitializingBleClient(RealBleClient());

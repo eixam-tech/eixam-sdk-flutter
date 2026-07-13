@@ -5,6 +5,7 @@
 export 'src/public/sdk.dart';
 export 'src/public/config/config.dart';
 export 'src/public/models/models.dart';
+export 'src/public/storage/storage.dart';
 export 'src/public/enums/enums.dart';
 export 'src/public/events/events.dart';
 export 'src/public/errors/errors.dart';

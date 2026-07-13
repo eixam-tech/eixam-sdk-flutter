@@ -331,7 +331,7 @@ class EixamConnectSdkImpl
   late final SdkResolvedLocationResolver _resolvedLocationResolver;
   final Duration _appTriggeredSosBridgeWindow;
   bool _deferredRuntimeWorkPending = false;
-  bool _backgroundTelemetryEnabled = true;
+  bool _backgroundTelemetryEnabled = false;
   bool _backgroundTelemetryStarted = false;
   String? _backgroundTelemetryStartFingerprint;
   String? _backgroundTelemetryNotificationTitle;
