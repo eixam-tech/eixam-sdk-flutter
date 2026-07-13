@@ -333,6 +333,10 @@ class EixamConnectSdkImpl
   bool _deferredRuntimeWorkPending = false;
   bool _backgroundTelemetryEnabled = false;
   bool _backgroundTelemetryStarted = false;
+  BackgroundTrackingState _backgroundTrackingState =
+      BackgroundTrackingState.stopped;
+  AppLifecycleState _appLifecycleState =
+      WidgetsBinding.instance.lifecycleState ?? AppLifecycleState.resumed;
   String? _backgroundTelemetryStartFingerprint;
   String? _backgroundTelemetryNotificationTitle;
   String? _backgroundTelemetryNotificationBody;
@@ -355,6 +359,9 @@ class EixamConnectSdkImpl
   static const Duration _preSosTerminalCancelContextTtl = Duration(seconds: 30);
   static const Duration _osSosWidgetActionDedupeWindow = Duration(minutes: 10);
   static const Duration _nativePendingSosCreateTtl = Duration(hours: 24);
+  static const Duration _backgroundTelemetryStartConfirmationInterval =
+      Duration(milliseconds: 50);
+  static const int _backgroundTelemetryStartConfirmationAttempts = 20;
   static const Duration _nativePendingSosBackendConfirmTtl =
       Duration(hours: 24);
   static const Duration _iosExpiredPreSosPromotionTtl = Duration(minutes: 10);
@@ -408,6 +415,13 @@ class EixamConnectSdkImpl
     _sdkConfig = config;
     _session = await sessionStore?.load();
     _session = await _bootstrapSessionIfNeeded(_session);
+    await _refreshBackgroundTelemetryDiagnostics();
+    if (_backgroundTelemetryDiagnostics.serviceRunning && _session != null) {
+      _backgroundTelemetryStartFingerprint = _backgroundTelemetryFingerprint(
+        apiBaseUrl: config.apiBaseUrl,
+        session: _session!,
+      );
+    }
     _manualDisconnectRequested =
         await preferredBleDeviceStore.readManualDisconnectRequested();
     if (_manualDisconnectRequested) {
@@ -1124,20 +1138,41 @@ class EixamConnectSdkImpl
     String? notificationTitle,
     String? notificationBody,
   }) async {
+    if (_backgroundTrackingState == BackgroundTrackingState.starting ||
+        (_backgroundTelemetryEnabled &&
+            _backgroundTelemetryDiagnostics.serviceRunning)) {
+      return;
+    }
+    _backgroundTrackingState = BackgroundTrackingState.starting;
+    _emitOperationalDiagnostics(reason: 'background_telemetry_starting');
     _backgroundTelemetryEnabled = true;
     _backgroundTelemetryNotificationTitle =
         notificationTitle ?? notificationTexts.protectionActiveTitle;
     _backgroundTelemetryNotificationBody =
         notificationBody ?? notificationTexts.protectionActiveBody;
     await _reconcileBackgroundTelemetry(reason: 'enable_background_telemetry');
+    await _confirmBackgroundTelemetryStart();
+    _backgroundTrackingState = _deriveBackgroundTrackingState();
     _emitOperationalDiagnostics();
   }
 
   @override
   Future<void> disableBackgroundTelemetry() async {
+    if (_backgroundTrackingState == BackgroundTrackingState.stopping) {
+      return;
+    }
+    if (!_backgroundTelemetryEnabled &&
+        !_backgroundTelemetryDiagnostics.enabled &&
+        !_backgroundTelemetryDiagnostics.serviceRunning) {
+      _backgroundTrackingState = BackgroundTrackingState.stopped;
+      return;
+    }
+    _backgroundTrackingState = BackgroundTrackingState.stopping;
+    _emitOperationalDiagnostics(reason: 'background_telemetry_stopping');
     _backgroundTelemetryEnabled = false;
     await _stopBackgroundTelemetry(reason: 'disable_background_telemetry');
     _operationalTelemetryCoordinator.setIntervalPublishingEnabled(true);
+    _backgroundTrackingState = _deriveBackgroundTrackingState();
     _emitOperationalDiagnostics();
   }
 
@@ -1456,9 +1491,6 @@ class EixamConnectSdkImpl
   }
 
   Future<void> _stopBackgroundTelemetry({required String reason}) async {
-    if (!_backgroundTelemetryStarted && !_backgroundTelemetryEnabled) {
-      return;
-    }
     try {
       await backgroundTelemetryPlatformAdapter.stopBackgroundTelemetry();
     } catch (error) {
@@ -1489,6 +1521,19 @@ class EixamConnectSdkImpl
     try {
       _backgroundTelemetryDiagnostics = await backgroundTelemetryPlatformAdapter
           .getBackgroundTelemetryDiagnostics();
+      if (!_backgroundTelemetryDiagnostics.enabled) {
+        _backgroundTelemetryEnabled = false;
+        _backgroundTelemetryStarted = false;
+        _backgroundTelemetryStartFingerprint = null;
+      } else {
+        _backgroundTelemetryEnabled = true;
+        _backgroundTelemetryStarted =
+            _backgroundTelemetryDiagnostics.serviceRunning;
+      }
+      if (_backgroundTrackingState != BackgroundTrackingState.starting &&
+          _backgroundTrackingState != BackgroundTrackingState.stopping) {
+        _backgroundTrackingState = _deriveBackgroundTrackingState();
+      }
     } catch (_) {
       _backgroundTelemetryDiagnostics = BackgroundTelemetryDiagnostics(
         enabled: _backgroundTelemetryEnabled,
@@ -1501,6 +1546,58 @@ class EixamConnectSdkImpl
             _backgroundTelemetryDiagnostics.activeLocationRequest,
       );
     }
+  }
+
+  Future<void> _confirmBackgroundTelemetryStart() async {
+    for (var attempt = 0;
+        attempt < _backgroundTelemetryStartConfirmationAttempts;
+        attempt++) {
+      await _refreshBackgroundTelemetryDiagnostics();
+      final diagnostics = _backgroundTelemetryDiagnostics;
+      final permission = diagnostics.permissionStatus.toLowerCase();
+      if (diagnostics.serviceRunning ||
+          !diagnostics.enabled ||
+          diagnostics.lastTelemetryError != null ||
+          permission.contains('missing') ||
+          permission.contains('denied') ||
+          permission.contains('blocked')) {
+        return;
+      }
+      await Future<void>.delayed(
+        _backgroundTelemetryStartConfirmationInterval,
+      );
+    }
+  }
+
+  Future<void> _reconcileBackgroundTrackingFromNative({
+    required String reason,
+  }) async {
+    await _refreshBackgroundTelemetryDiagnostics();
+    _backgroundTrackingState = _deriveBackgroundTrackingState();
+    _operationalTelemetryCoordinator.setIntervalPublishingEnabled(true);
+    _emitOperationalDiagnostics(reason: reason);
+  }
+
+  BackgroundTrackingState _deriveBackgroundTrackingState() {
+    final diagnostics = _backgroundTelemetryDiagnostics;
+    final permission = diagnostics.permissionStatus.toLowerCase();
+    if (permission.contains('missing') ||
+        permission.contains('denied') ||
+        permission.contains('blocked')) {
+      return BackgroundTrackingState.permissionBlocked;
+    }
+    if (diagnostics.enabled && diagnostics.serviceRunning) {
+      return _appLifecycleState == AppLifecycleState.resumed
+          ? BackgroundTrackingState.activeForeground
+          : BackgroundTrackingState.activeBackground;
+    }
+    if (!diagnostics.enabled && !diagnostics.serviceRunning) {
+      return BackgroundTrackingState.stopped;
+    }
+    if (diagnostics.lastTelemetryError != null) {
+      return BackgroundTrackingState.error;
+    }
+    return BackgroundTrackingState.serviceUnavailable;
   }
 
   bool _isOpenSosState(SosState state) {
@@ -2039,6 +2136,7 @@ class EixamConnectSdkImpl
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appLifecycleState = state;
     switch (state) {
       case AppLifecycleState.resumed:
         _bleAutoReconnectCoordinator.setAppForeground(true);
@@ -2062,6 +2160,11 @@ class EixamConnectSdkImpl
         }
         unawaited(
           _flushNativeBackgroundTelemetryQueue(reason: 'app_foreground_resume'),
+        );
+        unawaited(
+          _reconcileBackgroundTrackingFromNative(
+            reason: 'app_foreground_resume',
+          ),
         );
         break;
       case AppLifecycleState.inactive:
@@ -15403,6 +15506,7 @@ class EixamConnectSdkImpl
       lastPublicSosDeliveryChannel: _lastPublicSosDeliveryChannel,
       lastTelRelayRx: _lastTelRelayRx,
       backgroundTelemetryEnabled: _backgroundTelemetryEnabled,
+      backgroundTrackingState: _backgroundTrackingState,
       androidForegroundServiceRunning:
           _backgroundTelemetryDiagnostics.serviceRunning,
       backgroundPermissionStatus:

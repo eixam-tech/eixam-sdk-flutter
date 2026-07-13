@@ -1105,10 +1105,7 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         }
 
         fun stop(context: Context) {
-            val intent = Intent(context, EixamTelemetryForegroundService::class.java).apply {
-                action = actionStop
-            }
-            context.startService(intent)
+            context.stopService(Intent(context, EixamTelemetryForegroundService::class.java))
         }
     }
 }

@@ -1,5 +1,6 @@
 import '../config/eixam_session.dart';
 import '../enums/realtime_connection_state.dart';
+import '../enums/background_tracking_state.dart';
 import '../enums/sos_delivery_channel.dart';
 import 'device_tel_relay_rx.dart';
 import 'sdk_bridge_diagnostics.dart';
@@ -21,6 +22,7 @@ class SdkOperationalDiagnostics {
     this.lastPublicSosDeliveryChannel,
     this.lastTelRelayRx,
     this.backgroundTelemetryEnabled = false,
+    this.backgroundTrackingState = BackgroundTrackingState.stopped,
     this.androidForegroundServiceRunning = false,
     this.backgroundPermissionStatus = 'unknown',
     this.lastBackgroundTelemetryAt,
@@ -48,6 +50,7 @@ class SdkOperationalDiagnostics {
   /// matched a stable relay contract.
   final DeviceTelRelayRx? lastTelRelayRx;
   final bool backgroundTelemetryEnabled;
+  final BackgroundTrackingState backgroundTrackingState;
   final bool androidForegroundServiceRunning;
   final String backgroundPermissionStatus;
   final DateTime? lastBackgroundTelemetryAt;
@@ -99,6 +102,7 @@ class SdkOperationalDiagnostics {
     Object? lastPublicSosDeliveryChannel = _unset,
     Object? lastTelRelayRx = _unset,
     bool? backgroundTelemetryEnabled,
+    BackgroundTrackingState? backgroundTrackingState,
     bool? androidForegroundServiceRunning,
     String? backgroundPermissionStatus,
     Object? lastBackgroundTelemetryAt = _unset,
@@ -133,6 +137,8 @@ class SdkOperationalDiagnostics {
           : lastTelRelayRx as DeviceTelRelayRx?,
       backgroundTelemetryEnabled:
           backgroundTelemetryEnabled ?? this.backgroundTelemetryEnabled,
+      backgroundTrackingState:
+          backgroundTrackingState ?? this.backgroundTrackingState,
       androidForegroundServiceRunning: androidForegroundServiceRunning ??
           this.androidForegroundServiceRunning,
       backgroundPermissionStatus:

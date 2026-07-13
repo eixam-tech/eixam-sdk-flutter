@@ -1,5 +1,6 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/preferred_ble_device_store.dart';
+import 'package:eixam_connect_flutter/src/data/datasources_local/sdk_session_store.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
@@ -28,6 +29,7 @@ void main() {
     late FakeRealtimeClient realtimeClient;
     late DeviceSosController deviceSosController;
     late _FakeBackgroundTelemetryAdapter backgroundAdapter;
+    late MemorySharedPrefsSdkStore localStore;
     late EixamConnectSdkImpl sdk;
 
     setUp(() {
@@ -56,7 +58,7 @@ void main() {
       realtimeClient = FakeRealtimeClient();
       deviceSosController = DeviceSosController();
       backgroundAdapter = _FakeBackgroundTelemetryAdapter();
-      final localStore = MemorySharedPrefsSdkStore();
+      localStore = MemorySharedPrefsSdkStore();
       sdk = EixamConnectSdkImpl(
         sosRepository: sosRepository,
         trackingRepository: trackingRepository,
@@ -73,6 +75,7 @@ void main() {
         preferredBleDeviceStore: PreferredBleDeviceStore(
           localStore: localStore,
         ),
+        sessionStore: SdkSessionStore(localStore: localStore),
         localStore: localStore,
         protectionPlatformAdapter: const NoopProtectionPlatformAdapter(),
         backgroundTelemetryPlatformAdapter: backgroundAdapter,
@@ -89,7 +92,8 @@ void main() {
       await realtimeClient.dispose();
     });
 
-    test('session initialization does not start background telemetry', () async {
+    test('session initialization does not start background telemetry',
+        () async {
       await sdk.initialize(
         const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
       );
@@ -112,6 +116,29 @@ void main() {
       expect(backgroundAdapter.running, isFalse);
     });
 
+    test('restart adopts a genuinely active persisted session', () async {
+      const session = EixamSession.signed(
+        appId: 'partner-app',
+        externalUserId: 'user-1',
+        userHash: 'hash-1',
+      );
+      await SdkSessionStore(localStore: localStore).save(session);
+      backgroundAdapter.enabled = true;
+      backgroundAdapter.running = true;
+
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
+      );
+      final diagnostics = await sdk.getOperationalDiagnostics();
+
+      expect(backgroundAdapter.startCallCount, 0);
+      expect(backgroundAdapter.running, isTrue);
+      expect(
+        diagnostics.backgroundTrackingState,
+        BackgroundTrackingState.activeForeground,
+      );
+    });
+
     test('explicit enable is not duplicated for the same session', () async {
       await sdk.initialize(
         const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
@@ -127,7 +154,31 @@ void main() {
       await sdk.enableBackgroundTelemetry();
 
       expect(backgroundAdapter.startCallCount, 1);
-      expect(backgroundAdapter.updateCallCount, 1);
+      expect(backgroundAdapter.updateCallCount, 0);
+    });
+
+    test('explicit enable waits for native running confirmation', () async {
+      backgroundAdapter.diagnosticReadsUntilRunning = 2;
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
+      );
+      await sdk.setSession(
+        const EixamSession.signed(
+          appId: 'partner-app',
+          externalUserId: 'user-1',
+          userHash: 'hash-1',
+        ),
+      );
+
+      await sdk.enableBackgroundTelemetry();
+      final diagnostics = await sdk.getOperationalDiagnostics();
+
+      expect(backgroundAdapter.startCallCount, 1);
+      expect(backgroundAdapter.running, isTrue);
+      expect(
+        diagnostics.backgroundTrackingState,
+        BackgroundTrackingState.activeForeground,
+      );
     });
 
     test('stop background telemetry is called on clearSession', () async {
@@ -147,6 +198,104 @@ void main() {
 
       expect(backgroundAdapter.stopCallCount, greaterThanOrEqualTo(1));
       expect(backgroundAdapter.running, isFalse);
+    });
+
+    test('notification stop becomes authoritative and is not restored',
+        () async {
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
+      );
+      const session = EixamSession.signed(
+        appId: 'partner-app',
+        externalUserId: 'user-1',
+        userHash: 'hash-1',
+      );
+      await sdk.setSession(session);
+      await sdk.enableBackgroundTelemetry();
+
+      backgroundAdapter.simulateNotificationStop();
+      final stopped = await sdk.getOperationalDiagnostics();
+      await sdk.setSession(session);
+      deviceRepository.emitStatus(
+        buildDeviceStatus(connected: true, paired: true, activated: true),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(stopped.backgroundTrackingState, BackgroundTrackingState.stopped);
+      expect(stopped.backgroundTelemetryEnabled, isFalse);
+      expect(backgroundAdapter.startCallCount, 1);
+      expect(backgroundAdapter.running, isFalse);
+    });
+
+    test('permission revocation produces a truthful blocked state', () async {
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
+      );
+      await sdk.setSession(
+        const EixamSession.signed(
+          appId: 'partner-app',
+          externalUserId: 'user-1',
+          userHash: 'hash-1',
+        ),
+      );
+      await sdk.enableBackgroundTelemetry();
+
+      backgroundAdapter.simulatePermissionRevocation();
+      final diagnostics = await sdk.getOperationalDiagnostics();
+
+      expect(
+        diagnostics.backgroundTrackingState,
+        BackgroundTrackingState.permissionBlocked,
+      );
+      expect(diagnostics.androidForegroundServiceRunning, isFalse);
+    });
+
+    test('start failure never reports tracking as active', () async {
+      backgroundAdapter.failStart = true;
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
+      );
+      await sdk.setSession(
+        const EixamSession.signed(
+          appId: 'partner-app',
+          externalUserId: 'user-1',
+          userHash: 'hash-1',
+        ),
+      );
+
+      await sdk.enableBackgroundTelemetry();
+      final diagnostics = await sdk.getOperationalDiagnostics();
+
+      expect(
+          diagnostics.backgroundTrackingState, BackgroundTrackingState.error);
+      expect(diagnostics.androidForegroundServiceRunning, isFalse);
+    });
+
+    test('explicit stop is idempotent', () async {
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
+      );
+      await sdk.setSession(
+        const EixamSession.signed(
+          appId: 'partner-app',
+          externalUserId: 'user-1',
+          userHash: 'hash-1',
+        ),
+      );
+      await sdk.enableBackgroundTelemetry();
+      final stopCallsBeforeExplicitStop = backgroundAdapter.stopCallCount;
+
+      await sdk.disableBackgroundTelemetry();
+      await sdk.disableBackgroundTelemetry();
+
+      expect(
+        backgroundAdapter.stopCallCount,
+        stopCallsBeforeExplicitStop + 1,
+      );
+      expect(
+        (await sdk.getOperationalDiagnostics()).backgroundTrackingState,
+        BackgroundTrackingState.stopped,
+      );
     });
 
     test('foreground interval is not paused after native background start',
@@ -187,14 +336,25 @@ class _FakeBackgroundTelemetryAdapter
   int startCallCount = 0;
   int updateCallCount = 0;
   int stopCallCount = 0;
+  bool enabled = false;
   bool running = false;
+  bool failStart = false;
+  int diagnosticReadsUntilRunning = 0;
+  String permissionStatus = 'granted';
+  String? lastError;
 
   @override
   Future<void> startBackgroundTelemetry(
     BackgroundTelemetryStartRequest request,
   ) async {
     startCallCount++;
-    running = true;
+    if (failStart) {
+      enabled = true;
+      lastError = 'foreground_start_failed';
+      throw StateError(lastError!);
+    }
+    enabled = true;
+    running = diagnosticReadsUntilRunning == 0;
   }
 
   @override
@@ -210,17 +370,35 @@ class _FakeBackgroundTelemetryAdapter
   @override
   Future<void> stopBackgroundTelemetry() async {
     stopCallCount++;
+    enabled = false;
     running = false;
   }
 
   @override
   Future<BackgroundTelemetryDiagnostics>
       getBackgroundTelemetryDiagnostics() async {
+    if (enabled && diagnosticReadsUntilRunning > 0) {
+      diagnosticReadsUntilRunning--;
+      if (diagnosticReadsUntilRunning == 0) {
+        running = true;
+      }
+    }
     return BackgroundTelemetryDiagnostics(
-      enabled: running,
+      enabled: enabled,
       serviceRunning: running,
-      permissionStatus: 'granted',
+      permissionStatus: permissionStatus,
+      lastTelemetryError: lastError,
     );
+  }
+
+  void simulateNotificationStop() {
+    enabled = false;
+    running = false;
+  }
+
+  void simulatePermissionRevocation() {
+    permissionStatus = 'location_missing';
+    running = false;
   }
 
   @override

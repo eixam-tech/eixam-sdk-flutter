@@ -43,6 +43,7 @@ export 'src/entities/public_pre_sos_status.dart';
 export 'src/entities/os_sos_widget_activation.dart';
 export 'src/enums/sos_state.dart';
 export 'src/enums/tracking_state.dart';
+export 'src/enums/background_tracking_state.dart';
 export 'src/enums/device_lifecycle_state.dart';
 export 'src/enums/device_battery_level.dart';
 export 'src/enums/device_battery_source.dart';
