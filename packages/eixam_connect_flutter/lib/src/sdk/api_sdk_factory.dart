@@ -59,9 +59,10 @@ class ApiSdkFactory {
     BleDebugRegistry.instance.reset();
 
     final store = SharedPrefsSdkStore();
+    final secureStore = PlatformSecureKeyValueStore();
     final sessionStore = SdkSessionStore(
       localStore: store,
-      secureStore: PlatformSecureKeyValueStore(),
+      secureStore: secureStore,
     );
     final sessionContext = SdkSessionContext();
     final preferredBleDeviceStore = PreferredBleDeviceStore(localStore: store);
@@ -153,6 +154,7 @@ class ApiSdkFactory {
       bleIncomingEvents: deviceRuntimeProvider.watchIncomingEvents(),
       preferredBleDeviceStore: preferredBleDeviceStore,
       sessionStore: sessionStore,
+      sosLifecycleSecureStore: secureStore,
       sessionContext: sessionContext,
       identityRemoteDataSource: HttpSdkIdentityRemoteDataSource(
         transport: httpTransport,

@@ -743,7 +743,7 @@ void main() {
         expect(await harness.sdk.getSosState(), SosState.cancelled);
         expect(
           await harness.sdk.getCurrentSosTerminalReason(),
-          SosTerminalReason.preSosCancelledByDevice,
+          SosTerminalReason.cancelledByDevice,
         );
       } finally {
         await harness.dispose();
@@ -1141,6 +1141,119 @@ void main() {
         await restored.dispose();
       }
     });
+
+    test('typed already-active recovers matching persisted local ownership',
+        () async {
+      final harness = _SdkSosHarness();
+      try {
+        await harness.setSession();
+        final first = await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        harness.sosRepository.triggerError = const SosException(
+          'E_SOS_ALREADY_ACTIVE',
+          'E_SOS_ALREADY_ACTIVE',
+        );
+        final recovered = await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+
+        expect(first.outcome, SosActivationOutcome.activated);
+        expect(
+          recovered.outcome,
+          SosActivationOutcome.alreadyActiveRecovered,
+        );
+        expect(recovered.lifecycle.lifecycleId, first.lifecycle.lifecycleId);
+        expect(recovered.lifecycle.localActionable, isTrue);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('typed already-active without local proof remains unmatched',
+        () async {
+      final repository = FakeSosRepository()
+        ..currentIncident = _incident(
+          state: SosState.sent,
+          triggerSource: 'external_backend',
+        )
+        ..triggerError = const SosException(
+          'E_SOS_ALREADY_ACTIVE',
+          'E_SOS_ALREADY_ACTIVE',
+        );
+      final harness = _SdkSosHarness(sosRepository: repository);
+      try {
+        await harness.setSession();
+        final result = await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+
+        expect(result.outcome, SosActivationOutcome.alreadyActiveUnmatched);
+        expect(result.lifecycle.stage, SosLifecycleStage.recoveryRequired);
+        expect(result.lifecycle.localActionable, isFalse);
+        expect(result.lifecycle.localIncidentId, isNull);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('typed cancellation publishes cancelling before terminal cleanup',
+        () async {
+      final harness = _SdkSosHarness();
+      final observed = <SosLifecycleStage>[];
+      final subscription = harness.sdk.sosLifecycleStream
+          .map((snapshot) => snapshot.stage)
+          .listen(observed.add);
+      try {
+        await harness.setSession();
+        await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        final result = await harness.sdk.cancelSosAuthoritatively();
+        await pumpEventQueue();
+
+        expect(result.outcome, SosCancellationOutcome.cancelled);
+        expect(result.lifecycle.stage, SosLifecycleStage.cancelled);
+        expect(observed, contains(SosLifecycleStage.cancelling));
+        expect(
+          observed.indexOf(SosLifecycleStage.cancelling),
+          lessThan(observed.indexOf(SosLifecycleStage.cancelled)),
+        );
+      } finally {
+        await subscription.cancel();
+        await harness.dispose();
+      }
+    });
+
+    test('process recreation restores the same actionable generation',
+        () async {
+      final secureStore = InMemorySecureKeyValueStore();
+      final repository = FakeSosRepository();
+      final first = _SdkSosHarness(
+        sosRepository: repository,
+        sosLifecycleSecureStore: secureStore,
+      );
+      await first.setSession();
+      final activated = await first.sdk.triggerSosAuthoritatively(
+        const SosTriggerPayload(triggerSource: 'commercial_app'),
+      );
+      await first.dispose(disposeSosRepository: false);
+
+      final restored = _SdkSosHarness(
+        sosRepository: repository,
+        sosLifecycleSecureStore: secureStore,
+      );
+      try {
+        await restored.setSession();
+        final lifecycle = await restored.sdk.getSosLifecycle();
+
+        expect(lifecycle.lifecycleId, activated.lifecycle.lifecycleId);
+        expect(lifecycle.stage, SosLifecycleStage.recoveryRequired);
+        expect(lifecycle.localActionable, isTrue);
+      } finally {
+        await restored.dispose();
+      }
+    });
   });
 }
 
@@ -1151,6 +1264,7 @@ final class _SdkSosHarness {
     Duration deviceCountdown = const Duration(seconds: 20),
     Duration appActivationObservationTimeout = const Duration(seconds: 3),
     MemorySharedPrefsSdkStore? localStore,
+    SecureKeyValueStore? sosLifecycleSecureStore,
   })  : sosRepository = sosRepository ?? FakeSosRepository(),
         trackingRepository = FakeTrackingRepository(
           currentPosition: TrackingPosition(
@@ -1206,6 +1320,7 @@ final class _SdkSosHarness {
       bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
       preferredBleDeviceStore: preferredBleDeviceStore,
       localStore: this.localStore,
+      sosLifecycleSecureStore: sosLifecycleSecureStore,
     );
   }
 

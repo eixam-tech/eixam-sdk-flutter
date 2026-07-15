@@ -30,6 +30,7 @@ import '../data/repositories/telemetry_repository.dart';
 import '../data/repositories/sos_runtime_rehydration_support.dart';
 import '../mappers/local_state_serializers.dart';
 import 'android_protection_platform_adapter.dart';
+import 'authoritative_sos_lifecycle_controller.dart';
 import 'background_telemetry_platform_adapter.dart';
 import 'background_telemetry_platform_adapter_factory.dart';
 import 'ble_operational_runtime_bridge.dart';
@@ -71,6 +72,7 @@ class EixamConnectSdkImpl
     required this.bleIncomingEvents,
     required this.preferredBleDeviceStore,
     this.sessionStore,
+    SecureKeyValueStore? sosLifecycleSecureStore,
     this.sessionContext,
     this.identityRemoteDataSource,
     this.profileRemoteDataSource,
@@ -134,6 +136,9 @@ class EixamConnectSdkImpl
       deviceStatusProvider: () => _lastPublicDeviceStatus ?? _lastDeviceStatus,
       bridgeDiagnosticsProvider: () => _bridgeDiagnostics,
     );
+    _sosLifecycle = AuthoritativeSosLifecycleController(
+      secureStore: sosLifecycleSecureStore ?? InMemorySecureKeyValueStore(),
+    );
     _operationalTelemetryCoordinator = OperationalTelemetryCoordinator(
       trackingRepository: trackingRepository,
       sosStateStream: _publicSosStateController.stream,
@@ -166,6 +171,7 @@ class EixamConnectSdkImpl
   final Stream<BleIncomingEvent> bleIncomingEvents;
   final PreferredBleDeviceStore preferredBleDeviceStore;
   final SdkSessionStore? sessionStore;
+  late final AuthoritativeSosLifecycleController _sosLifecycle;
   final SdkSessionContext? sessionContext;
   final SdkIdentityRemoteDataSource? identityRemoteDataSource;
   final SdkProfileRemoteDataSource? profileRemoteDataSource;
@@ -415,6 +421,7 @@ class EixamConnectSdkImpl
     _sdkConfig = config;
     _session = await sessionStore?.load();
     _session = await _bootstrapSessionIfNeeded(_session);
+    await _sosLifecycle.restoreFor(_session);
     await _refreshBackgroundTelemetryDiagnostics();
     if (_backgroundTelemetryDiagnostics.serviceRunning && _session != null) {
       _backgroundTelemetryStartFingerprint = _backgroundTelemetryFingerprint(
@@ -810,6 +817,7 @@ class EixamConnectSdkImpl
     _bleOperationalRuntimeBridge.resetForSessionChange();
     _clearBackendDeviceRegistrationSessionCache();
     _session = await _bootstrapSessionIfNeeded(session);
+    await _sosLifecycle.restoreFor(_session);
     if (sessionContext != null) {
       sessionContext!.currentSession = _session;
     }
@@ -1100,8 +1108,9 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Future<void> clearLocalUserData() {
-    return _localStore.clearLocalUserData();
+  Future<void> clearLocalUserData() async {
+    await _sosLifecycle.deleteAccountData();
+    await _localStore.clearLocalUserData();
   }
 
   @override
@@ -2858,12 +2867,17 @@ class EixamConnectSdkImpl
         forceDeviceOwned: deviceOwnedPreSosActivation,
       );
     }
-
     await _rehydrateDeviceSosPublicState(
       trigger: 'device_sos_status:${status.state.name}',
       deviceStatus: status,
       emitResolvedState: true,
     );
+
+    // Preserve the established device/pre-SOS publication ordering. The new
+    // lifecycle consumes that authoritative result after legacy adapters have
+    // observed it, so repository enrichment cannot delay or reclassify the
+    // device terminal transition.
+    await _reconcileAuthoritativeLifecycleFromDeviceStatus(status);
 
     if (_isSosCycleClosed(status.state)) {
       final terminalState = _mapTerminalDeviceStatusToPublicSosState(status) ??
@@ -3522,6 +3536,13 @@ class EixamConnectSdkImpl
       action: 'pre_sos_start',
       refreshRuntimeStatus: true,
     );
+    await _sosLifecycle.beginArming(
+      origin: SosLifecycleOrigin.localApp,
+      triggerSource: activationPayload?.triggerSource ?? 'commercial_app',
+      deviceId: runtimeStatus?.deviceId,
+      nodeId: runtimeStatus?.nodeId,
+      hardwareId: runtimeStatus?.canonicalHardwareId,
+    );
     final canMirrorPreSosOnDevice = runtimeStatus != null;
     final owner = _SosOwner.app;
     _logAppPreSosRouteDecision(
@@ -3849,6 +3870,116 @@ class EixamConnectSdkImpl
       return confirmPreSos(payload);
     }
     return _activatePublicSos(payload);
+  }
+
+  @override
+  Future<SosLifecycleSnapshot> getSosLifecycle() async => _sosLifecycle.current;
+
+  @override
+  Stream<SosLifecycleSnapshot> get sosLifecycleStream =>
+      _seedThenReplayLiveStream<SosLifecycleSnapshot>(
+        seed: getSosLifecycle,
+        live: _sosLifecycle.stream,
+      );
+
+  @override
+  Future<SosActivationResult> triggerSosAuthoritatively(
+    SosTriggerPayload payload,
+  ) async {
+    final identity = await _resolveLocalOperationalSosIdentity();
+    final prior = _sosLifecycle.current;
+    final hadPersistedLocalProof = prior.localActionable &&
+        prior.localIncidentId != null &&
+        (prior.isOpen || prior.stage == SosLifecycleStage.active);
+    await _sosLifecycle.beginActivating(
+      origin: SosLifecycleOrigin.localApp,
+      triggerSource: payload.triggerSource,
+      deviceId: identity.deviceId,
+      nodeId: identity.originatorNodeId,
+      hardwareId: identity.hardwareId,
+    );
+    try {
+      final incident = await triggerSos(payload);
+      final backendIncidentId =
+          _isLocalAppSosIncidentId(incident.id) ? null : incident.id;
+      final lifecycle = await _sosLifecycle.confirmActive(
+        origin: SosLifecycleOrigin.localApp,
+        localIncidentId: incident.id,
+        backendIncidentId: backendIncidentId,
+        triggerSource: payload.triggerSource,
+        deviceId: incident.deviceId ?? identity.deviceId,
+        nodeId: incident.originatorNodeId ?? identity.originatorNodeId,
+        hardwareId: incident.hardwareId ?? identity.hardwareId,
+        incident: incident,
+      );
+      return SosActivationResult(
+        outcome: SosActivationOutcome.activated,
+        lifecycle: lifecycle,
+        incident: incident,
+      );
+    } catch (error) {
+      final alreadyActive =
+          error is SosException && error.code == 'E_SOS_ALREADY_ACTIVE';
+      if (!alreadyActive) {
+        final lifecycle = await _sosLifecycle.activationFailed(
+          error is EixamSdkException ? error.code : 'E_SOS_ACTIVATION_FAILED',
+        );
+        return SosActivationResult(
+          outcome: SosActivationOutcome.failed,
+          lifecycle: lifecycle,
+        );
+      }
+
+      if (hadPersistedLocalProof) {
+        final lifecycle = await _sosLifecycle.confirmActive(
+          origin: prior.origin,
+          localIncidentId: prior.localIncidentId!,
+          backendIncidentId: prior.backendIncidentId,
+          triggerSource: prior.triggerSource ?? payload.triggerSource,
+          deviceId: prior.deviceId,
+          nodeId: prior.nodeId,
+          hardwareId: prior.hardwareId,
+          incident: prior.incident,
+          recoveryStatus: SosRecoveryStatus.restored,
+        );
+        return SosActivationResult(
+          outcome: SosActivationOutcome.alreadyActiveRecovered,
+          lifecycle: lifecycle,
+          incident: lifecycle.incident,
+        );
+      }
+
+      final deviceStatus = await deviceSosController.getStatus();
+      final deviceProvesLocalActive =
+          deviceStatus.state == DeviceSosState.active ||
+              deviceStatus.state == DeviceSosState.acknowledged;
+      if (deviceProvesLocalActive) {
+        final localIncidentId =
+            'device-runtime-sos:${deviceStatus.nodeId ?? identity.originatorNodeId ?? "local"}:${_sosLifecycle.current.generation}';
+        final lifecycle = await _sosLifecycle.confirmActive(
+          origin: SosLifecycleOrigin.connectedLocalDevice,
+          localIncidentId: localIncidentId,
+          triggerSource: payload.triggerSource,
+          deviceId: identity.deviceId,
+          nodeId: deviceStatus.nodeId ?? identity.originatorNodeId,
+          hardwareId: identity.hardwareId,
+          recoveryStatus: SosRecoveryStatus.restored,
+        );
+        return SosActivationResult(
+          outcome: SosActivationOutcome.alreadyActiveRecovered,
+          lifecycle: lifecycle,
+        );
+      }
+
+      final lifecycle = await _sosLifecycle.requireRecovery(
+        'E_SOS_ALREADY_ACTIVE_UNMATCHED',
+        preserveLocalOwnership: false,
+      );
+      return SosActivationResult(
+        outcome: SosActivationOutcome.alreadyActiveUnmatched,
+        lifecycle: lifecycle,
+      );
+    }
   }
 
   Future<SosIncident> _activatePublicSos(
@@ -4651,6 +4782,120 @@ class EixamConnectSdkImpl
     } finally {
       _publicSosClosureInFlight = previousClosureInFlight;
       _publicSosActionInFlight = false;
+    }
+  }
+
+  @override
+  Future<SosCancellationResult> cancelSosAuthoritatively() async {
+    final current = _sosLifecycle.current;
+    if (current.stage == SosLifecycleStage.cancelled ||
+        current.stage == SosLifecycleStage.resolved) {
+      return SosCancellationResult(
+        outcome: SosCancellationOutcome.alreadyTerminal,
+        lifecycle: current,
+        incident: current.incident,
+      );
+    }
+    await _sosLifecycle.beginCancellation();
+    try {
+      final incident = await cancelSos();
+      final channel = incident.deliveryChannel;
+      final backendConfirmed = channel == SosDeliveryChannel.backendOnly ||
+          channel == SosDeliveryChannel.backendAndDevice;
+      final deviceConfirmed = channel == SosDeliveryChannel.deviceOnly ||
+          channel == SosDeliveryChannel.backendAndDevice;
+      final accepted = await _sosLifecycle.cancellationAccepted(
+        backendConfirmed: backendConfirmed,
+        deviceConfirmed: deviceConfirmed,
+      );
+      if (!backendConfirmed) {
+        return SosCancellationResult(
+          outcome: SosCancellationOutcome.pendingConfirmation,
+          lifecycle: accepted,
+          incident: incident,
+        );
+      }
+      final terminal = await _sosLifecycle.confirmTerminal(
+        stage: SosLifecycleStage.cancelled,
+        incident: incident,
+      );
+      return SosCancellationResult(
+        outcome: SosCancellationOutcome.cancelled,
+        lifecycle: terminal,
+        incident: incident,
+      );
+    } catch (error) {
+      final lifecycle = await _sosLifecycle.cancellationFailed(
+        error is EixamSdkException ? error.code : 'E_SOS_CANCELLATION_FAILED',
+      );
+      return SosCancellationResult(
+        outcome: SosCancellationOutcome.failed,
+        lifecycle: lifecycle,
+      );
+    }
+  }
+
+  Future<void> _reconcileAuthoritativeLifecycleFromDeviceStatus(
+    DeviceSosStatus status,
+  ) async {
+    final lifecycle = _sosLifecycle.current;
+    final terminalDeviceState = _isDeviceSosCycleClosed(status.state);
+    final eventAt = terminalDeviceState
+        ? status.updatedAt
+        : status.lastPacketAt ?? status.updatedAt;
+    final activationAt = lifecycle.activationTimestamp;
+    if (activationAt != null && eventAt.isBefore(activationAt)) {
+      return;
+    }
+    if (lifecycle.nodeId != null &&
+        status.nodeId != null &&
+        lifecycle.nodeId != status.nodeId) {
+      return;
+    }
+    final device = _lastDeviceStatus;
+    if (status.state == DeviceSosState.active ||
+        status.state == DeviceSosState.acknowledged) {
+      final incident = await sosRepository.getCurrentIncident();
+      final localIncidentId = incident?.id ??
+          lifecycle.localIncidentId ??
+          'device-runtime-sos:${status.nodeId ?? device?.nodeId ?? "local"}:${lifecycle.generation == 0 ? _deviceRuntimeLocalCycleSequence : lifecycle.generation}';
+      await _sosLifecycle.confirmActive(
+        origin: status.triggerOrigin == DeviceSosTransitionSource.app
+            ? SosLifecycleOrigin.localApp
+            : SosLifecycleOrigin.connectedLocalDevice,
+        localIncidentId: localIncidentId,
+        backendIncidentId:
+            incident == null || _isLocalAppSosIncidentId(incident.id)
+                ? lifecycle.backendIncidentId
+                : incident.id,
+        triggerSource: incident?.triggerSource ?? lifecycle.triggerSource,
+        deviceId: incident?.deviceId ?? device?.deviceId,
+        nodeId: status.nodeId ?? incident?.originatorNodeId ?? device?.nodeId,
+        hardwareId: incident?.hardwareId ?? device?.canonicalHardwareId,
+        incident: incident,
+        recoveryStatus: lifecycle.stage == SosLifecycleStage.recoveryRequired
+            ? SosRecoveryStatus.restored
+            : lifecycle.recoveryStatus,
+      );
+      return;
+    }
+    if (!_isDeviceSosCycleClosed(status.state) || !lifecycle.isOpen) {
+      return;
+    }
+    final repositoryState = await sosRepository.getSosState();
+    if (repositoryState == SosState.cancelled) {
+      await _sosLifecycle.confirmTerminal(
+        stage: SosLifecycleStage.cancelled,
+      );
+    } else if (repositoryState == SosState.resolved) {
+      await _sosLifecycle.confirmTerminal(
+        stage: SosLifecycleStage.resolved,
+      );
+    } else if (lifecycle.stage == SosLifecycleStage.cancelling) {
+      await _sosLifecycle.cancellationAccepted(
+        backendConfirmed: false,
+        deviceConfirmed: true,
+      );
     }
   }
 
@@ -15811,6 +16056,7 @@ class EixamConnectSdkImpl
     await _protectionModeController.dispose();
     await firmwareUpdateCoordinator?.dispose();
     await _operationalTelemetryCoordinator.stop();
+    await _sosLifecycle.dispose();
     await deviceSosController.dispose();
     await realtimeClient.disconnect();
     await disposeCallback?.call();
