@@ -9,6 +9,9 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/builders/device_status_builder.dart';
 import '../support/device/mock_ble_client.dart';
 
+const double _decoded12ByteRemoteRelayLatitude = -38.8117790222168;
+const double _decoded12ByteRemoteRelayLongitude = 72.09365844726562;
+
 void main() {
   group('BleDeviceRuntimeProvider payload classification', () {
     late MockBleClient bleClient;
@@ -284,9 +287,9 @@ void main() {
       expect(event.remoteRelaySosSnapshot!.relayNodeId, 0x1234);
       expect(event.remoteRelaySosSnapshot!.location, isNotNull);
       expect(event.remoteRelaySosSnapshot!.location!.latitude,
-          closeTo(42.7711486816406, 0.000001));
+          closeTo(_decoded12ByteRemoteRelayLatitude, 0.000001));
       expect(event.remoteRelaySosSnapshot!.location!.longitude,
-          closeTo(-132.044506072998, 0.000001));
+          closeTo(_decoded12ByteRemoteRelayLongitude, 0.000001));
       expect(event.remoteRelaySosSnapshot!.location!.altitude, 800);
       expect(
         (await runtimeProvider.deviceSosController.getStatus()).state,
@@ -326,9 +329,10 @@ void main() {
       expect(snapshot!.originatorNodeId, 0x12345678);
       expect(snapshot.relayNodeId, 0x1234);
       expect(snapshot.location, isNotNull);
-      expect(snapshot.location!.latitude, closeTo(42.7711486816406, 0.000001));
-      expect(
-          snapshot.location!.longitude, closeTo(-132.044506072998, 0.000001));
+      expect(snapshot.location!.latitude,
+          closeTo(_decoded12ByteRemoteRelayLatitude, 0.000001));
+      expect(snapshot.location!.longitude,
+          closeTo(_decoded12ByteRemoteRelayLongitude, 0.000001));
       expect(snapshot.location!.altitude, 800);
     });
 
@@ -385,6 +389,11 @@ void main() {
         event.remoteRelaySosSnapshot!.payloadHex,
         '78 56 34 12 48 cd 1b 34 44 28 00 40',
       );
+      expect(event.remoteRelaySosSnapshot!.location!.latitude,
+          closeTo(_decoded12ByteRemoteRelayLatitude, 0.000001));
+      expect(event.remoteRelaySosSnapshot!.location!.longitude,
+          closeTo(_decoded12ByteRemoteRelayLongitude, 0.000001));
+      expect(event.remoteRelaySosSnapshot!.location!.altitude, 800);
       expect(
         (await runtimeProvider.deviceSosController.getStatus()).state,
         DeviceSosState.inactive,
