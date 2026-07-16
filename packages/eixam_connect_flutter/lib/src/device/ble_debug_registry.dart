@@ -32,8 +32,6 @@ class BleDebugRegistry {
   BleDebugState get currentState => _state;
 
   static const List<String> _consoleDiagnosticPrefixes = <String>[
-    'EIXAM_SDK_BUILD_MARKER',
-    'EIXAM_RECONNECT_TRACE',
     'EXTERNAL_SOS',
     'BLE_SOS_PACKET_RAW',
     'BLE_SOS_CLASSIFY_DECISION',
@@ -50,7 +48,6 @@ class BleDebugRegistry {
     '[APP_SOS_COUNTDOWN_ZERO]',
     '[NATIVE_PRE_SOS_BACKEND]',
     '[BACKGROUND_SOS]',
-    '[EIXAM_LOCATION_AUTH]',
     'Device SOS backend sync created incident',
     'SOS_BACKEND_PAYLOAD_FINAL',
   ];

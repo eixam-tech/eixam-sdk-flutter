@@ -193,8 +193,6 @@ class EixamConnectSdkImpl
     });
   }
 
-  static bool _externalLoraBuildMarkerLogged = false;
-
   final SosRepository sosRepository;
   final TrackingRepository trackingRepository;
   final TelemetryRepository telemetryRepository;
@@ -450,19 +448,6 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> initialize(EixamSdkConfig config) async {
-    if (!_externalLoraBuildMarkerLogged) {
-      _externalLoraBuildMarkerLogged = true;
-      debugPrint(
-        'EIXAM_SDK_BUILD_MARKER external_lora_history_only_fix_loaded',
-      );
-      debugPrint('EIXAM_SDK_BUILD_MARKER external_lora_tel_clear_v1_loaded');
-      BleDebugRegistry.instance.recordEvent(
-        'EIXAM_SDK_BUILD_MARKER external_lora_history_only_fix_loaded',
-      );
-      BleDebugRegistry.instance.recordEvent(
-        'EIXAM_SDK_BUILD_MARKER external_lora_tel_clear_v1_loaded',
-      );
-    }
     BleDebugRegistry.instance.recordEvent(
       '[SDK_RUNTIME_MARKER] package=eixam_connect_flutter '
       'marker=sos_debug_build_v3 path=eixam_connect_sdk_impl.dart',
@@ -1928,19 +1913,11 @@ class EixamConnectSdkImpl
     required String deviceId,
   }) async {
     final protection = await _protectionModeController.getStatus();
-    BleDebugRegistry.instance.recordEvent(
-      'OTA_COORDINATOR pre_transfer_prepare_requested '
-      'deviceId=$deviceId protection=${protection.modeState.name}/${protection.runtimeState.name}/${protection.bleOwner.name} '
-      'pendingSos=${protection.pendingSosCount} pendingTelemetry=${protection.pendingTelemetryCount}',
-    );
     if (_isFirmwareOtaProtectionOwnershipBlock(protection)) {
       BleDebugRegistry.instance.recordEvent(
         'OTA_COORDINATOR protection_exit_requested deviceId=$deviceId',
       );
       await _protectionModeController.exit();
-      BleDebugRegistry.instance.recordEvent(
-        'OTA_COORDINATOR protection_exit_result deviceId=$deviceId',
-      );
     }
     _bleAutoReconnectCoordinator.setAppForeground(true);
     var status = await _refreshFirmwareDfuPreparationStatus(
@@ -1954,37 +1931,18 @@ class EixamConnectSdkImpl
         !_isFirmwareDfuPreTransferStatusReady(status) && attempt <= maxAttempts;
       attempt++
     ) {
-      BleDebugRegistry.instance.recordEvent(
-        'OTA_COORDINATOR status_refresh_wait '
-        'deviceId=$deviceId attempt=$attempt '
-        'connected=${status.connected} '
-        'battery=${status.approximateBatteryPercentage?.toString() ?? "unknown"} '
-        'firmware=${status.firmwareVersion ?? "unknown"} '
-        'model=${status.model ?? "unknown"}',
-      );
       await Future<void>.delayed(retryDelay);
       status = await _refreshFirmwareDfuPreparationStatus(
         deviceId: deviceId,
         attempt: attempt,
       );
     }
-    BleDebugRegistry.instance.recordEvent(
-      'OTA_COORDINATOR status_refresh_result '
-      'deviceId=${status.deviceId} connected=${status.connected} '
-      'battery=${status.approximateBatteryPercentage?.toString() ?? "unknown"} '
-      'firmware=${status.firmwareVersion ?? "unknown"} '
-      'model=${status.model ?? "unknown"} '
-      'ready=${_isFirmwareDfuPreTransferStatusReady(status)}',
-    );
     return status;
   }
 
   Future<void> releaseBleForFirmwareDfuTransfer({
     required String deviceId,
   }) async {
-    BleDebugRegistry.instance.recordEvent(
-      'OTA_COORDINATOR dfu_ble_release_requested deviceId=$deviceId',
-    );
     // Suspend ALL auto-reconnect paths for the DFU window. The foreground flag
     // alone is not enough: an activity bounce (bonding dialog, notification)
     // restores it mid-transfer and the resulting reconnect races the native
@@ -2001,19 +1959,11 @@ class EixamConnectSdkImpl
         reason: 'firmware_ota_dfu_transfer',
       );
     }
-    BleDebugRegistry.instance.recordEvent(
-      'OTA_COORDINATOR dfu_ble_release_result '
-      'deviceId=${_lastDeviceStatus?.deviceId ?? deviceId} '
-      'connected=${_lastDeviceStatus?.connected.toString() ?? "unknown"}',
-    );
   }
 
   Future<void> restoreBleAfterFirmwareDfuTransfer({
     required String deviceId,
   }) async {
-    BleDebugRegistry.instance.recordEvent(
-      'OTA_COORDINATOR restore_ble_after_dfu_start deviceId=$deviceId',
-    );
     // Lift the auto-reconnect suppression FIRST and in a finally: if the BLE
     // ownership reclaim below throws, the suppression must still be cleared —
     // otherwise _dfuTransferSuppressed stays set and every future reconnect is
@@ -2049,30 +1999,6 @@ class EixamConnectSdkImpl
           )
         : await repository.refreshDeviceStatus();
     _lastDeviceStatus = status;
-    if (kDebugMode) {
-      debugPrint(
-        'OTA_COORDINATOR post_dfu_forced_firmware_read_result '
-        'deviceId=${status.deviceId} requestedDeviceId=$deviceId '
-        'attempt=$attempt connected=${status.connected} '
-        'ready=${status.isReadyForSafety} '
-        'firmware=${status.firmwareVersion ?? "unknown"} '
-        'target=$targetVersion '
-        'eixamService=${BleDebugRegistry.instance.currentState.eixamServiceFound} '
-        'cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound} '
-        'inetAvailable=${BleDebugRegistry.instance.currentState.inetFound}',
-      );
-    }
-    BleDebugRegistry.instance.recordEvent(
-      'OTA_COORDINATOR post_dfu_forced_firmware_read_result '
-      'deviceId=${status.deviceId} requestedDeviceId=$deviceId '
-      'attempt=$attempt connected=${status.connected} '
-      'ready=${status.isReadyForSafety} '
-      'firmware=${status.firmwareVersion ?? "unknown"} '
-      'target=$targetVersion '
-      'eixamService=${BleDebugRegistry.instance.currentState.eixamServiceFound} '
-      'cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound} '
-      'inetAvailable=${BleDebugRegistry.instance.currentState.inetFound}',
-    );
     return status;
   }
 
@@ -2092,14 +2018,6 @@ class EixamConnectSdkImpl
     final status = await _cacheDeviceStatus(
       deviceRepository.refreshDeviceStatus(),
       reason: 'firmware_ota_prepare_dfu',
-    );
-    BleDebugRegistry.instance.recordEvent(
-      'OTA_COORDINATOR status_refresh_result '
-      'deviceId=${status.deviceId} requestedDeviceId=$deviceId '
-      'attempt=$attempt connected=${status.connected} '
-      'battery=${status.approximateBatteryPercentage?.toString() ?? "unknown"} '
-      'firmware=${status.firmwareVersion ?? "unknown"} '
-      'model=${status.model ?? "unknown"}',
     );
     return status;
   }
@@ -2644,28 +2562,15 @@ class EixamConnectSdkImpl
         _queuedDeviceCountryConfigCheck = null;
         final status = _lastPublicDeviceStatus ?? _lastDeviceStatus;
         if (status == null || !status.connected) {
-          BleDebugRegistry.instance.recordEvent(
-            'DEVICE_REGION_CHECK skipped trigger=${request.trigger} '
-            'reason=device_not_connected',
-          );
           continue;
         }
         if (!_isDeviceCountryConfigCommandPathReady()) {
-          BleDebugRegistry.instance.recordEvent(
-            'DEVICE_REGION_CHECK deferred trigger=${request.trigger} '
-            'reason=command_path_not_ready',
-          );
           continue;
         }
 
         if (request.connectionEpoch != null &&
             request.connectionEpoch ==
                 _lastCheckedDeviceCountryConfigConnectionEpoch) {
-          BleDebugRegistry.instance.recordEvent(
-            'DEVICE_REGION_CHECK skipped trigger=${request.trigger} '
-            'reason=connection_epoch_already_checked '
-            'connectionEpoch=${request.connectionEpoch}',
-          );
           continue;
         }
 
@@ -2684,11 +2589,6 @@ class EixamConnectSdkImpl
             elapsed != null &&
             !elapsed.isNegative &&
             elapsed < minimumInterval) {
-          BleDebugRegistry.instance.recordEvent(
-            'DEVICE_REGION_CHECK skipped trigger=${request.trigger} '
-            'reason=throttled elapsedMs=${elapsed.inMilliseconds} '
-            'minimumMs=${minimumInterval.inMilliseconds}',
-          );
           continue;
         }
 
@@ -2698,11 +2598,6 @@ class EixamConnectSdkImpl
         }
         _lastDeviceCountryConfigCheckAt = now;
         _lastDeviceCountryConfigCheckDeviceKey = deviceKey;
-        BleDebugRegistry.instance.recordEvent(
-          'DEVICE_REGION_CHECK started trigger=${request.trigger} '
-          'connectionEpoch=${request.connectionEpoch?.toString() ?? "-"} '
-          'deviceKey=$deviceKey',
-        );
         try {
           await controller.check(reason: request.trigger);
     } catch (_) {

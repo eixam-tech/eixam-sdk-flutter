@@ -83,23 +83,14 @@ class PlatformFirmwareDfuTransport implements FirmwareDfuTransport {
         .map(_mapNativeEvent)
         .where((event) => event.sessionId == request.sessionId)
         .listen((event) {
-      lastEvent = event;
+          lastEvent = event;
           if (!event.isTerminal) {
             armInactivityTimeout();
           }
-      debugPrint(
-        'OTA_DFU_DART native event received '
-        'sessionId=${event.sessionId} state=${event.state} '
-        'address=${event.deviceAddress ?? "unknown"} '
-        'progress=${event.progressPercentage?.toString() ?? "unknown"} '
-        'error=${event.errorCode ?? "none"} '
-        'emittedAtMillis=${event.emittedAtMillis?.toString() ?? "unknown"} '
-        'completedAtMillis=${event.completedAtMillis?.toString() ?? "none"}',
-      );
-      if (event.isTerminal && !terminalCompleter.isCompleted) {
-        terminalCompleter.complete(event);
-      }
-    });
+          if (event.isTerminal && !terminalCompleter.isCompleted) {
+            terminalCompleter.complete(event);
+          }
+        });
     try {
       final raw = await _methodChannel
           .invokeMapMethod<String, dynamic>('startDfu', <String, dynamic>{
@@ -129,10 +120,6 @@ class PlatformFirmwareDfuTransport implements FirmwareDfuTransport {
       armInactivityTimeout();
       final terminal = await terminalCompleter.future;
       if (terminal.isSuccess) {
-        debugPrint(
-          'OTA_DFU_DART native terminal success '
-          'sessionId=${request.sessionId} state=${terminal.state}',
-        );
         return;
       }
       debugPrint(

@@ -159,7 +159,6 @@ final class FirmwareDfuBridge: NSObject, FlutterPlugin, FlutterStreamHandler {
       let initiator = DFUServiceInitiator(queue: DispatchQueue.main)
       initiator.delegate = self
       initiator.progressDelegate = self
-      initiator.logger = self
       // The Eixam tag exposes a custom (Adafruit-style) buttonless DFU service
       // inside the FE59 Secure DFU service; without this the library does not
       // recognise it and the "enter DFU" step / transfer never proceeds (stuck
@@ -380,13 +379,6 @@ extension FirmwareDfuBridge: DFUProgressDelegate {
       part: part,
       totalParts: totalParts
     )
-  }
-}
-
-extension FirmwareDfuBridge: LoggerDelegate {
-  func logWith(_ level: LogLevel, message: String) {
-    guard let activeSession else { return }
-    emit(sessionId: activeSession.sessionId, state: "transferring", message: message)
   }
 }
 

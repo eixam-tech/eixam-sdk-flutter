@@ -96,13 +96,6 @@ internal object FirmwareDfuBridge {
         val firmwareZipPath = (arguments?.get("firmwareZipPath") as? String)?.trim().orEmpty()
         val targetVersion = (arguments?.get("targetVersion") as? String)?.trim()
         val forceDfu = arguments?.get("forceDfu") as? Boolean ?: false
-        val firmwareZip = File(firmwareZipPath)
-
-        Log.i(
-            logTag,
-            "startDfu payload targetAddress=$deviceId filePath=$firmwareZipPath " +
-                "fileSize=${if (firmwareZip.exists()) firmwareZip.length() else -1}",
-        )
 
         val validationError = validateStart(
             context = context,
@@ -117,7 +110,6 @@ internal object FirmwareDfuBridge {
 
         val listener = object : DfuProgressListenerAdapter() {
             override fun onDeviceConnecting(deviceAddress: String) {
-                Log.i(logTag, "onDeviceConnecting address=$deviceAddress")
                 emit(
                     sessionId,
                     "connecting",
@@ -127,7 +119,6 @@ internal object FirmwareDfuBridge {
             }
 
             override fun onDeviceConnected(deviceAddress: String) {
-                Log.i(logTag, "onDeviceConnected address=$deviceAddress")
                 emit(
                     sessionId,
                     "connected",
@@ -137,7 +128,6 @@ internal object FirmwareDfuBridge {
             }
 
             override fun onDfuProcessStarting(deviceAddress: String) {
-                Log.i(logTag, "onDfuProcessStarting address=$deviceAddress")
                 emit(
                     sessionId,
                     "dfuProcessStarting",
@@ -147,7 +137,6 @@ internal object FirmwareDfuBridge {
             }
 
             override fun onDfuProcessStarted(deviceAddress: String) {
-                Log.i(logTag, "onDfuProcessStarted address=$deviceAddress")
                 emit(
                     sessionId,
                     "starting",
@@ -157,7 +146,6 @@ internal object FirmwareDfuBridge {
             }
 
             override fun onEnablingDfuMode(deviceAddress: String) {
-                Log.i(logTag, "onEnablingDfuMode address=$deviceAddress")
                 emit(
                     sessionId,
                     "enablingDfuMode",
@@ -174,11 +162,6 @@ internal object FirmwareDfuBridge {
                 currentPart: Int,
                 partsTotal: Int,
             ) {
-                Log.i(
-                    logTag,
-                    "onProgressChanged address=$deviceAddress percent=$percent " +
-                        "part=$currentPart/$partsTotal",
-                )
                 emit(
                     sessionId = sessionId,
                     state = "uploading",
@@ -191,7 +174,6 @@ internal object FirmwareDfuBridge {
             }
 
             override fun onFirmwareValidating(deviceAddress: String) {
-                Log.i(logTag, "onFirmwareValidating address=$deviceAddress")
                 emit(
                     sessionId,
                     "firmwareValidating",
@@ -201,7 +183,6 @@ internal object FirmwareDfuBridge {
             }
 
             override fun onDeviceDisconnecting(deviceAddress: String) {
-                Log.i(logTag, "onDeviceDisconnecting address=$deviceAddress")
                 emit(
                     sessionId,
                     "deviceDisconnecting",
@@ -211,7 +192,6 @@ internal object FirmwareDfuBridge {
             }
 
             override fun onDeviceDisconnected(deviceAddress: String) {
-                Log.i(logTag, "onDeviceDisconnected address=$deviceAddress")
                 emit(
                     sessionId,
                     "deviceDisconnected",
@@ -222,10 +202,6 @@ internal object FirmwareDfuBridge {
 
             override fun onDfuCompleted(deviceAddress: String) {
                 val completedAtMillis = System.currentTimeMillis()
-                Log.i(
-                    logTag,
-                    "onDfuCompleted address=$deviceAddress completedAtMillis=$completedAtMillis",
-                )
                 emit(
                     sessionId,
                     "dfuCompleted",
@@ -325,15 +301,10 @@ internal object FirmwareDfuBridge {
                 .setPacketsReceiptNotificationsEnabled(true)
                 .setPacketsReceiptNotificationsValue(8)
                 .setZip(firmwareZipPath)
-            // Build marker: confirms this (rebuilt) plugin is running and shows
-            // the effective PRN pacing in logcat, so we never again chase whether
-            // a native change actually got compiled in.
-            Log.i(logTag, "DFU config prn=8 prnEnabled=true forceDfu=$forceDfu (legacy-bootloader pacing)")
             activeSession = activeSession?.copy(
                 controller = initiator.start(context, EixamDfuService::class.java),
                 targetVersion = targetVersion,
             )
-            Log.i(logTag, "DFU service initiated sessionId=$sessionId targetAddress=$deviceId")
             emit(sessionId, "queued", message = "DFU transfer queued.")
             result.success(mapOf("success" to true, "started" to true))
         } catch (error: Exception) {
@@ -361,10 +332,8 @@ internal object FirmwareDfuBridge {
             val adapter = manager?.adapter ?: return
             val device = adapter.getRemoteDevice(deviceId)
             if (device.bondState == BluetoothDevice.BOND_BONDED) {
-                Log.i(logTag, "ensureBonded already bonded address=$deviceId")
                 return
             }
-            Log.i(logTag, "ensureBonded creating bond address=$deviceId")
             val latch = CountDownLatch(1)
             val receiver = object : BroadcastReceiver() {
                 override fun onReceive(ctx: Context?, intent: Intent?) {
@@ -384,7 +353,6 @@ internal object FirmwareDfuBridge {
             context.registerReceiver(receiver, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED))
             try {
                 val started = device.createBond()
-                Log.i(logTag, "ensureBonded createBond() started=$started address=$deviceId")
                 if (started) {
                     latch.await(15, TimeUnit.SECONDS)
                 }
@@ -394,7 +362,6 @@ internal object FirmwareDfuBridge {
                 } catch (_: Exception) {
                 }
             }
-            Log.i(logTag, "ensureBonded result bondState=${device.bondState} address=$deviceId")
         } catch (error: Exception) {
             Log.w(logTag, "ensureBonded failed address=$deviceId error=${error.message}")
         }

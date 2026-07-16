@@ -227,23 +227,8 @@ class FirmwareUpdateCoordinator {
     if ((!check.eligibility.eligible || release == null) &&
         release != null &&
         _canAttemptDfuPreparation(check)) {
-      _debugLog(
-        'OTA_COORDINATOR pre_transfer_prepare_requested '
-        'deviceId=${check.device.deviceId} '
-        'blockers=${check.eligibility.blockers.map((b) => b.name).join(",")} '
-        'battery=${check.device.batteryPercentage?.toString() ?? "unknown"} '
-        'threshold=${policy.minDeviceBatteryPercentage}',
-      );
       final preparedStatus = await prepareForDfuTransfer!(
         deviceId: check.device.deviceId,
-      );
-      _debugLog(
-        'OTA_COORDINATOR status_refresh_result '
-        'deviceId=${preparedStatus.deviceId} '
-        'connected=${preparedStatus.connected} '
-        'battery=${preparedStatus.approximateBatteryPercentage?.toString() ?? "unknown"} '
-        'firmware=${preparedStatus.firmwareVersion ?? "unknown"} '
-        'model=${preparedStatus.model ?? "unknown"}',
       );
       check = await _resolveUsableCheck(
         deviceId: preparedStatus.deviceId,
@@ -252,16 +237,6 @@ class FirmwareUpdateCoordinator {
         forceRefresh: true,
       );
       release = check.release;
-    }
-    if (check.eligibility.eligible && release != null) {
-      _debugLog(
-        'OTA_COORDINATOR pre_transfer_eligibility_passed '
-        'deviceId=${check.device.deviceId} '
-        'firmware=${check.device.currentVersion ?? "unknown"} '
-        'battery=${check.device.batteryPercentage?.toString() ?? "unknown"} '
-        'model=${check.device.hardwareModel ?? "unknown"} '
-        'release=$releaseId target=${release.version}',
-      );
     }
     final now = DateTime.now();
     final session = FirmwareUpdateSession(
@@ -292,10 +267,6 @@ class FirmwareUpdateCoordinator {
     var nativeDfuEngaged = false;
     try {
       _emit(session, FirmwareUpdateState.downloading);
-      _debugLog(
-        'OTA_COORDINATOR artifact_download_start '
-        'sessionId=${session.sessionId} release=$releaseId',
-      );
       final download = await remoteDataSource.prepareDownload(releaseId);
       if (download.downloadUrl.isEmpty) {
         throw const FirmwareUpdateException(
@@ -324,11 +295,6 @@ class FirmwareUpdateCoordinator {
 
       _emit(session, FirmwareUpdateState.verifying);
       _verifySha256(artifactBytes, expectedHash);
-      _debugLog(
-        'OTA_COORDINATOR artifact_hash_verified '
-        'sessionId=${session.sessionId} release=$releaseId '
-        'bytes=${artifactBytes.length}',
-      );
 
       _emit(session, FirmwareUpdateState.readyToTransfer);
       _emit(session, FirmwareUpdateState.transferring);
@@ -353,19 +319,8 @@ class FirmwareUpdateCoordinator {
             'the bootloader but could not be reconnected).',
         onEngaged: () => nativeDfuEngaged = true,
       );
-        _debugLog(
-          'OTA_COORDINATOR native_dfu_completed '
-          'sessionId=${session.sessionId} deviceId=${session.deviceId} '
-          'target=${release.version}',
-        );
 
       _emit(session, FirmwareUpdateState.reconnecting);
-      _debugLog(
-        'OTA_COORDINATOR post_dfu_reconnect_wait_start '
-        'sessionId=${session.sessionId} deviceId=${session.deviceId} '
-        'target=${release.version} timeoutSeconds='
-        '${_postDfuVerificationTimeout.inSeconds}',
-      );
       final verification = await _waitForInstalledVersion(
         session: session,
         targetVersion: release.version,
@@ -625,11 +580,6 @@ class FirmwareUpdateCoordinator {
     _sessions[session.sessionId] = session;
     try {
       _emit(session, FirmwareUpdateState.downloading);
-      _debugLog(
-        'OTA_COORDINATOR recovery_download_start '
-        'sessionId=${session.sessionId} release=$releaseId '
-        'bootloader=$bootloaderDeviceId',
-      );
       final download = await remoteDataSource.prepareDownload(releaseId);
       if (download.downloadUrl.isEmpty) {
         throw const FirmwareUpdateException(
@@ -674,9 +624,6 @@ class FirmwareUpdateCoordinator {
             'The recovery upload never started (the bootloader could not be '
             'reconnected).',
         );
-      _debugLog(
-        'OTA_COORDINATOR recovery_completed sessionId=${session.sessionId}',
-      );
       return _completeSession(session, state: FirmwareUpdateState.completed);
     } on FirmwareUpdateException catch (error) {
       return _completeSession(
@@ -809,19 +756,6 @@ class FirmwareUpdateCoordinator {
         'Protection runtime is using BLE or has pending work.',
       );
     }
-
-    _debugLog(
-      'OTA_COORDINATOR eligibility_inputs '
-      'deviceId=${status.deviceId} connected=${status.connected} '
-      'firmware=${firmwareVersion ?? "unknown"} '
-      'battery=${battery?.toString() ?? "unknown"} '
-      'threshold=${policy.minDeviceBatteryPercentage} '
-      'model=${model ?? "unknown"} '
-      'protection=${protection == null ? "unavailable" : "${protection.modeState.name}/${protection.runtimeState.name}/${protection.bleOwner.name}"} '
-      'pendingSos=${protection?.pendingSosCount.toString() ?? "unknown"} '
-      'pendingTelemetry=${protection?.pendingTelemetryCount.toString() ?? "unknown"} '
-      'blockers=${blockers.map((b) => b.name).join(",")}',
-    );
 
     final lifecycleState = appLifecycleStateProvider?.call();
     if (policy.requireForeground &&
@@ -965,13 +899,6 @@ class FirmwareUpdateCoordinator {
       latest = status;
       final installed = status.firmwareVersion?.trim();
       final matches = _firmwareVersionMatches(installed, targetVersion);
-      _debugLog(
-        'OTA_COORDINATOR post_dfu_verification_attempt '
-        'sessionId=${session.sessionId} attempt=$attempt '
-        'source=${postDfuStatusRefresh == null ? "repository_refresh" : "forced_firmware_read"} '
-        'connected=${status.connected} ready=${status.isReadyForSafety} '
-        'firmware=${installed ?? "unknown"} target=$targetVersion matches=$matches',
-      );
       if (status.connected && matches) {
         return _InstalledVersionVerification(
           matchesTarget: true,
