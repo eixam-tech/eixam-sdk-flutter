@@ -71,6 +71,7 @@ class BleAutoReconnectCoordinator {
   bool _manualDisconnectRequested = false;
   bool _isConnectionAttemptInProgress = false;
   bool _isAppForeground = true;
+  bool _dfuTransferSuppressed = false;
   bool _disposed = false;
   int _retryAttempt = 0;
   int _preferredReconnectCampaignToken = 0;
@@ -80,8 +81,8 @@ class BleAutoReconnectCoordinator {
     required Stream<DeviceStatus> deviceStatusStream,
   }) async {
     _lastStatus = initialStatus;
-    _manualDisconnectRequested =
-        await _preferredDeviceStore.readManualDisconnectRequested();
+    _manualDisconnectRequested = await _preferredDeviceStore
+        .readManualDisconnectRequested();
     await _deviceStatusSub?.cancel();
     _deviceStatusSub = deviceStatusStream.listen(_handleDeviceStatus);
   }
@@ -139,9 +140,8 @@ class BleAutoReconnectCoordinator {
     final stream = readinessStream;
     if (stream != null) {
       _readinessReconnectSub = stream.listen(
-        (readiness) => unawaited(
-          _handleBleReadinessChanged(readiness, trigger: trigger),
-        ),
+        (readiness) =>
+            unawaited(_handleBleReadinessChanged(readiness, trigger: trigger)),
         onError: (Object error) {
           _traceReconnect(
             'sdk_ble_ready_reconnect_skipped reason=readiness_stream_error '
@@ -184,7 +184,53 @@ class BleAutoReconnectCoordinator {
     );
   }
 
+  /// Hard-suppresses every auto-reconnect path for the duration of a firmware
+  /// DFU transfer. The foreground flag is NOT a safe gate for this: the Android
+  /// bonding dialog (or any notification interaction) bounces the activity
+  /// through inactive->resumed mid-transfer, which restores the foreground flag
+  /// and would immediately fire a reconnect that races the native DFU library
+  /// for the device — leaving it stranded in the bootloader at 0%.
+  ///
+  /// Awaits any connection attempt that is ALREADY awaiting the native stack:
+  /// cancelling the campaign only stops the next iteration, so a connect
+  /// resolving after this returns would otherwise hold an untracked GATT link
+  /// straight into the DFU window. Draining it here lets the ownership handoff
+  /// that follows tear down whatever it established.
+  Future<void> suspendForDfuTransfer({required String reason}) async {
+    _dfuTransferSuppressed = true;
+    _cancelPreferredReconnectCampaign(reason: 'dfu_transfer');
+    _retryTimer?.cancel();
+    _retryTimer = null;
+    BleDebugRegistry.instance.recordEvent(
+      'BLE_AUTO_RECONNECT_SUSPENDED_FOR_DFU reason=$reason',
+    );
+    final campaign = _preferredReconnectCampaign;
+    if (campaign != null) {
+      try {
+        await campaign;
+      } catch (_) {
+        // A failed/cancelled in-flight attempt is fine; we only need it to have
+        // settled so no connect resolves after the ownership handoff.
+      }
+    }
+  }
+
+  /// Lifts the DFU suppression once the transfer (or its failure handling) is
+  /// over, so post-DFU verification can reconnect to the device again.
+  void resumeAfterDfuTransfer({required String reason}) {
+    _dfuTransferSuppressed = false;
+    BleDebugRegistry.instance.recordEvent(
+      'BLE_AUTO_RECONNECT_RESUMED_AFTER_DFU reason=$reason',
+    );
+  }
+
   void onUnexpectedDisconnect() {
+    if (_dfuTransferSuppressed) {
+      BleDebugRegistry.instance.recordEvent(
+        'Reconnect skipped because a firmware DFU transfer is in progress',
+      );
+      return;
+    }
     if (_manualDisconnectRequested) {
       BleDebugRegistry.instance.recordEvent(
         'Reconnect skipped because manual disconnect is active',
@@ -275,9 +321,7 @@ class BleAutoReconnectCoordinator {
     await _deviceStatusSub?.cancel();
   }
 
-  Future<void> _pollBleReadinessForReconnect({
-    required String trigger,
-  }) async {
+  Future<void> _pollBleReadinessForReconnect({required String trigger}) async {
     if (_disposed || _readinessReconnectPollInFlight) {
       return;
     }
@@ -318,9 +362,7 @@ class BleAutoReconnectCoordinator {
       return;
     }
     if (previousReady) {
-      _traceReconnect(
-        'sdk_ble_ready_reconnect_skipped reason=already_ready',
-      );
+      _traceReconnect('sdk_ble_ready_reconnect_skipped reason=already_ready');
       return;
     }
     await _triggerBleReadyReconnect(trigger: trigger);
@@ -328,9 +370,7 @@ class BleAutoReconnectCoordinator {
 
   Future<void> _triggerBleReadyReconnect({required String trigger}) async {
     if (_preferredReconnectCampaign != null || _isConnectionAttemptInProgress) {
-      _traceReconnect(
-        'sdk_ble_ready_reconnect_skipped reason=inflight',
-      );
+      _traceReconnect('sdk_ble_ready_reconnect_skipped reason=inflight');
       return;
     }
     if (_manualDisconnectRequested) {
@@ -360,7 +400,8 @@ class BleAutoReconnectCoordinator {
       );
       return;
     }
-    final preferredDevice = await _preferredDeviceStore.getPreferredDevice() ??
+    final preferredDevice =
+        await _preferredDeviceStore.getPreferredDevice() ??
         _preferredDeviceFromStatus(currentStatus);
     if (preferredDevice == null) {
       _traceReconnect(
@@ -368,9 +409,7 @@ class BleAutoReconnectCoordinator {
       );
       return;
     }
-    _traceReconnect(
-      'sdk_ble_ready_reconnect_trigger source=$trigger',
-    );
+    _traceReconnect('sdk_ble_ready_reconnect_trigger source=$trigger');
     unawaited(_tryAutoConnect(trigger: trigger));
   }
 
@@ -379,6 +418,19 @@ class BleAutoReconnectCoordinator {
     String? attemptId,
     String? platformRemoteId,
   }) async {
+    if (_dfuTransferSuppressed) {
+      _traceReconnect(
+        'sdk_campaign_cancelled reason=dfu_transfer_in_progress '
+        'source=$trigger',
+      );
+      _recordNoProviderCall(
+        attemptId: attemptId,
+        reason: 'dfu_transfer_in_progress',
+      );
+      return const PreferredDeviceReconnectResult.failed(
+        reason: 'dfu_transfer_in_progress',
+      );
+    }
     final activeCampaign = _preferredReconnectCampaign;
     _traceReconnect(
       'sdk_bootstrap_called source=$trigger '
@@ -400,9 +452,7 @@ class BleAutoReconnectCoordinator {
     final cancellation = Completer<void>();
     final token = ++_preferredReconnectCampaignToken;
     _preferredReconnectCancellation = cancellation;
-    _traceReconnect(
-      'sdk_inflight_changed value=true reason=campaign_created',
-    );
+    _traceReconnect('sdk_inflight_changed value=true reason=campaign_created');
     final campaign = _runPreferredReconnectCampaign(
       trigger: trigger,
       attemptId: attemptId,
@@ -440,16 +490,14 @@ class BleAutoReconnectCoordinator {
       'trigger=$trigger maxAttempts=$_preferredReconnectMaxAttempts',
     );
     PreferredDeviceReconnectResult lastResult =
-        const PreferredDeviceReconnectResult.failed(
-      reason: 'not_started',
-    );
-    for (var attempt = 1;
+        const PreferredDeviceReconnectResult.failed(reason: 'not_started');
+    for (
+      var attempt = 1;
         attempt <= _preferredReconnectMaxAttempts;
-        attempt++) {
+      attempt++
+    ) {
       if (!_isPreferredReconnectCampaignCurrent(token)) {
-        _traceReconnect(
-          'sdk_campaign_cancelled reason=disposed',
-        );
+        _traceReconnect('sdk_campaign_cancelled reason=disposed');
         return const PreferredDeviceReconnectResult.failed(
           reason: 'campaign_cancelled',
         );
@@ -524,9 +572,7 @@ class BleAutoReconnectCoordinator {
       );
       await _waitForPreferredReconnectDelay(delay);
       if (!_isPreferredReconnectCampaignCurrent(token)) {
-        _traceReconnect(
-          'sdk_campaign_cancelled reason=disposed',
-        );
+        _traceReconnect('sdk_campaign_cancelled reason=disposed');
         return const PreferredDeviceReconnectResult.failed(
           reason: 'campaign_cancelled',
         );
@@ -550,6 +596,19 @@ class BleAutoReconnectCoordinator {
     String? attemptId,
     String? platformRemoteId,
   }) async {
+    if (_dfuTransferSuppressed) {
+      _traceReconnect(
+        'sdk_campaign_cancelled reason=dfu_transfer_in_progress '
+        'source=$trigger',
+      );
+      _recordNoProviderCall(
+        attemptId: attemptId,
+        reason: 'dfu_transfer_in_progress',
+      );
+      return const PreferredDeviceReconnectResult.failed(
+        reason: 'dfu_transfer_in_progress',
+      );
+    }
     if (_manualDisconnectRequested) {
       _traceReconnect(
         'sdk_preflight hasPermission=unknown bluetoothReady=unknown '
@@ -557,9 +616,7 @@ class BleAutoReconnectCoordinator {
         'alreadyConnected=${_lastStatus?.connected == true} '
         'unsupportedRepository=false canStartCampaign=false',
       );
-      _traceReconnect(
-        'sdk_campaign_cancelled reason=manual_disconnect',
-      );
+      _traceReconnect('sdk_campaign_cancelled reason=manual_disconnect');
       BleDebugRegistry.instance.recordEvent(
         '$trigger auto-connect skipped because manual disconnect is active',
       );
@@ -578,9 +635,7 @@ class BleAutoReconnectCoordinator {
         'alreadyConnected=${_lastStatus?.connected == true} '
         'unsupportedRepository=false canStartCampaign=false',
       );
-      _traceReconnect(
-        'sdk_campaign_cancelled reason=unknown',
-      );
+      _traceReconnect('sdk_campaign_cancelled reason=unknown');
       BleDebugRegistry.instance.recordEvent(
         '$trigger auto-connect skipped because app is not in foreground',
       );
@@ -635,9 +690,7 @@ class BleAutoReconnectCoordinator {
         );
       }
       if (readiness.bluetoothEnabled) {
-        _traceReconnect(
-          'sdk_campaign_cancelled reason=permission_missing',
-        );
+        _traceReconnect('sdk_campaign_cancelled reason=permission_missing');
         BleDebugRegistry.instance.recordEvent(
           'BLE_READINESS_BLOCKED permissionMissing',
         );
@@ -649,9 +702,7 @@ class BleAutoReconnectCoordinator {
           reason: 'bluetooth_permission_missing',
         );
       }
-      _traceReconnect(
-        'sdk_campaign_cancelled reason=bluetooth_not_ready',
-      );
+      _traceReconnect('sdk_campaign_cancelled reason=bluetooth_not_ready');
       BleDebugRegistry.instance.recordEvent(
         'BLE_READINESS_BLOCKED bluetoothOff',
       );
@@ -693,7 +744,8 @@ class BleAutoReconnectCoordinator {
       }
     }
 
-    final preferredDevice = await _preferredDeviceStore.getPreferredDevice() ??
+    final preferredDevice =
+        await _preferredDeviceStore.getPreferredDevice() ??
         _preferredDeviceFromStatus(currentStatus);
     final overrideRemoteId = platformRemoteId?.trim();
     final reconnectDevice = _preferredDeviceWithPlatformRemoteId(
@@ -709,9 +761,7 @@ class BleAutoReconnectCoordinator {
         'alreadyConnected=${currentStatus.connected} '
         'unsupportedRepository=false canStartCampaign=false',
       );
-      _traceReconnect(
-        'sdk_campaign_cancelled reason=no_preferred_device',
-      );
+      _traceReconnect('sdk_campaign_cancelled reason=no_preferred_device');
       if (attemptId != null && _isIosPlatform()) {
         BleDebugRegistry.instance.recordEvent(
           'DEVICE_RECONNECT_ID_MISSING_AT_SDK attemptId=$attemptId',
@@ -775,16 +825,11 @@ class BleAutoReconnectCoordinator {
       'canStartCampaign=${!unsupportedRepository}',
     );
     if (reconnectRepository is! KnownDeviceReconnectRepository) {
-      _traceReconnect(
-        'sdk_campaign_cancelled reason=unsupported_repository',
-      );
+      _traceReconnect('sdk_campaign_cancelled reason=unsupported_repository');
       BleDebugRegistry.instance.recordEvent(
         '$trigger auto-connect skipped because repository cannot restore known devices',
       );
-      _recordNoProviderCall(
-        attemptId: attemptId,
-        reason: 'unsupported_state',
-      );
+      _recordNoProviderCall(attemptId: attemptId, reason: 'unsupported_state');
       return const PreferredDeviceReconnectResult.failed(
         reason: 'unsupported_repository',
       );
@@ -809,9 +854,7 @@ class BleAutoReconnectCoordinator {
           reconnectDevice.deviceId,
           reason: _mobileBondStopReason(error),
         );
-        _traceReconnect(
-          'sdk_campaign_cancelled reason=no_preferred_device',
-        );
+        _traceReconnect('sdk_campaign_cancelled reason=no_preferred_device');
         _recordNoProviderCall(
           attemptId: attemptId,
           reason: 'unsupported_state',
@@ -821,9 +864,7 @@ class BleAutoReconnectCoordinator {
         );
       }
       if (_isInvalidBleRemoteId(error)) {
-        _traceReconnect(
-          'sdk_campaign_cancelled reason=no_preferred_device',
-        );
+        _traceReconnect('sdk_campaign_cancelled reason=no_preferred_device');
         BleDebugRegistry.instance.recordEvent(
           'BLE_RECONNECT_DEFERRED reason=screen_not_visible_or_not_user_initiated',
         );
@@ -883,7 +924,8 @@ class BleAutoReconnectCoordinator {
       return result.reason != 'manual_disconnect_requested' &&
           result.reason != 'app_not_foreground' &&
           result.reason != 'unsupported_repository' &&
-          result.reason != 'campaign_cancelled';
+          result.reason != 'campaign_cancelled' &&
+          result.reason != 'dfu_transfer_in_progress';
     }
     return true;
   }
@@ -912,13 +954,16 @@ class BleAutoReconnectCoordinator {
     if (_preferredReconnectRetryDelays.isEmpty) {
       return Duration.zero;
     }
-    final index = (completedAttempt - 1)
-        .clamp(0, _preferredReconnectRetryDelays.length - 1);
+    final index = (completedAttempt - 1).clamp(
+      0,
+      _preferredReconnectRetryDelays.length - 1,
+    );
     return _preferredReconnectRetryDelays[index];
   }
 
   Future<void> _waitForPreferredReconnectDelay(Duration delay) {
-    final delayFuture = _preferredReconnectDelay?.call(delay) ??
+    final delayFuture =
+        _preferredReconnectDelay?.call(delay) ??
         (delay == Duration.zero
             ? Future<void>.value()
             : Future<void>.delayed(delay));
@@ -944,9 +989,7 @@ class BleAutoReconnectCoordinator {
     _traceReconnect(
       'sdk_campaign_cancelled reason=${_traceCancellationReason(reason)}',
     );
-    _traceReconnect(
-      'sdk_inflight_changed value=false reason=$reason',
-    );
+    _traceReconnect('sdk_inflight_changed value=false reason=$reason');
   }
 
   bool _hasReconnectPermission(PermissionState? readiness) {
@@ -987,8 +1030,7 @@ class BleAutoReconnectCoordinator {
                 ? 'unsupported_repository'
                 : 'unknown',
       PreferredDeviceReconnectResultStatus.reconnecting ||
-      PreferredDeviceReconnectResultStatus.exhausted =>
-        'unknown',
+      PreferredDeviceReconnectResultStatus.exhausted => 'unknown',
     };
   }
 
@@ -996,6 +1038,7 @@ class BleAutoReconnectCoordinator {
     return switch (reason) {
       'manual_disconnect' || 'manual_connect_requested' => 'manual_disconnect',
       'dispose' => 'disposed',
+      'dfu_transfer' => 'dfu_transfer_in_progress',
       _ => 'unknown',
     };
   }
@@ -1206,8 +1249,10 @@ class BleAutoReconnectCoordinator {
     return 'missing_valid_remote_id';
   }
 
-  void _recordNoProviderCall(
-      {required String? attemptId, required String reason}) {
+  void _recordNoProviderCall({
+    required String? attemptId,
+    required String reason,
+  }) {
     if (attemptId == null) {
       return;
     }

@@ -21,6 +21,7 @@ class SharedPrefsSdkStore {
   static const String deathManPlanKey = 'eixam.death_man.active_plan';
   static const String emergencyContactsKey = 'eixam.contacts.list';
   static const String deviceStatusKey = 'eixam.device.status';
+  static const String deviceCountryConfigKey = 'eixam.device.country_config';
   // Sensitive SDK session-restore key. Persists signed identity only; the
   // optional refresh token is intentionally not written by SdkSessionStore.
   static const String sdkSessionKey = 'eixam.sdk.session';
@@ -44,6 +45,7 @@ class SharedPrefsSdkStore {
     deathManPlanKey,
     emergencyContactsKey,
     deviceStatusKey,
+    deviceCountryConfigKey,
     sdkSessionKey,
     preSosSessionKey,
     osSosWidgetRecentActionsKey,

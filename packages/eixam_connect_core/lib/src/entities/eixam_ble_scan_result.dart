@@ -15,6 +15,7 @@ class EixamBleScanResult {
     required this.brandClassification,
     required this.isEixamDevice,
     required this.discoveredAt,
+    this.isDfuBootloader = false,
   });
 
   final String deviceId;
@@ -25,4 +26,9 @@ class EixamBleScanResult {
   final BleDiscoveredDeviceBrand brandClassification;
   final bool isEixamDevice;
   final DateTime discoveredAt;
+
+  /// Whether this advertisement is a device sitting in the Nordic DFU
+  /// bootloader (advertising the Secure DFU service) rather than a normal
+  /// device — i.e. one that needs firmware recovery.
+  final bool isDfuBootloader;
 }

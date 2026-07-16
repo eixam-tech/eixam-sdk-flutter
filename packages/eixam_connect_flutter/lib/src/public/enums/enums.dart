@@ -2,6 +2,8 @@
 export 'package:eixam_connect_core/src/enums/death_man_status.dart';
 export 'package:eixam_connect_core/src/enums/delivery_mode.dart';
 export 'discovered_device_brand.dart';
+export 'package:eixam_connect_core/src/enums/lora_region_code.dart';
+export 'package:eixam_connect_core/src/enums/device_country_config_outcome.dart';
 export 'package:eixam_connect_core/src/enums/device_battery_level.dart';
 export 'package:eixam_connect_core/src/enums/device_battery_source.dart';
 export 'package:eixam_connect_core/src/enums/device_lifecycle_state.dart';

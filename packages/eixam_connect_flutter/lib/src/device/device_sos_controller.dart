@@ -26,6 +26,8 @@ class DeviceSosController {
       StreamController<DeviceSosStatus>.broadcast();
   final StreamController<bool> _commandPathController =
       StreamController<bool>.broadcast();
+  final StreamController<bool> _controlCommandPathController =
+      StreamController<bool>.broadcast();
 
   DeviceCommandWriter? _commandWriter;
   bool _shortCommandAvailable = false;
@@ -59,12 +61,21 @@ class DeviceSosController {
     yield* _commandPathController.stream;
   }
 
+  /// Availability of the CMD characteristic used by control operations such
+  /// as runtime status, region provisioning and reboot. This is intentionally
+  /// separate from the short INET path used by most SOS commands.
+  Stream<bool> watchControlCommandPathAvailability() async* {
+    yield hasCommandChannel;
+    yield* _controlCommandPathController.stream;
+  }
+
   Future<void> attach({
     required DeviceCommandWriter commandWriter,
     bool shortCommandAvailable = true,
     bool longCommandAvailable = true,
   }) async {
     final previousAvailability = hasSosCommandPath;
+    final previousControlAvailability = hasCommandChannel;
     _commandWriter = commandWriter;
     _shortCommandAvailable = shortCommandAvailable;
     _longCommandAvailable = longCommandAvailable;
@@ -72,6 +83,7 @@ class DeviceSosController {
       'DEVICE_SOS_COMMAND_PATH_ATTACHED available=$hasSosCommandPath previous=$previousAvailability shortCommandAvailable=${this.shortCommandAvailable} longCommandAvailable=${this.longCommandAvailable}',
     );
     _emitCommandPathAvailabilityIfChanged(previousAvailability);
+    _emitControlCommandPathAvailabilityIfChanged(previousControlAvailability);
     _emit(
       _status.copyWith(
         lastEvent: 'DEVICE_SOS_COMMAND_CHANNEL_ATTACHED',
@@ -83,6 +95,7 @@ class DeviceSosController {
 
   Future<void> detach() async {
     final previousAvailability = hasSosCommandPath;
+    final previousControlAvailability = hasCommandChannel;
     _commandWriter = null;
     _shortCommandAvailable = false;
     _longCommandAvailable = false;
@@ -92,6 +105,7 @@ class DeviceSosController {
       'DEVICE_SOS_COMMAND_PATH_DETACHED available=$hasSosCommandPath previous=$previousAvailability',
     );
     _emitCommandPathAvailabilityIfChanged(previousAvailability);
+    _emitControlCommandPathAvailabilityIfChanged(previousControlAvailability);
     _cancelCountdownTimer();
     _emit(
       DeviceSosStatus(
@@ -329,8 +343,7 @@ class DeviceSosController {
   Future<void> sendInetOk({
     DeviceCommandWriter? commandWriterOverride,
     String commandRouteLabel = 'attached_writer',
-  }) =>
-      _sendNonSosCommand(
+  }) => _sendNonSosCommand(
         EixamDeviceCommand.inetOk(),
         commandWriterOverride: commandWriterOverride,
         commandRouteLabel: commandRouteLabel,
@@ -339,8 +352,7 @@ class DeviceSosController {
   Future<void> sendInetLost({
     DeviceCommandWriter? commandWriterOverride,
     String commandRouteLabel = 'attached_writer',
-  }) =>
-      _sendNonSosCommand(
+  }) => _sendNonSosCommand(
         EixamDeviceCommand.inetLost(),
         commandWriterOverride: commandWriterOverride,
         commandRouteLabel: commandRouteLabel,
@@ -349,8 +361,7 @@ class DeviceSosController {
   Future<void> sendPositionConfirmed({
     DeviceCommandWriter? commandWriterOverride,
     String commandRouteLabel = 'attached_writer',
-  }) =>
-      _sendNonSosCommand(
+  }) => _sendNonSosCommand(
         EixamDeviceCommand.positionConfirmed(),
         commandWriterOverride: commandWriterOverride,
         commandRouteLabel: commandRouteLabel,
@@ -371,8 +382,7 @@ class DeviceSosController {
   Future<void> sendShutdown({
     DeviceCommandWriter? commandWriterOverride,
     String commandRouteLabel = 'attached_writer',
-  }) =>
-      _sendNonSosCommand(
+  }) => _sendNonSosCommand(
         EixamDeviceCommand.shutdown(),
         commandWriterOverride: commandWriterOverride,
         commandRouteLabel: commandRouteLabel,
@@ -495,8 +505,9 @@ class DeviceSosController {
   }) async {
     Object? cmdError;
     if (allowCmd) {
-      final command =
-          EixamDeviceCommand.sosCancel(forceCmdCharacteristic: true);
+      final command = EixamDeviceCommand.sosCancel(
+        forceCmdCharacteristic: true,
+      );
       try {
         BleDebugRegistry.instance.recordEvent(
           'DEVICE_SOS_COMMAND_DISPATCH route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
@@ -615,7 +626,8 @@ class DeviceSosController {
     String? commandRouteLabel,
   }) {
     final pending = _pendingTerminalCommand;
-    _pendingTerminalCommand = (pending ??
+    _pendingTerminalCommand =
+        (pending ??
             _PendingTerminalDeviceCommand(
               action: action,
               nodeId: _status.nodeId,
@@ -758,9 +770,11 @@ class DeviceSosController {
       BleDebugRegistry.instance.recordEvent(
         'SOS_TRACE device_terminal_command_retry reason=sos_still_observed_after_terminal',
       );
-      unawaited(_flushPendingTerminalCommand(
+      unawaited(
+        _flushPendingTerminalCommand(
         reason: 'sos_still_observed_after_terminal',
-      ));
+        ),
+      );
       return;
     }
 
@@ -795,7 +809,8 @@ class DeviceSosController {
       return;
     }
 
-    final keepCountdownMetadata = nextState == DeviceSosState.active &&
+    final keepCountdownMetadata =
+        nextState == DeviceSosState.active &&
         _status.state == DeviceSosState.preConfirm;
     if (nextState != DeviceSosState.preConfirm) {
       _cancelCountdownTimer();
@@ -825,8 +840,9 @@ class DeviceSosController {
             '${packet.nodeId}:${packet.packetId}:${packet.rawHex}',
         nodeId: preserveCurrentPacketMetadata ? _status.nodeId : packet.nodeId,
         flags: preserveCurrentPacketMetadata ? _status.flags : packet.flagsWord,
-        sosType:
-            preserveCurrentPacketMetadata ? _status.sosType : packet.sosType,
+        sosType: preserveCurrentPacketMetadata
+            ? _status.sosType
+            : packet.sosType,
         retryCount: preserveCurrentPacketMetadata
             ? _status.retryCount
             : packet.retryCount,
@@ -842,16 +858,19 @@ class DeviceSosController {
         gpsQuality: preserveCurrentPacketMetadata
             ? _status.gpsQuality
             : packet.gpsQuality,
-        packetId:
-            preserveCurrentPacketMetadata ? _status.packetId : packet.packetId,
+        packetId: preserveCurrentPacketMetadata
+            ? _status.packetId
+            : packet.packetId,
         hasLocation: preserveCurrentPacketMetadata
             ? _status.hasLocation
             : packet.hasPosition,
         decoderNote: resolution.decoderNote,
-        countdownStartedAt:
-            keepCountdownMetadata ? _status.countdownStartedAt : null,
-        expectedActivationAt:
-            keepCountdownMetadata ? _status.expectedActivationAt : null,
+        countdownStartedAt: keepCountdownMetadata
+            ? _status.countdownStartedAt
+            : null,
+        expectedActivationAt: keepCountdownMetadata
+            ? _status.expectedActivationAt
+            : null,
         countdownRemainingSeconds: keepCountdownMetadata ? 0 : null,
       ),
     );
@@ -866,7 +885,8 @@ class DeviceSosController {
     final nextState = _resolveEventState(packet, previous);
     final classification = _classifyEventPacket(packet, nextState);
     final controlEventLabel = _describeEventPacket(packet);
-    final event = 'SOS device event decoded -> $controlEventLabel '
+    final event =
+        'SOS device event decoded -> $controlEventLabel '
         'nodeId=${_formatNodeId(packet.nodeId)} '
         'subcode=0x${packet.subcode.toRadixString(16).padLeft(2, '0')}';
 
@@ -898,13 +918,11 @@ class DeviceSosController {
         state: nextState,
         previousState: previous,
         transitionSource: source,
-        triggerOrigin: nextState == DeviceSosState.inactive ||
+        triggerOrigin:
+            nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
             ? _status.triggerOrigin
-            : _resolveObservedTriggerOrigin(
-                source,
-                nodeId: packet.nodeId,
-              ),
+            : _resolveObservedTriggerOrigin(source, nodeId: packet.nodeId),
         lastEvent: event,
         updatedAt: now,
         optimistic: false,
@@ -916,53 +934,65 @@ class DeviceSosController {
         lastPacketSignature:
             '${packet.nodeId}:${packet.opcode}:${packet.subcode}:${packet.rawHex}',
         nodeId: packet.nodeId,
-        packetId: nextState == DeviceSosState.inactive ||
+        packetId:
+            nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
             ? _status.packetId
             : null,
-        hasLocation: nextState == DeviceSosState.inactive ||
+        hasLocation:
+            nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
             ? _status.hasLocation
             : false,
-        flags: nextState == DeviceSosState.inactive ||
+        flags:
+            nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
             ? _status.flags
             : null,
-        sosType: nextState == DeviceSosState.inactive ||
+        sosType:
+            nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
             ? _status.sosType
             : null,
-        retryCount: nextState == DeviceSosState.inactive ||
+        retryCount:
+            nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
             ? _status.retryCount
             : null,
-        relayCount: nextState == DeviceSosState.inactive ||
+        relayCount:
+            nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
             ? _status.relayCount
             : null,
-        batteryLevel: nextState == DeviceSosState.inactive ||
+        batteryLevel:
+            nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
             ? _status.batteryLevel
             : null,
-        batteryState: nextState == DeviceSosState.inactive ||
+        batteryState:
+            nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
             ? _status.batteryState
             : null,
-        gpsQuality: nextState == DeviceSosState.inactive ||
+        gpsQuality:
+            nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
             ? _status.gpsQuality
             : null,
         decoderNote:
             'DEVICE_SOS_CONTROL_EVENT_DECODED event=$controlEventLabel',
-        countdownStartedAt: nextState == DeviceSosState.inactive ||
+        countdownStartedAt:
+            nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
             ? null
             : _status.countdownStartedAt,
-        expectedActivationAt: nextState == DeviceSosState.inactive ||
+        expectedActivationAt:
+            nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
             ? null
             : _status.expectedActivationAt,
-        countdownRemainingSeconds: nextState == DeviceSosState.inactive ||
+        countdownRemainingSeconds:
+            nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
             ? null
             : _status.countdownRemainingSeconds,
@@ -984,10 +1014,12 @@ class DeviceSosController {
       nodeId: currentStatus.nodeId,
       packetId: currentStatus.packetId,
     );
-    final sameCycle = cycleKey != null &&
+    final sameCycle =
+        cycleKey != null &&
         currentCycleKey != null &&
         cycleKey == currentCycleKey;
-    final sameOriginNode = packet.nodeId != 0 &&
+    final sameOriginNode =
+        packet.nodeId != 0 &&
         currentStatus.nodeId != null &&
         packet.nodeId == currentStatus.nodeId;
 
@@ -1004,11 +1036,13 @@ class DeviceSosController {
       );
     }
 
-    final recentlyClosedSameCycle = sameCycle &&
+    final recentlyClosedSameCycle =
+        sameCycle &&
         _isClosedState(currentStatus.state) &&
         _now().difference(currentStatus.updatedAt) <=
             _terminalCycleSuppressionWindow;
-    final recentlyClosedSameOrigin = sameOriginNode &&
+    final recentlyClosedSameOrigin =
+        sameOriginNode &&
         _isClosedState(currentStatus.state) &&
         _now().difference(currentStatus.updatedAt) <=
             _terminalCycleSuppressionWindow;
@@ -1066,8 +1100,9 @@ class DeviceSosController {
             : DeviceSosState.active,
         cycleKey: cycleKey,
         downgradeSuppressed: protocolState == DeviceSosState.preConfirm,
-        classificationDecision:
-            preserveAcknowledged ? 'acknowledged_sos' : 'active_sos',
+        classificationDecision: preserveAcknowledged
+            ? 'acknowledged_sos'
+            : 'active_sos',
         classificationReason: preserveAcknowledged
             ? 'acknowledged_cycle_authoritative'
             : (protocolState == DeviceSosState.preConfirm
@@ -1185,8 +1220,9 @@ class DeviceSosController {
       resolvedState: protocolState,
       cycleKey: cycleKey,
       downgradeSuppressed: false,
-      classificationDecision:
-          protocolState == DeviceSosState.active ? 'active_sos' : 'pre_sos',
+      classificationDecision: protocolState == DeviceSosState.active
+          ? 'active_sos'
+          : 'pre_sos',
       classificationReason: protocolState == DeviceSosState.active
           ? 'explicit_active_packet'
           : 'remote_emergency_trigger',
@@ -1371,7 +1407,8 @@ class DeviceSosController {
     bool? hasLocation,
     String? decoderNote,
   }) {
-    final isExistingCountdown = _status.state == DeviceSosState.preConfirm &&
+    final isExistingCountdown =
+        _status.state == DeviceSosState.preConfirm &&
         _status.countdownStartedAt != null &&
         _status.expectedActivationAt != null;
     final triggerOrigin =
@@ -1396,10 +1433,7 @@ class DeviceSosController {
       'previousPacketId=${_status.packetId?.toString() ?? "-"} '
       'startedAt=${countdownStartedAt.toUtc().toIso8601String()} '
       'deadline=${expectedActivationAt.toUtc().toIso8601String()} '
-      'remaining=${_countdownRemainingSeconds(
-        now: at,
-        expectedActivationAt: expectedActivationAt,
-      )}',
+      'remaining=${_countdownRemainingSeconds(now: at, expectedActivationAt: expectedActivationAt)}',
     );
     if (!isExistingCountdown) {
       _cancelCountdownTimer();
@@ -1582,8 +1616,8 @@ class DeviceSosController {
   }) {
     final currentOrigin = _status.triggerOrigin;
     final currentNodeId = _status.nodeId;
-    final keepsExistingAppCycle = currentOrigin ==
-            DeviceSosTransitionSource.app &&
+    final keepsExistingAppCycle =
+        currentOrigin == DeviceSosTransitionSource.app &&
         _status.state != DeviceSosState.inactive &&
         _status.state != DeviceSosState.resolved &&
         (currentNodeId == null || nodeId == null || currentNodeId == nodeId);
@@ -1657,10 +1691,19 @@ class DeviceSosController {
     _commandPathController.add(hasSosCommandPath);
   }
 
+  void _emitControlCommandPathAvailabilityIfChanged(bool previousAvailability) {
+    if (previousAvailability == hasCommandChannel ||
+        _controlCommandPathController.isClosed) {
+      return;
+    }
+    _controlCommandPathController.add(hasCommandChannel);
+  }
+
   Future<void> dispose() async {
     _awaitingObservedAppActivation = false;
     _pendingTerminalCommand = null;
     _cancelCountdownTimer();
+    await _controlCommandPathController.close();
     await _commandPathController.close();
     await _controller.close();
   }

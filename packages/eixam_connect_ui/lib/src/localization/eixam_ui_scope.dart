@@ -3,7 +3,6 @@ import 'package:flutter/widgets.dart';
 import 'eixam_ui_texts.dart';
 
 class EixamUiScope extends InheritedWidget {
-
   const EixamUiScope({
     super.key,
     required super.child,
@@ -33,6 +32,14 @@ class EixamUiScope extends InheritedWidget {
       deathManCheckInTitle: overrides.deathManCheckInTitle,
       deathManCheckInMessage: overrides.deathManCheckInMessage,
       confirmSafety: overrides.confirmSafety,
+      deviceRegionTitle: overrides.deviceRegionTitle,
+      deviceRegionPrompt: overrides.deviceRegionPrompt,
+      deviceRegionConfirm: overrides.deviceRegionConfirm,
+      deviceRegionCancel: overrides.deviceRegionCancel,
+      deviceRegionApplying: overrides.deviceRegionApplying,
+      deviceRegionSuccess: overrides.deviceRegionSuccess,
+      deviceRegionError: overrides.deviceRegionError,
+      deviceRegionDismiss: overrides.deviceRegionDismiss,
     );
   }
 

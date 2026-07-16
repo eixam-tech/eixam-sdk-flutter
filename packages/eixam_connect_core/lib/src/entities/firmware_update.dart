@@ -37,6 +37,8 @@ class FirmwareUpdatePolicy {
     this.minDeviceBatteryPercentage = 20,
     this.requireForeground = true,
     this.supportedHardwareModels = const <String>[],
+    this.allowDowngrade = false,
+    this.targetReleaseId,
   });
 
   final int minDeviceBatteryPercentage;
@@ -44,6 +46,17 @@ class FirmwareUpdatePolicy {
 
   /// Optional allow-list. Empty means the backend release metadata is trusted.
   final List<String> supportedHardwareModels;
+
+  /// Selects the highest stored firmware semver below the installed version,
+  /// including inactive historical releases exposed by the backend.
+  /// Defaults to false so production update checks can never downgrade a
+  /// device accidentally. Intended for controlled development/testing flows.
+  final bool allowDowngrade;
+
+  /// Explicit backend release to validate and install. This bypasses automatic
+  /// latest/previous selection but still enforces device, model, safety,
+  /// artifact and scope checks. Intended for controlled development tooling.
+  final String? targetReleaseId;
 }
 
 class DeviceFirmwareInfo {
@@ -190,4 +203,23 @@ class FirmwareUpdateProgress {
   final String? failureCode;
   final String? failureMessage;
   final DateTime updatedAt;
+
+  /// The completion percentage (0–100) to display, preferring the native
+  /// [progressPercentage] and falling back to one derived from
+  /// [bytesTransferred] / [totalBytes] when the native layer reports only byte
+  /// counts. `null` when neither is available (an indeterminate phase). Callers
+  /// should use this instead of re-deriving the byte math so every progress UI
+  /// presents the same value.
+  int? get effectivePercentage {
+    final percent = progressPercentage;
+    if (percent != null) {
+      return percent.clamp(0, 100);
+    }
+    final transferred = bytesTransferred;
+    final total = totalBytes;
+    if (transferred != null && total != null && total > 0) {
+      return ((transferred * 100) ~/ total).clamp(0, 100);
+    }
+    return null;
+  }
 }

@@ -5,6 +5,7 @@ import '../entities/death_man_plan.dart';
 import '../entities/ble_notification_navigation_request.dart';
 import '../entities/backend_registered_device.dart';
 import '../entities/ble_command_channel_status.dart';
+import '../entities/device_country_config_status.dart';
 import '../entities/device_sos_status.dart';
 import '../entities/device_status.dart';
 import '../entities/device_runtime_status.dart';
@@ -38,9 +39,8 @@ import '../events/eixam_sdk_event.dart';
 import '../events/realtime_event.dart';
 
 /// Public SDK contract consumed by host apps.
-typedef EixamConnectSdkBootstrapper = Future<EixamConnectSdk> Function(
-  EixamBootstrapConfig config,
-);
+typedef EixamConnectSdkBootstrapper =
+    Future<EixamConnectSdk> Function(EixamBootstrapConfig config);
 
 EixamConnectSdkBootstrapper? _bootstrapper;
 
@@ -189,9 +189,7 @@ abstract class EixamConnectSdk {
   });
   Future<void> deleteRegisteredDevice(String deviceId);
 
-  Future<void> startPreSos({
-    Duration countdown = defaultPreSosCountdown,
-  });
+  Future<void> startPreSos({Duration countdown = defaultPreSosCountdown});
   Future<SosIncident> confirmPreSos(SosTriggerPayload payload);
   Future<void> cancelPreSos();
   Future<PublicPreSosStatus?> getPreSosStatus();
@@ -224,6 +222,7 @@ abstract class EixamConnectSdk {
   Future<DeviceStatus> getDeviceStatus();
   Future<DeviceStatus> refreshDeviceStatus();
   Future<DeviceFirmwareInfo> getFirmwareInfo({String? deviceId});
+  Future<List<FirmwareRelease>> listFirmwareReleases({String? deviceId});
   Future<FirmwareUpdateCheck> checkFirmwareUpdate({
     String? deviceId,
     FirmwareUpdatePolicy policy = const FirmwareUpdatePolicy(),
@@ -257,6 +256,42 @@ abstract class EixamConnectSdk {
   Future<DeviceRuntimeStatus> getDeviceRuntimeStatus();
   Future<RuntimeIdentitySnapshot> getRuntimeIdentitySnapshot();
   Future<void> rebootDevice();
+
+  /// Most recent per-country radio-config (LoRa region) apply outcome.
+  Future<DeviceCountryConfigStatus> getDeviceCountryConfigStatus();
+
+  /// Emits each per-country radio-config apply outcome as it is produced.
+  Stream<DeviceCountryConfigStatus> watchDeviceCountryConfigStatus();
+
+  /// Checks the connected device against the backend config for its current
+  /// country. A mismatch is surfaced as `updateAvailable`; this method never
+  /// writes a region or reboots the device.
+  ///
+  /// [countryIsoOverride] is intended for host development tools. It bypasses
+  /// phone geolocation only; backend config lookup, device comparison, user
+  /// confirmation, apply and verification remain the production path.
+  Future<DeviceCountryConfigStatus> checkDeviceCountryConfig({
+    String reason,
+    String? countryIsoOverride,
+  });
+
+  /// Applies the mismatch most recently produced by
+  /// [checkDeviceCountryConfig]. Hosts must call this only after explicit user
+  /// confirmation. The SDK re-checks device identity, safety and live region
+  /// immediately before the write and reboot.
+  Future<DeviceCountryConfigStatus> applyPendingDeviceCountryConfig({
+    String reason,
+  });
+
+  /// Deprecated compatibility alias for [checkDeviceCountryConfig]. It only
+  /// detects a mismatch and never writes or reboots. Hosts must call
+  /// [applyPendingDeviceCountryConfig] after explicit user confirmation.
+  @Deprecated(
+    'Use checkDeviceCountryConfig, then applyPendingDeviceCountryConfig after '
+    'explicit user confirmation.',
+  )
+  Future<DeviceCountryConfigStatus> ensureDeviceCountryConfig({String reason});
+
   Future<BleNotificationNavigationRequest?>
       consumePendingBleNotificationNavigationRequest();
   Stream<BleNotificationNavigationRequest>
