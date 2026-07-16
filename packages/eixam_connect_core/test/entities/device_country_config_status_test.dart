@@ -26,6 +26,8 @@ void main() {
       expect(updated.targetRegion, LoraRegionCode.eu868);
       expect(updated.deviceConfig, 'EU868');
       expect(updated.updatedAt, base.updatedAt);
+      expect(updated.applyAttempted, isFalse);
+      expect(updated.canRetry, isFalse);
     });
 
     test('copyWith can reset nullable fields back to null', () {
@@ -36,6 +38,27 @@ void main() {
       final cleared = status.copyWith(countryIso: null, detail: null);
       expect(cleared.countryIso, isNull);
       expect(cleared.detail, isNull);
+    });
+
+    test('update available explicitly requires host confirmation', () {
+      final status = DeviceCountryConfigStatus.idle().copyWith(
+        outcome: DeviceCountryConfigOutcome.updateAvailable,
+      );
+
+      expect(status.requiresConfirmation, isTrue);
+      expect(status.isApplying, isFalse);
+      expect(status.isTerminal, isTrue);
+    });
+
+    test('copyWith carries apply and retry metadata', () {
+      final status = DeviceCountryConfigStatus.idle().copyWith(
+        outcome: DeviceCountryConfigOutcome.skippedSafetyActive,
+        applyAttempted: true,
+        canRetry: true,
+      );
+
+      expect(status.applyAttempted, isTrue);
+      expect(status.canRetry, isTrue);
     });
   });
 }

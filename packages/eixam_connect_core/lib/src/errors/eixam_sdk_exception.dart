@@ -27,11 +27,7 @@ class SosException extends EixamSdkException {
 }
 
 class SosHttpException extends SosException {
-  const SosHttpException(
-    super.code,
-    super.message, {
-    required this.statusCode,
-  });
+  const SosHttpException(super.code, super.message, {required this.statusCode});
 
   final int statusCode;
 }
@@ -47,8 +43,10 @@ class DeviceException extends EixamSdkException {
       : this('E_DEVICE_INVALID_PAIRING_CODE', 'E_DEVICE_INVALID_PAIRING_CODE');
 
   const DeviceException.invalidActivationCode()
-      : this('E_DEVICE_INVALID_ACTIVATION_CODE',
-            'E_DEVICE_INVALID_ACTIVATION_CODE');
+    : this(
+        'E_DEVICE_INVALID_ACTIVATION_CODE',
+        'E_DEVICE_INVALID_ACTIVATION_CODE',
+      );
 
   const DeviceException.notPaired()
       : this('E_DEVICE_NOT_PAIRED', 'E_DEVICE_NOT_PAIRED');
@@ -87,7 +85,18 @@ class DeviceException extends EixamSdkException {
 }
 
 class FirmwareUpdateException extends EixamSdkException {
-  const FirmwareUpdateException(super.code, super.message);
+  const FirmwareUpdateException(
+    super.code,
+    super.message, {
+    this.requiresRecovery,
+  });
+
+  /// The native DFU transport's explicit verdict on whether the device is left
+  /// stranded in the bootloader (`true`) or is still alive and reachable
+  /// (`false`, e.g. the bootloader actively rejected the image). `null` means
+  /// the failure carries no native verdict (a stall/timeout thrown before any
+  /// terminal event), so the caller must fall back to its own heuristic.
+  final bool? requiresRecovery;
 }
 
 class FeedbackException extends EixamSdkException {

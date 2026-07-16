@@ -28,7 +28,8 @@ void main() {
   }
 
   group('HttpSdkDeviceConfigRemoteDataSource', () {
-    test('sends country_iso query with signed headers and parses payload',
+    test(
+      'sends country_iso query with signed headers and parses payload',
         () async {
       final client = _RecordingHttpClient(
         response: http.Response(
@@ -48,12 +49,14 @@ void main() {
       expect(request.headers['X-App-ID'], 'app-demo');
       expect(request.headers['X-User-ID'], 'canonical-user-1');
       expect(request.headers['Authorization'], 'Bearer sdk-user-hash');
-      expect(config.deviceConfig, 'EU868');
+        expect(config, isNotNull);
+        expect(config!.deviceConfig, 'EU868');
       expect(config.loraRegionByte, 3);
       expect(config.regionByte, 3);
       expect(config.regionCode, LoraRegionCode.eu868);
       expect(config.raw['duty_cycle'], 1.0);
-    });
+      },
+    );
 
     test('omits country_iso when not provided', () async {
       final client = _RecordingHttpClient(
@@ -67,25 +70,20 @@ void main() {
       expect(request.url.queryParameters.containsKey('country_iso'), isFalse);
     });
 
-    test('treats 404 as an empty config that falls back to EU (no throw)',
-        () async {
+    test('treats 404 as "no applicable config" (null, no throw)', () async {
       final client = _RecordingHttpClient(response: http.Response('', 404));
       final dataSource = buildDataSource(client);
 
       final config = await dataSource.fetchByCountry(countryIso: 'XX');
 
-      // No byte from the backend -> EU868 fallback, never left region-less.
-      expect(config.deviceConfig, isNull);
-      expect(config.loraRegionByte, isNull);
-      expect(config.regionByte, LoraRegionCode.eu868.wireValue);
-      expect(config.regionCode, LoraRegionCode.eu868);
-      expect(config.hasApplicableRegion, isTrue);
+      // No config for this country and no default: the caller must skip.
+      // Returning an empty config here would silently fall back to EU868 and
+      // reboot a device that may be outside the EU.
+      expect(config, isNull);
     });
 
     test('maps other non-2xx responses to NetworkException', () async {
-      final client = _RecordingHttpClient(
-        response: http.Response('boom', 500),
-      );
+      final client = _RecordingHttpClient(response: http.Response('boom', 500));
       final dataSource = buildDataSource(client);
 
       expect(

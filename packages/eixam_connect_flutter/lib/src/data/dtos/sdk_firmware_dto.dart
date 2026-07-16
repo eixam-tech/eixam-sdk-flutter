@@ -48,10 +48,7 @@ class SdkFirmwareDto {
 }
 
 class SdkFirmwareCheckDto {
-  const SdkFirmwareCheckDto({
-    required this.updateAvailable,
-    this.firmware,
-  });
+  const SdkFirmwareCheckDto({required this.updateAvailable, this.firmware});
 
   factory SdkFirmwareCheckDto.fromJson(Map<String, dynamic> json) {
     final firmwareJson = json['firmware'];
@@ -65,6 +62,24 @@ class SdkFirmwareCheckDto {
 
   final bool updateAvailable;
   final SdkFirmwareDto? firmware;
+}
+
+class SdkFirmwareListDto {
+  const SdkFirmwareListDto({required this.firmwareVersions});
+
+  factory SdkFirmwareListDto.fromJson(Map<String, dynamic> json) {
+    final raw = json['firmware_versions'];
+    return SdkFirmwareListDto(
+      firmwareVersions: raw is List<dynamic>
+          ? <SdkFirmwareDto>[
+              for (final item in raw)
+                if (item is Map<String, dynamic>) SdkFirmwareDto.fromJson(item),
+            ]
+          : const <SdkFirmwareDto>[],
+    );
+  }
+
+  final List<SdkFirmwareDto> firmwareVersions;
 }
 
 class SdkFirmwareDownloadDto {

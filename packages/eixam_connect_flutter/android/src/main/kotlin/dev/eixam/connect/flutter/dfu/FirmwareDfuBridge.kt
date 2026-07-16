@@ -307,7 +307,28 @@ internal object FirmwareDfuBridge {
                 .setUnsafeExperimentalButtonlessServiceInSecureDfuEnabled(true)
                 .setPrepareDataObjectDelay(300L)
                 .setNumberOfRetries(3)
+                // Packet Receipt Notifications MUST be enabled AND kept low for
+                // the legacy (Nordic SDK 11 / Adafruit-RAK) bootloader on the
+                // WisMesh Tag. The Nordic DFU library disables PRN by default on
+                // Android 6.0+, and even its default value (12) is too high here:
+                // the library's own diagnostic for remote error 6 says verbatim
+                // "the data were sent too fast for the target to handle. Reduce
+                // the number of packets before notification (PRN) to 10 or less."
+                // Flow control for this 0.4.3 bootloader's small buffer. It is
+                // MTU-23 capped (20 bytes/packet, unchangeable), so PRN — how
+                // many packets between the bootloader's ACKs — is the ONLY speed
+                // lever: higher = fewer round-trips = faster, but too high floods
+                // the buffer and it rejects with remote error 6. Measured: PRN=12
+                // (Nordic default) fails, PRN=1 works. PRN=8 is the fast end of
+                // the library's "10 or less" guidance. If error 6 reappears on
+                // any unit, step down (6, then 4).
+                .setPacketsReceiptNotificationsEnabled(true)
+                .setPacketsReceiptNotificationsValue(8)
                 .setZip(firmwareZipPath)
+            // Build marker: confirms this (rebuilt) plugin is running and shows
+            // the effective PRN pacing in logcat, so we never again chase whether
+            // a native change actually got compiled in.
+            Log.i(logTag, "DFU config prn=8 prnEnabled=true forceDfu=$forceDfu (legacy-bootloader pacing)")
             activeSession = activeSession?.copy(
                 controller = initiator.start(context, EixamDfuService::class.java),
                 targetVersion = targetVersion,

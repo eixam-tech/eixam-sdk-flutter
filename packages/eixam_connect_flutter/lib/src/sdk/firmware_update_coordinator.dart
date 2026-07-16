@@ -12,13 +12,12 @@ typedef ProtectionStatusProvider = Future<ProtectionStatus> Function();
 typedef DeviceSosStatusProvider = Future<DeviceSosStatus> Function();
 typedef PreSosStatusProvider = Future<PublicPreSosStatus?> Function();
 typedef AppLifecycleStateProvider = AppLifecycleState? Function();
-typedef FirmwareDfuPreparationHook = Future<DeviceStatus> Function({
-  required String deviceId,
-});
-typedef FirmwareDfuConnectionHook = Future<void> Function({
-  required String deviceId,
-});
-typedef FirmwareDfuStatusRefreshHook = Future<DeviceStatus> Function({
+typedef FirmwareDfuPreparationHook =
+    Future<DeviceStatus> Function({required String deviceId});
+typedef FirmwareDfuConnectionHook =
+    Future<void> Function({required String deviceId});
+typedef FirmwareDfuStatusRefreshHook =
+    Future<DeviceStatus> Function({
   required String deviceId,
   required int attempt,
   required String targetVersion,
@@ -39,7 +38,15 @@ class FirmwareUpdateCoordinator {
     this.releaseBleForDfuTransfer,
     this.restoreBleAfterDfuTransfer,
     this.postDfuStatusRefresh,
-  });
+    Duration dfuStallTimeout = _defaultDfuStallTimeout,
+    Duration dfuFirstUploadDeadline = _defaultDfuFirstUploadDeadline,
+    Duration postDfuVerificationTimeout = _defaultPostDfuVerificationTimeout,
+    Duration postDfuVerificationPollInterval =
+        _defaultPostDfuVerificationPollInterval,
+  }) : _dfuStallTimeout = dfuStallTimeout,
+       _dfuFirstUploadDeadline = dfuFirstUploadDeadline,
+       _postDfuVerificationTimeout = postDfuVerificationTimeout,
+       _postDfuVerificationPollInterval = postDfuVerificationPollInterval;
 
   final DeviceRepository deviceRepository;
   final SosRepository sosRepository;
@@ -55,14 +62,37 @@ class FirmwareUpdateCoordinator {
   final FirmwareDfuConnectionHook? restoreBleAfterDfuTransfer;
   final FirmwareDfuStatusRefreshHook? postDfuStatusRefresh;
 
-  static const Duration _postDfuVerificationTimeout = Duration(seconds: 180);
-  static const Duration _postDfuVerificationPollInterval = Duration(seconds: 5);
+  static const Duration _defaultPostDfuVerificationTimeout = Duration(
+    seconds: 180,
+  );
+  static const Duration _defaultPostDfuVerificationPollInterval = Duration(
+    seconds: 5,
+  );
 
-  /// Max time the DFU may run without any progress/state event before it is
-  /// treated as stalled (e.g. the device entered the bootloader but the library
-  /// could not reconnect to transfer). Keeps the UI from freezing for the full
-  /// native terminal timeout with no feedback.
-  static const Duration _dfuStallTimeout = Duration(seconds: 90);
+  static const Duration _defaultDfuStallTimeout = Duration(seconds: 90);
+  static const Duration _defaultDfuFirstUploadDeadline = Duration(seconds: 180);
+
+  /// Max time to wait for the device to reboot into the new image and report a
+  /// matching firmware version after the transfer completes.
+  final Duration _postDfuVerificationTimeout;
+
+  /// Delay between post-DFU version-verification polls.
+  final Duration _postDfuVerificationPollInterval;
+
+  /// Max time the DFU may run without any *upload* progress once the upload
+  /// has started. Re-armed only by events that carry a progress percentage —
+  /// the native reconnect-retry loop emits a steady stream of connecting /
+  /// disconnected state events that must NOT keep the watchdog alive, or a
+  /// device stranded in the bootloader pins the UI at 0% until the native
+  /// terminal timeout.
+  final Duration _dfuStallTimeout;
+
+  /// Max time between starting the native DFU and the first upload-progress
+  /// event (enter-DFU write, device reboot into the bootloader, bootloader
+  /// reconnect, init packet — plus a possible first-time bonding dialog). If no
+  /// byte is uploaded within this window the device likely entered the
+  /// bootloader but could not be reconnected → fail fast into recovery.
+  final Duration _dfuFirstUploadDeadline;
 
   final StreamController<FirmwareUpdateProgress> _progressController =
       StreamController<FirmwareUpdateProgress>.broadcast();
@@ -70,9 +100,31 @@ class FirmwareUpdateCoordinator {
       <String, FirmwareUpdateSession>{};
   FirmwareUpdateCheck? _lastCheck;
 
+  /// Whether an update or recovery session is still running (not terminal).
+  /// Other reboot-causing flows (e.g. the LoRa region provisioning) must hold
+  /// off while this is true — a reboot during transfer or post-DFU
+  /// verification breaks the update.
+  bool get hasActiveSession =>
+      _sessions.values.any((session) => session.completedAt == null);
+
   Future<DeviceFirmwareInfo> getFirmwareInfo({String? deviceId}) async {
     final status = await deviceRepository.refreshDeviceStatus();
     return _firmwareInfoFromStatus(status);
+  }
+
+  Future<List<FirmwareRelease>> listFirmwareReleases({String? deviceId}) async {
+    final status = await deviceRepository.refreshDeviceStatus();
+    if (!_matchesRequestedDevice(status, deviceId)) {
+      return const <FirmwareRelease>[];
+    }
+    final response = await remoteDataSource.listReleases(
+      hardwareModel: status.model,
+    );
+    return <FirmwareRelease>[
+      for (final release in response.firmwareVersions)
+        if (release.id.isNotEmpty && release.version.isNotEmpty)
+          release.toDomain(),
+    ];
   }
 
   Future<FirmwareUpdateCheck> checkFirmwareUpdate({
@@ -84,9 +136,9 @@ class FirmwareUpdateCoordinator {
     // never blocks the UI on "checking firmware" forever.
     DeviceStatus status;
     try {
-      status = await deviceRepository
-          .refreshDeviceStatus()
-          .timeout(const Duration(seconds: 12));
+      status = await deviceRepository.refreshDeviceStatus().timeout(
+        const Duration(seconds: 12),
+      );
     } on TimeoutException {
       _debugLog(
         'OTA_COORDINATOR check_refresh_timeout '
@@ -129,19 +181,32 @@ class FirmwareUpdateCoordinator {
 
     final response = await remoteDataSource.checkUpdate(
       hardwareModel: device.hardwareModel,
-      currentVersion: device.currentVersion!,
+      currentVersion: _backendComparableFirmwareVersion(device.currentVersion!),
+      allowDowngrade: policy.allowDowngrade,
+      targetReleaseId: policy.targetReleaseId,
     );
     final release = response.firmware?.toDomain();
+    final actionableRelease =
+        response.updateAvailable &&
+            release != null &&
+            _firmwareReleaseIsActionable(
+              currentVersion: device.currentVersion!,
+              targetVersion: release.version,
+              allowDowngrade: policy.allowDowngrade,
+              explicitTarget: policy.targetReleaseId != null,
+            )
+        ? release
+        : null;
     final releaseEligibility = await evaluateEligibility(
       status: status,
-      release: release,
+      release: actionableRelease,
       policy: policy,
     );
     return _rememberCheck(
       FirmwareUpdateCheck(
         device: device,
-        updateAvailable: response.updateAvailable && release != null,
-        release: release,
+        updateAvailable: actionableRelease != null,
+        release: actionableRelease,
         eligibility: releaseEligibility,
         checkedAt: DateTime.now(),
       ),
@@ -215,11 +280,16 @@ class FirmwareUpdateCoordinator {
         session,
         state: FirmwareUpdateState.blocked,
         failureCode: 'firmwareUpdateBlocked',
-        failureMessage:
-            check.eligibility.blockers.map((blocker) => blocker.name).join(','),
+        failureMessage: check.eligibility.blockers
+            .map((blocker) => blocker.name)
+            .join(','),
       );
     }
 
+    // Set as soon as the native DFU emits any event; a failure before that
+    // cannot have stranded the device in the bootloader, so it must NOT be
+    // routed to recovery. Read by _completeTransferFailure on the error paths.
+    var nativeDfuEngaged = false;
     try {
       _emit(session, FirmwareUpdateState.downloading);
       _debugLog(
@@ -262,64 +332,32 @@ class FirmwareUpdateCoordinator {
 
       _emit(session, FirmwareUpdateState.readyToTransfer);
       _emit(session, FirmwareUpdateState.transferring);
-      final stall = Completer<void>();
-      Timer? stallTimer;
-      void armStallWatchdog() {
-        stallTimer?.cancel();
-        stallTimer = Timer(_dfuStallTimeout, () {
-          if (!stall.isCompleted) {
-            stall.completeError(
-              const FirmwareUpdateException(
-                'dfuStalled',
-                'The firmware transfer made no progress (the device may have '
-                    'entered the bootloader but could not be reconnected).',
-              ),
-            );
-          }
-        });
-      }
-
-      armStallWatchdog();
-      final dfuSub = dfuTransport.watchProgress(session.sessionId).listen(
-        (progress) {
-          armStallWatchdog(); // any DFU event proves it is still alive
-          _emit(
-            session,
-            progress.state,
-            progressPercentage: progress.progressPercentage,
-            bytesTransferred: progress.bytesTransferred,
-            totalBytes: progress.totalBytes,
-          );
-        },
-      );
-      try {
-        await releaseBleForDfuTransfer?.call(deviceId: session.deviceId);
         _debugLog(
           'OTA_COORDINATOR native_dfu_start '
           'sessionId=${session.sessionId} deviceId=${session.deviceId} '
           'release=$releaseId target=${release.version}',
         );
-        await Future.any(<Future<void>>[
-          dfuTransport.start(
-            FirmwareDfuTransferRequest(
+      await _runNativeDfuWithWatchdog(
+        session: session,
+        request: FirmwareDfuTransferRequest(
               sessionId: session.sessionId,
               deviceId: session.deviceId,
               release: release,
               artifactBytes: artifactBytes,
             ),
-          ),
-          stall.future,
-        ]);
+        stallMessage:
+            'The firmware transfer made no upload progress for '
+            '${_dfuStallTimeout.inSeconds}s.',
+        firstUploadMessage:
+            'The firmware upload never started (the device may have entered '
+            'the bootloader but could not be reconnected).',
+        onEngaged: () => nativeDfuEngaged = true,
+      );
         _debugLog(
           'OTA_COORDINATOR native_dfu_completed '
           'sessionId=${session.sessionId} deviceId=${session.deviceId} '
           'target=${release.version}',
         );
-      } finally {
-        stallTimer?.cancel();
-        await dfuSub.cancel();
-        await restoreBleAfterDfuTransfer?.call(deviceId: session.deviceId);
-      }
 
       _emit(session, FirmwareUpdateState.reconnecting);
       _debugLog(
@@ -354,13 +392,128 @@ class FirmwareUpdateCoordinator {
         session,
         code: error.code,
         message: error.message,
+        nativeDfuEngaged: nativeDfuEngaged,
+        requiresRecovery: error.requiresRecovery,
       );
     } catch (error) {
       return _completeTransferFailure(
         session,
         code: 'firmwareUpdateFailed',
         message: error.toString(),
+        nativeDfuEngaged: nativeDfuEngaged,
       );
+    }
+  }
+
+  /// Runs [request] through the native DFU transport under two watchdogs,
+  /// forwarding progress to [_emit], and returns only when the native transfer
+  /// resolves or a watchdog fires (throwing `dfuStalled`). Shared by the normal
+  /// update and recovery flows so their stall/first-upload semantics can never
+  /// drift apart.
+  ///
+  /// - The **first-upload deadline** is armed *after* [releaseBleForDfuTransfer]
+  ///   so the BLE handoff is not charged against it; it bounds enter-DFU +
+  ///   bootloader reconnect + init packet.
+  /// - The **stall watchdog** re-arms on any real upload progress and, once the
+  ///   upload has started, on every subsequent event — including the
+  ///   null-percentage validating/disconnecting tail after 100% — so a slow but
+  ///   live finalization is not mistaken for a stall, while the bare
+  ///   reconnect-retry churn before the first byte still cannot keep it alive.
+  /// - On a watchdog fire the still-pending native transfer is cancelled so it
+  ///   does not keep flashing unawaited (and a later recovery is not rejected
+  ///   with `alreadyRunning`).
+  ///
+  /// [onEngaged] fires the first time the native side emits any event, i.e. the
+  /// device actually engaged — used to decide recovery-vs-failed routing.
+  Future<void> _runNativeDfuWithWatchdog({
+    required FirmwareUpdateSession session,
+    required FirmwareDfuTransferRequest request,
+    required String stallMessage,
+    required String firstUploadMessage,
+    void Function()? onEngaged,
+  }) async {
+    final stall = Completer<void>();
+    Timer? stallTimer;
+    Timer? firstUploadTimer;
+    var uploadStarted = false;
+    void failStalled(String message) {
+      if (!stall.isCompleted) {
+        stall.completeError(FirmwareUpdateException('dfuStalled', message));
+      }
+    }
+
+    void armStallWatchdog() {
+      stallTimer?.cancel();
+      stallTimer = Timer(_dfuStallTimeout, () => failStalled(stallMessage));
+    }
+
+    final dfuSub = dfuTransport.watchProgress(session.sessionId).listen((
+      progress,
+    ) {
+      onEngaged?.call();
+      final isUploadProgress =
+          progress.progressPercentage != null ||
+          (progress.bytesTransferred ?? 0) > 0;
+      if (isUploadProgress) {
+        uploadStarted = true;
+        firstUploadTimer?.cancel();
+        firstUploadTimer = null;
+      }
+      // Before the first byte, only real upload evidence re-arms the stall
+      // watchdog — the bare reconnect-retry churn must not (the first-upload
+      // deadline guards that window). After the upload has started, every
+      // event (including the null-percentage finalization tail) proves the
+      // transfer is still alive and re-arms it.
+      if (uploadStarted) {
+        armStallWatchdog();
+      }
+      _emit(
+        session,
+        progress.state,
+        progressPercentage: progress.progressPercentage,
+        bytesTransferred: progress.bytesTransferred,
+        totalBytes: progress.totalBytes,
+      );
+    });
+    try {
+      await releaseBleForDfuTransfer?.call(deviceId: request.deviceId);
+      // Only arm the deadline if the upload hasn't already begun — defensive
+      // against any future transport that could emit progress before start().
+      if (!uploadStarted) {
+        firstUploadTimer = Timer(
+          _dfuFirstUploadDeadline,
+          () => failStalled(firstUploadMessage),
+      );
+    }
+      await Future.any(<Future<void>>[
+        dfuTransport.start(request),
+        stall.future,
+      ]);
+    } finally {
+      stallTimer?.cancel();
+      firstUploadTimer?.cancel();
+      await dfuSub.cancel();
+      // A watchdog fired but the native transfer future is still pending: cancel
+      // it so it does not keep flashing behind our back and a subsequent
+      // recovery is not rejected with 'alreadyRunning'.
+      if (stall.isCompleted) {
+        try {
+          await dfuTransport.cancel(session.sessionId);
+        } catch (_) {}
+      }
+      // Restore is best-effort cleanup: a failure here (e.g. the BLE ownership
+      // reclaim throwing) must NOT override the transfer's real outcome — a
+      // throw out of this finally would mask a SUCCESSFUL transfer as a failure
+      // and route it to recovery. Suppression is already lifted inside the
+      // restore hook's own finally, so swallowing here is safe.
+      try {
+        await restoreBleAfterDfuTransfer?.call(deviceId: request.deviceId);
+      } catch (error) {
+        _debugLog(
+          'OTA_COORDINATOR restore_hook_failed '
+          'sessionId=${session.sessionId} error=$error',
+        );
+      }
     }
   }
 
@@ -375,9 +528,22 @@ class FirmwareUpdateCoordinator {
     FirmwareUpdateSession session, {
     required String code,
     required String message,
+    required bool nativeDfuEngaged,
+    bool? requiresRecovery,
   }) {
     final phase = _sessions[session.sessionId]?.state;
-    if (code == 'recoveryRequired' || _isPastPointOfNoReturn(phase)) {
+    // Prefer the native transport's explicit verdict when it has one. If the
+    // device actively responded with an error (`requiresRecovery == false`) it
+    // is still alive and NOT stranded — e.g. the bootloader rejected the image
+    // at validation ("OPERATION FAILED") and rebooted — so a re-flash would
+    // only fail to reconnect; report a plain failure the user can retry. Fall
+    // back to the phase heuristic only when the native side gave no verdict
+    // (`requiresRecovery == null`), such as a `dfuStalled` first-upload timeout
+    // where nothing was ever emitted. Route to recovery only when the device
+    // actually entered the bootloader and the running app was erased.
+    final stranded =
+        requiresRecovery ?? (nativeDfuEngaged && _isPastPointOfNoReturn(phase));
+    if (code == 'recoveryRequired' || stranded) {
       return _completeSession(
         session,
         state: FirmwareUpdateState.recoveryRequired,
@@ -471,8 +637,9 @@ class FirmwareUpdateCoordinator {
           'Firmware artifact URL is missing.',
         );
       }
-      final artifactBytes =
-          await remoteDataSource.downloadArtifact(download.downloadUrl);
+      final artifactBytes = await remoteDataSource.downloadArtifact(
+        download.downloadUrl,
+      );
       if (download.sha256Hash.isNotEmpty) {
         _emit(session, FirmwareUpdateState.verifying);
         _verifySha256(artifactBytes, download.sha256Hash);
@@ -484,33 +651,29 @@ class FirmwareUpdateCoordinator {
       );
       _emit(session, FirmwareUpdateState.readyToTransfer);
       _emit(session, FirmwareUpdateState.transferring);
-      final dfuSub = dfuTransport.watchProgress(session.sessionId).listen(
-            (progress) => _emit(
-              session,
-              progress.state,
-              progressPercentage: progress.progressPercentage,
-              bytesTransferred: progress.bytesTransferred,
-              totalBytes: progress.totalBytes,
-            ),
-          );
-      try {
         _debugLog(
           'OTA_COORDINATOR recovery_dfu_start '
           'sessionId=${session.sessionId} bootloader=$bootloaderDeviceId '
           'release=$releaseId',
         );
-        await dfuTransport.start(
-          FirmwareDfuTransferRequest(
+      // Same reconnect suppression as a normal update: an auto-reconnect
+      // grabbing the bootloader's address mid-flash breaks the recovery too.
+      await _runNativeDfuWithWatchdog(
+        session: session,
+        request: FirmwareDfuTransferRequest(
             sessionId: session.sessionId,
             deviceId: bootloaderDeviceId,
             release: release,
             artifactBytes: artifactBytes,
             forceDfu: true,
           ),
+        stallMessage:
+            'The recovery transfer made no upload progress for '
+            '${_dfuStallTimeout.inSeconds}s.',
+        firstUploadMessage:
+            'The recovery upload never started (the bootloader could not be '
+            'reconnected).',
         );
-      } finally {
-        await dfuSub.cancel();
-      }
       _debugLog(
         'OTA_COORDINATOR recovery_completed sessionId=${session.sessionId}',
       );
@@ -759,9 +922,10 @@ class FirmwareUpdateCoordinator {
       blockers: List<FirmwareUpdateBlocker>.unmodifiable(
         <FirmwareUpdateBlocker>[...eligibility.blockers, blocker],
       ),
-      messages: List<String>.unmodifiable(
-        <String>[...eligibility.messages, message],
-      ),
+      messages: List<String>.unmodifiable(<String>[
+        ...eligibility.messages,
+        message,
+      ]),
     );
   }
 
@@ -860,6 +1024,55 @@ class FirmwareUpdateCoordinator {
     return normalized;
   }
 
+  String _backendComparableFirmwareVersion(String version) {
+    final normalized = _normalizeFirmwareVersion(version);
+    final semver = RegExp(r'^(\d+\.\d+\.\d+)(?:\.|$)').firstMatch(normalized);
+    return semver?.group(1) ?? normalized;
+  }
+
+  bool _firmwareReleaseIsActionable({
+    required String currentVersion,
+    required String targetVersion,
+    required bool allowDowngrade,
+    required bool explicitTarget,
+  }) {
+    if (_firmwareVersionMatches(currentVersion, targetVersion)) {
+      return false;
+    }
+    if (explicitTarget) {
+      return true;
+    }
+    final current = _parseComparableSemver(currentVersion);
+    final target = _parseComparableSemver(targetVersion);
+    if (current == null || target == null) {
+      return !allowDowngrade;
+    }
+    final comparison = _compareSemver(target, current);
+    return allowDowngrade ? comparison < 0 : comparison > 0;
+  }
+
+  List<int>? _parseComparableSemver(String version) {
+    final comparable = _backendComparableFirmwareVersion(version);
+    final match = RegExp(r'^(\d+)\.(\d+)\.(\d+)$').firstMatch(comparable);
+    if (match == null) {
+      return null;
+    }
+    return <int>[
+      int.parse(match.group(1)!),
+      int.parse(match.group(2)!),
+      int.parse(match.group(3)!),
+    ];
+  }
+
+  int _compareSemver(List<int> candidate, List<int> base) {
+    for (var index = 0; index < 3; index++) {
+      if (candidate[index] != base[index]) {
+        return candidate[index].compareTo(base[index]);
+      }
+    }
+    return 0;
+  }
+
   FirmwareUpdateSession _completeSession(
     FirmwareUpdateSession session, {
     required FirmwareUpdateState state,
@@ -891,6 +1104,29 @@ class FirmwareUpdateCoordinator {
     String? failureCode,
     String? failureMessage,
   }) {
+    // Track the live phase in the session map: the point-of-no-return guards
+    // (_completeTransferFailure, cancelFirmwareUpdate) read it to decide
+    // whether the bootloader has already erased the running app. Without this
+    // the tracked state stays `idle` for the whole transfer and a mid-flash
+    // abort/stall is misreported as a clean cancel/failure.
+    final tracked = _sessions[session.sessionId];
+    if (tracked != null &&
+        tracked.completedAt == null &&
+        tracked.state != state) {
+      // Do NOT let a native terminal-ish progress event (dfuError → failed,
+      // dfuAborted → cancelled, delivered through watchProgress) regress the
+      // tracked phase out of the point-of-no-return band. The failure routing
+      // reads this phase right after start() throws; if it were clobbered to
+      // failed/cancelled, a device genuinely mid-flash would be reported as a
+      // clean failure instead of routed to recovery. Terminal state is applied
+      // authoritatively by _completeSession, not by a transient progress event.
+      final regressesOutOfPointOfNoReturn =
+          _isPastPointOfNoReturn(tracked.state) &&
+          !_isPastPointOfNoReturn(state);
+      if (!regressesOutOfPointOfNoReturn) {
+        _sessions[session.sessionId] = tracked.copyWith(state: state);
+      }
+    }
     if (_progressController.isClosed) {
       return;
     }
@@ -918,8 +1154,7 @@ class FirmwareUpdateCoordinator {
       SosState.idle ||
       SosState.cancelled ||
       SosState.resolved ||
-      SosState.failed =>
-        false,
+      SosState.failed => false,
       _ => true,
     };
   }
@@ -928,8 +1163,7 @@ class FirmwareUpdateCoordinator {
     return switch (status) {
       DeathManStatus.confirmedSafe ||
       DeathManStatus.cancelled ||
-      DeathManStatus.expired =>
-        false,
+      DeathManStatus.expired => false,
       _ => true,
     };
   }

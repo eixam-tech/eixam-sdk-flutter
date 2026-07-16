@@ -13,6 +13,12 @@ class EixamUiTexts {
     required this.deathManCheckInMessage,
     required this.confirmSafety,
     required this.deviceRegionTitle,
+    this.deviceRegionPrompt =
+        'This update is required to comply with the radio regulations in your '
+        'current region. Update the device to continue.',
+    this.deviceRegionConfirm = 'Update',
+    this.deviceRegionCancel = 'Not now',
+    this.deviceRegionRetry = 'Try again',
     required this.deviceRegionApplying,
     required this.deviceRegionSuccess,
     required this.deviceRegionError,
@@ -31,14 +37,18 @@ class EixamUiTexts {
         deathManCheckInMessage:
             'Confirma que estás bien para evitar activar el protocolo SOS.',
         confirmSafety: 'Estoy bien',
-        deviceRegionTitle: 'Región de radio del dispositivo',
-        deviceRegionApplying:
-            'Configurando la región de radio correcta para tu país…',
-        deviceRegionSuccess:
-            'Tu dispositivo ya usa la región de radio legal para tu ubicación.',
+    deviceRegionTitle: 'Actualización de región requerida',
+    deviceRegionPrompt:
+        'Esta actualización es obligatoria para cumplir la normativa de '
+        'radio de tu región actual. Actualiza el dispositivo para continuar.',
+    deviceRegionConfirm: 'Actualizar',
+    deviceRegionCancel: 'Ahora no',
+    deviceRegionRetry: 'Reintentar',
+    deviceRegionApplying: 'Actualizando la región del dispositivo…',
+    deviceRegionSuccess: 'La región del dispositivo se ha actualizado.',
         deviceRegionError:
-            'El dispositivo no pudo aplicar la región. Se reintentará '
-            'automáticamente.',
+        'No hemos podido actualizar la región del dispositivo. Mantén el '
+        'dispositivo conectado e inténtalo de nuevo.',
         deviceRegionDismiss: 'Aceptar',
       );
 
@@ -54,14 +64,18 @@ class EixamUiTexts {
         deathManCheckInMessage:
             'Confirm you are safe to avoid triggering the SOS protocol.',
         confirmSafety: 'I am safe',
-        deviceRegionTitle: 'Device radio region',
-        deviceRegionApplying:
-            'Setting the correct radio region for your country…',
-        deviceRegionSuccess:
-            'Your device now uses the radio region legal for your location.',
+    deviceRegionTitle: 'Device region update required',
+    deviceRegionPrompt:
+        'This update is required to comply with the radio regulations in '
+        'your current region. Update the device to continue.',
+    deviceRegionConfirm: 'Update',
+    deviceRegionCancel: 'Not now',
+    deviceRegionRetry: 'Try again',
+    deviceRegionApplying: 'Updating device region…',
+    deviceRegionSuccess: 'Device region updated.',
         deviceRegionError:
-            'The device could not apply the region. It will retry '
-            'automatically.',
+        'We could not update the device region. Keep the device connected '
+        'and try again.',
         deviceRegionDismiss: 'OK',
       );
 
@@ -77,15 +91,18 @@ class EixamUiTexts {
         deathManCheckInMessage:
             'Confirma que estàs bé per evitar activar el protocol SOS.',
         confirmSafety: 'Estic bé',
-        deviceRegionTitle: 'Regió de ràdio del dispositiu',
-        deviceRegionApplying:
-            'Configurant la regió de ràdio correcta per al teu país…',
-        deviceRegionSuccess:
-            'El teu dispositiu ja fa servir la regió de ràdio legal per a la '
-            'teva ubicació.',
+    deviceRegionTitle: 'Actualització de regió necessària',
+    deviceRegionPrompt:
+        'Aquesta actualització és obligatòria per complir la normativa de '
+        'ràdio de la regió actual. Actualitza el dispositiu per continuar.',
+    deviceRegionConfirm: 'Actualitzar',
+    deviceRegionCancel: 'Ara no',
+    deviceRegionRetry: 'Torna-ho a provar',
+    deviceRegionApplying: 'Actualitzant la regió del dispositiu…',
+    deviceRegionSuccess: 'La regió del dispositiu s’ha actualitzat.',
         deviceRegionError:
-            'El dispositiu no ha pogut aplicar la regió. Es tornarà a provar '
-            'automàticament.',
+        'No hem pogut actualitzar la regió del dispositiu. Mantén el '
+        'dispositiu connectat i torna-ho a provar.',
         deviceRegionDismiss: 'D’acord',
       );
 
@@ -101,15 +118,18 @@ class EixamUiTexts {
         deathManCheckInMessage:
             'Confirmez que vous allez bien pour éviter d’activer le protocole SOS.',
         confirmSafety: 'Je vais bien',
-        deviceRegionTitle: 'Région radio de l’appareil',
-        deviceRegionApplying:
-            'Configuration de la région radio adaptée à votre pays…',
-        deviceRegionSuccess:
-            'Votre appareil utilise désormais la région radio légale pour '
-            'votre position.',
+    deviceRegionTitle: 'Mise à jour de région requise',
+    deviceRegionPrompt:
+        'Cette mise à jour est obligatoire pour respecter la réglementation '
+        'radio de votre région actuelle. Mettez à jour l’appareil pour continuer.',
+    deviceRegionConfirm: 'Mettre à jour',
+    deviceRegionCancel: 'Pas maintenant',
+    deviceRegionRetry: 'Réessayer',
+    deviceRegionApplying: 'Mise à jour de la région de l’appareil…',
+    deviceRegionSuccess: 'La région de l’appareil a été mise à jour.',
         deviceRegionError:
-            'L’appareil n’a pas pu appliquer la région. Une nouvelle tentative '
-            'aura lieu automatiquement.',
+        'Nous n’avons pas pu mettre à jour la région de l’appareil. Gardez '
+        'l’appareil connecté et réessayez.',
         deviceRegionDismiss: 'OK',
       );
 
@@ -137,6 +157,10 @@ class EixamUiTexts {
   final String deathManCheckInMessage;
   final String confirmSafety;
   final String deviceRegionTitle;
+  final String deviceRegionPrompt;
+  final String deviceRegionConfirm;
+  final String deviceRegionCancel;
+  final String deviceRegionRetry;
   final String deviceRegionApplying;
   final String deviceRegionSuccess;
   final String deviceRegionError;
@@ -154,6 +178,10 @@ class EixamUiTexts {
     String? deathManCheckInMessage,
     String? confirmSafety,
     String? deviceRegionTitle,
+    String? deviceRegionPrompt,
+    String? deviceRegionConfirm,
+    String? deviceRegionCancel,
+    String? deviceRegionRetry,
     String? deviceRegionApplying,
     String? deviceRegionSuccess,
     String? deviceRegionError,
@@ -172,6 +200,10 @@ class EixamUiTexts {
           deathManCheckInMessage ?? this.deathManCheckInMessage,
       confirmSafety: confirmSafety ?? this.confirmSafety,
       deviceRegionTitle: deviceRegionTitle ?? this.deviceRegionTitle,
+      deviceRegionPrompt: deviceRegionPrompt ?? this.deviceRegionPrompt,
+      deviceRegionConfirm: deviceRegionConfirm ?? this.deviceRegionConfirm,
+      deviceRegionCancel: deviceRegionCancel ?? this.deviceRegionCancel,
+      deviceRegionRetry: deviceRegionRetry ?? this.deviceRegionRetry,
       deviceRegionApplying: deviceRegionApplying ?? this.deviceRegionApplying,
       deviceRegionSuccess: deviceRegionSuccess ?? this.deviceRegionSuccess,
       deviceRegionError: deviceRegionError ?? this.deviceRegionError,

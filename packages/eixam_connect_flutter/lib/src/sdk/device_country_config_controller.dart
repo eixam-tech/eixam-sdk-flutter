@@ -17,14 +17,14 @@ typedef ConnectedDeviceStatusProvider = DeviceStatus? Function();
 /// it is safe to reboot the device.
 typedef SafetyHoldReasonProvider = Future<String?> Function();
 
-/// Keeps the connected BLE device configured with the per-country radio config
-/// (LoRa region) legal for the country it is physically in.
+/// Detects when the connected BLE device differs from the backend config for
+/// the current country, then applies that pending change only after the host
+/// has obtained explicit user confirmation.
 ///
-/// Modeled on `FirmwareUpdateCoordinator`: a single guarded entry point
-/// ([ensure]) runs ordered skip gates before ever writing a region or
-/// rebooting, drives a setRegion -> reboot -> verify loop, and never throws.
-/// Safety is the first hard gate — a region change reboots the device, so it is
-/// deferred whenever a safety flow is active.
+/// Detection ([check]) never writes or reboots. Application ([applyPending])
+/// re-checks identity, safety and live device state immediately before driving
+/// the setRegion -> reboot -> verify loop. Both entry points are guarded,
+/// best-effort and never throw.
 class DeviceCountryConfigController {
   DeviceCountryConfigController({
     required this.geoCountrySource,
@@ -66,7 +66,8 @@ class DeviceCountryConfigController {
   final StreamController<DeviceCountryConfigStatus> _statusController =
       StreamController<DeviceCountryConfigStatus>.broadcast();
   DeviceCountryConfigStatus _lastStatus = DeviceCountryConfigStatus.idle();
-  bool _inFlight = false;
+  _PendingDeviceCountryConfig? _pending;
+  Completer<void>? _operationDone;
 
   Stream<DeviceCountryConfigStatus> watchStatus() => _statusController.stream;
 
@@ -76,31 +77,68 @@ class DeviceCountryConfigController {
     await _statusController.close();
   }
 
-  /// Single entry point. Best-effort and idempotent: never throws, returns the
-  /// terminal [DeviceCountryConfigStatus], and is guarded against concurrent
-  /// runs (overlapping calls return the current status without re-running).
-  Future<DeviceCountryConfigStatus> ensure({String reason = 'manual'}) async {
-    if (_inFlight) {
-      return _lastStatus;
-    }
-    _inFlight = true;
+  /// Detects a mismatch without changing the device.
+  Future<DeviceCountryConfigStatus> check({
+    String reason = 'manual',
+    String? countryIsoOverride,
+  }) async {
+    await _acquireOperation();
     try {
-      return await _run(reason);
+      return await _check(reason, countryIsoOverride: countryIsoOverride);
     } catch (error) {
+      _pending = null;
       return _emit(
         DeviceCountryConfigOutcome.failed,
-        detail: 'Unexpected error ($reason): $error',
+        detail: 'Unexpected check error ($reason): $error',
       );
     } finally {
-      _inFlight = false;
+      _finishOperation();
     }
   }
 
-  Future<DeviceCountryConfigStatus> _run(String reason) async {
+  /// Applies the most recently detected mismatch after host confirmation.
+  Future<DeviceCountryConfigStatus> applyPending({
+    String reason = 'user_confirmed',
+  }) async {
+    // A lifecycle re-check may overlap the user's tap. Serialize the apply
+    // behind it so confirmation uses the freshly validated plan. If that check
+    // invalidates the plan, return its detection status rather than inventing a
+    // misleading apply failure for a modal that is no longer actionable.
+    final overlappedOperation = _operationDone != null;
+    await _acquireOperation();
+    try {
+      if (overlappedOperation &&
+          _pending == null &&
+          !_lastStatus.requiresConfirmation) {
+        return _lastStatus;
+      }
+      return await _applyPending(reason);
+    } catch (error) {
+      _pending = null;
+      return _emit(
+        DeviceCountryConfigOutcome.failed,
+        applyAttempted: true,
+        detail: 'Unexpected apply error ($reason): $error',
+      );
+    } finally {
+      _finishOperation();
+    }
+  }
+
+  /// Deprecated compatibility alias. It deliberately remains detection-only;
+  /// no public SDK method may apply a region without explicit confirmation.
+  @Deprecated('Use check, then applyPending after explicit user confirmation.')
+  Future<DeviceCountryConfigStatus> ensure({String reason = 'manual'}) =>
+      check(reason: reason);
+
+  Future<DeviceCountryConfigStatus> _check(
+    String reason, {
+    String? countryIsoOverride,
+  }) async {
     // 1. A command-capable device must be connected.
     final deviceStatus = deviceStatusProvider();
     if (deviceStatus == null || !deviceStatus.connected) {
-      return _emit(
+      return _emitCheckTerminal(
         DeviceCountryConfigOutcome.skippedDeviceOffline,
         detail: 'No connected device (reason=$reason)',
       );
@@ -110,23 +148,27 @@ class DeviceCountryConfigController {
     // 2. Safety gate FIRST: never reboot during an active safety flow.
     final hold = await safetyHoldReason();
     if (hold != null) {
-      return _emit(DeviceCountryConfigOutcome.skippedSafetyActive,
-          detail: hold);
+      return _emitCheckTerminal(
+        DeviceCountryConfigOutcome.skippedSafetyActive,
+        detail: hold,
+      );
     }
 
-    // 3. Resolve the device's physical location. Require an AUTHORITATIVE fix
-    // (connected-device / phone) — a cached / backend-snapshot / relay
-    // coordinate could resolve the wrong country and reboot the device onto a
-    // region illegal for where it actually is.
+    // 3-4. Resolve the ISO country. Production uses an AUTHORITATIVE fix
+    // (connected-device / phone). A host development tool may supply a country
+    // override; this only bypasses geo resolution and still exercises backend
+    // config lookup plus the real device compare/apply/verify flow.
+    final String countryIso;
+    final override = countryIsoOverride?.trim().toUpperCase();
+    if (override != null && override.isNotEmpty) {
+      countryIso = override;
+    } else {
     final location = await locationProvider();
     if (location == null ||
         !location.isValid ||
         !location.authoritativeForBackend) {
-      return _emit(DeviceCountryConfigOutcome.skippedNoLocation);
+        return _emitCheckTerminal(DeviceCountryConfigOutcome.skippedNoLocation);
     }
-
-    // 4. Resolve the ISO country for that location (backend geo endpoint).
-    final String countryIso;
     try {
       final resolved = await geoCountrySource.resolveCountry(
         latitude: location.latitude,
@@ -134,27 +176,38 @@ class DeviceCountryConfigController {
       );
       countryIso = resolved.countryIso;
     } catch (error) {
-      return _emit(
+        return _emitCheckTerminal(
         DeviceCountryConfigOutcome.skippedCountryUnknown,
         detail: 'Country resolution failed: $error',
       );
     }
+    }
 
     // 5. Fetch the per-country config and map it to a target region.
-    final DeviceCountryConfig config;
+    final DeviceCountryConfig? config;
     try {
       config = await deviceConfigSource.fetchByCountry(countryIso: countryIso);
     } catch (error) {
-      return _emit(
+      return _emitCheckTerminal(
         DeviceCountryConfigOutcome.skippedCountryUnknown,
         countryIso: countryIso,
         detail: 'Device config fetch failed: $error',
       );
     }
-    // The region byte is taken verbatim from the backend config; when the
-    // backend is unmapped it already falls back to EU868 (see
-    // DeviceCountryConfig.regionByte), so there is always a legal region to
-    // apply — the SDK never skips a device for a "missing" region.
+    // No backend config for this country and no default (404): skip. Applying
+    // the EU868 fallback here would reboot a device physically outside the EU
+    // onto a region illegal for where it actually is.
+    if (config == null) {
+      return _emitCheckTerminal(
+        DeviceCountryConfigOutcome.skippedCountryUnknown,
+        countryIso: countryIso,
+        detail: 'No device config for country $countryIso (backend 404)',
+      );
+    }
+    // The region byte is taken verbatim from the backend config; when a config
+    // EXISTS but omits/zeroes the byte it falls back to EU868 (see
+    // DeviceCountryConfig.regionByte) — the backend explicitly chose to answer
+    // for this country, so there is always a legal region to apply.
     final int target = config.regionByte;
     final LoraRegionCode targetLabel = LoraRegionCode.fromWireValue(target);
 
@@ -172,7 +225,7 @@ class DeviceCountryConfigController {
           deviceConfig: config.deviceConfig,
           at: _clock(),
         );
-        return _emit(
+        return _emitCheckTerminal(
           DeviceCountryConfigOutcome.skippedUpToDate,
           countryIso: countryIso,
           targetRegion: targetLabel,
@@ -181,7 +234,7 @@ class DeviceCountryConfigController {
         );
       }
     } catch (error) {
-      return _emit(
+      return _emitCheckTerminal(
         DeviceCountryConfigOutcome.skippedDeviceOffline,
         countryIso: countryIso,
         targetRegion: targetLabel,
@@ -202,52 +255,162 @@ class DeviceCountryConfigController {
       // lacks the region command, so suppress re-attempts for ANY target until
       // the cooldown elapses — a border crossing (different target) must not
       // re-trigger reboots on unsupported firmware.
-      return _emit(
+      return _emitCheckTerminal(
         DeviceCountryConfigOutcome.skippedFirmwareUnsupported,
         countryIso: countryIso,
         targetRegion: targetLabel,
         deviceReportedRegion: deviceRegion,
         deviceConfig: config.deviceConfig,
-        detail: 'Device did not adopt a region previously (firmware likely '
+        detail:
+            'Device did not adopt a region previously (firmware likely '
             'lacks the region command)',
       );
     }
 
-    // 7. Re-check safety immediately before the reboot-causing write: an
-    // SOS / PreSOS / Death-Man / protection flow may have started during the
-    // awaits above (location, geo, config, status), and a reboot must never
-    // interrupt an active safety flow.
-    final holdBeforeApply = await safetyHoldReason();
-    if (holdBeforeApply != null) {
-      return _emit(
-        DeviceCountryConfigOutcome.skippedSafetyActive,
-        countryIso: countryIso,
-        targetRegion: targetLabel,
-        deviceReportedRegion: deviceRegion,
-        deviceConfig: config.deviceConfig,
-        detail: holdBeforeApply,
-      );
-    }
-
-    // 8. Apply: signal the in-progress state (drives the host's loading modal)
-    // — emitted only here, once we're committed to a real write+reboot — then
-    // write the region, reboot, and verify the device adopted it.
-    _emit(
-      DeviceCountryConfigOutcome.applying,
+    // 7. Publish a pending change. The host now owns explicit confirmation;
+    // detection stops here without sending any BLE command or rebooting.
+    _pending = _PendingDeviceCountryConfig(
+      deviceKey: deviceKey,
       countryIso: countryIso,
+      targetWire: target,
       targetRegion: targetLabel,
       deviceReportedRegion: deviceRegion,
       deviceConfig: config.deviceConfig,
     );
-    try {
-      await setRegionCommand(target);
-    } catch (error) {
       return _emit(
-        DeviceCountryConfigOutcome.failed,
+      DeviceCountryConfigOutcome.updateAvailable,
         countryIso: countryIso,
         targetRegion: targetLabel,
         deviceReportedRegion: deviceRegion,
         deviceConfig: config.deviceConfig,
+      );
+    }
+
+  Future<DeviceCountryConfigStatus> _applyPending(String reason) async {
+    final pending = _pending;
+    if (pending == null) {
+      return _emit(
+        DeviceCountryConfigOutcome.failed,
+        applyAttempted: true,
+        detail: 'No pending device region update (reason=$reason)',
+      );
+    }
+
+    final deviceStatus = deviceStatusProvider();
+    if (deviceStatus == null || !deviceStatus.connected) {
+      return _emit(
+        DeviceCountryConfigOutcome.skippedDeviceOffline,
+        applyAttempted: true,
+        canRetry: true,
+        countryIso: pending.countryIso,
+        targetRegion: pending.targetRegion,
+        deviceReportedRegion: pending.deviceReportedRegion,
+        deviceConfig: pending.deviceConfig,
+        detail: 'Pending device is temporarily offline (reason=$reason)',
+      );
+    }
+    if (_deviceKeyFor(deviceStatus) != pending.deviceKey) {
+      _pending = null;
+      return _emit(
+        DeviceCountryConfigOutcome.skippedDeviceOffline,
+        applyAttempted: true,
+        countryIso: pending.countryIso,
+        targetRegion: pending.targetRegion,
+        deviceReportedRegion: pending.deviceReportedRegion,
+        deviceConfig: pending.deviceConfig,
+        detail: 'A different device is connected (reason=$reason)',
+      );
+    }
+
+    // User confirmation may arrive well after detection. Re-check both safety
+    // and the live region before doing anything that can reboot the device.
+    final hold = await safetyHoldReason();
+    if (hold != null) {
+      return _emit(
+        DeviceCountryConfigOutcome.skippedSafetyActive,
+        applyAttempted: true,
+        canRetry: true,
+        countryIso: pending.countryIso,
+        targetRegion: pending.targetRegion,
+        deviceReportedRegion: pending.deviceReportedRegion,
+        deviceConfig: pending.deviceConfig,
+        detail: hold,
+      );
+    }
+
+    LoraRegionCode liveRegion;
+    try {
+      final runtime = await runtimeStatusProvider();
+      liveRegion = LoraRegionCode.fromWireValue(runtime.region);
+      if (runtime.region == pending.targetWire) {
+        _pending = null;
+        await store.saveApplied(
+          deviceKey: pending.deviceKey,
+          countryIso: pending.countryIso,
+          regionWire: pending.targetWire,
+          deviceConfig: pending.deviceConfig,
+          at: _clock(),
+        );
+        return _emit(
+          DeviceCountryConfigOutcome.skippedUpToDate,
+          applyAttempted: true,
+          countryIso: pending.countryIso,
+          targetRegion: pending.targetRegion,
+          deviceReportedRegion: liveRegion,
+          deviceConfig: pending.deviceConfig,
+        );
+      }
+    } catch (error) {
+      return _emit(
+        DeviceCountryConfigOutcome.skippedDeviceOffline,
+        applyAttempted: true,
+        canRetry: true,
+        countryIso: pending.countryIso,
+        targetRegion: pending.targetRegion,
+        deviceReportedRegion: pending.deviceReportedRegion,
+        deviceConfig: pending.deviceConfig,
+        detail: 'Could not re-read device region: $error',
+      );
+    }
+
+    final holdBeforeWrite = await safetyHoldReason();
+    if (holdBeforeWrite != null) {
+      return _emit(
+        DeviceCountryConfigOutcome.skippedSafetyActive,
+        applyAttempted: true,
+        canRetry: true,
+        countryIso: pending.countryIso,
+        targetRegion: pending.targetRegion,
+        deviceReportedRegion: liveRegion,
+        deviceConfig: pending.deviceConfig,
+        detail: holdBeforeWrite,
+      );
+    }
+
+    // Signal progress only after all late gates pass and the write is about to
+    // start. The modal also switches to loading immediately on confirmation.
+    _emit(
+      DeviceCountryConfigOutcome.applying,
+      applyAttempted: true,
+      countryIso: pending.countryIso,
+      targetRegion: pending.targetRegion,
+      deviceReportedRegion: liveRegion,
+      deviceConfig: pending.deviceConfig,
+    );
+    // From this point a BLE write may have reached the device even if the
+    // transport later reports an error. Consume the plan before dispatch and
+    // require a fresh detection after any write-side failure.
+    _pending = null;
+    try {
+      await setRegionCommand(pending.targetWire);
+    } catch (error) {
+      return _emit(
+        DeviceCountryConfigOutcome.failed,
+        applyAttempted: true,
+        countryIso: pending.countryIso,
+        targetRegion: pending.targetRegion,
+        deviceReportedRegion: liveRegion,
+        deviceConfig: pending.deviceConfig,
         detail: 'setRegion failed: $error',
       );
     }
@@ -258,38 +421,40 @@ class DeviceCountryConfigController {
       // and fall through to verification.
     }
 
-    final adopted = await _waitForRegion(target);
+    final adopted = await _waitForRegion(pending.targetWire);
     if (adopted) {
       await store.saveApplied(
-        deviceKey: deviceKey,
-        countryIso: countryIso,
-        regionWire: target,
-        deviceConfig: config.deviceConfig,
+        deviceKey: pending.deviceKey,
+        countryIso: pending.countryIso,
+        regionWire: pending.targetWire,
+        deviceConfig: pending.deviceConfig,
         at: _clock(),
       );
       return _emit(
         DeviceCountryConfigOutcome.applied,
-        countryIso: countryIso,
-        targetRegion: targetLabel,
-        deviceReportedRegion: targetLabel,
-        deviceConfig: config.deviceConfig,
+        applyAttempted: true,
+        countryIso: pending.countryIso,
+        targetRegion: pending.targetRegion,
+        deviceReportedRegion: pending.targetRegion,
+        deviceConfig: pending.deviceConfig,
       );
     }
 
     await store.saveUnsupportedAttempt(
-      deviceKey: deviceKey,
-      countryIso: countryIso,
-      regionWire: target,
-      deviceConfig: config.deviceConfig,
+      deviceKey: pending.deviceKey,
+      countryIso: pending.countryIso,
+      regionWire: pending.targetWire,
+      deviceConfig: pending.deviceConfig,
       at: _clock(),
     );
     return _emit(
       DeviceCountryConfigOutcome.skippedFirmwareUnsupported,
-      countryIso: countryIso,
-      targetRegion: targetLabel,
-      deviceReportedRegion: deviceRegion,
-      deviceConfig: config.deviceConfig,
-      detail: 'Device did not adopt region $target after reboot',
+      applyAttempted: true,
+      countryIso: pending.countryIso,
+      targetRegion: pending.targetRegion,
+      deviceReportedRegion: liveRegion,
+      deviceConfig: pending.deviceConfig,
+      detail: 'Device did not adopt region ${pending.targetWire} after reboot',
     );
   }
 
@@ -331,6 +496,8 @@ class DeviceCountryConfigController {
 
   DeviceCountryConfigStatus _emit(
     DeviceCountryConfigOutcome outcome, {
+    bool applyAttempted = false,
+    bool canRetry = false,
     String? countryIso,
     LoraRegionCode? targetRegion,
     LoraRegionCode? deviceReportedRegion,
@@ -340,6 +507,8 @@ class DeviceCountryConfigController {
     final status = DeviceCountryConfigStatus(
       outcome: outcome,
       updatedAt: _clock(),
+      applyAttempted: applyAttempted,
+      canRetry: canRetry,
       countryIso: countryIso,
       targetRegion: targetRegion,
       deviceReportedRegion: deviceReportedRegion,
@@ -353,6 +522,64 @@ class DeviceCountryConfigController {
     return status;
   }
 
+  DeviceCountryConfigStatus _emitCheckTerminal(
+    DeviceCountryConfigOutcome outcome, {
+    String? countryIso,
+    LoraRegionCode? targetRegion,
+    LoraRegionCode? deviceReportedRegion,
+    String? deviceConfig,
+    String? detail,
+  }) {
+    // A completed detection replaces or invalidates any older confirmation.
+    // The UI uses applyAttempted=false to close a now-stale prompt quietly.
+    _pending = null;
+    return _emit(
+      outcome,
+      countryIso: countryIso,
+      targetRegion: targetRegion,
+      deviceReportedRegion: deviceReportedRegion,
+      deviceConfig: deviceConfig,
+      detail: detail,
+    );
+  }
+
   static Future<void> _defaultDelay(Duration duration) =>
       Future<void>.delayed(duration);
+
+  Future<void> _acquireOperation() async {
+    while (true) {
+      final running = _operationDone;
+      if (running == null) {
+        _operationDone = Completer<void>();
+        return;
+      }
+      await running.future;
+    }
+  }
+
+  void _finishOperation() {
+    final done = _operationDone;
+    _operationDone = null;
+    if (done != null && !done.isCompleted) {
+      done.complete();
+    }
+  }
+}
+
+final class _PendingDeviceCountryConfig {
+  const _PendingDeviceCountryConfig({
+    required this.deviceKey,
+    required this.countryIso,
+    required this.targetWire,
+    required this.targetRegion,
+    required this.deviceReportedRegion,
+    required this.deviceConfig,
+  });
+
+  final String deviceKey;
+  final String countryIso;
+  final int targetWire;
+  final LoraRegionCode targetRegion;
+  final LoraRegionCode deviceReportedRegion;
+  final String? deviceConfig;
 }

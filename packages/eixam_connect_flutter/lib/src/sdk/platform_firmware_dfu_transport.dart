@@ -21,7 +21,16 @@ class PlatformFirmwareDfuTransport implements FirmwareDfuTransport {
       'dev.eixam.connect_flutter/firmware_dfu/methods';
   static const String _eventChannelName =
       'dev.eixam.connect_flutter/firmware_dfu/events';
-  static const Duration _nativeTerminalTimeout = Duration(minutes: 6);
+
+  /// Max silence between native DFU events before giving up. This is an
+  /// *inactivity* window, not an absolute cap on the whole transfer: it re-arms
+  /// on every native event, so a slow-but-progressing upload (e.g. a legacy
+  /// bootloader capped at ATT MTU 23 with a low PRN, which can take 10–15 min
+  /// for a ~600 KB image) is never killed mid-flight — only a genuine hang with
+  /// no events at all trips it. A previous fixed 6-min absolute cap aborted
+  /// healthy slow transfers, resetting the UI to "failed" while the native
+  /// foreground service kept flashing in the background.
+  static const Duration _nativeInactivityTimeout = Duration(minutes: 6);
 
   final MethodChannel _methodChannel;
   final EventChannel _eventChannel;
@@ -43,11 +52,41 @@ class PlatformFirmwareDfuTransport implements FirmwareDfuTransport {
     late final StreamSubscription<_NativeDfuEvent> terminalSub;
     final terminalCompleter = Completer<_NativeDfuEvent>();
     _NativeDfuEvent? lastEvent;
+    Timer? inactivityTimer;
+    // Re-armed on every native event and after the transfer starts. Only a full
+    // window of silence (no progress/state events) completes the transfer with
+    // a timeout error, so a slow-but-live upload keeps running.
+    void armInactivityTimeout() {
+      inactivityTimer?.cancel();
+      inactivityTimer = Timer(_nativeInactivityTimeout, () {
+        if (terminalCompleter.isCompleted) {
+          return;
+        }
+        terminalCompleter.complete(
+          _NativeDfuEvent(
+            sessionId: request.sessionId,
+            state: 'dfuError',
+            errorCode: 'dfuTerminalTimeout',
+            errorMessage:
+                'Native DFU reported no events for '
+                '${_nativeInactivityTimeout.inMinutes} min. Last native state '
+                'was ${lastEvent?.state ?? "unknown"}.',
+            requiresRecovery:
+                lastEvent?.requiresRecovery == true ||
+                lastEvent?.state == 'deviceDisconnected',
+          ),
+        );
+      });
+    }
+
     terminalSub = _ensureNativeEvents()
         .map(_mapNativeEvent)
         .where((event) => event.sessionId == request.sessionId)
         .listen((event) {
       lastEvent = event;
+          if (!event.isTerminal) {
+            armInactivityTimeout();
+          }
       debugPrint(
         'OTA_DFU_DART native event received '
         'sessionId=${event.sessionId} state=${event.state} '
@@ -62,9 +101,8 @@ class PlatformFirmwareDfuTransport implements FirmwareDfuTransport {
       }
     });
     try {
-      final raw = await _methodChannel.invokeMapMethod<String, dynamic>(
-        'startDfu',
-        <String, dynamic>{
+      final raw = await _methodChannel
+          .invokeMapMethod<String, dynamic>('startDfu', <String, dynamic>{
           'sessionId': request.sessionId,
           'deviceId': request.deviceId,
           'deviceRemoteId': request.deviceId,
@@ -73,30 +111,23 @@ class PlatformFirmwareDfuTransport implements FirmwareDfuTransport {
           'releaseId': request.release.releaseId,
           'forceDfu': request.forceDfu,
           'enterDfuMode': !request.forceDfu,
-        },
-      );
+          });
       final started = raw?['success'] == true || raw?['started'] == true;
       if (!started) {
+        final startRequiresRecovery = raw?['requiresRecovery'] == true;
         throw FirmwareUpdateException(
-          raw?['requiresRecovery'] == true
+          startRequiresRecovery
               ? 'recoveryRequired'
               : _nativeErrorCode(raw, fallback: 'dfuFailed'),
           _nativeErrorMessage(raw, fallback: 'Native DFU failed to start.'),
+          requiresRecovery: startRequiresRecovery,
         );
       }
-      final terminal = await terminalCompleter.future.timeout(
-        _nativeTerminalTimeout,
-        onTimeout: () => _NativeDfuEvent(
-          sessionId: request.sessionId,
-          state: 'dfuError',
-          errorCode: 'dfuTerminalTimeout',
-          errorMessage:
-              'Native DFU did not report completion before the timeout. '
-              'Last native state was ${lastEvent?.state ?? "unknown"}.',
-          requiresRecovery: lastEvent?.requiresRecovery == true ||
-              lastEvent?.state == 'deviceDisconnected',
-        ),
-      );
+      // Arm the inactivity watchdog now that the native transfer is running;
+      // each subsequent native event re-arms it, so it only fires on true
+      // silence, never on a healthy slow transfer.
+      armInactivityTimeout();
+      final terminal = await terminalCompleter.future;
       if (terminal.isSuccess) {
         debugPrint(
           'OTA_DFU_DART native terminal success '
@@ -115,6 +146,7 @@ class PlatformFirmwareDfuTransport implements FirmwareDfuTransport {
             ? 'recoveryRequired'
             : (terminal.errorCode ?? _terminalFailureCode(terminal.state)),
         terminal.errorMessage ?? 'Native DFU failed.',
+        requiresRecovery: terminal.requiresRecovery,
       );
     } on PlatformException catch (error) {
       throw FirmwareUpdateException(
@@ -122,6 +154,7 @@ class PlatformFirmwareDfuTransport implements FirmwareDfuTransport {
         error.message ?? error.code,
       );
     } finally {
+      inactivityTimer?.cancel();
       await terminalSub.cancel();
       await _deleteArtifactQuietly(request.sessionId);
     }
@@ -138,10 +171,9 @@ class PlatformFirmwareDfuTransport implements FirmwareDfuTransport {
   @override
   Future<void> cancel(String sessionId) async {
     try {
-      await _methodChannel.invokeMethod<void>(
-        'cancelDfu',
-        <String, dynamic>{'sessionId': sessionId},
-      );
+      await _methodChannel.invokeMethod<void>('cancelDfu', <String, dynamic>{
+        'sessionId': sessionId,
+      });
     } on PlatformException catch (error) {
       throw FirmwareUpdateException(
         _mapPlatformErrorCode(error.code),
@@ -154,8 +186,10 @@ class PlatformFirmwareDfuTransport implements FirmwareDfuTransport {
 
   Future<String> _writeFirmwareZip(FirmwareDfuTransferRequest request) async {
     final tempDir = Directory.systemTemp.createTempSync('eixam_dfu_');
-    final file = File('${tempDir.path}${Platform.pathSeparator}'
-        '${request.sessionId}_${request.release.version}.zip');
+    final file = File(
+      '${tempDir.path}${Platform.pathSeparator}'
+      '${request.sessionId}_${request.release.version}.zip',
+    );
     await file.writeAsBytes(request.artifactBytes, flush: true);
     return file.path;
   }
@@ -236,13 +270,11 @@ class PlatformFirmwareDfuTransport implements FirmwareDfuTransport {
       'dfuProcessStarting' ||
       'enablingDfuMode' ||
       'starting' ||
-      'uploading' =>
-        FirmwareUpdateState.transferring,
+      'uploading' => FirmwareUpdateState.transferring,
       'firmwareValidating' => FirmwareUpdateState.transferring,
       'deviceDisconnecting' ||
       'deviceDisconnected' ||
-      'dfuCompleted' =>
-        FirmwareUpdateState.reconnecting,
+      'dfuCompleted' => FirmwareUpdateState.reconnecting,
       'dfuAborted' => FirmwareUpdateState.cancelled,
       'dfuError' => FirmwareUpdateState.failed,
       'downloading' => FirmwareUpdateState.downloading,
@@ -336,10 +368,7 @@ class _NativeDfuEvent {
 }
 
 class _NativeDfuProgress {
-  const _NativeDfuProgress({
-    required this.sessionId,
-    required this.progress,
-  });
+  const _NativeDfuProgress({required this.sessionId, required this.progress});
 
   final String sessionId;
   final DfuProgress progress;

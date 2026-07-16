@@ -170,6 +170,15 @@ final class FirmwareDfuBridge: NSObject, FlutterPlugin, FlutterStreamHandler {
       initiator.forceDfu = pending.forceDfu
       // Small delay before each data object improves reliability on nRF52.
       initiator.dataObjectPreparationDelay = 0.3
+      // Pace the upload to the bootloader's ACKs. The WisMesh Tag runs the
+      // legacy (Nordic SDK 11 / Adafruit-RAK) bootloader, whose small buffer and
+      // slow flash reject the first data object with remote error 6
+      // (OPERATION_FAILED) if packets stream unthrottled. The Nordic default
+      // (12) is too high here — the library's own error-6 hint says reduce PRN
+      // to 10 or less. MTU is bootloader-capped at 23, so PRN is the only speed
+      // lever; PRN=8 is the fast end of the guidance and matches Android. Step
+      // down (6, then 4) if error 6 reappears.
+      initiator.packetReceiptNotificationParameter = 8
       emit(sessionId: pending.sessionId, state: "transferring", message: "DFU transfer queued.")
       dfuController = initiator.with(firmware: firmware).start(target: peripheral)
     } catch {

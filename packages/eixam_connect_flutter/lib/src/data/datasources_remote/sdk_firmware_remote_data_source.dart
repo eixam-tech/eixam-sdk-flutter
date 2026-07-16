@@ -15,7 +15,11 @@ abstract class SdkFirmwareRemoteDataSource {
   Future<SdkFirmwareCheckDto> checkUpdate({
     required String? hardwareModel,
     required String currentVersion,
+    bool allowDowngrade = false,
+    String? targetReleaseId,
   });
+
+  Future<SdkFirmwareListDto> listReleases({required String? hardwareModel});
 
   Future<SdkFirmwareDownloadDto> prepareDownload(String releaseId);
 
@@ -36,9 +40,14 @@ class HttpSdkFirmwareRemoteDataSource implements SdkFirmwareRemoteDataSource {
   Future<SdkFirmwareCheckDto> checkUpdate({
     required String? hardwareModel,
     required String currentVersion,
+    bool allowDowngrade = false,
+    String? targetReleaseId,
   }) async {
     final query = <String, String>{
       'current_version': currentVersion,
+      if (allowDowngrade) 'allow_downgrade': 'true',
+      if (targetReleaseId != null && targetReleaseId.trim().isNotEmpty)
+        'target_release_id': targetReleaseId.trim(),
       if (hardwareModel != null && hardwareModel.trim().isNotEmpty)
         'hardware_model': hardwareModel.trim(),
     };
@@ -46,17 +55,16 @@ class HttpSdkFirmwareRemoteDataSource implements SdkFirmwareRemoteDataSource {
     // some backends do not decode back to a space — a hardware model like
     // "EIXAM R1" would then miss its release).
     final encodedQuery = query.entries
-        .map((entry) =>
+        .map(
+          (entry) =>
             '${Uri.encodeQueryComponent(entry.key)}='
-            '${Uri.encodeComponent(entry.value)}')
+              '${Uri.encodeComponent(entry.value)}',
+        )
         .join('&');
     final path = '/v1/sdk/firmware/check?$encodedQuery';
     final response = await transport.get(path);
     if (response.statusCode != 200) {
-      throw FirmwareUpdateException(
-        'E_FIRMWARE_CHECK_FAILED',
-        response.body,
-      );
+      throw FirmwareUpdateException('E_FIRMWARE_CHECK_FAILED', response.body);
     }
     return SdkFirmwareCheckDto.fromJson(
       _decode(response.body, errorCode: 'E_FIRMWARE_CHECK_INVALID_JSON'),
@@ -64,9 +72,37 @@ class HttpSdkFirmwareRemoteDataSource implements SdkFirmwareRemoteDataSource {
   }
 
   @override
+  Future<SdkFirmwareListDto> listReleases({
+    required String? hardwareModel,
+  }) async {
+    final query = <String, String>{
+      if (hardwareModel != null && hardwareModel.trim().isNotEmpty)
+        'hardware_model': hardwareModel.trim(),
+    };
+    final encodedQuery = query.entries
+        .map(
+          (entry) =>
+              '${Uri.encodeQueryComponent(entry.key)}='
+              '${Uri.encodeComponent(entry.value)}',
+        )
+        .join('&');
+    final path = encodedQuery.isEmpty
+        ? '/v1/sdk/firmware/releases'
+        : '/v1/sdk/firmware/releases?$encodedQuery';
+    final response = await transport.get(path);
+    if (response.statusCode != 200) {
+      throw FirmwareUpdateException('E_FIRMWARE_LIST_FAILED', response.body);
+    }
+    return SdkFirmwareListDto.fromJson(
+      _decode(response.body, errorCode: 'E_FIRMWARE_LIST_INVALID_JSON'),
+    );
+  }
+
+  @override
   Future<SdkFirmwareDownloadDto> prepareDownload(String releaseId) async {
-    final response =
-        await transport.get('/v1/sdk/firmware/download/$releaseId');
+    final response = await transport.get(
+      '/v1/sdk/firmware/download/$releaseId',
+    );
     if (response.statusCode != 200) {
       throw FirmwareUpdateException(
         'E_FIRMWARE_DOWNLOAD_PREPARE_FAILED',
@@ -129,10 +165,7 @@ class HttpSdkFirmwareRemoteDataSource implements SdkFirmwareRemoteDataSource {
     return bytes;
   }
 
-  Map<String, dynamic> _decode(
-    String body, {
-    required String errorCode,
-  }) {
+  Map<String, dynamic> _decode(String body, {required String errorCode}) {
     final Object decoded;
     try {
       decoded = jsonDecode(body);
@@ -195,8 +228,9 @@ void _validateFirmwareArtifactSize({
       'Firmware artifact size metadata is invalid.',
     );
   }
-  final toleratedExpected =
-      expectedSizeBytes == null ? null : expectedSizeBytes + sizeToleranceBytes;
+  final toleratedExpected = expectedSizeBytes == null
+      ? null
+      : expectedSizeBytes + sizeToleranceBytes;
   if (toleratedExpected != null && observed > toleratedExpected) {
     throw FirmwareUpdateException(
       firmwareArtifactTooLargeCode,

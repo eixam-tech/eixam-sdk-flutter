@@ -38,7 +38,8 @@ void main() {
       expect(inactive.countdownRemainingSeconds, isNull);
     });
 
-    test('app cancel applies local close without waiting for device ACK',
+    test(
+      'app cancel applies local close without waiting for device ACK',
         () async {
       final commands = <EixamDeviceCommand>[];
       final controller = DeviceSosController(
@@ -60,7 +61,8 @@ void main() {
       expect(commands.map((command) => command.opcode), <int>[0x06, 0x04]);
       expect(status.state, DeviceSosState.inactive);
       expect(controller.currentStatus.state, DeviceSosState.inactive);
-    });
+      },
+    );
 
     test('short command path allows SOS cancel without long CMD', () async {
       final commands = <EixamDeviceCommand>[];
@@ -100,9 +102,14 @@ void main() {
         source: DeviceSosTransitionSource.device,
       );
       controller.handleIncomingSosEventPacket(
-        EixamSosEventPacket.tryParse(
-          <int>[0xE2, 0x02, 0x34, 0x12, 0x00, 0x00],
-        )!,
+        EixamSosEventPacket.tryParse(<int>[
+          0xE2,
+          0x02,
+          0x34,
+          0x12,
+          0x00,
+          0x00,
+        ])!,
         source: DeviceSosTransitionSource.device,
       );
 
@@ -112,7 +119,8 @@ void main() {
       expect(status.decoderNote, contains('ACTIVE_PACKET_STARTED_PRE_CONFIRM'));
     });
 
-    test('app cancel keeps suppressing late SOS packets after ignored E2 ACK',
+    test(
+      'app cancel keeps suppressing late SOS packets after ignored E2 ACK',
         () async {
       final commands = <EixamDeviceCommand>[];
       final controller = DeviceSosController(
@@ -127,9 +135,14 @@ void main() {
       await controller.triggerSos();
       final cancelled = await controller.cancelSos();
       controller.handleIncomingSosEventPacket(
-        EixamSosEventPacket.tryParse(
-          <int>[0xE2, 0x02, 0x34, 0x12, 0x00, 0x00],
-        )!,
+          EixamSosEventPacket.tryParse(<int>[
+            0xE2,
+            0x02,
+            0x34,
+            0x12,
+            0x00,
+            0x00,
+          ])!,
         source: DeviceSosTransitionSource.device,
       );
       controller.handleIncomingSosPacket(
@@ -138,14 +151,16 @@ void main() {
       );
 
       final status = controller.currentStatus;
-      expect(
-        commands.map((command) => command.opcode),
-        <int>[0x06, 0x04, 0x04],
-      );
+        expect(commands.map((command) => command.opcode), <int>[
+          0x06,
+          0x04,
+          0x04,
+        ]);
       expect(cancelled.state, DeviceSosState.inactive);
       expect(status.state, DeviceSosState.inactive);
       expect(status.decoderNote, isNot(contains('PACKET_EXPLICIT_ACTIVE')));
-    });
+      },
+    );
 
     test('device PRE-SOS after app cancel starts a fresh countdown', () async {
       final commands = <EixamDeviceCommand>[];
@@ -203,9 +218,11 @@ void main() {
       expect(controller.currentStatus.state, DeviceSosState.active);
 
       await cancelFuture;
-    });
+      },
+    );
 
-    test('active device SOS cancel with E1 clear ACK marks terminal after ACK',
+    test(
+      'active device SOS cancel with E1 clear ACK marks terminal after ACK',
         () async {
       final commands = <EixamDeviceCommand>[];
       final controller = DeviceSosController(
@@ -237,9 +254,11 @@ void main() {
       expect(closed.derivedFromBlePacket, isTrue);
       expect(closed.lastOpcode, 0xE1);
       expect(controller.currentStatus.state, DeviceSosState.inactive);
-    });
+      },
+    );
 
-    test('active device SOS cancel timeout forces terminal with diagnostic',
+    test(
+      'active device SOS cancel timeout forces terminal with diagnostic',
         () async {
       BleDebugRegistry.instance.reset();
       final commands = <EixamDeviceCommand>[];
@@ -260,18 +279,17 @@ void main() {
       expect(closed.state, DeviceSosState.inactive);
       expect(closed.previousState, DeviceSosState.active);
       expect(closed.derivedFromBlePacket, isFalse);
-      expect(
-        closed.lastEvent,
-        contains('FORCED_TERMINAL_AFTER_MISSING_ACK'),
-      );
+        expect(closed.lastEvent, contains('FORCED_TERMINAL_AFTER_MISSING_ACK'));
       expect(
         BleDebugRegistry.instance.currentState.events.any(
-          (event) => event.message
-              .contains('DEVICE_SOS_CLOSE_COMMAND_ACK_TIMEOUT_FORCED_TERMINAL'),
+            (event) => event.message.contains(
+              'DEVICE_SOS_CLOSE_COMMAND_ACK_TIMEOUT_FORCED_TERMINAL',
+            ),
         ),
         isTrue,
       );
-    });
+      },
+    );
 
     test('pending cancel retry remains alive while waiting for ACK', () async {
       final commands = <EixamDeviceCommand>[];
@@ -336,7 +354,8 @@ void main() {
 
       expect(
           EixamDeviceCommand.sosAckRelay(nodeId: 0x1234).usesCmdCharacteristic,
-          isTrue);
+        isTrue,
+      );
       expect(commands, isEmpty);
     });
 
@@ -365,7 +384,8 @@ void main() {
       expect(active.countdownRemainingSeconds, isNull);
     });
 
-    test('app activate helper sends trigger then confirm and becomes active',
+    test(
+      'app activate helper sends trigger then confirm and becomes active',
         () async {
       final commands = <EixamDeviceCommand>[];
       final controller = DeviceSosController(
@@ -402,7 +422,8 @@ void main() {
       expect(active.state, DeviceSosState.active);
       expect(active.previousState, DeviceSosState.preConfirm);
       expect(active.triggerOrigin, DeviceSosTransitionSource.app);
-    });
+      },
+    );
 
     test(
         'app activate helper waits for observed preConfirm before confirm to avoid early confirm race',
@@ -418,10 +439,7 @@ void main() {
         commandWriter: (command) async {
           commands.add(command);
           if (command.opcode == 0x05) {
-            expect(
-              controller.currentStatus.state,
-              DeviceSosState.preConfirm,
-            );
+              expect(controller.currentStatus.state, DeviceSosState.preConfirm);
             expect(controller.currentStatus.derivedFromBlePacket, isTrue);
             Future<void>.delayed(const Duration(milliseconds: 5), () {
               controller.handleIncomingSosPacket(
@@ -447,7 +465,8 @@ void main() {
       expect(active.state, DeviceSosState.active);
       expect(active.optimistic, isFalse);
       expect(active.derivedFromBlePacket, isTrue);
-    });
+      },
+    );
 
     test(
         'first observed BLE preConfirm preserves app trigger origin for app-triggered SOS',
@@ -470,7 +489,8 @@ void main() {
       expect(status.transitionSource, DeviceSosTransitionSource.device);
       expect(status.triggerOrigin, DeviceSosTransitionSource.app);
       expect(status.derivedFromBlePacket, isTrue);
-    });
+      },
+    );
 
     test(
         'app activate helper fails when no observed active transition arrives after confirm',
@@ -516,7 +536,8 @@ void main() {
       expect(commands.map((command) => command.opcode), <int>[0x06, 0x05]);
       expect(controller.currentStatus.state, DeviceSosState.preConfirm);
       expect(controller.currentStatus.derivedFromBlePacket, isTrue);
-    });
+      },
+    );
 
     test('app trigger -> preConfirm -> timeout -> active', () async {
       final controller = DeviceSosController(
@@ -581,7 +602,8 @@ void main() {
       expect(status.transitionSource, DeviceSosTransitionSource.device);
       expect(status.triggerOrigin, DeviceSosTransitionSource.app);
       expect(status.nodeId, 0x1234);
-    });
+      },
+    );
 
     test('device trigger -> preConfirm -> cancel -> inactive', () {
       final controller = DeviceSosController(
@@ -595,9 +617,14 @@ void main() {
         source: DeviceSosTransitionSource.device,
       );
       controller.handleIncomingSosEventPacket(
-        EixamSosEventPacket.tryParse(
-          <int>[0xE1, 0x01, 0x34, 0x12, 0x00, 0x00],
-        )!,
+        EixamSosEventPacket.tryParse(<int>[
+          0xE1,
+          0x01,
+          0x34,
+          0x12,
+          0x00,
+          0x00,
+        ])!,
         source: DeviceSosTransitionSource.device,
       );
 
@@ -651,9 +678,14 @@ void main() {
         source: DeviceSosTransitionSource.device,
       );
       controller.handleIncomingSosEventPacket(
-        EixamSosEventPacket.tryParse(
-          <int>[0xE1, 0x01, 0x34, 0x12, 0x00, 0x00],
-        )!,
+          EixamSosEventPacket.tryParse(<int>[
+            0xE1,
+            0x01,
+            0x34,
+            0x12,
+            0x00,
+            0x00,
+          ])!,
         source: DeviceSosTransitionSource.device,
       );
 
@@ -672,7 +704,8 @@ void main() {
         status.decoderNote,
         contains('REOPEN_SUPPRESSED_AFTER_TERMINAL'),
       );
-    });
+      },
+    );
 
     test(
         'terminal cancel suppresses late same-node SOS packets even when packet id changes',
@@ -688,9 +721,14 @@ void main() {
         source: DeviceSosTransitionSource.device,
       );
       controller.handleIncomingSosEventPacket(
-        EixamSosEventPacket.tryParse(
-          <int>[0xE1, 0x01, 0x34, 0x12, 0x00, 0x00],
-        )!,
+          EixamSosEventPacket.tryParse(<int>[
+            0xE1,
+            0x01,
+            0x34,
+            0x12,
+            0x00,
+            0x00,
+          ])!,
         source: DeviceSosTransitionSource.device,
       );
 
@@ -705,7 +743,8 @@ void main() {
       expect(status.countdownStartedAt, isNull);
       expect(status.expectedActivationAt, isNull);
       expect(status.decoderNote, contains('SAME_NODE_REOPEN_SUPPRESSED'));
-    });
+      },
+    );
 
     test(
         'active SOS + incoming device E1 02 packet keeps terminal cancelled and does not reopen preConfirm',
@@ -721,9 +760,14 @@ void main() {
         source: DeviceSosTransitionSource.device,
       );
       controller.handleIncomingSosEventPacket(
-        EixamSosEventPacket.tryParse(
-          <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
-        )!,
+          EixamSosEventPacket.tryParse(<int>[
+            0xE1,
+            0x02,
+            0x34,
+            0x12,
+            0x00,
+            0x00,
+          ])!,
         source: DeviceSosTransitionSource.device,
       );
 
@@ -742,7 +786,8 @@ void main() {
         status.decoderNote,
         contains('REOPEN_SUPPRESSED_AFTER_TERMINAL'),
       );
-    });
+      },
+    );
 
     test('device trigger -> preConfirm -> timeout -> active', () async {
       final controller = DeviceSosController(
@@ -762,10 +807,7 @@ void main() {
       expect(status.previousState, DeviceSosState.preConfirm);
       expect(status.triggerOrigin, DeviceSosTransitionSource.device);
       expect(status.countdownRemainingSeconds, 0);
-      expect(
-        status.decoderNote,
-        contains('PROMOTED_AFTER_COUNTDOWN'),
-      );
+      expect(status.decoderNote, contains('PROMOTED_AFTER_COUNTDOWN'));
     });
 
     test(
@@ -793,7 +835,8 @@ void main() {
       expect(status.previousState, DeviceSosState.active);
       expect(status.triggerOrigin, DeviceSosTransitionSource.device);
       expect(status.state, isNot(DeviceSosState.preConfirm));
-    });
+      },
+    );
 
     test(
         'sosType 1 packet after countdown deadline promotes to active even with a new packet id',
@@ -821,7 +864,8 @@ void main() {
       expect(status.packetId, 0);
       expect(status.previousState, DeviceSosState.active);
       expect(status.decoderNote, contains('PRESERVED_OPEN_CYCLE'));
-    });
+      },
+    );
 
     test(
         'duplicate PRE-SOS packet with a new packet id keeps the first countdown deadline',
@@ -857,7 +901,8 @@ void main() {
       expect(elapsed.countdownStartedAt, first.countdownStartedAt);
       expect(elapsed.expectedActivationAt, first.expectedActivationAt);
       expect(elapsed.countdownRemainingSeconds, 0);
-    });
+      },
+    );
 
     test('device active packet as first observed packet starts PRE-SOS', () {
       final controller = DeviceSosController(
@@ -878,13 +923,11 @@ void main() {
       expect(status.countdownStartedAt, isNotNull);
       expect(status.expectedActivationAt, isNotNull);
       expect(status.countdownRemainingSeconds, greaterThan(0));
-      expect(
-        status.decoderNote,
-        contains('ACTIVE_PACKET_STARTED_PRE_CONFIRM'),
-      );
+      expect(status.decoderNote, contains('ACTIVE_PACKET_STARTED_PRE_CONFIRM'));
     });
 
-    test('realistic PRE-SOS packet then early active packet keeps countdown',
+    test(
+      'realistic PRE-SOS packet then early active packet keeps countdown',
         () {
       final controller = DeviceSosController(
         countdownDuration: const Duration(milliseconds: 40),
@@ -911,8 +954,11 @@ void main() {
       expect(active.nodeId, preConfirm.nodeId);
       expect(active.expectedActivationAt, preConfirm.expectedActivationAt);
       expect(
-          active.decoderNote, contains('ACTIVE_PACKET_HELD_UNTIL_COUNTDOWN'));
-    });
+          active.decoderNote,
+          contains('ACTIVE_PACKET_HELD_UNTIL_COUNTDOWN'),
+        );
+      },
+    );
 
     test(
         'sosType 1 countdown packet maps to preConfirm without retryCount guess',
@@ -933,9 +979,11 @@ void main() {
       expect(status.retryCount, greaterThan(0));
       expect(status.sosType, 1);
       expect(status.decoderNote, contains('PRE_CONFIRM_STARTED_COUNTDOWN'));
-    });
+      },
+    );
 
-    test('app-triggered PRE-SOS is not upgraded by first device notify',
+    test(
+      'app-triggered PRE-SOS is not upgraded by first device notify',
         () async {
       final controller = DeviceSosController(
         countdownDuration: const Duration(milliseconds: 80),
@@ -954,13 +1002,12 @@ void main() {
       expect(status.state, DeviceSosState.preConfirm);
       expect(status.triggerOrigin, DeviceSosTransitionSource.app);
       expect(status.derivedFromBlePacket, isTrue);
-      expect(
-        status.decoderNote,
-        contains('PRE_CONFIRM_KEEP_COUNTDOWN'),
+        expect(status.decoderNote, contains('PRE_CONFIRM_KEEP_COUNTDOWN'));
+      },
       );
-    });
 
-    test('explicit active sosType from idle is held until PRE-SOS elapses',
+    test(
+      'explicit active sosType from idle is held until PRE-SOS elapses',
         () async {
       final controller = DeviceSosController(
         countdownDuration: const Duration(milliseconds: 40),
@@ -986,7 +1033,8 @@ void main() {
       final active = controller.currentStatus;
       expect(active.state, DeviceSosState.active);
       expect(active.previousState, DeviceSosState.preConfirm);
-    });
+      },
+    );
 
     test(
         'later PRE-SOS-like packet for the same active cycle is ignored as a downgrade',
@@ -1017,7 +1065,8 @@ void main() {
         status.decoderNote,
         contains('PRE_CONFIRM_RESTART_SUPPRESSED_AFTER_PROMOTION'),
       );
-    });
+      },
+    );
 
     test(
         'repeated PRE-SOS packet for promoted cycle starts countdown after detach',
@@ -1049,11 +1098,9 @@ void main() {
       expect(status.previousState, DeviceSosState.inactive);
       expect(status.countdownStartedAt, isNotNull);
       expect(status.countdownRemainingSeconds, greaterThan(0));
-      expect(
-        status.decoderNote,
-        contains('PRE_CONFIRM_STARTED_COUNTDOWN'),
+        expect(status.decoderNote, contains('PRE_CONFIRM_STARTED_COUNTDOWN'));
+      },
       );
-    });
 
     test(
         'later PRE-SOS-like packet with a new packet id cannot restart an active SOS',
@@ -1081,11 +1128,9 @@ void main() {
       expect(status.countdownStartedAt, isNull);
       expect(status.expectedActivationAt, isNull);
       expect(status.countdownRemainingSeconds, isNull);
-      expect(
-        status.decoderNote,
-        contains('PRESERVED_OPEN_CYCLE'),
+        expect(status.decoderNote, contains('PRESERVED_OPEN_CYCLE'));
+      },
       );
-    });
 
     test('active -> ack -> acknowledged', () async {
       final commands = <EixamDeviceCommand>[];
@@ -1113,12 +1158,45 @@ void main() {
       expect(acknowledged.triggerOrigin, DeviceSosTransitionSource.device);
     });
   });
+
+  group('DeviceSosController control command readiness', () {
+    test(
+      'tracks CMD availability independently from the short INET path',
+      () async {
+        final controller = DeviceSosController();
+        addTearDown(controller.dispose);
+        final availability = <bool>[];
+        final sub = controller.watchControlCommandPathAvailability().listen(
+          availability.add,
+        );
+        addTearDown(sub.cancel);
+        await Future<void>.delayed(Duration.zero);
+
+        await controller.attach(
+          commandWriter: (_) async {},
+          shortCommandAvailable: true,
+          longCommandAvailable: false,
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(availability, <bool>[false]);
+
+        await controller.attach(
+          commandWriter: (_) async {},
+          shortCommandAvailable: true,
+          longCommandAvailable: true,
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(availability, <bool>[false, true]);
+
+        await controller.detach();
+        await Future<void>.delayed(Duration.zero);
+        expect(availability, <bool>[false, true, false]);
+      },
+    );
+  });
 }
 
-EixamSosPacket _countdownPacket({
-  int retryCountBits = 1,
-  int packetId = 0,
-}) {
+EixamSosPacket _countdownPacket({int retryCountBits = 1, int packetId = 0}) {
   final flagsWord =
       0x4000 | ((retryCountBits & 0x03) << 12) | (packetId & 0x0F);
   return EixamSosPacket.tryParse(<int>[
@@ -1155,7 +1233,12 @@ Future<void> _promoteDeviceSosToActive(DeviceSosController controller) async {
 }
 
 EixamSosEventPacket _deviceClearPacket() {
-  return EixamSosEventPacket.tryParse(
-    <int>[0xE1, 0x01, 0x34, 0x12, 0x00, 0x00],
-  )!;
+  return EixamSosEventPacket.tryParse(<int>[
+    0xE1,
+    0x01,
+    0x34,
+    0x12,
+    0x00,
+    0x00,
+  ])!;
 }

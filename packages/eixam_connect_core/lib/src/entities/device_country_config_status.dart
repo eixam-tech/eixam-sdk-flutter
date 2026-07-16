@@ -9,6 +9,8 @@ class DeviceCountryConfigStatus {
   const DeviceCountryConfigStatus({
     required this.outcome,
     required this.updatedAt,
+    this.applyAttempted = false,
+    this.canRetry = false,
     this.countryIso,
     this.targetRegion,
     this.deviceReportedRegion,
@@ -25,6 +27,15 @@ class DeviceCountryConfigStatus {
 
   final DeviceCountryConfigOutcome outcome;
   final DateTime updatedAt;
+
+  /// Whether this status was produced while handling an explicit user-confirmed
+  /// apply. Detection-only skips keep this false so hosts can invalidate a
+  /// visible confirmation without presenting a misleading apply error.
+  final bool applyAttempted;
+
+  /// Whether the pending plan is still safe to retry without another backend
+  /// detection. Hosts may offer a retry action only when this is true.
+  final bool canRetry;
 
   /// ISO country resolved for the device's physical location.
   final String? countryIso;
@@ -43,11 +54,15 @@ class DeviceCountryConfigStatus {
 
   bool get isApplied => outcome == DeviceCountryConfigOutcome.applied;
 
+  /// A mismatch was detected and is waiting for explicit user confirmation.
+  bool get requiresConfirmation =>
+      outcome == DeviceCountryConfigOutcome.updateAvailable;
+
   /// A region change is actively in progress — the host should show loading.
   bool get isApplying => outcome == DeviceCountryConfigOutcome.applying;
 
-  /// Final state (neither [DeviceCountryConfigOutcome.idle] nor
-  /// [DeviceCountryConfigOutcome.applying]) — safe to resolve a loading modal.
+  /// Final state of the current SDK operation. `updateAvailable` is terminal
+  /// for detection, even though a later user-confirmed apply may follow it.
   bool get isTerminal =>
       outcome != DeviceCountryConfigOutcome.idle &&
       outcome != DeviceCountryConfigOutcome.applying;
@@ -55,8 +70,9 @@ class DeviceCountryConfigStatus {
   /// An attempted apply did not succeed — the host should show an error. Covers
   /// a hard [DeviceCountryConfigOutcome.failed] and the soft
   /// [DeviceCountryConfigOutcome.skippedFirmwareUnsupported] (firmware lacks the
-  /// region command). The other `skipped*` outcomes never emit [isApplying]
-  /// first, so they stay transparent (no modal).
+  /// region command). Retryable apply gates such as an active safety flow use
+  /// [applyAttempted] and [canRetry] instead; detection-only skips remain
+  /// transparent.
   bool get isFailure =>
       outcome == DeviceCountryConfigOutcome.failed ||
       outcome == DeviceCountryConfigOutcome.skippedFirmwareUnsupported;
@@ -64,6 +80,8 @@ class DeviceCountryConfigStatus {
   DeviceCountryConfigStatus copyWith({
     DeviceCountryConfigOutcome? outcome,
     DateTime? updatedAt,
+    bool? applyAttempted,
+    bool? canRetry,
     Object? countryIso = _unset,
     Object? targetRegion = _unset,
     Object? deviceReportedRegion = _unset,
@@ -73,6 +91,8 @@ class DeviceCountryConfigStatus {
     return DeviceCountryConfigStatus(
       outcome: outcome ?? this.outcome,
       updatedAt: updatedAt ?? this.updatedAt,
+      applyAttempted: applyAttempted ?? this.applyAttempted,
+      canRetry: canRetry ?? this.canRetry,
       countryIso: identical(countryIso, _unset)
           ? this.countryIso
           : countryIso as String?,

@@ -12,24 +12,134 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues(<String, Object>{}));
 
+  group('DeviceCountryConfigController confirmation flow', () {
+    test('detects a mismatch without writing or rebooting', () async {
+      final env = _Env(); // device EU868; backend US -> US915
+      final controller = env.build();
+
+      final status = await controller.check(reason: 'device_connected');
+
+      expect(status.outcome, DeviceCountryConfigOutcome.updateAvailable);
+      expect(status.requiresConfirmation, isTrue);
+      expect(status.countryIso, 'US');
+      expect(status.targetRegion, LoraRegionCode.us915);
+      expect(env.setRegionCalls, isEmpty);
+      expect(env.rebootCalls, 0);
+    });
+
+    test(
+      'applies only after confirmation and verifies the new region',
+      () async {
+        final env = _Env();
+        final controller = env.build();
+
+        await controller.check();
+        final status = await controller.applyPending();
+
+        expect(status.outcome, DeviceCountryConfigOutcome.applied);
+        expect(env.setRegionCalls, <int>[LoraRegionCode.us915.wireValue]);
+        expect(env.rebootCalls, 1);
+      },
+    );
+
+    test('re-checks safety after confirmation before writing', () async {
+      final env = _Env();
+      final controller = env.build();
+
+      await controller.check();
+      env.safetyReason = 'SOS flow active';
+      final status = await controller.applyPending();
+
+      expect(status.outcome, DeviceCountryConfigOutcome.skippedSafetyActive);
+      expect(status.applyAttempted, isTrue);
+      expect(status.canRetry, isTrue);
+      expect(env.setRegionCalls, isEmpty);
+      expect(env.rebootCalls, 0);
+
+      env.safetyReason = null;
+      final retried = await controller.applyPending();
+      expect(retried.outcome, DeviceCountryConfigOutcome.applied);
+      expect(env.setRegionCalls, <int>[LoraRegionCode.us915.wireValue]);
+    });
+
+    test(
+      'debug country override still fetches backend config and skips geo',
+      () async {
+        final env = _Env();
+        final controller = env.build();
+
+        final status = await controller.check(
+          reason: 'dev_simulated_mobile_country',
+          countryIsoOverride: ' jp ',
+        );
+
+        expect(status.outcome, DeviceCountryConfigOutcome.updateAvailable);
+        expect(status.countryIso, 'JP');
+        expect(env.geoResolveCalls, 0);
+        expect(env.requestedConfigCountries, <String?>['JP']);
+        expect(env.setRegionCalls, isEmpty);
+      },
+    );
+
+    test('confirmation waits for an overlapping lifecycle check', () async {
+      final env = _Env()..holdGate = Completer<void>();
+      final controller = env.build();
+
+      final check = controller.check(reason: 'app_foreground_resume');
+      final apply = controller.applyPending(reason: 'user_confirmed_modal');
+      await Future<void>.delayed(Duration.zero);
+      expect(env.setRegionCalls, isEmpty);
+
+      env.holdGate!.complete();
+      expect((await check).outcome, DeviceCountryConfigOutcome.updateAvailable);
+      expect((await apply).outcome, DeviceCountryConfigOutcome.applied);
+      expect(env.setRegionCalls, <int>[LoraRegionCode.us915.wireValue]);
+    });
+
+    test(
+      'a re-check invalidates a stale prompt without an apply failure',
+      () async {
+        final env = _Env();
+        final controller = env.build();
+        await controller.check();
+        env.location = null;
+
+        final recheck = controller.check(reason: 'app_foreground_resume');
+        final apply = controller.applyPending(reason: 'user_confirmed_modal');
+
+        expect(
+          (await recheck).outcome,
+          DeviceCountryConfigOutcome.skippedNoLocation,
+        );
+        final applyResult = await apply;
+        expect(
+          applyResult.outcome,
+          DeviceCountryConfigOutcome.skippedNoLocation,
+        );
+        expect(applyResult.applyAttempted, isFalse);
+        expect(env.setRegionCalls, isEmpty);
+        expect(env.rebootCalls, 0);
+      },
+    );
+  });
+
   group('DeviceCountryConfigController.ensure', () {
-    test('applies the target region, reboots, and verifies adoption', () async {
+    test('is detection-only and never bypasses confirmation', () async {
       final env = _Env(); // device on EU868(3); country US -> US915(1)
       final controller = env.build();
 
       final status = await controller.ensure(reason: 'startup');
 
-      expect(status.outcome, DeviceCountryConfigOutcome.applied);
+      expect(status.outcome, DeviceCountryConfigOutcome.updateAvailable);
       expect(status.countryIso, 'US');
       expect(status.targetRegion, LoraRegionCode.us915);
-      expect(env.setRegionCalls, <int>[LoraRegionCode.us915.wireValue]);
-      expect(env.rebootCalls, 1);
-      final record = await env.store.getRecord('hw-1');
-      expect(record!.applied, isTrue);
-      expect(record.region, LoraRegionCode.us915);
+      expect(env.setRegionCalls, isEmpty);
+      expect(env.rebootCalls, 0);
+      expect(await env.store.getRecord('hw-1'), isNull);
     });
 
-    test('skips (up to date) when the device already runs the region',
+    test(
+      'skips (up to date) when the device already runs the region',
         () async {
       final env = _Env()..reportedRegion = LoraRegionCode.us915.wireValue;
       final controller = env.build();
@@ -39,7 +149,8 @@ void main() {
       expect(status.outcome, DeviceCountryConfigOutcome.skippedUpToDate);
       expect(env.setRegionCalls, isEmpty);
       expect(env.rebootCalls, 0);
-    });
+      },
+    );
 
     test('never reboots while a safety flow is active', () async {
       final env = _Env()..safetyReason = 'SOS flow active';
@@ -83,9 +194,32 @@ void main() {
       expect(env.setRegionCalls, isEmpty);
     });
 
+    test(
+      'skips (country unknown) when the backend has no config (404)',
+      () async {
+        final env = _Env()
+          ..reportedRegion = LoraRegionCode.us915.wireValue
+          ..deviceConfig = null; // backend 404: no config, no default
+        final controller = env.build();
+
+        final status = await controller.ensure();
+
+        // Must NOT fall back to EU868 + reboot: the device may be physically
+        // outside the EU and EU868 would be illegal there.
+        expect(
+          status.outcome,
+          DeviceCountryConfigOutcome.skippedCountryUnknown,
+        );
+        expect(env.setRegionCalls, isEmpty);
+        expect(env.rebootCalls, 0);
+      },
+    );
+
     test('falls back to EU868 when the backend omits a region byte', () async {
       final env = _Env()
-        ..reportedRegion = LoraRegionCode.us915.wireValue // device on US915
+        ..reportedRegion = LoraRegionCode
+            .us915
+            .wireValue // device on US915
         ..deviceConfig = DeviceCountryConfig.fromJson(
           // Unmapped country / byte-less config -> EU fallback (not a skip).
           <String, dynamic>{'region': 'LORA24'},
@@ -94,12 +228,13 @@ void main() {
 
       final status = await controller.ensure();
 
-      expect(status.outcome, DeviceCountryConfigOutcome.applied);
+      expect(status.outcome, DeviceCountryConfigOutcome.updateAvailable);
       expect(status.targetRegion, LoraRegionCode.eu868);
-      expect(env.setRegionCalls, <int>[LoraRegionCode.eu868.wireValue]);
+      expect(env.setRegionCalls, isEmpty);
     });
 
-    test('does not reboot when the live device region cannot be read',
+    test(
+      'does not reboot when the live device region cannot be read',
         () async {
       final env = _Env()..runtimeThrows = true;
       final controller = env.build();
@@ -109,23 +244,26 @@ void main() {
       expect(status.outcome, DeviceCountryConfigOutcome.skippedDeviceOffline);
       expect(env.setRegionCalls, isEmpty);
       expect(env.rebootCalls, 0);
-    });
+      },
+    );
 
-    test(
-        'marks firmware unsupported when the region is not adopted, and does '
+    test('marks firmware unsupported when the region is not adopted, and does '
         'not reboot again on the next run', () async {
       final env = _Env()..applyAdoptsRegion = false; // firmware ignores 0x20
       final controller = env.build();
 
-      final first = await controller.ensure();
+      await controller.check();
+      final first = await controller.applyPending();
       expect(
-          first.outcome, DeviceCountryConfigOutcome.skippedFirmwareUnsupported);
+        first.outcome,
+        DeviceCountryConfigOutcome.skippedFirmwareUnsupported,
+      );
       expect(env.setRegionCalls, hasLength(1));
       expect(env.rebootCalls, 1);
       final record = await env.store.getRecord('hw-1');
       expect(record!.applied, isFalse);
 
-      final second = await controller.ensure();
+      final second = await controller.check();
       expect(
         second.outcome,
         DeviceCountryConfigOutcome.skippedFirmwareUnsupported,
@@ -135,27 +273,28 @@ void main() {
       expect(env.rebootCalls, 1);
     });
 
-    test('guards against concurrent runs', () async {
+    test('serializes concurrent checks without returning stale idle', () async {
       final env = _Env()..holdGate = Completer<void>();
       final controller = env.build();
 
       final first = controller.ensure(reason: 'first');
-      // Second call observes the in-flight guard and returns immediately.
-      final second = await controller.ensure(reason: 'second');
-      expect(second.outcome, DeviceCountryConfigOutcome.idle);
+      final second = controller.ensure(reason: 'second');
 
       env.holdGate!.complete();
       final firstResult = await first;
-      expect(firstResult.outcome, DeviceCountryConfigOutcome.applied);
-      expect(env.setRegionCalls, hasLength(1));
+      final secondResult = await second;
+      expect(firstResult.outcome, DeviceCountryConfigOutcome.updateAvailable);
+      expect(secondResult.outcome, DeviceCountryConfigOutcome.updateAvailable);
+      expect(env.setRegionCalls, isEmpty);
     });
 
     test('emits each terminal status on the stream', () async {
       final env = _Env()..reportedRegion = LoraRegionCode.us915.wireValue;
       final controller = env.build();
       final emitted = <DeviceCountryConfigOutcome>[];
-      final sub =
-          controller.watchStatus().listen((s) => emitted.add(s.outcome));
+      final sub = controller.watchStatus().listen(
+        (s) => emitted.add(s.outcome),
+      );
 
       await controller.ensure();
       await Future<void>.delayed(Duration.zero);
@@ -164,15 +303,18 @@ void main() {
       await sub.cancel();
     });
 
-    test('emits applying BEFORE the terminal outcome on a real apply',
+    test(
+      'emits applying BEFORE the terminal outcome on a real apply',
         () async {
       final env = _Env(); // device EU868(3), US -> US915(1): a real apply
       final controller = env.build();
       final emitted = <DeviceCountryConfigOutcome>[];
-      final sub =
-          controller.watchStatus().listen((s) => emitted.add(s.outcome));
+        final sub = controller.watchStatus().listen(
+          (s) => emitted.add(s.outcome),
+        );
 
-      await controller.ensure();
+        await controller.check();
+        await controller.applyPending();
       await Future<void>.delayed(Duration.zero);
 
       // The loading state must precede success so the host can show a modal.
@@ -184,15 +326,18 @@ void main() {
         ]),
       );
       await sub.cancel();
-    });
+      },
+    );
 
-    test('does NOT emit applying when the device is already up to date',
+    test(
+      'does NOT emit applying when the device is already up to date',
         () async {
       final env = _Env()..reportedRegion = LoraRegionCode.us915.wireValue;
       final controller = env.build();
       final emitted = <DeviceCountryConfigOutcome>[];
-      final sub =
-          controller.watchStatus().listen((s) => emitted.add(s.outcome));
+        final sub = controller.watchStatus().listen(
+          (s) => emitted.add(s.outcome),
+        );
 
       await controller.ensure();
       await Future<void>.delayed(Duration.zero);
@@ -201,7 +346,8 @@ void main() {
       expect(emitted, isNot(contains(DeviceCountryConfigOutcome.applying)));
       expect(emitted, contains(DeviceCountryConfigOutcome.skippedUpToDate));
       await sub.cancel();
-    });
+      },
+    );
   });
 }
 
@@ -247,7 +393,7 @@ class _Env {
   SdkResolvedLocation? location = _validLocation();
   Object? geoError;
   String geoCountryIso = 'US';
-  DeviceCountryConfig deviceConfig = DeviceCountryConfig.fromJson(
+  DeviceCountryConfig? deviceConfig = DeviceCountryConfig.fromJson(
     <String, dynamic>{
       'region': 'US915',
       'lora_region_code': 1,
@@ -256,12 +402,15 @@ class _Env {
   );
   Object? deviceConfigError;
   Completer<void>? holdGate;
+  int geoResolveCalls = 0;
+  final List<String?> requestedConfigCountries = <String?>[];
 
   final List<int> setRegionCalls = <int>[];
   int rebootCalls = 0;
   DateTime now = DateTime.parse('2026-06-30T12:00:00Z');
-  final DeviceConfigStore store =
-      DeviceConfigStore(localStore: SharedPrefsSdkStore());
+  final DeviceConfigStore store = DeviceConfigStore(
+    localStore: SharedPrefsSdkStore(),
+  );
 
   DeviceCountryConfigController build() {
     return DeviceCountryConfigController(
@@ -314,6 +463,7 @@ class _FakeGeo implements SdkGeoCountryRemoteDataSource {
     required double latitude,
     required double longitude,
   }) async {
+    env.geoResolveCalls += 1;
     final error = env.geoError;
     if (error != null) {
       throw error;
@@ -332,7 +482,8 @@ class _FakeDeviceConfig implements SdkDeviceConfigRemoteDataSource {
   final _Env env;
 
   @override
-  Future<DeviceCountryConfig> fetchByCountry({String? countryIso}) async {
+  Future<DeviceCountryConfig?> fetchByCountry({String? countryIso}) async {
+    env.requestedConfigCountries.add(countryIso);
     final error = env.deviceConfigError;
     if (error != null) {
       throw error;

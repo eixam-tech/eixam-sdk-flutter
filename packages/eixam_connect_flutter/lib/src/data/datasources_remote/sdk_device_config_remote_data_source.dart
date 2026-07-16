@@ -6,8 +6,10 @@ import 'sdk_http_transport.dart';
 
 abstract class SdkDeviceConfigRemoteDataSource {
   /// Fetches the per-country device radio config. When [countryIso] is null or
-  /// blank the backend resolves its `"default"` config.
-  Future<DeviceCountryConfig> fetchByCountry({String? countryIso});
+  /// blank the backend resolves its `"default"` config. Returns null when the
+  /// backend has no config for this country and no default (404) — the caller
+  /// must skip instead of applying a fallback region.
+  Future<DeviceCountryConfig?> fetchByCountry({String? countryIso});
 }
 
 /// HTTP implementation for `GET /v1/sdk/device-configs`.
@@ -23,23 +25,22 @@ class HttpSdkDeviceConfigRemoteDataSource
   final SdkHttpTransport transport;
 
   @override
-  Future<DeviceCountryConfig> fetchByCountry({String? countryIso}) async {
+  Future<DeviceCountryConfig?> fetchByCountry({String? countryIso}) async {
     final iso = countryIso?.trim() ?? '';
     final path = Uri(
       path: _path,
-      queryParameters: <String, String>{
-        if (iso.isNotEmpty) 'country_iso': iso,
-      },
+      queryParameters: <String, String>{if (iso.isNotEmpty) 'country_iso': iso},
     ).toString();
     final response = await transport.get(
       path,
       headers: const <String, String>{'Accept': 'application/json'},
     );
     final statusCode = response.statusCode;
-    // 404 = no config for this country and no configured default. Treat as
-    // "no applicable region" (caller skips) rather than an error.
+    // 404 = no config for this country and no configured default. Return null
+    // so the caller skips — an empty DeviceCountryConfig would silently fall
+    // back to EU868 and reboot a device that may be outside the EU.
     if (statusCode == 404) {
-      return const DeviceCountryConfig();
+      return null;
     }
     if (statusCode < 200 || statusCode >= 300) {
       throw NetworkException('E_SDK_DEVICE_CONFIG_FAILED', response.body);

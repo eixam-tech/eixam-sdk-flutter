@@ -4,6 +4,11 @@ enum DeviceCountryConfigOutcome {
   /// No check has run yet this session.
   idle,
 
+  /// The connected device uses a different region from the backend config for
+  /// the current country. No device command has been sent yet: the host must
+  /// ask the user before calling `applyPendingDeviceCountryConfig`.
+  updateAvailable,
+
   /// A region change is actively in progress (write + reboot + verify).
   /// NON-TERMINAL: always followed by [applied], [failed] or
   /// [skippedFirmwareUnsupported]. Emitted only when a real apply starts (never
