@@ -232,3 +232,27 @@ built from one captured lifecycle snapshot and carries that same revision.
 Consumers reject lifecycle or capability snapshots older than the greatest
 accepted SOS revision, preventing active/recovery state from being combined
 with an older ready capability (and preventing the reverse stale-idle merge).
+
+## App-origin countdown bridge classification (2026-07-17)
+
+`SOS_APP_ORIGIN_ACTIVE_BRIDGE_REGISTERED` is diagnostic output from the legacy
+short-lived public-state bridge that retained an accepted `SosState` while a
+stale repository `idle` could arrive. No SDK or app control flow consumes the
+marker. The authoritative lifecycle and its monotonic revision are the direct
+invariant; the marker is not lifecycle proof.
+
+The marker-only regression exposed a genuine gap rather than a need to restore
+the diagnostic: automatic app-origin countdown completion published legacy
+`sent` after transport acceptance but left `SosLifecycleSnapshot` at `arming`.
+Countdown settlement now publishes `activating` before `confirmPreSos`, then
+publishes `active` with the accepted incident and the existing lifecycle ID and
+generation. Failure publishes `activationFailed`; unresolved already-active
+settlement publishes `recoveryRequired`. A stale legacy `idle` does not change
+the active lifecycle or its revision. The regression asserts those typed
+states, provenance, identity, generation and revision directly instead of
+asserting debug-registry output.
+
+Validation after this correction completed with 451 Flutter package tests
+passed and zero failed. The focused SOS lifecycle/recovery/cancellation matrix
+completed with 120 passed, and the partner app compatibility matrix completed
+with 246 passed.

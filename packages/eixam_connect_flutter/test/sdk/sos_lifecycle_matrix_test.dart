@@ -608,6 +608,9 @@ void main() {
       );
       final states = <SosState>[];
       final subscription = harness.sdk.currentSosStateStream.listen(states.add);
+      final lifecycles = <SosLifecycleSnapshot>[];
+      final lifecycleSubscription =
+          harness.sdk.sosLifecycleStream.listen(lifecycles.add);
       try {
         harness.deviceRepository.emitStatus(
           buildDeviceStatus(
@@ -642,6 +645,21 @@ void main() {
         expect(states, contains(SosState.sent));
         expect(await harness.sdk.getPreSosStatus(), isNull);
         expect(await harness.sdk.getSosState(), SosState.sent);
+        final acceptedLifecycle = await harness.sdk.getSosLifecycle();
+        expect(acceptedLifecycle.stage, SosLifecycleStage.active);
+        expect(acceptedLifecycle.origin, SosLifecycleOrigin.localApp);
+        expect(acceptedLifecycle.localActionable, isTrue);
+        expect(acceptedLifecycle.generation, greaterThan(0));
+        expect(acceptedLifecycle.revision, greaterThan(0));
+        expect(acceptedLifecycle.lifecycleId, isNot('4660:0'));
+        expect(
+          lifecycles.map((snapshot) => snapshot.stage),
+          containsAllInOrder(<SosLifecycleStage>[
+            SosLifecycleStage.arming,
+            SosLifecycleStage.activating,
+            SosLifecycleStage.active,
+          ]),
+        );
 
         harness.sosRepository.currentIncident =
             harness.sosRepository.currentIncident.copyWith(
@@ -652,11 +670,23 @@ void main() {
 
         expect(await harness.sdk.getSosState(), SosState.sent);
         expect(states.last, SosState.sent);
+        final lifecycleAfterStaleIdle = await harness.sdk.getSosLifecycle();
+        expect(lifecycleAfterStaleIdle.stage, SosLifecycleStage.active);
+        expect(lifecycleAfterStaleIdle.localActionable, isTrue);
         expect(
-          _hasDebugMessage('SOS_APP_ORIGIN_ACTIVE_BRIDGE_REGISTERED'),
-          isTrue,
+          lifecycleAfterStaleIdle.lifecycleId,
+          acceptedLifecycle.lifecycleId,
+        );
+        expect(
+          lifecycleAfterStaleIdle.generation,
+          acceptedLifecycle.generation,
+        );
+        expect(
+          lifecycleAfterStaleIdle.revision,
+          acceptedLifecycle.revision,
         );
       } finally {
+        await lifecycleSubscription.cancel();
         await subscription.cancel();
         await harness.dispose();
       }

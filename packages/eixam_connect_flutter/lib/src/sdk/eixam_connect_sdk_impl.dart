@@ -8557,9 +8557,34 @@ class EixamConnectSdkImpl
     )) {
       return;
     }
+    final lifecycle = _sosLifecycle.current;
+    final lifecycleOrigin = session?.owner == _SosOwner.device
+        ? SosLifecycleOrigin.connectedLocalDevice
+        : SosLifecycleOrigin.localApp;
+    await _sosLifecycle.beginActivating(
+      origin: lifecycleOrigin,
+      triggerSource:
+          session?.activationPayload.triggerSource ?? lifecycle.triggerSource,
+      deviceId: lifecycle.deviceId,
+      nodeId: session?.originatorNodeId ?? lifecycle.nodeId,
+      hardwareId: lifecycle.hardwareId,
+    );
     try {
-      await confirmPreSos(
-        _preSosSession?.activationPayload ?? const SosTriggerPayload(),
+      final incident = await confirmPreSos(
+        session?.activationPayload ?? const SosTriggerPayload(),
+      );
+      await _sosLifecycle.confirmActive(
+        origin: lifecycleOrigin,
+        localIncidentId: incident.id,
+        backendIncidentId:
+            _isLocalAppSosIncidentId(incident.id) ? null : incident.id,
+        triggerSource: incident.triggerSource ?? lifecycle.triggerSource,
+        deviceId: incident.deviceId ?? lifecycle.deviceId,
+        nodeId: incident.originatorNodeId ??
+            session?.originatorNodeId ??
+            lifecycle.nodeId,
+        hardwareId: incident.hardwareId ?? lifecycle.hardwareId,
+        incident: incident,
       );
     } on SosException catch (error) {
       if (error.code != 'E_SOS_ALREADY_ACTIVE') {
@@ -8578,6 +8603,7 @@ class EixamConnectSdkImpl
             deviceAvailable: deviceSosController.hasSosCommandPath,
           ),
         );
+        await _sosLifecycle.activationFailed(error.code);
         return;
       }
       BleDebugRegistry.instance.recordEvent(
@@ -8586,6 +8612,10 @@ class EixamConnectSdkImpl
       await _rehydrateDeviceSosPublicState(
         trigger: 'countdown_zero_already_active',
         emitResolvedState: true,
+      );
+      await _sosLifecycle.requireRecovery(
+        'E_SOS_ALREADY_ACTIVE_UNMATCHED',
+        preserveLocalOwnership: false,
       );
     } catch (error) {
       BleDebugRegistry.instance.recordEvent(
@@ -8596,6 +8626,7 @@ class EixamConnectSdkImpl
       _markCountdownZeroActivationFailed(
         terminalReason: SosTerminalReason.deliveryFailed,
       );
+      await _sosLifecycle.activationFailed('E_SOS_ACTIVATION_FAILED');
     }
   }
 
