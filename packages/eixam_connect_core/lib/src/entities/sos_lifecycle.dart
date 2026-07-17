@@ -45,9 +45,18 @@ enum SosActivationOutcome {
 }
 
 enum SosCancellationOutcome {
+  pendingActivationCancelled,
+  activeCancellationConfirmed,
+  cancellationPending,
+  cancellationFailed,
+  noActionableLifecycle,
+  @Deprecated('Use activeCancellationConfirmed instead.')
   cancelled,
+  @Deprecated('Use cancellationPending instead.')
   pendingConfirmation,
+  @Deprecated('Use noActionableLifecycle instead.')
   alreadyTerminal,
+  @Deprecated('Use cancellationFailed instead.')
   failed
 }
 

@@ -256,3 +256,34 @@ Validation after this correction completed with 451 Flutter package tests
 passed and zero failed. The focused SOS lifecycle/recovery/cancellation matrix
 completed with 120 passed, and the partner app compatibility matrix completed
 with 246 passed.
+
+## Authoritative pending-activation cancellation (2026-07-17)
+
+The SDK periodic pre-SOS timer is the authoritative countdown. The app's
+one-second timer only renders the SDK deadline. Each app-origin countdown now
+owns a generation-scoped operation token containing the lifecycle generation,
+lifecycle revision, and operation revision. Restored countdowns receive a new
+in-process token for the restored authoritative generation.
+
+Countdown callbacks revalidate that token before publishing `activating`, at
+the repository dispatch boundary, and after repository completion. The
+dispatch boundary is a synchronous compare-and-set: cancellation that wins
+marks the operation cancelled, cancels the timer/session, publishes
+`cancelled`, and never calls backend cancellation; dispatch that wins marks the
+operation committed, after which cancellation publishes `cancelling`, waits
+for the dispatch result, and performs the existing authoritative active-SOS
+cancellation. A callback from cancelled generation G cannot publish into G or
+a newly-started G+1.
+
+Typed cancellation distinguishes `pendingActivationCancelled`,
+`activeCancellationConfirmed`, `cancellationPending`, `cancellationFailed`,
+and `noActionableLifecycle`. Privacy-safe diagnostics are
+`SOS_PENDING_ACTIVATION_CANCEL` and `SOS_LATE_ACTIVATION_REJECTED`; neither
+contains incident, user, device, location, endpoint, token, payload, or packet
+data.
+
+Physical retest: cancel at 15 and 1 seconds remaining; repeat on the exact
+countdown-zero boundary with cancellation and dispatch winning separately;
+start the next SOS immediately after pre-dispatch cancellation; and verify no
+late `arming`, `activating`, `active`, or backend publish from the cancelled
+generation.

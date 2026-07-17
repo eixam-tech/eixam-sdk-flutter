@@ -600,6 +600,170 @@ void main() {
     });
 
     test(
+        'typed pending cancellation invalidates countdown generation without backend calls',
+        () async {
+      final harness = _SdkSosHarness();
+      final stages = <SosLifecycleStage>[];
+      final subscription =
+          harness.sdk.sosLifecycleStream.map((value) => value.stage).listen(
+                stages.add,
+              );
+      try {
+        await harness.sdk.startPreSos(countdown: const Duration(seconds: 15));
+
+        final result = await harness.sdk.cancelSosAuthoritatively();
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+
+        expect(
+          result.outcome,
+          SosCancellationOutcome.pendingActivationCancelled,
+        );
+        expect(result.lifecycle.stage, SosLifecycleStage.cancelled);
+        expect(result.lifecycle.localIncidentId, isNull);
+        expect(harness.sosRepository.triggerCallCount, 0);
+        expect(harness.sosRepository.cancelCallCount, 0);
+        expect(await harness.sdk.getPreSosStatus(), isNull);
+        expect(stages, isNot(contains(SosLifecycleStage.activating)));
+        expect(stages, isNot(contains(SosLifecycleStage.active)));
+        expect(
+          (await harness.sdk.getSosCapability()).lifecycleAllowsActivation,
+          isTrue,
+        );
+      } finally {
+        await subscription.cancel();
+        await harness.dispose();
+      }
+    });
+
+    test('cancelled generation cannot affect an immediately-started generation',
+        () async {
+      final harness = _SdkSosHarness();
+      try {
+        await harness.sdk.startPreSos(countdown: const Duration(seconds: 1));
+        final first = await harness.sdk.cancelSosAuthoritatively();
+        expect(
+          first.outcome,
+          SosCancellationOutcome.pendingActivationCancelled,
+        );
+
+        await harness.sdk.startPreSos(
+          countdown: const Duration(milliseconds: 60),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 180));
+
+        expect(harness.sosRepository.triggerCallCount, 1);
+        expect(
+          (await harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.active,
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('duplicate pending cancellation is idempotent', () async {
+      final harness = _SdkSosHarness();
+      try {
+        await harness.sdk.startPreSos(countdown: const Duration(seconds: 15));
+
+        final first = await harness.sdk.cancelSosAuthoritatively();
+        final second = await harness.sdk.cancelSosAuthoritatively();
+
+        expect(
+          first.outcome,
+          SosCancellationOutcome.pendingActivationCancelled,
+        );
+        expect(
+          second.outcome,
+          SosCancellationOutcome.noActionableLifecycle,
+        );
+        expect(second.lifecycle.stage, SosLifecycleStage.cancelled);
+        expect(harness.sosRepository.triggerCallCount, 0);
+        expect(harness.sosRepository.cancelCallCount, 0);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('process recreation after pending cancellation never restores active',
+        () async {
+      final store = MemorySharedPrefsSdkStore();
+      final secureStore = InMemorySecureKeyValueStore();
+      final repository = FakeSosRepository();
+      final first = _SdkSosHarness(
+        sosRepository: repository,
+        localStore: store,
+        sosLifecycleSecureStore: secureStore,
+      );
+      await first.sdk.startPreSos(countdown: const Duration(seconds: 15));
+      final cancelled = await first.sdk.cancelSosAuthoritatively();
+      expect(
+        cancelled.outcome,
+        SosCancellationOutcome.pendingActivationCancelled,
+      );
+      await first.dispose(disposeSosRepository: false);
+      await pumpEventQueue();
+
+      final restored = _SdkSosHarness(
+        sosRepository: repository,
+        localStore: store,
+        sosLifecycleSecureStore: secureStore,
+      );
+      try {
+        await restored.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+
+        final lifecycle = await restored.sdk.getSosLifecycle();
+        expect(lifecycle.stage, SosLifecycleStage.idle);
+        expect(lifecycle.recoveryStatus, SosRecoveryStatus.none);
+        expect(await restored.sdk.getPreSosStatus(), isNull);
+        expect(repository.triggerCallCount, 0);
+        expect(repository.cancelCallCount, 0);
+      } finally {
+        await restored.dispose();
+      }
+    });
+
+    test(
+        'dispatch commit wins boundary and cancellation waits before backend cancel',
+        () async {
+      final repository = _BlockingTriggerSosRepository();
+      final harness = _SdkSosHarness(sosRepository: repository);
+      try {
+        await harness.sdk.startPreSos(
+          countdown: const Duration(milliseconds: 60),
+        );
+        await repository.triggerStarted.future.timeout(
+          const Duration(seconds: 2),
+        );
+
+        final cancellation = harness.sdk.cancelSosAuthoritatively();
+        await pumpEventQueue();
+
+        expect(
+          (await harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.cancelling,
+        );
+        expect(repository.cancelCallCount, 0);
+
+        repository.releaseTrigger();
+        final result = await cancellation;
+
+        expect(
+          result.outcome,
+          SosCancellationOutcome.activeCancellationConfirmed,
+        );
+        expect(result.lifecycle.stage, SosLifecycleStage.cancelled);
+        expect(repository.triggerCallCount, 1);
+        expect(repository.cancelCallCount, 1);
+      } finally {
+        repository.releaseTrigger();
+        await harness.dispose();
+      }
+    });
+
+    test(
         'SOS-03b app-origin BLE countdown success is not cleared by stale idle',
         () async {
       final harness = _SdkSosHarness(
@@ -1153,10 +1317,10 @@ void main() {
         sosRepository: repository,
         localStore: store,
       );
-      await first.sdk.startPreSos(countdown: const Duration(milliseconds: 5));
+      await first.sdk.startPreSos(countdown: const Duration(milliseconds: 50));
       expect(await first.sdk.getPreSosStatus(), isNotNull);
       await first.dispose(disposeSosRepository: false);
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await Future<void>.delayed(const Duration(milliseconds: 70));
 
       final restored = _SdkSosHarness(
         sosRepository: repository,
@@ -1325,7 +1489,10 @@ void main() {
         final result = await harness.sdk.cancelSosAuthoritatively();
         await pumpEventQueue();
 
-        expect(result.outcome, SosCancellationOutcome.cancelled);
+        expect(
+          result.outcome,
+          SosCancellationOutcome.activeCancellationConfirmed,
+        );
         expect(result.lifecycle.stage, SosLifecycleStage.cancelled);
         expect(observed, contains(SosLifecycleStage.cancelling));
         expect(
@@ -1731,6 +1898,62 @@ final class _AlreadyActiveLookupRepository extends FakeSosRepository
     throw const SosException(
       'E_SOS_ALREADY_ACTIVE',
       'E_SOS_ALREADY_ACTIVE',
+    );
+  }
+}
+
+final class _BlockingTriggerSosRepository extends FakeSosRepository {
+  final Completer<void> triggerStarted = Completer<void>();
+  final Completer<void> _release = Completer<void>();
+
+  void releaseTrigger() {
+    if (!_release.isCompleted) {
+      _release.complete();
+    }
+  }
+
+  @override
+  Future<SosIncident> triggerSos({
+    String? message,
+    required String triggerSource,
+    TrackingPosition? positionSnapshot,
+    String? deviceId,
+    String? hardwareId,
+    int? originatorNodeId,
+    int? relayNodeId,
+    String? relayDeviceId,
+    String? relayHardwareId,
+    String? relaySource,
+    String? incidentId,
+    String? cycleKey,
+    OsSosWidgetActivation? osWidgetActivation,
+    SdkDeviceBatterySnapshot? deviceBattery,
+    SdkCoverageSnapshot? deviceCoverage,
+    int? mobileBattery,
+    SdkCoverageSnapshot? mobileCoverage,
+  }) async {
+    if (!triggerStarted.isCompleted) {
+      triggerStarted.complete();
+    }
+    await _release.future;
+    return super.triggerSos(
+      message: message,
+      triggerSource: triggerSource,
+      positionSnapshot: positionSnapshot,
+      deviceId: deviceId,
+      hardwareId: hardwareId,
+      originatorNodeId: originatorNodeId,
+      relayNodeId: relayNodeId,
+      relayDeviceId: relayDeviceId,
+      relayHardwareId: relayHardwareId,
+      relaySource: relaySource,
+      incidentId: incidentId,
+      cycleKey: cycleKey,
+      osWidgetActivation: osWidgetActivation,
+      deviceBattery: deviceBattery,
+      deviceCoverage: deviceCoverage,
+      mobileBattery: mobileBattery,
+      mobileCoverage: mobileCoverage,
     );
   }
 }
