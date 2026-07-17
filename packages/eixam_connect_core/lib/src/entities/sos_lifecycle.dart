@@ -1,5 +1,6 @@
 import '../enums/sos_actionability.dart';
 import 'sos_incident.dart';
+import 'sos_capability_snapshot.dart';
 
 /// Authoritative, SDK-owned SOS lifecycle stages.
 enum SosLifecycleStage {
@@ -183,11 +184,15 @@ final class SosActivationResult {
     required this.outcome,
     required this.lifecycle,
     this.incident,
+    this.selectedPath,
+    this.usedPaths = const <SosActivationPath>{},
   });
 
   final SosActivationOutcome outcome;
   final SosLifecycleSnapshot lifecycle;
   final SosIncident? incident;
+  final SosActivationPath? selectedPath;
+  final Set<SosActivationPath> usedPaths;
 }
 
 final class SosCancellationResult {

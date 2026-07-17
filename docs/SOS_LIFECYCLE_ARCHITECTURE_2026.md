@@ -118,3 +118,66 @@ Legacy methods are retained and the SDK continues adapting device/current SOS
 streams. New fields are intentionally limited to lifecycle decisions. Logs
 should use reason codes and booleans; no new coordinates, hardware addresses,
 user IDs, raw packets, or full incident IDs are required by this design.
+
+## Multi-path activation capability
+
+Lifecycle and readiness are separate SDK contracts. `SosLifecycleSnapshot`
+answers what is happening to the current SOS generation;
+`SosCapabilitySnapshot` answers which existing transport can perform the next
+action. An idle lifecycle is therefore not required to be `localActionable` in
+order for a new app SOS to be available.
+
+The capability aggregates independent paths:
+
+- `appBackend`: an authenticated session plus the existing HTTP/MQTT SOS
+  repository and a lifecycle that permits activation;
+- `connectedDevice`: a connected device with the SOS command channel ready;
+- `restoredActiveLifecycle`: persisted local proof for recovery/cancellation;
+- `physicalDevice`: a typed path identifier reserved for device-originated
+  observation; it is not claimed as an app-triggerable route while disconnected.
+
+Global activation availability is exactly
+`canTriggerAppSos || canTriggerDeviceSos`. Device registration, BLE,
+command-channel discovery, tracking, background-location permission and
+telemetry are not prerequisites of `appBackend`. Device failure only removes
+the connected-device path and is reported as typed degradation.
+
+`getSosCapability`, `watchSosCapability`, and `retrySosCapability` are public.
+The stream recomputes on SDK transport/device diagnostics and authoritative
+lifecycle changes. Blocking and degradation are enums; no UI copy or raw
+runtime strings cross the SDK boundary. `SosActivationResult` also reports the
+selected path and the paths actually used, derived from the existing delivery
+channel.
+
+## Transport selection, location, and cancellation
+
+The existing `_activatePublicSos` orchestration remains authoritative. It
+attempts the connected-device command when ready, independently publishes via
+the existing `SosRepository` HTTP/MQTT path, and accepts backend-only,
+device-only, or combined success without duplicating the lifecycle. App-only
+success immediately confirms and persists the same authoritative local
+generation. A later reconnect enriches that generation.
+
+Emergency location resolution prefers current device evidence, then phone
+location and permitted cached evidence. `positionSnapshot` is nullable in the
+existing repository/API contract, so unavailable location is a typed degraded
+reason and never blocks activation. No urgent activation requests background
+location permission.
+
+Cancellation uses the same independent transport aggregation. The SDK tries a
+device close only when that command path is usable and always attempts the
+existing backend cancellation. Thus a backend-backed app SOS remains
+cancellable without BLE. Backend confirmation permits terminal `cancelled`;
+device-only acceptance remains pending until authoritative terminal criteria
+are satisfied.
+
+## Physical validation matrix
+
+- Signed-in app, no registered or connected device: app activation/cancel.
+- Registered device disconnected and BLE disabled: app activation/cancel.
+- Connected device with and without command discovery: combined versus app-only.
+- Location granted, denied, services disabled, and no fix: activation remains
+  transport-driven and coordinate handling remains truthful.
+- Backend unavailable with command-ready device: device-only pending behavior.
+- Reconnect during app-only active SOS: same generation, no duplicate incident.
+- Relaunch during app-only active/cancelling SOS: secure lifecycle recovery.

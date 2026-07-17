@@ -31,6 +31,7 @@ export 'src/entities/tracking_position.dart';
 export 'src/entities/sos_actuator_snapshot.dart';
 export 'src/entities/sos_incident.dart';
 export 'src/entities/sos_lifecycle.dart';
+export 'src/entities/sos_capability_snapshot.dart';
 export 'src/entities/sos_history_item.dart';
 export 'src/entities/sos_trigger_payload.dart';
 export 'src/entities/emergency_contact.dart';

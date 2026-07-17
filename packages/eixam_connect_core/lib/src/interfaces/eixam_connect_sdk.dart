@@ -29,6 +29,7 @@ import '../entities/sdk_telemetry_payload.dart';
 import '../entities/sos_history_item.dart';
 import '../entities/sos_incident.dart';
 import '../entities/sos_lifecycle.dart';
+import '../entities/sos_capability_snapshot.dart';
 import '../entities/sos_trigger_payload.dart';
 import '../entities/tracking_position.dart';
 import '../enums/realtime_connection_state.dart';
@@ -128,6 +129,9 @@ abstract class EixamConnectSdk {
 
   Future<SdkOperationalDiagnostics> getOperationalDiagnostics();
   Stream<SdkOperationalDiagnostics> watchOperationalDiagnostics();
+  Future<SosCapabilitySnapshot> getSosCapability();
+  Stream<SosCapabilitySnapshot> watchSosCapability();
+  Future<SosCapabilitySnapshot> retrySosCapability();
   Future<SdkResolvedLocation?> getResolvedLocationForEmergencyContext();
   Stream<SdkResolvedLocation?> watchResolvedLocation();
   Future<SdkTelemetryPayload?> getResolvedTelemetryPreview({

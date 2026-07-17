@@ -1254,6 +1254,76 @@ void main() {
         await restored.dispose();
       }
     });
+
+    test('app SOS capability stays available without a registered device',
+        () async {
+      final harness = _SdkSosHarness();
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+
+        final capability = await harness.sdk.getSosCapability();
+
+        expect(capability.canTriggerAppSos, isTrue);
+        expect(capability.canTriggerDeviceSos, isFalse);
+        expect(capability.canTriggerSos, isTrue);
+        expect(capability.hasRegisteredDevice, isFalse);
+        expect(capability.hasConnectedDevice, isFalse);
+        expect(
+          capability.availableActivationPaths,
+          contains(SosActivationPath.appBackend),
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('missing location degrades but does not block app SOS', () async {
+      final harness = _SdkSosHarness(hasLocation: false);
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+
+        final capability = await harness.sdk.getSosCapability();
+        final result = await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+
+        expect(capability.locationAvailable, isFalse);
+        expect(capability.canTriggerAppSos, isTrue);
+        expect(
+          capability.degradedReasons,
+          contains(SosCapabilityDegradedReason.locationUnavailable),
+        );
+        expect(result.outcome, SosActivationOutcome.activated);
+        expect(result.usedPaths, contains(SosActivationPath.appBackend));
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('unauthenticated runtime reports a typed blocking reason', () async {
+      final harness = _SdkSosHarness();
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+
+        final capability = await harness.sdk.getSosCapability();
+
+        expect(capability.canTriggerSos, isFalse);
+        expect(
+          capability.blockingReason,
+          SosCapabilityBlockingReason.authenticationRequired,
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
   });
 }
 
@@ -1265,14 +1335,17 @@ final class _SdkSosHarness {
     Duration appActivationObservationTimeout = const Duration(seconds: 3),
     MemorySharedPrefsSdkStore? localStore,
     SecureKeyValueStore? sosLifecycleSecureStore,
+    bool hasLocation = true,
   })  : sosRepository = sosRepository ?? FakeSosRepository(),
         trackingRepository = FakeTrackingRepository(
-          currentPosition: TrackingPosition(
-            latitude: 41.38,
-            longitude: 2.17,
-            timestamp: DateTime.utc(2026, 1, 1, 10),
-            source: DeliveryMode.mobile,
-          ),
+          currentPosition: hasLocation
+              ? TrackingPosition(
+                  latitude: 41.38,
+                  longitude: 2.17,
+                  timestamp: DateTime.utc(2026, 1, 1, 10),
+                  source: DeliveryMode.mobile,
+                )
+              : null,
         ),
         telemetryRepository = FakeTelemetryRepository(),
         contactsRepository = FakeContactsRepository(),

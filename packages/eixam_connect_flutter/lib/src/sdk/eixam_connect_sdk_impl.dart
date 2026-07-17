@@ -154,6 +154,9 @@ class EixamConnectSdkImpl
           _shouldBlockDeviceOriginPreSosBackendPublish;
     }
     _bindSosStreams();
+    _sosCapabilityLifecycleSub = _sosLifecycle.stream.listen((_) {
+      unawaited(_emitSosCapability(reason: 'lifecycle_change'));
+    });
   }
   static bool _externalLoraBuildMarkerLogged = false;
 
@@ -199,6 +202,8 @@ class EixamConnectSdkImpl
       StreamController<SdkOperationalDiagnostics>.broadcast();
   final StreamController<SdkResolvedLocation?> _resolvedLocationController =
       StreamController<SdkResolvedLocation?>.broadcast();
+  final StreamController<SosCapabilitySnapshot> _sosCapabilityController =
+      StreamController<SosCapabilitySnapshot>.broadcast();
   final StreamController<BleNotificationNavigationRequest>
       _bleNotificationNavigationController =
       StreamController<BleNotificationNavigationRequest>.broadcast();
@@ -224,6 +229,7 @@ class EixamConnectSdkImpl
   StreamSubscription<BleIncomingEvent>? _bleIncomingEventDiagnosticsSub;
   StreamSubscription<ProtectionStatus>? _protectionStatusSub;
   StreamSubscription<ProtectionPlatformEvent>? _protectionRawSosEventsSub;
+  StreamSubscription<SosLifecycleSnapshot>? _sosCapabilityLifecycleSub;
   Timer? _protectionDisconnectGraceTimer;
   bool _lastProtectionDeviceConnected = false;
   bool _firmwareOtaInProgress = false;
@@ -3886,6 +3892,7 @@ class EixamConnectSdkImpl
   Future<SosActivationResult> triggerSosAuthoritatively(
     SosTriggerPayload payload,
   ) async {
+    final selectedCapability = await getSosCapability();
     final identity = await _resolveLocalOperationalSosIdentity();
     final prior = _sosLifecycle.current;
     final hadPersistedLocalProof = prior.localActionable &&
@@ -3916,6 +3923,8 @@ class EixamConnectSdkImpl
         outcome: SosActivationOutcome.activated,
         lifecycle: lifecycle,
         incident: incident,
+        selectedPath: selectedCapability.preferredActivationPath,
+        usedPaths: _activationPathsForDelivery(incident.deliveryChannel),
       );
     } catch (error) {
       final alreadyActive =
@@ -3946,6 +3955,10 @@ class EixamConnectSdkImpl
           outcome: SosActivationOutcome.alreadyActiveRecovered,
           lifecycle: lifecycle,
           incident: lifecycle.incident,
+          selectedPath: SosActivationPath.restoredActiveLifecycle,
+          usedPaths: const <SosActivationPath>{
+            SosActivationPath.restoredActiveLifecycle,
+          },
         );
       }
 
@@ -3968,6 +3981,10 @@ class EixamConnectSdkImpl
         return SosActivationResult(
           outcome: SosActivationOutcome.alreadyActiveRecovered,
           lifecycle: lifecycle,
+          selectedPath: SosActivationPath.restoredActiveLifecycle,
+          usedPaths: const <SosActivationPath>{
+            SosActivationPath.restoredActiveLifecycle,
+          },
         );
       }
 
@@ -3980,6 +3997,24 @@ class EixamConnectSdkImpl
         lifecycle: lifecycle,
       );
     }
+  }
+
+  Set<SosActivationPath> _activationPathsForDelivery(
+    SosDeliveryChannel? delivery,
+  ) {
+    return switch (delivery) {
+      SosDeliveryChannel.backendAndDevice => const <SosActivationPath>{
+          SosActivationPath.appBackend,
+          SosActivationPath.connectedDevice,
+        },
+      SosDeliveryChannel.backendOnly => const <SosActivationPath>{
+          SosActivationPath.appBackend,
+        },
+      SosDeliveryChannel.deviceOnly => const <SosActivationPath>{
+          SosActivationPath.connectedDevice,
+        },
+      null => const <SosActivationPath>{},
+    };
   }
 
   Future<SosIncident> _activatePublicSos(
@@ -15529,9 +15564,159 @@ class EixamConnectSdkImpl
     return true;
   }
 
+  bool _lifecycleAllowsNewSos(SosLifecycleSnapshot lifecycle) {
+    return lifecycle.stage == SosLifecycleStage.idle ||
+        lifecycle.stage == SosLifecycleStage.cancelled ||
+        lifecycle.stage == SosLifecycleStage.resolved ||
+        lifecycle.stage == SosLifecycleStage.activationFailed;
+  }
+
+  Future<SosCapabilitySnapshot> _buildSosCapability({
+    required String reason,
+  }) async {
+    final route = _computeCurrentSosCapabilitySnapshot(
+      reason: reason,
+      recordDiagnostics: reason != 'lifecycle_change',
+    );
+    final lifecycle = _sosLifecycle.current;
+    final authenticated = _session != null;
+    final initialized = _sdkConfig != null;
+    final lifecycleAllowsActivation = _lifecycleAllowsNewSos(lifecycle);
+    final appTransportReady = authenticated && route.backendAvailable;
+    final deviceTransportReady =
+        route.deviceConnected && route.deviceSosAvailable;
+    PreferredDevice? preferred;
+    try {
+      preferred = await preferredDevice;
+    } catch (_) {
+      preferred = null;
+    }
+    final hasRegisteredDevice =
+        preferred != null || _backendRegisteredNodeIdsForSession.isNotEmpty;
+    final locationAvailable = _lastResolvedLocation != null ||
+        _bridgeDiagnostics.latestOwnDeviceLocation != null;
+    final canTriggerAppSos =
+        initialized && appTransportReady && lifecycleAllowsActivation;
+    final canTriggerDeviceSos =
+        initialized && deviceTransportReady && lifecycleAllowsActivation;
+    final paths = <SosActivationPath>{
+      if (canTriggerAppSos) SosActivationPath.appBackend,
+      if (canTriggerDeviceSos) SosActivationPath.connectedDevice,
+      if (lifecycle.isOpen) SosActivationPath.restoredActiveLifecycle,
+    };
+    final degraded = <SosCapabilityDegradedReason>{
+      if (!hasRegisteredDevice) SosCapabilityDegradedReason.deviceNotRegistered,
+      if (!route.deviceConnected)
+        SosCapabilityDegradedReason.deviceDisconnected,
+      if (route.deviceConnected && !route.shortCommandAvailable)
+        SosCapabilityDegradedReason.commandChannelUnavailable,
+      if (!locationAvailable) SosCapabilityDegradedReason.locationUnavailable,
+    };
+    final blockingReason = canTriggerAppSos || canTriggerDeviceSos
+        ? null
+        : !initialized
+            ? SosCapabilityBlockingReason.initializing
+            : !authenticated
+                ? SosCapabilityBlockingReason.authenticationRequired
+                : !lifecycleAllowsActivation
+                    ? SosCapabilityBlockingReason
+                        .lifecycleDoesNotAllowActivation
+                    : !appTransportReady && !hasRegisteredDevice
+                        ? SosCapabilityBlockingReason.appTransportUnavailable
+                        : !appTransportReady && !deviceTransportReady
+                            ? SosCapabilityBlockingReason.noActivationPath
+                            : SosCapabilityBlockingReason
+                                .appTransportUnavailable;
+    final capability = SosCapabilitySnapshot(
+      canTriggerAppSos: canTriggerAppSos,
+      canTriggerDeviceSos: canTriggerDeviceSos,
+      canCancelCurrentSos:
+          lifecycle.isOpen && (appTransportReady || deviceTransportReady),
+      appTransportReady: appTransportReady,
+      deviceTransportReady: deviceTransportReady,
+      hasAuthenticatedSession: authenticated,
+      hasRegisteredDevice: hasRegisteredDevice,
+      hasConnectedDevice: route.deviceConnected,
+      commandChannelReady: route.shortCommandAvailable,
+      locationAvailable: locationAvailable,
+      lifecycleAllowsActivation: lifecycleAllowsActivation,
+      availableActivationPaths: Set<SosActivationPath>.unmodifiable(paths),
+      preferredActivationPath: canTriggerAppSos
+          ? SosActivationPath.appBackend
+          : canTriggerDeviceSos
+              ? SosActivationPath.connectedDevice
+              : lifecycle.isOpen
+                  ? SosActivationPath.restoredActiveLifecycle
+                  : null,
+      blockingReason: blockingReason,
+      degradedReasons: Set<SosCapabilityDegradedReason>.unmodifiable(degraded),
+      transient: !initialized,
+      retryable: blockingReason == SosCapabilityBlockingReason.initializing ||
+          blockingReason ==
+              SosCapabilityBlockingReason.appTransportUnavailable ||
+          blockingReason == SosCapabilityBlockingReason.noActivationPath,
+    );
+    if (reason != 'lifecycle_change') {
+      BleDebugRegistry.instance.recordEvent(
+        '[SDK_SOS_CAPABILITY_PUBLIC] reason=$reason '
+        'canTriggerAppSos=${capability.canTriggerAppSos} '
+        'canTriggerDeviceSos=${capability.canTriggerDeviceSos} '
+        'appTransportReady=${capability.appTransportReady} '
+        'deviceTransportReady=${capability.deviceTransportReady} '
+        'authenticated=${capability.hasAuthenticatedSession} '
+        'connectedDevice=${capability.hasConnectedDevice} '
+        'commandReady=${capability.commandChannelReady} '
+        'locationAvailable=${capability.locationAvailable} '
+        'lifecycleAllowsActivation=${capability.lifecycleAllowsActivation} '
+        'selectedPath=${capability.preferredActivationPath?.name ?? "none"} '
+        'blockingReason=${capability.blockingReason?.name ?? "none"}',
+      );
+    }
+    return capability;
+  }
+
+  Future<void> _emitSosCapability({required String reason}) async {
+    if (_sosCapabilityController.isClosed) {
+      return;
+    }
+    final capability = await _buildSosCapability(reason: reason);
+    if (!_sosCapabilityController.isClosed) {
+      _sosCapabilityController.add(capability);
+    }
+  }
+
+  @override
+  Future<SosCapabilitySnapshot> getSosCapability() {
+    return _buildSosCapability(reason: 'get_sos_capability');
+  }
+
+  @override
+  Stream<SosCapabilitySnapshot> watchSosCapability() {
+    return _seedThenReplayLiveStream<SosCapabilitySnapshot>(
+      seed: getSosCapability,
+      live: _sosCapabilityController.stream,
+    );
+  }
+
+  @override
+  Future<SosCapabilitySnapshot> retrySosCapability() async {
+    await _refreshOperationalDiagnostics(
+      trigger: 'retry_sos_capability',
+      refreshRuntimeStatus: true,
+    );
+    final capability = await _buildSosCapability(
+      reason: 'retry_sos_capability_result',
+    );
+    if (!_sosCapabilityController.isClosed) {
+      _sosCapabilityController.add(capability);
+    }
+    return capability;
+  }
+
   _CurrentSosCapabilitySnapshot _computeCurrentSosCapabilitySnapshot({
     required String reason,
     DeviceStatus? statusOverride,
+    bool recordDiagnostics = true,
   }) {
     final backendAvailable = _isBackendSosChannelAvailable();
     final protectionStatus = _protectionModeController.currentStatus;
@@ -15564,17 +15749,19 @@ class EixamConnectSdkImpl
             : SosDeliveryChannel.backendOnly)
         : (deviceSosAvailable ? SosDeliveryChannel.deviceOnly : null);
 
-    BleDebugRegistry.instance.recordEvent(
-      '[SDK_SOS_CAPABILITY] recompute reason=$reason '
-      'backendAvailable=$backendAvailable '
-      'deviceConnected=$deviceConnected '
-      'chosenConnected=${chosenConnected ?? false} '
-      'serviceBleConnected=${serviceBleConnected ?? false} '
-      'serviceBleReady=${serviceBleReady ?? false} '
-      'shortCommandAvailable=$shortCommandAvailable '
-      'longCommandAvailable=$longCommandAvailable '
-      'result=${capability?.name ?? "unavailable"}',
-    );
+    if (recordDiagnostics) {
+      BleDebugRegistry.instance.recordEvent(
+        '[SDK_SOS_CAPABILITY] recompute reason=$reason '
+        'backendAvailable=$backendAvailable '
+        'deviceConnected=$deviceConnected '
+        'chosenConnected=${chosenConnected ?? false} '
+        'serviceBleConnected=${serviceBleConnected ?? false} '
+        'serviceBleReady=${serviceBleReady ?? false} '
+        'shortCommandAvailable=$shortCommandAvailable '
+        'longCommandAvailable=$longCommandAvailable '
+        'result=${capability?.name ?? "unavailable"}',
+      );
+    }
 
     return _CurrentSosCapabilitySnapshot(
       backendAvailable: backendAvailable,
@@ -15966,6 +16153,7 @@ class EixamConnectSdkImpl
       reason: reason,
     );
     _operationalDiagnosticsController.add(diagnostics);
+    unawaited(_emitSosCapability(reason: reason));
   }
 
   Future<DeviceStatus> _resolveDeviceStatusForCapability({
@@ -16052,6 +16240,7 @@ class EixamConnectSdkImpl
     await _bleIncomingEventDiagnosticsSub?.cancel();
     await _protectionStatusSub?.cancel();
     await _protectionRawSosEventsSub?.cancel();
+    await _sosCapabilityLifecycleSub?.cancel();
     await _bleOperationalRuntimeBridge.dispose();
     await _protectionModeController.dispose();
     await firmwareUpdateCoordinator?.dispose();
@@ -16063,6 +16252,7 @@ class EixamConnectSdkImpl
     await _realtimeConnectionStateController.close();
     await _realtimeEventsController.close();
     await _operationalDiagnosticsController.close();
+    await _sosCapabilityController.close();
     await _resolvedLocationController.close();
     await _bleNotificationNavigationController.close();
     await _publicDeviceStatusController.close();
