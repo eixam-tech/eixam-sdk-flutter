@@ -54,6 +54,7 @@ enum SosCancellationOutcome {
 /// The single public source of truth for an SOS generation.
 final class SosLifecycleSnapshot {
   const SosLifecycleSnapshot({
+    this.revision = 0,
     required this.stage,
     required this.lifecycleId,
     required this.generation,
@@ -87,6 +88,7 @@ final class SosLifecycleSnapshot {
         lastAuthoritativeObservation: observedAt,
       );
 
+  final int revision;
   final SosLifecycleStage stage;
   final String lifecycleId;
   final int generation;
@@ -120,6 +122,7 @@ final class SosLifecycleSnapshot {
       stage == SosLifecycleStage.recoveryRequired;
 
   SosLifecycleSnapshot copyWith({
+    int? revision,
     SosLifecycleStage? stage,
     SosLifecycleOrigin? origin,
     bool? localActionable,
@@ -139,6 +142,7 @@ final class SosLifecycleSnapshot {
     Object? incident = _unset,
   }) =>
       SosLifecycleSnapshot(
+        revision: revision ?? this.revision,
         stage: stage ?? this.stage,
         lifecycleId: lifecycleId,
         generation: generation,

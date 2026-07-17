@@ -1200,6 +1200,86 @@ void main() {
       }
     });
 
+    test(
+        'already-active current app incident reconciles without optimistic active publication',
+        () async {
+      final repository = _AlreadyActiveLookupRepository(
+        authoritativeActive: _incident(
+          state: SosState.sent,
+          triggerSource: 'commercial_app',
+        ),
+      );
+      final harness = _SdkSosHarness(sdkSosRepository: repository);
+      final observed = <SosLifecycleStage>[];
+      final subscription = harness.sdk.sosLifecycleStream
+          .map((snapshot) => snapshot.stage)
+          .listen(observed.add);
+      try {
+        await harness.setSession();
+        final resultFuture = harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        await pumpEventQueue(times: 3);
+
+        expect(observed, contains(SosLifecycleStage.activating));
+        expect(observed, isNot(contains(SosLifecycleStage.active)));
+
+        repository.completeTriggerWithAlreadyActive();
+        final result = await resultFuture;
+        await pumpEventQueue();
+
+        expect(result.outcome, SosActivationOutcome.alreadyActiveRecovered);
+        expect(result.lifecycle.stage, SosLifecycleStage.active);
+        expect(
+          observed.where((stage) => stage == SosLifecycleStage.active),
+          hasLength(1),
+        );
+        final capability = await harness.sdk.getSosCapability();
+        expect(capability.revision, result.lifecycle.revision);
+        expect(capability.canTriggerSos, isFalse);
+        expect(capability.lifecycleAllowsActivation, isFalse);
+        expect(capability.canCancelCurrentSos, isTrue);
+        expect(
+          capability.preferredActivationPath,
+          SosActivationPath.restoredActiveLifecycle,
+        );
+      } finally {
+        await subscription.cancel();
+        await harness.dispose(disposeSosRepository: false);
+        await repository.dispose();
+      }
+    });
+
+    test('already-active authoritative foreign incident requires recovery',
+        () async {
+      final repository = _AlreadyActiveLookupRepository(
+        authoritativeActive: _incident(
+          state: SosState.sent,
+          triggerSource: 'external_backend',
+          owner: 'external',
+        ),
+      )..completeTriggerWithAlreadyActive();
+      final harness = _SdkSosHarness(sdkSosRepository: repository);
+      try {
+        await harness.setSession();
+        final result = await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+
+        expect(result.outcome, SosActivationOutcome.alreadyActiveUnmatched);
+        expect(result.lifecycle.stage, SosLifecycleStage.recoveryRequired);
+        expect(result.lifecycle.backendIncidentId, isNotNull);
+        expect(result.lifecycle.localActionable, isFalse);
+        final capability = await harness.sdk.getSosCapability();
+        expect(capability.canTriggerSos, isFalse);
+        expect(capability.lifecycleAllowsActivation, isFalse);
+        expect(capability.canCancelCurrentSos, isTrue);
+      } finally {
+        await harness.dispose(disposeSosRepository: false);
+        await repository.dispose();
+      }
+    });
+
     test('typed cancellation publishes cancelling before terminal cleanup',
         () async {
       final harness = _SdkSosHarness();
@@ -1581,6 +1661,50 @@ final class _OnDemandOperationalRealtimeClient extends FakeRealtimeClient
   Future<void> reconnectIfSessionChanged(EixamSession session) => connect();
 }
 
+final class _AlreadyActiveLookupRepository extends FakeSosRepository
+    implements AuthoritativeActiveSosLookup {
+  _AlreadyActiveLookupRepository({required this.authoritativeActive});
+
+  final SosIncident authoritativeActive;
+  final Completer<void> _triggerResponse = Completer<void>();
+
+  void completeTriggerWithAlreadyActive() {
+    if (!_triggerResponse.isCompleted) {
+      _triggerResponse.complete();
+    }
+  }
+
+  @override
+  Future<SosIncident?> getAuthoritativeActiveSos() async => authoritativeActive;
+
+  @override
+  Future<SosIncident> triggerSos({
+    String? message,
+    required String triggerSource,
+    TrackingPosition? positionSnapshot,
+    String? deviceId,
+    String? hardwareId,
+    int? originatorNodeId,
+    int? relayNodeId,
+    String? relayDeviceId,
+    String? relayHardwareId,
+    String? relaySource,
+    String? incidentId,
+    String? cycleKey,
+    OsSosWidgetActivation? osWidgetActivation,
+    SdkDeviceBatterySnapshot? deviceBattery,
+    SdkCoverageSnapshot? deviceCoverage,
+    int? mobileBattery,
+    SdkCoverageSnapshot? mobileCoverage,
+  }) async {
+    await _triggerResponse.future;
+    throw const SosException(
+      'E_SOS_ALREADY_ACTIVE',
+      'E_SOS_ALREADY_ACTIVE',
+    );
+  }
+}
+
 final class _HistoryFakeSosRepository extends FakeSosRepository {
   @override
   Future<SosHistoryPage> listSosHistory(
@@ -1605,12 +1729,14 @@ final class _HistoryFakeSosRepository extends FakeSosRepository {
 SosIncident _incident({
   required SosState state,
   required String triggerSource,
+  String? owner,
 }) {
   return SosIncident(
     id: 'sos-${triggerSource.replaceAll('_', '-')}',
     state: state,
     createdAt: DateTime.utc(2026, 3, 31, 10),
     triggerSource: triggerSource,
+    owner: owner,
   );
 }
 

@@ -16,7 +16,10 @@ import 'mqtt_sos_lifecycle_update.dart';
 import 'sos_runtime_rehydration_support.dart';
 
 class MqttOperationalSosRepository
-    implements SosRepository, SosRuntimeRehydrationSupport {
+    implements
+        SosRepository,
+        SosRuntimeRehydrationSupport,
+        AuthoritativeActiveSosLookup {
   MqttOperationalSosRepository({
     required this.realtimeClient,
     SosRemoteDataSource? remoteDataSource,
@@ -1089,6 +1092,16 @@ class MqttOperationalSosRepository
         diagnosticNote: 'E_SOS_REHYDRATION_FAILED error=$error',
       );
     }
+  }
+
+  @override
+  Future<SosIncident?> getAuthoritativeActiveSos() async {
+    final dataSource = remoteDataSource;
+    if (dataSource == null) {
+      return null;
+    }
+    final active = await dataSource.getActiveSos();
+    return active == null ? null : _mapper.toDomain(active);
   }
 
   Future<void> dispose() async {

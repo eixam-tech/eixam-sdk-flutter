@@ -21,3 +21,9 @@ class SosRuntimeRehydrationResult {
 abstract interface class SosRuntimeRehydrationSupport {
   Future<SosRuntimeRehydrationResult> rehydrateRuntimeStateFromBackend();
 }
+
+/// Reads the account-scoped current-active endpoint without promoting history
+/// or mutating the repository's local lifecycle.
+abstract interface class AuthoritativeActiveSosLookup {
+  Future<SosIncident?> getAuthoritativeActiveSos();
+}

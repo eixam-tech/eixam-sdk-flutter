@@ -15,7 +15,11 @@ import 'sos_runtime_rehydration_support.dart';
 /// The repository keeps a local state machine for responsive UI updates and can
 /// optionally cache the active incident so the host app restores context after a
 /// process restart.
-class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
+class ApiSosRepository
+    implements
+        SosRepository,
+        SosRuntimeRehydrationSupport,
+        AuthoritativeActiveSosLookup {
   ApiSosRepository({
     required this.remoteDataSource,
     this.mapper = const SosIncidentMapper(),
@@ -397,6 +401,12 @@ class ApiSosRepository implements SosRepository, SosRuntimeRehydrationSupport {
       outcome: SosRuntimeRehydrationOutcome.hydratedFromBackend,
       resultingState: _stateMachine.current,
     );
+  }
+
+  @override
+  Future<SosIncident?> getAuthoritativeActiveSos() async {
+    final active = await remoteDataSource.getActiveSos();
+    return active == null ? null : mapper.toDomain(active);
   }
 
   void _clearCurrentIncidentAfterCancellation(SosIncident cancelledIncident) {

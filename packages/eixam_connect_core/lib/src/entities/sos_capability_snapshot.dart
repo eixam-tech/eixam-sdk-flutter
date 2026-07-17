@@ -26,6 +26,7 @@ enum SosCapabilityDegradedReason {
 /// SDK-owned SOS readiness, independent from the active SOS lifecycle.
 final class SosCapabilitySnapshot {
   const SosCapabilitySnapshot({
+    this.revision = 0,
     required this.canTriggerAppSos,
     required this.canTriggerDeviceSos,
     required this.canCancelCurrentSos,
@@ -45,6 +46,7 @@ final class SosCapabilitySnapshot {
     this.blockingReason,
   });
 
+  final int revision;
   final bool canTriggerAppSos;
   final bool canTriggerDeviceSos;
   final bool canCancelCurrentSos;

@@ -24,6 +24,7 @@ final class AuthoritativeSosLifecycleController {
   SosLifecycleSnapshot _current;
   String? _ownerScope;
   int _generation = 0;
+  int _revision = 0;
 
   SosLifecycleSnapshot get current => _current;
   Stream<SosLifecycleSnapshot> get stream => _controller.stream;
@@ -198,6 +199,8 @@ final class AuthoritativeSosLifecycleController {
   Future<SosLifecycleSnapshot> requireRecovery(
     String code, {
     bool preserveLocalOwnership = true,
+    String? backendIncidentId,
+    SosIncident? incident,
   }) =>
       _publish(
         _current.copyWith(
@@ -206,6 +209,8 @@ final class AuthoritativeSosLifecycleController {
               preserveLocalOwnership && _current.localIncidentId != null,
           recoveryStatus: SosRecoveryStatus.unresolved,
           failureCode: code,
+          backendIncidentId: backendIncidentId,
+          incident: incident,
           lastAuthoritativeObservation: _now(),
         ),
       );
@@ -300,7 +305,9 @@ final class AuthoritativeSosLifecycleController {
     SosLifecycleSnapshot next, {
     bool persist = true,
   }) async {
-    _current = next;
+    _revision += 1;
+    _current = next.copyWith(revision: _revision);
+    next = _current;
     if (persist &&
         next.isOpen &&
         next.localIncidentId != null &&

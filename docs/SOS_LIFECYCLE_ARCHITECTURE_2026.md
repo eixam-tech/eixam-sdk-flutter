@@ -208,3 +208,27 @@ the device path; app-only activation remains ready. Each meaningful transition
 emits one debug-only, privacy-safe `SOS_CAPABILITY_EVAL` line containing only
 the source, readiness booleans, typed blocking reason and selected path. It
 contains no identity, incident, location, endpoint, token or packet data.
+
+## Authoritative already-active ordering correction (2026-07-17)
+
+App-originated activation now publishes `arming -> activating` and keeps the
+typed lifecycle at `activating` while `SosRepository.triggerSos` is pending.
+Only repository acceptance or SDK-owned reconciliation of the account-scoped
+current-active endpoint may publish `active`. The legacy `SosState.sending`
+surface remains transport progress, not activation proof.
+
+For `E_SOS_ALREADY_ACTIVE`, the SDK performs three bounded current-active
+reads. It matches lifecycle/cycle correlation, persisted backend identity,
+proven device identity, or explicit current app provenance. It never queries
+history for promotion. A match returns `alreadyActiveRecovered`, retains the
+generation and publishes actionable `active`. An authoritative current active
+incident that cannot be matched returns `alreadyActiveUnmatched` and publishes
+`recoveryRequired`; a new activation remains blocked. Cancellation is exposed
+only when the lifecycle contains an authoritative backend or local incident
+identity and an appropriate transport is available.
+
+Every lifecycle publication receives a monotonic `revision`. Capability is
+built from one captured lifecycle snapshot and carries that same revision.
+Consumers reject lifecycle or capability snapshots older than the greatest
+accepted SOS revision, preventing active/recovery state from being combined
+with an older ready capability (and preventing the reverse stale-idle merge).

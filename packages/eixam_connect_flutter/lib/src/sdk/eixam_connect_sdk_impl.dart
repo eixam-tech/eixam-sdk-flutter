@@ -3905,7 +3905,7 @@ class EixamConnectSdkImpl
     final hadPersistedLocalProof = prior.localActionable &&
         prior.localIncidentId != null &&
         (prior.isOpen || prior.stage == SosLifecycleStage.active);
-    await _sosLifecycle.beginActivating(
+    final attemptedLifecycle = await _sosLifecycle.beginActivating(
       origin: SosLifecycleOrigin.localApp,
       triggerSource: payload.triggerSource,
       deviceId: identity.deviceId,
@@ -3969,6 +3969,38 @@ class EixamConnectSdkImpl
         );
       }
 
+      final authoritativeActive = await _reconcileAlreadyActiveIncident();
+      if (authoritativeActive != null &&
+          _matchesAttemptedAppSos(
+            attempted: attemptedLifecycle,
+            prior: prior,
+            incident: authoritativeActive,
+          )) {
+        final lifecycle = await _sosLifecycle.confirmActive(
+          origin: SosLifecycleOrigin.localApp,
+          localIncidentId: authoritativeActive.id,
+          backendIncidentId: authoritativeActive.id,
+          triggerSource:
+              authoritativeActive.triggerSource ?? payload.triggerSource,
+          deviceId: authoritativeActive.deviceId ?? attemptedLifecycle.deviceId,
+          nodeId:
+              authoritativeActive.originatorNodeId ?? attemptedLifecycle.nodeId,
+          hardwareId:
+              authoritativeActive.hardwareId ?? attemptedLifecycle.hardwareId,
+          incident: authoritativeActive,
+          recoveryStatus: SosRecoveryStatus.restored,
+        );
+        return SosActivationResult(
+          outcome: SosActivationOutcome.alreadyActiveRecovered,
+          lifecycle: lifecycle,
+          incident: authoritativeActive,
+          selectedPath: SosActivationPath.restoredActiveLifecycle,
+          usedPaths: const <SosActivationPath>{
+            SosActivationPath.restoredActiveLifecycle,
+          },
+        );
+      }
+
       final deviceStatus = await deviceSosController.getStatus();
       final deviceProvesLocalActive =
           deviceStatus.state == DeviceSosState.active ||
@@ -3998,12 +4030,71 @@ class EixamConnectSdkImpl
       final lifecycle = await _sosLifecycle.requireRecovery(
         'E_SOS_ALREADY_ACTIVE_UNMATCHED',
         preserveLocalOwnership: false,
+        backendIncidentId: authoritativeActive?.id,
+        incident: authoritativeActive,
       );
       return SosActivationResult(
         outcome: SosActivationOutcome.alreadyActiveUnmatched,
         lifecycle: lifecycle,
       );
     }
+  }
+
+  static const int _alreadyActiveReconcileAttempts = 3;
+  static const Duration _alreadyActiveReconcileDelay = Duration(
+    milliseconds: 100,
+  );
+
+  Future<SosIncident?> _reconcileAlreadyActiveIncident() async {
+    final repository = sosRepository;
+    if (repository is! AuthoritativeActiveSosLookup) {
+      return null;
+    }
+    final activeLookup = repository as AuthoritativeActiveSosLookup;
+    for (var attempt = 0;
+        attempt < _alreadyActiveReconcileAttempts;
+        attempt += 1) {
+      try {
+        final incident = await activeLookup.getAuthoritativeActiveSos();
+        if (incident != null && _isOpenSosState(incident.state)) {
+          return incident;
+        }
+      } catch (_) {
+        // The trigger response remains authoritative: reconciliation failure
+        // must not turn an already-active response into Ready.
+      }
+      if (attempt + 1 < _alreadyActiveReconcileAttempts) {
+        await Future<void>.delayed(_alreadyActiveReconcileDelay);
+      }
+    }
+    return null;
+  }
+
+  bool _matchesAttemptedAppSos({
+    required SosLifecycleSnapshot attempted,
+    required SosLifecycleSnapshot prior,
+    required SosIncident incident,
+  }) {
+    if (incident.cycleKey != null &&
+        incident.cycleKey == attempted.lifecycleId) {
+      return true;
+    }
+    if (prior.backendIncidentId != null &&
+        prior.backendIncidentId == incident.id) {
+      return true;
+    }
+    final identityMatches = (attempted.nodeId != null &&
+            attempted.nodeId == incident.originatorNodeId) ||
+        (attempted.deviceId != null &&
+            attempted.deviceId == incident.deviceId) ||
+        (attempted.hardwareId != null &&
+            attempted.hardwareId == incident.hardwareId);
+    if (identityMatches) {
+      return true;
+    }
+    final origin = classifySosIncidentOrigin(incident);
+    return origin.actionability == SosActionability.localActionable &&
+        origin.originKind == SosOriginKind.app;
   }
 
   Set<SosActivationPath> _activationPathsForDelivery(
@@ -15635,10 +15726,13 @@ class EixamConnectSdkImpl
                             : SosCapabilityBlockingReason
                                 .appTransportUnavailable;
     final capability = SosCapabilitySnapshot(
+      revision: lifecycle.revision,
       canTriggerAppSos: canTriggerAppSos,
       canTriggerDeviceSos: canTriggerDeviceSos,
-      canCancelCurrentSos:
-          lifecycle.isOpen && (appTransportReady || deviceTransportReady),
+      canCancelCurrentSos: lifecycle.isOpen &&
+          (lifecycle.backendIncidentId != null ||
+              lifecycle.localIncidentId != null) &&
+          (appTransportReady || deviceTransportReady),
       appTransportReady: appTransportReady,
       deviceTransportReady: deviceTransportReady,
       hasAuthenticatedSession: authenticated,
