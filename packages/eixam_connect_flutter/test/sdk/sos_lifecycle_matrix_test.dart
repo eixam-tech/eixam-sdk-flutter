@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/preferred_ble_device_store.dart';
+import 'package:eixam_connect_flutter/src/data/repositories/mqtt_operational_sos_repository.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/sos_runtime_rehydration_support.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
@@ -9,6 +10,8 @@ import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_sos_event_packet.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_sos_packet.dart';
 import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
+import 'package:eixam_connect_flutter/src/sdk/operational_realtime_client.dart';
+import 'package:eixam_connect_flutter/src/sdk/sdk_mqtt_contract.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -1280,6 +1283,89 @@ void main() {
       }
     });
 
+    test(
+        'disconnected MQTT remains app-ready because activation connects on demand',
+        () async {
+      final realtimeClient = _OnDemandOperationalRealtimeClient();
+      final repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+      );
+      final harness = _SdkSosHarness(
+        sdkSosRepository: repository,
+        realtimeClient: realtimeClient,
+      );
+      final transitions = <SosCapabilitySnapshot>[];
+      final subscription = harness.sdk.watchSosCapability().listen(
+            transitions.add,
+          );
+      try {
+        final initializing = await harness.sdk.getSosCapability();
+
+        expect(initializing.canTriggerSos, isFalse);
+        expect(
+          initializing.blockingReason,
+          SosCapabilityBlockingReason.initializing,
+        );
+        expect(initializing.transient, isTrue);
+
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+        await pumpEventQueue(times: 3);
+
+        final capability = await harness.sdk.getSosCapability();
+
+        expect(realtimeClient.connected, isFalse);
+        expect(capability.appTransportReady, isTrue);
+        expect(capability.deviceTransportReady, isFalse);
+        expect(capability.canTriggerAppSos, isTrue);
+        expect(capability.canTriggerDeviceSos, isFalse);
+        expect(capability.canTriggerSos, isTrue);
+        expect(
+          capability.preferredActivationPath,
+          SosActivationPath.appBackend,
+        );
+        expect(
+          transitions,
+          contains(
+            isA<SosCapabilitySnapshot>()
+                .having(
+                  (value) => value.blockingReason,
+                  'blockingReason',
+                  SosCapabilityBlockingReason.initializing,
+                )
+                .having((value) => value.transient, 'transient', isTrue),
+          ),
+        );
+        expect(
+          transitions.last,
+          isA<SosCapabilitySnapshot>()
+              .having(
+                (value) => value.canTriggerAppSos,
+                'canTriggerAppSos',
+                isTrue,
+              )
+              .having(
+                (value) => value.preferredActivationPath,
+                'preferredActivationPath',
+                SosActivationPath.appBackend,
+              ),
+        );
+
+        final result = await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+
+        expect(result.outcome, SosActivationOutcome.activated);
+        expect(realtimeClient.publishedSos, hasLength(1));
+      } finally {
+        await subscription.cancel();
+        await harness.dispose(disposeSosRepository: false);
+        await repository.dispose();
+      }
+    });
+
     test('missing location degrades but does not block app SOS', () async {
       final harness = _SdkSosHarness(hasLocation: false);
       try {
@@ -1330,6 +1416,8 @@ void main() {
 final class _SdkSosHarness {
   _SdkSosHarness({
     FakeSosRepository? sosRepository,
+    SosRepository? sdkSosRepository,
+    FakeRealtimeClient? realtimeClient,
     bool connectedBle = false,
     Duration deviceCountdown = const Duration(seconds: 20),
     Duration appActivationObservationTimeout = const Duration(seconds: 3),
@@ -1368,7 +1456,7 @@ final class _SdkSosHarness {
           ),
         ),
         notificationsRepository = FakeNotificationsRepository(),
-        realtimeClient = FakeRealtimeClient(),
+        realtimeClient = realtimeClient ?? FakeRealtimeClient(),
         deviceSosController = DeviceSosController(
           countdownDuration: deviceCountdown,
           countdownTick: const Duration(milliseconds: 5),
@@ -1379,7 +1467,7 @@ final class _SdkSosHarness {
           localStore: localStore ?? MemorySharedPrefsSdkStore(),
         ) {
     sdk = EixamConnectSdkImpl(
-      sosRepository: this.sosRepository,
+      sosRepository: sdkSosRepository ?? this.sosRepository,
       trackingRepository: trackingRepository,
       telemetryRepository: telemetryRepository,
       contactsRepository: contactsRepository,
@@ -1388,7 +1476,7 @@ final class _SdkSosHarness {
       deathManRepository: deathManRepository,
       permissionsRepository: permissionsRepository,
       notificationsRepository: notificationsRepository,
-      realtimeClient: realtimeClient,
+      realtimeClient: this.realtimeClient,
       deviceSosController: deviceSosController,
       bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
       preferredBleDeviceStore: preferredBleDeviceStore,
@@ -1470,6 +1558,27 @@ final class _SdkSosHarness {
     await deviceRepository.dispose();
     await realtimeClient.dispose();
   }
+}
+
+final class _OnDemandOperationalRealtimeClient extends FakeRealtimeClient
+    implements OperationalRealtimeClient {
+  bool connected = false;
+
+  @override
+  Future<void> connect() async {
+    connectCallCount++;
+  }
+
+  @override
+  Future<void> publishOperationalSos(MqttOperationalSosRequest request) async {
+    publishedSos.add(request);
+  }
+
+  @override
+  Future<void> publishTelemetry(SdkTelemetryPayload payload) async {}
+
+  @override
+  Future<void> reconnectIfSessionChanged(EixamSession session) => connect();
 }
 
 final class _HistoryFakeSosRepository extends FakeSosRepository {

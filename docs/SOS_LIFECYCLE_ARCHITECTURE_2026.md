@@ -181,3 +181,30 @@ are satisfied.
 - Backend unavailable with command-ready device: device-only pending behavior.
 - Reconnect during app-only active SOS: same generation, no duplicate incident.
 - Relaunch during app-only active/cancelling SOS: secure lifecycle recovery.
+
+## SDK-first capability regression correction (2026-07)
+
+The false field was `appTransportReady=false`. For an
+`MqttOperationalSosRepository`, capability evaluation treated the current
+realtime socket state as a mandatory activation prerequisite. A disconnected
+or still-connecting MQTT state therefore produced `noActivationPath` whenever
+the optional BLE path was also unavailable.
+
+That source was stale with respect to the real trigger contract.
+`MqttOperationalSosRepository.triggerSos` delegates to
+`MqttRealtimeClient.publishOperationalSos`, which authenticates from the SDK
+session and calls its connection establishment path before publishing. The app
+path prerequisites are therefore an initialized SDK, an authenticated session,
+a configured operational SOS repository, and a lifecycle that permits a new
+activation. An already-connected MQTT socket is not required. HTTP remains the
+backend cancellation path where configured; no new endpoint or fallback was
+introduced.
+
+Capability continues to recompute from initialization/session, realtime,
+device diagnostics, command-path and lifecycle events. Before initialization,
+the typed result is `initializing` with `transient=true`. After initialization
+and authentication, Bluetooth-off or disconnected-device state removes only
+the device path; app-only activation remains ready. Each meaningful transition
+emits one debug-only, privacy-safe `SOS_CAPABILITY_EVAL` line containing only
+the source, readiness booleans, typed blocking reason and selected path. It
+contains no identity, incident, location, endpoint, token or packet data.

@@ -277,6 +277,8 @@ class EixamConnectSdkImpl
   _AppOriginActiveSosBridge? _appOriginActiveSosBridge;
   int? _knownLocalDeviceNodeId;
   SosDeliveryChannel? _lastPublishedCurrentSosCapabilityChannel;
+  String? _lastSosCapabilityEvaluationSignature;
+  int _sosCapabilityEmissionRevision = 0;
   DeviceTelRelayRx? _lastTelRelayRx;
   final Map<String, _ObservedRelaySosContext> _observedRelaySosBySignature =
       <String, _ObservedRelaySosContext>{};
@@ -328,6 +330,7 @@ class EixamConnectSdkImpl
   final Set<String> _deviceOriginatedBackendSyncInFlight = <String>{};
   final Set<String> _iosExpiredPreSosPromotionKeys = <String>{};
   EixamSdkConfig? _sdkConfig;
+  bool _sdkInitialized = false;
   final bool _registeredDeviceAutoSyncInFlight = false;
   final Set<String> _backendRegisteredNodeIdsForSession = <String>{};
   final Map<String, Future<void>> _backendDeviceRegistrationInFlightByNodeId =
@@ -482,6 +485,8 @@ class EixamConnectSdkImpl
         'SDK_CLIENT_CREATION_READY_WITH_TRANSPORT_PENDING '
         'trigger=initialize transport=mqtt status=runtime_deferred',
       );
+      _sdkInitialized = true;
+      _emitOperationalDiagnostics(reason: 'sdk_initialized');
       return;
     }
     _operationalTelemetryCoordinator.start(initialSosState: _publicSosState);
@@ -499,6 +504,8 @@ class EixamConnectSdkImpl
       trigger: 'initialize',
       status: _lastDeviceStatus,
     );
+    _sdkInitialized = true;
+    _emitOperationalDiagnostics(reason: 'sdk_initialized');
   }
 
   void _bindDeviceStreams() {
@@ -15553,10 +15560,10 @@ class EixamConnectSdkImpl
 
   bool _isBackendSosChannelAvailable() {
     if (sosRepository is MqttOperationalSosRepository) {
-      final repository = sosRepository as MqttOperationalSosRepository;
-      return _session != null &&
-          (_lastRealtimeConnectionState == RealtimeConnectionState.connected ||
-              repository.remoteDataSource != null);
+      // Operational MQTT publish establishes its connection on demand. A
+      // temporarily disconnected realtime socket therefore does not make the
+      // configured app SOS path unusable.
+      return _session != null;
     }
     if (sosRepository is ApiSosRepository) {
       return _session != null;
@@ -15580,7 +15587,7 @@ class EixamConnectSdkImpl
     );
     final lifecycle = _sosLifecycle.current;
     final authenticated = _session != null;
-    final initialized = _sdkConfig != null;
+    final initialized = _sdkInitialized;
     final lifecycleAllowsActivation = _lifecycleAllowsNewSos(lifecycle);
     final appTransportReady = authenticated && route.backendAvailable;
     final deviceTransportReady =
@@ -15656,38 +15663,75 @@ class EixamConnectSdkImpl
               SosCapabilityBlockingReason.appTransportUnavailable ||
           blockingReason == SosCapabilityBlockingReason.noActivationPath,
     );
-    if (reason != 'lifecycle_change') {
-      BleDebugRegistry.instance.recordEvent(
-        '[SDK_SOS_CAPABILITY_PUBLIC] reason=$reason '
-        'canTriggerAppSos=${capability.canTriggerAppSos} '
-        'canTriggerDeviceSos=${capability.canTriggerDeviceSos} '
-        'appTransportReady=${capability.appTransportReady} '
-        'deviceTransportReady=${capability.deviceTransportReady} '
-        'authenticated=${capability.hasAuthenticatedSession} '
-        'connectedDevice=${capability.hasConnectedDevice} '
-        'commandReady=${capability.commandChannelReady} '
-        'locationAvailable=${capability.locationAvailable} '
-        'lifecycleAllowsActivation=${capability.lifecycleAllowsActivation} '
-        'selectedPath=${capability.preferredActivationPath?.name ?? "none"} '
-        'blockingReason=${capability.blockingReason?.name ?? "none"}',
-      );
-    }
     return capability;
+  }
+
+  void _logSosCapabilityEvaluation({
+    required String source,
+    required SosCapabilitySnapshot capability,
+  }) {
+    final signature = <Object?>[
+      _sdkInitialized,
+      capability.hasAuthenticatedSession,
+      capability.appTransportReady,
+      capability.deviceTransportReady,
+      capability.hasRegisteredDevice,
+      capability.hasConnectedDevice,
+      capability.commandChannelReady,
+      capability.locationAvailable,
+      capability.lifecycleAllowsActivation,
+      capability.canTriggerAppSos,
+      capability.canTriggerDeviceSos,
+      capability.canTriggerSos,
+      capability.blockingReason,
+      capability.transient,
+      capability.preferredActivationPath,
+    ].join('|');
+    if (_lastSosCapabilityEvaluationSignature == signature) {
+      return;
+    }
+    _lastSosCapabilityEvaluationSignature = signature;
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_CAPABILITY_EVAL source=$source '
+      'sdkInitialized=$_sdkInitialized '
+      'authenticated=${capability.hasAuthenticatedSession} '
+      'appTransportReady=${capability.appTransportReady} '
+      'deviceTransportReady=${capability.deviceTransportReady} '
+      'hasRegisteredDevice=${capability.hasRegisteredDevice} '
+      'hasConnectedDevice=${capability.hasConnectedDevice} '
+      'commandChannelReady=${capability.commandChannelReady} '
+      'locationAvailable=${capability.locationAvailable} '
+      'lifecycleAllowsActivation=${capability.lifecycleAllowsActivation} '
+      'canTriggerAppSos=${capability.canTriggerAppSos} '
+      'canTriggerDeviceSos=${capability.canTriggerDeviceSos} '
+      'canTriggerSos=${capability.canTriggerSos} '
+      'blockingReason=${capability.blockingReason?.name ?? "none"} '
+      'transient=${capability.transient} '
+      'selectedPath=${capability.preferredActivationPath?.name ?? "none"}',
+    );
   }
 
   Future<void> _emitSosCapability({required String reason}) async {
     if (_sosCapabilityController.isClosed) {
       return;
     }
+    final revision = ++_sosCapabilityEmissionRevision;
     final capability = await _buildSosCapability(reason: reason);
-    if (!_sosCapabilityController.isClosed) {
+    if (revision == _sosCapabilityEmissionRevision &&
+        !_sosCapabilityController.isClosed) {
+      _logSosCapabilityEvaluation(source: reason, capability: capability);
       _sosCapabilityController.add(capability);
     }
   }
 
   @override
-  Future<SosCapabilitySnapshot> getSosCapability() {
-    return _buildSosCapability(reason: 'get_sos_capability');
+  Future<SosCapabilitySnapshot> getSosCapability() async {
+    final capability = await _buildSosCapability(reason: 'get_sos_capability');
+    _logSosCapabilityEvaluation(
+      source: 'get_sos_capability',
+      capability: capability,
+    );
+    return capability;
   }
 
   @override
@@ -15700,6 +15744,7 @@ class EixamConnectSdkImpl
 
   @override
   Future<SosCapabilitySnapshot> retrySosCapability() async {
+    final revision = ++_sosCapabilityEmissionRevision;
     await _refreshOperationalDiagnostics(
       trigger: 'retry_sos_capability',
       refreshRuntimeStatus: true,
@@ -15707,7 +15752,12 @@ class EixamConnectSdkImpl
     final capability = await _buildSosCapability(
       reason: 'retry_sos_capability_result',
     );
-    if (!_sosCapabilityController.isClosed) {
+    _logSosCapabilityEvaluation(
+      source: 'retry_sos_capability_result',
+      capability: capability,
+    );
+    if (revision == _sosCapabilityEmissionRevision &&
+        !_sosCapabilityController.isClosed) {
       _sosCapabilityController.add(capability);
     }
     return capability;
