@@ -12,13 +12,18 @@ Partner apps are expected to:
 - bootstrap the SDK with the correct `appId` and environment
 - set or refresh the signed SDK session
 - explicitly connect a compatible BLE device when device-backed features are needed
-- render coarse capability/progress from the public SDK state
+- read initial `SosLifecycleSnapshot` and `SosCapabilitySnapshot`, subscribe to
+  both streams, and render typed lifecycle/capability state
 - optionally expose diagnostics to support or QA users
 
 Partner apps are not expected to:
 
 - decode relay TEL or SOS packets
 - map relay BLE payloads to backend device ids
+- reconstruct SOS lifecycle from history, legacy transport progress, timers, or
+  device summaries
+- parse `E_SOS_ALREADY_ACTIVE`, select activation transports, or optimistically
+  cancel
 
 Those responsibilities stay inside the SDK/runtime layers.
 
@@ -65,3 +70,20 @@ Use public APIs this way:
 
 Diagnostics are descriptive and support-oriented. They should not replace the
 SDK’s typed public state for host control flow.
+
+## SOS lifecycle and capability
+
+Use `getSosLifecycle()` plus `sosLifecycleStream` and `getSosCapability()` plus
+the capability stream for the initial and ongoing contract. Lifecycle owns
+idle through terminal/failure/recovery states; capability independently reports
+whether app/backend or connected-device activation and current cancellation are
+available.
+
+App/backend activation does not require a registered device, BLE, command
+channel, firmware runtime, telemetry, tracking, or a location fix. The SDK owns
+transport selection, countdown and dispatch ordering, bounded already-active
+recovery, cancellation confirmation, account-scoped persistence, and revision
+ordering. Host consumers merge equal revisions and reject stale ones.
+
+See [SOS orchestration](SOS_ORCHESTRATION.md) and the repository
+[authoritative lifecycle architecture](../../docs/SOS_LIFECYCLE_ARCHITECTURE_2026.md).

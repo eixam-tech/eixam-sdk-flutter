@@ -10,6 +10,9 @@ EIXAM Connect Flutter plugin runtime and Protection Mode platform bridge.
   s.author           = { 'EIXAM' => 'dev@eixam.dev' }
   s.source           = { :path => '.' }
   s.source_files = 'Classes/**/*'
+  s.resource_bundles = {
+    'eixam_connect_flutter_privacy' => ['PrivacyInfo.xcprivacy']
+  }
   s.dependency 'Flutter'
   s.dependency 'NordicDFU', '~> 4.16'
   s.platform = :ios, '13.0'

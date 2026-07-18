@@ -33,6 +33,13 @@ internal object BackgroundTelemetryBridge {
                     EixamTelemetryForegroundService.start(context)
                 } catch (error: Exception) {
                     store.markError(error.message ?: error.javaClass.simpleName)
+                    store.markStopped()
+                    result.error(
+                        "background_telemetry_start_failed",
+                        error.message ?: error.javaClass.simpleName,
+                        null,
+                    )
+                    return
                 }
                 result.success(null)
             }
@@ -43,6 +50,12 @@ internal object BackgroundTelemetryBridge {
                     EixamTelemetryForegroundService.update(context)
                 } catch (error: Exception) {
                     store.markError(error.message ?: error.javaClass.simpleName)
+                    result.error(
+                        "background_telemetry_update_failed",
+                        error.message ?: error.javaClass.simpleName,
+                        null,
+                    )
+                    return
                 }
                 result.success(null)
             }
@@ -52,6 +65,12 @@ internal object BackgroundTelemetryBridge {
                     EixamTelemetryForegroundService.stop(context)
                 } catch (error: Exception) {
                     store.markError(error.message ?: error.javaClass.simpleName)
+                    result.error(
+                        "background_telemetry_stop_failed",
+                        error.message ?: error.javaClass.simpleName,
+                        null,
+                    )
+                    return
                 }
                 result.success(null)
             }

@@ -4,6 +4,7 @@ import android.content.Context
 import dev.eixam.connect.flutter.dfu.FirmwareDfuBridge
 import dev.eixam.connect.flutter.protection.ProtectionRuntimeBridge
 import dev.eixam.connect.flutter.telemetry.BackgroundTelemetryBridge
+import dev.eixam.connect.flutter.storage.SecureStorageBridge
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 
 class EixamConnectFlutterPlugin : FlutterPlugin {
@@ -23,6 +24,10 @@ class EixamConnectFlutterPlugin : FlutterPlugin {
             messenger = binding.binaryMessenger,
             context = binding.applicationContext,
         )
+        SecureStorageBridge.register(
+            messenger = binding.binaryMessenger,
+            context = binding.applicationContext,
+        )
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -30,6 +35,7 @@ class EixamConnectFlutterPlugin : FlutterPlugin {
             ProtectionRuntimeBridge.unregister()
             BackgroundTelemetryBridge.unregister()
             FirmwareDfuBridge.unregister()
+            SecureStorageBridge.unregister()
         }
         applicationContext = null
     }

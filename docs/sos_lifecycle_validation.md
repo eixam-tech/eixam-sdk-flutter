@@ -1,66 +1,60 @@
-# SOS Lifecycle Validation
+# SOS lifecycle validation
 
-This note separates automated SDK regression from real mobile validation.
-Automated tests must use fakes/mocks only. Real BLE, LoRa, MQTT, staging
-backend, Android lifecycle, and device firmware behavior remain manual release
-validation.
+This note separates automated SDK evidence from physical release evidence.
+Fakes and mocks cannot prove BLE, firmware, staging backend, OS lifecycle,
+signed artifacts, or store-delivered behavior.
 
-## Automated Coverage
+## Final automated status
 
+- Flutter SDK package suite: **456/456 passed**.
+- Analyzer: passed with three pre-existing `implementation_imports`
+  informational notices and no warnings or errors.
 - `packages/eixam_connect_flutter/test/sdk/sos_lifecycle_matrix_test.dart`
-  covers SOS-01 through SOS-16 at the SDK state/lifecycle boundary using fake
-  repositories, fake device runtime events, fake rehydration, and fake LoRa
-  backend-origin trigger sources.
+  covers the focused lifecycle matrix with fake repositories, device runtime,
+  rehydration, and relay/backend inputs.
+- `packages/eixam_connect_flutter/test/sdk/authoritative_sos_lifecycle_controller_test.dart`
+  covers secure same-account restoration, lifecycle publication, terminal
+  cleanup, and failure handling.
 - `packages/eixam_connect_flutter/test/sdk/eixam_connect_sdk_impl_test.dart`
-  contains deeper SDK behavior tests, including stale PRE-SOS cleanup and
-  backend terminal precedence on app resume.
-- `eixam-app/test/sdk/application/partner_sdk_adapter_test.dart` verifies that
-  idle SDK snapshots render with the intended SOS tab copy instead of generic
-  `SOS disponible` text.
-- `eixam-app/test/data/repositories/partner_app_repository_sos_sync_test.dart`
-  now treats the repository as an SDK pass-through for SOS lifecycle snapshots;
-  old app-owned preservation expectations were removed.
+  contains broader orchestration, countdown, already-active, cancellation,
+  device mirror, and recovery cases.
+- Partner-app focused SOS and required supporting matrices passed. The complete
+  app sweep is not claimed as passing because its pre-existing
+  `login_screen_test.dart` harness hangs.
+- Android staging debug/release builds and iOS staging debug `--no-codesign`
+  build passed at the app integration checkpoint.
 
-## Timeout/Scope Audit
+## Coverage boundaries
 
-| Test file | Classification | Issue | Action | Remaining risk |
-| --- | --- | --- | --- | --- |
-| `packages/eixam_connect_flutter/test/sdk/sos_lifecycle_matrix_test.dart` | Fast SDK regression | New focused matrix coverage | Added | Depends on current fake contracts, not live staging |
-| `packages/eixam_connect_flutter/test/sdk/eixam_connect_sdk_impl_test.dart` | Valid but slow monolithic SDK suite | Full file previously exceeded a 4 minute focused run window | Kept, but matrix coverage moved to a small file | Should be split over time; do not increase timeout blindly |
-| `packages/eixam_connect_flutter/test/sdk/remote_relay_sos_backend_handoff_test.dart` | Valid SDK fake-integration coverage | Exercises remote relay/backend handoff contracts with fakes | Kept | Higher scope than pure unit tests |
-| `eixam-app/test/features/sos/presentation/sos_screen_test.dart` | Widget/presentation coverage | Contains legacy guard-oriented cases and is heavier than state-machine tests | Use only for rendering regressions | Not the source of SOS lifecycle truth |
-| `eixam-app/test/data/repositories/partner_app_repository_sos_sync_test.dart` | Fast adapter/repository coverage | Several tests expected app-owned PRE-SOS/active preservation | Updated to SDK pass-through expectations | Remaining cases should avoid lifecycle decisions |
+Automated cases verify SDK-first ownership; independent app/device paths;
+app-only activation with device, Bluetooth, and location unavailable;
+generation-scoped countdown cancellation before and after dispatch commit;
+matched and unmatched already-active recovery; process restoration; pending and
+failed cancellation; monotonic lifecycle/capability revisions; equal-revision
+merge expectations; stale-generation rejection; device-mirrored `preConfirm`
+with `packetId=0`; immediate active presentation before incident identity;
+later identity enrichment; and history/external non-actionability.
 
-## Manual Real-Device Checklist
+These are contract tests, not a physical-completion claim.
 
-Run the existing app helper only for manual log inspection:
-`..\eixam_commecial_app\eixam-app\run_live_staging.bat`
+## Physical status
 
-For each scenario, record: observed signal, SDK state, UI result, backend/device
-alignment, and history result when terminal.
+The user reports physically verifying the main functional paths available in
+this iteration. Granular evidence is not present for every extended case, so
+the full matrix remains recommended before production promotion. The canonical
+case-by-case physical matrix is maintained in the partner app release
+documentation (`docs/SOS_PHYSICAL_VALIDATION_MATRIX.md` there) to avoid two
+diverging release checklists.
 
-| Scenario | Manual validation focus |
-| --- | --- |
-| SOS-01 | No BLE app countdown, resolve during countdown, history resolved |
-| SOS-02 | No BLE app active, cancel active, history cancelled |
-| SOS-03 | No BLE app countdown, cancel before send, no active backend SOS |
-| SOS-04 | BLE app active, app cancel, backend/device/UI aligned |
-| SOS-05 | BLE app active, app resolve, backend/device/UI aligned |
-| SOS-06 | BLE app active, device cancel, backend/app/UI cancelled |
-| SOS-07 | BLE device countdown, device cancel during countdown |
-| SOS-08 | BLE device active, app cancel |
-| SOS-09 | BLE device active, app resolve |
-| SOS-10 | BLE device countdown while app backgrounded, resume countdown time |
-| SOS-11 | BLE device sent while app backgrounded, resume active state |
-| SOS-12 | BLE device cancel before app opens, resume idle/no countdown |
-| SOS-13 | LoRa trigger foreground, existing backend/realtime active signal maps |
-| SOS-14 | LoRa cancel foreground, existing backend/realtime terminal clears |
-| SOS-15 | LoRa trigger while app not foreground, resume active if backend exposes |
-| SOS-16 | LoRa trigger/cancel before app opens, resume idle/terminal if exposed |
+Physical evidence should record only lifecycle stage, capability booleans,
+revision, selected path, typed blocking reason, UI outcome, and terminal
+alignment. Do not retain real identities, hardware addresses, incident IDs,
+coordinates, contacts, credentials, endpoints containing secrets, or raw
+packets in durable documentation.
 
-## Gap Rule
+## Gap rule
 
-LoRa scenarios are only passable if existing backend/realtime/rehydration
-contracts expose active and terminal state for the linked user/device. If a live
-run does not show those existing signals, the SDK/app must report the gap rather
-than infer success from stale local UI state.
+Physical device-origin/relay cases pass only if existing backend, realtime,
+rehydration, and firmware contracts expose sufficient authoritative active and
+terminal evidence. If a live run lacks those signals, report the gap; never
+promote history or stale local presentation into lifecycle proof.

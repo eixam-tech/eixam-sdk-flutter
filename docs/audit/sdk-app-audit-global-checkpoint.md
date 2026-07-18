@@ -2,10 +2,15 @@
 
 Date: 2026-06-25
 
+Historical checkpoint: retained for audit evidence. The final SOS-first branch
+supersedes its lifecycle/persistence description; see
+`../SOS_LIFECYCLE_ARCHITECTURE_2026.md`. Backend, firmware, broker, and rollout
+gaps are not closed by that supersession.
+
 Scope:
 
-- SDK: `/Users/roger/flutterdev/eixam-sdk-flutter`
-- App reference: `/Users/roger/flutterdev/eixam_commecial_app/eixam-app`
+- SDK: this repository
+- App reference: the sibling partner-app repository
 
 This checkpoint summarizes the SDK/app audit remediation state after the recent SOS lifecycle, transport, BLE/security, storage, diagnostics, app-architecture, reconnect/readiness, and QA remediation work. It is intentionally honest about what is fixed in the SDK/app boundary and what still requires firmware, backend, platform, or rollout decisions.
 

@@ -25,6 +25,7 @@ abstract final class SecureStorageNamespaces {
   static const String appAuthSession = 'app.auth.session';
   static const String sdkSession = 'sdk.session';
   static const String sdkDevice = 'sdk.device';
+  static const String sdkSosLifecycle = 'sdk.sos.lifecycle';
 }
 
 /// Stable secure-storage key constants reserved for future migrations.
@@ -47,6 +48,11 @@ abstract final class SecureStorageKeys {
   static const SecureStorageKey sdkSessionIdentity = SecureStorageKey(
     namespace: SecureStorageNamespaces.sdkSession,
     name: 'identity',
+  );
+
+  static const SecureStorageKey sdkSosLifecycleProvenance = SecureStorageKey(
+    namespace: SecureStorageNamespaces.sdkSosLifecycle,
+    name: 'provenance',
   );
 
   /// Returns the key prefix used for [namespace].

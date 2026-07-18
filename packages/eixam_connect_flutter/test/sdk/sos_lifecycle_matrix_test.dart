@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/preferred_ble_device_store.dart';
+import 'package:eixam_connect_flutter/src/data/repositories/mqtt_operational_sos_repository.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/sos_runtime_rehydration_support.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
@@ -9,6 +10,8 @@ import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_sos_event_packet.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_sos_packet.dart';
 import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
+import 'package:eixam_connect_flutter/src/sdk/operational_realtime_client.dart';
+import 'package:eixam_connect_flutter/src/sdk/sdk_mqtt_contract.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -597,6 +600,170 @@ void main() {
     });
 
     test(
+        'typed pending cancellation invalidates countdown generation without backend calls',
+        () async {
+      final harness = _SdkSosHarness();
+      final stages = <SosLifecycleStage>[];
+      final subscription =
+          harness.sdk.sosLifecycleStream.map((value) => value.stage).listen(
+                stages.add,
+              );
+      try {
+        await harness.sdk.startPreSos(countdown: const Duration(seconds: 15));
+
+        final result = await harness.sdk.cancelSosAuthoritatively();
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+
+        expect(
+          result.outcome,
+          SosCancellationOutcome.pendingActivationCancelled,
+        );
+        expect(result.lifecycle.stage, SosLifecycleStage.cancelled);
+        expect(result.lifecycle.localIncidentId, isNull);
+        expect(harness.sosRepository.triggerCallCount, 0);
+        expect(harness.sosRepository.cancelCallCount, 0);
+        expect(await harness.sdk.getPreSosStatus(), isNull);
+        expect(stages, isNot(contains(SosLifecycleStage.activating)));
+        expect(stages, isNot(contains(SosLifecycleStage.active)));
+        expect(
+          (await harness.sdk.getSosCapability()).lifecycleAllowsActivation,
+          isTrue,
+        );
+      } finally {
+        await subscription.cancel();
+        await harness.dispose();
+      }
+    });
+
+    test('cancelled generation cannot affect an immediately-started generation',
+        () async {
+      final harness = _SdkSosHarness();
+      try {
+        await harness.sdk.startPreSos(countdown: const Duration(seconds: 1));
+        final first = await harness.sdk.cancelSosAuthoritatively();
+        expect(
+          first.outcome,
+          SosCancellationOutcome.pendingActivationCancelled,
+        );
+
+        await harness.sdk.startPreSos(
+          countdown: const Duration(milliseconds: 60),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 180));
+
+        expect(harness.sosRepository.triggerCallCount, 1);
+        expect(
+          (await harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.active,
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('duplicate pending cancellation is idempotent', () async {
+      final harness = _SdkSosHarness();
+      try {
+        await harness.sdk.startPreSos(countdown: const Duration(seconds: 15));
+
+        final first = await harness.sdk.cancelSosAuthoritatively();
+        final second = await harness.sdk.cancelSosAuthoritatively();
+
+        expect(
+          first.outcome,
+          SosCancellationOutcome.pendingActivationCancelled,
+        );
+        expect(
+          second.outcome,
+          SosCancellationOutcome.noActionableLifecycle,
+        );
+        expect(second.lifecycle.stage, SosLifecycleStage.cancelled);
+        expect(harness.sosRepository.triggerCallCount, 0);
+        expect(harness.sosRepository.cancelCallCount, 0);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('process recreation after pending cancellation never restores active',
+        () async {
+      final store = MemorySharedPrefsSdkStore();
+      final secureStore = InMemorySecureKeyValueStore();
+      final repository = FakeSosRepository();
+      final first = _SdkSosHarness(
+        sosRepository: repository,
+        localStore: store,
+        sosLifecycleSecureStore: secureStore,
+      );
+      await first.sdk.startPreSos(countdown: const Duration(seconds: 15));
+      final cancelled = await first.sdk.cancelSosAuthoritatively();
+      expect(
+        cancelled.outcome,
+        SosCancellationOutcome.pendingActivationCancelled,
+      );
+      await first.dispose(disposeSosRepository: false);
+      await pumpEventQueue();
+
+      final restored = _SdkSosHarness(
+        sosRepository: repository,
+        localStore: store,
+        sosLifecycleSecureStore: secureStore,
+      );
+      try {
+        await restored.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+
+        final lifecycle = await restored.sdk.getSosLifecycle();
+        expect(lifecycle.stage, SosLifecycleStage.idle);
+        expect(lifecycle.recoveryStatus, SosRecoveryStatus.none);
+        expect(await restored.sdk.getPreSosStatus(), isNull);
+        expect(repository.triggerCallCount, 0);
+        expect(repository.cancelCallCount, 0);
+      } finally {
+        await restored.dispose();
+      }
+    });
+
+    test(
+        'dispatch commit wins boundary and cancellation waits before backend cancel',
+        () async {
+      final repository = _BlockingTriggerSosRepository();
+      final harness = _SdkSosHarness(sosRepository: repository);
+      try {
+        await harness.sdk.startPreSos(
+          countdown: const Duration(milliseconds: 60),
+        );
+        await repository.triggerStarted.future.timeout(
+          const Duration(seconds: 2),
+        );
+
+        final cancellation = harness.sdk.cancelSosAuthoritatively();
+        await pumpEventQueue();
+
+        expect(
+          (await harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.cancelling,
+        );
+        expect(repository.cancelCallCount, 0);
+
+        repository.releaseTrigger();
+        final result = await cancellation;
+
+        expect(
+          result.outcome,
+          SosCancellationOutcome.activeCancellationConfirmed,
+        );
+        expect(result.lifecycle.stage, SosLifecycleStage.cancelled);
+        expect(repository.triggerCallCount, 1);
+        expect(repository.cancelCallCount, 1);
+      } finally {
+        repository.releaseTrigger();
+        await harness.dispose();
+      }
+    });
+
+    test(
         'SOS-03b app-origin BLE countdown success is not cleared by stale idle',
         () async {
       final harness = _SdkSosHarness(
@@ -605,6 +772,9 @@ void main() {
       );
       final states = <SosState>[];
       final subscription = harness.sdk.currentSosStateStream.listen(states.add);
+      final lifecycles = <SosLifecycleSnapshot>[];
+      final lifecycleSubscription =
+          harness.sdk.sosLifecycleStream.listen(lifecycles.add);
       try {
         harness.deviceRepository.emitStatus(
           buildDeviceStatus(
@@ -639,6 +809,21 @@ void main() {
         expect(states, contains(SosState.sent));
         expect(await harness.sdk.getPreSosStatus(), isNull);
         expect(await harness.sdk.getSosState(), SosState.sent);
+        final acceptedLifecycle = await harness.sdk.getSosLifecycle();
+        expect(acceptedLifecycle.stage, SosLifecycleStage.active);
+        expect(acceptedLifecycle.origin, SosLifecycleOrigin.localApp);
+        expect(acceptedLifecycle.localActionable, isTrue);
+        expect(acceptedLifecycle.generation, greaterThan(0));
+        expect(acceptedLifecycle.revision, greaterThan(0));
+        expect(acceptedLifecycle.lifecycleId, isNot('4660:0'));
+        expect(
+          lifecycles.map((snapshot) => snapshot.stage),
+          containsAllInOrder(<SosLifecycleStage>[
+            SosLifecycleStage.arming,
+            SosLifecycleStage.activating,
+            SosLifecycleStage.active,
+          ]),
+        );
 
         harness.sosRepository.currentIncident =
             harness.sosRepository.currentIncident.copyWith(
@@ -649,11 +834,23 @@ void main() {
 
         expect(await harness.sdk.getSosState(), SosState.sent);
         expect(states.last, SosState.sent);
+        final lifecycleAfterStaleIdle = await harness.sdk.getSosLifecycle();
+        expect(lifecycleAfterStaleIdle.stage, SosLifecycleStage.active);
+        expect(lifecycleAfterStaleIdle.localActionable, isTrue);
         expect(
-          _hasDebugMessage('SOS_APP_ORIGIN_ACTIVE_BRIDGE_REGISTERED'),
-          isTrue,
+          lifecycleAfterStaleIdle.lifecycleId,
+          acceptedLifecycle.lifecycleId,
+        );
+        expect(
+          lifecycleAfterStaleIdle.generation,
+          acceptedLifecycle.generation,
+        );
+        expect(
+          lifecycleAfterStaleIdle.revision,
+          acceptedLifecycle.revision,
         );
       } finally {
+        await lifecycleSubscription.cancel();
         await subscription.cancel();
         await harness.dispose();
       }
@@ -743,7 +940,7 @@ void main() {
         expect(await harness.sdk.getSosState(), SosState.cancelled);
         expect(
           await harness.sdk.getCurrentSosTerminalReason(),
-          SosTerminalReason.preSosCancelledByDevice,
+          SosTerminalReason.cancelledByDevice,
         );
       } finally {
         await harness.dispose();
@@ -1120,10 +1317,10 @@ void main() {
         sosRepository: repository,
         localStore: store,
       );
-      await first.sdk.startPreSos(countdown: const Duration(milliseconds: 5));
+      await first.sdk.startPreSos(countdown: const Duration(milliseconds: 50));
       expect(await first.sdk.getPreSosStatus(), isNotNull);
       await first.dispose(disposeSosRepository: false);
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await Future<void>.delayed(const Duration(milliseconds: 70));
 
       final restored = _SdkSosHarness(
         sosRepository: repository,
@@ -1141,24 +1338,379 @@ void main() {
         await restored.dispose();
       }
     });
+
+    test('typed already-active recovers matching persisted local ownership',
+        () async {
+      final harness = _SdkSosHarness();
+      try {
+        await harness.setSession();
+        final first = await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        harness.sosRepository.triggerError = const SosException(
+          'E_SOS_ALREADY_ACTIVE',
+          'E_SOS_ALREADY_ACTIVE',
+        );
+        final recovered = await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+
+        expect(first.outcome, SosActivationOutcome.activated);
+        expect(
+          recovered.outcome,
+          SosActivationOutcome.alreadyActiveRecovered,
+        );
+        expect(recovered.lifecycle.lifecycleId, first.lifecycle.lifecycleId);
+        expect(recovered.lifecycle.localActionable, isTrue);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('typed already-active without local proof remains unmatched',
+        () async {
+      final repository = FakeSosRepository()
+        ..currentIncident = _incident(
+          state: SosState.sent,
+          triggerSource: 'external_backend',
+        )
+        ..triggerError = const SosException(
+          'E_SOS_ALREADY_ACTIVE',
+          'E_SOS_ALREADY_ACTIVE',
+        );
+      final harness = _SdkSosHarness(sosRepository: repository);
+      try {
+        await harness.setSession();
+        final result = await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+
+        expect(result.outcome, SosActivationOutcome.alreadyActiveUnmatched);
+        expect(result.lifecycle.stage, SosLifecycleStage.recoveryRequired);
+        expect(result.lifecycle.localActionable, isFalse);
+        expect(result.lifecycle.localIncidentId, isNull);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test(
+        'already-active current app incident reconciles without optimistic active publication',
+        () async {
+      final repository = _AlreadyActiveLookupRepository(
+        authoritativeActive: _incident(
+          state: SosState.sent,
+          triggerSource: 'commercial_app',
+        ),
+      );
+      final harness = _SdkSosHarness(sdkSosRepository: repository);
+      final observed = <SosLifecycleStage>[];
+      final subscription = harness.sdk.sosLifecycleStream
+          .map((snapshot) => snapshot.stage)
+          .listen(observed.add);
+      try {
+        await harness.setSession();
+        final resultFuture = harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        await pumpEventQueue(times: 3);
+
+        expect(observed, contains(SosLifecycleStage.activating));
+        expect(observed, isNot(contains(SosLifecycleStage.active)));
+
+        repository.completeTriggerWithAlreadyActive();
+        final result = await resultFuture;
+        await pumpEventQueue();
+
+        expect(result.outcome, SosActivationOutcome.alreadyActiveRecovered);
+        expect(result.lifecycle.stage, SosLifecycleStage.active);
+        expect(
+          observed.where((stage) => stage == SosLifecycleStage.active),
+          hasLength(1),
+        );
+        final capability = await harness.sdk.getSosCapability();
+        expect(capability.revision, result.lifecycle.revision);
+        expect(capability.canTriggerSos, isFalse);
+        expect(capability.lifecycleAllowsActivation, isFalse);
+        expect(capability.canCancelCurrentSos, isTrue);
+        expect(
+          capability.preferredActivationPath,
+          SosActivationPath.restoredActiveLifecycle,
+        );
+      } finally {
+        await subscription.cancel();
+        await harness.dispose(disposeSosRepository: false);
+        await repository.dispose();
+      }
+    });
+
+    test('already-active authoritative foreign incident requires recovery',
+        () async {
+      final repository = _AlreadyActiveLookupRepository(
+        authoritativeActive: _incident(
+          state: SosState.sent,
+          triggerSource: 'external_backend',
+          owner: 'external',
+        ),
+      )..completeTriggerWithAlreadyActive();
+      final harness = _SdkSosHarness(sdkSosRepository: repository);
+      try {
+        await harness.setSession();
+        final result = await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+
+        expect(result.outcome, SosActivationOutcome.alreadyActiveUnmatched);
+        expect(result.lifecycle.stage, SosLifecycleStage.recoveryRequired);
+        expect(result.lifecycle.backendIncidentId, isNotNull);
+        expect(result.lifecycle.localActionable, isFalse);
+        final capability = await harness.sdk.getSosCapability();
+        expect(capability.canTriggerSos, isFalse);
+        expect(capability.lifecycleAllowsActivation, isFalse);
+        expect(capability.canCancelCurrentSos, isTrue);
+      } finally {
+        await harness.dispose(disposeSosRepository: false);
+        await repository.dispose();
+      }
+    });
+
+    test('typed cancellation publishes cancelling before terminal cleanup',
+        () async {
+      final harness = _SdkSosHarness();
+      final observed = <SosLifecycleStage>[];
+      final subscription = harness.sdk.sosLifecycleStream
+          .map((snapshot) => snapshot.stage)
+          .listen(observed.add);
+      try {
+        await harness.setSession();
+        await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        final result = await harness.sdk.cancelSosAuthoritatively();
+        await pumpEventQueue();
+
+        expect(
+          result.outcome,
+          SosCancellationOutcome.activeCancellationConfirmed,
+        );
+        expect(result.lifecycle.stage, SosLifecycleStage.cancelled);
+        expect(observed, contains(SosLifecycleStage.cancelling));
+        expect(
+          observed.indexOf(SosLifecycleStage.cancelling),
+          lessThan(observed.indexOf(SosLifecycleStage.cancelled)),
+        );
+      } finally {
+        await subscription.cancel();
+        await harness.dispose();
+      }
+    });
+
+    test('process recreation restores the same actionable generation',
+        () async {
+      final secureStore = InMemorySecureKeyValueStore();
+      final repository = FakeSosRepository();
+      final first = _SdkSosHarness(
+        sosRepository: repository,
+        sosLifecycleSecureStore: secureStore,
+      );
+      await first.setSession();
+      final activated = await first.sdk.triggerSosAuthoritatively(
+        const SosTriggerPayload(triggerSource: 'commercial_app'),
+      );
+      await first.dispose(disposeSosRepository: false);
+
+      final restored = _SdkSosHarness(
+        sosRepository: repository,
+        sosLifecycleSecureStore: secureStore,
+      );
+      try {
+        await restored.setSession();
+        final lifecycle = await restored.sdk.getSosLifecycle();
+
+        expect(lifecycle.lifecycleId, activated.lifecycle.lifecycleId);
+        expect(lifecycle.stage, SosLifecycleStage.recoveryRequired);
+        expect(lifecycle.localActionable, isTrue);
+      } finally {
+        await restored.dispose();
+      }
+    });
+
+    test('app SOS capability stays available without a registered device',
+        () async {
+      final harness = _SdkSosHarness();
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+
+        final capability = await harness.sdk.getSosCapability();
+
+        expect(capability.canTriggerAppSos, isTrue);
+        expect(capability.canTriggerDeviceSos, isFalse);
+        expect(capability.canTriggerSos, isTrue);
+        expect(capability.hasRegisteredDevice, isFalse);
+        expect(capability.hasConnectedDevice, isFalse);
+        expect(
+          capability.availableActivationPaths,
+          contains(SosActivationPath.appBackend),
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test(
+        'disconnected MQTT remains app-ready because activation connects on demand',
+        () async {
+      final realtimeClient = _OnDemandOperationalRealtimeClient();
+      final repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+      );
+      final harness = _SdkSosHarness(
+        sdkSosRepository: repository,
+        realtimeClient: realtimeClient,
+      );
+      final transitions = <SosCapabilitySnapshot>[];
+      final subscription = harness.sdk.watchSosCapability().listen(
+            transitions.add,
+          );
+      try {
+        final initializing = await harness.sdk.getSosCapability();
+
+        expect(initializing.canTriggerSos, isFalse);
+        expect(
+          initializing.blockingReason,
+          SosCapabilityBlockingReason.initializing,
+        );
+        expect(initializing.transient, isTrue);
+
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+        await pumpEventQueue(times: 3);
+
+        final capability = await harness.sdk.getSosCapability();
+
+        expect(realtimeClient.connected, isFalse);
+        expect(capability.appTransportReady, isTrue);
+        expect(capability.deviceTransportReady, isFalse);
+        expect(capability.canTriggerAppSos, isTrue);
+        expect(capability.canTriggerDeviceSos, isFalse);
+        expect(capability.canTriggerSos, isTrue);
+        expect(
+          capability.preferredActivationPath,
+          SosActivationPath.appBackend,
+        );
+        expect(
+          transitions,
+          contains(
+            isA<SosCapabilitySnapshot>()
+                .having(
+                  (value) => value.blockingReason,
+                  'blockingReason',
+                  SosCapabilityBlockingReason.initializing,
+                )
+                .having((value) => value.transient, 'transient', isTrue),
+          ),
+        );
+        expect(
+          transitions.last,
+          isA<SosCapabilitySnapshot>()
+              .having(
+                (value) => value.canTriggerAppSos,
+                'canTriggerAppSos',
+                isTrue,
+              )
+              .having(
+                (value) => value.preferredActivationPath,
+                'preferredActivationPath',
+                SosActivationPath.appBackend,
+              ),
+        );
+
+        final result = await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+
+        expect(result.outcome, SosActivationOutcome.activated);
+        expect(realtimeClient.publishedSos, hasLength(1));
+      } finally {
+        await subscription.cancel();
+        await harness.dispose(disposeSosRepository: false);
+        await repository.dispose();
+      }
+    });
+
+    test('missing location degrades but does not block app SOS', () async {
+      final harness = _SdkSosHarness(hasLocation: false);
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+
+        final capability = await harness.sdk.getSosCapability();
+        final result = await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+
+        expect(capability.locationAvailable, isFalse);
+        expect(capability.canTriggerAppSos, isTrue);
+        expect(
+          capability.degradedReasons,
+          contains(SosCapabilityDegradedReason.locationUnavailable),
+        );
+        expect(result.outcome, SosActivationOutcome.activated);
+        expect(result.usedPaths, contains(SosActivationPath.appBackend));
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('unauthenticated runtime reports a typed blocking reason', () async {
+      final harness = _SdkSosHarness();
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+
+        final capability = await harness.sdk.getSosCapability();
+
+        expect(capability.canTriggerSos, isFalse);
+        expect(
+          capability.blockingReason,
+          SosCapabilityBlockingReason.authenticationRequired,
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
   });
 }
 
 final class _SdkSosHarness {
   _SdkSosHarness({
     FakeSosRepository? sosRepository,
+    SosRepository? sdkSosRepository,
+    FakeRealtimeClient? realtimeClient,
     bool connectedBle = false,
     Duration deviceCountdown = const Duration(seconds: 20),
     Duration appActivationObservationTimeout = const Duration(seconds: 3),
     MemorySharedPrefsSdkStore? localStore,
+    SecureKeyValueStore? sosLifecycleSecureStore,
+    bool hasLocation = true,
   })  : sosRepository = sosRepository ?? FakeSosRepository(),
         trackingRepository = FakeTrackingRepository(
-          currentPosition: TrackingPosition(
-            latitude: 41.38,
-            longitude: 2.17,
-            timestamp: DateTime.utc(2026, 1, 1, 10),
-            source: DeliveryMode.mobile,
-          ),
+          currentPosition: hasLocation
+              ? TrackingPosition(
+                  latitude: 41.38,
+                  longitude: 2.17,
+                  timestamp: DateTime.utc(2026, 1, 1, 10),
+                  source: DeliveryMode.mobile,
+                )
+              : null,
         ),
         telemetryRepository = FakeTelemetryRepository(),
         contactsRepository = FakeContactsRepository(),
@@ -1181,7 +1733,7 @@ final class _SdkSosHarness {
           ),
         ),
         notificationsRepository = FakeNotificationsRepository(),
-        realtimeClient = FakeRealtimeClient(),
+        realtimeClient = realtimeClient ?? FakeRealtimeClient(),
         deviceSosController = DeviceSosController(
           countdownDuration: deviceCountdown,
           countdownTick: const Duration(milliseconds: 5),
@@ -1192,7 +1744,7 @@ final class _SdkSosHarness {
           localStore: localStore ?? MemorySharedPrefsSdkStore(),
         ) {
     sdk = EixamConnectSdkImpl(
-      sosRepository: this.sosRepository,
+      sosRepository: sdkSosRepository ?? this.sosRepository,
       trackingRepository: trackingRepository,
       telemetryRepository: telemetryRepository,
       contactsRepository: contactsRepository,
@@ -1201,11 +1753,12 @@ final class _SdkSosHarness {
       deathManRepository: deathManRepository,
       permissionsRepository: permissionsRepository,
       notificationsRepository: notificationsRepository,
-      realtimeClient: realtimeClient,
+      realtimeClient: this.realtimeClient,
       deviceSosController: deviceSosController,
       bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
       preferredBleDeviceStore: preferredBleDeviceStore,
       localStore: this.localStore,
+      sosLifecycleSecureStore: sosLifecycleSecureStore,
     );
   }
 
@@ -1284,6 +1837,127 @@ final class _SdkSosHarness {
   }
 }
 
+final class _OnDemandOperationalRealtimeClient extends FakeRealtimeClient
+    implements OperationalRealtimeClient {
+  bool connected = false;
+
+  @override
+  Future<void> connect() async {
+    connectCallCount++;
+  }
+
+  @override
+  Future<void> publishOperationalSos(MqttOperationalSosRequest request) async {
+    publishedSos.add(request);
+  }
+
+  @override
+  Future<void> publishTelemetry(SdkTelemetryPayload payload) async {}
+
+  @override
+  Future<void> reconnectIfSessionChanged(EixamSession session) => connect();
+}
+
+final class _AlreadyActiveLookupRepository extends FakeSosRepository
+    implements AuthoritativeActiveSosLookup {
+  _AlreadyActiveLookupRepository({required this.authoritativeActive});
+
+  final SosIncident authoritativeActive;
+  final Completer<void> _triggerResponse = Completer<void>();
+
+  void completeTriggerWithAlreadyActive() {
+    if (!_triggerResponse.isCompleted) {
+      _triggerResponse.complete();
+    }
+  }
+
+  @override
+  Future<SosIncident?> getAuthoritativeActiveSos() async => authoritativeActive;
+
+  @override
+  Future<SosIncident> triggerSos({
+    String? message,
+    required String triggerSource,
+    TrackingPosition? positionSnapshot,
+    String? deviceId,
+    String? hardwareId,
+    int? originatorNodeId,
+    int? relayNodeId,
+    String? relayDeviceId,
+    String? relayHardwareId,
+    String? relaySource,
+    String? incidentId,
+    String? cycleKey,
+    OsSosWidgetActivation? osWidgetActivation,
+    SdkDeviceBatterySnapshot? deviceBattery,
+    SdkCoverageSnapshot? deviceCoverage,
+    int? mobileBattery,
+    SdkCoverageSnapshot? mobileCoverage,
+  }) async {
+    await _triggerResponse.future;
+    throw const SosException(
+      'E_SOS_ALREADY_ACTIVE',
+      'E_SOS_ALREADY_ACTIVE',
+    );
+  }
+}
+
+final class _BlockingTriggerSosRepository extends FakeSosRepository {
+  final Completer<void> triggerStarted = Completer<void>();
+  final Completer<void> _release = Completer<void>();
+
+  void releaseTrigger() {
+    if (!_release.isCompleted) {
+      _release.complete();
+    }
+  }
+
+  @override
+  Future<SosIncident> triggerSos({
+    String? message,
+    required String triggerSource,
+    TrackingPosition? positionSnapshot,
+    String? deviceId,
+    String? hardwareId,
+    int? originatorNodeId,
+    int? relayNodeId,
+    String? relayDeviceId,
+    String? relayHardwareId,
+    String? relaySource,
+    String? incidentId,
+    String? cycleKey,
+    OsSosWidgetActivation? osWidgetActivation,
+    SdkDeviceBatterySnapshot? deviceBattery,
+    SdkCoverageSnapshot? deviceCoverage,
+    int? mobileBattery,
+    SdkCoverageSnapshot? mobileCoverage,
+  }) async {
+    if (!triggerStarted.isCompleted) {
+      triggerStarted.complete();
+    }
+    await _release.future;
+    return super.triggerSos(
+      message: message,
+      triggerSource: triggerSource,
+      positionSnapshot: positionSnapshot,
+      deviceId: deviceId,
+      hardwareId: hardwareId,
+      originatorNodeId: originatorNodeId,
+      relayNodeId: relayNodeId,
+      relayDeviceId: relayDeviceId,
+      relayHardwareId: relayHardwareId,
+      relaySource: relaySource,
+      incidentId: incidentId,
+      cycleKey: cycleKey,
+      osWidgetActivation: osWidgetActivation,
+      deviceBattery: deviceBattery,
+      deviceCoverage: deviceCoverage,
+      mobileBattery: mobileBattery,
+      mobileCoverage: mobileCoverage,
+    );
+  }
+}
+
 final class _HistoryFakeSosRepository extends FakeSosRepository {
   @override
   Future<SosHistoryPage> listSosHistory(
@@ -1308,12 +1982,14 @@ final class _HistoryFakeSosRepository extends FakeSosRepository {
 SosIncident _incident({
   required SosState state,
   required String triggerSource,
+  String? owner,
 }) {
   return SosIncident(
     id: 'sos-${triggerSource.replaceAll('_', '-')}',
     state: state,
     createdAt: DateTime.utc(2026, 3, 31, 10),
     triggerSource: triggerSource,
+    owner: owner,
   );
 }
 

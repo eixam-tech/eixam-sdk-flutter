@@ -32,6 +32,9 @@ class BleDebugRegistry {
   BleDebugState get currentState => _state;
 
   static const List<String> _consoleDiagnosticPrefixes = <String>[
+    'EIXAM_SDK_BUILD_MARKER',
+    'EIXAM_RECONNECT_TRACE',
+    'SOS_CAPABILITY_EVAL',
     'EXTERNAL_SOS',
     'BLE_SOS_PACKET_RAW',
     'BLE_SOS_CLASSIFY_DECISION',
@@ -116,8 +119,9 @@ class BleDebugRegistry {
       lastPacketReceived: _safeDiagnosticHexField(lastPacketReceived),
       lastRawNotificationChannel: lastRawNotificationChannel,
       lastRawNotificationCharacteristic: lastRawNotificationCharacteristic,
-      lastRawNotificationPayloadHex:
-          _safeDiagnosticHexField(lastRawNotificationPayloadHex),
+      lastRawNotificationPayloadHex: _safeDiagnosticHexField(
+        lastRawNotificationPayloadHex,
+      ),
       lastRawNotificationAt: lastRawNotificationAt,
       lastDecodedIncomingEventType: lastDecodedIncomingEventType,
       lastDecodeOutcome: lastDecodeOutcome,
@@ -160,9 +164,9 @@ class BleDebugRegistry {
   }) {
     final safePayload =
         SecurityDiagnosticsRedactor.formatHexPayloadForDiagnostics(
-      payloadHex,
-      allowSensitive: _allowSensitiveDiagnostics,
-    );
+          payloadHex,
+          allowSensitive: _allowSensitiveDiagnostics,
+        );
     _state = _state.copyWith(
       lastPacketReceived: safePayload,
       lastRawNotificationChannel: channel,

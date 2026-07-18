@@ -51,7 +51,7 @@ Package-targeted runs are often more deterministic — see `docs/ai_context/VALI
 
 ## Local development with the partner app
 
-The partner app keeps a versioned `pubspec_overrides.yaml`:
+The partner app may use `pubspec_overrides.yaml` for workspace iteration:
 
 ```yaml
 dependency_overrides:
@@ -73,6 +73,7 @@ Also uninstall the app from the emulator or device.
 
 ## Key references
 
+- Documentation index: [docs/README.md](docs/README.md)
 - Engineering contract: [AGENTS.md](AGENTS.md) (also published as [CLAUDE.md](CLAUDE.md))
 - AI context index: [docs/ai_context/AI_INDEX.md](docs/ai_context/AI_INDEX.md)
 - Public API surface: [packages/eixam_connect_flutter/PUBLIC_API.md](packages/eixam_connect_flutter/PUBLIC_API.md)

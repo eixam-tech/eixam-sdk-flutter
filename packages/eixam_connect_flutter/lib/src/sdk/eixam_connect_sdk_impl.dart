@@ -33,6 +33,7 @@ import '../data/repositories/telemetry_repository.dart';
 import '../data/repositories/sos_runtime_rehydration_support.dart';
 import '../mappers/local_state_serializers.dart';
 import 'android_protection_platform_adapter.dart';
+import 'authoritative_sos_lifecycle_controller.dart';
 import 'background_telemetry_platform_adapter.dart';
 import 'background_telemetry_platform_adapter_factory.dart';
 import 'ble_operational_runtime_bridge.dart';
@@ -75,6 +76,7 @@ class EixamConnectSdkImpl
     required this.bleIncomingEvents,
     required this.preferredBleDeviceStore,
     this.sessionStore,
+    SecureKeyValueStore? sosLifecycleSecureStore,
     this.sessionContext,
     this.identityRemoteDataSource,
     this.profileRemoteDataSource,
@@ -94,12 +96,12 @@ class EixamConnectSdkImpl
     this.disposeCallback,
   }) : _clock = clock ?? DateTime.now,
        _appTriggeredSosBridgeWindow = appTriggeredSosBridgeWindow,
-        _localStore = localStore ?? SharedPrefsSdkStore(),
+       _localStore = localStore ?? SharedPrefsSdkStore(),
        protectionPlatformAdapter =
            protectionPlatformAdapter ?? buildDefaultProtectionPlatformAdapter(),
-        backgroundTelemetryPlatformAdapter =
-            backgroundTelemetryPlatformAdapter ??
-                buildDefaultBackgroundTelemetryPlatformAdapter() {
+       backgroundTelemetryPlatformAdapter =
+           backgroundTelemetryPlatformAdapter ??
+           buildDefaultBackgroundTelemetryPlatformAdapter() {
     _bleAutoReconnectCoordinator = BleAutoReconnectCoordinator(
       deviceRepository: deviceRepository,
       preferredDeviceStore: preferredBleDeviceStore,
@@ -115,8 +117,8 @@ class EixamConnectSdkImpl
       sessionProvider: () => _session,
       backendHardwareIdResolver: (runtimeDeviceId) =>
           _loadBackendHardwareIdForOperationalPayloads(
-        runtimeStatus: _lastDeviceStatus,
-      ),
+            runtimeStatus: _lastDeviceStatus,
+          ),
       sosBackendDeviceRegisterRetry: _retrySosAfterBackendDeviceRegistration,
     );
     _protectionModeController = ProtectionModeController(
@@ -130,8 +132,8 @@ class EixamConnectSdkImpl
           _buildOperationalDiagnostics(reason: 'protection_mode_controller'),
       backendHardwareIdProvider: () =>
           _loadBackendHardwareIdForOperationalPayloads(
-        runtimeStatus: _lastDeviceStatus,
-      ),
+            runtimeStatus: _lastDeviceStatus,
+          ),
       hostAppManagedNotificationsProvider: () =>
           notificationPolicy == EixamNotificationPolicy.hostAppManaged,
       notificationTextsProvider: () => notificationTexts,
@@ -141,6 +143,9 @@ class EixamConnectSdkImpl
       trackingRepository: trackingRepository,
       deviceStatusProvider: () => _lastPublicDeviceStatus ?? _lastDeviceStatus,
       bridgeDiagnosticsProvider: () => _bridgeDiagnostics,
+    );
+    _sosLifecycle = AuthoritativeSosLifecycleController(
+      secureStore: sosLifecycleSecureStore ?? InMemorySecureKeyValueStore(),
     );
     _operationalTelemetryCoordinator = OperationalTelemetryCoordinator(
       trackingRepository: trackingRepository,
@@ -158,6 +163,9 @@ class EixamConnectSdkImpl
     }
     _maybeBuildDeviceCountryConfigController();
     _bindSosStreams();
+    _sosCapabilityLifecycleSub = _sosLifecycle.stream.listen((_) {
+      unawaited(_emitSosCapability(reason: 'lifecycle_change'));
+    });
   }
 
   void _maybeBuildDeviceCountryConfigController() {
@@ -177,9 +185,9 @@ class EixamConnectSdkImpl
       runtimeStatusProvider: getDeviceRuntimeStatus,
       setRegionCommand: (regionCode) =>
           _sendDeviceControlCommandThroughActiveOwner(
-        action: 'set_region',
-        command: EixamDeviceCommand.setRegion(regionCode),
-      ),
+            action: 'set_region',
+            command: EixamDeviceCommand.setRegion(regionCode),
+          ),
       rebootCommand: rebootDevice,
       deviceStatusProvider: () => _lastPublicDeviceStatus ?? _lastDeviceStatus,
       safetyHoldReason: _deviceCountryConfigSafetyHold,
@@ -207,6 +215,7 @@ class EixamConnectSdkImpl
   final Stream<BleIncomingEvent> bleIncomingEvents;
   final PreferredBleDeviceStore preferredBleDeviceStore;
   final SdkSessionStore? sessionStore;
+  late final AuthoritativeSosLifecycleController _sosLifecycle;
   final SdkSessionContext? sessionContext;
   final SdkIdentityRemoteDataSource? identityRemoteDataSource;
   final SdkProfileRemoteDataSource? profileRemoteDataSource;
@@ -222,7 +231,7 @@ class EixamConnectSdkImpl
   final FirmwareUpdateCoordinator? firmwareUpdateCoordinator;
   DeviceCountryConfigController? _deviceCountryConfigController;
   final StreamController<DeviceCountryConfigStatus>
-      _deviceCountryConfigStatusController =
+  _deviceCountryConfigStatusController =
       StreamController<DeviceCountryConfigStatus>.broadcast();
   DeviceCountryConfigStatus _lastDeviceCountryConfigStatus =
       DeviceCountryConfigStatus.idle();
@@ -242,18 +251,20 @@ class EixamConnectSdkImpl
       StreamController.broadcast();
 
   final StreamController<RealtimeConnectionState>
-      _realtimeConnectionStateController =
+  _realtimeConnectionStateController =
       StreamController<RealtimeConnectionState>.broadcast();
 
   final StreamController<RealtimeEvent> _realtimeEventsController =
       StreamController<RealtimeEvent>.broadcast();
   final StreamController<SdkOperationalDiagnostics>
-      _operationalDiagnosticsController =
+  _operationalDiagnosticsController =
       StreamController<SdkOperationalDiagnostics>.broadcast();
   final StreamController<SdkResolvedLocation?> _resolvedLocationController =
       StreamController<SdkResolvedLocation?>.broadcast();
+  final StreamController<SosCapabilitySnapshot> _sosCapabilityController =
+      StreamController<SosCapabilitySnapshot>.broadcast();
   final StreamController<BleNotificationNavigationRequest>
-      _bleNotificationNavigationController =
+  _bleNotificationNavigationController =
       StreamController<BleNotificationNavigationRequest>.broadcast();
   final StreamController<DeviceStatus> _publicDeviceStatusController =
       StreamController<DeviceStatus>.broadcast();
@@ -262,7 +273,7 @@ class EixamConnectSdkImpl
   final StreamController<PublicPreSosStatus?> _publicPreSosStatusController =
       StreamController<PublicPreSosStatus?>.broadcast();
   final StreamController<EixamNotificationIntent>
-      _notificationIntentController =
+  _notificationIntentController =
       StreamController<EixamNotificationIntent>.broadcast();
   final BleIncomingPayloadClassifier _protectionSosPayloadClassifier =
       const BleIncomingPayloadClassifier();
@@ -277,6 +288,7 @@ class EixamConnectSdkImpl
   StreamSubscription<BleIncomingEvent>? _bleIncomingEventDiagnosticsSub;
   StreamSubscription<ProtectionStatus>? _protectionStatusSub;
   StreamSubscription<ProtectionPlatformEvent>? _protectionRawSosEventsSub;
+  StreamSubscription<SosLifecycleSnapshot>? _sosCapabilityLifecycleSub;
   Timer? _protectionDisconnectGraceTimer;
   bool _lastProtectionDeviceConnected = false;
   bool _lastProtectionServiceBleReady = false;
@@ -326,6 +338,8 @@ class EixamConnectSdkImpl
   _AppOriginActiveSosBridge? _appOriginActiveSosBridge;
   int? _knownLocalDeviceNodeId;
   SosDeliveryChannel? _lastPublishedCurrentSosCapabilityChannel;
+  String? _lastSosCapabilityEvaluationSignature;
+  int _sosCapabilityEmissionRevision = 0;
   DeviceTelRelayRx? _lastTelRelayRx;
   final Map<String, _ObservedRelaySosContext> _observedRelaySosBySignature =
       <String, _ObservedRelaySosContext>{};
@@ -348,7 +362,7 @@ class EixamConnectSdkImpl
   final Map<String, _PreSosTerminalCancelContext>
   _preSosTerminalCancelContextByKey = <String, _PreSosTerminalCancelContext>{};
   final Map<String, _SosClosureIntent>
-      _deviceOriginatedClosureIntentByCycleKey = <String, _SosClosureIntent>{};
+  _deviceOriginatedClosureIntentByCycleKey = <String, _SosClosureIntent>{};
   final Map<String, _SosClosureIntent>
   _deviceOriginatedClosureIntentByIncidentId = <String, _SosClosureIntent>{};
   String? _activeDeviceRuntimeIncidentId;
@@ -374,6 +388,7 @@ class EixamConnectSdkImpl
   final Set<String> _deviceOriginatedBackendSyncInFlight = <String>{};
   final Set<String> _iosExpiredPreSosPromotionKeys = <String>{};
   EixamSdkConfig? _sdkConfig;
+  bool _sdkInitialized = false;
   final bool _registeredDeviceAutoSyncInFlight = false;
   final Set<String> _backendRegisteredNodeIdsForSession = <String>{};
   final Map<String, Future<void>> _backendDeviceRegistrationInFlightByNodeId =
@@ -381,6 +396,8 @@ class EixamConnectSdkImpl
   bool _manualDisconnectRequested = false;
   bool _lastDeviceControlCommandPathAvailable = false;
   int _preSosCycleRevision = 0;
+  int _pendingSosActivationRevision = 0;
+  _PendingSosActivationOperation? _pendingSosActivation;
   final Set<int> _loggedIgnoredPreSosTickCycles = <int>{};
   late final BleAutoReconnectCoordinator _bleAutoReconnectCoordinator;
   late final BleOperationalRuntimeBridge _bleOperationalRuntimeBridge;
@@ -389,8 +406,12 @@ class EixamConnectSdkImpl
   late final SdkResolvedLocationResolver _resolvedLocationResolver;
   final Duration _appTriggeredSosBridgeWindow;
   bool _deferredRuntimeWorkPending = false;
-  bool _backgroundTelemetryEnabled = true;
+  bool _backgroundTelemetryEnabled = false;
   bool _backgroundTelemetryStarted = false;
+  BackgroundTrackingState _backgroundTrackingState =
+      BackgroundTrackingState.stopped;
+  AppLifecycleState _appLifecycleState =
+      WidgetsBinding.instance.lifecycleState ?? AppLifecycleState.resumed;
   String? _backgroundTelemetryStartFingerprint;
   String? _backgroundTelemetryNotificationTitle;
   String? _backgroundTelemetryNotificationBody;
@@ -420,6 +441,9 @@ class EixamConnectSdkImpl
     seconds: 10,
   );
   static const Duration _nativePendingSosCreateTtl = Duration(hours: 24);
+  static const Duration _backgroundTelemetryStartConfirmationInterval =
+      Duration(milliseconds: 50);
+  static const int _backgroundTelemetryStartConfirmationAttempts = 20;
   static const Duration _nativePendingSosBackendConfirmTtl = Duration(
     hours: 24,
   );
@@ -430,21 +454,21 @@ class EixamConnectSdkImpl
       'eixam.permissions.disclosure_acks';
   static const EixamNotificationTexts _fallbackNotificationTexts =
       EixamNotificationTexts(
-    protectionActiveTitle: '',
-    protectionActiveBody: '',
-    protectionModeTitle: '',
-    protectionModeBody: '',
-    protectionModeChannelName: '',
-    protectionModeChannelDescription: '',
-    protectionSosChannelName: '',
-    protectionSosChannelDescription: '',
-    protectionPreSosTitle: '',
-    protectionPreSosBody: '',
-    protectionSosActiveTitle: '',
-    protectionSosActiveBody: '',
-    protectionSosResolvedTitle: '',
-    protectionSosResolvedBody: '',
-  );
+        protectionActiveTitle: '',
+        protectionActiveBody: '',
+        protectionModeTitle: '',
+        protectionModeBody: '',
+        protectionModeChannelName: '',
+        protectionModeChannelDescription: '',
+        protectionSosChannelName: '',
+        protectionSosChannelDescription: '',
+        protectionPreSosTitle: '',
+        protectionPreSosBody: '',
+        protectionSosActiveTitle: '',
+        protectionSosActiveBody: '',
+        protectionSosResolvedTitle: '',
+        protectionSosResolvedBody: '',
+      );
 
   @override
   Future<void> initialize(EixamSdkConfig config) async {
@@ -459,6 +483,14 @@ class EixamConnectSdkImpl
     _sdkConfig = config;
     _session = await sessionStore?.load();
     _session = await _bootstrapSessionIfNeeded(_session);
+    await _sosLifecycle.restoreFor(_session);
+    await _refreshBackgroundTelemetryDiagnostics();
+    if (_backgroundTelemetryDiagnostics.serviceRunning && _session != null) {
+      _backgroundTelemetryStartFingerprint = _backgroundTelemetryFingerprint(
+        apiBaseUrl: config.apiBaseUrl,
+        session: _session!,
+      );
+    }
     _manualDisconnectRequested = await preferredBleDeviceStore
         .readManualDisconnectRequested();
     if (_manualDisconnectRequested) {
@@ -506,6 +538,8 @@ class EixamConnectSdkImpl
         'SDK_CLIENT_CREATION_READY_WITH_TRANSPORT_PENDING '
         'trigger=initialize transport=mqtt status=runtime_deferred',
       );
+      _sdkInitialized = true;
+      _emitOperationalDiagnostics(reason: 'sdk_initialized');
       return;
     }
     _operationalTelemetryCoordinator.start(initialSosState: _publicSosState);
@@ -532,6 +566,8 @@ class EixamConnectSdkImpl
         ),
       );
     }
+    _sdkInitialized = true;
+    _emitOperationalDiagnostics(reason: 'sdk_initialized');
   }
 
   void _bindDeviceStreams() {
@@ -607,18 +643,18 @@ class EixamConnectSdkImpl
     _deviceControlCommandPathSub = deviceSosController
         .watchControlCommandPathAvailability()
         .listen(
-      (available) async {
+          (available) async {
             final previous = _lastDeviceControlCommandPathAvailable;
             _lastDeviceControlCommandPathAvailable = available;
-        BleDebugRegistry.instance.recordEvent(
+            BleDebugRegistry.instance.recordEvent(
               'Device control command path availability changed -> available=$available previous=$previous connected=${_lastDeviceStatus?.connected} deviceId=${_lastDeviceStatus?.nodeId?.toString() ?? "-"} nodeId=${_lastDeviceStatus?.nodeId?.toString() ?? "-"} hardwareId=${_lastDeviceStatus?.deviceId ?? "-"}',
-        );
-        if (available == previous) {
-          BleDebugRegistry.instance.recordEvent(
+            );
+            if (available == previous) {
+              BleDebugRegistry.instance.recordEvent(
                 'device_control_command_path_changed -> diagnostics_refresh_skipped reason=no_effective_change',
-          );
-          return;
-        }
+              );
+              return;
+            }
             if (available &&
                 (_lastPublicDeviceStatus ?? _lastDeviceStatus)?.connected ==
                     true) {
@@ -633,18 +669,18 @@ class EixamConnectSdkImpl
                   connectionEpoch: connectionEpoch,
                 ),
               );
-        }
-        await _refreshOperationalDiagnostics(
+            }
+            await _refreshOperationalDiagnostics(
               trigger: 'device_control_command_path_changed',
-          refreshRuntimeStatus: false,
-        );
-      },
-      onError: (Object error) {
-        BleDebugRegistry.instance.recordEvent(
+              refreshRuntimeStatus: false,
+            );
+          },
+          onError: (Object error) {
+            BleDebugRegistry.instance.recordEvent(
               'Device control command path monitor error: $error',
+            );
+          },
         );
-      },
-    );
   }
 
   void _bindRealtimeStreams() {
@@ -678,15 +714,15 @@ class EixamConnectSdkImpl
     _bridgeDiagnosticsSub = _bleOperationalRuntimeBridge
         .watchDiagnostics()
         .listen((diagnostics) {
-      _bridgeDiagnostics = diagnostics;
-      final latestOwnDeviceLocation = diagnostics.latestOwnDeviceLocation;
-      final connected =
-          (_lastPublicDeviceStatus ?? _lastDeviceStatus)?.connected == true;
-      if (connected && latestOwnDeviceLocation != null) {
-        _rememberResolvedLocation(latestOwnDeviceLocation);
-      }
-      _emitOperationalDiagnostics(reason: 'bridge_diagnostics');
-    });
+          _bridgeDiagnostics = diagnostics;
+          final latestOwnDeviceLocation = diagnostics.latestOwnDeviceLocation;
+          final connected =
+              (_lastPublicDeviceStatus ?? _lastDeviceStatus)?.connected == true;
+          if (connected && latestOwnDeviceLocation != null) {
+            _rememberResolvedLocation(latestOwnDeviceLocation);
+          }
+          _emitOperationalDiagnostics(reason: 'bridge_diagnostics');
+        });
     _protectionStatusSub?.cancel();
     _protectionStatusSub = _protectionModeController.watchStatus().listen((
       status,
@@ -797,11 +833,11 @@ class EixamConnectSdkImpl
             _isTerminalSosEventPacket(sosEventPacket)) {
           final synthesizedRemoteCancel =
               _remoteRelayCancelSnapshotForRelayTerminalEvent(
-            packet: sosEventPacket,
-            receivedAt: event.receivedAt,
-            rawPayload: event.payload,
-            payloadHex: event.payloadHex,
-          );
+                packet: sosEventPacket,
+                receivedAt: event.receivedAt,
+                rawPayload: event.payload,
+                payloadHex: event.payloadHex,
+              );
           _logRemoteRelayCancelDetection(
             source: 'ble_incoming_event_terminal',
             rawType: event.type.name,
@@ -856,15 +892,15 @@ class EixamConnectSdkImpl
     _protectionRawSosEventsSub = protectionPlatformAdapter
         .watchPlatformEvents()
         .listen(
-      (event) {
-        _handleProtectionPlatformSosEvent(event);
-      },
-      onError: (Object error) {
-        BleDebugRegistry.instance.recordEvent(
-          'Protection platform SOS event monitor error: $error',
+          (event) {
+            _handleProtectionPlatformSosEvent(event);
+          },
+          onError: (Object error) {
+            BleDebugRegistry.instance.recordEvent(
+              'Protection platform SOS event monitor error: $error',
+            );
+          },
         );
-      },
-    );
   }
 
   void _reconcileProtectionDisconnectLifecycle({
@@ -933,6 +969,7 @@ class EixamConnectSdkImpl
     _bleOperationalRuntimeBridge.resetForSessionChange();
     _clearBackendDeviceRegistrationSessionCache();
     _session = await _bootstrapSessionIfNeeded(session);
+    await _sosLifecycle.restoreFor(_session);
     if (sessionContext != null) {
       sessionContext!.currentSession = _session;
     }
@@ -1222,8 +1259,9 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Future<void> clearLocalUserData() {
-    return _localStore.clearLocalUserData();
+  Future<void> clearLocalUserData() async {
+    await _sosLifecycle.deleteAccountData();
+    await _localStore.clearLocalUserData();
   }
 
   @override
@@ -1257,20 +1295,41 @@ class EixamConnectSdkImpl
     String? notificationTitle,
     String? notificationBody,
   }) async {
+    if (_backgroundTrackingState == BackgroundTrackingState.starting ||
+        (_backgroundTelemetryEnabled &&
+            _backgroundTelemetryDiagnostics.serviceRunning)) {
+      return;
+    }
+    _backgroundTrackingState = BackgroundTrackingState.starting;
+    _emitOperationalDiagnostics(reason: 'background_telemetry_starting');
     _backgroundTelemetryEnabled = true;
     _backgroundTelemetryNotificationTitle =
         notificationTitle ?? notificationTexts.protectionActiveTitle;
     _backgroundTelemetryNotificationBody =
         notificationBody ?? notificationTexts.protectionActiveBody;
     await _reconcileBackgroundTelemetry(reason: 'enable_background_telemetry');
+    await _confirmBackgroundTelemetryStart();
+    _backgroundTrackingState = _deriveBackgroundTrackingState();
     _emitOperationalDiagnostics();
   }
 
   @override
   Future<void> disableBackgroundTelemetry() async {
+    if (_backgroundTrackingState == BackgroundTrackingState.stopping) {
+      return;
+    }
+    if (!_backgroundTelemetryEnabled &&
+        !_backgroundTelemetryDiagnostics.enabled &&
+        !_backgroundTelemetryDiagnostics.serviceRunning) {
+      _backgroundTrackingState = BackgroundTrackingState.stopped;
+      return;
+    }
+    _backgroundTrackingState = BackgroundTrackingState.stopping;
+    _emitOperationalDiagnostics(reason: 'background_telemetry_stopping');
     _backgroundTelemetryEnabled = false;
     await _stopBackgroundTelemetry(reason: 'disable_background_telemetry');
     _operationalTelemetryCoordinator.setIntervalPublishingEnabled(true);
+    _backgroundTrackingState = _deriveBackgroundTrackingState();
     _emitOperationalDiagnostics();
   }
 
@@ -1562,9 +1621,9 @@ class EixamConnectSdkImpl
         } catch (error) {
           await backgroundTelemetryPlatformAdapter
               .markQueuedBackgroundTelemetryFlushFailed(
-            item.signature,
-            error: _compactDiagnosticValue(error),
-          );
+                item.signature,
+                error: _compactDiagnosticValue(error),
+              );
           BleDebugRegistry.instance.recordEvent(
             'TELEMETRY_NATIVE_MQTT_FLUSH_RESULT success=false '
             'handoffId=${item.signature} error=${_compactDiagnosticValue(error)}',
@@ -1583,9 +1642,6 @@ class EixamConnectSdkImpl
   }
 
   Future<void> _stopBackgroundTelemetry({required String reason}) async {
-    if (!_backgroundTelemetryStarted && !_backgroundTelemetryEnabled) {
-      return;
-    }
     try {
       await backgroundTelemetryPlatformAdapter.stopBackgroundTelemetry();
     } catch (error) {
@@ -1616,6 +1672,19 @@ class EixamConnectSdkImpl
     try {
       _backgroundTelemetryDiagnostics = await backgroundTelemetryPlatformAdapter
           .getBackgroundTelemetryDiagnostics();
+      if (!_backgroundTelemetryDiagnostics.enabled) {
+        _backgroundTelemetryEnabled = false;
+        _backgroundTelemetryStarted = false;
+        _backgroundTelemetryStartFingerprint = null;
+      } else {
+        _backgroundTelemetryEnabled = true;
+        _backgroundTelemetryStarted =
+            _backgroundTelemetryDiagnostics.serviceRunning;
+      }
+      if (_backgroundTrackingState != BackgroundTrackingState.starting &&
+          _backgroundTrackingState != BackgroundTrackingState.stopping) {
+        _backgroundTrackingState = _deriveBackgroundTrackingState();
+      }
     } catch (_) {
       _backgroundTelemetryDiagnostics = BackgroundTelemetryDiagnostics(
         enabled: _backgroundTelemetryEnabled,
@@ -1628,6 +1697,58 @@ class EixamConnectSdkImpl
             _backgroundTelemetryDiagnostics.activeLocationRequest,
       );
     }
+  }
+
+  Future<void> _confirmBackgroundTelemetryStart() async {
+    for (
+      var attempt = 0;
+      attempt < _backgroundTelemetryStartConfirmationAttempts;
+      attempt++
+    ) {
+      await _refreshBackgroundTelemetryDiagnostics();
+      final diagnostics = _backgroundTelemetryDiagnostics;
+      final permission = diagnostics.permissionStatus.toLowerCase();
+      if (diagnostics.serviceRunning ||
+          !diagnostics.enabled ||
+          diagnostics.lastTelemetryError != null ||
+          permission.contains('missing') ||
+          permission.contains('denied') ||
+          permission.contains('blocked')) {
+        return;
+      }
+      await Future<void>.delayed(_backgroundTelemetryStartConfirmationInterval);
+    }
+  }
+
+  Future<void> _reconcileBackgroundTrackingFromNative({
+    required String reason,
+  }) async {
+    await _refreshBackgroundTelemetryDiagnostics();
+    _backgroundTrackingState = _deriveBackgroundTrackingState();
+    _operationalTelemetryCoordinator.setIntervalPublishingEnabled(true);
+    _emitOperationalDiagnostics(reason: reason);
+  }
+
+  BackgroundTrackingState _deriveBackgroundTrackingState() {
+    final diagnostics = _backgroundTelemetryDiagnostics;
+    final permission = diagnostics.permissionStatus.toLowerCase();
+    if (permission.contains('missing') ||
+        permission.contains('denied') ||
+        permission.contains('blocked')) {
+      return BackgroundTrackingState.permissionBlocked;
+    }
+    if (diagnostics.enabled && diagnostics.serviceRunning) {
+      return _appLifecycleState == AppLifecycleState.resumed
+          ? BackgroundTrackingState.activeForeground
+          : BackgroundTrackingState.activeBackground;
+    }
+    if (!diagnostics.enabled && !diagnostics.serviceRunning) {
+      return BackgroundTrackingState.stopped;
+    }
+    if (diagnostics.lastTelemetryError != null) {
+      return BackgroundTrackingState.error;
+    }
+    return BackgroundTrackingState.serviceUnavailable;
   }
 
   bool _isOpenSosState(SosState state) {
@@ -1857,13 +1978,13 @@ class EixamConnectSdkImpl
     _firmwareOtaInProgress = true;
     return _firmwareUpdates()
         .startFirmwareUpdate(
-      deviceId: deviceId,
-      releaseId: releaseId,
-      policy: policy,
-    )
+          deviceId: deviceId,
+          releaseId: releaseId,
+          policy: policy,
+        )
         .whenComplete(() {
-      _firmwareOtaInProgress = false;
-    });
+          _firmwareOtaInProgress = false;
+        });
   }
 
   /// Re-flashes a device stranded in the DFU bootloader (recovery after an
@@ -1877,13 +1998,13 @@ class EixamConnectSdkImpl
     _firmwareOtaInProgress = true;
     return _firmwareUpdates()
         .recoverFirmwareUpdate(
-      bootloaderDeviceId: bootloaderDeviceId,
-      releaseId: releaseId,
-      targetVersion: targetVersion,
-    )
+          bootloaderDeviceId: bootloaderDeviceId,
+          releaseId: releaseId,
+          targetVersion: targetVersion,
+        )
         .whenComplete(() {
-      _firmwareOtaInProgress = false;
-    });
+          _firmwareOtaInProgress = false;
+        });
   }
 
   @override
@@ -1928,7 +2049,7 @@ class EixamConnectSdkImpl
     const retryDelay = Duration(seconds: 2);
     for (
       var attempt = 1;
-        !_isFirmwareDfuPreTransferStatusReady(status) && attempt <= maxAttempts;
+      !_isFirmwareDfuPreTransferStatusReady(status) && attempt <= maxAttempts;
       attempt++
     ) {
       await Future<void>.delayed(retryDelay);
@@ -1970,18 +2091,18 @@ class EixamConnectSdkImpl
     // blocked until the app is killed. (The release side suspends before doing
     // its own repository work for the same reason.)
     try {
-    final repository = deviceRepository;
-    if (repository is InMemoryDeviceRepository) {
+      final repository = deviceRepository;
+      if (repository is InMemoryDeviceRepository) {
         _lastDeviceStatus = await repository
             .reclaimBleOwnershipFromProtectionMode(
-        reason: 'firmware_ota_dfu_transfer_complete',
-      );
-    }
+              reason: 'firmware_ota_dfu_transfer_complete',
+            );
+      }
     } finally {
       _bleAutoReconnectCoordinator.resumeAfterDfuTransfer(
         reason: 'firmware_dfu_transfer_complete',
       );
-    _bleAutoReconnectCoordinator.setAppForeground(true);
+      _bleAutoReconnectCoordinator.setAppForeground(true);
     }
     await _bleAutoReconnectCoordinator.tryAutoConnectOnResume();
   }
@@ -2146,6 +2267,7 @@ class EixamConnectSdkImpl
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appLifecycleState = state;
     switch (state) {
       case AppLifecycleState.resumed:
         _bleAutoReconnectCoordinator.setAppForeground(true);
@@ -2170,6 +2292,11 @@ class EixamConnectSdkImpl
         );
         unawaited(
           _maybeCheckDeviceCountryConfig('app_foreground_resume', resume: true),
+        );
+        unawaited(
+          _reconcileBackgroundTrackingFromNative(
+            reason: 'app_foreground_resume',
+          ),
         );
         break;
       case AppLifecycleState.inactive:
@@ -2257,7 +2384,7 @@ class EixamConnectSdkImpl
       final status = await deviceSosController.getStatus();
       final canFallbackToImmediateConfirm =
           status.state == DeviceSosState.preConfirm &&
-              status.triggerOrigin == DeviceSosTransitionSource.app;
+          status.triggerOrigin == DeviceSosTransitionSource.app;
       if (!canFallbackToImmediateConfirm) {
         rethrow;
       }
@@ -2515,7 +2642,7 @@ class EixamConnectSdkImpl
       );
     }
     return controller.applyPending(reason: reason);
-    }
+  }
 
   @override
   @Deprecated(
@@ -2600,11 +2727,11 @@ class EixamConnectSdkImpl
         _lastDeviceCountryConfigCheckDeviceKey = deviceKey;
         try {
           await controller.check(reason: request.trigger);
-    } catch (_) {
-      // Best-effort; the controller never throws, but never let this seam
-      // surface an error into a lifecycle path.
-    }
-  }
+        } catch (_) {
+          // Best-effort; the controller never throws, but never let this seam
+          // surface an error into a lifecycle path.
+        }
+      }
     } finally {
       _deviceCountryConfigCheckDrainRunning = false;
     }
@@ -2707,7 +2834,7 @@ class EixamConnectSdkImpl
 
   @override
   Future<BleNotificationNavigationRequest?>
-      consumePendingBleNotificationNavigationRequest() async {
+  consumePendingBleNotificationNavigationRequest() async {
     final pending = _pendingBleNotificationNavigationRequest;
     _pendingBleNotificationNavigationRequest = null;
     return pending;
@@ -2715,13 +2842,13 @@ class EixamConnectSdkImpl
 
   @override
   Stream<BleNotificationNavigationRequest>
-      watchBleNotificationNavigationRequests() {
+  watchBleNotificationNavigationRequests() {
     return _bleNotificationNavigationController.stream;
   }
 
   @override
   Future<List<EixamNotificationIntent>>
-      consumePendingNotificationIntents() async {
+  consumePendingNotificationIntents() async {
     final pending = List<EixamNotificationIntent>.unmodifiable(
       _pendingNotificationIntents,
     );
@@ -2932,8 +3059,8 @@ class EixamConnectSdkImpl
   @override
   Stream<ProtectionStatus> watchProtectionStatus() {
     return _protectionModeController.watchStatus().asyncMap(
-          _syncDeviceStateFromProtectionStatus,
-        );
+      _syncDeviceStateFromProtectionStatus,
+    );
   }
 
   @override
@@ -2966,9 +3093,9 @@ class EixamConnectSdkImpl
     _consumePendingAppTriggeredSosBridge(status);
     final deviceOwnedPreSosActivation =
         _preSosSession?.owner == _SosOwner.device &&
-            status.state == DeviceSosState.active &&
-            status.previousState == DeviceSosState.preConfirm &&
-            status.nodeId != null;
+        status.state == DeviceSosState.active &&
+        status.previousState == DeviceSosState.preConfirm &&
+        status.nodeId != null;
     final sosStatusEventSequence = ++_deviceSosStatusEventSequence;
     final isCorrelatedAppTriggeredStatus = _isCorrelatedAppTriggeredSosStatus(
       status,
@@ -3104,12 +3231,17 @@ class EixamConnectSdkImpl
         forceDeviceOwned: deviceOwnedPreSosActivation,
       );
     }
-
     await _rehydrateDeviceSosPublicState(
       trigger: 'device_sos_status:${status.state.name}',
       deviceStatus: status,
       emitResolvedState: true,
     );
+
+    // Preserve the established device/pre-SOS publication ordering. The new
+    // lifecycle consumes that authoritative result after legacy adapters have
+    // observed it, so repository enrichment cannot delay or reclassify the
+    // device terminal transition.
+    await _reconcileAuthoritativeLifecycleFromDeviceStatus(status);
 
     if (_isSosCycleClosed(status.state)) {
       final terminalState =
@@ -3771,6 +3903,18 @@ class EixamConnectSdkImpl
       action: 'pre_sos_start',
       refreshRuntimeStatus: true,
     );
+    final armingLifecycle = await _sosLifecycle.beginArming(
+      origin: SosLifecycleOrigin.localApp,
+      triggerSource: activationPayload?.triggerSource ?? 'commercial_app',
+      deviceId: runtimeStatus?.deviceId,
+      nodeId: runtimeStatus?.nodeId,
+      hardwareId: runtimeStatus?.canonicalHardwareId,
+    );
+    _pendingSosActivation = _PendingSosActivationOperation(
+      generation: armingLifecycle.generation,
+      lifecycleRevision: armingLifecycle.revision,
+      operationRevision: ++_pendingSosActivationRevision,
+    );
     final canMirrorPreSosOnDevice = runtimeStatus != null;
     final owner = _SosOwner.app;
     _logAppPreSosRouteDecision(
@@ -3779,8 +3923,8 @@ class EixamConnectSdkImpl
       decision: canMirrorPreSosOnDevice
           ? 'app_countdown_plus_device_pre_sos'
           : ((_lastDeviceStatus?.connected ?? false)
-              ? 'app_countdown_device_path_skip'
-              : 'no_ble_pre_sos'),
+                ? 'app_countdown_device_path_skip'
+                : 'no_ble_pre_sos'),
     );
     BleDebugRegistry.instance.recordEvent(
       'SOS_OWNER_SELECTED owner=${owner.name} '
@@ -3853,9 +3997,18 @@ class EixamConnectSdkImpl
     if (pending != null) {
       return pending;
     }
-    final future = _confirmPreSosInternal(payload);
+    final pendingActivation = _pendingSosActivation;
+    final future = _confirmPreSosInternal(
+      payload,
+      pendingActivation: pendingActivation,
+    );
     _pendingPreSosConfirmation = future;
     return future.whenComplete(() {
+      if (pendingActivation != null &&
+          pendingActivation.dispatchCommitted &&
+          !pendingActivation.dispatchResult.isCompleted) {
+        pendingActivation.dispatchResult.complete();
+      }
       if (identical(_pendingPreSosConfirmation, future)) {
         _pendingPreSosConfirmation = null;
       }
@@ -3885,7 +4038,7 @@ class EixamConnectSdkImpl
       final protectionStatus = _protectionModeController.currentStatus;
       final protectionActive =
           protectionStatus.modeState == ProtectionModeState.armed ||
-              protectionStatus.runtimeState == ProtectionRuntimeState.active;
+          protectionStatus.runtimeState == ProtectionRuntimeState.active;
       final deviceOwnedCountdown =
           status.state == DeviceSosState.preConfirm ||
           activeSession?.mirroredOnDevice == true ||
@@ -3894,7 +4047,7 @@ class EixamConnectSdkImpl
           stageIsArming;
       final hasIncidentId =
           _hasBackendVisibleSosIncident(_lastKnownActiveSosIncident) ||
-              _hasBackendVisibleSosIncident(_publicSosFallbackIncident);
+          _hasBackendVisibleSosIncident(_publicSosFallbackIncident);
       final deviceId =
           runtimeStatus?.nodeId?.toString() ??
           _lastDeviceStatus?.nodeId?.toString() ??
@@ -4102,11 +4255,247 @@ class EixamConnectSdkImpl
     return _activatePublicSos(payload);
   }
 
+  @override
+  Future<SosLifecycleSnapshot> getSosLifecycle() async => _sosLifecycle.current;
+
+  @override
+  Stream<SosLifecycleSnapshot> get sosLifecycleStream =>
+      _seedThenReplayLiveStream<SosLifecycleSnapshot>(
+        seed: getSosLifecycle,
+        live: _sosLifecycle.stream,
+      );
+
+  @override
+  Future<SosActivationResult> triggerSosAuthoritatively(
+    SosTriggerPayload payload,
+  ) async {
+    final selectedCapability = await getSosCapability();
+    final identity = await _resolveLocalOperationalSosIdentity();
+    final prior = _sosLifecycle.current;
+    final hadPersistedLocalProof =
+        prior.localActionable &&
+        prior.localIncidentId != null &&
+        (prior.isOpen || prior.stage == SosLifecycleStage.active);
+    final attemptedLifecycle = await _sosLifecycle.beginActivating(
+      origin: SosLifecycleOrigin.localApp,
+      triggerSource: payload.triggerSource,
+      deviceId: identity.deviceId,
+      nodeId: identity.originatorNodeId,
+      hardwareId: identity.hardwareId,
+    );
+    try {
+      final incident = await triggerSos(payload);
+      final backendIncidentId = _isLocalAppSosIncidentId(incident.id)
+          ? null
+          : incident.id;
+      final lifecycle = await _sosLifecycle.confirmActive(
+        origin: SosLifecycleOrigin.localApp,
+        localIncidentId: incident.id,
+        backendIncidentId: backendIncidentId,
+        triggerSource: payload.triggerSource,
+        deviceId: incident.deviceId ?? identity.deviceId,
+        nodeId: incident.originatorNodeId ?? identity.originatorNodeId,
+        hardwareId: incident.hardwareId ?? identity.hardwareId,
+        incident: incident,
+      );
+      return SosActivationResult(
+        outcome: SosActivationOutcome.activated,
+        lifecycle: lifecycle,
+        incident: incident,
+        selectedPath: selectedCapability.preferredActivationPath,
+        usedPaths: _activationPathsForDelivery(incident.deliveryChannel),
+      );
+    } catch (error) {
+      final alreadyActive =
+          error is SosException && error.code == 'E_SOS_ALREADY_ACTIVE';
+      if (!alreadyActive) {
+        final lifecycle = await _sosLifecycle.activationFailed(
+          error is EixamSdkException ? error.code : 'E_SOS_ACTIVATION_FAILED',
+        );
+        return SosActivationResult(
+          outcome: SosActivationOutcome.failed,
+          lifecycle: lifecycle,
+        );
+      }
+
+      if (hadPersistedLocalProof) {
+        final lifecycle = await _sosLifecycle.confirmActive(
+          origin: prior.origin,
+          localIncidentId: prior.localIncidentId!,
+          backendIncidentId: prior.backendIncidentId,
+          triggerSource: prior.triggerSource ?? payload.triggerSource,
+          deviceId: prior.deviceId,
+          nodeId: prior.nodeId,
+          hardwareId: prior.hardwareId,
+          incident: prior.incident,
+          recoveryStatus: SosRecoveryStatus.restored,
+        );
+        return SosActivationResult(
+          outcome: SosActivationOutcome.alreadyActiveRecovered,
+          lifecycle: lifecycle,
+          incident: lifecycle.incident,
+          selectedPath: SosActivationPath.restoredActiveLifecycle,
+          usedPaths: const <SosActivationPath>{
+            SosActivationPath.restoredActiveLifecycle,
+          },
+        );
+      }
+
+      final authoritativeActive = await _reconcileAlreadyActiveIncident();
+      if (authoritativeActive != null &&
+          _matchesAttemptedAppSos(
+            attempted: attemptedLifecycle,
+            prior: prior,
+            incident: authoritativeActive,
+          )) {
+        final lifecycle = await _sosLifecycle.confirmActive(
+          origin: SosLifecycleOrigin.localApp,
+          localIncidentId: authoritativeActive.id,
+          backendIncidentId: authoritativeActive.id,
+          triggerSource:
+              authoritativeActive.triggerSource ?? payload.triggerSource,
+          deviceId: authoritativeActive.deviceId ?? attemptedLifecycle.deviceId,
+          nodeId:
+              authoritativeActive.originatorNodeId ?? attemptedLifecycle.nodeId,
+          hardwareId:
+              authoritativeActive.hardwareId ?? attemptedLifecycle.hardwareId,
+          incident: authoritativeActive,
+          recoveryStatus: SosRecoveryStatus.restored,
+        );
+        return SosActivationResult(
+          outcome: SosActivationOutcome.alreadyActiveRecovered,
+          lifecycle: lifecycle,
+          incident: authoritativeActive,
+          selectedPath: SosActivationPath.restoredActiveLifecycle,
+          usedPaths: const <SosActivationPath>{
+            SosActivationPath.restoredActiveLifecycle,
+          },
+        );
+      }
+
+      final deviceStatus = await deviceSosController.getStatus();
+      final deviceProvesLocalActive =
+          deviceStatus.state == DeviceSosState.active ||
+          deviceStatus.state == DeviceSosState.acknowledged;
+      if (deviceProvesLocalActive) {
+        final localIncidentId =
+            'device-runtime-sos:${deviceStatus.nodeId ?? identity.originatorNodeId ?? "local"}:${_sosLifecycle.current.generation}';
+        final lifecycle = await _sosLifecycle.confirmActive(
+          origin: SosLifecycleOrigin.connectedLocalDevice,
+          localIncidentId: localIncidentId,
+          triggerSource: payload.triggerSource,
+          deviceId: identity.deviceId,
+          nodeId: deviceStatus.nodeId ?? identity.originatorNodeId,
+          hardwareId: identity.hardwareId,
+          recoveryStatus: SosRecoveryStatus.restored,
+        );
+        return SosActivationResult(
+          outcome: SosActivationOutcome.alreadyActiveRecovered,
+          lifecycle: lifecycle,
+          selectedPath: SosActivationPath.restoredActiveLifecycle,
+          usedPaths: const <SosActivationPath>{
+            SosActivationPath.restoredActiveLifecycle,
+          },
+        );
+      }
+
+      final lifecycle = await _sosLifecycle.requireRecovery(
+        'E_SOS_ALREADY_ACTIVE_UNMATCHED',
+        preserveLocalOwnership: false,
+        backendIncidentId: authoritativeActive?.id,
+        incident: authoritativeActive,
+      );
+      return SosActivationResult(
+        outcome: SosActivationOutcome.alreadyActiveUnmatched,
+        lifecycle: lifecycle,
+      );
+    }
+  }
+
+  static const int _alreadyActiveReconcileAttempts = 3;
+  static const Duration _alreadyActiveReconcileDelay = Duration(
+    milliseconds: 100,
+  );
+
+  Future<SosIncident?> _reconcileAlreadyActiveIncident() async {
+    final repository = sosRepository;
+    if (repository is! AuthoritativeActiveSosLookup) {
+      return null;
+    }
+    final activeLookup = repository as AuthoritativeActiveSosLookup;
+    for (
+      var attempt = 0;
+      attempt < _alreadyActiveReconcileAttempts;
+      attempt += 1
+    ) {
+      try {
+        final incident = await activeLookup.getAuthoritativeActiveSos();
+        if (incident != null && _isOpenSosState(incident.state)) {
+          return incident;
+        }
+      } catch (_) {
+        // The trigger response remains authoritative: reconciliation failure
+        // must not turn an already-active response into Ready.
+      }
+      if (attempt + 1 < _alreadyActiveReconcileAttempts) {
+        await Future<void>.delayed(_alreadyActiveReconcileDelay);
+      }
+    }
+    return null;
+  }
+
+  bool _matchesAttemptedAppSos({
+    required SosLifecycleSnapshot attempted,
+    required SosLifecycleSnapshot prior,
+    required SosIncident incident,
+  }) {
+    if (incident.cycleKey != null &&
+        incident.cycleKey == attempted.lifecycleId) {
+      return true;
+    }
+    if (prior.backendIncidentId != null &&
+        prior.backendIncidentId == incident.id) {
+      return true;
+    }
+    final identityMatches =
+        (attempted.nodeId != null &&
+            attempted.nodeId == incident.originatorNodeId) ||
+        (attempted.deviceId != null &&
+            attempted.deviceId == incident.deviceId) ||
+        (attempted.hardwareId != null &&
+            attempted.hardwareId == incident.hardwareId);
+    if (identityMatches) {
+      return true;
+    }
+    final origin = classifySosIncidentOrigin(incident);
+    return origin.actionability == SosActionability.localActionable &&
+        origin.originKind == SosOriginKind.app;
+  }
+
+  Set<SosActivationPath> _activationPathsForDelivery(
+    SosDeliveryChannel? delivery,
+  ) {
+    return switch (delivery) {
+      SosDeliveryChannel.backendAndDevice => const <SosActivationPath>{
+        SosActivationPath.appBackend,
+        SosActivationPath.connectedDevice,
+      },
+      SosDeliveryChannel.backendOnly => const <SosActivationPath>{
+        SosActivationPath.appBackend,
+      },
+      SosDeliveryChannel.deviceOnly => const <SosActivationPath>{
+        SosActivationPath.connectedDevice,
+      },
+      null => const <SosActivationPath>{},
+    };
+  }
+
   Future<SosIncident> _activatePublicSos(
     SosTriggerPayload payload, {
     bool skipDeviceAction = false,
     bool deviceAlreadyActive = false,
     bool allowDeviceRuntimeActiveShortCircuit = true,
+    _PendingSosActivationOperation? pendingActivation,
   }) async {
     final originDecision = classifySosOrigin(
       triggerSource: payload.triggerSource,
@@ -4143,10 +4532,12 @@ class EixamConnectSdkImpl
       BleDebugRegistry.instance.recordEvent(
         'triggerSos() start -> backendAvailable=${capabilitySnapshot.backendAvailable} cachedDeviceConnected=${_lastDeviceStatus?.connected} shortCommandAvailable=${capabilitySnapshot.shortCommandAvailable} longCommandAvailable=${capabilitySnapshot.longCommandAvailable} currentCapability=${capabilitySnapshot.capability?.name ?? "unavailable"} activeOwner=$_currentDeviceCommandOwnerRoute',
       );
-      _emitPublicSosState(
-        SosState.sending,
-        source: 'public_sos_backend_publish_start',
-      );
+      if (pendingActivation == null) {
+        _emitPublicSosState(
+          SosState.sending,
+          source: 'public_sos_backend_publish_start',
+        );
+      }
       _logAppSosRouteDecision(
         action: 'trigger',
         capabilitySnapshot: capabilitySnapshot,
@@ -4224,6 +4615,18 @@ class EixamConnectSdkImpl
       SosIncident? backendIncident;
       Object? backendError;
       final backendPublishStopwatch = Stopwatch()..start();
+      if (pendingActivation != null) {
+        if (!_commitPendingSosDispatch(pendingActivation)) {
+          throw const SosException(
+            'E_SOS_PENDING_ACTIVATION_CANCELLED',
+            'Pending SOS activation was cancelled before dispatch.',
+          );
+        }
+        _emitPublicSosState(
+          SosState.sending,
+          source: 'public_sos_backend_publish_start',
+        );
+      }
       try {
         BleDebugRegistry.instance.recordEvent(
           '[BACKGROUND_SOS] backend_publish_call_start state=sent '
@@ -4422,7 +4825,10 @@ class EixamConnectSdkImpl
     }
   }
 
-  Future<SosIncident> _confirmPreSosInternal(SosTriggerPayload payload) async {
+  Future<SosIncident> _confirmPreSosInternal(
+    SosTriggerPayload payload, {
+    required _PendingSosActivationOperation? pendingActivation,
+  }) async {
     final session = _preSosSession;
     var deviceStatus = await deviceSosController.getStatus();
     if (_shouldBlockPreSosActivationForDeviceTerminalCancel(
@@ -4465,7 +4871,7 @@ class EixamConnectSdkImpl
         deviceStatus.triggerOrigin == DeviceSosTransitionSource.app;
 
     if (!hasLocalSession && !devicePreConfirm) {
-      return _activatePublicSos(payload);
+      return _activatePublicSos(payload, pendingActivation: pendingActivation);
     }
 
     if (session?.owner == _SosOwner.device) {
@@ -4510,6 +4916,7 @@ class EixamConnectSdkImpl
         skipDeviceAction: true,
         deviceAlreadyActive: true,
         allowDeviceRuntimeActiveShortCircuit: false,
+        pendingActivation: pendingActivation,
       );
     }
 
@@ -4524,6 +4931,7 @@ class EixamConnectSdkImpl
         skipDeviceAction: true,
         deviceAlreadyActive: true,
         allowDeviceRuntimeActiveShortCircuit: false,
+        pendingActivation: pendingActivation,
       );
     }
 
@@ -4561,6 +4969,7 @@ class EixamConnectSdkImpl
         skipDeviceAction: true,
         deviceAlreadyActive: true,
         allowDeviceRuntimeActiveShortCircuit: false,
+        pendingActivation: pendingActivation,
       );
     }
 
@@ -4574,6 +4983,7 @@ class EixamConnectSdkImpl
         skipDeviceAction: true,
         deviceAlreadyActive: true,
         allowDeviceRuntimeActiveShortCircuit: false,
+        pendingActivation: pendingActivation,
       );
     }
 
@@ -4581,7 +4991,7 @@ class EixamConnectSdkImpl
       reason: 'public_pre_sos_confirmed_local_only',
       emitIdleState: false,
     );
-    return _activatePublicSos(payload);
+    return _activatePublicSos(payload, pendingActivation: pendingActivation);
   }
 
   @override
@@ -4609,8 +5019,8 @@ class EixamConnectSdkImpl
       }
       final adoptedBackendIncident =
           await _adoptBackendIncidentForDeviceOnlyFallback(
-        _publicSosFallbackIncident!,
-      );
+            _publicSosFallbackIncident!,
+          );
       if (adoptedBackendIncident != null) {
         return adoptedBackendIncident;
       }
@@ -4743,11 +5153,11 @@ class EixamConnectSdkImpl
         final preCancelPublicState = _publicSosState;
         final preCancelHasOpenBackendIncident =
             _hasBackendVisibleSosIncident(_lastKnownActiveSosIncident) ||
-                _hasBackendVisibleSosIncident(_publicSosFallbackIncident);
+            _hasBackendVisibleSosIncident(_publicSosFallbackIncident);
         final preCancelRequiresBackendCancel =
             preCancelPublicState != SosState.arming &&
-                (_isOpenSosState(preCancelPublicState) ||
-                    preCancelHasOpenBackendIncident);
+            (_isOpenSosState(preCancelPublicState) ||
+                preCancelHasOpenBackendIncident);
         BleDebugRegistry.instance.recordEvent(
           '[SOS_CANCEL] action=pre_sos_branch '
           'publicState=${preCancelPublicState.name} '
@@ -4912,6 +5322,188 @@ class EixamConnectSdkImpl
     } finally {
       _publicSosClosureInFlight = previousClosureInFlight;
       _publicSosActionInFlight = false;
+    }
+  }
+
+  @override
+  Future<SosCancellationResult> cancelSosAuthoritatively() async {
+    final current = _sosLifecycle.current;
+    if (current.stage == SosLifecycleStage.cancelled ||
+        current.stage == SosLifecycleStage.resolved ||
+        current.stage == SosLifecycleStage.idle) {
+      return SosCancellationResult(
+        outcome: SosCancellationOutcome.noActionableLifecycle,
+        lifecycle: current,
+        incident: current.incident,
+      );
+    }
+
+    final pending = _pendingSosActivation;
+    final pendingStage =
+        current.stage == SosLifecycleStage.arming ||
+        current.stage == SosLifecycleStage.activating;
+    if (pendingStage &&
+        pending != null &&
+        pending.generation == current.generation &&
+        !pending.dispatchCommitted) {
+      pending.cancelled = true;
+      _pendingSosActivationRevision += 1;
+      final taskCancelled = _preSosSession != null;
+      _clearPreSosSession(
+        reason: 'authoritative_pending_activation_cancelled',
+        emitIdleState: true,
+      );
+      try {
+        await cancelPreSos();
+      } catch (_) {
+        // The pending operation is already invalidated. A mirrored device
+        // cleanup failure cannot resurrect it or turn this into backend cancel.
+      }
+      final terminal = await _sosLifecycle.confirmTerminal(
+        stage: SosLifecycleStage.cancelled,
+      );
+      if (identical(_pendingSosActivation, pending)) {
+        _pendingSosActivation = null;
+      }
+      _logPendingSosActivationCancel(
+        operation: pending,
+        stageBefore: current.stage,
+        dispatchCommitted: false,
+        taskCancelled: taskCancelled,
+        terminalAfter: terminal.stage,
+        result: SosCancellationOutcome.pendingActivationCancelled,
+        source: 'cancelSosAuthoritatively',
+      );
+      return SosCancellationResult(
+        outcome: SosCancellationOutcome.pendingActivationCancelled,
+        lifecycle: terminal,
+      );
+    }
+
+    if (pendingStage && pending != null && pending.dispatchCommitted) {
+      pending.cancellationRequested = true;
+      await _sosLifecycle.beginCancellation();
+      try {
+        await pending.dispatchResult.future;
+      } catch (_) {
+        // The active cancellation flow below reports the authoritative result.
+      }
+      final result = await _cancelActiveSosAuthoritatively(
+        cancellationAlreadyBegan: true,
+      );
+      if (identical(_pendingSosActivation, pending)) {
+        _pendingSosActivation = null;
+      }
+      return result;
+    }
+
+    return _cancelActiveSosAuthoritatively();
+  }
+
+  Future<SosCancellationResult> _cancelActiveSosAuthoritatively({
+    bool cancellationAlreadyBegan = false,
+  }) async {
+    if (!cancellationAlreadyBegan) {
+      await _sosLifecycle.beginCancellation();
+    }
+    try {
+      final incident = await cancelSos();
+      final channel = incident.deliveryChannel;
+      final backendConfirmed =
+          channel == SosDeliveryChannel.backendOnly ||
+          channel == SosDeliveryChannel.backendAndDevice;
+      final deviceConfirmed =
+          channel == SosDeliveryChannel.deviceOnly ||
+          channel == SosDeliveryChannel.backendAndDevice;
+      final accepted = await _sosLifecycle.cancellationAccepted(
+        backendConfirmed: backendConfirmed,
+        deviceConfirmed: deviceConfirmed,
+      );
+      if (!backendConfirmed) {
+        return SosCancellationResult(
+          outcome: SosCancellationOutcome.cancellationPending,
+          lifecycle: accepted,
+          incident: incident,
+        );
+      }
+      final terminal = await _sosLifecycle.confirmTerminal(
+        stage: SosLifecycleStage.cancelled,
+        incident: incident,
+      );
+      return SosCancellationResult(
+        outcome: SosCancellationOutcome.activeCancellationConfirmed,
+        lifecycle: terminal,
+        incident: incident,
+      );
+    } catch (error) {
+      final lifecycle = await _sosLifecycle.cancellationFailed(
+        error is EixamSdkException ? error.code : 'E_SOS_CANCELLATION_FAILED',
+      );
+      return SosCancellationResult(
+        outcome: SosCancellationOutcome.cancellationFailed,
+        lifecycle: lifecycle,
+      );
+    }
+  }
+
+  Future<void> _reconcileAuthoritativeLifecycleFromDeviceStatus(
+    DeviceSosStatus status,
+  ) async {
+    final lifecycle = _sosLifecycle.current;
+    final terminalDeviceState = _isDeviceSosCycleClosed(status.state);
+    final eventAt = terminalDeviceState
+        ? status.updatedAt
+        : status.lastPacketAt ?? status.updatedAt;
+    final activationAt = lifecycle.activationTimestamp;
+    if (activationAt != null && eventAt.isBefore(activationAt)) {
+      return;
+    }
+    if (lifecycle.nodeId != null &&
+        status.nodeId != null &&
+        lifecycle.nodeId != status.nodeId) {
+      return;
+    }
+    final device = _lastDeviceStatus;
+    if (status.state == DeviceSosState.active ||
+        status.state == DeviceSosState.acknowledged) {
+      final incident = await sosRepository.getCurrentIncident();
+      final localIncidentId =
+          incident?.id ??
+          lifecycle.localIncidentId ??
+          'device-runtime-sos:${status.nodeId ?? device?.nodeId ?? "local"}:${lifecycle.generation == 0 ? _deviceRuntimeLocalCycleSequence : lifecycle.generation}';
+      await _sosLifecycle.confirmActive(
+        origin: status.triggerOrigin == DeviceSosTransitionSource.app
+            ? SosLifecycleOrigin.localApp
+            : SosLifecycleOrigin.connectedLocalDevice,
+        localIncidentId: localIncidentId,
+        backendIncidentId:
+            incident == null || _isLocalAppSosIncidentId(incident.id)
+            ? lifecycle.backendIncidentId
+            : incident.id,
+        triggerSource: incident?.triggerSource ?? lifecycle.triggerSource,
+        deviceId: incident?.deviceId ?? device?.deviceId,
+        nodeId: status.nodeId ?? incident?.originatorNodeId ?? device?.nodeId,
+        hardwareId: incident?.hardwareId ?? device?.canonicalHardwareId,
+        incident: incident,
+        recoveryStatus: lifecycle.stage == SosLifecycleStage.recoveryRequired
+            ? SosRecoveryStatus.restored
+            : lifecycle.recoveryStatus,
+      );
+      return;
+    }
+    if (!_isDeviceSosCycleClosed(status.state) || !lifecycle.isOpen) {
+      return;
+    }
+    final repositoryState = await sosRepository.getSosState();
+    if (repositoryState == SosState.cancelled) {
+      await _sosLifecycle.confirmTerminal(stage: SosLifecycleStage.cancelled);
+    } else if (repositoryState == SosState.resolved) {
+      await _sosLifecycle.confirmTerminal(stage: SosLifecycleStage.resolved);
+    } else if (lifecycle.stage == SosLifecycleStage.cancelling) {
+      await _sosLifecycle.cancellationAccepted(
+        backendConfirmed: false,
+        deviceConfirmed: true,
+      );
     }
   }
 
@@ -5527,8 +6119,8 @@ class EixamConnectSdkImpl
     final cmd = capabilitySnapshot.shortCommandAvailable;
     final decision = inet
         ? (bleConnected
-            ? (cmd ? 'inet_plus_cmd' : 'inet_only_cmd_skip')
-            : 'inet_only_no_ble')
+              ? (cmd ? 'inet_plus_cmd' : 'inet_only_cmd_skip')
+              : 'inet_only_no_ble')
         : (cmd ? 'cmd_only' : 'unavailable');
     BleDebugRegistry.instance.recordEvent(
       '[APP_SOS_ROUTE] origin=app action=$action '
@@ -6047,10 +6639,10 @@ class EixamConnectSdkImpl
     final terminal = _isOpenSosState(_publicSosState)
         ? 'open'
         : _publicSosState == SosState.resolved
-            ? 'resolved'
-            : _publicSosState == SosState.cancelled
-                ? 'cancelled'
-                : _publicSosState.name;
+        ? 'resolved'
+        : _publicSosState == SosState.cancelled
+        ? 'cancelled'
+        : _publicSosState.name;
     final signature = [
       action,
       incomingIncidentId,
@@ -6761,8 +7353,8 @@ class EixamConnectSdkImpl
     final reason = session?.mirroredOnDevice == true
         ? 'matching_app_pre_sos_bridge'
         : bridge != null
-            ? 'recent_app_bridge_even_if_current_session_unmirrored'
-            : 'matching_app_pre_sos_bridge';
+        ? 'recent_app_bridge_even_if_current_session_unmirrored'
+        : 'matching_app_pre_sos_bridge';
     BleDebugRegistry.instance.recordEvent(
       'SOS_APP_ORIGIN_BLE_RUNTIME_CORRELATED '
       'reason=$reason '
@@ -7069,8 +7661,8 @@ class EixamConnectSdkImpl
       origin: matchesAppOriginBridge
           ? DeviceSosTransitionSource.app
           : status.triggerOrigin == DeviceSosTransitionSource.unknown
-              ? null
-              : status.triggerOrigin,
+          ? null
+          : status.triggerOrigin,
       owner: owner,
       cycleKey: matchesAppOriginBridge
           ? appBridgeCycleKey ?? existing?.cycleKey ?? cycleKey
@@ -7926,9 +8518,9 @@ class EixamConnectSdkImpl
         _publicSosState == SosState.resolved) {
       final dropped = await protectionPlatformAdapter
           .dropPendingNativeSosCreate(
-        pending.signature,
-        reason: 'public_terminal:${_publicSosState.name}',
-      );
+            pending.signature,
+            reason: 'public_terminal:${_publicSosState.name}',
+          );
       if (dropped) {
         BleDebugRegistry.instance.recordEvent(
           'NATIVE_SOS_PENDING_DROPPED_CANCELLED '
@@ -7943,9 +8535,9 @@ class EixamConnectSdkImpl
       if (snapshot.preSosLifecycleState == 'cancelPending') {
         final dropped = await protectionPlatformAdapter
             .dropPendingNativeSosCreate(
-          pending.signature,
-          reason: 'native_cancel_pending',
-        );
+              pending.signature,
+              reason: 'native_cancel_pending',
+            );
         if (dropped) {
           BleDebugRegistry.instance.recordEvent(
             'NATIVE_SOS_PENDING_DROPPED_CANCELLED '
@@ -8043,10 +8635,10 @@ class EixamConnectSdkImpl
       );
       final sameCountdownWindow =
           _samePreSosInstant(session.startedAt, startedAt) &&
-              _samePreSosInstant(
-                session.expectedActivationAt,
-                expectedActivationAt,
-              );
+          _samePreSosInstant(
+            session.expectedActivationAt,
+            expectedActivationAt,
+          );
       final sameOriginNode =
           session.originatorNodeId != null &&
           originatorNodeId != null &&
@@ -8146,6 +8738,18 @@ class EixamConnectSdkImpl
       emitNotificationIntent: false,
       publishStatus: DateTime.now().isBefore(expectedActivationAt),
     );
+    if (owner == _SosOwner.app && _pendingSosActivation == null) {
+      final lifecycle = await _sosLifecycle.beginArming(
+        origin: SosLifecycleOrigin.localApp,
+        triggerSource: _preSosSession?.activationPayload.triggerSource,
+        nodeId: _preSosSession?.originatorNodeId,
+      );
+      _pendingSosActivation = _PendingSosActivationOperation(
+        generation: lifecycle.generation,
+        lifecycleRevision: lifecycle.revision,
+        operationRevision: ++_pendingSosActivationRevision,
+      );
+    }
     BleDebugRegistry.instance.recordEvent(
       '[PRE_SOS_CYCLE] action=restore_persisted trigger=$trigger '
       'cycle=${raw['cycleKey'] ?? "-"} '
@@ -8157,20 +8761,20 @@ class EixamConnectSdkImpl
   Future<void> _persistPreSosSession(_PreSosSession session) async {
     await _localStore
         .saveJson(SharedPrefsSdkStore.preSosSessionKey, <String, dynamic>{
-        'cycleKey': session.cycleKey,
-        'owner': session.owner.name,
-        'startedAt': session.startedAt.toUtc().toIso8601String(),
+          'cycleKey': session.cycleKey,
+          'owner': session.owner.name,
+          'startedAt': session.startedAt.toUtc().toIso8601String(),
           'expectedActivationAt': session.expectedActivationAt
               .toUtc()
               .toIso8601String(),
-        'mirroredOnDevice': session.mirroredOnDevice,
-        if (session.origin != null) 'origin': session.origin!.name,
-        if (session.originatorNodeId != null)
-          'originatorNodeId': session.originatorNodeId,
-        if (session.packetId != null) 'packetId': session.packetId,
-        'activationPayload': LocalStateSerializers.sosTriggerPayloadToJson(
-          session.activationPayload,
-        ),
+          'mirroredOnDevice': session.mirroredOnDevice,
+          if (session.origin != null) 'origin': session.origin!.name,
+          if (session.originatorNodeId != null)
+            'originatorNodeId': session.originatorNodeId,
+          if (session.packetId != null) 'packetId': session.packetId,
+          'activationPayload': LocalStateSerializers.sosTriggerPayloadToJson(
+            session.activationPayload,
+          ),
         });
   }
 
@@ -8441,7 +9045,25 @@ class EixamConnectSdkImpl
 
   Future<void> _confirmPreSosFromCountdownZero() async {
     final session = _preSosSession;
+    final operation = _pendingSosActivation;
+    final requiresPendingOperation = session?.owner == _SosOwner.app;
+    if (requiresPendingOperation &&
+        (operation == null || !_isPendingSosActivationCurrent(operation))) {
+      _logLateSosActivationRejected(
+        operation: operation,
+        callbackSource: 'countdown_zero_before_device_status',
+      );
+      return;
+    }
     final deviceStatus = await deviceSosController.getStatus();
+    if (requiresPendingOperation &&
+        !_isPendingSosActivationCurrent(operation!)) {
+      _logLateSosActivationRejected(
+        operation: operation,
+        callbackSource: 'countdown_zero_after_device_status',
+      );
+      return;
+    }
     if (_shouldBlockPreSosActivationForDeviceTerminalCancel(
       session: session,
       deviceStatus: deviceStatus,
@@ -8449,11 +9071,73 @@ class EixamConnectSdkImpl
     )) {
       return;
     }
-    try {
-      await confirmPreSos(
-        _preSosSession?.activationPayload ?? const SosTriggerPayload(),
+    final lifecycle = _sosLifecycle.current;
+    final lifecycleOrigin = session?.owner == _SosOwner.device
+        ? SosLifecycleOrigin.connectedLocalDevice
+        : SosLifecycleOrigin.localApp;
+    await _sosLifecycle.beginActivating(
+      origin: lifecycleOrigin,
+      triggerSource:
+          session?.activationPayload.triggerSource ?? lifecycle.triggerSource,
+      deviceId: lifecycle.deviceId,
+      nodeId: session?.originatorNodeId ?? lifecycle.nodeId,
+      hardwareId: lifecycle.hardwareId,
+    );
+    if (requiresPendingOperation &&
+        !_isPendingSosActivationCurrent(operation!)) {
+      _logLateSosActivationRejected(
+        operation: operation,
+        callbackSource: 'countdown_zero_after_begin_activating',
       );
+      return;
+    }
+    try {
+      final activation = confirmPreSos(
+        session?.activationPayload ?? const SosTriggerPayload(),
+      );
+      final incident = await activation;
+      if (operation != null && !operation.dispatchResult.isCompleted) {
+        operation.dispatchResult.complete();
+      }
+      if (operation != null &&
+          (!_isPendingSosActivationCurrent(operation) ||
+              operation.cancellationRequested)) {
+        _logLateSosActivationRejected(
+          operation: operation,
+          callbackSource: 'countdown_zero_repository_success',
+        );
+        return;
+      }
+      await _sosLifecycle.confirmActive(
+        origin: lifecycleOrigin,
+        localIncidentId: incident.id,
+        backendIncidentId: _isLocalAppSosIncidentId(incident.id)
+            ? null
+            : incident.id,
+        triggerSource: incident.triggerSource ?? lifecycle.triggerSource,
+        deviceId: incident.deviceId ?? lifecycle.deviceId,
+        nodeId:
+            incident.originatorNodeId ??
+            session?.originatorNodeId ??
+            lifecycle.nodeId,
+        hardwareId: incident.hardwareId ?? lifecycle.hardwareId,
+        incident: incident,
+      );
+      if (operation != null && identical(_pendingSosActivation, operation)) {
+        _pendingSosActivation = null;
+      }
     } on SosException catch (error) {
+      if (operation != null && !operation.dispatchResult.isCompleted) {
+        operation.dispatchResult.complete();
+      }
+      if ((operation != null && !_isPendingSosActivationCurrent(operation)) ||
+          error.code == 'E_SOS_PENDING_ACTIVATION_CANCELLED') {
+        _logLateSosActivationRejected(
+          operation: operation,
+          callbackSource: 'countdown_zero_repository_error',
+        );
+        return;
+      }
       if (error.code != 'E_SOS_ALREADY_ACTIVE') {
         if (error.code == 'E_PRE_SOS_CANCELLED_BY_DEVICE') {
           return;
@@ -8470,6 +9154,7 @@ class EixamConnectSdkImpl
             deviceAvailable: deviceSosController.hasSosCommandPath,
           ),
         );
+        await _sosLifecycle.activationFailed(error.code);
         return;
       }
       BleDebugRegistry.instance.recordEvent(
@@ -8479,7 +9164,21 @@ class EixamConnectSdkImpl
         trigger: 'countdown_zero_already_active',
         emitResolvedState: true,
       );
+      await _sosLifecycle.requireRecovery(
+        'E_SOS_ALREADY_ACTIVE_UNMATCHED',
+        preserveLocalOwnership: false,
+      );
     } catch (error) {
+      if (operation != null && !operation.dispatchResult.isCompleted) {
+        operation.dispatchResult.complete();
+      }
+      if (operation != null && !_isPendingSosActivationCurrent(operation)) {
+        _logLateSosActivationRejected(
+          operation: operation,
+          callbackSource: 'countdown_zero_untyped_error',
+        );
+        return;
+      }
       BleDebugRegistry.instance.recordEvent(
         '[APP_SOS_COUNTDOWN_ZERO] action=activate_failed '
         'errorType=${error.runtimeType} '
@@ -8488,7 +9187,67 @@ class EixamConnectSdkImpl
       _markCountdownZeroActivationFailed(
         terminalReason: SosTerminalReason.deliveryFailed,
       );
+      await _sosLifecycle.activationFailed('E_SOS_ACTIVATION_FAILED');
     }
+  }
+
+  bool _isPendingSosActivationCurrent(
+    _PendingSosActivationOperation operation,
+  ) {
+    final lifecycle = _sosLifecycle.current;
+    return identical(_pendingSosActivation, operation) &&
+        !operation.cancelled &&
+        operation.operationRevision == _pendingSosActivationRevision &&
+        lifecycle.generation == operation.generation &&
+        !lifecycle.isTerminal;
+  }
+
+  bool _commitPendingSosDispatch(_PendingSosActivationOperation operation) {
+    if (!_isPendingSosActivationCurrent(operation)) {
+      _logLateSosActivationRejected(
+        operation: operation,
+        callbackSource: 'repository_dispatch_commit',
+      );
+      return false;
+    }
+    operation.dispatchCommitted = true;
+    return true;
+  }
+
+  void _logPendingSosActivationCancel({
+    required _PendingSosActivationOperation operation,
+    required SosLifecycleStage stageBefore,
+    required bool dispatchCommitted,
+    required bool taskCancelled,
+    required SosLifecycleStage terminalAfter,
+    required SosCancellationOutcome result,
+    required String source,
+  }) {
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_PENDING_ACTIVATION_CANCEL '
+      'generationPresent=${operation.generation > 0} '
+      'lifecycleRevision=${operation.lifecycleRevision} '
+      'stageBefore=${stageBefore.name} '
+      'dispatchCommitted=$dispatchCommitted '
+      'taskCancelled=$taskCancelled '
+      'terminalAfter=${terminalAfter.name} '
+      'result=${result.name} source=$source',
+    );
+  }
+
+  void _logLateSosActivationRejected({
+    required _PendingSosActivationOperation? operation,
+    required String callbackSource,
+  }) {
+    final current = _sosLifecycle.current;
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_LATE_ACTIVATION_REJECTED '
+      'staleRevision=${operation?.lifecycleRevision ?? 0} '
+      'currentRevision=${current.revision} '
+      'staleGenerationPresent=${(operation?.generation ?? 0) > 0} '
+      'currentGenerationPresent=${current.generation > 0} '
+      'callbackSource=$callbackSource',
+    );
   }
 
   bool _shouldBlockPreSosActivationForDeviceTerminalCancel({
@@ -8787,7 +9546,7 @@ class EixamConnectSdkImpl
     final deviceStatus = await deviceSosController.getStatus();
     final deviceSosAlreadyActive =
         deviceStatus.state == DeviceSosState.active ||
-            deviceStatus.state == DeviceSosState.acknowledged;
+        deviceStatus.state == DeviceSosState.acknowledged;
     if (!deviceSosAlreadyActive) {
       return false;
     }
@@ -9574,13 +10333,13 @@ class EixamConnectSdkImpl
     final currentTerminal = _isOpenSosState(_publicSosState)
         ? 'open'
         : _isTerminalPublicSosState(_publicSosState)
-            ? _publicSosState.name
-            : _publicSosState.name;
+        ? _publicSosState.name
+        : _publicSosState.name;
     final incomingTerminal = _isOpenSosState(incoming)
         ? 'open'
         : _isTerminalPublicSosState(incoming)
-            ? incoming.name
-            : incoming.name;
+        ? incoming.name
+        : incoming.name;
     final deviceId =
         _lastDeviceStatus?.nodeId?.toString() ??
         status.activeDeviceId ??
@@ -9717,8 +10476,8 @@ class EixamConnectSdkImpl
     }
     final cycleNodeId =
         _parseDeviceRuntimeNodeId(_activeDeviceRuntimeIncidentId) ??
-            _parseSosCycleNodeId(_activeDeviceRuntimeCycleKey) ??
-            _parseSosCycleNodeId(_activeDeviceSosCycleKey);
+        _parseSosCycleNodeId(_activeDeviceRuntimeCycleKey) ??
+        _parseSosCycleNodeId(_activeDeviceSosCycleKey);
     return cycleNodeId != null || _activeDeviceRuntimeIncidentId != null;
   }
 
@@ -9784,14 +10543,14 @@ class EixamConnectSdkImpl
       reason: reason,
       message: rejectedState == SosState.idle
           ? '[APP_SOS_RECONCILE] decision=reject_open_sos_idle_regression '
-              'reason=stale_idle_during_open_sos cycleId=$cycleId '
-              'source=$source previous_stage=${_publicSosState.name} '
-              'incoming_stage=${rejectedState.name} previous_terminal=open '
-              'incoming_terminal=idle '
-              'activeIncident=${_activeDeviceRuntimeIncidentId ?? "none"}'
+                'reason=stale_idle_during_open_sos cycleId=$cycleId '
+                'source=$source previous_stage=${_publicSosState.name} '
+                'incoming_stage=${rejectedState.name} previous_terminal=open '
+                'incoming_terminal=idle '
+                'activeIncident=${_activeDeviceRuntimeIncidentId ?? "none"}'
           : 'APP_SOS_RECONCILE rejected_device_sos_regression '
-              'cycleId=$cycleId source=$source reason=$reason '
-              'activeIncident=${_activeDeviceRuntimeIncidentId ?? "none"}',
+                'cycleId=$cycleId source=$source reason=$reason '
+                'activeIncident=${_activeDeviceRuntimeIncidentId ?? "none"}',
     );
   }
 
@@ -9957,8 +10716,8 @@ class EixamConnectSdkImpl
     final currentTerminal = _isOpenSosState(_publicSosState)
         ? 'open'
         : _isTerminalPublicSosState(_publicSosState)
-            ? _publicSosState.name
-            : _publicSosState.name;
+        ? _publicSosState.name
+        : _publicSosState.name;
     final incomingIncidentId =
         _publicSosFallbackIncident?.id ??
         _lastKnownActiveSosIncident?.id ??
@@ -10180,8 +10939,8 @@ class EixamConnectSdkImpl
         !DateTime.now().isBefore(status.expectedActivationAt!);
     final publicState =
         status.state == DeviceSosState.preConfirm && deviceCountdownExpired
-            ? SosState.sent
-            : _mapDeviceStatusToPublicSosState(status);
+        ? SosState.sent
+        : _mapDeviceStatusToPublicSosState(status);
     if (publicState == null || publicState == SosState.arming) {
       return null;
     }
@@ -10446,11 +11205,11 @@ class EixamConnectSdkImpl
   }) {
     final candidates = devices
         .where((device) {
-      final hardwareId = device.hardwareId.trim();
-      return hardwareId.isNotEmpty &&
-          hardwareId != bleHardwareId &&
-          !isBleMacDeviceId(hardwareId) &&
-          int.tryParse(hardwareId) != null;
+          final hardwareId = device.hardwareId.trim();
+          return hardwareId.isNotEmpty &&
+              hardwareId != bleHardwareId &&
+              !isBleMacDeviceId(hardwareId) &&
+              int.tryParse(hardwareId) != null;
         })
         .toList(growable: false);
     if (candidates.isEmpty) {
@@ -10800,9 +11559,9 @@ class EixamConnectSdkImpl
       );
       _recentExternalRelaySosContexts[contextKey] =
           _mergeRecentExternalRelaySosContext(
-        previous: _recentExternalRelaySosContexts[contextKey],
-        incoming: restoredContext,
-      );
+            previous: _recentExternalRelaySosContexts[contextKey],
+            incoming: restoredContext,
+          );
       restored++;
     }
     if (restored > 0) {
@@ -10982,11 +11741,11 @@ class EixamConnectSdkImpl
   String _compactJson(Map<String, dynamic> payload) {
     final body = payload.entries
         .map((entry) {
-      final value = entry.value;
-      if (value is num || value is bool) {
-        return '"${entry.key}":$value';
-      }
-      return '"${entry.key}":"${value.toString().replaceAll('"', r'\"')}"';
+          final value = entry.value;
+          if (value is num || value is bool) {
+            return '"${entry.key}":$value';
+          }
+          return '"${entry.key}":"${value.toString().replaceAll('"', r'\"')}"';
         })
         .join(',');
     return '{$body}';
@@ -11233,8 +11992,8 @@ class EixamConnectSdkImpl
     }
     final intent =
         _mapTerminalDeviceStatusToPublicSosState(status) == SosState.resolved
-            ? _SosClosureIntent.resolve
-            : _SosClosureIntent.cancel;
+        ? _SosClosureIntent.resolve
+        : _SosClosureIntent.cancel;
     try {
       final terminalIncident = await _runBackendTerminalClosure(
         intent: intent,
@@ -11523,14 +12282,14 @@ class EixamConnectSdkImpl
     final existing = exactExisting?.backendIncidentId?.trim().isNotEmpty == true
         ? exactExisting
         : bestExisting?.backendIncidentId?.trim().isNotEmpty == true
-            ? bestExisting
-            : exactExisting ?? bestExisting;
+        ? bestExisting
+        : exactExisting ?? bestExisting;
     final triggerObservedAt =
         existing?.triggerObservedAt ?? snapshot.receivedAt.toUtc();
     final normalizedBackendIncidentId = backendIncidentId?.trim();
     final acceptedTriggerDeviceId =
         _normalizeNodeIdDeviceIdString(triggerDeviceId) ??
-            _normalizeNodeIdDeviceIdString(existing?.triggerDeviceId);
+        _normalizeNodeIdDeviceIdString(existing?.triggerDeviceId);
     BleDebugRegistry.instance.recordEvent(
       'EXTERNAL_SOS remote_context_remember_attempt '
       'originatorNodeId=$originatorNodeId '
@@ -11654,15 +12413,15 @@ class EixamConnectSdkImpl
     );
     final matches = _recentExternalRelaySosContexts.values
         .where((context) {
-      if (context.originatorNodeId != originatorNodeId) {
-        return false;
-      }
-      if (relayNodeId != null &&
-          context.relayNodeId != null &&
-          context.relayNodeId != relayNodeId) {
-        return false;
-      }
-      return true;
+          if (context.originatorNodeId != originatorNodeId) {
+            return false;
+          }
+          if (relayNodeId != null &&
+              context.relayNodeId != null &&
+              context.relayNodeId != relayNodeId) {
+            return false;
+          }
+          return true;
         })
         .toList(growable: false);
     if (matches.isEmpty) {
@@ -11714,13 +12473,13 @@ class EixamConnectSdkImpl
       backendIncidentId: incomingIncidentId?.isNotEmpty == true
           ? incomingIncidentId
           : previousIncidentId?.isNotEmpty == true
-              ? previousIncidentId
-              : null,
+          ? previousIncidentId
+          : null,
       triggerDeviceId: incomingTriggerDeviceId?.isNotEmpty == true
           ? incomingTriggerDeviceId
           : previousTriggerDeviceId?.isNotEmpty == true
-              ? previousTriggerDeviceId
-              : null,
+          ? previousTriggerDeviceId
+          : null,
       triggerObservedAt:
           previous.triggerObservedAt.isBefore(incoming.triggerObservedAt)
           ? previous.triggerObservedAt
@@ -13461,16 +14220,16 @@ class EixamConnectSdkImpl
         platformConnectedBleNodeId != null && !payloadReason.identityUnknown;
     final unknownRemoteRelaySnapshot =
         !payloadReason.identityOwn && isUnknownOriginSos
-            ? _unknownOriginRemoteSosSnapshotFromPlatform(
-                bytes: bytes,
-                rawHex: rawHex,
-                source: payloadReason.source,
-              )
-            : null;
+        ? _unknownOriginRemoteSosSnapshotFromPlatform(
+            bytes: bytes,
+            rawHex: rawHex,
+            source: payloadReason.source,
+          )
+        : null;
     final classifiedRemoteRelaySnapshot =
         payloadReason.identityOwn && !hasTrustedPlatformConnectedNode
-            ? null
-            : remoteClassification.remoteRelaySosSnapshot;
+        ? null
+        : remoteClassification.remoteRelaySosSnapshot;
     final remoteRelaySnapshot =
         classifiedRemoteRelaySnapshot ?? unknownRemoteRelaySnapshot;
     final originatorNodeId =
@@ -13507,18 +14266,18 @@ class EixamConnectSdkImpl
       platformEventType: event.type.name,
       decision: remoteRelaySnapshot != null
           ? unknownRemoteRelaySnapshot != null
-              ? 'unknown_hold'
-              : 'remote_relay'
+                ? 'unknown_hold'
+                : 'remote_relay'
           : isLocalPlatformSosClassification
-              ? 'own_device'
-              : 'unknown_hold',
+          ? 'own_device'
+          : 'unknown_hold',
       reason: remoteRelaySnapshot != null
           ? unknownRemoteRelaySnapshot != null
-              ? 'connected_ble_node_unknown'
-              : 'originator_differs_from_connected_ble_node'
+                ? 'connected_ble_node_unknown'
+                : 'originator_differs_from_connected_ble_node'
           : isLocalPlatformSosClassification
-              ? 'originator_matches_connected_ble_node'
-              : 'connected_ble_node_unknown',
+          ? 'originator_matches_connected_ble_node'
+          : 'connected_ble_node_unknown',
     );
     _logSosTrace(
       'dart_platform_event_parse_result '
@@ -13604,11 +14363,11 @@ class EixamConnectSdkImpl
       if (_isTerminalSosEventPacket(sosEventPacket)) {
         final synthesizedRemoteCancel =
             _remoteRelayCancelSnapshotForRelayTerminalEvent(
-          packet: sosEventPacket,
-          receivedAt: event.timestamp,
-          rawPayload: bytes,
-          payloadHex: rawHex,
-        );
+              packet: sosEventPacket,
+              receivedAt: event.timestamp,
+              rawPayload: bytes,
+              payloadHex: rawHex,
+            );
         _logRemoteRelayCancelDetection(
           source: 'protection_platform_event_terminal',
           rawType: event.type.name,
@@ -14324,8 +15083,8 @@ class EixamConnectSdkImpl
     final identitySource = connectedDeviceNodeId != null
         ? 'ble_node'
         : hardwareId != null
-            ? 'device_hardware_pending'
-            : 'none';
+        ? 'device_hardware_pending'
+        : 'none';
     if (connectedDeviceNodeId == null) {
       BleDebugRegistry.instance.recordEvent(
         '[APP_REMOTE_RELAY_LOCAL_GUARD_NODE_RESOLVE_FAILED] '
@@ -14446,9 +15205,9 @@ class EixamConnectSdkImpl
         : null;
     final locationSource = positionSnapshot != null
         ? (snapshot.rawPayload.length ==
-                EixamBleProtocol.sosPacketLengthWithPosition
-            ? 'packet_12b'
-            : 'last_known')
+                  EixamBleProtocol.sosPacketLengthWithPosition
+              ? 'packet_12b'
+              : 'last_known')
         : 'none';
     _logSosTrace(
       'remote_backend_handoff_decision '
@@ -15337,7 +16096,7 @@ class EixamConnectSdkImpl
     final session = _session;
     final appUserIdPresent =
         session?.externalUserId.trim().isNotEmpty == true ||
-            session?.canonicalExternalUserId?.trim().isNotEmpty == true;
+        session?.canonicalExternalUserId?.trim().isNotEmpty == true;
     final sdkUserIdPresent = session?.sdkUserId?.trim().isNotEmpty == true;
     final identity = normalizeSosBackendIdentity(
       deviceId: deviceId,
@@ -15457,8 +16216,8 @@ class EixamConnectSdkImpl
     final terminal = _isOpenSosState(_publicSosState)
         ? 'open'
         : _isTerminalPublicSosState(_publicSosState)
-            ? _publicSosState.name
-            : _publicSosState.name;
+        ? _publicSosState.name
+        : _publicSosState.name;
     final containsRemoteSos =
         expectedIncidentId != null &&
         expectedIncidentId.trim().isNotEmpty &&
@@ -15564,10 +16323,10 @@ class EixamConnectSdkImpl
 
   bool _isBackendSosChannelAvailable() {
     if (sosRepository is MqttOperationalSosRepository) {
-      final repository = sosRepository as MqttOperationalSosRepository;
-      return _session != null &&
-          (_lastRealtimeConnectionState == RealtimeConnectionState.connected ||
-              repository.remoteDataSource != null);
+      // Operational MQTT publish establishes its connection on demand. A
+      // temporarily disconnected realtime socket therefore does not make the
+      // configured app SOS path unusable.
+      return _session != null;
     }
     if (sosRepository is ApiSosRepository) {
       return _session != null;
@@ -15575,9 +16334,206 @@ class EixamConnectSdkImpl
     return true;
   }
 
+  bool _lifecycleAllowsNewSos(SosLifecycleSnapshot lifecycle) {
+    return lifecycle.stage == SosLifecycleStage.idle ||
+        lifecycle.stage == SosLifecycleStage.cancelled ||
+        lifecycle.stage == SosLifecycleStage.resolved ||
+        lifecycle.stage == SosLifecycleStage.activationFailed;
+  }
+
+  Future<SosCapabilitySnapshot> _buildSosCapability({
+    required String reason,
+  }) async {
+    final route = _computeCurrentSosCapabilitySnapshot(
+      reason: reason,
+      recordDiagnostics: reason != 'lifecycle_change',
+    );
+    final lifecycle = _sosLifecycle.current;
+    final authenticated = _session != null;
+    final initialized = _sdkInitialized;
+    final lifecycleAllowsActivation = _lifecycleAllowsNewSos(lifecycle);
+    final appTransportReady = authenticated && route.backendAvailable;
+    final deviceTransportReady =
+        route.deviceConnected && route.deviceSosAvailable;
+    PreferredDevice? preferred;
+    try {
+      preferred = await preferredDevice;
+    } catch (_) {
+      preferred = null;
+    }
+    final hasRegisteredDevice =
+        preferred != null || _backendRegisteredNodeIdsForSession.isNotEmpty;
+    final locationAvailable =
+        _lastResolvedLocation != null ||
+        _bridgeDiagnostics.latestOwnDeviceLocation != null;
+    final canTriggerAppSos =
+        initialized && appTransportReady && lifecycleAllowsActivation;
+    final canTriggerDeviceSos =
+        initialized && deviceTransportReady && lifecycleAllowsActivation;
+    final paths = <SosActivationPath>{
+      if (canTriggerAppSos) SosActivationPath.appBackend,
+      if (canTriggerDeviceSos) SosActivationPath.connectedDevice,
+      if (lifecycle.isOpen) SosActivationPath.restoredActiveLifecycle,
+    };
+    final degraded = <SosCapabilityDegradedReason>{
+      if (!hasRegisteredDevice) SosCapabilityDegradedReason.deviceNotRegistered,
+      if (!route.deviceConnected)
+        SosCapabilityDegradedReason.deviceDisconnected,
+      if (route.deviceConnected && !route.shortCommandAvailable)
+        SosCapabilityDegradedReason.commandChannelUnavailable,
+      if (!locationAvailable) SosCapabilityDegradedReason.locationUnavailable,
+    };
+    final blockingReason = canTriggerAppSos || canTriggerDeviceSos
+        ? null
+        : !initialized
+        ? SosCapabilityBlockingReason.initializing
+        : !authenticated
+        ? SosCapabilityBlockingReason.authenticationRequired
+        : !lifecycleAllowsActivation
+        ? SosCapabilityBlockingReason.lifecycleDoesNotAllowActivation
+        : !appTransportReady && !hasRegisteredDevice
+        ? SosCapabilityBlockingReason.appTransportUnavailable
+        : !appTransportReady && !deviceTransportReady
+        ? SosCapabilityBlockingReason.noActivationPath
+        : SosCapabilityBlockingReason.appTransportUnavailable;
+    final capability = SosCapabilitySnapshot(
+      revision: lifecycle.revision,
+      canTriggerAppSos: canTriggerAppSos,
+      canTriggerDeviceSos: canTriggerDeviceSos,
+      canCancelCurrentSos:
+          lifecycle.isOpen &&
+          (lifecycle.backendIncidentId != null ||
+              lifecycle.localIncidentId != null) &&
+          (appTransportReady || deviceTransportReady),
+      appTransportReady: appTransportReady,
+      deviceTransportReady: deviceTransportReady,
+      hasAuthenticatedSession: authenticated,
+      hasRegisteredDevice: hasRegisteredDevice,
+      hasConnectedDevice: route.deviceConnected,
+      commandChannelReady: route.shortCommandAvailable,
+      locationAvailable: locationAvailable,
+      lifecycleAllowsActivation: lifecycleAllowsActivation,
+      availableActivationPaths: Set<SosActivationPath>.unmodifiable(paths),
+      preferredActivationPath: canTriggerAppSos
+          ? SosActivationPath.appBackend
+          : canTriggerDeviceSos
+          ? SosActivationPath.connectedDevice
+          : lifecycle.isOpen
+          ? SosActivationPath.restoredActiveLifecycle
+          : null,
+      blockingReason: blockingReason,
+      degradedReasons: Set<SosCapabilityDegradedReason>.unmodifiable(degraded),
+      transient: !initialized,
+      retryable:
+          blockingReason == SosCapabilityBlockingReason.initializing ||
+          blockingReason ==
+              SosCapabilityBlockingReason.appTransportUnavailable ||
+          blockingReason == SosCapabilityBlockingReason.noActivationPath,
+    );
+    return capability;
+  }
+
+  void _logSosCapabilityEvaluation({
+    required String source,
+    required SosCapabilitySnapshot capability,
+  }) {
+    final signature = <Object?>[
+      _sdkInitialized,
+      capability.hasAuthenticatedSession,
+      capability.appTransportReady,
+      capability.deviceTransportReady,
+      capability.hasRegisteredDevice,
+      capability.hasConnectedDevice,
+      capability.commandChannelReady,
+      capability.locationAvailable,
+      capability.lifecycleAllowsActivation,
+      capability.canTriggerAppSos,
+      capability.canTriggerDeviceSos,
+      capability.canTriggerSos,
+      capability.blockingReason,
+      capability.transient,
+      capability.preferredActivationPath,
+    ].join('|');
+    if (_lastSosCapabilityEvaluationSignature == signature) {
+      return;
+    }
+    _lastSosCapabilityEvaluationSignature = signature;
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_CAPABILITY_EVAL source=$source '
+      'sdkInitialized=$_sdkInitialized '
+      'authenticated=${capability.hasAuthenticatedSession} '
+      'appTransportReady=${capability.appTransportReady} '
+      'deviceTransportReady=${capability.deviceTransportReady} '
+      'hasRegisteredDevice=${capability.hasRegisteredDevice} '
+      'hasConnectedDevice=${capability.hasConnectedDevice} '
+      'commandChannelReady=${capability.commandChannelReady} '
+      'locationAvailable=${capability.locationAvailable} '
+      'lifecycleAllowsActivation=${capability.lifecycleAllowsActivation} '
+      'canTriggerAppSos=${capability.canTriggerAppSos} '
+      'canTriggerDeviceSos=${capability.canTriggerDeviceSos} '
+      'canTriggerSos=${capability.canTriggerSos} '
+      'blockingReason=${capability.blockingReason?.name ?? "none"} '
+      'transient=${capability.transient} '
+      'selectedPath=${capability.preferredActivationPath?.name ?? "none"}',
+    );
+  }
+
+  Future<void> _emitSosCapability({required String reason}) async {
+    if (_sosCapabilityController.isClosed) {
+      return;
+    }
+    final revision = ++_sosCapabilityEmissionRevision;
+    final capability = await _buildSosCapability(reason: reason);
+    if (revision == _sosCapabilityEmissionRevision &&
+        !_sosCapabilityController.isClosed) {
+      _logSosCapabilityEvaluation(source: reason, capability: capability);
+      _sosCapabilityController.add(capability);
+    }
+  }
+
+  @override
+  Future<SosCapabilitySnapshot> getSosCapability() async {
+    final capability = await _buildSosCapability(reason: 'get_sos_capability');
+    _logSosCapabilityEvaluation(
+      source: 'get_sos_capability',
+      capability: capability,
+    );
+    return capability;
+  }
+
+  @override
+  Stream<SosCapabilitySnapshot> watchSosCapability() {
+    return _seedThenReplayLiveStream<SosCapabilitySnapshot>(
+      seed: getSosCapability,
+      live: _sosCapabilityController.stream,
+    );
+  }
+
+  @override
+  Future<SosCapabilitySnapshot> retrySosCapability() async {
+    final revision = ++_sosCapabilityEmissionRevision;
+    await _refreshOperationalDiagnostics(
+      trigger: 'retry_sos_capability',
+      refreshRuntimeStatus: true,
+    );
+    final capability = await _buildSosCapability(
+      reason: 'retry_sos_capability_result',
+    );
+    _logSosCapabilityEvaluation(
+      source: 'retry_sos_capability_result',
+      capability: capability,
+    );
+    if (revision == _sosCapabilityEmissionRevision &&
+        !_sosCapabilityController.isClosed) {
+      _sosCapabilityController.add(capability);
+    }
+    return capability;
+  }
+
   _CurrentSosCapabilitySnapshot _computeCurrentSosCapabilitySnapshot({
     required String reason,
     DeviceStatus? statusOverride,
+    bool recordDiagnostics = true,
   }) {
     final backendAvailable = _isBackendSosChannelAvailable();
     final protectionStatus = _protectionModeController.currentStatus;
@@ -15594,11 +16550,11 @@ class EixamConnectSdkImpl
         : null;
     final deviceConnected = platformOwnsBle
         ? protectionStatus.deviceConnected ||
-            protectionStatus.serviceBleConnected ||
-            protectionStatus.serviceBleReady
+              protectionStatus.serviceBleConnected ||
+              protectionStatus.serviceBleReady
         : (chosenConnected ?? false) ||
-            flutterShortCommandPath ||
-            flutterLongCommandPath;
+              flutterShortCommandPath ||
+              flutterLongCommandPath;
     final shortCommandAvailable = platformOwnsBle
         ? protectionStatus.serviceBleReady || flutterShortCommandPath
         : flutterShortCommandPath;
@@ -15608,21 +16564,23 @@ class EixamConnectSdkImpl
     final deviceSosAvailable = deviceConnected && shortCommandAvailable;
     final capability = backendAvailable
         ? (deviceSosAvailable
-            ? SosDeliveryChannel.backendAndDevice
-            : SosDeliveryChannel.backendOnly)
+              ? SosDeliveryChannel.backendAndDevice
+              : SosDeliveryChannel.backendOnly)
         : (deviceSosAvailable ? SosDeliveryChannel.deviceOnly : null);
 
-    BleDebugRegistry.instance.recordEvent(
-      '[SDK_SOS_CAPABILITY] recompute reason=$reason '
-      'backendAvailable=$backendAvailable '
-      'deviceConnected=$deviceConnected '
-      'chosenConnected=${chosenConnected ?? false} '
-      'serviceBleConnected=${serviceBleConnected ?? false} '
-      'serviceBleReady=${serviceBleReady ?? false} '
-      'shortCommandAvailable=$shortCommandAvailable '
-      'longCommandAvailable=$longCommandAvailable '
-      'result=${capability?.name ?? "unavailable"}',
-    );
+    if (recordDiagnostics) {
+      BleDebugRegistry.instance.recordEvent(
+        '[SDK_SOS_CAPABILITY] recompute reason=$reason '
+        'backendAvailable=$backendAvailable '
+        'deviceConnected=$deviceConnected '
+        'chosenConnected=${chosenConnected ?? false} '
+        'serviceBleConnected=${serviceBleConnected ?? false} '
+        'serviceBleReady=${serviceBleReady ?? false} '
+        'shortCommandAvailable=$shortCommandAvailable '
+        'longCommandAvailable=$longCommandAvailable '
+        'result=${capability?.name ?? "unavailable"}',
+      );
+    }
 
     return _CurrentSosCapabilitySnapshot(
       backendAvailable: backendAvailable,
@@ -15796,6 +16754,7 @@ class EixamConnectSdkImpl
       lastPublicSosDeliveryChannel: _lastPublicSosDeliveryChannel,
       lastTelRelayRx: _lastTelRelayRx,
       backgroundTelemetryEnabled: _backgroundTelemetryEnabled,
+      backgroundTrackingState: _backgroundTrackingState,
       androidForegroundServiceRunning:
           _backgroundTelemetryDiagnostics.serviceRunning,
       backgroundPermissionStatus:
@@ -15906,11 +16865,11 @@ class EixamConnectSdkImpl
           : relayNodeId ?? _knownLocalDeviceNodeId,
       hasRecentExternalRelayContext: eventPacket != null
           ? _recentExternalRelayContextForOriginatorNode(eventPacket.nodeId) !=
-              null
+                null
           : sosPacket != null
           ? _recentExternalRelayContextForOriginatorNode(sosPacket.nodeId) !=
-                  null
-              : false,
+                null
+          : false,
       fallbackOnUnknownConnectedNode: const BleIncomingPayloadClassification(
         kind: BleIncomingPayloadKind.unknownOriginSos,
       ),
@@ -16010,6 +16969,7 @@ class EixamConnectSdkImpl
       reason: reason,
     );
     _operationalDiagnosticsController.add(diagnostics);
+    unawaited(_emitSosCapability(reason: reason));
   }
 
   Future<DeviceStatus> _resolveDeviceStatusForCapability({
@@ -16096,12 +17056,14 @@ class EixamConnectSdkImpl
     await _bleIncomingEventDiagnosticsSub?.cancel();
     await _protectionStatusSub?.cancel();
     await _protectionRawSosEventsSub?.cancel();
+    await _sosCapabilityLifecycleSub?.cancel();
     await _bleOperationalRuntimeBridge.dispose();
     await _protectionModeController.dispose();
     await _deviceCountryConfigStatusSub?.cancel();
     await _deviceCountryConfigController?.dispose();
     await firmwareUpdateCoordinator?.dispose();
     await _operationalTelemetryCoordinator.stop();
+    await _sosLifecycle.dispose();
     await deviceSosController.dispose();
     await realtimeClient.disconnect();
     await disposeCallback?.call();
@@ -16109,6 +17071,7 @@ class EixamConnectSdkImpl
     await _realtimeEventsController.close();
     await _operationalDiagnosticsController.close();
     await _deviceCountryConfigStatusController.close();
+    await _sosCapabilityController.close();
     await _resolvedLocationController.close();
     await _bleNotificationNavigationController.close();
     await _publicDeviceStatusController.close();
@@ -16202,27 +17165,27 @@ class EixamConnectSdkImpl
   List<String> _visibleFeaturesForPurpose(EixamPermissionPurpose purpose) {
     return switch (purpose) {
       EixamPermissionPurpose.locationForeground => const <String>[
-          'SOS',
-          'safety status',
-        ],
+        'SOS',
+        'safety status',
+      ],
       EixamPermissionPurpose.locationBackground => const <String>[
-          'SOS',
-          'protection mode',
-          'safety tracking',
-          'connected TAG monitoring',
-        ],
+        'SOS',
+        'protection mode',
+        'safety tracking',
+        'connected TAG monitoring',
+      ],
       EixamPermissionPurpose.nearbyDevicesBluetooth => const <String>[
-          'TAG pairing',
-          'device monitoring',
-          'physical SOS trigger',
-          'physical SOS cancel',
-        ],
+        'TAG pairing',
+        'device monitoring',
+        'physical SOS trigger',
+        'physical SOS cancel',
+      ],
       EixamPermissionPurpose.notifications => const <String>[
-          'SOS status',
-          'device alerts',
-          'protection events',
-          'safety updates',
-        ],
+        'SOS status',
+        'device alerts',
+        'protection events',
+        'safety updates',
+      ],
     };
   }
 
@@ -16268,8 +17231,8 @@ class EixamConnectSdkImpl
     final status = _permissionStatusForPurpose(requirement.purpose, state);
     final service =
         requirement.purpose == EixamPermissionPurpose.nearbyDevicesBluetooth
-            ? 'bt:${state.bluetoothEnabled}'
-            : 'loc:${state.location != SdkPermissionStatus.serviceDisabled}';
+        ? 'bt:${state.bluetoothEnabled}'
+        : 'loc:${state.location != SdkPermissionStatus.serviceDisabled}';
     return '${requirement.purpose.name}:${status.name}:$service';
   }
 }
@@ -16720,6 +17683,22 @@ class _BufferedLiveEvent<T> {
   final StackTrace? stackTrace;
 
   bool get isError => error != null;
+}
+
+final class _PendingSosActivationOperation {
+  _PendingSosActivationOperation({
+    required this.generation,
+    required this.lifecycleRevision,
+    required this.operationRevision,
+  });
+
+  final int generation;
+  final int lifecycleRevision;
+  final int operationRevision;
+  final Completer<void> dispatchResult = Completer<void>();
+  bool cancelled = false;
+  bool dispatchCommitted = false;
+  bool cancellationRequested = false;
 }
 
 class _ProtectionSosPayloadReason {

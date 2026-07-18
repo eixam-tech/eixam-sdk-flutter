@@ -29,6 +29,8 @@ import '../entities/sdk_user_profile.dart';
 import '../entities/sdk_telemetry_payload.dart';
 import '../entities/sos_history_item.dart';
 import '../entities/sos_incident.dart';
+import '../entities/sos_lifecycle.dart';
+import '../entities/sos_capability_snapshot.dart';
 import '../entities/sos_trigger_payload.dart';
 import '../entities/tracking_position.dart';
 import '../enums/realtime_connection_state.dart';
@@ -127,6 +129,9 @@ abstract class EixamConnectSdk {
 
   Future<SdkOperationalDiagnostics> getOperationalDiagnostics();
   Stream<SdkOperationalDiagnostics> watchOperationalDiagnostics();
+  Future<SosCapabilitySnapshot> getSosCapability();
+  Stream<SosCapabilitySnapshot> watchSosCapability();
+  Future<SosCapabilitySnapshot> retrySosCapability();
   Future<SdkResolvedLocation?> getResolvedLocationForEmergencyContext();
   Stream<SdkResolvedLocation?> watchResolvedLocation();
   Future<SdkTelemetryPayload?> getResolvedTelemetryPreview({
@@ -199,6 +204,11 @@ abstract class EixamConnectSdk {
     Duration countdown = defaultPreSosCountdown,
   });
   Future<SosIncident> triggerSos(SosTriggerPayload payload);
+  Future<SosActivationResult> triggerSosAuthoritatively(
+    SosTriggerPayload payload,
+  );
+  Future<SosLifecycleSnapshot> getSosLifecycle();
+  Stream<SosLifecycleSnapshot> get sosLifecycleStream;
   Future<SosIncident?> getCurrentSosIncident();
   Future<SosTerminalReason?> getCurrentSosTerminalReason();
   Stream<SosState> get currentSosStateStream;
@@ -336,6 +346,7 @@ abstract class EixamConnectSdk {
   Stream<TrackingState> watchTrackingState();
 
   Future<SosIncident> cancelSos();
+  Future<SosCancellationResult> cancelSosAuthoritatively();
   Future<void> resolveSos();
   Future<SosState> acknowledgeSosSummary();
   Future<SosState> getSosState();

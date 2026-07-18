@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -900,6 +901,18 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             .setContentTitle(resolvedTitle)
             .setContentText(resolvedBody)
             .setContentIntent(NotificationLaunchIntents.contentIntentForLaunchingApp(this))
+            .addAction(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                "Stop location sharing",
+                PendingIntent.getService(
+                    this,
+                    notificationId,
+                    Intent(this, EixamTelemetryForegroundService::class.java).apply {
+                        action = actionStop
+                    },
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                ),
+            )
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
@@ -1092,10 +1105,7 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         }
 
         fun stop(context: Context) {
-            val intent = Intent(context, EixamTelemetryForegroundService::class.java).apply {
-                action = actionStop
-            }
-            context.startService(intent)
+            context.stopService(Intent(context, EixamTelemetryForegroundService::class.java))
         }
     }
 }
