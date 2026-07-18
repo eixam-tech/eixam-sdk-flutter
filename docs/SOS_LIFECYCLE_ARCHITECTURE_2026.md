@@ -45,12 +45,12 @@ terminal -> a new lifecycle ID and generation
 
 ## Secure provenance
 
-`AuthoritativeSosLifecycleController` uses the existing
-`SecureKeyValueStore`. The record is keyed as `sdk.sos.lifecycle` and contains
-only: schema version, SHA-256 account scope (`appId:externalUserId`), lifecycle
-ID, generation, lifecycle stage, origin, local/backend incident IDs, required
-device/node identity, trigger source, activation/observation timestamps, and
-pending cancellation phase.
+`AuthoritativeSosLifecycleController` uses the platform-backed
+`SecureKeyValueStore`. Provenance is account-scoped and contains only the
+minimum generation, lifecycle, origin, identity, timing, and pending
+cancellation evidence required for recovery. Storage keys and native storage
+details are private implementation details, not part of the integration
+contract.
 
 It never stores coordinates, contacts, full incidents or payloads, BLE packets,
 tokens, PSKs, voice data, or location history. A record is written only after
@@ -229,9 +229,11 @@ identity and an appropriate transport is available.
 
 Every lifecycle publication receives a monotonic `revision`. Capability is
 built from one captured lifecycle snapshot and carries that same revision.
-Consumers reject lifecycle or capability snapshots older than the greatest
-accepted SOS revision, preventing active/recovery state from being combined
-with an older ready capability (and preventing the reverse stale-idle merge).
+Consumers merge lifecycle and capability halves at an equal revision in either
+arrival order and reject snapshots older than the greatest accepted SOS
+revision. This prevents active/recovery state from being combined with an
+older ready capability (and prevents the reverse stale-idle merge). Terminal
+presentation and readiness for a subsequent activation remain independent.
 
 ## App-origin countdown bridge classification (2026-07-17)
 
@@ -252,10 +254,10 @@ the active lifecycle or its revision. The regression asserts those typed
 states, provenance, identity, generation and revision directly instead of
 asserting debug-registry output.
 
-Validation after this correction completed with 451 Flutter package tests
-passed and zero failed. The focused SOS lifecycle/recovery/cancellation matrix
-completed with 120 passed, and the partner app compatibility matrix completed
-with 246 passed.
+That checkpoint completed with 451 Flutter package tests passed and zero
+failed. The final branch result supersedes it: **456/456 Flutter package tests
+passed**. Analysis passed with three pre-existing `implementation_imports`
+informational notices and no warnings or errors.
 
 ## Authoritative pending-activation cancellation (2026-07-17)
 
@@ -287,3 +289,9 @@ countdown-zero boundary with cancellation and dispatch winning separately;
 start the next SOS immediately after pre-dispatch cancellation; and verify no
 late `arming`, `activating`, `active`, or backend publish from the cancelled
 generation.
+
+The user reports physically verifying the main functional paths available in
+this iteration. The complete extended app-only, connected-device,
+dispatch-boundary, recreation, stale-generation, account-isolation, and
+history/external-safety matrix remains recommended and must not be inferred
+from automated results.

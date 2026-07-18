@@ -17,9 +17,18 @@ The SDK keeps two different truths separate:
 - effective delivery channel:
   what the SDK actually used for the active or last public SOS operation
 
+`SosLifecycleSnapshot` is the lifecycle authority. It owns `idle`, `arming`,
+`activating`, `active`, `cancelling`, `cancelled`, `resolved`,
+`activationFailed`, `cancellationFailed`, and `recoveryRequired`. Host apps
+must not reconstruct those states from legacy transport progress, history,
+timers, or device summaries. See
+[`docs/SOS_LIFECYCLE_ARCHITECTURE_2026.md`](../../docs/SOS_LIFECYCLE_ARCHITECTURE_2026.md).
+
 ## Public SOS Behavior
 
-The public methods `triggerSos(...)`, `cancelSos()`, and `resolveSos()` now orchestrate both channels from the SDK layer.
+Typed authoritative activation/cancellation methods and the compatible public
+`triggerSos(...)`, `cancelSos()`, and `resolveSos()` surface orchestrate channels
+from the SDK layer.
 
 - Backend remains the preferred operational source when available.
 - Device synchronization is automatic when the runtime device path is ready.
@@ -45,7 +54,11 @@ The public methods `triggerSos(...)`, `cancelSos()`, and `resolveSos()` now orch
 
 - If backend cancellation is available, it is attempted.
 - If the device path is available and the device SOS is still active, the device is cancelled too.
-- If backend cancellation fails but device cancellation succeeds, the overall operation still succeeds through the device path.
+- The typed lifecycle publishes `cancelling` before transport work and does not
+  clear provenance on transport acceptance alone.
+- Backend confirmation can establish the terminal boundary without BLE.
+  Device-only acceptance remains pending until authoritative terminal evidence.
+- Failure publishes `cancellationFailed`, retains provenance, and permits retry.
 
 ### `resolveSos()`
 
@@ -59,10 +72,11 @@ The SDK keeps separate availability checks for backend and device channels.
 
 ### Backend SOS availability
 
-Backend availability is evaluated from the configured runtime:
+App/backend activation availability is evaluated from the configured runtime:
 
-- MQTT operational SOS:
-  requires a signed SDK session and an active realtime connection.
+- MQTT operational SOS requires an initialized SDK, a signed session, and a
+  configured operational repository. An already-connected realtime socket is
+  not required because the publish path establishes its connection.
 - HTTP-backed SOS repositories:
   require the backend-facing repository/runtime to be configured.
 - In-memory and test repositories:
@@ -145,6 +159,29 @@ device, or both.
 - If backend succeeds and device sync fails, the backend result wins and the device failure is recorded as diagnostics only.
 - If backend fails and device succeeds, the SDK returns a successful device-only public result.
 - If both channels fail or are unavailable, the public call fails.
+- Legacy `SosState.sending` is transport progress, never authoritative proof of
+  an active lifecycle.
+
+## Countdown, recovery, and revisions
+
+- The SDK owns the countdown deadline and timer. Host timers are display-only.
+- Cancellation is generation-scoped. Pre-dispatch cancellation never calls
+  backend cancellation; post-dispatch-commit cancellation settles activation
+  before using the active cancellation path. Stale callbacks are rejected.
+- `E_SOS_ALREADY_ACTIVE` is reconciled inside the SDK with bounded
+  authoritative current-active lookup. Matching proof yields typed
+  `alreadyActiveRecovered`; unmatched activity yields
+  `alreadyActiveUnmatched` plus `recoveryRequired`. History is never promoted.
+- Lifecycle and capability publications use monotonic revisions. Equal-revision
+  halves merge; stale revisions are rejected.
+- Account-scoped secure provenance survives process recreation and BLE
+  disconnect/reconnect. Pending cancellation restores as cancelling. Privacy
+  exclusions prevent location, contacts, payloads, raw packets, and credentials
+  from entering the lifecycle record.
+- A device `preConfirm` that mirrors app SOS enriches the same lifecycle.
+  `packetId=0` is not generation identity. Authoritative active state overrides
+  countdown presentation before backend incident identity is known; later
+  identity enriches the same generation.
 
 ### Relay `422` Terminal Behavior
 

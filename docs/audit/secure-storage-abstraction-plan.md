@@ -2,7 +2,14 @@
 
 Date: 2026-06-22
 
-Scope: SEC-STORAGE Phase 1 through Phase 2B SDK/app audit remediation prep for `/Users/roger/flutterdev/eixam-sdk-flutter` and `/Users/roger/flutterdev/eixam_commecial_app/eixam-app`.
+Historical plan: retained for audit evidence. The final SOS branch later added
+a platform-backed secure store specifically for minimal account-scoped SOS
+provenance. The broader app-auth migration plan and its rollout risks below are
+not automatically complete; see `../SOS_LIFECYCLE_ARCHITECTURE_2026.md` for the
+current SOS contract.
+
+Scope: SEC-STORAGE Phase 1 through Phase 2B SDK/app audit remediation prep for
+this SDK and the partner-app repository.
 
 Phase 1 added a pure Dart abstraction and test implementations only. Phase 2A adds a disabled-by-default app auth-session secure-storage seam and focused tests so the real migration can be enabled deliberately later. Phase 2B completes app-only guardrails around that seam: fallback, clear, corrupt-payload, migration-on-read ordering, and default/preview config behavior are now covered while secure storage remains disabled by default. Phase 2B improves fallback and kill-switch safety, but it is not a real secure-storage rollout. It does not add a secure-storage dependency, enable flags, migrate user data, change token format, change default login/session restore behavior, change backend API contracts, touch native Android/iOS project files, or touch SOS/MQTT/BLE behavior.
 

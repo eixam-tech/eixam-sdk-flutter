@@ -52,10 +52,8 @@ Host app implementation:
 - `android/app/src/main/kotlin/<app package>/MainActivity.kt`:
   forward widget intents into Flutter with the shared activation payload.
 
-For the current local partner app path, these map to:
-
-- `c:\Users\roger\flutterdev\eixam_app\android\app\src\main\AndroidManifest.xml`
-- `c:\Users\roger\flutterdev\eixam_app\android\app\src\main\kotlin\com\example\eixam_app\MainActivity.kt`
+In the partner app, resolve these paths from its repository root. Do not place
+machine-specific workspace paths in integration documentation.
 
 Default Android tap behavior should be: if SOS is active, open the active SOS
 screen; otherwise open a dedicated confirmation flow or start a short SDK
@@ -79,11 +77,8 @@ Host app implementation:
 - App Group entitlements:
   share only a lightweight derived SOS/device/protection snapshot.
 
-For the current local partner app path, these map to:
-
-- `c:\Users\roger\flutterdev\eixam_app\ios\Runner\AppDelegate.swift`
-- `c:\Users\roger\flutterdev\eixam_app\ios\Runner\Info.plist`
-- new `c:\Users\roger\flutterdev\eixam_app\ios\EixamSosWidget\...` files
+In the partner app, the corresponding Runner and widget-extension files are
+resolved from its repository root.
 
 iOS widgets cannot be treated as a reliable long-running SOS runtime. Prefer
 opening the app to the SOS confirmation flow unless the action surface supports

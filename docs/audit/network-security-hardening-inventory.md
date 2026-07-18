@@ -2,7 +2,14 @@
 
 Date: 2026-06-25
 
-Scope: SDK/app-only network security inventory for `/Users/roger/flutterdev/eixam-sdk-flutter` and read-only app reference at `/Users/roger/flutterdev/eixam_commecial_app/eixam-app`.
+Historical checkpoint: retained for audit evidence. Later work added a
+platform-backed secure store for minimal SOS lifecycle provenance only. It did
+not prove certificate pinning, broker/token rotation, backend authorization,
+or broad user-data migration; those unresolved findings remain current unless
+a later document explicitly closes them.
+
+Scope: SDK/app-only network security inventory for this SDK and a read-only
+partner-app reference.
 
 This document records current SDK/app posture and next actions only. It does not change runtime behavior and must not be used to claim backend, firmware, native Android/iOS, broker, certificate, token-rotation, or infrastructure remediation.
 

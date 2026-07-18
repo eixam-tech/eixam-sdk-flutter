@@ -2,9 +2,23 @@
 
 Date: 2026-06-22
 
-Scope: SDK/app-only audit remediation for `/Users/roger/flutterdev/eixam-sdk-flutter` and `/Users/roger/flutterdev/eixam_commecial_app/eixam-app`. Backend, firmware, native Android/iOS project files, generated files, and build/test cache are intentionally out of scope.
+Historical checkpoint: retained for audit evidence. Since this date, the SDK
+added a platform-backed secure store for the minimal account-scoped SOS
+provenance record. That does not by itself resolve the broader auth-token,
+telemetry, tracking, backend, or migration risks catalogued below. For current
+SOS persistence, see `../SOS_LIFECYCLE_ARCHITECTURE_2026.md`.
 
-Checkpoint status: local storage is partially mitigated, not fully fixed. Secure storage migration is designed/planned in `docs/audit/secure-storage-abstraction-plan.md`; Phase 1 provides a pure Dart SDK core abstraction, Phase 2A adds a disabled-by-default app auth-session seam, and Phase 2B completes app-only fallback/kill-switch guardrails around that seam. No secure-storage dependency, platform-backed implementation, enabled flag, real token/session migration, or user-data migration exists yet in this SDK/app boundary.
+Scope: SDK/app-only audit remediation for this SDK and the partner-app
+repository. Backend, firmware, native Android/iOS project files, generated
+files, and build/test cache are intentionally out of scope.
+
+Checkpoint status at 2026-06-22: local storage was partially mitigated, not
+fully fixed. Secure storage migration was designed/planned in
+`secure-storage-abstraction-plan.md`; Phase 1 provided a pure Dart SDK core
+abstraction, Phase 2A added a disabled-by-default app auth-session seam, and
+Phase 2B completed app-only fallback/kill-switch guardrails around that seam.
+At that checkpoint no platform-backed implementation or real token/session
+migration existed.
 
 Classification:
 

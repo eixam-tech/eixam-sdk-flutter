@@ -1,17 +1,21 @@
 # SDK/App Audit Remediation Tracker
 
+Historical checkpoint: retained for audit evidence. The final authoritative
+SOS lifecycle and platform-secure minimal provenance record supersede older SOS
+ownership/storage statements below; see
+`../SOS_LIFECYCLE_ARCHITECTURE_2026.md`. Other open backend, firmware, broker,
+token, and migration findings remain open unless explicitly resolved.
+
 Status: SDK/app-only checkpoint for Dani audit remediation after SEC-BLE Phase 0 SDK-only scaffolding, ARCH-APP-5.3 `LiveEixamSdkClient` typed seam audit, ARCH-SDK-2 second-pass public SOS stream boundary cleanup, stale override cleanup, aggregate QA gate pass, and expanded Android manual QA checkpoint.
 
 Global checkpoint: `docs/audit/sdk-app-audit-global-checkpoint.md`.
 
 Future PR/patch guardrails checklist: `docs/audit/sdk-app-audit-guardrails-checklist.md`.
 
-Firmware/backend/broker/protocol handoff for Dani: `docs/audit/dani-firmware-backend-audit-handoff.md`.
-
 This tracker is intentionally scoped to:
 
-- SDK: `/Users/roger/flutterdev/eixam-sdk-flutter`
-- App: `/Users/roger/flutterdev/eixam_commecial_app/eixam-app`
+- SDK: this repository
+- App: the partner-app repository
 
 Do not use this tracker as approval to change backend, firmware, protocol server code, generated files, native Android/iOS project files, production/runtime code, or `build/test_cache`. Firmware/backend-required findings below are not fixed unless explicitly marked fixed by a later firmware/backend remediation pass.
 

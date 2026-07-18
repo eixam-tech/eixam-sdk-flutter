@@ -33,14 +33,27 @@ Run from the repository root unless noted otherwise.
 - `eixam_connect_core` is a Dart package; targeted `dart test` is often the fastest check there.
 - `eixam_connect_flutter` is a Flutter package; prefer `flutter test` for targeted validation.
 
+## Final Store-Compliance Checkpoint
+
+- Flutter SDK package suite: **456/456 passed**.
+- Analyzer passed with three pre-existing `implementation_imports`
+  informational notices and no warnings or errors.
+- Partner-app focused SOS/supporting matrices passed; Android staging
+  debug/release and iOS staging debug `--no-codesign` builds passed.
+- The complete partner-app sweep remains blocked by a pre-existing
+  `login_screen_test.dart` harness hang. It is test-infrastructure debt, not an
+  SOS failure, and the full app suite must not be reported as passing.
+
 ## Manual Validation Checklist
 
 ### App-only SOS
 
 - Verify signed session is configured.
-- Verify realtime connection reaches connected state.
 - Trigger SOS with no BLE device connected.
 - Confirm SDK succeeds through backend path only.
+- Repeat with Bluetooth and location unavailable. An already-connected realtime
+  socket, registered device, BLE, tracking, and location are not prerequisites
+  for the app/backend path.
 
 ### BLE SOS From App
 
@@ -93,4 +106,8 @@ Run from the repository root unless noted otherwise.
 
 ## Needs Verification
 
-- Root `flutter test` is documented in the repo README, but depending on local Flutter workspace behavior you may prefer package-targeted test commands when narrowing failures. Treat package-scoped commands as the most deterministic option.
+- The user reports physical verification of the main functional paths available
+  in this iteration. The complete extended physical matrix and store-delivered
+  artifact evidence remain recommended; automated results do not close them.
+- Root `flutter test` remains the documented repo command, while package-targeted
+  commands are the deterministic evidence used for the final 456/456 result.
