@@ -36,6 +36,7 @@ abstract class SosRepository {
   Future<SosIncident?> getCurrentIncident();
   Future<SosState> getSosState();
   Stream<SosState> watchSosState();
+  Stream<SosIncident?> watchCurrentIncident();
 
   /// Returns paginated SOS history for the authenticated user.
   ///

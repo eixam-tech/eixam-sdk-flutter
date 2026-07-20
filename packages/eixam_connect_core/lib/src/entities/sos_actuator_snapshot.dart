@@ -35,7 +35,6 @@ enum SosActuatorChannelKind {
 }
 
 class SosActuatorSnapshot {
-
   factory SosActuatorSnapshot.fromJson(Map<String, dynamic> json) {
     return SosActuatorSnapshot(
       snapshotVersion: _intFromJson(json['snapshotVersion']) ??
@@ -76,7 +75,6 @@ class SosActuatorSnapshot {
 }
 
 class SosActuatorItem {
-
   factory SosActuatorItem.fromJson(Map<String, dynamic> json) {
     final rawType = _stringFromJson(json['type']) ?? '';
     final rawStatus = _stringFromJson(json['status']) ?? '';
@@ -142,14 +140,15 @@ class SosActuatorItem {
 }
 
 class SosActuatorContact {
-
   factory SosActuatorContact.fromJson(Map<String, dynamic> json) {
     final rawStatus = _stringFromJson(json['status']);
     final status = _statusFromRaw(rawStatus);
     final rawOutcome = _stringFromJson(json['outcome']);
     final rawChannel = _stringFromJson(json['channel']);
     return SosActuatorContact(
-      id: _stringFromJson(json['id']),
+      id: _stringFromJson(
+        json['contactId'] ?? json['contact_id'] ?? json['id'],
+      ),
       name: _stringFromJson(json['name']),
       phone: _stringFromJson(json['phone']),
       email: _stringFromJson(json['email']),
@@ -217,7 +216,6 @@ class SosActuatorContact {
 }
 
 class SosActuatorChannel {
-
   factory SosActuatorChannel.fromJson(Map<String, dynamic> json) {
     final rawStatus = _stringFromJson(json['status']);
     final status = _statusFromRaw(rawStatus);
@@ -282,7 +280,6 @@ class SosActuatorChannel {
 }
 
 class SosActuatorDelivery {
-
   factory SosActuatorDelivery.fromJson(Map<String, dynamic> json) {
     final rawStatus = _stringFromJson(json['status']);
     final status = _statusFromRaw(rawStatus);
@@ -363,10 +360,16 @@ SosActuatorType _typeFromRaw(String raw) {
 
 SosActuatorStatus _statusFromRaw(String? raw) {
   return switch (_normalize(raw)) {
-    'scheduled' => SosActuatorStatus.scheduled,
-    'sent' => SosActuatorStatus.sent,
-    'delivered' => SosActuatorStatus.delivered,
-    'failed' => SosActuatorStatus.failed,
+    'scheduled' || 'queued' => SosActuatorStatus.scheduled,
+    'sent' || 'ringing' || 'in_progress' => SosActuatorStatus.sent,
+    'delivered' || 'completed' || 'acknowledged' => SosActuatorStatus.delivered,
+    'failed' ||
+    'no_answer' ||
+    'busy' ||
+    'canceled' ||
+    'cancelled' ||
+    'undelivered' =>
+      SosActuatorStatus.failed,
     'skipped' => SosActuatorStatus.skipped,
     _ => SosActuatorStatus.unknown,
   };

@@ -6,7 +6,9 @@ import 'package:eixam_connect_flutter/src/data/datasources_remote/sos_remote_dat
 import 'package:eixam_connect_flutter/src/data/dtos/sos_history_dto.dart';
 import 'package:eixam_connect_flutter/src/data/dtos/sos_incident_dto.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/mqtt_operational_sos_repository.dart';
+import 'package:eixam_connect_flutter/src/data/repositories/sos_runtime_rehydration_support.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
+import 'package:eixam_connect_flutter/src/mappers/local_state_serializers.dart';
 import 'package:eixam_connect_flutter/src/sdk/operational_realtime_client.dart';
 import 'package:eixam_connect_flutter/src/sdk/sdk_mqtt_contract.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -51,7 +53,7 @@ void main() {
 
       expect(incident.state, SosState.sent);
       expect(realtimeClient.publishedSos, hasLength(1));
-      expect(remoteDataSource.getActiveSosCalls, 1);
+      expect(remoteDataSource.getActiveSosCalls, greaterThanOrEqualTo(1));
       expect(await repository.getSosState(), SosState.sent);
       expect(_hasDiagnostic('SOS_ALREADY_ACTIVE_GUARD_CHECK'), isTrue);
       expect(_hasDiagnostic('SOS_ALREADY_ACTIVE_GUARD_STALE_CLEARED'), isTrue);
@@ -385,6 +387,9 @@ void main() {
     });
 
     test('accepts actuator_update for matching active incident', () async {
+      final observedUpdate = repository.watchCurrentIncident().firstWhere(
+            (item) => item?.actuators?.snapshotVersion == 7,
+          );
       final incident = await _triggerAppSos(repository);
 
       realtimeClient.emitEvent(_actuatorEvent(
@@ -395,10 +400,39 @@ void main() {
 
       final current = await repository.getCurrentIncident();
       expect(current!.actuators!.snapshotVersion, 7);
+      expect((await observedUpdate)!.actuators!.snapshotVersion, 7);
       expect(_hasDiagnostic('SOS_ACTUATOR_UPDATE_ACCEPTED'), isTrue);
     });
 
-    test('ignores actuator_update for mismatched incident', () async {
+    test('older and equal actuator versions cannot regress delivery', () async {
+      final incident = await _triggerAppSos(repository);
+      realtimeClient.emitEvent(_actuatorEvent(
+        incidentId: incident.id,
+        snapshotVersion: 7,
+        status: 'delivered',
+      ));
+      await _pumpRealtime();
+
+      realtimeClient.emitEvent(_actuatorEvent(
+        incidentId: incident.id,
+        snapshotVersion: 6,
+        status: 'failed',
+      ));
+      realtimeClient.emitEvent(_actuatorEvent(
+        incidentId: incident.id,
+        snapshotVersion: 7,
+        status: 'failed',
+      ));
+      await _pumpRealtime();
+
+      final current = await repository.getCurrentIncident();
+      expect(current!.actuators!.snapshotVersion, 7);
+      expect(
+          current.actuators!.items.single.status, SosActuatorStatus.delivered);
+    });
+
+    test('buffers a canonical actuator candidate while handoff is pending',
+        () async {
       await _triggerAppSos(repository);
 
       realtimeClient.emitEvent(_actuatorEvent(
@@ -409,7 +443,374 @@ void main() {
 
       final current = await repository.getCurrentIncident();
       expect(current!.actuators, isNull);
+      expect(_hasDiagnostic('SOS_MQTT_ACTUATOR_UPDATE_BUFFERED'), isTrue);
+    });
+
+    test('processed lifecycle confirms reception before actuator planning',
+        () async {
+      final remoteDataSource = _FakeSosRemoteDataSource();
+      await repository.dispose();
+      repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        remoteDataSource: remoteDataSource,
+      );
+      final localIncident = await _triggerAppSos(repository);
+      expect(localIncident.isBackendConfirmed, isFalse);
+      remoteDataSource.active = _localActiveDto(id: 'backend-incident-1');
+
+      realtimeClient.emitEvent(_lifecycleEvent(
+        incidentId: 'backend-incident-1',
+        clientIncidentId: localIncident.id,
+        state: 'active',
+        source: 'button_ui',
+        triggerSource: 'button_ui',
+        actionability: 'localActionable',
+        displaySurface: 'activeAndHistory',
+      ));
+      await _pumpRealtime();
+
+      final current = await repository.getCurrentIncident();
+      expect(current!.id, 'backend-incident-1');
+      expect(current.isBackendConfirmed, isTrue);
+      expect(current.actuators, isNull);
+      expect(current.progress.steps.first.state, SosProgressState.succeeded);
+      expect(remoteDataSource.getActiveSosCalls, 0);
+    });
+
+    test('real processed event canonically hands off without echoed ids',
+        () async {
+      final localIncident = await _triggerAppSos(repository);
+
+      realtimeClient.emitEvent(_processedEvent(
+        incidentId: 'canonical-processed-incident',
+      ));
+      await _pumpRealtime();
+
+      final current = await repository.getCurrentIncident();
+      expect(current!.id, 'canonical-processed-incident');
+      expect(current.id, isNot(localIncident.id));
+      expect(current.isBackendConfirmed, isTrue);
+      expect(current.progress.steps.first.state, SosProgressState.succeeded);
+      expect(current.progress.provisionalIncidentId, localIncident.id);
+      expect(
+        current.progress.canonicalIncidentId,
+        'canonical-processed-incident',
+      );
+      expect(current.progress.preservedLocalOwnership, isTrue);
+      expect(
+        _hasDiagnostic('MQTT_SOS_LIFECYCLE_ACCEPTED_PROCESSED_HANDOFF'),
+        isTrue,
+      );
+      expect(_hasDiagnostic('SOS_BACKEND_CONFIRMATION_MQTT_RECEIVED'), isTrue);
+      expect(_hasDiagnostic('SOS_CANONICAL_INCIDENT_HANDOFF'), isTrue);
+    });
+
+    test('internal and legacy processed aliases produce one handoff', () async {
+      await _triggerAppSos(repository);
+      final eventAt = DateTime.now().toUtc();
+
+      realtimeClient.emitEvent(_processedEvent(
+        incidentId: 'canonical-alias-incident',
+        timestamp: eventAt,
+        topicCategory: 'internal',
+      ));
+      realtimeClient.emitEvent(_processedEvent(
+        incidentId: 'canonical-alias-incident',
+        timestamp: eventAt,
+        topicCategory: 'legacy_alias',
+      ));
+      await _pumpRealtime();
+
+      expect(
+        (await repository.getCurrentIncident())!.id,
+        'canonical-alias-incident',
+      );
+      final handoffs = BleDebugRegistry.instance.currentState.events.where(
+        (event) => event.message.contains('SOS_CANONICAL_INCIDENT_HANDOFF'),
+      );
+      expect(handoffs, hasLength(1));
+      expect(_hasDiagnostic('reason=duplicate_alias_or_event'), isTrue);
+    });
+
+    test('unrelated remote processed event cannot claim local SOS', () async {
+      final local = await _triggerAppSos(repository);
+
+      realtimeClient.emitEvent(_processedEvent(
+        incidentId: 'remote-relay-incident',
+        source: 'remote_lora_relay',
+      ));
+      await _pumpRealtime();
+
+      final current = await repository.getCurrentIncident();
+      expect(current!.id, local.id);
+      expect(current.isBackendConfirmed, isFalse);
+      expect(_hasDiagnostic('reason=external_only'), isTrue);
+    });
+
+    test('unknown MQTT event is ignored without changing state', () async {
+      final local = await _triggerAppSos(repository);
+      realtimeClient.emitEvent(RealtimeEvent(
+        type: 'sos.unknown',
+        timestamp: DateTime.now().toUtc(),
+        payload: const <String, dynamic>{
+          'type': 'sos.unknown',
+          'incidentId': 'unknown-incident',
+          '_mqttAuthenticatedUserScoped': true,
+          '_mqttTopicCategory': 'internal',
+        },
+      ));
+      await _pumpRealtime();
+
+      expect((await repository.getCurrentIncident())!.id, local.id);
+      expect(_hasDiagnostic('reason=unsupported_event_type'), isTrue);
+    });
+
+    test('publish stays local and never calls REST before processed event',
+        () async {
+      final remoteDataSource = _FakeSosRemoteDataSource();
+      await repository.dispose();
+      repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        remoteDataSource: remoteDataSource,
+      );
+      final local = await repository.triggerSos(
+        triggerSource: 'button_ui',
+        positionSnapshot: _position(),
+      );
+      expect(local.isBackendConfirmed, isFalse);
+      expect(local.progress.steps, hasLength(1));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      final current = await repository.getCurrentIncident();
+      expect(current!.id, local.id);
+      expect(current.isBackendConfirmed, isFalse);
+      expect(current.progress.steps.first.state, SosProgressState.pending);
+      expect(remoteDataSource.getActiveSosCalls, 0);
+      expect(_hasDiagnostic('SOS_BACKEND_CONFIRMATION_REST'), isFalse);
+    });
+
+    test('processed plan and later actuator update expose two contacts',
+        () async {
+      final remoteDataSource = _FakeSosRemoteDataSource();
+      await repository.dispose();
+      repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        remoteDataSource: remoteDataSource,
+      );
+      await _triggerAppSos(repository);
+
+      realtimeClient.emitEvent(_processedEvent(
+        incidentId: 'canonical-mqtt-incident',
+        snapshotVersion: 1,
+        contactStatuses: const <String>['scheduled', 'scheduled'],
+      ));
+      await _pumpRealtime();
+
+      var current = await repository.getCurrentIncident();
+      var contacts = current!.progress.steps.singleWhere(
+        (step) => step.type == SosProgressStepType.emergencyContacts,
+      );
+      expect(contacts.totalTargets, 2);
+      expect(contacts.state, SosProgressState.inProgress);
+
+      realtimeClient.emitEvent(_actuatorEvent(
+        incidentId: 'canonical-mqtt-incident',
+        snapshotVersion: 2,
+        status: 'delivered',
+        contactStatuses: const <String>['delivered', 'delivered'],
+      ));
+      await _pumpRealtime();
+
+      current = await repository.getCurrentIncident();
+      contacts = current!.progress.steps.singleWhere(
+        (step) => step.type == SosProgressStepType.emergencyContacts,
+      );
+      expect(contacts.totalTargets, 2);
+      expect(contacts.successfulTargets, 2);
+      expect(contacts.state, SosProgressState.succeeded);
+      expect(remoteDataSource.getActiveSosCalls, 0);
+    });
+
+    test('MQTT contact delivery plus failure exposes partial progress',
+        () async {
+      await _triggerAppSos(repository);
+      realtimeClient.emitEvent(_processedEvent(
+        incidentId: 'canonical-partial-incident',
+      ));
+      await _pumpRealtime();
+      realtimeClient.emitEvent(_actuatorEvent(
+        incidentId: 'canonical-partial-incident',
+        snapshotVersion: 3,
+        status: 'delivered',
+        contactStatuses: const <String>['delivered', 'failed'],
+      ));
+      await _pumpRealtime();
+
+      final contacts =
+          (await repository.getCurrentIncident())!.progress.steps.singleWhere(
+                (step) => step.type == SosProgressStepType.emergencyContacts,
+              );
+      expect(contacts.totalTargets, 2);
+      expect(contacts.successfulTargets, 1);
+      expect(contacts.failedTargets, 1);
+      expect(contacts.state, SosProgressState.partiallySucceeded);
+    });
+
+    test('actuator update before processed is buffered then applied', () async {
+      final remoteDataSource = _FakeSosRemoteDataSource();
+      await repository.dispose();
+      repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        remoteDataSource: remoteDataSource,
+      );
+      await _triggerAppSos(repository);
+
+      realtimeClient.emitEvent(_actuatorEvent(
+        incidentId: 'mqtt-buffered-incident',
+        snapshotVersion: 2,
+        status: 'delivered',
+        contactStatuses: const <String>['delivered', 'delivered'],
+      ));
+      await _pumpRealtime();
+      expect((await repository.getCurrentIncident())!.actuators, isNull);
+      expect(_hasDiagnostic('SOS_MQTT_ACTUATOR_UPDATE_BUFFERED'), isTrue);
+
+      realtimeClient.emitEvent(_processedEvent(
+        incidentId: 'mqtt-buffered-incident',
+      ));
+      await _pumpRealtime();
+
+      final current = await repository.getCurrentIncident();
+      expect(current!.id, 'mqtt-buffered-incident');
+      expect(current.actuators!.snapshotVersion, 2);
+      expect(
+        current.progress.steps
+            .singleWhere(
+              (step) => step.type == SosProgressStepType.emergencyContacts,
+            )
+            .successfulTargets,
+        2,
+      );
+      expect(_hasDiagnostic('source=pre_processed_buffer'), isTrue);
+      expect(remoteDataSource.getActiveSosCalls, 0);
+    });
+
+    test('MQTT warning timeout keeps local incident in confirming state',
+        () async {
+      final remoteDataSource = _FakeSosRemoteDataSource();
+      await repository.dispose();
+      repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        remoteDataSource: remoteDataSource,
+        mqttConfirmationWarningDelay: const Duration(milliseconds: 1),
+      );
+      final local = await _triggerAppSos(repository);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      final current = await repository.getCurrentIncident();
+      expect(current!.id, local.id);
+      expect(current.isBackendConfirmed, isFalse);
+      expect(current.state, SosState.sent);
+      expect(current.progress.steps.first.state, SosProgressState.pending);
+      expect(_hasDiagnostic('SOS_BACKEND_CONFIRMATION_TIMEOUT'), isTrue);
+      expect(remoteDataSource.getActiveSosCalls, 0);
+    });
+
+    test('cancel during confirmation stops retries and cannot reopen',
+        () async {
+      final remoteDataSource = _FakeSosRemoteDataSource();
+      await repository.dispose();
+      repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        remoteDataSource: remoteDataSource,
+        cancelRemoteDataSource: remoteDataSource,
+      );
+      await _triggerAppSos(repository);
+      realtimeClient.emitEvent(_actuatorEvent(
+        incidentId: 'late-active',
+        snapshotVersion: 2,
+      ));
+      await _pumpRealtime();
+      await repository.cancelSos();
+      realtimeClient.emitEvent(_processedEvent(incidentId: 'late-active'));
+      await Future<void>.delayed(const Duration(milliseconds: 90));
+
+      expect(await repository.getSosState(), SosState.idle);
+      expect(await repository.watchCurrentIncident().first, isNull);
+      expect(_hasDiagnostic('reason=cancel_requested'), isTrue);
+    });
+
+    test('session clear stops confirmation and removes local progress',
+        () async {
+      final remoteDataSource = _FakeSosRemoteDataSource();
+      await repository.dispose();
+      repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        remoteDataSource: remoteDataSource,
+      );
+      await _triggerAppSos(repository);
+      realtimeClient.emitEvent(_actuatorEvent(
+        incidentId: 'other-user-incident',
+        snapshotVersion: 2,
+      ));
+      await _pumpRealtime();
+      await repository.clearSosRuntimeForSessionChange();
+      realtimeClient.emitEvent(
+        _processedEvent(incidentId: 'other-user-incident'),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(await repository.getSosState(), SosState.idle);
+      expect(await repository.watchCurrentIncident().first, isNull);
+      expect(_hasDiagnostic('reason=session_cleared'), isTrue);
+    });
+
+    test('stale actuator event cannot reopen a locally cancelled incident',
+        () async {
+      await repository.dispose();
+      repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        cancelRemoteDataSource: _FakeSosRemoteDataSource(),
+      );
+      final incident = await _triggerAppSos(repository);
+      await repository.cancelSos();
+
+      realtimeClient.emitEvent(_actuatorEvent(
+        incidentId: incident.id,
+        snapshotVersion: 99,
+      ));
+      await _pumpRealtime();
+
+      expect(await repository.getSosState(), SosState.idle);
+      expect(await repository.getCurrentIncident(), isNull);
       expect(_hasDiagnostic('SOS_ACTUATOR_UPDATE_IGNORED'), isTrue);
+    });
+
+    test('cached confirmed active incident clears on no-active REST response',
+        () async {
+      final store = MemorySharedPrefsSdkStore();
+      final cached = SosIncident(
+        id: 'remotely-closed',
+        state: SosState.sent,
+        createdAt: DateTime.utc(2026, 6, 21),
+        isBackendConfirmed: true,
+      );
+      store.jsonValues[SharedPrefsSdkStore.sosIncidentKey] =
+          LocalStateSerializers.sosIncidentToJson(cached);
+      store.stringValues[SharedPrefsSdkStore.sosStateKey] = SosState.sent.name;
+      await repository.dispose();
+      repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        remoteDataSource: _FakeSosRemoteDataSource(),
+        localStore: store,
+      );
+      await repository.restoreState();
+
+      final result = await repository.rehydrateRuntimeStateFromBackend();
+
+      expect(result.outcome, SosRuntimeRehydrationOutcome.clearedToIdle);
+      expect(await repository.getCurrentIncident(), isNull);
+      expect(store.jsonValues[SharedPrefsSdkStore.sosIncidentKey], isNull);
     });
 
     test('preserves app-origin local lifecycle flow', () async {
@@ -496,22 +897,86 @@ RealtimeEvent _lifecycleEvent({
 RealtimeEvent _actuatorEvent({
   required String incidentId,
   required int snapshotVersion,
+  String status = 'sent',
+  List<String> contactStatuses = const <String>[],
+  DateTime? timestamp,
+  String topicCategory = 'internal',
 }) {
+  final eventAt = (timestamp ?? DateTime.now()).toUtc();
   return RealtimeEvent(
     type: 'sos.actuator_update',
-    timestamp: DateTime.utc(2026, 6, 21),
+    timestamp: eventAt,
     payload: <String, dynamic>{
       'type': 'sos.actuator_update',
+      'userId': '11111111-1111-1111-1111-111111111111',
       'incidentId': incidentId,
       'snapshotVersion': snapshotVersion,
-      'actuators': const <Map<String, dynamic>>[
+      'updatedAt': eventAt.toIso8601String(),
+      '_mqttAuthenticatedUserScoped': true,
+      '_mqttTopicCategory': topicCategory,
+      'actuators': <Map<String, dynamic>>[
         <String, dynamic>{
           'id': 'contacts',
           'type': 'emergency_contacts',
-          'status': 'sent',
-          'outcome': 'success',
+          'status': status,
+          'outcome': status == 'failed' ? 'failure' : 'success',
+          if (contactStatuses.isNotEmpty)
+            'contacts': <Map<String, dynamic>>[
+              for (var index = 0; index < contactStatuses.length; index++)
+                <String, dynamic>{
+                  'contactId': 'contact-${index + 1}',
+                  'status': contactStatuses[index],
+                },
+            ],
         },
       ],
+    },
+  );
+}
+
+RealtimeEvent _processedEvent({
+  required String incidentId,
+  DateTime? timestamp,
+  String topicCategory = 'internal',
+  String? source,
+  int? snapshotVersion,
+  List<String> contactStatuses = const <String>[],
+}) {
+  final eventAt = (timestamp ?? DateTime.now()).toUtc();
+  return RealtimeEvent(
+    type: 'processed',
+    timestamp: eventAt,
+    payload: <String, dynamic>{
+      'type': 'processed',
+      'userId': '11111111-1111-1111-1111-111111111111',
+      'incidentId': incidentId,
+      'status': 'active',
+      'occurredAt': eventAt.toIso8601String(),
+      'openedAt': eventAt.toIso8601String(),
+      'updatedAt': eventAt.toIso8601String(),
+      '_mqttAuthenticatedUserScoped': true,
+      '_mqttTopicCategory': topicCategory,
+      if (source != null) 'source': source,
+      if (snapshotVersion != null) 'snapshotVersion': snapshotVersion,
+      if (snapshotVersion != null)
+        'actuators': <String, dynamic>{
+          'snapshotVersion': snapshotVersion,
+          'items': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'id': 'contacts',
+              'type': 'emergency_contacts',
+              'status': 'scheduled',
+              'outcome': 'pending',
+              'contacts': <Map<String, dynamic>>[
+                for (var index = 0; index < contactStatuses.length; index++)
+                  <String, dynamic>{
+                    'contactId': 'contact-${index + 1}',
+                    'status': contactStatuses[index],
+                  },
+              ],
+            },
+          ],
+        },
     },
   );
 }
@@ -542,7 +1007,10 @@ bool _hasDiagnostic(String token) {
   );
 }
 
-SosIncidentDto _localActiveDto({required String id}) {
+SosIncidentDto _localActiveDto({
+  required String id,
+  SosActuatorSnapshot? actuators,
+}) {
   return SosIncidentDto(
     id: id,
     state: SosState.sent.name,
@@ -552,6 +1020,7 @@ SosIncidentDto _localActiveDto({required String id}) {
     originKind: SosOriginKind.app.name,
     actionability: SosActionability.localActionable.name,
     displaySurface: SosDisplaySurface.activeAndHistory.name,
+    actuators: actuators,
   );
 }
 

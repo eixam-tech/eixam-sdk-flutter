@@ -100,6 +100,8 @@ class LocalStateSerializers {
       'actionability': incident.actionability.name,
       'displaySurface': incident.displaySurface.name,
       'actuators': incident.actuators?.toJson(),
+      'isBackendConfirmed': incident.isBackendConfirmed,
+      'isUsingCachedData': incident.isUsingCachedData,
       'positionSnapshot': incident.positionSnapshot == null
           ? null
           : trackingPositionToJson(incident.positionSnapshot!),
@@ -153,6 +155,8 @@ class LocalStateSerializers {
               Map<String, dynamic>.from(actuators),
             )
           : null,
+      isBackendConfirmed: json['isBackendConfirmed'] as bool? ?? false,
+      isUsingCachedData: json['isUsingCachedData'] as bool? ?? false,
       positionSnapshot: snapshot is Map<String, dynamic>
           ? trackingPositionFromJson(snapshot)
           : null,

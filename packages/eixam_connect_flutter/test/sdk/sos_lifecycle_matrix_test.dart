@@ -230,6 +230,37 @@ void main() {
       }
     });
 
+    test('incident progress stream deduplicates equivalent repository states',
+        () async {
+      final harness = _SdkSosHarness();
+      harness.sosRepository.currentIncident = SosIncident(
+        id: 'b5c38ed3-40be-4565-b55a-bf49753861a1',
+        state: SosState.sent,
+        createdAt: DateTime.utc(2026, 7, 20, 10),
+        originKind: SosOriginKind.app,
+        actionability: SosActionability.localActionable,
+        displaySurface: SosDisplaySurface.activeAndHistory,
+        isBackendConfirmed: true,
+        provisionalIncidentId: 'sos-1784553184064842',
+        preservedLocalOwnership: true,
+      );
+      final progress = <SosIncidentProgress?>[];
+      final subscription = harness.sdk.currentSosIncidentProgressStream.listen(
+        progress.add,
+      );
+      try {
+        await pumpEventQueue(times: 2);
+        harness.sosRepository.stateController.add(SosState.sent);
+        harness.sosRepository.stateController.add(SosState.sent);
+        await pumpEventQueue(times: 2);
+
+        expect(progress, hasLength(1));
+      } finally {
+        await harness.dispose();
+        await subscription.cancel();
+      }
+    });
+
     test('authoritative terminal cancelled state still wins', () async {
       final harness = _SdkSosHarness();
       try {
@@ -1133,6 +1164,110 @@ void main() {
         await pumpEventQueue(times: 3);
 
         expect(await harness.sdk.getSosState(), SosState.sent);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('MQTT reconnect rehydrates remote terminal state', () async {
+      final repository = FakeRehydratingSosRepository()
+        ..currentIncident = _incident(
+          state: SosState.sent,
+          triggerSource: 'button_ui',
+        )
+        ..rehydrationResult = const SosRuntimeRehydrationResult(
+          outcome: SosRuntimeRehydrationOutcome.clearedToIdle,
+          resultingState: SosState.idle,
+        );
+      final realtime = FakeRealtimeClient();
+      final harness = _SdkSosHarness(
+        sosRepository: repository,
+        realtimeClient: realtime,
+      );
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await harness.setSession();
+        final beforeReconnect = repository.rehydrateCallCount;
+
+        realtime.emitConnectionState(RealtimeConnectionState.reconnecting);
+        realtime.emitConnectionState(RealtimeConnectionState.connected);
+        await pumpEventQueue(times: 4);
+
+        expect(repository.rehydrateCallCount, greaterThan(beforeReconnect));
+        expect(await harness.sdk.getSosState(), SosState.idle);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('app resume clears an incident resolved remotely', () async {
+      final repository = FakeRehydratingSosRepository()
+        ..currentIncident = _incident(
+          state: SosState.sent,
+          triggerSource: 'button_ui',
+        )
+        ..rehydrationResult = const SosRuntimeRehydrationResult(
+          outcome: SosRuntimeRehydrationOutcome.hydratedFromBackend,
+          resultingState: SosState.sent,
+        );
+      final harness = _SdkSosHarness(sosRepository: repository);
+      try {
+        await harness.setSession();
+        repository.rehydrationResult = const SosRuntimeRehydrationResult(
+          outcome: SosRuntimeRehydrationOutcome.clearedToIdle,
+          resultingState: SosState.idle,
+        );
+
+        harness.sdk.didChangeAppLifecycleState(AppLifecycleState.resumed);
+        await pumpEventQueue(times: 4);
+
+        expect(await harness.sdk.getSosState(), SosState.idle);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('switching authenticated users clears prior incident progress',
+        () async {
+      final repository = FakeRehydratingSosRepository()
+        ..currentIncident = _incident(
+          state: SosState.sent,
+          triggerSource: 'button_ui',
+        );
+      final harness = _SdkSosHarness(sosRepository: repository);
+      try {
+        await harness.setSession();
+
+        await harness.sdk.setSession(
+          const EixamSession.signed(
+            appId: 'app-demo',
+            externalUserId: 'different-user',
+            userHash: 'new-hash',
+          ),
+        );
+
+        expect(repository.clearForSessionChangeCallCount, 1);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('logout clears repository-owned incident observation', () async {
+      final repository = FakeRehydratingSosRepository()
+        ..currentIncident = _incident(
+          state: SosState.sent,
+          triggerSource: 'button_ui',
+        );
+      final harness = _SdkSosHarness(sosRepository: repository);
+      try {
+        await harness.setSession();
+
+        await harness.sdk.clearSession();
+
+        expect(repository.clearForSessionChangeCallCount, 1);
+        expect(repository.currentIncident.state, SosState.idle);
       } finally {
         await harness.dispose();
       }

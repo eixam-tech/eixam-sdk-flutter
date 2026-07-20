@@ -19,6 +19,7 @@ class ApiSosRepository
     implements
         SosRepository,
         SosRuntimeRehydrationSupport,
+        SosRuntimeSessionIsolation,
         AuthoritativeActiveSosLookup {
   ApiSosRepository({
     required this.remoteDataSource,
@@ -51,7 +52,9 @@ class ApiSosRepository
         await _localStore.readString(SharedPrefsSdkStore.sosClosedIncidentKey);
 
     if (incidentJson != null) {
-      _activeIncident = LocalStateSerializers.sosIncidentFromJson(incidentJson);
+      _activeIncident = LocalStateSerializers.sosIncidentFromJson(
+        incidentJson,
+      ).copyWith(isUsingCachedData: true);
     }
 
     final restoredState = SosState.values.firstWhere(
@@ -288,6 +291,14 @@ class ApiSosRepository
   Stream<SosState> watchSosState() => _stateController.stream;
 
   @override
+  Stream<SosIncident?> watchCurrentIncident() async* {
+    yield _activeIncident;
+    await for (final _ in _stateController.stream) {
+      yield _activeIncident;
+    }
+  }
+
+  @override
   Future<SosHistoryPage> listSosHistory(
       {String? cursor, int limit = 20}) async {
     final dto =
@@ -342,14 +353,6 @@ class ApiSosRepository
   Future<SosRuntimeRehydrationResult> rehydrateRuntimeStateFromBackend() async {
     final active = await remoteDataSource.getActiveSos();
     if (active == null) {
-      if (_shouldPreserveOpenIncidentWithoutBackendPayload()) {
-        await _persistState();
-        return SosRuntimeRehydrationResult(
-          outcome: SosRuntimeRehydrationOutcome.keptLocalFallback,
-          resultingState: _stateMachine.current,
-          diagnosticNote: 'E_SOS_REHYDRATION_KEPT_LOCAL_FALLBACK',
-        );
-      }
       _activeIncident = null;
       _setState(SosState.idle);
       await _persistState();
@@ -409,6 +412,14 @@ class ApiSosRepository
     return active == null ? null : mapper.toDomain(active);
   }
 
+  @override
+  Future<void> clearSosRuntimeForSessionChange() async {
+    _activeIncident = null;
+    _locallyClosedIncidentId = null;
+    _setState(SosState.idle);
+    await _persistState();
+  }
+
   void _clearCurrentIncidentAfterCancellation(SosIncident cancelledIncident) {
     _activeIncident = cancelledIncident;
     _locallyClosedIncidentId = cancelledIncident.id;
@@ -420,28 +431,6 @@ class ApiSosRepository
   bool _shouldIgnoreLocallyClosedIncident(SosIncident incident) {
     final closedIncidentId = _locallyClosedIncidentId;
     return closedIncidentId != null && incident.id == closedIncidentId;
-  }
-
-  bool _shouldPreserveOpenIncidentWithoutBackendPayload() {
-    return _activeIncident != null && _isOpenSosState(_stateMachine.current);
-  }
-
-  bool _isOpenSosState(SosState state) {
-    return switch (state) {
-      SosState.arming ||
-      SosState.triggerRequested ||
-      SosState.triggeredLocal ||
-      SosState.sending ||
-      SosState.sent ||
-      SosState.acknowledged ||
-      SosState.cancelRequested =>
-        true,
-      SosState.idle ||
-      SosState.cancelled ||
-      SosState.resolved ||
-      SosState.failed =>
-        false,
-    };
   }
 
   String _compactSummary(Object? value) {

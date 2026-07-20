@@ -19,6 +19,8 @@ class MqttOperationalSosRepository
     implements
         SosRepository,
         SosRuntimeRehydrationSupport,
+        MqttOnlyLiveSosLifecycle,
+        SosRuntimeSessionIsolation,
         AuthoritativeActiveSosLookup {
   MqttOperationalSosRepository({
     required this.realtimeClient,
@@ -27,17 +29,36 @@ class MqttOperationalSosRepository
     SharedPrefsSdkStore? localStore,
     this.preSosBackendPublishBlocker,
     Duration destructiveRehydrationGracePeriod = const Duration(seconds: 5),
+    Duration mqttConfirmationWarningDelay = const Duration(seconds: 8),
+    Duration actuatorBufferTtl = const Duration(seconds: 30),
+    Duration processedHandoffWindow = const Duration(minutes: 2),
+    Duration processedClockSkewTolerance = const Duration(seconds: 30),
     DateTime Function()? nowProvider,
   })  : remoteDataSource = remoteDataSource ?? cancelRemoteDataSource,
-        _localStore = localStore {
+        _localStore = localStore,
+        _destructiveRehydrationGracePeriod = destructiveRehydrationGracePeriod,
+        _mqttConfirmationWarningDelay = mqttConfirmationWarningDelay,
+        _actuatorBufferTtl = actuatorBufferTtl,
+        _processedHandoffWindow = processedHandoffWindow,
+        _processedClockSkewTolerance = processedClockSkewTolerance,
+        _nowProvider = nowProvider ?? DateTime.now {
     _stateController.add(_stateMachine.current);
     _realtimeSub = realtimeClient.watchEvents().listen(_handleRealtimeEvent);
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_MQTT_EVENT_REPOSITORY_LISTENER_ACTIVE parserReady=true',
+    );
   }
 
   final OperationalRealtimeClient realtimeClient;
   final SosRemoteDataSource? remoteDataSource;
   final SosRemoteDataSource? cancelRemoteDataSource;
   final SharedPrefsSdkStore? _localStore;
+  final Duration _destructiveRehydrationGracePeriod;
+  final Duration _mqttConfirmationWarningDelay;
+  final Duration _actuatorBufferTtl;
+  final Duration _processedHandoffWindow;
+  final Duration _processedClockSkewTolerance;
+  final DateTime Function() _nowProvider;
   bool Function({
     required String source,
     required String? triggerSource,
@@ -57,6 +78,11 @@ class MqttOperationalSosRepository
       <String, String?>{};
   final Map<String, DateTime> _externalRelaySosPublishDedupe =
       <String, DateTime>{};
+  Timer? _mqttConfirmationWarningTimer;
+  final Map<String, _BufferedActuatorUpdate> _bufferedActuatorUpdates =
+      <String, _BufferedActuatorUpdate>{};
+  final Map<String, DateTime> _handledMqttEvents = <String, DateTime>{};
+  bool _disposed = false;
 
   Future<void> restoreState() async {
     if (_localStore == null) {
@@ -71,7 +97,9 @@ class MqttOperationalSosRepository
         await _localStore.readString(SharedPrefsSdkStore.sosClosedIncidentKey);
 
     if (incidentJson != null) {
-      _activeIncident = LocalStateSerializers.sosIncidentFromJson(incidentJson);
+      _activeIncident = LocalStateSerializers.sosIncidentFromJson(
+        incidentJson,
+      ).copyWith(isUsingCachedData: true);
     }
 
     final restoredState = SosState.values.firstWhere(
@@ -231,6 +259,7 @@ class MqttOperationalSosRepository
       _rememberActiveLikeState();
       _emit(SosState.sent);
       await _persistState();
+      _startMqttConfirmationWait(incident.id);
       return incident;
     } catch (error) {
       _emit(SosState.failed);
@@ -795,6 +824,7 @@ class MqttOperationalSosRepository
 
   @override
   Future<SosIncident> cancelSos() async {
+    _clearPendingMqttLifecycle(reason: 'cancel_requested');
     if (!await _ensureActiveIncidentForCancellation()) {
       throw const SosException(
         'E_SOS_CANCEL_NOT_ALLOWED',
@@ -836,6 +866,7 @@ class MqttOperationalSosRepository
 
   @override
   Future<SosIncident> resolveSos() async {
+    _clearPendingMqttLifecycle(reason: 'resolve_requested');
     if (!await _ensureActiveIncidentForCancellation()) {
       throw const SosException(
         'E_SOS_RESOLVE_NOT_ALLOWED',
@@ -941,20 +972,21 @@ class MqttOperationalSosRepository
   }
 
   @override
-  Future<SosIncident?> getCurrentIncident() async {
-    try {
-      await rehydrateRuntimeStateFromBackend();
-    } catch (_) {
-      // Keep the last known local incident when backend refresh is unavailable.
-    }
-    return _activeIncident;
-  }
+  Future<SosIncident?> getCurrentIncident() async => _activeIncident;
 
   @override
   Future<SosState> getSosState() async => _stateMachine.current;
 
   @override
   Stream<SosState> watchSosState() => _stateController.stream;
+
+  @override
+  Stream<SosIncident?> watchCurrentIncident() async* {
+    yield _activeIncident;
+    await for (final _ in _stateController.stream) {
+      yield _activeIncident;
+    }
+  }
 
   @override
   Future<SosHistoryPage> listSosHistory(
@@ -1094,6 +1126,81 @@ class MqttOperationalSosRepository
     }
   }
 
+  void _startMqttConfirmationWait(String localIncidentId) {
+    _mqttConfirmationWarningTimer?.cancel();
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_BACKEND_CONFIRMATION_WAIT_STARTED transport=mqtt',
+    );
+    _mqttConfirmationWarningTimer = Timer(_mqttConfirmationWarningDelay, () {
+      final incident = _activeIncident;
+      if (_disposed ||
+          incident == null ||
+          incident.id != localIncidentId ||
+          incident.isBackendConfirmed ||
+          !_isActiveLikeState(_stateMachine.current)) {
+        return;
+      }
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_BACKEND_CONFIRMATION_TIMEOUT transport=mqtt '
+        'state=confirming noRestFallback=true',
+      );
+    });
+  }
+
+  void _stopMqttConfirmationWait({required String reason}) {
+    if (_mqttConfirmationWarningTimer != null) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_BACKEND_CONFIRMATION_WAIT_STOPPED transport=mqtt reason=$reason',
+      );
+    }
+    _mqttConfirmationWarningTimer?.cancel();
+    _mqttConfirmationWarningTimer = null;
+  }
+
+  void _clearPendingMqttLifecycle({required String reason}) {
+    _stopMqttConfirmationWait(reason: reason);
+    if (_bufferedActuatorUpdates.isNotEmpty) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_MQTT_ACTUATOR_UPDATE_BUFFER_CLEARED reason=$reason '
+        'count=${_bufferedActuatorUpdates.length}',
+      );
+    }
+    for (final buffered in _bufferedActuatorUpdates.values) {
+      buffered.expiryTimer.cancel();
+    }
+    _bufferedActuatorUpdates.clear();
+    _handledMqttEvents.clear();
+  }
+
+  void _logProgressSummary(SosIncident incident) {
+    final contactStep = incident.progress.steps.where(
+      (step) => step.type == SosProgressStepType.emergencyContacts,
+    );
+    final contacts = contactStep.isEmpty ? null : contactStep.first;
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_PROGRESS_STREAM_EMIT backendConfirmed='
+      '${incident.isBackendConfirmed} steps=${incident.progress.steps.length}',
+    );
+    if (incident.actuators != null) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_ACTUATOR_SNAPSHOT_RECEIVED version='
+        '${incident.actuators!.snapshotVersion} '
+        'items=${incident.actuators!.items.length}',
+      );
+    }
+    if (contacts != null) {
+      final total = contacts.totalTargets ?? 0;
+      final delivered = contacts.successfulTargets ?? 0;
+      final failed = contacts.failedTargets ?? 0;
+      final inProgress = (total - delivered - failed).clamp(0, total);
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_CONTACT_PROGRESS_NORMALIZED contactTargets=$total '
+        'delivered=$delivered inProgress=$inProgress failed=$failed '
+        'state=${contacts.state.name}',
+      );
+    }
+  }
+
   @override
   Future<SosIncident?> getAuthoritativeActiveSos() async {
     final dataSource = remoteDataSource;
@@ -1104,7 +1211,20 @@ class MqttOperationalSosRepository
     return active == null ? null : _mapper.toDomain(active);
   }
 
+  @override
+  Future<void> clearSosRuntimeForSessionChange() async {
+    _clearPendingMqttLifecycle(reason: 'session_cleared');
+    _activeIncident = null;
+    _locallyClosedIncidentId = null;
+    _trustedLifecycleCorrelationIds.clear();
+    _externalRelaySosPublishDedupe.clear();
+    _setState(SosState.idle);
+    await _persistState();
+  }
+
   Future<void> dispose() async {
+    _disposed = true;
+    _clearPendingMqttLifecycle(reason: 'repository_disposed');
     await _realtimeSub?.cancel();
     await _stateController.close();
   }
@@ -1112,28 +1232,31 @@ class MqttOperationalSosRepository
   void _handleRealtimeEvent(RealtimeEvent event) {
     final update = MqttSosLifecycleUpdate.fromRealtimeEvent(event);
     if (update == null) {
-      if (_isSosLifecycleEvent(event)) {
-        BleDebugRegistry.instance.recordEvent(
-          'MQTT_SOS_LIFECYCLE_REJECTED_IDENTITY_MISMATCH '
-          'reason=missing_incident_id incidentId=none activeIncidentId='
-          '${_activeIncident?.id ?? "none"}',
-        );
-      }
-      if (_isActuatorUpdateEvent(event)) {
-        BleDebugRegistry.instance.recordEvent(
-          'SOS_ACTUATOR_UPDATE_IGNORED reason=missing_snapshot '
-          'incidentId=${_eventIncidentId(event) ?? "none"} version=none',
-        );
-      }
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_MQTT_EVENT_PARSE_REJECTED '
+        'reason=${_mqttParseRejectionReason(event)} '
+        'eventType=${event.type.trim().isEmpty ? "unknown" : event.type}',
+      );
+      return;
+    }
+    if (_isDuplicateMqttEvent(update)) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_MQTT_EVENT_AUTHORITY_REJECTED reason=duplicate_alias_or_event '
+        'eventType=${update.eventType}',
+      );
       return;
     }
     final actuators = update.actuators;
-    if (actuators != null) {
+    if (actuators != null && update.eventType == 'sos.actuator_update') {
       BleDebugRegistry.instance.recordEvent(
-        'SOS_ACTUATOR_UPDATE_RECEIVED incidentId=${update.incidentId} '
+        'SOS_MQTT_ACTUATOR_UPDATE_RECEIVED '
         'version=${actuators.snapshotVersion} '
         'items=${_actuatorItemsSummary(actuators)}',
       );
+    }
+    if (_shouldBufferActuatorUpdate(update)) {
+      _bufferActuatorUpdate(event, update);
+      return;
     }
     final authority = _lifecycleAuthorityFor(update);
     if (!authority.accepted) {
@@ -1147,6 +1270,7 @@ class MqttOperationalSosRepository
       }
       return;
     }
+    _rememberMqttEvent(update);
     if (!_isActiveLikeState(_stateMachine.current)) {
       if (actuators != null) {
         BleDebugRegistry.instance.recordEvent(
@@ -1160,11 +1284,39 @@ class MqttOperationalSosRepository
     }
 
     final previousIncident = _activeIncident!;
-    if (previousIncident.id != update.incidentId) {
-      _activeIncident = _incidentWithId(previousIncident, update.incidentId);
+    final incidentIdentifierChanged = previousIncident.id != update.incidentId;
+    if (incidentIdentifierChanged) {
+      _activeIncident = _incidentWithId(
+        previousIncident,
+        update.incidentId,
+        trustedCanonicalHandoff: !previousIncident.isBackendConfirmed &&
+            previousIncident.id.startsWith('sos-'),
+      );
     }
     var currentIncident = _activeIncident!;
-    var shouldPersist = false;
+    var shouldPersist = !currentIncident.isBackendConfirmed ||
+        currentIncident.isUsingCachedData;
+    currentIncident = currentIncident.copyWith(
+      isBackendConfirmed: true,
+      isUsingCachedData: false,
+    );
+    _activeIncident = currentIncident;
+    if (!previousIncident.isBackendConfirmed) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_BACKEND_CONFIRMATION_MQTT_RECEIVED eventType=${update.eventType} '
+        'actuatorItems=${actuators?.items.length ?? 0}',
+      );
+      if (update.eventType == 'processed') {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_MQTT_PROCESSED_ACCEPTED canonicalIncidentIdPresent=true',
+        );
+      }
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_CANONICAL_INCIDENT_HANDOFF source=mqtt '
+        'preservedLocalOwnership=true',
+      );
+      _stopMqttConfirmationWait(reason: 'mqtt_confirmation_received');
+    }
 
     if (actuators != null) {
       if (!_shouldAcceptActuatorSnapshot(
@@ -1178,13 +1330,22 @@ class MqttOperationalSosRepository
           'currentVersion=${currentIncident.actuators?.snapshotVersion ?? -1}',
         );
       } else {
-        currentIncident = currentIncident.copyWith(actuators: actuators);
+        currentIncident = currentIncident.copyWith(
+          actuators: actuators,
+          isUsingCachedData: false,
+        );
         _activeIncident = currentIncident;
         shouldPersist = true;
         BleDebugRegistry.instance.recordEvent(
           'SOS_ACTUATOR_UPDATE_ACCEPTED incidentId=${update.incidentId} '
           'version=${actuators.snapshotVersion}',
         );
+        if (update.eventType == 'sos.actuator_update') {
+          BleDebugRegistry.instance.recordEvent(
+            'SOS_MQTT_ACTUATOR_UPDATE_APPLIED '
+            'version=${actuators.snapshotVersion}',
+          );
+        }
       }
     }
 
@@ -1196,12 +1357,17 @@ class MqttOperationalSosRepository
           incidentId: update.incidentId,
           version: actuators?.snapshotVersion,
         );
+        _logProgressSummary(currentIncident);
+      }
+      if (incidentIdentifierChanged) {
+        _applyBufferedActuatorUpdate(update.incidentId);
       }
       return;
     }
 
     final nextIncident = currentIncident.copyWith(
       state: state,
+      isUsingCachedData: false,
       terminalReason: _terminalReasonForUpdate(
         update: update,
         previousIncident: currentIncident,
@@ -1222,11 +1388,18 @@ class MqttOperationalSosRepository
           version: actuators?.snapshotVersion,
         );
       }
+      if (incidentIdentifierChanged) {
+        _applyBufferedActuatorUpdate(update.incidentId);
+      }
       return;
     }
     _activeIncident = nextIncident;
     _rememberActiveLikeStateIfNeeded(state);
     unawaited(_persistState());
+    _logProgressSummary(nextIncident);
+    if (incidentIdentifierChanged) {
+      _applyBufferedActuatorUpdate(update.incidentId);
+    }
   }
 
   _LifecycleAuthorityDecision _lifecycleAuthorityFor(
@@ -1300,6 +1473,51 @@ class MqttOperationalSosRepository
       return const _LifecycleAuthorityDecision.accepted('cycle_match');
     }
 
+    // The production backend's processed event is published on an
+    // authenticated, user-scoped topic, but intentionally contains only the
+    // canonical incident id. It does not echo clientIncidentId/correlationId.
+    // While exactly one freshly published local incident is awaiting backend
+    // confirmation, that scoped processed event is the canonical handoff.
+    if (update.eventType == 'processed' &&
+        update.authenticatedUserScoped &&
+        !activeIncident.isBackendConfirmed &&
+        activeIncident.id.startsWith('sos-') &&
+        _isProcessedTimestampCompatible(update, activeIncident) &&
+        _isActiveLikeState(_stateMachine.current)) {
+      _logLifecycleAuthorityAccepted(
+        update: update,
+        activeIncidentId: activeIncident.id,
+        reason: 'user_scoped_processed_handoff',
+        diagnostic: 'MQTT_SOS_LIFECYCLE_ACCEPTED_PROCESSED_HANDOFF',
+      );
+      return const _LifecycleAuthorityDecision.accepted(
+        'user_scoped_processed_handoff',
+      );
+    }
+
+    if (update.eventType == 'processed' && !update.authenticatedUserScoped) {
+      _logLifecycleAuthorityRejected(
+        update: update,
+        activeIncidentId: activeIncident.id,
+        reason: 'untrusted_topic',
+        diagnostic: 'MQTT_SOS_LIFECYCLE_REJECTED_IDENTITY_MISMATCH',
+      );
+      return const _LifecycleAuthorityDecision.rejected('untrusted_topic');
+    }
+
+    if (update.eventType == 'processed' &&
+        !_isProcessedTimestampCompatible(update, activeIncident)) {
+      _logLifecycleAuthorityRejected(
+        update: update,
+        activeIncidentId: activeIncident.id,
+        reason: 'publish_window_mismatch',
+        diagnostic: 'MQTT_SOS_LIFECYCLE_REJECTED_IDENTITY_MISMATCH',
+      );
+      return const _LifecycleAuthorityDecision.rejected(
+        'publish_window_mismatch',
+      );
+    }
+
     _logLifecycleAuthorityRejected(
       update: update,
       activeIncidentId: activeIncident.id,
@@ -1346,6 +1564,11 @@ class MqttOperationalSosRepository
     required String diagnostic,
   }) {
     BleDebugRegistry.instance.recordEvent(
+      'SOS_MQTT_EVENT_AUTHORITY_ACCEPTED reason=$reason '
+      'eventType=${update.eventType} '
+      'topicCategory=${update.topicCategory ?? "unknown"}',
+    );
+    BleDebugRegistry.instance.recordEvent(
       'MQTT_SOS_LIFECYCLE_AUTHORITY_ACCEPTED reason=$reason '
       'incidentId=${update.incidentId} activeIncidentId=$activeIncidentId '
       'clientIncidentId=${update.clientIncidentId ?? "none"} '
@@ -1367,6 +1590,11 @@ class MqttOperationalSosRepository
     required String diagnostic,
   }) {
     BleDebugRegistry.instance.recordEvent(
+      'SOS_MQTT_EVENT_AUTHORITY_REJECTED reason=$reason '
+      'eventType=${update.eventType} '
+      'topicCategory=${update.topicCategory ?? "unknown"}',
+    );
+    BleDebugRegistry.instance.recordEvent(
       'MQTT_SOS_LIFECYCLE_AUTHORITY_REJECTED reason=$reason '
       'incidentId=${update.incidentId} '
       'activeIncidentId=${activeIncidentId ?? "none"} '
@@ -1381,6 +1609,125 @@ class MqttOperationalSosRepository
       '$diagnostic reason=$reason incidentId=${update.incidentId} '
       'activeIncidentId=${activeIncidentId ?? "none"}',
     );
+  }
+
+  bool _isProcessedTimestampCompatible(
+    MqttSosLifecycleUpdate update,
+    SosIncident activeIncident,
+  ) {
+    final eventAt = update.eventTimestamp.toUtc();
+    final createdAt = activeIncident.createdAt.toUtc();
+    final earliest = createdAt.subtract(_processedClockSkewTolerance);
+    final latest = createdAt.add(_processedHandoffWindow);
+    final futureLimit =
+        _nowProvider().toUtc().add(_processedClockSkewTolerance);
+    return !eventAt.isBefore(earliest) &&
+        !eventAt.isAfter(latest) &&
+        !eventAt.isAfter(futureLimit);
+  }
+
+  bool _shouldBufferActuatorUpdate(MqttSosLifecycleUpdate update) {
+    final active = _activeIncident;
+    return update.eventType == 'sos.actuator_update' &&
+        update.actuators != null &&
+        update.authenticatedUserScoped &&
+        active != null &&
+        !active.isBackendConfirmed &&
+        active.id.startsWith('sos-') &&
+        !_sameIdentity(update.incidentId, active.id) &&
+        _isActiveLikeState(_stateMachine.current) &&
+        !_isExternalOnlyLifecycle(update) &&
+        _isProcessedTimestampCompatible(update, active);
+  }
+
+  void _bufferActuatorUpdate(
+    RealtimeEvent event,
+    MqttSosLifecycleUpdate update,
+  ) {
+    final existing = _bufferedActuatorUpdates[update.incidentId];
+    final incomingVersion = update.actuators!.snapshotVersion;
+    if (existing != null &&
+        existing.update.actuators!.snapshotVersion >= incomingVersion) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_MQTT_ACTUATOR_UPDATE_BUFFERED outcome=duplicate_ignored '
+        'version=$incomingVersion',
+      );
+      return;
+    }
+    existing?.expiryTimer.cancel();
+    late final Timer expiryTimer;
+    expiryTimer = Timer(_actuatorBufferTtl, () {
+      final buffered = _bufferedActuatorUpdates[update.incidentId];
+      if (buffered == null || !identical(buffered.expiryTimer, expiryTimer)) {
+        return;
+      }
+      _bufferedActuatorUpdates.remove(update.incidentId);
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_MQTT_ACTUATOR_UPDATE_BUFFER_CLEARED reason=expired count=1',
+      );
+    });
+    _bufferedActuatorUpdates[update.incidentId] = _BufferedActuatorUpdate(
+      event: event,
+      update: update,
+      expiryTimer: expiryTimer,
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_MQTT_EVENT_AUTHORITY_ACCEPTED '
+      'reason=buffered_for_pending_handoff '
+      'eventType=${update.eventType} '
+      'topicCategory=${update.topicCategory ?? "unknown"}',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_MQTT_ACTUATOR_UPDATE_BUFFERED outcome=stored '
+      'version=$incomingVersion',
+    );
+  }
+
+  void _applyBufferedActuatorUpdate(String canonicalIncidentId) {
+    final buffered = _bufferedActuatorUpdates.remove(canonicalIncidentId);
+    if (buffered == null) {
+      return;
+    }
+    buffered.expiryTimer.cancel();
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_MQTT_ACTUATOR_UPDATE_APPLIED source=pre_processed_buffer '
+      'version=${buffered.update.actuators!.snapshotVersion}',
+    );
+    _handleRealtimeEvent(buffered.event);
+  }
+
+  bool _isDuplicateMqttEvent(MqttSosLifecycleUpdate update) {
+    final now = _nowProvider().toUtc();
+    _handledMqttEvents.removeWhere(
+      (_, handledAt) => now.difference(handledAt) > const Duration(minutes: 5),
+    );
+    return _handledMqttEvents.containsKey(_mqttEventDedupeKey(update));
+  }
+
+  void _rememberMqttEvent(MqttSosLifecycleUpdate update) {
+    _handledMqttEvents[_mqttEventDedupeKey(update)] = _nowProvider().toUtc();
+  }
+
+  String _mqttEventDedupeKey(MqttSosLifecycleUpdate update) {
+    final eventId = _normalizeIdentity(update.eventId);
+    if (eventId != null) {
+      return 'event:$eventId';
+    }
+    return '${update.eventType}|${update.incidentId}|'
+        '${update.state?.name ?? "none"}|'
+        '${update.terminalReason?.name ?? "none"}|'
+        '${update.actuators?.snapshotVersion ?? -1}|'
+        '${update.eventTimestamp.toUtc().toIso8601String()}';
+  }
+
+  String _mqttParseRejectionReason(RealtimeEvent event) {
+    if (_eventIncidentId(event) == null) {
+      return 'missing_incident_id';
+    }
+    if (_isActuatorUpdateEvent(event)) {
+      return 'missing_actuator_snapshot';
+    }
+    return 'unsupported_event_type';
   }
 
   bool _shouldAcceptActuatorSnapshot({
@@ -1405,12 +1752,6 @@ class MqttOperationalSosRepository
     return event.type.trim().toLowerCase() == 'sos.actuator_update' ||
         (event.payload?['type']?.toString().trim().toLowerCase() ==
             'sos.actuator_update');
-  }
-
-  bool _isSosLifecycleEvent(RealtimeEvent event) {
-    return event.type.trim().toLowerCase() == 'sos.lifecycle' ||
-        (event.payload?['type']?.toString().trim().toLowerCase() ==
-            'sos.lifecycle');
   }
 
   String? _eventIncidentId(RealtimeEvent event) {
@@ -1792,10 +2133,12 @@ class MqttOperationalSosRepository
     if (_activeIncident == null || !_isActiveLikeState(_stateMachine.current)) {
       return false;
     }
-    // A backend refresh with no active payload is not enough to erase an
-    // open local incident; cancel/resolve need that id until a terminal
-    // operation settles it explicitly.
-    return true;
+    final incident = _activeIncident!;
+    if (incident.isBackendConfirmed || incident.isUsingCachedData) {
+      return false;
+    }
+    return _nowProvider().toUtc().difference(incident.createdAt.toUtc()) <
+        _destructiveRehydrationGracePeriod;
   }
 
   bool _isActiveLikeState(SosState state) {
@@ -1812,7 +2155,11 @@ class MqttOperationalSosRepository
 
   void _rememberActiveLikeState() {}
 
-  SosIncident _incidentWithId(SosIncident incident, String id) {
+  SosIncident _incidentWithId(
+    SosIncident incident,
+    String id, {
+    bool trustedCanonicalHandoff = false,
+  }) {
     return SosIncident(
       id: id,
       state: incident.state,
@@ -1834,6 +2181,13 @@ class MqttOperationalSosRepository
       actionability: incident.actionability,
       displaySurface: incident.displaySurface,
       actuators: incident.actuators,
+      isBackendConfirmed: incident.isBackendConfirmed,
+      isUsingCachedData: incident.isUsingCachedData,
+      provisionalIncidentId: trustedCanonicalHandoff
+          ? incident.provisionalIncidentId ?? incident.id
+          : incident.provisionalIncidentId,
+      preservedLocalOwnership:
+          trustedCanonicalHandoff || incident.preservedLocalOwnership,
     );
   }
 
@@ -1899,6 +2253,18 @@ class MqttOperationalSosRepository
       _rememberActiveLikeState();
     }
   }
+}
+
+class _BufferedActuatorUpdate {
+  const _BufferedActuatorUpdate({
+    required this.event,
+    required this.update,
+    required this.expiryTimer,
+  });
+
+  final RealtimeEvent event;
+  final MqttSosLifecycleUpdate update;
+  final Timer expiryTimer;
 }
 
 class _LifecycleAuthorityDecision {

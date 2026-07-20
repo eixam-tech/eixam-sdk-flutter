@@ -4,6 +4,7 @@ import 'package:eixam_connect_flutter/src/data/datasources_remote/sos_remote_dat
 import 'package:eixam_connect_flutter/src/data/dtos/sos_history_dto.dart';
 import 'package:eixam_connect_flutter/src/data/dtos/sos_incident_dto.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/api_sos_repository.dart';
+import 'package:eixam_connect_flutter/src/data/repositories/sos_runtime_rehydration_support.dart';
 import 'package:eixam_connect_flutter/src/mappers/local_state_serializers.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -66,6 +67,76 @@ void main() {
         triggered.id,
       );
     });
+
+    test('no-active response clears a cached backend-confirmed incident',
+        () async {
+      final remoteDataSource = _FakeSosRemoteDataSource();
+      final store = MemorySharedPrefsSdkStore();
+      final incident = SosIncident(
+        id: 'closed-remotely',
+        state: SosState.sent,
+        createdAt: DateTime.utc(2026, 1, 1, 10),
+        isBackendConfirmed: true,
+      );
+      store.jsonValues[SharedPrefsSdkStore.sosIncidentKey] =
+          LocalStateSerializers.sosIncidentToJson(incident);
+      store.stringValues[SharedPrefsSdkStore.sosStateKey] = SosState.sent.name;
+      final repository = ApiSosRepository(
+        remoteDataSource: remoteDataSource,
+        localStore: store,
+      );
+      await repository.restoreState();
+
+      final result = await repository.rehydrateRuntimeStateFromBackend();
+
+      expect(result.outcome, SosRuntimeRehydrationOutcome.clearedToIdle);
+      expect(await repository.getCurrentIncident(), isNull);
+      expect(store.jsonValues[SharedPrefsSdkStore.sosIncidentKey], isNull);
+    });
+
+    test('session isolation clears observed incident progress', () async {
+      final remoteDataSource = _FakeSosRemoteDataSource();
+      final store = MemorySharedPrefsSdkStore();
+      final repository = ApiSosRepository(
+        remoteDataSource: remoteDataSource,
+        localStore: store,
+      );
+      await _seedActiveLocalSos(repository, store, remoteDataSource);
+
+      await repository.clearSosRuntimeForSessionChange();
+      remoteDataSource.active = null;
+
+      expect(await repository.getCurrentIncident(), isNull);
+      expect(await repository.getSosState(), SosState.idle);
+      expect(store.jsonValues[SharedPrefsSdkStore.sosIncidentKey], isNull);
+    });
+
+    test('temporary refresh failure retains last confirmed cached incident',
+        () async {
+      final remoteDataSource = _FakeSosRemoteDataSource();
+      final store = MemorySharedPrefsSdkStore();
+      final incident = SosIncident(
+        id: 'cached-during-network-loss',
+        state: SosState.sent,
+        createdAt: DateTime.utc(2026, 1, 1, 10),
+        isBackendConfirmed: true,
+      );
+      store.jsonValues[SharedPrefsSdkStore.sosIncidentKey] =
+          LocalStateSerializers.sosIncidentToJson(incident);
+      store.stringValues[SharedPrefsSdkStore.sosStateKey] = SosState.sent.name;
+      final repository = ApiSosRepository(
+        remoteDataSource: remoteDataSource,
+        localStore: store,
+      );
+      await repository.restoreState();
+      remoteDataSource.getActiveError = StateError('offline');
+
+      final retained = await repository.getCurrentIncident();
+
+      expect(retained?.id, incident.id);
+      expect(retained?.isUsingCachedData, isTrue);
+      expect(retained?.isBackendConfirmed, isTrue);
+    });
   });
 }
 
@@ -102,6 +173,7 @@ Future<SosIncident> _seedActiveLocalSos(
 final class _FakeSosRemoteDataSource implements SosRemoteDataSource {
   SosIncidentDto? active;
   String cancelResponseState = SosState.cancelled.name;
+  Object? getActiveError;
 
   @override
   Future<SosIncidentDto> triggerSos({
@@ -156,7 +228,12 @@ final class _FakeSosRemoteDataSource implements SosRemoteDataSource {
   }
 
   @override
-  Future<SosIncidentDto?> getActiveSos() async => active;
+  Future<SosIncidentDto?> getActiveSos() async {
+    if (getActiveError != null) {
+      throw getActiveError!;
+    }
+    return active;
+  }
 
   @override
   Future<SosHistoryPageDto> listSosHistory(

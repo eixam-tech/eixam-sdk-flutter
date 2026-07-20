@@ -51,6 +51,7 @@ class BleDebugRegistry {
     '[APP_SOS_COUNTDOWN_ZERO]',
     '[NATIVE_PRE_SOS_BACKEND]',
     '[BACKGROUND_SOS]',
+    'SOS_',
     'Device SOS backend sync created incident',
     'SOS_BACKEND_PAYLOAD_FINAL',
   ];
@@ -164,9 +165,9 @@ class BleDebugRegistry {
   }) {
     final safePayload =
         SecurityDiagnosticsRedactor.formatHexPayloadForDiagnostics(
-          payloadHex,
-          allowSensitive: _allowSensitiveDiagnostics,
-        );
+      payloadHex,
+      allowSensitive: _allowSensitiveDiagnostics,
+    );
     _state = _state.copyWith(
       lastPacketReceived: safePayload,
       lastRawNotificationChannel: channel,
