@@ -3,6 +3,9 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 class MqttSosLifecycleUpdate {
   const MqttSosLifecycleUpdate({
     required this.incidentId,
+    required this.eventType,
+    required this.eventTimestamp,
+    required this.authenticatedUserScoped,
     this.state,
     this.actuators,
     this.clientIncidentId,
@@ -15,9 +18,15 @@ class MqttSosLifecycleUpdate {
     this.actionability,
     this.displaySurface,
     this.terminalReason,
+    this.topicCategory,
+    this.userId,
+    this.eventId,
   });
 
   final String incidentId;
+  final String eventType;
+  final DateTime eventTimestamp;
+  final bool authenticatedUserScoped;
   final SosState? state;
   final SosActuatorSnapshot? actuators;
   final String? clientIncidentId;
@@ -30,6 +39,9 @@ class MqttSosLifecycleUpdate {
   final String? actionability;
   final String? displaySurface;
   final SosTerminalReason? terminalReason;
+  final String? topicCategory;
+  final String? userId;
+  final String? eventId;
 
   static MqttSosLifecycleUpdate? fromRealtimeEvent(RealtimeEvent event) {
     final payload = event.payload;
@@ -46,6 +58,9 @@ class MqttSosLifecycleUpdate {
 
     return MqttSosLifecycleUpdate(
       incidentId: incidentId,
+      eventType: _eventTypeFrom(event, payload),
+      eventTimestamp: event.timestamp.toUtc(),
+      authenticatedUserScoped: payload['_mqttAuthenticatedUserScoped'] == true,
       state: state,
       actuators: actuators,
       clientIncidentId: _stringFromPayload(
@@ -76,7 +91,22 @@ class MqttSosLifecycleUpdate {
         const ['displaySurface', 'display_surface', 'sosDisplaySurface'],
       ),
       terminalReason: _terminalReasonFromPayload(payload),
+      topicCategory: _stringFromPayload(
+        payload,
+        const ['_mqttTopicCategory'],
+      ),
+      userId: _stringFromPayload(payload, const ['userId', 'user_id']),
+      eventId: _stringFromPayload(payload, const ['eventId', 'event_id']),
     );
+  }
+
+  static String _eventTypeFrom(
+    RealtimeEvent event,
+    Map<String, dynamic> payload,
+  ) {
+    final payloadType = payload['type'];
+    final raw = payloadType is String ? payloadType : event.type;
+    return raw.trim().toLowerCase();
   }
 
   static String? _incidentIdFrom(Map<String, dynamic> payload) {

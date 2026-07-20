@@ -35,7 +35,9 @@ class InMemorySosRepository implements SosRepository {
         await _localStore.readString(SharedPrefsSdkStore.sosClosedIncidentKey);
 
     if (incidentJson != null) {
-      _activeIncident = LocalStateSerializers.sosIncidentFromJson(incidentJson);
+      _activeIncident = LocalStateSerializers.sosIncidentFromJson(
+        incidentJson,
+      ).copyWith(isUsingCachedData: true);
     }
 
     final restoredState = SosState.values.firstWhere(
@@ -144,6 +146,14 @@ class InMemorySosRepository implements SosRepository {
 
   @override
   Stream<SosState> watchSosState() => _stateController.stream;
+
+  @override
+  Stream<SosIncident?> watchCurrentIncident() async* {
+    yield _activeIncident;
+    await for (final _ in _stateController.stream) {
+      yield _activeIncident;
+    }
+  }
 
   @override
   Future<SosHistoryPage> listSosHistory(

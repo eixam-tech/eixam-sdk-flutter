@@ -40,6 +40,7 @@ class SosIncidentMapper {
       displaySurface: _displaySurfaceFromRaw(dto.displaySurface) ??
           originDecision.displaySurface,
       actuators: dto.actuators,
+      isBackendConfirmed: true,
       positionSnapshot: dto.positionSnapshot == null
           ? null
           : LocalStateSerializers.trackingPositionFromJson(

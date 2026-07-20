@@ -58,6 +58,36 @@ void main() {
           incident.positionSnapshot?.longitude);
     });
 
+    test('round-trips actuator evidence and cached-data marker', () {
+      final incident = SosIncident(
+        id: 'sos-cached',
+        state: SosState.sent,
+        createdAt: DateTime.utc(2026, 7, 20),
+        isBackendConfirmed: true,
+        isUsingCachedData: true,
+        actuators: SosActuatorSnapshot.fromJson(<String, dynamic>{
+          'snapshotVersion': 5,
+          'items': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'id': 'emergency_contacts',
+              'type': 'emergency_contacts',
+              'status': 'delivered',
+              'outcome': 'success',
+            },
+          ],
+        }),
+      );
+
+      final restored = LocalStateSerializers.sosIncidentFromJson(
+        LocalStateSerializers.sosIncidentToJson(incident),
+      );
+
+      expect(restored.isUsingCachedData, isTrue);
+      expect(restored.isBackendConfirmed, isTrue);
+      expect(restored.actuators?.snapshotVersion, 5);
+      expect(restored.progress.steps.first.state, SosProgressState.succeeded);
+    });
+
     test('restores battery state from stored name before protocol fallback',
         () {
       final restored =

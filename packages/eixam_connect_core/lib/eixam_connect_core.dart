@@ -32,6 +32,7 @@ export 'src/entities/sdk_operational_diagnostics.dart';
 export 'src/entities/sdk_resolved_location.dart';
 export 'src/entities/tracking_position.dart';
 export 'src/entities/sos_actuator_snapshot.dart';
+export 'src/entities/sos_incident_progress.dart';
 export 'src/entities/sos_incident.dart';
 export 'src/entities/sos_lifecycle.dart';
 export 'src/entities/sos_capability_snapshot.dart';

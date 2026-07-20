@@ -112,6 +112,14 @@ class FakeSosRepository implements SosRepository {
   Stream<SosState> watchSosState() => stateController.stream;
 
   @override
+  Stream<SosIncident?> watchCurrentIncident() async* {
+    yield currentIncident;
+    await for (final _ in stateController.stream) {
+      yield currentIncident;
+    }
+  }
+
+  @override
   Future<SosHistoryPage> listSosHistory(
       {String? cursor, int limit = 20}) async {
     return const SosHistoryPage(items: [], hasMore: false);
@@ -123,13 +131,14 @@ class FakeSosRepository implements SosRepository {
 }
 
 class FakeRehydratingSosRepository extends FakeSosRepository
-    implements SosRuntimeRehydrationSupport {
+    implements SosRuntimeRehydrationSupport, SosRuntimeSessionIsolation {
   SosRuntimeRehydrationResult rehydrationResult =
       const SosRuntimeRehydrationResult(
     outcome: SosRuntimeRehydrationOutcome.clearedToIdle,
     resultingState: SosState.idle,
   );
   int rehydrateCallCount = 0;
+  int clearForSessionChangeCallCount = 0;
 
   @override
   Future<SosRuntimeRehydrationResult> rehydrateRuntimeStateFromBackend() async {
@@ -139,6 +148,13 @@ class FakeRehydratingSosRepository extends FakeSosRepository
     );
     stateController.add(currentIncident.state);
     return rehydrationResult;
+  }
+
+  @override
+  Future<void> clearSosRuntimeForSessionChange() async {
+    clearForSessionChangeCallCount++;
+    currentIncident = currentIncident.copyWith(state: SosState.idle);
+    stateController.add(SosState.idle);
   }
 }
 

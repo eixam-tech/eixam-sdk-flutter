@@ -3,6 +3,7 @@ import '../enums/sos_actionability.dart';
 import '../enums/sos_delivery_channel.dart';
 import '../enums/sos_terminal_reason.dart';
 import 'sos_actuator_snapshot.dart';
+import 'sos_incident_progress.dart';
 import 'tracking_position.dart';
 
 class SosIncident {
@@ -27,6 +28,10 @@ class SosIncident {
     this.actionability = SosActionability.unknown,
     this.displaySurface = SosDisplaySurface.unknown,
     this.actuators,
+    this.isBackendConfirmed = false,
+    this.isUsingCachedData = false,
+    this.provisionalIncidentId,
+    this.preservedLocalOwnership = false,
   });
   final String id;
   final SosState state;
@@ -48,6 +53,27 @@ class SosIncident {
   final SosActionability actionability;
   final SosDisplaySurface displaySurface;
   final SosActuatorSnapshot? actuators;
+  final bool isBackendConfirmed;
+  final bool isUsingCachedData;
+  final String? provisionalIncidentId;
+  final bool preservedLocalOwnership;
+
+  SosIncidentProgress get progress => SosIncidentProgress.fromEvidence(
+        incidentId: id,
+        incidentState: state,
+        createdAt: createdAt,
+        deliveryChannel: deliveryChannel,
+        actuators: actuators,
+        isBackendConfirmed: isBackendConfirmed,
+        isUsingCachedData: isUsingCachedData,
+        provisionalIncidentId: provisionalIncidentId,
+        canonicalIncidentId:
+            isBackendConfirmed && !id.startsWith('sos-') ? id : null,
+        preservedLocalOwnership: preservedLocalOwnership,
+        originKind: originKind,
+        actionability: actionability,
+        displaySurface: displaySurface,
+      );
 
   SosIncident copyWith({
     SosState? state,
@@ -69,6 +95,10 @@ class SosIncident {
     SosActionability? actionability,
     SosDisplaySurface? displaySurface,
     Object? actuators = _unset,
+    bool? isBackendConfirmed,
+    bool? isUsingCachedData,
+    String? provisionalIncidentId,
+    bool? preservedLocalOwnership,
   }) {
     return SosIncident(
       id: id,
@@ -97,6 +127,12 @@ class SosIncident {
       actuators: identical(actuators, _unset)
           ? this.actuators
           : actuators as SosActuatorSnapshot?,
+      isBackendConfirmed: isBackendConfirmed ?? this.isBackendConfirmed,
+      isUsingCachedData: isUsingCachedData ?? this.isUsingCachedData,
+      provisionalIncidentId:
+          provisionalIncidentId ?? this.provisionalIncidentId,
+      preservedLocalOwnership:
+          preservedLocalOwnership ?? this.preservedLocalOwnership,
     );
   }
 

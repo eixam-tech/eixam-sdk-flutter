@@ -29,6 +29,7 @@ import '../entities/sdk_user_profile.dart';
 import '../entities/sdk_telemetry_payload.dart';
 import '../entities/sos_history_item.dart';
 import '../entities/sos_incident.dart';
+import '../entities/sos_incident_progress.dart';
 import '../entities/sos_lifecycle.dart';
 import '../entities/sos_capability_snapshot.dart';
 import '../entities/sos_trigger_payload.dart';
@@ -41,8 +42,8 @@ import '../events/eixam_sdk_event.dart';
 import '../events/realtime_event.dart';
 
 /// Public SDK contract consumed by host apps.
-typedef EixamConnectSdkBootstrapper =
-    Future<EixamConnectSdk> Function(EixamBootstrapConfig config);
+typedef EixamConnectSdkBootstrapper = Future<EixamConnectSdk> Function(
+    EixamBootstrapConfig config);
 
 EixamConnectSdkBootstrapper? _bootstrapper;
 
@@ -397,4 +398,36 @@ abstract class EixamConnectSdk {
 
   /// Raw realtime events received by the SDK transport layer.
   Stream<RealtimeEvent> watchRealtimeEvents();
+}
+
+/// Optional capability implemented by SDK runtimes that can expose incident
+/// progress directly from their repository-owned realtime lifecycle.
+abstract interface class SosIncidentProgressProvider {
+  Future<SosIncidentProgress?> getCurrentSosIncidentProgress();
+  Stream<SosIncidentProgress?> get currentSosIncidentProgressStream;
+}
+
+/// Additive progress API for every [EixamConnectSdk] consumer.
+///
+/// Production runtimes use [SosIncidentProgressProvider]. Existing custom SDK
+/// implementations retain source compatibility and receive a state-stream
+/// fallback derived from the public incident model.
+extension EixamConnectSdkIncidentProgress on EixamConnectSdk {
+  Future<SosIncidentProgress?> getCurrentSosIncidentProgress() async {
+    final sdk = this;
+    if (sdk is SosIncidentProgressProvider) {
+      return sdk.getCurrentSosIncidentProgress();
+    }
+    return (await getCurrentSosIncident())?.progress;
+  }
+
+  Stream<SosIncidentProgress?> get currentSosIncidentProgressStream {
+    final sdk = this;
+    if (sdk is SosIncidentProgressProvider) {
+      return sdk.currentSosIncidentProgressStream;
+    }
+    return currentSosStateStream.asyncMap(
+      (_) async => (await getCurrentSosIncident())?.progress,
+    );
+  }
 }

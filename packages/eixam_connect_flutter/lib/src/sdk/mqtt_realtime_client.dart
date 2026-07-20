@@ -390,18 +390,56 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
     _subscribedTopics = SdkMqttTopics.eventTopicsFor(session);
 
     _messageSub = transport.watchMessages().listen((message) {
+      final topicCategory = _sosEventTopicCategory(message.topic, session);
+      final shape = _mqttPayloadShape(message.payload);
+      _recordRealtime(
+        'SOS_MQTT_EVENT_RECEIVED topicCategory=$topicCategory '
+        'eventType=${shape.eventType} '
+        'canonicalIncidentIdPresent=${shape.canonicalIncidentIdPresent} '
+        'snapshotVersionPresent=${shape.snapshotVersionPresent} '
+        'payloadShapeVersion=${shape.payloadShapeVersion}',
+      );
       try {
-        final event = SdkMqttContract.parseRealtimeEvent(
+        final parsed = SdkMqttContract.parseRealtimeEvent(
           topic: message.topic,
           payload: message.payload,
+        );
+        if (parsed.type == 'mqtt.message') {
+          _recordRealtime(
+            'SOS_MQTT_EVENT_PARSE_REJECTED reason=invalid_json_or_shape '
+            'topicCategory=$topicCategory',
+          );
+          return;
+        }
+        final event = RealtimeEvent(
+          type: parsed.type,
+          timestamp: parsed.timestamp,
+          payload: <String, dynamic>{
+            ...?parsed.payload,
+            '_mqttAuthenticatedUserScoped':
+                _subscribedTopics.contains(message.topic) &&
+                    _mqttPayloadIdentityMatches(
+                      shape.payloadUserId,
+                      topicCategory,
+                      session,
+                    ),
+            '_mqttTopicCategory': topicCategory,
+            '_mqttPayloadShapeVersion': shape.payloadShapeVersion,
+          },
+        );
+        _recordRealtime(
+          'SOS_MQTT_EVENT_PARSED topicCategory=$topicCategory '
+          'eventType=${event.type} '
+          'canonicalIncidentIdPresent=${shape.canonicalIncidentIdPresent} '
+          'snapshotVersionPresent=${shape.snapshotVersionPresent}',
         );
         if (!_eventsController.isClosed) {
           _eventsController.add(event);
         }
       } catch (error) {
         _recordRealtime(
-          'MQTT_TRANSPORT_DISCONNECT_HANDLED '
-          'phase=realtime_message_parse errorType=${error.runtimeType}',
+          'SOS_MQTT_EVENT_PARSE_REJECTED reason=parser_exception '
+          'topicCategory=$topicCategory errorType=${error.runtimeType}',
         );
       }
     }, onError: (Object error, StackTrace stackTrace) {
@@ -434,8 +472,27 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
 
     await transport.connect().timeout(connectTimeout);
     for (final topic in _subscribedTopics) {
-      await transport.subscribe(topic);
+      final category = _sosEventTopicCategory(topic, session);
+      _recordRealtime(
+        'SOS_MQTT_EVENT_SUBSCRIPTION_REQUESTED topicCategory=$category',
+      );
+      try {
+        await transport.subscribe(topic);
+        _recordRealtime(
+          'SOS_MQTT_EVENT_SUBSCRIPTION_ACTIVE topicCategory=$category qos=1',
+        );
+      } catch (error) {
+        _recordRealtime(
+          'SOS_MQTT_EVENT_SUBSCRIPTION_FAILED topicCategory=$category '
+          'errorType=${error.runtimeType}',
+        );
+        rethrow;
+      }
     }
+    _recordRealtime(
+      'SOS_MQTT_SOS_READY publishReady=true eventReady=true '
+      'subscriptions=${_subscribedTopics.length}',
+    );
   }
 
   Future<void> _disconnectTransport() async {
@@ -538,4 +595,99 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
   String _compactSummary(Object? value) {
     return SecurityDiagnosticsRedactor.compactSummary(value, maxLength: 240);
   }
+
+  String _sosEventTopicCategory(String topic, EixamSession session) {
+    if (MqttTopicSegment.usesLegacyUserTopics(session)) {
+      final legacyOnlyTopic =
+          'sos/events/${MqttTopicSegment.encode(MqttTopicSegment.legacyUserIdFrom(session))}';
+      return topic == legacyOnlyTopic ? 'legacy_alias' : 'other';
+    }
+    final internalTopic =
+        'sos/events/${MqttTopicSegment.encode(MqttTopicSegment.sdkUserIdFrom(session))}';
+    if (topic == internalTopic) {
+      return 'internal';
+    }
+    final legacyTopic =
+        'sos/events/${MqttTopicSegment.encode(MqttTopicSegment.legacyUserIdFrom(session))}';
+    if (topic == legacyTopic) {
+      return 'legacy_alias';
+    }
+    return 'other';
+  }
+
+  _MqttPayloadShape _mqttPayloadShape(String payload) {
+    try {
+      final decoded = jsonDecode(payload);
+      if (decoded is Map<String, dynamic>) {
+        final eventType = decoded['type']?.toString().trim();
+        final incident = decoded['incident'];
+        final nested = incident is Map ? incident : const <String, dynamic>{};
+        final incidentId =
+            decoded['incidentId'] ?? decoded['id'] ?? nested['id'];
+        final snapshotVersion = decoded['snapshotVersion'] ??
+            decoded['snapshot_version'] ??
+            (decoded['actuators'] is Map
+                ? (decoded['actuators'] as Map)['snapshotVersion']
+                : null);
+        final shapeVersion = decoded['schemaVersion'] ??
+            decoded['schema_version'] ??
+            decoded['version'] ??
+            'legacy';
+        return _MqttPayloadShape(
+          eventType: eventType == null || eventType.isEmpty
+              ? 'unknown'
+              : eventType.toLowerCase(),
+          canonicalIncidentIdPresent:
+              incidentId is String && incidentId.trim().isNotEmpty,
+          snapshotVersionPresent: snapshotVersion != null,
+          payloadShapeVersion: shapeVersion.toString(),
+          payloadUserId: decoded['userId']?.toString().trim(),
+        );
+      }
+    } catch (_) {
+      // The parser boundary reports the rejection without exposing payload.
+    }
+    return const _MqttPayloadShape(
+      eventType: 'unknown',
+      canonicalIncidentIdPresent: false,
+      snapshotVersionPresent: false,
+      payloadShapeVersion: 'invalid',
+      payloadUserId: null,
+    );
+  }
+
+  bool _mqttPayloadIdentityMatches(
+    String? payloadUserId,
+    String topicCategory,
+    EixamSession session,
+  ) {
+    final normalized = payloadUserId?.trim();
+    if (normalized == null || normalized.isEmpty) {
+      return false;
+    }
+    if (topicCategory == 'internal' &&
+        !MqttTopicSegment.usesLegacyUserTopics(session)) {
+      return normalized == MqttTopicSegment.sdkUserIdFrom(session);
+    }
+    if (topicCategory == 'legacy_alias') {
+      return normalized == MqttTopicSegment.legacyUserIdFrom(session);
+    }
+    return false;
+  }
+}
+
+class _MqttPayloadShape {
+  const _MqttPayloadShape({
+    required this.eventType,
+    required this.canonicalIncidentIdPresent,
+    required this.snapshotVersionPresent,
+    required this.payloadShapeVersion,
+    required this.payloadUserId,
+  });
+
+  final String eventType;
+  final bool canonicalIncidentIdPresent;
+  final bool snapshotVersionPresent;
+  final String payloadShapeVersion;
+  final String? payloadUserId;
 }
