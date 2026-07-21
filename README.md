@@ -22,10 +22,28 @@ This monorepo is **SDK-first**: the SDK is the product. The partner app in `../e
 ```dart
 import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
 
+const notificationTexts = EixamNotificationTexts(
+  protectionActiveTitle: 'Protection active',
+  protectionActiveBody: 'EIXAM is monitoring your connected device.',
+  protectionModeTitle: 'Protection mode',
+  protectionModeBody: 'Protection mode is running in the background.',
+  protectionModeChannelName: 'Protection mode',
+  protectionModeChannelDescription: 'Keeps device protection active.',
+  protectionSosChannelName: 'SOS alerts',
+  protectionSosChannelDescription: 'Shows SOS lifecycle alerts.',
+  protectionPreSosTitle: 'SOS countdown',
+  protectionPreSosBody: 'An SOS alert is about to be sent.',
+  protectionSosActiveTitle: 'SOS active',
+  protectionSosActiveBody: 'Your SOS alert is being handled.',
+  protectionSosResolvedTitle: 'SOS resolved',
+  protectionSosResolvedBody: 'Your SOS alert has been resolved.',
+);
+
 final sdk = await EixamConnectSdk.bootstrap(
   const EixamBootstrapConfig(
     appId: 'partner-app',
     environment: EixamEnvironment.production,
+    notificationTexts: notificationTexts,
     initialSession: EixamSession.signed(
       appId: 'partner-app',
       externalUserId: 'partner-user-123',
@@ -37,6 +55,7 @@ final sdk = await EixamConnectSdk.bootstrap(
 
 - `production`, `sandbox`, `staging` resolve internally; `custom` requires `EixamCustomEndpoints`.
 - `initialSession` is optional; when provided its `appId` must match bootstrap `appId`.
+- `notificationTexts` is required and must contain non-empty, app-localized strings.
 - Bootstrap does not request permissions, pair devices, or trigger UX-sensitive actions.
 
 ## Quality checks

@@ -71,10 +71,28 @@ Topic-scoped depth lives in `docs/ai_context/`: `ARCHITECTURE.md`, `SOS_FLOW.md`
 ## Public Bootstrap Contract
 
 ```dart
+const notificationTexts = EixamNotificationTexts(
+  protectionActiveTitle: 'Protection active',
+  protectionActiveBody: 'EIXAM is monitoring your connected device.',
+  protectionModeTitle: 'Protection mode',
+  protectionModeBody: 'Protection mode is running in the background.',
+  protectionModeChannelName: 'Protection mode',
+  protectionModeChannelDescription: 'Keeps device protection active.',
+  protectionSosChannelName: 'SOS alerts',
+  protectionSosChannelDescription: 'Shows SOS lifecycle alerts.',
+  protectionPreSosTitle: 'SOS countdown',
+  protectionPreSosBody: 'An SOS alert is about to be sent.',
+  protectionSosActiveTitle: 'SOS active',
+  protectionSosActiveBody: 'Your SOS alert is being handled.',
+  protectionSosResolvedTitle: 'SOS resolved',
+  protectionSosResolvedBody: 'Your SOS alert has been resolved.',
+);
+
 final sdk = await EixamConnectSdk.bootstrap(
   const EixamBootstrapConfig(
     appId: 'partner-app',
     environment: EixamEnvironment.production,
+    notificationTexts: notificationTexts,
     initialSession: EixamSession.signed(
       appId: 'partner-app',
       externalUserId: 'partner-user-123',
@@ -87,6 +105,7 @@ final sdk = await EixamConnectSdk.bootstrap(
 - `production`, `sandbox`, `staging` resolve internally.
 - `EixamEnvironment.custom` requires `EixamCustomEndpoints`; non-custom environments must not receive it.
 - `initialSession.appId` must match bootstrap `appId` when provided.
+- `notificationTexts` is required and every value must be a non-empty, app-localized string.
 - `bootstrap(...)` must not request permissions, pair devices, or trigger UX-sensitive actions.
 
 ## Boundary Rules — Do Not Break

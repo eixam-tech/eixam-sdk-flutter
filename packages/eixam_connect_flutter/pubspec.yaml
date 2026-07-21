@@ -1,9 +1,9 @@
 name: eixam_connect_flutter
 description: Partner-facing Flutter SDK for integrating EIXAM SOS, device, telemetry, and diagnostics flows into host apps.
-version: 0.2.0
-homepage: https://developer.eixam.example/sdk/flutter
-repository: https://github.com/eixam/eixam-connect-sdk
-issue_tracker: https://github.com/eixam/eixam-connect-sdk/issues
+version: 0.3.0
+homepage: https://docs.eixam.io/docs/flutter-sdk/overview
+repository: https://github.com/eixam-tech/eixam-sdk-flutter
+issue_tracker: https://github.com/eixam-tech/eixam-sdk-flutter/issues
 publish_to: 'none'
 environment:
   sdk: '>=3.4.0 <4.0.0'
