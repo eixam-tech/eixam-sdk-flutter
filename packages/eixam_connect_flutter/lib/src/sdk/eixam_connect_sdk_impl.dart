@@ -34,6 +34,8 @@ import '../data/repositories/sos_runtime_rehydration_support.dart';
 import '../mappers/local_state_serializers.dart';
 import 'android_protection_platform_adapter.dart';
 import 'authoritative_sos_lifecycle_controller.dart';
+import 'background_location_platform_adapter.dart';
+import 'background_location_platform_adapter_factory.dart';
 import 'background_telemetry_platform_adapter.dart';
 import 'background_telemetry_platform_adapter_factory.dart';
 import 'ble_operational_runtime_bridge.dart';
@@ -60,7 +62,10 @@ import 'sos_origin_classifier.dart';
 /// escalating a Death Man plan into SOS automatically.
 class EixamConnectSdkImpl
     with WidgetsBindingObserver
-    implements EixamConnectSdk, SosIncidentProgressProvider {
+    implements
+        EixamConnectSdk,
+        BackgroundLocationControl,
+        SosIncidentProgressProvider {
   EixamConnectSdkImpl({
     required this.sosRepository,
     required this.trackingRepository,
@@ -89,6 +94,7 @@ class EixamConnectSdkImpl
     this.notificationTexts = _fallbackNotificationTexts,
     this.permissionDisclosureConfig = const EixamPermissionDisclosureConfig(),
     ProtectionPlatformAdapter? protectionPlatformAdapter,
+    BackgroundLocationPlatformAdapter? backgroundLocationPlatformAdapter,
     BackgroundTelemetryPlatformAdapter? backgroundTelemetryPlatformAdapter,
     SharedPrefsSdkStore? localStore,
     DateTime Function()? clock,
@@ -99,6 +105,8 @@ class EixamConnectSdkImpl
         _localStore = localStore ?? SharedPrefsSdkStore(),
         protectionPlatformAdapter = protectionPlatformAdapter ??
             buildDefaultProtectionPlatformAdapter(),
+        backgroundLocationPlatformAdapter = backgroundLocationPlatformAdapter ??
+            buildDefaultBackgroundLocationPlatformAdapter(),
         backgroundTelemetryPlatformAdapter =
             backgroundTelemetryPlatformAdapter ??
                 buildDefaultBackgroundTelemetryPlatformAdapter() {
@@ -227,6 +235,7 @@ class EixamConnectSdkImpl
   final EixamNotificationTexts notificationTexts;
   final EixamPermissionDisclosureConfig permissionDisclosureConfig;
   final ProtectionPlatformAdapter protectionPlatformAdapter;
+  final BackgroundLocationPlatformAdapter backgroundLocationPlatformAdapter;
   final BackgroundTelemetryPlatformAdapter backgroundTelemetryPlatformAdapter;
   final FirmwareUpdateCoordinator? firmwareUpdateCoordinator;
   DeviceCountryConfigController? _deviceCountryConfigController;
@@ -1364,6 +1373,43 @@ class EixamConnectSdkImpl
     _operationalTelemetryCoordinator.setIntervalPublishingEnabled(true);
     _backgroundTrackingState = _deriveBackgroundTrackingState();
     _emitOperationalDiagnostics();
+  }
+
+  @override
+  Future<LocationPermissionSnapshot> getLocationPermissionSnapshot() {
+    return backgroundLocationPlatformAdapter.getLocationPermissionSnapshot();
+  }
+
+  @override
+  Future<LocationPermissionSnapshot> requestLocationWhenInUsePermission() {
+    return backgroundLocationPlatformAdapter
+        .requestLocationWhenInUsePermission();
+  }
+
+  @override
+  Future<LocationPermissionSnapshot> requestLocationAlwaysPermission() {
+    return backgroundLocationPlatformAdapter.requestLocationAlwaysPermission();
+  }
+
+  @override
+  Future<BackgroundLocationRuntimeStatus> setBackgroundLocationContext(
+    BackgroundLocationContext context, {
+    required bool active,
+  }) {
+    return backgroundLocationPlatformAdapter.setBackgroundLocationContext(
+      context,
+      active: active,
+    );
+  }
+
+  @override
+  Future<BackgroundLocationRuntimeStatus> getBackgroundLocationStatus() {
+    return backgroundLocationPlatformAdapter.getBackgroundLocationStatus();
+  }
+
+  @override
+  Stream<BackgroundLocationRuntimeStatus> watchBackgroundLocationStatus() {
+    return backgroundLocationPlatformAdapter.watchBackgroundLocationStatus();
   }
 
   Future<SosRuntimeRehydrationResult?> _rehydrateSosRuntimeState({
@@ -17063,6 +17109,7 @@ class EixamConnectSdkImpl
     await _sosCapabilityLifecycleSub?.cancel();
     await _bleOperationalRuntimeBridge.dispose();
     await _protectionModeController.dispose();
+    await backgroundLocationPlatformAdapter.dispose();
     await _deviceCountryConfigStatusSub?.cancel();
     await _deviceCountryConfigController?.dispose();
     await firmwareUpdateCoordinator?.dispose();
