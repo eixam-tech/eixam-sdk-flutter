@@ -795,8 +795,8 @@ void main() {
     });
 
     test(
-        'SOS-03b app-origin BLE countdown success is not cleared by stale idle',
-        () async {
+        'characterization: locally actionable lifecycle mutations feed the '
+        'public SOS state', () async {
       final harness = _SdkSosHarness(
         connectedBle: true,
         deviceCountdown: const Duration(milliseconds: 35),
@@ -1324,8 +1324,9 @@ void main() {
       }
     });
 
-    test('SOS-13 LoRa/backend foreground active stays external-only idle',
-        () async {
+    test(
+        'characterization: external-only relay incident does not become a '
+        'locally owned authoritative lifecycle', () async {
       final harness = _SdkSosHarness();
       try {
         await harness.sdk.initialize(
@@ -1340,6 +1341,9 @@ void main() {
 
         expect(await harness.sdk.getSosState(), SosState.idle);
         expect(await harness.sdk.getCurrentSosIncident(), isNull);
+        final lifecycle = await harness.sdk.getSosLifecycle();
+        expect(lifecycle.localActionable, isFalse);
+        expect(lifecycle.stage, SosLifecycleStage.idle);
       } finally {
         await harness.dispose();
       }

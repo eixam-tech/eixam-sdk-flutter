@@ -103,6 +103,42 @@ void main() {
       });
     });
 
+    test('characterization: legacy public cancelling state retains SOS cadence',
+        () {
+      fakeAsync((async) {
+        final harness = _Harness();
+        harness.start();
+        harness.emitSosState(SosState.sent);
+        async.flushMicrotasks();
+
+        async.elapse(const Duration(seconds: 20));
+        async.flushMicrotasks();
+        harness.emitSosState(SosState.cancelRequested);
+        async.flushMicrotasks();
+        async.elapse(const Duration(seconds: 20));
+        async.flushMicrotasks();
+
+        expect(harness.publishedPayloads, hasLength(2));
+      });
+    });
+
+    test('characterization: cadence consumes legacy public SosState revisions',
+        () {
+      fakeAsync((async) {
+        final harness = _Harness();
+        harness.start();
+
+        // Known limitation: this coordinator receives SosState, not the
+        // authoritative SosLifecycleSnapshot with ownership metadata.
+        harness.emitSosState(SosState.sent);
+        async.flushMicrotasks();
+        async.elapse(const Duration(seconds: 20));
+        async.flushMicrotasks();
+
+        expect(harness.publishedPayloads, hasLength(1));
+      });
+    });
+
     test('no valid location skips publish', () {
       fakeAsync((async) {
         final harness = _Harness(hasInitialPosition: false);
