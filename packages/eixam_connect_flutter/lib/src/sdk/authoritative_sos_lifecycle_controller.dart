@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import 'sos_location_ownership_effect.dart';
 import 'sos_location_ownership_orchestrator.dart';
 
 /// Owns SOS generation, account-scoped provenance and terminal cleanup.
@@ -16,15 +17,22 @@ final class AuthoritativeSosLifecycleController {
     required SecureKeyValueStore secureStore,
     DateTime Function()? clock,
     SosLocationOwnershipOrchestrator? locationOwnershipOrchestrator,
+    SosLocationOwnershipEffectSink locationOwnershipEffectSink =
+        const NoopSosLocationOwnershipEffectSink(),
   })  : _secureStore = secureStore,
         _clock = clock ?? DateTime.now,
         _locationOwnershipOrchestrator =
             locationOwnershipOrchestrator ?? SosLocationOwnershipOrchestrator(),
+        _locationOwnershipEffectDispatcher =
+            SosLocationOwnershipEffectDispatcher(
+          sink: locationOwnershipEffectSink,
+        ),
         _current = SosLifecycleSnapshot.idle((clock ?? DateTime.now)().toUtc());
 
   final SecureKeyValueStore _secureStore;
   final DateTime Function() _clock;
   final SosLocationOwnershipOrchestrator _locationOwnershipOrchestrator;
+  final SosLocationOwnershipEffectDispatcher _locationOwnershipEffectDispatcher;
   final StreamController<SosLifecycleSnapshot> _controller =
       StreamController<SosLifecycleSnapshot>.broadcast();
   SosLifecycleSnapshot _current;
@@ -37,6 +45,8 @@ final class AuthoritativeSosLifecycleController {
   Stream<SosLifecycleSnapshot> get stream => _controller.stream;
   SosLocationOwnershipOrchestrator get locationOwnershipOrchestrator =>
       _locationOwnershipOrchestrator;
+  SosLocationOwnershipEffectDispatcher get locationOwnershipEffectDispatcher =>
+      _locationOwnershipEffectDispatcher;
 
   static String ownerScopeFor(EixamSession session) => sha256
       .convert(utf8.encode('${session.appId}:${session.externalUserId}'))
@@ -314,6 +324,7 @@ final class AuthoritativeSosLifecycleController {
     }
     _disposed = true;
     _locationOwnershipOrchestrator.dispose();
+    _locationOwnershipEffectDispatcher.dispose();
     await _controller.close();
   }
 
@@ -325,7 +336,11 @@ final class AuthoritativeSosLifecycleController {
     _current = next.copyWith(revision: _revision);
     next = _current;
     if (!_disposed) {
-      _locationOwnershipOrchestrator.accept(next);
+      final transition = _locationOwnershipOrchestrator.accept(next);
+      final effect = sosLocationOwnershipEffectFor(transition);
+      if (effect != null) {
+        _locationOwnershipEffectDispatcher.offer(effect);
+      }
     }
     if (persist &&
         next.isOpen &&
