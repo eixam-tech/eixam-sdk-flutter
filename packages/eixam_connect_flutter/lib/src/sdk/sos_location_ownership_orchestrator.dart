@@ -16,6 +16,33 @@ enum SosLocationOwnershipTransition {
   none,
 }
 
+/// Immutable diagnostics for the in-memory SOS ownership shadow.
+///
+/// This type is internal to the Flutter SDK package and is not barrel-exported.
+final class SosLocationOwnershipShadowState {
+  const SosLocationOwnershipShadowState({
+    required this.lastAcceptedLifecycleRevision,
+    required this.currentGeneration,
+    required this.desiredSosOwnership,
+    required this.lastDirective,
+    required this.lastEmittedOwnershipTransition,
+    required this.acceptedSnapshotCount,
+    required this.activateTransitionCount,
+    required this.deactivateTransitionCount,
+    required this.disposed,
+  });
+
+  final int? lastAcceptedLifecycleRevision;
+  final int? currentGeneration;
+  final bool desiredSosOwnership;
+  final SosLocationOwnershipDirective? lastDirective;
+  final SosLocationOwnershipTransition? lastEmittedOwnershipTransition;
+  final int acceptedSnapshotCount;
+  final int activateTransitionCount;
+  final int deactivateTransitionCount;
+  final bool disposed;
+}
+
 /// Reduces one authoritative SOS lifecycle snapshot to an ownership directive.
 ///
 /// Ambiguous and externally owned snapshots retain the existing ownership.
@@ -78,7 +105,11 @@ final class SosLocationOwnershipOrchestrator {
   int? _lastAcceptedLifecycleRevision;
   int? _currentGeneration;
   bool _desiredSosOwnership = false;
+  SosLocationOwnershipDirective? _lastDirective;
   SosLocationOwnershipTransition? _lastEmittedOwnershipTransition;
+  int _acceptedSnapshotCount = 0;
+  int _activateTransitionCount = 0;
+  int _deactivateTransitionCount = 0;
   bool _disposed = false;
 
   int? get lastAcceptedLifecycleRevision => _lastAcceptedLifecycleRevision;
@@ -87,6 +118,18 @@ final class SosLocationOwnershipOrchestrator {
   SosLocationOwnershipTransition? get lastEmittedOwnershipTransition =>
       _lastEmittedOwnershipTransition;
   bool get isDisposed => _disposed;
+  SosLocationOwnershipShadowState get shadowState =>
+      SosLocationOwnershipShadowState(
+        lastAcceptedLifecycleRevision: _lastAcceptedLifecycleRevision,
+        currentGeneration: _currentGeneration,
+        desiredSosOwnership: _desiredSosOwnership,
+        lastDirective: _lastDirective,
+        lastEmittedOwnershipTransition: _lastEmittedOwnershipTransition,
+        acceptedSnapshotCount: _acceptedSnapshotCount,
+        activateTransitionCount: _activateTransitionCount,
+        deactivateTransitionCount: _deactivateTransitionCount,
+        disposed: _disposed,
+      );
 
   /// Accepts a snapshot and returns only a newly required ownership transition.
   SosLocationOwnershipTransition accept(SosLifecycleSnapshot snapshot) {
@@ -96,8 +139,10 @@ final class SosLocationOwnershipOrchestrator {
       return SosLocationOwnershipTransition.none;
     }
     _lastAcceptedLifecycleRevision = snapshot.revision;
+    _acceptedSnapshotCount += 1;
 
     final directive = resolveSosLocationOwnershipDirective(snapshot);
+    _lastDirective = directive;
     return switch (directive) {
       SosLocationOwnershipDirective.activate => _activate(snapshot),
       SosLocationOwnershipDirective.deactivate => _deactivate(snapshot),
@@ -146,6 +191,14 @@ final class SosLocationOwnershipOrchestrator {
     SosLocationOwnershipTransition transition,
   ) {
     _lastEmittedOwnershipTransition = transition;
+    switch (transition) {
+      case SosLocationOwnershipTransition.activate:
+        _activateTransitionCount += 1;
+      case SosLocationOwnershipTransition.deactivate:
+        _deactivateTransitionCount += 1;
+      case SosLocationOwnershipTransition.none:
+        break;
+    }
     return transition;
   }
 
@@ -153,7 +206,11 @@ final class SosLocationOwnershipOrchestrator {
     _lastAcceptedLifecycleRevision = null;
     _currentGeneration = null;
     _desiredSosOwnership = false;
+    _lastDirective = null;
     _lastEmittedOwnershipTransition = null;
+    _acceptedSnapshotCount = 0;
+    _activateTransitionCount = 0;
+    _deactivateTransitionCount = 0;
   }
 
   void _ensureNotDisposed() {

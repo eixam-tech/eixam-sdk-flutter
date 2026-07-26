@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import 'sos_location_ownership_orchestrator.dart';
+
 /// Owns SOS generation, account-scoped provenance and terminal cleanup.
 ///
 /// This controller deliberately persists metadata only. Incident payloads,
@@ -13,21 +15,28 @@ final class AuthoritativeSosLifecycleController {
   AuthoritativeSosLifecycleController({
     required SecureKeyValueStore secureStore,
     DateTime Function()? clock,
+    SosLocationOwnershipOrchestrator? locationOwnershipOrchestrator,
   })  : _secureStore = secureStore,
         _clock = clock ?? DateTime.now,
+        _locationOwnershipOrchestrator =
+            locationOwnershipOrchestrator ?? SosLocationOwnershipOrchestrator(),
         _current = SosLifecycleSnapshot.idle((clock ?? DateTime.now)().toUtc());
 
   final SecureKeyValueStore _secureStore;
   final DateTime Function() _clock;
+  final SosLocationOwnershipOrchestrator _locationOwnershipOrchestrator;
   final StreamController<SosLifecycleSnapshot> _controller =
       StreamController<SosLifecycleSnapshot>.broadcast();
   SosLifecycleSnapshot _current;
   String? _ownerScope;
   int _generation = 0;
   int _revision = 0;
+  bool _disposed = false;
 
   SosLifecycleSnapshot get current => _current;
   Stream<SosLifecycleSnapshot> get stream => _controller.stream;
+  SosLocationOwnershipOrchestrator get locationOwnershipOrchestrator =>
+      _locationOwnershipOrchestrator;
 
   static String ownerScopeFor(EixamSession session) => sha256
       .convert(utf8.encode('${session.appId}:${session.externalUserId}'))
@@ -299,7 +308,14 @@ final class AuthoritativeSosLifecycleController {
     await detachAccount();
   }
 
-  Future<void> dispose() => _controller.close();
+  Future<void> dispose() async {
+    if (_disposed) {
+      return;
+    }
+    _disposed = true;
+    _locationOwnershipOrchestrator.dispose();
+    await _controller.close();
+  }
 
   Future<SosLifecycleSnapshot> _publish(
     SosLifecycleSnapshot next, {
@@ -308,6 +324,9 @@ final class AuthoritativeSosLifecycleController {
     _revision += 1;
     _current = next.copyWith(revision: _revision);
     next = _current;
+    if (!_disposed) {
+      _locationOwnershipOrchestrator.accept(next);
+    }
     if (persist &&
         next.isOpen &&
         next.localIncidentId != null &&

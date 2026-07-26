@@ -213,6 +213,9 @@ void main() {
       );
       expect(orchestrator.lastAcceptedLifecycleRevision, 5);
       expect(orchestrator.desiredSosOwnership, isTrue);
+      expect(orchestrator.shadowState.acceptedSnapshotCount, 1);
+      expect(orchestrator.shadowState.activateTransitionCount, 1);
+      expect(orchestrator.shadowState.deactivateTransitionCount, 0);
     });
 
     test('older generation terminal cannot close newer ownership', () {
@@ -432,6 +435,10 @@ void main() {
       expect(orchestrator.currentGeneration, isNull);
       expect(orchestrator.desiredSosOwnership, isFalse);
       expect(orchestrator.lastEmittedOwnershipTransition, isNull);
+      expect(orchestrator.shadowState.lastDirective, isNull);
+      expect(orchestrator.shadowState.acceptedSnapshotCount, 0);
+      expect(orchestrator.shadowState.activateTransitionCount, 0);
+      expect(orchestrator.shadowState.deactivateTransitionCount, 0);
       expect(
         orchestrator.accept(
           _snapshot(stage: SosLifecycleStage.active, revision: 1),
@@ -483,6 +490,40 @@ void main() {
 
       expect(transition, SosLocationOwnershipTransition.activate);
       expect(transition, isNot(isA<Future<Object?>>()));
+    });
+
+    test('diagnostics count accepted snapshots and emitted transitions only',
+        () {
+      orchestrator.accept(
+        _snapshot(stage: SosLifecycleStage.arming, revision: 1),
+      );
+      orchestrator.accept(
+        _snapshot(stage: SosLifecycleStage.active, revision: 2),
+      );
+      orchestrator.accept(
+        _snapshot(stage: SosLifecycleStage.active, revision: 3),
+      );
+      orchestrator.accept(
+        _snapshot(
+          stage: SosLifecycleStage.cancelled,
+          revision: 4,
+          localActionable: false,
+        ),
+      );
+
+      final state = orchestrator.shadowState;
+      expect(state.lastAcceptedLifecycleRevision, 4);
+      expect(state.currentGeneration, 1);
+      expect(state.desiredSosOwnership, isFalse);
+      expect(state.lastDirective, SosLocationOwnershipDirective.deactivate);
+      expect(
+        state.lastEmittedOwnershipTransition,
+        SosLocationOwnershipTransition.deactivate,
+      );
+      expect(state.acceptedSnapshotCount, 4);
+      expect(state.activateTransitionCount, 1);
+      expect(state.deactivateTransitionCount, 1);
+      expect(state.disposed, isFalse);
     });
   });
 }

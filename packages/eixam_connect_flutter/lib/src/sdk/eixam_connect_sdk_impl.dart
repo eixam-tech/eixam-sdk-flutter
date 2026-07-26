@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_core/src/interfaces/realtime_client.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart' show kDebugMode, visibleForTesting;
 import 'package:flutter/widgets.dart';
 
 import '../data/datasources_local/device_config_store.dart';
@@ -54,6 +54,7 @@ import 'sdk_resolved_location_resolver.dart';
 import 'sdk_mqtt_contract.dart';
 import 'sos_backend_identity_normalizer.dart';
 import 'sos_origin_classifier.dart';
+import 'sos_location_ownership_orchestrator.dart';
 
 /// Main SDK orchestrator used by host apps.
 ///
@@ -224,6 +225,9 @@ class EixamConnectSdkImpl
   final PreferredBleDeviceStore preferredBleDeviceStore;
   final SdkSessionStore? sessionStore;
   late final AuthoritativeSosLifecycleController _sosLifecycle;
+  @visibleForTesting
+  SosLocationOwnershipOrchestrator get debugSosLocationOwnershipOrchestrator =>
+      _sosLifecycle.locationOwnershipOrchestrator;
   final SdkSessionContext? sessionContext;
   final SdkIdentityRemoteDataSource? identityRemoteDataSource;
   final SdkProfileRemoteDataSource? profileRemoteDataSource;
