@@ -171,6 +171,11 @@ void main() {
         diagnostics.lastEffect,
         SosLocationOwnershipEffect.activateSosLocation,
       );
+      expect(
+        diagnostics.effectMode,
+        SosLocationOwnershipEffectMode.disabled,
+      );
+      expect(diagnostics.platformState.appliedOwnership, isNull);
     });
   });
 
@@ -251,6 +256,41 @@ void main() {
         controller.locationOwnershipEffectDispatcher.diagnostics.failureCount,
         2,
       );
+    });
+
+    test('disposal drains delayed work before disposing the sink', () async {
+      final sink = DelayedSosLocationOwnershipEffectSink();
+      final dispatcher = SosLocationOwnershipEffectDispatcher(sink: sink);
+
+      dispatcher.offer(SosLocationOwnershipEffect.activateSosLocation);
+      await pumpEventQueue();
+      final disposal = dispatcher.dispose();
+      await pumpEventQueue();
+
+      expect(sink.started, hasLength(1));
+      expect(sink.disposed, isFalse);
+      expect(dispatcher.diagnostics.acceptingCommands, isFalse);
+
+      dispatcher.offer(SosLocationOwnershipEffect.deactivateSosLocation);
+      sink.completeNext();
+      await disposal;
+
+      expect(sink.completed, hasLength(1));
+      expect(sink.disposed, isTrue);
+      expect(dispatcher.diagnostics.disposed, isTrue);
+      expect(dispatcher.diagnostics.emittedCommandCount, 1);
+    });
+
+    test('failure during drain is contained and disposal completes', () async {
+      final dispatcher = SosLocationOwnershipEffectDispatcher(
+        sink: FailingSosLocationOwnershipEffectSink(),
+      );
+      dispatcher.offer(SosLocationOwnershipEffect.activateSosLocation);
+
+      await dispatcher.dispose().timeout(const Duration(seconds: 1));
+
+      expect(dispatcher.diagnostics.failureCount, 1);
+      expect(dispatcher.diagnostics.disposed, isTrue);
     });
   });
 
@@ -387,12 +427,13 @@ final class FailingSosLocationOwnershipEffectSink
 }
 
 final class DelayedSosLocationOwnershipEffectSink
-    implements SosLocationOwnershipEffectSink {
+    implements SosLocationOwnershipEffectSink, SosLocationOwnershipDisposable {
   final List<SosLocationOwnershipEffect> started =
       <SosLocationOwnershipEffect>[];
   final List<SosLocationOwnershipEffect> completed =
       <SosLocationOwnershipEffect>[];
   final List<Completer<void>> _pending = <Completer<void>>[];
+  bool disposed = false;
 
   @override
   Future<void> apply(SosLocationOwnershipEffect effect) async {
@@ -405,6 +446,11 @@ final class DelayedSosLocationOwnershipEffectSink
 
   void completeNext() {
     _pending.removeAt(0).complete();
+  }
+
+  @override
+  Future<void> dispose() async {
+    disposed = true;
   }
 }
 

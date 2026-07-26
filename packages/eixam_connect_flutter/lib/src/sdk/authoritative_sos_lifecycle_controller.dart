@@ -19,6 +19,8 @@ final class AuthoritativeSosLifecycleController {
     SosLocationOwnershipOrchestrator? locationOwnershipOrchestrator,
     SosLocationOwnershipEffectSink locationOwnershipEffectSink =
         const NoopSosLocationOwnershipEffectSink(),
+    SosLocationOwnershipEffectMode locationOwnershipEffectMode =
+        SosLocationOwnershipEffectMode.disabled,
   })  : _secureStore = secureStore,
         _clock = clock ?? DateTime.now,
         _locationOwnershipOrchestrator =
@@ -26,6 +28,7 @@ final class AuthoritativeSosLifecycleController {
         _locationOwnershipEffectDispatcher =
             SosLocationOwnershipEffectDispatcher(
           sink: locationOwnershipEffectSink,
+          effectMode: locationOwnershipEffectMode,
         ),
         _current = SosLifecycleSnapshot.idle((clock ?? DateTime.now)().toUtc());
 
@@ -55,7 +58,12 @@ final class AuthoritativeSosLifecycleController {
   Future<SosLifecycleSnapshot> restoreFor(EixamSession? session) async {
     if (session == null) {
       _ownerScope = null;
-      return _publish(SosLifecycleSnapshot.idle(_now()), persist: false);
+      return _publish(
+        SosLifecycleSnapshot.idle(_now()),
+        persist: false,
+        reconciliationReason: SosLocationOwnershipReconciliationReason
+            .initializationAfterLifecycleRestoration,
+      );
     }
     final ownerScope = ownerScopeFor(session);
     _ownerScope = ownerScope;
@@ -63,13 +71,23 @@ final class AuthoritativeSosLifecycleController {
       SecureStorageKeys.sdkSosLifecycleProvenance.value,
     );
     if (encoded == null || encoded.trim().isEmpty) {
-      return _publish(SosLifecycleSnapshot.idle(_now()), persist: false);
+      return _publish(
+        SosLifecycleSnapshot.idle(_now()),
+        persist: false,
+        reconciliationReason: SosLocationOwnershipReconciliationReason
+            .initializationAfterLifecycleRestoration,
+      );
     }
     try {
       final json = jsonDecode(encoded) as Map<String, dynamic>;
       if (json['ownerScope'] != ownerScope) {
         // Preserve the other account's record without exposing or adopting it.
-        return _publish(SosLifecycleSnapshot.idle(_now()), persist: false);
+        return _publish(
+          SosLifecycleSnapshot.idle(_now()),
+          persist: false,
+          reconciliationReason: SosLocationOwnershipReconciliationReason
+              .initializationAfterLifecycleRestoration,
+        );
       }
       final restored = _decode(json);
       _generation = restored.generation;
@@ -85,6 +103,8 @@ final class AuthoritativeSosLifecycleController {
           recoveryStatus: SosRecoveryStatus.reconciling,
           lastAuthoritativeObservation: _now(),
         ),
+        reconciliationReason: SosLocationOwnershipReconciliationReason
+            .initializationAfterLifecycleRestoration,
       );
     } catch (_) {
       // An unreadable record is quarantined by retaining it and refusing to
@@ -103,6 +123,8 @@ final class AuthoritativeSosLifecycleController {
           failureCode: 'E_SOS_PROVENANCE_UNREADABLE',
         ),
         persist: false,
+        reconciliationReason: SosLocationOwnershipReconciliationReason
+            .initializationAfterLifecycleRestoration,
       );
     }
   }
@@ -324,13 +346,35 @@ final class AuthoritativeSosLifecycleController {
     }
     _disposed = true;
     _locationOwnershipOrchestrator.dispose();
-    _locationOwnershipEffectDispatcher.dispose();
+    await _locationOwnershipEffectDispatcher.dispose();
     await _controller.close();
+  }
+
+  Future<void> reconcileLocationOwnershipForTesting() async {
+    return reconcileLocationOwnership(
+      SosLocationOwnershipReconciliationReason.explicitInternalTestTrigger,
+    );
+  }
+
+  Future<void> reconcileLocationOwnership(
+    SosLocationOwnershipReconciliationReason reason,
+  ) async {
+    if (_disposed) {
+      return;
+    }
+    _locationOwnershipEffectDispatcher.reconcile(
+      _locationOwnershipOrchestrator.desiredSosOwnership,
+      reason,
+    );
+    await _locationOwnershipEffectDispatcher.whenIdle;
   }
 
   Future<SosLifecycleSnapshot> _publish(
     SosLifecycleSnapshot next, {
     bool persist = true,
+    SosLocationOwnershipReconciliationReason reconciliationReason =
+        SosLocationOwnershipReconciliationReason
+            .newerAuthoritativeLifecycleRevision,
   }) async {
     _revision += 1;
     _current = next.copyWith(revision: _revision);
@@ -341,6 +385,10 @@ final class AuthoritativeSosLifecycleController {
       if (effect != null) {
         _locationOwnershipEffectDispatcher.offer(effect);
       }
+      _locationOwnershipEffectDispatcher.reconcile(
+        _locationOwnershipOrchestrator.desiredSosOwnership,
+        reconciliationReason,
+      );
     }
     if (persist &&
         next.isOpen &&

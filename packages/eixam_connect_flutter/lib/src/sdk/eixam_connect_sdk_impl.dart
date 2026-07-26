@@ -2,7 +2,8 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_core/src/interfaces/realtime_client.dart';
-import 'package:flutter/foundation.dart' show kDebugMode, visibleForTesting;
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, kDebugMode, visibleForTesting;
 import 'package:flutter/widgets.dart';
 
 import '../data/datasources_local/device_config_store.dart';
@@ -33,6 +34,7 @@ import '../data/repositories/telemetry_repository.dart';
 import '../data/repositories/sos_runtime_rehydration_support.dart';
 import '../mappers/local_state_serializers.dart';
 import 'android_protection_platform_adapter.dart';
+import 'android_tracking_owner_arbiter.dart';
 import 'authoritative_sos_lifecycle_controller.dart';
 import 'background_location_platform_adapter.dart';
 import 'background_location_platform_adapter_factory.dart';
@@ -54,7 +56,9 @@ import 'sdk_resolved_location_resolver.dart';
 import 'sdk_mqtt_contract.dart';
 import 'sos_backend_identity_normalizer.dart';
 import 'sos_origin_classifier.dart';
+import 'sos_location_ownership_effect.dart';
 import 'sos_location_ownership_orchestrator.dart';
+import 'sos_location_ownership_platform_sink.dart';
 
 /// Main SDK orchestrator used by host apps.
 ///
@@ -100,6 +104,10 @@ class EixamConnectSdkImpl
     SharedPrefsSdkStore? localStore,
     DateTime Function()? clock,
     Duration appTriggeredSosBridgeWindow = _defaultAppTriggeredSosBridgeWindow,
+    SosLocationOwnershipEffectMode sosLocationOwnershipEffectMode =
+        SosLocationOwnershipEffectMode.disabled,
+    TargetPlatform? sosLocationOwnershipPlatform,
+    bool? sosLocationOwnershipIsWeb,
     this.disposeCallback,
   })  : _clock = clock ?? DateTime.now,
         _appTriggeredSosBridgeWindow = appTriggeredSosBridgeWindow,
@@ -153,9 +161,34 @@ class EixamConnectSdkImpl
       deviceStatusProvider: () => _lastPublicDeviceStatus ?? _lastDeviceStatus,
       bridgeDiagnosticsProvider: () => _bridgeDiagnostics,
     );
+    _trackingOwnerArbiter = AndroidTrackingOwnerArbiter(
+      trackingRepository: trackingRepository,
+    );
+    final sosLocationOwnershipEffectSink = createSosLocationOwnershipEffectSink(
+      platform: sosLocationOwnershipPlatform,
+      isWeb: sosLocationOwnershipIsWeb,
+      effectMode: sosLocationOwnershipEffectMode,
+      trackingOwnerArbiter: _trackingOwnerArbiter,
+      backgroundLocationPlatformAdapter: this.backgroundLocationPlatformAdapter,
+    );
     _sosLifecycle = AuthoritativeSosLifecycleController(
       secureStore: sosLifecycleSecureStore ?? InMemorySecureKeyValueStore(),
+      locationOwnershipEffectSink: sosLocationOwnershipEffectSink,
+      locationOwnershipEffectMode: sosLocationOwnershipEffectMode,
     );
+    if (sosLocationOwnershipEffectMode ==
+        SosLocationOwnershipEffectMode.enabled) {
+      _sosLocationOwnershipStatusSub = this
+          .backgroundLocationPlatformAdapter
+          .watchBackgroundLocationStatus()
+          .listen((_) {
+        unawaited(
+          _sosLifecycle.reconcileLocationOwnership(
+            SosLocationOwnershipReconciliationReason.permissionOrStatusChange,
+          ),
+        );
+      });
+    }
     _operationalTelemetryCoordinator = OperationalTelemetryCoordinator(
       trackingRepository: trackingRepository,
       sosStateStream: _publicSosStateController.stream,
@@ -225,9 +258,20 @@ class EixamConnectSdkImpl
   final PreferredBleDeviceStore preferredBleDeviceStore;
   final SdkSessionStore? sessionStore;
   late final AuthoritativeSosLifecycleController _sosLifecycle;
+  late final AndroidTrackingOwnerArbiter _trackingOwnerArbiter;
   @visibleForTesting
   SosLocationOwnershipOrchestrator get debugSosLocationOwnershipOrchestrator =>
       _sosLifecycle.locationOwnershipOrchestrator;
+  @visibleForTesting
+  SosLocationOwnershipEffectDiagnostics
+      get debugSosLocationOwnershipEffectDiagnostics =>
+          _sosLifecycle.locationOwnershipEffectDispatcher.diagnostics;
+  @visibleForTesting
+  AndroidTrackingOwnerDiagnostics get debugAndroidTrackingOwnerDiagnostics =>
+      _trackingOwnerArbiter.diagnostics;
+  @visibleForTesting
+  Future<void> debugReconcileSosLocationOwnership() =>
+      _sosLifecycle.reconcileLocationOwnershipForTesting();
   final SdkSessionContext? sessionContext;
   final SdkIdentityRemoteDataSource? identityRemoteDataSource;
   final SdkProfileRemoteDataSource? profileRemoteDataSource;
@@ -249,6 +293,8 @@ class EixamConnectSdkImpl
   DeviceCountryConfigStatus _lastDeviceCountryConfigStatus =
       DeviceCountryConfigStatus.idle();
   StreamSubscription<DeviceCountryConfigStatus>? _deviceCountryConfigStatusSub;
+  StreamSubscription<BackgroundLocationRuntimeStatus>?
+      _sosLocationOwnershipStatusSub;
   final DateTime Function() _clock;
   bool _deviceCountryConfigCheckDrainRunning = false;
   ({
@@ -3907,12 +3953,16 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> startTracking() {
-    return trackingRepository.startTracking();
+    return _trackingOwnerArbiter.addOwner(
+      AndroidTrackingOwner.legacyPublicTracking,
+    );
   }
 
   @override
   Future<void> stopTracking() {
-    return trackingRepository.stopTracking();
+    return _trackingOwnerArbiter.removeOwner(
+      AndroidTrackingOwner.legacyPublicTracking,
+    );
   }
 
   @override
@@ -17111,14 +17161,16 @@ class EixamConnectSdkImpl
     await _protectionStatusSub?.cancel();
     await _protectionRawSosEventsSub?.cancel();
     await _sosCapabilityLifecycleSub?.cancel();
+    await _sosLocationOwnershipStatusSub?.cancel();
     await _bleOperationalRuntimeBridge.dispose();
     await _protectionModeController.dispose();
+    await _sosLifecycle.dispose();
     await backgroundLocationPlatformAdapter.dispose();
     await _deviceCountryConfigStatusSub?.cancel();
     await _deviceCountryConfigController?.dispose();
     await firmwareUpdateCoordinator?.dispose();
     await _operationalTelemetryCoordinator.stop();
-    await _sosLifecycle.dispose();
+    await _trackingOwnerArbiter.dispose();
     await deviceSosController.dispose();
     await realtimeClient.disconnect();
     await disposeCallback?.call();
