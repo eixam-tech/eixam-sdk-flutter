@@ -105,7 +105,7 @@ class EixamConnectSdkImpl
     DateTime Function()? clock,
     Duration appTriggeredSosBridgeWindow = _defaultAppTriggeredSosBridgeWindow,
     SosLocationOwnershipEffectMode sosLocationOwnershipEffectMode =
-        SosLocationOwnershipEffectMode.disabled,
+        SosLocationOwnershipEffectMode.enabled,
     TargetPlatform? sosLocationOwnershipPlatform,
     bool? sosLocationOwnershipIsWeb,
     this.disposeCallback,
@@ -550,6 +550,10 @@ class EixamConnectSdkImpl
     _session = await sessionStore?.load();
     _session = await _bootstrapSessionIfNeeded(_session);
     await _sosLifecycle.restoreFor(_session);
+    await _sosLifecycle.reconcileLocationOwnership(
+      SosLocationOwnershipReconciliationReason
+          .initializationAfterLifecycleRestoration,
+    );
     await _refreshBackgroundTelemetryDiagnostics();
     if (_backgroundTelemetryDiagnostics.serviceRunning && _session != null) {
       _backgroundTelemetryStartFingerprint = _backgroundTelemetryFingerprint(
@@ -1044,6 +1048,10 @@ class EixamConnectSdkImpl
     }
     _session = nextSession;
     await _sosLifecycle.restoreFor(_session);
+    await _sosLifecycle.reconcileLocationOwnership(
+      SosLocationOwnershipReconciliationReason
+          .initializationAfterLifecycleRestoration,
+    );
     if (sessionContext != null) {
       sessionContext!.currentSession = _session;
     }

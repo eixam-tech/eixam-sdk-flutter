@@ -123,8 +123,9 @@ void main() {
       await runtimeProvider.dispose();
     });
 
-    test('public tracking routes idempotently through the legacy owner',
-        () async {
+    test(
+        'production defaults to enabled SDK SOS ownership while public '
+        'tracking remains independently idempotent', () async {
       final runtimeProvider = FakeDeviceRuntimeProvider();
       final deviceRepository = InMemoryDeviceRepository(
         runtimeProvider: runtimeProvider,
@@ -149,7 +150,7 @@ void main() {
       expect(trackingRepository.stopCallCount, 1);
       expect(
         sdk.debugSosLocationOwnershipEffectDiagnostics.effectMode,
-        SosLocationOwnershipEffectMode.disabled,
+        SosLocationOwnershipEffectMode.enabled,
       );
 
       await sdk.dispose();

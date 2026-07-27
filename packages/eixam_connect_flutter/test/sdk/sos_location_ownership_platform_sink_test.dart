@@ -305,7 +305,7 @@ void main() {
       expect(adapter.setCalls, isEmpty);
     });
 
-    test('enabled selects Android and iOS implementations', () {
+    test('production-enabled mode selects Android and iOS implementations', () {
       expect(
         build(TargetPlatform.android, SosLocationOwnershipEffectMode.enabled),
         isA<AndroidSosLocationOwnershipEffectSink>(),

@@ -1507,7 +1507,8 @@ void main() {
       }
     });
 
-    test('SDK runtime owns one shadow across initialization and activation',
+    test(
+        'SDK runtime owns one lifecycle and activates production tracking once',
         () async {
       final harness = _SdkSosHarness();
       final shadow = harness.sdk.debugSosLocationOwnershipOrchestrator;
@@ -1529,6 +1530,7 @@ void main() {
         final result = await harness.sdk.triggerSosAuthoritatively(
           const SosTriggerPayload(triggerSource: 'commercial_app'),
         );
+        await harness.sdk.debugReconcileSosLocationOwnership();
 
         expect(result.lifecycle.stage, SosLifecycleStage.active);
         expect(await harness.sdk.getSosState(), SosState.sent);
@@ -1542,7 +1544,10 @@ void main() {
         );
         expect(shadow.shadowState.activateTransitionCount, 1);
         expect(shadow.shadowState.desiredSosOwnership, isTrue);
-        expect(harness.trackingRepository.startCallCount, trackingStartsBefore);
+        expect(
+          harness.trackingRepository.startCallCount,
+          trackingStartsBefore + 1,
+        );
         expect(harness.trackingRepository.stopCallCount, trackingStopsBefore);
         expect(harness.telemetryRepository.publishCallCount, telemetryBefore);
       } finally {
@@ -1550,7 +1555,7 @@ void main() {
       }
     });
 
-    test('shadow terminal does not add tracking or telemetry side effects',
+    test('authoritative terminal removes production tracking without telemetry',
         () async {
       final harness = _SdkSosHarness();
       try {
@@ -1558,18 +1563,23 @@ void main() {
         await harness.sdk.triggerSosAuthoritatively(
           const SosTriggerPayload(triggerSource: 'commercial_app'),
         );
+        await harness.sdk.debugReconcileSosLocationOwnership();
         final shadow = harness.sdk.debugSosLocationOwnershipOrchestrator;
         final trackingStartsBefore = harness.trackingRepository.startCallCount;
         final trackingStopsBefore = harness.trackingRepository.stopCallCount;
         final telemetryBefore = harness.telemetryRepository.publishCallCount;
 
         final result = await harness.sdk.cancelSosAuthoritatively();
+        await harness.sdk.debugReconcileSosLocationOwnership();
 
         expect(result.lifecycle.stage, SosLifecycleStage.cancelled);
         expect(shadow.shadowState.deactivateTransitionCount, 1);
         expect(shadow.shadowState.desiredSosOwnership, isFalse);
         expect(harness.trackingRepository.startCallCount, trackingStartsBefore);
-        expect(harness.trackingRepository.stopCallCount, trackingStopsBefore);
+        expect(
+          harness.trackingRepository.stopCallCount,
+          trackingStopsBefore + 1,
+        );
         expect(harness.telemetryRepository.publishCallCount, telemetryBefore);
       } finally {
         await harness.dispose();
