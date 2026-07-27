@@ -250,6 +250,109 @@ void main() {
     await nativeEvents.close();
   });
 
+  test(
+      'location stream validates, dedupes, rejects older samples, and replays latest',
+      () async {
+    final nativeEvents = StreamController<Object?>.broadcast();
+    var factoryCalls = 0;
+    final adapter = IosBackgroundLocationPlatformAdapter(
+      methodChannel: methodChannel,
+      eventStreamFactory: () {
+        factoryCalls += 1;
+        return nativeEvents.stream;
+      },
+    );
+    final emitted = <IosBackgroundLocationSample>[];
+    final firstSub = adapter.watchLocationSamples().listen(emitted.add);
+    await pumpEventQueue();
+    final newestTimestamp = DateTime.fromMillisecondsSinceEpoch(
+      DateTime.now().millisecondsSinceEpoch,
+      isUtc: true,
+    );
+    final newest = _validStatus(
+      sample: _sample(
+        latitude: 41.3874,
+        longitude: 2.1686,
+        timestamp: newestTimestamp,
+        context: 'combined',
+      ),
+    );
+
+    nativeEvents.add(newest);
+    nativeEvents.add(newest);
+    nativeEvents.add(_validStatus(
+      sample: _sample(
+        latitude: 40,
+        longitude: 2,
+        timestamp: newestTimestamp.subtract(const Duration(seconds: 1)),
+        context: 'sharing',
+      ),
+    ));
+    nativeEvents.add(_validStatus(
+      sample: _sample(
+        latitude: 91,
+        longitude: 2,
+        timestamp: newestTimestamp.add(const Duration(seconds: 1)),
+        context: 'sos',
+      ),
+    ));
+    await pumpEventQueue();
+
+    expect(factoryCalls, 1);
+    expect(emitted, hasLength(1));
+    expect(emitted.single.latitude, 41.3874);
+    expect(emitted.single.context, 'combined');
+
+    final replayed = await adapter.watchLocationSamples().first;
+    expect(replayed.timestamp, newestTimestamp);
+    expect(factoryCalls, 1);
+
+    await firstSub.cancel();
+    await adapter.dispose();
+    await nativeEvents.close();
+  });
+
+  test('location stream preserves sharing and SOS sample categories', () async {
+    final nativeEvents = StreamController<Object?>.broadcast();
+    final adapter = IosBackgroundLocationPlatformAdapter(
+      methodChannel: methodChannel,
+      eventStreamFactory: () => nativeEvents.stream,
+    );
+    final contexts = <String>[];
+    final subscription =
+        adapter.watchLocationSamples().map((sample) => sample.context).listen(
+              contexts.add,
+            );
+    await pumpEventQueue();
+    final timestamp = DateTime.fromMillisecondsSinceEpoch(
+      DateTime.now().millisecondsSinceEpoch,
+      isUtc: true,
+    );
+
+    nativeEvents.add(_validStatus(
+      sample: _sample(
+        latitude: 41,
+        longitude: 2,
+        timestamp: timestamp,
+        context: 'sharing',
+      ),
+    ));
+    nativeEvents.add(_validStatus(
+      sample: _sample(
+        latitude: 41.1,
+        longitude: 2.1,
+        timestamp: timestamp.add(const Duration(seconds: 1)),
+        context: 'sos',
+      ),
+    ));
+    await pumpEventQueue();
+
+    expect(contexts, <String>['sharing', 'sos']);
+    await subscription.cancel();
+    await adapter.dispose();
+    await nativeEvents.close();
+  });
+
   test('unsupported adapter preserves contexts and reports stable error',
       () async {
     final adapter = UnsupportedBackgroundLocationPlatformAdapter();
@@ -278,6 +381,7 @@ Map<String, Object?> _validStatus({
   List<String> activeContexts = const <String>[],
   String effectiveMode = 'idle',
   bool running = false,
+  Map<String, Object?>? sample,
 }) {
   return <String, Object?>{
     'activeContexts': activeContexts,
@@ -293,5 +397,23 @@ Map<String, Object?> _validStatus({
     'lastErrorCode': null,
     'lastErrorMessage': null,
     'wasRestoredAfterRelaunch': false,
+    if (sample != null) ...<String, Object?>{
+      'latestLocationSample': sample,
+      'latestLocationSampleAction': 'received',
+    },
   };
 }
+
+Map<String, Object?> _sample({
+  required double latitude,
+  required double longitude,
+  required DateTime timestamp,
+  required String context,
+}) =>
+    <String, Object?>{
+      'latitude': latitude,
+      'longitude': longitude,
+      'timestamp': timestamp.millisecondsSinceEpoch,
+      'accuracy': 8.0,
+      'context': context,
+    };

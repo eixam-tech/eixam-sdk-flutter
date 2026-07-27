@@ -1,6 +1,7 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/shared_prefs_sdk_store.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/geolocator_tracking_repository.dart';
+import 'package:eixam_connect_flutter/src/sdk/latest_phone_position_sink.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/fakes/memory_shared_prefs_sdk_store.dart';
@@ -77,6 +78,84 @@ void main() {
       final replayed = await repository.watchPositions().first;
       expect(replayed.latitude, 41.3874);
       expect(replayed.longitude, 2.1686);
+    });
+
+    test('native sample updates and replays the shared latest position',
+        () async {
+      final repository = GeolocatorTrackingRepository(
+        permissionsRepository: FakePermissionsRepository(),
+      );
+      final timestamp = DateTime.utc(2026, 7, 27, 12);
+      final position = TrackingPosition(
+        latitude: 41.3874,
+        longitude: 2.1686,
+        accuracy: 8,
+        source: DeliveryMode.mobile,
+        timestamp: timestamp,
+      );
+
+      expect(
+        await repository.acceptPhonePosition(
+          position,
+          source: PhonePositionSource.nativeContext,
+        ),
+        isTrue,
+      );
+
+      expect(repository.latestPhonePosition, position);
+      expect(await repository.watchPositions().first, position);
+      await repository.dispose();
+    });
+
+    test('newest source wins and duplicate or invalid samples are ignored',
+        () async {
+      final repository = GeolocatorTrackingRepository(
+        permissionsRepository: FakePermissionsRepository(),
+      );
+      final newer = TrackingPosition(
+        latitude: 41.3874,
+        longitude: 2.1686,
+        timestamp: DateTime.utc(2026, 7, 27, 12, 1),
+      );
+
+      expect(
+        await repository.acceptPhonePosition(
+          newer,
+          source: PhonePositionSource.nativeContext,
+        ),
+        isTrue,
+      );
+      expect(
+        await repository.acceptPhonePosition(
+          TrackingPosition(
+            latitude: 40,
+            longitude: 2,
+            timestamp: DateTime.utc(2026, 7, 27, 12),
+          ),
+          source: PhonePositionSource.oneShot,
+        ),
+        isFalse,
+      );
+      expect(
+        await repository.acceptPhonePosition(
+          newer,
+          source: PhonePositionSource.geolocator,
+        ),
+        isFalse,
+      );
+      expect(
+        await repository.acceptPhonePosition(
+          TrackingPosition(
+            latitude: double.nan,
+            longitude: 2,
+            timestamp: DateTime.utc(2026, 7, 27, 12, 2),
+          ),
+          source: PhonePositionSource.nativeContext,
+        ),
+        isFalse,
+      );
+      expect(await repository.watchPositions().first, newer);
+      await repository.dispose();
     });
 
     test('dispose closes controllers and is double-dispose safe', () async {

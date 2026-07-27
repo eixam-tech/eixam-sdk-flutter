@@ -178,6 +178,30 @@ private final class BackgroundLocationService: NSObject {
     let altitude: Double?
   }
 
+  private struct CoordinateSample {
+    let timestamp: TimeInterval
+    let latitude: Double
+    let longitude: Double
+    let horizontalAccuracy: Double
+    let context: String
+
+    func isSameNativeSample(as other: CoordinateSample) -> Bool {
+      timestamp == other.timestamp &&
+        latitude == other.latitude &&
+        longitude == other.longitude
+    }
+
+    var payload: [String: Any] {
+      [
+        "latitude": latitude,
+        "longitude": longitude,
+        "timestamp": Int64(timestamp * 1000),
+        "accuracy": horizontalAccuracy,
+        "context": context,
+      ]
+    }
+  }
+
   typealias Observer = ([String: Any]) -> Void
 
   private let locationManager: CLLocationManager
@@ -188,6 +212,7 @@ private final class BackgroundLocationService: NSObject {
   private var locationUpdatesStarted = false
   private var wasRestoredAfterRelaunch = false
   private var hasRejectedPersistedControlState = false
+  private var latestAcceptedSample: CoordinateSample?
 
   private override init() {
     precondition(
@@ -199,6 +224,7 @@ private final class BackgroundLocationService: NSObject {
       UserDefaults(suiteName: Self.defaultsSuiteName) ?? UserDefaults.standard
     super.init()
     locationManager.delegate = self
+    latestAcceptedSample = restoreLatestAcceptedSample()
     restorePersistedState()
   }
 
@@ -215,7 +241,11 @@ private final class BackgroundLocationService: NSObject {
     assertMainThread()
     let token = UUID()
     observers[token] = observer
-    observer(runtimeStatus())
+    observer(runtimeStatus(sampleAction: "replayed"))
+    traceSample(
+      action: "replayed",
+      sampleAvailable: latestAcceptedSample != nil
+    )
     return token
   }
 
@@ -531,7 +561,7 @@ private final class BackgroundLocationService: NSObject {
     ]
   }
 
-  private func runtimeStatus() -> [String: Any] {
+  private func runtimeStatus(sampleAction: String? = nil) -> [String: Any] {
     assertMainThread()
     var status: [String: Any] = [
       "activeContexts": Array(requestedContexts).sorted(),
@@ -544,6 +574,11 @@ private final class BackgroundLocationService: NSObject {
     if defaults.object(forKey: Keys.lastAcceptedLocationAt) != nil {
       status["lastAcceptedLocationAt"] =
         Int64(defaults.double(forKey: Keys.lastAcceptedLocationAt) * 1000)
+    }
+    if let sampleAction = sampleAction,
+       let sample = latestAcceptedSample {
+      status["latestLocationSample"] = sample.payload
+      status["latestLocationSampleAction"] = sampleAction
     }
     if let code = defaults.string(forKey: Keys.lastErrorCode) {
       status["lastErrorCode"] = code
@@ -624,12 +659,31 @@ private final class BackgroundLocationService: NSObject {
       }
       .max(by: { $0.timestamp < $1.timestamp })
     guard let location = accepted else {
+      traceSample(action: "rejected", sampleAvailable: false)
       return
     }
 
     let altitude: Double? =
       location.verticalAccuracy >= 0 ? location.altitude : nil
     let timestamp = location.timestamp.timeIntervalSince1970
+    let sample = CoordinateSample(
+      timestamp: timestamp,
+      latitude: location.coordinate.latitude,
+      longitude: location.coordinate.longitude,
+      horizontalAccuracy: location.horizontalAccuracy,
+      context: sampleContext()
+    )
+    if let latest = latestAcceptedSample {
+      if sample.isSameNativeSample(as: latest) {
+        traceSample(action: "rejected", sampleAvailable: true)
+        return
+      }
+      if sample.timestamp <= latest.timestamp {
+        traceSample(action: "rejected", sampleAvailable: true)
+        return
+      }
+    }
+    latestAcceptedSample = sample
     defaults.set(timestamp, forKey: Keys.lastAcceptedLocationAt)
     defaults.set(location.coordinate.latitude, forKey: Keys.lastAcceptedLatitude)
     defaults.set(
@@ -653,7 +707,60 @@ private final class BackgroundLocationService: NSObject {
       altitude: altitude
     ))
     clearRuntimeError()
-    notifyObservers()
+    notifyObservers(sampleAction: "received")
+    traceSample(action: "received", sampleAvailable: true)
+  }
+
+  private func restoreLatestAcceptedSample() -> CoordinateSample? {
+    guard defaults.object(forKey: Keys.lastAcceptedLocationAt) != nil,
+          defaults.object(forKey: Keys.lastAcceptedLatitude) != nil,
+          defaults.object(forKey: Keys.lastAcceptedLongitude) != nil,
+          defaults.object(forKey: Keys.lastAcceptedHorizontalAccuracy) != nil
+    else {
+      return nil
+    }
+    let timestamp = defaults.double(forKey: Keys.lastAcceptedLocationAt)
+    let latitude = defaults.double(forKey: Keys.lastAcceptedLatitude)
+    let longitude = defaults.double(forKey: Keys.lastAcceptedLongitude)
+    let accuracy = defaults.double(
+      forKey: Keys.lastAcceptedHorizontalAccuracy
+    )
+    let coordinate = CLLocationCoordinate2D(
+      latitude: latitude,
+      longitude: longitude
+    )
+    guard timestamp.isFinite,
+          CLLocationCoordinate2DIsValid(coordinate),
+          accuracy.isFinite,
+          accuracy >= 0 else {
+      return nil
+    }
+    return CoordinateSample(
+      timestamp: timestamp,
+      latitude: latitude,
+      longitude: longitude,
+      horizontalAccuracy: accuracy,
+      context: "unknown"
+    )
+  }
+
+  private func sampleContext() -> String {
+    if requestedContexts.count > 1 {
+      return "combined"
+    }
+    return requestedContexts.first ?? "unknown"
+  }
+
+  private func traceSample(action: String, sampleAvailable: Bool) {
+    let timestampPresent = latestAcceptedSample != nil
+    NSLog(
+      "EIXAM_SOS_LOC event=ios_native_sample action=%@ context=%@ sample_available=%@ timestamp_present=%@ observer_count=%d",
+      action,
+      latestAcceptedSample?.context ?? "unknown",
+      sampleAvailable ? "true" : "false",
+      timestampPresent ? "true" : "false",
+      observers.count
+    )
   }
 
   private func enqueue(_ sample: PersistedSample) {
@@ -695,9 +802,9 @@ private final class BackgroundLocationService: NSObject {
     defaults.removeObject(forKey: Keys.lastErrorMessage)
   }
 
-  private func notifyObservers() {
+  private func notifyObservers(sampleAction: String? = nil) {
     assertMainThread()
-    let status = runtimeStatus()
+    let status = runtimeStatus(sampleAction: sampleAction)
     for observer in Array(observers.values) {
       observer(status)
     }

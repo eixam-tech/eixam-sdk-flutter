@@ -1326,6 +1326,39 @@ void main() {
     });
 
     test(
+        'same-session auth restore preserves countdown dispatch through active',
+        () async {
+      final harness = _SdkSosHarness();
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await harness.setSession();
+        await harness.sdk.startPreSos(
+          countdown: const Duration(milliseconds: 50),
+        );
+
+        await harness.setSession();
+        expect(
+          (await harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.arming,
+        );
+
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+        await pumpEventQueue(times: 3);
+
+        expect(harness.sosRepository.triggerCallCount, 1);
+        expect(
+          (await harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.active,
+        );
+        expect(await harness.sdk.getSosState(), SosState.sent);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test(
         'characterization: external-only relay incident does not become a '
         'locally owned authoritative lifecycle', () async {
       final harness = _SdkSosHarness();

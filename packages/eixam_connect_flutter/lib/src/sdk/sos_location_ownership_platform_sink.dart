@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'android_tracking_owner_arbiter.dart';
 import 'background_location_platform_adapter.dart';
 import 'sos_location_ownership_effect.dart';
+import 'sos_location_trace.dart';
 
 final class ObservingSosLocationOwnershipEffectSink
     implements
@@ -120,6 +121,7 @@ final class IosSosLocationOwnershipEffectSink
       BackgroundLocationContext.sos,
       active: active,
     );
+    _traceIosContexts('effect', desiredOwnership: active);
   }
 
   @override
@@ -133,12 +135,36 @@ final class IosSosLocationOwnershipEffectSink
     final hasSos =
         status.activeContexts.contains(BackgroundLocationContext.sos);
     if (hasSos == desiredOwnership) {
+      _traceIosContexts('reconcile_unchanged',
+          desiredOwnership: desiredOwnership);
       return;
     }
     _lastStatus = await _platformAdapter.setBackgroundLocationContext(
       BackgroundLocationContext.sos,
       active: desiredOwnership,
     );
+    _traceIosContexts('reconcile_applied', desiredOwnership: desiredOwnership);
+  }
+
+  void _traceIosContexts(
+    String action, {
+    required bool desiredOwnership,
+  }) {
+    final status = _lastStatus;
+    final contexts =
+        status?.activeContexts.map((context) => context.name).toList() ?? [];
+    contexts.sort();
+    SosLocationTrace.emit('ios_context', {
+      'action': action,
+      'requested_context': BackgroundLocationContext.sos.name,
+      'desired': desiredOwnership,
+      'active_contexts': contexts.isEmpty ? 'none' : contexts.join(','),
+      'sos_active':
+          status?.activeContexts.contains(BackgroundLocationContext.sos),
+      'sharing_active':
+          status?.activeContexts.contains(BackgroundLocationContext.sharing),
+      'running': status?.isNativeServiceRunning,
+    });
   }
 }
 

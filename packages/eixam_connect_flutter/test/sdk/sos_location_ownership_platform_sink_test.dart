@@ -468,4 +468,8 @@ final class _BackgroundLocationAdapter
   @override
   Stream<BackgroundLocationRuntimeStatus> watchBackgroundLocationStatus() =>
       const Stream.empty();
+
+  @override
+  Stream<IosBackgroundLocationSample> watchLocationSamples() =>
+      const Stream.empty();
 }

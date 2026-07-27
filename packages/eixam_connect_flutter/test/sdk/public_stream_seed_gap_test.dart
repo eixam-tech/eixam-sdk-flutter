@@ -4,8 +4,10 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/preferred_ble_device_store.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
+import 'package:eixam_connect_flutter/src/sdk/background_location_platform_adapter.dart';
 import 'package:eixam_connect_flutter/src/sdk/background_telemetry_platform_adapter.dart';
 import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
+import 'package:eixam_connect_flutter/src/sdk/latest_phone_position_sink.dart';
 import 'package:eixam_connect_flutter/src/sdk/protection_platform_adapter.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -107,6 +109,37 @@ void main() {
       await trackingRepository.dispose();
     });
 
+    test('iOS native sample reaches watchPositions without acquiring ownership',
+        () async {
+      final trackingRepository = _PhonePositionTrackingRepository();
+      final backgroundLocationAdapter = _SampleBackgroundLocationAdapter();
+      final sdk = _buildSdk(
+        trackingRepository: trackingRepository,
+        backgroundLocationPlatformAdapter: backgroundLocationAdapter,
+      );
+      final timestamp = DateTime.now().toUtc();
+
+      backgroundLocationAdapter.emit(IosBackgroundLocationSample(
+        latitude: 41.3874,
+        longitude: 2.1686,
+        accuracy: 8,
+        timestamp: timestamp,
+        context: 'sharing',
+      ));
+      await pumpEventQueue();
+
+      final emitted = await sdk.watchPositions().first;
+      expect(emitted.latitude, 41.3874);
+      expect(emitted.timestamp, timestamp);
+      expect(trackingRepository.startCalls, 0);
+      expect(trackingRepository.stopCalls, 0);
+      expect(trackingRepository.currentPositionCalls, 0);
+
+      await sdk.dispose();
+      await trackingRepository.dispose();
+      await backgroundLocationAdapter.close();
+    });
+
     test('watchDeviceSosStatus drops duplicate live status matching seed',
         () async {
       final deviceSosController = _DelayedDeviceSosController();
@@ -137,6 +170,7 @@ EixamConnectSdkImpl _buildSdk({
   SosRepository? sosRepository,
   TrackingRepository? trackingRepository,
   DeviceSosController? deviceSosController,
+  BackgroundLocationPlatformAdapter? backgroundLocationPlatformAdapter,
 }) {
   final localStore = MemorySharedPrefsSdkStore();
   return EixamConnectSdkImpl(
@@ -157,6 +191,7 @@ EixamConnectSdkImpl _buildSdk({
     protectionPlatformAdapter: const NoopProtectionPlatformAdapter(),
     backgroundTelemetryPlatformAdapter:
         const NoopBackgroundTelemetryPlatformAdapter(),
+    backgroundLocationPlatformAdapter: backgroundLocationPlatformAdapter,
   );
 }
 
@@ -279,4 +314,123 @@ class _DelayedTrackingRepository implements TrackingRepository {
     await _positionsController.close();
     await _stateController.close();
   }
+}
+
+class _PhonePositionTrackingRepository
+    implements TrackingRepository, LatestPhonePositionSink {
+  final StreamController<TrackingPosition> _positions =
+      StreamController<TrackingPosition>.broadcast();
+  final StreamController<TrackingState> _states =
+      StreamController<TrackingState>.broadcast();
+
+  @override
+  TrackingPosition? latestPhonePosition;
+  int startCalls = 0;
+  int stopCalls = 0;
+  int currentPositionCalls = 0;
+
+  @override
+  Future<bool> acceptPhonePosition(
+    TrackingPosition position, {
+    required PhonePositionSource source,
+  }) async {
+    final current = latestPhonePosition;
+    if (current != null && !position.timestamp.isAfter(current.timestamp)) {
+      return false;
+    }
+    latestPhonePosition = position;
+    _positions.add(position);
+    return true;
+  }
+
+  @override
+  Future<TrackingPosition?> getCurrentPosition() async {
+    currentPositionCalls += 1;
+    return latestPhonePosition;
+  }
+
+  @override
+  Future<TrackingState> getTrackingState() async => TrackingState.idle;
+
+  @override
+  Future<void> startTracking() async {
+    startCalls += 1;
+  }
+
+  @override
+  Future<void> stopTracking() async {
+    stopCalls += 1;
+  }
+
+  @override
+  Stream<TrackingPosition> watchPositions() async* {
+    final current = latestPhonePosition;
+    if (current != null) {
+      yield current;
+    }
+    yield* _positions.stream;
+  }
+
+  @override
+  Stream<TrackingState> watchTrackingState() => _states.stream;
+
+  Future<void> dispose() async {
+    await _positions.close();
+    await _states.close();
+  }
+}
+
+class _SampleBackgroundLocationAdapter
+    implements BackgroundLocationPlatformAdapter {
+  final StreamController<IosBackgroundLocationSample> _samples =
+      StreamController<IosBackgroundLocationSample>.broadcast();
+
+  BackgroundLocationRuntimeStatus get _status =>
+      BackgroundLocationRuntimeStatus(
+        activeContexts: const <BackgroundLocationContext>{},
+        isNativePlatformSupported: true,
+        isNativeServiceRunning: false,
+        permission: LocationPermissionSnapshot(
+          locationServicesEnabled: true,
+          authorizationStatus: LocationAuthorizationStatus.always,
+          accuracyAuthorization: LocationAccuracyAuthorization.full,
+        ),
+      );
+
+  void emit(IosBackgroundLocationSample sample) => _samples.add(sample);
+
+  Future<void> close() => _samples.close();
+
+  @override
+  Future<void> dispose() async {}
+
+  @override
+  Future<BackgroundLocationRuntimeStatus> getBackgroundLocationStatus() async =>
+      _status;
+
+  @override
+  Future<LocationPermissionSnapshot> getLocationPermissionSnapshot() async =>
+      _status.permission;
+
+  @override
+  Future<LocationPermissionSnapshot> requestLocationAlwaysPermission() async =>
+      _status.permission;
+
+  @override
+  Future<LocationPermissionSnapshot>
+      requestLocationWhenInUsePermission() async => _status.permission;
+
+  @override
+  Future<BackgroundLocationRuntimeStatus> setBackgroundLocationContext(
+    BackgroundLocationContext context, {
+    required bool active,
+  }) async =>
+      _status;
+
+  @override
+  Stream<BackgroundLocationRuntimeStatus> watchBackgroundLocationStatus() =>
+      Stream.value(_status);
+
+  @override
+  Stream<IosBackgroundLocationSample> watchLocationSamples() => _samples.stream;
 }

@@ -4,8 +4,10 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import 'authoritative_sos_cadence.dart';
 import 'sos_location_ownership_effect.dart';
 import 'sos_location_ownership_orchestrator.dart';
+import 'sos_location_trace.dart';
 
 /// Owns SOS generation, account-scoped provenance and terminal cleanup.
 ///
@@ -38,14 +40,26 @@ final class AuthoritativeSosLifecycleController {
   final SosLocationOwnershipEffectDispatcher _locationOwnershipEffectDispatcher;
   final StreamController<SosLifecycleSnapshot> _controller =
       StreamController<SosLifecycleSnapshot>.broadcast();
+  final StreamController<AuthoritativeSosCadence> _cadenceController =
+      StreamController<AuthoritativeSosCadence>.broadcast(sync: true);
   SosLifecycleSnapshot _current;
   String? _ownerScope;
   int _generation = 0;
   int _revision = 0;
+  bool _hasCompletedRestoration = false;
+  String? _lastRestoredOwnerScope;
   bool _disposed = false;
 
   SosLifecycleSnapshot get current => _current;
   Stream<SosLifecycleSnapshot> get stream => _controller.stream;
+  AuthoritativeSosCadence get currentCadence => AuthoritativeSosCadence(
+        lifecycleRevision: _current.revision,
+        lifecycleStage: _current.stage,
+        desiredLocalSosOwnership:
+            _locationOwnershipOrchestrator.desiredSosOwnership,
+      );
+  Stream<AuthoritativeSosCadence> get cadenceStream =>
+      _cadenceController.stream;
   SosLocationOwnershipOrchestrator get locationOwnershipOrchestrator =>
       _locationOwnershipOrchestrator;
   SosLocationOwnershipEffectDispatcher get locationOwnershipEffectDispatcher =>
@@ -56,45 +70,57 @@ final class AuthoritativeSosLifecycleController {
       .toString();
 
   Future<SosLifecycleSnapshot> restoreFor(EixamSession? session) async {
+    final ownerScope = session == null ? null : ownerScopeFor(session);
+    if (_hasCompletedRestoration && _lastRestoredOwnerScope == ownerScope) {
+      _traceIgnoredRestoration(
+        reason: 'duplicate_restoration',
+        incomingStage: 'not_loaded',
+        incomingGenerationPresent: false,
+      );
+      return _current;
+    }
+    final revisionAtStart = _revision;
+    final priorOwnerScope = _ownerScope;
+    final replacingDifferentAccount = priorOwnerScope != null &&
+        ownerScope != null &&
+        priorOwnerScope != ownerScope;
+    _ownerScope = ownerScope;
+
     if (session == null) {
-      _ownerScope = null;
-      return _publish(
+      return _acceptRestoration(
         SosLifecycleSnapshot.idle(_now()),
-        persist: false,
-        reconciliationReason: SosLocationOwnershipReconciliationReason
-            .initializationAfterLifecycleRestoration,
+        ownerScope: ownerScope,
+        revisionAtStart: revisionAtStart,
+        replacingDifferentAccount: replacingDifferentAccount,
       );
     }
-    final ownerScope = ownerScopeFor(session);
-    _ownerScope = ownerScope;
     final encoded = await _secureStore.read(
       SecureStorageKeys.sdkSosLifecycleProvenance.value,
     );
     if (encoded == null || encoded.trim().isEmpty) {
-      return _publish(
+      return _acceptRestoration(
         SosLifecycleSnapshot.idle(_now()),
-        persist: false,
-        reconciliationReason: SosLocationOwnershipReconciliationReason
-            .initializationAfterLifecycleRestoration,
+        ownerScope: ownerScope,
+        revisionAtStart: revisionAtStart,
+        replacingDifferentAccount: replacingDifferentAccount,
       );
     }
     try {
       final json = jsonDecode(encoded) as Map<String, dynamic>;
       if (json['ownerScope'] != ownerScope) {
         // Preserve the other account's record without exposing or adopting it.
-        return _publish(
+        return _acceptRestoration(
           SosLifecycleSnapshot.idle(_now()),
-          persist: false,
-          reconciliationReason: SosLocationOwnershipReconciliationReason
-              .initializationAfterLifecycleRestoration,
+          ownerScope: ownerScope,
+          revisionAtStart: revisionAtStart,
+          replacingDifferentAccount: replacingDifferentAccount,
         );
       }
       final restored = _decode(json);
-      _generation = restored.generation;
       final recoveryStage = restored.stage == SosLifecycleStage.cancelling
           ? SosLifecycleStage.cancelling
           : SosLifecycleStage.recoveryRequired;
-      return _publish(
+      return _acceptRestoration(
         restored.copyWith(
           stage: recoveryStage,
           localActionable: true,
@@ -103,13 +129,14 @@ final class AuthoritativeSosLifecycleController {
           recoveryStatus: SosRecoveryStatus.reconciling,
           lastAuthoritativeObservation: _now(),
         ),
-        reconciliationReason: SosLocationOwnershipReconciliationReason
-            .initializationAfterLifecycleRestoration,
+        ownerScope: ownerScope,
+        revisionAtStart: revisionAtStart,
+        replacingDifferentAccount: replacingDifferentAccount,
       );
     } catch (_) {
       // An unreadable record is quarantined by retaining it and refusing to
       // infer cancellation or ownership.
-      return _publish(
+      return _acceptRestoration(
         SosLifecycleSnapshot(
           stage: SosLifecycleStage.recoveryRequired,
           lifecycleId: 'sos-recovery:${_now().microsecondsSinceEpoch}',
@@ -122,11 +149,70 @@ final class AuthoritativeSosLifecycleController {
           recoveryStatus: SosRecoveryStatus.unresolved,
           failureCode: 'E_SOS_PROVENANCE_UNREADABLE',
         ),
-        persist: false,
-        reconciliationReason: SosLocationOwnershipReconciliationReason
-            .initializationAfterLifecycleRestoration,
+        ownerScope: ownerScope,
+        revisionAtStart: revisionAtStart,
+        replacingDifferentAccount: replacingDifferentAccount,
       );
     }
+  }
+
+  Future<SosLifecycleSnapshot> _acceptRestoration(
+    SosLifecycleSnapshot incoming, {
+    required String? ownerScope,
+    required int revisionAtStart,
+    required bool replacingDifferentAccount,
+  }) {
+    if (_hasCompletedRestoration && _lastRestoredOwnerScope == ownerScope) {
+      _traceIgnoredRestoration(
+        reason: 'duplicate_restoration',
+        incomingStage: incoming.stage.name,
+        incomingGenerationPresent: incoming.generation > 0,
+      );
+      return Future<SosLifecycleSnapshot>.value(_current);
+    }
+
+    final current = _current;
+    final newerLocalLifecycle = current.localActionable &&
+        !current.externalOnly &&
+        current.isOpen &&
+        !replacingDifferentAccount;
+    if (newerLocalLifecycle) {
+      _hasCompletedRestoration = true;
+      _lastRestoredOwnerScope = ownerScope;
+      _traceIgnoredRestoration(
+        reason: current.revision > revisionAtStart
+            ? 'late_restoration'
+            : 'restoration_after_local_lifecycle',
+        incomingStage: incoming.stage.name,
+        incomingGenerationPresent: incoming.generation > 0,
+      );
+      return Future<SosLifecycleSnapshot>.value(current);
+    }
+
+    _hasCompletedRestoration = true;
+    _lastRestoredOwnerScope = ownerScope;
+    _generation = incoming.generation;
+    return _publish(
+      incoming,
+      persist: false,
+      reconciliationReason: SosLocationOwnershipReconciliationReason
+          .initializationAfterLifecycleRestoration,
+    );
+  }
+
+  void _traceIgnoredRestoration({
+    required String reason,
+    required String incomingStage,
+    required bool incomingGenerationPresent,
+  }) {
+    SosLocationTrace.emit('lifecycle_snapshot_ignored', {
+      'reason': reason,
+      'current_stage': _current.stage.name,
+      'incoming_stage': incomingStage,
+      'current_local_actionable': _current.localActionable,
+      'current_generation_present': _current.generation > 0,
+      'incoming_generation_present': incomingGenerationPresent,
+    });
   }
 
   Future<SosLifecycleSnapshot> beginArming({
@@ -330,6 +416,8 @@ final class AuthoritativeSosLifecycleController {
 
   Future<void> detachAccount() async {
     _ownerScope = null;
+    _hasCompletedRestoration = false;
+    _lastRestoredOwnerScope = null;
     await _publish(SosLifecycleSnapshot.idle(_now()), persist: false);
   }
 
@@ -345,9 +433,25 @@ final class AuthoritativeSosLifecycleController {
       return;
     }
     _disposed = true;
+    final ownership = _locationOwnershipOrchestrator.shadowState;
+    final effects = _locationOwnershipEffectDispatcher.diagnostics;
+    SosLocationTrace.emit('lifecycle_dispose_begin', {
+      'desired': ownership.desiredSosOwnership,
+      'activate_count': ownership.activateTransitionCount,
+      'deactivate_count': ownership.deactivateTransitionCount,
+      'emitted_effects': effects.emittedCommandCount,
+      'completed_effects': effects.completedCommandCount,
+      'effect_failures': effects.failureCount,
+    });
     _locationOwnershipOrchestrator.dispose();
     await _locationOwnershipEffectDispatcher.dispose();
+    await _cadenceController.close();
     await _controller.close();
+    SosLocationTrace.emit('lifecycle_dispose_done', {
+      'desired': false,
+      'pending_effects': 0,
+      'effect_tail_drained': true,
+    });
   }
 
   Future<void> reconcileLocationOwnershipForTesting() async {
@@ -382,6 +486,30 @@ final class AuthoritativeSosLifecycleController {
     if (!_disposed) {
       final transition = _locationOwnershipOrchestrator.accept(next);
       final effect = sosLocationOwnershipEffectFor(transition);
+      final shadow = _locationOwnershipOrchestrator.shadowState;
+      SosLocationTrace.emit('lifecycle_decision', {
+        'revision': next.revision,
+        'generation': next.generation,
+        'stage': next.stage.name,
+        'origin': next.origin.name,
+        'local_actionable': next.localActionable,
+        'external_only': next.externalOnly,
+        'directive': shadow.lastDirective?.name,
+        'transition': transition.name,
+        'desired': shadow.desiredSosOwnership,
+        'activate_count': shadow.activateTransitionCount,
+        'deactivate_count': shadow.deactivateTransitionCount,
+        'reconciliation_reason': reconciliationReason.name,
+      });
+      if (!_cadenceController.isClosed) {
+        _cadenceController.add(
+          AuthoritativeSosCadence(
+            lifecycleRevision: next.revision,
+            lifecycleStage: next.stage,
+            desiredLocalSosOwnership: shadow.desiredSosOwnership,
+          ),
+        );
+      }
       if (effect != null) {
         _locationOwnershipEffectDispatcher.offer(effect);
       }

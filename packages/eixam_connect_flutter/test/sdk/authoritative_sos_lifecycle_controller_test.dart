@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/sdk/authoritative_sos_lifecycle_controller.dart';
 import 'package:eixam_connect_flutter/src/sdk/sos_location_ownership_orchestrator.dart';
@@ -70,6 +72,64 @@ void main() {
     expect(encoded, isNot(contains('contacts')));
     expect(encoded, isNot(contains('payload')));
     expect(encoded, isNot(contains('token')));
+  });
+
+  test('cadence follows accepted desired ownership across the lifecycle',
+      () async {
+    final decisions = <(SosLifecycleStage, bool)>[];
+    final subscription = controller.cadenceStream.listen(
+      (cadence) => decisions.add(
+        (
+          cadence.lifecycleStage,
+          cadence.desiredLocalSosOwnership,
+        ),
+      ),
+    );
+    addTearDown(subscription.cancel);
+
+    await controller.restoreFor(owner);
+    await controller.beginArming(origin: SosLifecycleOrigin.localApp);
+    await controller.beginActivating(origin: SosLifecycleOrigin.localApp);
+    await controller.confirmActive(
+      origin: SosLifecycleOrigin.localApp,
+      localIncidentId: 'local-cadence',
+    );
+    await controller.beginCancellation();
+    await controller.cancellationFailed('E_CONTROLLED');
+    await controller.confirmTerminal(stage: SosLifecycleStage.cancelled);
+
+    expect(decisions, <(SosLifecycleStage, bool)>[
+      (SosLifecycleStage.idle, false),
+      (SosLifecycleStage.arming, false),
+      (SosLifecycleStage.activating, false),
+      (SosLifecycleStage.active, true),
+      (SosLifecycleStage.cancelling, true),
+      (SosLifecycleStage.cancellationFailed, true),
+      (SosLifecycleStage.cancelled, false),
+    ]);
+  });
+
+  test('external and ambiguous lifecycle decisions cannot enable cadence',
+      () async {
+    await controller.restoreFor(owner);
+    await controller.beginArming(origin: SosLifecycleOrigin.remoteRelay);
+    await controller.beginActivating(origin: SosLifecycleOrigin.remoteRelay);
+    await controller.confirmActive(
+      origin: SosLifecycleOrigin.remoteRelay,
+      localIncidentId: 'relay',
+    );
+
+    expect(controller.currentCadence.desiredLocalSosOwnership, isFalse);
+
+    await controller.detachAccount();
+    await controller.beginArming(origin: SosLifecycleOrigin.unknown);
+    await controller.beginActivating(origin: SosLifecycleOrigin.unknown);
+    await controller.confirmActive(
+      origin: SosLifecycleOrigin.unknown,
+      localIncidentId: 'ambiguous',
+    );
+
+    expect(controller.currentCadence.desiredLocalSosOwnership, isFalse);
   });
 
   test('SDK recreation restores active ownership as recovery required',
@@ -211,6 +271,68 @@ void main() {
     expect(store.values, isEmpty);
     expect(controller.current.stage, SosLifecycleStage.recoveryRequired);
     expect(controller.current.localIncidentId, isNull);
+  });
+
+  test(
+      'same-session auth restoration cannot reset arming and dispatch reaches active',
+      () async {
+    final snapshots = <SosLifecycleSnapshot>[];
+    final subscription = controller.stream.listen(snapshots.add);
+    addTearDown(subscription.cancel);
+
+    final idle = await controller.restoreFor(owner);
+    final arming = await controller.beginArming(
+      origin: SosLifecycleOrigin.localApp,
+    );
+    final afterAuthRestore = await controller.restoreFor(owner);
+    final activating = await controller.beginActivating(
+      origin: SosLifecycleOrigin.localApp,
+    );
+    final active = await controller.confirmActive(
+      origin: SosLifecycleOrigin.localApp,
+      localIncidentId: 'local-race',
+      backendIncidentId: 'backend-race',
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(idle.stage, SosLifecycleStage.idle);
+    expect(afterAuthRestore, same(arming));
+    expect(afterAuthRestore.revision, 2);
+    expect(activating.stage, SosLifecycleStage.activating);
+    expect(active.stage, SosLifecycleStage.active);
+    expect(
+      snapshots.map((snapshot) => snapshot.stage),
+      <SosLifecycleStage>[
+        SosLifecycleStage.idle,
+        SosLifecycleStage.arming,
+        SosLifecycleStage.activating,
+        SosLifecycleStage.active,
+      ],
+    );
+  });
+
+  test('late restoration finishing after arming is rejected', () async {
+    final delayedStore = _DelayedReadSecureStore();
+    final delayedController = AuthoritativeSosLifecycleController(
+      secureStore: delayedStore,
+      clock: () => now,
+    );
+    addTearDown(delayedController.dispose);
+    final snapshots = <SosLifecycleSnapshot>[];
+    final subscription = delayedController.stream.listen(snapshots.add);
+    addTearDown(subscription.cancel);
+
+    final restoration = delayedController.restoreFor(owner);
+    await delayedStore.readStarted.future;
+    final arming = await delayedController.beginArming(
+      origin: SosLifecycleOrigin.localApp,
+    );
+    delayedStore.completeRead();
+    final restored = await restoration;
+
+    expect(restored, same(arming));
+    expect(delayedController.current.stage, SosLifecycleStage.arming);
+    expect(snapshots, <SosLifecycleSnapshot>[arming]);
   });
 
   group('runtime shadow wiring', () {
@@ -404,4 +526,31 @@ void main() {
       expect(shadow.shadowState.desiredSosOwnership, isTrue);
     });
   });
+}
+
+final class _DelayedReadSecureStore implements SecureKeyValueStore {
+  final Completer<void> readStarted = Completer<void>();
+  final Completer<String?> _readResult = Completer<String?>();
+
+  void completeRead([String? value]) => _readResult.complete(value);
+
+  @override
+  Future<String?> read(String key) {
+    if (!readStarted.isCompleted) {
+      readStarted.complete();
+    }
+    return _readResult.future;
+  }
+
+  @override
+  Future<bool> containsKey(String key) async => false;
+
+  @override
+  Future<void> delete(String key) async {}
+
+  @override
+  Future<void> deleteAll({String? namespace}) async {}
+
+  @override
+  Future<void> write(String key, String value) async {}
 }

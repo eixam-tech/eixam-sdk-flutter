@@ -5,13 +5,16 @@ import 'package:geolocator/geolocator.dart';
 
 import '../datasources_local/shared_prefs_sdk_store.dart';
 import '../../mappers/local_state_serializers.dart';
+import '../../sdk/latest_phone_position_sink.dart';
+import '../../sdk/sos_location_trace.dart';
 
 /// Tracking repository backed by `geolocator`.
 ///
 /// The repository exposes live positions and tracking state, and can also cache
 /// the most recent values locally so the SDK can restore them on the next app
 /// launch.
-class GeolocatorTrackingRepository implements TrackingRepository {
+class GeolocatorTrackingRepository
+    implements TrackingRepository, LatestPhonePositionSink {
   GeolocatorTrackingRepository({
     required this.permissionsRepository,
     SharedPrefsSdkStore? localStore,
@@ -20,15 +23,23 @@ class GeolocatorTrackingRepository implements TrackingRepository {
       distanceFilter: 10,
     ),
     this.staleAfter = const Duration(seconds: 30),
-  }) : _localStore = localStore;
+  }) : _localStore = localStore {
+    _positionsController = StreamController<TrackingPosition>.broadcast(
+      onListen: () => _positionObserverCount += 1,
+      onCancel: () {
+        if (_positionObserverCount > 0) {
+          _positionObserverCount -= 1;
+        }
+      },
+    );
+  }
 
   final PermissionsRepository permissionsRepository;
   final SharedPrefsSdkStore? _localStore;
   final LocationSettings locationSettings;
   final Duration staleAfter;
 
-  final StreamController<TrackingPosition> _positionsController =
-      StreamController.broadcast();
+  late final StreamController<TrackingPosition> _positionsController;
   final StreamController<TrackingState> _trackingStateController =
       StreamController.broadcast();
 
@@ -36,7 +47,11 @@ class GeolocatorTrackingRepository implements TrackingRepository {
   Timer? _freshnessTimer;
   TrackingPosition? _lastPosition;
   TrackingState _state = TrackingState.idle;
+  int _positionObserverCount = 0;
   bool _disposed = false;
+
+  @override
+  TrackingPosition? get latestPhonePosition => _lastPosition;
 
   /// Restores the cached tracking state and last known position.
   Future<void> restoreState() async {
@@ -74,8 +89,10 @@ class GeolocatorTrackingRepository implements TrackingRepository {
       final position = await Geolocator.getCurrentPosition(
           locationSettings: locationSettings);
       if (_disposed) return _lastPosition;
-      _lastPosition = _mapPosition(position);
-      _addPosition(_lastPosition!);
+      await acceptPhonePosition(
+        _mapPosition(position),
+        source: PhonePositionSource.oneShot,
+      );
       _setState(TrackingState.tracking);
       _restartFreshnessTimer();
       await _persistState();
@@ -99,14 +116,22 @@ class GeolocatorTrackingRepository implements TrackingRepository {
     await _persistState();
 
     try {
+      final hadPreviousStream = _subscription != null;
       await _subscription?.cancel();
+      SosLocationTrace.emit('geolocator_stream', {
+        'action': 'previous_cancelled',
+        'had_previous_stream': hadPreviousStream,
+        'active_streams': 0,
+      });
       _subscription =
           Geolocator.getPositionStream(locationSettings: locationSettings)
               .listen(
         (position) async {
           if (_disposed) return;
-          _lastPosition = _mapPosition(position);
-          _addPosition(_lastPosition!);
+          await acceptPhonePosition(
+            _mapPosition(position),
+            source: PhonePositionSource.geolocator,
+          );
           _setState(TrackingState.tracking);
           _restartFreshnessTimer();
           await _persistState();
@@ -123,9 +148,17 @@ class GeolocatorTrackingRepository implements TrackingRepository {
           }
         },
       );
+      SosLocationTrace.emit('geolocator_stream', {
+        'action': 'subscribed',
+        'active_streams': 1,
+      });
     } catch (error) {
       _setState(TrackingState.error);
       await _persistState();
+      SosLocationTrace.emit('geolocator_stream', {
+        'action': 'subscribe_failed',
+        'active_streams': 0,
+      });
       throw TrackingException('E_TRACKING_START_ERROR', error.toString());
     }
   }
@@ -134,6 +167,10 @@ class GeolocatorTrackingRepository implements TrackingRepository {
   Future<void> stopTracking() async {
     await _subscription?.cancel();
     _subscription = null;
+    SosLocationTrace.emit('geolocator_stream', {
+      'action': 'cancelled',
+      'active_streams': 0,
+    });
     _freshnessTimer?.cancel();
     _freshnessTimer = null;
     if (_disposed) return;
@@ -158,6 +195,57 @@ class GeolocatorTrackingRepository implements TrackingRepository {
     yield _state;
     if (_disposed) return;
     yield* _trackingStateController.stream;
+  }
+
+  @override
+  Future<bool> acceptPhonePosition(
+    TrackingPosition position, {
+    required PhonePositionSource source,
+  }) async {
+    if (_disposed) {
+      return false;
+    }
+    final sourceName = switch (source) {
+      PhonePositionSource.nativeContext => 'native_context',
+      PhonePositionSource.geolocator => 'geolocator',
+      PhonePositionSource.oneShot => 'one_shot',
+    };
+    if (!_isValidPosition(position)) {
+      _tracePositionCache(
+        action: 'ignored',
+        source: sourceName,
+        reason: 'invalid',
+      );
+      return false;
+    }
+    final current = _lastPosition;
+    if (current != null) {
+      if (_isSamePosition(position, current)) {
+        _tracePositionCache(
+          action: 'ignored',
+          source: sourceName,
+          reason: 'duplicate',
+        );
+        return false;
+      }
+      if (!position.timestamp.isAfter(current.timestamp)) {
+        _tracePositionCache(
+          action: 'ignored',
+          source: sourceName,
+          reason: 'older_sample',
+        );
+        return false;
+      }
+    }
+    _lastPosition = position;
+    _addPosition(position);
+    await _persistState();
+    _tracePositionCache(
+      action: 'updated',
+      source: sourceName,
+      reason: 'newer_sample',
+    );
+    return true;
   }
 
   Future<void> _ensureLocationPermission() async {
@@ -209,6 +297,37 @@ class GeolocatorTrackingRepository implements TrackingRepository {
     );
   }
 
+  bool _isValidPosition(TrackingPosition position) =>
+      position.latitude.isFinite &&
+      position.longitude.isFinite &&
+      position.latitude >= -90 &&
+      position.latitude <= 90 &&
+      position.longitude >= -180 &&
+      position.longitude <= 180 &&
+      (position.accuracy == null ||
+          (position.accuracy!.isFinite && position.accuracy! >= 0));
+
+  bool _isSamePosition(
+    TrackingPosition first,
+    TrackingPosition second,
+  ) =>
+      first.timestamp == second.timestamp &&
+      first.latitude == second.latitude &&
+      first.longitude == second.longitude;
+
+  void _tracePositionCache({
+    required String action,
+    required String source,
+    required String reason,
+  }) {
+    SosLocationTrace.emit('ios_position_cache', {
+      'action': action,
+      'source': source,
+      'reason': reason,
+      'observer_count': _positionObserverCount,
+    });
+  }
+
   Future<void> _persistState() async {
     if (_disposed) return;
     if (_localStore == null) return;
@@ -241,6 +360,10 @@ class GeolocatorTrackingRepository implements TrackingRepository {
     _freshnessTimer = null;
     await _subscription?.cancel();
     _subscription = null;
+    SosLocationTrace.emit('geolocator_stream', {
+      'action': 'disposed',
+      'active_streams': 0,
+    });
     await _positionsController.close();
     await _trackingStateController.close();
   }

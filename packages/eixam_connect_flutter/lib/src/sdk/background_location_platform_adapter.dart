@@ -3,9 +3,37 @@ import 'dart:async';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:flutter/services.dart';
 
+import 'sos_location_trace.dart';
+
 abstract class BackgroundLocationPlatformAdapter
     implements BackgroundLocationControl {
+  Stream<IosBackgroundLocationSample> watchLocationSamples();
+
   Future<void> dispose();
+}
+
+class IosBackgroundLocationSample {
+  const IosBackgroundLocationSample({
+    required this.latitude,
+    required this.longitude,
+    required this.timestamp,
+    required this.context,
+    this.accuracy,
+  });
+
+  final double latitude;
+  final double longitude;
+  final DateTime timestamp;
+  final String context;
+  final double? accuracy;
+
+  TrackingPosition toTrackingPosition() => TrackingPosition(
+        latitude: latitude,
+        longitude: longitude,
+        accuracy: accuracy,
+        source: DeliveryMode.mobile,
+        timestamp: timestamp,
+      );
 }
 
 class BackgroundLocationAdapterException implements Exception {
@@ -31,6 +59,10 @@ class IosBackgroundLocationPlatformAdapter
     _statusController =
         StreamController<BackgroundLocationRuntimeStatus>.broadcast(
             onListen: _startNativeSubscription);
+    _sampleController = StreamController<IosBackgroundLocationSample>.broadcast(
+      onListen: _handleSampleListen,
+      onCancel: _handleSampleCancel,
+    );
   }
 
   static const String _methodChannelName =
@@ -43,9 +75,12 @@ class IosBackgroundLocationPlatformAdapter
   final Stream<Object?> Function()? _eventStreamFactory;
   late final StreamController<BackgroundLocationRuntimeStatus>
       _statusController;
+  late final StreamController<IosBackgroundLocationSample> _sampleController;
 
   StreamSubscription<Object?>? _nativeSubscription;
   Future<void> _contextOperation = Future<void>.value();
+  IosBackgroundLocationSample? _latestSample;
+  int _sampleObserverCount = 0;
   bool _disposed = false;
 
   @override
@@ -128,6 +163,20 @@ class IosBackgroundLocationPlatformAdapter
   }
 
   @override
+  Stream<IosBackgroundLocationSample> watchLocationSamples() async* {
+    _ensureNotDisposed();
+    final current = _latestSample;
+    if (current != null) {
+      _traceSample('replayed', current.context);
+      yield current;
+    }
+    if (_disposed) {
+      return;
+    }
+    yield* _sampleController.stream;
+  }
+
+  @override
   Future<void> dispose() async {
     if (_disposed) {
       return;
@@ -135,6 +184,8 @@ class IosBackgroundLocationPlatformAdapter
     _disposed = true;
     await _nativeSubscription?.cancel();
     _nativeSubscription = null;
+    _latestSample = null;
+    await _sampleController.close();
     await _statusController.close();
   }
 
@@ -148,12 +199,142 @@ class IosBackgroundLocationPlatformAdapter
       (event) {
         try {
           _statusController.add(_parseStatus(event));
+          _parseAndEmitSample(event);
         } catch (error, stackTrace) {
           _statusController.addError(error, stackTrace);
         }
       },
       onError: _statusController.addError,
     );
+  }
+
+  void _handleSampleListen() {
+    _sampleObserverCount += 1;
+    _startNativeSubscription();
+  }
+
+  void _handleSampleCancel() {
+    if (_sampleObserverCount > 0) {
+      _sampleObserverCount -= 1;
+    }
+  }
+
+  void _parseAndEmitSample(Object? raw) {
+    final map = _stringKeyedMap(raw, payloadName: 'status');
+    final rawSample = map['latestLocationSample'];
+    if (rawSample == null) {
+      return;
+    }
+    try {
+      final sample = _parseSample(rawSample);
+      final latest = _latestSample;
+      if (latest != null) {
+        if (_isSameSample(sample, latest)) {
+          _traceSample('rejected', sample.context, reason: 'duplicate');
+          return;
+        }
+        if (!sample.timestamp.isAfter(latest.timestamp)) {
+          _traceSample('rejected', sample.context, reason: 'older_sample');
+          return;
+        }
+      }
+      _latestSample = sample;
+      if (!_sampleController.isClosed) {
+        _sampleController.add(sample);
+      }
+      _traceSample(
+        map['latestLocationSampleAction'] == 'replayed'
+            ? 'replayed'
+            : 'received',
+        sample.context,
+      );
+    } on BackgroundLocationAdapterException {
+      _traceSample('rejected', 'unknown', reason: 'invalid');
+    }
+  }
+
+  IosBackgroundLocationSample _parseSample(Object? raw) {
+    final map = _stringKeyedMap(raw, payloadName: 'sample');
+    final latitude = map['latitude'];
+    final longitude = map['longitude'];
+    final timestampMs = map['timestamp'];
+    final accuracy = map['accuracy'];
+    final context = map['context'];
+    if (latitude is! num ||
+        longitude is! num ||
+        timestampMs is! num ||
+        accuracy is! num ||
+        context is! String) {
+      throw const BackgroundLocationAdapterException(
+        'invalid_native_payload',
+        'Native location sample has invalid field types.',
+      );
+    }
+    final parsedLatitude = latitude.toDouble();
+    final parsedLongitude = longitude.toDouble();
+    final parsedAccuracy = accuracy.toDouble();
+    if (!parsedLatitude.isFinite ||
+        !parsedLongitude.isFinite ||
+        parsedLatitude < -90 ||
+        parsedLatitude > 90 ||
+        parsedLongitude < -180 ||
+        parsedLongitude > 180 ||
+        !parsedAccuracy.isFinite ||
+        parsedAccuracy < 0 ||
+        !const <String>{
+          'sharing',
+          'sos',
+          'dmp',
+          'combined',
+          'unknown',
+        }.contains(context)) {
+      throw const BackgroundLocationAdapterException(
+        'invalid_native_payload',
+        'Native location sample is outside its valid range.',
+      );
+    }
+    final timestamp = DateTime.fromMillisecondsSinceEpoch(
+      timestampMs.toInt(),
+      isUtc: true,
+    );
+    final now = DateTime.now().toUtc();
+    if (timestamp.isBefore(now.subtract(const Duration(minutes: 5))) ||
+        timestamp.isAfter(now.add(const Duration(minutes: 1)))) {
+      throw const BackgroundLocationAdapterException(
+        'stale_native_payload',
+        'Native location sample timestamp is outside its accepted window.',
+      );
+    }
+    return IosBackgroundLocationSample(
+      latitude: parsedLatitude,
+      longitude: parsedLongitude,
+      timestamp: timestamp,
+      context: context,
+      accuracy: parsedAccuracy,
+    );
+  }
+
+  bool _isSameSample(
+    IosBackgroundLocationSample first,
+    IosBackgroundLocationSample second,
+  ) =>
+      first.timestamp == second.timestamp &&
+      first.latitude == second.latitude &&
+      first.longitude == second.longitude;
+
+  void _traceSample(
+    String action,
+    String context, {
+    String? reason,
+  }) {
+    SosLocationTrace.emit('ios_native_sample', {
+      'action': action,
+      'context': context,
+      'sample_available': action != 'rejected',
+      'timestamp_present': action != 'rejected',
+      'observer_count': _sampleObserverCount,
+      if (reason != null) 'reason': reason,
+    });
   }
 
   LocationPermissionSnapshot _parsePermission(Object? raw) {
@@ -347,6 +528,10 @@ class UnsupportedBackgroundLocationPlatformAdapter
   @override
   Stream<BackgroundLocationRuntimeStatus> watchBackgroundLocationStatus() =>
       Stream<BackgroundLocationRuntimeStatus>.value(_status);
+
+  @override
+  Stream<IosBackgroundLocationSample> watchLocationSamples() =>
+      const Stream<IosBackgroundLocationSample>.empty();
 
   @override
   Future<void> dispose() async {}

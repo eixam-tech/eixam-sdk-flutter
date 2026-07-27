@@ -246,11 +246,13 @@ void main() {
       );
       await controller.locationOwnershipEffectDispatcher.whenIdle;
       expect(controller.current.stage, SosLifecycleStage.active);
+      expect(controller.currentCadence.desiredLocalSosOwnership, isTrue);
 
       await controller.confirmTerminal(stage: SosLifecycleStage.cancelled);
       await controller.locationOwnershipEffectDispatcher.whenIdle;
 
       expect(controller.current.stage, SosLifecycleStage.cancelled);
+      expect(controller.currentCadence.desiredLocalSosOwnership, isFalse);
       expect(errors, isEmpty);
       expect(
         controller.locationOwnershipEffectDispatcher.diagnostics.failureCount,

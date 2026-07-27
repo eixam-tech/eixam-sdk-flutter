@@ -4,6 +4,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import 'background_location_platform_adapter.dart';
 import 'sos_location_ownership_orchestrator.dart';
+import 'sos_location_trace.dart';
 
 enum SosLocationOwnershipEffectMode {
   disabled,
@@ -131,6 +132,7 @@ final class SosLocationOwnershipEffectDispatcher {
   int _emittedCommandCount = 0;
   int _effectAttemptCount = 0;
   int _completedCommandCount = 0;
+  int _pendingCommandCount = 0;
   int _failureCount = 0;
   SosLocationOwnershipEffect? _lastEffect;
   int _lastSequenceNumber = 0;
@@ -169,6 +171,10 @@ final class SosLocationOwnershipEffectDispatcher {
   /// Errors are reduced to a count and never escape this boundary.
   void offer(SosLocationOwnershipEffect effect) {
     if (!_acceptingCommands) {
+      SosLocationTrace.emit('effect_ignored', {
+        'reason': 'not_accepting',
+        'effect': effect.name,
+      });
       return;
     }
     _authoritativeDesiredOwnership =
@@ -176,15 +182,47 @@ final class SosLocationOwnershipEffectDispatcher {
     _emittedCommandCount += 1;
     _lastSequenceNumber += 1;
     _lastEffect = effect;
+    _pendingCommandCount += 1;
+    final sequence = _lastSequenceNumber;
+    SosLocationTrace.emit('effect_queued', {
+      'sequence': sequence,
+      'effect': effect.name,
+      'desired': _authoritativeDesiredOwnership,
+      'queued_count': _pendingCommandCount,
+    });
     _tail = _tail.then((_) async {
       _effectAttemptCount += 1;
+      SosLocationTrace.emit('effect_attempt', {
+        'sequence': sequence,
+        'effect': effect.name,
+        'attempt_count': _effectAttemptCount,
+      });
       try {
         await _sink.apply(effect);
         _completedCommandCount += 1;
         _lastErrorCategory = null;
+        SosLocationTrace.emit('effect_result', {
+          'sequence': sequence,
+          'effect': effect.name,
+          'result': 'success',
+          'completed_count': _completedCommandCount,
+        });
       } catch (error) {
         _failureCount += 1;
         _lastErrorCategory = _categorize(error);
+        SosLocationTrace.emit('effect_result', {
+          'sequence': sequence,
+          'effect': effect.name,
+          'result': 'failure',
+          'error_category': _lastErrorCategory?.name,
+          'failure_count': _failureCount,
+        });
+      } finally {
+        _pendingCommandCount -= 1;
+        SosLocationTrace.emit('effect_settled', {
+          'sequence': sequence,
+          'pending_count': _pendingCommandCount,
+        });
       }
     });
   }
@@ -200,6 +238,11 @@ final class SosLocationOwnershipEffectDispatcher {
     _authoritativeDesiredOwnership = desiredOwnership;
     _reconciliationCount += 1;
     _lastReconciliationReason = reason;
+    SosLocationTrace.emit('reconcile_queued', {
+      'desired': desiredOwnership,
+      'reason': reason.name,
+      'count': _reconciliationCount,
+    });
     _tail = _tail.then((_) async {
       final sink = _sink;
       if (sink is! SosLocationOwnershipReconciler) {
@@ -211,9 +254,20 @@ final class SosLocationOwnershipEffectDispatcher {
           reason,
         );
         _lastErrorCategory = null;
+        SosLocationTrace.emit('reconcile_result', {
+          'desired': desiredOwnership,
+          'reason': reason.name,
+          'result': 'success',
+        });
       } catch (error) {
         _failureCount += 1;
         _lastErrorCategory = _categorize(error);
+        SosLocationTrace.emit('reconcile_result', {
+          'desired': desiredOwnership,
+          'reason': reason.name,
+          'result': 'failure',
+          'error_category': _lastErrorCategory?.name,
+        });
       }
     });
   }
@@ -237,6 +291,14 @@ final class SosLocationOwnershipEffectDispatcher {
       }
     }
     _disposed = true;
+    SosLocationTrace.emit('effect_dispatcher_disposed', {
+      'desired': _authoritativeDesiredOwnership,
+      'emitted_count': _emittedCommandCount,
+      'completed_count': _completedCommandCount,
+      'failure_count': _failureCount,
+      'pending_count': _pendingCommandCount,
+      'effect_tail_drained': true,
+    });
   }
 
   SosLocationOwnershipErrorCategory _categorize(Object error) {

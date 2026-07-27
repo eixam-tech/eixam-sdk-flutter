@@ -116,6 +116,34 @@ void main() {
       expect(backgroundAdapter.running, isFalse);
     });
 
+    test('deferred transport startup still starts SDK telemetry cadence',
+        () async {
+      const session = EixamSession.signed(
+        appId: 'partner-app',
+        externalUserId: 'user-1',
+        userHash: 'hash-1',
+      );
+      await SdkSessionStore(localStore: localStore).save(session);
+      BleDebugRegistry.instance.reset();
+
+      await sdk.initialize(
+        const EixamSdkConfig(
+          apiBaseUrl: 'https://api.example.test',
+          deferRuntimeStartup: true,
+        ),
+      );
+
+      final debugMessages = BleDebugRegistry.instance.currentState.events
+          .map((event) => event.message)
+          .toList();
+      expect(
+        debugMessages,
+        contains(
+          '[SDK_TELEMETRY_LOOP] action=start mode=normal interval=60s',
+        ),
+      );
+    });
+
     test(
         'current Android semantics: initialization adopts an already-running '
         'native service', () async {

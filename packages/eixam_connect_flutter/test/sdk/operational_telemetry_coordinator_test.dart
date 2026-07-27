@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:eixam_connect_flutter/src/sdk/authoritative_sos_cadence.dart';
 import 'package:eixam_connect_flutter/src/sdk/operational_telemetry_coordinator.dart';
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -32,11 +33,11 @@ void main() {
       });
     });
 
-    test('SOS open publishes at 20 seconds even without movement', () {
+    test('authoritative active publishes at 20 seconds without movement', () {
       fakeAsync((async) {
         final harness = _Harness();
         harness.start();
-        harness.emitSosState(SosState.sent);
+        harness.emitCadence(SosLifecycleStage.active, desired: true);
         async.flushMicrotasks();
 
         async.elapse(const Duration(seconds: 20));
@@ -50,7 +51,7 @@ void main() {
       fakeAsync((async) {
         final harness = _Harness();
         harness.start();
-        harness.emitSosState(SosState.sent);
+        harness.emitCadence(SosLifecycleStage.active, desired: true);
         async.flushMicrotasks();
 
         harness.emitPosition(
@@ -67,7 +68,7 @@ void main() {
       fakeAsync((async) {
         final harness = _Harness();
         harness.start();
-        harness.emitSosState(SosState.sent);
+        harness.emitCadence(SosLifecycleStage.active, desired: true);
         async.flushMicrotasks();
 
         harness.emitPosition(
@@ -84,12 +85,12 @@ void main() {
       fakeAsync((async) {
         final harness = _Harness();
         harness.start();
-        harness.emitSosState(SosState.sent);
+        harness.emitCadence(SosLifecycleStage.active, desired: true);
         async.flushMicrotasks();
 
         async.elapse(const Duration(seconds: 20));
         async.flushMicrotasks();
-        harness.emitSosState(SosState.resolved);
+        harness.emitCadence(SosLifecycleStage.resolved, desired: false);
         async.flushMicrotasks();
         async.elapse(const Duration(seconds: 59));
         async.flushMicrotasks();
@@ -103,39 +104,151 @@ void main() {
       });
     });
 
-    test('characterization: legacy public cancelling state retains SOS cadence',
-        () {
+    test('cancelling and cancellation failure retain SOS cadence', () {
       fakeAsync((async) {
         final harness = _Harness();
         harness.start();
-        harness.emitSosState(SosState.sent);
+        harness.emitCadence(SosLifecycleStage.active, desired: true);
         async.flushMicrotasks();
 
         async.elapse(const Duration(seconds: 20));
         async.flushMicrotasks();
-        harness.emitSosState(SosState.cancelRequested);
+        harness.emitCadence(SosLifecycleStage.cancelling, desired: true);
+        async.flushMicrotasks();
+        async.elapse(const Duration(seconds: 20));
+        async.flushMicrotasks();
+        harness.emitCadence(
+          SosLifecycleStage.cancellationFailed,
+          desired: true,
+        );
         async.flushMicrotasks();
         async.elapse(const Duration(seconds: 20));
         async.flushMicrotasks();
 
-        expect(harness.publishedPayloads, hasLength(2));
+        expect(harness.publishedPayloads, hasLength(3));
       });
     });
 
-    test('characterization: cadence consumes legacy public SosState revisions',
-        () {
+    test('arming and activating remain normal with no early SOS interval', () {
       fakeAsync((async) {
         final harness = _Harness();
         harness.start();
 
-        // Known limitation: this coordinator receives SosState, not the
-        // authoritative SosLifecycleSnapshot with ownership metadata.
-        harness.emitSosState(SosState.sent);
+        harness.emitCadence(SosLifecycleStage.arming, desired: false);
+        async.elapse(const Duration(seconds: 20));
         async.flushMicrotasks();
+        harness.emitCadence(SosLifecycleStage.activating, desired: false);
+        async.elapse(const Duration(seconds: 20));
+        async.flushMicrotasks();
+
+        expect(harness.publishedPayloads, isEmpty);
+
         async.elapse(const Duration(seconds: 20));
         async.flushMicrotasks();
 
         expect(harness.publishedPayloads, hasLength(1));
+      });
+    });
+
+    test('active duplicate revision does not reconfigure or delay SOS timer',
+        () {
+      fakeAsync((async) {
+        final harness = _Harness();
+        harness.start();
+        harness.emitCadence(SosLifecycleStage.active, desired: true);
+        async.elapse(const Duration(seconds: 10));
+        harness.emitCadence(
+          SosLifecycleStage.active,
+          desired: true,
+          revision: harness.lastRevision,
+        );
+        async.elapse(const Duration(seconds: 10));
+        async.flushMicrotasks();
+
+        expect(harness.publishedPayloads, hasLength(1));
+      });
+    });
+
+    test('valid local recovery retains SOS cadence', () {
+      fakeAsync((async) {
+        final harness = _Harness();
+        harness.start(
+          stage: SosLifecycleStage.active,
+          desired: true,
+        );
+        harness.emitCadence(
+          SosLifecycleStage.recoveryRequired,
+          desired: true,
+        );
+
+        async.elapse(const Duration(seconds: 20));
+        async.flushMicrotasks();
+
+        expect(harness.publishedPayloads, hasLength(1));
+      });
+    });
+
+    test('terminal and definitive idle each use normal cadence', () {
+      for (final stage in <SosLifecycleStage>[
+        SosLifecycleStage.cancelled,
+        SosLifecycleStage.resolved,
+        SosLifecycleStage.idle,
+      ]) {
+        fakeAsync((async) {
+          final harness = _Harness();
+          harness.start(
+            stage: SosLifecycleStage.active,
+            desired: true,
+          );
+          harness.emitCadence(stage, desired: false);
+
+          async.elapse(const Duration(seconds: 59));
+          async.flushMicrotasks();
+          expect(harness.publishedPayloads, isEmpty, reason: stage.name);
+
+          async.elapse(const Duration(seconds: 1));
+          async.flushMicrotasks();
+          expect(harness.publishedPayloads, hasLength(1), reason: stage.name);
+        });
+      }
+    });
+
+    test('external relay and ambiguous active stay on normal cadence', () {
+      for (final stage in <SosLifecycleStage>[
+        SosLifecycleStage.active,
+        SosLifecycleStage.recoveryRequired,
+      ]) {
+        fakeAsync((async) {
+          final harness = _Harness();
+          harness.start();
+          harness.emitCadence(stage, desired: false);
+
+          async.elapse(const Duration(seconds: 20));
+          async.flushMicrotasks();
+          expect(harness.publishedPayloads, isEmpty, reason: stage.name);
+        });
+      }
+    });
+
+    test('restored local active starts SOS and restored idle starts normal',
+        () {
+      fakeAsync((async) {
+        final active = _Harness();
+        active.start(
+          stage: SosLifecycleStage.recoveryRequired,
+          desired: true,
+        );
+        final idle = _Harness();
+        idle.start();
+
+        async.elapse(const Duration(seconds: 20));
+        async.flushMicrotasks();
+        expect(active.publishedPayloads, hasLength(1));
+        expect(idle.publishedPayloads, isEmpty);
+
+        async.elapse(const Duration(seconds: 40));
+        async.flushMicrotasks();
+        expect(idle.publishedPayloads, hasLength(1));
       });
     });
 
@@ -230,7 +343,7 @@ class _Harness {
         ) {
     coordinator = OperationalTelemetryCoordinator(
       trackingRepository: trackingRepository,
-      sosStateStream: _sosStateController.stream,
+      authoritativeSosCadenceStream: _cadenceController.stream,
       sessionProvider: () => session,
       publishTelemetry: (payload) async {
         publishCallCount++;
@@ -253,7 +366,8 @@ class _Harness {
     );
   }
 
-  final _sosStateController = StreamController<SosState>.broadcast(sync: true);
+  final _cadenceController =
+      StreamController<AuthoritativeSosCadence>.broadcast(sync: true);
   final List<SdkTelemetryPayload> publishedPayloads = <SdkTelemetryPayload>[];
   final List<String> logs = <String>[];
   final _FakeTrackingRepository trackingRepository;
@@ -266,13 +380,34 @@ class _Harness {
   );
   Object? publishError;
   int publishCallCount = 0;
+  int lastRevision = 0;
 
-  void start() {
-    coordinator.start(initialSosState: SosState.idle);
+  void start({
+    SosLifecycleStage stage = SosLifecycleStage.idle,
+    bool desired = false,
+  }) {
+    coordinator.start(
+      initialCadence: AuthoritativeSosCadence(
+        lifecycleRevision: lastRevision,
+        lifecycleStage: stage,
+        desiredLocalSosOwnership: desired,
+      ),
+    );
   }
 
-  void emitSosState(SosState state) {
-    _sosStateController.add(state);
+  void emitCadence(
+    SosLifecycleStage stage, {
+    required bool desired,
+    int? revision,
+  }) {
+    lastRevision = revision ?? lastRevision + 1;
+    _cadenceController.add(
+      AuthoritativeSosCadence(
+        lifecycleRevision: lastRevision,
+        lifecycleStage: stage,
+        desiredLocalSosOwnership: desired,
+      ),
+    );
   }
 
   void emitPosition(TrackingPosition position) {

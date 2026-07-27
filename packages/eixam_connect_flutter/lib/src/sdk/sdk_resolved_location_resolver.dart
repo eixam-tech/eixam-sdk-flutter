@@ -1,5 +1,6 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import 'latest_phone_position_sink.dart';
 import 'location_debug_log.dart';
 
 enum SdkResolvedLocationUseCase {
@@ -213,6 +214,13 @@ class SdkResolvedLocationResolver {
 
   Future<SdkResolvedLocation?> _freshPhoneLocation() async {
     try {
+      final cached = _trackingRepository is LatestPhonePositionSink
+          ? (_trackingRepository as LatestPhonePositionSink).latestPhonePosition
+          : null;
+      final cachedLocation = _validFreshPhoneLocation(cached);
+      if (cachedLocation != null) {
+        return cachedLocation;
+      }
       final position = await _trackingRepository.getCurrentPosition();
       if (position == null) {
         LocationDebugLog.resolved(
@@ -223,12 +231,7 @@ class SdkResolvedLocationResolver {
         );
         return null;
       }
-      final freshness = _age(position.timestamp);
-      final location = SdkResolvedLocation.fromPhoneTrackingPosition(
-        position: position,
-        freshness: freshness,
-        isFresh: freshness <= _freshnessThreshold,
-      );
+      final location = _phoneLocation(position);
       if (!location.isValid || !location.isFresh) {
         LocationDebugLog.resolved(
           flow: 'resolver_candidate',
@@ -255,6 +258,32 @@ class SdkResolvedLocationResolver {
       );
       return null;
     }
+  }
+
+  SdkResolvedLocation? _validFreshPhoneLocation(TrackingPosition? position) {
+    if (position == null) {
+      return null;
+    }
+    final location = _phoneLocation(position);
+    if (!location.isValid || !location.isFresh) {
+      return null;
+    }
+    LocationDebugLog.resolved(
+      flow: 'resolver_candidate',
+      location: location,
+      accepted: true,
+      note: 'shared_latest_phone_position',
+    );
+    return location;
+  }
+
+  SdkResolvedLocation _phoneLocation(TrackingPosition position) {
+    final freshness = _age(position.timestamp);
+    return SdkResolvedLocation.fromPhoneTrackingPosition(
+      position: position,
+      freshness: freshness,
+      isFresh: freshness <= _freshnessThreshold,
+    );
   }
 
   SdkResolvedLocation? _presentationOnly(SdkResolvedLocation? location) {

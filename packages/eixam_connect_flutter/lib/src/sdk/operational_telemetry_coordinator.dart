@@ -4,7 +4,10 @@ import 'dart:math' as math;
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import '../device/ble_debug_registry.dart';
+import 'authoritative_sos_cadence.dart';
+import 'latest_phone_position_sink.dart';
 import 'location_debug_log.dart';
+import 'sos_location_trace.dart';
 
 typedef OperationalTelemetrySessionProvider = EixamSession? Function();
 typedef OperationalTelemetryPayloadPublisher = Future<void> Function(
@@ -18,7 +21,7 @@ typedef OperationalTelemetryLogger = void Function(String message);
 class OperationalTelemetryCoordinator {
   OperationalTelemetryCoordinator({
     required TrackingRepository trackingRepository,
-    required Stream<SosState> sosStateStream,
+    required Stream<AuthoritativeSosCadence> authoritativeSosCadenceStream,
     required OperationalTelemetrySessionProvider sessionProvider,
     required OperationalTelemetryPayloadPublisher publishTelemetry,
     required OperationalResolvedLocationProvider resolvedLocationProvider,
@@ -28,7 +31,7 @@ class OperationalTelemetryCoordinator {
     OperationalTelemetryClock? clock,
     OperationalTelemetryLogger? logger,
   })  : _trackingRepository = trackingRepository,
-        _sosStateStream = sosStateStream,
+        _authoritativeSosCadenceStream = authoritativeSosCadenceStream,
         _sessionProvider = sessionProvider,
         _publishTelemetry = publishTelemetry,
         _resolvedLocationProvider = resolvedLocationProvider,
@@ -40,7 +43,7 @@ class OperationalTelemetryCoordinator {
             ((message) => BleDebugRegistry.instance.recordEvent(message));
 
   final TrackingRepository _trackingRepository;
-  final Stream<SosState> _sosStateStream;
+  final Stream<AuthoritativeSosCadence> _authoritativeSosCadenceStream;
   final OperationalTelemetrySessionProvider _sessionProvider;
   final OperationalTelemetryPayloadPublisher _publishTelemetry;
   final OperationalResolvedLocationProvider _resolvedLocationProvider;
@@ -50,11 +53,12 @@ class OperationalTelemetryCoordinator {
   final OperationalTelemetryClock _clock;
   final OperationalTelemetryLogger _logger;
 
-  StreamSubscription<SosState>? _sosStateSub;
+  StreamSubscription<AuthoritativeSosCadence>? _sosCadenceSub;
   StreamSubscription<TrackingPosition>? _positionSub;
   Timer? _timer;
   bool _started = false;
-  bool _sosOpen = false;
+  bool _sosCadenceActive = false;
+  SosLifecycleStage _authoritativeLifecycleStage = SosLifecycleStage.idle;
   bool _intervalPublishingEnabled = true;
   bool _publishInFlight = false;
   SdkResolvedLocation? _lastPublishedSosLocation;
@@ -71,49 +75,68 @@ class OperationalTelemetryCoordinator {
     }
   }
 
-  void start({required SosState initialSosState}) {
+  void start({required AuthoritativeSosCadence initialCadence}) {
     if (_started) {
       return;
     }
     _started = true;
-    _sosOpen = _isOpenSosState(initialSosState);
+    _sosCadenceActive = initialCadence.desiredLocalSosOwnership;
+    _authoritativeLifecycleStage = initialCadence.lifecycleStage;
     _lastPublishedSosLocation = null;
-    _sosStateSub = _sosStateStream.listen(
-      _handleSosState,
-      onError: (Object error) {
+    _sosCadenceSub = _authoritativeSosCadenceStream.listen(
+      _handleAuthoritativeSosCadence,
+      onError: (Object _) {
         _logger(
-            '[SDK_TELEMETRY_LOOP] action=skip reason=sos_state_stream_error error=$error');
+          '[SDK_TELEMETRY_LOOP] action=skip '
+          'reason=authoritative_sos_cadence_stream_error '
+          'error_category=stream',
+        );
       },
     );
     _positionSub = _trackingRepository.watchPositions().listen(
       _handlePosition,
-      onError: (Object error) {
+      onError: (Object _) {
         _logger(
-            '[SDK_TELEMETRY_LOOP] action=skip reason=position_stream_error error=$error');
+          '[SDK_TELEMETRY_LOOP] action=skip '
+          'reason=position_stream_error error_category=stream',
+        );
       },
     );
-    if (_sosOpen) {
+    if (_sosCadenceActive) {
       unawaited(_primeSosMovementAnchor());
     }
     _startTimerForCurrentMode();
+    SosLocationTrace.emit('publication_loop', {
+      'action': 'start',
+      ..._cadenceTraceFields,
+      'loop_count': 1,
+    });
   }
 
   Future<void> stop() async {
     if (!_started &&
         _timer == null &&
-        _sosStateSub == null &&
+        _sosCadenceSub == null &&
         _positionSub == null) {
       return;
     }
     _started = false;
     _timer?.cancel();
     _timer = null;
-    await _sosStateSub?.cancel();
+    await _sosCadenceSub?.cancel();
     await _positionSub?.cancel();
-    _sosStateSub = null;
+    _sosCadenceSub = null;
     _positionSub = null;
     _lastPublishedSosLocation = null;
     _logger('[SDK_TELEMETRY_LOOP] action=stop');
+    SosLocationTrace.emit('publication_loop', {
+      'action': 'stop',
+      'loop_count': 0,
+      'publish_in_flight': _publishInFlight,
+      'timer_active': _timer != null,
+      'position_subscription_active': _positionSub != null,
+      'sos_cadence_subscription_active': _sosCadenceSub != null,
+    });
   }
 
   Future<void> evaluateNow({required String reason}) async {
@@ -123,21 +146,26 @@ class OperationalTelemetryCoordinator {
     await _publishFromCurrentLocation(reason: reason);
   }
 
-  void _handleSosState(SosState state) {
-    final nextOpen = _isOpenSosState(state);
-    if (nextOpen == _sosOpen) {
+  void _handleAuthoritativeSosCadence(AuthoritativeSosCadence cadence) {
+    _authoritativeLifecycleStage = cadence.lifecycleStage;
+    final nextActive = cadence.desiredLocalSosOwnership;
+    SosLocationTrace.emit('telemetry_cadence_decision', {
+      ..._cadenceTraceFieldsFor(nextActive),
+      'lifecycle_revision': cadence.lifecycleRevision,
+    });
+    if (nextActive == _sosCadenceActive) {
       return;
     }
-    _sosOpen = nextOpen;
+    _sosCadenceActive = nextActive;
     _lastPublishedSosLocation = null;
-    if (_sosOpen) {
+    if (_sosCadenceActive) {
       unawaited(_primeSosMovementAnchor());
     }
     _startTimerForCurrentMode();
   }
 
   void _handlePosition(TrackingPosition position) {
-    if (!_started || !_sosOpen || !_hasValidLocation(position)) {
+    if (!_started || !_sosCadenceActive || !_hasValidLocation(position)) {
       return;
     }
     final anchor = _lastPublishedSosLocation;
@@ -159,8 +187,11 @@ class OperationalTelemetryCoordinator {
 
   Future<void> _primeSosMovementAnchor() async {
     try {
-      final position = await _trackingRepository.getCurrentPosition();
-      if (_sosOpen && _hasValidLocation(position)) {
+      final cached = _trackingRepository is LatestPhonePositionSink
+          ? (_trackingRepository as LatestPhonePositionSink).latestPhonePosition
+          : null;
+      final position = cached ?? await _trackingRepository.getCurrentPosition();
+      if (_sosCadenceActive && _hasValidLocation(position)) {
         _lastPublishedSosLocation = _resolvedLocationFromTracking(position!);
       }
     } catch (_) {
@@ -174,14 +205,26 @@ class OperationalTelemetryCoordinator {
     if (!_intervalPublishingEnabled) {
       _logger(
           '[SDK_TELEMETRY_LOOP] action=pause reason=native_background_owner');
+      SosLocationTrace.emit('publication_loop', {
+        'action': 'pause',
+        'reason': 'native_background_owner',
+        ..._cadenceTraceFields,
+        'loop_count': 0,
+      });
       return;
     }
-    if (_sosOpen) {
+    if (_sosCadenceActive) {
       _logger(
         '[SDK_TELEMETRY_LOOP] action=start mode=sos '
         'interval=${_sosInterval.inSeconds}s '
         'movementThreshold=${_sosMovementThresholdMeters.toStringAsFixed(0)}m',
       );
+      SosLocationTrace.emit('publication_loop', {
+        'action': 'configure',
+        ..._cadenceTraceFields,
+        'publication_reason': 'sos_interval',
+        'loop_count': 1,
+      });
       _timer = Timer.periodic(
         _sosInterval,
         (_) => unawaited(_publishFromCurrentLocation(reason: 'sos_interval')),
@@ -192,6 +235,12 @@ class OperationalTelemetryCoordinator {
       '[SDK_TELEMETRY_LOOP] action=start mode=normal '
       'interval=${_normalInterval.inSeconds}s',
     );
+    SosLocationTrace.emit('publication_loop', {
+      'action': 'configure',
+      ..._cadenceTraceFields,
+      'publication_reason': 'normal_heartbeat',
+      'loop_count': 1,
+    });
     _timer = Timer.periodic(
       _normalInterval,
       (_) => unawaited(
@@ -204,12 +253,25 @@ class OperationalTelemetryCoordinator {
     SdkResolvedLocation? location;
     try {
       location = await _resolvedLocationProvider();
-    } catch (error) {
+    } catch (_) {
       _logger(
-          '[SDK_TELEMETRY_LOOP] action=skip reason=no_location error=$error');
+        '[SDK_TELEMETRY_LOOP] action=skip '
+        'reason=no_location error_category=provider',
+      );
+      SosLocationTrace.emit('telemetry_source', {
+        'reason': reason,
+        'source': 'none',
+        'accepted': false,
+        'error_category': 'provider',
+      });
       return;
     }
     final validResolved = _hasValidResolvedLocation(location);
+    SosLocationTrace.emit('telemetry_source', {
+      'reason': reason,
+      'source': validResolved ? location?.source.name : 'none',
+      'accepted': validResolved,
+    });
     LocationDebugLog.resolved(
       flow: 'telemetry_publish_candidate',
       location: location,
@@ -231,14 +293,30 @@ class OperationalTelemetryCoordinator {
   }) async {
     if (_publishInFlight) {
       _logger('[SDK_TELEMETRY_LOOP] action=skip reason=publish_in_flight');
+      SosLocationTrace.emit('publication', {
+        'action': 'skip',
+        'reason': 'publish_in_flight',
+        'source': location.source.name,
+      });
       return;
     }
     final session = _sessionProvider();
     if (session == null) {
       _logger('[SDK_TELEMETRY_LOOP] action=skip reason=missing_session');
+      SosLocationTrace.emit('publication', {
+        'action': 'skip',
+        'reason': 'missing_session',
+        'source': location.source.name,
+      });
       return;
     }
     _publishInFlight = true;
+    SosLocationTrace.emit('publication', {
+      'action': 'attempt',
+      'reason': reason,
+      'source': location.source.name,
+      ..._cadenceTraceFields,
+    });
     try {
       final payload = SdkTelemetryPayload(
         timestamp: _clock().toUtc(),
@@ -263,7 +341,7 @@ class OperationalTelemetryCoordinator {
         sentToBackend: true,
       );
       await _publishTelemetry(payload);
-      if (_sosOpen) {
+      if (_sosCadenceActive) {
         _lastPublishedSosLocation = location;
       }
       final distanceFragment = distanceMeters == null
@@ -272,32 +350,39 @@ class OperationalTelemetryCoordinator {
       _logger(
         '[SDK_TELEMETRY_LOOP] action=publish reason=$reason$distanceFragment',
       );
-    } catch (error) {
+      SosLocationTrace.emit('publication', {
+        'action': 'success',
+        'reason': reason,
+        'source': location.source.name,
+        ..._cadenceTraceFields,
+      });
+    } catch (_) {
       _logger(
-        '[SDK_TELEMETRY_LOOP] action=skip reason=publish_error error=$error',
+        '[SDK_TELEMETRY_LOOP] action=skip '
+        'reason=publish_error error_category=publish',
       );
+      SosLocationTrace.emit('publication', {
+        'action': 'failure',
+        'reason': reason,
+        'source': location.source.name,
+        'error_category': 'publish',
+        ..._cadenceTraceFields,
+      });
     } finally {
       _publishInFlight = false;
     }
   }
 
-  bool _isOpenSosState(SosState state) {
-    return switch (state) {
-      SosState.arming ||
-      SosState.triggerRequested ||
-      SosState.triggeredLocal ||
-      SosState.sending ||
-      SosState.sent ||
-      SosState.acknowledged ||
-      SosState.cancelRequested =>
-        true,
-      SosState.idle ||
-      SosState.cancelled ||
-      SosState.resolved ||
-      SosState.failed =>
-        false,
-    };
-  }
+  Map<String, Object?> get _cadenceTraceFields =>
+      _cadenceTraceFieldsFor(_sosCadenceActive);
+
+  Map<String, Object?> _cadenceTraceFieldsFor(bool cadenceActive) =>
+      <String, Object?>{
+        'sos_cadence_active': cadenceActive,
+        'authoritative_stage': _authoritativeLifecycleStage.name,
+        'authoritative_desired_ownership': cadenceActive,
+        'mode': cadenceActive ? 'sos' : 'normal',
+      };
 
   bool _hasValidLocation(TrackingPosition? position) {
     if (position == null) {

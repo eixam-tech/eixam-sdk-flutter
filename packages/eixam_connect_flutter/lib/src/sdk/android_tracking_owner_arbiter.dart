@@ -2,6 +2,8 @@ import 'dart:collection';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import 'sos_location_trace.dart';
+
 enum AndroidTrackingOwner {
   legacyPublicTracking,
   sos,
@@ -71,7 +73,9 @@ final class AndroidTrackingOwnerArbiter {
 
   Future<void> addOwner(AndroidTrackingOwner owner) {
     _ensureNotDisposed();
-    if (!_requestedOwners.add(owner)) {
+    final added = _requestedOwners.add(owner);
+    _traceOwnerMutation('add', owner, changed: added);
+    if (!added) {
       return _operation;
     }
     return _serialize(_reconcileAppliedState);
@@ -79,7 +83,9 @@ final class AndroidTrackingOwnerArbiter {
 
   Future<void> removeOwner(AndroidTrackingOwner owner) {
     _ensureNotDisposed();
-    if (!_requestedOwners.remove(owner)) {
+    final removed = _requestedOwners.remove(owner);
+    _traceOwnerMutation('remove', owner, changed: removed);
+    if (!removed) {
       return _operation;
     }
     return _serialize(_reconcileAppliedState);
@@ -93,8 +99,10 @@ final class AndroidTrackingOwnerArbiter {
       try {
         _actualState = await _trackingRepository.getTrackingState();
         _appliedRunning = _isRunning(_actualState!);
+        _traceState('reconcile_observed');
       } catch (error) {
         _lastErrorCategory = _categorize(error);
+        _traceState('reconcile_observe_failed');
       }
       await _reconcileAppliedState();
     });
@@ -107,11 +115,13 @@ final class AndroidTrackingOwnerArbiter {
     _disposed = true;
     await _operation;
     _requestedOwners.clear();
+    _traceState('disposed');
   }
 
   Future<void> _reconcileAppliedState() async {
     final shouldRun = _requestedOwners.isNotEmpty;
     if (shouldRun == _appliedRunning) {
+      _traceState('stream_unchanged');
       return;
     }
     if (shouldRun) {
@@ -121,9 +131,11 @@ final class AndroidTrackingOwnerArbiter {
         _appliedRunning = true;
         _actualState = TrackingState.starting;
         _lastErrorCategory = null;
+        _traceState('stream_started');
       } catch (error) {
         _appliedRunning = false;
         _lastErrorCategory = _categorize(error);
+        _traceState('stream_start_failed');
         rethrow;
       }
       return;
@@ -134,9 +146,11 @@ final class AndroidTrackingOwnerArbiter {
       _appliedRunning = false;
       _actualState = TrackingState.idle;
       _lastErrorCategory = null;
+      _traceState('stream_stopped');
     } catch (error) {
       _appliedRunning = true;
       _lastErrorCategory = _categorize(error);
+      _traceState('stream_stop_failed');
       rethrow;
     }
   }
@@ -174,5 +188,39 @@ final class AndroidTrackingOwnerArbiter {
     if (_disposed) {
       throw StateError('AndroidTrackingOwnerArbiter is disposed.');
     }
+  }
+
+  void _traceOwnerMutation(
+    String action,
+    AndroidTrackingOwner owner, {
+    required bool changed,
+  }) {
+    SosLocationTrace.emit('android_owner', {
+      'action': action,
+      'owner': owner.name,
+      'changed': changed,
+      'owners': _ownerNames,
+      'owner_count': _requestedOwners.length,
+      'running': _appliedRunning,
+    });
+  }
+
+  void _traceState(String action) {
+    SosLocationTrace.emit('android_stream', {
+      'action': action,
+      'owners': _ownerNames,
+      'owner_count': _requestedOwners.length,
+      'running': _appliedRunning,
+      'active_streams': _appliedRunning ? 1 : 0,
+      'start_attempts': _startAttemptCount,
+      'stop_attempts': _stopAttemptCount,
+      'error_category': _lastErrorCategory?.name,
+      'disposed': _disposed,
+    });
+  }
+
+  String get _ownerNames {
+    final names = _requestedOwners.map((owner) => owner.name).toList()..sort();
+    return names.isEmpty ? 'none' : names.join(',');
   }
 }
