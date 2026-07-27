@@ -2,3 +2,5 @@
 .dart_tool/
 build/
 coverage/
+/apps/eixam_control_app/android/local.properties
+/packages/eixam_connect_flutter/example/.flutter-plugins-dependencies

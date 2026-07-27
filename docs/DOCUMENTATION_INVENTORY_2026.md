@@ -41,11 +41,12 @@ guides.
 | `packages/eixam_connect_flutter/SOS_ORCHESTRATION.md` | Package-local SOS behavior contract | 2026-07 transport/capability | Current deep guide | Retain |
 | `packages/eixam_connect_flutter/BLE_DEVICE_CONTRACT.md` | Package-local BLE/command/relay contract | 2026-06/07 | Current specialized guide | Retain |
 
-`docs/.DS_Store` and `docs/audit/.DS_Store` are tracked filesystem metadata,
-not documentation. They were not modified. Package `pubspec.yaml` files and the
-iOS podspec were inspected for documentation links, platform declarations,
-package versions, and supported SDK ranges; none references an additional
-Markdown source.
+`docs/.DS_Store` and `docs/audit/.DS_Store` were reported as tracked filesystem
+metadata during the documentation audit. A later pre-merge artifact audit
+confirmed that neither path is tracked at the audited release head. Package
+`pubspec.yaml` files and the iOS podspec were inspected for documentation links,
+platform declarations, package versions, and supported SDK ranges; none
+references an additional Markdown source.
 
 No document was merged, archived, removed, or replaced. New companion guides
 were created because the existing internal architecture and package notes
