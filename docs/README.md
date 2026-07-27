@@ -7,9 +7,11 @@ consume typed contracts.
 
 ## Architecture
 
+- [SDK integration guide](SDK_INTEGRATION_GUIDE.md)
 - [Repository architecture](ai_context/ARCHITECTURE.md)
 - [Authoritative SOS lifecycle](SOS_LIFECYCLE_ARCHITECTURE_2026.md)
-- [Public API notes](../packages/eixam_connect_flutter/PUBLIC_API.md)
+- [Public API reference](PUBLIC_API_REFERENCE.md)
+- [Package-level public API notes](../packages/eixam_connect_flutter/PUBLIC_API.md)
 - [Backend integration](ai_context/BACKEND_INTEGRATION.md)
 
 ## SOS
@@ -34,6 +36,7 @@ architecture document takes precedence for lifecycle persistence.
 
 ## Android and iOS integration
 
+- [Host setup, permissions, and location](SDK_INTEGRATION_GUIDE.md#location-architecture)
 - [BLE/device runtime](ai_context/BLE_AND_DEVICE_RUNTIME.md)
 - [BLE device contract](../packages/eixam_connect_flutter/BLE_DEVICE_CONTRACT.md)
 - [OS widget integration](ai_context/OS_SOS_WIDGETS.md)
@@ -45,6 +48,7 @@ manifest, but does not sign or publish the host application.
 
 ## Testing and troubleshooting
 
+- [Integration troubleshooting](SDK_INTEGRATION_GUIDE.md#troubleshooting)
 - [Validation commands and final status](ai_context/VALIDATION_AND_TESTS.md)
 - [Automated SOS validation](sos_lifecycle_validation.md)
 - [AI context index](ai_context/AI_INDEX.md)
@@ -58,3 +62,7 @@ uninstall the host app from the test device before repeating restoration tests.
 Documents under `audit/` are retained as historical checkpoint and remediation
 evidence. They are not proof that backend, firmware, broker, signing, or store
 work was completed.
+
+The [documentation inventory](DOCUMENTATION_INVENTORY_2026.md) records the
+purpose, audience, scope, status, and disposition of every documentation
+source reviewed for the current release branch.

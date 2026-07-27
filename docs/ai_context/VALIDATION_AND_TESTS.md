@@ -33,16 +33,14 @@ Run from the repository root unless noted otherwise.
 - `eixam_connect_core` is a Dart package; targeted `dart test` is often the fastest check there.
 - `eixam_connect_flutter` is a Flutter package; prefer `flutter test` for targeted validation.
 
-## Final Store-Compliance Checkpoint
+## Current Committed-Head Checkpoint
 
-- Flutter SDK package suite: **456/456 passed**.
-- Analyzer passed with three pre-existing `implementation_imports`
-  informational notices and no warnings or errors.
-- Partner-app focused SOS/supporting matrices passed; Android staging
-  debug/release and iOS staging debug `--no-codesign` builds passed.
-- The complete partner-app sweep remains blocked by a pre-existing
-  `login_screen_test.dart` harness hang. It is test-infrastructure debt, not an
-  SOS failure, and the full app suite must not be reported as passing.
+- SDK full suite: **665 tests passed** at
+  `edbfd2328f759ee94908d8d72c201a26cd69670e`.
+- App full suite: **767 tests passed** at
+  `109db774977a31a2298b692af3da2673c0b683c7`.
+- These are historical counts for the exact committed heads and must be rerun
+  when either head changes.
 
 ## Manual Validation Checklist
 
@@ -104,10 +102,13 @@ Run from the repository root unless noted otherwise.
 - Verify `I'm OK` notification action path.
 - Verify auto-triggered SOS when `autoTriggerSos` is true.
 
-## Needs Verification
+## Staging and Production Boundaries
 
-- The user reports physical verification of the main functional paths available
-  in this iteration. The complete extended physical matrix and store-delivered
-  artifact evidence remain recommended; automated results do not close them.
+- Physical/backend validation covered the current app-origin,
+  connected-local-device, progress, cancellation/rearm, map/sharing, and
+  diagnostic flows against staging.
+- The complete extended physical matrix and store-delivered artifact evidence
+  remain required; automated and staging results do not close production
+  deployment or store-release gates.
 - Root `flutter test` remains the documented repo command, while package-targeted
-  commands are the deterministic evidence used for the final 456/456 result.
+  commands remain useful for deterministic failure isolation.

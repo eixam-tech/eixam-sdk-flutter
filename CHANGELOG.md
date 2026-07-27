@@ -2,6 +2,40 @@
 
 All notable changes to the EIXAM Connect Flutter SDK are documented here.
 
+## Unreleased - 2026-07-27
+
+No package version is assigned by this entry.
+
+### Added
+
+- SDK-owned SOS phone-location acquisition and context arbitration that
+  preserves Profile sharing when an SOS context ends.
+- Stable connected-device SOS generations, immediate active handoff, local
+  terminal classification, and immediate rearm after a confirmed terminal
+  boundary.
+- Provisional-to-canonical incident handoff with versioned backend and
+  emergency-contact progress.
+
+### Changed
+
+- Hardened SOS lifecycle handling against duplicate/stale packets, delayed
+  countdown observations, cancellation races, and reconnect snapshots.
+- Release diagnostics now use redacted presence/category fields; verbose
+  device and location traces remain debug-only and opt-in.
+- iOS Core Location service status is cached from delegate/application
+  updates; the global service query runs off the main queue and is not called
+  synchronously during sample delivery.
+
+### Validation scope
+
+- Automated checkpoint at commit `edbfd2328f759ee94908d8d72c201a26cd69670e`:
+  665 SDK tests passed.
+- App-origin and connected-local-device flows, progress handoff,
+  cancellation/rearm, map updates, sharing coexistence, and privacy-safe
+  diagnostics were physically and backend validated against staging.
+- This is not evidence of a production backend deployment or a production
+  store release.
+
 ## 0.3.0 - 2026-07-21
 
 ### Added
