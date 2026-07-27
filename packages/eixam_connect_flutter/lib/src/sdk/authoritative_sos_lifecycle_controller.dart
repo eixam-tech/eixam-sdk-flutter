@@ -217,6 +217,7 @@ final class AuthoritativeSosLifecycleController {
 
   Future<SosLifecycleSnapshot> beginArming({
     required SosLifecycleOrigin origin,
+    String? lifecycleId,
     String? triggerSource,
     String? deviceId,
     int? nodeId,
@@ -231,7 +232,8 @@ final class AuthoritativeSosLifecycleController {
     return _publish(
       SosLifecycleSnapshot(
         stage: SosLifecycleStage.arming,
-        lifecycleId: 'sos:$identity:${now.microsecondsSinceEpoch}:$_generation',
+        lifecycleId: lifecycleId ??
+            'sos:$identity:${now.microsecondsSinceEpoch}:$_generation',
         generation: _generation,
         origin: origin,
         localActionable: true,
