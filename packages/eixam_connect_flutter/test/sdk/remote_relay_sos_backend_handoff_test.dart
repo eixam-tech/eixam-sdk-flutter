@@ -61,6 +61,7 @@ void main() {
     late List<EixamDeviceCommand> deviceCommands;
 
     setUp(() async {
+      await BleDebugRegistry.instance.resetForLifecycle();
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(protectionMethodChannel, (call) async {
         switch (call.method) {
@@ -401,7 +402,7 @@ void main() {
               ) &&
               event.message.contains('actionability=externalOnly') &&
               event.message.contains('localStateMutation=false') &&
-              event.message.contains('publicIncident=false') &&
+              event.message.contains('incident_present=false') &&
               event.message.contains('backendPublish=true'),
         ),
         isTrue,
@@ -448,7 +449,10 @@ void main() {
       expect(
         _hasDebugMessage(
           'REMOTE_RELAY_SOS_HANDOFF_IN_FLIGHT_CLEARED',
-          allOf(contains('reason=success'), contains('signature=')),
+          allOf(
+            contains('reason=success'),
+            contains('packet_identity_present=true'),
+          ),
         ),
         isTrue,
       );
@@ -1051,15 +1055,11 @@ void main() {
       expect(status.deviceId, 'CF:82:59:4B:1A:A8');
       expect(sosRepository.lastDeviceId, '1498094248');
       expect(sosRepository.lastOriginatorNodeId, 1498094248);
-      expect(
-        BleDebugRegistry.instance.currentState.events.any(
-          (event) =>
-              event.message.contains('DEVICE_NODE_ID_PROMOTED') &&
-              event.message.contains('nodeId=1498094248') &&
-              event.message.contains('hardwareId=CF:82:59:4B:1A:A8'),
-        ),
-        isTrue,
-      );
+      final diagnostics = BleDebugRegistry.instance.currentState.events
+          .map((event) => event.message)
+          .join('\n');
+      expect(diagnostics, isNot(contains('1498094248')));
+      expect(diagnostics, isNot(contains('CF:82:59:4B:1A:A8')));
     });
 
     test('telemetry after device SOS promotion uses nodeId backend identity',
@@ -1336,7 +1336,8 @@ void main() {
       );
     });
 
-    test('SOS_BACKEND_PAYLOAD_FINAL logs MQTT runtime node identity', () async {
+    test('SOS_BACKEND_PAYLOAD_FINAL logs runtime identity presence only',
+        () async {
       BleDebugRegistry.instance.reset();
       final repository = MqttOperationalSosRepository(
         realtimeClient: realtimeClient,
@@ -1355,8 +1356,10 @@ void main() {
           (event) =>
               event.message.contains('SOS_BACKEND_PAYLOAD_FINAL') &&
               event.message.contains('owner=device') &&
-              event.message.contains('deviceId=1498094248') &&
-              event.message.contains('originatorNodeId=1498094248'),
+              event.message.contains('device_identity_present=true') &&
+              event.message.contains('originator_identity_present=true') &&
+              !event.message.contains('1498094248') &&
+              !event.message.contains('CF:82:59:4B:1A:A8'),
         ),
         isTrue,
       );
@@ -2121,8 +2124,8 @@ void main() {
                 event.message.contains(
                   'remote_cancel_gateway_scope_fallback',
                 ) &&
-                event.message.contains('originatorNodeId=4321') &&
-                event.message.contains('relayNodeId=8765') &&
+                event.message.contains('originator_identity_present=true') &&
+                event.message.contains('relay_identity_present=true') &&
                 event.message.contains('localSosInactive=true'),
           ),
           isTrue,
@@ -2170,7 +2173,7 @@ void main() {
                 event.message.contains(
                   'remote_cancel_gateway_scope_blocked_local_sos_active',
                 ) &&
-                event.message.contains('originatorNodeId=13579') &&
+                event.message.contains('originator_identity_present=true') &&
                 event.message.contains('localSosInactive=false'),
           ),
           isTrue,
@@ -2469,6 +2472,27 @@ void main() {
           sosRepository.terminalOperations,
           <String>['cancel:backend-sos-1'],
         );
+
+        await BleDebugRegistry.instance.resetForLifecycle();
+        deviceSosController.handleIncomingSosEventPacket(
+          _deviceCancelEventForNode(418683257),
+          source: DeviceSosTransitionSource.device,
+        );
+        await _eventually(
+          () => BleDebugRegistry.instance.currentState.events.any(
+            (event) =>
+                event.message.contains('event=device_terminal') &&
+                event.message.contains('classification=connected_local') &&
+                event.message.contains('action=accepted'),
+          ),
+        );
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) =>
+                event.message.contains('relay_terminal_residue_detected'),
+          ),
+          isFalse,
+        );
       });
 
       test('app-only SOS does not send fake app identity', () async {
@@ -2503,7 +2527,8 @@ void main() {
             (event) =>
                 event.message
                     .contains('decision=preserve_active_incident_id') &&
-                event.message.contains(triggered.id),
+                event.message.contains('incident_present=true') &&
+                !event.message.contains(triggered.id),
           ),
           isTrue,
         );

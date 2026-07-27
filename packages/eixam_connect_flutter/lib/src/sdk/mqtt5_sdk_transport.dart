@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:mqtt5_client/mqtt5_client.dart';
 import 'package:mqtt5_client/mqtt5_server_client.dart';
 
+import '../device/ble_debug_registry.dart';
 import 'sdk_mqtt_contract.dart';
 import 'sdk_mqtt_transport.dart';
 import 'transport_security_validator.dart';
@@ -233,7 +234,7 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
     if (!kDebugMode || !enableLogging) {
       return;
     }
-    debugPrint(message);
+    safeSdkDebugPrint(message);
   }
 
   void _safeAddMessage(SdkMqttIncomingMessage message) {

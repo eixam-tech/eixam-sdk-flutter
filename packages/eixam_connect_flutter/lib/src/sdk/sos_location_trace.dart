@@ -1,9 +1,12 @@
 import 'package:flutter/foundation.dart';
 
-const bool sosLocationTraceEnabled = bool.fromEnvironment(
-  'EIXAM_SOS_LOCATION_TRACE',
-  defaultValue: kDebugMode,
-);
+import '../device/ble_debug_registry.dart';
+
+const bool sosLocationTraceEnabled = kDebugMode &&
+    bool.fromEnvironment(
+      'EIXAM_SOS_LOCATION_TRACE',
+      defaultValue: false,
+    );
 
 /// Temporary, privacy-safe device-console trace for the SOS location cutover.
 ///
@@ -18,7 +21,7 @@ abstract final class SosLocationTrace {
       final attributes = fields.entries
           .map((entry) => '${entry.key}=${entry.value ?? 'none'}')
           .join(' ');
-      debugPrintSynchronously(
+      safeSdkDebugPrint(
         attributes.isEmpty
             ? 'EIXAM_SOS_LOC event=$event'
             : 'EIXAM_SOS_LOC event=$event $attributes',

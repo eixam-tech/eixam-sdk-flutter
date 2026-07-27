@@ -1,6 +1,8 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:flutter/foundation.dart';
 
+import '../device/ble_debug_registry.dart';
+
 enum SdkBuildMode {
   debug,
   profile,
@@ -58,7 +60,7 @@ class SdkTransportSecurityValidator {
       return;
     }
     _logRejected(fieldName: 'apiBaseUrl', uri: uri);
-    debugPrint('SDK_CONFIG_BLOCKED reason=insecure_endpoint');
+    safeSdkDebugPrint('SDK_CONFIG_BLOCKED reason=insecure_endpoint');
     throw const TransportSecurityException(
       'E_SDK_INSECURE_API_ENDPOINT',
       'SDK API endpoints must use HTTPS. Insecure local HTTP is allowed only '
@@ -91,7 +93,7 @@ class SdkTransportSecurityValidator {
       return;
     }
     _logRejected(fieldName: 'websocketUrl', uri: uri);
-    debugPrint('SDK_CONFIG_BLOCKED reason=insecure_endpoint');
+    safeSdkDebugPrint('SDK_CONFIG_BLOCKED reason=insecure_endpoint');
     throw const TransportSecurityException(
       'E_SDK_INSECURE_REALTIME_ENDPOINT',
       'SDK realtime endpoints must use wss:// or ssl/tls MQTT transport. '
@@ -133,21 +135,21 @@ class SdkTransportSecurityValidator {
   }
 
   static void _logAccepted({required String fieldName, required Uri uri}) {
-    debugPrint(
+    safeSdkDebugPrint(
       'CONFIG_ENDPOINT_SECURITY_ACCEPTED '
       'field=$fieldName endpoint=${_redactUri(uri)} source=sdk',
     );
   }
 
   static void _logDebugAllowed({required String fieldName, required Uri uri}) {
-    debugPrint(
+    safeSdkDebugPrint(
       'CONFIG_ENDPOINT_SECURITY_DEBUG_INSECURE_ALLOWED '
       'field=$fieldName endpoint=${_redactUri(uri)} source=sdk',
     );
   }
 
   static void _logRejected({required String fieldName, required Uri uri}) {
-    debugPrint(
+    safeSdkDebugPrint(
       'CONFIG_ENDPOINT_SECURITY_REJECTED '
       'reason=insecure_endpoint field=$fieldName '
       'endpoint=${_redactUri(uri)} source=sdk',

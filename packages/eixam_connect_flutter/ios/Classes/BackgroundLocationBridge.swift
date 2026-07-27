@@ -118,6 +118,10 @@ private final class BackgroundLocationService: NSObject {
   private static let maximumFutureClockSkew: TimeInterval = 60
   private static let maximumQueuedSampleAge: TimeInterval = 7 * 24 * 60 * 60
   private static let maximumQueuedSampleCount = 100
+  private static let locationServicesQueryQueue = DispatchQueue(
+    label: "dev.eixam.connect_flutter.location-services-status",
+    qos: .utility
+  )
 
   private enum Keys {
     static let controlState =
@@ -213,19 +217,37 @@ private final class BackgroundLocationService: NSObject {
   private var wasRestoredAfterRelaunch = false
   private var hasRejectedPersistedControlState = false
   private var latestAcceptedSample: CoordinateSample?
+  private var cachedAuthorizationStatus: CLAuthorizationStatus
+  private var cachedLocationServicesEnabled = false
+  private var locationServicesStatusKnown = false
+  private var locationServicesQueryInFlight = false
+  private var locationServicesQueryShouldEmit = false
 
   private override init() {
     precondition(
       Thread.isMainThread,
       "BackgroundLocationService must be created on the main thread."
     )
-    locationManager = CLLocationManager()
+    let manager = CLLocationManager()
+    locationManager = manager
+    if #available(iOS 14.0, *) {
+      cachedAuthorizationStatus = manager.authorizationStatus
+    } else {
+      cachedAuthorizationStatus = CLLocationManager.authorizationStatus()
+    }
     defaults =
       UserDefaults(suiteName: Self.defaultsSuiteName) ?? UserDefaults.standard
     super.init()
     locationManager.delegate = self
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(applicationDidBecomeActive),
+      name: UIApplication.didBecomeActiveNotification,
+      object: nil
+    )
     latestAcceptedSample = restoreLatestAcceptedSample()
     restorePersistedState()
+    refreshLocationServicesStatus(emit: false)
   }
 
   static func sharedOnMainThread() -> BackgroundLocationService {
@@ -246,6 +268,9 @@ private final class BackgroundLocationService: NSObject {
       action: "replayed",
       sampleAvailable: latestAcceptedSample != nil
     )
+    if !locationServicesStatusKnown {
+      refreshLocationServicesStatus(emit: true)
+    }
     return token
   }
 
@@ -456,7 +481,11 @@ private final class BackgroundLocationService: NSObject {
       )
       return
     }
-    guard CLLocationManager.locationServicesEnabled() else {
+    guard locationServicesStatusKnown else {
+      refreshLocationServicesStatus(emit: emit)
+      return
+    }
+    guard cachedLocationServicesEnabled else {
       stopLocationManager(clearError: false, emit: false)
       setRuntimeError(
         code: "location_services_disabled",
@@ -555,7 +584,7 @@ private final class BackgroundLocationService: NSObject {
   private func permissionSnapshot() -> [String: Any] {
     assertMainThread()
     return [
-      "locationServicesEnabled": CLLocationManager.locationServicesEnabled(),
+      "locationServicesEnabled": cachedLocationServicesEnabled,
       "authorization": authorizationName(currentAuthorizationStatus()),
       "accuracyAuthorization": accuracyAuthorizationName(),
     ]
@@ -591,10 +620,43 @@ private final class BackgroundLocationService: NSObject {
 
   private func currentAuthorizationStatus() -> CLAuthorizationStatus {
     assertMainThread()
+    return cachedAuthorizationStatus
+  }
+
+  @objc private func applicationDidBecomeActive() {
+    assertMainThread()
     if #available(iOS 14.0, *) {
-      return locationManager.authorizationStatus
+      cachedAuthorizationStatus = locationManager.authorizationStatus
     }
-    return CLLocationManager.authorizationStatus()
+    refreshLocationServicesStatus(emit: true)
+  }
+
+  private func refreshLocationServicesStatus(emit: Bool) {
+    assertMainThread()
+    locationServicesQueryShouldEmit =
+      locationServicesQueryShouldEmit || emit
+    guard !locationServicesQueryInFlight else {
+      return
+    }
+    locationServicesQueryInFlight = true
+    Self.locationServicesQueryQueue.async { [weak self] in
+      let enabled = CLLocationManager.locationServicesEnabled()
+      DispatchQueue.main.async {
+        guard let self = self else {
+          return
+        }
+        let changed = !self.locationServicesStatusKnown ||
+          self.cachedLocationServicesEnabled != enabled
+        self.cachedLocationServicesEnabled = enabled
+        self.locationServicesStatusKnown = true
+        self.locationServicesQueryInFlight = false
+        let shouldEmit = self.locationServicesQueryShouldEmit
+        self.locationServicesQueryShouldEmit = false
+        if changed || shouldEmit {
+          self.reconcileRuntime(emit: shouldEmit)
+        }
+      }
+    }
   }
 
   private func authorizationName(_ status: CLAuthorizationStatus) -> String {
@@ -752,6 +814,7 @@ private final class BackgroundLocationService: NSObject {
   }
 
   private func traceSample(action: String, sampleAvailable: Bool) {
+#if DEBUG
     let timestampPresent = latestAcceptedSample != nil
     NSLog(
       "EIXAM_SOS_LOC event=ios_native_sample action=%@ context=%@ sample_available=%@ timestamp_present=%@ observer_count=%d",
@@ -761,6 +824,7 @@ private final class BackgroundLocationService: NSObject {
       timestampPresent ? "true" : "false",
       observers.count
     )
+#endif
   }
 
   private func enqueue(_ sample: PersistedSample) {
@@ -833,7 +897,7 @@ extension BackgroundLocationService: CLLocationManagerDelegate {
     assertMainThread()
     let coreLocationError = error as? CLError
     if coreLocationError?.code == .denied &&
-        !CLLocationManager.locationServicesEnabled() {
+        !cachedLocationServicesEnabled {
       stopLocationManager(clearError: false, emit: false)
       setRuntimeError(
         code: "location_services_disabled",
@@ -846,11 +910,16 @@ extension BackgroundLocationService: CLLocationManagerDelegate {
       )
     }
     notifyObservers()
+    if coreLocationError?.code == .denied {
+      refreshLocationServicesStatus(emit: true)
+    }
   }
 
   @available(iOS 14.0, *)
   func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+    cachedAuthorizationStatus = manager.authorizationStatus
     reconcileRuntime(emit: true)
+    refreshLocationServicesStatus(emit: true)
   }
 
   func locationManager(
@@ -860,7 +929,9 @@ extension BackgroundLocationService: CLLocationManagerDelegate {
     if #available(iOS 14.0, *) {
       return
     }
+    cachedAuthorizationStatus = status
     reconcileRuntime(emit: true)
+    refreshLocationServicesStatus(emit: true)
   }
 }
 

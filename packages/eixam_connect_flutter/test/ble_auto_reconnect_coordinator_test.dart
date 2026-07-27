@@ -79,7 +79,8 @@ void main() {
       await coordinator.dispose();
     });
 
-    test('DFU suppression blocks every reconnect trigger until resumed '
+    test(
+        'DFU suppression blocks every reconnect trigger until resumed '
         '(foreground bounces must not defeat it)', () async {
       SharedPreferences.setMockInitialValues(<String, Object>{});
       BleDebugRegistry.instance.reset();
@@ -141,200 +142,200 @@ void main() {
 
     test(
       'handoff reconnect returns bluetoothOff when BLE is not ready',
-        () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      BleDebugRegistry.instance.reset();
-      final repository = _FakeDeviceRepository();
-      final store = PreferredBleDeviceStore(
-        localStore: SharedPrefsSdkStore(),
-      );
-      await store.savePreferredDevice(
-        PreferredBleDevice(
-          deviceId: 'ble-demo-r1',
-          displayName: 'EIXAM Demo',
-          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
-        ),
-      );
-      final coordinator = BleAutoReconnectCoordinator(
-        deviceRepository: repository,
-        preferredDeviceStore: store,
-        permissionStateProvider: () async => const PermissionState(
-          bluetooth: SdkPermissionStatus.granted,
-          bluetoothEnabled: false,
-        ),
-      );
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        BleDebugRegistry.instance.reset();
+        final repository = _FakeDeviceRepository();
+        final store = PreferredBleDeviceStore(
+          localStore: SharedPrefsSdkStore(),
+        );
+        await store.savePreferredDevice(
+          PreferredBleDevice(
+            deviceId: 'ble-demo-r1',
+            displayName: 'EIXAM Demo',
+            lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+          ),
+        );
+        final coordinator = BleAutoReconnectCoordinator(
+          deviceRepository: repository,
+          preferredDeviceStore: store,
+          permissionStateProvider: () async => const PermissionState(
+            bluetooth: SdkPermissionStatus.granted,
+            bluetoothEnabled: false,
+          ),
+        );
 
-      await coordinator.initialize(
-        initialStatus: await repository.getDeviceStatus(),
-        deviceStatusStream: repository.watchDeviceStatus(),
-      );
-      final result = await coordinator.tryAutoConnectForHandoff(
-        trigger: 'startup',
-        attemptId: 'attempt-1',
-      );
+        await coordinator.initialize(
+          initialStatus: await repository.getDeviceStatus(),
+          deviceStatusStream: repository.watchDeviceStatus(),
+        );
+        final result = await coordinator.tryAutoConnectForHandoff(
+          trigger: 'startup',
+          attemptId: 'attempt-1',
+        );
 
         expect(
           result.status,
           PreferredDeviceReconnectResultStatus.bluetoothOff,
         );
-      expect(repository.reconnectCallCount, 0);
-      expect(
+        expect(repository.reconnectCallCount, 0);
+        expect(
           BleDebugRegistry.instance.currentState.events.map(
             (event) => event.message,
           ),
-        contains('BLE_READINESS_BLOCKED bluetoothOff'),
-      );
-      await coordinator.dispose();
+          contains('BLE_READINESS_BLOCKED bluetoothOff'),
+        );
+        await coordinator.dispose();
       },
     );
 
     test(
       'iOS handoff retries early unknown readiness when it becomes ready',
-        () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      BleDebugRegistry.instance.reset();
-      final repository = _FakeDeviceRepository();
-      final store = PreferredBleDeviceStore(
-        localStore: SharedPrefsSdkStore(),
-      );
-      await store.savePreferredDevice(
-        PreferredBleDevice(
-          deviceId: '11111111-1111-1111-1111-111111111111',
-          displayName: 'EIXAM Demo',
-          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
-        ),
-      );
-      var readinessReadCount = 0;
-      final retryDelays = <Duration>[];
-      final coordinator = BleAutoReconnectCoordinator(
-        deviceRepository: repository,
-        preferredDeviceStore: store,
-        isIosPlatform: () => true,
-        permissionStateProvider: () async {
-          readinessReadCount++;
-          if (readinessReadCount == 1) {
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        BleDebugRegistry.instance.reset();
+        final repository = _FakeDeviceRepository();
+        final store = PreferredBleDeviceStore(
+          localStore: SharedPrefsSdkStore(),
+        );
+        await store.savePreferredDevice(
+          PreferredBleDevice(
+            deviceId: '11111111-1111-1111-1111-111111111111',
+            displayName: 'EIXAM Demo',
+            lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+          ),
+        );
+        var readinessReadCount = 0;
+        final retryDelays = <Duration>[];
+        final coordinator = BleAutoReconnectCoordinator(
+          deviceRepository: repository,
+          preferredDeviceStore: store,
+          isIosPlatform: () => true,
+          permissionStateProvider: () async {
+            readinessReadCount++;
+            if (readinessReadCount == 1) {
+              return const PermissionState(
+                bluetooth: SdkPermissionStatus.unknown,
+                bluetoothEnabled: false,
+              );
+            }
             return const PermissionState(
-              bluetooth: SdkPermissionStatus.unknown,
-              bluetoothEnabled: false,
+              bluetooth: SdkPermissionStatus.granted,
+              bluetoothEnabled: true,
             );
-          }
-          return const PermissionState(
-            bluetooth: SdkPermissionStatus.granted,
-            bluetoothEnabled: true,
-          );
-        },
-        preferredReconnectDelay: (delay) async {
-          retryDelays.add(delay);
-        },
-      );
+          },
+          preferredReconnectDelay: (delay) async {
+            retryDelays.add(delay);
+          },
+        );
 
-      await coordinator.initialize(
-        initialStatus: await repository.getDeviceStatus(),
-        deviceStatusStream: repository.watchDeviceStatus(),
-      );
-      final result = await coordinator.tryAutoConnectForHandoff(
-        trigger: 'startup',
-        attemptId: 'attempt-1',
-      );
+        await coordinator.initialize(
+          initialStatus: await repository.getDeviceStatus(),
+          deviceStatusStream: repository.watchDeviceStatus(),
+        );
+        final result = await coordinator.tryAutoConnectForHandoff(
+          trigger: 'startup',
+          attemptId: 'attempt-1',
+        );
 
-      expect(result.status, PreferredDeviceReconnectResultStatus.connected);
-      expect(repository.reconnectCallCount, 1);
-      expect(readinessReadCount, 2);
-      expect(retryDelays, <Duration>[const Duration(seconds: 1)]);
-      expect(
+        expect(result.status, PreferredDeviceReconnectResultStatus.connected);
+        expect(repository.reconnectCallCount, 1);
+        expect(readinessReadCount, 2);
+        expect(retryDelays, <Duration>[const Duration(seconds: 1)]);
+        expect(
           BleDebugRegistry.instance.currentState.events.map(
             (event) => event.message,
           ),
-        containsAll(<String>[
-          'BLE_READINESS_PENDING_IOS reason=adapter_state_warmup',
-          'EIXAM_RECONNECT_TRACE sdk_campaign_attempt_result '
-              'attemptNumber=1 result=bluetoothOff '
-              'reason=ios_readiness_warmup_retry retryable=true',
-        ]),
-      );
-      await coordinator.dispose();
+          containsAll(<String>[
+            'BLE_READINESS_PENDING_IOS reason=adapter_state_warmup',
+            'EIXAM_RECONNECT_TRACE sdk_campaign_attempt_result '
+                'attemptNumber=1 result=bluetoothOff '
+                'reason=ios_readiness_warmup_retry retryable=true',
+          ]),
+        );
+        await coordinator.dispose();
       },
     );
 
     test(
       'handoff reconnect returns permissionMissing without provider call',
-        () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      BleDebugRegistry.instance.reset();
-      final repository = _FakeDeviceRepository();
-      final store = PreferredBleDeviceStore(
-        localStore: SharedPrefsSdkStore(),
-      );
-      await store.savePreferredDevice(
-        PreferredBleDevice(
-          deviceId: 'ble-demo-r1',
-          displayName: 'EIXAM Demo',
-          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
-        ),
-      );
-      final coordinator = BleAutoReconnectCoordinator(
-        deviceRepository: repository,
-        preferredDeviceStore: store,
-        permissionStateProvider: () async => const PermissionState(
-          bluetooth: SdkPermissionStatus.denied,
-          bluetoothEnabled: true,
-        ),
-      );
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        BleDebugRegistry.instance.reset();
+        final repository = _FakeDeviceRepository();
+        final store = PreferredBleDeviceStore(
+          localStore: SharedPrefsSdkStore(),
+        );
+        await store.savePreferredDevice(
+          PreferredBleDevice(
+            deviceId: 'ble-demo-r1',
+            displayName: 'EIXAM Demo',
+            lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+          ),
+        );
+        final coordinator = BleAutoReconnectCoordinator(
+          deviceRepository: repository,
+          preferredDeviceStore: store,
+          permissionStateProvider: () async => const PermissionState(
+            bluetooth: SdkPermissionStatus.denied,
+            bluetoothEnabled: true,
+          ),
+        );
 
-      await coordinator.initialize(
-        initialStatus: await repository.getDeviceStatus(),
-        deviceStatusStream: repository.watchDeviceStatus(),
-      );
-      final result = await coordinator.tryAutoConnectForHandoff(
-        trigger: 'startup',
-        attemptId: 'attempt-1',
-      );
+        await coordinator.initialize(
+          initialStatus: await repository.getDeviceStatus(),
+          deviceStatusStream: repository.watchDeviceStatus(),
+        );
+        final result = await coordinator.tryAutoConnectForHandoff(
+          trigger: 'startup',
+          attemptId: 'attempt-1',
+        );
 
-      expect(
-        result.status,
-        PreferredDeviceReconnectResultStatus.permissionMissing,
-      );
-      expect(repository.reconnectCallCount, 0);
-      expect(
+        expect(
+          result.status,
+          PreferredDeviceReconnectResultStatus.permissionMissing,
+        );
+        expect(repository.reconnectCallCount, 0);
+        expect(
           BleDebugRegistry.instance.currentState.events.map(
             (event) => event.message,
           ),
-        contains('BLE_READINESS_BLOCKED permissionMissing'),
-      );
-      await coordinator.dispose();
+          contains('BLE_READINESS_BLOCKED permissionMissing'),
+        );
+        await coordinator.dispose();
       },
     );
 
     test(
       'handoff reconnect returns noKnownDevice without scanning loop',
-        () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      BleDebugRegistry.instance.reset();
-      final repository = _FakeDeviceRepository();
-      final store = PreferredBleDeviceStore(
-        localStore: SharedPrefsSdkStore(),
-      );
-      final coordinator = BleAutoReconnectCoordinator(
-        deviceRepository: repository,
-        preferredDeviceStore: store,
-      );
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        BleDebugRegistry.instance.reset();
+        final repository = _FakeDeviceRepository();
+        final store = PreferredBleDeviceStore(
+          localStore: SharedPrefsSdkStore(),
+        );
+        final coordinator = BleAutoReconnectCoordinator(
+          deviceRepository: repository,
+          preferredDeviceStore: store,
+        );
 
-      await coordinator.initialize(
-        initialStatus: await repository.getDeviceStatus(),
-        deviceStatusStream: repository.watchDeviceStatus(),
-      );
-      final result = await coordinator.tryAutoConnectForHandoff(
-        trigger: 'startup',
-        attemptId: 'attempt-1',
-      );
+        await coordinator.initialize(
+          initialStatus: await repository.getDeviceStatus(),
+          deviceStatusStream: repository.watchDeviceStatus(),
+        );
+        final result = await coordinator.tryAutoConnectForHandoff(
+          trigger: 'startup',
+          attemptId: 'attempt-1',
+        );
 
         expect(
           result.status,
           PreferredDeviceReconnectResultStatus.noKnownDevice,
         );
-      expect(repository.reconnectCallCount, 0);
-      expect(repository.pairCallCount, 0);
-      await coordinator.dispose();
+        expect(repository.reconnectCallCount, 0);
+        expect(repository.pairCallCount, 0);
+        await coordinator.dispose();
       },
     );
 
@@ -366,15 +367,15 @@ void main() {
       );
       readiness.add(
         const PermissionState(
-        bluetooth: SdkPermissionStatus.granted,
-        bluetoothEnabled: false,
+          bluetooth: SdkPermissionStatus.granted,
+          bluetoothEnabled: false,
         ),
       );
       await _settleReconnectMonitor();
       readiness.add(
         const PermissionState(
-        bluetooth: SdkPermissionStatus.granted,
-        bluetoothEnabled: true,
+          bluetooth: SdkPermissionStatus.granted,
+          bluetoothEnabled: true,
         ),
       );
       await _settleReconnectMonitor();
@@ -421,15 +422,15 @@ void main() {
       );
       readiness.add(
         const PermissionState(
-        bluetooth: SdkPermissionStatus.granted,
-        bluetoothEnabled: false,
+          bluetooth: SdkPermissionStatus.granted,
+          bluetoothEnabled: false,
         ),
       );
       await _settleReconnectMonitor();
       readiness.add(
         const PermissionState(
-        bluetooth: SdkPermissionStatus.granted,
-        bluetoothEnabled: true,
+          bluetooth: SdkPermissionStatus.granted,
+          bluetoothEnabled: true,
         ),
       );
       await _settleReconnectMonitor();
@@ -467,15 +468,15 @@ void main() {
       );
       readiness.add(
         const PermissionState(
-        bluetooth: SdkPermissionStatus.granted,
-        bluetoothEnabled: false,
+          bluetooth: SdkPermissionStatus.granted,
+          bluetoothEnabled: false,
         ),
       );
       await _settleReconnectMonitor();
       readiness.add(
         const PermissionState(
-        bluetooth: SdkPermissionStatus.granted,
-        bluetoothEnabled: true,
+          bluetooth: SdkPermissionStatus.granted,
+          bluetoothEnabled: true,
         ),
       );
       await _settleReconnectMonitor();
@@ -523,8 +524,8 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 1));
       readiness.add(
         const PermissionState(
-        bluetooth: SdkPermissionStatus.granted,
-        bluetoothEnabled: true,
+          bluetooth: SdkPermissionStatus.granted,
+          bluetoothEnabled: true,
         ),
       );
       await startup;
@@ -578,15 +579,15 @@ void main() {
       );
       readiness.add(
         const PermissionState(
-        bluetooth: SdkPermissionStatus.granted,
-        bluetoothEnabled: false,
+          bluetooth: SdkPermissionStatus.granted,
+          bluetoothEnabled: false,
         ),
       );
       await _settleReconnectMonitor();
       readiness.add(
         const PermissionState(
-        bluetooth: SdkPermissionStatus.granted,
-        bluetoothEnabled: true,
+          bluetooth: SdkPermissionStatus.granted,
+          bluetoothEnabled: true,
         ),
       );
       await _settleReconnectMonitor();
@@ -594,15 +595,15 @@ void main() {
       expect(repository.reconnectCallCount, 10);
       readiness.add(
         const PermissionState(
-        bluetooth: SdkPermissionStatus.granted,
-        bluetoothEnabled: false,
+          bluetooth: SdkPermissionStatus.granted,
+          bluetoothEnabled: false,
         ),
       );
       await _settleReconnectMonitor();
       readiness.add(
         const PermissionState(
-        bluetooth: SdkPermissionStatus.granted,
-        bluetoothEnabled: true,
+          bluetooth: SdkPermissionStatus.granted,
+          bluetoothEnabled: true,
         ),
       );
       await _settleReconnectMonitor();
@@ -766,82 +767,82 @@ void main() {
     });
 
     test(
-        'preferred reconnect treats attempt bluetoothOff as retryable after ready preflight',
-        () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      BleDebugRegistry.instance.reset();
-      final repository = _FakeDeviceRepository()
-        ..pairErrors = <Object>[
-          const DeviceException(
-            'E_DEVICE_BLUETOOTH_OFF',
-            'Adapter was not ready for this attempt.',
+      'preferred reconnect treats attempt bluetoothOff as retryable after ready preflight',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        BleDebugRegistry.instance.reset();
+        final repository = _FakeDeviceRepository()
+          ..pairErrors = <Object>[
+            const DeviceException(
+              'E_DEVICE_BLUETOOTH_OFF',
+              'Adapter was not ready for this attempt.',
+            ),
+          ];
+        final store = PreferredBleDeviceStore(
+          localStore: SharedPrefsSdkStore(),
+        );
+        await store.savePreferredDevice(
+          PreferredBleDevice(
+            deviceId: 'ble-demo-r1',
+            displayName: 'EIXAM Demo',
+            lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
           ),
-        ];
-      final store = PreferredBleDeviceStore(
-        localStore: SharedPrefsSdkStore(),
-      );
-      await store.savePreferredDevice(
-        PreferredBleDevice(
-          deviceId: 'ble-demo-r1',
-          displayName: 'EIXAM Demo',
-          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
-        ),
-      );
-      final delayStarted = Completer<Duration>();
-      final delayCompleter = Completer<void>();
-      final coordinator = BleAutoReconnectCoordinator(
-        deviceRepository: repository,
-        preferredDeviceStore: store,
-        permissionStateProvider: () async => const PermissionState(
-          bluetooth: SdkPermissionStatus.granted,
-          bluetoothEnabled: true,
-        ),
-        preferredReconnectDelay: (delay) {
-          if (!delayStarted.isCompleted) {
-            delayStarted.complete(delay);
-          }
-          return delayCompleter.future;
-        },
-      );
+        );
+        final delayStarted = Completer<Duration>();
+        final delayCompleter = Completer<void>();
+        final coordinator = BleAutoReconnectCoordinator(
+          deviceRepository: repository,
+          preferredDeviceStore: store,
+          permissionStateProvider: () async => const PermissionState(
+            bluetooth: SdkPermissionStatus.granted,
+            bluetoothEnabled: true,
+          ),
+          preferredReconnectDelay: (delay) {
+            if (!delayStarted.isCompleted) {
+              delayStarted.complete(delay);
+            }
+            return delayCompleter.future;
+          },
+        );
 
-      await coordinator.initialize(
-        initialStatus: await repository.getDeviceStatus(),
-        deviceStatusStream: repository.watchDeviceStatus(),
-      );
-      final first = coordinator.tryAutoConnectForHandoff(
-        trigger: 'startup',
-        attemptId: 'attempt-1',
-      );
-      expect(await delayStarted.future, const Duration(seconds: 1));
-      expect(repository.reconnectCallCount, 1);
-      expect(
+        await coordinator.initialize(
+          initialStatus: await repository.getDeviceStatus(),
+          deviceStatusStream: repository.watchDeviceStatus(),
+        );
+        final first = coordinator.tryAutoConnectForHandoff(
+          trigger: 'startup',
+          attemptId: 'attempt-1',
+        );
+        expect(await delayStarted.future, const Duration(seconds: 1));
+        expect(repository.reconnectCallCount, 1);
+        expect(
           BleDebugRegistry.instance.currentState.events.map(
             (event) => event.message,
           ),
-        contains(
-          'EIXAM_RECONNECT_TRACE sdk_campaign_attempt_result '
-          'attemptNumber=1 result=bluetoothOff '
-          'reason=attempt_bluetooth_off_transient_retry retryable=true',
-        ),
-      );
+          contains(
+            'EIXAM_RECONNECT_TRACE sdk_campaign_attempt_result '
+            'attemptNumber=1 result=bluetoothOff '
+            'reason=attempt_bluetooth_off_transient_retry retryable=true',
+          ),
+        );
 
-      final duplicate = await coordinator.tryAutoConnectForHandoff(
-        trigger: 'startup',
-        attemptId: 'attempt-2',
-      );
-      expect(
-        duplicate.status,
-        PreferredDeviceReconnectResultStatus.reconnecting,
-      );
-      expect(duplicate.reason, 'inflight');
+        final duplicate = await coordinator.tryAutoConnectForHandoff(
+          trigger: 'startup',
+          attemptId: 'attempt-2',
+        );
+        expect(
+          duplicate.status,
+          PreferredDeviceReconnectResultStatus.reconnecting,
+        );
+        expect(duplicate.reason, 'inflight');
 
-      delayCompleter.complete();
-      expect(
-        (await first).status,
-        PreferredDeviceReconnectResultStatus.connected,
-      );
-      expect(repository.reconnectCallCount, 2);
-      await coordinator.dispose();
+        delayCompleter.complete();
+        expect(
+          (await first).status,
+          PreferredDeviceReconnectResultStatus.connected,
+        );
+        expect(repository.reconnectCallCount, 2);
+        await coordinator.dispose();
       },
     );
 
@@ -884,60 +885,60 @@ void main() {
     });
 
     test(
-        'preferred reconnect exhausts after ten retryable bluetoothOff attempts',
-        () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      BleDebugRegistry.instance.reset();
-      final repository = _FakeDeviceRepository()
-        ..pairErrors = List<Object>.filled(
-          10,
-          const DeviceException(
-            'E_DEVICE_BLUETOOTH_OFF',
-            'Adapter was not ready for this attempt.',
+      'preferred reconnect exhausts after ten retryable bluetoothOff attempts',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        BleDebugRegistry.instance.reset();
+        final repository = _FakeDeviceRepository()
+          ..pairErrors = List<Object>.filled(
+            10,
+            const DeviceException(
+              'E_DEVICE_BLUETOOTH_OFF',
+              'Adapter was not ready for this attempt.',
+            ),
+          );
+        final store = PreferredBleDeviceStore(
+          localStore: SharedPrefsSdkStore(),
+        );
+        await store.savePreferredDevice(
+          PreferredBleDevice(
+            deviceId: 'ble-demo-r1',
+            displayName: 'EIXAM Demo',
+            lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
           ),
         );
-      final store = PreferredBleDeviceStore(
-        localStore: SharedPrefsSdkStore(),
-      );
-      await store.savePreferredDevice(
-        PreferredBleDevice(
-          deviceId: 'ble-demo-r1',
-          displayName: 'EIXAM Demo',
-          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
-        ),
-      );
-      final retryDelays = <Duration>[];
-      final coordinator = BleAutoReconnectCoordinator(
-        deviceRepository: repository,
-        preferredDeviceStore: store,
-        permissionStateProvider: () async => const PermissionState(
-          bluetooth: SdkPermissionStatus.granted,
-          bluetoothEnabled: true,
-        ),
-        preferredReconnectDelay: (delay) async {
-          retryDelays.add(delay);
-        },
-      );
+        final retryDelays = <Duration>[];
+        final coordinator = BleAutoReconnectCoordinator(
+          deviceRepository: repository,
+          preferredDeviceStore: store,
+          permissionStateProvider: () async => const PermissionState(
+            bluetooth: SdkPermissionStatus.granted,
+            bluetoothEnabled: true,
+          ),
+          preferredReconnectDelay: (delay) async {
+            retryDelays.add(delay);
+          },
+        );
 
-      await coordinator.initialize(
-        initialStatus: await repository.getDeviceStatus(),
-        deviceStatusStream: repository.watchDeviceStatus(),
-      );
-      final result = await coordinator.tryAutoConnectForHandoff(
-        trigger: 'startup',
-        attemptId: 'attempt-1',
-      );
+        await coordinator.initialize(
+          initialStatus: await repository.getDeviceStatus(),
+          deviceStatusStream: repository.watchDeviceStatus(),
+        );
+        final result = await coordinator.tryAutoConnectForHandoff(
+          trigger: 'startup',
+          attemptId: 'attempt-1',
+        );
 
-      expect(result.status, PreferredDeviceReconnectResultStatus.exhausted);
-      expect(repository.reconnectCallCount, 10);
-      expect(retryDelays, hasLength(9));
-      expect(
+        expect(result.status, PreferredDeviceReconnectResultStatus.exhausted);
+        expect(repository.reconnectCallCount, 10);
+        expect(retryDelays, hasLength(9));
+        expect(
           BleDebugRegistry.instance.currentState.events.map(
             (event) => event.message,
-        ),
+          ),
           contains('EIXAM_RECONNECT_TRACE sdk_campaign_exhausted attempts=10'),
-      );
-      await coordinator.dispose();
+        );
+        await coordinator.dispose();
       },
     );
 
@@ -1085,46 +1086,47 @@ void main() {
 
     test(
       'iOS delegates logical preferred ids to runtime scan resolution',
-        () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      BleDebugRegistry.instance.reset();
-      final repository = _FakeDeviceRepository();
-      final store = PreferredBleDeviceStore(
-        localStore: SharedPrefsSdkStore(),
-      );
-      await store.savePreferredDevice(
-        PreferredBleDevice(
-          deviceId: 'ble-demo-r1',
-          displayName: 'EIXAM Demo',
-          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
-        ),
-      );
-      final coordinator = BleAutoReconnectCoordinator(
-        deviceRepository: repository,
-        preferredDeviceStore: store,
-        isIosPlatform: () => true,
-      );
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        BleDebugRegistry.instance.reset();
+        final repository = _FakeDeviceRepository();
+        final store = PreferredBleDeviceStore(
+          localStore: SharedPrefsSdkStore(),
+        );
+        await store.savePreferredDevice(
+          PreferredBleDevice(
+            deviceId: 'ble-demo-r1',
+            displayName: 'EIXAM Demo',
+            lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+          ),
+        );
+        final coordinator = BleAutoReconnectCoordinator(
+          deviceRepository: repository,
+          preferredDeviceStore: store,
+          isIosPlatform: () => true,
+        );
 
-      await coordinator.initialize(
-        initialStatus: await repository.getDeviceStatus(),
-        deviceStatusStream: repository.watchDeviceStatus(),
-      );
-      repository.setDisconnected();
+        await coordinator.initialize(
+          initialStatus: await repository.getDeviceStatus(),
+          deviceStatusStream: repository.watchDeviceStatus(),
+        );
+        repository.setDisconnected();
 
-      await coordinator.tryAutoConnectOnResume();
+        await coordinator.tryAutoConnectOnResume();
 
-      expect(repository.reconnectCallCount, 1);
-      expect(repository.lastReconnectedDeviceId, 'ble-demo-r1');
-      expect(
+        expect(repository.reconnectCallCount, 1);
+        expect(repository.lastReconnectedDeviceId, 'ble-demo-r1');
+        expect(
           BleDebugRegistry.instance.currentState.events.map(
             (event) => event.message,
           ),
-        containsAll(<String>[
-          'DEVICE_IDENTITY_RESOLVED platform=ios logicalId=ble-demo-r1 remoteIdPresent=false',
-          'BLE_RECONNECT_REQUIRES_SCAN platform=ios reason=missing_valid_remote_id',
-        ]),
-      );
-      await coordinator.dispose();
+          containsAll(<String>[
+            'DEVICE_IDENTITY_RESOLVED platform=ios '
+                'device_identity_present=true remoteIdPresent=false',
+            'BLE_RECONNECT_REQUIRES_SCAN platform=ios reason=missing_valid_remote_id',
+          ]),
+        );
+        await coordinator.dispose();
       },
     );
 
@@ -1165,13 +1167,15 @@ void main() {
           (event) => event.message,
         ),
         contains(
-          'BLE_AUTO_RECONNECT_STOPPED reason=android_bond_missing hardwareId=ble-demo-r1',
+          'BLE_AUTO_RECONNECT_STOPPED reason=android_bond_missing '
+          'device_identity_present=true',
         ),
       );
       await coordinator.dispose();
     });
 
-    test('stops auto-connect when iOS pairing information was removed', () async {
+    test('stops auto-connect when iOS pairing information was removed',
+        () async {
       SharedPreferences.setMockInitialValues(<String, Object>{});
       BleDebugRegistry.instance.reset();
       final repository = _FakeDeviceRepository()
@@ -1214,7 +1218,9 @@ void main() {
           (event) => event.message,
         ),
         contains(
-          'BLE_AUTO_RECONNECT_STOPPED reason=ios_pairing_information_removed hardwareId=97BA8682-44B7-5BA3-2257-381176EB6AAB',
+          'BLE_AUTO_RECONNECT_STOPPED '
+          'reason=ios_pairing_information_removed '
+          'device_identity_present=true',
         ),
       );
       await coordinator.dispose();
@@ -1222,265 +1228,267 @@ void main() {
 
     test(
       'manual connect clears stale preferred device on iOS pairing removal',
-        () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      BleDebugRegistry.instance.reset();
-      BleDebugRegistry.instance.selectDevice(
-        '97BA8682-44B7-5BA3-2257-381176EB6AAB',
-      );
-      final repository = _FakeDeviceRepository()
-        ..pairErrors = <Object>[
-          const DeviceException.bleIosPairingInformationRemoved(),
-        ];
-      final store = PreferredBleDeviceStore(
-        localStore: SharedPrefsSdkStore(),
-      );
-      await store.savePreferredDevice(
-        PreferredBleDevice(
-          deviceId: '97BA8682-44B7-5BA3-2257-381176EB6AAB',
-          displayName: 'EIXAM Demo',
-          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
-        ),
-      );
-      final coordinator = BleAutoReconnectCoordinator(
-        deviceRepository: repository,
-        preferredDeviceStore: store,
-        isIosPlatform: () => true,
-      );
-
-      await coordinator.initialize(
-        initialStatus: await repository.getDeviceStatus(),
-        deviceStatusStream: repository.watchDeviceStatus(),
-      );
-
-      await expectLater(
-        coordinator.pairDeviceManually(pairingCode: '1234'),
-        throwsA(
-          isA<DeviceException>().having(
-            (error) => error.code,
-            'code',
-            DeviceException.bleIosPairingInformationRemovedCode,
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        BleDebugRegistry.instance.reset();
+        BleDebugRegistry.instance.selectDevice(
+          '97BA8682-44B7-5BA3-2257-381176EB6AAB',
+        );
+        final repository = _FakeDeviceRepository()
+          ..pairErrors = <Object>[
+            const DeviceException.bleIosPairingInformationRemoved(),
+          ];
+        final store = PreferredBleDeviceStore(
+          localStore: SharedPrefsSdkStore(),
+        );
+        await store.savePreferredDevice(
+          PreferredBleDevice(
+            deviceId: '97BA8682-44B7-5BA3-2257-381176EB6AAB',
+            displayName: 'EIXAM Demo',
+            lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
           ),
-        ),
-      );
+        );
+        final coordinator = BleAutoReconnectCoordinator(
+          deviceRepository: repository,
+          preferredDeviceStore: store,
+          isIosPlatform: () => true,
+        );
 
-      expect(repository.pairCallCount, 1);
-      expect(await store.getPreferredDevice(), isNull);
-      expect(await store.readManualDisconnectRequested(), isTrue);
-      expect(
+        await coordinator.initialize(
+          initialStatus: await repository.getDeviceStatus(),
+          deviceStatusStream: repository.watchDeviceStatus(),
+        );
+
+        await expectLater(
+          coordinator.pairDeviceManually(pairingCode: '1234'),
+          throwsA(
+            isA<DeviceException>().having(
+              (error) => error.code,
+              'code',
+              DeviceException.bleIosPairingInformationRemovedCode,
+            ),
+          ),
+        );
+
+        expect(repository.pairCallCount, 1);
+        expect(await store.getPreferredDevice(), isNull);
+        expect(await store.readManualDisconnectRequested(), isTrue);
+        expect(
           BleDebugRegistry.instance.currentState.events.map(
             (event) => event.message,
           ),
-        contains(
-          'BLE_AUTO_RECONNECT_STOPPED reason=ios_pairing_information_removed hardwareId=97BA8682-44B7-5BA3-2257-381176EB6AAB',
-        ),
-      );
-      await coordinator.dispose();
+          contains(
+            'BLE_AUTO_RECONNECT_STOPPED '
+            'reason=ios_pairing_information_removed '
+            'device_identity_present=true',
+          ),
+        );
+        await coordinator.dispose();
       },
     );
 
     test(
       'uses restored paired device id when preferred store is empty',
-        () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      BleDebugRegistry.instance.reset();
-      final repository = _FakeDeviceRepository()..setDisconnected();
-      final store = PreferredBleDeviceStore(
-        localStore: SharedPrefsSdkStore(),
-      );
-      final coordinator = BleAutoReconnectCoordinator(
-        deviceRepository: repository,
-        preferredDeviceStore: store,
-      );
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        BleDebugRegistry.instance.reset();
+        final repository = _FakeDeviceRepository()..setDisconnected();
+        final store = PreferredBleDeviceStore(
+          localStore: SharedPrefsSdkStore(),
+        );
+        final coordinator = BleAutoReconnectCoordinator(
+          deviceRepository: repository,
+          preferredDeviceStore: store,
+        );
 
-      await coordinator.initialize(
-        initialStatus: await repository.getDeviceStatus(),
-        deviceStatusStream: repository.watchDeviceStatus(),
-      );
-      await coordinator.tryAutoConnectOnStartup();
+        await coordinator.initialize(
+          initialStatus: await repository.getDeviceStatus(),
+          deviceStatusStream: repository.watchDeviceStatus(),
+        );
+        await coordinator.tryAutoConnectOnStartup();
 
-      expect(repository.reconnectCallCount, 1);
-      expect(repository.lastReconnectedDeviceId, 'demo-device');
-      await coordinator.dispose();
+        expect(repository.reconnectCallCount, 1);
+        expect(repository.lastReconnectedDeviceId, 'demo-device');
+        await coordinator.dispose();
       },
     );
 
     test(
-        'rebinds an already connected device when command channel is not ready',
-        () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      BleDebugRegistry.instance.reset();
-      final repository = _FakeDeviceRepository()
-        ..setConnected(commandCapable: false);
-      final store = PreferredBleDeviceStore(
-        localStore: SharedPrefsSdkStore(),
-      );
-      await store.savePreferredDevice(
-        PreferredBleDevice(
-          deviceId: 'ble-demo-r1',
-          displayName: 'EIXAM Demo',
-          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
-        ),
-      );
-      final coordinator = BleAutoReconnectCoordinator(
-        deviceRepository: repository,
-        preferredDeviceStore: store,
-      );
+      'rebinds an already connected device when command channel is not ready',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        BleDebugRegistry.instance.reset();
+        final repository = _FakeDeviceRepository()
+          ..setConnected(commandCapable: false);
+        final store = PreferredBleDeviceStore(
+          localStore: SharedPrefsSdkStore(),
+        );
+        await store.savePreferredDevice(
+          PreferredBleDevice(
+            deviceId: 'ble-demo-r1',
+            displayName: 'EIXAM Demo',
+            lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+          ),
+        );
+        final coordinator = BleAutoReconnectCoordinator(
+          deviceRepository: repository,
+          preferredDeviceStore: store,
+        );
 
-      await coordinator.initialize(
-        initialStatus: await repository.getDeviceStatus(),
-        deviceStatusStream: repository.watchDeviceStatus(),
-      );
-      await coordinator.tryAutoConnectOnResume();
+        await coordinator.initialize(
+          initialStatus: await repository.getDeviceStatus(),
+          deviceStatusStream: repository.watchDeviceStatus(),
+        );
+        await coordinator.tryAutoConnectOnResume();
 
-      expect(repository.refreshCallCount, 1);
-      expect(repository.reconnectCallCount, 1);
-      expect(repository.lastReconnectedDeviceId, 'ble-demo-r1');
-      expect(
+        expect(repository.refreshCallCount, 1);
+        expect(repository.reconnectCallCount, 1);
+        expect(repository.lastReconnectedDeviceId, 'ble-demo-r1');
+        expect(
           BleDebugRegistry.instance.currentState.events.map(
             (event) => event.message,
           ),
-        contains(
-          'BLE_AUTO_CONNECT_REBIND trigger=resume reason=command_channel_not_ready',
-        ),
-      );
-      await coordinator.dispose();
+          contains(
+            'BLE_AUTO_CONNECT_REBIND trigger=resume reason=command_channel_not_ready',
+          ),
+        );
+        await coordinator.dispose();
       },
     );
 
     test(
       'skips already connected device when command channel is ready',
-        () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      BleDebugRegistry.instance.reset();
-      final repository = _FakeDeviceRepository()
-        ..setConnected(commandCapable: true);
-      final store = PreferredBleDeviceStore(
-        localStore: SharedPrefsSdkStore(),
-      );
-      await store.savePreferredDevice(
-        PreferredBleDevice(
-          deviceId: 'ble-demo-r1',
-          displayName: 'EIXAM Demo',
-          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
-        ),
-      );
-      final coordinator = BleAutoReconnectCoordinator(
-        deviceRepository: repository,
-        preferredDeviceStore: store,
-      );
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        BleDebugRegistry.instance.reset();
+        final repository = _FakeDeviceRepository()
+          ..setConnected(commandCapable: true);
+        final store = PreferredBleDeviceStore(
+          localStore: SharedPrefsSdkStore(),
+        );
+        await store.savePreferredDevice(
+          PreferredBleDevice(
+            deviceId: 'ble-demo-r1',
+            displayName: 'EIXAM Demo',
+            lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+          ),
+        );
+        final coordinator = BleAutoReconnectCoordinator(
+          deviceRepository: repository,
+          preferredDeviceStore: store,
+        );
 
-      await coordinator.initialize(
-        initialStatus: await repository.getDeviceStatus(),
-        deviceStatusStream: repository.watchDeviceStatus(),
-      );
-      await coordinator.tryAutoConnectOnResume();
+        await coordinator.initialize(
+          initialStatus: await repository.getDeviceStatus(),
+          deviceStatusStream: repository.watchDeviceStatus(),
+        );
+        await coordinator.tryAutoConnectOnResume();
 
-      expect(repository.refreshCallCount, 1);
-      expect(repository.reconnectCallCount, 0);
-      expect(
+        expect(repository.refreshCallCount, 1);
+        expect(repository.reconnectCallCount, 0);
+        expect(
           BleDebugRegistry.instance.currentState.events.map(
             (event) => event.message,
           ),
-        contains(
-          'BLE_AUTO_CONNECT_SKIPPED trigger=resume reason=command_channel_ready',
-        ),
-      );
-      await coordinator.dispose();
+          contains(
+            'BLE_AUTO_CONNECT_SKIPPED trigger=resume reason=command_channel_ready',
+          ),
+        );
+        await coordinator.dispose();
       },
     );
 
     test(
       'retries manual connect once for transient disconnect failures',
-        () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      BleDebugRegistry.instance.reset();
-      final repository = _FakeDeviceRepository()
-        ..pairErrors = <Object>[
-          PlatformException(
-            code: 'deviceDisconnected',
-            message: 'deviceDisconnected',
-          ),
-        ];
-      final store = PreferredBleDeviceStore(
-        localStore: SharedPrefsSdkStore(),
-      );
-      final coordinator = BleAutoReconnectCoordinator(
-        deviceRepository: repository,
-        preferredDeviceStore: store,
-      );
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        BleDebugRegistry.instance.reset();
+        final repository = _FakeDeviceRepository()
+          ..pairErrors = <Object>[
+            PlatformException(
+              code: 'deviceDisconnected',
+              message: 'deviceDisconnected',
+            ),
+          ];
+        final store = PreferredBleDeviceStore(
+          localStore: SharedPrefsSdkStore(),
+        );
+        final coordinator = BleAutoReconnectCoordinator(
+          deviceRepository: repository,
+          preferredDeviceStore: store,
+        );
 
-      await coordinator.initialize(
-        initialStatus: await repository.getDeviceStatus(),
-        deviceStatusStream: repository.watchDeviceStatus(),
-      );
+        await coordinator.initialize(
+          initialStatus: await repository.getDeviceStatus(),
+          deviceStatusStream: repository.watchDeviceStatus(),
+        );
 
         final status = await coordinator.pairDeviceManually(
           pairingCode: '1234',
         );
 
-      expect(status.connected, isTrue);
-      expect(repository.pairCallCount, 2);
-      expect(
+        expect(status.connected, isTrue);
+        expect(repository.pairCallCount, 2);
+        expect(
           BleDebugRegistry.instance.currentState.events.map(
             (event) => event.message,
           ),
-        contains('manual_connect_retry_start'),
-      );
-      expect(
+          contains('manual_connect_retry_start'),
+        );
+        expect(
           BleDebugRegistry.instance.currentState.events.map(
             (event) => event.message,
           ),
-        contains('manual_connect_retry_success'),
-      );
-      await coordinator.dispose();
+          contains('manual_connect_retry_success'),
+        );
+        await coordinator.dispose();
       },
     );
 
     test(
       'retries auto-connect campaign for transient disconnect failures',
-        () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      BleDebugRegistry.instance.reset();
-      final repository = _FakeDeviceRepository()
-        ..pairErrors = <Object>[
-          PlatformException(
-            code: 'deviceDisconnected',
-            message: 'deviceDisconnected',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        BleDebugRegistry.instance.reset();
+        final repository = _FakeDeviceRepository()
+          ..pairErrors = <Object>[
+            PlatformException(
+              code: 'deviceDisconnected',
+              message: 'deviceDisconnected',
+            ),
+          ];
+        final store = PreferredBleDeviceStore(
+          localStore: SharedPrefsSdkStore(),
+        );
+        await store.savePreferredDevice(
+          PreferredBleDevice(
+            deviceId: 'ble-demo-r1',
+            displayName: 'EIXAM Demo',
+            lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
           ),
-        ];
-      final store = PreferredBleDeviceStore(
-        localStore: SharedPrefsSdkStore(),
-      );
-      await store.savePreferredDevice(
-        PreferredBleDevice(
-          deviceId: 'ble-demo-r1',
-          displayName: 'EIXAM Demo',
-          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
-        ),
-      );
-      final coordinator = BleAutoReconnectCoordinator(
-        deviceRepository: repository,
-        preferredDeviceStore: store,
-        preferredReconnectDelay: (_) async {},
-      );
+        );
+        final coordinator = BleAutoReconnectCoordinator(
+          deviceRepository: repository,
+          preferredDeviceStore: store,
+          preferredReconnectDelay: (_) async {},
+        );
 
-      await coordinator.initialize(
-        initialStatus: await repository.getDeviceStatus(),
-        deviceStatusStream: repository.watchDeviceStatus(),
-      );
+        await coordinator.initialize(
+          initialStatus: await repository.getDeviceStatus(),
+          deviceStatusStream: repository.watchDeviceStatus(),
+        );
 
-      await coordinator.tryAutoConnectOnStartup();
+        await coordinator.tryAutoConnectOnStartup();
 
-      expect(repository.reconnectCallCount, 2);
-      expect(repository.pairCallCount, 0);
-      expect(
-        BleDebugRegistry.instance.currentState.events
-            .map((event) => event.message)
-            .where((message) => message == 'manual_connect_retry_start'),
-        isEmpty,
-      );
-      await coordinator.dispose();
+        expect(repository.reconnectCallCount, 2);
+        expect(repository.pairCallCount, 0);
+        expect(
+          BleDebugRegistry.instance.currentState.events
+              .map((event) => event.message)
+              .where((message) => message == 'manual_connect_retry_start'),
+          isEmpty,
+        );
+        await coordinator.dispose();
       },
     );
   });

@@ -23,11 +23,13 @@ void main() {
   late SdkSessionContext sessionContext;
   late List<_FakeMqttTransport> transports;
   late MqttRealtimeClient client;
+  late int subscribeFailuresRemaining;
 
   setUp(() async {
     await BleDebugRegistry.instance.resetForLifecycle();
     sessionContext = SdkSessionContext()..currentSession = session;
     transports = <_FakeMqttTransport>[];
+    subscribeFailuresRemaining = 0;
     client = MqttRealtimeClient(
       config: const EixamSdkConfig(
         apiBaseUrl: 'https://api.example.test',
@@ -36,7 +38,15 @@ void main() {
       ),
       sessionContext: sessionContext,
       transportFactory: (_) {
-        final transport = _FakeMqttTransport();
+        final transport = _FakeMqttTransport(
+          failSubscription: () {
+            if (subscribeFailuresRemaining == 0) {
+              return false;
+            }
+            subscribeFailuresRemaining -= 1;
+            return true;
+          },
+        );
         transports.add(transport);
         return transport;
       },
@@ -127,6 +137,77 @@ void main() {
     expect(second[2], 'subscribe:sos/events/$externalUserId');
     expect(second.last, 'publish:sos/alerts/$internalUserId');
   });
+
+  test('identical ready diagnostics dedupe without suppressing subscriptions',
+      () async {
+    await client.connect();
+    await client.disconnect();
+    await client.connect();
+
+    final subscriptionOperations = transports
+        .expand((transport) => transport.operations)
+        .where((operation) => operation.startsWith('subscribe:'))
+        .toList();
+    expect(subscriptionOperations, hasLength(4));
+
+    final diagnostics = BleDebugRegistry.instance.currentState.events
+        .map((event) => event.message)
+        .toList();
+    expect(
+      diagnostics
+          .where(
+            (message) =>
+                message.contains('SOS_MQTT_EVENT_SUBSCRIPTION_REQUESTED'),
+          )
+          .length,
+      2,
+    );
+    expect(
+      diagnostics
+          .where(
+            (message) => message.contains('SOS_MQTT_EVENT_SUBSCRIPTION_ACTIVE'),
+          )
+          .length,
+      2,
+    );
+    expect(
+      diagnostics
+          .where((message) => message.contains('SOS_MQTT_SOS_READY'))
+          .length,
+      1,
+    );
+  });
+
+  test('subscription failure emits and recovery reruns real subscriptions',
+      () async {
+    subscribeFailuresRemaining = 1;
+
+    await client.connect();
+    expect(_hasDiagnostic('SOS_MQTT_EVENT_SUBSCRIPTION_FAILED'), isTrue);
+
+    await client.disconnect();
+    await client.connect();
+
+    final subscriptionOperations = transports
+        .expand((transport) => transport.operations)
+        .where((operation) => operation.startsWith('subscribe:'))
+        .toList();
+    expect(subscriptionOperations, hasLength(3));
+    expect(_hasDiagnostic('SOS_MQTT_EVENT_SUBSCRIPTION_ACTIVE'), isTrue);
+    expect(_hasDiagnostic('SOS_MQTT_SOS_READY'), isTrue);
+    final diagnostics = BleDebugRegistry.instance.currentState.events
+        .map((event) => event.message)
+        .toList();
+    expect(
+      diagnostics
+          .where(
+            (message) =>
+                message.contains('SOS_MQTT_EVENT_SUBSCRIPTION_REQUESTED'),
+          )
+          .length,
+      3,
+    );
+  });
 }
 
 bool _hasDiagnostic(String token) {
@@ -136,6 +217,9 @@ bool _hasDiagnostic(String token) {
 }
 
 final class _FakeMqttTransport implements SdkMqttTransport {
+  _FakeMqttTransport({required this.failSubscription});
+
+  final bool Function() failSubscription;
   final StreamController<SdkMqttIncomingMessage> _messages =
       StreamController<SdkMqttIncomingMessage>.broadcast();
   final StreamController<SdkMqttDisconnectEvent> _disconnects =
@@ -171,6 +255,9 @@ final class _FakeMqttTransport implements SdkMqttTransport {
   @override
   Future<void> subscribe(String topic) async {
     operations.add('subscribe:$topic');
+    if (failSubscription()) {
+      throw StateError('synthetic subscription failure');
+    }
   }
 
   @override

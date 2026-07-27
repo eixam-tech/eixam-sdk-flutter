@@ -81,8 +81,8 @@ class BleAutoReconnectCoordinator {
     required Stream<DeviceStatus> deviceStatusStream,
   }) async {
     _lastStatus = initialStatus;
-    _manualDisconnectRequested = await _preferredDeviceStore
-        .readManualDisconnectRequested();
+    _manualDisconnectRequested =
+        await _preferredDeviceStore.readManualDisconnectRequested();
     await _deviceStatusSub?.cancel();
     _deviceStatusSub = deviceStatusStream.listen(_handleDeviceStatus);
   }
@@ -400,8 +400,7 @@ class BleAutoReconnectCoordinator {
       );
       return;
     }
-    final preferredDevice =
-        await _preferredDeviceStore.getPreferredDevice() ??
+    final preferredDevice = await _preferredDeviceStore.getPreferredDevice() ??
         _preferredDeviceFromStatus(currentStatus);
     if (preferredDevice == null) {
       _traceReconnect(
@@ -491,11 +490,9 @@ class BleAutoReconnectCoordinator {
     );
     PreferredDeviceReconnectResult lastResult =
         const PreferredDeviceReconnectResult.failed(reason: 'not_started');
-    for (
-      var attempt = 1;
+    for (var attempt = 1;
         attempt <= _preferredReconnectMaxAttempts;
-      attempt++
-    ) {
+        attempt++) {
       if (!_isPreferredReconnectCampaignCurrent(token)) {
         _traceReconnect('sdk_campaign_cancelled reason=disposed');
         return const PreferredDeviceReconnectResult.failed(
@@ -744,8 +741,7 @@ class BleAutoReconnectCoordinator {
       }
     }
 
-    final preferredDevice =
-        await _preferredDeviceStore.getPreferredDevice() ??
+    final preferredDevice = await _preferredDeviceStore.getPreferredDevice() ??
         _preferredDeviceFromStatus(currentStatus);
     final overrideRemoteId = platformRemoteId?.trim();
     final reconnectDevice = _preferredDeviceWithPlatformRemoteId(
@@ -798,7 +794,7 @@ class BleAutoReconnectCoordinator {
       BleDebugRegistry.instance.recordEvent(
         'SDK_RECONNECT_REMOTE_ID_RESOLVED '
         'attemptId=${attemptId ?? 'none'} platform=ios '
-        'remoteId=${_redactedReconnectId(remoteId)} '
+        'remote_identity_present=${remoteId.trim().isNotEmpty} '
         'length=${remoteId.length} '
         'validCoreBluetoothUuid=${_isValidIosBleRemoteId(remoteId)}',
       );
@@ -809,7 +805,8 @@ class BleAutoReconnectCoordinator {
     }
 
     BleDebugRegistry.instance.recordEvent(
-      '$trigger auto-connect started for ${reconnectDevice.deviceId}',
+      'BLE_AUTO_RECONNECT_STARTED trigger=$trigger '
+      'device_identity_present=${reconnectDevice.deviceId.trim().isNotEmpty}',
     );
     BleDebugRegistry.instance.selectDevice(reconnectDevice.deviceId);
     final reconnectRepository = _deviceRepository;
@@ -962,8 +959,7 @@ class BleAutoReconnectCoordinator {
   }
 
   Future<void> _waitForPreferredReconnectDelay(Duration delay) {
-    final delayFuture =
-        _preferredReconnectDelay?.call(delay) ??
+    final delayFuture = _preferredReconnectDelay?.call(delay) ??
         (delay == Duration.zero
             ? Future<void>.value()
             : Future<void>.delayed(delay));
@@ -1030,7 +1026,8 @@ class BleAutoReconnectCoordinator {
                 ? 'unsupported_repository'
                 : 'unknown',
       PreferredDeviceReconnectResultStatus.reconnecting ||
-      PreferredDeviceReconnectResultStatus.exhausted => 'unknown',
+      PreferredDeviceReconnectResultStatus.exhausted =>
+        'unknown',
     };
   }
 
@@ -1260,14 +1257,6 @@ class BleAutoReconnectCoordinator {
       'BLE_RECONNECT_FAILED_NO_PROVIDER_CALL '
       'reason=$reason attemptId=$attemptId',
     );
-  }
-
-  String _redactedReconnectId(String value) {
-    final trimmed = value.trim();
-    if (trimmed.length <= 8) {
-      return trimmed.isEmpty ? 'none' : 'redacted:${trimmed.length}';
-    }
-    return '${trimmed.substring(0, 4)}...${trimmed.substring(trimmed.length - 4)}';
   }
 
   Future<void> _handleMissingMobileBond(

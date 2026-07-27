@@ -8,7 +8,11 @@ import '../device/ble_debug_registry.dart';
 class LocationDebugLog {
   const LocationDebugLog._();
 
-  static const bool enabled = kDebugMode;
+  static const bool enabled = kDebugMode &&
+      bool.fromEnvironment(
+        'EIXAM_VERBOSE_LOCATION_DIAGNOSTICS',
+        defaultValue: false,
+      );
   static const String tag = '[EIXAM_LOCATION_AUTH]';
   static const double _suspiciousJumpKm = 50;
   static const Duration _suspiciousJumpWindow = Duration(minutes: 10);
@@ -184,8 +188,7 @@ class LocationDebugLog {
       if (candidateExists != null) 'candidateExists=$candidateExists',
       if (connected != null) 'connected=$connected',
       if (runtimeReady != null) 'runtimeReady=$runtimeReady',
-      if (latestTelTimestamp != null)
-        'latestTelTimestamp=${latestTelTimestamp.toUtc().toIso8601String()}',
+      if (latestTelTimestamp != null) 'latestTelTimestamp_present=true',
       if (latestTelAge != null) 'latestTelAgeMs=${latestTelAge.inMilliseconds}',
       if (packetType != null && packetType.trim().isNotEmpty)
         'packetType=${packetType.trim()}',
@@ -300,7 +303,7 @@ class LocationDebugLog {
       'lon=${longitude?.toStringAsFixed(6) ?? "none"} '
       'alt=${altitude?.toStringAsFixed(2) ?? "none"} '
       'accuracy=${accuracy?.toStringAsFixed(2) ?? "none"} '
-      'timestamp=${normalizedTimestamp?.toIso8601String() ?? "none"} '
+      'timestamp_present=${normalizedTimestamp != null} '
       'ageMs=$ageMs '
       'freshnessMs=${freshness?.inMilliseconds.toString() ?? "none"} '
       'authoritativeForBackend=${authoritativeForBackend?.toString() ?? "unknown"} '

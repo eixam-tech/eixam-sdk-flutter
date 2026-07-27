@@ -3396,7 +3396,10 @@ class EixamConnectSdkImpl
       );
     }
     final connectedLocalTerminal =
-        _isConnectedLocalDeviceTerminalForActiveCycle(status);
+        _isConnectedLocalDeviceTerminalForActiveCycle(
+      status,
+      appOwnedBleRuntimeStatus: appOwnedBleRuntimeStatus,
+    );
     if (connectedLocalTerminal) {
       await _acceptConnectedLocalDeviceTerminal(status);
     } else {
@@ -3600,15 +3603,21 @@ class EixamConnectSdkImpl
   }
 
   bool _isConnectedLocalDeviceTerminalForActiveCycle(
-    DeviceSosStatus status,
-  ) {
+    DeviceSosStatus status, {
+    required bool appOwnedBleRuntimeStatus,
+  }) {
     if (!_isDeviceSosCycleClosed(status.state) ||
-        status.triggerOrigin != DeviceSosTransitionSource.device) {
+        (status.triggerOrigin != DeviceSosTransitionSource.device &&
+            !appOwnedBleRuntimeStatus)) {
       return false;
     }
     final lifecycle = _sosLifecycle.current;
-    if (!lifecycle.isOpen ||
-        lifecycle.origin != SosLifecycleOrigin.connectedLocalDevice) {
+    final connectedLocalLifecycle =
+        lifecycle.origin == SosLifecycleOrigin.connectedLocalDevice;
+    final lifecycleMatchesLocalTerminal =
+        (connectedLocalLifecycle && lifecycle.isOpen) ||
+            appOwnedBleRuntimeStatus;
+    if (!lifecycleMatchesLocalTerminal) {
       return false;
     }
     final statusNodeId = _normalizeNodeIdOrNull(status.nodeId);
@@ -3623,10 +3632,12 @@ class EixamConnectSdkImpl
   Future<void> _acceptConnectedLocalDeviceTerminal(
     DeviceSosStatus status,
   ) async {
-    await _sosLifecycle.confirmTerminal(
-      stage: SosLifecycleStage.cancelled,
-      incident: _sosLifecycle.current.incident,
-    );
+    if (_sosLifecycle.current.isOpen) {
+      await _sosLifecycle.confirmTerminal(
+        stage: SosLifecycleStage.cancelled,
+        incident: _sosLifecycle.current.incident,
+      );
+    }
     _traceConnectedLocalDeviceCycle(action: 'terminated', status: status);
     _traceDeviceTerminal(
       action: 'accepted',
@@ -5377,7 +5388,7 @@ class EixamConnectSdkImpl
       );
     } catch (error) {
       if (kDebugMode) {
-        debugPrint(
+        safeSdkDebugPrint(
           '[BACKGROUND_SOS] get_current_sos_device_status_failed '
           'error=$error',
         );
@@ -10116,7 +10127,7 @@ class EixamConnectSdkImpl
         'SOS notification cleanup failed -> reason=$reason error=$error',
       );
       if (kDebugMode) {
-        debugPrint('SOS notification cleanup failed: $error');
+        safeSdkDebugPrint('SOS notification cleanup failed: $error');
       }
     }
   }
@@ -14734,13 +14745,10 @@ class EixamConnectSdkImpl
         sosEventPacket,
         source: DeviceSosTransitionSource.device,
       );
-      if (_isTerminalSosEventPacket(sosEventPacket)) {
-        _applyTerminalSosSuppression(
-          reason: 'own_device_terminal_packet',
-          terminalState: _terminalStateForSosEventPacket(sosEventPacket),
-          nodeId: sosEventPacket.nodeId,
-        );
-      }
+      // The device status listener classifies the terminal against the
+      // still-owned local cycle before applying terminal suppression. Doing
+      // that here would clear ownership first and make the same-device packet
+      // look like relay residue.
       return;
     }
 
@@ -14775,7 +14783,8 @@ class EixamConnectSdkImpl
       case ProtectionPlatformEventType.nativeBackendSyncQueued:
         BleDebugRegistry.instance.recordEvent(
           '[NATIVE_PRE_SOS_BACKEND] action=queued '
-          'reason=${event.reason ?? "-"}',
+          'reason_category=${_isCancelBackendSyncReason(event.reason) ? "cancel" : "sync"} '
+          'reason_present=${event.reason?.trim().isNotEmpty == true}',
         );
         _clearPreSosSession(
           reason: 'native_backend_sync_queued',
@@ -14823,7 +14832,8 @@ class EixamConnectSdkImpl
       case ProtectionPlatformEventType.nativeBackendSyncSucceeded:
         BleDebugRegistry.instance.recordEvent(
           '[NATIVE_PRE_SOS_BACKEND] action=succeeded '
-          'reason=${event.reason ?? "-"}',
+          'reason_category=${_isCancelBackendSyncReason(event.reason) ? "cancel" : "sync"} '
+          'reason_present=${event.reason?.trim().isNotEmpty == true}',
         );
         _clearPreSosSession(
           reason: 'native_backend_sync_succeeded',
@@ -14847,7 +14857,8 @@ class EixamConnectSdkImpl
       case ProtectionPlatformEventType.nativeBackendSyncFailed:
         BleDebugRegistry.instance.recordEvent(
           '[NATIVE_PRE_SOS_BACKEND] action=failed '
-          'reason=${event.reason ?? "-"}',
+          'reason_category=native_backend_sync_failed '
+          'reason_present=${event.reason?.trim().isNotEmpty == true}',
         );
         _markCountdownZeroActivationFailed(
           source: 'native_backend_sync_failed',
@@ -15239,13 +15250,6 @@ class EixamConnectSdkImpl
       return true;
     }
     return false;
-  }
-
-  SosState _terminalStateForSosEventPacket(EixamSosEventPacket packet) {
-    if (packet.opcode == EixamBleProtocol.sosEventUserDeactivatedOpcode) {
-      return SosState.cancelled;
-    }
-    return SosState.cancelled;
   }
 
   Future<void> _evaluateDeathManPlan(String planId) async {

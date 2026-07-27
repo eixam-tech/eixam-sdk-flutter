@@ -49,6 +49,7 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
   bool _disposed = false;
   EixamSession? _activeSession;
   Set<String> _subscribedTopics = <String>{};
+  final Map<String, String> _diagnosticTransitions = <String, String>{};
 
   @override
   Future<void> connect() {
@@ -473,25 +474,36 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
     await transport.connect().timeout(connectTimeout);
     for (final topic in _subscribedTopics) {
       final category = _sosEventTopicCategory(topic, session);
-      _recordRealtime(
+      _recordRealtimeTransition(
         'SOS_MQTT_EVENT_SUBSCRIPTION_REQUESTED topicCategory=$category',
+        key: 'subscription_request_$category',
+        state: 'requested',
       );
       try {
         await transport.subscribe(topic);
-        _recordRealtime(
+        _recordRealtimeTransition(
           'SOS_MQTT_EVENT_SUBSCRIPTION_ACTIVE topicCategory=$category qos=1',
+          key: 'subscription_active_$category',
+          state: 'active',
         );
       } catch (error) {
-        _recordRealtime(
+        _diagnosticTransitions['subscription_request_$category'] = 'failed';
+        _diagnosticTransitions['subscription_active_$category'] = 'failed';
+        _recordRealtimeTransition(
           'SOS_MQTT_EVENT_SUBSCRIPTION_FAILED topicCategory=$category '
           'errorType=${error.runtimeType}',
+          key: 'subscription_failure_$category',
+          state: 'failed_${error.runtimeType}',
+          failure: true,
         );
         rethrow;
       }
     }
-    _recordRealtime(
+    _recordRealtimeTransition(
       'SOS_MQTT_SOS_READY publishReady=true eventReady=true '
       'subscriptions=${_subscribedTopics.length}',
+      key: 'sos_ready',
+      state: 'ready_${_subscribedTopics.length}',
     );
   }
 
@@ -544,6 +556,20 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
 
   void _recordRealtime(String message) {
     BleDebugRegistry.instance.recordEvent(message);
+  }
+
+  void _recordRealtimeTransition(
+    String message, {
+    required String key,
+    required String state,
+    bool failure = false,
+  }) {
+    final previous = _diagnosticTransitions[key];
+    if (!failure && previous == state) {
+      return;
+    }
+    _diagnosticTransitions[key] = state;
+    _recordRealtime(message);
   }
 
   String _nextCorrelationId(String prefix) =>

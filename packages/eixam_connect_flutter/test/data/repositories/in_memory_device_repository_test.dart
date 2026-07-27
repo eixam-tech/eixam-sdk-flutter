@@ -396,7 +396,8 @@ void main() {
             return event.message;
           }),
           contains(
-            'InMemoryDeviceRepository.heartbeat_failed -> errorType=StateError',
+            'InMemoryDeviceRepository.heartbeat_failed -> '
+            'error_category=invalid_state',
           ),
         );
       } finally {

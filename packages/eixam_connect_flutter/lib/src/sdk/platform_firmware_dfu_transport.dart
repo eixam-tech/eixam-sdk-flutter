@@ -5,6 +5,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import '../device/ble_debug_registry.dart';
 import 'firmware_dfu_transport.dart';
 
 class PlatformFirmwareDfuTransport implements FirmwareDfuTransport {
@@ -67,12 +68,10 @@ class PlatformFirmwareDfuTransport implements FirmwareDfuTransport {
             sessionId: request.sessionId,
             state: 'dfuError',
             errorCode: 'dfuTerminalTimeout',
-            errorMessage:
-                'Native DFU reported no events for '
+            errorMessage: 'Native DFU reported no events for '
                 '${_nativeInactivityTimeout.inMinutes} min. Last native state '
                 'was ${lastEvent?.state ?? "unknown"}.',
-            requiresRecovery:
-                lastEvent?.requiresRecovery == true ||
+            requiresRecovery: lastEvent?.requiresRecovery == true ||
                 lastEvent?.state == 'deviceDisconnected',
           ),
         );
@@ -83,26 +82,26 @@ class PlatformFirmwareDfuTransport implements FirmwareDfuTransport {
         .map(_mapNativeEvent)
         .where((event) => event.sessionId == request.sessionId)
         .listen((event) {
-          lastEvent = event;
-          if (!event.isTerminal) {
-            armInactivityTimeout();
-          }
-          if (event.isTerminal && !terminalCompleter.isCompleted) {
-            terminalCompleter.complete(event);
-          }
-        });
+      lastEvent = event;
+      if (!event.isTerminal) {
+        armInactivityTimeout();
+      }
+      if (event.isTerminal && !terminalCompleter.isCompleted) {
+        terminalCompleter.complete(event);
+      }
+    });
     try {
       final raw = await _methodChannel
           .invokeMapMethod<String, dynamic>('startDfu', <String, dynamic>{
-          'sessionId': request.sessionId,
-          'deviceId': request.deviceId,
-          'deviceRemoteId': request.deviceId,
-          'firmwareZipPath': firmwareZipPath,
-          'targetVersion': request.release.version,
-          'releaseId': request.release.releaseId,
-          'forceDfu': request.forceDfu,
-          'enterDfuMode': !request.forceDfu,
-          });
+        'sessionId': request.sessionId,
+        'deviceId': request.deviceId,
+        'deviceRemoteId': request.deviceId,
+        'firmwareZipPath': firmwareZipPath,
+        'targetVersion': request.release.version,
+        'releaseId': request.release.releaseId,
+        'forceDfu': request.forceDfu,
+        'enterDfuMode': !request.forceDfu,
+      });
       final started = raw?['success'] == true || raw?['started'] == true;
       if (!started) {
         final startRequiresRecovery = raw?['requiresRecovery'] == true;
@@ -122,7 +121,7 @@ class PlatformFirmwareDfuTransport implements FirmwareDfuTransport {
       if (terminal.isSuccess) {
         return;
       }
-      debugPrint(
+      safeSdkDebugPrint(
         'OTA_DFU_DART native terminal error '
         'sessionId=${request.sessionId} state=${terminal.state} '
         'code=${terminal.errorCode ?? "dfuFailed"} '
@@ -257,11 +256,13 @@ class PlatformFirmwareDfuTransport implements FirmwareDfuTransport {
       'dfuProcessStarting' ||
       'enablingDfuMode' ||
       'starting' ||
-      'uploading' => FirmwareUpdateState.transferring,
+      'uploading' =>
+        FirmwareUpdateState.transferring,
       'firmwareValidating' => FirmwareUpdateState.transferring,
       'deviceDisconnecting' ||
       'deviceDisconnected' ||
-      'dfuCompleted' => FirmwareUpdateState.reconnecting,
+      'dfuCompleted' =>
+        FirmwareUpdateState.reconnecting,
       'dfuAborted' => FirmwareUpdateState.cancelled,
       'dfuError' => FirmwareUpdateState.failed,
       'downloading' => FirmwareUpdateState.downloading,

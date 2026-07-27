@@ -123,7 +123,7 @@ class RealBleClient implements BleClient {
       final mapped = _mapAdapterState(state);
       BleDebugRegistry.instance.update(adapterState: mapped);
       if (mapped == BleAdapterState.poweredOn) {
-        debugPrint(
+        safeSdkDebugPrint(
           'IOS_BLE_POWERED_CACHE_UPDATED '
           'source=adapter_state value=poweredOn',
         );
@@ -133,7 +133,7 @@ class RealBleClient implements BleClient {
     final initialAdapterState = _mapAdapterState(_adapterStateProvider());
     BleDebugRegistry.instance.update(adapterState: initialAdapterState);
     if (initialAdapterState == BleAdapterState.poweredOn) {
-      debugPrint(
+      safeSdkDebugPrint(
         'IOS_BLE_POWERED_CACHE_UPDATED '
         'source=adapter_state value=poweredOn',
       );
@@ -149,7 +149,7 @@ class RealBleClient implements BleClient {
     final state = _mapAdapterState(_adapterStateProvider());
     BleDebugRegistry.instance.update(adapterState: state);
     if (state == BleAdapterState.poweredOn) {
-      debugPrint(
+      safeSdkDebugPrint(
         'IOS_BLE_POWERED_CACHE_UPDATED '
         'source=adapter_state value=poweredOn',
       );
@@ -164,7 +164,7 @@ class RealBleClient implements BleClient {
       final mapped = _mapAdapterState(state);
       BleDebugRegistry.instance.update(adapterState: mapped);
       if (mapped == BleAdapterState.poweredOn) {
-        debugPrint(
+        safeSdkDebugPrint(
           'IOS_BLE_POWERED_CACHE_UPDATED '
           'source=adapter_state value=poweredOn',
         );
@@ -179,20 +179,20 @@ class RealBleClient implements BleClient {
   }) async {
     _ensureInitialized();
     final isIos = defaultTargetPlatform == TargetPlatform.iOS;
-    debugPrint(
+    safeSdkDebugPrint(
       'SDK_DISCOVERY_START_ENTRY '
       'source=ble_client_scan platform=${isIos ? 'ios' : 'other'}',
     );
     final precheck = await _precheckNativeScanStart();
     if (isIos) {
-      debugPrint(
+      safeSdkDebugPrint(
         'SDK_DISCOVERY_PRECHECK '
         'adapterState=${precheck.adapterState.name} '
         'supported=${precheck.supported} '
         'scannerReady=${precheck.scannerReady}',
       );
       if (!precheck.allowed) {
-        debugPrint(
+        safeSdkDebugPrint(
           'SDK_DISCOVERY_PRECHECK_BLOCKED reason=${precheck.reason}',
         );
         throw const DeviceException(
@@ -201,7 +201,7 @@ class RealBleClient implements BleClient {
         );
       }
       if (precheck.scannerReady == 'unknown') {
-        debugPrint(
+        safeSdkDebugPrint(
           'SDK_DISCOVERY_PRECHECK_ALLOW_UNKNOWN '
           'reason=adapter_powered_on_supported',
         );
@@ -250,15 +250,16 @@ class RealBleClient implements BleClient {
     });
 
     try {
-      debugPrint('SDK_DISCOVERY_NATIVE_START_SCAN_CALL_BEGIN');
+      safeSdkDebugPrint('SDK_DISCOVERY_NATIVE_START_SCAN_CALL_BEGIN');
       await _startScan(timeout);
-      debugPrint('SDK_DISCOVERY_NATIVE_START_SCAN_CALL_DONE');
+      safeSdkDebugPrint('SDK_DISCOVERY_NATIVE_START_SCAN_CALL_DONE');
       await Future.delayed(timeout);
       await _stopScan();
       await sub.cancel();
     } catch (error) {
-      debugPrint('SDK_DISCOVERY_NATIVE_START_SCAN_CALL_FAILED error=$error');
-      debugPrint(
+      safeSdkDebugPrint(
+          'SDK_DISCOVERY_NATIVE_START_SCAN_CALL_FAILED error=$error');
+      safeSdkDebugPrint(
         'SDK_DISCOVERY_ERROR_ORIGIN '
         'origin=flutter_blue_plus_native error=$error',
       );
@@ -452,7 +453,7 @@ class RealBleClient implements BleClient {
       BleDebugRegistry.instance.recordEvent(
         'BLE_CONNECT_DISCOVER_FAILED hardwareId=$deviceId error=$error',
       );
-      debugPrint(
+      safeSdkDebugPrint(
         'BLE connect/discoverServices failed -> hardwareId=$deviceId error=$error',
       );
 
