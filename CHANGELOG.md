@@ -18,6 +18,11 @@ No package version is assigned by this entry.
 
 ### Changed
 
+- Removed a stale Contacts collection declaration from the Flutter iOS
+  plugin privacy manifest. The SDK does not access the system address book;
+  emergency-contact records are supplied explicitly by the host or backend.
+  No runtime behavior or public API changed, and packages remain at `0.3.0`
+  because the App consumes an immutable private Git release unit.
 - Hardened SOS lifecycle handling against duplicate/stale packets, delayed
   countdown observations, cancellation races, and reconnect snapshots.
 - Release diagnostics now use redacted presence/category fields; verbose

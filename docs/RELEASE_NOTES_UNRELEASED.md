@@ -28,6 +28,11 @@ No semantic version is assigned by this document.
   opt-in device/location traces disabled by default.
 - Moved the iOS global Core Location service-status query off the main queue
   and use cached delegate/application state during sample delivery.
+- Removed a stale Contacts collection declaration from the Flutter iOS plugin
+  privacy manifest. The SDK does not access the system address book; manually
+  supplied emergency-contact data is ordinary host/backend model data, not
+  system Contacts access. Runtime behavior and public APIs are unchanged, and
+  package versions remain `0.3.0` for the immutable private Git release unit.
 
 Validation checkpoint: 665 SDK tests passed at
 `edbfd2328f759ee94908d8d72c201a26cd69670e`. The listed physical and backend
