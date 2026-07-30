@@ -1,6 +1,8 @@
 # EIXAM Connect Flutter SDK
 
-Partner-facing Flutter SDK for EIXAM's connected safety platform — SOS, device runtime, telemetry, relay ingest, notifications, and Death Man Protocol.
+Partner-facing Flutter SDK for EIXAM's connected safety platform — SOS,
+device runtime, telemetry, relay ingest, notifications, and Death Man
+Protocol. The native runtime plugin supports Android and iOS.
 
 This monorepo is **SDK-first**: the SDK is the product. The partner app in `../eixam-app` is a host/reference integration.
 
@@ -14,10 +16,20 @@ This monorepo is **SDK-first**: the SDK is the product. The partner app in `../e
 
 ## Prerequisites
 
-- Flutter on `PATH`, Android SDK, and at least one device visible in `flutter devices`
+- Flutter on `PATH`; packages require Dart `>=3.4.0 <4.0.0`
+- Android SDK or Xcode for the target platform
+- At least one device visible in `flutter devices`
 - Verify with `flutter doctor`
 
-## Integration
+## Integration path
+
+Packages are private and must be consumed from a reviewed Git commit or local
+path override. See the
+[SDK integration guide](docs/SDK_INTEGRATION_GUIDE.md) for dependency setup,
+host permissions, device connection, location ownership, diagnostics, and
+troubleshooting.
+
+The minimal bootstrap shape is:
 
 ```dart
 import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
@@ -42,7 +54,7 @@ const notificationTexts = EixamNotificationTexts(
 final sdk = await EixamConnectSdk.bootstrap(
   const EixamBootstrapConfig(
     appId: 'partner-app',
-    environment: EixamEnvironment.production,
+    environment: EixamEnvironment.staging,
     notificationTexts: notificationTexts,
     initialSession: EixamSession.signed(
       appId: 'partner-app',
@@ -53,10 +65,16 @@ final sdk = await EixamConnectSdk.bootstrap(
 );
 ```
 
-- `production`, `sandbox`, `staging` resolve internally; `custom` requires `EixamCustomEndpoints`.
+- `production`, `sandbox`, and `staging` resolve internally; `custom` requires
+  `EixamCustomEndpoints`.
 - `initialSession` is optional; when provided its `appId` must match bootstrap `appId`.
 - `notificationTexts` is required and must contain non-empty, app-localized strings.
 - Bootstrap does not request permissions, pair devices, or trigger UX-sensitive actions.
+- The host obtains the signed session from its trusted service; the mobile app
+  does not compute the signing value.
+
+Staging and production are distinct configurations. Staging validation is not
+evidence that a production backend or store release has been deployed.
 
 ## Quality checks
 
@@ -82,7 +100,7 @@ dependency_overrides:
 
 ## Troubleshooting
 
-Stale state:
+For stale generated/plugin state:
 
 ```bash
 flutter clean && flutter pub get
@@ -90,9 +108,16 @@ flutter clean && flutter pub get
 
 Also uninstall the app from the emulator or device.
 
+For initialization, connection, command-channel, location, lifecycle,
+progress, cancellation/rearm, reconnect, external-SOS, and support-log
+troubleshooting, use the
+[troubleshooting table](docs/SDK_INTEGRATION_GUIDE.md#troubleshooting).
+
 ## Key references
 
 - Documentation index: [docs/README.md](docs/README.md)
+- Integration guide: [docs/SDK_INTEGRATION_GUIDE.md](docs/SDK_INTEGRATION_GUIDE.md)
+- Public API reference: [docs/PUBLIC_API_REFERENCE.md](docs/PUBLIC_API_REFERENCE.md)
 - Engineering contract: [AGENTS.md](AGENTS.md) (also published as [CLAUDE.md](CLAUDE.md))
 - AI context index: [docs/ai_context/AI_INDEX.md](docs/ai_context/AI_INDEX.md)
 - Public API surface: [packages/eixam_connect_flutter/PUBLIC_API.md](packages/eixam_connect_flutter/PUBLIC_API.md)

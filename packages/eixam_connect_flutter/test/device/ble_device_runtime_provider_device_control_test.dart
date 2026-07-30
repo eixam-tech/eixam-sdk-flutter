@@ -299,7 +299,8 @@ void main() {
         BleDebugRegistry.instance.currentState.events
             .map((event) => event.message),
         contains(
-          'BLE_RECONNECT_STOPPED reason=mobile_bond_missing hardwareId=${MockBleClient.demoDeviceId}',
+          'BLE_RECONNECT_STOPPED reason=mobile_bond_missing '
+          'device_identity_present=true',
         ),
       );
     });
@@ -351,7 +352,7 @@ void main() {
             .map((event) => event.message),
         contains(
           'IOS_RECONNECT_SCAN_RESOLVE_DONE '
-          'reason=known_identity_match attemptId=attempt-ios-1 '
+          'reason=known_identity_match attempt_present=true '
           'remoteId=1111...1111',
         ),
       );
@@ -416,7 +417,7 @@ void main() {
         contains(
           'IOS_RECONNECT_SCAN_RESOLVE_FAILED '
           'reason=no_unique_eixam_candidate '
-          'attemptId=attempt-ios-ambiguous',
+          'attempt_present=true',
         ),
       );
     });

@@ -7,6 +7,7 @@ import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_payload_classifier.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_sos_event_packet.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_sos_packet.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/preferred_ble_device_store.dart';
@@ -60,6 +61,7 @@ void main() {
     late List<EixamDeviceCommand> deviceCommands;
 
     setUp(() async {
+      await BleDebugRegistry.instance.resetForLifecycle();
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(protectionMethodChannel, (call) async {
         switch (call.method) {
@@ -400,7 +402,7 @@ void main() {
               ) &&
               event.message.contains('actionability=externalOnly') &&
               event.message.contains('localStateMutation=false') &&
-              event.message.contains('publicIncident=false') &&
+              event.message.contains('incident_present=false') &&
               event.message.contains('backendPublish=true'),
         ),
         isTrue,
@@ -447,7 +449,10 @@ void main() {
       expect(
         _hasDebugMessage(
           'REMOTE_RELAY_SOS_HANDOFF_IN_FLIGHT_CLEARED',
-          allOf(contains('reason=success'), contains('signature=')),
+          allOf(
+            contains('reason=success'),
+            contains('packet_identity_present=true'),
+          ),
         ),
         isTrue,
       );
@@ -794,7 +799,10 @@ void main() {
         _deviceOriginPreConfirmPacketForNode(1498094248),
         source: DeviceSosTransitionSource.device,
       );
-      await _eventually(() => sosRepository.triggerCallCount == 1);
+      await _eventually(
+        () => sosRepository.triggerCallCount == 1,
+        timeout: const Duration(seconds: 3),
+      );
 
       expect(sosRepository.lastDeviceId, '1498094248');
       expect(sosRepository.lastOriginatorNodeId, 1498094248);
@@ -861,6 +869,112 @@ void main() {
       expect(
         (await deviceSosController.getStatus()).state,
         DeviceSosState.active,
+      );
+    });
+
+    test(
+        'first connected-device active packet promotes one authoritative cycle',
+        () async {
+      await rebuildSdkWithFastDeviceSosTiming();
+      trackingRepository.emitPosition(freshPhonePosition());
+      final lifecycles = <SosLifecycleSnapshot>[];
+      final subscription = sdk.sosLifecycleStream.listen(lifecycles.add);
+      addTearDown(subscription.cancel);
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginActivePacketForNode(1498094248),
+        source: DeviceSosTransitionSource.device,
+      );
+
+      await _eventually(
+        () => lifecycles.any(
+          (lifecycle) =>
+              lifecycle.stage == SosLifecycleStage.active &&
+              lifecycle.origin == SosLifecycleOrigin.connectedLocalDevice,
+        ),
+      );
+      await _eventually(() => sosRepository.triggerCallCount == 1);
+
+      final openStages = lifecycles
+          .where((lifecycle) => lifecycle.generation > 0)
+          .map((lifecycle) => lifecycle.stage)
+          .toList();
+      expect(openStages, contains(SosLifecycleStage.arming));
+      expect(openStages, contains(SosLifecycleStage.activating));
+      expect(openStages, contains(SosLifecycleStage.active));
+      expect(openStages, isNot(contains(SosLifecycleStage.idle)));
+      expect(sosRepository.triggerCallCount, 1);
+    });
+
+    test('active retries reuse physical cycle and terminal bypasses relay',
+        () async {
+      await rebuildSdkWithFastDeviceSosTiming();
+      trackingRepository.emitPosition(freshPhonePosition());
+      sosRepository.currentIncident = SosIncident(
+        id: 'api-sos-identity-cycle',
+        state: SosState.idle,
+        createdAt: DateTime.utc(2026, 7, 27),
+      );
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginActivePacketForNode(1498094248),
+        source: DeviceSosTransitionSource.device,
+      );
+      await _eventuallyAsync(
+        () => sdk.getSosLifecycle().then(
+              (lifecycle) =>
+                  lifecycle.stage == SosLifecycleStage.active &&
+                  lifecycle.origin == SosLifecycleOrigin.connectedLocalDevice,
+            ),
+      );
+      await _eventually(
+        () => sosRepository.triggerCallCount == 1,
+        timeout: const Duration(seconds: 3),
+      );
+      final firstStatus = await deviceSosController.getStatus();
+      final firstCycle = sdk.debugDeriveDeviceSosCycleKey(firstStatus);
+      final firstLifecycle = await sdk.getSosLifecycle();
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginActivePacketForNode(1498094248, packetId: 3),
+        source: DeviceSosTransitionSource.device,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      final repeatedStatus = await deviceSosController.getStatus();
+      final repeatedCycle = sdk.debugDeriveDeviceSosCycleKey(repeatedStatus);
+      final repeatedLifecycle = await sdk.getSosLifecycle();
+
+      expect(repeatedCycle, firstCycle);
+      expect(repeatedLifecycle.lifecycleId, firstLifecycle.lifecycleId);
+      expect(repeatedLifecycle.localIncidentId, firstLifecycle.localIncidentId);
+      expect(sosRepository.triggerCallCount, 1);
+
+      BleDebugRegistry.instance.reset();
+      deviceSosController.handleIncomingSosEventPacket(
+        _deviceCancelEventForNode(1498094248),
+        source: DeviceSosTransitionSource.device,
+      );
+      await _eventuallyAsync(
+        () => sdk.getSosLifecycle().then(
+              (lifecycle) => lifecycle.stage == SosLifecycleStage.cancelled,
+            ),
+        timeout: const Duration(seconds: 3),
+      );
+
+      expect(sosRepository.cancelCallCount, 1);
+      await _eventually(
+        () => BleDebugRegistry.instance.currentState.events.any(
+          (event) =>
+              event.message.contains('event=device_terminal') &&
+              event.message.contains('classification=connected_local') &&
+              event.message.contains('action=accepted'),
+        ),
+      );
+      expect(
+        BleDebugRegistry.instance.currentState.events.any(
+          (event) => event.message.contains('relay_terminal_residue_detected'),
+        ),
+        isFalse,
       );
     });
 
@@ -941,15 +1055,11 @@ void main() {
       expect(status.deviceId, 'CF:82:59:4B:1A:A8');
       expect(sosRepository.lastDeviceId, '1498094248');
       expect(sosRepository.lastOriginatorNodeId, 1498094248);
-      expect(
-        BleDebugRegistry.instance.currentState.events.any(
-          (event) =>
-              event.message.contains('DEVICE_NODE_ID_PROMOTED') &&
-              event.message.contains('nodeId=1498094248') &&
-              event.message.contains('hardwareId=CF:82:59:4B:1A:A8'),
-        ),
-        isTrue,
-      );
+      final diagnostics = BleDebugRegistry.instance.currentState.events
+          .map((event) => event.message)
+          .join('\n');
+      expect(diagnostics, isNot(contains('1498094248')));
+      expect(diagnostics, isNot(contains('CF:82:59:4B:1A:A8')));
     });
 
     test('telemetry after device SOS promotion uses nodeId backend identity',
@@ -1226,7 +1336,8 @@ void main() {
       );
     });
 
-    test('SOS_BACKEND_PAYLOAD_FINAL logs MQTT runtime node identity', () async {
+    test('SOS_BACKEND_PAYLOAD_FINAL logs runtime identity presence only',
+        () async {
       BleDebugRegistry.instance.reset();
       final repository = MqttOperationalSosRepository(
         realtimeClient: realtimeClient,
@@ -1245,8 +1356,10 @@ void main() {
           (event) =>
               event.message.contains('SOS_BACKEND_PAYLOAD_FINAL') &&
               event.message.contains('owner=device') &&
-              event.message.contains('deviceId=1498094248') &&
-              event.message.contains('originatorNodeId=1498094248'),
+              event.message.contains('device_identity_present=true') &&
+              event.message.contains('originator_identity_present=true') &&
+              !event.message.contains('1498094248') &&
+              !event.message.contains('CF:82:59:4B:1A:A8'),
         ),
         isTrue,
       );
@@ -2011,8 +2124,8 @@ void main() {
                 event.message.contains(
                   'remote_cancel_gateway_scope_fallback',
                 ) &&
-                event.message.contains('originatorNodeId=4321') &&
-                event.message.contains('relayNodeId=8765') &&
+                event.message.contains('originator_identity_present=true') &&
+                event.message.contains('relay_identity_present=true') &&
                 event.message.contains('localSosInactive=true'),
           ),
           isTrue,
@@ -2060,7 +2173,7 @@ void main() {
                 event.message.contains(
                   'remote_cancel_gateway_scope_blocked_local_sos_active',
                 ) &&
-                event.message.contains('originatorNodeId=13579') &&
+                event.message.contains('originator_identity_present=true') &&
                 event.message.contains('localSosInactive=false'),
           ),
           isTrue,
@@ -2359,6 +2472,27 @@ void main() {
           sosRepository.terminalOperations,
           <String>['cancel:backend-sos-1'],
         );
+
+        await BleDebugRegistry.instance.resetForLifecycle();
+        deviceSosController.handleIncomingSosEventPacket(
+          _deviceCancelEventForNode(418683257),
+          source: DeviceSosTransitionSource.device,
+        );
+        await _eventually(
+          () => BleDebugRegistry.instance.currentState.events.any(
+            (event) =>
+                event.message.contains('event=device_terminal') &&
+                event.message.contains('classification=connected_local') &&
+                event.message.contains('action=accepted'),
+          ),
+        );
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) =>
+                event.message.contains('relay_terminal_residue_detected'),
+          ),
+          isFalse,
+        );
       });
 
       test('app-only SOS does not send fake app identity', () async {
@@ -2393,7 +2527,8 @@ void main() {
             (event) =>
                 event.message
                     .contains('decision=preserve_active_incident_id') &&
-                event.message.contains(triggered.id),
+                event.message.contains('incident_present=true') &&
+                !event.message.contains(triggered.id),
           ),
           isTrue,
         );
@@ -2582,7 +2717,11 @@ RemoteRelaySosSnapshot _snapshot({
   );
 }
 
-EixamSosPacket _deviceOriginActivePacketForNode(int nodeId) {
+EixamSosPacket _deviceOriginActivePacketForNode(
+  int nodeId, {
+  int packetId = 0,
+}) {
+  final flagsWord = 0x8000 | (packetId & 0x0F);
   return EixamSosPacket.tryParse(<int>[
     nodeId & 0xFF,
     (nodeId >> 8) & 0xFF,
@@ -2594,8 +2733,19 @@ EixamSosPacket _deviceOriginActivePacketForNode(int nodeId) {
     0x00,
     0x00,
     0x00,
-    0x00,
-    0x80,
+    flagsWord & 0xFF,
+    (flagsWord >> 8) & 0xFF,
+  ])!;
+}
+
+EixamSosEventPacket _deviceCancelEventForNode(int nodeId) {
+  return EixamSosEventPacket.tryParse(<int>[
+    EixamBleProtocol.sosEventUserDeactivatedOpcode,
+    0x01,
+    nodeId & 0xFF,
+    (nodeId >> 8) & 0xFF,
+    (nodeId >> 16) & 0xFF,
+    (nodeId >> 24) & 0xFF,
   ])!;
 }
 

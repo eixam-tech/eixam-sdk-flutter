@@ -188,12 +188,13 @@ void main() {
 
     test('accepts matching correlationId lifecycle update', () async {
       final incident = await _triggerAppSos(repository);
-      final correlationId = _lastCorrelationId();
+      final correlationId = repository.debugLastTrustedCorrelationId;
+      expect(correlationId, isNotNull);
 
       realtimeClient.emitEvent(_lifecycleEvent(
         incidentId: 'backend-correlation-incident',
         state: 'acknowledged',
-        correlationId: correlationId,
+        correlationId: correlationId!,
       ));
       await _pumpRealtime();
 
@@ -988,17 +989,6 @@ TrackingPosition _position() {
     timestamp: DateTime.utc(2026, 6, 21),
     source: DeliveryMode.mobile,
   );
-}
-
-String _lastCorrelationId() {
-  final messages = BleDebugRegistry.instance.currentState.events
-      .map((event) => event.message)
-      .where((message) => message.contains('correlationId='))
-      .toList();
-  expect(messages, isNotEmpty);
-  final match = RegExp(r'correlationId=([^\s]+)').firstMatch(messages.last);
-  expect(match, isNotNull);
-  return match!.group(1)!;
 }
 
 bool _hasDiagnostic(String token) {

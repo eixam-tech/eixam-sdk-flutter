@@ -4,11 +4,12 @@ This note separates automated SDK evidence from physical release evidence.
 Fakes and mocks cannot prove BLE, firmware, staging backend, OS lifecycle,
 signed artifacts, or store-delivered behavior.
 
-## Final automated status
+## Current committed-head checkpoint
 
-- Flutter SDK package suite: **456/456 passed**.
-- Analyzer: passed with three pre-existing `implementation_imports`
-  informational notices and no warnings or errors.
+- SDK full suite: **665 tests passed** at
+  `edbfd2328f759ee94908d8d72c201a26cd69670e`.
+- App full suite: **767 tests passed** at
+  `109db774977a31a2298b692af3da2673c0b683c7`.
 - `packages/eixam_connect_flutter/test/sdk/sos_lifecycle_matrix_test.dart`
   covers the focused lifecycle matrix with fake repositories, device runtime,
   rehydration, and relay/backend inputs.
@@ -18,11 +19,7 @@ signed artifacts, or store-delivered behavior.
 - `packages/eixam_connect_flutter/test/sdk/eixam_connect_sdk_impl_test.dart`
   contains broader orchestration, countdown, already-active, cancellation,
   device mirror, and recovery cases.
-- Partner-app focused SOS and required supporting matrices passed. The complete
-  app sweep is not claimed as passing because its pre-existing
-  `login_screen_test.dart` harness hangs.
-- Android staging debug/release builds and iOS staging debug `--no-codesign`
-  build passed at the app integration checkpoint.
+- The counts are a checkpoint for those commits, not permanent suite totals.
 
 ## Coverage boundaries
 
@@ -39,12 +36,16 @@ These are contract tests, not a physical-completion claim.
 
 ## Physical status
 
-The user reports physically verifying the main functional paths available in
-this iteration. Granular evidence is not present for every extended case, so
-the full matrix remains recommended before production promotion. The canonical
-case-by-case physical matrix is maintained in the partner app release
-documentation (`docs/SOS_PHYSICAL_VALIDATION_MATRIX.md` there) to avoid two
-diverging release checklists.
+Physical and backend validation against staging covered app-origin and
+connected-local-device origin, stable countdown, active presentation/map,
+backend and contact progress, provisional-to-canonical handoff, app/TAG
+cancellation, immediate rearm, Profile sharing coexistence, privacy-safe
+diagnostics, and removal of the repeated iOS Core Location main-thread
+warning. The extended production-delivered matrix remains required before
+production promotion. The canonical case-by-case physical matrix is maintained
+in the partner app release documentation
+(`docs/SOS_PHYSICAL_VALIDATION_MATRIX.md` there) to avoid two diverging release
+checklists.
 
 Physical evidence should record only lifecycle stage, capability booleans,
 revision, selected path, typed blocking reason, UI outcome, and terminal

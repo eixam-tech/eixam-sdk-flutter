@@ -14,10 +14,56 @@ import 'ble_scan_result.dart';
 typedef BleCommandWriter = Future<void> Function(EixamDeviceCommand command);
 typedef BleScanner = Future<List<BleScanResult>> Function();
 
+final Map<String, String> _lastSafeSdkDiagnosticByEvent = <String, String>{};
+
+void safeSdkDebugPrint(String message) {
+  final safeMessage = SecurityDiagnosticsRedactor.sanitizeEventMessage(
+    message,
+    allowSensitive: false,
+  );
+  final eventKey = _diagnosticEventKey(safeMessage);
+  final neverDedupe = _isProgressDiagnostic(safeMessage);
+  final failure = RegExp(
+    r'(failed|failure|error|rejected|denied)',
+    caseSensitive: false,
+  ).hasMatch(safeMessage);
+  if (!neverDedupe &&
+      !failure &&
+      _lastSafeSdkDiagnosticByEvent[eventKey] == safeMessage) {
+    return;
+  }
+  _lastSafeSdkDiagnosticByEvent[eventKey] = safeMessage;
+  debugPrint(safeMessage);
+}
+
+String _diagnosticEventKey(String message) {
+  final tokens = message.split(RegExp(r'\s+'));
+  if (tokens.isEmpty) {
+    return 'diagnostic';
+  }
+  if (tokens.length == 1) {
+    return tokens.first;
+  }
+  return '${tokens[0]} ${tokens[1]}';
+}
+
+bool _isProgressDiagnostic(String message) {
+  final normalized = message.toUpperCase();
+  return normalized.contains('ACTUATOR') ||
+      normalized.contains('PROGRESS') ||
+      normalized.startsWith('SOS_MQTT_EVENT_SUBSCRIPTION') ||
+      normalized.startsWith('SOS_MQTT_SOS_READY');
+}
+
 class BleDebugRegistry {
   BleDebugRegistry._();
 
   static final BleDebugRegistry instance = BleDebugRegistry._();
+
+  static const bool _verboseDeviceDiagnostics = bool.fromEnvironment(
+    'EIXAM_VERBOSE_DEVICE_DIAGNOSTICS',
+    defaultValue: false,
+  );
 
   StreamController<BleDebugState> _controller =
       StreamController<BleDebugState>.broadcast();
@@ -26,6 +72,8 @@ class BleDebugRegistry {
   BleCommandWriter? _commandWriter;
   BleScanner? _scanner;
   bool? _allowSensitiveDiagnosticsOverride;
+  String? _lastConsoleMessage;
+  final Map<String, String> _lastEventByKey = <String, String>{};
 
   Stream<BleDebugState> watch() => _controller.stream;
 
@@ -65,6 +113,9 @@ class BleDebugRegistry {
     _commandWriter = null;
     _scanner = null;
     _allowSensitiveDiagnosticsOverride = null;
+    _lastConsoleMessage = null;
+    _lastEventByKey.clear();
+    _lastSafeSdkDiagnosticByEvent.clear();
     _state = const BleDebugState();
     _controller = StreamController<BleDebugState>.broadcast();
     await previousController.close();
@@ -141,8 +192,21 @@ class BleDebugRegistry {
       message,
       allowSensitive: _allowSensitiveDiagnostics,
     );
-    if (kDebugMode && _shouldPrintDiagnosticEvent(safeMessage)) {
+    final eventKey = _diagnosticEventKey(safeMessage);
+    final neverDedupe = _isProgressDiagnostic(safeMessage);
+    final failure = RegExp(
+      r'(failed|failure|error|rejected|denied)',
+      caseSensitive: false,
+    ).hasMatch(safeMessage);
+    if (!neverDedupe && !failure && _lastEventByKey[eventKey] == safeMessage) {
+      return;
+    }
+    _lastEventByKey[eventKey] = safeMessage;
+    if (kDebugMode &&
+        _shouldPrintDiagnosticEvent(safeMessage) &&
+        (neverDedupe || safeMessage != _lastConsoleMessage)) {
       debugPrint(safeMessage);
+      _lastConsoleMessage = safeMessage;
     }
     final events = List<BleDebugEvent>.from(_state.events)
       ..add(BleDebugEvent(timestamp: DateTime.now(), message: safeMessage));
@@ -154,6 +218,12 @@ class BleDebugRegistry {
   }
 
   bool _shouldPrintDiagnosticEvent(String message) {
+    if (!_verboseDeviceDiagnostics &&
+        (message.startsWith('BLE_SOS_PACKET_RAW') ||
+            message.startsWith('TEL raw payload') ||
+            message.startsWith('SOS raw payload'))) {
+      return false;
+    }
     return _consoleDiagnosticPrefixes.any(message.startsWith);
   }
 
@@ -253,7 +323,7 @@ class BleDebugRegistry {
   }
 
   bool get _allowSensitiveDiagnostics =>
-      _allowSensitiveDiagnosticsOverride ?? kDebugMode;
+      _allowSensitiveDiagnosticsOverride ?? false;
 
   String? _safeDiagnosticHexField(String? value) {
     if (value == null || _allowSensitiveDiagnostics) {

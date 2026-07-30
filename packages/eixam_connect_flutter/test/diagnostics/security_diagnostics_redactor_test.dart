@@ -4,6 +4,7 @@ import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_http_trans
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_session_context.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/diagnostics/security_diagnostics_redactor.dart';
+import 'package:eixam_connect_flutter/src/sdk/location_debug_log.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -14,11 +15,16 @@ void main() {
   });
 
   group('SecurityDiagnosticsRedactor', () {
+    test('location authority diagnostics are disabled by default', () {
+      expect(LocationDebugLog.enabled, isFalse);
+    });
+
     test('redacts raw payload, identity, location, headers, and topics', () {
       final message = SecurityDiagnosticsRedactor.sanitizeEventMessage(
         'payloadHex=01 02 aa bb deviceId=device-secret nodeId=4242 '
         'lat=41.387400 lon=2.168600 lng=2.168600 X-App-ID=app-secret '
         'X-User-ID=user-secret signature=sos:device-secret:deadbeef '
+        'lastPacketSignature=4242:de ad be ef '
         'topic=sos/alerts/sdk-user-secret',
         allowSensitive: false,
       );
@@ -32,14 +38,18 @@ void main() {
       expect(message, isNot(contains('user-secret')));
       expect(message, isNot(contains('sdk-user-secret')));
       expect(message, isNot(contains('deadbeef')));
-      expect(message, contains('<redacted-hex bytes=4>'));
-      expect(message, contains('signature=<redacted>'));
-      expect(message, contains('topic=<redacted-topic>'));
+      expect(message, isNot(contains('4242:de ad be ef')));
+      expect(message, contains('packet_bytes_present=true'));
+      expect(message, contains('device_identity_present=true'));
+      expect(message, contains('originator_identity_present=true'));
+      expect(message, contains('packet_identity_present=true'));
+      expect(message, contains('topic_category=operational'));
     });
 
     test('redacts bridge-style summaries with raw BLE payloads', () {
       final message = SecurityDiagnosticsRedactor.sanitizeEventMessage(
-        'device=AA:BB:CC:DD:EE:FF lat=41.3874 lng=2.1686 '
+        'device=AA:BB:CC:DD:EE:FF nodeId=0x01020304 (16909060) '
+        'lat=41.3874 lng=2.1686 '
         'raw=de ad be ef',
         allowSensitive: false,
       );
@@ -47,9 +57,10 @@ void main() {
       expect(message, isNot(contains('AA:BB:CC:DD:EE:FF')));
       expect(message, isNot(contains('41.3874')));
       expect(message, isNot(contains('2.1686')));
+      expect(message, isNot(contains('16909060')));
       expect(message, isNot(contains('de ad be ef')));
-      expect(message, contains('device=<redacted>'));
-      expect(message, contains('raw=<redacted-hex bytes=4>'));
+      expect(message, contains('device_identity_present=true'));
+      expect(message, contains('packet_bytes_present=true'));
     });
 
     test('formatters suppress raw BLE payloads, identifiers, and coordinates',
@@ -112,6 +123,56 @@ void main() {
       expect(redacted['longitude'], '<redacted>');
       expect(redacted['message'], 'safe developer note');
     });
+
+    test('converts raw exceptions to bounded categories', () {
+      final message = SecurityDiagnosticsRedactor.sanitizeEventMessage(
+        'SOS_BACKEND_FAILED error=SocketException: host user-secret '
+        'retry=2',
+        allowSensitive: false,
+      );
+
+      expect(message, contains('error_category=transport'));
+      expect(message, contains('retry=2'));
+      expect(message, isNot(contains('host user-secret')));
+    });
+
+    test('never exposes attempt IDs or exact timestamps', () {
+      for (final allowSensitive in <bool>[false, true]) {
+        final message = SecurityDiagnosticsRedactor.sanitizeEventMessage(
+          'DEVICE_RECONNECT attemptId=app-1737 '
+          'lastPacketAt=2026-07-27T10:11:12.123Z '
+          'updatedAt=2026-07-27T10:11:13.123Z '
+          'deadline=2026-07-27T10:11:32.123Z ageMs=1512',
+          allowSensitive: allowSensitive,
+        );
+
+        expect(message, contains('attempt_present=true'));
+        expect(message, contains('timestamp_present=true'));
+        expect(message, contains('age_category=fresh'));
+        expect(message, isNot(contains('app-1737')));
+        expect(message, isNot(contains('2026-07-27')));
+        expect(message, isNot(contains('1512')));
+      }
+    });
+
+    test('structured release events emit only allowlisted fields', () {
+      final message = SecurityDiagnosticsRedactor.structuredEvent(
+        'SOS_BACKEND_RESULT',
+        fields: const <String, Object?>{
+          'transport': 'mqtt',
+          'result': 'accepted',
+          'incident_present': true,
+          'deviceId': 'device-secret',
+          'payload': 'raw-secret',
+        },
+      );
+
+      expect(message, contains('transport=mqtt'));
+      expect(message, contains('result=accepted'));
+      expect(message, contains('incident_present=true'));
+      expect(message, isNot(contains('device-secret')));
+      expect(message, isNot(contains('raw-secret')));
+    });
   });
 
   group('BleDebugRegistry release-like diagnostics', () {
@@ -142,7 +203,76 @@ void main() {
       final message =
           BleDebugRegistry.instance.currentState.events.single.message;
       expect(message, isNot(contains('AA:BB:CC:DD:EE:FF')));
-      expect(message, contains('hardwareId=<redacted>'));
+      expect(message, contains('device_identity_present=true'));
+    });
+
+    test('deduplicates identical logs but preserves transitions and failures',
+        () {
+      BleDebugRegistry.instance.debugSetSensitiveDiagnosticsEnabled(false);
+
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_CAPABILITY_EVAL ready=true source=runtime',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_CAPABILITY_EVAL ready=true source=runtime',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_CAPABILITY_EVAL ready=false source=runtime',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_CAPABILITY_EVAL failed error=TimeoutException',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_CAPABILITY_EVAL failed error=TimeoutException',
+      );
+
+      final messages = BleDebugRegistry.instance.currentState.events
+          .map((event) => event.message)
+          .toList();
+      expect(messages, hasLength(4));
+      expect(messages[0], contains('ready=true'));
+      expect(messages[1], contains('ready=false'));
+      expect(messages[2], contains('error_category=timeout'));
+      expect(messages[3], contains('error_category=timeout'));
+    });
+
+    test('dedupes on safe state but never suppresses actuator progress', () {
+      BleDebugRegistry.instance.debugSetSensitiveDiagnosticsEnabled(false);
+
+      BleDebugRegistry.instance.recordEvent(
+        'BLE_POWERED_CACHE state=ready deviceId=device-one',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'BLE_POWERED_CACHE state=ready deviceId=device-two',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'BLE_POWERED_CACHE state=notReady deviceId=device-two',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_ACTUATOR_PROGRESS state=sending deviceId=device-one',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_ACTUATOR_PROGRESS state=sending deviceId=device-two',
+      );
+
+      final messages = BleDebugRegistry.instance.currentState.events
+          .map((event) => event.message)
+          .toList();
+      expect(messages, hasLength(4));
+      expect(
+        messages
+            .where((message) => message.contains('BLE_POWERED_CACHE'))
+            .length,
+        2,
+      );
+      expect(
+        messages
+            .where((message) => message.contains('SOS_ACTUATOR_PROGRESS'))
+            .length,
+        2,
+      );
+      expect(messages.join('\n'), isNot(contains('device-one')));
+      expect(messages.join('\n'), isNot(contains('device-two')));
     });
   });
 
@@ -191,9 +321,9 @@ void main() {
       expect(diagnostics, isNot(contains('incident-secret')));
       expect(diagnostics, isNot(contains('41.3874')));
       expect(diagnostics, isNot(contains('2.1686')));
-      expect(diagnostics, contains('X-App-ID=<redacted>'));
-      expect(diagnostics, contains('X-User-ID=<redacted>'));
-      expect(diagnostics, contains('body='));
+      expect(diagnostics, contains('app_identity_present=true'));
+      expect(diagnostics, contains('user_identity_present=true'));
+      expect(diagnostics, contains('payload_present=true'));
     });
 
     test('logs redacted external cancel failure response body', () async {
@@ -236,13 +366,10 @@ void main() {
           .join('\n');
       expect(diagnostics, contains('EXTERNAL_SOS cancel_response'));
       expect(diagnostics, contains('httpStatus=422'));
-      expect(diagnostics, contains('endpoint=/v1/sdk/sos/cancel'));
-      expect(diagnostics, contains('responseBody='));
-      expect(diagnostics, contains('backendErrorCode=validation_error'));
-      expect(
-        diagnostics,
-        contains('backendErrorMessage=Referenced device does not exist'),
-      );
+      expect(diagnostics, contains('topic_category=operational'));
+      expect(diagnostics, contains('payload_present=true'));
+      expect(diagnostics, contains('error_category=unexpected'));
+      expect(diagnostics, isNot(contains('Referenced device does not exist')));
       expect(diagnostics, isNot(contains('device-secret')));
       expect(diagnostics, isNot(contains('gateway-secret@example.com')));
       expect(diagnostics, isNot(contains('hash-secret')));

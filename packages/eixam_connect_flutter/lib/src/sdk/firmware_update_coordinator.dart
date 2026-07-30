@@ -6,18 +6,18 @@ import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/widgets.dart';
 
 import '../data/datasources_remote/sdk_firmware_remote_data_source.dart';
+import '../device/ble_debug_registry.dart';
 import 'firmware_dfu_transport.dart';
 
 typedef ProtectionStatusProvider = Future<ProtectionStatus> Function();
 typedef DeviceSosStatusProvider = Future<DeviceSosStatus> Function();
 typedef PreSosStatusProvider = Future<PublicPreSosStatus?> Function();
 typedef AppLifecycleStateProvider = AppLifecycleState? Function();
-typedef FirmwareDfuPreparationHook =
-    Future<DeviceStatus> Function({required String deviceId});
-typedef FirmwareDfuConnectionHook =
-    Future<void> Function({required String deviceId});
-typedef FirmwareDfuStatusRefreshHook =
-    Future<DeviceStatus> Function({
+typedef FirmwareDfuPreparationHook = Future<DeviceStatus> Function(
+    {required String deviceId});
+typedef FirmwareDfuConnectionHook = Future<void> Function(
+    {required String deviceId});
+typedef FirmwareDfuStatusRefreshHook = Future<DeviceStatus> Function({
   required String deviceId,
   required int attempt,
   required String targetVersion,
@@ -43,10 +43,10 @@ class FirmwareUpdateCoordinator {
     Duration postDfuVerificationTimeout = _defaultPostDfuVerificationTimeout,
     Duration postDfuVerificationPollInterval =
         _defaultPostDfuVerificationPollInterval,
-  }) : _dfuStallTimeout = dfuStallTimeout,
-       _dfuFirstUploadDeadline = dfuFirstUploadDeadline,
-       _postDfuVerificationTimeout = postDfuVerificationTimeout,
-       _postDfuVerificationPollInterval = postDfuVerificationPollInterval;
+  })  : _dfuStallTimeout = dfuStallTimeout,
+        _dfuFirstUploadDeadline = dfuFirstUploadDeadline,
+        _postDfuVerificationTimeout = postDfuVerificationTimeout,
+        _postDfuVerificationPollInterval = postDfuVerificationPollInterval;
 
   final DeviceRepository deviceRepository;
   final SosRepository sosRepository;
@@ -137,8 +137,8 @@ class FirmwareUpdateCoordinator {
     DeviceStatus status;
     try {
       status = await deviceRepository.refreshDeviceStatus().timeout(
-        const Duration(seconds: 12),
-      );
+            const Duration(seconds: 12),
+          );
     } on TimeoutException {
       _debugLog(
         'OTA_COORDINATOR check_refresh_timeout '
@@ -186,8 +186,7 @@ class FirmwareUpdateCoordinator {
       targetReleaseId: policy.targetReleaseId,
     );
     final release = response.firmware?.toDomain();
-    final actionableRelease =
-        response.updateAvailable &&
+    final actionableRelease = response.updateAvailable &&
             release != null &&
             _firmwareReleaseIsActionable(
               currentVersion: device.currentVersion!,
@@ -255,9 +254,8 @@ class FirmwareUpdateCoordinator {
         session,
         state: FirmwareUpdateState.blocked,
         failureCode: 'firmwareUpdateBlocked',
-        failureMessage: check.eligibility.blockers
-            .map((blocker) => blocker.name)
-            .join(','),
+        failureMessage:
+            check.eligibility.blockers.map((blocker) => blocker.name).join(','),
       );
     }
 
@@ -298,21 +296,20 @@ class FirmwareUpdateCoordinator {
 
       _emit(session, FirmwareUpdateState.readyToTransfer);
       _emit(session, FirmwareUpdateState.transferring);
-        _debugLog(
-          'OTA_COORDINATOR native_dfu_start '
-          'sessionId=${session.sessionId} deviceId=${session.deviceId} '
-          'release=$releaseId target=${release.version}',
-        );
+      _debugLog(
+        'OTA_COORDINATOR native_dfu_start '
+        'sessionId=${session.sessionId} deviceId=${session.deviceId} '
+        'release=$releaseId target=${release.version}',
+      );
       await _runNativeDfuWithWatchdog(
         session: session,
         request: FirmwareDfuTransferRequest(
-              sessionId: session.sessionId,
-              deviceId: session.deviceId,
-              release: release,
-              artifactBytes: artifactBytes,
-            ),
-        stallMessage:
-            'The firmware transfer made no upload progress for '
+          sessionId: session.sessionId,
+          deviceId: session.deviceId,
+          release: release,
+          artifactBytes: artifactBytes,
+        ),
+        stallMessage: 'The firmware transfer made no upload progress for '
             '${_dfuStallTimeout.inSeconds}s.',
         firstUploadMessage:
             'The firmware upload never started (the device may have entered '
@@ -406,8 +403,7 @@ class FirmwareUpdateCoordinator {
       progress,
     ) {
       onEngaged?.call();
-      final isUploadProgress =
-          progress.progressPercentage != null ||
+      final isUploadProgress = progress.progressPercentage != null ||
           (progress.bytesTransferred ?? 0) > 0;
       if (isUploadProgress) {
         uploadStarted = true;
@@ -438,8 +434,8 @@ class FirmwareUpdateCoordinator {
         firstUploadTimer = Timer(
           _dfuFirstUploadDeadline,
           () => failStalled(firstUploadMessage),
-      );
-    }
+        );
+      }
       await Future.any(<Future<void>>[
         dfuTransport.start(request),
         stall.future,
@@ -535,8 +531,8 @@ class FirmwareUpdateCoordinator {
       throw const FirmwareUpdateException(
         'dfuCancelBlockedInTransfer',
         'The firmware transfer is already in progress and can no longer be '
-        'cancelled safely. Let it finish — interrupting it leaves the device '
-        'in recovery mode until it is re-flashed.',
+            'cancelled safely. Let it finish — interrupting it leaves the device '
+            'in recovery mode until it is re-flashed.',
       );
     }
     await dfuTransport.cancel(sessionId);
@@ -601,29 +597,28 @@ class FirmwareUpdateCoordinator {
       );
       _emit(session, FirmwareUpdateState.readyToTransfer);
       _emit(session, FirmwareUpdateState.transferring);
-        _debugLog(
-          'OTA_COORDINATOR recovery_dfu_start '
-          'sessionId=${session.sessionId} bootloader=$bootloaderDeviceId '
-          'release=$releaseId',
-        );
+      _debugLog(
+        'OTA_COORDINATOR recovery_dfu_start '
+        'sessionId=${session.sessionId} bootloader=$bootloaderDeviceId '
+        'release=$releaseId',
+      );
       // Same reconnect suppression as a normal update: an auto-reconnect
       // grabbing the bootloader's address mid-flash breaks the recovery too.
       await _runNativeDfuWithWatchdog(
         session: session,
         request: FirmwareDfuTransferRequest(
-            sessionId: session.sessionId,
-            deviceId: bootloaderDeviceId,
-            release: release,
-            artifactBytes: artifactBytes,
-            forceDfu: true,
-          ),
-        stallMessage:
-            'The recovery transfer made no upload progress for '
+          sessionId: session.sessionId,
+          deviceId: bootloaderDeviceId,
+          release: release,
+          artifactBytes: artifactBytes,
+          forceDfu: true,
+        ),
+        stallMessage: 'The recovery transfer made no upload progress for '
             '${_dfuStallTimeout.inSeconds}s.',
         firstUploadMessage:
             'The recovery upload never started (the bootloader could not be '
             'reconnected).',
-        );
+      );
       return _completeSession(session, state: FirmwareUpdateState.completed);
     } on FirmwareUpdateException catch (error) {
       return _completeSession(
@@ -941,10 +936,8 @@ class FirmwareUpdateCoordinator {
 
   String _normalizeFirmwareVersion(String? version) {
     if (version == null) return '';
-    var normalized = version
-        .replaceAll(RegExp(r'[\x00-\x1f\x7f]'), '')
-        .trim()
-        .toLowerCase();
+    var normalized =
+        version.replaceAll(RegExp(r'[\x00-\x1f\x7f]'), '').trim().toLowerCase();
     if (normalized.startsWith('v')) {
       normalized = normalized.substring(1);
     }
@@ -1049,7 +1042,7 @@ class FirmwareUpdateCoordinator {
       // authoritatively by _completeSession, not by a transient progress event.
       final regressesOutOfPointOfNoReturn =
           _isPastPointOfNoReturn(tracked.state) &&
-          !_isPastPointOfNoReturn(state);
+              !_isPastPointOfNoReturn(state);
       if (!regressesOutOfPointOfNoReturn) {
         _sessions[session.sessionId] = tracked.copyWith(state: state);
       }
@@ -1081,7 +1074,8 @@ class FirmwareUpdateCoordinator {
       SosState.idle ||
       SosState.cancelled ||
       SosState.resolved ||
-      SosState.failed => false,
+      SosState.failed =>
+        false,
       _ => true,
     };
   }
@@ -1090,7 +1084,8 @@ class FirmwareUpdateCoordinator {
     return switch (status) {
       DeathManStatus.confirmedSafe ||
       DeathManStatus.cancelled ||
-      DeathManStatus.expired => false,
+      DeathManStatus.expired =>
+        false,
       _ => true,
     };
   }
@@ -1135,7 +1130,7 @@ void _debugLog(String message) {
   if (!kDebugMode) {
     return;
   }
-  debugPrint(message);
+  safeSdkDebugPrint(message);
 }
 
 class _InstalledVersionVerification {

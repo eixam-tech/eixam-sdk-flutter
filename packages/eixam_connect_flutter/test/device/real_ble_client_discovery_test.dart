@@ -223,7 +223,7 @@ void main() {
       logs,
       contains(
         'SDK_DISCOVERY_NATIVE_START_SCAN_CALL_FAILED '
-        'error=Bad state: E_BLE_SCANNER_NOT_READY',
+        'error_category=invalid_state',
       ),
     );
     expect(
@@ -231,7 +231,7 @@ void main() {
       contains(
         'SDK_DISCOVERY_ERROR_ORIGIN '
         'origin=flutter_blue_plus_native '
-        'error=Bad state: E_BLE_SCANNER_NOT_READY',
+        'error_category=invalid_state',
       ),
     );
   });

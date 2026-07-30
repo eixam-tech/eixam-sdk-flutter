@@ -116,7 +116,37 @@ void main() {
       expect(backgroundAdapter.running, isFalse);
     });
 
-    test('restart adopts a genuinely active persisted session', () async {
+    test('deferred transport startup still starts SDK telemetry cadence',
+        () async {
+      const session = EixamSession.signed(
+        appId: 'partner-app',
+        externalUserId: 'user-1',
+        userHash: 'hash-1',
+      );
+      await SdkSessionStore(localStore: localStore).save(session);
+      BleDebugRegistry.instance.reset();
+
+      await sdk.initialize(
+        const EixamSdkConfig(
+          apiBaseUrl: 'https://api.example.test',
+          deferRuntimeStartup: true,
+        ),
+      );
+
+      final debugMessages = BleDebugRegistry.instance.currentState.events
+          .map((event) => event.message)
+          .toList();
+      expect(
+        debugMessages,
+        contains(
+          '[SDK_TELEMETRY_LOOP] action=start mode=normal interval=60s',
+        ),
+      );
+    });
+
+    test(
+        'current Android semantics: initialization adopts an already-running '
+        'native service', () async {
       const session = EixamSession.signed(
         appId: 'partner-app',
         externalUserId: 'user-1',
@@ -139,7 +169,9 @@ void main() {
       );
     });
 
-    test('explicit enable is not duplicated for the same session', () async {
+    test(
+        'current Android semantics: duplicate enables share one global '
+        'Boolean owner', () async {
       await sdk.initialize(
         const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
       );
@@ -155,6 +187,50 @@ void main() {
 
       expect(backgroundAdapter.startCallCount, 1);
       expect(backgroundAdapter.updateCallCount, 0);
+      expect(backgroundAdapter.startRequests.single.sosOpen, isFalse);
+      expect(
+        (await sdk.getOperationalDiagnostics()).backgroundTelemetryEnabled,
+        isTrue,
+      );
+    });
+
+    test(
+        'current Android semantics: enabled-but-stopped native service is '
+        'restarted during initialization', () async {
+      const session = EixamSession.signed(
+        appId: 'partner-app',
+        externalUserId: 'user-1',
+        userHash: 'hash-1',
+      );
+      await SdkSessionStore(localStore: localStore).save(session);
+      backgroundAdapter.enabled = true;
+      backgroundAdapter.running = false;
+
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
+      );
+
+      expect(backgroundAdapter.startCallCount, 1);
+      expect(backgroundAdapter.running, isTrue);
+    });
+
+    test(
+        'current Android semantics: disabled and stopped service is not '
+        'restarted during initialization', () async {
+      await SdkSessionStore(localStore: localStore).save(
+        const EixamSession.signed(
+          appId: 'partner-app',
+          externalUserId: 'user-1',
+          userHash: 'hash-1',
+        ),
+      );
+
+      await sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
+      );
+
+      expect(backgroundAdapter.startCallCount, 0);
+      expect(backgroundAdapter.running, isFalse);
     });
 
     test('explicit enable waits for native running confirmation', () async {
@@ -200,8 +276,9 @@ void main() {
       expect(backgroundAdapter.running, isFalse);
     });
 
-    test('notification stop becomes authoritative and is not restored',
-        () async {
+    test(
+        'current Android semantics: notification stop is authoritative and '
+        'is not restored', () async {
       await sdk.initialize(
         const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
       );
@@ -271,7 +348,9 @@ void main() {
       expect(diagnostics.androidForegroundServiceRunning, isFalse);
     });
 
-    test('explicit stop is idempotent', () async {
+    test(
+        'current Android semantics: duplicate disables clear the one global '
+        'Boolean owner idempotently', () async {
       await sdk.initialize(
         const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
       );
@@ -296,6 +375,92 @@ void main() {
         (await sdk.getOperationalDiagnostics()).backgroundTrackingState,
         BackgroundTrackingState.stopped,
       );
+      expect(
+        (await sdk.getOperationalDiagnostics()).backgroundTelemetryEnabled,
+        isFalse,
+      );
+    });
+
+    test(
+        'current Android semantics: open, cancelling, and terminal SOS update '
+        'an already-running service without restarting or stopping it',
+        () async {
+      await _initializeWithSession(sdk);
+      await sdk.enableBackgroundTelemetry();
+      final startsAfterEnable = backgroundAdapter.startCallCount;
+      final stopsAfterEnable = backgroundAdapter.stopCallCount;
+
+      await sdk.triggerSos(
+        const SosTriggerPayload(triggerSource: 'commercial_app'),
+      );
+      await pumpEventQueue(times: 3);
+      await _emitRepositorySosState(sosRepository, SosState.cancelRequested);
+      await _emitRepositorySosState(sosRepository, SosState.cancelled);
+
+      expect(backgroundAdapter.sosOpenUpdates, <bool>[
+        true,
+        true,
+        true,
+        false,
+      ]);
+      expect(backgroundAdapter.startCallCount, startsAfterEnable);
+      expect(backgroundAdapter.stopCallCount, stopsAfterEnable);
+      expect(backgroundAdapter.running, isTrue);
+      expect(
+        (await sdk.getOperationalDiagnostics()).backgroundTelemetryEnabled,
+        isTrue,
+      );
+    });
+
+    test(
+        'current Android semantics: cancelling retains SOS cadence while '
+        'cancellation is pending', () async {
+      await _initializeWithSession(sdk);
+      await sdk.enableBackgroundTelemetry();
+
+      await sdk.triggerSos(
+        const SosTriggerPayload(triggerSource: 'commercial_app'),
+      );
+      await pumpEventQueue(times: 3);
+      backgroundAdapter.sosOpenUpdates.clear();
+      await _emitRepositorySosState(sosRepository, SosState.cancelRequested);
+
+      expect(backgroundAdapter.sosOpenUpdates, <bool>[true]);
+      expect(backgroundAdapter.running, isTrue);
+    });
+
+    test(
+        'current Android semantics: duplicate SOS revisions do not duplicate '
+        'native starts or updates', () async {
+      await _initializeWithSession(sdk);
+      await sdk.enableBackgroundTelemetry();
+      final startsAfterEnable = backgroundAdapter.startCallCount;
+
+      await sdk.triggerSos(
+        const SosTriggerPayload(triggerSource: 'commercial_app'),
+      );
+      await pumpEventQueue(times: 3);
+      final updatesAfterFirstRevision = backgroundAdapter.updateCallCount;
+      await _emitRepositorySosState(sosRepository, SosState.sent);
+
+      expect(backgroundAdapter.startCallCount, startsAfterEnable);
+      expect(backgroundAdapter.updateCallCount, updatesAfterFirstRevision);
+    });
+
+    test(
+        'current Android semantics: SOS state alone neither starts nor creates '
+        'the foreground service', () async {
+      await _initializeWithSession(sdk);
+      final startsBeforeSos = backgroundAdapter.startCallCount;
+
+      await sdk.triggerSos(
+        const SosTriggerPayload(triggerSource: 'commercial_app'),
+      );
+      await pumpEventQueue(times: 3);
+
+      expect(backgroundAdapter.startCallCount, startsBeforeSos);
+      expect(backgroundAdapter.updateCallCount, 0);
+      expect(backgroundAdapter.running, isFalse);
     });
 
     test('foreground interval is not paused after native background start',
@@ -333,6 +498,9 @@ void main() {
 
 class _FakeBackgroundTelemetryAdapter
     implements BackgroundTelemetryPlatformAdapter {
+  final List<BackgroundTelemetryStartRequest> startRequests =
+      <BackgroundTelemetryStartRequest>[];
+  final List<bool> sosOpenUpdates = <bool>[];
   int startCallCount = 0;
   int updateCallCount = 0;
   int stopCallCount = 0;
@@ -348,6 +516,7 @@ class _FakeBackgroundTelemetryAdapter
     BackgroundTelemetryStartRequest request,
   ) async {
     startCallCount++;
+    startRequests.add(request);
     if (failStart) {
       enabled = true;
       lastError = 'foreground_start_failed';
@@ -365,6 +534,7 @@ class _FakeBackgroundTelemetryAdapter
     SdkCoverageSnapshot? deviceCoverage,
   }) async {
     updateCallCount++;
+    sosOpenUpdates.add(sosOpen);
   }
 
   @override
@@ -415,4 +585,29 @@ class _FakeBackgroundTelemetryAdapter
     String signature, {
     required String error,
   }) async {}
+}
+
+Future<void> _initializeWithSession(EixamConnectSdkImpl sdk) async {
+  await sdk.initialize(
+    const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
+  );
+  await sdk.setSession(
+    const EixamSession.signed(
+      appId: 'partner-app',
+      externalUserId: 'user-1',
+      userHash: 'hash-1',
+    ),
+  );
+}
+
+Future<void> _emitRepositorySosState(
+  FakeSosRepository repository,
+  SosState state,
+) async {
+  repository.currentIncident = repository.currentIncident.copyWith(
+    state: state,
+    triggerSource: 'commercial_app',
+  );
+  repository.stateController.add(state);
+  await pumpEventQueue(times: 3);
 }

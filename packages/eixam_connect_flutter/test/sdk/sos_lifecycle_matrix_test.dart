@@ -12,6 +12,7 @@ import 'package:eixam_connect_flutter/src/device/eixam_sos_packet.dart';
 import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
 import 'package:eixam_connect_flutter/src/sdk/operational_realtime_client.dart';
 import 'package:eixam_connect_flutter/src/sdk/sdk_mqtt_contract.dart';
+import 'package:eixam_connect_flutter/src/sdk/sos_location_ownership_orchestrator.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -795,8 +796,8 @@ void main() {
     });
 
     test(
-        'SOS-03b app-origin BLE countdown success is not cleared by stale idle',
-        () async {
+        'characterization: locally actionable lifecycle mutations feed the '
+        'public SOS state', () async {
       final harness = _SdkSosHarness(
         connectedBle: true,
         deviceCountdown: const Duration(milliseconds: 35),
@@ -1324,8 +1325,42 @@ void main() {
       }
     });
 
-    test('SOS-13 LoRa/backend foreground active stays external-only idle',
+    test(
+        'same-session auth restore preserves countdown dispatch through active',
         () async {
+      final harness = _SdkSosHarness();
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await harness.setSession();
+        await harness.sdk.startPreSos(
+          countdown: const Duration(milliseconds: 50),
+        );
+
+        await harness.setSession();
+        expect(
+          (await harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.arming,
+        );
+
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+        await pumpEventQueue(times: 3);
+
+        expect(harness.sosRepository.triggerCallCount, 1);
+        expect(
+          (await harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.active,
+        );
+        expect(await harness.sdk.getSosState(), SosState.sent);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test(
+        'characterization: external-only relay incident does not become a '
+        'locally owned authoritative lifecycle', () async {
       final harness = _SdkSosHarness();
       try {
         await harness.sdk.initialize(
@@ -1340,6 +1375,9 @@ void main() {
 
         expect(await harness.sdk.getSosState(), SosState.idle);
         expect(await harness.sdk.getCurrentSosIncident(), isNull);
+        final lifecycle = await harness.sdk.getSosLifecycle();
+        expect(lifecycle.localActionable, isFalse);
+        expect(lifecycle.stage, SosLifecycleStage.idle);
       } finally {
         await harness.dispose();
       }
@@ -1497,6 +1535,110 @@ void main() {
         );
         expect(recovered.lifecycle.lifecycleId, first.lifecycle.lifecycleId);
         expect(recovered.lifecycle.localActionable, isTrue);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test(
+        'SDK runtime owns one lifecycle and activates production tracking once',
+        () async {
+      final harness = _SdkSosHarness();
+      final shadow = harness.sdk.debugSosLocationOwnershipOrchestrator;
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+
+        expect(
+          harness.sdk.debugSosLocationOwnershipOrchestrator,
+          same(shadow),
+        );
+        final acceptedBefore = shadow.shadowState.acceptedSnapshotCount;
+        final trackingStartsBefore = harness.trackingRepository.startCallCount;
+        final trackingStopsBefore = harness.trackingRepository.stopCallCount;
+        final telemetryBefore = harness.telemetryRepository.publishCallCount;
+
+        final result = await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        await harness.sdk.debugReconcileSosLocationOwnership();
+
+        expect(result.lifecycle.stage, SosLifecycleStage.active);
+        expect(await harness.sdk.getSosState(), SosState.sent);
+        expect(
+          shadow.shadowState.lastAcceptedLifecycleRevision,
+          result.lifecycle.revision,
+        );
+        expect(
+          shadow.shadowState.acceptedSnapshotCount,
+          acceptedBefore + 3,
+        );
+        expect(shadow.shadowState.activateTransitionCount, 1);
+        expect(shadow.shadowState.desiredSosOwnership, isTrue);
+        expect(
+          harness.trackingRepository.startCallCount,
+          trackingStartsBefore + 1,
+        );
+        expect(harness.trackingRepository.stopCallCount, trackingStopsBefore);
+        expect(harness.telemetryRepository.publishCallCount, telemetryBefore);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('authoritative terminal removes production tracking without telemetry',
+        () async {
+      final harness = _SdkSosHarness();
+      try {
+        await harness.setSession();
+        await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        await harness.sdk.debugReconcileSosLocationOwnership();
+        final shadow = harness.sdk.debugSosLocationOwnershipOrchestrator;
+        final trackingStartsBefore = harness.trackingRepository.startCallCount;
+        final trackingStopsBefore = harness.trackingRepository.stopCallCount;
+        final telemetryBefore = harness.telemetryRepository.publishCallCount;
+
+        final result = await harness.sdk.cancelSosAuthoritatively();
+        await harness.sdk.debugReconcileSosLocationOwnership();
+
+        expect(result.lifecycle.stage, SosLifecycleStage.cancelled);
+        expect(shadow.shadowState.deactivateTransitionCount, 1);
+        expect(shadow.shadowState.desiredSosOwnership, isFalse);
+        expect(harness.trackingRepository.startCallCount, trackingStartsBefore);
+        expect(
+          harness.trackingRepository.stopCallCount,
+          trackingStopsBefore + 1,
+        );
+        expect(harness.telemetryRepository.publishCallCount, telemetryBefore);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('arming remains shadow-retain while public arming is unchanged',
+        () async {
+      final harness = _SdkSosHarness();
+      try {
+        await harness.setSession();
+        final shadow = harness.sdk.debugSosLocationOwnershipOrchestrator;
+        final activateBefore = shadow.shadowState.activateTransitionCount;
+        final trackingStartsBefore = harness.trackingRepository.startCallCount;
+
+        await harness.sdk.startPreSos(
+          countdown: const Duration(seconds: 20),
+        );
+
+        expect(await harness.sdk.getSosState(), SosState.arming);
+        expect(
+          shadow.shadowState.lastDirective,
+          SosLocationOwnershipDirective.retain,
+        );
+        expect(shadow.shadowState.activateTransitionCount, activateBefore);
+        expect(harness.trackingRepository.startCallCount, trackingStartsBefore);
       } finally {
         await harness.dispose();
       }

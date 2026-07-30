@@ -331,7 +331,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         connectionError: null,
       );
       BleDebugRegistry.instance.recordEvent(
-        'Reconnect started for known BLE device $deviceId',
+        'BLE_RECONNECT_STARTED device_identity_present=true',
       );
       BleDebugRegistry.instance.recordEvent(
         'SDK_RECONNECT_CONNECT_CALL_BEGIN '
@@ -454,7 +454,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         'error=$error',
       );
       if (kDebugMode) {
-        debugPrint('BLE reconnect failed -> hardwareId=$deviceId error=$error');
+        safeSdkDebugPrint(
+            'BLE reconnect failed -> hardwareId=$deviceId error=$error');
       }
 
       await _resetFailedPairingAttempt(deviceId);

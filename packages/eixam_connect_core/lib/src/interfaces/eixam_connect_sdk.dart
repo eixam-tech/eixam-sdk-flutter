@@ -138,10 +138,20 @@ abstract class EixamConnectSdk {
   Future<SdkTelemetryPayload?> getResolvedTelemetryPreview({
     bool includeCachedFallback = true,
   });
+
+  /// Enables the legacy background-telemetry sharing behavior.
+  ///
+  /// A future background-location implementation will map this to activation
+  /// of the `sharing` background-location context. Disabling legacy sharing will
+  /// remove only that context and must not stop an active SOS or DMP context.
   Future<void> enableBackgroundTelemetry({
     String? notificationTitle,
     String? notificationBody,
   });
+
+  /// Disables only the legacy background-telemetry sharing behavior.
+  ///
+  /// This API remains unchanged in phase 1; no context mapping is performed.
   Future<void> disableBackgroundTelemetry();
   Future<ProtectionReadinessReport> evaluateProtectionReadiness();
   Future<EnterProtectionModeResult> enterProtectionMode({

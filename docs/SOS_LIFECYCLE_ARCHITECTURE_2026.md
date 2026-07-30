@@ -112,6 +112,94 @@ local-actionable and not history-only. `cancelling`, `cancellationFailed`, and
 `recoveryRequired` remain visible with truthful status. Only explicit SDK
 `cancelled` or `resolved` closes the active surface.
 
+## SOS source semantics
+
+| Source | Lifecycle origin | Local active surface | Phone location | Local cancellation |
+| --- | --- | --- | --- | --- |
+| App-origin | `localApp` | Yes | SDK resolves latest accepted phone/device evidence | Through authoritative cancellation |
+| Connected local device | `connectedLocalDevice` or `registeredLocalDevice` | Yes | SDK SOS context supplies phone updates while active | App command when capable; physical TAG terminal events are authoritative |
+| External backend incident | `externalBackend` | History-only unless matched to local provenance | Display-only incident evidence | No local cancellation |
+| Remote relay | `remoteRelay` | History-only | Remote packet location is not phone acquisition | Relay handoff only; no local active control |
+
+There is one owner per active local SOS generation. A connected-device
+`preConfirm` and the later active/backend observations enrich that generation;
+they do not create competing owners. Remote/external observations never adopt
+local ownership without the explicit provenance checks described above.
+
+## Incident identity and progress handoff
+
+An app or connected-device activation can begin with a local provisional
+incident identity. A connected device also has runtime/node evidence used only
+for ownership correlation. Backend processing later supplies the canonical
+incident identity. The repository preserves the provisional alias, adopts the
+canonical identity after an authority-checked handoff, and applies buffered
+actuator updates to the same logical generation.
+
+Progress starts with backend delivery pending, becomes confirmed only after
+backend evidence, and adds emergency-contact state from versioned actuator
+snapshots. Older or duplicate snapshot versions are ignored. Progress streams
+are broadcast and deduplicate equivalent state, so multiple subscribers
+observe one repository-owned lifecycle. Terminal incident state emits terminal
+progress and clears buffered correlation state.
+
+Diagnostics expose only whether provisional/canonical/correlation values are
+present and which typed category was selected. They do not emit the values or
+derive stable hashes from them.
+
+```mermaid
+sequenceDiagram
+  participant Host
+  participant SDK
+  participant Runtime as Device/runtime
+  participant Service as Backend progress
+  Host->>SDK: triggerSosAuthoritatively(payload)
+  SDK->>SDK: create generation + provisional identity
+  SDK->>Runtime: dispatch when command-ready
+  SDK-->>Host: active / delivery pending
+  Service-->>SDK: canonical incident accepted
+  SDK->>SDK: authority-check and alias handoff
+  Service-->>SDK: versioned actuator updates
+  SDK-->>Host: same generation + canonical progress
+```
+
+## Connected-device sequence
+
+```mermaid
+sequenceDiagram
+  participant Tag as Connected TAG
+  participant SDK
+  participant Host
+  participant Service as Backend
+  Tag-->>SDK: preConfirm
+  SDK-->>Host: arming with stable deadline
+  Tag-->>SDK: active
+  SDK-->>Host: active immediately
+  SDK->>Service: publish once for the owned generation
+  Service-->>SDK: canonical incident/progress
+  SDK-->>Host: enrich active generation
+  Tag-->>SDK: terminal cancel
+  SDK-->>Host: cancelled; next generation may arm
+```
+
+Duplicate packets preserve the first accepted countdown deadline. Late
+countdown packets cannot replace active state. Stale revisions and prior
+generation terminal packets are ignored.
+
+## SOS location ownership
+
+The SDK reduces authoritative lifecycle revisions to
+activate/deactivate/retain location effects. Locally actionable `active`,
+`cancelling`, `cancellationFailed`, and `recoveryRequired` retain SOS
+ownership. Confirmed `cancelled`/`resolved` remove it for the matching
+generation. External-only and ambiguous observations retain current ownership
+rather than changing it.
+
+The platform sink changes only the `sos` owner. On iOS, the native service
+keeps the independent `sharing`, `dmp`, and `sos` context set on its single
+manager. On Android, the tracking-owner arbiter applies the same coexistence
+rule. This is why SOS cancellation returns to sharing when Profile sharing is
+still active, rather than stopping acquisition globally.
+
 ## Backward compatibility and privacy
 
 Legacy methods are retained and the SDK continues adapting device/current SOS
@@ -255,9 +343,9 @@ states, provenance, identity, generation and revision directly instead of
 asserting debug-registry output.
 
 That checkpoint completed with 451 Flutter package tests passed and zero
-failed. The final branch result supersedes it: **456/456 Flutter package tests
-passed**. Analysis passed with three pre-existing `implementation_imports`
-informational notices and no warnings or errors.
+failed. A later 456-test checkpoint superseded it. The current committed-head
+checkpoint supersedes both: **665 SDK tests passed** at
+`edbfd2328f759ee94908d8d72c201a26cd69670e`.
 
 ## Authoritative pending-activation cancellation (2026-07-17)
 

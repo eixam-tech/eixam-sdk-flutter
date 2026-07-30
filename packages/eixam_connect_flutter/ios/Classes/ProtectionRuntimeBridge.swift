@@ -840,8 +840,8 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
   }
 
   func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
-    if let error {
-      let reason = "The iOS Protection runtime received a notify error on \(characteristic.uuid.uuidString.lowercased()): \(error.localizedDescription)"
+    if error != nil {
+      let reason = "ios_ble_notify_error"
       defaults.set(reason, forKey: Keys.lastFailureReason)
       recordEvent(type: "runtimeError", reason: reason)
       return
@@ -863,7 +863,7 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     let timestamp = Date().millisecondsSince1970
     let payloadHex = bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
 #if DEBUG
-    print("IOS_BLE_SOS_PAYLOAD_RECEIVED source=\(source) characteristic=\(characteristicUuid) len=\(bytes.count) payload=\(payloadHex)")
+    print("IOS_BLE_SOS_PAYLOAD_RECEIVED source=\(source) packet_bytes_present=true byte_count=\(bytes.count)")
 #endif
 
     guard let parsed = parseIosBleSosSnapshot(bytes: bytes, receivedAt: timestamp) else {
@@ -871,7 +871,7 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     }
     if shouldSuppressAfterTerminalSnapshot(parsed: parsed, receivedAt: timestamp) {
 #if DEBUG
-      print("IOS_BLE_SOS_STALE_ACTIVE_SUPPRESSED source=native_snapshot kind=\(parsed.kind.rawValue) nodeId=\(parsed.nodeId.map(String.init) ?? "none") packetId=\(parsed.packetId.map(String.init) ?? "none")")
+      print("IOS_BLE_SOS_STALE_ACTIVE_SUPPRESSED source=native_snapshot kind=\(parsed.kind.rawValue) originator_identity_present=\(parsed.nodeId != nil) packet_identity_present=\(parsed.packetId != nil)")
 #endif
       return
     }
@@ -893,7 +893,7 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     defaults.synchronize()
 
 #if DEBUG
-    print("IOS_BLE_SOS_SNAPSHOT_PERSISTED kind=\(parsed.kind.rawValue) nodeId=\(parsed.nodeId.map(String.init) ?? "none") packetId=\(parsed.packetId.map(String.init) ?? "none") cycle=\(parsed.cycleKey ?? "none") deadline=\(parsed.deadlineAt.map(String.init) ?? "none")")
+    print("IOS_BLE_SOS_SNAPSHOT_PERSISTED kind=\(parsed.kind.rawValue) originator_identity_present=\(parsed.nodeId != nil) packet_identity_present=\(parsed.packetId != nil) deadline_present=\(parsed.deadlineAt != nil)")
 #endif
     requestBackgroundSosNotification(
       for: parsed,
@@ -956,7 +956,7 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     previous: (kind: IosBleSosSnapshotKind?, nodeId: Int?, cycleKey: String?)
   ) {
 #if DEBUG
-    print("IOS_SOS_NOTIFICATION_REQUESTED kind=\(parsed.kind.rawValue) cycle=\(parsed.cycleKey ?? "none") nodeId=\(parsed.nodeId.map(String.init) ?? "none")")
+    print("IOS_SOS_NOTIFICATION_REQUESTED kind=\(parsed.kind.rawValue) packet_identity_present=\(parsed.cycleKey != nil) originator_identity_present=\(parsed.nodeId != nil)")
 #endif
     guard parsed.kind == .preSos || parsed.kind == .active || parsed.kind == .cancelled else {
 #if DEBUG
@@ -970,14 +970,14 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     UNUserNotificationCenter.current().getNotificationSettings { settings in
       guard self.isNotificationAuthorized(settings.authorizationStatus) else {
 #if DEBUG
-        print("IOS_SOS_NOTIFICATION_PERMISSION_MISSING kind=\(parsed.kind.rawValue) cycle=\(parsed.cycleKey ?? "none") status=\(settings.authorizationStatus.rawValue)")
+        print("IOS_SOS_NOTIFICATION_PERMISSION_MISSING kind=\(parsed.kind.rawValue) authorization_category=not_granted")
 #endif
         return
       }
       let dedupeKey = self.sosNotificationDedupeKey(for: parsed)
       guard self.rememberSosNotificationKey(dedupeKey) else {
 #if DEBUG
-        print("IOS_SOS_NOTIFICATION_DEDUPED kind=\(parsed.kind.rawValue) cycle=\(parsed.cycleKey ?? "none") key=\(dedupeKey)")
+        print("IOS_SOS_NOTIFICATION_DEDUPED kind=\(parsed.kind.rawValue) packet_identity_present=\(parsed.cycleKey != nil)")
 #endif
         return
       }
@@ -1011,13 +1011,13 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
         trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
       )
       UNUserNotificationCenter.current().add(request) { error in
-        if let error {
+        if error != nil {
 #if DEBUG
-          print("IOS_SOS_NOTIFICATION_SKIPPED kind=\(parsed.kind.rawValue) cycle=\(parsed.cycleKey ?? "none") reason=schedule_failed error=\(error.localizedDescription)")
+          print("IOS_SOS_NOTIFICATION_SKIPPED kind=\(parsed.kind.rawValue) reason=schedule_failed error_category=native_notification")
 #endif
         } else {
 #if DEBUG
-          print("IOS_SOS_NOTIFICATION_SCHEDULED kind=\(parsed.kind.rawValue) cycle=\(parsed.cycleKey ?? "none") identifier=\(identifier)")
+          print("IOS_SOS_NOTIFICATION_SCHEDULED kind=\(parsed.kind.rawValue) packet_identity_present=\(parsed.cycleKey != nil)")
 #endif
         }
       }
@@ -1046,7 +1046,7 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     }
     guard previous.kind == .preSos || previous.kind == .active else {
 #if DEBUG
-      print("IOS_SOS_NOTIFICATION_SKIPPED kind=\(parsed.kind.rawValue) reason=terminal_without_open_cycle cycle=\(parsed.cycleKey ?? "none")")
+      print("IOS_SOS_NOTIFICATION_SKIPPED kind=\(parsed.kind.rawValue) reason=terminal_without_open_cycle packet_identity_present=\(parsed.cycleKey != nil)")
 #endif
       return false
     }
@@ -1055,7 +1055,7 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
         return true
       }
 #if DEBUG
-      print("IOS_SOS_NOTIFICATION_SKIPPED kind=\(parsed.kind.rawValue) reason=terminal_node_mismatch incomingNodeId=\(parsedNodeId) previousNodeId=\(previousNodeId)")
+      print("IOS_SOS_NOTIFICATION_SKIPPED kind=\(parsed.kind.rawValue) reason=terminal_node_mismatch originator_identity_present=true")
 #endif
       return false
     }
@@ -1064,7 +1064,7 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
         return true
       }
 #if DEBUG
-      print("IOS_SOS_NOTIFICATION_SKIPPED kind=\(parsed.kind.rawValue) reason=terminal_cycle_mismatch incomingCycle=\(parsedCycle) previousCycle=\(previousCycle)")
+      print("IOS_SOS_NOTIFICATION_SKIPPED kind=\(parsed.kind.rawValue) reason=terminal_cycle_mismatch packet_identity_present=true")
 #endif
       return false
     }

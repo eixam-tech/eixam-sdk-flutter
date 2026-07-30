@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:flutter/foundation.dart';
 
 import '../../device/ble_debug_registry.dart';
 import '../../mappers/local_state_serializers.dart';
@@ -83,6 +84,12 @@ class MqttOperationalSosRepository
       <String, _BufferedActuatorUpdate>{};
   final Map<String, DateTime> _handledMqttEvents = <String, DateTime>{};
   bool _disposed = false;
+
+  @visibleForTesting
+  String? get debugLastTrustedCorrelationId =>
+      _trustedLifecycleCorrelationIds.isEmpty
+          ? null
+          : _trustedLifecycleCorrelationIds.keys.last;
 
   Future<void> restoreState() async {
     if (_localStore == null) {

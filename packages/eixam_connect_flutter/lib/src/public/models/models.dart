@@ -1,5 +1,6 @@
 // Public SDK models and entities exposed to partner applications.
 export 'package:eixam_connect_core/src/entities/backend_registered_device.dart';
+export 'package:eixam_connect_core/src/entities/background_location.dart';
 export 'package:eixam_connect_core/src/entities/ble_command_channel_status.dart';
 export 'package:eixam_connect_core/src/entities/ble_notification_navigation_request.dart';
 export 'package:eixam_connect_core/src/entities/death_man_plan.dart';

@@ -9,6 +9,7 @@ import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
 import 'package:eixam_connect_flutter/src/sdk/background_telemetry_platform_adapter.dart';
 import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
 import 'package:eixam_connect_flutter/src/sdk/protection_platform_adapter.dart';
+import 'package:eixam_connect_flutter/src/sdk/sos_location_ownership_effect.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/builders/device_status_builder.dart';
@@ -119,6 +120,40 @@ void main() {
       await sdk.dispose();
 
       expect(cascadeCalls, 1);
+      await runtimeProvider.dispose();
+    });
+
+    test(
+        'production defaults to enabled SDK SOS ownership while public '
+        'tracking remains independently idempotent', () async {
+      final runtimeProvider = FakeDeviceRuntimeProvider();
+      final deviceRepository = InMemoryDeviceRepository(
+        runtimeProvider: runtimeProvider,
+      );
+      final trackingRepository = FakeTrackingRepository();
+      final sdk = _buildSdk(
+        deviceRepository: deviceRepository,
+        trackingRepository: trackingRepository,
+        disposeCallback: deviceRepository.dispose,
+      );
+
+      await sdk.startTracking();
+      await sdk.startTracking();
+      expect(trackingRepository.startCallCount, 1);
+      expect(
+        sdk.debugAndroidTrackingOwnerDiagnostics.requestedOwners.single.name,
+        'legacyPublicTracking',
+      );
+
+      await sdk.stopTracking();
+      await sdk.stopTracking();
+      expect(trackingRepository.stopCallCount, 1);
+      expect(
+        sdk.debugSosLocationOwnershipEffectDiagnostics.effectMode,
+        SosLocationOwnershipEffectMode.enabled,
+      );
+
+      await sdk.dispose();
       await runtimeProvider.dispose();
     });
 

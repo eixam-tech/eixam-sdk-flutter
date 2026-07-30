@@ -2,7 +2,8 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_core/src/interfaces/realtime_client.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, kDebugMode, visibleForTesting;
 import 'package:flutter/widgets.dart';
 
 import '../data/datasources_local/device_config_store.dart';
@@ -33,7 +34,10 @@ import '../data/repositories/telemetry_repository.dart';
 import '../data/repositories/sos_runtime_rehydration_support.dart';
 import '../mappers/local_state_serializers.dart';
 import 'android_protection_platform_adapter.dart';
+import 'android_tracking_owner_arbiter.dart';
 import 'authoritative_sos_lifecycle_controller.dart';
+import 'background_location_platform_adapter.dart';
+import 'background_location_platform_adapter_factory.dart';
 import 'background_telemetry_platform_adapter.dart';
 import 'background_telemetry_platform_adapter_factory.dart';
 import 'ble_operational_runtime_bridge.dart';
@@ -48,10 +52,15 @@ import 'protection_platform_adapter.dart';
 import 'protection_platform_adapter_factory.dart';
 import 'relay_ingest_context.dart';
 import 'location_debug_log.dart';
+import 'latest_phone_position_sink.dart';
 import 'sdk_resolved_location_resolver.dart';
 import 'sdk_mqtt_contract.dart';
 import 'sos_backend_identity_normalizer.dart';
 import 'sos_origin_classifier.dart';
+import 'sos_location_ownership_effect.dart';
+import 'sos_location_ownership_orchestrator.dart';
+import 'sos_location_ownership_platform_sink.dart';
+import 'sos_location_trace.dart';
 
 /// Main SDK orchestrator used by host apps.
 ///
@@ -60,7 +69,10 @@ import 'sos_origin_classifier.dart';
 /// escalating a Death Man plan into SOS automatically.
 class EixamConnectSdkImpl
     with WidgetsBindingObserver
-    implements EixamConnectSdk, SosIncidentProgressProvider {
+    implements
+        EixamConnectSdk,
+        BackgroundLocationControl,
+        SosIncidentProgressProvider {
   EixamConnectSdkImpl({
     required this.sosRepository,
     required this.trackingRepository,
@@ -89,16 +101,23 @@ class EixamConnectSdkImpl
     this.notificationTexts = _fallbackNotificationTexts,
     this.permissionDisclosureConfig = const EixamPermissionDisclosureConfig(),
     ProtectionPlatformAdapter? protectionPlatformAdapter,
+    BackgroundLocationPlatformAdapter? backgroundLocationPlatformAdapter,
     BackgroundTelemetryPlatformAdapter? backgroundTelemetryPlatformAdapter,
     SharedPrefsSdkStore? localStore,
     DateTime Function()? clock,
     Duration appTriggeredSosBridgeWindow = _defaultAppTriggeredSosBridgeWindow,
+    SosLocationOwnershipEffectMode sosLocationOwnershipEffectMode =
+        SosLocationOwnershipEffectMode.enabled,
+    TargetPlatform? sosLocationOwnershipPlatform,
+    bool? sosLocationOwnershipIsWeb,
     this.disposeCallback,
   })  : _clock = clock ?? DateTime.now,
         _appTriggeredSosBridgeWindow = appTriggeredSosBridgeWindow,
         _localStore = localStore ?? SharedPrefsSdkStore(),
         protectionPlatformAdapter = protectionPlatformAdapter ??
             buildDefaultProtectionPlatformAdapter(),
+        backgroundLocationPlatformAdapter = backgroundLocationPlatformAdapter ??
+            buildDefaultBackgroundLocationPlatformAdapter(),
         backgroundTelemetryPlatformAdapter =
             backgroundTelemetryPlatformAdapter ??
                 buildDefaultBackgroundTelemetryPlatformAdapter() {
@@ -144,12 +163,60 @@ class EixamConnectSdkImpl
       deviceStatusProvider: () => _lastPublicDeviceStatus ?? _lastDeviceStatus,
       bridgeDiagnosticsProvider: () => _bridgeDiagnostics,
     );
+    _trackingOwnerArbiter = AndroidTrackingOwnerArbiter(
+      trackingRepository: trackingRepository,
+    );
+    final sosLocationOwnershipEffectSink = createSosLocationOwnershipEffectSink(
+      platform: sosLocationOwnershipPlatform,
+      isWeb: sosLocationOwnershipIsWeb,
+      effectMode: sosLocationOwnershipEffectMode,
+      trackingOwnerArbiter: _trackingOwnerArbiter,
+      backgroundLocationPlatformAdapter: this.backgroundLocationPlatformAdapter,
+    );
     _sosLifecycle = AuthoritativeSosLifecycleController(
       secureStore: sosLifecycleSecureStore ?? InMemorySecureKeyValueStore(),
+      locationOwnershipEffectSink: sosLocationOwnershipEffectSink,
+      locationOwnershipEffectMode: sosLocationOwnershipEffectMode,
     );
+    if (sosLocationOwnershipEffectMode ==
+        SosLocationOwnershipEffectMode.enabled) {
+      _sosLocationOwnershipStatusSub = this
+          .backgroundLocationPlatformAdapter
+          .watchBackgroundLocationStatus()
+          .listen((_) {
+        unawaited(
+          _sosLifecycle.reconcileLocationOwnership(
+            SosLocationOwnershipReconciliationReason.permissionOrStatusChange,
+          ),
+        );
+      });
+    }
+    if (trackingRepository is LatestPhonePositionSink) {
+      final phonePositionSink = trackingRepository as LatestPhonePositionSink;
+      _nativeLocationSampleSub =
+          this.backgroundLocationPlatformAdapter.watchLocationSamples().listen(
+        (sample) {
+          unawaited(
+            phonePositionSink.acceptPhonePosition(
+              sample.toTrackingPosition(),
+              source: PhonePositionSource.nativeContext,
+            ),
+          );
+        },
+        onError: (Object _, StackTrace __) {
+          SosLocationTrace.emit('ios_native_sample', {
+            'action': 'rejected',
+            'context': 'unknown',
+            'sample_available': false,
+            'timestamp_present': false,
+            'observer_count': 1,
+          });
+        },
+      );
+    }
     _operationalTelemetryCoordinator = OperationalTelemetryCoordinator(
       trackingRepository: trackingRepository,
-      sosStateStream: _publicSosStateController.stream,
+      authoritativeSosCadenceStream: _sosLifecycle.cadenceStream,
       sessionProvider: () => _session,
       publishTelemetry: publishTelemetry,
       resolvedLocationProvider: () => _resolveLocation(
@@ -216,6 +283,20 @@ class EixamConnectSdkImpl
   final PreferredBleDeviceStore preferredBleDeviceStore;
   final SdkSessionStore? sessionStore;
   late final AuthoritativeSosLifecycleController _sosLifecycle;
+  late final AndroidTrackingOwnerArbiter _trackingOwnerArbiter;
+  @visibleForTesting
+  SosLocationOwnershipOrchestrator get debugSosLocationOwnershipOrchestrator =>
+      _sosLifecycle.locationOwnershipOrchestrator;
+  @visibleForTesting
+  SosLocationOwnershipEffectDiagnostics
+      get debugSosLocationOwnershipEffectDiagnostics =>
+          _sosLifecycle.locationOwnershipEffectDispatcher.diagnostics;
+  @visibleForTesting
+  AndroidTrackingOwnerDiagnostics get debugAndroidTrackingOwnerDiagnostics =>
+      _trackingOwnerArbiter.diagnostics;
+  @visibleForTesting
+  Future<void> debugReconcileSosLocationOwnership() =>
+      _sosLifecycle.reconcileLocationOwnershipForTesting();
   final SdkSessionContext? sessionContext;
   final SdkIdentityRemoteDataSource? identityRemoteDataSource;
   final SdkProfileRemoteDataSource? profileRemoteDataSource;
@@ -227,6 +308,7 @@ class EixamConnectSdkImpl
   final EixamNotificationTexts notificationTexts;
   final EixamPermissionDisclosureConfig permissionDisclosureConfig;
   final ProtectionPlatformAdapter protectionPlatformAdapter;
+  final BackgroundLocationPlatformAdapter backgroundLocationPlatformAdapter;
   final BackgroundTelemetryPlatformAdapter backgroundTelemetryPlatformAdapter;
   final FirmwareUpdateCoordinator? firmwareUpdateCoordinator;
   DeviceCountryConfigController? _deviceCountryConfigController;
@@ -236,6 +318,9 @@ class EixamConnectSdkImpl
   DeviceCountryConfigStatus _lastDeviceCountryConfigStatus =
       DeviceCountryConfigStatus.idle();
   StreamSubscription<DeviceCountryConfigStatus>? _deviceCountryConfigStatusSub;
+  StreamSubscription<BackgroundLocationRuntimeStatus>?
+      _sosLocationOwnershipStatusSub;
+  StreamSubscription<IosBackgroundLocationSample>? _nativeLocationSampleSub;
   final DateTime Function() _clock;
   bool _deviceCountryConfigCheckDrainRunning = false;
   ({
@@ -375,6 +460,7 @@ class EixamConnectSdkImpl
   String? _activeDeviceRuntimeIncidentId;
   String? _activeDeviceRuntimeCycleKey;
   String? _activeDeviceRuntimeLocalCycleKey;
+  String? _lastClosedDeviceRuntimeLocalCycleKey;
   int _deviceRuntimeLocalCycleSequence = 0;
   int _deviceSosStatusEventSequence = 0;
   String? _deviceOwnedBackendIncidentId;
@@ -479,6 +565,11 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> initialize(EixamSdkConfig config) async {
+    SosLocationTrace.emit('sdk_runtime', {
+      'action': 'initialize_begin',
+      'recurring_publication_owner': 'sdk',
+      'recurring_publication_paths': 1,
+    });
     BleDebugRegistry.instance.recordEvent(
       '[SDK_RUNTIME_MARKER] package=eixam_connect_flutter '
       'marker=sos_debug_build_v3 path=eixam_connect_sdk_impl.dart',
@@ -539,6 +630,9 @@ class EixamConnectSdkImpl
     _bindOperationalDiagnostics();
     _bleOperationalRuntimeBridge.start();
     _emitOperationalDiagnostics();
+    _operationalTelemetryCoordinator.start(
+      initialCadence: _sosLifecycle.currentCadence,
+    );
     if ((_sdkConfig?.deferRuntimeStartup ?? false) && _session != null) {
       _deferredRuntimeWorkPending = true;
       BleDebugRegistry.instance.recordEvent(
@@ -549,7 +643,6 @@ class EixamConnectSdkImpl
       _emitOperationalDiagnostics(reason: 'sdk_initialized');
       return;
     }
-    _operationalTelemetryCoordinator.start(initialSosState: _publicSosState);
     await _reconcileBackgroundTelemetry(reason: 'initialize');
     _connectRealtimeInBackground(trigger: 'initialize');
     await _resumeDeathManMonitoringIfNeeded();
@@ -975,12 +1068,13 @@ class EixamConnectSdkImpl
     EixamSession session, {
     bool deferRuntimeWork = false,
   }) async {
-    _bleOperationalRuntimeBridge.resetForSessionChange();
-    _clearBackendDeviceRegistrationSessionCache();
     final previousSession = _session;
     final nextSession = (await _bootstrapSessionIfNeeded(session))!;
-    if (previousSession != null &&
-        !_sameAuthenticatedPrincipal(previousSession, nextSession)) {
+    final authenticatedPrincipalChanged = previousSession != null &&
+        !_sameAuthenticatedPrincipal(previousSession, nextSession);
+    if (authenticatedPrincipalChanged) {
+      _bleOperationalRuntimeBridge.resetForSessionChange();
+      _clearBackendDeviceRegistrationSessionCache();
       await _clearSosRuntimeForSessionChange();
     }
     _session = nextSession;
@@ -989,8 +1083,13 @@ class EixamConnectSdkImpl
       sessionContext!.currentSession = _session;
     }
     await _rehydrateSosRuntimeState();
-    _publicSosFallbackIncident = null;
-    _clearPendingAppTriggeredSosBridge(reason: 'session_replaced');
+    final preserveCurrentLocalSos = _sosLifecycle.current.localActionable &&
+        !_sosLifecycle.current.externalOnly &&
+        _sosLifecycle.current.isOpen;
+    if (!preserveCurrentLocalSos) {
+      _publicSosFallbackIncident = null;
+      _clearPendingAppTriggeredSosBridge(reason: 'session_replaced');
+    }
     _applyPublicSosState(
       _publicSosStateFromRepositoryLoad(
         incoming: await sosRepository.getSosState(),
@@ -1025,7 +1124,9 @@ class EixamConnectSdkImpl
     required String trigger,
     required EixamSession session,
   }) async {
-    _operationalTelemetryCoordinator.start(initialSosState: _publicSosState);
+    _operationalTelemetryCoordinator.start(
+      initialCadence: _sosLifecycle.currentCadence,
+    );
     await _reconcileBackgroundTelemetry(reason: trigger);
     _scheduleRegisteredDeviceAutoSync(
       trigger: trigger,
@@ -1099,8 +1200,13 @@ class EixamConnectSdkImpl
       sessionContext!.currentSession = refreshed;
     }
     await _rehydrateSosRuntimeState();
-    _publicSosFallbackIncident = null;
-    _clearPendingAppTriggeredSosBridge(reason: 'identity_refreshed');
+    final preserveCurrentLocalSos = _sosLifecycle.current.localActionable &&
+        !_sosLifecycle.current.externalOnly &&
+        _sosLifecycle.current.isOpen;
+    if (!preserveCurrentLocalSos) {
+      _publicSosFallbackIncident = null;
+      _clearPendingAppTriggeredSosBridge(reason: 'identity_refreshed');
+    }
     _applyPublicSosState(
       _publicSosStateFromRepositoryLoad(
         incoming: await sosRepository.getSosState(),
@@ -1364,6 +1470,43 @@ class EixamConnectSdkImpl
     _operationalTelemetryCoordinator.setIntervalPublishingEnabled(true);
     _backgroundTrackingState = _deriveBackgroundTrackingState();
     _emitOperationalDiagnostics();
+  }
+
+  @override
+  Future<LocationPermissionSnapshot> getLocationPermissionSnapshot() {
+    return backgroundLocationPlatformAdapter.getLocationPermissionSnapshot();
+  }
+
+  @override
+  Future<LocationPermissionSnapshot> requestLocationWhenInUsePermission() {
+    return backgroundLocationPlatformAdapter
+        .requestLocationWhenInUsePermission();
+  }
+
+  @override
+  Future<LocationPermissionSnapshot> requestLocationAlwaysPermission() {
+    return backgroundLocationPlatformAdapter.requestLocationAlwaysPermission();
+  }
+
+  @override
+  Future<BackgroundLocationRuntimeStatus> setBackgroundLocationContext(
+    BackgroundLocationContext context, {
+    required bool active,
+  }) {
+    return backgroundLocationPlatformAdapter.setBackgroundLocationContext(
+      context,
+      active: active,
+    );
+  }
+
+  @override
+  Future<BackgroundLocationRuntimeStatus> getBackgroundLocationStatus() {
+    return backgroundLocationPlatformAdapter.getBackgroundLocationStatus();
+  }
+
+  @override
+  Stream<BackgroundLocationRuntimeStatus> watchBackgroundLocationStatus() {
+    return backgroundLocationPlatformAdapter.watchBackgroundLocationStatus();
   }
 
   Future<SosRuntimeRehydrationResult?> _rehydrateSosRuntimeState({
@@ -3160,6 +3303,10 @@ class EixamConnectSdkImpl
       status,
     );
     final cycleKey = _deriveDeviceSosCycleKey(status);
+    await _advanceConnectedLocalDeviceLifecycleBeforeHandoff(
+      status,
+      cycleKey: cycleKey,
+    );
     final isAppOriginatedStatus =
         status.triggerOrigin == DeviceSosTransitionSource.app;
     final appOwnedBleRuntimeStatus = _isAppOwnedBleRuntimeStatus(
@@ -3248,11 +3395,20 @@ class EixamConnectSdkImpl
         source: 'device_originated_sos',
       );
     }
-    if (await _handleRemoteRelayCancelFromTerminalResidue(
+    final connectedLocalTerminal =
+        _isConnectedLocalDeviceTerminalForActiveCycle(
       status,
-      eventSequence: sosStatusEventSequence,
-    )) {
-      return;
+      appOwnedBleRuntimeStatus: appOwnedBleRuntimeStatus,
+    );
+    if (connectedLocalTerminal) {
+      await _acceptConnectedLocalDeviceTerminal(status);
+    } else {
+      if (await _handleRemoteRelayCancelFromTerminalResidue(
+        status,
+        eventSequence: sosStatusEventSequence,
+      )) {
+        return;
+      }
     }
     _rememberDeviceRuntimeSosOwnership(status, cycleKey);
     _emitDeviceSosActiveNotificationIntent(status, cycleKey);
@@ -3328,6 +3484,11 @@ class EixamConnectSdkImpl
       _notifiedDeviceSosState = null;
       _clearRememberedDeviceOriginatedClosureIntent(cycleKey: closedCycleKey);
       _clearPendingAppTriggeredSosBridge(reason: 'device_cycle_closed');
+      if (connectedLocalTerminal) {
+        _clearDeviceRuntimeSosOwnership(
+          reason: 'connected_local_device_terminal',
+        );
+      }
     }
 
     if (!status.derivedFromBlePacket && !isDeviceTimeoutPromotion) {
@@ -3367,6 +3528,161 @@ class EixamConnectSdkImpl
     return state == DeviceSosState.preConfirm ||
         state == DeviceSosState.active ||
         state == DeviceSosState.acknowledged;
+  }
+
+  Future<void> _advanceConnectedLocalDeviceLifecycleBeforeHandoff(
+    DeviceSosStatus status, {
+    required String? cycleKey,
+  }) async {
+    if (cycleKey == null ||
+        status.triggerOrigin != DeviceSosTransitionSource.device) {
+      return;
+    }
+    final device = _lastDeviceStatus;
+    if (status.state == DeviceSosState.preConfirm) {
+      if (!_sosLifecycle.current.isOpen) {
+        await _sosLifecycle.beginArming(
+          origin: SosLifecycleOrigin.connectedLocalDevice,
+          lifecycleId: 'device-cycle:$cycleKey',
+          triggerSource: 'ble_device_runtime_status',
+          deviceId: device?.deviceId,
+          nodeId: status.nodeId ?? device?.nodeId,
+          hardwareId: device?.canonicalHardwareId,
+        );
+      }
+      _traceConnectedLocalDeviceHandoff(
+        action: 'accepted',
+        from: 'preconfirm',
+        to: 'activating',
+        reason: 'authoritative_arming_established',
+      );
+      return;
+    }
+    if (status.state != DeviceSosState.active &&
+        status.state != DeviceSosState.acknowledged) {
+      return;
+    }
+    var lifecycle = _sosLifecycle.current;
+    if (!lifecycle.isOpen || lifecycle.isTerminal) {
+      lifecycle = await _sosLifecycle.beginArming(
+        origin: SosLifecycleOrigin.connectedLocalDevice,
+        lifecycleId: 'device-cycle:$cycleKey',
+        triggerSource: 'ble_device_runtime_status',
+        deviceId: device?.deviceId,
+        nodeId: status.nodeId ?? device?.nodeId,
+        hardwareId: device?.canonicalHardwareId,
+      );
+    }
+    if (lifecycle.stage == SosLifecycleStage.arming) {
+      lifecycle = await _sosLifecycle.beginActivating(
+        origin: SosLifecycleOrigin.connectedLocalDevice,
+        triggerSource: 'ble_device_runtime_status',
+        deviceId: device?.deviceId,
+        nodeId: status.nodeId ?? device?.nodeId,
+        hardwareId: device?.canonicalHardwareId,
+      );
+    }
+    if (lifecycle.stage == SosLifecycleStage.activating) {
+      await _sosLifecycle.confirmActive(
+        origin: SosLifecycleOrigin.connectedLocalDevice,
+        localIncidentId: 'device-runtime-$cycleKey',
+        triggerSource: 'ble_device_runtime_status',
+        deviceId: device?.deviceId,
+        nodeId: status.nodeId ?? device?.nodeId,
+        hardwareId: device?.canonicalHardwareId,
+      );
+    }
+    _traceConnectedLocalDeviceHandoff(
+      action: 'accepted',
+      from: status.previousState == DeviceSosState.preConfirm
+          ? 'preconfirm'
+          : lifecycle.stage.name,
+      to: 'activating',
+      reason: 'device_active_precedes_pre_sos_clear',
+    );
+  }
+
+  bool _isConnectedLocalDeviceTerminalForActiveCycle(
+    DeviceSosStatus status, {
+    required bool appOwnedBleRuntimeStatus,
+  }) {
+    if (!_isDeviceSosCycleClosed(status.state) ||
+        (status.triggerOrigin != DeviceSosTransitionSource.device &&
+            !appOwnedBleRuntimeStatus)) {
+      return false;
+    }
+    final lifecycle = _sosLifecycle.current;
+    final connectedLocalLifecycle =
+        lifecycle.origin == SosLifecycleOrigin.connectedLocalDevice;
+    final lifecycleMatchesLocalTerminal =
+        (connectedLocalLifecycle && lifecycle.isOpen) ||
+            appOwnedBleRuntimeStatus;
+    if (!lifecycleMatchesLocalTerminal) {
+      return false;
+    }
+    final statusNodeId = _normalizeNodeIdOrNull(status.nodeId);
+    final ownerNodeId = lifecycle.nodeId ??
+        _parseSosCycleNodeId(_activeDeviceRuntimeLocalCycleKey) ??
+        _parseSosCycleNodeId(_activeDeviceSosCycleKey);
+    return statusNodeId == null ||
+        ownerNodeId == null ||
+        statusNodeId == ownerNodeId;
+  }
+
+  Future<void> _acceptConnectedLocalDeviceTerminal(
+    DeviceSosStatus status,
+  ) async {
+    if (_sosLifecycle.current.isOpen) {
+      await _sosLifecycle.confirmTerminal(
+        stage: SosLifecycleStage.cancelled,
+        incident: _sosLifecycle.current.incident,
+      );
+    }
+    _traceConnectedLocalDeviceCycle(action: 'terminated', status: status);
+    _traceDeviceTerminal(
+      action: 'accepted',
+      classification: 'connected_local',
+      matchedActiveOwner: true,
+      lifecycleTerminal: true,
+    );
+  }
+
+  void _traceConnectedLocalDeviceCycle({
+    required String action,
+    required DeviceSosStatus status,
+  }) {
+    BleDebugRegistry.instance.recordEvent(
+      'EIXAM_SOS_STATUS event=device_cycle '
+      'action=$action origin=connected_local_device '
+      'generation_present=${_deviceRuntimeLocalCycleSequence > 0} '
+      'packet_identity_present=${status.packetId != null}',
+    );
+  }
+
+  void _traceConnectedLocalDeviceHandoff({
+    required String action,
+    required String from,
+    required String to,
+    required String reason,
+  }) {
+    BleDebugRegistry.instance.recordEvent(
+      'EIXAM_SOS_STATUS event=device_handoff '
+      'action=$action from=$from to=$to reason=$reason',
+    );
+  }
+
+  void _traceDeviceTerminal({
+    required String action,
+    required String classification,
+    required bool matchedActiveOwner,
+    required bool lifecycleTerminal,
+  }) {
+    BleDebugRegistry.instance.recordEvent(
+      'EIXAM_SOS_STATUS event=device_terminal '
+      'action=$action classification=$classification '
+      'matched_active_owner=$matchedActiveOwner '
+      'lifecycle_terminal=$lifecycleTerminal',
+    );
   }
 
   String _deviceTerminalEventReason(DeviceSosStatus status) {
@@ -3420,6 +3736,12 @@ class EixamConnectSdkImpl
     );
     final context = _recentExternalRelayContextForRelayNode(relayNodeId);
     if (context == null) {
+      _traceDeviceTerminal(
+        action: 'ignored',
+        classification: 'remote_relay',
+        matchedActiveOwner: false,
+        lifecycleTerminal: false,
+      );
       BleDebugRegistry.instance.recordEvent(
         'EXTERNAL_SOS relay_terminal_residue_ignored '
         'reason=no_recent_remote_context relayNodeId=$relayNodeId '
@@ -3433,6 +3755,12 @@ class EixamConnectSdkImpl
       observedAt: observedAt,
       eventSequence: eventSequence,
     )) {
+      _traceDeviceTerminal(
+        action: 'ignored',
+        classification: 'remote_relay',
+        matchedActiveOwner: false,
+        lifecycleTerminal: false,
+      );
       BleDebugRegistry.instance.recordEvent(
         'EXTERNAL_SOS relay_terminal_residue_ignored '
         'reason=stale_baseline relayNodeId=$relayNodeId '
@@ -3447,6 +3775,12 @@ class EixamConnectSdkImpl
       'originatorNodeId=${context.originatorNodeId} '
       'relayNodeId=$relayNodeId '
       'backendIncidentId=${context.backendIncidentId ?? "none"}',
+    );
+    _traceDeviceTerminal(
+      action: 'accepted',
+      classification: 'remote_relay',
+      matchedActiveOwner: false,
+      lifecycleTerminal: false,
     );
     BleDebugRegistry.instance.recordEvent(
       'SOS_ORIGIN_DECISION source=relay_terminal_residue '
@@ -3568,14 +3902,16 @@ class EixamConnectSdkImpl
   }
 
   String? _deriveDeviceSosCycleKey(DeviceSosStatus status) {
-    if (!_isSosCycleNotifiable(status.state)) {
-      return null;
-    }
-
     final nodeId = status.nodeId ??
         _parseDeviceRuntimeNodeId(status.lastPacketSignature) ??
         _parseSosCycleNodeId(status.lastPacketSignature) ??
         _knownLocalDeviceNodeId;
+    if (!_isSosCycleNotifiable(status.state)) {
+      return _resolveLocalDeviceRuntimeCycleKey(
+        status: status,
+        nodeId: nodeId,
+      );
+    }
     final runtimeCycleKey = _runtimeDeviceSosCycleKey(
       status: status,
       nodeId: nodeId,
@@ -3598,7 +3934,6 @@ class EixamConnectSdkImpl
     if (localCycleKey != null) {
       return localCycleKey;
     }
-
     return runtimeCycleKey;
   }
 
@@ -3625,46 +3960,35 @@ class EixamConnectSdkImpl
     }
     final currentLocalCycle = _activeDeviceRuntimeLocalCycleKey;
     if (currentLocalCycle != null &&
-        !_isTerminalPublicSosState(_publicSosState)) {
+        _parseSosCycleNodeId(currentLocalCycle) == nodeId) {
+      _traceConnectedLocalDeviceCycle(
+        action: status.state == DeviceSosState.active ||
+                status.state == DeviceSosState.acknowledged
+            ? 'promoted'
+            : 'reused',
+        status: status,
+      );
       return currentLocalCycle;
     }
-    if (currentLocalCycle != null &&
-        _parseSosCycleNodeId(currentLocalCycle) == nodeId &&
-        !_isNewLocalActivationAfterTerminal(status)) {
-      return currentLocalCycle;
+    if (_isDeviceSosCycleClosed(status.state)) {
+      final lastClosedCycle = _lastClosedDeviceRuntimeLocalCycleKey;
+      if (lastClosedCycle != null &&
+          _parseSosCycleNodeId(lastClosedCycle) == nodeId) {
+        _traceConnectedLocalDeviceCycle(
+            action: 'terminal_reused', status: status);
+        return lastClosedCycle;
+      }
+      return null;
     }
-    final supersedesTerminalGuard = _isNewLocalActivationAfterTerminal(status);
     _deviceRuntimeLocalCycleSequence += 1;
     final nextCycle = 'sos:$nodeId:$_deviceRuntimeLocalCycleSequence';
-    final previousIncident = _activeDeviceRuntimeIncidentId;
-    final previousTerminal = _terminalLabelForPublicSos(_publicSosState);
     _activeDeviceRuntimeLocalCycleKey = nextCycle;
     _activeDeviceRuntimeCycleKey = 'sos-cycle:$nextCycle';
     _activeDeviceRuntimeIncidentId = 'device-runtime-$nextCycle';
     _lastDeviceRuntimeCanonicalIncidentSignature = null;
     _lastDeviceRuntimeCanonicalIncident = null;
     _deviceOwnedBackendIncidentId = null;
-    if (supersedesTerminalGuard) {
-      BleDebugRegistry.instance.recordEvent(
-        '[APP_SOS_RECONCILE] action=clear_terminal_guard_for_new_local_activation '
-        'source=BACKGROUND_SOS incidentId=$_activeDeviceRuntimeIncidentId '
-        'canonicalIncidentId=$_activeDeviceRuntimeIncidentId '
-        'previous_stage=${_publicSosState.name} incoming_stage=active '
-        'previous_terminal=$previousTerminal incoming_terminal=open '
-        'guardedIds=${previousIncident ?? "none"} '
-        'originatorNodeId=$nodeId connectedDeviceNodeId=$nodeId',
-      );
-      BleDebugRegistry.instance.recordEvent(
-        '[APP_SOS_RECONCILE] decision=accept_new_local_activation_after_terminal '
-        'reason=local_activation_supersedes_terminal_guard '
-        'source=BACKGROUND_SOS incidentId=$_activeDeviceRuntimeIncidentId '
-        'canonicalIncidentId=$_activeDeviceRuntimeIncidentId '
-        'previous_stage=${_publicSosState.name} incoming_stage=active '
-        'previous_terminal=$previousTerminal incoming_terminal=open '
-        'guardedIds=${previousIncident ?? "none"} '
-        'originatorNodeId=$nodeId connectedDeviceNodeId=$nodeId',
-      );
-    }
+    _traceConnectedLocalDeviceCycle(action: 'created', status: status);
     return nextCycle;
   }
 
@@ -3672,28 +3996,6 @@ class EixamConnectSdkImpl
     return status.triggerOrigin == DeviceSosTransitionSource.device ||
         status.transitionSource == DeviceSosTransitionSource.device ||
         _preSosSession?.owner == _SosOwner.device;
-  }
-
-  bool _isNewLocalActivationAfterTerminal(DeviceSosStatus status) {
-    if (!_isTerminalPublicSosState(_publicSosState)) {
-      return false;
-    }
-    return status.state == DeviceSosState.preConfirm ||
-        status.state == DeviceSosState.active ||
-        status.state == DeviceSosState.acknowledged;
-  }
-
-  String _terminalLabelForPublicSos(SosState state) {
-    if (state == SosState.resolved) {
-      return 'resolved';
-    }
-    if (state == SosState.cancelled) {
-      return 'cancelled';
-    }
-    if (state == SosState.idle || state == SosState.failed) {
-      return 'idle';
-    }
-    return 'open';
   }
 
   String? debugDeriveDeviceSosCycleKey(DeviceSosStatus status) {
@@ -3857,12 +4159,16 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> startTracking() {
-    return trackingRepository.startTracking();
+    return _trackingOwnerArbiter.addOwner(
+      AndroidTrackingOwner.legacyPublicTracking,
+    );
   }
 
   @override
   Future<void> stopTracking() {
-    return trackingRepository.stopTracking();
+    return _trackingOwnerArbiter.removeOwner(
+      AndroidTrackingOwner.legacyPublicTracking,
+    );
   }
 
   @override
@@ -3914,8 +4220,13 @@ class EixamConnectSdkImpl
 
   @override
   Stream<TrackingPosition> watchPositions() {
+    final phonePositionSink = trackingRepository is LatestPhonePositionSink
+        ? trackingRepository as LatestPhonePositionSink
+        : null;
     return _seedThenReplayLiveStream<TrackingPosition>(
-      seed: trackingRepository.getCurrentPosition,
+      seed: phonePositionSink?.latestPhonePosition != null
+          ? () async => phonePositionSink?.latestPhonePosition
+          : trackingRepository.getCurrentPosition,
       live: trackingRepository.watchPositions(),
       emitNullSeed: false,
     );
@@ -5077,7 +5388,7 @@ class EixamConnectSdkImpl
       );
     } catch (error) {
       if (kDebugMode) {
-        debugPrint(
+        safeSdkDebugPrint(
           '[BACKGROUND_SOS] get_current_sos_device_status_failed '
           'error=$error',
         );
@@ -5560,8 +5871,8 @@ class EixamConnectSdkImpl
     if (status.state == DeviceSosState.active ||
         status.state == DeviceSosState.acknowledged) {
       final incident = await sosRepository.getCurrentIncident();
-      final localIncidentId = incident?.id ??
-          lifecycle.localIncidentId ??
+      final localIncidentId = lifecycle.localIncidentId ??
+          incident?.id ??
           'device-runtime-sos:${status.nodeId ?? device?.nodeId ?? "local"}:${lifecycle.generation == 0 ? _deviceRuntimeLocalCycleSequence : lifecycle.generation}';
       await _sosLifecycle.confirmActive(
         origin: status.triggerOrigin == DeviceSosTransitionSource.app
@@ -6514,6 +6825,8 @@ class EixamConnectSdkImpl
       'incidentId=${_activeDeviceRuntimeIncidentId ?? "-"} '
       'cycle=${_activeDeviceRuntimeCycleKey ?? "-"}',
     );
+    _lastClosedDeviceRuntimeLocalCycleKey = _activeDeviceRuntimeLocalCycleKey ??
+        _lastClosedDeviceRuntimeLocalCycleKey;
     _activeDeviceRuntimeIncidentId = null;
     _activeDeviceRuntimeCycleKey = null;
     _activeDeviceRuntimeLocalCycleKey = null;
@@ -9663,6 +9976,15 @@ class EixamConnectSdkImpl
   }
 
   String? _preSosCycleKeyFromDeviceStatus(DeviceSosStatus status) {
+    if (status.triggerOrigin == DeviceSosTransitionSource.device &&
+        _activeDeviceRuntimeLocalCycleKey != null) {
+      return _activeDeviceRuntimeLocalCycleKey;
+    }
+    if (status.triggerOrigin == DeviceSosTransitionSource.device &&
+        _isDeviceSosCycleClosed(status.state) &&
+        _lastClosedDeviceRuntimeLocalCycleKey != null) {
+      return _lastClosedDeviceRuntimeLocalCycleKey;
+    }
     final nodeId = status.nodeId ?? _knownLocalDeviceNodeId;
     final packetId = status.packetId;
     if (nodeId != null && packetId != null) {
@@ -9805,7 +10127,7 @@ class EixamConnectSdkImpl
         'SOS notification cleanup failed -> reason=$reason error=$error',
       );
       if (kDebugMode) {
-        debugPrint('SOS notification cleanup failed: $error');
+        safeSdkDebugPrint('SOS notification cleanup failed: $error');
       }
     }
   }
@@ -14423,13 +14745,10 @@ class EixamConnectSdkImpl
         sosEventPacket,
         source: DeviceSosTransitionSource.device,
       );
-      if (_isTerminalSosEventPacket(sosEventPacket)) {
-        _applyTerminalSosSuppression(
-          reason: 'own_device_terminal_packet',
-          terminalState: _terminalStateForSosEventPacket(sosEventPacket),
-          nodeId: sosEventPacket.nodeId,
-        );
-      }
+      // The device status listener classifies the terminal against the
+      // still-owned local cycle before applying terminal suppression. Doing
+      // that here would clear ownership first and make the same-device packet
+      // look like relay residue.
       return;
     }
 
@@ -14464,7 +14783,8 @@ class EixamConnectSdkImpl
       case ProtectionPlatformEventType.nativeBackendSyncQueued:
         BleDebugRegistry.instance.recordEvent(
           '[NATIVE_PRE_SOS_BACKEND] action=queued '
-          'reason=${event.reason ?? "-"}',
+          'reason_category=${_isCancelBackendSyncReason(event.reason) ? "cancel" : "sync"} '
+          'reason_present=${event.reason?.trim().isNotEmpty == true}',
         );
         _clearPreSosSession(
           reason: 'native_backend_sync_queued',
@@ -14512,7 +14832,8 @@ class EixamConnectSdkImpl
       case ProtectionPlatformEventType.nativeBackendSyncSucceeded:
         BleDebugRegistry.instance.recordEvent(
           '[NATIVE_PRE_SOS_BACKEND] action=succeeded '
-          'reason=${event.reason ?? "-"}',
+          'reason_category=${_isCancelBackendSyncReason(event.reason) ? "cancel" : "sync"} '
+          'reason_present=${event.reason?.trim().isNotEmpty == true}',
         );
         _clearPreSosSession(
           reason: 'native_backend_sync_succeeded',
@@ -14536,7 +14857,8 @@ class EixamConnectSdkImpl
       case ProtectionPlatformEventType.nativeBackendSyncFailed:
         BleDebugRegistry.instance.recordEvent(
           '[NATIVE_PRE_SOS_BACKEND] action=failed '
-          'reason=${event.reason ?? "-"}',
+          'reason_category=native_backend_sync_failed '
+          'reason_present=${event.reason?.trim().isNotEmpty == true}',
         );
         _markCountdownZeroActivationFailed(
           source: 'native_backend_sync_failed',
@@ -14911,6 +15233,7 @@ class EixamConnectSdkImpl
     _activeDeviceRuntimeIncidentId = null;
     _activeDeviceRuntimeCycleKey = null;
     _activeDeviceRuntimeLocalCycleKey = null;
+    _lastClosedDeviceRuntimeLocalCycleKey = null;
     _deviceOwnedBackendIncidentId = null;
     _lastDeviceRuntimeCanonicalIncidentSignature = null;
     _lastDeviceRuntimeCanonicalIncident = null;
@@ -14927,13 +15250,6 @@ class EixamConnectSdkImpl
       return true;
     }
     return false;
-  }
-
-  SosState _terminalStateForSosEventPacket(EixamSosEventPacket packet) {
-    if (packet.opcode == EixamBleProtocol.sosEventUserDeactivatedOpcode) {
-      return SosState.cancelled;
-    }
-    return SosState.cancelled;
   }
 
   Future<void> _evaluateDeathManPlan(String planId) async {
@@ -17044,6 +17360,10 @@ class EixamConnectSdkImpl
       return;
     }
     _disposed = true;
+    SosLocationTrace.emit('sdk_runtime', {
+      'action': 'dispose_begin',
+      'recurring_publication_owner': 'sdk',
+    });
     await _stopBackgroundTelemetry(reason: 'dispose');
     _cancelProtectionDisconnectGraceTimer();
     WidgetsBinding.instance.removeObserver(this);
@@ -17061,13 +17381,18 @@ class EixamConnectSdkImpl
     await _protectionStatusSub?.cancel();
     await _protectionRawSosEventsSub?.cancel();
     await _sosCapabilityLifecycleSub?.cancel();
+    await _sosLocationOwnershipStatusSub?.cancel();
+    await _nativeLocationSampleSub?.cancel();
+    _nativeLocationSampleSub = null;
     await _bleOperationalRuntimeBridge.dispose();
     await _protectionModeController.dispose();
+    await _sosLifecycle.dispose();
+    await backgroundLocationPlatformAdapter.dispose();
     await _deviceCountryConfigStatusSub?.cancel();
     await _deviceCountryConfigController?.dispose();
     await firmwareUpdateCoordinator?.dispose();
     await _operationalTelemetryCoordinator.stop();
-    await _sosLifecycle.dispose();
+    await _trackingOwnerArbiter.dispose();
     await deviceSosController.dispose();
     await realtimeClient.disconnect();
     await disposeCallback?.call();
@@ -17083,6 +17408,12 @@ class EixamConnectSdkImpl
     await _publicPreSosStatusController.close();
     await _notificationIntentController.close();
     await _eventsController.close();
+    SosLocationTrace.emit('sdk_runtime', {
+      'action': 'dispose_done',
+      'recurring_publication_loops': 0,
+      'ownership_accepting': false,
+      'tracking_owners': 0,
+    });
   }
 
   Future<EixamPermissionPreflightResult> _buildPermissionPreflight({
