@@ -24,7 +24,11 @@ class DeviceRuntimeStatus {
   final bool inetOk;
   final bool positionConfirmed;
   final int nodeId;
-  final int batteryPercent;
+
+  /// Exact battery percentage reported by GET_DEVICE_STATUS.
+  ///
+  /// `null` represents the wire sentinel `0xFF` or another invalid value.
+  final int? batteryPercent;
   final int telIntervalSeconds;
   final DateTime? receivedAt;
   final List<int> rawBytes;

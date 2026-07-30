@@ -35,7 +35,7 @@ class EixamDeviceRuntimeStatusPacket {
         inetOk: (flags & 0x08) != 0,
         positionConfirmed: (flags & 0x10) != 0,
         nodeId: _readU32(bytes, 7),
-        batteryPercent: bytes[11],
+        batteryPercent: _decodeBatteryPercent(bytes[11]),
         telIntervalSeconds: bytes[12] | (bytes[13] << 8),
         receivedAt: receivedAt,
         rawBytes: List<int>.unmodifiable(bytes),
@@ -48,5 +48,9 @@ class EixamDeviceRuntimeStatusPacket {
         (bytes[offset + 1] << 8) |
         (bytes[offset + 2] << 16) |
         (bytes[offset + 3] << 24);
+  }
+
+  static int? _decodeBatteryPercent(int value) {
+    return value >= 0 && value <= 100 ? value : null;
   }
 }

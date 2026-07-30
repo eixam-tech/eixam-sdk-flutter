@@ -1,1 +1,1 @@
-enum DeviceBatterySource { telPacket, sosPacket, unknown }
+enum DeviceBatterySource { deviceStatus, telPacket, sosPacket, unknown }

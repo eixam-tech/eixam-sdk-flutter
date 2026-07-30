@@ -16,6 +16,24 @@ enum DeviceBatteryLevel {
   /// UI-only approximation derived from the 2-bit EIXAM battery protocol.
   final int approximatePercentage;
 
+  /// Maps an exact firmware percentage to the same ranges used by
+  /// `EixamPositionCodec::encodeBattery`.
+  static DeviceBatteryLevel? fromPercentage(int? percentage) {
+    if (percentage == null || percentage < 0 || percentage > 100) {
+      return null;
+    }
+    if (percentage < 10) {
+      return DeviceBatteryLevel.critical;
+    }
+    if (percentage < 30) {
+      return DeviceBatteryLevel.low;
+    }
+    if (percentage < 60) {
+      return DeviceBatteryLevel.medium;
+    }
+    return DeviceBatteryLevel.ok;
+  }
+
   static DeviceBatteryLevel? fromProtocolValue(int? value) {
     if (value == null) {
       return null;

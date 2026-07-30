@@ -54,5 +54,66 @@ void main() {
         isNull,
       );
     });
+
+    test('preserves zero percent and maps protocol unknown to null', () {
+      final zero = EixamDeviceRuntimeStatusPacket.tryParse(
+        const <int>[
+          0xE9,
+          0x78,
+          0x02,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+        ],
+      );
+      final unknown = EixamDeviceRuntimeStatusPacket.tryParse(
+        const <int>[
+          0xE9,
+          0x78,
+          0x02,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0xFF,
+          0,
+          0,
+        ],
+      );
+      final invalid = EixamDeviceRuntimeStatusPacket.tryParse(
+        const <int>[
+          0xE9,
+          0x78,
+          0x02,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          101,
+          0,
+          0,
+        ],
+      );
+
+      expect(zero?.status.batteryPercent, 0);
+      expect(unknown?.status.batteryPercent, isNull);
+      expect(invalid?.status.batteryPercent, isNull);
+    });
   });
 }

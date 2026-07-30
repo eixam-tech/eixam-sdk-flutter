@@ -211,6 +211,9 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       final runtimeBatteryState = _batteryStateFromPercent(
         runtimeStatus?.batteryPercent,
       );
+      final runtimeBatteryPercent = runtimeStatus == null
+          ? currentStatus.batteryPercent
+          : runtimeStatus.batteryPercent;
       final activated = currentStatus.activated ||
           runtimeStatus?.isProvisioned == true ||
           runtimeStatus?.txEnabled == true;
@@ -224,14 +227,21 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         paired: true,
         activated: activated,
         connected: true,
+        batteryPercent: runtimeBatteryPercent,
         lifecycleState: activated
             ? DeviceLifecycleState.ready
             : DeviceLifecycleState.paired,
-        batteryLevel: runtimeBatteryState?.protocolValue ??
-            _effectiveBatteryLevel(currentStatus),
-        batteryState:
-            runtimeBatteryState ?? _effectiveBatteryState(currentStatus),
-        batterySource: _effectiveBatterySource(currentStatus),
+        batteryLevel: runtimeStatus == null
+            ? _effectiveBatteryLevel(currentStatus)
+            : runtimeBatteryState?.protocolValue,
+        batteryState: runtimeStatus == null
+            ? _effectiveBatteryState(currentStatus)
+            : runtimeBatteryState,
+        batterySource: runtimeStatus == null
+            ? _effectiveBatterySource(currentStatus)
+            : runtimeStatus.batteryPercent != null
+                ? DeviceBatterySource.deviceStatus
+                : DeviceBatterySource.unknown,
         firmwareVersion: await _readFirmwareMetadata(
           candidate.deviceId,
           currentFirmwareVersion: null,
@@ -378,6 +388,9 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       final runtimeBatteryState = _batteryStateFromPercent(
         runtimeStatus?.batteryPercent,
       );
+      final runtimeBatteryPercent = runtimeStatus == null
+          ? currentStatus.batteryPercent
+          : runtimeStatus.batteryPercent;
       final activated = currentStatus.activated ||
           runtimeStatus?.isProvisioned == true ||
           runtimeStatus?.txEnabled == true;
@@ -389,14 +402,21 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         paired: true,
         activated: activated,
         connected: true,
+        batteryPercent: runtimeBatteryPercent,
         lifecycleState: activated
             ? DeviceLifecycleState.ready
             : DeviceLifecycleState.paired,
-        batteryLevel: runtimeBatteryState?.protocolValue ??
-            _effectiveBatteryLevel(currentStatus),
-        batteryState:
-            runtimeBatteryState ?? _effectiveBatteryState(currentStatus),
-        batterySource: _effectiveBatterySource(currentStatus),
+        batteryLevel: runtimeStatus == null
+            ? _effectiveBatteryLevel(currentStatus)
+            : runtimeBatteryState?.protocolValue,
+        batteryState: runtimeStatus == null
+            ? _effectiveBatteryState(currentStatus)
+            : runtimeBatteryState,
+        batterySource: runtimeStatus == null
+            ? _effectiveBatterySource(currentStatus)
+            : runtimeStatus.batteryPercent != null
+                ? DeviceBatterySource.deviceStatus
+                : DeviceBatterySource.unknown,
         firmwareVersion: await _readFirmwareMetadata(
           deviceId,
           currentFirmwareVersion: currentStatus.firmwareVersion,
@@ -885,6 +905,18 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
             mode: mode,
           )
         : currentStatus.signalQuality;
+    final runtimeStatus = connected && mode != DeviceRefreshMode.heartbeat
+        ? await _readRuntimeStatusAfterConnection(
+            deviceId: currentStatus.deviceId,
+            reason: 'refresh',
+          )
+        : null;
+    final runtimeBatteryState = _batteryStateFromPercent(
+      runtimeStatus?.batteryPercent,
+    );
+    final runtimeBatteryPercent = runtimeStatus == null
+        ? currentStatus.batteryPercent
+        : runtimeStatus.batteryPercent;
 
     BleDebugRegistry.instance.recordEvent(
       'Refreshed device status for ${currentStatus.deviceId}',
@@ -892,15 +924,18 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     final nextStatus = currentStatus.copyWith(
       connected: connected,
       canonicalHardwareId: currentStatus.canonicalHardwareId,
-      batteryLevel: connected
-          ? _effectiveBatteryLevel(currentStatus)
-          : currentStatus.batteryLevel,
-      batteryState: connected
-          ? _effectiveBatteryState(currentStatus)
-          : currentStatus.effectiveBatteryState,
-      batterySource: connected
-          ? _effectiveBatterySource(currentStatus)
-          : currentStatus.batterySource,
+      batteryPercent: runtimeBatteryPercent,
+      batteryLevel: connected && runtimeStatus != null
+          ? runtimeBatteryState?.protocolValue
+          : _effectiveBatteryLevel(currentStatus),
+      batteryState: connected && runtimeStatus != null
+          ? runtimeBatteryState
+          : _effectiveBatteryState(currentStatus),
+      batterySource: connected && runtimeStatus != null
+          ? runtimeStatus.batteryPercent != null
+              ? DeviceBatterySource.deviceStatus
+              : DeviceBatterySource.unknown
+          : _effectiveBatterySource(currentStatus),
       firmwareVersion: firmwareVersion,
       signalQuality: signalQuality,
       lifecycleState: _resolveLifecycle(currentStatus, connected),
@@ -1046,19 +1081,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   }
 
   DeviceBatteryLevel? _batteryStateFromPercent(int? percent) {
-    if (percent == null) {
-      return null;
-    }
-    if (percent <= 15) {
-      return DeviceBatteryLevel.critical;
-    }
-    if (percent <= 40) {
-      return DeviceBatteryLevel.low;
-    }
-    if (percent <= 75) {
-      return DeviceBatteryLevel.medium;
-    }
-    return DeviceBatteryLevel.ok;
+    return DeviceBatteryLevel.fromPercentage(percent);
   }
 
   bool _hasFirmwareCache(String? firmwareVersion) {
@@ -2539,6 +2562,9 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   }
 
   DeviceBatterySource? _effectiveBatterySource(DeviceStatus currentStatus) {
+    if (currentStatus.batteryPercent != null) {
+      return currentStatus.batterySource ?? DeviceBatterySource.deviceStatus;
+    }
     if (_lastTelBatteryLevel != null) {
       return DeviceBatterySource.telPacket;
     }
@@ -2552,7 +2578,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       {required String reason}) {
     _lastRuntimeStatus = nextStatus;
     BleDebugRegistry.instance.recordEvent(
-      'Final battery value sent to UI -> source=${nextStatus.batterySource?.name ?? "-"} raw=${nextStatus.batteryLevel?.toString() ?? "-"} state=${nextStatus.effectiveBatteryState?.label ?? "-"} approx=${nextStatus.approximateBatteryPercentage?.toString() ?? "-"} changed=true reason=$reason',
+      'Final battery value sent to UI -> source=${nextStatus.batterySource?.name ?? "-"} exact=${nextStatus.batteryPercent?.toString() ?? "-"} raw=${nextStatus.batteryLevel?.toString() ?? "-"} state=${nextStatus.effectiveBatteryState?.label ?? "-"} displayed=${nextStatus.approximateBatteryPercentage?.toString() ?? "-"} changed=true reason=$reason',
     );
     _runtimeStatusController.add(nextStatus);
   }

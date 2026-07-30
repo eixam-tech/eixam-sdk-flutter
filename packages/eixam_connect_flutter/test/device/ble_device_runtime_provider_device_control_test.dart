@@ -99,8 +99,32 @@ void main() {
       expect(status.nodeId, 0x1234);
       expect(status.activated, isTrue);
       expect(status.lifecycleState, DeviceLifecycleState.ready);
+      expect(status.batteryPercent, 88);
       expect(status.effectiveBatteryState, DeviceBatteryLevel.ok);
+      expect(status.approximateBatteryPercentage, 88);
+      expect(status.batterySource, DeviceBatterySource.deviceStatus);
       expect(status.signalQuality, isNotNull);
+    });
+
+    test('manual refresh preserves zero and clears protocol unknown', () async {
+      var status = await _pairDemoDevice(runtimeProvider);
+      bleClient.runtimeStatusPayload[11] = 0;
+
+      status = await runtimeProvider.refresh(status);
+
+      expect(status.batteryPercent, 0);
+      expect(status.effectiveBatteryState, DeviceBatteryLevel.critical);
+      expect(status.approximateBatteryPercentage, 0);
+      expect(status.batterySource, DeviceBatterySource.deviceStatus);
+
+      bleClient.runtimeStatusPayload[11] = 0xFF;
+      status = await runtimeProvider.refresh(status);
+
+      expect(status.batteryPercent, isNull);
+      expect(status.batteryLevel, isNull);
+      expect(status.effectiveBatteryState, isNull);
+      expect(status.approximateBatteryPercentage, isNull);
+      expect(status.batterySource, DeviceBatterySource.unknown);
     });
 
     test('handles malformed runtime status responses safely', () async {

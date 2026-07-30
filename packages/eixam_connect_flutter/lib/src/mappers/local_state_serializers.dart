@@ -239,6 +239,7 @@ class LocalStateSerializers {
       'paired': status.paired,
       'activated': status.activated,
       'connected': status.connected,
+      'batteryPercent': status.batteryPercent,
       'batteryLevel': status.batteryLevel,
       'batteryState': status.effectiveBatteryState?.name,
       'batterySource': status.batterySource?.name,
@@ -252,6 +253,7 @@ class LocalStateSerializers {
   }
 
   static DeviceStatus deviceStatusFromJson(Map<String, dynamic> json) {
+    final batteryPercent = _validBatteryPercent(json['batteryPercent']);
     final rawBatteryLevel = json['batteryLevel'] as int?;
     final batteryStateName = json['batteryState'] as String?;
     final batterySourceName = json['batterySource'] as String?;
@@ -282,6 +284,7 @@ class LocalStateSerializers {
       paired: json['paired'] as bool? ?? false,
       activated: json['activated'] as bool? ?? false,
       connected: json['connected'] as bool? ?? false,
+      batteryPercent: batteryPercent,
       batteryLevel: rawBatteryLevel,
       batteryState: batteryState,
       batterySource: batterySource,
@@ -299,5 +302,13 @@ class LocalStateSerializers {
       ),
       provisioningError: json['provisioningError'] as String?,
     );
+  }
+
+  static int? _validBatteryPercent(Object? value) {
+    if (value is! num) {
+      return null;
+    }
+    final percentage = value.round();
+    return percentage >= 0 && percentage <= 100 ? percentage : null;
   }
 }

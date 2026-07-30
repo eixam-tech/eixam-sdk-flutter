@@ -106,5 +106,42 @@ void main() {
       expect(restored.batterySource, DeviceBatterySource.telPacket);
       expect(restored.lifecycleState, DeviceLifecycleState.ready);
     });
+
+    test('round-trips exact battery percentage including zero', () {
+      const status = DeviceStatus(
+        deviceId: 'device-1',
+        paired: true,
+        activated: true,
+        connected: true,
+        batteryPercent: 0,
+        batteryLevel: 0,
+        batteryState: DeviceBatteryLevel.critical,
+        batterySource: DeviceBatterySource.deviceStatus,
+        lifecycleState: DeviceLifecycleState.ready,
+      );
+
+      final restored = LocalStateSerializers.deviceStatusFromJson(
+        LocalStateSerializers.deviceStatusToJson(status),
+      );
+
+      expect(restored.batteryPercent, 0);
+      expect(restored.approximateBatteryPercentage, 0);
+      expect(restored.batterySource, DeviceBatterySource.deviceStatus);
+    });
+
+    test('rejects invalid persisted exact battery percentage', () {
+      final restored =
+          LocalStateSerializers.deviceStatusFromJson(<String, dynamic>{
+        'deviceId': 'device-1',
+        'paired': true,
+        'activated': true,
+        'connected': true,
+        'batteryPercent': 255,
+        'lifecycleState': 'ready',
+      });
+
+      expect(restored.batteryPercent, isNull);
+      expect(restored.approximateBatteryPercentage, isNull);
+    });
   });
 }

@@ -8,7 +8,6 @@ import '../enums/device_battery_source.dart';
 /// connectivity and support information without being coupled to any BLE or
 /// backend implementation detail.
 class DeviceStatus {
-
   const DeviceStatus({
     required this.deviceId,
     this.nodeId,
@@ -18,6 +17,7 @@ class DeviceStatus {
     required this.paired,
     required this.activated,
     required this.connected,
+    this.batteryPercent,
     this.batteryLevel,
     this.batteryState,
     this.batterySource,
@@ -37,6 +37,12 @@ class DeviceStatus {
   final bool activated;
   final bool connected;
 
+  /// Exact battery percentage (`0..100`) when the runtime can provide one.
+  ///
+  /// This is intentionally separate from [batteryLevel], which is the lossy
+  /// 2-bit value embedded in TEL and SOS packets.
+  final int? batteryPercent;
+
   /// Raw EIXAM protocol battery value (`0..3`), not a true percentage.
   final int? batteryLevel;
   final DeviceBatteryLevel? batteryState;
@@ -53,10 +59,13 @@ class DeviceStatus {
   bool get isReadyForSafety => paired && activated && connected;
 
   DeviceBatteryLevel? get effectiveBatteryState =>
-      batteryState ?? DeviceBatteryLevel.fromProtocolValue(batteryLevel);
+      DeviceBatteryLevel.fromPercentage(batteryPercent) ??
+      batteryState ??
+      DeviceBatteryLevel.fromProtocolValue(batteryLevel);
 
+  /// Exact percentage when available, otherwise the UI-only 2-bit estimate.
   int? get approximateBatteryPercentage =>
-      effectiveBatteryState?.approximatePercentage;
+      batteryPercent ?? effectiveBatteryState?.approximatePercentage;
 
   DeviceStatus copyWith({
     String? deviceId,
@@ -67,9 +76,10 @@ class DeviceStatus {
     bool? paired,
     bool? activated,
     bool? connected,
-    int? batteryLevel,
-    DeviceBatteryLevel? batteryState,
-    DeviceBatterySource? batterySource,
+    Object? batteryPercent = _unset,
+    Object? batteryLevel = _unset,
+    Object? batteryState = _unset,
+    Object? batterySource = _unset,
     String? firmwareVersion,
     DateTime? lastSeen,
     DateTime? lastSyncedAt,
@@ -89,9 +99,18 @@ class DeviceStatus {
       paired: paired ?? this.paired,
       activated: activated ?? this.activated,
       connected: connected ?? this.connected,
-      batteryLevel: batteryLevel ?? this.batteryLevel,
-      batteryState: batteryState ?? this.batteryState,
-      batterySource: batterySource ?? this.batterySource,
+      batteryPercent: identical(batteryPercent, _unset)
+          ? this.batteryPercent
+          : batteryPercent as int?,
+      batteryLevel: identical(batteryLevel, _unset)
+          ? this.batteryLevel
+          : batteryLevel as int?,
+      batteryState: identical(batteryState, _unset)
+          ? this.batteryState
+          : batteryState as DeviceBatteryLevel?,
+      batterySource: identical(batterySource, _unset)
+          ? this.batterySource
+          : batterySource as DeviceBatterySource?,
       firmwareVersion: firmwareVersion ?? this.firmwareVersion,
       lastSeen: lastSeen ?? this.lastSeen,
       lastSyncedAt: lastSyncedAt ?? this.lastSyncedAt,
