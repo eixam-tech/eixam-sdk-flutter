@@ -1073,6 +1073,7 @@ class FirmwareUpdateCoordinator {
     return switch (state) {
       SosState.idle ||
       SosState.cancelled ||
+      SosState.cancelRequested ||
       SosState.resolved ||
       SosState.failed =>
         false,

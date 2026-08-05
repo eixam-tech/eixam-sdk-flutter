@@ -646,6 +646,9 @@ class EixamConnectSdkImpl
     await _reconcileBackgroundTelemetry(reason: 'initialize');
     _connectRealtimeInBackground(trigger: 'initialize');
     await _resumeDeathManMonitoringIfNeeded();
+    await _seedPreferredBleDeviceFromSystemAssociationIfNeeded(
+      trigger: 'initialize',
+    );
     await _seedPreferredBleDeviceFromBackendRegistryIfNeeded(
       trigger: 'initialize',
     );
@@ -1132,6 +1135,7 @@ class EixamConnectSdkImpl
       trigger: trigger,
       status: _lastDeviceStatus,
     );
+    await _seedPreferredBleDeviceFromSystemAssociationIfNeeded(trigger: trigger);
     await _seedPreferredBleDeviceFromBackendRegistryIfNeeded(trigger: trigger);
     await _bleAutoReconnectCoordinator.tryAutoConnectOnResume();
     _connectRealtimeInBackground(
@@ -3112,8 +3116,15 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Future<PermissionState> requestLocationPermission() {
-    return permissionsRepository.requestLocationPermission();
+  Future<PermissionState> requestLocationPermission() async {
+    final previous = await permissionsRepository.getPermissionState();
+    final state = await permissionsRepository.requestLocationPermission();
+    if (!previous.hasLocationAccess && state.hasLocationAccess) {
+      await _warmResolvedLocationAfterPermissionGrant(
+        reason: 'location_permission_granted',
+      );
+    }
+    return state;
   }
 
   @override
@@ -6080,6 +6091,40 @@ class EixamConnectSdkImpl
         accepted: true,
         persisted: false,
         note: 'not_persisted_for_native',
+      );
+    }
+  }
+
+  Future<void> _warmResolvedLocationAfterPermissionGrant({
+    required String reason,
+  }) async {
+    if (_lastResolvedLocation != null && _lastResolvedLocation!.isValid) {
+      return;
+    }
+    try {
+      final permissions = await permissionsRepository.getPermissionState();
+      if (!permissions.hasLocationAccess) {
+        return;
+      }
+      final location = await _resolveLocation(
+        useCase: SdkResolvedLocationUseCase.uiPreview,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        '[LOCATION_WARM] reason=$reason '
+        'resolved=${location != null} '
+        'source=${location?.source.name ?? 'none'}',
+      );
+      if (location != null) {
+        final capability = await _buildSosCapability(
+          reason: 'location_warm:$reason',
+        );
+        if (!_sosCapabilityController.isClosed) {
+          _sosCapabilityController.add(capability);
+        }
+      }
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        '[LOCATION_WARM] reason=$reason failed error=$error',
       );
     }
   }
@@ -11488,6 +11533,42 @@ class EixamConnectSdkImpl
     );
   }
 
+  Future<void> _seedPreferredBleDeviceFromSystemAssociationIfNeeded({
+    required String trigger,
+  }) async {
+    final manualDisconnectRequested =
+        await preferredBleDeviceStore.readManualDisconnectRequested();
+    _manualDisconnectRequested = manualDisconnectRequested;
+    if (manualDisconnectRequested) {
+      return;
+    }
+    final existingPreferred =
+        await preferredBleDeviceStore.getPreferredDevice();
+    if (existingPreferred != null) {
+      return;
+    }
+    final status =
+        _lastDeviceStatus ?? await deviceRepository.getDeviceStatus();
+    if (status.paired && status.deviceId.trim().isNotEmpty) {
+      return;
+    }
+    if (deviceRepository is! InMemoryDeviceRepository) {
+      return;
+    }
+    final recovered =
+        await (deviceRepository as InMemoryDeviceRepository)
+            .recoverPreferredFromSystemAssociation();
+    if (recovered == null || recovered.deviceId.trim().isEmpty) {
+      return;
+    }
+    await preferredBleDeviceStore.savePreferredDevice(recovered);
+    await preferredBleDeviceStore.saveManualDisconnectRequested(false);
+    BleDebugRegistry.instance.recordEvent(
+      'Preferred BLE device restored from system association -> '
+      'trigger=$trigger bleHardwareId=${recovered.deviceId}',
+    );
+  }
+
   Future<void> _seedPreferredBleDeviceFromBackendRegistryIfNeeded({
     required String trigger,
   }) async {
@@ -16840,6 +16921,9 @@ class EixamConnectSdkImpl
     await _refreshOperationalDiagnostics(
       trigger: 'retry_sos_capability',
       refreshRuntimeStatus: true,
+    );
+    await _warmResolvedLocationAfterPermissionGrant(
+      reason: 'retry_sos_capability',
     );
     final capability = await _buildSosCapability(
       reason: 'retry_sos_capability_result',

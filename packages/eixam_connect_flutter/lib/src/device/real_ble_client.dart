@@ -556,6 +556,91 @@ class RealBleClient implements BleClient {
   }
 
   @override
+  Future<List<BleScanResult>> listSystemAssociatedDevices() async {
+    _ensureInitialized();
+    final byId = <String, BleScanResult>{};
+
+    void remember(
+      BluetoothDevice device, {
+      required String source,
+      required bool trustServiceUuidMatch,
+    }) {
+      final deviceId = device.remoteId.str.trim();
+      if (deviceId.isEmpty || byId.containsKey(deviceId)) {
+        return;
+      }
+      final name = (device.platformName.trim().isNotEmpty
+              ? device.platformName
+              : device.advName)
+          .trim();
+      // systemDevices([eixamServiceUuid]) already filtered by service UUID.
+      // bondedDevices are not — never inject a fake EIXAM UUID into the
+      // classifier or headphones/cars become preferred after reinstall.
+      final brand = classifyBleDiscoveredDeviceBrand(
+        name: name,
+        advertisedServiceUuids: trustServiceUuidMatch
+            ? const <String>[EixamBleProtocol.serviceUuid]
+            : const <String>[],
+      );
+      final looksEixam = brand == BleDiscoveredDeviceBrand.eixam ||
+          name.toLowerCase().contains('eixam');
+      if (!looksEixam) {
+        return;
+      }
+      byId[deviceId] = BleScanResult(
+        deviceId: deviceId,
+        name: name.isEmpty ? 'EIXAM' : name,
+        rssi: 0,
+        connectable: true,
+        advertisedServiceUuids: trustServiceUuidMatch
+            ? const <String>[EixamBleProtocol.serviceUuid]
+            : const <String>[],
+        brandClassification: BleDiscoveredDeviceBrand.eixam,
+        discoveredAt: DateTime.now(),
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'BLE system-associated EIXAM candidate -> source=$source '
+        'hardwareId=$deviceId name=${name.isEmpty ? "none" : name}',
+      );
+    }
+
+    try {
+      final systemDevices =
+          await FlutterBluePlus.systemDevices([eixamServiceUuid]);
+      for (final device in systemDevices) {
+        remember(
+          device,
+          source: 'system_devices',
+          trustServiceUuidMatch: true,
+        );
+      }
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'BLE systemDevices association lookup failed -> error=$error',
+      );
+    }
+
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      try {
+        final bondedDevices = await FlutterBluePlus.bondedDevices;
+        for (final device in bondedDevices) {
+          remember(
+            device,
+            source: 'bonded_devices',
+            trustServiceUuidMatch: false,
+          );
+        }
+      } catch (error) {
+        BleDebugRegistry.instance.recordEvent(
+          'BLE bondedDevices association lookup failed -> error=$error',
+        );
+      }
+    }
+
+    return byId.values.toList(growable: false);
+  }
+
+  @override
   Stream<bool> watchConnection(String deviceId) {
     _ensureInitialized();
 

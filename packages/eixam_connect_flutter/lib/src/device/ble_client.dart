@@ -21,6 +21,13 @@ abstract class BleClient {
   Future<bool> isConnected(String deviceId);
   Future<bool> hasSystemAssociation(String deviceId);
   Future<bool> removeSystemAssociation(String deviceId);
+
+  /// Returns OS-associated / bonded devices that look like EIXAM peers.
+  ///
+  /// Used after reinstall to recover a preferred device when SharedPrefs are
+  /// gone but the phone still holds a Bluetooth bond.
+  Future<List<BleScanResult>> listSystemAssociatedDevices();
+
   Stream<bool> watchConnection(String deviceId);
 
   Future<int?> readBatteryLevel(String deviceId);

@@ -78,6 +78,41 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   DeviceSosController get deviceSosController => _deviceSosController;
   Stream<BleIncomingEvent> watchIncomingEvents() =>
       _incomingEventsController.stream;
+
+  Future<PreferredDevice?> recoverPreferredFromSystemAssociation() async {
+    try {
+      final associated = await _bleClient.listSystemAssociatedDevices();
+      if (associated.isEmpty) {
+        return null;
+      }
+      associated.sort((a, b) {
+        final aName = a.name.toLowerCase();
+        final bName = b.name.toLowerCase();
+        final aScore = aName.contains('eixam') ? 0 : 1;
+        final bScore = bName.contains('eixam') ? 0 : 1;
+        if (aScore != bScore) {
+          return aScore.compareTo(bScore);
+        }
+        return a.deviceId.compareTo(b.deviceId);
+      });
+      final candidate = associated.first;
+      BleDebugRegistry.instance.recordEvent(
+        'BLE preferred candidate recovered from system association -> '
+        'hardwareId=${candidate.deviceId} name=${candidate.name}',
+      );
+      return PreferredDevice(
+        deviceId: candidate.deviceId,
+        displayName: candidate.name.trim().isEmpty ? null : candidate.name,
+        lastConnectedAt: DateTime.now(),
+      );
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'BLE system association recovery failed -> error=$error',
+      );
+      return null;
+    }
+  }
+
   @override
   Stream<DeviceStatus> watchRuntimeStatus() => _runtimeStatusController.stream;
   bool get hasCommandChannel =>
@@ -399,6 +434,11 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         deviceId: deviceId,
         nodeId: runtimeStatus?.nodeId,
         deviceAlias: _connectedDeviceAlias,
+        // Pairing sets a hardware model; reconnect must too or OTA eligibility
+        // treats the device as unsupportedHardware ("update incompatible").
+        model: currentStatus.model?.trim().isNotEmpty == true
+            ? currentStatus.model
+            : 'EIXAM R1',
         paired: true,
         activated: activated,
         connected: true,

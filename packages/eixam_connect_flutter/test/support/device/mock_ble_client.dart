@@ -9,6 +9,7 @@ import 'package:eixam_connect_flutter/src/device/ble_scan_result_brand_classifie
 import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_notification.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
+import 'package:eixam_connect_flutter/src/public/enums/discovered_device_brand.dart';
 
 class MockBleClient implements BleClient {
   final StreamController<BleAdapterState> _adapterController =
@@ -143,6 +144,25 @@ class MockBleClient implements BleClient {
     removedSystemAssociations.add(deviceId);
     systemAssociationAvailable = false;
     return true;
+  }
+
+  @override
+  Future<List<BleScanResult>> listSystemAssociatedDevices() async {
+    if (!systemAssociationAvailable) {
+      return const <BleScanResult>[];
+    }
+    return <BleScanResult>[
+      BleScanResult(
+        deviceId: demoDeviceId,
+        canonicalHardwareId: demoCanonicalHardwareId,
+        name: 'EIXAM R1 Demo',
+        rssi: 0,
+        connectable: true,
+        advertisedServiceUuids: const <String>[EixamBleProtocol.serviceUuid],
+        brandClassification: BleDiscoveredDeviceBrand.eixam,
+        discoveredAt: DateTime.now(),
+      ),
+    ];
   }
 
   @override

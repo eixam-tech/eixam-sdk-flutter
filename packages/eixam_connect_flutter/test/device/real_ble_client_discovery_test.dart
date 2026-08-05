@@ -343,6 +343,10 @@ final class _FakeBleClient implements BleClient {
   Future<bool> removeSystemAssociation(String deviceId) async => false;
 
   @override
+  Future<List<BleScanResult>> listSystemAssociatedDevices() async =>
+      const <BleScanResult>[];
+
+  @override
   Future<Stream<EixamBleNotification>> subscribeEixamNotifications(
     String deviceId,
   ) async {

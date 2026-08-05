@@ -79,6 +79,12 @@ final class LazyInitializingBleClient implements BleClient {
   }
 
   @override
+  Future<List<BleScanResult>> listSystemAssociatedDevices() async {
+    await _ensureInitialized();
+    return _delegate.listSystemAssociatedDevices();
+  }
+
+  @override
   Stream<bool> watchConnection(String deviceId) async* {
     await _ensureInitialized();
     yield* _delegate.watchConnection(deviceId);

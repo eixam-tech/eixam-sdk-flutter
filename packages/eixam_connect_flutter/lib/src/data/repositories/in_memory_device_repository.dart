@@ -220,6 +220,14 @@ class InMemoryDeviceRepository
     return _runtimeProvider.getRuntimeIdentitySnapshot(_status);
   }
 
+  Future<PreferredDevice?> recoverPreferredFromSystemAssociation() async {
+    final runtimeProvider = _runtimeProvider;
+    if (runtimeProvider is! BleDeviceRuntimeProvider) {
+      return null;
+    }
+    return runtimeProvider.recoverPreferredFromSystemAssociation();
+  }
+
   Future<DeviceStatus> releaseBleOwnershipToProtectionMode({
     required String reason,
   }) async {
