@@ -11,6 +11,7 @@ import '../entities/device_status.dart';
 import '../entities/device_runtime_status.dart';
 import '../entities/eixam_ble_diagnostics.dart';
 import '../entities/eixam_ble_scan_result.dart';
+import '../entities/eixam_device_position_batch.dart';
 import '../entities/emergency_contact.dart';
 import '../entities/eixam_notification_intent.dart';
 import '../entities/app_feedback.dart';
@@ -135,6 +136,10 @@ abstract class EixamConnectSdk {
   Future<SosCapabilitySnapshot> retrySosCapability();
   Future<SdkResolvedLocation?> getResolvedLocationForEmergencyContext();
   Stream<SdkResolvedLocation?> watchResolvedLocation();
+
+  /// Watches real positions sampled by the connected TAG and delivered in a
+  /// live BLE `0xD3` batch. Each event preserves firmware order (oldest first).
+  Stream<EixamDevicePositionBatch> watchDevicePositionBatches();
   Future<SdkTelemetryPayload?> getResolvedTelemetryPreview({
     bool includeCachedFallback = true,
   });

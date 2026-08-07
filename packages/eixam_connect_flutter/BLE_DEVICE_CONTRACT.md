@@ -114,6 +114,13 @@ Failure semantics:
 
 The BLE runtime continues to reassemble `0xD0` TEL fragments internally.
 
+Completed `0xD3` live position batches are validated atomically as
+`[opcode][count][count × (timeUnix u32 LE + TEL wire12)]`, with count 1–24.
+Every embedded TEL is decoded by the same authoritative 12-byte TEL decoder.
+Malformed lengths, counts, or TEL records publish no batch and cannot update
+current location. Valid batches become one public batch event; only their newest
+sample becomes the current connected-device location.
+
 On top of that, the SDK now adds typed support for `0xD2 EIXAM_BLE_TEL_RELAY_RX_V1`.
 
 When a completed aggregate payload matches the `0xD2` contract, the SDK decodes and retains:

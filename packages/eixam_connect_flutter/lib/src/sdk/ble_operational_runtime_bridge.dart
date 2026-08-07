@@ -230,6 +230,9 @@ class BleOperationalRuntimeBridge {
       case BleIncomingEventType.telAggregateComplete:
         await _publishAggregateTelemetryIfMappable(event);
         return;
+      case BleIncomingEventType.telLivePositionBatch:
+        _rememberOwnDeviceLocationFromLiveBatch(event);
+        return;
       case BleIncomingEventType.telRelayRx:
         await _publishRelayTelemetryIfValid(event);
         return;
@@ -980,6 +983,33 @@ class BleOperationalRuntimeBridge {
       persisted: false,
       note: 'packetType=TEL classification=${event.classification.kind.name} '
           'hasLocation=true gpsQuality=${packet.gpsQuality} raw=${packet.rawHex}',
+    );
+  }
+
+  void _rememberOwnDeviceLocationFromLiveBatch(BleIncomingEvent event) {
+    final liveBatch = event.telLiveBatchPacket;
+    if (liveBatch == null || liveBatch.batch.samples.isEmpty) {
+      return;
+    }
+    final latestSample = liveBatch.batch.samples.last;
+    final latestPacket = liveBatch.telPackets.last;
+    if (!_isValidCoordinate(latestSample.latitude, latestSample.longitude)) {
+      return;
+    }
+    _rememberOwnDeviceLocation(
+      SdkResolvedLocation.connectedDevice(
+        latitude: latestSample.latitude,
+        longitude: latestSample.longitude,
+        altitudeMeters: latestSample.altitudeMeters,
+        timestamp: latestSample.sampledAt ?? liveBatch.batch.receivedAt,
+        deviceId: latestPacket.nodeId.toString(),
+        hardwareId: event.canonicalHardwareId,
+        nodeId: latestPacket.nodeId,
+        freshness: Duration.zero,
+      ),
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'SDK_TEL_LIVE_BATCH latest_location_updated=true',
     );
   }
 

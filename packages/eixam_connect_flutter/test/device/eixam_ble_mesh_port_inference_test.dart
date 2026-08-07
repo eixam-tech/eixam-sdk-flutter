@@ -59,6 +59,13 @@ void main() {
       expect(
         inferMeshPortForLiveNotification(
           channel: EixamBleChannel.tel,
+          payload: const <int>[0xD3, 0x01],
+        ),
+        EixamBleProtocol.telMeshPort,
+      );
+      expect(
+        inferMeshPortForLiveNotification(
+          channel: EixamBleChannel.tel,
           payload: const <int>[
             0x34,
             0x12,

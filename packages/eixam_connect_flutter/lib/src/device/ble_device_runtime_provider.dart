@@ -23,6 +23,7 @@ import 'eixam_sos_event_packet.dart';
 import 'eixam_sos_packet.dart';
 import 'eixam_tel_fragment.dart';
 import 'eixam_tel_packet.dart';
+import 'eixam_tel_live_batch_packet.dart';
 import 'eixam_tel_relay_cluster_packet.dart';
 import 'eixam_tel_reassembler.dart';
 import 'eixam_tel_relay_rx_packet.dart';
@@ -1570,6 +1571,48 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       channel: notification.channel,
       classificationBefore: 'before_tel_dispatch',
     );
+    if (payload.isNotEmpty && payload.first == EixamTelLiveBatchPacket.opcode) {
+      final liveBatch = EixamTelLiveBatchPacket.tryParse(
+        payload,
+        receivedAt: notification.receivedAt,
+      );
+      if (liveBatch == null) {
+        BleDebugRegistry.instance.recordEvent(
+          'SDK_TEL_LIVE_BATCH malformed=true',
+        );
+      } else {
+        final invalidTimestampCount = liveBatch.batch.samples
+            .where((sample) => !sample.timestampValid)
+            .length;
+        BleDebugRegistry.instance.recordEvent(
+          'SDK_TEL_LIVE_BATCH received_count=${liveBatch.batch.samples.length} '
+          'timestamp_invalid_count=$invalidTimestampCount',
+        );
+        _incomingEventsController.add(
+          BleIncomingEvent(
+            deviceId: deviceId,
+            canonicalHardwareId: _connectedCanonicalHardwareId,
+            deviceAlias: _connectedDeviceAlias,
+            type: BleIncomingEventType.telLivePositionBatch,
+            channel: notification.channel,
+            payload: List<int>.unmodifiable(payload),
+            payloadHex: payloadHex,
+            source: source,
+            receivedAt: notification.receivedAt,
+            meshPort: notification.meshPort,
+            telFragment: telFragment,
+            aggregatePayload:
+                aggregatePayload ?? List<int>.unmodifiable(payload),
+            telLiveBatchPacket: liveBatch,
+          ),
+        );
+        BleDebugRegistry.instance.recordEvent(
+          'SDK_TEL_LIVE_BATCH published_count=${liveBatch.batch.samples.length}',
+        );
+      }
+      return;
+    }
+
     final runtimeStatusPacket = EixamDeviceRuntimeStatusPacket.tryParse(
       payload,
       receivedAt: notification.receivedAt,

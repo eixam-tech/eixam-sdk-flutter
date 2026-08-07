@@ -19,6 +19,7 @@ Partner apps are expected to:
 Partner apps are not expected to:
 
 - decode relay TEL or SOS packets
+
 - map relay BLE payloads to backend device ids
 - reconstruct SOS lifecycle from history, legacy transport progress, timers, or
   device summaries
@@ -26,6 +27,30 @@ Partner apps are not expected to:
   cancel
 
 Those responsibilities stay inside the SDK/runtime layers.
+
+## Connected-device live position batches
+
+`watchResolvedLocation()` remains the latest/current resolved-position stream.
+For a connected TAG `0xD3` live batch, only the newest sample updates that
+current marker.
+
+`watchDevicePositionBatches()` emits one `EixamDevicePositionBatch` per valid
+firmware `0xD3` message. Each batch contains 1–24 real TAG samples in firmware
+order (oldest to newest); the SDK does not fabricate or deduplicate samples.
+`receivedAt` is phone/SDK reception time, while each sample's nullable
+`sampledAt` is the TAG time. `timestampValid` is true only when that TAG Unix
+time is within seven days before or ten minutes after reception. This is a
+live-transport plausibility safeguard, not proof of RTC synchronization.
+
+Each sample has an opaque SHA-256 `stableSampleKey` over its canonical 16-byte
+firmware record for application idempotency. For undated records, replay
+identity is necessarily limited to the identity present in those record bytes.
+The source is always `SdkLocationSource.connectedDevice`. Classic 12-byte TEL
+continues to update current location and does not emit a synthetic batch.
+
+The SDK does not yet expose the firmware `0xD1` persistent-backlog protocol.
+Actual live batch density depends on firmware sampling and scheduling; consumers
+must use the samples received and must not infer missing intermediate points.
 
 ## Relay Ingest
 

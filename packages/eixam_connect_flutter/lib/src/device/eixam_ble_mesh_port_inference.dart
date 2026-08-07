@@ -22,7 +22,8 @@ int? inferMeshPortForLiveNotification({
 
   if (payload.first == EixamBleProtocol.telAggregateFragmentOpcode ||
       payload.first == 0xC2 ||
-      payload.first == 0xD2) {
+      payload.first == 0xD2 ||
+      payload.first == 0xD3) {
     return EixamBleProtocol.telMeshPort;
   }
 

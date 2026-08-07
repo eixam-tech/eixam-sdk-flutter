@@ -591,6 +591,37 @@ void main() {
       final event = await nextEvent;
       expect(event.type, BleIncomingEventType.unknownProtocolPacket);
     });
+
+    test('reassembles a maximum 386-byte D3 payload into one typed batch',
+        () async {
+      final logicalPayload = _maximumLiveBatchPayload();
+      final nextEvent = runtimeProvider.watchIncomingEvents().firstWhere(
+            (event) => event.type == BleIncomingEventType.telLivePositionBatch,
+          );
+
+      for (var offset = 0; offset < logicalPayload.length; offset += 15) {
+        final end = offset + 15 < logicalPayload.length
+            ? offset + 15
+            : logicalPayload.length;
+        bleClient.emitNotification(
+          MockBleClient.demoDeviceId,
+          channel: EixamBleChannel.tel,
+          payload: <int>[
+            0xD0,
+            logicalPayload.length & 0xFF,
+            logicalPayload.length >> 8,
+            offset & 0xFF,
+            offset >> 8,
+            ...logicalPayload.sublist(offset, end),
+          ],
+        );
+      }
+
+      final event = await nextEvent.timeout(const Duration(seconds: 2));
+      expect(event.aggregatePayload, hasLength(386));
+      expect(event.telLiveBatchPacket!.batch.samples, hasLength(24));
+      expect(event.telLiveBatchPacket!.batch.samples.last.packetId, 7);
+    });
   });
 }
 
@@ -624,4 +655,30 @@ List<int> _sosPayloadForNode(int nodeId) {
     0x40,
     0x09,
   ];
+}
+
+List<int> _maximumLiveBatchPayload() {
+  final payload = <int>[0xD3, 24];
+  for (var index = 0; index < 24; index++) {
+    final timestamp = 1786102500 + index;
+    payload.addAll(<int>[
+      timestamp & 0xFF,
+      (timestamp >> 8) & 0xFF,
+      (timestamp >> 16) & 0xFF,
+      (timestamp >> 24) & 0xFF,
+      0x78,
+      0x56,
+      0x34,
+      0x12,
+      0x01,
+      0x02,
+      0x03,
+      0x04,
+      0x05,
+      0x06,
+      0x80 | (index % 16),
+      0x25,
+    ]);
+  }
+  return payload;
 }

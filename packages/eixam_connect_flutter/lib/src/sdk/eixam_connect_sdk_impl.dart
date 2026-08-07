@@ -349,6 +349,9 @@ class EixamConnectSdkImpl
       StreamController<SdkOperationalDiagnostics>.broadcast();
   final StreamController<SdkResolvedLocation?> _resolvedLocationController =
       StreamController<SdkResolvedLocation?>.broadcast();
+  final StreamController<EixamDevicePositionBatch>
+      _devicePositionBatchController =
+      StreamController<EixamDevicePositionBatch>.broadcast();
   final StreamController<SosCapabilitySnapshot> _sosCapabilityController =
       StreamController<SosCapabilitySnapshot>.broadcast();
   final StreamController<BleNotificationNavigationRequest>
@@ -887,6 +890,10 @@ class EixamConnectSdkImpl
     _bleIncomingEventDiagnosticsSub?.cancel();
     _bleIncomingEventDiagnosticsSub = bleIncomingEvents.listen(
       (event) {
+        final liveBatch = event.telLiveBatchPacket?.batch;
+        if (liveBatch != null && !_devicePositionBatchController.isClosed) {
+          _devicePositionBatchController.add(liveBatch);
+        }
         final relayPacket = event.telRelayRxPacket;
         if (relayPacket != null) {
           _lastTelRelayRx = relayPacket.relay;
@@ -1135,7 +1142,8 @@ class EixamConnectSdkImpl
       trigger: trigger,
       status: _lastDeviceStatus,
     );
-    await _seedPreferredBleDeviceFromSystemAssociationIfNeeded(trigger: trigger);
+    await _seedPreferredBleDeviceFromSystemAssociationIfNeeded(
+        trigger: trigger);
     await _seedPreferredBleDeviceFromBackendRegistryIfNeeded(trigger: trigger);
     await _bleAutoReconnectCoordinator.tryAutoConnectOnResume();
     _connectRealtimeInBackground(
@@ -11555,9 +11563,8 @@ class EixamConnectSdkImpl
     if (deviceRepository is! InMemoryDeviceRepository) {
       return;
     }
-    final recovered =
-        await (deviceRepository as InMemoryDeviceRepository)
-            .recoverPreferredFromSystemAssociation();
+    final recovered = await (deviceRepository as InMemoryDeviceRepository)
+        .recoverPreferredFromSystemAssociation();
     if (recovered == null || recovered.deviceId.trim().isEmpty) {
       return;
     }
@@ -14208,6 +14215,11 @@ class EixamConnectSdkImpl
       seed: getResolvedLocationForEmergencyContext,
       live: _resolvedLocationController.stream,
     );
+  }
+
+  @override
+  Stream<EixamDevicePositionBatch> watchDevicePositionBatches() {
+    return _devicePositionBatchController.stream;
   }
 
   @override
@@ -17486,6 +17498,7 @@ class EixamConnectSdkImpl
     await _deviceCountryConfigStatusController.close();
     await _sosCapabilityController.close();
     await _resolvedLocationController.close();
+    await _devicePositionBatchController.close();
     await _bleNotificationNavigationController.close();
     await _publicDeviceStatusController.close();
     await _publicSosStateController.close();

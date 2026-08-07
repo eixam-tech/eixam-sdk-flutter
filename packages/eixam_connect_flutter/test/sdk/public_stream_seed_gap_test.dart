@@ -4,6 +4,8 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/preferred_ble_device_store.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_tel_live_batch_packet.dart';
 import 'package:eixam_connect_flutter/src/sdk/background_location_platform_adapter.dart';
 import 'package:eixam_connect_flutter/src/sdk/background_telemetry_platform_adapter.dart';
 import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
@@ -163,6 +165,93 @@ void main() {
       await sdk.dispose();
       await deviceSosController.dispose();
     });
+
+    test('publishes each live batch once and resolves only its newest sample',
+        () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final sdk = _buildSdk(bleIncomingEvents: bleEvents.stream);
+      await sdk.initialize(
+        const EixamSdkConfig(
+          apiBaseUrl: 'https://sdk.test',
+          deferRuntimeStartup: true,
+        ),
+      );
+      final receivedAt = DateTime.utc(2026, 8, 7, 12);
+      final parsed = EixamTelLiveBatchPacket.tryParse(
+        _liveBatchPayload(),
+        receivedAt: receivedAt,
+      )!;
+      final batches = <EixamDevicePositionBatch>[];
+      final locations = <SdkResolvedLocation?>[];
+      final batchSub = sdk.watchDevicePositionBatches().listen(batches.add);
+      final locationSub = sdk.watchResolvedLocation().listen(locations.add);
+      final event = BleIncomingEvent(
+        deviceId: 'demo-device',
+        type: BleIncomingEventType.telLivePositionBatch,
+        channel: EixamBleChannel.tel,
+        payload: _liveBatchPayload(),
+        payloadHex: '',
+        source: DeviceSosTransitionSource.device,
+        receivedAt: receivedAt,
+        telLiveBatchPacket: parsed,
+      );
+
+      bleEvents.add(event);
+      await pumpEventQueue(times: 10);
+
+      expect(batches, hasLength(1));
+      expect(batches.single.samples, hasLength(3));
+      expect(batches.single.samples.map((sample) => sample.packetId),
+          <int>[1, 2, 3]);
+      final connectedLocations = locations
+          .where((location) =>
+              location?.source == SdkLocationSource.connectedDevice)
+          .toList();
+      expect(connectedLocations, hasLength(1));
+      expect(connectedLocations.single!.latitude,
+          parsed.batch.samples.last.latitude);
+      expect(connectedLocations.single!.timestamp,
+          parsed.batch.samples.last.sampledAt);
+
+      bleEvents.add(event);
+      await pumpEventQueue(times: 10);
+      expect(batches, hasLength(2));
+      expect(batches.last.samples.first.stableSampleKey,
+          batches.first.samples.first.stableSampleKey);
+
+      final invalidLatestPayload = _liveBatchPayload();
+      final latestTimestampOffset = 2 + 2 * 16;
+      invalidLatestPayload.setRange(
+        latestTimestampOffset,
+        latestTimestampOffset + 4,
+        const <int>[0, 0, 0, 0],
+      );
+      final invalidLatest = EixamTelLiveBatchPacket.tryParse(
+        invalidLatestPayload,
+        receivedAt: receivedAt,
+      )!;
+      bleEvents.add(
+        BleIncomingEvent(
+          deviceId: 'demo-device',
+          type: BleIncomingEventType.telLivePositionBatch,
+          channel: EixamBleChannel.tel,
+          payload: invalidLatestPayload,
+          payloadHex: '',
+          source: DeviceSosTransitionSource.device,
+          receivedAt: receivedAt,
+          telLiveBatchPacket: invalidLatest,
+        ),
+      );
+      await pumpEventQueue(times: 10);
+      expect(batches.last.samples.last.timestampValid, isFalse);
+      expect(batches.last.samples.last.sampledAt, isNull);
+      expect(locations.last!.timestamp, receivedAt);
+
+      await batchSub.cancel();
+      await locationSub.cancel();
+      await sdk.dispose();
+      await bleEvents.close();
+    });
   });
 }
 
@@ -171,6 +260,8 @@ EixamConnectSdkImpl _buildSdk({
   TrackingRepository? trackingRepository,
   DeviceSosController? deviceSosController,
   BackgroundLocationPlatformAdapter? backgroundLocationPlatformAdapter,
+  Stream<BleIncomingEvent> bleIncomingEvents =
+      const Stream<BleIncomingEvent>.empty(),
 }) {
   final localStore = MemorySharedPrefsSdkStore();
   return EixamConnectSdkImpl(
@@ -185,7 +276,7 @@ EixamConnectSdkImpl _buildSdk({
     notificationsRepository: FakeNotificationsRepository(),
     realtimeClient: FakeRealtimeClient(),
     deviceSosController: deviceSosController ?? DeviceSosController(),
-    bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+    bleIncomingEvents: bleIncomingEvents,
     preferredBleDeviceStore: PreferredBleDeviceStore(localStore: localStore),
     localStore: localStore,
     protectionPlatformAdapter: const NoopProtectionPlatformAdapter(),
@@ -193,6 +284,36 @@ EixamConnectSdkImpl _buildSdk({
         const NoopBackgroundTelemetryPlatformAdapter(),
     backgroundLocationPlatformAdapter: backgroundLocationPlatformAdapter,
   );
+}
+
+List<int> _liveBatchPayload() {
+  const wire = <int>[
+    0x78,
+    0x56,
+    0x34,
+    0x12,
+    0x01,
+    0x02,
+    0x03,
+    0x04,
+    0x05,
+    0x06,
+    0x81,
+    0x25,
+  ];
+  final payload = <int>[0xD3, 3];
+  for (var index = 0; index < 3; index++) {
+    final timestamp = 1786103820 + index * 60;
+    final sampleWire = <int>[...wire]..[10] = 0x80 | (index + 1);
+    payload.addAll(<int>[
+      timestamp & 0xFF,
+      (timestamp >> 8) & 0xFF,
+      (timestamp >> 16) & 0xFF,
+      (timestamp >> 24) & 0xFF,
+      ...sampleWire,
+    ]);
+  }
+  return payload;
 }
 
 TrackingPosition _position(int index) {

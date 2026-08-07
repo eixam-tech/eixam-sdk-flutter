@@ -27,7 +27,8 @@ class EixamTelPacket {
   final int headingBucket;
 
   static EixamTelPacket? tryParse(List<int> bytes) {
-    if (bytes.length != EixamBleProtocol.telPacketLength) {
+    if (bytes.length != EixamBleProtocol.telPacketLength ||
+        bytes.any((byte) => byte < 0 || byte > 0xFF)) {
       return null;
     }
 
