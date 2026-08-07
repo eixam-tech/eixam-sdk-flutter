@@ -11,6 +11,44 @@ import 'sdk_mqtt_contract.dart';
 import 'sdk_mqtt_transport.dart';
 import 'transport_security_validator.dart';
 
+@immutable
+class Mqtt5TransportEndpointSettings {
+  const Mqtt5TransportEndpointSettings({
+    required this.server,
+    required this.port,
+    required this.useWebSocket,
+    required this.secure,
+  });
+
+  final String server;
+  final int port;
+  final bool useWebSocket;
+  final bool secure;
+}
+
+Mqtt5TransportEndpointSettings resolveMqtt5TransportEndpointSettings(
+  Uri brokerUri,
+) {
+  final useWebSocket = brokerUri.scheme == 'ws' || brokerUri.scheme == 'wss';
+  final secure = brokerUri.scheme == 'ssl' || brokerUri.scheme == 'tls';
+  final server = useWebSocket
+      ? '${brokerUri.scheme}://${brokerUri.host}'
+          '${brokerUri.path.isEmpty ? '' : brokerUri.path}'
+      : brokerUri.host;
+  final defaultPort = switch (brokerUri.scheme) {
+    'wss' => 443,
+    'ws' => 80,
+    'ssl' || 'tls' => 8883,
+    _ => 1883,
+  };
+  return Mqtt5TransportEndpointSettings(
+    server: server,
+    port: brokerUri.hasPort ? brokerUri.port : defaultPort,
+    useWebSocket: useWebSocket,
+    secure: secure,
+  );
+}
+
 class Mqtt5SdkTransport implements SdkMqttTransport {
   Mqtt5SdkTransport({
     required this.request,
@@ -47,20 +85,19 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
     await disconnect();
 
     final brokerUri = request.brokerUri;
-    final server = _serverStringFor(brokerUri);
-    final client = MqttServerClient(server, request.clientIdentifier);
+    final endpoint = resolveMqtt5TransportEndpointSettings(brokerUri);
+    final client = MqttServerClient(endpoint.server, request.clientIdentifier);
     _logTransport(
-      'connect_start uri=${_redactedUri(brokerUri)} server=$server '
-      'port=${brokerUri.hasPort ? brokerUri.port : _defaultPortFor(brokerUri)} '
-      'websocket=${brokerUri.scheme == 'ws' || brokerUri.scheme == 'wss'} '
-      'secure=${brokerUri.scheme == 'ssl' || brokerUri.scheme == 'tls'}',
+      'connect_start uri=${_redactedUri(brokerUri)} server=${endpoint.server} '
+      'port=${endpoint.port} websocket=${endpoint.useWebSocket} '
+      'secure=${endpoint.secure}',
     );
     client.logging(on: kDebugMode && enableLogging, logPayloads: false);
     client.keepAlivePeriod = 30;
-    client.port =
-        brokerUri.hasPort ? brokerUri.port : _defaultPortFor(brokerUri);
-    client.useWebSocket = brokerUri.scheme == 'ws' || brokerUri.scheme == 'wss';
-    client.secure = brokerUri.scheme == 'ssl' || brokerUri.scheme == 'tls';
+    client.port = endpoint.port;
+    client.useWebSocket = endpoint.useWebSocket;
+    client.secure = endpoint.secure;
+    client.socketTimeout = request.connectTimeout.inMilliseconds;
     client.onDisconnected = () {
       final solicited = client.connectionStatus?.disconnectionOrigin ==
           MqttDisconnectionOrigin.solicited;
@@ -283,23 +320,6 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
 
   String _redactedUri(Uri uri) {
     return uri.replace(userInfo: '').toString();
-  }
-
-  String _serverStringFor(Uri brokerUri) {
-    if (brokerUri.scheme == 'ws' || brokerUri.scheme == 'wss') {
-      final path = brokerUri.path.isEmpty ? '' : brokerUri.path;
-      return '${brokerUri.scheme}://${brokerUri.host}$path';
-    }
-    return brokerUri.host;
-  }
-
-  int _defaultPortFor(Uri brokerUri) {
-    return switch (brokerUri.scheme) {
-      'wss' => 443,
-      'ws' => 80,
-      'ssl' || 'tls' => 8883,
-      _ => 1883,
-    };
   }
 
   MqttQos _toMqttQos(SdkMqttQos qos) {
