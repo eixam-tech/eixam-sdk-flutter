@@ -17,6 +17,36 @@ typedef SdkMqttTransportFactory = SdkMqttTransport Function(
   SdkMqttConnectRequest request,
 );
 
+final class _MqttConnectAttempt {
+  _MqttConnectAttempt({
+    required this.generation,
+    required this.session,
+  });
+
+  final int generation;
+  final EixamSession session;
+  late final Future<void> future;
+  _MqttTransportBinding? binding;
+}
+
+final class _MqttTransportBinding {
+  _MqttTransportBinding({
+    required this.generation,
+    required this.transport,
+    required this.subscribedTopics,
+  });
+
+  final int generation;
+  final SdkMqttTransport transport;
+  final Set<String> subscribedTopics;
+  // Lifecycle cleanup is centralized in MqttRealtimeClient._disposeBinding.
+  // ignore: cancel_subscriptions
+  StreamSubscription<SdkMqttIncomingMessage>? messageSubscription;
+  // ignore: cancel_subscriptions
+  StreamSubscription<SdkMqttDisconnectEvent>? disconnectSubscription;
+  Future<void>? disposeFuture;
+}
+
 class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
   MqttRealtimeClient({
     required this.config,
@@ -40,41 +70,58 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
       StreamController<RealtimeEvent>.broadcast();
 
   RealtimeConnectionState _state = RealtimeConnectionState.disconnected;
-  SdkMqttTransport? _transport;
-  StreamSubscription<SdkMqttIncomingMessage>? _messageSub;
-  StreamSubscription<SdkMqttDisconnectEvent>? _disconnectSub;
+  _MqttTransportBinding? _binding;
+  _MqttConnectAttempt? _connectAttempt;
+  final Set<Future<void>> _backgroundAttemptFutures = <Future<void>>{};
   Timer? _reconnectTimer;
-  Future<void>? _connectFuture;
+  int _lifecycleGeneration = 0;
   bool _manualDisconnect = false;
   bool _disposed = false;
   EixamSession? _activeSession;
-  Set<String> _subscribedTopics = <String>{};
   final Map<String, String> _diagnosticTransitions = <String, String>{};
 
   @override
   Future<void> connect() {
     _manualDisconnect = false;
+    _cancelReconnectTimer();
     return _ensureConnected(initialConnect: true);
   }
 
   @override
   Future<void> disconnect() async {
     _manualDisconnect = true;
-    _reconnectTimer?.cancel();
-    _connectFuture = null;
-    await _disconnectTransport();
+    _cancelReconnectTimer();
+    final generation = ++_lifecycleGeneration;
+    final attempt = _connectAttempt;
+    _connectAttempt = null;
+    final binding = _binding;
+    _binding = null;
+    _activeSession = null;
+    _recordRealtime(
+      'MQTT_LIFECYCLE event=disconnect_begin generation=$generation '
+      'inFlight=${attempt != null} transportPresent=${binding != null}',
+    );
+    if (attempt != null) {
+      _recordRealtime(
+        'MQTT_LIFECYCLE event=connect_invalidated '
+        'generation=${attempt.generation} reason=disconnect',
+      );
+    }
+    if (binding != null && !identical(binding, attempt?.binding)) {
+      await _disposeBinding(binding);
+    }
     _setState(RealtimeConnectionState.disconnected);
+    _recordRealtime(
+      'MQTT_LIFECYCLE event=disconnect_complete generation=$generation '
+      'staleConnectPending=${attempt != null}',
+    );
   }
 
   @override
   Future<void> reconnectIfSessionChanged(EixamSession session) async {
     final previous = _activeSession;
     if (previous != null &&
-        previous.appId == session.appId &&
-        previous.externalUserId == session.externalUserId &&
-        previous.userHash == session.userHash &&
-        previous.sdkUserId == session.sdkUserId &&
-        previous.canonicalExternalUserId == session.canonicalExternalUserId &&
+        _sameSession(previous, session) &&
         _state == RealtimeConnectionState.connected) {
       return;
     }
@@ -101,7 +148,7 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
         : null;
 
     await _ensureConnected(initialConnect: true);
-    final transport = _transport;
+    final transport = _binding?.transport;
     if (transport == null) {
       throw const NetworkException(
         'E_MQTT_NOT_CONNECTED',
@@ -253,7 +300,7 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
       );
     }
     await _ensureConnected(initialConnect: true);
-    final transport = _transport;
+    final transport = _binding?.transport;
     if (transport == null) {
       throw const NetworkException(
         'E_MQTT_NOT_CONNECTED',
@@ -319,19 +366,24 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
   Future<void> dispose() async {
     _disposed = true;
     await disconnect();
+    final pendingAttempts = _backgroundAttemptFutures.toList(growable: false);
+    if (pendingAttempts.isNotEmpty) {
+      await Future.wait(pendingAttempts);
+    }
     await _connectionController.close();
     await _eventsController.close();
   }
 
   Future<void> _ensureConnected({required bool initialConnect}) {
-    final existing = _connectFuture;
+    final existing = _connectAttempt;
     if (existing != null) {
-      return existing;
+      return existing.future;
     }
 
     if (_disposed) {
       return Future<void>.value();
     }
+    _manualDisconnect = false;
 
     final session = sessionContext.currentSession;
     if (session == null) {
@@ -340,57 +392,175 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
       return Future<void>.value();
     }
 
-    if (_state == RealtimeConnectionState.connected && _activeSession != null) {
+    if (_state == RealtimeConnectionState.connected &&
+        _activeSession != null &&
+        _sameSession(_activeSession!, session)) {
       return Future<void>.value();
     }
 
-    final completer = Completer<void>();
+    final attempt = _MqttConnectAttempt(
+      generation: ++_lifecycleGeneration,
+      session: session,
+    );
+    _connectAttempt = attempt;
+    _recordRealtime(
+      'MQTT_LIFECYCLE event=connect_begin '
+      'generation=${attempt.generation} initial=$initialConnect',
+    );
+    _setState(
+      initialConnect
+          ? RealtimeConnectionState.connecting
+          : RealtimeConnectionState.reconnecting,
+    );
+    final future = _runConnectAttempt(
+      attempt,
+      initialConnect: initialConnect,
+    );
+    attempt.future = future;
+    _backgroundAttemptFutures.add(future);
+    unawaited(
+      future.then((_) {
+        _backgroundAttemptFutures.remove(future);
+      }),
+    );
+    return future;
+  }
+
+  Future<void> _runConnectAttempt(
+    _MqttConnectAttempt attempt, {
+    required bool initialConnect,
+  }) async {
     final connectStopwatch = Stopwatch()..start();
-    _connectFuture = completer.future;
-    unawaited(() async {
-      try {
-        _logRealtime(
-          'connect_start initial=$initialConnect '
-          'session=${session.externalUserId} state=${_state.name}',
+    try {
+      final previousBinding = _binding;
+      if (previousBinding != null) {
+        _binding = null;
+        _activeSession = null;
+        await _disposeBinding(previousBinding);
+      }
+      if (!_isAttemptCurrent(attempt)) {
+        _recordStaleConnect(attempt, phase: 'before_transport_create');
+        return;
+      }
+
+      final request = SdkMqttContract.connectRequest(
+        config: config,
+        session: attempt.session,
+        connectTimeout: connectTimeout,
+      );
+      final transport = transportFactory(request);
+      final binding = _MqttTransportBinding(
+        generation: attempt.generation,
+        transport: transport,
+        subscribedTopics: SdkMqttTopics.eventTopicsFor(attempt.session),
+      );
+      attempt.binding = binding;
+      if (!_isAttemptCurrent(attempt)) {
+        await _discardStaleBinding(attempt, binding, phase: 'transport_create');
+        return;
+      }
+      _binding = binding;
+      _bindTransportStreams(attempt, binding);
+
+      await transport.connect();
+      if (!_isBindingAuthoritative(attempt, binding)) {
+        await _discardStaleBinding(attempt, binding, phase: 'connect_complete');
+        return;
+      }
+
+      for (final topic in binding.subscribedTopics) {
+        final category = _sosEventTopicCategory(topic, attempt.session);
+        _recordRealtimeTransition(
+          'SOS_MQTT_EVENT_SUBSCRIPTION_REQUESTED topicCategory=$category',
+          key: 'subscription_request_$category',
+          state: 'requested',
         );
-        _setState(initialConnect
-            ? RealtimeConnectionState.connecting
-            : RealtimeConnectionState.reconnecting);
-        await _connectTransport(session);
-        _setState(RealtimeConnectionState.connected);
-        _logRealtime('connect_success session=${session.externalUserId}');
-        completer.complete();
-      } catch (error) {
+        try {
+          await transport.subscribe(topic);
+          if (!_isBindingAuthoritative(attempt, binding)) {
+            await _discardStaleBinding(
+              attempt,
+              binding,
+              phase: 'subscription_complete',
+            );
+            return;
+          }
+          _recordRealtimeTransition(
+            'SOS_MQTT_EVENT_SUBSCRIPTION_ACTIVE topicCategory=$category',
+            key: 'subscription_active_$category',
+            state: 'active',
+          );
+        } catch (error) {
+          _diagnosticTransitions['subscription_request_$category'] = 'failed';
+          _diagnosticTransitions['subscription_active_$category'] = 'failed';
+          _recordRealtimeTransition(
+            'SOS_MQTT_EVENT_SUBSCRIPTION_FAILED topicCategory=$category '
+            'errorType=${error.runtimeType}',
+            key: 'subscription_failure_$category',
+            state: 'failed_${error.runtimeType}',
+            failure: true,
+          );
+          rethrow;
+        }
+      }
+      if (!_isBindingAuthoritative(attempt, binding)) {
+        await _discardStaleBinding(attempt, binding,
+            phase: 'subscriptions_done');
+        return;
+      }
+      _recordRealtimeTransition(
+        'SOS_MQTT_SOS_READY publishReady=true eventReady=true '
+        'subscriptions=${binding.subscribedTopics.length}',
+        key: 'sos_ready',
+        state: 'ready_${binding.subscribedTopics.length}',
+      );
+      _activeSession = attempt.session;
+      _setState(RealtimeConnectionState.connected);
+      _recordRealtime(
+        'MQTT_LIFECYCLE event=connect_success '
+        'generation=${attempt.generation} initial=$initialConnect',
+      );
+    } catch (error) {
+      final binding = attempt.binding;
+      if (binding != null) {
+        await _disposeBinding(binding);
+        if (identical(_binding, binding)) {
+          _binding = null;
+        }
+      }
+      if (_isAttemptCurrent(attempt)) {
+        _activeSession = null;
+        _recordRealtime(
+          'MQTT_LIFECYCLE event=connect_failed '
+          'generation=${attempt.generation} errorType=${error.runtimeType}',
+        );
         _recordRealtime(
           'SDK_CLIENT_CREATION_TIMEOUT_GUARD '
           'step=mqtt_connect elapsedMs=${connectStopwatch.elapsedMilliseconds} '
           'errorType=${error.runtimeType}',
         );
-        _logRealtime('connect_failure error=$error');
-        await _disconnectTransport();
         _setState(RealtimeConnectionState.error);
         _scheduleReconnect();
-        completer.complete();
-      } finally {
-        _connectFuture = null;
+      } else {
+        _recordStaleConnect(attempt, phase: 'connect_failure');
       }
-    }());
-    return completer.future;
+    } finally {
+      if (identical(_connectAttempt, attempt)) {
+        _connectAttempt = null;
+      }
+    }
   }
 
-  Future<void> _connectTransport(EixamSession session) async {
-    await _disconnectTransport();
-
-    final request = SdkMqttContract.connectRequest(
-      config: config,
-      session: session,
-    );
-    final transport = transportFactory(request);
-    _transport = transport;
-    _activeSession = session;
-    _subscribedTopics = SdkMqttTopics.eventTopicsFor(session);
-
-    _messageSub = transport.watchMessages().listen((message) {
+  void _bindTransportStreams(
+    _MqttConnectAttempt attempt,
+    _MqttTransportBinding binding,
+  ) {
+    final transport = binding.transport;
+    final session = attempt.session;
+    binding.messageSubscription = transport.watchMessages().listen((message) {
+      if (!_isBindingCurrent(binding)) {
+        return;
+      }
       final topicCategory = _sosEventTopicCategory(message.topic, session);
       final shape = _mqttPayloadShape(message.payload);
       _recordRealtime(
@@ -418,7 +588,7 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
           payload: <String, dynamic>{
             ...?parsed.payload,
             '_mqttAuthenticatedUserScoped':
-                _subscribedTopics.contains(message.topic) &&
+                binding.subscribedTopics.contains(message.topic) &&
                     _mqttPayloadIdentityMatches(
                       shape.payloadUserId,
                       topicCategory,
@@ -444,6 +614,9 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
         );
       }
     }, onError: (Object error, StackTrace stackTrace) {
+      if (!_isBindingCurrent(binding)) {
+        return;
+      }
       _recordRealtime(
         'MQTT_TRANSPORT_DISCONNECT_HANDLED '
         'phase=realtime_message_stream errorType=${error.runtimeType}',
@@ -451,7 +624,11 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
       _setState(RealtimeConnectionState.reconnecting);
       _scheduleReconnect();
     });
-    _disconnectSub = transport.watchDisconnects().listen((event) {
+    binding.disconnectSubscription =
+        transport.watchDisconnects().listen((event) {
+      if (!_isBindingCurrent(binding)) {
+        return;
+      }
       if (_manualDisconnect || _disposed || event.solicited) {
         _logRealtime(
           'disconnect solicited=${event.solicited} manual=$_manualDisconnect',
@@ -463,6 +640,9 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
       _setState(RealtimeConnectionState.reconnecting);
       _scheduleReconnect();
     }, onError: (Object error, StackTrace stackTrace) {
+      if (!_isBindingCurrent(binding)) {
+        return;
+      }
       _recordRealtime(
         'MQTT_TRANSPORT_DISCONNECT_HANDLED '
         'phase=realtime_disconnect_stream errorType=${error.runtimeType}',
@@ -470,54 +650,71 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
       _setState(RealtimeConnectionState.reconnecting);
       _scheduleReconnect();
     });
+  }
 
-    await transport.connect().timeout(connectTimeout);
-    for (final topic in _subscribedTopics) {
-      final category = _sosEventTopicCategory(topic, session);
-      _recordRealtimeTransition(
-        'SOS_MQTT_EVENT_SUBSCRIPTION_REQUESTED topicCategory=$category',
-        key: 'subscription_request_$category',
-        state: 'requested',
-      );
-      try {
-        await transport.subscribe(topic);
-        _recordRealtimeTransition(
-          'SOS_MQTT_EVENT_SUBSCRIPTION_ACTIVE topicCategory=$category qos=1',
-          key: 'subscription_active_$category',
-          state: 'active',
-        );
-      } catch (error) {
-        _diagnosticTransitions['subscription_request_$category'] = 'failed';
-        _diagnosticTransitions['subscription_active_$category'] = 'failed';
-        _recordRealtimeTransition(
-          'SOS_MQTT_EVENT_SUBSCRIPTION_FAILED topicCategory=$category '
-          'errorType=${error.runtimeType}',
-          key: 'subscription_failure_$category',
-          state: 'failed_${error.runtimeType}',
-          failure: true,
-        );
-        rethrow;
-      }
+  Future<void> _discardStaleBinding(
+    _MqttConnectAttempt attempt,
+    _MqttTransportBinding binding, {
+    required String phase,
+  }) async {
+    _recordStaleConnect(attempt, phase: phase);
+    if (identical(_binding, binding)) {
+      _binding = null;
     }
-    _recordRealtimeTransition(
-      'SOS_MQTT_SOS_READY publishReady=true eventReady=true '
-      'subscriptions=${_subscribedTopics.length}',
-      key: 'sos_ready',
-      state: 'ready_${_subscribedTopics.length}',
+    await _disposeBinding(binding);
+  }
+
+  Future<void> _disposeBinding(_MqttTransportBinding binding) {
+    final existing = binding.disposeFuture;
+    if (existing != null) {
+      return existing;
+    }
+    final future = _runBindingDisposal(binding);
+    binding.disposeFuture = future;
+    return future;
+  }
+
+  Future<void> _runBindingDisposal(_MqttTransportBinding binding) async {
+    await _containLifecycleFailure(
+      binding.messageSubscription?.cancel,
+      phase: 'cancel_message_subscription',
+      generation: binding.generation,
+    );
+    await _containLifecycleFailure(
+      binding.disconnectSubscription?.cancel,
+      phase: 'cancel_disconnect_subscription',
+      generation: binding.generation,
+    );
+    binding.messageSubscription = null;
+    binding.disconnectSubscription = null;
+    await _containLifecycleFailure(
+      binding.transport.disconnect,
+      phase: 'transport_disconnect',
+      generation: binding.generation,
+    );
+    await _containLifecycleFailure(
+      binding.transport.dispose,
+      phase: 'transport_dispose',
+      generation: binding.generation,
     );
   }
 
-  Future<void> _disconnectTransport() async {
-    _reconnectTimer?.cancel();
-    _reconnectTimer = null;
-    await _messageSub?.cancel();
-    await _disconnectSub?.cancel();
-    _messageSub = null;
-    _disconnectSub = null;
-    final transport = _transport;
-    _transport = null;
-    await transport?.disconnect();
-    await transport?.dispose();
+  Future<void> _containLifecycleFailure(
+    Future<void> Function()? action, {
+    required String phase,
+    required int generation,
+  }) async {
+    if (action == null) {
+      return;
+    }
+    try {
+      await action();
+    } catch (error) {
+      _recordRealtime(
+        'MQTT_LIFECYCLE event=cleanup_failed generation=$generation '
+        'phase=$phase errorType=${error.runtimeType}',
+      );
+    }
   }
 
   void _scheduleReconnect() {
@@ -528,13 +725,72 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
       return;
     }
     _recordRealtime(
-      'MQTT_TRANSPORT_RECONNECT_SCHEDULED '
+      'MQTT_LIFECYCLE event=reconnect_scheduled '
+      'generation=$_lifecycleGeneration '
       'delayMs=${reconnectDelay.inMilliseconds}',
     );
+    final scheduledGeneration = _lifecycleGeneration;
     _reconnectTimer = Timer(reconnectDelay, () {
       _reconnectTimer = null;
+      if (_manualDisconnect ||
+          _disposed ||
+          scheduledGeneration != _lifecycleGeneration) {
+        _recordRealtime(
+          'MQTT_LIFECYCLE event=reconnect_discarded '
+          'generation=$scheduledGeneration',
+        );
+        return;
+      }
+      _recordRealtime(
+        'MQTT_LIFECYCLE event=reconnect_begin '
+        'generation=$scheduledGeneration',
+      );
       unawaited(_ensureConnected(initialConnect: false));
     });
+  }
+
+  void _cancelReconnectTimer() {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+  }
+
+  bool _isAttemptCurrent(_MqttConnectAttempt attempt) {
+    return !_disposed &&
+        !_manualDisconnect &&
+        attempt.generation == _lifecycleGeneration &&
+        identical(_connectAttempt, attempt);
+  }
+
+  bool _isBindingAuthoritative(
+    _MqttConnectAttempt attempt,
+    _MqttTransportBinding binding,
+  ) {
+    return _isAttemptCurrent(attempt) && identical(_binding, binding);
+  }
+
+  bool _isBindingCurrent(_MqttTransportBinding binding) {
+    return !_disposed &&
+        !_manualDisconnect &&
+        binding.generation == _lifecycleGeneration &&
+        identical(_binding, binding);
+  }
+
+  bool _sameSession(EixamSession left, EixamSession right) {
+    return left.appId == right.appId &&
+        left.externalUserId == right.externalUserId &&
+        left.userHash == right.userHash &&
+        left.sdkUserId == right.sdkUserId &&
+        left.canonicalExternalUserId == right.canonicalExternalUserId;
+  }
+
+  void _recordStaleConnect(
+    _MqttConnectAttempt attempt, {
+    required String phase,
+  }) {
+    _recordRealtime(
+      'MQTT_LIFECYCLE event=stale_connect_discarded '
+      'generation=${attempt.generation} phase=$phase',
+    );
   }
 
   void _setState(RealtimeConnectionState next) {

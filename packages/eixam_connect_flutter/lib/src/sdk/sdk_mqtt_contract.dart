@@ -14,6 +14,7 @@ class SdkMqttConnectRequest {
     required this.password,
     required this.cleanSession,
     this.allowInsecureLocalEndpoint = false,
+    this.connectTimeout = const Duration(seconds: 8),
   });
 
   final Uri brokerUri;
@@ -22,6 +23,7 @@ class SdkMqttConnectRequest {
   final String password;
   final bool cleanSession;
   final bool allowInsecureLocalEndpoint;
+  final Duration connectTimeout;
 }
 
 class SdkMqttEnvelope {
@@ -199,6 +201,7 @@ class SdkMqttContract {
   static SdkMqttConnectRequest connectRequest({
     required EixamSdkConfig config,
     required EixamSession session,
+    Duration connectTimeout = const Duration(seconds: 8),
   }) {
     final endpoint = config.websocketUrl ?? config.apiBaseUrl;
     SdkTransportSecurityValidator.validateRealtimeEndpoint(
@@ -213,6 +216,7 @@ class SdkMqttContract {
       password: session.userHash,
       cleanSession: true,
       allowInsecureLocalEndpoint: config.allowInsecureLocalEndpoints,
+      connectTimeout: connectTimeout,
     );
   }
 
