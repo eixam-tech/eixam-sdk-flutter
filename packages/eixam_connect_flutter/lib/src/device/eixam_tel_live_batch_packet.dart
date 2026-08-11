@@ -1,6 +1,6 @@
-import 'package:crypto/crypto.dart';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import 'eixam_position_sample_identity.dart';
 import 'eixam_tel_packet.dart';
 
 /// Decoded firmware `EIXAM_BLE_TEL_LIVE_BATCH` (`0xD3`) payload.
@@ -62,7 +62,7 @@ class EixamTelLiveBatchPacket {
           sampledAt: sampledAt,
           packetId: telPacket.packetId,
           source: SdkLocationSource.connectedDevice,
-          stableSampleKey: 'tlb1:${sha256.convert(record)}',
+          stableSampleKey: EixamPositionSampleIdentity.liveRecord(record),
         ),
       );
     }

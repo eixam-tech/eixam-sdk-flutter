@@ -6,6 +6,7 @@ import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_tel_live_batch_packet.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_tel_packet.dart';
 import 'package:eixam_connect_flutter/src/sdk/background_location_platform_adapter.dart';
 import 'package:eixam_connect_flutter/src/sdk/background_telemetry_platform_adapter.dart';
 import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
@@ -166,7 +167,7 @@ void main() {
       await deviceSosController.dispose();
     });
 
-    test('publishes each live batch once and resolves only its newest sample',
+    test('publishes only novel samples and resolves only the newest sample',
         () async {
       final bleEvents = StreamController<BleIncomingEvent>.broadcast();
       final sdk = _buildSdk(bleIncomingEvents: bleEvents.stream);
@@ -215,9 +216,7 @@ void main() {
 
       bleEvents.add(event);
       await pumpEventQueue(times: 10);
-      expect(batches, hasLength(2));
-      expect(batches.last.samples.first.stableSampleKey,
-          batches.first.samples.first.stableSampleKey);
+      expect(batches, hasLength(1));
 
       final invalidLatestPayload = _liveBatchPayload();
       final latestTimestampOffset = 2 + 2 * 16;
@@ -249,6 +248,72 @@ void main() {
 
       await batchSub.cancel();
       await locationSub.cancel();
+      await sdk.dispose();
+      await bleEvents.close();
+    });
+
+    test('normalizes classic TEL and coalesces an equivalent live record',
+        () async {
+      final bleEvents = StreamController<BleIncomingEvent>.broadcast();
+      final sdk = _buildSdk(bleIncomingEvents: bleEvents.stream);
+      await sdk.initialize(
+        const EixamSdkConfig(
+          apiBaseUrl: 'https://sdk.test',
+          deferRuntimeStartup: true,
+        ),
+      );
+      final receivedAt = DateTime.utc(2026, 8, 7, 12);
+      final batches = <EixamDevicePositionBatch>[];
+      final subscription = sdk.watchDevicePositionBatches().listen(batches.add);
+      final wire = _liveBatchPayload().sublist(6, 18);
+      final telPacket = EixamTelPacket.tryParse(wire)!;
+
+      bleEvents.add(
+        BleIncomingEvent(
+          deviceId: 'demo-device',
+          type: BleIncomingEventType.telPosition,
+          channel: EixamBleChannel.tel,
+          payload: wire,
+          payloadHex: '',
+          source: DeviceSosTransitionSource.device,
+          receivedAt: receivedAt,
+          telPacket: telPacket,
+          classification: BleIncomingPayloadClassification(
+            kind: BleIncomingPayloadKind.telPosition,
+            telPacket: telPacket,
+          ),
+        ),
+      );
+      await pumpEventQueue(times: 5);
+      expect(batches, hasLength(1));
+      expect(batches.single.samples, hasLength(1));
+      expect(batches.single.samples.single.sampledAt, isNull);
+
+      final equivalentPayload = <int>[
+        0xD3,
+        1,
+        ..._liveBatchPayload().sublist(2, 18),
+      ];
+      final equivalent = EixamTelLiveBatchPacket.tryParse(
+        equivalentPayload,
+        receivedAt: receivedAt,
+      )!;
+      bleEvents.add(
+        BleIncomingEvent(
+          deviceId: 'demo-device',
+          type: BleIncomingEventType.telLivePositionBatch,
+          channel: EixamBleChannel.tel,
+          payload: equivalentPayload,
+          payloadHex: '',
+          source: DeviceSosTransitionSource.device,
+          receivedAt: receivedAt,
+          telLiveBatchPacket: equivalent,
+        ),
+      );
+      await pumpEventQueue(times: 5);
+      expect(batches, hasLength(1));
+
+      await subscription.cancel();
       await sdk.dispose();
       await bleEvents.close();
     });

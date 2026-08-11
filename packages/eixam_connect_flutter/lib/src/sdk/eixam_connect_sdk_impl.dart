@@ -44,6 +44,7 @@ import 'ble_operational_runtime_bridge.dart';
 import 'ble_auto_reconnect_coordinator.dart';
 import 'ble_sos_notification_payload.dart';
 import 'device_country_config_controller.dart';
+import 'device_position_batch_normalizer.dart';
 import 'firmware_update_coordinator.dart';
 import 'operational_telemetry_coordinator.dart';
 import 'operational_realtime_client.dart';
@@ -500,6 +501,8 @@ class EixamConnectSdkImpl
   late final ProtectionModeController _protectionModeController;
   late final OperationalTelemetryCoordinator _operationalTelemetryCoordinator;
   late final SdkResolvedLocationResolver _resolvedLocationResolver;
+  final DevicePositionBatchNormalizer _devicePositionBatchNormalizer =
+      DevicePositionBatchNormalizer();
   final Duration _appTriggeredSosBridgeWindow;
   bool _deferredRuntimeWorkPending = false;
   bool _backgroundTelemetryEnabled = false;
@@ -890,9 +893,9 @@ class EixamConnectSdkImpl
     _bleIncomingEventDiagnosticsSub?.cancel();
     _bleIncomingEventDiagnosticsSub = bleIncomingEvents.listen(
       (event) {
-        final liveBatch = event.telLiveBatchPacket?.batch;
-        if (liveBatch != null && !_devicePositionBatchController.isClosed) {
-          _devicePositionBatchController.add(liveBatch);
+        final positionBatch = _devicePositionBatchNormalizer.normalize(event);
+        if (positionBatch != null && !_devicePositionBatchController.isClosed) {
+          _devicePositionBatchController.add(positionBatch);
         }
         final relayPacket = event.telRelayRxPacket;
         if (relayPacket != null) {

@@ -1578,7 +1578,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       );
       if (liveBatch == null) {
         BleDebugRegistry.instance.recordEvent(
-          'SDK_TEL_LIVE_BATCH malformed=true',
+          'SDK_TEL_LIVE_BATCH claimed=false malformed_or_collision=true',
         );
       } else {
         final invalidTimestampCount = liveBatch.batch.samples
@@ -1609,8 +1609,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         BleDebugRegistry.instance.recordEvent(
           'SDK_TEL_LIVE_BATCH published_count=${liveBatch.batch.samples.length}',
         );
+        return;
       }
-      return;
     }
 
     final runtimeStatusPacket = EixamDeviceRuntimeStatusPacket.tryParse(

@@ -592,6 +592,104 @@ void main() {
       expect(event.type, BleIncomingEventType.unknownProtocolPacket);
     });
 
+    test('does not swallow a 7-byte SOS whose node id starts with D3',
+        () async {
+      final nextEvent = runtimeProvider.watchIncomingEvents().firstWhere(
+            (event) => event.type == BleIncomingEventType.sosMeshPacket,
+          );
+
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.tel,
+        payload: _sosPayloadForNode(0x000012D3),
+      );
+
+      final event = await nextEvent.timeout(const Duration(seconds: 2));
+      expect(event.sosPacket?.nodeId, 0x000012D3);
+      expect(event.classification.kind, BleIncomingPayloadKind.remoteRelaySos);
+      expect(event.telLiveBatchPacket, isNull);
+    });
+
+    test('does not swallow a 12-byte SOS whose node id starts with D3',
+        () async {
+      final nextEvent = runtimeProvider.watchIncomingEvents().firstWhere(
+            (event) => event.type == BleIncomingEventType.sosMeshPacket,
+          );
+      final payload = <int>[
+        0xD3,
+        0x12,
+        0x00,
+        0x00,
+        0x01,
+        0x02,
+        0x03,
+        0x04,
+        0x05,
+        0x06,
+        0x00,
+        0x40,
+      ];
+
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.tel,
+        payload: payload,
+      );
+
+      final event = await nextEvent.timeout(const Duration(seconds: 2));
+      expect(event.sosPacket?.nodeId, 0x000012D3);
+      expect(event.sosPacket?.hasPosition, isTrue);
+      expect(event.classification.kind, BleIncomingPayloadKind.remoteRelaySos);
+      expect(event.telLiveBatchPacket, isNull);
+    });
+
+    test('does not swallow a classic TEL whose node id starts with D3',
+        () async {
+      final nextEvent = runtimeProvider.watchIncomingEvents().firstWhere(
+            (event) => event.type == BleIncomingEventType.telPosition,
+          );
+      const payload = <int>[
+        0xD3,
+        0x12,
+        0x00,
+        0x00,
+        0x01,
+        0x02,
+        0x03,
+        0x04,
+        0x05,
+        0x06,
+        0x80,
+        0x25,
+      ];
+
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.tel,
+        payload: payload,
+      );
+
+      final event = await nextEvent.timeout(const Duration(seconds: 2));
+      expect(event.telPacket?.nodeId, 0x000012D3);
+      expect(event.classification.kind, BleIncomingPayloadKind.telPosition);
+      expect(event.telLiveBatchPacket, isNull);
+    });
+
+    test('malformed D3-shaped data falls through to unknown classification',
+        () async {
+      final nextEvent = _nextIncomingEvent(runtimeProvider);
+
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.tel,
+        payload: const <int>[0xD3, 0x01, 0x02],
+      );
+
+      final event = await nextEvent.timeout(const Duration(seconds: 2));
+      expect(event.type, BleIncomingEventType.unknownProtocolPacket);
+      expect(event.telLiveBatchPacket, isNull);
+    });
+
     test('reassembles a maximum 386-byte D3 payload into one typed batch',
         () async {
       final logicalPayload = _maximumLiveBatchPayload();
