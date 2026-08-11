@@ -9,6 +9,8 @@ DeviceStatus buildDeviceStatus({
   bool paired = true,
   bool activated = true,
   bool connected = true,
+  DeviceProvisioningStatus provisioningStatus =
+      DeviceProvisioningStatus.unknown,
   int? batteryLevel = 2,
   DeviceBatteryLevel? batteryState = DeviceBatteryLevel.ok,
   DeviceBatterySource? batterySource = DeviceBatterySource.unknown,
@@ -29,6 +31,7 @@ DeviceStatus buildDeviceStatus({
     paired: paired,
     activated: activated,
     connected: connected,
+    provisioningStatus: provisioningStatus,
     batteryLevel: batteryLevel,
     batteryState: batteryState,
     batterySource: batterySource,

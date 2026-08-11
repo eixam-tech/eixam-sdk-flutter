@@ -97,13 +97,59 @@ void main() {
       final status = await _pairDemoDevice(runtimeProvider);
 
       expect(status.nodeId, 0x1234);
-      expect(status.activated, isTrue);
-      expect(status.lifecycleState, DeviceLifecycleState.ready);
+      expect(status.activated, isFalse);
+      expect(status.provisioningStatus, DeviceProvisioningStatus.provisioned);
+      expect(status.lifecycleState, DeviceLifecycleState.paired);
       expect(status.batteryPercent, 88);
       expect(status.effectiveBatteryState, DeviceBatteryLevel.ok);
       expect(status.approximateBatteryPercentage, 88);
       expect(status.batterySource, DeviceBatterySource.deviceStatus);
       expect(status.signalQuality, isNotNull);
+    });
+
+    test('provisioned firmware does not implicitly activate the product',
+        () async {
+      final status = await _pairDemoDevice(runtimeProvider);
+
+      expect(status.provisioningStatus, DeviceProvisioningStatus.provisioned);
+      expect(status.activated, isFalse);
+      expect(status.isReadyForSafety, isFalse);
+    });
+
+    test('tx enabled does not imply firmware provisioning', () async {
+      bleClient.runtimeStatusPayload[6] = 0x04;
+
+      final status = await _pairDemoDevice(runtimeProvider);
+
+      expect(status.provisioningStatus, DeviceProvisioningStatus.unprovisioned);
+      expect(status.activated, isFalse);
+    });
+
+    test('fresh 0x23 updates the authoritative provisioning status stream',
+        () async {
+      await _pairDemoDevice(runtimeProvider);
+      bleClient.runtimeStatusPayload[6] = 0x04;
+      final nextStatus = runtimeProvider.watchRuntimeStatus().firstWhere(
+            (status) =>
+                status.provisioningStatus ==
+                DeviceProvisioningStatus.unprovisioned,
+          );
+
+      await runtimeProvider.requestDeviceRuntimeStatus();
+
+      expect(
+        (await nextStatus).provisioningStatus,
+        DeviceProvisioningStatus.unprovisioned,
+      );
+    });
+
+    test('missing authoritative 0x23 leaves provisioning unknown', () async {
+      bleClient.runtimeStatusPayload = const <int>[0x99];
+
+      final status = await _pairDemoDevice(runtimeProvider);
+
+      expect(status.provisioningStatus, DeviceProvisioningStatus.unknown);
+      expect(status.activated, isFalse);
     });
 
     test('manual refresh preserves zero and clears protocol unknown', () async {

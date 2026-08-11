@@ -22,6 +22,19 @@ class SecurityDiagnosticsRedactor {
     return _redactedHexSummary(normalized);
   }
 
+  /// Formats an outbound BLE command payload without ever revealing bytes that
+  /// the command marks as secret, even when verbose diagnostics are enabled.
+  /// Future provisioning commands must opt into [containsSecret].
+  static String formatBleCommandPayloadForDiagnostics(
+    String? value, {
+    required bool containsSecret,
+  }) {
+    if (containsSecret) {
+      return redactedPayload;
+    }
+    return value?.trim().isNotEmpty == true ? value!.trim() : 'none';
+  }
+
   static String formatIdentifierForDiagnostics(
     Object? value, {
     required bool allowSensitive,
@@ -81,6 +94,13 @@ class SecurityDiagnosticsRedactor {
     sanitized = sanitized.replaceAllMapped(
       RegExp(r'\b(?:ageMs|freshnessMs|lastKnownAgeMs|latestTelAgeMs)=(-?\d+)'),
       (match) => 'age_category=${_ageCategory(match[1])}',
+    );
+    sanitized = sanitized.replaceAllMapped(
+      RegExp(
+        r'\b(psk|networkPsk|network_psk|softSim|softsim|backendToken)=(.*?)(?=\s+[A-Za-z][A-Za-z0-9_]*=|$)',
+        caseSensitive: false,
+      ),
+      (match) => 'secret_present=${_isPresentToken(match[2])}',
     );
     if (allowSensitive) {
       return sanitized;
@@ -452,7 +472,11 @@ class SecurityDiagnosticsRedactor {
   }
 
   static bool _isSensitiveJsonKey(String key) {
-    return key.contains('token') ||
+    final compactKey = key.replaceAll(RegExp(r'[^a-z0-9]'), '');
+    return compactKey == 'psk' ||
+        compactKey == 'networkpsk' ||
+        compactKey == 'softsim' ||
+        key.contains('token') ||
         key.contains('secret') ||
         key.contains('authorization') ||
         key == 'password' ||

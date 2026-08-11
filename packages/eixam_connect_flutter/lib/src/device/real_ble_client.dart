@@ -745,7 +745,7 @@ class RealBleClient implements BleClient {
       throw Exception('E_BLE_CMD_CHARACTERISTIC_MISSING');
     }
 
-    final payload = command.encodedHex;
+    final payload = command.diagnosticPayload;
     _log(
       'BLE write -> hardwareId=$deviceId target=${targetUuid.str} command=${command.label} payload=$payload',
     );

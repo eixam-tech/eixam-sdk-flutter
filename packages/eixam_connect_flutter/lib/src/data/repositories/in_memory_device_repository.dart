@@ -461,6 +461,7 @@ class InMemoryDeviceRepository
         previous.paired != next.paired ||
         previous.activated != next.activated ||
         previous.connected != next.connected ||
+        previous.provisioningStatus != next.provisioningStatus ||
         previous.batteryPercent != next.batteryPercent ||
         previous.batteryLevel != next.batteryLevel ||
         previous.effectiveBatteryState != next.effectiveBatteryState ||

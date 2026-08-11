@@ -1,5 +1,8 @@
+import '../diagnostics/security_diagnostics_redactor.dart';
 import 'ble_command_criticality.dart';
 import 'eixam_ble_protocol.dart';
+
+enum BleCommandPayloadSensitivity { operational, secret }
 
 class EixamDeviceCommand {
   factory EixamDeviceCommand.inetOk() => const EixamDeviceCommand._(
@@ -114,12 +117,16 @@ class EixamDeviceCommand {
     required this.label,
     required this.bytes,
     this.forceCmdCharacteristic = false,
+    // Reserved for a source-certified future secret-bearing command.
+    // ignore: unused_element_parameter
+    this.payloadSensitivity = BleCommandPayloadSensitivity.operational,
   });
 
   final int opcode;
   final String label;
   final List<int> bytes;
   final bool forceCmdCharacteristic;
+  final BleCommandPayloadSensitivity payloadSensitivity;
 
   List<int> encode() => List<int>.unmodifiable(bytes);
 
@@ -141,4 +148,16 @@ class EixamDeviceCommand {
       : EixamBleProtocol.inetWriteCharacteristicUuid;
 
   String get encodedHex => EixamBleProtocol.hex(encode());
+
+  /// Diagnostic representation of the payload. A future secret-bearing
+  /// command must set [payloadSensitivity] to `secret`; its bytes will then be
+  /// suppressed even in verbose diagnostics.
+  String get diagnosticPayload =>
+      SecurityDiagnosticsRedactor.formatBleCommandPayloadForDiagnostics(
+        payloadSensitivity == BleCommandPayloadSensitivity.secret
+            ? null
+            : encodedHex,
+        containsSecret:
+            payloadSensitivity == BleCommandPayloadSensitivity.secret,
+      );
 }

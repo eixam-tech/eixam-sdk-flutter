@@ -1,4 +1,5 @@
 import '../enums/device_lifecycle_state.dart';
+import '../enums/device_provisioning_status.dart';
 import '../enums/device_battery_level.dart';
 import '../enums/device_battery_source.dart';
 
@@ -17,6 +18,7 @@ class DeviceStatus {
     required this.paired,
     required this.activated,
     required this.connected,
+    this.provisioningStatus = DeviceProvisioningStatus.unknown,
     this.batteryPercent,
     this.batteryLevel,
     this.batteryState,
@@ -36,6 +38,12 @@ class DeviceStatus {
   final bool paired;
   final bool activated;
   final bool connected;
+
+  /// Exact firmware `PROVISIONED` state from the latest valid `0x23` response.
+  ///
+  /// This is not inferred from [activated], connection state, or LoRa transmit
+  /// enablement.
+  final DeviceProvisioningStatus provisioningStatus;
 
   /// Exact battery percentage (`0..100`) when the runtime can provide one.
   ///
@@ -76,6 +84,7 @@ class DeviceStatus {
     bool? paired,
     bool? activated,
     bool? connected,
+    DeviceProvisioningStatus? provisioningStatus,
     Object? batteryPercent = _unset,
     Object? batteryLevel = _unset,
     Object? batteryState = _unset,
@@ -99,6 +108,7 @@ class DeviceStatus {
       paired: paired ?? this.paired,
       activated: activated ?? this.activated,
       connected: connected ?? this.connected,
+      provisioningStatus: provisioningStatus ?? this.provisioningStatus,
       batteryPercent: identical(batteryPercent, _unset)
           ? this.batteryPercent
           : batteryPercent as int?,

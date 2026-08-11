@@ -114,6 +114,10 @@ void main() {
           'latitude': 41.3874,
           'longitude': 2.1686,
           'message': 'safe developer note',
+          'psk': 'psk-secret',
+          'network_psk': 'network-psk-secret',
+          'softSim': 'softsim-secret',
+          'backendToken': 'backend-token-secret',
         },
       ) as Map<String, Object?>;
 
@@ -122,6 +126,45 @@ void main() {
       expect(redacted['latitude'], '<redacted>');
       expect(redacted['longitude'], '<redacted>');
       expect(redacted['message'], 'safe developer note');
+      expect(redacted['psk'], '<redacted>');
+      expect(redacted['network_psk'], '<redacted>');
+      expect(redacted['softSim'], '<redacted>');
+      expect(redacted['backendToken'], '<redacted>');
+    });
+
+    test('always suppresses secret-bearing BLE command payloads', () {
+      const secretHex =
+          '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
+
+      expect(
+        SecurityDiagnosticsRedactor.formatBleCommandPayloadForDiagnostics(
+          secretHex,
+          containsSecret: true,
+        ),
+        SecurityDiagnosticsRedactor.redactedPayload,
+      );
+      expect(
+        SecurityDiagnosticsRedactor.formatBleCommandPayloadForDiagnostics(
+          '23',
+          containsSecret: false,
+        ),
+        '23',
+      );
+    });
+
+    test('redacts provisioning secrets in event messages', () {
+      const secret =
+          '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
+      for (final allowSensitive in <bool>[false, true]) {
+        final message = SecurityDiagnosticsRedactor.sanitizeEventMessage(
+          'psk=$secret networkPsk=$secret softSim=$secret '
+          'backendToken=$secret result=rejected',
+          allowSensitive: allowSensitive,
+        );
+
+        expect(message, isNot(contains(secret)));
+        expect(message, contains('secret_present=true'));
+      }
     });
 
     test('converts raw exceptions to bounded categories', () {

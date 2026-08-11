@@ -250,9 +250,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       final runtimeBatteryPercent = runtimeStatus == null
           ? currentStatus.batteryPercent
           : runtimeStatus.batteryPercent;
-      final activated = currentStatus.activated ||
-          runtimeStatus?.isProvisioned == true ||
-          runtimeStatus?.txEnabled == true;
+      final activated = currentStatus.activated;
 
       final nextStatus = currentStatus.copyWith(
         deviceId: candidate.deviceId,
@@ -263,6 +261,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         paired: true,
         activated: activated,
         connected: true,
+        provisioningStatus: _provisioningStatusFromRuntime(runtimeStatus),
         batteryPercent: runtimeBatteryPercent,
         lifecycleState: activated
             ? DeviceLifecycleState.ready
@@ -427,9 +426,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       final runtimeBatteryPercent = runtimeStatus == null
           ? currentStatus.batteryPercent
           : runtimeStatus.batteryPercent;
-      final activated = currentStatus.activated ||
-          runtimeStatus?.isProvisioned == true ||
-          runtimeStatus?.txEnabled == true;
+      final activated = currentStatus.activated;
 
       final nextStatus = currentStatus.copyWith(
         deviceId: deviceId,
@@ -443,6 +440,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         paired: true,
         activated: activated,
         connected: true,
+        provisioningStatus: _provisioningStatusFromRuntime(runtimeStatus),
         batteryPercent: runtimeBatteryPercent,
         lifecycleState: activated
             ? DeviceLifecycleState.ready
@@ -751,7 +749,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     Future<void> commandWriter(EixamDeviceCommand command) {
       _lastAppCommandAt = DateTime.now();
       BleDebugRegistry.instance.recordEvent(
-        'BLE app command tracked -> hardwareId=$deviceId command=${command.label} payload=${command.encodedHex}',
+        'BLE app command tracked -> hardwareId=$deviceId command=${command.label} payload=${command.diagnosticPayload}',
       );
       return _bleClient.writeDeviceCommand(deviceId, command);
     }
@@ -966,6 +964,9 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     final nextStatus = currentStatus.copyWith(
       connected: connected,
       canonicalHardwareId: currentStatus.canonicalHardwareId,
+      provisioningStatus: mode == DeviceRefreshMode.heartbeat
+          ? currentStatus.provisioningStatus
+          : _provisioningStatusFromRuntime(runtimeStatus),
       batteryPercent: runtimeBatteryPercent,
       batteryLevel: connected && runtimeStatus != null
           ? runtimeBatteryState?.protocolValue
@@ -1183,6 +1184,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       paired: false,
       activated: false,
       connected: false,
+      provisioningStatus: DeviceProvisioningStatus.unknown,
       batteryLevel: null,
       batteryState: null,
       batterySource: null,
@@ -1619,7 +1621,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     );
     if (runtimeStatusPacket != null) {
       _connectedBleTagNodeId = runtimeStatusPacket.status.nodeId;
-      _publishRuntimeNodeIdIfChanged(runtimeStatusPacket.status.nodeId);
+      _publishDeviceRuntimeStatus(runtimeStatusPacket.status);
       BleDebugRegistry.instance.recordEvent(
         'TEL classified -> type=device_status len=${payload.length} nodeId=${_formatNodeId(runtimeStatusPacket.status.nodeId)} battery=${runtimeStatusPacket.status.batteryPercent} telInterval=${runtimeStatusPacket.status.telIntervalSeconds}',
       );
@@ -2616,20 +2618,48 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     _publishRuntimeStatus(nextStatus, reason: reason);
   }
 
-  void _publishRuntimeNodeIdIfChanged(int nodeId) {
+  void _publishDeviceRuntimeStatus(DeviceRuntimeStatus runtimeStatus) {
     final currentStatus = _lastRuntimeStatus;
-    if (currentStatus == null || currentStatus.nodeId == nodeId) {
+    if (currentStatus == null) {
+      return;
+    }
+    final batteryState = _batteryStateFromPercent(runtimeStatus.batteryPercent);
+    final nextStatus = currentStatus.copyWith(
+      nodeId: runtimeStatus.nodeId,
+      provisioningStatus: _provisioningStatusFromRuntime(runtimeStatus),
+      batteryPercent: runtimeStatus.batteryPercent,
+      batteryLevel: batteryState?.protocolValue,
+      batteryState: batteryState,
+      batterySource: runtimeStatus.batteryPercent != null
+          ? DeviceBatterySource.deviceStatus
+          : DeviceBatterySource.unknown,
+      lastSeen: DateTime.now(),
+      lastSyncedAt: DateTime.now(),
+      clearProvisioningError: true,
+    );
+    final unchanged = currentStatus.nodeId == nextStatus.nodeId &&
+        currentStatus.provisioningStatus == nextStatus.provisioningStatus &&
+        currentStatus.batteryPercent == nextStatus.batteryPercent &&
+        currentStatus.batteryLevel == nextStatus.batteryLevel &&
+        currentStatus.batterySource == nextStatus.batterySource;
+    if (unchanged) {
       return;
     }
     _publishRuntimeStatus(
-      currentStatus.copyWith(
-        nodeId: nodeId,
-        lastSeen: DateTime.now(),
-        lastSyncedAt: DateTime.now(),
-        clearProvisioningError: true,
-      ),
-      reason: 'runtime_node_id_updated',
+      nextStatus,
+      reason: 'device_runtime_status_updated',
     );
+  }
+
+  DeviceProvisioningStatus _provisioningStatusFromRuntime(
+    DeviceRuntimeStatus? runtimeStatus,
+  ) {
+    if (runtimeStatus == null) {
+      return DeviceProvisioningStatus.unknown;
+    }
+    return runtimeStatus.isProvisioned
+        ? DeviceProvisioningStatus.provisioned
+        : DeviceProvisioningStatus.unprovisioned;
   }
 
   int? _effectiveBatteryLevel(DeviceStatus currentStatus) {

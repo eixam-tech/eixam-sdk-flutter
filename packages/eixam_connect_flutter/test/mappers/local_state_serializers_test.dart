@@ -129,6 +129,23 @@ void main() {
       expect(restored.batterySource, DeviceBatterySource.deviceStatus);
     });
 
+    test('does not persist authoritative provisioning status as a checkpoint',
+        () {
+      const status = DeviceStatus(
+        deviceId: 'device-1',
+        paired: true,
+        activated: false,
+        connected: true,
+        provisioningStatus: DeviceProvisioningStatus.provisioned,
+      );
+
+      final json = LocalStateSerializers.deviceStatusToJson(status);
+      final restored = LocalStateSerializers.deviceStatusFromJson(json);
+
+      expect(json, isNot(contains('provisioningStatus')));
+      expect(restored.provisioningStatus, DeviceProvisioningStatus.unknown);
+    });
+
     test('rejects invalid persisted exact battery percentage', () {
       final restored =
           LocalStateSerializers.deviceStatusFromJson(<String, dynamic>{

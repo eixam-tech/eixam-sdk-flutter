@@ -3,6 +3,47 @@ import 'package:test/test.dart';
 
 void main() {
   group('DeviceStatus', () {
+    test('provisioning is unknown unless authoritative status is supplied', () {
+      const status = DeviceStatus(
+        deviceId: 'device-1',
+        paired: true,
+        activated: true,
+        connected: true,
+      );
+
+      expect(status.provisioningStatus, DeviceProvisioningStatus.unknown);
+      expect(
+        status
+            .copyWith(
+              provisioningStatus: DeviceProvisioningStatus.unprovisioned,
+            )
+            .provisioningStatus,
+        DeviceProvisioningStatus.unprovisioned,
+      );
+    });
+
+    test('activation and provisioning remain independent', () {
+      const activatedButUnprovisioned = DeviceStatus(
+        deviceId: 'device-1',
+        paired: true,
+        activated: true,
+        connected: true,
+        provisioningStatus: DeviceProvisioningStatus.unprovisioned,
+      );
+      const provisionedButNotActivated = DeviceStatus(
+        deviceId: 'device-2',
+        paired: true,
+        activated: false,
+        connected: true,
+        provisioningStatus: DeviceProvisioningStatus.provisioned,
+      );
+
+      expect(activatedButUnprovisioned.provisioningStatus,
+          DeviceProvisioningStatus.unprovisioned);
+      expect(provisionedButNotActivated.activated, isFalse);
+      expect(provisionedButNotActivated.isReadyForSafety, isFalse);
+    });
+
     test('isReadyForSafety requires paired, activated, and connected', () {
       const ready = DeviceStatus(
         deviceId: 'device-1',

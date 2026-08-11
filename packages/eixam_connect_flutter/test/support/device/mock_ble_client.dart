@@ -195,7 +195,7 @@ class MockBleClient implements BleClient {
     }
 
     BleDebugRegistry.instance.update(
-      lastCommandSent: command.encodedHex,
+      lastCommandSent: command.diagnosticPayload,
       lastWriteTargetCharacteristic: command.targetCharacteristicUuid,
       lastWriteResult: 'SUCCESS',
       lastWriteAt: DateTime.now(),
