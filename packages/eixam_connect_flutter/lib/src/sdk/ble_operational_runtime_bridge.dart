@@ -213,6 +213,7 @@ class BleOperationalRuntimeBridge {
   Future<void> _handleBleIncomingEvent(BleIncomingEvent event) async {
     switch (event.type) {
       case BleIncomingEventType.deviceRuntimeStatus:
+      case BleIncomingEventType.provisioningCommandResult:
         return;
       case BleIncomingEventType.telPosition:
         await _publishTelemetryIfValid(event);

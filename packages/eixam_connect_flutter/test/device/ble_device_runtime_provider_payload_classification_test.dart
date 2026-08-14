@@ -4,6 +4,7 @@ import 'package:eixam_connect_flutter/src/device/ble_device_runtime_provider.dar
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_payload_classifier.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
+import 'package:eixam_connect_flutter/src/provisioning/provisioning_command_result.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/builders/device_status_builder.dart';
@@ -590,6 +591,59 @@ void main() {
 
       final event = await nextEvent;
       expect(event.type, BleIncomingEventType.unknownProtocolPacket);
+    });
+
+    test('routes E9 7A, E9 78, D3, TEL and SOS without collisions', () async {
+      final events = runtimeProvider.watchIncomingEvents().take(5).toList();
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.tel,
+        payload: const <int>[0xe9, 0x7a, 1, 0x20, 0, 3],
+      );
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.tel,
+        payload: bleClient.runtimeStatusPayload,
+      );
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.tel,
+        payload: _maximumLiveBatchPayload(),
+      );
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.tel,
+        payload: const <int>[
+          0x34,
+          0x12,
+          0,
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          0x80,
+          0x25,
+        ],
+      );
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.sos,
+        payload: _sosPayloadForNode(0x1234),
+      );
+
+      final routed = await events.timeout(const Duration(seconds: 2));
+      expect(routed.map((event) => event.type), <BleIncomingEventType>[
+        BleIncomingEventType.provisioningCommandResult,
+        BleIncomingEventType.deviceRuntimeStatus,
+        BleIncomingEventType.telLivePositionBatch,
+        BleIncomingEventType.telPosition,
+        BleIncomingEventType.sosMeshPacket,
+      ]);
+      expect(routed.first.provisioningCommandResult?.outcome,
+          ProvisioningCommandOutcome.ok);
     });
 
     test('does not swallow a 7-byte SOS whose node id starts with D3',

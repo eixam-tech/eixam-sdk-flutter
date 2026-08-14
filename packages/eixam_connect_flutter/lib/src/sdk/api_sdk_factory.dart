@@ -11,6 +11,7 @@ import '../data/datasources_remote/sdk_device_config_remote_data_source.dart';
 import '../data/datasources_remote/sdk_feedback_remote_data_source.dart';
 import '../data/datasources_remote/sdk_geo_country_remote_data_source.dart';
 import '../data/datasources_remote/sdk_identity_remote_data_source.dart';
+import '../data/datasources_remote/sdk_network_psk_remote_data_source.dart';
 import '../data/datasources_remote/sdk_profile_remote_data_source.dart';
 import '../data/datasources_remote/sdk_session_context.dart';
 import '../data/datasources_remote/sdk_contacts_remote_data_source.dart';
@@ -30,6 +31,7 @@ import '../device/ble_device_runtime_provider.dart';
 import '../device/ble_debug_registry.dart';
 import '../device/lazy_initializing_ble_client.dart';
 import '../device/real_ble_client.dart';
+import '../provisioning/strict_device_provisioning_config.dart';
 import 'eixam_connect_sdk_impl.dart';
 import 'firmware_dfu_transport_factory.dart';
 import 'firmware_update_coordinator.dart';
@@ -95,6 +97,10 @@ class ApiSdkFactory {
         HttpSdkFirmwareRemoteDataSource(transport: httpTransport);
     final deviceConfigRemoteDataSource =
         HttpSdkDeviceConfigRemoteDataSource(transport: httpTransport);
+    final networkPskRemoteDataSource =
+        HttpSdkNetworkPskRemoteDataSource(transport: httpTransport);
+    final provisioningConfigSource =
+        HttpStrictDeviceProvisioningConfigSource(transport: httpTransport);
     final geoCountryRemoteDataSource =
         HttpSdkGeoCountryRemoteDataSource(transport: httpTransport);
     final deviceConfigStore = DeviceConfigStore(localStore: store);
@@ -171,6 +177,9 @@ class ApiSdkFactory {
       feedbackRemoteDataSource: feedbackRemoteDataSource,
       geoCountryRemoteDataSource: geoCountryRemoteDataSource,
       deviceConfigRemoteDataSource: deviceConfigRemoteDataSource,
+      networkPskRemoteDataSource: networkPskRemoteDataSource,
+      provisioningConfigSource: provisioningConfigSource,
+      provisioningBackendUrl: apiBaseUrl,
       deviceConfigStore: deviceConfigStore,
       firmwareUpdateCoordinator: FirmwareUpdateCoordinator(
         deviceRepository: deviceRepository,

@@ -6,6 +6,7 @@ import '../entities/ble_notification_navigation_request.dart';
 import '../entities/backend_registered_device.dart';
 import '../entities/ble_command_channel_status.dart';
 import '../entities/device_country_config_status.dart';
+import '../entities/device_ready.dart';
 import '../entities/device_sos_status.dart';
 import '../entities/device_status.dart';
 import '../entities/device_runtime_status.dart';
@@ -181,6 +182,8 @@ abstract class EixamConnectSdk {
   Stream<BleCommandChannelStatus> watchDeviceCommandChannelStatus();
   Future<PreferredDevice?> get preferredDevice;
   Stream<DeviceStatus> get deviceStatusStream;
+  Future<DeviceReadyResult> ensureDeviceReady();
+  Stream<DeviceProvisioningState> watchDeviceProvisioningState();
   Future<PreferredDeviceReconnectResult> bootstrapPreferredDeviceReconnect({
     String reason = 'startup',
     String? attemptId,

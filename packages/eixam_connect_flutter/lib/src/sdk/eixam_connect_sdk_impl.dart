@@ -18,6 +18,7 @@ import '../data/datasources_remote/sdk_device_config_remote_data_source.dart';
 import '../data/datasources_remote/sdk_feedback_remote_data_source.dart';
 import '../data/datasources_remote/sdk_geo_country_remote_data_source.dart';
 import '../data/datasources_remote/sdk_identity_remote_data_source.dart';
+import '../data/datasources_remote/sdk_network_psk_remote_data_source.dart';
 import '../data/datasources_remote/sdk_profile_remote_data_source.dart';
 import '../device/ble_incoming_event.dart';
 import '../device/ble_incoming_payload_classifier.dart';
@@ -29,6 +30,8 @@ import '../device/eixam_ble_protocol.dart';
 import '../device/ble_scan_result.dart';
 import '../device/eixam_sos_event_packet.dart';
 import '../device/eixam_sos_packet.dart';
+import '../provisioning/device_provisioning_coordinator.dart';
+import '../provisioning/strict_device_provisioning_config.dart';
 import '../data/datasources_remote/sdk_session_context.dart';
 import '../data/repositories/telemetry_repository.dart';
 import '../data/repositories/sos_runtime_rehydration_support.dart';
@@ -96,6 +99,9 @@ class EixamConnectSdkImpl
     this.feedbackRemoteDataSource,
     this.geoCountryRemoteDataSource,
     this.deviceConfigRemoteDataSource,
+    this.networkPskRemoteDataSource,
+    this.provisioningConfigSource,
+    this.provisioningBackendUrl,
     this.deviceConfigStore,
     this.firmwareUpdateCoordinator,
     this.notificationPolicy = EixamNotificationPolicy.sdkManaged,
@@ -304,6 +310,9 @@ class EixamConnectSdkImpl
   final SdkFeedbackRemoteDataSource? feedbackRemoteDataSource;
   final SdkGeoCountryRemoteDataSource? geoCountryRemoteDataSource;
   final SdkDeviceConfigRemoteDataSource? deviceConfigRemoteDataSource;
+  final SdkNetworkPskRemoteDataSource? networkPskRemoteDataSource;
+  final StrictDeviceProvisioningConfigSource? provisioningConfigSource;
+  final String? provisioningBackendUrl;
   final DeviceConfigStore? deviceConfigStore;
   final EixamNotificationPolicy notificationPolicy;
   final EixamNotificationTexts notificationTexts;
@@ -313,6 +322,7 @@ class EixamConnectSdkImpl
   final BackgroundTelemetryPlatformAdapter backgroundTelemetryPlatformAdapter;
   final FirmwareUpdateCoordinator? firmwareUpdateCoordinator;
   DeviceCountryConfigController? _deviceCountryConfigController;
+  DeviceProvisioningCoordinator? _deviceProvisioningCoordinator;
   final StreamController<DeviceCountryConfigStatus>
       _deviceCountryConfigStatusController =
       StreamController<DeviceCountryConfigStatus>.broadcast();
@@ -2093,6 +2103,120 @@ class EixamConnectSdkImpl
 
   @override
   Stream<DeviceStatus> get deviceStatusStream => watchDeviceStatus();
+
+  @override
+  Future<DeviceReadyResult> ensureDeviceReady() async {
+    final coordinator = _deviceProvisioningCoordinator ??=
+        _buildDeviceProvisioningCoordinator();
+    if (coordinator == null) {
+      return const DeviceReadyResult.failed(
+        DeviceReadyFailure(
+          code: DeviceReadyFailureCode.configurationUnavailable,
+          retryable: false,
+        ),
+      );
+    }
+    return coordinator.ensureReady();
+  }
+
+  @override
+  Stream<DeviceProvisioningState> watchDeviceProvisioningState() async* {
+    final coordinator = _deviceProvisioningCoordinator ??=
+        _buildDeviceProvisioningCoordinator();
+    if (coordinator == null) {
+      yield const DeviceProvisioningState(
+        phase: DeviceProvisioningPhase.failed,
+        failure: DeviceReadyFailure(
+          code: DeviceReadyFailureCode.configurationUnavailable,
+          retryable: false,
+        ),
+      );
+      return;
+    }
+    yield* coordinator.watchState();
+  }
+
+  DeviceProvisioningCoordinator? _buildDeviceProvisioningCoordinator() {
+    final pskSource = networkPskRemoteDataSource;
+    final configSource = provisioningConfigSource;
+    final apiBaseUrl = provisioningBackendUrl;
+    final geoSource = geoCountryRemoteDataSource;
+    if (pskSource == null ||
+        configSource == null ||
+        apiBaseUrl == null ||
+        geoSource == null) {
+      return null;
+    }
+    return DeviceProvisioningCoordinator(
+      statusProvider: refreshDeviceStatus,
+      liveStatusProvider: () async {
+        final repository = deviceRepository;
+        if (repository is! InMemoryDeviceRepository) {
+          throw const DeviceException(
+            'E_DEVICE_LIVE_FIRMWARE_UNAVAILABLE',
+            'E_DEVICE_LIVE_FIRMWARE_UNAVAILABLE',
+          );
+        }
+        return repository.refreshDeviceStatusForFirmwareValidation(
+          reason: 'device_provisioning_live_firmware_gate',
+        );
+      },
+      runtimeStatusProvider: getDeviceRuntimeStatus,
+      countryIsoProvider: () async {
+        final location = await _resolveLocation(
+          useCase: SdkResolvedLocationUseCase.emergencyBackend,
+        );
+        if (location == null) {
+          throw const ProvisioningContractException();
+        }
+        final country = await geoSource.resolveCountry(
+          latitude: location.latitude,
+          longitude: location.longitude,
+        );
+        return country.countryIso;
+      },
+      pskSource: pskSource,
+      configSource: configSource,
+      backendUrl: apiBaseUrl,
+      writeCommand: _sendDeviceCommandThroughActiveOwner,
+      incomingPackets: bleIncomingEvents.map((event) => event.payload),
+      deviceStatusChanges: deviceStatusStream,
+      reboot: _rebootDeviceAndAwaitExpectedDisconnect,
+      reconnectSameDevice: _reconnectProvisionedDevice,
+      // Intentionally closed until firmware contains both the 0x20 persistence
+      // fix and truthful 0x24 COMMIT ACK fix. The certified minimum is then set
+      // in this single policy without changing orchestration.
+      firmwarePolicy: const ProvisioningFirmwarePolicy.pendingCertification(),
+    );
+  }
+
+  Future<void> _rebootDeviceAndAwaitExpectedDisconnect() async {
+    await const ProvisioningRebootDisconnectPolicy().writeAndAwait(
+      writeReboot: rebootDevice,
+      statuses: deviceStatusStream,
+    );
+  }
+
+  Future<bool> _reconnectProvisionedDevice(String platformDeviceId) async {
+    final result = await reconnectPreferredDevice(
+      reason: 'device_provisioning_reboot',
+      platformRemoteId: platformDeviceId,
+    );
+    if (result.connected) {
+      return true;
+    }
+    if (!result.reconnecting) {
+      return false;
+    }
+    try {
+      final status = await deviceStatusStream
+          .firstWhere((candidate) => candidate.connected)
+          .timeout(const Duration(seconds: 15));
+      return status.deviceId == platformDeviceId;
+    } on TimeoutException {
+      return false;
+    }
+  }
 
   @override
   Future<PreferredDeviceReconnectResult> bootstrapPreferredDeviceReconnect({
@@ -17489,6 +17613,7 @@ class EixamConnectSdkImpl
     await backgroundLocationPlatformAdapter.dispose();
     await _deviceCountryConfigStatusSub?.cancel();
     await _deviceCountryConfigController?.dispose();
+    await _deviceProvisioningCoordinator?.dispose();
     await firmwareUpdateCoordinator?.dispose();
     await _operationalTelemetryCoordinator.stop();
     await _trackingOwnerArbiter.dispose();

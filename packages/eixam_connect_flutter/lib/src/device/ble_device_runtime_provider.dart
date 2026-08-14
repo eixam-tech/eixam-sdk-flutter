@@ -27,6 +27,7 @@ import 'eixam_tel_live_batch_packet.dart';
 import 'eixam_tel_relay_cluster_packet.dart';
 import 'eixam_tel_reassembler.dart';
 import 'eixam_tel_relay_rx_packet.dart';
+import '../provisioning/provisioning_command_result.dart';
 
 class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   BleDeviceRuntimeProvider({
@@ -1573,6 +1574,31 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       channel: notification.channel,
       classificationBefore: 'before_tel_dispatch',
     );
+    final provisioningResult = ProvisioningCommandResult.tryParse(payload);
+    if (provisioningResult != null) {
+      BleDebugRegistry.instance.recordDecodedIncomingEvent(
+        eventType: BleIncomingEventType.provisioningCommandResult.name,
+        outcome: BleIncomingEventType.provisioningCommandResult.name,
+        receivedAt: notification.receivedAt,
+      );
+      _incomingEventsController.add(
+        BleIncomingEvent(
+          deviceId: deviceId,
+          canonicalHardwareId: _connectedCanonicalHardwareId,
+          deviceAlias: _connectedDeviceAlias,
+          type: BleIncomingEventType.provisioningCommandResult,
+          channel: notification.channel,
+          payload: List<int>.unmodifiable(payload),
+          payloadHex: payloadHex,
+          source: source,
+          receivedAt: notification.receivedAt,
+          meshPort: notification.meshPort,
+          provisioningCommandResult: provisioningResult,
+        ),
+      );
+      return;
+    }
+
     if (payload.isNotEmpty && payload.first == EixamTelLiveBatchPacket.opcode) {
       final liveBatch = EixamTelLiveBatchPacket.tryParse(
         payload,

@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import '../diagnostics/security_diagnostics_redactor.dart';
 import 'ble_command_criticality.dart';
 import 'eixam_ble_protocol.dart';
@@ -112,6 +114,26 @@ class EixamDeviceCommand {
         bytes: <int>[0x20, regionCode & 0xFF],
         forceCmdCharacteristic: true,
       );
+
+  factory EixamDeviceCommand.provisioningFrame({
+    required String label,
+    required List<int> bytes,
+    required bool secret,
+  }) {
+    if (bytes.isEmpty ||
+        (bytes.first != 0x20 && bytes.first != 0x21 && bytes.first != 0x24)) {
+      throw ArgumentError('Invalid provisioning frame.');
+    }
+    return EixamDeviceCommand._(
+      opcode: bytes.first,
+      label: label,
+      bytes: Uint8List.fromList(bytes),
+      forceCmdCharacteristic: true,
+      payloadSensitivity: (secret || bytes.first == 0x24)
+          ? BleCommandPayloadSensitivity.secret
+          : BleCommandPayloadSensitivity.operational,
+    );
+  }
   const EixamDeviceCommand._({
     required this.opcode,
     required this.label,
@@ -128,11 +150,30 @@ class EixamDeviceCommand {
   final bool forceCmdCharacteristic;
   final BleCommandPayloadSensitivity payloadSensitivity;
 
-  List<int> encode() => List<int>.unmodifiable(bytes);
+  List<int> encode() =>
+      payloadSensitivity == BleCommandPayloadSensitivity.secret
+          ? bytes
+          : List<int>.unmodifiable(bytes);
+
+  /// Clears the command-owned payload copy after a secret write completes.
+  /// Callers must await the transport write before invoking this method.
+  void dispose() {
+    if (payloadSensitivity == BleCommandPayloadSensitivity.secret &&
+        bytes is Uint8List) {
+      (bytes as Uint8List).fillRange(0, bytes.length, 0);
+    }
+  }
 
   BleCommandCriticality get criticality {
     return switch (opcode) {
-      0x04 || 0x06 || 0x10 || 0x20 || 0x22 => BleCommandCriticality.critical,
+      0x04 ||
+      0x06 ||
+      0x10 ||
+      0x20 ||
+      0x21 ||
+      0x22 ||
+      0x24 =>
+        BleCommandCriticality.critical,
       _ => BleCommandCriticality.nonCritical,
     };
   }
@@ -147,7 +188,10 @@ class EixamDeviceCommand {
       ? EixamBleProtocol.cmdWriteCharacteristicUuid
       : EixamBleProtocol.inetWriteCharacteristicUuid;
 
-  String get encodedHex => EixamBleProtocol.hex(encode());
+  String get encodedHex =>
+      payloadSensitivity == BleCommandPayloadSensitivity.secret
+          ? '<redacted-secret-payload>'
+          : EixamBleProtocol.hex(encode());
 
   /// Diagnostic representation of the payload. A future secret-bearing
   /// command must set [payloadSensitivity] to `secret`; its bytes will then be
