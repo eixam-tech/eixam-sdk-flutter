@@ -2183,10 +2183,9 @@ class EixamConnectSdkImpl
       deviceStatusChanges: deviceStatusStream,
       reboot: _rebootDeviceAndAwaitExpectedDisconnect,
       reconnectSameDevice: _reconnectProvisionedDevice,
-      // Intentionally closed until firmware contains both the 0x20 persistence
-      // fix and truthful 0x24 COMMIT ACK fix. The certified minimum is then set
-      // in this single policy without changing orchestration.
-      firmwarePolicy: const ProvisioningFirmwarePolicy.pendingCertification(),
+      // Greenfield provisioning has one canonical certified firmware baseline.
+      // Devices outside this contract update firmware before mutating writes.
+      firmwarePolicy: const ProvisioningFirmwarePolicy.current(),
     );
   }
 

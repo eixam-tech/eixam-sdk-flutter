@@ -10,21 +10,18 @@ import 'softsim_transport.dart';
 import 'strict_device_provisioning_config.dart';
 
 final class ProvisioningFirmwarePolicy {
-  const ProvisioningFirmwarePolicy.pendingCertification()
-      : minimumSupportedVersion = null;
-  const ProvisioningFirmwarePolicy.certified(this.minimumSupportedVersion);
+  const ProvisioningFirmwarePolicy.current();
 
-  final String? minimumSupportedVersion;
+  static const String certifiedBaselineVersion = '2.7.37';
 
   bool supports(String? version) {
-    final minimum = minimumSupportedVersion;
-    if (minimum == null || version == null) return false;
+    if (version == null) return false;
     final actualParts = _parts(version);
-    final minimumParts = _parts(minimum);
-    if (actualParts == null || minimumParts == null) return false;
+    final baselineParts = _parts(certifiedBaselineVersion);
+    if (actualParts == null || baselineParts == null) return false;
     for (var index = 0; index < 3; index++) {
-      if (actualParts[index] != minimumParts[index]) {
-        return actualParts[index] > minimumParts[index];
+      if (actualParts[index] != baselineParts[index]) {
+        return actualParts[index] > baselineParts[index];
       }
     }
     return true;
@@ -102,8 +99,7 @@ final class DeviceProvisioningCoordinator {
     required Stream<DeviceStatus> deviceStatusChanges,
     required this.reboot,
     required this.reconnectSameDevice,
-    this.firmwarePolicy =
-        const ProvisioningFirmwarePolicy.pendingCertification(),
+    this.firmwarePolicy = const ProvisioningFirmwarePolicy.current(),
     this.softSimRejectionObservationInterval =
         const Duration(milliseconds: 250),
   }) : _packets = incomingPackets.asBroadcastStream() {

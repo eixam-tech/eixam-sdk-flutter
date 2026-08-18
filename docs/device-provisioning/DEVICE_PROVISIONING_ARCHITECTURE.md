@@ -2,21 +2,22 @@
 
 Status: canonical internal provisioning reference for SDK Phase 2A
 
-Snapshot date: 2026-08-14
+Snapshot date: 2026-08-18
 
 Audience: SDK, firmware, backend, application, QA, and release engineers
 
-> **Certification boundary:** firmware `2.7.34` is **not certified for
-> mutating SDK provisioning**. The production SDK policy is deliberately
-> closed, so the current implementation cannot send provisioning writes to a
-> real TAG. See [Firmware compatibility policy](#23-firmware-compatibility-policy).
+> **Greenfield certification boundary:** the current SDK generation has one
+> canonical provisioning firmware baseline: `2.7.37`. A TAG on older,
+> malformed, or unreadable firmware returns `firmwareUpdateRequired` before any
+> mutating provisioning write. See
+> [Firmware compatibility policy](#23-firmware-compatibility-policy).
 
 This document separates three kinds of statement:
 
 - **Implemented contract** — present in the reviewed Phase 2A SDK or confirmed
   directly in current firmware/backend source.
-- **Current certification status** — an implemented path that remains disabled
-  until the firmware is corrected and certified.
+- **Current certification status** — the single firmware baseline certified for
+  this greenfield SDK generation.
 - **External follow-up** — work owned outside this SDK change.
 
 ## Contents
@@ -44,7 +45,7 @@ This document separates three kinds of statement:
 21. [Canonical `ensureDeviceReady` flow](#21-canonical-ensuredeviceready-flow)
 22. [Final verification](#22-final-verification)
 23. [Firmware compatibility policy](#23-firmware-compatibility-policy)
-24. [Current external firmware blockers](#24-current-external-firmware-blockers)
+24. [Current external firmware follow-ups](#24-current-external-firmware-follow-ups)
 25. [Failure and retry model](#25-failure-and-retry-model)
 26. [Security model](#26-security-model)
 27. [Cancellation and lifecycle safety](#27-cancellation-and-lifecycle-safety)
@@ -97,17 +98,18 @@ ready because `PROVISIONED=1` does not prove current-app assignment.
 | Component | Audited state |
 | --- | --- |
 | SDK branch | `feat/device-provisioning-phase2` |
-| SDK Phase 1/base commit | `b924659ea41a60b6b11e8432142b0b0073fe083d` |
-| SDK Phase 2A | Reviewed, uncommitted working-tree implementation when this document was created |
+| SDK HEAD at certification patch start | `a9c972a04c3194d85448cb7aaa1eab9be9b6888c` |
 | D3 semantic TAG positions | `b2bf27e893078189ce43236471c9a4b4293087bb` |
-| Firmware version | `2.7.34` |
-| Firmware audited main | `865722b02ade21054fc88f733b73649885db257c` |
+| Certified provisioning firmware baseline | `2.7.37` |
+| Firmware audited main | `4ef9d04227a27c486efb8cb1d5c7e73787d0d969` |
+| Firmware source branch | `main` |
 | Backend audited main | `fd284b6debe37f5021345fbc60c1b60ff022bc40` |
 
-**Firmware `2.7.34` is not certified for mutating SDK provisioning.** The SDK
-uses `ProvisioningFirmwarePolicy.pendingCertification()`, whose minimum version
-is unset and whose compatibility decision is therefore always false. This is
-an intentional release barrier, not an incomplete SDK execution path.
+**Firmware `2.7.37` is the canonical certified baseline for mutating SDK
+provisioning.** Eixam is greenfield: the SDK does not maintain a provisioning
+compatibility matrix and does not implement fallback wire behavior for older
+firmware milestones. A physical TAG currently running `2.7.31` must be updated
+to `2.7.37` before `ensureDeviceReady()` attempts provisioning.
 
 ## 3. Responsibility boundaries
 
@@ -282,15 +284,17 @@ broader BLE integration contract remains in
 | `ea03` | INET/small command write path |
 | `ea04` | CMD/larger command write path |
 
-Provisioning commands are forced through CMD (`ea04`). Its current application
-payload limit is 16 bytes, which determines the 12-byte SoftSIM CHUNK data
-limit after the four-byte CHUNK header.
+Provisioning commands are forced through CMD (`ea04`). The SDK intentionally
+sends SoftSIM CHUNK frames with 12 data bytes after the four-byte CHUNK header.
+Current firmware can accept larger CHUNK data on its own write path, but the
+reviewed SDK transport contract remains 12 bytes because provisioning is
+infrequent and there is no product value in changing it now.
 
 ## 8. Command overview
 
 | Opcode | Purpose |
 | --- | --- |
-| `0x20` | Full TEL/LoRa RF configuration; a legacy short region form also exists |
+| `0x20` | Full TEL/LoRa RF configuration |
 | `0x21` | SOS RF configuration |
 | `0x22` | Reboot to apply persisted configuration/runtime policy |
 | `0x23` | Request runtime/device status |
@@ -394,16 +398,16 @@ The accepted source-certified EU868 constraints are:
 - coding rate exactly 4/5;
 - uplink power 0–14 dBm.
 
-Firmware still supports a legacy short `0x20` region form. The readiness
-orchestrator does not use it.
+The readiness orchestrator always sends the full `0x20` TEL RF frame. It does
+not attempt alternate provisioning behavior for older firmware.
 
 The SDK waits for a matching command result. `OK` and `OK_NOCHANGE` are both
 semantic success for `0x20`; `REJECT` is failure. In firmware, detail normally
 contains the region code.
 
-**Current certification caveat:** audited firmware `2.7.34` still has a
-persistence/idempotency behavior awaiting Joan's final correction. It is not
-approved for this mutating flow.
+Certified firmware `2.7.37` preserves the `0x20` persistence/idempotency fix:
+on persistence failure, firmware restores `config.lora`, emits `REJECT`, and a
+retry cannot falsely succeed as `OK_NOCHANGE`.
 
 ## 12. `0x21` SOS RF contract
 
@@ -514,8 +518,10 @@ COMMIT [0x24 0x03]
 ABORT  [0x24 0x04]
 ```
 
-BEGIN is 8 bytes. COMMIT and ABORT are 2 bytes. CMD (`ea04`) permits a 16-byte
-application payload, so CHUNK has four header bytes and at most 12 data bytes.
+BEGIN is 8 bytes. COMMIT and ABORT are 2 bytes. The SDK sends 12 SoftSIM data
+bytes per CHUNK, producing 16-byte CMD frames with the four-byte CHUNK header.
+This is an SDK transport choice, not a claim that firmware cannot accept a
+larger CHUNK on the same opcode.
 
 For the 230-byte blob, the SDK sends exactly 20 contiguous CHUNK frames:
 
@@ -733,18 +739,29 @@ before final runtime verification; wrong node identity produces
 > **CURRENT CERTIFICATION STATUS**
 >
 > ```text
-> Firmware 2.7.34: NOT CERTIFIED
+> Certified provisioning firmware baseline: 2.7.37
+> Firmware source: main / 4ef9d04227a27c486efb8cb1d5c7e73787d0d969
 > ```
 
 Production wiring constructs:
 
 ```dart
-const ProvisioningFirmwarePolicy.pendingCertification()
+const ProvisioningFirmwarePolicy.current()
 ```
 
-An unset certified minimum rejects every firmware version, including `2.7.34`
-and hypothetical newer versions. For a virgin TAG, the live firmware gate
-therefore returns `firmwareUpdateRequired` before PSK retrieval or mutation.
+Eixam is greenfield. There are no external SDK consumers requiring historical
+provisioning compatibility, so the SDK does not contain a firmware compatibility
+matrix, alternate provisioning implementations, or legacy fallback behavior for
+older firmware milestones such as `2.7.35` or `2.7.36`.
+
+The policy is intentionally small: parse a semantic firmware version and accept
+the current certified baseline `2.7.37` or a later semantic version. This later
+version acceptance is the existing fail-closed version subsystem behavior, not a
+promise that old provisioning contracts remain supported. Missing, malformed,
+or older metadata fails closed.
+
+For a virgin TAG on unsupported firmware, the live firmware gate returns
+`firmwareUpdateRequired` before PSK retrieval or mutation.
 
 The zero-write consequence is explicit:
 
@@ -753,38 +770,35 @@ The zero-write consequence is explicit:
 - no `0x21`;
 - no provisioning `0x22` reboot.
 
-The final minimum version will be configured only after Joan's firmware fixes,
-a version bump, and focused firmware microaudit. This document does not guess
-the eventual version number.
+The physical TAG currently running `2.7.31` must be updated to `2.7.37` before
+`ensureDeviceReady()` can perform provisioning.
 
-## 24. Current external firmware blockers
+## 24. Current external firmware follow-ups
 
-These are external certification blockers, not SDK correctness defects.
+There are no source-level firmware blockers for SDK provisioning against
+baseline `2.7.37`.
 
-### Blocker A — `0x20` persistence/idempotency
+### Historical milestone
 
-Current `2.7.34` may mutate RAM, fail persistence, return `REJECT`, then return
-a false `OK_NOCHANGE` when the same state is retried. Joan is correcting the
-persistence/idempotency behavior so the result truthfully represents durable
-state.
+Historical milestone `2.7.35` is where the final `0x20`
+persistence/idempotency and truthful `0x24` COMMIT ACK fixes first landed. It is
+not the public SDK baseline for this greenfield product generation.
 
-### Blocker B — `0x24` COMMIT truthfulness
+### Documentation follow-up
 
-Current `2.7.34` may save `config.bin`, fail to apply or persist the PRIMARY
-PSK, and still return `OK`. Joan is correcting COMMIT so success means all
-required durable/runtime effects succeeded.
+Remaining textual follow-up outside this SDK patch: firmware document
+`firmware/docs/eixam/31_BACKEND_SOFTSIM_CLAIM.md` still describes
+`backendToken` as a generated API key/JWT/opaque credential and says it is not
+the `nodeId`. The canonical project contract is instead:
 
-### Blocker C — final firmware certification
+```text
+backendToken = backend hardware_id = unsigned decimal nodeId.toString()
+```
 
-After both fixes:
+### Physical TAG follow-up
 
-1. bump the firmware version;
-2. run the focused firmware microaudit;
-3. configure the SDK's certified minimum;
-4. run the physical E2E sequence.
-
-Until those steps finish, firmware `2.7.34` remains blocked regardless of the
-completeness of the SDK implementation.
+Physical E2E still requires updating the current `2.7.31` TAG to `2.7.37`
+before provisioning.
 
 ## 25. Failure and retry model
 
@@ -945,16 +959,21 @@ chunk indexes, ACK packets, or BLE characteristic decisions.
 
 ## 29. Testing status
 
-Validated at documentation creation:
+Validated during the greenfield `2.7.37` certification update:
 
 | Validation | Result |
 | --- | --- |
-| Full Flutter SDK suite | 797 passing |
+| Full Flutter package suite | 791 passing, 4 failing due unrelated test-harness/load issues: `privacy_manifest_contract_test.dart` recursively enters a stale generated Android `build` path, and three mixed-batch diagnostics failures pass when isolated |
+| Flutter SDK package suite (`test/sdk`) | 406 passing |
+| Flutter data package suite (`test/data`) | 127 passing |
+| Flutter device package suite (`test/device`) | 97 passing |
 | Core Dart suite | 132 passing |
-| Focused provisioning suite | 52 passing |
-| Provider routing/SOS/D3 suite | 19 passing |
-| `flutter analyze --no-fatal-infos` | No errors or warnings; 3 pre-existing informational implementation-import notices |
-| `git diff --check` | Clean |
+| Focused provisioning suite | 55 passing |
+| SOS regression suite | 307 passing when serialized |
+| D3 regression suite | 49 passing |
+| Package `flutter analyze --no-fatal-infos` | No errors or warnings; 3 pre-existing informational implementation-import notices |
+| Root `flutter analyze --no-fatal-infos` | Not clean under the current root analyzer layout; unresolved `eixam_connect_ui` Flutter/core imports plus 3 implementation-import infos |
+| `git diff --check` | Pending in this snapshot |
 
 High-value covered scenarios include:
 
@@ -965,7 +984,7 @@ High-value covered scenarios include:
 - cancellation/disposal during BEGIN and CHUNK with no later writes;
 - secret diagnostics redaction and buffer cleanup after success/failure/timeout;
 - stale cached firmware overridden by a live unsupported version;
-- pending-certification zero-write behavior;
+- older, missing, and malformed firmware zero-write eligibility behavior;
 - already-provisioned assignment-unverified behavior;
 - reboot lower bound, accepted disconnect, and missing disconnect;
 - reconnect platform identity, node identity, and fresh final `0x23`;
@@ -1014,11 +1033,8 @@ environment, timestamps, and semantic outcomes without recording secrets.
 
 ## 31. Production release gate
 
-- [ ] Joan's final `0x20` persistence/idempotency correction is merged.
-- [ ] Joan's truthful `0x24` COMMIT correction is merged.
-- [ ] Firmware version is bumped; it is not assumed in advance.
-- [ ] Focused firmware microaudit passes.
-- [ ] SDK certified minimum firmware is configured in a small reviewed patch.
+- [x] Firmware `2.7.37` is certified as the greenfield provisioning baseline.
+- [x] SDK certified provisioning firmware baseline is configured as `2.7.37`.
 - [ ] SDK analyze and full/focused tests pass at the release head.
 - [ ] Physical provisioning E2E passes on supported mobile platforms.
 - [ ] TEL operation passes after provisioning and power cycle.
@@ -1031,8 +1047,7 @@ environment, timestamps, and semantic outcomes without recording secrets.
 - [ ] Partner-facing documentation reflects the certified release behavior.
 
 No single checked item overrides the others. In particular, a green SDK suite
-does not certify firmware, and a firmware version bump without microaudit and
-physical E2E does not open the SDK gate.
+does not replace physical E2E on the updated TAG.
 
 ## 32. Known non-goals
 
@@ -1047,7 +1062,7 @@ Phase 2A does not include:
 - cryptographic proof of current-app assignment for pre-provisioned devices;
 - full RF parameter readback after reboot.
 
-Once firmware ACKs are truthful, command ACK plus fresh final `0x23` is the
+For certified firmware `2.7.37`, command ACK plus fresh final `0x23` is the
 intended MVP verification model. The ACK proves that the requested persistent
 operation reported success; the fresh status proves identity, provisioning,
 region, preset policy, TX enablement, and effective SF after reboot. Full RF
@@ -1059,22 +1074,19 @@ readback could strengthen a future protocol but is not required for this MVP.
 | --- | --- | --- |
 | D3 semantic TAG positions | `b2bf27e893078189ce43236471c9a4b4293087bb` | Added typed live batched-position support and collision-safe routing |
 | Provisioning Phase 1 | `b924659ea41a60b6b11e8432142b0b0073fe083d` | Added provisioning foundations and authoritative runtime status semantics |
-| Provisioning Phase 2A | Uncommitted at this snapshot | Adds closed-gate orchestration, strict contracts, secret safety, ACK/reboot/reconnect verification, and public readiness state |
-| Firmware `2.7.34` | Audited, not certified | Provides source contracts but retains two truthfulness/persistence blockers |
-| Final firmware certification | Pending | Enables selection of the real SDK minimum and physical E2E |
+| Provisioning Phase 2A | `a9c972a04c3194d85448cb7aaa1eab9be9b6888c` plus this certification patch | Adds greenfield orchestration, strict contracts, secret safety, ACK/reboot/reconnect verification, and public readiness state |
+| Firmware `2.7.35` | Historical milestone | First landed the final `0x20` persistence and truthful `0x24` ACK fixes |
+| Firmware `2.7.37` | Certified baseline | Canonical provisioning firmware for the current SDK generation |
 
 ## 34. Next actions
 
-1. Review this canonical document and commit SDK Phase 2A with it.
-2. Joan completes the `0x20` persistence/idempotency fix.
-3. Joan completes the truthful `0x24` COMMIT fix.
-4. Bump the firmware version after both corrections.
-5. Run the focused firmware microaudit.
-6. Set the SDK certified minimum firmware to the audited version.
-7. Review and commit that small SDK certification patch.
-8. Run the physical TAG E2E and recovery matrix.
-9. Integrate and validate the demo against the committed SDK revision.
-10. Integrate and validate the commercial app against the committed SDK revision.
+1. Review this greenfield certification patch.
+2. Update the physical TAG from `2.7.31` to firmware `2.7.37`.
+3. Run the physical TAG E2E and recovery matrix.
+4. Correct firmware document `31_BACKEND_SOFTSIM_CLAIM.md` so its
+   `backendToken` wording matches the canonical `hardware_id` contract.
+5. Integrate and validate the demo against the committed SDK revision.
+6. Integrate and validate the commercial app against the committed SDK revision.
 
 ## 35. Source map
 

@@ -24,9 +24,8 @@ void main() {
     await harness.dispose();
   });
 
-  test('virgin production flow remains held while certified minimum is unset',
-      () async {
-    final harness = _Harness();
+  test('2.7.31 requires firmware update before provisioning writes', () async {
+    final harness = _Harness(liveFirmwareVersion: '2.7.31');
     final states = <DeviceProvisioningState>[];
     final subscription = harness.coordinator.watchState().listen(states.add);
 
@@ -38,6 +37,7 @@ void main() {
 
     expect(result.failure?.code, DeviceReadyFailureCode.firmwareUpdateRequired);
     expect(harness.commands, isEmpty);
+    expect(harness.pskClient.requestCount, 0);
     expect(states.map((state) => state.phase),
         contains(DeviceProvisioningPhase.firmwareUpdateRequired));
     await subscription.cancel();
@@ -45,7 +45,7 @@ void main() {
   });
 
   test('canonical virgin flow orders SoftSIM, 0x20, 0x21 and reboot', () async {
-    final harness = _Harness(certified: true);
+    final harness = _Harness();
     final result = await harness.coordinator.ensureReady();
 
     expect(result.isReady, isTrue);
@@ -75,7 +75,6 @@ void main() {
   test('0x20 OK_NOCHANGE is semantic success under corrected contract',
       () async {
     final harness = _Harness(
-      certified: true,
       noChangeOpcode: 0x20,
     );
     expect((await harness.coordinator.ensureReady()).isReady, isTrue);
@@ -83,7 +82,7 @@ void main() {
   });
 
   test('OK_NOCHANGE is rejected for opcode 0x21', () async {
-    final harness = _Harness(certified: true, noChangeOpcode: 0x21);
+    final harness = _Harness(noChangeOpcode: 0x21);
     final result = await harness.coordinator.ensureReady();
 
     expect(result.failure?.code,
@@ -91,24 +90,45 @@ void main() {
     await harness.dispose();
   });
 
-  test('firmware policy explicitly rejects 2.7.34 and accepts certified min',
+  test('firmware policy accepts current baseline and rejects old or unreadable',
       () {
-    const policy = ProvisioningFirmwarePolicy.certified('2.7.35');
-    expect(policy.supports('2.7.34'), isFalse);
-    expect(policy.supports('2.7.35'), isTrue);
+    const policy = ProvisioningFirmwarePolicy.current();
+    expect(policy.supports('2.7.31'), isFalse);
+    expect(policy.supports('2.7.37'), isTrue);
     expect(policy.supports('2.8.0'), isTrue);
     expect(policy.supports(null), isFalse);
-    expect(
-      const ProvisioningFirmwarePolicy.pendingCertification()
-          .supports('99.0.0'),
-      isFalse,
-    );
+    expect(policy.supports('unreadable'), isFalse);
+  });
+
+  for (final version in <String?>['unreadable', null]) {
+    test(
+        '${version ?? 'missing'} firmware metadata fails closed before '
+        'mutating writes', () async {
+      final harness = _Harness(liveFirmwareVersion: version);
+      final result = await harness.coordinator.ensureReady();
+
+      expect(
+          result.failure?.code, DeviceReadyFailureCode.firmwareUpdateRequired);
+      expect(harness.commands, isEmpty);
+      expect(harness.pskClient.requestCount, 0);
+      await harness.dispose();
+    });
+  }
+
+  test('unsupported firmware has no legacy provisioning fallback', () async {
+    final harness = _Harness(liveFirmwareVersion: '2.7.31');
+    final result = await harness.coordinator.ensureReady();
+
+    expect(result.failure?.code, DeviceReadyFailureCode.firmwareUpdateRequired);
+    expect(harness.commands.map((command) => command.opcode), isEmpty);
+    expect(harness.rebootCount, 0);
+    await harness.dispose();
   });
 
   for (final opcode in <int>[0x24, 0x20, 0x21]) {
     test('opcode 0x${opcode.toRadixString(16)} REJECT is typed failure',
         () async {
-      final harness = _Harness(certified: true, rejectedOpcode: opcode);
+      final harness = _Harness(rejectedOpcode: opcode);
       final result = await harness.coordinator.ensureReady();
 
       expect(result.failure?.code,
@@ -119,7 +139,7 @@ void main() {
   }
 
   test('reconnect failure is retryable', () async {
-    final harness = _Harness(certified: true, reconnectSucceeds: false);
+    final harness = _Harness(reconnectSucceeds: false);
     final result = await harness.coordinator.ensureReady();
 
     expect(result.failure?.code, DeviceReadyFailureCode.reconnectFailed);
@@ -128,7 +148,7 @@ void main() {
   });
 
   test('changed nodeId after reboot fails identity verification', () async {
-    final harness = _Harness(certified: true, finalNodeId: 7);
+    final harness = _Harness(finalNodeId: 7);
     final result = await harness.coordinator.ensureReady();
 
     expect(result.failure?.code, DeviceReadyFailureCode.identityMismatch);
@@ -137,7 +157,7 @@ void main() {
   });
 
   test('stale pre-reboot unprovisioned 0x23 cannot produce ready', () async {
-    final harness = _Harness(certified: true, finalProvisioned: false);
+    final harness = _Harness(finalProvisioned: false);
     final result = await harness.coordinator.ensureReady();
 
     expect(result.failure?.code, DeviceReadyFailureCode.verificationFailed);
@@ -147,8 +167,7 @@ void main() {
   test('live unsupported firmware overrides supported cached metadata',
       () async {
     final harness = _Harness(
-      certified: true,
-      liveFirmwareVersion: '2.7.34',
+      liveFirmwareVersion: '2.7.31',
     );
     final result = await harness.coordinator.ensureReady();
 
@@ -161,7 +180,6 @@ void main() {
   test('nodeId maximum unsigned value is provisioned without truncation',
       () async {
     final harness = _Harness(
-      certified: true,
       initialNodeId: 0xffffffff,
       finalNodeId: 0xffffffff,
     );
@@ -170,7 +188,7 @@ void main() {
   });
 
   test('ready state resets on disconnect', () async {
-    final harness = _Harness(certified: true);
+    final harness = _Harness();
     final states = <DeviceProvisioningState>[];
     final subscription = harness.coordinator.watchState().listen(states.add);
     expect((await harness.coordinator.ensureReady()).isReady, isTrue);
@@ -184,7 +202,7 @@ void main() {
   });
 
   test('ready state resets on connected-device switch', () async {
-    final harness = _Harness(certified: true);
+    final harness = _Harness();
     final states = <DeviceProvisioningState>[];
     final subscription = harness.coordinator.watchState().listen(states.add);
     expect((await harness.coordinator.ensureReady()).isReady, isTrue);
@@ -200,7 +218,7 @@ void main() {
     test(
         'dispose during ${blockAt == 1 ? 'BEGIN' : 'CHUNK'} stops all later writes',
         () async {
-      final harness = _Harness(certified: true, blockAtWrite: blockAt);
+      final harness = _Harness(blockAtWrite: blockAt);
       final result = harness.coordinator.ensureReady();
       await harness.writeBlocked.future;
       final writesAtDispose = harness.commands.length;
@@ -224,7 +242,7 @@ void main() {
 
   test('wrong final platform identity fails before fresh 0x23 verification',
       () async {
-    final harness = _Harness(certified: true, finalDeviceId: 'ble-device-2');
+    final harness = _Harness(finalDeviceId: 'ble-device-2');
     final result = await harness.coordinator.ensureReady();
     expect(result.failure?.code, DeviceReadyFailureCode.identityMismatch);
     expect(harness.runtimeReadCount, 1);
@@ -235,13 +253,12 @@ void main() {
 final class _Harness {
   _Harness({
     this.initiallyProvisioned = false,
-    this.certified = false,
     this.rejectedOpcode,
     this.noChangeOpcode,
     this.reconnectSucceeds = true,
     this.finalNodeId = 305419896,
     this.finalProvisioned = true,
-    this.liveFirmwareVersion = '2.7.35',
+    this.liveFirmwareVersion = '2.7.37',
     this.initialNodeId = 305419896,
     this.finalDeviceId = 'ble-device-1',
     this.blockAtWrite,
@@ -282,21 +299,18 @@ final class _Harness {
         reconnectCount++;
         return reconnectSucceeds && deviceId == 'ble-device-1';
       },
-      firmwarePolicy: certified
-          ? const ProvisioningFirmwarePolicy.certified('2.7.35')
-          : const ProvisioningFirmwarePolicy.pendingCertification(),
+      firmwarePolicy: const ProvisioningFirmwarePolicy.current(),
       softSimRejectionObservationInterval: const Duration(milliseconds: 1),
     );
   }
 
   final bool initiallyProvisioned;
-  final bool certified;
   final int? rejectedOpcode;
   final int? noChangeOpcode;
   final bool reconnectSucceeds;
   final int finalNodeId;
   final bool finalProvisioned;
-  final String liveFirmwareVersion;
+  final String? liveFirmwareVersion;
   final int initialNodeId;
   final String finalDeviceId;
   final int? blockAtWrite;
@@ -315,7 +329,7 @@ final class _Harness {
 
   DeviceStatus _status({
     required bool afterReboot,
-    String firmwareVersion = '2.7.35',
+    String? firmwareVersion = '2.7.37',
   }) =>
       DeviceStatus(
         deviceId: afterReboot ? finalDeviceId : 'ble-device-1',
