@@ -4,6 +4,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import '../data/datasources_remote/sdk_network_psk_remote_data_source.dart';
 import '../device/eixam_ble_command.dart';
+import '../firmware_version.dart';
 import 'provisioning_command_result.dart';
 import 'softsim_provisioning.dart';
 import 'softsim_transport.dart';
@@ -28,15 +29,7 @@ final class ProvisioningFirmwarePolicy {
   }
 
   static List<int>? _parts(String value) {
-    final match =
-        RegExp(r'^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$').firstMatch(value.trim());
-    return match == null
-        ? null
-        : <int>[
-            int.parse(match.group(1)!),
-            int.parse(match.group(2)!),
-            int.parse(match.group(3)!),
-          ];
+    return parseEixamFirmwareSemanticCore(value);
   }
 }
 

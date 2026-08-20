@@ -7,6 +7,7 @@ import 'package:flutter/widgets.dart';
 
 import '../data/datasources_remote/sdk_firmware_remote_data_source.dart';
 import '../device/ble_debug_registry.dart';
+import '../firmware_version.dart';
 import 'firmware_dfu_transport.dart';
 
 typedef ProtectionStatusProvider = Future<ProtectionStatus> Function();
@@ -935,13 +936,7 @@ class FirmwareUpdateCoordinator {
   }
 
   String _normalizeFirmwareVersion(String? version) {
-    if (version == null) return '';
-    var normalized =
-        version.replaceAll(RegExp(r'[\x00-\x1f\x7f]'), '').trim().toLowerCase();
-    if (normalized.startsWith('v')) {
-      normalized = normalized.substring(1);
-    }
-    return normalized;
+    return normalizeEixamFirmwareVersion(version);
   }
 
   String _backendComparableFirmwareVersion(String version) {

@@ -90,14 +90,51 @@ void main() {
     await harness.dispose();
   });
 
-  test('firmware policy accepts current baseline and rejects old or unreadable',
-      () {
+  test('firmware policy accepts established certified version forms', () {
     const policy = ProvisioningFirmwarePolicy.current();
     expect(policy.supports('2.7.31'), isFalse);
     expect(policy.supports('2.7.37'), isTrue);
+    expect(policy.supports('2.7.37.4ef9d04'), isTrue);
+    expect(policy.supports('v2.7.37'), isTrue);
+    expect(policy.supports('2.7.37+4ef9d04'), isTrue);
+    expect(policy.supports('2.7.37-4ef9d04'), isTrue);
     expect(policy.supports('2.8.0'), isTrue);
     expect(policy.supports(null), isFalse);
-    expect(policy.supports('unreadable'), isFalse);
+  });
+
+  test('firmware policy rejects malformed decorated versions', () {
+    const policy = ProvisioningFirmwarePolicy.current();
+    for (final version in <String>[
+      '',
+      'unreadable',
+      'release-2.7.37',
+      '2.7',
+      '2.7.37.',
+      '2.7.37.not-a-hash',
+      '2.7.37+',
+      '2.7.37-',
+    ]) {
+      expect(policy.supports(version), isFalse, reason: version);
+    }
+  });
+
+  test('physical dotted build passes the live provisioning firmware gate',
+      () async {
+    final harness = _Harness(liveFirmwareVersion: '2.7.37.4ef9d04');
+    final states = <DeviceProvisioningState>[];
+    final subscription = harness.coordinator.watchState().listen(states.add);
+
+    final result = await harness.coordinator.ensureReady();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(result.isReady, isTrue);
+    expect(result.failure, isNull);
+    expect(
+      states.map((state) => state.phase),
+      isNot(contains(DeviceProvisioningPhase.firmwareUpdateRequired)),
+    );
+    await subscription.cancel();
+    await harness.dispose();
   });
 
   for (final version in <String?>['unreadable', null]) {
