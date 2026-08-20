@@ -5,6 +5,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import '../data/datasources_remote/sdk_network_psk_remote_data_source.dart';
 import '../device/eixam_ble_command.dart';
 import '../firmware_version.dart';
+import 'device_assignment_verifier.dart';
 import 'provisioning_command_result.dart';
 import 'softsim_provisioning.dart';
 import 'softsim_transport.dart';
@@ -113,6 +114,8 @@ final class DeviceProvisioningCoordinator {
     required this.countryIsoProvider,
     required this.pskSource,
     required this.configSource,
+    required this.assignmentVerifier,
+    required this.assignmentCreator,
     required this.backendUrl,
     required this.writeCommand,
     required Stream<List<int>> incomingPackets,
@@ -136,6 +139,8 @@ final class DeviceProvisioningCoordinator {
   final Future<String> Function() countryIsoProvider;
   final SdkNetworkPskRemoteDataSource pskSource;
   final StrictDeviceProvisioningConfigSource configSource;
+  final DeviceAssignmentVerifier assignmentVerifier;
+  final DeviceAssignmentCreator assignmentCreator;
   final String backendUrl;
   final Future<void> Function(EixamDeviceCommand command) writeCommand;
   final Future<void> Function() reboot;
@@ -193,10 +198,15 @@ final class DeviceProvisioningCoordinator {
         return _fail(DeviceReadyFailureCode.identityMismatch, retryable: false);
       }
       if (initialRuntime.isProvisioned) {
-        // 0x23 proves only structural config.bin validity. It cannot prove
-        // current-app PSK ownership or authoritative backend assignment.
-        _emit(DeviceProvisioningPhase.provisionedAssignmentUnverified);
-        return DeviceReadyResult.provisionedAssignmentUnverified(initialStatus);
+        // 0x23 proves only structural config.bin validity. Current-app/user
+        // assignment requires an authenticated backend registry match.
+        if (!await _verifyAssignment(operation, initialRuntime.nodeId)) {
+          _emit(DeviceProvisioningPhase.provisionedAssignmentUnverified);
+          return DeviceReadyResult.provisionedAssignmentUnverified(
+              initialStatus);
+        }
+        _emit(DeviceProvisioningPhase.ready, progress: 1);
+        return DeviceReadyResult.ready(initialStatus);
       }
 
       _emit(DeviceProvisioningPhase.fetchingConfiguration);
@@ -329,6 +339,22 @@ final class DeviceProvisioningCoordinator {
                       : DeviceReadyFailureCode.verificationFailed,
                   retryable: !identityChanged);
             }
+            if (!await _createAssignment(
+              operation,
+              nodeId: finalRuntime.nodeId,
+              status: finalStatus,
+            )) {
+              _emit(DeviceProvisioningPhase.provisionedAssignmentUnverified);
+              return DeviceReadyResult.provisionedAssignmentUnverified(
+                  finalStatus);
+            }
+            if (!await _verifyAssignment(operation, finalRuntime.nodeId)) {
+              diagnosticLog?.call('ASSIGNMENT_READBACK result=not_found');
+              _emit(DeviceProvisioningPhase.provisionedAssignmentUnverified);
+              return DeviceReadyResult.provisionedAssignmentUnverified(
+                  finalStatus);
+            }
+            diagnosticLog?.call('ASSIGNMENT_READBACK result=matched');
             _emit(DeviceProvisioningPhase.ready, progress: 1);
             return DeviceReadyResult.ready(finalStatus);
           } finally {
@@ -413,6 +439,64 @@ final class DeviceProvisioningCoordinator {
         ),
       ),
     );
+  }
+
+  Future<bool> _verifyAssignment(
+    _ProvisioningOperation operation,
+    int nodeId,
+  ) async {
+    diagnosticLog?.call('ASSIGNMENT_VERIFY started');
+    try {
+      final matched = await assignmentVerifier.verifyAssignment(nodeId: nodeId);
+      _check(operation);
+      diagnosticLog?.call(
+        'ASSIGNMENT_VERIFY result=${matched ? "matched" : "not_found"}',
+      );
+      return matched;
+    } on ProvisioningOperationCancelledException {
+      rethrow;
+    } catch (_) {
+      _check(operation);
+      diagnosticLog?.call(
+        'ASSIGNMENT_VERIFY result=backend_unavailable',
+      );
+      return false;
+    }
+  }
+
+  Future<bool> _createAssignment(
+    _ProvisioningOperation operation, {
+    required int nodeId,
+    required DeviceStatus status,
+  }) async {
+    diagnosticLog?.call(
+      'ASSIGNMENT_CREATE reason=successful_initial_provisioning',
+    );
+    try {
+      final firmwareVersion = status.firmwareVersion?.trim();
+      final hardwareModel = (status.model ?? status.deviceAlias)?.trim();
+      final created = await assignmentCreator.createAssignment(
+        nodeId: nodeId,
+        firmwareVersion: firmwareVersion == null || firmwareVersion.isEmpty
+            ? 'unknown'
+            : firmwareVersion,
+        hardwareModel: hardwareModel == null || hardwareModel.isEmpty
+            ? 'EIXAM R1'
+            : hardwareModel,
+        pairedAt: (status.lastSeen ?? DateTime.now()).toUtc(),
+      );
+      _check(operation);
+      diagnosticLog?.call(
+        'ASSIGNMENT_CREATE result=${created ? "success" : "failed"}',
+      );
+      return created;
+    } on ProvisioningOperationCancelledException {
+      rethrow;
+    } catch (_) {
+      _check(operation);
+      diagnosticLog?.call('ASSIGNMENT_CREATE result=failed');
+      return false;
+    }
   }
 
   Future<void> _write(

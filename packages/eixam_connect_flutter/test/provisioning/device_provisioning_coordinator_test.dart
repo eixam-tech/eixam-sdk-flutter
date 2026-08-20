@@ -5,22 +5,224 @@ import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_http_trans
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_network_psk_remote_data_source.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_session_context.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
+import 'package:eixam_connect_flutter/src/provisioning/device_assignment_verifier.dart';
 import 'package:eixam_connect_flutter/src/provisioning/device_provisioning_coordinator.dart';
 import 'package:eixam_connect_flutter/src/provisioning/strict_device_provisioning_config.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
 void main() {
-  test('already-provisioned assignment is unverified and not rewritten',
+  test('already-provisioned exact assignment is ready without writes',
       () async {
     final harness = _Harness(initiallyProvisioned: true);
     final result = await harness.coordinator.ensureReady();
 
-    expect(result.isReady, isFalse);
-    expect(result.disposition,
-        DeviceReadyDisposition.provisionedAssignmentUnverified);
+    expect(result.disposition, DeviceReadyDisposition.ready);
     expect(harness.commands, isEmpty);
     expect(harness.pskClient.requestCount, 0);
+    expect(harness.registry.listCalls, 1);
+    expect(harness.registry.upsertCalls, 0);
+    expect(harness.diagnostics, contains('ASSIGNMENT_VERIFY result=matched'));
+    await harness.dispose();
+  });
+
+  for (final testCase in <({String name, List<String> hardwareIds})>[
+    (name: 'completely absent row', hardwareIds: <String>[]),
+    (name: 'unowned current-app row is not listed', hardwareIds: <String>[]),
+    (name: 'same-app another-user row is not listed', hardwareIds: <String>[]),
+    (name: 'same node in another app is not listed', hardwareIds: <String>[]),
+    (name: 'different hardware id', hardwareIds: <String>['7']),
+    (
+      name: 'MAC-like hardware id only',
+      hardwareIds: <String>['AA:BB:CC:DD:EE:FF'],
+    ),
+    (name: 'malformed hardware id', hardwareIds: <String>[' 305419896 ']),
+  ]) {
+    test('already-provisioned ${testCase.name} is assignment-unverified',
+        () async {
+      final harness = _Harness(
+        initiallyProvisioned: true,
+        assignmentHardwareIds: testCase.hardwareIds,
+      );
+
+      final result = await harness.coordinator.ensureReady();
+
+      expect(
+        result.disposition,
+        DeviceReadyDisposition.provisionedAssignmentUnverified,
+      );
+      expect(harness.commands, isEmpty);
+      expect(harness.pskClient.requestCount, 0);
+      expect(harness.registry.listCalls, 1);
+      expect(harness.registry.upsertCalls, 0);
+      expect(
+        harness.diagnostics,
+        contains('ASSIGNMENT_VERIFY result=not_found'),
+      );
+      await harness.dispose();
+    });
+  }
+
+  for (final testCase in <({String name, Object error})>[
+    (
+      name: 'backend timeout',
+      error: TimeoutException('registry timeout'),
+    ),
+    (
+      name: 'auth failure',
+      error: const AuthException('E_TEST_AUTH', 'E_TEST_AUTH'),
+    ),
+    (
+      name: 'repository failure',
+      error: const DeviceException('E_TEST_REGISTRY', 'E_TEST_REGISTRY'),
+    ),
+  ]) {
+    test('already-provisioned ${testCase.name} is assignment-unverified',
+        () async {
+      final harness = _Harness(
+        initiallyProvisioned: true,
+        registryError: testCase.error,
+      );
+
+      final result = await harness.coordinator.ensureReady();
+
+      expect(
+        result.disposition,
+        DeviceReadyDisposition.provisionedAssignmentUnverified,
+      );
+      expect(result.failure, isNull);
+      expect(harness.commands, isEmpty);
+      expect(harness.registry.listCalls, 1);
+      expect(harness.registry.upsertCalls, 0);
+      expect(
+        harness.diagnostics,
+        contains('ASSIGNMENT_VERIFY result=backend_unavailable'),
+      );
+      await harness.dispose();
+    });
+  }
+
+  test('exact assignment among multiple registered devices is ready', () async {
+    final harness = _Harness(
+      initiallyProvisioned: true,
+      assignmentHardwareIds: const <String>[
+        '7',
+        '305419896',
+        'AA:BB:CC:DD:EE:FF',
+      ],
+    );
+
+    expect(
+      (await harness.coordinator.ensureReady()).disposition,
+      DeviceReadyDisposition.ready,
+    );
+    expect(harness.registry.listCalls, 1);
+    expect(harness.registry.upsertCalls, 0);
+    await harness.dispose();
+  });
+
+  test('fresh provisioning creates and reads back assignment', () async {
+    final harness = _Harness(assignmentHardwareIds: const <String>[]);
+
+    final result = await harness.coordinator.ensureReady();
+
+    expect(
+      result.disposition,
+      DeviceReadyDisposition.ready,
+    );
+    expect(harness.commands, isNotEmpty);
+    expect(harness.rebootCount, 1);
+    expect(harness.runtimeReadCount, 2);
+    expect(harness.registry.listCalls, 1);
+    expect(harness.registry.upsertCalls, 1);
+    expect(
+      harness.diagnostics,
+      contains('ASSIGNMENT_CREATE result=success'),
+    );
+    expect(
+      harness.diagnostics,
+      contains('ASSIGNMENT_READBACK result=matched'),
+    );
+    await harness.dispose();
+  });
+
+  test('fresh provisioning assignment failure remains unverified', () async {
+    final harness = _Harness(
+      assignmentHardwareIds: const <String>[],
+      assignmentCreateError: StateError('assignment failed'),
+    );
+
+    final result = await harness.coordinator.ensureReady();
+
+    expect(
+      result.disposition,
+      DeviceReadyDisposition.provisionedAssignmentUnverified,
+    );
+    expect(harness.rebootCount, 1);
+    expect(harness.registry.upsertCalls, 1);
+    expect(harness.registry.listCalls, 0);
+    expect(
+      harness.diagnostics,
+      contains('ASSIGNMENT_CREATE result=failed'),
+    );
+    final commandCount = harness.commands.length;
+    final retry = await harness.coordinator.ensureReady();
+    expect(
+      retry.disposition,
+      DeviceReadyDisposition.provisionedAssignmentUnverified,
+    );
+    expect(harness.commands.length, commandCount);
+    expect(harness.registry.upsertCalls, 1);
+    await harness.dispose();
+  });
+
+  test('fresh provisioning assignment response mismatch fails closed',
+      () async {
+    final harness = _Harness(
+      assignmentHardwareIds: const <String>[],
+      assignmentCreateResponseHardwareId: '7',
+    );
+
+    final result = await harness.coordinator.ensureReady();
+
+    expect(
+      result.disposition,
+      DeviceReadyDisposition.provisionedAssignmentUnverified,
+    );
+    expect(harness.registry.upsertCalls, 1);
+    expect(harness.registry.listCalls, 0);
+    await harness.dispose();
+  });
+
+  test('fresh provisioning missing read-back remains unverified', () async {
+    final harness = _Harness(
+      assignmentHardwareIds: const <String>[],
+      persistCreatedAssignment: false,
+    );
+
+    final result = await harness.coordinator.ensureReady();
+
+    expect(
+      result.disposition,
+      DeviceReadyDisposition.provisionedAssignmentUnverified,
+    );
+    expect(harness.registry.upsertCalls, 1);
+    expect(harness.registry.listCalls, 1);
+    expect(
+      harness.diagnostics,
+      contains('ASSIGNMENT_READBACK result=not_found'),
+    );
+    await harness.dispose();
+  });
+
+  test('assignment is not read before live provisioned state is established',
+      () async {
+    final harness = _Harness(liveFirmwareVersion: '2.7.31');
+
+    final result = await harness.coordinator.ensureReady();
+
+    expect(result.failure?.code, DeviceReadyFailureCode.firmwareUpdateRequired);
+    expect(harness.registry.listCalls, 0);
     await harness.dispose();
   });
 
@@ -354,6 +556,11 @@ final class _Harness {
     this.blockAtWrite,
     this.rebootFails = false,
     this.blockReboot = false,
+    List<String>? assignmentHardwareIds,
+    Object? registryError,
+    Object? assignmentCreateError,
+    String? assignmentCreateResponseHardwareId,
+    bool persistCreatedAssignment = true,
   }) {
     pskClient = _PskClient();
     final session = SdkSessionContext()
@@ -372,6 +579,13 @@ final class _Harness {
         sessionContext: session,
       ),
     );
+    registry = _RegistryRepository(
+      hardwareIds: assignmentHardwareIds ?? <String>[initialNodeId.toString()],
+      error: registryError,
+      createError: assignmentCreateError,
+      createResponseHardwareId: assignmentCreateResponseHardwareId,
+      persistCreatedAssignment: persistCreatedAssignment,
+    );
     coordinator = DeviceProvisioningCoordinator(
       statusProvider: () async => _status(afterReboot: rebootCount > 0),
       liveStatusProvider: () async => _status(
@@ -382,6 +596,12 @@ final class _Harness {
       countryIsoProvider: () async => 'ES',
       pskSource: pskSource,
       configSource: const _ConfigSource(),
+      assignmentVerifier: RegisteredDeviceAssignmentVerifier(
+        repository: registry,
+      ),
+      assignmentCreator: RegisteredDeviceAssignmentCreator(
+        repository: registry,
+      ),
       backendUrl: 'https://api.staging.eixam.io',
       incomingPackets: packets.stream,
       deviceStatusChanges: statuses.stream,
@@ -435,6 +655,7 @@ final class _Harness {
   final List<EixamDeviceCommand> commands = <EixamDeviceCommand>[];
   final List<String> rebootBoundaryEvents = <String>[];
   late final _PskClient pskClient;
+  late final _RegistryRepository registry;
   late final DeviceProvisioningCoordinator coordinator;
   int rebootCount = 0;
   int reconnectCount = 0;
@@ -525,6 +746,77 @@ final class _Harness {
     await packets.close();
     await statuses.close();
     pskClient.close();
+  }
+}
+
+final class _RegistryRepository implements SdkDeviceRegistryRepository {
+  _RegistryRepository({
+    required List<String> hardwareIds,
+    this.error,
+    this.createError,
+    this.createResponseHardwareId,
+    this.persistCreatedAssignment = true,
+  }) : devices = hardwareIds
+            .map(
+              (hardwareId) => BackendRegisteredDevice(
+                id: 'device-$hardwareId',
+                hardwareId: hardwareId,
+                firmwareVersion: '2.7.37',
+                hardwareModel: 'EIXAM R1',
+                pairedAt: DateTime.utc(2026),
+                createdAt: DateTime.utc(2026),
+                updatedAt: DateTime.utc(2026),
+              ),
+            )
+            .toList();
+
+  final List<BackendRegisteredDevice> devices;
+  final Object? error;
+  final Object? createError;
+  final String? createResponseHardwareId;
+  final bool persistCreatedAssignment;
+  int listCalls = 0;
+  int upsertCalls = 0;
+
+  @override
+  Future<List<BackendRegisteredDevice>> listRegisteredDevices() async {
+    listCalls++;
+    final failure = error;
+    if (failure != null) throw failure;
+    return devices;
+  }
+
+  @override
+  Future<void> removeRegisteredDevice(String deviceId) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<BackendRegisteredDevice> upsertRegisteredDevice({
+    required String hardwareId,
+    required String firmwareVersion,
+    required String hardwareModel,
+    required DateTime pairedAt,
+  }) async {
+    upsertCalls++;
+    final failure = createError;
+    if (failure != null) throw failure;
+    final responseHardwareId = createResponseHardwareId ?? hardwareId;
+    final device = BackendRegisteredDevice(
+      id: 'device-created',
+      hardwareId: responseHardwareId,
+      firmwareVersion: firmwareVersion,
+      hardwareModel: hardwareModel,
+      pairedAt: pairedAt,
+      createdAt: DateTime.utc(2026),
+      updatedAt: DateTime.utc(2026),
+    );
+    if (persistCreatedAssignment) {
+      devices
+        ..removeWhere((item) => item.hardwareId == hardwareId)
+        ..add(device);
+    }
+    return device;
   }
 }
 

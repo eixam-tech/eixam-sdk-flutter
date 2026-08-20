@@ -17,7 +17,7 @@ import '../diagnostics/security_diagnostics_redactor.dart';
 import 'location_debug_log.dart';
 import 'relay_ingest_context.dart';
 
-typedef SosBackendDeviceRegisterRetry = Future<bool> Function({
+typedef SosBackendAssignmentVerifiedRetry = Future<bool> Function({
   required String originalCorrelationId,
   required String retryCorrelationId,
   required String signature,
@@ -44,7 +44,7 @@ class BleOperationalRuntimeBridge {
     required this.deviceSosController,
     required EixamSession? Function() sessionProvider,
     Future<String?> Function(String runtimeDeviceId)? backendHardwareIdResolver,
-    SosBackendDeviceRegisterRetry? sosBackendDeviceRegisterRetry,
+    SosBackendAssignmentVerifiedRetry? sosBackendAssignmentVerifiedRetry,
     DateTime Function()? now,
     Duration dedupWindow = const Duration(seconds: 3),
   })  : _bleIncomingEvents = bleIncomingEvents,
@@ -52,7 +52,7 @@ class BleOperationalRuntimeBridge {
         _realtimeEvents = realtimeEvents,
         _sessionProvider = sessionProvider,
         _backendHardwareIdResolver = backendHardwareIdResolver,
-        _sosBackendDeviceRegisterRetry = sosBackendDeviceRegisterRetry,
+        _sosBackendAssignmentVerifiedRetry = sosBackendAssignmentVerifiedRetry,
         _now = now ?? DateTime.now,
         _dedupWindow = dedupWindow;
 
@@ -65,7 +65,7 @@ class BleOperationalRuntimeBridge {
   final EixamSession? Function() _sessionProvider;
   final Future<String?> Function(String runtimeDeviceId)?
       _backendHardwareIdResolver;
-  final SosBackendDeviceRegisterRetry? _sosBackendDeviceRegisterRetry;
+  final SosBackendAssignmentVerifiedRetry? _sosBackendAssignmentVerifiedRetry;
   final DateTime Function() _now;
   final Duration _dedupWindow;
 
@@ -1581,7 +1581,7 @@ class BleOperationalRuntimeBridge {
       if (allowPendingFallback &&
           _isBackendValidationError(error, relayContext: relayContext)) {
         final validationStatus = _backendValidationStatus(error);
-        final retry = _sosBackendDeviceRegisterRetry;
+        final retry = _sosBackendAssignmentVerifiedRetry;
         if (retry != null && originatorNodeId != null) {
           final originalCorrelationId = signature;
           final retryCorrelationId =
@@ -1607,7 +1607,8 @@ class BleOperationalRuntimeBridge {
             _emitDiagnostics(
               _diagnostics.copyWith(
                 pendingSos: null,
-                lastDecision: 'SOS published after device registration retry',
+                lastDecision:
+                    'SOS published after assignment verification retry',
               ),
             );
             return true;

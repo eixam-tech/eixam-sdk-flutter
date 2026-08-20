@@ -155,7 +155,7 @@ class _BridgeHarness {
       sosRepository: sosRepository,
       deviceSosController: deviceSosController,
       sessionProvider: () => null,
-      sosBackendDeviceRegisterRetry: ({
+      sosBackendAssignmentVerifiedRetry: ({
         required originalCorrelationId,
         required retryCorrelationId,
         required signature,

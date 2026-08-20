@@ -142,6 +142,20 @@ void main() {
         ),
       );
       deviceRegistryRepository = FakeSdkDeviceRegistryRepository();
+      for (final nodeId in <int>[1498094248, 233234039, 418683257]) {
+        final timestamp = DateTime.utc(2026);
+        deviceRegistryRepository.devices.add(
+          BackendRegisteredDevice(
+            id: 'device-$nodeId',
+            hardwareId: nodeId.toString(),
+            firmwareVersion: '2.7.37',
+            hardwareModel: 'EIXAM R1',
+            pairedAt: timestamp,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          ),
+        );
+      }
       deathManRepository = FakeDeathManRepository();
       permissionsRepository = FakePermissionsRepository();
       notificationsRepository = FakeNotificationsRepository();
@@ -1027,6 +1041,37 @@ void main() {
       expect(sosRepository.lastDeviceId, '1498094248');
       expect(sosRepository.lastOriginatorNodeId, 1498094248);
       expect(sosRepository.lastDeviceId, isNot('CF:82:59:4B:1A:A8'));
+    });
+
+    test('unverified device SOS cannot create assignment', () async {
+      await rebuildSdkWithFastDeviceSosTiming();
+      deviceRegistryRepository.devices.clear();
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'CF:82:59:4B:1A:A8',
+          canonicalHardwareId: 'CF:82:59:4B:1A:A8',
+          connected: true,
+          paired: true,
+          activated: true,
+        ),
+      );
+      trackingRepository.emitPosition(freshPhonePosition());
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginActivePacketForNode(1498094248),
+        source: DeviceSosTransitionSource.device,
+      );
+
+      await _eventually(
+        () => BleDebugRegistry.instance.currentState.events.any(
+          (event) =>
+              event.message ==
+              'DEVICE_SOS_ASSIGNMENT result=unverified '
+                  'action=backend_sync_blocked',
+        ),
+      );
+      expect(sosRepository.triggerCallCount, 0);
+      expect(deviceRegistryRepository.upsertCallCount, 0);
     });
 
     test(
@@ -2260,9 +2305,11 @@ void main() {
           includeBackendIncidentId: false,
           includeIdentityMapping: false,
         );
-        await sdk.ensureBackendDeviceRegistered(
-          nodeId: 9090,
-          reason: 'test_registered_numeric_remote_cancel',
+        await sdk.upsertRegisteredDevice(
+          hardwareId: '9090',
+          firmwareVersion: '2.7.37',
+          hardwareModel: 'EIXAM R1',
+          pairedAt: DateTime.utc(2026),
         );
 
         bleEvents.add(

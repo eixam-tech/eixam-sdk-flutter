@@ -206,36 +206,20 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
         response.statusCode,
         response.body,
       )) {
-        BleDebugRegistry.instance.recordEvent(
-          '[SOS_BACKEND_RESPONSE] status=422 '
-          'reason=referenced_device_does_not_exist '
-          'action=register_device_and_retry '
-          'deviceId=${identity.deviceId ?? "none"} '
-          'nodeId=${identity.nodeId?.toString() ?? "none"} '
-          'hardwareId=${identity.hardwareId ?? "none"} '
-          'identitySource=${identity.identitySource}',
-        );
-        final recoveryHardwareId = await _registerDeviceForSos422Recovery(
-          identity: identity,
-        );
-        BleDebugRegistry.instance.recordEvent(
-          '[SOS_BACKEND_RETRY] reason=device_registered_after_422 retry=1 '
-          'deviceId=${identity.deviceId ?? "none"} '
-          'nodeId=${identity.nodeId?.toString() ?? "none"} '
-          'hardwareId=${identity.hardwareId ?? "none"} '
-          'registeredHardwareId=$recoveryHardwareId '
-          'identitySource=${identity.identitySource}',
-        );
-        response = await transport.post(
-          '/v1/sdk/sos',
-          body: body,
-        );
-        final retryIncidentId = _incidentIdFromResponseBody(response.body);
-        BleDebugRegistry.instance.recordEvent(
-          '[SOS_BACKEND_RETRY_RESPONSE] status=${response.statusCode} '
-          'backendIncidentId=${retryIncidentId ?? "none"} '
-          'error=${response.statusCode >= 200 && response.statusCode < 300 ? "none" : _redactedCompactJson(response.body)}',
-        );
+        if (identity.identitySource == 'app') {
+          BleDebugRegistry.instance.recordEvent(
+            'APP_SOS_REGISTRATION result=required action=retry',
+          );
+          await _registerAppIdentityForSos422Recovery(identity: identity);
+          response = await transport.post(
+            '/v1/sdk/sos',
+            body: body,
+          );
+        } else {
+          BleDebugRegistry.instance.recordEvent(
+            'DEVICE_SOS_ASSIGNMENT result=unverified action=retry_blocked',
+          );
+        }
       }
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -330,7 +314,7 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     }
   }
 
-  Future<String> _registerDeviceForSos422Recovery({
+  Future<void> _registerAppIdentityForSos422Recovery({
     required SosBackendIdentity identity,
   }) async {
     final hardwareId = _recoveryHardwareIdFor(identity);
@@ -338,9 +322,6 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
       BleDebugRegistry.instance.recordEvent(
         '[BACKGROUND_SOS] backend_publish_blocked '
         'reason=missing_device_identity_for_422_recovery '
-        'deviceId=${identity.deviceId ?? "none"} '
-        'nodeId=${identity.nodeId?.toString() ?? "none"} '
-        'hardwareId=${identity.hardwareId ?? "none"} '
         'identitySource=${identity.identitySource}',
       );
       throw const SosException(
@@ -348,31 +329,22 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
         'SOS backend rejected the device and no stable identity is available for registration.',
       );
     }
-    final source = identity.nodeId != null ? 'ble_node' : 'app';
     final pairedAt = DateTime.now().toUtc();
-    final firmwareVersion = identity.nodeId != null ? 'unknown' : 'app';
-    final hardwareModel = identity.nodeId != null ? 'EIXAM R1' : 'EIXAM App';
     final body = jsonEncode(<String, dynamic>{
       'hardware_id': hardwareId,
-      'firmware_version': firmwareVersion,
-      'hardware_model': hardwareModel,
+      'firmware_version': 'app',
+      'hardware_model': 'EIXAM App',
       'paired_at': pairedAt.toIso8601String(),
     });
     BleDebugRegistry.instance.recordEvent(
-      '[DEVICE_BACKEND_REGISTER_OUTBOUND] reason=sos_422_recovery '
-      'hardware_id=$hardwareId source=$source '
-      'payload=${_redactedCompactJson(body)}',
+      'APP_SOS_REGISTRATION result=started',
     );
     final response = await transport.post(
       '/v1/sdk/devices',
       body: body,
     );
-    final backendDeviceId = _deviceIdFromResponseBody(response.body);
     BleDebugRegistry.instance.recordEvent(
-      '[DEVICE_BACKEND_REGISTER_RESPONSE] reason=sos_422_recovery '
-      'status=${response.statusCode} '
-      'backendDeviceId=${backendDeviceId ?? "none"} '
-      'hardware_id=$hardwareId',
+      'APP_SOS_REGISTRATION result=${response.statusCode >= 200 && response.statusCode < 300 ? "success" : "failed"}',
     );
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw SosHttpException(
@@ -381,7 +353,6 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
         statusCode: response.statusCode,
       );
     }
-    return hardwareId;
   }
 
   String? _recoveryHardwareIdFor(SosBackendIdentity identity) {
@@ -446,38 +417,6 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
       return '<redacted>';
     }
     return SecurityDiagnosticsRedactor.compactSummary(text, maxLength: 120);
-  }
-
-  String? _incidentIdFromResponseBody(String body) {
-    try {
-      final payload = jsonDecode(body);
-      if (payload is! Map<String, dynamic>) {
-        return null;
-      }
-      final incident = payload['incident'];
-      if (incident is Map<String, dynamic>) {
-        return incident['id']?.toString();
-      }
-    } catch (_) {
-      return null;
-    }
-    return null;
-  }
-
-  String? _deviceIdFromResponseBody(String body) {
-    try {
-      final payload = jsonDecode(body);
-      if (payload is! Map<String, dynamic>) {
-        return null;
-      }
-      final device = payload['device'];
-      if (device is Map<String, dynamic>) {
-        return device['id']?.toString();
-      }
-    } catch (_) {
-      return null;
-    }
-    return null;
   }
 
   @override
