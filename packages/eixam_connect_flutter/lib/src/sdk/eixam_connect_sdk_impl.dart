@@ -2183,6 +2183,11 @@ class EixamConnectSdkImpl
       deviceStatusChanges: deviceStatusStream,
       reboot: _rebootDeviceAndAwaitExpectedDisconnect,
       reconnectSameDevice: _reconnectProvisionedDevice,
+      acquireReconnectOwnership:
+          _bleAutoReconnectCoordinator.acquireProvisioningReconnectOwnership,
+      releaseReconnectOwnership:
+          _bleAutoReconnectCoordinator.releaseProvisioningReconnectOwnership,
+      diagnosticLog: BleDebugRegistry.instance.recordEvent,
       // Greenfield provisioning has one canonical certified firmware baseline.
       // Devices outside this contract update firmware before mutating writes.
       firmwarePolicy: const ProvisioningFirmwarePolicy.current(),
@@ -2193,12 +2198,13 @@ class EixamConnectSdkImpl
     await const ProvisioningRebootDisconnectPolicy().writeAndAwait(
       writeReboot: rebootDevice,
       statuses: deviceStatusStream,
+      diagnosticLog: BleDebugRegistry.instance.recordEvent,
     );
   }
 
   Future<bool> _reconnectProvisionedDevice(String platformDeviceId) async {
-    final result = await reconnectPreferredDevice(
-      reason: 'device_provisioning_reboot',
+    final result =
+        await _bleAutoReconnectCoordinator.reconnectForProvisioningReboot(
       platformRemoteId: platformDeviceId,
     );
     if (result.connected) {

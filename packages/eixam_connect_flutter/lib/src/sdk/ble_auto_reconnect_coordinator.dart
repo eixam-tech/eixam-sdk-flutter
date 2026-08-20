@@ -72,6 +72,7 @@ class BleAutoReconnectCoordinator {
   bool _isConnectionAttemptInProgress = false;
   bool _isAppForeground = true;
   bool _dfuTransferSuppressed = false;
+  bool _provisioningReconnectOwned = false;
   bool _disposed = false;
   int _retryAttempt = 0;
   int _preferredReconnectCampaignToken = 0;
@@ -184,6 +185,49 @@ class BleAutoReconnectCoordinator {
     );
   }
 
+  /// Gives provisioning exclusive ownership of reconnect across its reboot
+  /// boundary. Suppression is set before an existing campaign is cancelled so
+  /// no lifecycle, readiness, startup, or retry trigger can replace it while
+  /// the in-flight native connection attempt is being drained.
+  Future<void> acquireProvisioningReconnectOwnership() async {
+    _provisioningReconnectOwned = true;
+    _cancelPreferredReconnectCampaign(reason: 'provisioning_reboot');
+    _retryTimer?.cancel();
+    _retryTimer = null;
+    final campaign = _preferredReconnectCampaign;
+    if (campaign != null) {
+      try {
+        await campaign;
+      } catch (_) {
+        // Only settlement matters. Provisioning will perform the sole allowed
+        // reconnect after the reboot disconnect has been validated.
+      }
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'PROVISIONING_REBOOT reconnect_ownership_acquired=true',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'PROVISIONING_REBOOT generic_reconnect_suppressed=true',
+    );
+  }
+
+  void releaseProvisioningReconnectOwnership() {
+    _provisioningReconnectOwned = false;
+    BleDebugRegistry.instance.recordEvent(
+      'PROVISIONING_REBOOT reconnect_ownership_acquired=false',
+    );
+  }
+
+  Future<PreferredDeviceReconnectResult> reconnectForProvisioningReboot({
+    required String platformRemoteId,
+  }) {
+    return _tryAutoConnect(
+      trigger: 'device_provisioning_reboot',
+      platformRemoteId: platformRemoteId,
+      allowDuringProvisioningOwnership: true,
+    );
+  }
+
   /// Hard-suppresses every auto-reconnect path for the duration of a firmware
   /// DFU transfer. The foreground flag is NOT a safe gate for this: the Android
   /// bonding dialog (or any notification interaction) bounces the activity
@@ -225,6 +269,10 @@ class BleAutoReconnectCoordinator {
   }
 
   void onUnexpectedDisconnect() {
+    if (_provisioningReconnectOwned) {
+      _recordProvisioningReconnectSuppressed(trigger: 'unexpected_disconnect');
+      return;
+    }
     if (_dfuTransferSuppressed) {
       BleDebugRegistry.instance.recordEvent(
         'Reconnect skipped because a firmware DFU transfer is in progress',
@@ -369,6 +417,10 @@ class BleAutoReconnectCoordinator {
   }
 
   Future<void> _triggerBleReadyReconnect({required String trigger}) async {
+    if (_provisioningReconnectOwned) {
+      _recordProvisioningReconnectSuppressed(trigger: trigger);
+      return;
+    }
     if (_preferredReconnectCampaign != null || _isConnectionAttemptInProgress) {
       _traceReconnect('sdk_ble_ready_reconnect_skipped reason=inflight');
       return;
@@ -416,7 +468,18 @@ class BleAutoReconnectCoordinator {
     required String trigger,
     String? attemptId,
     String? platformRemoteId,
+    bool allowDuringProvisioningOwnership = false,
   }) async {
+    if (_provisioningReconnectOwned && !allowDuringProvisioningOwnership) {
+      _recordProvisioningReconnectSuppressed(trigger: trigger);
+      _recordNoProviderCall(
+        attemptId: attemptId,
+        reason: 'provisioning_reconnect_owned',
+      );
+      return const PreferredDeviceReconnectResult.failed(
+        reason: 'provisioning_reconnect_owned',
+      );
+    }
     if (_dfuTransferSuppressed) {
       _traceReconnect(
         'sdk_campaign_cancelled reason=dfu_transfer_in_progress '
@@ -1036,8 +1099,19 @@ class BleAutoReconnectCoordinator {
       'manual_disconnect' || 'manual_connect_requested' => 'manual_disconnect',
       'dispose' => 'disposed',
       'dfu_transfer' => 'dfu_transfer_in_progress',
+      'provisioning_reboot' => 'provisioning_reconnect_owned',
       _ => 'unknown',
     };
+  }
+
+  void _recordProvisioningReconnectSuppressed({required String trigger}) {
+    BleDebugRegistry.instance.recordEvent(
+      'PROVISIONING_REBOOT generic_reconnect_suppressed=true trigger=$trigger',
+    );
+    _traceReconnect(
+      'sdk_campaign_cancelled reason=provisioning_reconnect_owned '
+      'source=$trigger',
+    );
   }
 
   void _traceReconnect(String message) {

@@ -141,6 +141,125 @@ void main() {
     });
 
     test(
+        'provisioning ownership suppresses generic triggers but allows its '
+        'explicit reconnect', () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final readiness = StreamController<PermissionState>.broadcast();
+      final repository = _FakeDeviceRepository();
+      final store = PreferredBleDeviceStore(localStore: SharedPrefsSdkStore());
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: 'ble-demo-r1',
+          displayName: 'EIXAM Demo',
+          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+        ),
+      );
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+      );
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+      await coordinator.startBleReadinessReconnectMonitor(
+        readinessStream: readiness.stream,
+      );
+      readiness.add(
+        const PermissionState(
+          bluetooth: SdkPermissionStatus.granted,
+          bluetoothEnabled: false,
+        ),
+      );
+      await _settleReconnectMonitor();
+
+      await coordinator.acquireProvisioningReconnectOwnership();
+      coordinator.setAppForeground(false);
+      coordinator.setAppForeground(true);
+      await coordinator.tryAutoConnectOnStartup();
+      await coordinator.tryAutoConnectOnResume();
+      coordinator.onUnexpectedDisconnect();
+      readiness.add(
+        const PermissionState(
+          bluetooth: SdkPermissionStatus.granted,
+          bluetoothEnabled: true,
+        ),
+      );
+      await _settleReconnectMonitor();
+
+      expect(repository.reconnectCallCount, 0);
+      expect(
+        BleDebugRegistry.instance.currentState.events
+            .map((event) => event.message),
+        contains('PROVISIONING_REBOOT generic_reconnect_suppressed=true'),
+      );
+      final explicit = await coordinator.reconnectForProvisioningReboot(
+        platformRemoteId: 'ble-demo-r1',
+      );
+      expect(explicit.connected, isTrue);
+      expect(repository.reconnectCallCount, 1);
+
+      coordinator.releaseProvisioningReconnectOwnership();
+      repository.setDisconnected();
+      await coordinator.tryAutoConnectOnStartup();
+      expect(repository.reconnectCallCount, 2);
+      await readiness.close();
+      await coordinator.dispose();
+    });
+
+    test('provisioning ownership cancels and settles an existing campaign',
+        () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _FakeDeviceRepository()
+        ..pairErrors = <Object>[
+          const DeviceException(
+            'E_BLE_DEVICE_NOT_FOUND',
+            'Preferred device was not found.',
+          ),
+        ];
+      final store = PreferredBleDeviceStore(localStore: SharedPrefsSdkStore());
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: 'ble-demo-r1',
+          displayName: 'EIXAM Demo',
+          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+        ),
+      );
+      final delayStarted = Completer<void>();
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+        preferredReconnectDelay: (_) {
+          if (!delayStarted.isCompleted) delayStarted.complete();
+          return Completer<void>().future;
+        },
+      );
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+
+      final campaign = coordinator.tryAutoConnectOnStartup();
+      await delayStarted.future;
+      await coordinator.acquireProvisioningReconnectOwnership();
+      await campaign;
+
+      expect(repository.reconnectCallCount, 1);
+      expect(
+        BleDebugRegistry.instance.currentState.events
+            .map((event) => event.message),
+        contains(
+          'BLE_PREFERRED_RECONNECT_CAMPAIGN_CANCELLED '
+          'reason=provisioning_reboot',
+        ),
+      );
+      coordinator.releaseProvisioningReconnectOwnership();
+      await coordinator.dispose();
+    });
+
+    test(
       'handoff reconnect returns bluetoothOff when BLE is not ready',
       () async {
         SharedPreferences.setMockInitialValues(<String, Object>{});

@@ -55,6 +55,11 @@ void main() {
     expect(opcodes.indexOf(0x20), lessThan(opcodes.indexOf(0x21)));
     expect(harness.rebootCount, 1);
     expect(harness.reconnectCount, 1);
+    expect(harness.reconnectOwnershipAcquireCount, 1);
+    expect(harness.reconnectOwnershipReleaseCount, 1);
+    expect(harness.reconnectOwnershipHeld, isFalse);
+    expect(harness.rebootBoundaryEvents,
+        <String>['acquire', 'reboot', 'reconnect', 'release']);
     expect(
       harness.commands.where((command) => command.opcode == 0x24).every(
             (command) =>
@@ -181,6 +186,26 @@ void main() {
 
     expect(result.failure?.code, DeviceReadyFailureCode.reconnectFailed);
     expect(result.failure?.retryable, isTrue);
+    expect(harness.reconnectOwnershipHeld, isFalse);
+    expect(harness.reconnectOwnershipReleaseCount, 1);
+    expect(
+      harness.diagnostics,
+      contains('PROVISIONING_REBOOT failure_code=reconnectFailed'),
+    );
+    await harness.dispose();
+  });
+
+  test('reboot failure releases reconnect ownership', () async {
+    final harness = _Harness(rebootFails: true);
+    final result = await harness.coordinator.ensureReady();
+
+    expect(result.failure?.code, DeviceReadyFailureCode.rebootFailed);
+    expect(harness.reconnectOwnershipHeld, isFalse);
+    expect(harness.reconnectOwnershipReleaseCount, 1);
+    expect(
+      harness.diagnostics,
+      contains('PROVISIONING_REBOOT failure_code=rebootFailed'),
+    );
     await harness.dispose();
   });
 
@@ -190,6 +215,8 @@ void main() {
 
     expect(result.failure?.code, DeviceReadyFailureCode.identityMismatch);
     expect(result.failure?.retryable, isFalse);
+    expect(harness.reconnectOwnershipHeld, isFalse);
+    expect(harness.reconnectOwnershipReleaseCount, 1);
     await harness.dispose();
   });
 
@@ -198,7 +225,33 @@ void main() {
     final result = await harness.coordinator.ensureReady();
 
     expect(result.failure?.code, DeviceReadyFailureCode.verificationFailed);
+    expect(harness.reconnectOwnershipHeld, isFalse);
+    expect(harness.reconnectOwnershipReleaseCount, 1);
     await harness.dispose();
+  });
+
+  test('dispose during reboot releases reconnect ownership', () async {
+    final harness = _Harness(blockReboot: true);
+    final result = harness.coordinator.ensureReady();
+    await harness.rebootBlocked.future;
+
+    expect(harness.reconnectOwnershipHeld, isTrue);
+    final dispose = harness.coordinator.dispose();
+    harness.releaseReboot.complete();
+    await dispose;
+
+    expect((await result).failure?.code,
+        DeviceReadyFailureCode.deviceCommunicationInterrupted);
+    expect(harness.reconnectOwnershipHeld, isFalse);
+    expect(harness.reconnectOwnershipReleaseCount, 1);
+    expect(
+      harness.diagnostics,
+      contains(
+        'PROVISIONING_REBOOT '
+        'failure_code=deviceCommunicationInterrupted',
+      ),
+    );
+    await harness.dispose(closeCoordinator: false);
   });
 
   test('live unsupported firmware overrides supported cached metadata',
@@ -299,6 +352,8 @@ final class _Harness {
     this.initialNodeId = 305419896,
     this.finalDeviceId = 'ble-device-1',
     this.blockAtWrite,
+    this.rebootFails = false,
+    this.blockReboot = false,
   }) {
     pskClient = _PskClient();
     final session = SdkSessionContext()
@@ -331,11 +386,31 @@ final class _Harness {
       incomingPackets: packets.stream,
       deviceStatusChanges: statuses.stream,
       writeCommand: _write,
-      reboot: () async => rebootCount++,
+      reboot: () async {
+        rebootBoundaryEvents.add('reboot');
+        rebootCount++;
+        if (blockReboot) {
+          if (!rebootBlocked.isCompleted) rebootBlocked.complete();
+          await releaseReboot.future;
+        }
+        if (rebootFails) throw const ProvisioningRebootException();
+      },
       reconnectSameDevice: (deviceId) async {
+        rebootBoundaryEvents.add('reconnect');
         reconnectCount++;
         return reconnectSucceeds && deviceId == 'ble-device-1';
       },
+      acquireReconnectOwnership: () async {
+        rebootBoundaryEvents.add('acquire');
+        reconnectOwnershipAcquireCount++;
+        reconnectOwnershipHeld = true;
+      },
+      releaseReconnectOwnership: () {
+        rebootBoundaryEvents.add('release');
+        reconnectOwnershipReleaseCount++;
+        reconnectOwnershipHeld = false;
+      },
+      diagnosticLog: diagnostics.add,
       firmwarePolicy: const ProvisioningFirmwarePolicy.current(),
       softSimRejectionObservationInterval: const Duration(milliseconds: 1),
     );
@@ -351,18 +426,27 @@ final class _Harness {
   final int initialNodeId;
   final String finalDeviceId;
   final int? blockAtWrite;
+  final bool rebootFails;
+  final bool blockReboot;
   final StreamController<List<int>> packets =
       StreamController<List<int>>.broadcast();
   final StreamController<DeviceStatus> statuses =
       StreamController<DeviceStatus>.broadcast();
   final List<EixamDeviceCommand> commands = <EixamDeviceCommand>[];
+  final List<String> rebootBoundaryEvents = <String>[];
   late final _PskClient pskClient;
   late final DeviceProvisioningCoordinator coordinator;
   int rebootCount = 0;
   int reconnectCount = 0;
+  int reconnectOwnershipAcquireCount = 0;
+  int reconnectOwnershipReleaseCount = 0;
+  bool reconnectOwnershipHeld = false;
   int runtimeReadCount = 0;
+  final List<String> diagnostics = <String>[];
   final Completer<void> writeBlocked = Completer<void>();
   final Completer<void> releaseWrite = Completer<void>();
+  final Completer<void> rebootBlocked = Completer<void>();
+  final Completer<void> releaseReboot = Completer<void>();
 
   DeviceStatus _status({
     required bool afterReboot,

@@ -54,24 +54,51 @@ final class ProvisioningRebootDisconnectPolicy {
   Future<void> writeAndAwait({
     required Future<void> Function() writeReboot,
     required Stream<DeviceStatus> statuses,
+    void Function(String event)? diagnosticLog,
   }) async {
     final disconnect = Completer<DateTime>();
     final subscription = statuses.listen((status) {
       if (!status.connected && !disconnect.isCompleted) {
+        diagnosticLog?.call(
+          'PROVISIONING_REBOOT disconnect_observed=true',
+        );
         disconnect.complete(clock());
       }
     });
     try {
+      diagnosticLog?.call(
+        'PROVISIONING_REBOOT command_write_started=true',
+      );
       await writeReboot();
+      diagnosticLog?.call(
+        'PROVISIONING_REBOOT command_write_completed=true',
+      );
       final writeCompletedAt = clock();
       final disconnectedAt = await disconnect.future.timeout(
         maximumDelay,
-        onTimeout: () => throw const ProvisioningRebootException(),
+        onTimeout: () {
+          diagnosticLog?.call(
+            'PROVISIONING_REBOOT disconnect_timing_bucket=timeout',
+          );
+          throw const ProvisioningRebootException();
+        },
       );
       final elapsed = disconnectedAt.difference(writeCompletedAt);
-      if (elapsed < minimumDelay || elapsed > maximumDelay) {
+      if (elapsed < minimumDelay) {
+        diagnosticLog?.call(
+          'PROVISIONING_REBOOT disconnect_timing_bucket=too_early',
+        );
         throw const ProvisioningRebootException();
       }
+      if (elapsed > maximumDelay) {
+        diagnosticLog?.call(
+          'PROVISIONING_REBOOT disconnect_timing_bucket=timeout',
+        );
+        throw const ProvisioningRebootException();
+      }
+      diagnosticLog?.call(
+        'PROVISIONING_REBOOT disconnect_timing_bucket=valid',
+      );
     } finally {
       await subscription.cancel();
     }
@@ -92,6 +119,9 @@ final class DeviceProvisioningCoordinator {
     required Stream<DeviceStatus> deviceStatusChanges,
     required this.reboot,
     required this.reconnectSameDevice,
+    required this.acquireReconnectOwnership,
+    required this.releaseReconnectOwnership,
+    this.diagnosticLog,
     this.firmwarePolicy = const ProvisioningFirmwarePolicy.current(),
     this.softSimRejectionObservationInterval =
         const Duration(milliseconds: 250),
@@ -110,6 +140,9 @@ final class DeviceProvisioningCoordinator {
   final Future<void> Function(EixamDeviceCommand command) writeCommand;
   final Future<void> Function() reboot;
   final Future<bool> Function(String platformDeviceId) reconnectSameDevice;
+  final Future<void> Function() acquireReconnectOwnership;
+  final void Function() releaseReconnectOwnership;
+  final void Function(String event)? diagnosticLog;
   final ProvisioningFirmwarePolicy firmwarePolicy;
   final Duration softSimRejectionObservationInterval;
   final Stream<List<int>> _packets;
@@ -241,47 +274,66 @@ final class DeviceProvisioningCoordinator {
               bytes: encodeSosRadioConfig(config));
           _check(operation);
 
-          _emit(DeviceProvisioningPhase.rebooting, progress: 0.7);
-          _expectingRebootDisconnect = true;
+          operation.rebootBoundaryStarted = true;
           try {
-            await reboot();
+            await acquireReconnectOwnership();
+            _check(operation);
+            _emit(DeviceProvisioningPhase.rebooting, progress: 0.7);
+            _expectingRebootDisconnect = true;
+            try {
+              await reboot();
+            } finally {
+              _expectingRebootDisconnect = false;
+            }
+            _check(operation);
+            _emit(DeviceProvisioningPhase.reconnecting, progress: 0.8);
+            diagnosticLog?.call(
+              'PROVISIONING_REBOOT explicit_reconnect_started=true',
+            );
+            if (!await reconnectSameDevice(initialStatus.deviceId)) {
+              diagnosticLog?.call(
+                'PROVISIONING_REBOOT explicit_reconnect_result=failed',
+              );
+              return _fail(DeviceReadyFailureCode.reconnectFailed,
+                  retryable: true);
+            }
+            diagnosticLog?.call(
+              'PROVISIONING_REBOOT explicit_reconnect_result=connected',
+            );
+            _check(operation);
+            _emit(DeviceProvisioningPhase.verifying, progress: 0.9);
+            diagnosticLog?.call(
+              'PROVISIONING_REBOOT verification_started=true',
+            );
+            final finalStatus = await statusProvider();
+            _check(operation);
+            if (!finalStatus.connected ||
+                finalStatus.deviceId != initialStatus.deviceId) {
+              return _fail(DeviceReadyFailureCode.identityMismatch,
+                  retryable: false);
+            }
+            final finalRuntime = await runtimeStatusProvider();
+            _check(operation);
+            final verified = finalRuntime.nodeId == initialRuntime.nodeId &&
+                finalRuntime.isProvisioned &&
+                finalRuntime.region == config.regionCode &&
+                !finalRuntime.usePreset &&
+                finalRuntime.txEnabled &&
+                finalRuntime.meshSpreadingFactor == config.tel.spreadingFactor;
+            if (!verified) {
+              final identityChanged =
+                  finalRuntime.nodeId != initialRuntime.nodeId;
+              return _fail(
+                  identityChanged
+                      ? DeviceReadyFailureCode.identityMismatch
+                      : DeviceReadyFailureCode.verificationFailed,
+                  retryable: !identityChanged);
+            }
+            _emit(DeviceProvisioningPhase.ready, progress: 1);
+            return DeviceReadyResult.ready(finalStatus);
           } finally {
-            _expectingRebootDisconnect = false;
+            releaseReconnectOwnership();
           }
-          _check(operation);
-          _emit(DeviceProvisioningPhase.reconnecting, progress: 0.8);
-          if (!await reconnectSameDevice(initialStatus.deviceId)) {
-            return _fail(DeviceReadyFailureCode.reconnectFailed,
-                retryable: true);
-          }
-          _check(operation);
-          _emit(DeviceProvisioningPhase.verifying, progress: 0.9);
-          final finalStatus = await statusProvider();
-          _check(operation);
-          if (!finalStatus.connected ||
-              finalStatus.deviceId != initialStatus.deviceId) {
-            return _fail(DeviceReadyFailureCode.identityMismatch,
-                retryable: false);
-          }
-          final finalRuntime = await runtimeStatusProvider();
-          _check(operation);
-          final verified = finalRuntime.nodeId == initialRuntime.nodeId &&
-              finalRuntime.isProvisioned &&
-              finalRuntime.region == config.regionCode &&
-              !finalRuntime.usePreset &&
-              finalRuntime.txEnabled &&
-              finalRuntime.meshSpreadingFactor == config.tel.spreadingFactor;
-          if (!verified) {
-            final identityChanged =
-                finalRuntime.nodeId != initialRuntime.nodeId;
-            return _fail(
-                identityChanged
-                    ? DeviceReadyFailureCode.identityMismatch
-                    : DeviceReadyFailureCode.verificationFailed,
-                retryable: !identityChanged);
-          }
-          _emit(DeviceProvisioningPhase.ready, progress: 1);
-          return DeviceReadyResult.ready(finalStatus);
         } finally {
           softSim.dispose();
         }
@@ -405,14 +457,28 @@ final class DeviceProvisioningCoordinator {
     _ackCoordinator.cancelPending();
   }
 
-  DeviceReadyResult _cancelledResult() => const DeviceReadyResult.failed(
-        DeviceReadyFailure(
-            code: DeviceReadyFailureCode.deviceCommunicationInterrupted,
-            retryable: true),
+  DeviceReadyResult _cancelledResult() {
+    if (_operation?.rebootBoundaryStarted == true) {
+      diagnosticLog?.call(
+        'PROVISIONING_REBOOT '
+        'failure_code=${DeviceReadyFailureCode.deviceCommunicationInterrupted.name}',
       );
+    }
+    return const DeviceReadyResult.failed(
+      DeviceReadyFailure(
+        code: DeviceReadyFailureCode.deviceCommunicationInterrupted,
+        retryable: true,
+      ),
+    );
+  }
 
   DeviceReadyResult _fail(DeviceReadyFailureCode code,
       {required bool retryable}) {
+    if (_operation?.rebootBoundaryStarted == true) {
+      diagnosticLog?.call(
+        'PROVISIONING_REBOOT failure_code=${code.name}',
+      );
+    }
     final failure = DeviceReadyFailure(code: code, retryable: retryable);
     _emit(DeviceProvisioningPhase.failed, failure: failure);
     return DeviceReadyResult.failed(failure);
@@ -438,6 +504,7 @@ final class DeviceProvisioningCoordinator {
 
 final class _ProvisioningOperation {
   final Completer<void> _cancelled = Completer<void>();
+  bool rebootBoundaryStarted = false;
   bool get cancelled => _cancelled.isCompleted;
   Future<void> get whenCancelled => _cancelled.future;
   void cancel() {

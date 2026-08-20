@@ -20,6 +20,7 @@ void main() {
       maximumDelay: const Duration(seconds: 5),
       clock: () => now,
     );
+    final diagnostics = <String>[];
     final result = policy.writeAndAwait(
       writeReboot: () async {
         Timer(Duration.zero, () {
@@ -28,8 +29,18 @@ void main() {
         });
       },
       statuses: statuses.stream,
+      diagnosticLog: diagnostics.add,
     );
     await expectLater(result, throwsA(isA<ProvisioningRebootException>()));
+    expect(
+      diagnostics,
+      containsAllInOrder(<String>[
+        'PROVISIONING_REBOOT command_write_started=true',
+        'PROVISIONING_REBOOT command_write_completed=true',
+        'PROVISIONING_REBOOT disconnect_observed=true',
+        'PROVISIONING_REBOOT disconnect_timing_bucket=too_early',
+      ]),
+    );
     await statuses.close();
   });
 
@@ -63,12 +74,18 @@ void main() {
       minimumDelay: Duration.zero,
       maximumDelay: const Duration(milliseconds: 10),
     );
+    final diagnostics = <String>[];
     await expectLater(
       policy.writeAndAwait(
         writeReboot: () async {},
         statuses: statuses.stream,
+        diagnosticLog: diagnostics.add,
       ),
       throwsA(isA<ProvisioningRebootException>()),
+    );
+    expect(
+      diagnostics,
+      contains('PROVISIONING_REBOOT disconnect_timing_bucket=timeout'),
     );
     await statuses.close();
   });
