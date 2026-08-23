@@ -4,13 +4,24 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import '../device/ble_incoming_event.dart';
 import '../device/eixam_position_sample_identity.dart';
+import '../device/eixam_position_backlog_packet.dart';
+
+class DevicePositionNormalizationResult {
+  const DevicePositionNormalizationResult({
+    required this.batch,
+    required this.duplicateCount,
+  });
+
+  final EixamDevicePositionBatch? batch;
+  final int duplicateCount;
+}
 
 /// Converts connected-device TEL deliveries into a transport-neutral stream of
 /// novel position batches.
 class DevicePositionBatchNormalizer {
   DevicePositionBatchNormalizer({
     this.maximumDevices = 4,
-    this.maximumRecordIdentitiesPerDevice = 512,
+    this.maximumRecordIdentitiesPerDevice = 8192,
     this.maximumRecentWireIdentitiesPerDevice = 64,
     this.crossTransportWindow = const Duration(seconds: 10),
   });
@@ -43,6 +54,35 @@ class DevicePositionBatchNormalizer {
       return null;
     }
     return _normalizeClassicTel(event);
+  }
+
+  DevicePositionNormalizationResult normalizeBacklog(
+    BleIncomingEvent event,
+    EixamPositionBacklogChunk chunk,
+  ) {
+    final sample = chunk.batch.samples.single;
+    final state = _stateFor(event, chunk.telPacket.nodeId);
+    if (state.recordIdentities.containsKey(sample.stableSampleKey)) {
+      return const DevicePositionNormalizationResult(
+        batch: null,
+        duplicateCount: 1,
+      );
+    }
+    state.rememberRecordIdentity(
+      sample.stableSampleKey,
+      maximumRecordIdentitiesPerDevice,
+      receivedAt: event.receivedAt,
+    );
+    return DevicePositionNormalizationResult(
+      batch: EixamDevicePositionBatch(
+        samples: chunk.batch.samples,
+        receivedAt: chunk.batch.receivedAt,
+        source: chunk.batch.source,
+        delivery: EixamDevicePositionDelivery.recovered,
+        deviceIdentity: _deviceIdentity(event),
+      ),
+      duplicateCount: 0,
+    );
   }
 
   EixamDevicePositionBatch? _normalizeLiveBatch(
@@ -90,6 +130,8 @@ class DevicePositionBatchNormalizer {
       samples: novel,
       receivedAt: batch.receivedAt,
       source: batch.source,
+      delivery: batch.delivery,
+      deviceIdentity: _deviceIdentity(event),
     );
   }
 
@@ -142,13 +184,12 @@ class DevicePositionBatchNormalizer {
       ],
       receivedAt: event.receivedAt.toUtc(),
       source: SdkLocationSource.connectedDevice,
+      deviceIdentity: _deviceIdentity(event),
     );
   }
 
   _DeviceDedupState _stateFor(BleIncomingEvent event, int nodeId) {
-    final deviceIdentity = event.canonicalHardwareId?.trim().isNotEmpty == true
-        ? event.canonicalHardwareId!.trim()
-        : event.deviceId.trim();
+    final deviceIdentity = _deviceIdentity(event);
     final key = '$deviceIdentity:$nodeId';
     final existing = _states.remove(key);
     final state = existing ?? _DeviceDedupState();
@@ -158,6 +199,11 @@ class DevicePositionBatchNormalizer {
     }
     return state;
   }
+
+  String _deviceIdentity(BleIncomingEvent event) =>
+      event.canonicalHardwareId?.trim().isNotEmpty == true
+          ? event.canonicalHardwareId!.trim()
+          : event.deviceId.trim();
 }
 
 enum _PositionTransport { classicTel, liveBatch }

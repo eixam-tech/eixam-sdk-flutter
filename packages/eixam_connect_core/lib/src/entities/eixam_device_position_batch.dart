@@ -1,5 +1,7 @@
 import 'sdk_resolved_location.dart';
 
+enum EixamDevicePositionDelivery { live, recovered }
+
 /// One real position sample captured by a connected EIXAM device.
 ///
 /// [sampledAt] is present only when the device-provided timestamp is plausible
@@ -35,9 +37,18 @@ class EixamDevicePositionBatch {
     required List<EixamDevicePositionSample> samples,
     required this.receivedAt,
     required this.source,
+    this.delivery = EixamDevicePositionDelivery.live,
+    this.deviceIdentity,
   }) : samples = List<EixamDevicePositionSample>.unmodifiable(samples);
 
   final List<EixamDevicePositionSample> samples;
   final DateTime receivedAt;
   final SdkLocationSource source;
+  final EixamDevicePositionDelivery delivery;
+
+  /// Stable opaque identity of the TAG that produced this batch.
+  ///
+  /// Consumers may compare this value with the connected device's canonical
+  /// identity. They must not parse it or treat it as a BLE address.
+  final String? deviceIdentity;
 }

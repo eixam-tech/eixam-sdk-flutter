@@ -49,6 +49,7 @@ import 'ble_auto_reconnect_coordinator.dart';
 import 'ble_sos_notification_payload.dart';
 import 'device_country_config_controller.dart';
 import 'device_position_batch_normalizer.dart';
+import 'device_position_backlog_coordinator.dart';
 import 'firmware_update_coordinator.dart';
 import 'operational_telemetry_coordinator.dart';
 import 'operational_realtime_client.dart';
@@ -118,6 +119,7 @@ class EixamConnectSdkImpl
         SosLocationOwnershipEffectMode.enabled,
     TargetPlatform? sosLocationOwnershipPlatform,
     bool? sosLocationOwnershipIsWeb,
+    Future<void> Function(EixamDeviceCommand command)? backlogCommandWriter,
     this.disposeCallback,
   })  : _clock = clock ?? DateTime.now,
         _appTriggeredSosBridgeWindow = appTriggeredSosBridgeWindow,
@@ -129,6 +131,15 @@ class EixamConnectSdkImpl
         backgroundTelemetryPlatformAdapter =
             backgroundTelemetryPlatformAdapter ??
                 buildDefaultBackgroundTelemetryPlatformAdapter() {
+    _devicePositionBacklogCoordinator = DevicePositionBacklogCoordinator(
+      writeCommand: backlogCommandWriter ?? _writePositionBacklogCommand,
+      normalizer: _devicePositionBatchNormalizer,
+      emitBatch: (batch) {
+        if (!_devicePositionBatchController.isClosed) {
+          _devicePositionBatchController.add(batch);
+        }
+      },
+    );
     _bleAutoReconnectCoordinator = BleAutoReconnectCoordinator(
       deviceRepository: deviceRepository,
       preferredDeviceStore: preferredBleDeviceStore,
@@ -511,6 +522,7 @@ class EixamConnectSdkImpl
   late final SdkResolvedLocationResolver _resolvedLocationResolver;
   final DevicePositionBatchNormalizer _devicePositionBatchNormalizer =
       DevicePositionBatchNormalizer();
+  late final DevicePositionBacklogCoordinator _devicePositionBacklogCoordinator;
   final Duration _appTriggeredSosBridgeWindow;
   bool _deferredRuntimeWorkPending = false;
   bool _backgroundTelemetryEnabled = false;
@@ -717,6 +729,9 @@ class EixamConnectSdkImpl
         'Device connectivity changed -> connected=${promotedStatus.connected} previous=${previousStatus?.connected} deviceId=${promotedStatus.nodeId?.toString() ?? "-"} nodeId=${promotedStatus.nodeId?.toString() ?? "-"} hardwareId=${promotedStatus.deviceId} lifecycle=${promotedStatus.lifecycleState.name}',
       );
       _emitOperationalDiagnostics();
+      if (!promotedStatus.connected) {
+        unawaited(_devicePositionBacklogCoordinator.disconnected());
+      }
       unawaited(
         _updateBackgroundTelemetryState(reason: 'device_status_stream'),
       );
@@ -893,6 +908,10 @@ class EixamConnectSdkImpl
     _bleIncomingEventDiagnosticsSub?.cancel();
     _bleIncomingEventDiagnosticsSub = bleIncomingEvents.listen(
       (event) {
+        if (event.type == BleIncomingEventType.telPositionBacklog) {
+          unawaited(_devicePositionBacklogCoordinator.handleEvent(event));
+          return;
+        }
         final positionBatch = _devicePositionBatchNormalizer.normalize(event);
         if (positionBatch != null && !_devicePositionBatchController.isClosed) {
           _devicePositionBatchController.add(positionBatch);
@@ -2092,6 +2111,7 @@ class EixamConnectSdkImpl
 
   @override
   Future<DeviceReadyResult> ensureDeviceReady() async {
+    await _devicePositionBacklogCoordinator.cancel();
     final coordinator = _deviceProvisioningCoordinator ??=
         _buildDeviceProvisioningCoordinator();
     if (coordinator == null) {
@@ -2317,7 +2337,8 @@ class EixamConnectSdkImpl
     required String deviceId,
     required String releaseId,
     FirmwareUpdatePolicy policy = const FirmwareUpdatePolicy(),
-  }) {
+  }) async {
+    await _devicePositionBacklogCoordinator.cancel();
     _firmwareOtaInProgress = true;
     return _firmwareUpdates()
         .startFirmwareUpdate(
@@ -2337,7 +2358,8 @@ class EixamConnectSdkImpl
     required String bootloaderDeviceId,
     required String releaseId,
     String targetVersion = '',
-  }) {
+  }) async {
+    await _devicePositionBacklogCoordinator.cancel();
     _firmwareOtaInProgress = true;
     return _firmwareUpdates()
         .recoverFirmwareUpdate(
@@ -14190,6 +14212,34 @@ class EixamConnectSdkImpl
   }
 
   @override
+  Future<DevicePositionBacklogSyncResult> syncDevicePositionBacklog({
+    required DateTime since,
+    DateTime? until,
+    Duration timeout = const Duration(seconds: 5),
+  }) {
+    return _devicePositionBacklogCoordinator.sync(
+      since: since,
+      until: until,
+      timeout: timeout,
+    );
+  }
+
+  Future<void> _writePositionBacklogCommand(
+    EixamDeviceCommand command,
+  ) async {
+    if (_isProtectionPlatformOwningBle ||
+        _firmwareOtaInProgress ||
+        (_deviceProvisioningCoordinator?.isBusy ?? false)) {
+      throw const DeviceException(
+        'E_DEVICE_BACKLOG_SYNC_OWNER_UNAVAILABLE',
+        'E_DEVICE_BACKLOG_SYNC_OWNER_UNAVAILABLE',
+      );
+    }
+    await _ensureCommandCapableDeviceRepository(action: 'position_backlog');
+    await _sendDeviceCommandThroughActiveOwner(command);
+  }
+
+  @override
   Future<SdkTelemetryPayload?> getResolvedTelemetryPreview({
     bool includeCachedFallback = true,
   }) async {
@@ -17437,6 +17487,7 @@ class EixamConnectSdkImpl
     await _sosStateSub?.cancel();
     await _bridgeDiagnosticsSub?.cancel();
     await _bleIncomingEventDiagnosticsSub?.cancel();
+    await _devicePositionBacklogCoordinator.cancel();
     await _protectionStatusSub?.cancel();
     await _protectionRawSosEventsSub?.cancel();
     await _sosCapabilityLifecycleSub?.cancel();

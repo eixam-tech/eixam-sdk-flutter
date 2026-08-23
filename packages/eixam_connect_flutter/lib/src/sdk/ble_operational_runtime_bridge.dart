@@ -225,7 +225,7 @@ class BleOperationalRuntimeBridge {
           ),
         );
         BleDebugRegistry.instance.recordEvent(
-          'BLE operational bridge observed TEL aggregate fragment -> awaiting_completion hardwareId=${event.deviceId}',
+          'BLE operational bridge observed TEL aggregate fragment -> awaiting_completion',
         );
         return;
       case BleIncomingEventType.telAggregateComplete:
@@ -233,6 +233,8 @@ class BleOperationalRuntimeBridge {
         return;
       case BleIncomingEventType.telLivePositionBatch:
         _rememberOwnDeviceLocationFromLiveBatch(event);
+        return;
+      case BleIncomingEventType.telPositionBacklog:
         return;
       case BleIncomingEventType.telRelayRx:
         await _publishRelayTelemetryIfValid(event);

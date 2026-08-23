@@ -7,6 +7,7 @@ import 'eixam_sos_event_packet.dart';
 import 'eixam_sos_packet.dart';
 import 'eixam_tel_fragment.dart';
 import 'eixam_tel_live_batch_packet.dart';
+import 'eixam_position_backlog_packet.dart';
 import 'eixam_tel_packet.dart';
 import 'eixam_tel_relay_rx_packet.dart';
 import '../provisioning/provisioning_command_result.dart';
@@ -45,6 +46,7 @@ enum BleIncomingEventType {
   telAggregateFragment,
   telAggregateComplete,
   telLivePositionBatch,
+  telPositionBacklog,
   telRelayRx,
   clusterHeartbeat,
   sosMeshPacket,
@@ -68,6 +70,7 @@ class BleIncomingEvent {
     this.telFragment,
     this.aggregatePayload,
     this.telLiveBatchPacket,
+    this.positionBacklogPacket,
     this.clusterHeartbeatPacket,
     this.deviceRuntimeStatusPacket,
     this.provisioningCommandResult,
@@ -94,6 +97,7 @@ class BleIncomingEvent {
   final EixamTelFragment? telFragment;
   final List<int>? aggregatePayload;
   final EixamTelLiveBatchPacket? telLiveBatchPacket;
+  final EixamPositionBacklogPacket? positionBacklogPacket;
   final EixamClusterHeartbeatPacket? clusterHeartbeatPacket;
   final EixamDeviceRuntimeStatusPacket? deviceRuntimeStatusPacket;
   final ProvisioningCommandResult? provisioningCommandResult;

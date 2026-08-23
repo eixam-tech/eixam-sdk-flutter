@@ -105,6 +105,57 @@ class EixamDeviceCommand {
         forceCmdCharacteristic: true,
       );
 
+  factory EixamDeviceCommand.positionBacklogStart({
+    required int sinceUnix,
+    int maxEvents = 0,
+  }) =>
+      EixamDeviceCommand._(
+        opcode: 0x30,
+        label: 'POSITION BACKLOG START',
+        bytes: <int>[
+          0x30,
+          sinceUnix & 0xFF,
+          (sinceUnix >> 8) & 0xFF,
+          (sinceUnix >> 16) & 0xFF,
+          (sinceUnix >> 24) & 0xFF,
+          maxEvents & 0xFF,
+          (maxEvents >> 8) & 0xFF,
+        ],
+        forceCmdCharacteristic: true,
+        redactDiagnosticPayload: true,
+      );
+
+  factory EixamDeviceCommand.positionBacklogAck({
+    required int sessionId,
+    required int nextLogicalIndex,
+  }) =>
+      EixamDeviceCommand._(
+        opcode: 0x31,
+        label: 'POSITION BACKLOG ACK',
+        bytes: <int>[
+          0x31,
+          sessionId & 0xFF,
+          nextLogicalIndex & 0xFF,
+          (nextLogicalIndex >> 8) & 0xFF,
+          (nextLogicalIndex >> 16) & 0xFF,
+          (nextLogicalIndex >> 24) & 0xFF,
+        ],
+        forceCmdCharacteristic: true,
+        redactDiagnosticPayload: true,
+      );
+
+  factory EixamDeviceCommand.positionBacklogAbort({
+    required int sessionId,
+    int reason = 0,
+  }) =>
+      EixamDeviceCommand._(
+        opcode: 0x32,
+        label: 'POSITION BACKLOG ABORT',
+        bytes: <int>[0x32, sessionId & 0xFF, reason & 0xFF],
+        forceCmdCharacteristic: true,
+        redactDiagnosticPayload: true,
+      );
+
   /// Provisions the device LoRa region (legal per-country radio config).
   /// Payload `[0x20, regionCode]` where `regionCode` is a Meshtastic
   /// `RegionCode` byte. The device persists it and applies it on reboot.
@@ -142,6 +193,7 @@ class EixamDeviceCommand {
     // Reserved for a source-certified future secret-bearing command.
     // ignore: unused_element_parameter
     this.payloadSensitivity = BleCommandPayloadSensitivity.operational,
+    this.redactDiagnosticPayload = false,
   });
 
   final int opcode;
@@ -149,6 +201,7 @@ class EixamDeviceCommand {
   final List<int> bytes;
   final bool forceCmdCharacteristic;
   final BleCommandPayloadSensitivity payloadSensitivity;
+  final bool redactDiagnosticPayload;
 
   List<int> encode() =>
       payloadSensitivity == BleCommandPayloadSensitivity.secret
@@ -188,20 +241,22 @@ class EixamDeviceCommand {
       ? EixamBleProtocol.cmdWriteCharacteristicUuid
       : EixamBleProtocol.inetWriteCharacteristicUuid;
 
-  String get encodedHex =>
-      payloadSensitivity == BleCommandPayloadSensitivity.secret
+  String get encodedHex => redactDiagnosticPayload
+      ? '<redacted-operational-payload>'
+      : payloadSensitivity == BleCommandPayloadSensitivity.secret
           ? '<redacted-secret-payload>'
           : EixamBleProtocol.hex(encode());
 
   /// Diagnostic representation of the payload. A future secret-bearing
   /// command must set [payloadSensitivity] to `secret`; its bytes will then be
   /// suppressed even in verbose diagnostics.
-  String get diagnosticPayload =>
-      SecurityDiagnosticsRedactor.formatBleCommandPayloadForDiagnostics(
-        payloadSensitivity == BleCommandPayloadSensitivity.secret
-            ? null
-            : encodedHex,
-        containsSecret:
-            payloadSensitivity == BleCommandPayloadSensitivity.secret,
-      );
+  String get diagnosticPayload => redactDiagnosticPayload
+      ? encodedHex
+      : SecurityDiagnosticsRedactor.formatBleCommandPayloadForDiagnostics(
+          payloadSensitivity == BleCommandPayloadSensitivity.secret
+              ? null
+              : encodedHex,
+          containsSecret:
+              payloadSensitivity == BleCommandPayloadSensitivity.secret,
+        );
 }

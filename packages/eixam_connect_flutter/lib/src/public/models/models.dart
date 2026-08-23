@@ -15,6 +15,7 @@ export 'package:eixam_connect_core/src/entities/resolved_country.dart';
 export 'package:eixam_connect_core/src/entities/eixam_ble_diagnostics.dart';
 export 'package:eixam_connect_core/src/entities/eixam_ble_scan_result.dart';
 export 'package:eixam_connect_core/src/entities/eixam_device_position_batch.dart';
+export 'package:eixam_connect_core/src/entities/device_position_backlog_sync_result.dart';
 export 'package:eixam_connect_core/src/entities/eixam_notification_intent.dart';
 export 'package:eixam_connect_core/src/entities/emergency_contact.dart';
 export 'package:eixam_connect_core/src/entities/app_feedback.dart';

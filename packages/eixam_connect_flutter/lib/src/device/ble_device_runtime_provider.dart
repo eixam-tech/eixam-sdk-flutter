@@ -24,6 +24,7 @@ import 'eixam_sos_packet.dart';
 import 'eixam_tel_fragment.dart';
 import 'eixam_tel_packet.dart';
 import 'eixam_tel_live_batch_packet.dart';
+import 'eixam_position_backlog_packet.dart';
 import 'eixam_tel_relay_cluster_packet.dart';
 import 'eixam_tel_reassembler.dart';
 import 'eixam_tel_relay_rx_packet.dart';
@@ -1495,14 +1496,18 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     EixamBleNotification notification,
   ) async {
     final source = DeviceSosTransitionSource.device;
+    final redactsBacklogTransport = notification.payload.isNotEmpty &&
+        (notification.payload.first ==
+                EixamBleProtocol.telAggregateFragmentOpcode ||
+            notification.payload.first == EixamPositionBacklogPacket.marker);
     BleDebugRegistry.instance.recordIncomingNotification(
       channel: notification.channel.name,
       characteristic: _characteristicLabelForChannel(notification.channel),
-      payloadHex: notification.payloadHex,
+      payloadHex: redactsBacklogTransport ? '' : notification.payloadHex,
       receivedAt: notification.receivedAt,
     );
     BleDebugRegistry.instance.recordEvent(
-      'TEL raw payload (ea01) -> len=${notification.payload.length} payload=${notification.payloadHex}',
+      'TEL notification (ea01) -> len=${notification.payload.length}',
     );
 
     final telFragment = EixamTelFragment.tryParse(notification.payload);
@@ -1534,7 +1539,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       final completedPayload = _telReassembler.addFragment(telFragment);
       if (completedPayload != null) {
         BleDebugRegistry.instance.recordEvent(
-          'TEL aggregate completed -> totalLen=${completedPayload.length} payload=${EixamBleProtocol.hex(completedPayload)}',
+          'TEL aggregate completed -> totalLen=${completedPayload.length}',
         );
         await _dispatchClassifiedTelPayload(
           deviceId: deviceId,
@@ -1567,6 +1572,38 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     EixamTelFragment? telFragment,
     List<int>? aggregatePayload,
   }) async {
+    if (payload.isNotEmpty &&
+        payload.first == EixamPositionBacklogPacket.marker) {
+      final backlogPacket = EixamPositionBacklogPacket.tryParse(
+        payload,
+        receivedAt: notification.receivedAt,
+      );
+      if (backlogPacket == null) {
+        BleDebugRegistry.instance.recordEvent('POSITION_BACKLOG malformed');
+      }
+      _incomingEventsController.add(
+        BleIncomingEvent(
+          deviceId: deviceId,
+          canonicalHardwareId: _connectedCanonicalHardwareId,
+          deviceAlias: _connectedDeviceAlias,
+          type: BleIncomingEventType.telPositionBacklog,
+          channel: notification.channel,
+          payload: backlogPacket == null
+              ? const <int>[]
+              : List<int>.unmodifiable(payload),
+          payloadHex: '',
+          source: source,
+          receivedAt: notification.receivedAt,
+          meshPort: notification.meshPort,
+          telFragment: telFragment,
+          aggregatePayload: backlogPacket == null
+              ? null
+              : aggregatePayload ?? List<int>.unmodifiable(payload),
+          positionBacklogPacket: backlogPacket,
+        ),
+      );
+      return;
+    }
     _logRawIncomingSosPacket(
       source: 'ble_device_runtime_provider_tel_entry',
       payload: payload,

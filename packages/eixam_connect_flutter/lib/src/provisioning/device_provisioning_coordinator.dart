@@ -162,6 +162,8 @@ final class DeviceProvisioningCoordinator {
   bool _expectingRebootDisconnect = false;
   bool _disposed = false;
 
+  bool get isBusy => _inFlight != null;
+
   Stream<DeviceProvisioningState> watchState() async* {
     yield _state;
     yield* _stateController.stream;

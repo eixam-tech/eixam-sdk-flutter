@@ -593,6 +593,62 @@ void main() {
       expect(event.type, BleIncomingEventType.unknownProtocolPacket);
     });
 
+    test('classifies direct and D0-reassembled D1 before generic TEL fallback',
+        () async {
+      final direct = runtimeProvider.watchIncomingEvents().firstWhere(
+            (event) => event.type == BleIncomingEventType.telPositionBacklog,
+          );
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.tel,
+        payload: const <int>[
+          0xD1,
+          0x01,
+          7,
+          1,
+          1,
+          0,
+          4,
+          0,
+          0,
+          0,
+          4,
+          0,
+          0,
+          0,
+        ],
+      );
+      expect((await direct).positionBacklogPacket, isNotNull);
+
+      final reassembled = runtimeProvider.watchIncomingEvents().firstWhere(
+            (event) => event.type == BleIncomingEventType.telPositionBacklog,
+          );
+      const payload = <int>[
+        0xD1,
+        0x01,
+        8,
+        1,
+        1,
+        0,
+        5,
+        0,
+        0,
+        0,
+        5,
+        0,
+        0,
+        0,
+      ];
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.tel,
+        payload: const <int>[0xD0, 14, 0, 0, 0, ...payload],
+      );
+      final event = await reassembled;
+      expect(event.positionBacklogPacket, isNotNull);
+      expect(event.aggregatePayload, payload);
+    });
+
     test('routes E9 7A, E9 78, D3, TEL and SOS without collisions', () async {
       final events = runtimeProvider.watchIncomingEvents().take(5).toList();
       bleClient.emitNotification(

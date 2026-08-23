@@ -18,6 +18,7 @@ export 'src/entities/eixam_notification_intent.dart';
 export 'src/entities/eixam_ble_diagnostics.dart';
 export 'src/entities/eixam_ble_scan_result.dart';
 export 'src/entities/eixam_device_position_batch.dart';
+export 'src/entities/device_position_backlog_sync_result.dart';
 export 'src/entities/app_feedback.dart';
 export 'src/entities/backend_registered_device.dart';
 export 'src/entities/background_location.dart';

@@ -41,5 +41,43 @@ void main() {
       expect(command.isCritical, isTrue);
       expect(command.usesCmdCharacteristic, isTrue);
     });
+
+    test('encodes the fixed persistent position backlog commands', () {
+      expect(
+        EixamDeviceCommand.positionBacklogStart(
+          sinceUnix: 0x12345678,
+          maxEvents: 0x9ABC,
+        ).encode(),
+        <int>[0x30, 0x78, 0x56, 0x34, 0x12, 0xBC, 0x9A],
+      );
+      expect(
+        EixamDeviceCommand.positionBacklogAck(
+          sessionId: 7,
+          nextLogicalIndex: 0x12345678,
+        ).encode(),
+        <int>[0x31, 7, 0x78, 0x56, 0x34, 0x12],
+      );
+      expect(
+        EixamDeviceCommand.positionBacklogAbort(sessionId: 7, reason: 3)
+            .encode(),
+        <int>[0x32, 7, 3],
+      );
+    });
+
+    test('redacts persistent position backlog command diagnostics', () {
+      final commands = <EixamDeviceCommand>[
+        EixamDeviceCommand.positionBacklogStart(sinceUnix: 0x12345678),
+        EixamDeviceCommand.positionBacklogAck(
+          sessionId: 7,
+          nextLogicalIndex: 0x12345678,
+        ),
+        EixamDeviceCommand.positionBacklogAbort(sessionId: 7, reason: 3),
+      ];
+
+      for (final command in commands) {
+        expect(command.diagnosticPayload, '<redacted-operational-payload>');
+        expect(command.diagnosticPayload, isNot(contains('12345678')));
+      }
+    });
   });
 }

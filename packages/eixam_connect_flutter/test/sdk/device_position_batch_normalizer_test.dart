@@ -3,6 +3,7 @@ import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_tel_live_batch_packet.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_tel_packet.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_position_backlog_packet.dart';
 import 'package:eixam_connect_flutter/src/sdk/device_position_batch_normalizer.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -81,6 +82,99 @@ void main() {
     );
 
     expect(output!.samples, hasLength(2));
+  });
+
+  test('the same D3 and D1 physical record is emitted only once', () {
+    final normalizer = DevicePositionBatchNormalizer();
+    final timestamp = 1786103800;
+    final wire = _wire(packetId: 1);
+    final live = _liveEvent(receivedAt, [
+      (timestamp: timestamp, wire: wire),
+    ]);
+    expect(normalizer.normalize(live), isNotNull);
+
+    final bytes = <int>[
+      0xD1,
+      2,
+      7,
+      0,
+      0,
+      0,
+      0,
+      1,
+      timestamp & 0xFF,
+      (timestamp >> 8) & 0xFF,
+      (timestamp >> 16) & 0xFF,
+      (timestamp >> 24) & 0xFF,
+      ...wire,
+    ];
+    final chunk = EixamPositionBacklogPacket.tryParse(
+      bytes,
+      receivedAt: receivedAt,
+    ) as EixamPositionBacklogChunk;
+    final backlog = BleIncomingEvent(
+      deviceId: 'device-a',
+      type: BleIncomingEventType.telPositionBacklog,
+      channel: EixamBleChannel.tel,
+      payload: bytes,
+      payloadHex: '',
+      source: DeviceSosTransitionSource.device,
+      receivedAt: receivedAt,
+      positionBacklogPacket: chunk,
+    );
+
+    final result = normalizer.normalizeBacklog(backlog, chunk);
+    expect(result.batch, isNull);
+    expect(result.duplicateCount, 1);
+  });
+
+  test('inclusive same-second retry suppresses known and retains distinct data',
+      () {
+    final normalizer = DevicePositionBatchNormalizer();
+    final timestamp = 1786103800;
+    final firstWire = _wire(packetId: 1);
+    final secondWire = <int>[...firstWire]..[4] = 9;
+    expect(
+      normalizer.normalize(_liveEvent(receivedAt, [
+        (timestamp: timestamp, wire: firstWire),
+      ])),
+      isNotNull,
+    );
+
+    DevicePositionNormalizationResult backlogResult(List<int> wire, int index) {
+      final bytes = <int>[
+        0xD1,
+        2,
+        7,
+        ...<int>[index, 0, 0, 0],
+        1,
+        timestamp & 0xFF,
+        (timestamp >> 8) & 0xFF,
+        (timestamp >> 16) & 0xFF,
+        (timestamp >> 24) & 0xFF,
+        ...wire,
+      ];
+      final chunk = EixamPositionBacklogPacket.tryParse(
+        bytes,
+        receivedAt: receivedAt,
+      ) as EixamPositionBacklogChunk;
+      return normalizer.normalizeBacklog(
+        BleIncomingEvent(
+          deviceId: 'device-a',
+          type: BleIncomingEventType.telPositionBacklog,
+          channel: EixamBleChannel.tel,
+          payload: bytes,
+          payloadHex: '',
+          source: DeviceSosTransitionSource.device,
+          receivedAt: receivedAt,
+          positionBacklogPacket: chunk,
+        ),
+        chunk,
+      );
+    }
+
+    expect(backlogResult(firstWire, 0).batch, isNull);
+    expect(backlogResult(secondWire, 1).batch, isNotNull);
   });
 
   test('classic TEL becomes one semantic batch and immediate replay is removed',
@@ -164,6 +258,12 @@ void main() {
 
     expect(normalizer.cachedDeviceCount, 2);
     expect(normalizer.largestRecordIdentityCount, lessThanOrEqualTo(3));
+  });
+
+  test('default canonical window covers the complete firmware backlog', () {
+    final normalizer = DevicePositionBatchNormalizer();
+    expect(normalizer.maximumRecordIdentitiesPerDevice,
+        greaterThanOrEqualTo(4095));
   });
 }
 
