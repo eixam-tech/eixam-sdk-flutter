@@ -94,6 +94,7 @@ class EixamConnectSdkImpl
     required this.bleIncomingEvents,
     required this.preferredBleDeviceStore,
     this.sessionStore,
+    this.recoverUnreadablePersistedSession = false,
     SecureKeyValueStore? sosLifecycleSecureStore,
     this.sessionContext,
     this.identityRemoteDataSource,
@@ -301,6 +302,7 @@ class EixamConnectSdkImpl
   final Stream<BleIncomingEvent> bleIncomingEvents;
   final PreferredBleDeviceStore preferredBleDeviceStore;
   final SdkSessionStore? sessionStore;
+  final bool recoverUnreadablePersistedSession;
   late final AuthoritativeSosLifecycleController _sosLifecycle;
   late final AndroidTrackingOwnerArbiter _trackingOwnerArbiter;
   @visibleForTesting
@@ -605,7 +607,9 @@ class EixamConnectSdkImpl
     _backgroundTelemetryNotificationBody ??=
         notificationTexts.protectionActiveBody;
     _sdkConfig = config;
-    _session = await sessionStore?.load();
+    _session = await sessionStore?.load(
+      recoverUnreadableEntry: recoverUnreadablePersistedSession,
+    );
     _session = await _bootstrapSessionIfNeeded(_session);
     await _sosLifecycle.restoreFor(_session);
     await _refreshBackgroundTelemetryDiagnostics();

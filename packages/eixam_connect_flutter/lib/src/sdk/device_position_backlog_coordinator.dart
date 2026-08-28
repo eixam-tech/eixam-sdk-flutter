@@ -52,7 +52,14 @@ class DevicePositionBacklogCoordinator {
     );
     _active = session;
     session.timer = Timer(timeout, () => _timeoutNow(session));
-    BleDebugRegistry.instance.recordEvent('POSITION_BACKLOG sync_started');
+    final untilUtc = until?.toUtc();
+    final untilUnix = untilUtc == null
+        ? 'none'
+        : '${untilUtc.millisecondsSinceEpoch ~/ 1000}';
+    BleDebugRegistry.instance.recordEvent(
+      'POSITION_BACKLOG request sinceUnix=$sinceUnix '
+      'untilUnix=$untilUnix',
+    );
     unawaited(_start(session, sinceUnix));
     return session.completer.future;
   }
@@ -66,6 +73,9 @@ class DevicePositionBacklogCoordinator {
     } on TimeoutException {
       _timeoutNow(session);
     } catch (error, stackTrace) {
+      BleDebugRegistry.instance.recordEvent(
+        'POSITION_BACKLOG failed reason=request_write',
+      );
       _completeError(session, error, stackTrace);
     }
   }
@@ -91,7 +101,7 @@ class DevicePositionBacklogCoordinator {
         ..expectedIndex = packet.startIndex
         ..endIndex = packet.endIndex;
       BleDebugRegistry.instance.recordEvent(
-        'POSITION_BACKLOG meta eventCount=${packet.totalEvents}',
+        'POSITION_BACKLOG meta totalEvents=${packet.totalEvents}',
       );
       return;
     }
@@ -110,10 +120,11 @@ class DevicePositionBacklogCoordinator {
       }
       session.receivedEvents++;
       final sampledAt = packet.batch.samples.single.sampledAt!;
-      final inWindow = !sampledAt.isBefore(session.since) &&
-          (session.until == null || !sampledAt.isAfter(session.until!));
+      final rejectedUntil =
+          session.until != null && sampledAt.isAfter(session.until!);
+      final inWindow = !sampledAt.isBefore(session.since) && !rejectedUntil;
       if (!inWindow) {
-        session.rejectedCount++;
+        if (rejectedUntil) session.rejectedUntilCount++;
       } else {
         final normalized = normalizer.normalizeBacklog(event, packet);
         session.duplicateCount += normalized.duplicateCount;
@@ -129,10 +140,14 @@ class DevicePositionBacklogCoordinator {
             'POSITION_BACKLOG sample_deduplicated duplicateCount=${normalized.duplicateCount}',
           );
         }
+        if (session.lastProcessedSampleAt == null ||
+            sampledAt.isAfter(session.lastProcessedSampleAt!)) {
+          session.lastProcessedSampleAt = sampledAt.toUtc();
+        }
       }
       session.expectedIndex = packet.logicalIndex + 1;
       BleDebugRegistry.instance.recordEvent(
-        'POSITION_BACKLOG chunk_received count=1',
+        'POSITION_BACKLOG chunks received=${session.receivedEvents}',
       );
       try {
         await _writeWithinDeadline(
@@ -151,11 +166,15 @@ class DevicePositionBacklogCoordinator {
     }
 
     if (packet is EixamPositionBacklogError) {
+      BleDebugRegistry.instance.recordEvent(
+        'POSITION_BACKLOG failed reason=device_error',
+      );
       _complete(session, completed: false);
       return;
     }
 
     if (packet is EixamPositionBacklogEnd) {
+      session.endSentEvents = packet.sentEvents;
       final valid = packet.status == 0 &&
           packet.sentEvents == session.receivedEvents &&
           packet.sentEvents == session.totalEvents &&
@@ -172,7 +191,12 @@ class DevicePositionBacklogCoordinator {
 
   Future<void> disconnected() async {
     final session = _active;
-    if (session != null) _complete(session, completed: false);
+    if (session != null) {
+      BleDebugRegistry.instance.recordEvent(
+        'POSITION_BACKLOG failed reason=disconnected',
+      );
+      _complete(session, completed: false);
+    }
   }
 
   Future<void> cancel() async {
@@ -182,7 +206,9 @@ class DevicePositionBacklogCoordinator {
 
   void _timeoutNow(_BacklogSession session) {
     if (!identical(_active, session)) return;
-    BleDebugRegistry.instance.recordEvent('POSITION_BACKLOG timeout');
+    BleDebugRegistry.instance.recordEvent(
+      'POSITION_BACKLOG failed reason=timeout',
+    );
     final sessionId = session.sessionId;
     _complete(session, completed: false, timedOut: true);
     if (sessionId != null) _abortBestEffort(sessionId, 8);
@@ -193,7 +219,9 @@ class DevicePositionBacklogCoordinator {
     String reason, {
     required int abortReason,
   }) {
-    BleDebugRegistry.instance.recordEvent('POSITION_BACKLOG $reason');
+    BleDebugRegistry.instance.recordEvent(
+      'POSITION_BACKLOG failed reason=$reason',
+    );
     final sessionId = session.sessionId;
     _complete(session, completed: false);
     if (sessionId != null) _abortBestEffort(sessionId, abortReason);
@@ -247,15 +275,27 @@ class DevicePositionBacklogCoordinator {
       timedOut: timedOut,
       partial: !completed &&
           (session.recoveredCount > 0 || session.duplicateCount > 0),
+      metaTotalEvents: session.totalEvents,
+      receivedCount: session.receivedEvents,
       recoveredCount: session.recoveredCount,
       duplicateCount: session.duplicateCount,
-      rejectedCount: session.rejectedCount,
+      rejectedUntilCount: session.rejectedUntilCount,
+      endSentEvents: session.endSentEvents,
+      lastProcessedSampleAt: session.lastProcessedSampleAt,
       retentionGapDetected: session.retentionGapDetected,
     );
-    BleDebugRegistry.instance.recordEvent(
-      'POSITION_BACKLOG completed recoveredCount=${result.recoveredCount} '
-      'duplicateCount=${result.duplicateCount}',
-    );
+    if (completed) {
+      BleDebugRegistry.instance.recordEvent(
+        'POSITION_BACKLOG completed '
+        'metaTotalEvents=${result.metaTotalEvents ?? 0} '
+        'receivedCount=${result.receivedCount} '
+        'recoveredCount=${result.recoveredCount} '
+        'duplicateCount=${result.duplicateCount} '
+        'rejectedUntilCount=${result.rejectedUntilCount} '
+        'endSentEvents=${result.endSentEvents ?? 0} '
+        'backlogEmpty=${result.backlogEmpty}',
+      );
+    }
     if (!session.completer.isCompleted) session.completer.complete(result);
   }
 }
@@ -280,6 +320,8 @@ class _BacklogSession {
   int receivedEvents = 0;
   int recoveredCount = 0;
   int duplicateCount = 0;
-  int rejectedCount = 0;
+  int rejectedUntilCount = 0;
+  int? endSentEvents;
+  DateTime? lastProcessedSampleAt;
   bool retentionGapDetected = false;
 }

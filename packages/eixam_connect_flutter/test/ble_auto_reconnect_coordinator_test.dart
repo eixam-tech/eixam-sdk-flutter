@@ -13,6 +13,38 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   group('BleAutoReconnectCoordinator', () {
+    test('Android foreground unexpected disconnect waits three seconds',
+        () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _FakeDeviceRepository();
+      final store = PreferredBleDeviceStore(localStore: SharedPrefsSdkStore());
+      Duration? scheduledDelay;
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+        isIosPlatform: () => false,
+        retryTimerFactory: (delay, callback) {
+          scheduledDelay = delay;
+          return Timer(const Duration(days: 1), callback);
+        },
+      );
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+
+      coordinator.onUnexpectedDisconnect();
+
+      expect(scheduledDelay, const Duration(seconds: 3));
+      expect(
+        BleDebugRegistry.instance.currentState.events
+            .map((event) => event.message),
+        contains('Reconnect scheduled in 3s'),
+      );
+      await coordinator.dispose();
+    });
+
     test('tries startup auto-connect when a preferred device exists', () async {
       SharedPreferences.setMockInitialValues(<String, Object>{});
       BleDebugRegistry.instance.reset();

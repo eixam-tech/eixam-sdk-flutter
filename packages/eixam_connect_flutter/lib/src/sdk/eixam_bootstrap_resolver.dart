@@ -12,6 +12,8 @@ class ResolvedEixamBootstrapConfig {
   final String appId;
   final EixamSdkConfig sdkConfig;
   final EixamSession? initialSession;
+
+  bool get recoverUnreadablePersistedSession => initialSession != null;
 }
 
 class EixamBootstrapResolver {

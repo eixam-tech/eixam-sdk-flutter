@@ -245,6 +245,17 @@ SOS owner does not stop acquisition while another owner still requires it.
 Foreground-service and notification readiness remain platform/version
 dependent and are exposed through typed permission/protection status.
 
+The Android SDK encrypts its persisted session and SOS lifecycle records with
+an app-scoped Android Keystore key. A host backup must not restore the SDK's
+encrypted SharedPreferences independently from that key. Host integrations
+should exclude the `eixam_secure_storage.xml` shared-preferences file from
+cloud backup and device-to-device extraction rules on every supported Android
+version. Do not disable backup globally merely for the SDK. If a mismatched
+restore makes only the old SDK session entry cryptographically unreadable,
+bootstrap can discard that one entry only when the host supplies a fresh
+authenticated session; global storage failures, fresh writes, verification
+failures, and SOS provenance failures remain fatal.
+
 ## Diagnostics and privacy
 
 `getOperationalDiagnostics` and `watchOperationalDiagnostics` are for support,

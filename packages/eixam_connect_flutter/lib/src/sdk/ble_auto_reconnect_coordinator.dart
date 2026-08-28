@@ -20,6 +20,7 @@ class BleAutoReconnectCoordinator {
     Future<void> Function(Duration delay)? preferredReconnectDelay,
     List<Duration>? preferredReconnectRetryDelays,
     Duration? readinessMonitorInterval,
+    Timer Function(Duration delay, void Function() callback)? retryTimerFactory,
   })  : _deviceRepository = deviceRepository,
         _preferredDeviceStore = preferredDeviceStore,
         _permissionStateProvider = permissionStateProvider,
@@ -28,6 +29,7 @@ class BleAutoReconnectCoordinator {
             preferredReconnectRetryDelays ?? _preferredReconnectBackoff,
         _readinessMonitorInterval =
             readinessMonitorInterval ?? const Duration(seconds: 2),
+        _retryTimerFactory = retryTimerFactory ?? Timer.new,
         _isIosPlatform = isIosPlatform ?? (() => Platform.isIOS);
 
   // The first retry waits longer than flutter_blue_plus's internal 2 s
@@ -35,7 +37,13 @@ class BleAutoReconnectCoordinator {
   // before we issue a new connect; reconnecting too soon races Android's
   // duplicate onConnectionStateChange callback and FBP rejects it as an
   // "[unexpected connection]".
-  static const List<Duration> _retryBackoff = <Duration>[
+  static const List<Duration> _androidRetryBackoff = <Duration>[
+    Duration(seconds: 3),
+    Duration(seconds: 8),
+    Duration(seconds: 15),
+    Duration(seconds: 30),
+  ];
+  static const List<Duration> _iosRetryBackoff = <Duration>[
     Duration(seconds: 4),
     Duration(seconds: 8),
     Duration(seconds: 15),
@@ -56,6 +64,8 @@ class BleAutoReconnectCoordinator {
   final Future<void> Function(Duration delay)? _preferredReconnectDelay;
   final List<Duration> _preferredReconnectRetryDelays;
   final Duration _readinessMonitorInterval;
+  final Timer Function(Duration delay, void Function() callback)
+      _retryTimerFactory;
   final String autoReconnectPairingCode;
   final bool Function() _isIosPlatform;
 
@@ -304,8 +314,10 @@ class BleAutoReconnectCoordinator {
       return;
     }
 
-    final backoffIndex = _retryAttempt.clamp(0, _retryBackoff.length - 1);
-    final delay = _retryBackoff[backoffIndex];
+    final retryBackoff =
+        _isIosPlatform() ? _iosRetryBackoff : _androidRetryBackoff;
+    final backoffIndex = _retryAttempt.clamp(0, retryBackoff.length - 1);
+    final delay = retryBackoff[backoffIndex];
     _retryAttempt++;
     BleDebugRegistry.instance.update(
       connectionStatus: BleConnectionStatus.reconnectScheduled,
@@ -314,7 +326,7 @@ class BleAutoReconnectCoordinator {
     BleDebugRegistry.instance.recordEvent(
       'Reconnect scheduled in ${delay.inSeconds}s',
     );
-    _retryTimer = Timer(delay, () {
+    _retryTimer = _retryTimerFactory(delay, () {
       _retryTimer = null;
       unawaited(_tryAutoConnect(trigger: 'retry').then<void>((_) {}));
     });

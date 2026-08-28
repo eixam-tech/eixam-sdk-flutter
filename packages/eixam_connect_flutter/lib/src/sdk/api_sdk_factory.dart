@@ -60,6 +60,31 @@ class ApiSdkFactory {
     bool enableLogging = false,
     bool allowInsecureLocalEndpoints = false,
     bool deferRuntimeStartup = false,
+  }) =>
+      _createHttpApi(
+        apiBaseUrl: apiBaseUrl,
+        websocketUrl: websocketUrl,
+        protectionPlatformAdapter: protectionPlatformAdapter,
+        notificationPolicy: notificationPolicy,
+        notificationTexts: notificationTexts,
+        permissionDisclosureConfig: permissionDisclosureConfig,
+        enableLogging: enableLogging,
+        allowInsecureLocalEndpoints: allowInsecureLocalEndpoints,
+        deferRuntimeStartup: deferRuntimeStartup,
+        recoverUnreadablePersistedSession: false,
+      );
+
+  static Future<EixamConnectSdk> _createHttpApi({
+    required String apiBaseUrl,
+    required String websocketUrl,
+    ProtectionPlatformAdapter? protectionPlatformAdapter,
+    required EixamNotificationPolicy notificationPolicy,
+    required EixamNotificationTexts notificationTexts,
+    required EixamPermissionDisclosureConfig permissionDisclosureConfig,
+    required bool enableLogging,
+    required bool allowInsecureLocalEndpoints,
+    required bool deferRuntimeStartup,
+    required bool recoverUnreadablePersistedSession,
   }) async {
     BleDebugRegistry.instance.reset();
 
@@ -168,6 +193,7 @@ class ApiSdkFactory {
       bleIncomingEvents: deviceRuntimeProvider.watchIncomingEvents(),
       preferredBleDeviceStore: preferredBleDeviceStore,
       sessionStore: sessionStore,
+      recoverUnreadablePersistedSession: recoverUnreadablePersistedSession,
       sosLifecycleSecureStore: secureStore,
       sessionContext: sessionContext,
       identityRemoteDataSource: HttpSdkIdentityRemoteDataSource(
@@ -234,7 +260,7 @@ class ApiSdkFactory {
   static Future<EixamConnectSdk> bootstrap(EixamBootstrapConfig config) async {
     final resolved = EixamBootstrapResolver.resolve(config);
 
-    final sdk = await createHttpApi(
+    final sdk = await _createHttpApi(
       apiBaseUrl: resolved.sdkConfig.apiBaseUrl,
       websocketUrl: resolved.sdkConfig.websocketUrl ?? '',
       notificationPolicy: config.notificationPolicy,
@@ -244,6 +270,8 @@ class ApiSdkFactory {
       allowInsecureLocalEndpoints:
           resolved.sdkConfig.allowInsecureLocalEndpoints,
       deferRuntimeStartup: config.featureFlags['defer_runtime_startup'] == true,
+      recoverUnreadablePersistedSession:
+          resolved.recoverUnreadablePersistedSession,
     );
 
     final restoredSession = await sdk.getCurrentSession();

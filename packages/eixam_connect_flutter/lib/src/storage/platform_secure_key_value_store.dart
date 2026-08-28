@@ -31,10 +31,7 @@ final class PlatformSecureKeyValueStore implements SecureKeyValueStore {
         'key': key,
       });
     } on PlatformException catch (error) {
-      throw SecureKeyValueStoreUnavailableException(
-        code: error.code,
-        message: error.message ?? 'Platform secure storage is unavailable.',
-      );
+      _throwSecureStoreException(error.code);
     } on MissingPluginException {
       throw const SecureKeyValueStoreUnavailableException();
     }
@@ -49,12 +46,22 @@ final class PlatformSecureKeyValueStore implements SecureKeyValueStore {
     try {
       await _methodChannel.invokeMethod<void>(method, arguments);
     } on PlatformException catch (error) {
-      throw SecureKeyValueStoreUnavailableException(
-        code: error.code,
-        message: error.message ?? 'Platform secure storage is unavailable.',
-      );
+      _throwSecureStoreException(error.code);
     } on MissingPluginException {
       throw const SecureKeyValueStoreUnavailableException();
+    }
+  }
+
+  Never _throwSecureStoreException(String code) {
+    switch (code) {
+      case 'secure_storage_entry_unreadable':
+        throw const SecureKeyValueStoreEntryUnreadableException();
+      case 'secure_storage_write_failed':
+        throw const SecureKeyValueStoreWriteException();
+      case 'secure_storage_delete_failed':
+        throw const SecureKeyValueStoreDeleteException();
+      default:
+        throw SecureKeyValueStoreUnavailableException(code: code);
     }
   }
 }

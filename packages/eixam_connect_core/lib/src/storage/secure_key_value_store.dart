@@ -142,15 +142,57 @@ final class UnavailableSecureKeyValueStore implements SecureKeyValueStore {
       );
 }
 
-/// Predictable exception thrown when secure storage is intentionally disabled.
-final class SecureKeyValueStoreUnavailableException implements Exception {
-  const SecureKeyValueStoreUnavailableException({
-    this.code = UnavailableSecureKeyValueStore.unavailableCode,
-    this.message = 'Secure key-value storage is unavailable.',
+/// Base type for stable, non-sensitive secure-storage failure classifications.
+sealed class SecureKeyValueStoreException implements Exception {
+  const SecureKeyValueStoreException({
+    required this.code,
+    required this.message,
   });
 
   final String code;
   final String message;
+}
+
+final class SecureKeyValueStoreEntryUnreadableException
+    extends SecureKeyValueStoreException {
+  const SecureKeyValueStoreEntryUnreadableException({
+    super.code = 'secure_storage_entry_unreadable',
+    super.message = 'Secure key-value storage entry is unreadable.',
+  });
+
+  @override
+  String toString() =>
+      'SecureKeyValueStoreEntryUnreadableException($code): $message';
+}
+
+final class SecureKeyValueStoreWriteException
+    extends SecureKeyValueStoreException {
+  const SecureKeyValueStoreWriteException({
+    super.code = 'secure_storage_write_failed',
+    super.message = 'Secure key-value storage write failed.',
+  });
+
+  @override
+  String toString() => 'SecureKeyValueStoreWriteException($code): $message';
+}
+
+final class SecureKeyValueStoreDeleteException
+    extends SecureKeyValueStoreException {
+  const SecureKeyValueStoreDeleteException({
+    super.code = 'secure_storage_delete_failed',
+    super.message = 'Secure key-value storage delete failed.',
+  });
+
+  @override
+  String toString() => 'SecureKeyValueStoreDeleteException($code): $message';
+}
+
+final class SecureKeyValueStoreUnavailableException
+    extends SecureKeyValueStoreException {
+  const SecureKeyValueStoreUnavailableException({
+    super.code = UnavailableSecureKeyValueStore.unavailableCode,
+    super.message = 'Secure key-value storage is unavailable.',
+  });
 
   @override
   String toString() =>

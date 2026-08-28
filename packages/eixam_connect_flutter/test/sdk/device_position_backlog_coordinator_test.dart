@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
@@ -10,6 +11,8 @@ import 'package:eixam_connect_flutter/src/sdk/device_position_batch_normalizer.d
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  setUp(BleDebugRegistry.instance.reset);
+
   test('START, META, CHUNK, ACK, END emits recovered samples', () async {
     final harness = _Harness();
     final future = harness.coordinator.sync(
@@ -27,7 +30,16 @@ void main() {
     final result = await future;
 
     expect(result.completed, isTrue);
+    expect(result.metaTotalEvents, 2);
+    expect(result.receivedCount, 2);
     expect(result.recoveredCount, 2);
+    expect(result.rejectedUntilCount, 0);
+    expect(result.endSentEvents, 2);
+    expect(
+      result.lastProcessedSampleAt,
+      DateTime.fromMillisecondsSinceEpoch(1787486460000, isUtc: true),
+    );
+    expect(result.backlogEmpty, isFalse);
     expect(harness.batches.expand((batch) => batch.samples), hasLength(2));
     expect(harness.commands.map((command) => command.opcode),
         <int>[0x30, 0x31, 0x31]);
@@ -69,7 +81,13 @@ void main() {
     );
     await harness.send(_meta(8, 0, 0, 0));
     await harness.send(_end(8, 0, 0));
-    expect((await restarted).completed, isTrue);
+    final empty = await restarted;
+    expect(empty.completed, isTrue);
+    expect(empty.metaTotalEvents, 0);
+    expect(empty.receivedCount, 0);
+    expect(empty.endSentEvents, 0);
+    expect(empty.lastProcessedSampleAt, isNull);
+    expect(empty.backlogEmpty, isTrue);
   });
 
   test('disconnect and cancellation complete partial sessions safely',
@@ -108,7 +126,62 @@ void main() {
     await harness.send(_end(7, 2, 1));
     final result = await future;
     expect(result.recoveredCount, 1);
-    expect(result.rejectedCount, 1);
+    expect(result.rejectedUntilCount, 1);
+    expect(
+      result.lastProcessedSampleAt,
+      DateTime.fromMillisecondsSinceEpoch(1787486400000, isUtc: true),
+    );
+  });
+
+  test('partial result reports only proven processed D1 coverage', () async {
+    final harness = _Harness();
+    final future = harness.coordinator.sync(
+      since: DateTime.fromMillisecondsSinceEpoch(1787486400000, isUtc: true),
+      until: null,
+      timeout: const Duration(seconds: 1),
+    );
+    await harness.send(_meta(7, 2, 0, 1));
+    await harness.send(_chunk(7, 0, 1787486400, 1));
+    await harness.coordinator.disconnected();
+
+    final result = await future;
+    expect(result.completed, isFalse);
+    expect(result.partial, isTrue);
+    expect(result.metaTotalEvents, 2);
+    expect(result.receivedCount, 1);
+    expect(result.endSentEvents, isNull);
+    expect(
+      result.lastProcessedSampleAt,
+      DateTime.fromMillisecondsSinceEpoch(1787486400000, isUtc: true),
+    );
+  });
+
+  test('semantic diagnostics contain counts without coordinates or identity',
+      () async {
+    final harness = _Harness();
+    final future = harness.coordinator.sync(
+      since: DateTime.fromMillisecondsSinceEpoch(1787486400000, isUtc: true),
+      until: null,
+      timeout: const Duration(seconds: 1),
+    );
+    await harness.send(_meta(7, 1, 0, 0));
+    await harness.send(_chunk(7, 0, 1787486400, 1));
+    await harness.send(_end(7, 1, 0));
+    await future;
+
+    final messages = BleDebugRegistry.instance.currentState.events
+        .map((event) => event.message)
+        .where((message) => message.startsWith('POSITION_BACKLOG'))
+        .join('\n');
+    expect(messages, contains('request sinceUnix=1787486400 untilUnix=none'));
+    expect(messages, contains('meta totalEvents=1'));
+    expect(messages, contains('chunks received=1'));
+    expect(messages, contains('receivedCount=1'));
+    expect(messages, contains('endSentEvents=1'));
+    expect(messages, isNot(contains('device')));
+    expect(messages, isNot(contains('hardware')));
+    expect(messages, isNot(contains('41.')));
+    expect(messages, isNot(contains('2.')));
   });
 
   test('full ring with a later first timestamp does not prove retention loss',

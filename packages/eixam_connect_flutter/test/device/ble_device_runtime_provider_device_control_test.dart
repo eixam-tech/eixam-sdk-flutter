@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/device/ble_adapter_state.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
@@ -259,6 +261,108 @@ void main() {
         await subscription.cancel();
       }
     });
+
+    test('disconnect status is published before notification cleanup',
+        () async {
+      await _pairDemoDevice(runtimeProvider);
+      final emittedStatuses = <DeviceStatus>[];
+      final subscription =
+          runtimeProvider.watchRuntimeStatus().listen(emittedStatuses.add);
+
+      try {
+        await bleClient.setAdapterState(BleAdapterState.poweredOff);
+        await Future<void>.delayed(Duration.zero);
+
+        final lifecycleEvents = BleDebugRegistry.instance.currentState.events
+            .map((event) => event.message)
+            .where((message) => message.startsWith('BLE_RECONNECT_LIFECYCLE'))
+            .toList();
+        final publishedIndex = lifecycleEvents.indexOf(
+          'BLE_RECONNECT_LIFECYCLE disconnect_status_published=true',
+        );
+        final cleanupIndex = lifecycleEvents.indexOf(
+          'BLE_RECONNECT_LIFECYCLE notification_cleanup_completed=true',
+        );
+        expect(emittedStatuses.last.connected, isFalse);
+        expect(publishedIndex, greaterThanOrEqualTo(0));
+        expect(cleanupIndex, greaterThan(publishedIndex));
+      } finally {
+        await subscription.cancel();
+      }
+    });
+
+    test(
+      'reconnect restores full readiness while old notification cleanup waits',
+      () async {
+        await runtimeProvider.dispose();
+        await bleClient.dispose();
+        final controlledBleClient = _DelayedOldNotificationCleanupBleClient();
+        bleClient = controlledBleClient;
+        await bleClient.initialize();
+        runtimeProvider = BleDeviceRuntimeProvider(bleClient: bleClient);
+
+        final readyStatus = await _pairDemoDevice(runtimeProvider);
+        var debugState = BleDebugRegistry.instance.currentState;
+        expect(readyStatus.connected, isTrue);
+        expect(debugState.commandWriterReady, isTrue);
+        expect(debugState.telNotifySubscribed, isTrue);
+        expect(debugState.sosNotifySubscribed, isTrue);
+
+        final emittedStatuses = <DeviceStatus>[];
+        final statusSubscription =
+            runtimeProvider.watchRuntimeStatus().listen(emittedStatuses.add);
+        try {
+          controlledBleClient.emitUnexpectedDisconnect();
+          await controlledBleClient.oldCleanupStarted.future;
+
+          expect(emittedStatuses.last.connected, isFalse);
+          expect(controlledBleClient.oldCleanupFinished.isCompleted, isFalse);
+          debugState = BleDebugRegistry.instance.currentState;
+          expect(debugState.commandWriterReady, isFalse);
+          expect(debugState.telNotifySubscribed, isFalse);
+          expect(debugState.sosNotifySubscribed, isFalse);
+
+          final reconnectedStatus = await runtimeProvider.reconnect(
+            currentStatus: emittedStatuses.last,
+            preferredDevice: PreferredDevice(
+              deviceId: MockBleClient.demoDeviceId,
+              displayName: 'EIXAM R1 Demo',
+              lastConnectedAt: DateTime.utc(2026, 8, 26),
+            ),
+          );
+
+          expect(controlledBleClient.oldCleanupFinished.isCompleted, isFalse);
+          expect(reconnectedStatus.connected, isTrue);
+          expect(
+            await controlledBleClient.isConnected(MockBleClient.demoDeviceId),
+            isTrue,
+          );
+          debugState = BleDebugRegistry.instance.currentState;
+          expect(debugState.commandWriterReady, isTrue);
+          expect(debugState.telNotifySubscribed, isTrue);
+          expect(debugState.sosNotifySubscribed, isTrue);
+
+          controlledBleClient.finishOldCleanup();
+          await controlledBleClient.oldCleanupFinished.future;
+
+          expect(reconnectedStatus.connected, isTrue);
+          expect(
+            await controlledBleClient.isConnected(MockBleClient.demoDeviceId),
+            isTrue,
+          );
+          debugState = BleDebugRegistry.instance.currentState;
+          expect(debugState.commandWriterReady, isTrue);
+          expect(debugState.telNotifySubscribed, isTrue);
+          expect(debugState.sosNotifySubscribed, isTrue);
+          expect(controlledBleClient.activeNotificationGeneration, 2);
+          expect(
+              controlledBleClient.cancelledNotificationGenerations, <int>[1]);
+        } finally {
+          controlledBleClient.finishOldCleanup();
+          await statusSubscription.cancel();
+        }
+      },
+    );
 
     test('BLE ownership transitions are not exposed as provisioning errors',
         () async {
@@ -579,5 +683,61 @@ final class _FailingConnectMockBleClient extends MockBleClient {
   @override
   Future<void> connect(String deviceId) async {
     throw error;
+  }
+}
+
+final class _DelayedOldNotificationCleanupBleClient extends MockBleClient {
+  final StreamController<bool> _connectionController =
+      StreamController<bool>.broadcast(sync: true);
+  final Completer<void> _oldCleanupGate = Completer<void>();
+  final Completer<void> oldCleanupStarted = Completer<void>();
+  final Completer<void> oldCleanupFinished = Completer<void>();
+  final List<StreamController<EixamBleNotification>> _notificationControllers =
+      <StreamController<EixamBleNotification>>[];
+  final List<int> cancelledNotificationGenerations = <int>[];
+
+  int activeNotificationGeneration = 0;
+
+  void emitUnexpectedDisconnect() => _connectionController.add(false);
+
+  void finishOldCleanup() {
+    if (!_oldCleanupGate.isCompleted) _oldCleanupGate.complete();
+  }
+
+  @override
+  Stream<bool> watchConnection(String deviceId) => _connectionController.stream;
+
+  @override
+  Future<Stream<EixamBleNotification>> subscribeEixamNotifications(
+    String deviceId,
+  ) async {
+    final generation = ++activeNotificationGeneration;
+    final controller = StreamController<EixamBleNotification>.broadcast(
+      sync: true,
+      onCancel: () async {
+        if (generation == 1) {
+          if (!oldCleanupStarted.isCompleted) oldCleanupStarted.complete();
+          await _oldCleanupGate.future;
+          if (!oldCleanupFinished.isCompleted) oldCleanupFinished.complete();
+        }
+        cancelledNotificationGenerations.add(generation);
+      },
+    );
+    _notificationControllers.add(controller);
+    BleDebugRegistry.instance.update(
+      telNotifySubscribed: true,
+      sosNotifySubscribed: true,
+    );
+    return controller.stream;
+  }
+
+  @override
+  Future<void> dispose() async {
+    finishOldCleanup();
+    for (final controller in _notificationControllers) {
+      await controller.close();
+    }
+    await _connectionController.close();
+    await super.dispose();
   }
 }

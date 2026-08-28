@@ -4,6 +4,32 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('EixamBootstrapResolver', () {
+    test('enables unreadable-session recovery only with an initial session',
+        () {
+      final withFreshSession = EixamBootstrapResolver.resolve(
+        EixamBootstrapConfig(
+          appId: 'partner-app',
+          environment: EixamEnvironment.staging,
+          notificationTexts: _notificationTexts,
+          initialSession: const EixamSession.signed(
+            appId: 'partner-app',
+            externalUserId: 'fresh-user',
+            userHash: 'fresh-hash',
+          ),
+        ),
+      );
+      final withoutFreshSession = EixamBootstrapResolver.resolve(
+        EixamBootstrapConfig(
+          appId: 'partner-app',
+          environment: EixamEnvironment.staging,
+          notificationTexts: _notificationTexts,
+        ),
+      );
+
+      expect(withFreshSession.recoverUnreadablePersistedSession, isTrue);
+      expect(withoutFreshSession.recoverUnreadablePersistedSession, isFalse);
+    });
+
     test('resolves production endpoints internally', () {
       final resolved = EixamBootstrapResolver.resolve(
         const EixamBootstrapConfig(

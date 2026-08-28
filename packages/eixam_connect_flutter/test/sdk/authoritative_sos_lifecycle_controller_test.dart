@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/sdk/authoritative_sos_lifecycle_controller.dart';
 import 'package:eixam_connect_flutter/src/sdk/sos_location_ownership_orchestrator.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -260,6 +261,72 @@ void main() {
 
     expect(store.values, isEmpty);
     expect(controller.current.stage, SosLifecycleStage.idle);
+  });
+
+  test('secure SOS provenance read failure logs only operation and type',
+      () async {
+    final failure = _privateSecureStoreFailure();
+    final failingController = AuthoritativeSosLifecycleController(
+      secureStore: _FailingSecureStore(readFailure: failure),
+      clock: () => now,
+    );
+    addTearDown(failingController.dispose);
+
+    final captured = await _captureSecureStoreFailure(
+      () => failingController.restoreFor(owner),
+    );
+
+    _expectSafeSecureStoreDiagnostic(
+      captured,
+      failure: failure,
+      operation: 'sos_lifecycle_read',
+    );
+  });
+
+  test('secure SOS provenance delete failure logs only operation and type',
+      () async {
+    final failure = _privateSecureStoreFailure();
+    final failingController = AuthoritativeSosLifecycleController(
+      secureStore: _FailingSecureStore(deleteFailure: failure),
+      clock: () => now,
+    );
+    addTearDown(failingController.dispose);
+
+    final captured = await _captureSecureStoreFailure(
+      failingController.deleteAccountData,
+    );
+
+    _expectSafeSecureStoreDiagnostic(
+      captured,
+      failure: failure,
+      operation: 'sos_lifecycle_delete',
+    );
+  });
+
+  test('unreadable SOS provenance remains fatal and is never cleared',
+      () async {
+    const failure = SecureKeyValueStoreEntryUnreadableException();
+    final secureStore = _FailingSecureStore(readFailure: failure);
+    final failingController = AuthoritativeSosLifecycleController(
+      secureStore: secureStore,
+      clock: () => now,
+    );
+    addTearDown(failingController.dispose);
+
+    final captured = await _captureSecureStoreFailure(
+      () => failingController.restoreFor(owner),
+    );
+
+    expect(captured.error, same(failure));
+    expect(failingController.current.stage, SosLifecycleStage.idle);
+    expect(secureStore.deletedKeys, isEmpty);
+    expect(
+      captured.diagnostics,
+      <String>[
+        'SECURE_STORE_OPERATION_FAILED operation=sos_lifecycle_read '
+            'reason=SecureKeyValueStoreEntryUnreadableException',
+      ],
+    );
   });
 
   test('arming and unmatched recovery without proof are not persisted',
@@ -550,6 +617,86 @@ final class _DelayedReadSecureStore implements SecureKeyValueStore {
 
   @override
   Future<void> deleteAll({String? namespace}) async {}
+
+  @override
+  Future<void> write(String key, String value) async {}
+}
+
+SecureKeyValueStoreUnavailableException _privateSecureStoreFailure() =>
+    const SecureKeyValueStoreUnavailableException(
+      message: 'private-message private-token private-value private-key',
+    );
+
+Future<({Object? error, List<String> diagnostics})> _captureSecureStoreFailure(
+  Future<Object?> Function() operation,
+) async {
+  final diagnostics = <String>[];
+  final originalDebugPrint = debugPrint;
+  debugPrint = (message, {wrapWidth}) {
+    if (message != null) diagnostics.add(message);
+  };
+  Object? error;
+  try {
+    await operation();
+  } catch (caught) {
+    error = caught;
+  } finally {
+    debugPrint = originalDebugPrint;
+  }
+  return (error: error, diagnostics: diagnostics);
+}
+
+void _expectSafeSecureStoreDiagnostic(
+  ({Object? error, List<String> diagnostics}) captured, {
+  required Object failure,
+  required String operation,
+}) {
+  expect(captured.error, same(failure));
+  expect(
+    captured.diagnostics,
+    <String>[
+      'SECURE_STORE_OPERATION_FAILED operation=$operation '
+          'reason=SecureKeyValueStoreUnavailableException',
+    ],
+  );
+  final diagnostic = captured.diagnostics.single;
+  for (final privateText in <String>[
+    'private-message',
+    'private-token',
+    'private-value',
+    'private-key',
+    'owner-a',
+    'secret-hash',
+    SecureStorageKeys.sdkSosLifecycleProvenance.value,
+  ]) {
+    expect(diagnostic, isNot(contains(privateText)));
+  }
+}
+
+final class _FailingSecureStore implements SecureKeyValueStore {
+  _FailingSecureStore({this.readFailure, this.deleteFailure});
+
+  final Object? readFailure;
+  final Object? deleteFailure;
+  final List<String> deletedKeys = <String>[];
+
+  @override
+  Future<bool> containsKey(String key) async => false;
+
+  @override
+  Future<void> delete(String key) async {
+    if (deleteFailure case final failure?) throw failure;
+    deletedKeys.add(key);
+  }
+
+  @override
+  Future<void> deleteAll({String? namespace}) async {}
+
+  @override
+  Future<String?> read(String key) async {
+    if (readFailure case final failure?) throw failure;
+    return null;
+  }
 
   @override
   Future<void> write(String key, String value) async {}

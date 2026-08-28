@@ -11,25 +11,27 @@ import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
-import javax.crypto.spec.GCMParameterSpec
 
 internal object SecureStorageBridge {
     private const val channelName = "dev.eixam.connect.flutter/secure_storage"
     private const val preferencesName = "eixam_secure_storage"
     private const val keyAlias = "eixam.secure.storage.v1"
-    private const val separator = ":"
-    private const val gcmTagBits = 128
     private var channel: MethodChannel? = null
 
     fun register(messenger: BinaryMessenger, context: Context) {
         val applicationContext = context.applicationContext
         channel = MethodChannel(messenger, channelName).also { methodChannel ->
             methodChannel.setMethodCallHandler { call, result ->
-                try {
-                    val preferences = applicationContext.getSharedPreferences(
+                val preferences = try {
+                    applicationContext.getSharedPreferences(
                         preferencesName,
                         Context.MODE_PRIVATE,
                     )
+                } catch (error: Throwable) {
+                    respondWithError(result, error)
+                    return@setMethodCallHandler
+                }
+                try {
                     when (call.method) {
                         "read" -> {
                             val key = call.argument<String>("key") ?: error("key is required")
@@ -39,15 +41,28 @@ internal object SecureStorageBridge {
                         "write" -> {
                             val key = call.argument<String>("key") ?: error("key is required")
                             val value = call.argument<String>("value") ?: error("value is required")
-                            if (!preferences.edit().putString(key, encrypt(value)).commit()) {
-                                error("Secure storage write failed")
+                            val encrypted = encrypt(value)
+                            try {
+                                if (!preferences.edit().putString(key, encrypted).commit()) {
+                                    throw SecureStorageWriteFailedException()
+                                }
+                            } catch (error: SecureStorageWriteFailedException) {
+                                throw error
+                            } catch (error: Throwable) {
+                                throw SecureStorageWriteFailedException(error)
                             }
                             result.success(null)
                         }
                         "delete" -> {
                             val key = call.argument<String>("key") ?: error("key is required")
-                            if (!preferences.edit().remove(key).commit()) {
-                                error("Secure storage delete failed")
+                            try {
+                                if (!preferences.edit().remove(key).commit()) {
+                                    throw SecureStorageDeleteFailedException()
+                                }
+                            } catch (error: SecureStorageDeleteFailedException) {
+                                throw error
+                            } catch (error: Throwable) {
+                                throw SecureStorageDeleteFailedException(error)
                             }
                             result.success(null)
                         }
@@ -63,17 +78,21 @@ internal object SecureStorageBridge {
                                     .filter { it.startsWith(generatedPrefix) || it.startsWith(rawPrefix) }
                                     .forEach(editor::remove)
                             }
-                            if (!editor.commit()) error("Secure storage delete-all failed")
+                            try {
+                                if (!editor.commit()) {
+                                    throw SecureStorageDeleteFailedException()
+                                }
+                            } catch (error: SecureStorageDeleteFailedException) {
+                                throw error
+                            } catch (error: Throwable) {
+                                throw SecureStorageDeleteFailedException(error)
+                            }
                             result.success(null)
                         }
                         else -> result.notImplemented()
                     }
                 } catch (error: Throwable) {
-                    result.error(
-                        "secure_storage_unavailable",
-                        error.message ?: "Secure storage operation failed",
-                        null,
-                    )
+                    respondWithError(result, error)
                 }
             }
         }
@@ -85,21 +104,34 @@ internal object SecureStorageBridge {
     }
 
     private fun encrypt(value: String): String {
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
-        val ciphertext = cipher.doFinal(value.toByteArray(StandardCharsets.UTF_8))
-        return Base64.encodeToString(cipher.iv, Base64.NO_WRAP) + separator +
-            Base64.encodeToString(ciphertext, Base64.NO_WRAP)
+        val key = getOrCreateKey()
+        try {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, key)
+            val ciphertext = cipher.doFinal(value.toByteArray(StandardCharsets.UTF_8))
+            return Base64.encodeToString(cipher.iv, Base64.NO_WRAP) + ":" +
+                Base64.encodeToString(ciphertext, Base64.NO_WRAP)
+        } catch (error: Throwable) {
+            throw SecureStorageWriteFailedException(error)
+        }
     }
 
     private fun decrypt(encoded: String): String {
-        val parts = encoded.split(separator, limit = 2)
-        require(parts.size == 2) { "Invalid secure storage payload" }
-        val iv = Base64.decode(parts[0], Base64.NO_WRAP)
-        val ciphertext = Base64.decode(parts[1], Base64.NO_WRAP)
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(gcmTagBits, iv))
-        return String(cipher.doFinal(ciphertext), StandardCharsets.UTF_8)
+        val key = getOrCreateKey()
+        return SecureStoragePayloadCodec.decrypt(encoded, key) { value ->
+            Base64.decode(value, Base64.NO_WRAP)
+        }
+    }
+
+    private fun respondWithError(result: MethodChannel.Result, error: Throwable) {
+        val code = SecureStorageFailureClassifier.codeFor(error)
+        val message = when (code) {
+            SecureStorageErrorCodes.entryUnreadable -> "Secure storage entry is unreadable."
+            SecureStorageErrorCodes.writeFailed -> "Secure storage write failed."
+            SecureStorageErrorCodes.deleteFailed -> "Secure storage delete failed."
+            else -> "Secure storage is unavailable."
+        }
+        result.error(code, message, null)
     }
 
     private fun getOrCreateKey(): SecretKey {

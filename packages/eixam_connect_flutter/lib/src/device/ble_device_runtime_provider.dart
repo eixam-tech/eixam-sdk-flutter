@@ -377,6 +377,9 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       try {
         await _bleClient.connect(deviceId);
         BleDebugRegistry.instance.recordEvent(
+          'BLE_RECONNECT_LIFECYCLE connected=true',
+        );
+        BleDebugRegistry.instance.recordEvent(
           'SDK_RECONNECT_CONNECT_CALL_DONE '
           'attemptId=${attemptId ?? 'none'} connected=true',
         );
@@ -766,10 +769,16 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       longCommandAvailable: BleDebugRegistry.instance.currentState.cmdFound,
     );
     BleDebugRegistry.instance.recordEvent(
+      'BLE_RECONNECT_LIFECYCLE command_ready=true',
+    );
+    BleDebugRegistry.instance.recordEvent(
       'BLE SOS runtime attached -> hardwareId=$deviceId inetAvailable=${BleDebugRegistry.instance.currentState.inetFound} cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound}',
     );
 
     final stream = await _bleClient.subscribeEixamNotifications(deviceId);
+    BleDebugRegistry.instance.recordEvent(
+      'BLE_RECONNECT_LIFECYCLE tel_notify_ready=true sos_notify_ready=true',
+    );
     _notificationSubscription = stream.listen(
       (notification) {
         unawaited(_handleNotification(deviceId, notification));
@@ -1467,7 +1476,10 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       return;
     }
 
-    await _notificationSubscription?.cancel();
+    BleDebugRegistry.instance.recordEvent(
+      'BLE_RECONNECT_LIFECYCLE disconnect_callback=true',
+    );
+    final disconnectedNotificationSubscription = _notificationSubscription;
     _notificationSubscription = null;
     BleDebugRegistry.instance.clearCommandWriter();
     BleDebugRegistry.instance.update(
@@ -1489,6 +1501,20 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       clearProvisioningError: true,
     );
     _publishRuntimeStatus(nextStatus, reason: 'unexpected_disconnect');
+    BleDebugRegistry.instance.recordEvent(
+      'BLE_RECONNECT_LIFECYCLE disconnect_status_published=true',
+    );
+    try {
+      await disconnectedNotificationSubscription?.cancel();
+      BleDebugRegistry.instance.recordEvent(
+        'BLE_RECONNECT_LIFECYCLE notification_cleanup_completed=true',
+      );
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'BLE_RECONNECT_LIFECYCLE notification_cleanup_failed=true '
+        'errorType=${error.runtimeType}',
+      );
+    }
   }
 
   Future<void> _handleTelNotification(

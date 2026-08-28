@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import '../storage/secure_store_operation_diagnostics.dart';
 import 'authoritative_sos_cadence.dart';
 import 'sos_location_ownership_effect.dart';
 import 'sos_location_ownership_orchestrator.dart';
@@ -94,9 +95,7 @@ final class AuthoritativeSosLifecycleController {
         replacingDifferentAccount: replacingDifferentAccount,
       );
     }
-    final encoded = await _secureStore.read(
-      SecureStorageKeys.sdkSosLifecycleProvenance.value,
-    );
+    final encoded = await _readProvenance();
     if (encoded == null || encoded.trim().isEmpty) {
       return _acceptRestoration(
         SosLifecycleSnapshot.idle(_now()),
@@ -410,9 +409,7 @@ final class AuthoritativeSosLifecycleController {
       incident: incident,
       lastAuthoritativeObservation: _now(),
     );
-    await _secureStore.delete(
-      SecureStorageKeys.sdkSosLifecycleProvenance.value,
-    );
+    await _deleteProvenance();
     return _publish(terminal, persist: false);
   }
 
@@ -424,10 +421,36 @@ final class AuthoritativeSosLifecycleController {
   }
 
   Future<void> deleteAccountData() async {
-    await _secureStore.delete(
-      SecureStorageKeys.sdkSosLifecycleProvenance.value,
-    );
+    await _deleteProvenance();
     await detachAccount();
+  }
+
+  Future<String?> _readProvenance() async {
+    try {
+      return await _secureStore.read(
+        SecureStorageKeys.sdkSosLifecycleProvenance.value,
+      );
+    } on SecureKeyValueStoreException catch (error) {
+      reportSecureStoreOperationFailure(
+        SecureStoreOperation.sosLifecycleRead,
+        error,
+      );
+      rethrow;
+    }
+  }
+
+  Future<void> _deleteProvenance() async {
+    try {
+      await _secureStore.delete(
+        SecureStorageKeys.sdkSosLifecycleProvenance.value,
+      );
+    } on SecureKeyValueStoreException catch (error) {
+      reportSecureStoreOperationFailure(
+        SecureStoreOperation.sosLifecycleDelete,
+        error,
+      );
+      rethrow;
+    }
   }
 
   Future<void> dispose() async {
