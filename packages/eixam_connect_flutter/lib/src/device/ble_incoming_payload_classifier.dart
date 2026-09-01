@@ -94,7 +94,7 @@ class BleIncomingPayloadClassifier {
     }
 
     final sosPacket = EixamSosPacket.tryParse(payload);
-    if (sosPacket != null && sosPacket.sosType == 0 && !sosPacket.hasPosition) {
+    if (sosPacket != null && sosPacket.isClear) {
       final isRemoteClear = _isExternalBackendClearPacket(
         sosPacket,
         connectedBleTagNodeId,
@@ -148,7 +148,7 @@ class BleIncomingPayloadClassifier {
             : null,
       );
     }
-    if (sosPacket != null && sosPacket.sosType != 0) {
+    if (sosPacket != null && sosPacket.isActiveOnChannel(channel)) {
       // Safety-critical rule: decoding a valid BLE SOS payload is not enough to
       // claim that the connected tag itself is in SOS. The originator nodeId in
       // bytes 0..3 must match the connected BLE tag nodeId.
@@ -176,29 +176,21 @@ class BleIncomingPayloadClassifier {
       return BleIncomingPayloadClassification(
         kind: classification,
         sosPacket: sosPacket,
-        remoteRelaySosSnapshot: classification ==
-                BleIncomingPayloadKind.remoteRelaySos
-            ? RemoteRelaySosSnapshot(
-                kind: RemoteRelaySosKind.sos,
-                originatorNodeId: sosPacket.nodeId,
-                relayNodeId: connectedBleTagNodeId,
-                source: _remoteSourceFor(channel),
-                sosType: sosPacket.sosType,
-                location: sosPacket.position == null
-                    ? null
-                    : TrackingPosition(
-                        latitude: sosPacket.position!.latitude,
-                        longitude: sosPacket.position!.longitude,
-                        altitude: sosPacket.position!.altitudeMeters.toDouble(),
-                        timestamp: receivedAt,
-                        source: DeliveryMode.mesh,
-                      ),
-                receivedAt: receivedAt,
-                rawPayload: List<int>.unmodifiable(payload),
-                payloadHex: payloadHex,
-                relayCount: sosPacket.relayCount,
-              )
-            : null,
+        remoteRelaySosSnapshot:
+            classification == BleIncomingPayloadKind.remoteRelaySos
+                ? RemoteRelaySosSnapshot(
+                    kind: RemoteRelaySosKind.sos,
+                    originatorNodeId: sosPacket.nodeId,
+                    relayNodeId: connectedBleTagNodeId,
+                    source: _remoteSourceFor(channel),
+                    sosType: sosPacket.sosType,
+                    location: sosPacket.trackingPositionAt(receivedAt),
+                    receivedAt: receivedAt,
+                    rawPayload: List<int>.unmodifiable(payload),
+                    payloadHex: payloadHex,
+                    relayCount: sosPacket.relayCount,
+                  )
+                : null,
       );
     }
 
@@ -256,7 +248,8 @@ class BleIncomingPayloadClassifier {
   }
 
   BleIncomingPayloadKind _classifySosEvent(EixamSosEventPacket packet) {
-    if (packet.opcode == EixamBleProtocol.sosEventAppCancelAckOpcode) {
+    if (packet.opcode == EixamBleProtocol.sosEventAppCancelAckOpcode ||
+        packet.opcode == EixamBleProtocol.sosEventBackendResolvedOpcode) {
       return BleIncomingPayloadKind.unknown;
     }
     return BleIncomingPayloadKind.sosCancel;
@@ -284,7 +277,7 @@ class BleIncomingPayloadClassifier {
     int? connectedBleTagNodeId, {
     required bool hasRecentExternalRelayContext,
   }) {
-    if (packet.sosType != 0) {
+    if (!packet.isClear) {
       return false;
     }
     if (connectedBleTagNodeId != null) {
@@ -407,8 +400,10 @@ class BleIncomingPayloadClassifier {
   bool _isSosLikePayload(List<int> payload) {
     return payload.length == 6 ||
         payload.length == EixamBleProtocol.sosPacketLengthMinimal ||
+        payload.length == EixamBleProtocol.sosPacketLengthDelta ||
         payload.length == EixamBleProtocol.sosPacketLengthWithPosition ||
         payload.length == EixamBleProtocol.sosPacketLengthMinimal + 6 ||
+        payload.length == EixamBleProtocol.sosPacketLengthDelta + 6 ||
         payload.length == EixamBleProtocol.sosPacketLengthWithPosition + 6 ||
         _looksLikeTerminalOpcode(payload);
   }
@@ -418,7 +413,8 @@ class BleIncomingPayloadClassifier {
       return false;
     }
     return payload.first == EixamBleProtocol.sosEventUserDeactivatedOpcode ||
-        payload.first == EixamBleProtocol.sosEventAppCancelAckOpcode;
+        payload.first == EixamBleProtocol.sosEventAppCancelAckOpcode ||
+        payload.first == EixamBleProtocol.sosEventBackendResolvedOpcode;
   }
 
   String _packetTypeByte(List<int> payload) {

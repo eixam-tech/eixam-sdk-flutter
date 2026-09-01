@@ -14,10 +14,19 @@ void main() {
       expect(packet.nodeId, 0x1234);
     });
 
+    test('parses backend-resolved ACK_SOS events', () {
+      final packet = EixamSosEventPacket.tryParse(
+          <int>[0xE3, 0x00, 0x34, 0x12, 0x00, 0x00]);
+
+      expect(packet, isNotNull);
+      expect(packet!.isBackendResolved, isTrue);
+      expect(packet.isUserDeactivated, isFalse);
+    });
+
     test('rejects unsupported opcodes', () {
       expect(
           EixamSosEventPacket.tryParse(
-              <int>[0xE3, 0x00, 0x00, 0x00, 0x00, 0x00]),
+              <int>[0xE4, 0x00, 0x00, 0x00, 0x00, 0x00]),
           isNull);
     });
   });

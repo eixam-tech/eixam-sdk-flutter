@@ -2,21 +2,53 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import '../../mappers/eixam_contact_phone.dart';
+import '../../mappers/local_state_serializers.dart';
 import '../../mappers/sdk_contact_mapper.dart';
+import '../datasources_local/shared_prefs_sdk_store.dart';
 import '../datasources_remote/sdk_contacts_remote_data_source.dart';
 
 class ApiContactsRepository implements ContactsRepository {
   ApiContactsRepository({
     required this.remoteDataSource,
+    this.localStore,
     this.mapper = const SdkContactMapper(),
   });
 
   final SdkContactsRemoteDataSource remoteDataSource;
+  final SharedPrefsSdkStore? localStore;
   final SdkContactMapper mapper;
   final StreamController<List<EmergencyContact>> _controller =
       StreamController<List<EmergencyContact>>.broadcast();
 
   List<EmergencyContact> _contacts = const <EmergencyContact>[];
+  bool _restored = false;
+
+  Future<void> restoreState() async {
+    if (_restored) {
+      return;
+    }
+    _restored = true;
+    final store = localStore;
+    if (store == null) {
+      return;
+    }
+    try {
+      final raw =
+          await store.readJson(SharedPrefsSdkStore.emergencyContactsKey);
+      final items = raw?['contacts'];
+      if (items is! List) {
+        return;
+      }
+      _contacts = LocalStateSerializers.emergencyContactsFromJson(items);
+    } catch (_) {
+      _contacts = const <EmergencyContact>[];
+    }
+  }
+
+  @override
+  List<EmergencyContact> peekEmergencyContacts() =>
+      List<EmergencyContact>.unmodifiable(_contacts);
 
   @override
   Future<EmergencyContact> addEmergencyContact({
@@ -30,7 +62,7 @@ class ApiContactsRepository implements ContactsRepository {
     final created = mapper.toDomain(
       await remoteDataSource.createContact(
         name: name.trim(),
-        phone: phone.trim(),
+        phone: EixamContactPhone.normalize(phone),
         email: email.trim(),
         priority: priority,
         language: normalizedLanguage,
@@ -38,6 +70,7 @@ class ApiContactsRepository implements ContactsRepository {
     );
     _contacts = _merge(created);
     _emit();
+    await _persist();
     return created;
   }
 
@@ -46,27 +79,30 @@ class ApiContactsRepository implements ContactsRepository {
     final items = await remoteDataSource.listContacts();
     _contacts = items.map(mapper.toDomain).toList(growable: false);
     _emit();
+    await _persist();
     return _contacts;
   }
 
   @override
   Future<void> removeEmergencyContact(String contactId) async {
     await remoteDataSource.deleteContact(contactId);
-    _contacts = _contacts.where((contact) => contact.id != contactId).toList(
-          growable: false,
-        );
+    _contacts = _contacts
+        .where((contact) => contact.id != contactId)
+        .toList(growable: false);
     _emit();
+    await _persist();
   }
 
   @override
   Future<EmergencyContact> updateEmergencyContact(
-      EmergencyContact contact) async {
+    EmergencyContact contact,
+  ) async {
     final normalizedLanguage = _normalizeLanguage(contact.language);
     final updated = mapper.toDomain(
       await remoteDataSource.replaceContact(
         id: contact.id,
         name: contact.name.trim(),
-        phone: contact.phone.trim(),
+        phone: EixamContactPhone.normalize(contact.phone),
         email: contact.email.trim(),
         priority: contact.priority,
         language: normalizedLanguage,
@@ -74,6 +110,7 @@ class ApiContactsRepository implements ContactsRepository {
     );
     _contacts = _merge(updated);
     _emit();
+    await _persist();
     return updated;
   }
 
@@ -92,11 +129,12 @@ class ApiContactsRepository implements ContactsRepository {
         byId[orderedContactIds[index]]!.copyWith(priority: index + 1),
     ]);
     _emit();
+    await _persist();
   }
 
   @override
   Stream<List<EmergencyContact>> watchEmergencyContacts() async* {
-    yield _contacts;
+    yield peekEmergencyContacts();
     yield* _controller.stream;
   }
 
@@ -116,6 +154,16 @@ class ApiContactsRepository implements ContactsRepository {
 
   void _emit() =>
       _controller.add(List<EmergencyContact>.unmodifiable(_contacts));
+
+  Future<void> _persist() async {
+    final store = localStore;
+    if (store == null) {
+      return;
+    }
+    await store.saveJson(SharedPrefsSdkStore.emergencyContactsKey, {
+      'contacts': LocalStateSerializers.emergencyContactsToJson(_contacts),
+    });
+  }
 
   String _normalizeLanguage(String language) {
     final trimmed = language.trim();

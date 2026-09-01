@@ -388,6 +388,10 @@ abstract class EixamConnectSdk {
   Stream<SosState> watchSosState();
 
   Future<List<EmergencyContact>> listEmergencyContacts();
+
+  /// Last known contacts, including disk cache after bootstrap. Never hits the network.
+  List<EmergencyContact> peekEmergencyContacts();
+
   Stream<List<EmergencyContact>> watchEmergencyContacts();
   @Deprecated('Use createEmergencyContact instead.')
   Future<EmergencyContact> addEmergencyContact({

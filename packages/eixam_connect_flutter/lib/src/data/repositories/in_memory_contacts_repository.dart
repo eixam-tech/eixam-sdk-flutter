@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import '../../mappers/eixam_contact_phone.dart';
+
 /// In-memory contacts store for tests and isolated harnesses.
 ///
 /// Emergency contacts are backend-owned in production; this repository does
@@ -28,7 +30,7 @@ class InMemoryContactsRepository implements ContactsRepository {
     final contact = EmergencyContact(
       id: 'contact-${DateTime.now().microsecondsSinceEpoch}',
       name: name.trim(),
-      phone: phone.trim(),
+      phone: EixamContactPhone.normalize(phone),
       email: email.trim(),
       priority: priority,
       language: _normalizeLanguage(language),
@@ -46,6 +48,10 @@ class InMemoryContactsRepository implements ContactsRepository {
       List.unmodifiable(_contacts);
 
   @override
+  List<EmergencyContact> peekEmergencyContacts() =>
+      List.unmodifiable(_contacts);
+
+  @override
   Stream<List<EmergencyContact>> watchEmergencyContacts() async* {
     yield List.unmodifiable(_contacts);
     yield* _contactsController.stream;
@@ -60,7 +66,7 @@ class InMemoryContactsRepository implements ContactsRepository {
     }
     _contacts[index] = contact.copyWith(
       name: contact.name.trim(),
-      phone: contact.phone.trim(),
+      phone: EixamContactPhone.normalize(contact.phone),
       email: contact.email.trim(),
       language: _normalizeLanguage(contact.language),
       updatedAt: DateTime.now().toUtc(),

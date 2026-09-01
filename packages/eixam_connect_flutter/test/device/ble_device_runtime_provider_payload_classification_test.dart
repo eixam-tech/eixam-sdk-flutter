@@ -785,6 +785,33 @@ void main() {
       expect(event.telLiveBatchPacket, isNull);
     });
 
+    test('12-byte TEL at speed is not classified as SOS', () async {
+      final nextEvent = runtimeProvider.watchIncomingEvents().firstWhere(
+            (event) => event.type == BleIncomingEventType.telPosition,
+          );
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.tel,
+        payload: const <int>[
+          0x34,
+          0x12,
+          0x00,
+          0x00,
+          0x80,
+          0x00,
+          0x4C,
+          0x0C,
+          0xCC,
+          0xCD,
+          0x20,
+          0x40,
+        ],
+      );
+      final event = await nextEvent.timeout(const Duration(seconds: 2));
+      expect(event.classification.kind, BleIncomingPayloadKind.telPosition);
+      expect(event.sosPacket, isNull);
+    });
+
     test('malformed D3-shaped data falls through to unknown classification',
         () async {
       final nextEvent = _nextIncomingEvent(runtimeProvider);

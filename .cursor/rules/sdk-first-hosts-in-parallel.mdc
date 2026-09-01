@@ -1,0 +1,12 @@
+---
+description: SDK owns protocol; eixam-app and eixam-sdk-demo-flutter stay in lockstep
+alwaysApply: true
+---
+
+# SDK first, hosts in parallel
+
+Wire, classification, SOS lifecycle, and geo gates live in `eixam-sdk-flutter`. Host apps stay thin: typed SDK state in, public APIs out. No BLE byte decode, no duplicate `sosType` rules, no local 0°,0° accept list.
+
+When a firmware/SDK contract changes, patch **eixam-app and eixam-sdk-demo-flutter in the same turn**. Same semantics both hosts: 7 B `sosType = 3` is open SOS, last-known pin keeps its age, Null Island is never painted, `ACK_SOS`/`0xE3` is not a user cancel.
+
+Do not ship an app-only workaround that the demo still violates, or the reverse.

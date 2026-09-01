@@ -19,6 +19,7 @@ import 'eixam_ble_notification.dart';
 import 'eixam_ble_protocol.dart';
 import 'eixam_cluster_heartbeat_packet.dart';
 import 'eixam_device_runtime_status_packet.dart';
+import 'eixam_last_known_position_store.dart';
 import 'eixam_sos_event_packet.dart';
 import 'eixam_sos_packet.dart';
 import 'eixam_tel_fragment.dart';
@@ -49,6 +50,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   final EixamTelReassembler _telReassembler = EixamTelReassembler();
   final BleIncomingPayloadClassifier _payloadClassifier =
       const BleIncomingPayloadClassifier();
+  final EixamLastKnownPositionStore _lastKnownPositions =
+      EixamLastKnownPositionStore();
 
   String? _connectedDeviceId;
   String? _connectedDeviceAlias;
@@ -1398,8 +1401,10 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   bool _isSosLikePayload(List<int> payload) {
     return payload.length == 6 ||
         payload.length == EixamBleProtocol.sosPacketLengthMinimal ||
+        payload.length == EixamBleProtocol.sosPacketLengthDelta ||
         payload.length == EixamBleProtocol.sosPacketLengthWithPosition ||
         payload.length == EixamBleProtocol.sosPacketLengthMinimal + 6 ||
+        payload.length == EixamBleProtocol.sosPacketLengthDelta + 6 ||
         payload.length == EixamBleProtocol.sosPacketLengthWithPosition + 6 ||
         _looksLikeTerminalOpcode(payload);
   }
@@ -1409,7 +1414,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       return false;
     }
     return payload.first == EixamBleProtocol.sosEventUserDeactivatedOpcode ||
-        payload.first == EixamBleProtocol.sosEventAppCancelAckOpcode;
+        payload.first == EixamBleProtocol.sosEventAppCancelAckOpcode ||
+        payload.first == EixamBleProtocol.sosEventBackendResolvedOpcode;
   }
 
   String _packetTypeByte(List<int> payload) {
@@ -1883,7 +1889,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       classificationBefore: 'before_payload_classifier',
     );
 
-    var classification = _payloadClassifier.classifySosPayload(
+    var classification = _classifyBoundSosPayload(
       payload: payload,
       payloadHex: payloadHex,
       receivedAt: notification.receivedAt,
@@ -2047,7 +2053,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
   String _classifyEmbeddedWireType(List<int> payload) {
     final sosPacket = EixamSosPacket.tryParse(payload);
-    if (sosPacket != null && sosPacket.sosType != 0) {
+    if (sosPacket != null && sosPacket.isActiveSos) {
       return 'sos';
     }
     if (EixamTelPacket.tryParse(payload) != null) {
@@ -2068,6 +2074,31 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     return null;
   }
 
+  BleIncomingPayloadClassification _classifyBoundSosPayload({
+    required List<int> payload,
+    required String payloadHex,
+    required DateTime receivedAt,
+    required DeviceSosTransitionSource source,
+    required EixamBleChannel channel,
+    required int? connectedBleTagNodeId,
+    required BleIncomingPayloadClassification fallbackOnUnknownConnectedNode,
+    bool hasRecentExternalRelayContext = false,
+  }) {
+    return _lastKnownPositions.bind(
+      _payloadClassifier.classifySosPayload(
+        payload: payload,
+        payloadHex: payloadHex,
+        receivedAt: receivedAt,
+        source: source,
+        channel: channel,
+        connectedBleTagNodeId: connectedBleTagNodeId,
+        fallbackOnUnknownConnectedNode: fallbackOnUnknownConnectedNode,
+        hasRecentExternalRelayContext: hasRecentExternalRelayContext,
+      ),
+      receivedAt: receivedAt,
+    );
+  }
+
   BleIncomingPayloadClassification _classifyD2RelayPeerPayload({
     required List<int> payload,
     required String payloadHex,
@@ -2081,7 +2112,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       classificationBefore: 'before_d2_peer_classifier',
     );
     final sosPacket = EixamSosPacket.tryParse(payload);
-    if (sosPacket == null || sosPacket.sosType == 0) {
+    if (sosPacket == null || !sosPacket.isActiveSos) {
       const classification = BleIncomingPayloadClassification(
         kind: BleIncomingPayloadKind.telRelayRx,
       );
@@ -2119,15 +2150,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         relayNodeId: connectedNodeId,
         source: RemoteRelaySosSource.d2Relay,
         sosType: sosPacket.sosType,
-        location: sosPacket.position == null
-            ? null
-            : TrackingPosition(
-                latitude: sosPacket.position!.latitude,
-                longitude: sosPacket.position!.longitude,
-                altitude: sosPacket.position!.altitudeMeters.toDouble(),
-                timestamp: receivedAt,
-                source: DeliveryMode.mesh,
-              ),
+        location: sosPacket.trackingPositionAt(receivedAt),
         receivedAt: receivedAt,
         rawPayload: List<int>.unmodifiable(payload),
         payloadHex: payloadHex,
@@ -2140,7 +2163,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       classification: classification,
       source: 'ble_device_runtime_provider_d2_relay_peer',
     );
-    return classification;
+    return _lastKnownPositions.bind(classification, receivedAt: receivedAt);
   }
 
   Future<void> _bindConnectionMonitor(String deviceId) async {
@@ -2183,7 +2206,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     );
 
     var sosEventPacket = notification.payload.length == 6
-        ? _payloadClassifier.classifySosPayload(
+        ? _classifyBoundSosPayload(
             payload: notification.payload,
             payloadHex: notification.payloadHex,
             receivedAt: notification.receivedAt,
@@ -2273,7 +2296,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       return;
     }
 
-    var sosClassification = _payloadClassifier.classifySosPayload(
+    var sosClassification = _classifyBoundSosPayload(
       payload: notification.payload,
       payloadHex: notification.payloadHex,
       receivedAt: notification.receivedAt,
@@ -2480,7 +2503,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       reason: reason,
     );
     if (resolvedNodeId == null) {
-      final fallback = _payloadClassifier.classifySosPayload(
+      final fallback = _classifyBoundSosPayload(
         payload: payload,
         payloadHex: payloadHex,
         receivedAt: receivedAt,
@@ -2499,7 +2522,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       return fallback;
     }
 
-    final resolved = _payloadClassifier.classifySosPayload(
+    final resolved = _classifyBoundSosPayload(
       payload: payload,
       payloadHex: payloadHex,
       receivedAt: receivedAt,

@@ -81,7 +81,7 @@ void main() {
     });
 
     test(
-        'already-provisioned unknown connection remains unverified without assignment POST',
+        'already-provisioned unknown connection is claimed with assignment POST',
         () async {
       expect(registryRepository.upsertCallCount, 0);
       await sdk.connectDevice(pairingCode: MockBleClient.demoDeviceId);
@@ -89,17 +89,14 @@ void main() {
 
       final result = await sdk.ensureDeviceReady();
 
-      expect(
-        result.disposition,
-        DeviceReadyDisposition.provisionedAssignmentUnverified,
-      );
-      expect(registryRepository.upsertCallCount, 0);
+      expect(result.disposition, DeviceReadyDisposition.ready);
+      expect(registryRepository.upsertCallCount, 1);
 
       await sdk.getDeviceStatus();
       await sdk.refreshDeviceStatus();
       await sdk.activateDevice(activationCode: 'activate');
       await Future<void>.delayed(Duration.zero);
-      expect(registryRepository.upsertCallCount, 0);
+      expect(registryRepository.upsertCallCount, 1);
     });
 
     test('already-provisioned exact assignment is ready without POST',

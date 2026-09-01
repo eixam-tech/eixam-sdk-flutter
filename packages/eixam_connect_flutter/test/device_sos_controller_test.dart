@@ -2,6 +2,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_position_data.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_sos_event_packet.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_sos_packet.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -1193,6 +1194,87 @@ void main() {
         expect(availability, <bool>[false, true, false]);
       },
     );
+  });
+
+  group('DeviceSosController firmware 2.7.50 pin and ACK', () {
+    test('7 B sosType 3 after a valid fix keeps hasLocation', () async {
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 5),
+        countdownTick: const Duration(milliseconds: 2),
+        appActivationObservationTimeout: const Duration(milliseconds: 20),
+      );
+      addTearDown(controller.dispose);
+      await controller.attach(commandWriter: (_) async {});
+      final sosFlags = EixamSosPacket.packFlags(sosType: 2);
+      controller.handleIncomingSosPacket(
+        EixamSosPacket.tryParse(<int>[
+          0x34,
+          0x12,
+          0x00,
+          0x00,
+          ...EixamPositionData.encode(latitude: 42.5, longitude: 1.5),
+          sosFlags & 0xFF,
+          (sosFlags >> 8) & 0xFF,
+        ])!,
+        source: DeviceSosTransitionSource.device,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 15));
+      expect(controller.currentStatus.hasLocation, isTrue);
+      final type3Flags = EixamSosPacket.packFlags(sosType: 3);
+      controller.handleIncomingSosPacket(
+        EixamSosPacket.tryParse(<int>[
+          0x34,
+          0x12,
+          0x00,
+          0x00,
+          type3Flags & 0xFF,
+          (type3Flags >> 8) & 0xFF,
+          0x02,
+        ])!,
+        source: DeviceSosTransitionSource.device,
+      );
+      expect(controller.currentStatus.hasLocation, isTrue);
+      expect(controller.currentStatus.state, isNot(DeviceSosState.inactive));
+    });
+
+    test('0xE3 after a valid fix stays acknowledged and keeps hasLocation',
+        () async {
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 5),
+        countdownTick: const Duration(milliseconds: 2),
+        appActivationObservationTimeout: const Duration(milliseconds: 20),
+      );
+      addTearDown(controller.dispose);
+      await controller.attach(commandWriter: (_) async {});
+      final sosFlags = EixamSosPacket.packFlags(sosType: 2);
+      controller.handleIncomingSosPacket(
+        EixamSosPacket.tryParse(<int>[
+          0x34,
+          0x12,
+          0x00,
+          0x00,
+          ...EixamPositionData.encode(latitude: 42.5, longitude: 1.5),
+          sosFlags & 0xFF,
+          (sosFlags >> 8) & 0xFF,
+        ])!,
+        source: DeviceSosTransitionSource.device,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 15));
+      expect(controller.currentStatus.hasLocation, isTrue);
+      controller.handleIncomingSosEventPacket(
+        EixamSosEventPacket.tryParse(<int>[
+          0xE3,
+          0x00,
+          0x34,
+          0x12,
+          0x00,
+          0x00,
+        ])!,
+        source: DeviceSosTransitionSource.device,
+      );
+      expect(controller.currentStatus.state, DeviceSosState.acknowledged);
+      expect(controller.currentStatus.hasLocation, isTrue);
+    });
   });
 }
 

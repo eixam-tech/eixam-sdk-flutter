@@ -272,6 +272,10 @@ class FakeContactsRepository implements ContactsRepository {
       List<EmergencyContact>.unmodifiable(contacts);
 
   @override
+  List<EmergencyContact> peekEmergencyContacts() =>
+      List<EmergencyContact>.unmodifiable(contacts);
+
+  @override
   Future<void> removeEmergencyContact(String contactId) async {
     contacts.removeWhere((contact) => contact.id == contactId);
     _controller.add(List<EmergencyContact>.unmodifiable(contacts));

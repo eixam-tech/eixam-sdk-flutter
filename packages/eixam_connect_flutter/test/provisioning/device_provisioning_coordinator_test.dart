@@ -38,7 +38,7 @@ void main() {
     ),
     (name: 'malformed hardware id', hardwareIds: <String>[' 305419896 ']),
   ]) {
-    test('already-provisioned ${testCase.name} is assignment-unverified',
+    test('already-provisioned ${testCase.name} is claimed then ready',
         () async {
       final harness = _Harness(
         initiallyProvisioned: true,
@@ -47,17 +47,18 @@ void main() {
 
       final result = await harness.coordinator.ensureReady();
 
-      expect(
-        result.disposition,
-        DeviceReadyDisposition.provisionedAssignmentUnverified,
-      );
+      expect(result.disposition, DeviceReadyDisposition.ready);
       expect(harness.commands, isEmpty);
       expect(harness.pskClient.requestCount, 0);
-      expect(harness.registry.listCalls, 1);
-      expect(harness.registry.upsertCalls, 0);
+      expect(harness.registry.listCalls, 2);
+      expect(harness.registry.upsertCalls, 1);
       expect(
         harness.diagnostics,
-        contains('ASSIGNMENT_VERIFY result=not_found'),
+        contains('ASSIGNMENT_CREATE reason=provisioned_assignment_missing'),
+      );
+      expect(
+        harness.diagnostics,
+        contains('ASSIGNMENT_READBACK result=matched'),
       );
       await harness.dispose();
     });
@@ -172,7 +173,7 @@ void main() {
       DeviceReadyDisposition.provisionedAssignmentUnverified,
     );
     expect(harness.commands.length, commandCount);
-    expect(harness.registry.upsertCalls, 1);
+    expect(harness.registry.upsertCalls, 2);
     await harness.dispose();
   });
 
@@ -532,6 +533,22 @@ void main() {
     });
   }
 
+  test('disconnect during reconnect wait does not cancel provisioning',
+      () async {
+    final reconnect = Completer<bool>();
+    final harness = _Harness(reconnectCompleter: reconnect);
+    final result = harness.coordinator.ensureReady();
+    await harness.reconnectStarted.future;
+
+    harness.statuses.add(harness.status(connected: false));
+    await Future<void>.delayed(Duration.zero);
+    reconnect.complete(true);
+
+    expect((await result).isReady, isTrue);
+    expect(harness.reconnectCount, 1);
+    await harness.dispose();
+  });
+
   test('wrong final platform identity fails before fresh 0x23 verification',
       () async {
     final harness = _Harness(finalDeviceId: 'ble-device-2');
@@ -556,6 +573,7 @@ final class _Harness {
     this.blockAtWrite,
     this.rebootFails = false,
     this.blockReboot = false,
+    this.reconnectCompleter,
     List<String>? assignmentHardwareIds,
     Object? registryError,
     Object? assignmentCreateError,
@@ -618,6 +636,10 @@ final class _Harness {
       reconnectSameDevice: (deviceId) async {
         rebootBoundaryEvents.add('reconnect');
         reconnectCount++;
+        if (!reconnectStarted.isCompleted) reconnectStarted.complete();
+        if (reconnectCompleter != null) {
+          return await reconnectCompleter!.future;
+        }
         return reconnectSucceeds && deviceId == 'ble-device-1';
       },
       acquireReconnectOwnership: () async {
@@ -648,6 +670,7 @@ final class _Harness {
   final int? blockAtWrite;
   final bool rebootFails;
   final bool blockReboot;
+  final Completer<bool>? reconnectCompleter;
   final StreamController<List<int>> packets =
       StreamController<List<int>>.broadcast();
   final StreamController<DeviceStatus> statuses =
@@ -668,6 +691,7 @@ final class _Harness {
   final Completer<void> releaseWrite = Completer<void>();
   final Completer<void> rebootBlocked = Completer<void>();
   final Completer<void> releaseReboot = Completer<void>();
+  final Completer<void> reconnectStarted = Completer<void>();
 
   DeviceStatus _status({
     required bool afterReboot,

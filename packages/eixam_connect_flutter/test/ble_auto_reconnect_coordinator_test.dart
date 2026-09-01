@@ -1142,6 +1142,46 @@ void main() {
       expect(repository.reconnectCallCount, 1);
     });
 
+    test(
+      'manual pair is not aborted by a cancelled reconnect campaign',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        BleDebugRegistry.instance.reset();
+        final repository = _FakeDeviceRepository()
+          ..reconnectDelay = const Duration(seconds: 30);
+        final store =
+            PreferredBleDeviceStore(localStore: SharedPrefsSdkStore());
+        await store.savePreferredDevice(
+          PreferredBleDevice(
+            deviceId: 'ble-demo-r1',
+            displayName: 'EIXAM Demo',
+            lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+          ),
+        );
+        final coordinator = BleAutoReconnectCoordinator(
+          deviceRepository: repository,
+          preferredDeviceStore: store,
+        );
+        await coordinator.initialize(
+          initialStatus: await repository.getDeviceStatus(),
+          deviceStatusStream: repository.watchDeviceStatus(),
+        );
+        unawaited(coordinator.tryAutoConnectForHandoff(trigger: 'startup'));
+        await Future<void>.delayed(Duration.zero);
+        expect(repository.reconnectCallCount, 1);
+        coordinator.cancelPreferredReconnect(reason: 'host_cancelled');
+        await Future<void>.delayed(Duration.zero);
+
+        final status = await coordinator.pairDeviceManually(
+          pairingCode: '1234',
+        );
+
+        expect(status.connected, isTrue);
+        expect(repository.pairCallCount, 1);
+        await coordinator.dispose();
+      },
+    );
+
     test('skips auto-connect when manual disconnect is active', () async {
       SharedPreferences.setMockInitialValues(<String, Object>{});
       BleDebugRegistry.instance.reset();

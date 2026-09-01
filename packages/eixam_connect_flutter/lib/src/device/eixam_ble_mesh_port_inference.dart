@@ -27,9 +27,9 @@ int? inferMeshPortForLiveNotification({
     return EixamBleProtocol.telMeshPort;
   }
 
-  if (payload.length == 7 || payload.length == 12) {
+  if (payload.length == 7 || payload.length == 10 || payload.length == 12) {
     final sosPacket = EixamSosPacket.tryParse(payload);
-    if (sosPacket != null && sosPacket.sosType != 0) {
+    if (sosPacket != null && sosPacket.isActiveSos) {
       return EixamBleProtocol.telMeshPort;
     }
   }

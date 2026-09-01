@@ -201,8 +201,15 @@ final class DeviceProvisioningCoordinator {
       }
       if (initialRuntime.isProvisioned) {
         // 0x23 proves only structural config.bin validity. Current-app/user
-        // assignment requires an authenticated backend registry match.
-        if (!await _verifyAssignment(operation, initialRuntime.nodeId)) {
+        // assignment requires an authenticated backend registry match. A
+        // provisioned TAG with no current-app row (unpair/re-pair, new
+        // session) is claimed here instead of left as a dead-end unverified
+        // state.
+        if (!await _ensureCurrentAssignment(
+          operation,
+          nodeId: initialRuntime.nodeId,
+          status: initialStatus,
+        )) {
           _emit(DeviceProvisioningPhase.provisionedAssignmentUnverified);
           return DeviceReadyResult.provisionedAssignmentUnverified(
               initialStatus);
@@ -294,24 +301,24 @@ final class DeviceProvisioningCoordinator {
             _expectingRebootDisconnect = true;
             try {
               await reboot();
+              _check(operation);
+              _emit(DeviceProvisioningPhase.reconnecting, progress: 0.8);
+              diagnosticLog?.call(
+                'PROVISIONING_REBOOT explicit_reconnect_started=true',
+              );
+              if (!await reconnectSameDevice(initialStatus.deviceId)) {
+                diagnosticLog?.call(
+                  'PROVISIONING_REBOOT explicit_reconnect_result=failed',
+                );
+                return _fail(DeviceReadyFailureCode.reconnectFailed,
+                    retryable: true);
+              }
+              diagnosticLog?.call(
+                'PROVISIONING_REBOOT explicit_reconnect_result=connected',
+              );
             } finally {
               _expectingRebootDisconnect = false;
             }
-            _check(operation);
-            _emit(DeviceProvisioningPhase.reconnecting, progress: 0.8);
-            diagnosticLog?.call(
-              'PROVISIONING_REBOOT explicit_reconnect_started=true',
-            );
-            if (!await reconnectSameDevice(initialStatus.deviceId)) {
-              diagnosticLog?.call(
-                'PROVISIONING_REBOOT explicit_reconnect_result=failed',
-              );
-              return _fail(DeviceReadyFailureCode.reconnectFailed,
-                  retryable: true);
-            }
-            diagnosticLog?.call(
-              'PROVISIONING_REBOOT explicit_reconnect_result=connected',
-            );
             _check(operation);
             _emit(DeviceProvisioningPhase.verifying, progress: 0.9);
             diagnosticLog?.call(
@@ -345,13 +352,18 @@ final class DeviceProvisioningCoordinator {
               operation,
               nodeId: finalRuntime.nodeId,
               status: finalStatus,
+              reason: 'successful_initial_provisioning',
             )) {
               _emit(DeviceProvisioningPhase.provisionedAssignmentUnverified);
               return DeviceReadyResult.provisionedAssignmentUnverified(
                   finalStatus);
             }
-            if (!await _verifyAssignment(operation, finalRuntime.nodeId)) {
-              diagnosticLog?.call('ASSIGNMENT_READBACK result=not_found');
+            final readback =
+                await _lookupAssignment(operation, finalRuntime.nodeId);
+            if (readback != _AssignmentLookup.matched) {
+              diagnosticLog?.call(
+                'ASSIGNMENT_READBACK result=${readback == _AssignmentLookup.missing ? "not_found" : "backend_unavailable"}',
+              );
               _emit(DeviceProvisioningPhase.provisionedAssignmentUnverified);
               return DeviceReadyResult.provisionedAssignmentUnverified(
                   finalStatus);
@@ -443,7 +455,41 @@ final class DeviceProvisioningCoordinator {
     );
   }
 
-  Future<bool> _verifyAssignment(
+  Future<bool> _ensureCurrentAssignment(
+    _ProvisioningOperation operation, {
+    required int nodeId,
+    required DeviceStatus status,
+  }) async {
+    switch (await _lookupAssignment(operation, nodeId)) {
+      case _AssignmentLookup.matched:
+        return true;
+      case _AssignmentLookup.unavailable:
+        return false;
+      case _AssignmentLookup.missing:
+        break;
+    }
+    if (!await _createAssignment(
+      operation,
+      nodeId: nodeId,
+      status: status,
+      reason: 'provisioned_assignment_missing',
+    )) {
+      return false;
+    }
+    switch (await _lookupAssignment(operation, nodeId)) {
+      case _AssignmentLookup.matched:
+        diagnosticLog?.call('ASSIGNMENT_READBACK result=matched');
+        return true;
+      case _AssignmentLookup.missing:
+        diagnosticLog?.call('ASSIGNMENT_READBACK result=not_found');
+        return false;
+      case _AssignmentLookup.unavailable:
+        diagnosticLog?.call('ASSIGNMENT_READBACK result=backend_unavailable');
+        return false;
+    }
+  }
+
+  Future<_AssignmentLookup> _lookupAssignment(
     _ProvisioningOperation operation,
     int nodeId,
   ) async {
@@ -454,7 +500,7 @@ final class DeviceProvisioningCoordinator {
       diagnosticLog?.call(
         'ASSIGNMENT_VERIFY result=${matched ? "matched" : "not_found"}',
       );
-      return matched;
+      return matched ? _AssignmentLookup.matched : _AssignmentLookup.missing;
     } on ProvisioningOperationCancelledException {
       rethrow;
     } catch (_) {
@@ -462,7 +508,7 @@ final class DeviceProvisioningCoordinator {
       diagnosticLog?.call(
         'ASSIGNMENT_VERIFY result=backend_unavailable',
       );
-      return false;
+      return _AssignmentLookup.unavailable;
     }
   }
 
@@ -470,9 +516,10 @@ final class DeviceProvisioningCoordinator {
     _ProvisioningOperation operation, {
     required int nodeId,
     required DeviceStatus status,
+    required String reason,
   }) async {
     diagnosticLog?.call(
-      'ASSIGNMENT_CREATE reason=successful_initial_provisioning',
+      'ASSIGNMENT_CREATE reason=$reason',
     );
     try {
       final firmwareVersion = status.firmwareVersion?.trim();
@@ -597,3 +644,5 @@ final class _ProvisioningOperation {
     if (!_cancelled.isCompleted) _cancelled.complete();
   }
 }
+
+enum _AssignmentLookup { matched, missing, unavailable }

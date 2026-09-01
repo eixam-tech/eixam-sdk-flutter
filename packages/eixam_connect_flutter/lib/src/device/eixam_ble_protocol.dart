@@ -21,9 +21,25 @@ class EixamBleProtocol {
   static const int telAggregateFragmentMaxPayloadLength = 15;
   static const int clusterHeartbeatPacketLength = 12;
   static const int sosPacketLengthWithPosition = 12;
+  static const int sosPacketLengthDelta = 10;
   static const int sosPacketLengthMinimal = 7;
   static const int sosEventUserDeactivatedOpcode = 0xE1;
   static const int sosEventAppCancelAckOpcode = 0xE2;
+  static const int sosEventBackendResolvedOpcode = 0xE3;
+  static const int rescueHeaderLength = 9;
+  static const int rescueStatusRespLength = 14;
+  static const int rescueCmdRequestPos = 0x01;
+  static const int rescueCmdAckSos = 0x02;
+  static const int rescueCmdBuzzerOn = 0x03;
+  static const int rescueCmdBuzzerOff = 0x04;
+  static const int rescueCmdStatusReq = 0x05;
+  static const int rescueCmdStatusResp = 0x85;
+  static const int telLiveBatchOpcode = 0xD3;
+  static const int telBacklogOpcode = 0xD1;
+
+  /// Reserved dense-track twins. Not on the wire until a versioned CMD opt-in.
+  static const int telDenseLiveBatchOpcode = 0xD4;
+  static const int telDenseBacklogOpcode = 0xD5;
   static const int inetMaxPayloadLength = 4;
 
   static String hex(List<int> data) {

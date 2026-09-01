@@ -41,7 +41,6 @@ class HttpSdkContactsRemoteDataSource implements SdkContactsRemoteDataSource {
     );
     _ensureStatus(
       response,
-      expectedStatusCode: 200,
       defaultCode: 'E_HTTP_CONTACTS_LIST_FAILED',
     );
     final payload =
@@ -86,7 +85,6 @@ class HttpSdkContactsRemoteDataSource implements SdkContactsRemoteDataSource {
     );
     _ensureStatus(
       response,
-      expectedStatusCode: 201,
       defaultCode: 'E_HTTP_CONTACT_CREATE_FAILED',
     );
     return _contactFromResponse(
@@ -117,7 +115,6 @@ class HttpSdkContactsRemoteDataSource implements SdkContactsRemoteDataSource {
     );
     _ensureStatus(
       response,
-      expectedStatusCode: 200,
       defaultCode: 'E_HTTP_CONTACT_UPDATE_FAILED',
     );
     return _contactFromResponse(
@@ -131,7 +128,6 @@ class HttpSdkContactsRemoteDataSource implements SdkContactsRemoteDataSource {
     final response = await transport.delete('/v1/sdk/contacts/$id');
     _ensureStatus(
       response,
-      expectedStatusCode: 204,
       defaultCode: 'E_HTTP_CONTACT_DELETE_FAILED',
     );
   }
@@ -145,7 +141,6 @@ class HttpSdkContactsRemoteDataSource implements SdkContactsRemoteDataSource {
     );
     _ensureStatus(
       response,
-      expectedStatusCode: 204,
       defaultCode: 'E_HTTP_CONTACTS_REORDER_FAILED',
     );
   }
@@ -199,7 +194,6 @@ class HttpSdkContactsRemoteDataSource implements SdkContactsRemoteDataSource {
 
   void _ensureStatus(
     http.Response response, {
-    required int expectedStatusCode,
     required String defaultCode,
   }) {
     final err = SdkContactsHttpSupport.tryMapHttpFailure(
@@ -208,9 +202,6 @@ class HttpSdkContactsRemoteDataSource implements SdkContactsRemoteDataSource {
     );
     if (err != null) {
       throw err;
-    }
-    if (response.statusCode != expectedStatusCode) {
-      throw ContactsException(defaultCode, response.body);
     }
   }
 }

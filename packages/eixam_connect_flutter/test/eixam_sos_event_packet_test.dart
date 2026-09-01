@@ -16,10 +16,21 @@ void main() {
       expect(packet.isAppCancelAck, isFalse);
     });
 
+    test('parses backend-resolved ACK_SOS events', () {
+      final packet = EixamSosEventPacket.tryParse(
+        <int>[0xE3, 0x01, 0x34, 0x12, 0x00, 0x00],
+      );
+
+      expect(packet, isNotNull);
+      expect(packet!.isBackendResolved, isTrue);
+      expect(packet.isUserDeactivated, isFalse);
+      expect(packet.nodeId, 0x1234);
+    });
+
     test('rejects packets with invalid size or opcode', () {
       expect(EixamSosEventPacket.tryParse(<int>[0xE1, 0x01, 0x34]), isNull);
       expect(
-        EixamSosEventPacket.tryParse(<int>[0xE3, 0x01, 0x34, 0x12, 0x00, 0x00]),
+        EixamSosEventPacket.tryParse(<int>[0xE4, 0x01, 0x34, 0x12, 0x00, 0x00]),
         isNull,
       );
     });

@@ -171,7 +171,9 @@ class ApiSdkFactory {
       remoteDataSource: HttpSdkContactsRemoteDataSource(
         transport: httpTransport,
       ),
+      localStore: store,
     );
+    await contactsRepository.restoreState();
 
     late final EixamConnectSdkImpl sdk;
     sdk = EixamConnectSdkImpl(

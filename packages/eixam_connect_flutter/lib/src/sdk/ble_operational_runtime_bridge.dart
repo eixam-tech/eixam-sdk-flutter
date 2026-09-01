@@ -1124,13 +1124,7 @@ class BleOperationalRuntimeBridge {
   }
 
   bool _isValidCoordinate(double latitude, double longitude) {
-    return latitude.isFinite &&
-        latitude >= -90 &&
-        latitude <= 90 &&
-        longitude.isFinite &&
-        longitude >= -180 &&
-        longitude <= 180 &&
-        !(latitude == 0 && longitude == 0);
+    return EixamGeoCoordinates.isValidFix(latitude, longitude);
   }
 
   void _logPositionDecodeDetail({

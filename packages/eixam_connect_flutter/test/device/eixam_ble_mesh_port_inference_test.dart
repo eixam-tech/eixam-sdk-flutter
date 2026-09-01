@@ -83,6 +83,26 @@ void main() {
         ),
         EixamBleProtocol.telMeshPort,
       );
+      expect(
+        inferMeshPortForLiveNotification(
+          channel: EixamBleChannel.tel,
+          payload: const <int>[
+            0x34,
+            0x12,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x20,
+            0x40,
+          ],
+        ),
+        isNull,
+      );
     });
   });
 }

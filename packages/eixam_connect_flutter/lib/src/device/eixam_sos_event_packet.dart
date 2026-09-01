@@ -21,6 +21,10 @@ class EixamSosEventPacket {
   bool get isAppCancelAck =>
       opcode == EixamBleProtocol.sosEventAppCancelAckOpcode;
 
+  /// `ACK_SOS` closed the tag episode (services on the way). Not a user cancel.
+  bool get isBackendResolved =>
+      opcode == EixamBleProtocol.sosEventBackendResolvedOpcode;
+
   static EixamSosEventPacket? tryParse(List<int> bytes) {
     if (bytes.length != 6) {
       return null;
@@ -28,7 +32,8 @@ class EixamSosEventPacket {
 
     final opcode = bytes[0];
     if (opcode != EixamBleProtocol.sosEventUserDeactivatedOpcode &&
-        opcode != EixamBleProtocol.sosEventAppCancelAckOpcode) {
+        opcode != EixamBleProtocol.sosEventAppCancelAckOpcode &&
+        opcode != EixamBleProtocol.sosEventBackendResolvedOpcode) {
       return null;
     }
 

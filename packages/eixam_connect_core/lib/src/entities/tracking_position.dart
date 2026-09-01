@@ -1,7 +1,7 @@
 import '../enums/delivery_mode.dart';
+import '../geo/eixam_geo_coordinates.dart';
 
 class TrackingPosition {
-
   const TrackingPosition({
     required this.latitude,
     required this.longitude,
@@ -23,4 +23,5 @@ class TrackingPosition {
 
   Duration get age => DateTime.now().difference(timestamp);
   bool get isStale => age > const Duration(minutes: 2);
+  bool get hasValidFix => EixamGeoCoordinates.isValidFix(latitude, longitude);
 }

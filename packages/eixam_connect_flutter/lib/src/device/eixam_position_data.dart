@@ -17,6 +17,27 @@ class EixamPositionData {
       altitudeMeters: details.decodedAltitudeMeters,
     );
   }
+
+  /// Packs lat/lon/alt into the 6-byte geo slice shared by TEL and SOS 12 B.
+  static List<int> encode({
+    required double latitude,
+    required double longitude,
+    int altitudeMeters = 0,
+  }) {
+    final latEnc =
+        ((latitude + 90.0) * 1048576.0 / 180.0).round().clamp(0, 1048575);
+    final lonEnc =
+        ((longitude + 180.0) * 2097152.0 / 360.0).round().clamp(0, 2097151);
+    final altEnc = (altitudeMeters / 40).round().clamp(0, 127);
+    return <int>[
+      (latEnc >> 12) & 0xFF,
+      (latEnc >> 4) & 0xFF,
+      ((latEnc & 0x0F) << 4) | ((lonEnc >> 17) & 0x0F),
+      (lonEnc >> 9) & 0xFF,
+      (lonEnc >> 1) & 0xFF,
+      (lonEnc & 0x01) | ((altEnc & 0x7F) << 1),
+    ];
+  }
 }
 
 class EixamPositionDecodeDetails {

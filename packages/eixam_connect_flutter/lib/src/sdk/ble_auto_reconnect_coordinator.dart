@@ -50,6 +50,8 @@ class BleAutoReconnectCoordinator {
     Duration(seconds: 30),
   ];
   static const int _preferredReconnectMaxAttempts = 10;
+  static const Duration _preferredReconnectAttemptTimeout =
+      Duration(seconds: 15);
   static const List<Duration> _preferredReconnectBackoff = <Duration>[
     Duration(seconds: 1),
     Duration(seconds: 2),
@@ -181,6 +183,10 @@ class BleAutoReconnectCoordinator {
     await _readinessReconnectSub?.cancel();
     _readinessReconnectSub = null;
     _lastReadinessForReconnectMonitor = null;
+  }
+
+  void cancelPreferredReconnect({String reason = 'host_cancelled'}) {
+    _cancelPreferredReconnectCampaign(reason: reason);
   }
 
   Future<PreferredDeviceReconnectResult> tryAutoConnectForHandoff({
@@ -912,6 +918,7 @@ class BleAutoReconnectCoordinator {
       await _runConnectionAttempt(
         reason: '${trigger}_auto_connect',
         status: BleConnectionStatus.reconnecting,
+        timeout: _preferredReconnectAttemptTimeout,
         action: () => knownDeviceReconnectRepository.reconnectDevice(
           device: reconnectDevice,
           attemptId: attemptId,
@@ -1187,6 +1194,7 @@ class BleAutoReconnectCoordinator {
     required BleConnectionStatus status,
     required Future<DeviceStatus> Function() action,
     bool allowSingleTransientDisconnectRetry = false,
+    Duration? timeout,
   }) async {
     if (_isConnectionAttemptInProgress) {
       throw StateError('BLE connection attempt already in progress.');
@@ -1200,7 +1208,9 @@ class BleAutoReconnectCoordinator {
     try {
       DeviceStatus result;
       try {
-        result = await action();
+        result = timeout == null
+            ? await action()
+            : await _withReconnectAbort(action(), timeout: timeout);
       } catch (error) {
         if (!allowSingleTransientDisconnectRetry ||
             !_isTransientDisconnectError(error)) {
@@ -1211,7 +1221,9 @@ class BleAutoReconnectCoordinator {
         );
         BleDebugRegistry.instance.recordEvent('manual_connect_retry_start');
         try {
-          result = await action();
+          result = timeout == null
+              ? await action()
+              : await _withReconnectAbort(action(), timeout: timeout);
         } catch (retryError) {
           BleDebugRegistry.instance.recordEvent(
             'manual_connect_retry_failed error=$retryError',
@@ -1233,6 +1245,41 @@ class BleAutoReconnectCoordinator {
     } finally {
       _isConnectionAttemptInProgress = false;
     }
+  }
+
+  Future<T> _withReconnectAbort<T>(
+    Future<T> future, {
+    Duration? timeout,
+  }) {
+    final cancellation = _preferredReconnectCancellation?.future;
+    if (cancellation == null && timeout == null) {
+      return future;
+    }
+    final done = Completer<T>();
+    Timer? timer;
+    future.then(
+      (value) {
+        if (!done.isCompleted) done.complete(value);
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        if (!done.isCompleted) done.completeError(error, stackTrace);
+      },
+    );
+    cancellation?.then((_) {
+      if (!done.isCompleted) {
+        done.completeError(TimeoutException('campaign_cancelled'));
+      }
+    });
+    if (timeout != null) {
+      timer = Timer(timeout, () {
+        if (!done.isCompleted) {
+          done.completeError(TimeoutException('connect_timeout'));
+        }
+      });
+    }
+    return done.future.whenComplete(() {
+      timer?.cancel();
+    });
   }
 
   bool _isTransientDisconnectError(Object error) {

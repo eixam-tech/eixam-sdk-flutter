@@ -2233,7 +2233,7 @@ class EixamConnectSdkImpl
     try {
       final status = await deviceStatusStream
           .firstWhere((candidate) => candidate.connected)
-          .timeout(const Duration(seconds: 15));
+          .timeout(const Duration(seconds: 45));
       return status.deviceId == platformDeviceId;
     } on TimeoutException {
       return false;
@@ -2273,6 +2273,9 @@ class EixamConnectSdkImpl
   Future<void> stopPreferredDeviceReconnectMonitor() {
     BleDebugRegistry.instance.recordEvent(
       'EIXAM_RECONNECT_TRACE sdk_ble_ready_monitor_stop',
+    );
+    _bleAutoReconnectCoordinator.cancelPreferredReconnect(
+      reason: 'monitor_stop',
     );
     return _bleAutoReconnectCoordinator.stopBleReadinessReconnectMonitor();
   }
@@ -14040,6 +14043,11 @@ class EixamConnectSdkImpl
   }
 
   @override
+  List<EmergencyContact> peekEmergencyContacts() {
+    return contactsRepository.peekEmergencyContacts();
+  }
+
+  @override
   Stream<List<EmergencyContact>> watchEmergencyContacts() {
     return contactsRepository.watchEmergencyContacts();
   }
@@ -15637,17 +15645,14 @@ class EixamConnectSdkImpl
     );
     final location = snapshot.location;
     final positionSnapshot = _hasValidRemoteRelayLocation(location)
-        ? _remoteRelayBackendPosition(
-            location: location!,
-            receivedAt: snapshot.receivedAt,
-          )
+        ? _remoteRelayBackendPosition(location: location!)
         : null;
-    final locationSource = positionSnapshot != null
-        ? (snapshot.rawPayload.length ==
-                EixamBleProtocol.sosPacketLengthWithPosition
+    final livePacket = EixamSosPacket.tryParse(snapshot.rawPayload);
+    final locationSource = positionSnapshot == null
+        ? 'none'
+        : (livePacket != null && livePacket.hasValidPosition
             ? 'packet_12b'
-            : 'last_known')
-        : 'none';
+            : 'last_known');
     _logSosTrace(
       'remote_backend_handoff_decision '
       'originatorNodeId=${snapshot.originatorNodeId} '
@@ -16704,21 +16709,11 @@ class EixamConnectSdkImpl
   }
 
   bool _hasValidRemoteRelayLocation(TrackingPosition? location) {
-    if (location == null) {
-      return false;
-    }
-    return location.latitude.isFinite &&
-        location.latitude >= -90 &&
-        location.latitude <= 90 &&
-        location.longitude.isFinite &&
-        location.longitude >= -180 &&
-        location.longitude <= 180 &&
-        !(location.latitude == 0 && location.longitude == 0);
+    return location != null && location.hasValidFix;
   }
 
   TrackingPosition _remoteRelayBackendPosition({
     required TrackingPosition location,
-    required DateTime receivedAt,
   }) {
     return TrackingPosition(
       latitude: location.latitude,
@@ -16728,7 +16723,7 @@ class EixamConnectSdkImpl
       speed: location.speed,
       heading: location.heading,
       source: location.source,
-      timestamp: receivedAt.toUtc(),
+      timestamp: location.timestamp.toUtc(),
     );
   }
 
@@ -17318,7 +17313,7 @@ class EixamConnectSdkImpl
     if (sosPacket == null) {
       return null;
     }
-    if (sosPacket.sosType == 0) {
+    if (sosPacket.isClear) {
       final context = _recentExternalRelayContextForOriginatorNode(
         sosPacket.nodeId,
       );
@@ -17344,20 +17339,25 @@ class EixamConnectSdkImpl
       relayNodeId: null,
       source: source ?? RemoteRelaySosSource.sosNotify,
       sosType: sosPacket.sosType,
-      location: sosPacket.position == null
-          ? null
-          : TrackingPosition(
-              latitude: sosPacket.position!.latitude,
-              longitude: sosPacket.position!.longitude,
-              altitude: sosPacket.position!.altitudeMeters.toDouble(),
-              timestamp: receivedAt,
-              source: DeliveryMode.mesh,
-            ),
+      location: sosPacket.trackingPositionAt(receivedAt) ??
+          _lastKnownTrackingPositionForNode(sosPacket.nodeId),
       receivedAt: receivedAt,
       rawPayload: List<int>.unmodifiable(bytes),
       payloadHex: rawHex,
       relayCount: sosPacket.relayCount,
     );
+  }
+
+  TrackingPosition? _lastKnownTrackingPositionForNode(int nodeId) {
+    final own = _bridgeDiagnostics.latestOwnDeviceLocation;
+    if (own != null && own.isValid && own.nodeId == nodeId) {
+      return own.toTrackingPosition();
+    }
+    final last = _lastResolvedLocation;
+    if (last != null && last.isValid && last.nodeId == nodeId) {
+      return last.toTrackingPosition();
+    }
+    return null;
   }
 
   int? _statusCodeForError(Object error) {

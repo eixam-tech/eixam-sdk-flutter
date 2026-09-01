@@ -2,6 +2,14 @@
 
 This file provides guidance to coding agents (Claude Code, Codex, Cursor, etc.) when working in this repository. It mirrors `CLAUDE.md`.
 
+## Workspace: SDK first, hosts in parallel
+
+Protocol, payload classification, SOS lifecycle, last-known fix/age, Rescue wire, and geo gates (`0°,0°` reject, 12 B bit 5 vs SOS) live in `eixam-sdk-flutter`. Never duplicate those rules in a host.
+
+When a firmware/SDK contract changes, patch **`eixam-app` and `eixam-sdk-demo-flutter` in the same turn**. Same observable semantics both hosts: 7 B `sosType = 3` keeps the episode open, last-known pin keeps its timestamp/age, Null Island is never painted, `ACK_SOS` / `0xE3` is not a user cancel. Do not ship an app-only workaround the demo still violates, or the reverse.
+
+Hosts stay thin: typed SDK state in, public APIs out. No BLE byte decode in widgets.
+
 ## Project Context
 
 EIXAM Connect Flutter is the **SDK-first** monorepo for EIXAM's connected safety platform (SOS, device runtime, telemetry, relay ingest, notifications, Death Man Protocol). The SDK is the product; the partner app in `../eixam-app` is a host/reference integration, not the source of truth.
