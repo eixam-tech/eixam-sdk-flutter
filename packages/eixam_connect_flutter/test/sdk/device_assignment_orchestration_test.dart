@@ -87,6 +87,8 @@ void main() {
       await sdk.connectDevice(pairingCode: MockBleClient.demoDeviceId);
       await Future<void>.delayed(Duration.zero);
 
+      expect(registryRepository.upsertCallCount, 1);
+
       final result = await sdk.ensureDeviceReady();
 
       expect(result.disposition, DeviceReadyDisposition.ready);

@@ -36,7 +36,6 @@ void main() {
       name: 'MAC-like hardware id only',
       hardwareIds: <String>['AA:BB:CC:DD:EE:FF'],
     ),
-    (name: 'malformed hardware id', hardwareIds: <String>[' 305419896 ']),
   ]) {
     test('already-provisioned ${testCase.name} is claimed then ready',
         () async {
@@ -64,6 +63,23 @@ void main() {
     });
   }
 
+  test('already-provisioned padded hardware id matches without rewrite',
+      () async {
+    final harness = _Harness(
+      initiallyProvisioned: true,
+      assignmentHardwareIds: const <String>[' 305419896 '],
+    );
+
+    expect(
+      (await harness.coordinator.ensureReady()).disposition,
+      DeviceReadyDisposition.ready,
+    );
+    expect(harness.commands, isEmpty);
+    expect(harness.registry.listCalls, 1);
+    expect(harness.registry.upsertCalls, 0);
+    await harness.dispose();
+  });
+
   for (final testCase in <({String name, Object error})>[
     (
       name: 'backend timeout',
@@ -78,7 +94,7 @@ void main() {
       error: const DeviceException('E_TEST_REGISTRY', 'E_TEST_REGISTRY'),
     ),
   ]) {
-    test('already-provisioned ${testCase.name} is assignment-unverified',
+    test('already-provisioned ${testCase.name} still becomes ready after claim',
         () async {
       final harness = _Harness(
         initiallyProvisioned: true,
@@ -87,21 +103,45 @@ void main() {
 
       final result = await harness.coordinator.ensureReady();
 
-      expect(
-        result.disposition,
-        DeviceReadyDisposition.provisionedAssignmentUnverified,
-      );
+      expect(result.disposition, DeviceReadyDisposition.ready);
+      expect(result.isReady, isTrue);
       expect(result.failure, isNull);
       expect(harness.commands, isEmpty);
-      expect(harness.registry.listCalls, 1);
-      expect(harness.registry.upsertCalls, 0);
+      expect(harness.registry.listCalls, 2);
+      expect(harness.registry.upsertCalls, 1);
       expect(
         harness.diagnostics,
         contains('ASSIGNMENT_VERIFY result=backend_unavailable'),
       );
+      expect(
+        harness.diagnostics,
+        contains('ASSIGNMENT remaining=unverified action=ready_provisioned'),
+      );
       await harness.dispose();
     });
   }
+
+  test('already-provisioned list and create failure still leaves the TAG ready',
+      () async {
+    final harness = _Harness(
+      initiallyProvisioned: true,
+      registryError: TimeoutException('registry timeout'),
+      assignmentCreateError: StateError('assignment failed'),
+    );
+
+    final result = await harness.coordinator.ensureReady();
+
+    expect(result.disposition, DeviceReadyDisposition.ready);
+    expect(result.isReady, isTrue);
+    expect(harness.commands, isEmpty);
+    expect(harness.registry.listCalls, 1);
+    expect(harness.registry.upsertCalls, 1);
+    expect(
+      harness.diagnostics,
+      contains('ASSIGNMENT remaining=unverified action=ready_provisioned'),
+    );
+    await harness.dispose();
+  });
 
   test('exact assignment among multiple registered devices is ready', () async {
     final harness = _Harness(
@@ -147,7 +187,8 @@ void main() {
     await harness.dispose();
   });
 
-  test('fresh provisioning assignment failure remains unverified', () async {
+  test('fresh provisioning assignment failure still leaves the TAG ready',
+      () async {
     final harness = _Harness(
       assignmentHardwareIds: const <String>[],
       assignmentCreateError: StateError('assignment failed'),
@@ -155,10 +196,8 @@ void main() {
 
     final result = await harness.coordinator.ensureReady();
 
-    expect(
-      result.disposition,
-      DeviceReadyDisposition.provisionedAssignmentUnverified,
-    );
+    expect(result.disposition, DeviceReadyDisposition.ready);
+    expect(result.isReady, isTrue);
     expect(harness.rebootCount, 1);
     expect(harness.registry.upsertCalls, 1);
     expect(harness.registry.listCalls, 0);
@@ -166,18 +205,19 @@ void main() {
       harness.diagnostics,
       contains('ASSIGNMENT_CREATE result=failed'),
     );
+    expect(
+      harness.diagnostics,
+      contains('ASSIGNMENT remaining=unverified action=ready_provisioned'),
+    );
     final commandCount = harness.commands.length;
     final retry = await harness.coordinator.ensureReady();
-    expect(
-      retry.disposition,
-      DeviceReadyDisposition.provisionedAssignmentUnverified,
-    );
+    expect(retry.disposition, DeviceReadyDisposition.ready);
     expect(harness.commands.length, commandCount);
     expect(harness.registry.upsertCalls, 2);
     await harness.dispose();
   });
 
-  test('fresh provisioning assignment response mismatch fails closed',
+  test('fresh provisioning assignment response mismatch still becomes ready',
       () async {
     final harness = _Harness(
       assignmentHardwareIds: const <String>[],
@@ -186,16 +226,18 @@ void main() {
 
     final result = await harness.coordinator.ensureReady();
 
-    expect(
-      result.disposition,
-      DeviceReadyDisposition.provisionedAssignmentUnverified,
-    );
+    expect(result.disposition, DeviceReadyDisposition.ready);
+    expect(result.isReady, isTrue);
     expect(harness.registry.upsertCalls, 1);
     expect(harness.registry.listCalls, 0);
+    expect(
+      harness.diagnostics,
+      contains('ASSIGNMENT remaining=unverified action=ready_provisioned'),
+    );
     await harness.dispose();
   });
 
-  test('fresh provisioning missing read-back remains unverified', () async {
+  test('fresh provisioning missing read-back still becomes ready', () async {
     final harness = _Harness(
       assignmentHardwareIds: const <String>[],
       persistCreatedAssignment: false,
@@ -203,15 +245,17 @@ void main() {
 
     final result = await harness.coordinator.ensureReady();
 
-    expect(
-      result.disposition,
-      DeviceReadyDisposition.provisionedAssignmentUnverified,
-    );
+    expect(result.disposition, DeviceReadyDisposition.ready);
+    expect(result.isReady, isTrue);
     expect(harness.registry.upsertCalls, 1);
     expect(harness.registry.listCalls, 1);
     expect(
       harness.diagnostics,
       contains('ASSIGNMENT_READBACK result=not_found'),
+    );
+    expect(
+      harness.diagnostics,
+      contains('ASSIGNMENT remaining=unverified action=ready_provisioned'),
     );
     await harness.dispose();
   });

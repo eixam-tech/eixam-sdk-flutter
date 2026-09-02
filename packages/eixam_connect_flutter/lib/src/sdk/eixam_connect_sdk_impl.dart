@@ -511,6 +511,7 @@ class EixamConnectSdkImpl
   EixamSdkConfig? _sdkConfig;
   bool _sdkInitialized = false;
   final Set<String> _verifiedAssignedNodeIdsForSession = <String>{};
+  final Set<int> _assignmentClaimInFlight = <int>{};
   bool _manualDisconnectRequested = false;
   bool _lastDeviceControlCommandPathAvailable = false;
   int _preSosCycleRevision = 0;
@@ -728,6 +729,10 @@ class EixamConnectSdkImpl
       _publishPublicDeviceStatus(
         rawStatus: promotedStatus,
         reason: 'device_status_stream',
+      );
+      _scheduleConnectedDeviceAssignmentClaim(
+        status: promotedStatus,
+        previous: previousStatus,
       );
       BleDebugRegistry.instance.recordEvent(
         'Device connectivity changed -> connected=${promotedStatus.connected} previous=${previousStatus?.connected} deviceId=${promotedStatus.nodeId?.toString() ?? "-"} nodeId=${promotedStatus.nodeId?.toString() ?? "-"} hardwareId=${promotedStatus.deviceId} lifecycle=${promotedStatus.lifecycleState.name}',
@@ -12122,21 +12127,97 @@ class EixamConnectSdkImpl
 
   void _clearVerifiedDeviceAssignments() {
     _verifiedAssignedNodeIdsForSession.clear();
+    _assignmentClaimInFlight.clear();
   }
 
   void _rememberVerifiedDeviceAssignment(int nodeId) {
     _verifiedAssignedNodeIdsForSession.add(nodeId.toString());
   }
 
+  void _scheduleConnectedDeviceAssignmentClaim({
+    required DeviceStatus status,
+    DeviceStatus? previous,
+  }) {
+    if (!status.connected || status.nodeId == null) {
+      return;
+    }
+    final nodeIdChanged = previous?.nodeId != status.nodeId;
+    final becameConnected = previous?.connected != true;
+    if (!nodeIdChanged && !becameConnected) {
+      return;
+    }
+    unawaited(_claimConnectedDeviceAssignment(status));
+  }
+
+  Future<void> _claimConnectedDeviceAssignment(DeviceStatus status) async {
+    final nodeId = status.nodeId;
+    if (nodeId == null || !_hasAuthenticatedDeviceRegistrySession()) {
+      return;
+    }
+    if (_verifiedAssignedNodeIdsForSession.contains(nodeId.toString())) {
+      return;
+    }
+    if (!_assignmentClaimInFlight.add(nodeId)) {
+      return;
+    }
+    try {
+      var matched = false;
+      try {
+        final devices = await deviceRegistryRepository.listRegisteredDevices();
+        matched = devices.any(
+          (device) =>
+              registeredHardwareIdMatchesNodeId(device.hardwareId, nodeId),
+        );
+      } catch (_) {
+        matched = false;
+      }
+      if (matched) {
+        _rememberVerifiedDeviceAssignment(nodeId);
+        BleDebugRegistry.instance.recordEvent(
+          'DEVICE_ASSIGNMENT result=matched action=auto_claim',
+        );
+        return;
+      }
+      final firmwareVersion = status.firmwareVersion?.trim();
+      final hardwareModel = (status.model ?? status.deviceAlias)?.trim();
+      final registered = await deviceRegistryRepository.upsertRegisteredDevice(
+        hardwareId: nodeId.toString(),
+        firmwareVersion: firmwareVersion == null || firmwareVersion.isEmpty
+            ? 'unknown'
+            : firmwareVersion,
+        hardwareModel: hardwareModel == null || hardwareModel.isEmpty
+            ? 'EIXAM R1'
+            : hardwareModel,
+        pairedAt: (status.lastSeen ?? DateTime.now()).toUtc(),
+      );
+      if (registeredHardwareIdMatchesNodeId(registered.hardwareId, nodeId)) {
+        _rememberVerifiedDeviceAssignment(nodeId);
+        BleDebugRegistry.instance.recordEvent(
+          'DEVICE_ASSIGNMENT result=created action=auto_claim',
+        );
+        return;
+      }
+      BleDebugRegistry.instance.recordEvent(
+        'DEVICE_ASSIGNMENT result=mismatch action=auto_claim',
+      );
+    } catch (_) {
+      BleDebugRegistry.instance.recordEvent(
+        'DEVICE_ASSIGNMENT result=failed action=auto_claim',
+      );
+    } finally {
+      _assignmentClaimInFlight.remove(nodeId);
+    }
+  }
+
   Future<bool> _verifyExistingDeviceAssignment(int nodeId) async {
-    final canonicalHardwareId = nodeId.toString();
     try {
       final devices = await deviceRegistryRepository.listRegisteredDevices();
       final matched = devices.any(
-        (device) => device.hardwareId == canonicalHardwareId,
+        (device) =>
+            registeredHardwareIdMatchesNodeId(device.hardwareId, nodeId),
       );
       if (matched) {
-        _verifiedAssignedNodeIdsForSession.add(canonicalHardwareId);
+        _rememberVerifiedDeviceAssignment(nodeId);
       }
       return matched;
     } catch (_) {
@@ -14001,8 +14082,9 @@ class EixamConnectSdkImpl
       hardwareModel: hardwareModel,
       pairedAt: pairedAt,
     );
-    final nodeId = int.tryParse(hardwareId);
-    if (nodeId != null && registered.hardwareId == nodeId.toString()) {
+    final nodeId = int.tryParse(hardwareId.trim(), radix: 10);
+    if (nodeId != null &&
+        registeredHardwareIdMatchesNodeId(registered.hardwareId, nodeId)) {
       _rememberVerifiedDeviceAssignment(nodeId);
     }
     return registered;
@@ -14350,6 +14432,7 @@ class EixamConnectSdkImpl
       await future,
       source: reason,
     );
+    final previous = _lastDeviceStatus;
     _lastDeviceStatus = status;
     if (status.nodeId != null) {
       _knownLocalDeviceNodeId = status.nodeId;
@@ -14358,6 +14441,10 @@ class EixamConnectSdkImpl
       rawStatus: status,
       reason: reason,
       emit: emitPublicStatus,
+    );
+    _scheduleConnectedDeviceAssignmentClaim(
+      status: publicStatus,
+      previous: previous,
     );
     return publicStatus;
   }

@@ -1,5 +1,16 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+bool registeredHardwareIdMatchesNodeId(String hardwareId, int nodeId) {
+  final trimmed = hardwareId.trim();
+  if (trimmed.isEmpty) {
+    return false;
+  }
+  if (trimmed == nodeId.toString()) {
+    return true;
+  }
+  return int.tryParse(trimmed, radix: 10) == nodeId;
+}
+
 abstract interface class DeviceAssignmentVerifier {
   Future<bool> verifyAssignment({required int nodeId});
 }
@@ -25,10 +36,9 @@ final class RegisteredDeviceAssignmentVerifier
 
   @override
   Future<bool> verifyAssignment({required int nodeId}) async {
-    final canonicalHardwareId = nodeId.toString();
     final devices = await repository.listRegisteredDevices();
     final matched = devices.any(
-      (device) => device.hardwareId == canonicalHardwareId,
+      (device) => registeredHardwareIdMatchesNodeId(device.hardwareId, nodeId),
     );
     if (matched) {
       onAssignmentVerified?.call(nodeId);
@@ -57,6 +67,6 @@ final class RegisteredDeviceAssignmentCreator
       hardwareModel: hardwareModel,
       pairedAt: pairedAt,
     );
-    return registered.hardwareId == canonicalHardwareId;
+    return registeredHardwareIdMatchesNodeId(registered.hardwareId, nodeId);
   }
 }

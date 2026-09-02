@@ -41,16 +41,33 @@ class HttpSdkDevicesRemoteDataSource implements SdkDevicesRemoteDataSource {
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw DeviceException('E_HTTP_DEVICE_UPSERT_FAILED', response.body);
     }
-    final payload =
-        _decode(response.body, errorCode: 'E_HTTP_DEVICE_UPSERT_FAILED');
-    final device = payload['device'];
-    if (device is! Map<String, dynamic>) {
-      throw const DeviceException(
-        'E_HTTP_DEVICE_UPSERT_FAILED',
-        'E_HTTP_DEVICE_INVALID_PAYLOAD',
+    if (response.body.trim().isEmpty) {
+      return SdkDeviceDto(
+        id: hardwareId,
+        hardwareId: hardwareId,
+        firmwareVersion: firmwareVersion,
+        hardwareModel: hardwareModel,
+        pairedAt: pairedAt.toUtc().toIso8601String(),
       );
     }
-    return SdkDeviceDto.fromJson(device);
+    try {
+      final payload =
+          _decode(response.body, errorCode: 'E_HTTP_DEVICE_UPSERT_FAILED');
+      final device = _deviceObject(payload);
+      if (device != null) {
+        return SdkDeviceDto.fromJson(device);
+      }
+    } catch (_) {
+      // 2xx means the backend accepted the assignment even if the body
+      // is a shape we do not fully understand.
+    }
+    return SdkDeviceDto(
+      id: hardwareId,
+      hardwareId: hardwareId,
+      firmwareVersion: firmwareVersion,
+      hardwareModel: hardwareModel,
+      pairedAt: pairedAt.toUtc().toIso8601String(),
+    );
   }
 
   @override
@@ -61,23 +78,25 @@ class HttpSdkDevicesRemoteDataSource implements SdkDevicesRemoteDataSource {
     }
     final payload =
         _decode(response.body, errorCode: 'E_HTTP_DEVICE_LIST_FAILED');
-    final devices = payload['devices'];
-    if (devices is! List) {
+    final devices = _deviceList(payload);
+    if (devices == null) {
       throw const DeviceException(
         'E_HTTP_DEVICE_LIST_FAILED',
         'E_HTTP_DEVICE_INVALID_LIST_PAYLOAD',
       );
     }
-    return [
-      for (final device in devices)
-        if (device is Map<String, dynamic>)
-          SdkDeviceDto.fromJson(device)
-        else
-          throw const DeviceException(
-            'E_HTTP_DEVICE_LIST_FAILED',
-            'E_HTTP_DEVICE_INVALID_PAYLOAD',
-          ),
-    ];
+    final parsed = <SdkDeviceDto>[];
+    for (final device in devices) {
+      if (device is! Map<String, dynamic>) {
+        continue;
+      }
+      try {
+        parsed.add(SdkDeviceDto.fromJson(device));
+      } on FormatException {
+        continue;
+      }
+    }
+    return parsed;
   }
 
   @override
@@ -105,5 +124,34 @@ class HttpSdkDevicesRemoteDataSource implements SdkDevicesRemoteDataSource {
       return decoded;
     }
     throw DeviceException(errorCode, 'E_HTTP_DEVICE_INVALID_JSON');
+  }
+
+  Map<String, dynamic>? _deviceObject(Map<String, dynamic> payload) {
+    final device = payload['device'];
+    if (device is Map<String, dynamic>) {
+      return device;
+    }
+    final data = payload['data'];
+    if (data is Map<String, dynamic>) {
+      final nested = data['device'];
+      if (nested is Map<String, dynamic>) {
+        return nested;
+      }
+      if (data['hardware_id'] != null || data['hardwareId'] != null) {
+        return data;
+      }
+    }
+    if (payload['hardware_id'] != null || payload['hardwareId'] != null) {
+      return payload;
+    }
+    return null;
+  }
+
+  List<dynamic>? _deviceList(Map<String, dynamic> payload) {
+    final devices = payload['devices'] ?? payload['data'];
+    if (devices is List) {
+      return devices;
+    }
+    return null;
   }
 }

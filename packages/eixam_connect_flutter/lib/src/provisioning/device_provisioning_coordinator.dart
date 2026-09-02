@@ -200,22 +200,18 @@ final class DeviceProvisioningCoordinator {
         return _fail(DeviceReadyFailureCode.identityMismatch, retryable: false);
       }
       if (initialRuntime.isProvisioned) {
-        // 0x23 proves only structural config.bin validity. Current-app/user
-        // assignment requires an authenticated backend registry match. A
-        // provisioned TAG with no current-app row (unpair/re-pair, new
-        // session) is claimed here instead of left as a dead-end unverified
-        // state.
-        if (!await _ensureCurrentAssignment(
+        // 0x23 proves structural config.bin validity. Current-app assignment
+        // is claimed when missing, but a connected provisioned TAG stays
+        // usable even if the registry is down or the row cannot be proven.
+        final assigned = await _ensureCurrentAssignment(
           operation,
           nodeId: initialRuntime.nodeId,
           status: initialStatus,
-        )) {
-          _emit(DeviceProvisioningPhase.provisionedAssignmentUnverified);
-          return DeviceReadyResult.provisionedAssignmentUnverified(
-              initialStatus);
-        }
-        _emit(DeviceProvisioningPhase.ready, progress: 1);
-        return DeviceReadyResult.ready(initialStatus);
+        );
+        return _readyProvisioned(
+          initialStatus,
+          assignmentVerified: assigned,
+        );
       }
 
       _emit(DeviceProvisioningPhase.fetchingConfiguration);
@@ -348,29 +344,31 @@ final class DeviceProvisioningCoordinator {
                       : DeviceReadyFailureCode.verificationFailed,
                   retryable: !identityChanged);
             }
-            if (!await _createAssignment(
+            final assigned = await _createAssignment(
               operation,
               nodeId: finalRuntime.nodeId,
               status: finalStatus,
               reason: 'successful_initial_provisioning',
-            )) {
-              _emit(DeviceProvisioningPhase.provisionedAssignmentUnverified);
-              return DeviceReadyResult.provisionedAssignmentUnverified(
-                  finalStatus);
-            }
-            final readback =
-                await _lookupAssignment(operation, finalRuntime.nodeId);
-            if (readback != _AssignmentLookup.matched) {
+            );
+            if (assigned) {
+              final readback =
+                  await _lookupAssignment(operation, finalRuntime.nodeId);
               diagnosticLog?.call(
-                'ASSIGNMENT_READBACK result=${readback == _AssignmentLookup.missing ? "not_found" : "backend_unavailable"}',
+                'ASSIGNMENT_READBACK result=${switch (readback) {
+                  _AssignmentLookup.matched => 'matched',
+                  _AssignmentLookup.missing => 'not_found',
+                  _AssignmentLookup.unavailable => 'backend_unavailable',
+                }}',
               );
-              _emit(DeviceProvisioningPhase.provisionedAssignmentUnverified);
-              return DeviceReadyResult.provisionedAssignmentUnverified(
-                  finalStatus);
+              return _readyProvisioned(
+                finalStatus,
+                assignmentVerified: readback == _AssignmentLookup.matched,
+              );
             }
-            diagnosticLog?.call('ASSIGNMENT_READBACK result=matched');
-            _emit(DeviceProvisioningPhase.ready, progress: 1);
-            return DeviceReadyResult.ready(finalStatus);
+            return _readyProvisioned(
+              finalStatus,
+              assignmentVerified: false,
+            );
           } finally {
             releaseReconnectOwnership();
           }
@@ -464,7 +462,6 @@ final class DeviceProvisioningCoordinator {
       case _AssignmentLookup.matched:
         return true;
       case _AssignmentLookup.unavailable:
-        return false;
       case _AssignmentLookup.missing:
         break;
     }
@@ -603,6 +600,19 @@ final class DeviceProvisioningCoordinator {
         retryable: true,
       ),
     );
+  }
+
+  DeviceReadyResult _readyProvisioned(
+    DeviceStatus status, {
+    required bool assignmentVerified,
+  }) {
+    if (!assignmentVerified) {
+      diagnosticLog?.call(
+        'ASSIGNMENT remaining=unverified action=ready_provisioned',
+      );
+    }
+    _emit(DeviceProvisioningPhase.ready, progress: 1);
+    return DeviceReadyResult.ready(status);
   }
 
   DeviceReadyResult _fail(DeviceReadyFailureCode code,
