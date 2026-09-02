@@ -187,7 +187,7 @@ class FirmwareUpdateCoordinator {
       targetReleaseId: policy.targetReleaseId,
     );
     final release = response.firmware?.toDomain();
-    final actionableRelease = response.updateAvailable &&
+    var actionableRelease = response.updateAvailable &&
             release != null &&
             _firmwareReleaseIsActionable(
               currentVersion: device.currentVersion!,
@@ -197,6 +197,13 @@ class FirmwareUpdateCoordinator {
             )
         ? release
         : null;
+    if (actionableRelease == null && policy.targetReleaseId == null) {
+      actionableRelease = await _newestActionableCatalogRelease(
+        currentVersion: device.currentVersion!,
+        policy: policy,
+        hardwareModel: device.hardwareModel,
+      );
+    }
     final releaseEligibility = await evaluateEligibility(
       status: status,
       release: actionableRelease,
@@ -894,7 +901,7 @@ class FirmwareUpdateCoordinator {
             );
       latest = status;
       final installed = status.firmwareVersion?.trim();
-      final matches = _firmwareVersionMatches(installed, targetVersion);
+      final matches = eixamFirmwareVersionsMatch(installed, targetVersion);
       if (status.connected && matches) {
         return _InstalledVersionVerification(
           matchesTarget: true,
@@ -914,33 +921,8 @@ class FirmwareUpdateCoordinator {
     }
   }
 
-  /// Whether the device's [installed] firmware string represents [target].
-  ///
-  /// The GATT firmware-revision string can carry build metadata (a git hash
-  /// appended on a dot boundary, e.g. `2.7.25.942a98e`), NUL/whitespace padding,
-  /// a `v` prefix, or differ in case from the backend release version. A strict
-  /// `==` check reports a false "still on the previous version" even when the
-  /// DFU succeeded. This tolerates those formatting differences while never
-  /// treating a genuinely different version — including the same semver with a
-  /// different build hash — as a match, so a failed DFU is still reported failed.
-  bool _firmwareVersionMatches(String? installed, String target) {
-    final a = _normalizeFirmwareVersion(installed);
-    final b = _normalizeFirmwareVersion(target);
-    if (a.isEmpty || b.isEmpty) return false;
-    if (a == b) return true;
-    // One side may omit build metadata that the other carries as a dot-suffix
-    // (e.g. release `2.7.25` vs device `2.7.25.942a98e`). Only match across a
-    // dot boundary so `2.7.25` never matches `2.7.26` and same-semver builds
-    // with a different hash stay distinct.
-    return a.startsWith('$b.') || b.startsWith('$a.');
-  }
-
-  String _normalizeFirmwareVersion(String? version) {
-    return normalizeEixamFirmwareVersion(version);
-  }
-
   String _backendComparableFirmwareVersion(String version) {
-    final normalized = _normalizeFirmwareVersion(version);
+    final normalized = normalizeEixamFirmwareVersion(version);
     final semver = RegExp(r'^(\d+\.\d+\.\d+)(?:\.|$)').firstMatch(normalized);
     return semver?.group(1) ?? normalized;
   }
@@ -951,41 +933,62 @@ class FirmwareUpdateCoordinator {
     required bool allowDowngrade,
     required bool explicitTarget,
   }) {
-    if (_firmwareVersionMatches(currentVersion, targetVersion)) {
+    if (eixamFirmwareVersionsMatch(currentVersion, targetVersion)) {
       return false;
     }
     if (explicitTarget) {
       return true;
     }
-    final current = _parseComparableSemver(currentVersion);
-    final target = _parseComparableSemver(targetVersion);
-    if (current == null || target == null) {
+    final comparison = compareEixamFirmwareVersions(
+      currentVersion,
+      targetVersion,
+    );
+    if (comparison == null) {
       return !allowDowngrade;
     }
-    final comparison = _compareSemver(target, current);
-    return allowDowngrade ? comparison < 0 : comparison > 0;
+    return allowDowngrade ? comparison > 0 : comparison < 0;
   }
 
-  List<int>? _parseComparableSemver(String version) {
-    final comparable = _backendComparableFirmwareVersion(version);
-    final match = RegExp(r'^(\d+)\.(\d+)\.(\d+)$').firstMatch(comparable);
-    if (match == null) {
+  Future<FirmwareRelease?> _newestActionableCatalogRelease({
+    required String currentVersion,
+    required FirmwareUpdatePolicy policy,
+    required String? hardwareModel,
+  }) async {
+    try {
+      final response = await remoteDataSource.listReleases(
+        hardwareModel: hardwareModel,
+      );
+      FirmwareRelease? newest;
+      for (final dto in response.firmwareVersions) {
+        if (dto.id.isEmpty || dto.version.isEmpty) continue;
+        if (dto.isActive == false && !policy.allowDowngrade) continue;
+        if (!_firmwareReleaseIsActionable(
+          currentVersion: currentVersion,
+          targetVersion: dto.version,
+          allowDowngrade: policy.allowDowngrade,
+          explicitTarget: false,
+        )) {
+          continue;
+        }
+        if (newest == null) {
+          newest = dto.toDomain();
+          continue;
+        }
+        final comparison = compareEixamFirmwareVersions(
+          newest.version,
+          dto.version,
+        );
+        if (comparison != null && comparison < 0) {
+          newest = dto.toDomain();
+        }
+      }
+      return newest;
+    } catch (error) {
+      _debugLog(
+        'OTA_COORDINATOR catalog_fallback_failed error=$error',
+      );
       return null;
     }
-    return <int>[
-      int.parse(match.group(1)!),
-      int.parse(match.group(2)!),
-      int.parse(match.group(3)!),
-    ];
-  }
-
-  int _compareSemver(List<int> candidate, List<int> base) {
-    for (var index = 0; index < 3; index++) {
-      if (candidate[index] != base[index]) {
-        return candidate[index].compareTo(base[index]);
-      }
-    }
-    return 0;
   }
 
   FirmwareUpdateSession _completeSession(

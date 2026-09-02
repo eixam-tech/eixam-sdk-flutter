@@ -49,6 +49,25 @@ void main() {
       expect(dto.updateAvailable, isFalse);
       expect(dto.firmware, isNull);
     });
+
+    test('maps camelCase check payloads and numeric versions', () {
+      final dto = SdkFirmwareCheckDto.fromJson(<String, dynamic>{
+        'updateAvailable': true,
+        'firmware': <String, dynamic>{
+          'id': 'fw-50',
+          'version': 50,
+          'hardwareModel': 'WISMESH_TAG',
+          'sha256Hash': 'abc123',
+          'fileSizeBytes': 1234,
+          'isActive': true,
+        },
+      });
+
+      expect(dto.updateAvailable, isTrue);
+      expect(dto.firmware!.version, '50');
+      expect(dto.firmware!.hardwareModel, 'WISMESH_TAG');
+      expect(dto.firmware!.sha256Hash, 'abc123');
+    });
   });
 
   group('FirmwareUpdateCoordinator', () {
@@ -140,7 +159,8 @@ void main() {
       );
     });
 
-    test('passes normalized semver and explicit downgrade policy to the '
+    test(
+        'passes normalized semver and explicit downgrade policy to the '
         'firmware backend', () async {
       final coordinator = buildCoordinator(
         initialStatus: _readyStatus(
@@ -157,7 +177,8 @@ void main() {
       expect(remote.lastCurrentVersion, '3.0.0');
     });
 
-    test('rejects a backend update whose release matches the installed '
+    test(
+        'rejects a backend update whose release matches the installed '
         'firmware version', () async {
       remote.releaseVersion = '2.0.0';
       final coordinator = buildCoordinator(
@@ -191,6 +212,38 @@ void main() {
         ]);
       },
     );
+
+    test('treats a portal short build as newer than the installed semver',
+        () async {
+      remote.releaseVersion = '50';
+      final coordinator = buildCoordinator(
+        initialStatus: _readyStatus(firmwareVersion: '2.7.45'),
+      );
+      addTearDown(coordinator.dispose);
+
+      final check = await coordinator.checkFirmwareUpdate();
+
+      expect(check.updateAvailable, isTrue);
+      expect(check.release?.version, '50');
+    });
+
+    test('uses the catalog when check reports no update', () async {
+      remote.checkUpdateAvailable = false;
+      remote.availableReleases = <SdkFirmwareDto>[
+        const SdkFirmwareDto(id: 'fw-45', version: '2.7.45', isActive: true),
+        const SdkFirmwareDto(id: 'fw-50', version: '2.7.50', isActive: true),
+      ];
+      final coordinator = buildCoordinator(
+        initialStatus: _readyStatus(firmwareVersion: '2.7.45'),
+      );
+      addTearDown(coordinator.dispose);
+
+      final check = await coordinator.checkFirmwareUpdate();
+
+      expect(remote.listCallCount, 1);
+      expect(check.updateAvailable, isTrue);
+      expect(check.release?.version, '2.7.50');
+    });
 
     test('accepts an explicit non-current target release', () async {
       remote.releaseVersion = '1.0.0';
@@ -289,16 +342,16 @@ void main() {
 
     test(
       'fails at transfer boundary when native DFU is not implemented',
-        () async {
-      final coordinator = buildCoordinator();
-      addTearDown(coordinator.dispose);
+      () async {
+        final coordinator = buildCoordinator();
+        addTearDown(coordinator.dispose);
 
-      final session = await coordinator.startFirmwareUpdate(
-        deviceId: 'demo-device',
-        releaseId: 'fw-1',
-      );
+        final session = await coordinator.startFirmwareUpdate(
+          deviceId: 'demo-device',
+          releaseId: 'fw-1',
+        );
 
-      expect(session.state, FirmwareUpdateState.failed);
+        expect(session.state, FirmwareUpdateState.failed);
         expect(
           session.failureCode,
           UnsupportedFirmwareDfuTransport.failureCode,
@@ -325,95 +378,95 @@ void main() {
 
     test(
       'completes only after installed firmware version matches target',
-        () async {
-      final coordinator = buildCoordinator(
-        transport: _SuccessfulDfuTransport(
-          onStart: () {
-            deviceRepository.setCurrentStatusSilently(
-              _readyStatus(firmwareVersion: '2.0.0'),
-            );
-          },
-        ),
-      );
-      addTearDown(coordinator.dispose);
+      () async {
+        final coordinator = buildCoordinator(
+          transport: _SuccessfulDfuTransport(
+            onStart: () {
+              deviceRepository.setCurrentStatusSilently(
+                _readyStatus(firmwareVersion: '2.0.0'),
+              );
+            },
+          ),
+        );
+        addTearDown(coordinator.dispose);
 
-      final session = await coordinator.startFirmwareUpdate(
-        deviceId: 'demo-device',
-        releaseId: 'fw-1',
-      );
+        final session = await coordinator.startFirmwareUpdate(
+          deviceId: 'demo-device',
+          releaseId: 'fw-1',
+        );
 
-      expect(session.state, FirmwareUpdateState.completed);
-      expect(session.failureCode, isNull);
+        expect(session.state, FirmwareUpdateState.completed);
+        expect(session.failureCode, isNull);
       },
     );
 
     test(
       'accepts a device version that appends a build hash to the release',
-        () async {
-      // Mirrors real firmware revision strings such as `2.7.25.942a98e`: the
-      // release version is the dotted-numeric core and the device reports it
-      // with a git hash appended on a dot boundary.
-      final coordinator = buildCoordinator(
-        transport: _SuccessfulDfuTransport(
-          onStart: () {
-            deviceRepository.setCurrentStatusSilently(
-              _readyStatus(firmwareVersion: '2.0.0.942a98e'),
-            );
-          },
-        ),
-      );
-      addTearDown(coordinator.dispose);
+      () async {
+        // Mirrors real firmware revision strings such as `2.7.25.942a98e`: the
+        // release version is the dotted-numeric core and the device reports it
+        // with a git hash appended on a dot boundary.
+        final coordinator = buildCoordinator(
+          transport: _SuccessfulDfuTransport(
+            onStart: () {
+              deviceRepository.setCurrentStatusSilently(
+                _readyStatus(firmwareVersion: '2.0.0.942a98e'),
+              );
+            },
+          ),
+        );
+        addTearDown(coordinator.dispose);
 
-      final session = await coordinator.startFirmwareUpdate(
-        deviceId: 'demo-device',
-        releaseId: 'fw-1',
-      );
+        final session = await coordinator.startFirmwareUpdate(
+          deviceId: 'demo-device',
+          releaseId: 'fw-1',
+        );
 
-      expect(session.state, FirmwareUpdateState.completed);
-      expect(session.failureCode, isNull);
+        expect(session.state, FirmwareUpdateState.completed);
+        expect(session.failureCode, isNull);
       },
     );
 
     test(
       'tolerates NUL/whitespace padding and a v prefix in the device version',
-        () async {
-      final coordinator = buildCoordinator(
-        transport: _SuccessfulDfuTransport(
-          onStart: () {
-            deviceRepository.setCurrentStatusSilently(
-              _readyStatus(firmwareVersion: '  V2.0.0 '),
-            );
-          },
-        ),
-      );
-      addTearDown(coordinator.dispose);
+      () async {
+        final coordinator = buildCoordinator(
+          transport: _SuccessfulDfuTransport(
+            onStart: () {
+              deviceRepository.setCurrentStatusSilently(
+                _readyStatus(firmwareVersion: '  V2.0.0 '),
+              );
+            },
+          ),
+        );
+        addTearDown(coordinator.dispose);
 
-      final session = await coordinator.startFirmwareUpdate(
-        deviceId: 'demo-device',
-        releaseId: 'fw-1',
-      );
+        final session = await coordinator.startFirmwareUpdate(
+          deviceId: 'demo-device',
+          releaseId: 'fw-1',
+        );
 
-      expect(session.state, FirmwareUpdateState.completed);
-      expect(session.failureCode, isNull);
+        expect(session.state, FirmwareUpdateState.completed);
+        expect(session.failureCode, isNull);
       },
     );
 
     test(
       'recoverFirmwareUpdate re-flashes a bootloader device and completes',
-        () async {
+      () async {
         final coordinator = buildCoordinator(
           transport: _SuccessfulDfuTransport(),
         );
-      addTearDown(coordinator.dispose);
+        addTearDown(coordinator.dispose);
 
-      final session = await coordinator.recoverFirmwareUpdate(
-        bootloaderDeviceId: 'bootloader-addr',
-        releaseId: 'fw-1',
-        targetVersion: '2.0.0',
-      );
+        final session = await coordinator.recoverFirmwareUpdate(
+          bootloaderDeviceId: 'bootloader-addr',
+          releaseId: 'fw-1',
+          targetVersion: '2.0.0',
+        );
 
-      expect(session.state, FirmwareUpdateState.completed);
-      expect(session.failureCode, isNull);
+        expect(session.state, FirmwareUpdateState.completed);
+        expect(session.failureCode, isNull);
       },
     );
 
@@ -433,7 +486,8 @@ void main() {
       },
     );
 
-    test('stalls into recovery when only connection churn arrives and no byte '
+    test(
+        'stalls into recovery when only connection churn arrives and no byte '
         'is ever uploaded', () async {
       // The Nordic reconnect-retry loop emits a steady stream of
       // connecting/disconnected state events (no progress percentage). Those
@@ -462,7 +516,8 @@ void main() {
       expect(transport.cancelCount, greaterThanOrEqualTo(1));
     });
 
-    test('a stall with no native event at all reports failed, not recovery '
+    test(
+        'a stall with no native event at all reports failed, not recovery '
         '(device never entered the bootloader)', () async {
       // If the native side hangs before emitting anything, the enter-DFU write
       // never happened and the running app was never erased — a plain retry is
@@ -488,7 +543,7 @@ void main() {
 
     test(
       'upload progress events keep the transfer alive past the deadline',
-        () async {
+      () async {
         // A slow-but-progressing upload must never be reported stalled: only a
         // full stall window with no percentage change may fail it. Total upload
         // time here (5 x 100 ms) exceeds both the first-upload deadline and the
@@ -561,7 +616,8 @@ void main() {
       expect(session.state, FirmwareUpdateState.recoveryRequired);
     });
 
-    test('recoverFirmwareUpdate suppresses auto-reconnect for the transfer '
+    test(
+        'recoverFirmwareUpdate suppresses auto-reconnect for the transfer '
         'window (release/restore hooks)', () async {
       final calls = <String>[];
       final coordinator = buildCoordinator(
@@ -617,8 +673,8 @@ void main() {
         );
         addTearDown(coordinator.dispose);
         final sub = coordinator.watchProgress().listen(
-          (p) => states.add(p.state),
-        );
+              (p) => states.add(p.state),
+            );
         addTearDown(sub.cancel);
 
         final session = await coordinator.startFirmwareUpdate(
@@ -688,26 +744,25 @@ void main() {
         final coordinator = buildCoordinator(
           transport: _SuccessfulDfuTransport(),
           postDfuVerificationPollInterval: const Duration(milliseconds: 5),
-          postDfuStatusRefresh:
-              ({
-                required String deviceId,
-                required int attempt,
-                required String targetVersion,
-              }) async {
-                refreshAttempts = attempt;
-                // The device reconnects on attempt 2 and only reports the new
-                // version on attempt 3 — exercises the multi-poll reconnect loop.
-                if (attempt < 2) {
-                  return _readyStatus(
-                    firmwareVersion: '1.0.0',
-                    connected: false,
-                  );
-                }
-                if (attempt < 3) {
-                  return _readyStatus(firmwareVersion: '1.0.0');
-                }
-                return _readyStatus(firmwareVersion: '2.0.0');
-              },
+          postDfuStatusRefresh: ({
+            required String deviceId,
+            required int attempt,
+            required String targetVersion,
+          }) async {
+            refreshAttempts = attempt;
+            // The device reconnects on attempt 2 and only reports the new
+            // version on attempt 3 — exercises the multi-poll reconnect loop.
+            if (attempt < 2) {
+              return _readyStatus(
+                firmwareVersion: '1.0.0',
+                connected: false,
+              );
+            }
+            if (attempt < 3) {
+              return _readyStatus(firmwareVersion: '1.0.0');
+            }
+            return _readyStatus(firmwareVersion: '2.0.0');
+          },
         );
         addTearDown(coordinator.dispose);
 
@@ -721,22 +776,22 @@ void main() {
       },
     );
 
-    test('e2e: a device that never reports the target within the window needs '
+    test(
+        'e2e: a device that never reports the target within the window needs '
         'recovery', () async {
       final coordinator = buildCoordinator(
         transport: _SuccessfulDfuTransport(),
         postDfuVerificationTimeout: const Duration(milliseconds: 60),
         postDfuVerificationPollInterval: const Duration(milliseconds: 10),
-        postDfuStatusRefresh:
-            ({
-              required String deviceId,
-              required int attempt,
-              required String targetVersion,
-            }) async {
-              // Never reconnects → past the point of no return, must route to
-              // recovery (the device is stranded in the bootloader).
-              return _readyStatus(firmwareVersion: null, connected: false);
-            },
+        postDfuStatusRefresh: ({
+          required String deviceId,
+          required int attempt,
+          required String targetVersion,
+        }) async {
+          // Never reconnects → past the point of no return, must route to
+          // recovery (the device is stranded in the bootloader).
+          return _readyStatus(firmwareVersion: null, connected: false);
+        },
       );
       addTearDown(coordinator.dispose);
 
@@ -749,7 +804,8 @@ void main() {
       expect(session.failureCode, 'deviceNotReconnected');
     });
 
-    test('e2e: an update offered while the device is momentarily disconnected '
+    test(
+        'e2e: an update offered while the device is momentarily disconnected '
         'is prepared, then transferred', () async {
       var prepareCalls = 0;
       final coordinator = buildCoordinator(
@@ -782,7 +838,8 @@ void main() {
       expect(session.state, FirmwareUpdateState.completed);
     });
 
-    test('e2e: a native error event mid-flash still routes to recovery '
+    test(
+        'e2e: a native error event mid-flash still routes to recovery '
         '(phase not clobbered by the terminal progress event)', () async {
       final coordinator = buildCoordinator(
         transport: _MidFlashErrorDfuTransport(),
@@ -800,7 +857,8 @@ void main() {
       expect(session.state, FirmwareUpdateState.recoveryRequired);
     });
 
-    test('e2e: a bootloader that rejects the image (requiresRecovery=false) '
+    test(
+        'e2e: a bootloader that rejects the image (requiresRecovery=false) '
         'reports failed, not recovery', () async {
       // The device received the image and its bootloader rejected it at
       // validation (Nordic remote "OPERATION FAILED"), then rebooted into the
@@ -959,8 +1017,10 @@ DeviceStatus _readyStatus({
 
 class _FakeFirmwareRemoteDataSource implements SdkFirmwareRemoteDataSource {
   int checkCallCount = 0;
+  int listCallCount = 0;
   int downloadCallCount = 0;
   bool lastAllowDowngrade = false;
+  bool checkUpdateAvailable = true;
   String? lastCurrentVersion;
   String? lastTargetReleaseId;
   String releaseVersion = '2.0.0';
@@ -981,6 +1041,9 @@ class _FakeFirmwareRemoteDataSource implements SdkFirmwareRemoteDataSource {
     lastAllowDowngrade = allowDowngrade;
     lastCurrentVersion = currentVersion;
     lastTargetReleaseId = targetReleaseId;
+    if (!checkUpdateAvailable) {
+      return const SdkFirmwareCheckDto(updateAvailable: false);
+    }
     return SdkFirmwareCheckDto(
       updateAvailable: true,
       firmware: SdkFirmwareDto(
@@ -997,6 +1060,7 @@ class _FakeFirmwareRemoteDataSource implements SdkFirmwareRemoteDataSource {
   Future<SdkFirmwareListDto> listReleases({
     required String? hardwareModel,
   }) async {
+    listCallCount++;
     return SdkFirmwareListDto(firmwareVersions: availableReleases);
   }
 
