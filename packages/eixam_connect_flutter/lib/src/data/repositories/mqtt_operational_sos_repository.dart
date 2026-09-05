@@ -9,6 +9,7 @@ import '../../mappers/sos_incident_mapper.dart';
 import '../../sdk/operational_realtime_client.dart';
 import '../../sdk/sdk_mqtt_contract.dart';
 import '../../sdk/sos_backend_identity_normalizer.dart';
+import '../../sdk/sos_incident_correlation.dart';
 import '../../sdk/sos_origin_classifier.dart';
 import '../datasources_local/shared_prefs_sdk_store.dart';
 import '../datasources_remote/sos_remote_data_source.dart';
@@ -80,6 +81,7 @@ class MqttOperationalSosRepository
   final Map<String, DateTime> _externalRelaySosPublishDedupe =
       <String, DateTime>{};
   Timer? _mqttConfirmationWarningTimer;
+  int _mqttConfirmationGeneration = 0;
   final Map<String, _BufferedActuatorUpdate> _bufferedActuatorUpdates =
       <String, _BufferedActuatorUpdate>{};
   final Map<String, DateTime> _handledMqttEvents = <String, DateTime>{};
@@ -481,14 +483,29 @@ class MqttOperationalSosRepository
     int? mobileBattery,
     SdkCoverageSnapshot? mobileCoverage,
   }) async {
+    final localIncidentId = 'sos-${DateTime.now().microsecondsSinceEpoch}';
+    final effectiveCycleKey = cycleKey ?? incidentId ?? localIncidentId;
     final incident = SosIncident(
-      id: 'sos-${DateTime.now().microsecondsSinceEpoch}',
+      id: localIncidentId,
       state: SosState.sent,
       createdAt: DateTime.now().toUtc(),
+      source: relaySource,
       triggerSource: triggerSource,
-      cycleKey: cycleKey,
+      relaySource: relaySource,
+      originatorNodeId: originatorNodeId,
+      relayNodeId: relayNodeId,
+      deviceId: deviceId,
+      hardwareId: hardwareId,
+      owner: _isAppOwnedTriggerSource(triggerSource) ||
+              (originatorNodeId == null && relayNodeId == null)
+          ? 'app'
+          : 'device',
+      cycleKey: effectiveCycleKey,
       message: message,
       positionSnapshot: positionSnapshot,
+      provisionalIncidentId: incidentId != null && incidentId != localIncidentId
+          ? incidentId
+          : null,
     );
     await submitSosToBackend(
       timestamp: incident.createdAt,
@@ -503,7 +520,7 @@ class MqttOperationalSosRepository
       triggerSource: triggerSource,
       message: message,
       incidentId: incidentId ?? incident.id,
-      cycleKey: cycleKey,
+      cycleKey: effectiveCycleKey,
       osWidgetActivation: osWidgetActivation,
       deviceBattery: deviceBattery,
       deviceCoverage: deviceCoverage,
@@ -849,13 +866,25 @@ class MqttOperationalSosRepository
 
     _activeIncident =
         _activeIncident!.copyWith(state: SosState.cancelRequested);
+    final cancellationTarget = _activeIncident!;
     _rememberActiveLikeState();
     _emit(SosState.cancelRequested);
     await _persistState();
 
     try {
-      final cancelled = await remoteDataSource.cancelSos();
+      final cancelled = await remoteDataSource.cancelSos(
+        deviceId: cancellationTarget.deviceId,
+        source: cancellationTarget.source,
+        triggerSource: cancellationTarget.triggerSource,
+        relaySource: cancellationTarget.relaySource,
+        originatorNodeId: cancellationTarget.originatorNodeId,
+        relayNodeId: cancellationTarget.relayNodeId,
+        incidentId: cancellationTarget.id,
+        cycleKey: cancellationTarget.cycleKey,
+      );
       final settledIncident = await _settleCancelledIncident(
+        remoteDataSource: remoteDataSource,
+        cancellationTarget: cancellationTarget,
         cancelledDto: cancelled,
       );
       await _persistState();
@@ -906,29 +935,98 @@ class MqttOperationalSosRepository
   }
 
   Future<SosIncident> _settleCancelledIncident({
+    required SosRemoteDataSource remoteDataSource,
+    required SosIncident cancellationTarget,
     required SosIncidentDto? cancelledDto,
   }) async {
-    final cancelledIncident = cancelledDto == null
-        ? _activeIncident!.copyWith(state: SosState.cancelled)
-        : _mapper.toDomain(cancelledDto).copyWith(state: SosState.cancelled);
-    _clearCurrentIncidentAfterCancellation(cancelledIncident);
-    return cancelledIncident;
+    final latestAtResponse = _activeIncident;
+    if (latestAtResponse != null &&
+        _isTerminalState(latestAtResponse.state) &&
+        sosIncidentEvidenceMatches(cancellationTarget, latestAtResponse)) {
+      return latestAtResponse;
+    }
+    if (cancelledDto != null) {
+      final responseIncident = _mapper.toDomain(cancelledDto);
+      if (!sosIncidentEvidenceMatches(cancellationTarget, responseIncident)) {
+        return cancellationTarget;
+      }
+      if (_isTerminalState(responseIncident.state)) {
+        _clearCurrentIncidentAfterCancellation(responseIncident);
+        return responseIncident;
+      }
+      return cancellationTarget;
+    }
+
+    SosIncidentDto? activeAfterCancellation;
+    try {
+      activeAfterCancellation = await remoteDataSource.getActiveSos();
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_CANCEL_CONFIRMATION_RECONCILIATION_FAILED '
+        'errorType=${error.runtimeType}',
+      );
+      return cancellationTarget;
+    }
+    final latestIncident = _activeIncident;
+    if (latestIncident != null &&
+        _isTerminalState(latestIncident.state) &&
+        sosIncidentEvidenceMatches(cancellationTarget, latestIncident)) {
+      return latestIncident;
+    }
+    if (activeAfterCancellation == null) {
+      final cancelledIncident = cancellationTarget.copyWith(
+        state: SosState.cancelled,
+      );
+      _clearCurrentIncidentAfterCancellation(cancelledIncident);
+      return cancelledIncident;
+    }
+
+    final backendActive = _mapper.toDomain(activeAfterCancellation);
+    if (!sosIncidentEvidenceMatches(cancellationTarget, backendActive) ||
+        !_isBackendActiveEvidenceState(backendActive.state)) {
+      return cancellationTarget;
+    }
+    _activeIncident = backendActive.copyWith(
+      state: SosState.cancelRequested,
+      deliveryChannel: cancellationTarget.deliveryChannel,
+      provisionalIncidentId:
+          cancellationTarget.provisionalIncidentId ?? cancellationTarget.id,
+      preservedLocalOwnership: true,
+    );
+    _emitActuatorOnlyUpdate(
+      incidentId: _activeIncident!.id,
+      version: _activeIncident!.actuators?.snapshotVersion,
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_CANCEL_CONFIRMATION_PENDING reason=backend_still_active '
+      'incidentId=${_activeIncident!.id}',
+    );
+    return _activeIncident!;
   }
 
   Future<SosIncident> _settleResolvedIncident({
     required SosRemoteDataSource remoteDataSource,
     required SosIncidentDto? resolvedDto,
   }) async {
+    final resolutionTarget = _activeIncident!;
     if (resolvedDto != null) {
+      final resolvedIncident = _mapper.toDomain(resolvedDto);
+      if (!sosIncidentEvidenceMatches(resolutionTarget, resolvedIncident)) {
+        return resolutionTarget;
+      }
       return _applyBackendIncident(resolvedDto);
     }
 
     final activeAfterResolve = await remoteDataSource.getActiveSos();
     if (activeAfterResolve != null) {
+      final activeIncident = _mapper.toDomain(activeAfterResolve);
+      if (!sosIncidentEvidenceMatches(resolutionTarget, activeIncident)) {
+        return resolutionTarget;
+      }
       return _applyBackendIncident(activeAfterResolve);
     }
 
-    _activeIncident = _activeIncident!.copyWith(state: SosState.resolved);
+    _activeIncident = resolutionTarget.copyWith(state: SosState.resolved);
     _emit(
       SosState.resolved,
       previousIncident: _activeIncident,
@@ -959,8 +1057,11 @@ class MqttOperationalSosRepository
   void _clearCurrentIncidentAfterCancellation(SosIncident cancelledIncident) {
     _activeIncident = cancelledIncident;
     _locallyClosedIncidentId = cancelledIncident.id;
+    final terminalState = cancelledIncident.state == SosState.resolved
+        ? SosState.resolved
+        : SosState.cancelled;
     _emit(
-      SosState.cancelled,
+      terminalState,
       previousIncident: cancelledIncident,
       incomingIncident: cancelledIncident,
       reason: 'cancel_terminal_settle',
@@ -1135,26 +1236,92 @@ class MqttOperationalSosRepository
 
   void _startMqttConfirmationWait(String localIncidentId) {
     _mqttConfirmationWarningTimer?.cancel();
+    final generation = ++_mqttConfirmationGeneration;
+    final expectedIncident = _activeIncident;
+    if (expectedIncident == null) return;
+    final expectedState = _stateMachine.current;
     BleDebugRegistry.instance.recordEvent(
       'SOS_BACKEND_CONFIRMATION_WAIT_STARTED transport=mqtt',
     );
-    _mqttConfirmationWarningTimer = Timer(_mqttConfirmationWarningDelay, () {
-      final incident = _activeIncident;
+    _mqttConfirmationWarningTimer = Timer(
+      _mqttConfirmationWarningDelay,
+      () => unawaited(
+        _reconcileMqttConfirmation(
+          generation: generation,
+          localIncidentId: localIncidentId,
+          expectedIncident: expectedIncident,
+          expectedState: expectedState,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _reconcileMqttConfirmation({
+    required int generation,
+    required String localIncidentId,
+    required SosIncident expectedIncident,
+    required SosState expectedState,
+  }) async {
+    final incident = _activeIncident;
+    if (_disposed ||
+        generation != _mqttConfirmationGeneration ||
+        incident == null ||
+        incident.id != localIncidentId ||
+        incident.createdAt != expectedIncident.createdAt ||
+        incident.cycleKey != expectedIncident.cycleKey ||
+        incident.isBackendConfirmed ||
+        _stateMachine.current != expectedState ||
+        !_isBackendActiveEvidenceState(expectedState)) {
+      return;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_BACKEND_CONFIRMATION_TIMEOUT transport=mqtt '
+      'state=confirming restFallback=true',
+    );
+    final dataSource = remoteDataSource;
+    if (dataSource == null) {
+      return;
+    }
+    try {
+      final active = await dataSource.getActiveSos();
+      final current = _activeIncident;
       if (_disposed ||
-          incident == null ||
-          incident.id != localIncidentId ||
-          incident.isBackendConfirmed ||
-          !_isActiveLikeState(_stateMachine.current)) {
+          generation != _mqttConfirmationGeneration ||
+          active == null ||
+          current == null ||
+          current.id != localIncidentId ||
+          current.createdAt != expectedIncident.createdAt ||
+          current.cycleKey != expectedIncident.cycleKey ||
+          current.isBackendConfirmed ||
+          _stateMachine.current != expectedState ||
+          !_isBackendActiveEvidenceState(expectedState)) {
         return;
       }
-      BleDebugRegistry.instance.recordEvent(
-        'SOS_BACKEND_CONFIRMATION_TIMEOUT transport=mqtt '
-        'state=confirming noRestFallback=true',
+      final backendIncident = _mapper.toDomain(active);
+      if (!_isBackendActiveEvidenceState(backendIncident.state) ||
+          !sosIncidentEvidenceMatches(current, backendIncident) ||
+          classifySosIncidentOrigin(backendIncident).isExternalOnly) {
+        return;
+      }
+      _activeIncident = backendIncident.copyWith(
+        deliveryChannel: current.deliveryChannel,
+        provisionalIncidentId: current.provisionalIncidentId ?? current.id,
+        preservedLocalOwnership: true,
       );
-    });
+      _stopMqttConfirmationWait(reason: 'rest_confirmation_received');
+      _setState(_activeIncident!.state);
+      await _persistState();
+      _logProgressSummary(_activeIncident!);
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_BACKEND_CONFIRMATION_RECONCILIATION_FAILED '
+        'errorType=${error.runtimeType}',
+      );
+    }
   }
 
   void _stopMqttConfirmationWait({required String reason}) {
+    _mqttConfirmationGeneration++;
     if (_mqttConfirmationWarningTimer != null) {
       BleDebugRegistry.instance.recordEvent(
         'SOS_BACKEND_CONFIRMATION_WAIT_STOPPED transport=mqtt reason=$reason',
@@ -1436,6 +1603,16 @@ class MqttOperationalSosRepository
       );
     }
 
+    if (_hasMqttIdentityConflict(update, activeIncident)) {
+      _logLifecycleAuthorityRejected(
+        update: update,
+        activeIncidentId: activeIncident.id,
+        reason: 'identity_conflict',
+        diagnostic: 'MQTT_SOS_LIFECYCLE_REJECTED_IDENTITY_MISMATCH',
+      );
+      return const _LifecycleAuthorityDecision.rejected('identity_conflict');
+    }
+
     if (_sameIdentity(update.incidentId, activeIncident.id)) {
       _logLifecycleAuthorityAccepted(
         update: update,
@@ -1448,7 +1625,11 @@ class MqttOperationalSosRepository
       );
     }
 
-    if (_sameIdentity(update.clientIncidentId, activeIncident.id)) {
+    if (_sameIdentity(update.clientIncidentId, activeIncident.id) ||
+        _sameIdentity(
+          update.clientIncidentId,
+          activeIncident.provisionalIncidentId,
+        )) {
       _logLifecycleAuthorityAccepted(
         update: update,
         activeIncidentId: activeIncident.id,
@@ -1478,28 +1659,6 @@ class MqttOperationalSosRepository
         diagnostic: 'MQTT_SOS_LIFECYCLE_ACCEPTED_CYCLE_MATCH',
       );
       return const _LifecycleAuthorityDecision.accepted('cycle_match');
-    }
-
-    // The production backend's processed event is published on an
-    // authenticated, user-scoped topic, but intentionally contains only the
-    // canonical incident id. It does not echo clientIncidentId/correlationId.
-    // While exactly one freshly published local incident is awaiting backend
-    // confirmation, that scoped processed event is the canonical handoff.
-    if (update.eventType == 'processed' &&
-        update.authenticatedUserScoped &&
-        !activeIncident.isBackendConfirmed &&
-        activeIncident.id.startsWith('sos-') &&
-        _isProcessedTimestampCompatible(update, activeIncident) &&
-        _isActiveLikeState(_stateMachine.current)) {
-      _logLifecycleAuthorityAccepted(
-        update: update,
-        activeIncidentId: activeIncident.id,
-        reason: 'user_scoped_processed_handoff',
-        diagnostic: 'MQTT_SOS_LIFECYCLE_ACCEPTED_PROCESSED_HANDOFF',
-      );
-      return const _LifecycleAuthorityDecision.accepted(
-        'user_scoped_processed_handoff',
-      );
     }
 
     if (update.eventType == 'processed' && !update.authenticatedUserScoped) {
@@ -1532,6 +1691,38 @@ class MqttOperationalSosRepository
       diagnostic: 'MQTT_SOS_LIFECYCLE_REJECTED_IDENTITY_MISMATCH',
     );
     return const _LifecycleAuthorityDecision.rejected('identity_mismatch');
+  }
+
+  bool _hasMqttIdentityConflict(
+    MqttSosLifecycleUpdate update,
+    SosIncident activeIncident,
+  ) {
+    final cycleKey = _normalizeIdentity(update.cycleKey);
+    final activeCycleKey = _normalizeIdentity(activeIncident.cycleKey);
+    if (cycleKey != null &&
+        activeCycleKey != null &&
+        cycleKey != activeCycleKey) {
+      return true;
+    }
+
+    final clientIncidentId = _normalizeIdentity(update.clientIncidentId);
+    if (clientIncidentId != null &&
+        !_sameIdentity(clientIncidentId, activeIncident.id) &&
+        !_sameIdentity(
+          clientIncidentId,
+          activeIncident.provisionalIncidentId,
+        )) {
+      return true;
+    }
+
+    final correlationId = _normalizeIdentity(update.correlationId);
+    if (correlationId != null &&
+        !_hasTrustedCorrelationMatch(update, activeIncident)) {
+      return true;
+    }
+
+    return activeIncident.isBackendConfirmed &&
+        !_sameIdentity(update.incidentId, activeIncident.id);
   }
 
   bool _hasTrustedCorrelationMatch(
@@ -2158,6 +2349,10 @@ class MqttOperationalSosRepository
       SosState.acknowledged,
       SosState.cancelRequested,
     }.contains(state);
+  }
+
+  bool _isBackendActiveEvidenceState(SosState state) {
+    return state == SosState.sent || state == SosState.acknowledged;
   }
 
   void _rememberActiveLikeState() {}

@@ -62,6 +62,7 @@ import 'latest_phone_position_sink.dart';
 import 'sdk_resolved_location_resolver.dart';
 import 'sdk_mqtt_contract.dart';
 import 'sos_backend_identity_normalizer.dart';
+import 'sos_incident_correlation.dart';
 import 'sos_origin_classifier.dart';
 import 'sos_location_ownership_effect.dart';
 import 'sos_location_ownership_orchestrator.dart';
@@ -3590,7 +3591,6 @@ class EixamConnectSdkImpl
     }
     _rememberDeviceRuntimeSosOwnership(status, cycleKey);
     _emitDeviceSosActiveNotificationIntent(status, cycleKey);
-    _emitDeviceSosTerminalNotificationIntent(status, cycleKey);
 
     if ((isAppOriginatedStatus || isCorrelatedAppTriggeredStatus) &&
         !deviceOwnedPreSosActivation) {
@@ -3628,10 +3628,9 @@ class EixamConnectSdkImpl
       emitResolvedState: true,
     );
 
-    // Preserve the established device/pre-SOS publication ordering. The new
-    // lifecycle consumes that authoritative result after legacy adapters have
-    // observed it, so repository enrichment cannot delay or reclassify the
-    // device terminal transition.
+    // Preserve the established device/pre-SOS publication ordering. The
+    // lifecycle becomes terminal only after the repository exposes correlated
+    // backend terminal evidence; the device closure alone is non-terminal.
     await _reconcileAuthoritativeLifecycleFromDeviceStatus(status);
 
     if (_isSosCycleClosed(status.state)) {
@@ -3810,18 +3809,12 @@ class EixamConnectSdkImpl
   Future<void> _acceptConnectedLocalDeviceTerminal(
     DeviceSosStatus status,
   ) async {
-    if (_sosLifecycle.current.isOpen) {
-      await _sosLifecycle.confirmTerminal(
-        stage: SosLifecycleStage.cancelled,
-        incident: _sosLifecycle.current.incident,
-      );
-    }
     _traceConnectedLocalDeviceCycle(action: 'terminated', status: status);
     _traceDeviceTerminal(
       action: 'accepted',
       classification: 'connected_local',
       matchedActiveOwner: true,
-      lifecycleTerminal: true,
+      lifecycleTerminal: false,
     );
   }
 
@@ -4984,26 +4977,8 @@ class EixamConnectSdkImpl
     required SosLifecycleSnapshot prior,
     required SosIncident incident,
   }) {
-    if (incident.cycleKey != null &&
-        incident.cycleKey == attempted.lifecycleId) {
-      return true;
-    }
-    if (prior.backendIncidentId != null &&
-        prior.backendIncidentId == incident.id) {
-      return true;
-    }
-    final identityMatches = (attempted.nodeId != null &&
-            attempted.nodeId == incident.originatorNodeId) ||
-        (attempted.deviceId != null &&
-            attempted.deviceId == incident.deviceId) ||
-        (attempted.hardwareId != null &&
-            attempted.hardwareId == incident.hardwareId);
-    if (identityMatches) {
-      return true;
-    }
-    final origin = classifySosIncidentOrigin(incident);
-    return origin.actionability == SosActionability.localActionable &&
-        origin.originKind == SosOriginKind.app;
+    return sosIncidentEvidenceMatchesLifecycle(attempted, incident) ||
+        sosIncidentEvidenceMatchesLifecycle(prior, incident);
   }
 
   Set<SosActivationPath> _activationPathsForDelivery(
@@ -5757,6 +5732,10 @@ class EixamConnectSdkImpl
         if (preCancelRequiresBackendCancel || preCancelHasOpenBackendIncident) {
           try {
             final backendIncident = await sosRepository.cancelSos();
+            if (backendIncident.state != SosState.cancelled &&
+                backendIncident.state != SosState.resolved) {
+              return backendIncident;
+            }
             _applyTerminalSosSuppression(
               reason: 'public_cancel_after_pre_sos',
               terminalState: SosState.cancelled,
@@ -5865,39 +5844,45 @@ class EixamConnectSdkImpl
         );
       }
 
+      final backendTerminal = backendIncident != null &&
+          (backendIncident.state == SosState.cancelled ||
+              backendIncident.state == SosState.resolved);
       final incident = backendIncident != null
           ? backendIncident.copyWith(
               deliveryChannel: deliveryChannel,
-              terminalReason: _lastPublicSosTerminalReason ==
-                      SosTerminalReason.deviceAckTimeout
-                  ? SosTerminalReason.deviceAckTimeout
-                  : SosTerminalReason.cancelledByUser,
+              terminalReason: backendTerminal
+                  ? (_lastPublicSosTerminalReason ==
+                          SosTerminalReason.deviceAckTimeout
+                      ? SosTerminalReason.deviceAckTimeout
+                      : SosTerminalReason.cancelledByUser)
+                  : backendIncident.terminalReason,
             )
           : await _updateFallbackPublicSosIncident(
-              state: SosState.cancelled,
+              state: SosState.cancelRequested,
               deliveryChannel: deliveryChannel,
             );
-      _applyTerminalSosSuppression(
-        reason: 'public_cancel_completed',
-        terminalState: SosState.cancelled,
-      );
-      await _clearSosNotificationsSafely(reason: 'public_cancel_completed');
       _recordPublicSosResult(
         incident: incident,
         deliveryChannel: deliveryChannel,
-        fallbackState: backendIncident == null ? SosState.cancelled : null,
+        fallbackState:
+            backendIncident == null ? SosState.cancelRequested : null,
       );
-      _clearCurrentPublicSosAfterCancellation(incident);
-      _emitSosTerminalNotificationIntent(
-        incident,
-        type: EixamNotificationIntentType.sosCancelled,
-        severity: EixamNotificationIntentSeverity.info,
-        titleKey: 'notification.sos.cancelled.title',
-        bodyKey: 'notification.sos.cancelled.body',
-      );
-      _clearPendingAppTriggeredSosBridge(reason: 'public_cancel_completed');
-      _publishCancelledSosEventIfNeeded(incident);
-      if (backendIncident != null) {
+      if (backendTerminal) {
+        _applyTerminalSosSuppression(
+          reason: 'public_cancel_completed',
+          terminalState: SosState.cancelled,
+        );
+        await _clearSosNotificationsSafely(reason: 'public_cancel_completed');
+        _clearCurrentPublicSosAfterCancellation(incident);
+        _emitSosTerminalNotificationIntent(
+          incident,
+          type: EixamNotificationIntentType.sosCancelled,
+          severity: EixamNotificationIntentSeverity.info,
+          titleKey: 'notification.sos.cancelled.title',
+          bodyKey: 'notification.sos.cancelled.body',
+        );
+        _clearPendingAppTriggeredSosBridge(reason: 'public_cancel_completed');
+        _publishCancelledSosEventIfNeeded(incident);
         await _rehydrateSosRuntimeState(
           trigger: 'local_cancel_success',
           emitPublicState: false,
@@ -5993,8 +5978,8 @@ class EixamConnectSdkImpl
     try {
       final incident = await cancelSos();
       final channel = incident.deliveryChannel;
-      final backendConfirmed = channel == SosDeliveryChannel.backendOnly ||
-          channel == SosDeliveryChannel.backendAndDevice;
+      final backendConfirmed = incident.state == SosState.cancelled ||
+          incident.state == SosState.resolved;
       final deviceConfirmed = channel == SosDeliveryChannel.deviceOnly ||
           channel == SosDeliveryChannel.backendAndDevice;
       final accepted = await _sosLifecycle.cancellationAccepted(
@@ -6009,7 +5994,9 @@ class EixamConnectSdkImpl
         );
       }
       final terminal = await _sosLifecycle.confirmTerminal(
-        stage: SosLifecycleStage.cancelled,
+        stage: incident.state == SosState.resolved
+            ? SosLifecycleStage.resolved
+            : SosLifecycleStage.cancelled,
         incident: incident,
       );
       return SosCancellationResult(
@@ -6048,7 +6035,15 @@ class EixamConnectSdkImpl
     final device = _lastDeviceStatus;
     if (status.state == DeviceSosState.active ||
         status.state == DeviceSosState.acknowledged) {
-      final incident = await sosRepository.getCurrentIncident();
+      final repositoryIncident = await sosRepository.getCurrentIncident();
+      final incident = repositoryIncident != null &&
+              lifecycle.isOpen &&
+              sosIncidentEvidenceMatchesLifecycle(
+                lifecycle,
+                repositoryIncident,
+              )
+          ? repositoryIncident
+          : null;
       final localIncidentId = lifecycle.localIncidentId ??
           incident?.id ??
           'device-runtime-sos:${status.nodeId ?? device?.nodeId ?? "local"}:${lifecycle.generation == 0 ? _deviceRuntimeLocalCycleSequence : lifecycle.generation}';
@@ -6076,10 +6071,19 @@ class EixamConnectSdkImpl
       return;
     }
     final repositoryState = await sosRepository.getSosState();
-    if (repositoryState == SosState.cancelled) {
-      await _sosLifecycle.confirmTerminal(stage: SosLifecycleStage.cancelled);
-    } else if (repositoryState == SosState.resolved) {
-      await _sosLifecycle.confirmTerminal(stage: SosLifecycleStage.resolved);
+    final repositoryIncident = await sosRepository.getCurrentIncident();
+    final correlatedTerminal = repositoryIncident != null &&
+        sosIncidentEvidenceMatchesLifecycle(lifecycle, repositoryIncident);
+    if (repositoryState == SosState.cancelled && correlatedTerminal) {
+      await _sosLifecycle.confirmTerminal(
+        stage: SosLifecycleStage.cancelled,
+        incident: repositoryIncident,
+      );
+    } else if (repositoryState == SosState.resolved && correlatedTerminal) {
+      await _sosLifecycle.confirmTerminal(
+        stage: SosLifecycleStage.resolved,
+        incident: repositoryIncident,
+      );
     } else if (lifecycle.stage == SosLifecycleStage.cancelling) {
       await _sosLifecycle.cancellationAccepted(
         backendConfirmed: false,
@@ -6142,39 +6146,51 @@ class EixamConnectSdkImpl
         );
       }
 
-      final incident = backendIncident != null
-          ? backendIncident.copyWith(
-              deliveryChannel: deliveryChannel,
-              terminalReason: SosTerminalReason.unknown,
-            )
-          : await _updateFallbackPublicSosIncident(
-              state: SosState.resolved,
-              deliveryChannel: deliveryChannel,
-            );
-      _applyTerminalSosSuppression(
-        reason: 'public_resolve_completed',
-        terminalState: SosState.resolved,
+      if (backendIncident == null) {
+        if (backendError != null) throw backendError;
+        return;
+      }
+      final backendTerminal = backendIncident.state == SosState.cancelled ||
+          backendIncident.state == SosState.resolved;
+      final incident = backendIncident.copyWith(
+        deliveryChannel: deliveryChannel,
+        terminalReason: backendTerminal
+            ? SosTerminalReason.unknown
+            : backendIncident.terminalReason,
       );
-      await _clearSosNotificationsSafely(reason: 'public_resolve_completed');
       _recordPublicSosResult(
         incident: incident,
         deliveryChannel: deliveryChannel,
-        fallbackState: backendIncident == null ? SosState.resolved : null,
       );
+      if (!backendTerminal) return;
+      final terminalState = incident.state == SosState.cancelled
+          ? SosState.cancelled
+          : SosState.resolved;
+      _applyTerminalSosSuppression(
+        reason: 'public_resolve_completed',
+        terminalState: terminalState,
+      );
+      await _clearSosNotificationsSafely(reason: 'public_resolve_completed');
       _emitSosTerminalNotificationIntent(
         incident,
-        type: EixamNotificationIntentType.sosResolved,
-        severity: EixamNotificationIntentSeverity.success,
-        titleKey: 'notification.sos.resolved.title',
-        bodyKey: 'notification.sos.resolved.body',
+        type: terminalState == SosState.cancelled
+            ? EixamNotificationIntentType.sosCancelled
+            : EixamNotificationIntentType.sosResolved,
+        severity: terminalState == SosState.cancelled
+            ? EixamNotificationIntentSeverity.info
+            : EixamNotificationIntentSeverity.success,
+        titleKey: terminalState == SosState.cancelled
+            ? 'notification.sos.cancelled.title'
+            : 'notification.sos.resolved.title',
+        bodyKey: terminalState == SosState.cancelled
+            ? 'notification.sos.cancelled.body'
+            : 'notification.sos.resolved.body',
       );
       _clearPendingAppTriggeredSosBridge(reason: 'public_resolve_completed');
-      if (backendIncident != null) {
-        await _rehydrateSosRuntimeState(
-          trigger: 'local_resolve_success',
-          emitPublicState: false,
-        );
-      }
+      await _rehydrateSosRuntimeState(
+        trigger: 'local_resolve_success',
+        emitPublicState: false,
+      );
     } finally {
       _publicSosClosureInFlight = previousClosureInFlight;
       _publicSosActionInFlight = false;
@@ -7639,52 +7655,6 @@ class EixamConnectSdkImpl
           'transitionSource': status.transitionSource.name,
           if (cycleKey != null) 'cycleKey': cycleKey,
         },
-      ),
-    );
-  }
-
-  void _emitDeviceSosTerminalNotificationIntent(
-    DeviceSosStatus status,
-    String? cycleKey,
-  ) {
-    final publicState = _mapTerminalDeviceStatusToPublicSosState(status);
-    if (publicState == null) {
-      return;
-    }
-    final type = publicState == SosState.resolved
-        ? EixamNotificationIntentType.sosResolved
-        : EixamNotificationIntentType.sosCancelled;
-    final severity = publicState == SosState.resolved
-        ? EixamNotificationIntentSeverity.success
-        : EixamNotificationIntentSeverity.info;
-    final dedupeKey = _sosIntentDedupeKeyForDeviceStatus(status, cycleKey);
-    _emitNotificationIntent(
-      _buildNotificationIntent(
-        type: type,
-        dedupeKey: dedupeKey,
-        severity: severity,
-        incidentId: dedupeKey.startsWith('sos:')
-            ? dedupeKey.substring('sos:'.length)
-            : null,
-        deviceId: _lastDeviceStatus?.deviceId,
-        deviceAlias: _lastDeviceStatus?.deviceAlias,
-        nodeId: status.nodeId,
-        titleKey: publicState == SosState.resolved
-            ? 'notification.sos.resolved.title'
-            : 'notification.sos.cancelled.title',
-        bodyKey: publicState == SosState.resolved
-            ? 'notification.sos.resolved.body'
-            : 'notification.sos.cancelled.body',
-        payload: <String, String>{
-          'deviceSosState': status.state.name,
-          'transitionSource': status.transitionSource.name,
-          if (cycleKey != null) 'cycleKey': cycleKey,
-          'terminalReason': _publicSosTerminalReasonForClose(
-            source: status.lastEvent,
-            terminalState: publicState,
-          ).name,
-        },
-        shouldClearSosNotifications: true,
       ),
     );
   }
@@ -11160,9 +11130,13 @@ class EixamConnectSdkImpl
   }
 
   Future<void> _syncPublicSosStateFromRepository(SosState state) async {
+    SosIncident? repositoryIncident;
     if (state != SosState.idle) {
-      final incident = await sosRepository.getCurrentIncident();
-      if (_isExternalOnlySosIncident(incident, source: 'sos_state_stream')) {
+      repositoryIncident = await sosRepository.getCurrentIncident();
+      if (_isExternalOnlySosIncident(
+        repositoryIncident,
+        source: 'sos_state_stream',
+      )) {
         _clearExternalOnlyPublicSosResidue(
           reason: 'sos_state_stream_external_only',
         );
@@ -11173,6 +11147,38 @@ class EixamConnectSdkImpl
           );
         }
         return;
+      }
+    }
+    final lifecycle = _sosLifecycle.current;
+    if (repositoryIncident != null &&
+        lifecycle.isOpen &&
+        sosIncidentEvidenceMatchesLifecycle(lifecycle, repositoryIncident)) {
+      if (repositoryIncident.state == SosState.cancelled ||
+          repositoryIncident.state == SosState.resolved) {
+        await _sosLifecycle.confirmTerminal(
+          stage: repositoryIncident.state == SosState.cancelled
+              ? SosLifecycleStage.cancelled
+              : SosLifecycleStage.resolved,
+          incident: repositoryIncident,
+        );
+      } else if ((repositoryIncident.state == SosState.sent ||
+              repositoryIncident.state == SosState.acknowledged) &&
+          repositoryIncident.isBackendConfirmed &&
+          lifecycle.stage != SosLifecycleStage.cancelling) {
+        await _sosLifecycle.confirmActive(
+          origin: lifecycle.origin,
+          localIncidentId: lifecycle.localIncidentId ??
+              repositoryIncident.provisionalIncidentId ??
+              repositoryIncident.id,
+          backendIncidentId: repositoryIncident.id,
+          triggerSource:
+              repositoryIncident.triggerSource ?? lifecycle.triggerSource,
+          deviceId: repositoryIncident.deviceId ?? lifecycle.deviceId,
+          nodeId: repositoryIncident.originatorNodeId ?? lifecycle.nodeId,
+          hardwareId: repositoryIncident.hardwareId ?? lifecycle.hardwareId,
+          incident: repositoryIncident,
+          recoveryStatus: lifecycle.recoveryStatus,
+        );
       }
     }
     final deviceOverride = await _rehydrateDeviceSosPublicState(
@@ -12554,6 +12560,10 @@ class EixamConnectSdkImpl
         titleKey = 'notification.sos.resolved.title';
         bodyKey = 'notification.sos.resolved.body';
         break;
+    }
+    if (terminal.state != SosState.cancelled &&
+        terminal.state != SosState.resolved) {
+      return terminal;
     }
     _emitSosTerminalNotificationIntent(
       terminal,

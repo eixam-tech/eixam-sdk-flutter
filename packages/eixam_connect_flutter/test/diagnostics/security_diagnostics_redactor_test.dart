@@ -320,6 +320,52 @@ void main() {
   });
 
   group('HttpSosRemoteDataSource diagnostics', () {
+    test('active SOS query accepts only explicit null absence', () async {
+      final sessionContext = SdkSessionContext()
+        ..currentSession = const EixamSession.signed(
+          appId: 'test-app',
+          externalUserId: 'test-user',
+          userHash: 'test-hash',
+        );
+      final transport = SdkHttpTransport(
+        client: MockClient(
+          (_) async => http.Response('{"incident":null}', 200),
+        ),
+        config: const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
+        sessionContext: sessionContext,
+      );
+
+      expect(
+        await HttpSosRemoteDataSource(transport: transport).getActiveSos(),
+        isNull,
+      );
+    });
+
+    test('active SOS query rejects missing incident field', () async {
+      final sessionContext = SdkSessionContext()
+        ..currentSession = const EixamSession.signed(
+          appId: 'test-app',
+          externalUserId: 'test-user',
+          userHash: 'test-hash',
+        );
+      final transport = SdkHttpTransport(
+        client: MockClient((_) async => http.Response('{}', 200)),
+        config: const EixamSdkConfig(apiBaseUrl: 'https://api.example.test'),
+        sessionContext: sessionContext,
+      );
+
+      await expectLater(
+        HttpSosRemoteDataSource(transport: transport).getActiveSos(),
+        throwsA(
+          isA<SosException>().having(
+            (error) => error.code,
+            'code',
+            'E_HTTP_SOS_GET_ACTIVE_FAILED',
+          ),
+        ),
+      );
+    });
+
     test('redacts identity headers and omits full request/response bodies',
         () async {
       BleDebugRegistry.instance.debugSetSensitiveDiagnosticsEnabled(false);

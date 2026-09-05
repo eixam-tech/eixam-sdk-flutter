@@ -1672,7 +1672,7 @@ void main() {
     });
 
     test(
-        'already-active current app incident reconciles without optimistic active publication',
+        'already-active app-shaped incident without correlation remains unmatched',
         () async {
       final repository = _AlreadyActiveLookupRepository(
         authoritativeActive: _incident(
@@ -1699,21 +1699,16 @@ void main() {
         final result = await resultFuture;
         await pumpEventQueue();
 
-        expect(result.outcome, SosActivationOutcome.alreadyActiveRecovered);
-        expect(result.lifecycle.stage, SosLifecycleStage.active);
+        expect(result.outcome, SosActivationOutcome.alreadyActiveUnmatched);
+        expect(result.lifecycle.stage, SosLifecycleStage.recoveryRequired);
         expect(
           observed.where((stage) => stage == SosLifecycleStage.active),
-          hasLength(1),
+          isEmpty,
         );
         final capability = await harness.sdk.getSosCapability();
         expect(capability.revision, result.lifecycle.revision);
         expect(capability.canTriggerSos, isFalse);
         expect(capability.lifecycleAllowsActivation, isFalse);
-        expect(capability.canCancelCurrentSos, isTrue);
-        expect(
-          capability.preferredActivationPath,
-          SosActivationPath.restoredActiveLifecycle,
-        );
       } finally {
         await subscription.cancel();
         await harness.dispose(disposeSosRepository: false);
@@ -1779,6 +1774,91 @@ void main() {
       } finally {
         await subscription.cancel();
         await harness.dispose();
+      }
+    });
+
+    test(
+        'typed cancellation stays non-terminal until repository terminal proof',
+        () async {
+      final repository = _PendingCancellationSosRepository(
+        initialIncident: SosIncident(
+          id: 'backend-active-cancel-pending',
+          state: SosState.sent,
+          createdAt: DateTime.utc(2026, 9, 5),
+          isBackendConfirmed: true,
+        ),
+      );
+      final harness = _SdkSosHarness(sosRepository: repository);
+      try {
+        await harness.setSession();
+        await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        repository.cancelResult = SosIncident(
+          id: 'backend-active-cancel-pending',
+          state: SosState.cancelRequested,
+          createdAt: DateTime.utc(2026, 9, 5),
+          deliveryChannel: SosDeliveryChannel.backendOnly,
+          isBackendConfirmed: true,
+        );
+
+        final pending = await harness.sdk.cancelSosAuthoritatively();
+
+        expect(
+          pending.outcome,
+          SosCancellationOutcome.cancellationPending,
+        );
+        expect(pending.lifecycle.stage, SosLifecycleStage.cancelling);
+        expect(pending.lifecycle.isTerminal, isFalse);
+
+        repository.cancelResult = SosIncident(
+          id: 'backend-active-cancel-pending',
+          state: SosState.cancelled,
+          createdAt: DateTime.utc(2026, 9, 5),
+          deliveryChannel: SosDeliveryChannel.backendOnly,
+          isBackendConfirmed: true,
+        );
+        await repository.cancelSos();
+        await pumpEventQueue();
+
+        expect(
+          (await harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.cancelled,
+        );
+      } finally {
+        await harness.dispose(disposeSosRepository: false);
+        await repository.dispose();
+      }
+    });
+
+    test('unrelated repository incident cannot mutate open lifecycle',
+        () async {
+      final repository = FakeSosRepository();
+      final harness = _SdkSosHarness(sosRepository: repository);
+      try {
+        await harness.setSession();
+        await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        final before = await harness.sdk.getSosLifecycle();
+
+        repository.currentIncident = SosIncident(
+          id: 'unrelated-backend-incident',
+          state: SosState.cancelled,
+          createdAt: DateTime.utc(2026, 9, 5),
+          isBackendConfirmed: true,
+        );
+        repository.stateController.add(SosState.cancelled);
+        await pumpEventQueue();
+
+        final after = await harness.sdk.getSosLifecycle();
+        expect(after.lifecycleId, before.lifecycleId);
+        expect(after.generation, before.generation);
+        expect(after.stage, SosLifecycleStage.active);
+        expect(after.backendIncidentId, before.backendIncidentId);
+      } finally {
+        await harness.dispose(disposeSosRepository: false);
+        await repository.dispose();
       }
     });
 
@@ -2232,6 +2312,23 @@ final class _BlockingTriggerSosRepository extends FakeSosRepository {
       mobileBattery: mobileBattery,
       mobileCoverage: mobileCoverage,
     );
+  }
+}
+
+final class _PendingCancellationSosRepository extends FakeSosRepository {
+  _PendingCancellationSosRepository({required SosIncident initialIncident}) {
+    currentIncident = initialIncident;
+  }
+
+  SosIncident? cancelResult;
+
+  @override
+  Future<SosIncident> cancelSos() async {
+    cancelCallCount++;
+    final result = cancelResult ?? currentIncident;
+    currentIncident = result;
+    stateController.add(result.state);
+    return result;
   }
 }
 

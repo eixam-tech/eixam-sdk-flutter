@@ -647,6 +647,12 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     }
 
     final payload = jsonDecode(response.body) as Map<String, dynamic>;
+    if (!payload.containsKey('incident')) {
+      throw const SosException(
+        'E_HTTP_SOS_GET_ACTIVE_FAILED',
+        'E_HTTP_SOS_GET_ACTIVE_FAILED',
+      );
+    }
     final incident = payload['incident'];
     if (incident == null) {
       return null;
