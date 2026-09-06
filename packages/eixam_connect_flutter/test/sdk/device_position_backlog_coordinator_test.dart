@@ -46,7 +46,7 @@ void main() {
     expect(harness.commands[1].encode(), <int>[0x31, 7, 5, 0, 0, 0]);
   });
 
-  test('wrong session/index aborts and closes ownership', () async {
+  test('stale session is ignored while wrong current index aborts', () async {
     final harness = _Harness();
     final future = harness.coordinator.sync(
       since: DateTime.fromMillisecondsSinceEpoch(1787486400000, isUtc: true),
@@ -55,11 +55,98 @@ void main() {
     );
     await harness.send(_meta(7, 1, 4, 4));
     await harness.send(_chunk(8, 4, 1787486400, 1));
+    expect(harness.coordinator.isActive, isTrue);
+    await harness.send(_chunk(7, 5, 1787486400, 1));
     final result = await future;
 
     expect(result.completed, isFalse);
     expect(harness.commands.last.opcode, 0x32);
     expect(harness.coordinator.isActive, isFalse);
+  });
+
+  test('valid progress may outlive the old single transfer deadline', () async {
+    final harness = _Harness();
+    const idle = Duration(milliseconds: 30);
+    final future = harness.coordinator.sync(
+      since: DateTime.fromMillisecondsSinceEpoch(1787486400000, isUtc: true),
+      until: null,
+      timeout: idle,
+    );
+    await harness.send(_meta(7, 3, 0, 2));
+    for (var index = 0; index < 3; index++) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await harness.send(_chunk(7, index, 1787486400 + index * 60, index + 1));
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    await harness.send(_end(7, 3, 2));
+
+    final result = await future;
+    expect(result.completed, isTrue);
+    expect(result.recoveredCount, 3);
+  });
+
+  test('idle progress timeout still terminates a transfer', () async {
+    final harness = _Harness();
+    final future = harness.coordinator.sync(
+      since: DateTime.fromMillisecondsSinceEpoch(1787486400000, isUtc: true),
+      until: null,
+      timeout: const Duration(milliseconds: 20),
+    );
+    await harness.send(_meta(7, 1, 0, 0));
+
+    final result = await future;
+    expect(result.timedOut, isTrue);
+    expect(result.partial, isFalse);
+  });
+
+  test('absolute maximum terminates a transfer despite continuous progress',
+      () async {
+    final harness = _Harness(overallTimeoutFactor: 3);
+    const idle = Duration(milliseconds: 30);
+    final future = harness.coordinator.sync(
+      since: DateTime.fromMillisecondsSinceEpoch(1787486400000, isUtc: true),
+      until: null,
+      timeout: idle,
+    );
+    await harness.send(_meta(7, 20, 0, 19));
+    var index = 0;
+    while (harness.coordinator.isActive) {
+      await Future<void>.delayed(const Duration(milliseconds: 15));
+      if (!harness.coordinator.isActive) break;
+      await harness.send(_chunk(7, index, 1787486400 + index, index + 1));
+      index++;
+    }
+
+    final result = await future;
+    expect(result.timedOut, isTrue);
+    expect(result.partial, isTrue);
+    expect(index, greaterThan(1));
+  });
+
+  test('stale packets after disconnect do not poison replacement session',
+      () async {
+    final harness = _Harness();
+    final first = harness.coordinator.sync(
+      since: DateTime.fromMillisecondsSinceEpoch(1787486400000, isUtc: true),
+      until: null,
+      timeout: const Duration(seconds: 1),
+    );
+    await harness.send(_meta(7, 1, 0, 0));
+    await harness.coordinator.disconnected();
+    expect((await first).completed, isFalse);
+
+    final replacement = harness.coordinator.sync(
+      since: DateTime.fromMillisecondsSinceEpoch(1787486400000, isUtc: true),
+      until: null,
+      timeout: const Duration(seconds: 1),
+    );
+    await harness.send(_chunk(7, 0, 1787486400, 1));
+    await harness.send(_end(7, 1, 0));
+    expect(harness.coordinator.isActive, isTrue);
+    await harness.send(_meta(8, 0, 0, 0));
+    await harness.send(_end(8, 0, 0));
+
+    expect((await replacement).completed, isTrue);
   });
 
   test('timeout aborts, returns typed result, and permits restart', () async {
@@ -320,6 +407,7 @@ class _Harness {
   _Harness({
     Future<void> Function(EixamDeviceCommand command)? writer,
     Duration abortTimeout = const Duration(milliseconds: 250),
+    int overallTimeoutFactor = 12,
   }) {
     coordinator = DevicePositionBacklogCoordinator(
       writeCommand: (command) {
@@ -329,6 +417,7 @@ class _Harness {
       normalizer: DevicePositionBatchNormalizer(),
       emitBatch: batches.add,
       abortTimeout: abortTimeout,
+      overallTimeoutFactor: overallTimeoutFactor,
     );
   }
 

@@ -14,14 +14,17 @@ class DevicePositionBacklogCoordinator {
     required this.normalizer,
     required this.emitBatch,
     this.abortTimeout = const Duration(milliseconds: 250),
+    this.overallTimeoutFactor = 12,
   });
 
   final Future<void> Function(EixamDeviceCommand command) writeCommand;
   final DevicePositionBatchNormalizer normalizer;
   final void Function(EixamDevicePositionBatch batch) emitBatch;
   final Duration abortTimeout;
+  final int overallTimeoutFactor;
 
   _BacklogSession? _active;
+  int _connectionGeneration = 0;
 
   bool get isActive => _active != null;
 
@@ -37,6 +40,7 @@ class DevicePositionBacklogCoordinator {
       );
     }
     if (timeout <= Duration.zero ||
+        overallTimeoutFactor < 1 ||
         (until != null && until.toUtc().isBefore(since.toUtc()))) {
       throw ArgumentError('Invalid position backlog sync window or timeout.');
     }
@@ -45,20 +49,27 @@ class DevicePositionBacklogCoordinator {
       throw ArgumentError.value(since, 'since', 'Must fit firmware UTC u32.');
     }
 
+    final overallTimeout = timeout * overallTimeoutFactor;
     final session = _BacklogSession(
       since: since.toUtc(),
       until: until?.toUtc(),
-      deadline: DateTime.now().toUtc().add(timeout),
+      idleTimeout: timeout,
+      overallDeadline: DateTime.now().toUtc().add(overallTimeout),
+      connectionGeneration: _connectionGeneration,
     );
     _active = session;
-    session.timer = Timer(timeout, () => _timeoutNow(session));
+    _armProgressTimeout(session, phase: 'initial_response');
+    session.overallTimer = Timer(
+      overallTimeout,
+      () => _timeoutNow(session, phase: 'overall'),
+    );
     final untilUtc = until?.toUtc();
     final untilUnix = untilUtc == null
         ? 'none'
         : '${untilUtc.millisecondsSinceEpoch ~/ 1000}';
     BleDebugRegistry.instance.recordEvent(
       'POSITION_BACKLOG request sinceUnix=$sinceUnix '
-      'untilUnix=$untilUnix',
+      'untilUnix=$untilUnix generation=${session.connectionGeneration}',
     );
     unawaited(_start(session, sinceUnix));
     return session.completer.future;
@@ -71,7 +82,7 @@ class DevicePositionBacklogCoordinator {
         EixamDeviceCommand.positionBacklogStart(sinceUnix: sinceUnix),
       );
     } on TimeoutException {
-      _timeoutNow(session);
+      _timeoutNow(session, phase: 'request_write');
     } catch (error, stackTrace) {
       BleDebugRegistry.instance.recordEvent(
         'POSITION_BACKLOG failed reason=request_write',
@@ -84,6 +95,12 @@ class DevicePositionBacklogCoordinator {
     if (event.type != BleIncomingEventType.telPositionBacklog) return;
     final session = _active;
     if (session == null) return;
+    if (session.connectionGeneration != _connectionGeneration) {
+      BleDebugRegistry.instance.recordEvent(
+        'POSITION_BACKLOG stale_generation_ignored',
+      );
+      return;
+    }
     final packet = event.positionBacklogPacket;
     if (packet == null) {
       _fail(session, 'malformed', abortReason: 1);
@@ -92,6 +109,12 @@ class DevicePositionBacklogCoordinator {
 
     if (packet is EixamPositionBacklogMeta) {
       if (session.sessionId != null) {
+        if (packet.sessionId != session.sessionId) {
+          BleDebugRegistry.instance.recordEvent(
+            'POSITION_BACKLOG stale_session_ignored stage=meta',
+          );
+          return;
+        }
         _fail(session, 'unexpected_meta', abortReason: 2);
         return;
       }
@@ -100,14 +123,19 @@ class DevicePositionBacklogCoordinator {
         ..totalEvents = packet.totalEvents
         ..expectedIndex = packet.startIndex
         ..endIndex = packet.endIndex;
+      _recordProgress(session, phase: 'meta');
       BleDebugRegistry.instance.recordEvent(
-        'POSITION_BACKLOG meta totalEvents=${packet.totalEvents}',
+        'POSITION_BACKLOG meta totalEvents=${packet.totalEvents} '
+        'generation=${session.connectionGeneration}',
       );
       return;
     }
 
     if (session.sessionId == null || packet.sessionId != session.sessionId) {
-      _fail(session, 'session_mismatch', abortReason: 3);
+      BleDebugRegistry.instance.recordEvent(
+        'POSITION_BACKLOG stale_session_ignored '
+        'stage=${session.sessionId == null ? "before_meta" : "active"}',
+      );
       return;
     }
 
@@ -118,6 +146,7 @@ class DevicePositionBacklogCoordinator {
         _fail(session, 'logical_index_mismatch', abortReason: 4);
         return;
       }
+      _recordProgress(session, phase: 'chunk');
       session.receivedEvents++;
       final sampledAt = packet.batch.samples.single.sampledAt!;
       final rejectedUntil =
@@ -147,7 +176,8 @@ class DevicePositionBacklogCoordinator {
       }
       session.expectedIndex = packet.logicalIndex + 1;
       BleDebugRegistry.instance.recordEvent(
-        'POSITION_BACKLOG chunks received=${session.receivedEvents}',
+        'POSITION_BACKLOG chunks received=${session.receivedEvents} '
+        'generation=${session.connectionGeneration}',
       );
       try {
         await _writeWithinDeadline(
@@ -158,7 +188,7 @@ class DevicePositionBacklogCoordinator {
           ),
         );
       } on TimeoutException {
-        _timeoutNow(session);
+        _timeoutNow(session, phase: 'ack_write');
       } catch (_) {
         _fail(session, 'ack_failed', abortReason: 5);
       }
@@ -174,6 +204,7 @@ class DevicePositionBacklogCoordinator {
     }
 
     if (packet is EixamPositionBacklogEnd) {
+      _recordProgress(session, phase: 'end');
       session.endSentEvents = packet.sentEvents;
       final valid = packet.status == 0 &&
           packet.sentEvents == session.receivedEvents &&
@@ -190,6 +221,7 @@ class DevicePositionBacklogCoordinator {
   }
 
   Future<void> disconnected() async {
+    _connectionGeneration++;
     final session = _active;
     if (session != null) {
       BleDebugRegistry.instance.recordEvent(
@@ -204,10 +236,12 @@ class DevicePositionBacklogCoordinator {
     if (session != null) _fail(session, 'cancelled', abortReason: 7);
   }
 
-  void _timeoutNow(_BacklogSession session) {
+  void _timeoutNow(_BacklogSession session, {required String phase}) {
     if (!identical(_active, session)) return;
     BleDebugRegistry.instance.recordEvent(
-      'POSITION_BACKLOG failed reason=timeout',
+      'POSITION_BACKLOG failed reason=timeout phase=$phase '
+      'generation=${session.connectionGeneration} '
+      'receivedCount=${session.receivedEvents}',
     );
     final sessionId = session.sessionId;
     _complete(session, completed: false, timedOut: true);
@@ -243,7 +277,8 @@ class DevicePositionBacklogCoordinator {
     EixamDeviceCommand command,
   ) async {
     if (!identical(_active, session)) return;
-    final remaining = session.deadline.difference(DateTime.now().toUtc());
+    final remaining =
+        session.overallDeadline.difference(DateTime.now().toUtc());
     if (remaining <= Duration.zero) throw TimeoutException('deadline');
     await writeCommand(command).timeout(remaining);
     if (!identical(_active, session)) return;
@@ -255,7 +290,8 @@ class DevicePositionBacklogCoordinator {
     StackTrace stackTrace,
   ) {
     if (!identical(_active, session)) return;
-    session.timer?.cancel();
+    session.progressTimer?.cancel();
+    session.overallTimer?.cancel();
     _active = null;
     if (!session.completer.isCompleted) {
       session.completer.completeError(error, stackTrace);
@@ -268,7 +304,8 @@ class DevicePositionBacklogCoordinator {
     bool timedOut = false,
   }) {
     if (!identical(_active, session)) return;
-    session.timer?.cancel();
+    session.progressTimer?.cancel();
+    session.overallTimer?.cancel();
     _active = null;
     final result = DevicePositionBacklogSyncResult(
       completed: completed,
@@ -298,21 +335,45 @@ class DevicePositionBacklogCoordinator {
     }
     if (!session.completer.isCompleted) session.completer.complete(result);
   }
+
+  void _recordProgress(_BacklogSession session, {required String phase}) {
+    if (!identical(_active, session) ||
+        session.connectionGeneration != _connectionGeneration) {
+      return;
+    }
+    _armProgressTimeout(session, phase: 'idle_after_$phase');
+  }
+
+  void _armProgressTimeout(
+    _BacklogSession session, {
+    required String phase,
+  }) {
+    session.progressTimer?.cancel();
+    session.progressTimer = Timer(
+      session.idleTimeout,
+      () => _timeoutNow(session, phase: phase),
+    );
+  }
 }
 
 class _BacklogSession {
   _BacklogSession({
     required this.since,
     required this.until,
-    required this.deadline,
+    required this.idleTimeout,
+    required this.overallDeadline,
+    required this.connectionGeneration,
   });
 
   final DateTime since;
   final DateTime? until;
-  final DateTime deadline;
+  final Duration idleTimeout;
+  final DateTime overallDeadline;
+  final int connectionGeneration;
   final Completer<DevicePositionBacklogSyncResult> completer =
       Completer<DevicePositionBacklogSyncResult>();
-  Timer? timer;
+  Timer? progressTimer;
+  Timer? overallTimer;
   int? sessionId;
   int? totalEvents;
   int? expectedIndex;
