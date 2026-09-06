@@ -120,7 +120,7 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
         .authenticateAs(request.username, request.password);
 
     try {
-      await client.connect();
+      await client.connect().timeout(request.connectTimeout);
     } on SocketException catch (error) {
       _logTransport(
         'MQTT_TRANSPORT_SOCKET_ERROR_HANDLED '

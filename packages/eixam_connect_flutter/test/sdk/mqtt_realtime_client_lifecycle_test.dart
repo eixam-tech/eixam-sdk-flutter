@@ -32,7 +32,10 @@ void main() {
   late StreamSubscription<RealtimeConnectionState> stateSubscription;
   late List<RealtimeConnectionState> states;
 
-  void createClient({Duration reconnectDelay = const Duration(hours: 1)}) {
+  void createClient({
+    Duration reconnectDelay = const Duration(hours: 1),
+    Duration connectTimeout = const Duration(seconds: 8),
+  }) {
     client = MqttRealtimeClient(
       config: const EixamSdkConfig(
         apiBaseUrl: 'https://api.staging.eixam.io',
@@ -45,6 +48,7 @@ void main() {
         return transport;
       },
       reconnectDelay: reconnectDelay,
+      connectTimeout: connectTimeout,
     );
     states = <RealtimeConnectionState>[];
     stateSubscription = client.watchConnectionState().listen(states.add);
@@ -187,6 +191,32 @@ void main() {
     expect(states.last, RealtimeConnectionState.disconnected);
   });
 
+  test('hung connect times out so SOS publish fails instead of blocking',
+      () async {
+    final first = _ControlledMqttTransport();
+    final retry = _ControlledMqttTransport();
+    queuedTransports.addAll(<_ControlledMqttTransport>[first, retry]);
+    createClient(connectTimeout: const Duration(milliseconds: 80));
+
+    final published = client.publishOperationalSos(
+      MqttOperationalSosRequest(
+        timestamp: DateTime.utc(2026, 9, 6, 12),
+        triggerSource: 'commercial_app',
+      ),
+    );
+    await first.connectStarted.future;
+
+    await expectLater(published, throwsA(isA<NetworkException>()));
+    await _drainStreamEvents();
+
+    expect(states.last, RealtimeConnectionState.error);
+    expect(_hasDiagnostic('event=connect_failed'), isTrue);
+    expect(_hasDiagnostic('event=sos_publish_reconnect_after_connect_failure'),
+        isTrue);
+    expect(first.publishCalls, 0);
+    expect(retry.publishCalls, 0);
+  });
+
   test('async socket failure is contained and a fresh reconnect succeeds',
       () async {
     final transportA = _ControlledMqttTransport();
@@ -267,6 +297,7 @@ final class _ControlledMqttTransport implements SdkMqttTransport {
   late SdkMqttConnectRequest request;
   int disconnectCalls = 0;
   int disposeCalls = 0;
+  int publishCalls = 0;
   bool _disposed = false;
 
   @override
@@ -322,7 +353,9 @@ final class _ControlledMqttTransport implements SdkMqttTransport {
     required String payload,
     SdkMqttQos qos = SdkMqttQos.atLeastOnce,
     bool retain = false,
-  }) async {}
+  }) async {
+    publishCalls += 1;
+  }
 
   @override
   Future<void> subscribe(String topic) async {

@@ -148,7 +148,17 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
         : null;
 
     await _ensureConnected(initialConnect: true);
-    final transport = _binding?.transport;
+    var transport = _binding?.transport;
+    if (transport == null) {
+      // A hung TLS/CONNACK attempt is now timed out and cleared. SOS must try
+      // one fresh connect immediately instead of waiting for the reconnect
+      // timer, or the alert never leaves the phone.
+      _recordRealtime(
+        'MQTT_LIFECYCLE event=sos_publish_reconnect_after_connect_failure',
+      );
+      await _ensureConnected(initialConnect: true);
+      transport = _binding?.transport;
+    }
     if (transport == null) {
       throw const NetworkException(
         'E_MQTT_NOT_CONNECTED',
@@ -462,7 +472,10 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
       _binding = binding;
       _bindTransportStreams(attempt, binding);
 
-      await transport.connect();
+      // mqtt5_client socketTimeout only covers TCP connect. TLS / CONNACK can
+      // hang past that. Without this Future timeout, SOS publish waits forever
+      // on the in-flight connect and never reaches the broker.
+      await transport.connect().timeout(connectTimeout);
       if (!_isBindingAuthoritative(attempt, binding)) {
         await _discardStaleBinding(attempt, binding, phase: 'connect_complete');
         return;
