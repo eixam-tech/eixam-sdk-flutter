@@ -173,7 +173,10 @@ internal class ProtectionForegroundService : Service() {
                 restored = restored,
             )
         } else {
-            runtimeOwner.ensureConnectedOrReconnect(wakeReason)
+            runtimeOwner.ensureConnectedOrReconnect(
+                wakeReason,
+                force = shouldForceNativeBleReconnect(wakeReason),
+            )
             ProtectionRuntimeBridge.recordPlatformEvent(
                 context = applicationContext,
                 type = "runtimeRecovered",
@@ -211,6 +214,14 @@ internal class ProtectionForegroundService : Service() {
                 action = actionStop
             }
             context.startService(intent)
+        }
+
+        internal fun shouldForceNativeBleReconnect(wakeReason: String): Boolean {
+            // Only abort an in-flight native GATT after Flutter actually
+            // released the radio. Matching native_owner_ / native_ble_owner
+            // force-kills every skipped Flutter campaign and attach/detach
+            // loops the SOS status stream.
+            return wakeReason.contains("flutter_yielded")
         }
 
         fun showPreConfirmNotification(context: Context) {

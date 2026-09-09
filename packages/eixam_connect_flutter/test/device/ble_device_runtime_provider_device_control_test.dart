@@ -109,6 +109,33 @@ void main() {
       expect(status.signalQuality, isNotNull);
     });
 
+    test(
+      'pair hydrates runtime status, firmware and signal concurrently',
+      () async {
+        await runtimeProvider.dispose();
+        await bleClient.dispose();
+        final overlapping = _OverlappingHydrationBleClient();
+        bleClient = overlapping;
+        await overlapping.initialize();
+        runtimeProvider = BleDeviceRuntimeProvider(bleClient: overlapping);
+
+        final status = await _pairDemoDevice(runtimeProvider);
+
+        expect(status.nodeId, 0x1234);
+        expect(status.firmwareVersion, '2.7.21-mock');
+        expect(status.signalQuality, isNotNull);
+        expect(
+          overlapping.startedAt.keys.toSet(),
+          containsAll(<String>['status', 'firmware', 'rssi']),
+        );
+        final starts = overlapping.startedAt.values.toList()..sort();
+        expect(
+          starts.last.difference(starts.first),
+          lessThan(_OverlappingHydrationBleClient.overlapDelay),
+        );
+      },
+    );
+
     test('provisioned firmware does not implicitly activate the product',
         () async {
       final status = await _pairDemoDevice(runtimeProvider);
@@ -173,6 +200,29 @@ void main() {
       expect(status.effectiveBatteryState, isNull);
       expect(status.approximateBatteryPercentage, isNull);
       expect(status.batterySource, DeviceBatterySource.unknown);
+    });
+
+    test('overlapping 0x23 callers join the in-flight reply', () async {
+      await _pairDemoDevice(runtimeProvider);
+      bleClient.runtimeStatusReplyDelay = const Duration(milliseconds: 80);
+      final before = bleClient.writtenCommands
+          .where((command) => command.opcode == 0x23)
+          .length;
+
+      final first = runtimeProvider.requestDeviceRuntimeStatus();
+      final second = runtimeProvider.requestDeviceRuntimeStatus();
+      final results = await Future.wait(<Future<DeviceRuntimeStatus>>[
+        first,
+        second,
+      ]);
+
+      expect(results[0].nodeId, results[1].nodeId);
+      expect(
+        bleClient.writtenCommands
+            .where((command) => command.opcode == 0x23)
+            .length,
+        before + 1,
+      );
     });
 
     test('handles malformed runtime status responses safely', () async {
@@ -739,5 +789,44 @@ final class _DelayedOldNotificationCleanupBleClient extends MockBleClient {
     }
     await _connectionController.close();
     await super.dispose();
+  }
+}
+
+final class _OverlappingHydrationBleClient extends MockBleClient {
+  static const Duration overlapDelay = Duration(milliseconds: 40);
+
+  final Map<String, DateTime> startedAt = <String, DateTime>{};
+
+  Future<T> _overlap<T>(
+    String name,
+    Future<T> Function() action,
+  ) async {
+    startedAt[name] = DateTime.now();
+    await Future<void>.delayed(overlapDelay);
+    return action();
+  }
+
+  @override
+  Future<void> writeDeviceCommand(
+    String deviceId,
+    EixamDeviceCommand command,
+  ) {
+    if (command.opcode != 0x23) {
+      return super.writeDeviceCommand(deviceId, command);
+    }
+    return _overlap(
+      'status',
+      () => super.writeDeviceCommand(deviceId, command),
+    );
+  }
+
+  @override
+  Future<String?> readFirmwareVersion(String deviceId) {
+    return _overlap('firmware', () => super.readFirmwareVersion(deviceId));
+  }
+
+  @override
+  Future<int?> readSignalQuality(String deviceId) {
+    return _overlap('rssi', () => super.readSignalQuality(deviceId));
   }
 }

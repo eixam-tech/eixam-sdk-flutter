@@ -68,6 +68,24 @@ void main() {
     }
   });
 
+  test('disconnect during the 0x22 write is accepted when past the floor',
+      () async {
+    final statuses = StreamController<DeviceStatus>.broadcast();
+    var now = DateTime.utc(2026);
+    final policy = ProvisioningRebootDisconnectPolicy(
+      clock: () => now,
+    );
+    final result = policy.writeAndAwait(
+      writeReboot: () async {
+        now = now.add(const Duration(milliseconds: 1500));
+        statuses.add(status(false));
+      },
+      statuses: statuses.stream,
+    );
+    await result;
+    await statuses.close();
+  });
+
   test('missing reboot disconnect is a typed reboot failure', () async {
     final statuses = StreamController<DeviceStatus>.broadcast();
     final policy = ProvisioningRebootDisconnectPolicy(
@@ -86,6 +104,65 @@ void main() {
     expect(
       diagnostics,
       contains('PROVISIONING_REBOOT disconnect_timing_bucket=timeout'),
+    );
+    await statuses.close();
+  });
+
+  test('timeout is success when raw GATT is already down', () async {
+    final statuses = StreamController<DeviceStatus>.broadcast();
+    final policy = ProvisioningRebootDisconnectPolicy(
+      minimumDelay: Duration.zero,
+      maximumDelay: const Duration(milliseconds: 10),
+    );
+    final diagnostics = <String>[];
+    await policy.writeAndAwait(
+      writeReboot: () async {},
+      statuses: statuses.stream,
+      alreadyDisconnected: () => true,
+      diagnosticLog: diagnostics.add,
+    );
+    expect(
+      diagnostics,
+      contains('PROVISIONING_REBOOT disconnect_timing_bucket=valid_unobserved'),
+    );
+    expect(
+      diagnostics,
+      isNot(contains('PROVISIONING_REBOOT disconnect_timing_bucket=timeout')),
+    );
+    await statuses.close();
+  });
+
+  test('lost reboot write ACK is success when disconnect is in window',
+      () async {
+    final statuses = StreamController<DeviceStatus>.broadcast();
+    var now = DateTime.utc(2026);
+    final policy = ProvisioningRebootDisconnectPolicy(
+      clock: () => now,
+    );
+    final diagnostics = <String>[];
+    final result = policy.writeAndAwait(
+      writeReboot: () async {
+        Timer(Duration.zero, () {
+          now = now.add(const Duration(milliseconds: 1500));
+          statuses.add(status(false));
+        });
+        throw const DeviceException(
+          'E_BLE_DEVICE_DISCONNECTED',
+          'E_BLE_DEVICE_DISCONNECTED',
+        );
+      },
+      statuses: statuses.stream,
+      diagnosticLog: diagnostics.add,
+    );
+    await result;
+    expect(
+      diagnostics,
+      containsAllInOrder(<String>[
+        'PROVISIONING_REBOOT command_write_started=true',
+        'PROVISIONING_REBOOT command_write_failed=true',
+        'PROVISIONING_REBOOT disconnect_observed=true',
+        'PROVISIONING_REBOOT disconnect_timing_bucket=valid',
+      ]),
     );
     await statuses.close();
   });

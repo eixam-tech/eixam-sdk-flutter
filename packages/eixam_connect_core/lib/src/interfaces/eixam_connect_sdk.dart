@@ -7,6 +7,7 @@ import '../entities/backend_registered_device.dart';
 import '../entities/ble_command_channel_status.dart';
 import '../entities/device_country_config_status.dart';
 import '../entities/device_ready.dart';
+import '../entities/device_unprovision.dart';
 import '../entities/device_sos_status.dart';
 import '../entities/device_status.dart';
 import '../entities/device_runtime_status.dart';
@@ -193,6 +194,16 @@ abstract class EixamConnectSdk {
   Stream<DeviceStatus> get deviceStatusStream;
   Future<DeviceReadyResult> ensureDeviceReady();
   Stream<DeviceProvisioningState> watchDeviceProvisioningState();
+
+  /// Lab/debug: wipe SoftSIM + SOS RF (`0x25`) then reboot (`0x22`).
+  ///
+  /// Hosts must not construct the BLE frame. Firmware ≥ 2.7.53. Always
+  /// reboots after OK / OK_NOCHANGE, including when `0x23` already reports
+  /// unprovisioned — disk can be clear while the Eixam stack is still in
+  /// RAM. Does not revert LoRa region or the Meshtastic PRIMARY PSK; the
+  /// next [ensureDeviceReady] COMMIT overwrites the PSK. Never call during
+  /// SOS, DMP, protection, or firmware transfer.
+  Future<DeviceUnprovisionResult> unprovisionDevice();
   Future<PreferredDeviceReconnectResult> bootstrapPreferredDeviceReconnect({
     String reason = 'startup',
     String? attemptId,

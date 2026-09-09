@@ -97,7 +97,20 @@ final class ProvisioningAckCoordinator {
           }
         });
         try {
-          await write();
+          // FBP write-with-response can hang forever after Android closes GATT
+          // (LINK_SUPERVISION_TIMEOUT). Do not wait for that Future once the
+          // ACK waiter has already settled (disconnect / timeout / ACK).
+          final written = Completer<void>();
+          unawaited(
+            write().then(written.complete, onError: written.completeError),
+          );
+          await Future.any<void>(<Future<void>>[
+            written.future,
+            ack.future.then<void>((_) {}, onError: (_) {}),
+          ]);
+          if (written.isCompleted) {
+            await written.future;
+          }
         } catch (_) {
           _epochValid = false;
           rethrow;

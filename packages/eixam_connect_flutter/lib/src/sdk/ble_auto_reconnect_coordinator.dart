@@ -17,6 +17,8 @@ class BleAutoReconnectCoordinator {
     this.autoReconnectPairingCode = 'AUTO-RECONNECT',
     Future<PermissionState> Function()? permissionStateProvider,
     bool Function()? isIosPlatform,
+    bool Function()? isNativeProtectionOwningBle,
+    Future<void> Function(String trigger)? onNativeProtectionOwnsBle,
     Future<void> Function(Duration delay)? preferredReconnectDelay,
     List<Duration>? preferredReconnectRetryDelays,
     Duration? readinessMonitorInterval,
@@ -24,6 +26,8 @@ class BleAutoReconnectCoordinator {
   })  : _deviceRepository = deviceRepository,
         _preferredDeviceStore = preferredDeviceStore,
         _permissionStateProvider = permissionStateProvider,
+        _isNativeProtectionOwningBle = isNativeProtectionOwningBle,
+        _onNativeProtectionOwnsBle = onNativeProtectionOwnsBle,
         _preferredReconnectDelay = preferredReconnectDelay,
         _preferredReconnectRetryDelays =
             preferredReconnectRetryDelays ?? _preferredReconnectBackoff,
@@ -63,6 +67,8 @@ class BleAutoReconnectCoordinator {
   final DeviceRepository _deviceRepository;
   final PreferredBleDeviceStore _preferredDeviceStore;
   final Future<PermissionState> Function()? _permissionStateProvider;
+  final bool Function()? _isNativeProtectionOwningBle;
+  final Future<void> Function(String trigger)? _onNativeProtectionOwnsBle;
   final Future<void> Function(Duration delay)? _preferredReconnectDelay;
   final List<Duration> _preferredReconnectRetryDelays;
   final Duration _readinessMonitorInterval;
@@ -369,6 +375,9 @@ class BleAutoReconnectCoordinator {
   void setAppForeground(bool isForeground) {
     final wasForeground = _isAppForeground;
     _isAppForeground = isForeground;
+    if (wasForeground != isForeground) {
+      _traceReconnect('sdk_foreground_changed value=$isForeground');
+    }
     if (!isForeground) {
       _retryTimer?.cancel();
       _retryTimer = null;
@@ -509,6 +518,23 @@ class BleAutoReconnectCoordinator {
       );
       return const PreferredDeviceReconnectResult.failed(
         reason: 'dfu_transfer_in_progress',
+      );
+    }
+    if (_isNativeProtectionOwningBle?.call() == true) {
+      _traceReconnect(
+        'sdk_campaign_cancelled reason=native_protection_ble_owner '
+        'source=$trigger',
+      );
+      _recordNoProviderCall(
+        attemptId: attemptId,
+        reason: 'native_protection_ble_owner',
+      );
+      final notifyNative = _onNativeProtectionOwnsBle;
+      if (notifyNative != null) {
+        unawaited(notifyNative(trigger));
+      }
+      return const PreferredDeviceReconnectResult.reconnecting(
+        reason: 'native_protection_ble_owner',
       );
     }
     final activeCampaign = _preferredReconnectCampaign;
@@ -713,7 +739,9 @@ class BleAutoReconnectCoordinator {
         'alreadyConnected=${_lastStatus?.connected == true} '
         'unsupportedRepository=false canStartCampaign=false',
       );
-      _traceReconnect('sdk_campaign_cancelled reason=unknown');
+      _traceReconnect(
+        'sdk_campaign_cancelled reason=app_not_foreground source=$trigger',
+      );
       BleDebugRegistry.instance.recordEvent(
         '$trigger auto-connect skipped because app is not in foreground',
       );
@@ -1106,7 +1134,9 @@ class BleAutoReconnectCoordinator {
             ? 'manual_disconnect'
             : result.reason == 'unsupported_repository'
                 ? 'unsupported_repository'
-                : 'unknown',
+                : result.reason == 'app_not_foreground'
+                    ? 'app_not_foreground'
+                    : 'unknown',
       PreferredDeviceReconnectResultStatus.reconnecting ||
       PreferredDeviceReconnectResultStatus.exhausted =>
         'unknown',
@@ -1119,6 +1149,7 @@ class BleAutoReconnectCoordinator {
       'dispose' => 'disposed',
       'dfu_transfer' => 'dfu_transfer_in_progress',
       'provisioning_reboot' => 'provisioning_reconnect_owned',
+      'app_not_foreground' => 'app_not_foreground',
       _ => 'unknown',
     };
   }

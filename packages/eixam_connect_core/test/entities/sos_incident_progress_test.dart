@@ -12,6 +12,21 @@ void main() {
       );
     });
 
+    test('device-only delivery still awaits backend reception', () {
+      final progress = _incident(
+        deliveryChannel: SosDeliveryChannel.deviceOnly,
+      ).progress;
+
+      expect(
+          progress.steps.single.type, SosProgressStepType.sosReceivedByEixam);
+      expect(progress.steps.single.state, SosProgressState.pending);
+      expect(
+        progress.steps.single.detailCode,
+        'awaiting_backend_confirmation',
+      );
+      expect(progress.isBackendReceptionConfirmed, isFalse);
+    });
+
     test('backend incident confirms reception without actuator evidence', () {
       final progress = _incident(isBackendConfirmed: true).progress;
 
@@ -19,6 +34,20 @@ void main() {
         progress.steps.first.state,
         SosProgressState.succeeded,
       );
+    });
+
+    test('acknowledged incident exposes one management row, not reception', () {
+      final progress = SosIncident(
+        id: 'incident-ack',
+        state: SosState.acknowledged,
+        createdAt: DateTime.utc(2026, 7, 20),
+        isBackendConfirmed: true,
+      ).progress;
+
+      expect(progress.steps, hasLength(1));
+      expect(
+          progress.steps.single.type, SosProgressStepType.incidentManagement);
+      expect(progress.isBackendReceptionConfirmed, isTrue);
     });
 
     test('empty actuator snapshot confirms reception with no contact failure',
@@ -192,12 +221,13 @@ SosIncident _incident({
   SosActuatorSnapshot? actuators,
   bool isBackendConfirmed = false,
   bool isUsingCachedData = false,
+  SosDeliveryChannel deliveryChannel = SosDeliveryChannel.backendOnly,
 }) {
   return SosIncident(
     id: 'incident-1',
     state: SosState.sent,
     createdAt: DateTime.utc(2026, 7, 20),
-    deliveryChannel: SosDeliveryChannel.backendOnly,
+    deliveryChannel: deliveryChannel,
     actuators: actuators,
     isBackendConfirmed: isBackendConfirmed,
     isUsingCachedData: isUsingCachedData,

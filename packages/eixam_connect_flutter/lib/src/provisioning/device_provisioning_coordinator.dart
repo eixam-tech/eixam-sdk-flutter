@@ -15,11 +15,17 @@ final class ProvisioningFirmwarePolicy {
   const ProvisioningFirmwarePolicy.current();
 
   static const String certifiedBaselineVersion = '2.7.37';
+  static const String unprovisionBaselineVersion = '2.7.53';
 
-  bool supports(String? version) {
+  bool supports(String? version) => _atLeast(version, certifiedBaselineVersion);
+
+  bool supportsUnprovision(String? version) =>
+      _atLeast(version, unprovisionBaselineVersion);
+
+  static bool _atLeast(String? version, String baseline) {
     if (version == null) return false;
     final actualParts = _parts(version);
-    final baselineParts = _parts(certifiedBaselineVersion);
+    final baselineParts = _parts(baseline);
     if (actualParts == null || baselineParts == null) return false;
     for (var index = 0; index < 3; index++) {
       if (actualParts[index] != baselineParts[index]) {
@@ -39,12 +45,16 @@ final class ProvisioningRebootException implements Exception {
 }
 
 /// Validates the disconnect caused by firmware's 1.5 second reboot schedule.
-/// The 900 ms lower bound rejects transport loss far earlier than reboot; the
-/// 5 second upper bound leaves ample Android/iOS callback scheduling margin.
+/// Timing starts at the 0x22 write, not write completion: CMD is
+/// write-with-response, so the TAG can drop BLE before the ATT ACK settles.
+/// A thrown write is still success when the disconnect window is valid.
+/// The 900 ms lower bound still rejects an immediate transport loss; the
+/// 12 second upper bound covers Android LINK_SUPERVISION_TIMEOUT after the
+/// scheduled reboot (often 5–8 s after the radio dies).
 final class ProvisioningRebootDisconnectPolicy {
   const ProvisioningRebootDisconnectPolicy({
     this.minimumDelay = const Duration(milliseconds: 900),
-    this.maximumDelay = const Duration(seconds: 5),
+    this.maximumDelay = const Duration(seconds: 12),
     this.clock = DateTime.now,
   });
 
@@ -55,6 +65,7 @@ final class ProvisioningRebootDisconnectPolicy {
   Future<void> writeAndAwait({
     required Future<void> Function() writeReboot,
     required Stream<DeviceStatus> statuses,
+    bool Function()? alreadyDisconnected,
     void Function(String event)? diagnosticLog,
   }) async {
     final disconnect = Completer<DateTime>();
@@ -70,21 +81,37 @@ final class ProvisioningRebootDisconnectPolicy {
       diagnosticLog?.call(
         'PROVISIONING_REBOOT command_write_started=true',
       );
-      await writeReboot();
-      diagnosticLog?.call(
-        'PROVISIONING_REBOOT command_write_completed=true',
+      final writeStartedAt = clock();
+      unawaited(
+        writeReboot().then(
+          (_) {
+            diagnosticLog?.call(
+              'PROVISIONING_REBOOT command_write_completed=true',
+            );
+          },
+          onError: (Object error) {
+            diagnosticLog?.call(
+              'PROVISIONING_REBOOT command_write_failed=true',
+            );
+          },
+        ),
       );
-      final writeCompletedAt = clock();
-      final disconnectedAt = await disconnect.future.timeout(
-        maximumDelay,
-        onTimeout: () {
+      DateTime disconnectedAt;
+      try {
+        disconnectedAt = await disconnect.future.timeout(maximumDelay);
+      } on TimeoutException {
+        if (alreadyDisconnected?.call() == true) {
           diagnosticLog?.call(
-            'PROVISIONING_REBOOT disconnect_timing_bucket=timeout',
+            'PROVISIONING_REBOOT disconnect_timing_bucket=valid_unobserved',
           );
-          throw const ProvisioningRebootException();
-        },
-      );
-      final elapsed = disconnectedAt.difference(writeCompletedAt);
+          return;
+        }
+        diagnosticLog?.call(
+          'PROVISIONING_REBOOT disconnect_timing_bucket=timeout',
+        );
+        throw const ProvisioningRebootException();
+      }
+      final elapsed = disconnectedAt.difference(writeStartedAt);
       if (elapsed < minimumDelay) {
         diagnosticLog?.call(
           'PROVISIONING_REBOOT disconnect_timing_bucket=too_early',
@@ -128,7 +155,13 @@ final class DeviceProvisioningCoordinator {
     this.firmwarePolicy = const ProvisioningFirmwarePolicy.current(),
     this.softSimRejectionObservationInterval =
         const Duration(milliseconds: 250),
-  }) : _packets = incomingPackets.asBroadcastStream() {
+    this.unprovisionVerifyAttempts = 5,
+    this.unprovisionVerifyRetryDelay = const Duration(milliseconds: 400),
+    this.postRebootVerifyAttempts = 15,
+    this.postRebootVerifyRetryDelay = const Duration(seconds: 1),
+    Future<void> Function(Duration duration)? delay,
+  })  : _packets = incomingPackets.asBroadcastStream(),
+        _delay = delay ?? _defaultDelay {
     _ackCoordinator = ProvisioningAckCoordinator(packets: _packets);
     _deviceStatusSubscription = deviceStatusChanges.listen(_onDeviceStatus);
   }
@@ -150,6 +183,11 @@ final class DeviceProvisioningCoordinator {
   final void Function(String event)? diagnosticLog;
   final ProvisioningFirmwarePolicy firmwarePolicy;
   final Duration softSimRejectionObservationInterval;
+  final int unprovisionVerifyAttempts;
+  final Duration unprovisionVerifyRetryDelay;
+  final int postRebootVerifyAttempts;
+  final Duration postRebootVerifyRetryDelay;
+  final Future<void> Function(Duration duration) _delay;
   final Stream<List<int>> _packets;
   late final ProvisioningAckCoordinator _ackCoordinator;
   late final StreamSubscription<DeviceStatus> _deviceStatusSubscription;
@@ -157,12 +195,13 @@ final class DeviceProvisioningCoordinator {
       StreamController<DeviceProvisioningState>.broadcast();
   DeviceProvisioningState _state = const DeviceProvisioningState.idle();
   Future<DeviceReadyResult>? _inFlight;
+  Future<DeviceUnprovisionResult>? _unprovisionInFlight;
   _ProvisioningOperation? _operation;
   String? _activeDeviceId;
   bool _expectingRebootDisconnect = false;
   bool _disposed = false;
 
-  bool get isBusy => _inFlight != null;
+  bool get isBusy => _inFlight != null || _unprovisionInFlight != null;
 
   Stream<DeviceProvisioningState> watchState() async* {
     yield _state;
@@ -173,8 +212,54 @@ final class DeviceProvisioningCoordinator {
     if (_disposed) {
       return Future<DeviceReadyResult>.value(_cancelledResult());
     }
+    if (_unprovisionInFlight != null) {
+      return Future<DeviceReadyResult>.value(
+        const DeviceReadyResult.failed(
+          DeviceReadyFailure(
+            code: DeviceReadyFailureCode.deviceCommunicationInterrupted,
+            retryable: true,
+          ),
+        ),
+      );
+    }
     return _inFlight ??= _startOperation();
   }
+
+  Future<DeviceUnprovisionResult> unprovision() {
+    if (_disposed) {
+      return Future<DeviceUnprovisionResult>.value(
+        const DeviceUnprovisionResult.failed(
+          DeviceUnprovisionFailure(
+            code: DeviceUnprovisionFailureCode.deviceCommunicationInterrupted,
+            retryable: true,
+          ),
+        ),
+      );
+    }
+    if (_inFlight != null || _unprovisionInFlight != null) {
+      return Future<DeviceUnprovisionResult>.value(
+        const DeviceUnprovisionResult.failed(
+          DeviceUnprovisionFailure(
+            code: DeviceUnprovisionFailureCode.busy,
+            retryable: true,
+          ),
+        ),
+      );
+    }
+    return _unprovisionInFlight ??= _startUnprovision();
+  }
+
+  Future<DeviceUnprovisionResult> _startUnprovision() {
+    final operation = _ProvisioningOperation();
+    _operation = operation;
+    return _runUnprovision(operation).whenComplete(() {
+      if (identical(_operation, operation)) _operation = null;
+      _unprovisionInFlight = null;
+    });
+  }
+
+  static Future<void> _defaultDelay(Duration duration) =>
+      Future<void>.delayed(duration);
 
   Future<DeviceReadyResult> _startOperation() {
     final operation = _ProvisioningOperation();
@@ -183,6 +268,338 @@ final class DeviceProvisioningCoordinator {
       if (identical(_operation, operation)) _operation = null;
       _inFlight = null;
     });
+  }
+
+  Future<DeviceUnprovisionResult> _runUnprovision(
+    _ProvisioningOperation operation,
+  ) async {
+    try {
+      final initialStatus = await statusProvider();
+      _check(operation);
+      if (!initialStatus.connected || initialStatus.nodeId == null) {
+        return _unprovisionFail(
+          DeviceUnprovisionFailureCode.notConnected,
+          retryable: true,
+        );
+      }
+      _activeDeviceId = initialStatus.deviceId;
+      final initialRuntime = await runtimeStatusProvider();
+      _check(operation);
+      if (initialRuntime.nodeId != initialStatus.nodeId) {
+        return _unprovisionFail(
+          DeviceUnprovisionFailureCode.identityMismatch,
+          retryable: false,
+        );
+      }
+
+      final liveStatus = await liveStatusProvider();
+      _check(operation);
+      if (!liveStatus.connected ||
+          liveStatus.deviceId != initialStatus.deviceId) {
+        return _unprovisionFail(
+          DeviceUnprovisionFailureCode.deviceCommunicationInterrupted,
+          retryable: true,
+        );
+      }
+      if (!firmwarePolicy.supportsUnprovision(liveStatus.firmwareVersion)) {
+        return _unprovisionFail(
+          DeviceUnprovisionFailureCode.firmwareUpdateRequired,
+          retryable: false,
+        );
+      }
+
+      final ack = await _ackCoordinator.run(
+        expectedOpcode: 0x25,
+        allowNoChange: true,
+        isCancelled: () => operation.cancelled,
+        write: () => _write(operation, EixamDeviceCommand.unprovision()),
+      );
+      _check(operation);
+      final alreadyVirgin =
+          ack.outcome == ProvisioningCommandOutcome.okNoChange;
+
+      // 0x23 can already report PROVISIONED=0 from disk while the Eixam
+      // stack is still in RAM. Always reboot after OK / OK_NOCHANGE, even
+      // when the TAG looked unprovisioned before the write.
+      operation.rebootBoundaryStarted = true;
+      try {
+        await acquireReconnectOwnership();
+        _check(operation);
+        _expectingRebootDisconnect = true;
+        try {
+          diagnosticLog?.call('UNPROVISION reboot_started=true');
+          await reboot();
+          _check(operation);
+          diagnosticLog?.call('UNPROVISION explicit_reconnect_started=true');
+          if (!await reconnectSameDevice(initialStatus.deviceId)) {
+            diagnosticLog?.call('UNPROVISION explicit_reconnect_result=failed');
+            return _unprovisionFail(
+              DeviceUnprovisionFailureCode.reconnectFailed,
+              retryable: true,
+            );
+          }
+          diagnosticLog?.call(
+            'UNPROVISION explicit_reconnect_result=connected',
+          );
+        } finally {
+          _expectingRebootDisconnect = false;
+        }
+        return await _verifyAfterUnprovisionReconnect(
+          operation: operation,
+          initialStatus: initialStatus,
+          initialRuntime: initialRuntime,
+          alreadyVirgin: alreadyVirgin,
+        );
+      } finally {
+        releaseReconnectOwnership();
+      }
+    } on ProvisioningOperationCancelledException {
+      return _unprovisionFail(
+        DeviceUnprovisionFailureCode.deviceCommunicationInterrupted,
+        retryable: true,
+      );
+    } on ProvisioningCommandRejectedException {
+      return _unprovisionFail(
+        DeviceUnprovisionFailureCode.deviceConfigurationRejected,
+        retryable: true,
+      );
+    } on ProvisioningCommandTimeoutException {
+      return _unprovisionFail(
+        DeviceUnprovisionFailureCode.deviceCommunicationTimeout,
+        retryable: true,
+      );
+    } on ProvisioningCommunicationInterruptedException {
+      return _unprovisionFail(
+        DeviceUnprovisionFailureCode.deviceCommunicationInterrupted,
+        retryable: true,
+      );
+    } on ProvisioningConnectionEpochInvalidException {
+      return _unprovisionFail(
+        DeviceUnprovisionFailureCode.deviceCommunicationInterrupted,
+        retryable: true,
+      );
+    } on ProvisioningRebootException {
+      return _unprovisionFail(
+        DeviceUnprovisionFailureCode.rebootFailed,
+        retryable: true,
+      );
+    } on DeviceException {
+      return _unprovisionFail(
+        DeviceUnprovisionFailureCode.deviceCommunicationInterrupted,
+        retryable: true,
+      );
+    } catch (_) {
+      return _unprovisionFail(
+        DeviceUnprovisionFailureCode.internal,
+        retryable: true,
+      );
+    }
+  }
+
+  DeviceUnprovisionResult _unprovisionFail(
+    DeviceUnprovisionFailureCode code, {
+    required bool retryable,
+  }) {
+    diagnosticLog?.call('UNPROVISION failure_code=${code.name}');
+    return DeviceUnprovisionResult.failed(
+      DeviceUnprovisionFailure(code: code, retryable: retryable),
+    );
+  }
+
+  Future<DeviceUnprovisionResult> _verifyAfterUnprovisionReconnect({
+    required _ProvisioningOperation operation,
+    required DeviceStatus initialStatus,
+    required DeviceRuntimeStatus initialRuntime,
+    required bool alreadyVirgin,
+  }) async {
+    DeviceUnprovisionFailureCode? lastCode;
+    for (var attempt = 1; attempt <= unprovisionVerifyAttempts; attempt++) {
+      _check(operation);
+      try {
+        final finalStatus = await statusProvider();
+        _check(operation);
+        if (!finalStatus.connected) {
+          lastCode = DeviceUnprovisionFailureCode.reconnectFailed;
+          diagnosticLog?.call(
+            'UNPROVISION verify_retry attempt=$attempt reason=not_connected',
+          );
+          await _delayBeforeUnprovisionVerifyRetry(attempt);
+          continue;
+        }
+        if (finalStatus.deviceId != initialStatus.deviceId) {
+          return _unprovisionFail(
+            DeviceUnprovisionFailureCode.identityMismatch,
+            retryable: false,
+          );
+        }
+        final finalRuntime = await runtimeStatusProvider();
+        _check(operation);
+        if (finalRuntime.nodeId == 0) {
+          lastCode =
+              DeviceUnprovisionFailureCode.deviceCommunicationInterrupted;
+          diagnosticLog?.call(
+            'UNPROVISION verify_retry attempt=$attempt reason=node_id_unready',
+          );
+          await _delayBeforeUnprovisionVerifyRetry(attempt);
+          continue;
+        }
+        if (finalRuntime.nodeId != initialRuntime.nodeId) {
+          return _unprovisionFail(
+            DeviceUnprovisionFailureCode.identityMismatch,
+            retryable: false,
+          );
+        }
+        if (finalRuntime.isProvisioned) {
+          lastCode = DeviceUnprovisionFailureCode.verificationFailed;
+          diagnosticLog?.call(
+            'UNPROVISION verify_retry attempt=$attempt '
+            'reason=still_provisioned',
+          );
+          await _delayBeforeUnprovisionVerifyRetry(attempt);
+          continue;
+        }
+        diagnosticLog?.call(
+          alreadyVirgin
+              ? 'UNPROVISION verified_already_unprovisioned=true'
+              : 'UNPROVISION verified_unprovisioned=true',
+        );
+        return alreadyVirgin
+            ? DeviceUnprovisionResult.alreadyUnprovisioned(finalStatus)
+            : DeviceUnprovisionResult.unprovisioned(finalStatus);
+      } on ProvisioningOperationCancelledException {
+        rethrow;
+      } on DeviceException {
+        lastCode = DeviceUnprovisionFailureCode.deviceCommunicationInterrupted;
+        diagnosticLog?.call(
+          'UNPROVISION verify_retry attempt=$attempt reason=device_exception',
+        );
+        await _delayBeforeUnprovisionVerifyRetry(attempt);
+      }
+    }
+    return _unprovisionFail(
+      lastCode ?? DeviceUnprovisionFailureCode.deviceCommunicationInterrupted,
+      retryable: true,
+    );
+  }
+
+  Future<void> _delayBeforeUnprovisionVerifyRetry(int attempt) async {
+    if (attempt >= unprovisionVerifyAttempts) {
+      return;
+    }
+    await _delay(unprovisionVerifyRetryDelay);
+  }
+
+  /// GATT/0x23 is often unread after the 1.5 s scheduled reboot plus boot.
+  /// Stay on [DeviceProvisioningPhase.verifying] until the TAG is actually
+  /// readable. A single-shot "not connected" is not identity mismatch.
+  Future<DeviceReadyResult> _verifyAfterProvisioningReconnect({
+    required _ProvisioningOperation operation,
+    required DeviceStatus initialStatus,
+    required DeviceRuntimeStatus initialRuntime,
+    required StrictDeviceProvisioningConfig config,
+  }) async {
+    _emit(DeviceProvisioningPhase.verifying, progress: 0.9);
+    diagnosticLog?.call('PROVISIONING_REBOOT verification_started=true');
+    DeviceReadyFailureCode? lastCode;
+    var lastRetryable = true;
+    for (var attempt = 1; attempt <= postRebootVerifyAttempts; attempt++) {
+      _check(operation);
+      try {
+        final finalStatus = await statusProvider();
+        _check(operation);
+        if (!finalStatus.connected) {
+          lastCode = DeviceReadyFailureCode.reconnectFailed;
+          lastRetryable = true;
+          diagnosticLog?.call(
+            'PROVISIONING_REBOOT verify_retry attempt=$attempt '
+            'reason=not_connected',
+          );
+          await _delayBeforePostRebootVerifyRetry(attempt);
+          continue;
+        }
+        if (finalStatus.deviceId != initialStatus.deviceId) {
+          return _fail(DeviceReadyFailureCode.identityMismatch,
+              retryable: false);
+        }
+        final finalRuntime = await runtimeStatusProvider();
+        _check(operation);
+        if (finalRuntime.nodeId == 0) {
+          lastCode = DeviceReadyFailureCode.deviceCommunicationInterrupted;
+          lastRetryable = true;
+          diagnosticLog?.call(
+            'PROVISIONING_REBOOT verify_retry attempt=$attempt '
+            'reason=node_id_unready',
+          );
+          await _delayBeforePostRebootVerifyRetry(attempt);
+          continue;
+        }
+        if (finalRuntime.nodeId != initialRuntime.nodeId) {
+          return _fail(DeviceReadyFailureCode.identityMismatch,
+              retryable: false);
+        }
+        final verified = finalRuntime.isProvisioned &&
+            finalRuntime.region == config.regionCode &&
+            !finalRuntime.usePreset &&
+            finalRuntime.txEnabled &&
+            finalRuntime.meshSpreadingFactor == config.tel.spreadingFactor;
+        if (!verified) {
+          lastCode = DeviceReadyFailureCode.verificationFailed;
+          lastRetryable = true;
+          diagnosticLog?.call(
+            'PROVISIONING_REBOOT verify_retry attempt=$attempt '
+            'reason=runtime_not_ready',
+          );
+          await _delayBeforePostRebootVerifyRetry(attempt);
+          continue;
+        }
+        final assigned = await _createAssignment(
+          operation,
+          nodeId: finalRuntime.nodeId,
+          status: finalStatus,
+          reason: 'successful_initial_provisioning',
+        );
+        if (assigned) {
+          final readback =
+              await _lookupAssignment(operation, finalRuntime.nodeId);
+          diagnosticLog?.call(
+            'ASSIGNMENT_READBACK result=${switch (readback) {
+              _AssignmentLookup.matched => 'matched',
+              _AssignmentLookup.missing => 'not_found',
+              _AssignmentLookup.unavailable => 'backend_unavailable',
+            }}',
+          );
+          return _readyProvisioned(
+            finalStatus,
+            assignmentVerified: readback == _AssignmentLookup.matched,
+          );
+        }
+        return _readyProvisioned(
+          finalStatus,
+          assignmentVerified: false,
+        );
+      } on ProvisioningOperationCancelledException {
+        rethrow;
+      } on DeviceException {
+        lastCode = DeviceReadyFailureCode.deviceCommunicationTimeout;
+        lastRetryable = true;
+        diagnosticLog?.call(
+          'PROVISIONING_REBOOT verify_retry attempt=$attempt '
+          'reason=device_exception',
+        );
+        await _delayBeforePostRebootVerifyRetry(attempt);
+      }
+    }
+    return _fail(
+      lastCode ?? DeviceReadyFailureCode.deviceCommunicationInterrupted,
+      retryable: lastRetryable,
+    );
+  }
+
+  Future<void> _delayBeforePostRebootVerifyRetry(int attempt) async {
+    if (attempt >= postRebootVerifyAttempts) {
+      return;
+    }
+    await _delay(postRebootVerifyRetryDelay);
   }
 
   Future<DeviceReadyResult> _run(_ProvisioningOperation operation) async {
@@ -294,6 +711,8 @@ final class DeviceProvisioningCoordinator {
             await acquireReconnectOwnership();
             _check(operation);
             _emit(DeviceProvisioningPhase.rebooting, progress: 0.7);
+            // Stay armed through verify. GATT often drops again while the
+            // TAG is still booting; that must not cancel the operation.
             _expectingRebootDisconnect = true;
             try {
               await reboot();
@@ -312,63 +731,15 @@ final class DeviceProvisioningCoordinator {
               diagnosticLog?.call(
                 'PROVISIONING_REBOOT explicit_reconnect_result=connected',
               );
+              return await _verifyAfterProvisioningReconnect(
+                operation: operation,
+                initialStatus: initialStatus,
+                initialRuntime: initialRuntime,
+                config: config,
+              );
             } finally {
               _expectingRebootDisconnect = false;
             }
-            _check(operation);
-            _emit(DeviceProvisioningPhase.verifying, progress: 0.9);
-            diagnosticLog?.call(
-              'PROVISIONING_REBOOT verification_started=true',
-            );
-            final finalStatus = await statusProvider();
-            _check(operation);
-            if (!finalStatus.connected ||
-                finalStatus.deviceId != initialStatus.deviceId) {
-              return _fail(DeviceReadyFailureCode.identityMismatch,
-                  retryable: false);
-            }
-            final finalRuntime = await runtimeStatusProvider();
-            _check(operation);
-            final verified = finalRuntime.nodeId == initialRuntime.nodeId &&
-                finalRuntime.isProvisioned &&
-                finalRuntime.region == config.regionCode &&
-                !finalRuntime.usePreset &&
-                finalRuntime.txEnabled &&
-                finalRuntime.meshSpreadingFactor == config.tel.spreadingFactor;
-            if (!verified) {
-              final identityChanged =
-                  finalRuntime.nodeId != initialRuntime.nodeId;
-              return _fail(
-                  identityChanged
-                      ? DeviceReadyFailureCode.identityMismatch
-                      : DeviceReadyFailureCode.verificationFailed,
-                  retryable: !identityChanged);
-            }
-            final assigned = await _createAssignment(
-              operation,
-              nodeId: finalRuntime.nodeId,
-              status: finalStatus,
-              reason: 'successful_initial_provisioning',
-            );
-            if (assigned) {
-              final readback =
-                  await _lookupAssignment(operation, finalRuntime.nodeId);
-              diagnosticLog?.call(
-                'ASSIGNMENT_READBACK result=${switch (readback) {
-                  _AssignmentLookup.matched => 'matched',
-                  _AssignmentLookup.missing => 'not_found',
-                  _AssignmentLookup.unavailable => 'backend_unavailable',
-                }}',
-              );
-              return _readyProvisioned(
-                finalStatus,
-                assignmentVerified: readback == _AssignmentLookup.matched,
-              );
-            }
-            return _readyProvisioned(
-              finalStatus,
-              assignmentVerified: false,
-            );
           } finally {
             releaseReconnectOwnership();
           }

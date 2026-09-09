@@ -105,6 +105,17 @@ class EixamDeviceCommand {
         forceCmdCharacteristic: true,
       );
 
+  /// Wipes `/eixam/config.bin` and `/eixam/rf.bin`. Firmware ≥ 2.7.53.
+  /// Does not reboot; callers must send [reboot] after an OK / OK_NOCHANGE
+  /// result so the Eixam stack drops, even when `0x23` already reads
+  /// unprovisioned. Does not revert `config.lora`.
+  factory EixamDeviceCommand.unprovision() => const EixamDeviceCommand._(
+        opcode: 0x25,
+        label: 'UNPROVISION',
+        bytes: <int>[0x25],
+        forceCmdCharacteristic: true,
+      );
+
   factory EixamDeviceCommand.positionBacklogStart({
     required int sinceUnix,
     int maxEvents = 0,
@@ -172,7 +183,10 @@ class EixamDeviceCommand {
     required bool secret,
   }) {
     if (bytes.isEmpty ||
-        (bytes.first != 0x20 && bytes.first != 0x21 && bytes.first != 0x24)) {
+        (bytes.first != 0x20 &&
+            bytes.first != 0x21 &&
+            bytes.first != 0x24 &&
+            bytes.first != 0x25)) {
       throw ArgumentError('Invalid provisioning frame.');
     }
     return EixamDeviceCommand._(
@@ -225,7 +239,8 @@ class EixamDeviceCommand {
       0x20 ||
       0x21 ||
       0x22 ||
-      0x24 =>
+      0x24 ||
+      0x25 =>
         BleCommandCriticality.critical,
       _ => BleCommandCriticality.nonCritical,
     };

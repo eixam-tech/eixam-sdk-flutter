@@ -1,4 +1,3 @@
-import '../enums/sos_delivery_channel.dart';
 import '../enums/sos_actionability.dart';
 import '../enums/sos_state.dart';
 import 'sos_actuator_snapshot.dart';
@@ -65,7 +64,6 @@ class SosIncidentProgress {
     required String incidentId,
     required SosState incidentState,
     required DateTime createdAt,
-    required SosDeliveryChannel? deliveryChannel,
     required SosActuatorSnapshot? actuators,
     required bool isBackendConfirmed,
     bool isUsingCachedData = false,
@@ -76,33 +74,40 @@ class SosIncidentProgress {
     SosActionability actionability = SosActionability.unknown,
     SosDisplaySurface displaySurface = SosDisplaySurface.unknown,
   }) {
-    final steps = <SosProgressStep>[
-      SosProgressStep(
-        type: SosProgressStepType.sosReceivedByEixam,
-        state: _receptionState(deliveryChannel, isBackendConfirmed),
-        updatedAt: isBackendConfirmed ? createdAt : null,
-        detailCode: isBackendConfirmed
-            ? 'backend_incident_confirmed'
-            : 'awaiting_backend_confirmation',
-      ),
-    ];
+    final steps = <SosProgressStep>[];
+    if (incidentState == SosState.acknowledged) {
+      // Portal ACK confirms reception and management together; one user-facing
+      // row avoids duplicate "received" + "confirmed" boxes.
+      steps.add(
+        SosProgressStep(
+          type: SosProgressStepType.incidentManagement,
+          state: SosProgressState.succeeded,
+          updatedAt: _latestActuatorUpdate(actuators) ?? createdAt,
+          detailCode: 'incident_acknowledged',
+        ),
+      );
+    } else {
+      // Device-only delivery still awaits cloud confirmation. Do not mark
+      // reception unavailable — that card is not the device ACK.
+      steps.add(
+        SosProgressStep(
+          type: SosProgressStepType.sosReceivedByEixam,
+          state: isBackendConfirmed
+              ? SosProgressState.succeeded
+              : SosProgressState.pending,
+          updatedAt: isBackendConfirmed ? createdAt : null,
+          detailCode: isBackendConfirmed
+              ? 'backend_incident_confirmed'
+              : 'awaiting_backend_confirmation',
+        ),
+      );
+    }
 
     final contacts = actuators?.items.where(
       (item) => item.type == SosActuatorType.emergencyContacts,
     );
     if (contacts != null && contacts.isNotEmpty) {
       steps.add(_contactsStep(contacts.first));
-    }
-
-    if (incidentState == SosState.acknowledged) {
-      steps.add(
-        SosProgressStep(
-          type: SosProgressStepType.incidentManagement,
-          state: SosProgressState.succeeded,
-          updatedAt: _latestActuatorUpdate(actuators),
-          detailCode: 'incident_acknowledged',
-        ),
-      );
     }
     if (incidentState == SosState.resolved ||
         incidentState == SosState.cancelled) {
@@ -147,19 +152,14 @@ class SosIncidentProgress {
   final SosOriginKind originKind;
   final SosActionability actionability;
   final SosDisplaySurface displaySurface;
-}
 
-SosProgressState _receptionState(
-  SosDeliveryChannel? deliveryChannel,
-  bool isBackendConfirmed,
-) {
-  if (isBackendConfirmed) {
-    return SosProgressState.succeeded;
-  }
-  if (deliveryChannel == SosDeliveryChannel.deviceOnly) {
-    return SosProgressState.unavailable;
-  }
-  return SosProgressState.pending;
+  /// True when backend reception or response-center acknowledgement is complete.
+  bool get isBackendReceptionConfirmed => steps.any(
+        (step) =>
+            step.state == SosProgressState.succeeded &&
+            (step.type == SosProgressStepType.sosReceivedByEixam ||
+                step.type == SosProgressStepType.incidentManagement),
+      );
 }
 
 SosProgressStep _contactsStep(SosActuatorItem item) {

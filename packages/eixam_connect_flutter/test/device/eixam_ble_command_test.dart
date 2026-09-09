@@ -25,6 +25,15 @@ void main() {
       expect(EixamDeviceCommand.sosVolume(70).encode(), <int>[0x12, 70]);
       expect(EixamDeviceCommand.reboot().encode(), <int>[0x22]);
       expect(EixamDeviceCommand.getDeviceStatus().encode(), <int>[0x23]);
+      expect(EixamDeviceCommand.unprovision().encode(), <int>[0x25]);
+    });
+
+    test('unprovision is critical and forced onto the CMD characteristic', () {
+      final command = EixamDeviceCommand.unprovision();
+
+      expect(command.opcode, 0x25);
+      expect(command.isCritical, isTrue);
+      expect(command.usesCmdCharacteristic, isTrue);
     });
 
     test('setRegion encodes opcode 0x20 plus the region byte', () {

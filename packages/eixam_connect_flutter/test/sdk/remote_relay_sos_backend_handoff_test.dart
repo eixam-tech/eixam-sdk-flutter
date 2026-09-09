@@ -1043,6 +1043,31 @@ void main() {
       expect(sosRepository.lastDeviceId, isNot('CF:82:59:4B:1A:A8'));
     });
 
+    test('device SOS without a fresh fix still publishes to backend', () async {
+      await rebuildSdkWithFastDeviceSosTiming();
+      deviceRepository.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'CF:82:59:4B:1A:A8',
+          canonicalHardwareId: 'CF:82:59:4B:1A:A8',
+          connected: true,
+          paired: true,
+          activated: true,
+        ),
+      );
+
+      deviceSosController.handleIncomingSosPacket(
+        _deviceOriginActivePacketForNode(1498094248),
+        source: DeviceSosTransitionSource.device,
+      );
+
+      await _eventually(
+        () => sosRepository.triggerCallCount == 1,
+        timeout: const Duration(seconds: 3),
+      );
+      expect(sosRepository.lastOriginatorNodeId, 1498094248);
+      expect(sosRepository.lastPositionSnapshot, isNull);
+    });
+
     test('unverified device SOS cannot create assignment', () async {
       await rebuildSdkWithFastDeviceSosTiming();
       deviceRegistryRepository.devices.clear();

@@ -81,6 +81,19 @@ void main() {
       expect(_hasDiagnostic('SOS_ALREADY_ACTIVE_GUARD_BLOCKED'), isTrue);
     });
 
+    test('device SOS without coordinates still publishes MQTT', () async {
+      final incident = await repository.triggerSos(
+        triggerSource: 'ble_device_runtime_status',
+        originatorNodeId: 1498094248,
+        deviceId: '1498094248',
+      );
+
+      expect(incident.state, SosState.sent);
+      expect(realtimeClient.publishedSos, hasLength(1));
+      expect(realtimeClient.publishedSos.single.positionSnapshot, isNull);
+      expect(_hasDiagnostic('SOS_POSITION_UNAVAILABLE'), isTrue);
+    });
+
     test('keeps duplicate protection when backend rehydrates active SOS',
         () async {
       final remoteDataSource = _FakeSosRemoteDataSource()
@@ -169,6 +182,65 @@ void main() {
           _hasDiagnostic(
               'SOS_ORIGIN_DECISION source=mqtt_repository_rehydrate'),
           isTrue);
+    });
+
+    test('user-scoped portal ACK confirms reception without clientIncidentId',
+        () async {
+      final local = await _triggerAppSos(repository);
+      expect(local.isBackendConfirmed, isFalse);
+
+      realtimeClient.emitEvent(_portalAckEvent(
+        incidentId: 'backend-ack-incident',
+      ));
+      await _pumpRealtime();
+
+      final current = await repository.getCurrentIncident();
+      expect(current!.id, 'backend-ack-incident');
+      expect(current.state, SosState.acknowledged);
+      expect(current.isBackendConfirmed, isTrue);
+      expect(current.provisionalIncidentId, local.id);
+      expect(current.preservedLocalOwnership, isTrue);
+      expect(current.progress.steps, hasLength(1));
+      expect(current.progress.steps.single.type,
+          SosProgressStepType.incidentManagement);
+      expect(current.progress.steps.single.state, SosProgressState.succeeded);
+      expect(current.progress.isBackendReceptionConfirmed, isTrue);
+      expect(_hasDiagnostic('reason=user_scoped_ack_handoff'), isTrue);
+    });
+
+    test('internal-topic portal ACK without payload userId still confirms',
+        () async {
+      await _triggerAppSos(repository);
+
+      realtimeClient.emitEvent(_portalAckEvent(
+        incidentId: 'backend-ack-internal-topic',
+        authenticatedUserScoped: false,
+        topicCategory: 'internal',
+      ));
+      await _pumpRealtime();
+
+      final current = await repository.getCurrentIncident();
+      expect(current!.id, 'backend-ack-internal-topic');
+      expect(current.state, SosState.acknowledged);
+      expect(current.isBackendConfirmed, isTrue);
+      expect(_hasDiagnostic('reason=user_scoped_ack_handoff'), isTrue);
+    });
+
+    test('unscoped portal ACK cannot claim a provisional local SOS', () async {
+      final local = await _triggerAppSos(repository);
+
+      realtimeClient.emitEvent(_portalAckEvent(
+        incidentId: 'backend-ack-incident',
+        authenticatedUserScoped: false,
+        topicCategory: null,
+      ));
+      await _pumpRealtime();
+
+      final current = await repository.getCurrentIncident();
+      expect(current!.id, local.id);
+      expect(current.isBackendConfirmed, isFalse);
+      expect(current.state, SosState.sent);
+      expect(_hasDiagnostic('reason=identity_mismatch'), isTrue);
     });
 
     test('accepts matching active incidentId lifecycle update', () async {
@@ -762,7 +834,7 @@ void main() {
       expect(await repository.getSosState(), SosState.cancelRequested);
       expect(
           (await repository.getCurrentIncident())!.id, 'backend-still-active');
-      expect(remoteDataSource.lastCancelIncidentId, local.id);
+      expect(remoteDataSource.lastCancelIncidentId, isNull);
     });
 
     test('active cancel response stays pending until terminal MQTT evidence',
@@ -814,6 +886,41 @@ void main() {
       expect(cancelled.state, SosState.cancelled);
       expect(await repository.getSosState(), SosState.idle);
       expect(await repository.getCurrentIncident(), isNull);
+    });
+
+    test('HTTP failure of provisional sos-* settles cancelled locally',
+        () async {
+      final remoteDataSource = _FakeSosRemoteDataSource()
+        ..cancelError = const SosException(
+          'E_HTTP_SOS_CANCEL_FAILED',
+          'E_HTTP_SOS_CANCEL_FAILED',
+        );
+      await repository.dispose();
+      repository = MqttOperationalSosRepository(
+        realtimeClient: realtimeClient,
+        remoteDataSource: remoteDataSource,
+        cancelRemoteDataSource: remoteDataSource,
+      );
+      final local = await _triggerAppSos(repository);
+
+      final cancelled = await repository.cancelSos();
+
+      expect(local.id, startsWith('sos-'));
+      expect(cancelled.state, SosState.cancelled);
+      expect(await repository.getSosState(), SosState.idle);
+      expect(await repository.getCurrentIncident(), isNull);
+      expect(remoteDataSource.lastCancelIncidentId, isNull);
+    });
+
+    test('missing cancel HTTP still settles provisional sos-* locally',
+        () async {
+      final local = await _triggerAppSos(repository);
+
+      final cancelled = await repository.cancelSos();
+
+      expect(local.id, startsWith('sos-'));
+      expect(cancelled.state, SosState.cancelled);
+      expect(await repository.getSosState(), SosState.idle);
     });
 
     test('active-query exception keeps cancellation non-terminal', () async {
@@ -1129,6 +1236,26 @@ Future<SosIncident> _triggerAppSos(
   );
 }
 
+RealtimeEvent _portalAckEvent({
+  required String incidentId,
+  bool authenticatedUserScoped = true,
+  String? topicCategory = 'internal',
+}) {
+  final eventAt = DateTime.now().toUtc();
+  return RealtimeEvent(
+    type: 'sos.lifecycle',
+    timestamp: eventAt,
+    payload: <String, dynamic>{
+      'type': 'sos_ack',
+      'incidentId': incidentId,
+      'status': 'active',
+      'occurredAt': eventAt.toIso8601String(),
+      '_mqttAuthenticatedUserScoped': authenticatedUserScoped,
+      if (topicCategory != null) '_mqttTopicCategory': topicCategory,
+    },
+  );
+}
+
 RealtimeEvent _lifecycleEvent({
   required String incidentId,
   required String state,
@@ -1317,6 +1444,7 @@ final class _FakeSosRemoteDataSource implements SosRemoteDataSource {
   Object? getActiveSosError;
   Completer<SosIncidentDto?>? getActiveSosCompleter;
   String? lastCancelIncidentId;
+  Object? cancelError;
 
   @override
   Future<SosIncidentDto> triggerSos({
@@ -1355,6 +1483,9 @@ final class _FakeSosRemoteDataSource implements SosRemoteDataSource {
     String? cycleKey,
   }) async {
     lastCancelIncidentId = incidentId;
+    if (cancelError != null) {
+      throw cancelError!;
+    }
     if (cancelReturnsNull) return null;
     if (cancelResponse != null) return cancelResponse;
     if (keepActiveOnCancel) return active;

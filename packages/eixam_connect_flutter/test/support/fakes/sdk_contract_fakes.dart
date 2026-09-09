@@ -33,6 +33,7 @@ class FakeSosRepository implements SosRepository {
   SdkCoverageSnapshot? lastMobileCoverage;
   OsSosWidgetActivation? lastOsWidgetActivation;
   Object? triggerError;
+  Object? cancelError;
   final StreamController<SosState> stateController =
       StreamController<SosState>.broadcast();
 
@@ -88,6 +89,10 @@ class FakeSosRepository implements SosRepository {
   Future<SosIncident> cancelSos() async {
     cancelCallCount++;
     terminalOperations.add('cancel:${currentIncident.id}');
+    final error = cancelError;
+    if (error != null) {
+      throw error;
+    }
     currentIncident = currentIncident.copyWith(state: SosState.cancelled);
     stateController.add(currentIncident.state);
     return currentIncident;

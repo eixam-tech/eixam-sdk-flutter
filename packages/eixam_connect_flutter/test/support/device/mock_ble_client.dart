@@ -24,6 +24,7 @@ class MockBleClient implements BleClient {
   final List<EixamDeviceCommand> writtenCommands = <EixamDeviceCommand>[];
   bool systemAssociationAvailable = true;
   final List<String> removedSystemAssociations = <String>[];
+  Duration? runtimeStatusReplyDelay;
   List<int> runtimeStatusPayload = <int>[
     0xE9,
     0x78,
@@ -345,7 +346,13 @@ class MockBleClient implements BleClient {
         ]);
         return;
       case 0x23:
-        emit(EixamBleChannel.tel, runtimeStatusPayload);
+        void sendStatus() => emit(EixamBleChannel.tel, runtimeStatusPayload);
+        final delay = runtimeStatusReplyDelay;
+        if (delay == null || delay <= Duration.zero) {
+          sendStatus();
+          return;
+        }
+        Future<void>.delayed(delay, sendStatus);
         return;
       default:
         return;

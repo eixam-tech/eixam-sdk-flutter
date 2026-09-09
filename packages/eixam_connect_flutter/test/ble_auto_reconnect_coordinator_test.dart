@@ -173,6 +173,46 @@ void main() {
     });
 
     test(
+        'native protection BLE owner skips Flutter reconnect and notifies native',
+        () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _FakeDeviceRepository();
+      final store = PreferredBleDeviceStore(localStore: SharedPrefsSdkStore());
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: 'ble-demo-r1',
+          displayName: 'EIXAM Demo',
+          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+        ),
+      );
+      final nativeTriggers = <String>[];
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+        isNativeProtectionOwningBle: () => true,
+        onNativeProtectionOwnsBle: (trigger) async {
+          nativeTriggers.add(trigger);
+        },
+      );
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+
+      final result = await coordinator.tryAutoConnectForHandoff(
+        trigger: 'startup',
+        attemptId: 'attempt-native',
+      );
+
+      expect(result.status, PreferredDeviceReconnectResultStatus.reconnecting);
+      expect(result.reason, 'native_protection_ble_owner');
+      expect(repository.reconnectCallCount, 0);
+      expect(nativeTriggers, <String>['startup']);
+      await coordinator.dispose();
+    });
+
+    test(
         'provisioning ownership suppresses generic triggers but allows its '
         'explicit reconnect', () async {
       SharedPreferences.setMockInitialValues(<String, Object>{});
@@ -1678,6 +1718,116 @@ void main() {
               .map((event) => event.message)
               .where((message) => message == 'manual_connect_retry_start'),
           isEmpty,
+        );
+        await coordinator.dispose();
+      },
+    );
+
+    test(
+      'resume campaign retries a failed attempt while still foreground',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        BleDebugRegistry.instance.reset();
+        final repository = _FakeDeviceRepository()
+          ..pairErrors = <Object>[
+            PlatformException(
+              code: 'deviceDisconnected',
+              message: 'deviceDisconnected',
+            ),
+          ];
+        final store = PreferredBleDeviceStore(
+          localStore: SharedPrefsSdkStore(),
+        );
+        await store.savePreferredDevice(
+          PreferredBleDevice(
+            deviceId: 'ble-demo-r1',
+            displayName: 'EIXAM Demo',
+            lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+          ),
+        );
+        final coordinator = BleAutoReconnectCoordinator(
+          deviceRepository: repository,
+          preferredDeviceStore: store,
+          preferredReconnectDelay: (_) async {},
+        );
+
+        await coordinator.initialize(
+          initialStatus: await repository.getDeviceStatus(),
+          deviceStatusStream: repository.watchDeviceStatus(),
+        );
+
+        final result = await coordinator.tryAutoConnectForHandoff(
+          trigger: 'resume',
+        );
+
+        expect(result.connected, isTrue);
+        expect(repository.reconnectCallCount, 2);
+        expect(
+          BleDebugRegistry.instance.currentState.events.map(
+            (event) => event.message,
+          ),
+          isNot(
+            contains(
+              'EIXAM_RECONNECT_TRACE sdk_campaign_cancelled '
+              'reason=app_not_foreground source=resume',
+            ),
+          ),
+        );
+        await coordinator.dispose();
+      },
+    );
+
+    test(
+      'resume campaign aborts when the app is backgrounded between attempts',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        BleDebugRegistry.instance.reset();
+        final repository = _FakeDeviceRepository()
+          ..pairErrors = <Object>[
+            PlatformException(
+              code: 'deviceDisconnected',
+              message: 'deviceDisconnected',
+            ),
+          ];
+        final store = PreferredBleDeviceStore(
+          localStore: SharedPrefsSdkStore(),
+        );
+        await store.savePreferredDevice(
+          PreferredBleDevice(
+            deviceId: 'ble-demo-r1',
+            displayName: 'EIXAM Demo',
+            lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+          ),
+        );
+        late final BleAutoReconnectCoordinator coordinator;
+        coordinator = BleAutoReconnectCoordinator(
+          deviceRepository: repository,
+          preferredDeviceStore: store,
+          preferredReconnectDelay: (_) async {
+            coordinator.setAppForeground(false);
+          },
+        );
+
+        await coordinator.initialize(
+          initialStatus: await repository.getDeviceStatus(),
+          deviceStatusStream: repository.watchDeviceStatus(),
+        );
+
+        final result = await coordinator.tryAutoConnectForHandoff(
+          trigger: 'resume',
+        );
+
+        expect(result.status, PreferredDeviceReconnectResultStatus.failed);
+        expect(result.reason, 'app_not_foreground');
+        expect(repository.reconnectCallCount, 1);
+        expect(
+          BleDebugRegistry.instance.currentState.events.map(
+            (event) => event.message,
+          ),
+          contains(
+            'EIXAM_RECONNECT_TRACE sdk_campaign_cancelled '
+            'reason=app_not_foreground source=resume',
+          ),
         );
         await coordinator.dispose();
       },

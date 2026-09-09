@@ -233,9 +233,10 @@ class MqttOperationalSosRepository
       );
     }
     if (positionSnapshot == null && !appOwnedSos) {
-      throw const SosException(
-        'E_SOS_POSITION_REQUIRED',
-        'E_SOS_POSITION_REQUIRED',
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_POSITION_UNAVAILABLE continuing_backend_publish '
+        'triggerSource=$triggerSource '
+        'reason=location_never_blocks_activation',
       );
     }
 
@@ -858,6 +859,11 @@ class MqttOperationalSosRepository
 
     final remoteDataSource = cancelRemoteDataSource;
     if (remoteDataSource == null) {
+      if (_canLocallySettleProvisionalCancel()) {
+        return _locallySettleProvisionalCancel(
+          reason: 'cancel_http_unavailable',
+        );
+      }
       throw const SosException(
         'E_SOS_CANCEL_HTTP_UNAVAILABLE',
         'E_SOS_CANCEL_HTTP_UNAVAILABLE',
@@ -879,7 +885,9 @@ class MqttOperationalSosRepository
         relaySource: cancellationTarget.relaySource,
         originatorNodeId: cancellationTarget.originatorNodeId,
         relayNodeId: cancellationTarget.relayNodeId,
-        incidentId: cancellationTarget.id,
+        incidentId: _isProvisionalLocalSosIncidentId(cancellationTarget.id)
+            ? null
+            : cancellationTarget.id,
         cycleKey: cancellationTarget.cycleKey,
       );
       final settledIncident = await _settleCancelledIncident(
@@ -890,6 +898,15 @@ class MqttOperationalSosRepository
       await _persistState();
       return settledIncident;
     } catch (error) {
+      if (_canLocallySettleProvisionalCancel()) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_CANCEL_PROVISIONAL_LOCAL_SETTLE '
+          'incidentId=${_activeIncident?.id ?? "none"} error=$error',
+        );
+        return _locallySettleProvisionalCancel(
+          reason: 'cancel_http_failed',
+        );
+      }
       _activeIncident = _activeIncident!.copyWith(state: SosState.sent);
       _emit(SosState.sent);
       await _persistState();
@@ -1052,6 +1069,35 @@ class MqttOperationalSosRepository
       _rememberActiveLikeState();
     }
     return _activeIncident!;
+  }
+
+  Future<SosIncident> _locallySettleProvisionalCancel({
+    required String reason,
+  }) async {
+    final current = _activeIncident!;
+    final cancelled = current.copyWith(
+      state: SosState.cancelled,
+      terminalReason: SosTerminalReason.cancelledByUser,
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_CANCEL_PROVISIONAL_LOCAL_SETTLE reason=$reason '
+      'incidentId=${cancelled.id}',
+    );
+    _clearCurrentIncidentAfterCancellation(cancelled);
+    await _persistState();
+    return cancelled;
+  }
+
+  bool _canLocallySettleProvisionalCancel() {
+    final incident = _activeIncident;
+    if (incident == null || incident.isBackendConfirmed) {
+      return false;
+    }
+    return _isProvisionalLocalSosIncidentId(incident.id);
+  }
+
+  bool _isProvisionalLocalSosIncidentId(String id) {
+    return id.startsWith('sos-') || id.startsWith('device-runtime-');
   }
 
   void _clearCurrentIncidentAfterCancellation(SosIncident cancelledIncident) {
@@ -1464,7 +1510,7 @@ class MqttOperationalSosRepository
         previousIncident,
         update.incidentId,
         trustedCanonicalHandoff: !previousIncident.isBackendConfirmed &&
-            previousIncident.id.startsWith('sos-'),
+            _isProvisionalLocalSosIncidentId(previousIncident.id),
       );
     }
     var currentIncident = _activeIncident!;
@@ -1548,6 +1594,7 @@ class MqttOperationalSosRepository
         state: state,
       ),
     );
+    _activeIncident = nextIncident;
     final accepted = _emit(
       state,
       previousIncident: currentIncident,
@@ -1555,6 +1602,7 @@ class MqttOperationalSosRepository
       reason: 'realtime_event',
     );
     if (!accepted) {
+      _activeIncident = currentIncident;
       if (shouldPersist) {
         unawaited(_persistState());
         _emitActuatorOnlyUpdate(
@@ -1684,6 +1732,18 @@ class MqttOperationalSosRepository
       );
     }
 
+    if (_isUserScopedAcknowledgementHandoff(update, activeIncident)) {
+      _logLifecycleAuthorityAccepted(
+        update: update,
+        activeIncidentId: activeIncident.id,
+        reason: 'user_scoped_ack_handoff',
+        diagnostic: 'MQTT_SOS_LIFECYCLE_ACCEPTED_USER_SCOPED_ACK',
+      );
+      return const _LifecycleAuthorityDecision.accepted(
+        'user_scoped_ack_handoff',
+      );
+    }
+
     _logLifecycleAuthorityRejected(
       update: update,
       activeIncidentId: activeIncident.id,
@@ -1807,6 +1867,33 @@ class MqttOperationalSosRepository
       '$diagnostic reason=$reason incidentId=${update.incidentId} '
       'activeIncidentId=${activeIncidentId ?? "none"}',
     );
+  }
+
+  bool _isUserScopedAcknowledgementHandoff(
+    MqttSosLifecycleUpdate update,
+    SosIncident activeIncident,
+  ) {
+    if (update.state != SosState.acknowledged ||
+        !_isTrustedUserScopedAckTopic(update) ||
+        activeIncident.isBackendConfirmed ||
+        !_isActiveLikeState(_stateMachine.current) ||
+        !_isProvisionalLocalSosIncidentId(activeIncident.id)) {
+      return false;
+    }
+    final eventAt = update.eventTimestamp.toUtc();
+    final createdAt = activeIncident.createdAt.toUtc();
+    final earliest = createdAt.subtract(_processedClockSkewTolerance);
+    final futureLimit =
+        _nowProvider().toUtc().add(_processedClockSkewTolerance);
+    return !eventAt.isBefore(earliest) && !eventAt.isAfter(futureLimit);
+  }
+
+  bool _isTrustedUserScopedAckTopic(MqttSosLifecycleUpdate update) {
+    if (update.authenticatedUserScoped) {
+      return true;
+    }
+    final topicCategory = update.topicCategory?.trim().toLowerCase();
+    return topicCategory == 'internal' || topicCategory == 'legacy_alias';
   }
 
   bool _isProcessedTimestampCompatible(
@@ -2151,6 +2238,12 @@ class MqttOperationalSosRepository
       return const <SosState>[
         SosState.cancelRequested,
         SosState.cancelled,
+      ];
+    }
+    if (from == SosState.sending && to == SosState.acknowledged) {
+      return const <SosState>[
+        SosState.sent,
+        SosState.acknowledged,
       ];
     }
     return null;

@@ -467,6 +467,47 @@ void main() {
     await harness.dispose();
   });
 
+  test('provisioning retries a post-reboot 0x23 timeout then verifies',
+      () async {
+    final harness = _Harness(runtimeFailuresAfterReboot: 2);
+    final result = await harness.coordinator.ensureReady();
+
+    expect(result.isReady, isTrue);
+    expect(harness.runtimeReadCount, greaterThan(1));
+    expect(
+      harness.diagnostics,
+      contains(
+        'PROVISIONING_REBOOT verify_retry attempt=1 reason=device_exception',
+      ),
+    );
+    await harness.dispose();
+  });
+
+  test('provisioning retries a disconnected post-reboot status then verifies',
+      () async {
+    final harness = _Harness(disconnectedStatusReadsAfterReboot: 2);
+    final result = await harness.coordinator.ensureReady();
+
+    expect(result.isReady, isTrue);
+    expect(
+      harness.diagnostics,
+      contains(
+        'PROVISIONING_REBOOT verify_retry attempt=1 reason=not_connected',
+      ),
+    );
+    await harness.dispose();
+  });
+
+  test('provisioning maps a stuck post-reboot disconnect to reconnectFailed',
+      () async {
+    final harness = _Harness(disconnectedStatusReadsAfterReboot: 99);
+    final result = await harness.coordinator.ensureReady();
+
+    expect(result.failure?.code, DeviceReadyFailureCode.reconnectFailed);
+    expect(result.failure?.retryable, isTrue);
+    await harness.dispose();
+  });
+
   test('stale pre-reboot unprovisioned 0x23 cannot produce ready', () async {
     final harness = _Harness(finalProvisioned: false);
     final result = await harness.coordinator.ensureReady();
@@ -601,6 +642,159 @@ void main() {
     expect(harness.runtimeReadCount, 1);
     await harness.dispose();
   });
+
+  test('unprovision still writes 0x25 and reboots when 0x23 is already 0',
+      () async {
+    final harness = _Harness(
+      initiallyProvisioned: false,
+      finalProvisioned: false,
+      noChangeOpcode: 0x25,
+      liveFirmwareVersion: '2.7.53',
+    );
+    final result = await harness.coordinator.unprovision();
+
+    expect(
+      result.disposition,
+      DeviceUnprovisionDisposition.alreadyUnprovisioned,
+    );
+    expect(harness.commands.single.opcode, 0x25);
+    expect(harness.rebootCount, 1);
+    expect(harness.reconnectCount, 1);
+    expect(harness.reconnectOwnershipHeld, isFalse);
+    await harness.dispose();
+  });
+
+  test('unprovision wipes then reboots and verifies PROVISIONED=0', () async {
+    final harness = _Harness(
+      initiallyProvisioned: true,
+      finalProvisioned: false,
+      liveFirmwareVersion: '2.7.53',
+    );
+    final result = await harness.coordinator.unprovision();
+
+    expect(result.disposition, DeviceUnprovisionDisposition.unprovisioned);
+    expect(harness.commands.single.opcode, 0x25);
+    expect(harness.rebootCount, 1);
+    expect(harness.reconnectCount, 1);
+    expect(harness.reconnectOwnershipAcquireCount, 1);
+    expect(harness.reconnectOwnershipReleaseCount, 1);
+    expect(harness.reconnectOwnershipHeld, isFalse);
+    await harness.dispose();
+  });
+
+  test('unprovision rejects firmware older than 2.7.53 before 0x25', () async {
+    final harness = _Harness(
+      initiallyProvisioned: true,
+      liveFirmwareVersion: '2.7.52',
+    );
+    final result = await harness.coordinator.unprovision();
+
+    expect(result.failure?.code,
+        DeviceUnprovisionFailureCode.firmwareUpdateRequired);
+    expect(harness.commands, isEmpty);
+    expect(harness.rebootCount, 0);
+    await harness.dispose();
+  });
+
+  test('unprovision does not reboot when 0x25 is rejected', () async {
+    final harness = _Harness(
+      initiallyProvisioned: true,
+      rejectedOpcode: 0x25,
+      liveFirmwareVersion: '2.7.53',
+    );
+    final result = await harness.coordinator.unprovision();
+
+    expect(result.failure?.code,
+        DeviceUnprovisionFailureCode.deviceConfigurationRejected);
+    expect(harness.commands.single.opcode, 0x25);
+    expect(harness.rebootCount, 0);
+    await harness.dispose();
+  });
+
+  test('unprovision retries after a missing reboot disconnect', () async {
+    final harness = _Harness(
+      initiallyProvisioned: true,
+      finalProvisioned: false,
+      liveFirmwareVersion: '2.7.53',
+      rebootFails: true,
+    );
+    final result = await harness.coordinator.unprovision();
+
+    expect(result.failure?.code, DeviceUnprovisionFailureCode.rebootFailed);
+    expect(result.failure?.retryable, isTrue);
+    expect(harness.commands.single.opcode, 0x25);
+    await harness.dispose();
+  });
+
+  test('unprovision retries 0x25 and reboot after wipe without reboot',
+      () async {
+    final harness = _Harness(
+      initiallyProvisioned: true,
+      finalProvisioned: false,
+      liveFirmwareVersion: '2.7.53',
+      rebootFails: true,
+    );
+    final first = await harness.coordinator.unprovision();
+
+    expect(first.failure?.code, DeviceUnprovisionFailureCode.rebootFailed);
+    expect(harness.commands.single.opcode, 0x25);
+    expect(harness.rebootCount, 1);
+
+    harness.rebootFails = false;
+    harness.noChangeOpcode = 0x25;
+    final retry = await harness.coordinator.unprovision();
+
+    expect(retry.succeeded, isTrue);
+    expect(harness.commands.map((command) => command.opcode), [0x25, 0x25]);
+    expect(harness.rebootCount, 2);
+    expect(harness.reconnectCount, 1);
+    expect(harness.reconnectOwnershipHeld, isFalse);
+    await harness.dispose();
+  });
+
+  test('unprovision retries a post-reboot 0x23 timeout then verifies',
+      () async {
+    final harness = _Harness(
+      initiallyProvisioned: true,
+      finalProvisioned: false,
+      liveFirmwareVersion: '2.7.53',
+      runtimeFailuresAfterReboot: 2,
+    );
+    final result = await harness.coordinator.unprovision();
+
+    expect(result.disposition, DeviceUnprovisionDisposition.unprovisioned);
+    expect(harness.runtimeReadCount, greaterThan(1));
+    await harness.dispose();
+  });
+
+  test('unprovision retries a disconnected post-reboot status then verifies',
+      () async {
+    final harness = _Harness(
+      initiallyProvisioned: true,
+      finalProvisioned: false,
+      liveFirmwareVersion: '2.7.53',
+      disconnectedStatusReadsAfterReboot: 2,
+    );
+    final result = await harness.coordinator.unprovision();
+
+    expect(result.disposition, DeviceUnprovisionDisposition.unprovisioned);
+    await harness.dispose();
+  });
+
+  test('unprovision maps a stuck post-reboot disconnect to reconnectFailed',
+      () async {
+    final harness = _Harness(
+      initiallyProvisioned: true,
+      finalProvisioned: false,
+      liveFirmwareVersion: '2.7.53',
+      disconnectedStatusReadsAfterReboot: 99,
+    );
+    final result = await harness.coordinator.unprovision();
+
+    expect(result.failure?.code, DeviceUnprovisionFailureCode.reconnectFailed);
+    expect(result.failure?.retryable, isTrue);
+    await harness.dispose();
+  });
 }
 
 final class _Harness {
@@ -618,6 +812,8 @@ final class _Harness {
     this.rebootFails = false,
     this.blockReboot = false,
     this.reconnectCompleter,
+    this.runtimeFailuresAfterReboot = 0,
+    this.disconnectedStatusReadsAfterReboot = 0,
     List<String>? assignmentHardwareIds,
     Object? registryError,
     Object? assignmentCreateError,
@@ -649,12 +845,30 @@ final class _Harness {
       persistCreatedAssignment: persistCreatedAssignment,
     );
     coordinator = DeviceProvisioningCoordinator(
-      statusProvider: () async => _status(afterReboot: rebootCount > 0),
+      statusProvider: () async {
+        final afterReboot = rebootCount > 0;
+        final status = _status(afterReboot: afterReboot);
+        if (afterReboot && disconnectedStatusReadsAfterReboot > 0) {
+          disconnectedStatusReadsAfterReboot--;
+          return status.copyWith(connected: false);
+        }
+        return status;
+      },
       liveStatusProvider: () async => _status(
         afterReboot: rebootCount > 0,
         firmwareVersion: liveFirmwareVersion,
       ),
-      runtimeStatusProvider: () async => _runtime(afterReboot: rebootCount > 0),
+      runtimeStatusProvider: () async {
+        final afterReboot = rebootCount > 0;
+        if (afterReboot && runtimeFailuresAfterReboot > 0) {
+          runtimeFailuresAfterReboot--;
+          throw const DeviceException(
+            'E_DEVICE_STATUS_TIMEOUT',
+            'E_DEVICE_STATUS_TIMEOUT',
+          );
+        }
+        return _runtime(afterReboot: afterReboot);
+      },
       countryIsoProvider: () async => 'ES',
       pskSource: pskSource,
       configSource: const _ConfigSource(),
@@ -699,12 +913,13 @@ final class _Harness {
       diagnosticLog: diagnostics.add,
       firmwarePolicy: const ProvisioningFirmwarePolicy.current(),
       softSimRejectionObservationInterval: const Duration(milliseconds: 1),
+      delay: (_) async {},
     );
   }
 
   final bool initiallyProvisioned;
   final int? rejectedOpcode;
-  final int? noChangeOpcode;
+  int? noChangeOpcode;
   final bool reconnectSucceeds;
   final int finalNodeId;
   final bool finalProvisioned;
@@ -712,9 +927,11 @@ final class _Harness {
   final int initialNodeId;
   final String finalDeviceId;
   final int? blockAtWrite;
-  final bool rebootFails;
+  bool rebootFails;
   final bool blockReboot;
   final Completer<bool>? reconnectCompleter;
+  int runtimeFailuresAfterReboot;
+  int disconnectedStatusReadsAfterReboot;
   final StreamController<List<int>> packets =
       StreamController<List<int>>.broadcast();
   final StreamController<DeviceStatus> statuses =

@@ -23,7 +23,7 @@ typedef SosBackendAssignmentVerifiedRetry = Future<bool> Function({
   required String signature,
   required String triggerSource,
   required String message,
-  required TrackingPosition positionSnapshot,
+  required TrackingPosition? positionSnapshot,
   required String? deviceId,
   required String? hardwareId,
   required int? originatorNodeId,
@@ -160,7 +160,7 @@ class BleOperationalRuntimeBridge {
     required String signature,
     required String triggerSource,
     required String message,
-    required TrackingPosition positionSnapshot,
+    required TrackingPosition? positionSnapshot,
     String? deviceId,
     String? hardwareId,
     int? originatorNodeId,
@@ -1507,7 +1507,7 @@ class BleOperationalRuntimeBridge {
     required String signature,
     required String triggerSource,
     required String message,
-    required TrackingPosition positionSnapshot,
+    required TrackingPosition? positionSnapshot,
     required String? deviceId,
     String? hardwareId,
     required int? originatorNodeId,
@@ -1922,7 +1922,7 @@ class _PendingSosPublish {
   final String signature;
   final String triggerSource;
   final String message;
-  final TrackingPosition positionSnapshot;
+  final TrackingPosition? positionSnapshot;
   final String? deviceId;
   final String? hardwareId;
   final int? originatorNodeId;

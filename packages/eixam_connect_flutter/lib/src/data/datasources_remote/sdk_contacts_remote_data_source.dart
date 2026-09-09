@@ -152,13 +152,17 @@ class HttpSdkContactsRemoteDataSource implements SdkContactsRemoteDataSource {
     required int priority,
     String language = 'en',
   }) {
-    return <String, dynamic>{
+    final body = <String, dynamic>{
       'name': name,
       'phone': phone,
-      'email': email,
       'priority': priority,
       'language': language,
     };
+    final trimmedEmail = email.trim();
+    if (trimmedEmail.isNotEmpty) {
+      body['email'] = trimmedEmail;
+    }
+    return body;
   }
 
   SdkContactDto _contactFromResponse(

@@ -269,7 +269,9 @@ class BleIncomingPayloadClassifier {
     if (connectedBleTagNodeId != null) {
       return packet.nodeId != connectedBleTagNodeId;
     }
-    return hasRecentExternalRelayContext;
+    // Unknown connected identity: this 6 B event arrived on the connected
+    // TAG GATT. Do not treat the physical 3 s hold as a remote LoRa cancel.
+    return false;
   }
 
   bool _isExternalBackendClearPacket(

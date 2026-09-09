@@ -353,6 +353,14 @@ void main() {
         final currentIncident = await harness.sdk.getCurrentSosIncident();
         expect(currentIncident?.state, SosState.sent);
         expect(currentIncident?.deliveryChannel, SosDeliveryChannel.deviceOnly);
+        expect(
+          currentIncident?.progress.steps.first.state,
+          SosProgressState.pending,
+        );
+        expect(
+          currentIncident?.progress.steps.first.detailCode,
+          'awaiting_backend_confirmation',
+        );
         expect(_hasDebugMessage('SOS_TRIGGER_DEVICE_ONLY_SUCCESS'), isTrue);
         expect(
           _hasDebugMessage('SOS_TRIGGER_DEVICE_ONLY_SUCCESS_RETURNED'),
@@ -1047,6 +1055,156 @@ void main() {
           await harness.sdk.getCurrentSosTerminalReason(),
           SosTerminalReason.cancelledByUser,
         );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('device-origin 0xE1 post-fire cancel closes authoritative lifecycle',
+        () async {
+      final harness = _SdkSosHarness(
+        connectedBle: true,
+        deviceCountdown: const Duration(milliseconds: 5),
+      );
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        harness.sosRepository.currentIncident =
+            harness.sosRepository.currentIncident.copyWith(
+          state: SosState.sent,
+          triggerSource: 'ble_device_runtime',
+        );
+        harness.deviceSosController.handleIncomingSosPacket(
+          _deviceOriginActivePacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 15));
+        expect(
+          (await harness.deviceSosController.getStatus()).state,
+          DeviceSosState.active,
+        );
+        expect(
+          (await harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.active,
+        );
+
+        harness.deviceSosController.handleIncomingSosEventPacket(
+          _devicePostFireCancelPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await pumpEventQueue(times: 3);
+
+        expect(harness.sosRepository.cancelCallCount, 1);
+        expect(
+          (await harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.cancelled,
+        );
+        expect(await harness.sdk.getSosState(), SosState.cancelled);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('device-origin 0xE1 still closes lifecycle when backend cancel fails',
+        () async {
+      final harness = _SdkSosHarness(
+        connectedBle: true,
+        deviceCountdown: const Duration(milliseconds: 5),
+      );
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        harness.sosRepository.cancelError = const SosException(
+          'E_SOS_CANCEL_FAILED',
+          'E_SOS_CANCEL_FAILED',
+        );
+        harness.sosRepository.currentIncident =
+            harness.sosRepository.currentIncident.copyWith(
+          state: SosState.sent,
+          triggerSource: 'ble_device_runtime',
+        );
+        harness.deviceSosController.handleIncomingSosPacket(
+          _deviceOriginActivePacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 15));
+        expect(
+          (await harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.active,
+        );
+
+        harness.deviceSosController.handleIncomingSosEventPacket(
+          _devicePostFireCancelPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await pumpEventQueue(times: 3);
+
+        expect(harness.sosRepository.cancelCallCount, 1);
+        expect(
+          (await harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.cancelled,
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('app cancel of provisional sos-* confirms cancelled when HTTP fails',
+        () async {
+      final harness = _SdkSosHarness();
+      try {
+        await harness.setSession();
+        harness.sosRepository.cancelError = const SosException(
+          'E_SOS_CANCEL_FAILED',
+          'E_SOS_CANCEL_FAILED',
+        );
+        await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+
+        final result = await harness.sdk.cancelSosAuthoritatively();
+
+        expect(
+          result.outcome,
+          SosCancellationOutcome.activeCancellationConfirmed,
+        );
+        expect(result.lifecycle.stage, SosLifecycleStage.cancelled);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('device-only cancelRequested of provisional sos-* confirms cancelled',
+        () async {
+      final repository = _PendingCancellationSosRepository(
+        initialIncident: SosIncident(
+          id: 'sos-1784553184064842',
+          state: SosState.sent,
+          createdAt: DateTime.utc(2026, 9, 5),
+        ),
+      );
+      final harness = _SdkSosHarness(sosRepository: repository);
+      try {
+        await harness.setSession();
+        await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        repository.cancelResult = SosIncident(
+          id: 'sos-1784553184064842',
+          state: SosState.cancelRequested,
+          createdAt: DateTime.utc(2026, 9, 5),
+          deliveryChannel: SosDeliveryChannel.deviceOnly,
+        );
+
+        final result = await harness.sdk.cancelSosAuthoritatively();
+
+        expect(
+          result.outcome,
+          SosCancellationOutcome.activeCancellationConfirmed,
+        );
+        expect(result.lifecycle.stage, SosLifecycleStage.cancelled);
       } finally {
         await harness.dispose();
       }
@@ -2410,6 +2568,12 @@ EixamSosPacket _deviceOriginActivePacket() {
 EixamSosEventPacket _deviceCancelPacket() {
   return EixamSosEventPacket.tryParse(
     <int>[0xE1, 0x01, 0x34, 0x12, 0x00, 0x00],
+  )!;
+}
+
+EixamSosEventPacket _devicePostFireCancelPacket() {
+  return EixamSosEventPacket.tryParse(
+    <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
   )!;
 }
 

@@ -89,8 +89,16 @@ device/backend cancellation path. The lifecycle records `requested`,
 `transportAccepted`, `deviceConfirmed`, `backendConfirmed`, or `fullyResolved`.
 An existing backend-confirmed cancellation is the strongest terminal evidence
 currently available and permits `cancelled` plus secure-record deletion. A
-device-only acceptance remains `cancelling/pendingConfirmation` until stronger
-terminal evidence arrives. Failure publishes `cancellationFailed`, retains
+device-only acceptance of an **app-initiated** cancel remains
+`cancelling/pendingConfirmation` until stronger terminal evidence arrives.
+A connected-tag `0xE1` (physical 3 s hold) is authoritative for the local
+surface: the SDK still requests backend cancel, then confirms `cancelled` even
+when provisional MQTT `sos-*` ids have not yet been handed off to a canonical
+backend id. App cancel of those same provisional ids also confirms `cancelled`
+when HTTP cancel cannot settle them — the host must not stick on
+`cancellationFailed` / SOS fallido. Retry of `cancellationFailed` without a
+canonical backend id also confirms `cancelled`. Failure of an app-initiated
+cancel of a canonical backend incident publishes `cancellationFailed`, retains
 provenance, remains locally actionable, and permits retry. Repeated terminal
 cancellation is idempotent.
 
@@ -137,10 +145,14 @@ actuator updates to the same logical generation.
 
 Progress starts with backend delivery pending, becomes confirmed only after
 backend evidence, and adds emergency-contact state from versioned actuator
-snapshots. Older or duplicate snapshot versions are ignored. Progress streams
-are broadcast and deduplicate equivalent state, so multiple subscribers
-observe one repository-owned lifecycle. Terminal incident state emits terminal
-progress and clears buffered correlation state.
+snapshots. A user-scoped portal ACK (`sos_ack` / `acknowledged`) for the open
+local generation confirms reception even when the payload still says `active`
+and omits `clientIncidentId`. Progress exposes a single acknowledgement row
+instead of separate reception + management rows. Older or duplicate snapshot
+versions are ignored.
+Progress streams are broadcast and deduplicate equivalent state, so multiple
+subscribers observe one repository-owned lifecycle. Terminal incident state
+emits terminal progress and clears buffered correlation state.
 
 Diagnostics expose only whether provisional/canonical/correlation values are
 present and which typed category was selected. They do not emit the values or

@@ -55,9 +55,10 @@ abstract final class SdkContactsHttpSupport {
     required String defaultCode,
   }) {
     return switch (statusCode) {
-      400 => 'E_SDK_CONTACTS_VALIDATION',
+      400 || 422 => 'E_SDK_CONTACTS_VALIDATION',
       401 => 'E_SDK_CONTACTS_UNAUTHORIZED',
       404 => 'E_SDK_CONTACTS_NOT_FOUND',
+      503 => 'E_SDK_CONTACTS_UNAVAILABLE',
       _ => defaultCode,
     };
   }

@@ -136,6 +136,30 @@ void main() {
     await packets.close();
   });
 
+  test('disconnect unblocks a hung GATT write', () async {
+    final packets = StreamController<List<int>>.broadcast();
+    final coordinator = ProvisioningAckCoordinator(
+      packets: packets.stream,
+      timeout: const Duration(seconds: 2),
+    );
+    final writeStarted = Completer<void>();
+    final result = coordinator.run(
+      expectedOpcode: 0x21,
+      write: () async {
+        writeStarted.complete();
+        await Completer<void>().future;
+      },
+    );
+    await writeStarted.future;
+    coordinator.markDisconnected();
+    await expectLater(
+      result,
+      throwsA(isA<ProvisioningCommunicationInterruptedException>()),
+    );
+    await coordinator.dispose();
+    await packets.close();
+  });
+
   test('disconnect while awaiting ACK is interruption, not timeout', () async {
     final packets = StreamController<List<int>>.broadcast();
     final coordinator = ProvisioningAckCoordinator(

@@ -443,19 +443,29 @@ Request:
 
 Firmware schedules reboot approximately 1.5 seconds after receiving it. The
 SDK subscribes for disconnect before issuing the write, then measures from
-successful write completion.
+write start. The TAG can drop BLE before the write future settles (ACK lost
+on reboot); measuring from completion falsely reports `rebootFailed`.
 
-The current conservative acceptance window is 900 ms through 5 seconds:
+The current conservative acceptance window is 900 ms through 12 seconds:
 
 - disconnect before 900 ms: unexpected/premature, `rebootFailed`;
 - disconnect inside the window: expected reboot, proceed to reconnect;
-- no disconnect by 5 seconds: `rebootFailed`;
+- no disconnect event by 12 seconds, but raw GATT already down: still valid
+  (`valid_unobserved`) — public/protection-bridged status can hide the drop;
+- no disconnect by 12 seconds and still connected: `rebootFailed`;
 - reconnect must target the same platform BLE device.
 
 The lower bound leaves margin around firmware's 1.5-second schedule while
-rejecting an unrelated immediate transport loss. The upper bound allows normal
-Android/iOS callback scheduling without treating an indefinite disconnect as
-success.
+rejecting an unrelated immediate transport loss. The upper bound covers
+Android `LINK_SUPERVISION_TIMEOUT` after the radio dies (often 5–8 s) plus
+callback slack. The policy listens to the raw repository status stream, not
+the host-facing public `DeviceStatus` (Protection must not keep `connected`
+true while Flutter owns BLE).
+
+After reboot the GATT table changes (Meshtastic Phone BLE appears or
+disappears). Android reconnects must `clearGattCache()` before
+`discoverServices()` or SOS CCCD writes fail with `GATT_WRITE_NOT_PERMITTED`
+on a stale handle.
 
 ## 14. `0x24` SoftSIM blob
 
@@ -691,7 +701,7 @@ build 230-byte SoftSIM
 0x22 reboot
         |
         v
-expected disconnect in 900 ms..5 s
+expected disconnect in 900 ms..12 s
         |
         v
 same-platform-device reconnect
@@ -733,6 +743,12 @@ The runtime request installs a new pending request before writing `0x23`, so a
 cached pre-reboot status cannot satisfy it. Wrong platform identity fails
 before final runtime verification; wrong node identity produces
 `identityMismatch`; other mismatches produce `verificationFailed`.
+
+GATT and `0x23` are often unread on the first post-boot attempt (firmware's
+1.5 s reboot delay plus nRF boot). The coordinator stays on `verifying` and
+retries status/0x23 for about 15 seconds. A transient disconnect is
+`reconnectFailed` (retryable), not `identityMismatch`. Hosts must keep the SOS
+row running for that reboot window instead of flashing a configure error.
 
 ## 23. Firmware compatibility policy
 
@@ -894,7 +910,17 @@ The Phase 2 public methods are:
 ```dart
 Future<DeviceReadyResult> ensureDeviceReady();
 Stream<DeviceProvisioningState> watchDeviceProvisioningState();
+Future<DeviceUnprovisionResult> unprovisionDevice();
 ```
+
+Lab/debug `unprovisionDevice()` sends firmware `0x25` then `0x22`. It does
+not fetch a PSK. Firmware below `2.7.53` returns `firmwareUpdateRequired`
+with no write. After ACK OK / OK_NOCHANGE the SDK always reboots, even when
+a fresh `0x23` already shows `PROVISIONED=0` from disk — the Eixam stack can
+still be in RAM after a wipe whose reboot failed. REJECT does not reboot.
+Region (`config.lora`) is left in place; the next `ensureDeviceReady()`
+COMMIT replaces the PRIMARY PSK. Hosts must not call this during SOS, DMP,
+protection, or OTA.
 
 The public result is:
 

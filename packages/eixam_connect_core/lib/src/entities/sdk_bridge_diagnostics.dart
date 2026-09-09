@@ -23,7 +23,7 @@ class PendingSosDiagnostics {
 
   final String signature;
   final String message;
-  final TrackingPosition positionSnapshot;
+  final TrackingPosition? positionSnapshot;
 }
 
 /// Integration-facing diagnostics for relay ingest and bridge decisions.

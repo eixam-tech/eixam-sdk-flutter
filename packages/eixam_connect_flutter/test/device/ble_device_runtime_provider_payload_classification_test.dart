@@ -457,6 +457,54 @@ void main() {
       );
     });
 
+    test('applies a TEL notify E1 02 for the connected node as a local cancel',
+        () async {
+      await runtimeProvider.requestDeviceRuntimeStatus();
+      final activated =
+          runtimeProvider.deviceSosController.watchStatus().firstWhere(
+                (status) => status.state != DeviceSosState.inactive,
+              );
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.tel,
+        payload: const <int>[
+          0x34,
+          0x12,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x40,
+        ],
+      );
+      await activated;
+
+      final nextEvent = runtimeProvider.watchIncomingEvents().firstWhere(
+            (event) => event.type == BleIncomingEventType.sosDeviceEvent,
+          );
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.tel,
+        payload: const <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
+      );
+
+      final event = await nextEvent;
+      expect(event.type, BleIncomingEventType.sosDeviceEvent);
+      expect(event.channel, EixamBleChannel.tel);
+      expect(event.classification.kind, BleIncomingPayloadKind.sosCancel);
+      expect(event.sosEventPacket?.opcode, 0xE1);
+      expect(event.sosEventPacket?.subcode, 0x02);
+      expect(
+        (await runtimeProvider.deviceSosController.getStatus()).state,
+        DeviceSosState.inactive,
+      );
+    });
+
     test(
         'recovers connected node identity before holding a device cancel event',
         () async {
@@ -515,6 +563,40 @@ void main() {
               event.message.contains('role=ownDeviceEvent'),
         ),
         isTrue,
+      );
+    });
+
+    test(
+        'applies a TEL 0xE1 cancel locally when connected node identity is unknown',
+        () async {
+      await runtimeProvider.dispose();
+      await bleClient.dispose();
+      BleDebugRegistry.instance.reset();
+
+      bleClient = MockBleClient()..runtimeStatusPayload = const <int>[0x99];
+      await bleClient.initialize();
+      runtimeProvider = BleDeviceRuntimeProvider(bleClient: bleClient);
+      await _pairDemoDevice(runtimeProvider);
+
+      final nextEvent = runtimeProvider.watchIncomingEvents().firstWhere(
+            (event) => event.type == BleIncomingEventType.sosDeviceEvent,
+          );
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.tel,
+        payload: const <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
+      );
+
+      final event = await nextEvent.timeout(const Duration(seconds: 2));
+      expect(event.classification.kind, BleIncomingPayloadKind.sosCancel);
+      expect(event.remoteRelaySosSnapshot, isNull);
+      expect(
+        (await runtimeProvider.deviceSosController.getStatus()).lastOpcode,
+        0xE1,
+      );
+      expect(
+        (await runtimeProvider.deviceSosController.getStatus()).state,
+        DeviceSosState.inactive,
       );
     });
 

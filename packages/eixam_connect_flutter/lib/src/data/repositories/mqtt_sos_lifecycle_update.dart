@@ -50,7 +50,7 @@ class MqttSosLifecycleUpdate {
     }
 
     final incidentId = _incidentIdFrom(payload);
-    final state = _stateFrom(payload);
+    final state = _stateFrom(event, payload);
     final actuators = _actuatorsFrom(payload);
     if (incidentId == null || (state == null && actuators == null)) {
       return null;
@@ -126,24 +126,52 @@ class MqttSosLifecycleUpdate {
     return null;
   }
 
-  static SosState? _stateFrom(Map<String, dynamic> payload) {
-    final eventType = payload['type'];
-    if (eventType is String &&
-        eventType.trim().toLowerCase() == 'sos.actuator_update') {
+  static SosState? _stateFrom(
+    RealtimeEvent event,
+    Map<String, dynamic> payload,
+  ) {
+    final eventType = _eventTypeFrom(event, payload);
+    if (eventType == 'sos.actuator_update') {
       return null;
     }
 
-    final raw = payload['status'] ?? payload['state'] ?? payload['type'];
-    if (raw is! String) {
-      return null;
+    // Portal ACK keeps the incident `active`/`opened` while the event type is
+    // `sos_ack`. Acknowledgement aliases must win over that leftover status.
+    for (final candidate in <String?>[
+      eventType,
+      _stringFromPayload(payload, const ['type']),
+      event.type,
+    ]) {
+      if (_mapNormalizedState(candidate) == SosState.acknowledged) {
+        return SosState.acknowledged;
+      }
     }
 
-    final normalized = raw.trim().toLowerCase();
-    return switch (normalized) {
+    for (final candidate in <String?>[
+      _stringFromPayload(payload, const ['status', 'state']),
+      _stringFromPayload(payload, const ['type']),
+      event.type,
+    ]) {
+      final mapped = _mapNormalizedState(candidate);
+      if (mapped != null) {
+        return mapped;
+      }
+    }
+    return null;
+  }
+
+  static SosState? _mapNormalizedState(String? raw) {
+    if (raw == null || raw.isEmpty) {
+      return null;
+    }
+    return switch (raw.trim().toLowerCase()) {
       'triggered' || 'opened' || 'active' || 'sent' => SosState.sent,
       'acknowledged' ||
       'sos_acknowledged' ||
-      'sos.acknowledged' =>
+      'sos.acknowledged' ||
+      'sos_ack' ||
+      'sos.ack' ||
+      'ack' =>
         SosState.acknowledged,
       'cancelled' ||
       'canceled' ||

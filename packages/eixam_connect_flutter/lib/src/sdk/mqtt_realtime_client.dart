@@ -403,6 +403,7 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
     }
 
     if (_state == RealtimeConnectionState.connected &&
+        _binding != null &&
         _activeSession != null &&
         _sameSession(_activeSession!, session)) {
       return Future<void>.value();

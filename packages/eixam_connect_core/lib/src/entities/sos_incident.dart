@@ -62,7 +62,6 @@ class SosIncident {
         incidentId: id,
         incidentState: state,
         createdAt: createdAt,
-        deliveryChannel: deliveryChannel,
         actuators: actuators,
         isBackendConfirmed: isBackendConfirmed,
         isUsingCachedData: isUsingCachedData,

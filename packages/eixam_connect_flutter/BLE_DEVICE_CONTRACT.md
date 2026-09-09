@@ -86,6 +86,9 @@ the SDK.
 
 - `rebootDevice()` maps to protocol command `0x22 REBOOT`
 - the SDK only attempts it when a connected command-capable device exists
+- provisioning treats the reboot drop from raw GATT status (900 ms–12 s), not
+  the protection-bridged public `connected` flag. Android often reports
+  `LINK_SUPERVISION_TIMEOUT` after the firmware 1.5 s reboot schedule.
 
 ### Runtime Status
 
@@ -108,6 +111,7 @@ Failure semantics:
 
 - no command-capable device: `E_DEVICE_COMMAND_NOT_READY`
 - no valid response before timeout: `E_DEVICE_STATUS_TIMEOUT`
+- a second `0x23` while one is in flight joins that reply instead of failing immediately
 - malformed or unsupported payloads are ignored safely until timeout
 
 ## TEL Fragment And Relay Support
@@ -137,6 +141,11 @@ The latest typed relay sample is exposed through:
 - `SdkOperationalDiagnostics.lastTelRelayRx`
 
 This preserves the existing aggregate path while giving host apps a stable typed view when the payload is known.
+
+Firmware ≥ 2.7.54 also copies 6-byte SOS control events (`0xE1` user cancel,
+`0xE2` app-cancel ACK, `0xE3` backend `ACK_SOS`) onto TEL. The Dart runtime
+treats a TEL copy as the same `sosDeviceEvent` as the SOS characteristic;
+duplicates share `rawHex` and are dropped. Hosts must not decode these bytes.
 
 ### Relay Ingest Routing
 

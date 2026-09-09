@@ -18,7 +18,7 @@ class SdkContactDto {
       id: _requiredString(json, 'id'),
       name: _requiredString(json, 'name'),
       phone: _requiredString(json, 'phone'),
-      email: _requiredString(json, 'email'),
+      email: _optionalString(json, 'email')?.trim() ?? '',
       priority: _requiredInt(json, 'priority'),
       language: language == null || language.isEmpty ? 'en' : language,
       createdAt: _optionalString(json, 'createdAt') ??

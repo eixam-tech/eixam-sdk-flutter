@@ -3,6 +3,7 @@ import 'package:eixam_connect_flutter/src/data/datasources_local/device_config_s
 import 'package:eixam_connect_flutter/src/data/datasources_local/preferred_ble_device_store.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_device_config_remote_data_source.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_geo_country_remote_data_source.dart';
+import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
 import 'package:eixam_connect_flutter/src/sdk/background_telemetry_platform_adapter.dart';
@@ -105,20 +106,73 @@ void main() {
       await harness.dispose();
     });
   });
+
+  group('BLE reconnect lifecycle', () {
+    test(
+      'inactive and hidden do not drop the reconnect foreground flag',
+      () async {
+        final harness = _LifecycleHarness(
+          initialStatus: buildDeviceStatus(
+            connected: false,
+            lifecycleState: DeviceLifecycleState.paired,
+          ),
+        );
+        await harness.initialize();
+        BleDebugRegistry.instance.reset();
+
+        harness.sdk.didChangeAppLifecycleState(AppLifecycleState.inactive);
+        harness.sdk.didChangeAppLifecycleState(AppLifecycleState.hidden);
+
+        expect(
+          BleDebugRegistry.instance.currentState.events.map(
+            (event) => event.message,
+          ),
+          isNot(
+            contains(
+                'EIXAM_RECONNECT_TRACE sdk_foreground_changed value=false'),
+          ),
+        );
+
+        await harness.dispose();
+      },
+    );
+
+    test('paused drops the reconnect foreground flag', () async {
+      final harness = _LifecycleHarness(
+        initialStatus: buildDeviceStatus(
+          connected: false,
+          lifecycleState: DeviceLifecycleState.paired,
+        ),
+      );
+      await harness.initialize();
+      BleDebugRegistry.instance.reset();
+
+      harness.sdk.didChangeAppLifecycleState(AppLifecycleState.paused);
+
+      expect(
+        BleDebugRegistry.instance.currentState.events.map(
+          (event) => event.message,
+        ),
+        contains('EIXAM_RECONNECT_TRACE sdk_foreground_changed value=false'),
+      );
+
+      await harness.dispose();
+    });
+  });
 }
 
 class _LifecycleHarness {
   _LifecycleHarness({required DeviceStatus initialStatus})
-    : now = DateTime.utc(2026, 1, 1, 10),
-      trackingRepository = FakeTrackingRepository(
-        currentPosition: TrackingPosition(
-          latitude: 41.3874,
-          longitude: 2.1686,
-          timestamp: DateTime.now(),
-          source: DeliveryMode.mobile,
+      : now = DateTime.utc(2026, 1, 1, 10),
+        trackingRepository = FakeTrackingRepository(
+          currentPosition: TrackingPosition(
+            latitude: 41.3874,
+            longitude: 2.1686,
+            timestamp: DateTime.now(),
+            source: DeliveryMode.mobile,
+          ),
         ),
-      ),
-      deviceRepository = FakeDeviceRepository(initialStatus: initialStatus) {
+        deviceRepository = FakeDeviceRepository(initialStatus: initialStatus) {
     sdk = EixamConnectSdkImpl(
       sosRepository: sosRepository,
       trackingRepository: trackingRepository,

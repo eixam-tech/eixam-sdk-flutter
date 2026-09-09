@@ -47,7 +47,7 @@ class SdkResolvedLocationResolver {
       return remote;
     }
 
-    final device = _freshConnectedOwnDeviceLocation();
+    final device = _connectedOwnDeviceLocation(requireFresh: true);
     if (device != null) {
       LocationDebugLog.resolved(
         flow: 'resolver_selected',
@@ -57,7 +57,7 @@ class SdkResolvedLocationResolver {
       return device;
     }
 
-    final phone = await _freshPhoneLocation();
+    final phone = await _phoneLocationCandidate(requireFresh: true);
     if (phone != null) {
       LocationDebugLog.resolved(
         flow: 'resolver_selected',
@@ -65,6 +65,29 @@ class SdkResolvedLocationResolver {
         accepted: true,
       );
       return phone;
+    }
+
+    if (useCase == SdkResolvedLocationUseCase.emergencyBackend) {
+      final lastKnownDevice = _connectedOwnDeviceLocation(requireFresh: false);
+      if (lastKnownDevice != null) {
+        LocationDebugLog.resolved(
+          flow: 'resolver_selected',
+          location: lastKnownDevice,
+          accepted: true,
+          note: 'emergency_last_known_device',
+        );
+        return lastKnownDevice;
+      }
+      final lastKnownPhone = await _phoneLocationCandidate(requireFresh: false);
+      if (lastKnownPhone != null) {
+        LocationDebugLog.resolved(
+          flow: 'resolver_selected',
+          location: lastKnownPhone,
+          accepted: true,
+          note: 'emergency_last_known_phone',
+        );
+        return lastKnownPhone;
+      }
     }
 
     if (useCase == SdkResolvedLocationUseCase.uiPreview) {
@@ -133,7 +156,9 @@ class SdkResolvedLocationResolver {
     return resolved.copyWith(authoritativeForBackend: true);
   }
 
-  SdkResolvedLocation? _freshConnectedOwnDeviceLocation() {
+  SdkResolvedLocation? _connectedOwnDeviceLocation({
+    required bool requireFresh,
+  }) {
     final diagnostics = _bridgeDiagnosticsProvider();
     final candidate = diagnostics.latestOwnDeviceLocation;
     final status = _deviceStatusProvider();
@@ -191,7 +216,7 @@ class SdkResolvedLocationResolver {
         nodeId: candidate.nodeId ?? status.nodeId,
       ),
     );
-    if (!resolved.isValid || !resolved.isFresh) {
+    if (!resolved.isValid || (requireFresh && !resolved.isFresh)) {
       LocationDebugLog.resolved(
         flow: 'resolver_candidate',
         location: resolved,
@@ -212,12 +237,17 @@ class SdkResolvedLocationResolver {
     return resolved.copyWith(authoritativeForBackend: true);
   }
 
-  Future<SdkResolvedLocation?> _freshPhoneLocation() async {
+  Future<SdkResolvedLocation?> _phoneLocationCandidate({
+    required bool requireFresh,
+  }) async {
     try {
       final cached = _trackingRepository is LatestPhonePositionSink
           ? (_trackingRepository as LatestPhonePositionSink).latestPhonePosition
           : null;
-      final cachedLocation = _validFreshPhoneLocation(cached);
+      final cachedLocation = _validPhoneLocation(
+        cached,
+        requireFresh: requireFresh,
+      );
       if (cachedLocation != null) {
         return cachedLocation;
       }
@@ -232,7 +262,7 @@ class SdkResolvedLocationResolver {
         return null;
       }
       final location = _phoneLocation(position);
-      if (!location.isValid || !location.isFresh) {
+      if (!location.isValid || (requireFresh && !location.isFresh)) {
         LocationDebugLog.resolved(
           flow: 'resolver_candidate',
           location: location,
@@ -260,12 +290,15 @@ class SdkResolvedLocationResolver {
     }
   }
 
-  SdkResolvedLocation? _validFreshPhoneLocation(TrackingPosition? position) {
+  SdkResolvedLocation? _validPhoneLocation(
+    TrackingPosition? position, {
+    required bool requireFresh,
+  }) {
     if (position == null) {
       return null;
     }
     final location = _phoneLocation(position);
-    if (!location.isValid || !location.isFresh) {
+    if (!location.isValid || (requireFresh && !location.isFresh)) {
       return null;
     }
     LocationDebugLog.resolved(

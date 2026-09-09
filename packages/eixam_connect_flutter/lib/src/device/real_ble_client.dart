@@ -13,6 +13,7 @@ import 'ble_debug_registry.dart';
 import 'ble_security_policy.dart';
 import 'ble_scan_result.dart';
 import 'ble_scan_result_brand_classifier.dart';
+import 'android_ble_gatt_cache.dart';
 import 'eixam_ble_command.dart';
 import 'eixam_ble_mesh_port_inference.dart';
 import 'eixam_ble_notification.dart';
@@ -48,6 +49,8 @@ class RealBleClient implements BleClient {
     @visibleForTesting Stream<List<ScanResult>> Function()? scanResultsProvider,
     @visibleForTesting NativeBleStartScan? startScan,
     @visibleForTesting NativeBleStopScan? stopScan,
+    @visibleForTesting
+    Future<void> Function(BluetoothDevice device)? androidGattCacheClearer,
   })  : _meshPortResolver = meshPortResolver,
         _isSupportedProvider =
             isSupportedProvider ?? (() => FlutterBluePlus.isSupported),
@@ -66,9 +69,12 @@ class RealBleClient implements BleClient {
                   androidUsesFineLocation: true,
                   androidCheckLocationServices: true,
                 )),
-        _stopScan = stopScan ?? (() => FlutterBluePlus.stopScan());
+        _stopScan = stopScan ?? (() => FlutterBluePlus.stopScan()),
+        _androidGattCacheClearer =
+            androidGattCacheClearer ?? _defaultAndroidGattCacheClearer;
 
   static const Duration _connectTimeout = Duration(seconds: 10);
+  static const Duration _commandWriteTimeout = Duration(seconds: 8);
   static const Duration _postConnectStabilizationDelay =
       Duration(milliseconds: 350);
   static const Duration _connectedStateConfirmationTimeout =
@@ -86,6 +92,7 @@ class RealBleClient implements BleClient {
   final Stream<List<ScanResult>> Function() _scanResultsProvider;
   final NativeBleStartScan _startScan;
   final NativeBleStopScan _stopScan;
+  final Future<void> Function(BluetoothDevice device) _androidGattCacheClearer;
 
   static final Guid eixamServiceUuid = Guid(EixamBleProtocol.serviceUuid);
   static final Guid telNotifyCharUuid =
@@ -373,7 +380,7 @@ class RealBleClient implements BleClient {
         );
         _log('BLE connect() start -> hardwareId=$deviceId');
         try {
-          await device.connect(timeout: _connectTimeout);
+          await _connectNative(device);
           BleDebugRegistry.instance.recordEvent(
             'BLE connect() success -> hardwareId=$deviceId',
           );
@@ -396,6 +403,7 @@ class RealBleClient implements BleClient {
         _log(
           'BLE connect() success -> hardwareId=$deviceId skipped=already_connected',
         );
+        await _requestAndroidHighConnectionPriority(device);
       }
 
       final postConnectState = await _waitForStableConnectedState(
@@ -758,9 +766,15 @@ class RealBleClient implements BleClient {
     );
     try {
       if (c.properties.writeWithoutResponse) {
-        await c.write(data, withoutResponse: true);
+        await c.write(data, withoutResponse: true).timeout(
+              _commandWriteTimeout,
+              onTimeout: () => throw TimeoutException('E_BLE_WRITE_TIMEOUT'),
+            );
       } else {
-        await c.write(data, withoutResponse: false);
+        await c.write(data, withoutResponse: false).timeout(
+              _commandWriteTimeout,
+              onTimeout: () => throw TimeoutException('E_BLE_WRITE_TIMEOUT'),
+            );
       }
     } catch (error) {
       BleDebugRegistry.instance.update(
@@ -795,7 +809,17 @@ class RealBleClient implements BleClient {
   @override
   Future<Stream<EixamBleNotification>> subscribeEixamNotifications(
     String deviceId,
-  ) async {
+  ) {
+    return _subscribeEixamNotifications(
+      deviceId,
+      allowStaleGattRetry: true,
+    );
+  }
+
+  Future<Stream<EixamBleNotification>> _subscribeEixamNotifications(
+    String deviceId, {
+    required bool allowStaleGattRetry,
+  }) async {
     final tel = await _findCharacteristic(
       deviceId,
       eixamServiceUuid,
@@ -811,8 +835,29 @@ class RealBleClient implements BleClient {
       throw Exception('E_BLE_NOTIFY_CHARACTERISTICS_MISSING');
     }
 
-    await tel.setNotifyValue(true);
-    await sos.setNotifyValue(true);
+    try {
+      await tel.setNotifyValue(true);
+      await sos.setNotifyValue(true);
+    } catch (error) {
+      if (!allowStaleGattRetry ||
+          !AndroidBleGattCache.isStaleDescriptorWrite(error)) {
+        rethrow;
+      }
+      BleDebugRegistry.instance.recordEvent(
+        'BLE notify CCCD stale GATT cache -> hardwareId=$deviceId error=$error',
+      );
+      _log(
+        'BLE notify CCCD stale GATT cache -> hardwareId=$deviceId error=$error',
+      );
+      final refreshed = await _refreshAndroidGattAndRediscover(deviceId);
+      if (!refreshed) {
+        rethrow;
+      }
+      return _subscribeEixamNotifications(
+        deviceId,
+        allowStaleGattRetry: false,
+      );
+    }
     BleDebugRegistry.instance.update(
       telNotifySubscribed: true,
       sosNotifySubscribed: true,
@@ -1053,6 +1098,39 @@ class RealBleClient implements BleClient {
     );
   }
 
+  /// Direct GATT connect. Skip FBP's default Android MTU 512 exchange: EIXAM
+  /// TEL/SOS/CMD and SoftSIM chunks fit ATT MTU 23. Nordic DFU uses its own
+  /// session. On Android, request a high-priority connection interval.
+  Future<void> _connectNative(BluetoothDevice device) async {
+    await device.connect(
+      timeout: _connectTimeout,
+      mtu: null,
+    );
+    await _requestAndroidHighConnectionPriority(device);
+  }
+
+  Future<void> _requestAndroidHighConnectionPriority(
+    BluetoothDevice device,
+  ) async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+    try {
+      await device.requestConnectionPriority(
+        connectionPriorityRequest: ConnectionPriority.high,
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'BLE android connection priority high -> '
+        'hardwareId=${device.remoteId.str}',
+      );
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'BLE android connection priority high skipped -> '
+        'hardwareId=${device.remoteId.str} error=$error',
+      );
+    }
+  }
+
   Future<BluetoothConnectionState> _waitForStableConnectedState(
     BluetoothDevice device, {
     required String deviceId,
@@ -1070,6 +1148,51 @@ class RealBleClient implements BleClient {
       throw error;
     }
     return state;
+  }
+
+  Future<void> _clearAndroidGattCache(BluetoothDevice device) async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+    try {
+      await _androidGattCacheClearer(device);
+      BleDebugRegistry.instance.recordEvent(
+        'BLE android gatt cache cleared -> hardwareId=${device.remoteId.str}',
+      );
+      _log(
+        'BLE android gatt cache cleared -> hardwareId=${device.remoteId.str}',
+      );
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'BLE android gatt cache clear skipped -> '
+        'hardwareId=${device.remoteId.str} error=$error',
+      );
+    }
+  }
+
+  Future<bool> _refreshAndroidGattAndRediscover(String deviceId) async {
+    final device = await _resolveKnownDevice(deviceId);
+    if (device == null) {
+      return false;
+    }
+    _servicesCache.remove(deviceId);
+    await _clearAndroidGattCache(device);
+    try {
+      final services = await _discoverServicesWithReconnectRetry(
+        deviceId: deviceId,
+        device: device,
+      );
+      _servicesCache[deviceId] = services;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<void> _defaultAndroidGattCacheClearer(
+    BluetoothDevice device,
+  ) {
+    return device.clearGattCache();
   }
 
   Future<void> _clearTransientConnectionState(
@@ -1108,7 +1231,7 @@ class RealBleClient implements BleClient {
           BleDebugRegistry.instance.recordEvent(
             'BLE discoverServices reconnect() start -> hardwareId=$deviceId attempt=${attempt + 1}',
           );
-          await device.connect(timeout: _connectTimeout);
+          await _connectNative(device);
           await _waitForStableConnectedState(device, deviceId: deviceId);
         }
       }
@@ -1119,7 +1242,14 @@ class RealBleClient implements BleClient {
         _log(
           'BLE discoverServices() start -> hardwareId=$deviceId attempt=${attempt + 1}',
         );
-        final services = await device.discoverServices();
+        await _clearAndroidGattCache(device);
+        // Reconnect always rediscovers. The Services Changed CCCD is extra
+        // GATT traffic we do not consume (`onServicesReset` is unused).
+        // Android still serves a per-MAC handle cache after provision /
+        // unprovision reboot unless we call clearGattCache first.
+        final services = await device.discoverServices(
+          subscribeToServicesChanged: false,
+        );
         BleDebugRegistry.instance.recordEvent(
           'BLE discoverServices() success -> hardwareId=$deviceId services=${services.length} attempt=${attempt + 1}',
         );

@@ -132,8 +132,15 @@ internal class ProtectionBleRuntimeOwner(
     fun flushPendingBackendActions(reason: String): Map<String, Any> =
         backendHandoff.flushPendingActionsSync(reason)
 
-    fun ensureConnectedOrReconnect(reason: String) {
+    fun ensureConnectedOrReconnect(reason: String, force: Boolean = false) {
         if (!runtimeActive || isStopping || targetDeviceId.isNullOrBlank()) {
+            return
+        }
+        if (force) {
+            reconnectRunnable?.let(mainHandler::removeCallbacks)
+            reconnectRunnable = null
+            connectionInFlight = false
+            connect(reason = reason)
             return
         }
         if (runtimeStore.snapshot()["serviceBleReady"] == true) {
@@ -474,7 +481,29 @@ internal class ProtectionBleRuntimeOwner(
     }
 
     @SuppressLint("MissingPermission")
+    private fun refreshGattCache(gatt: BluetoothGatt): Boolean {
+        return try {
+            val refresh = gatt.javaClass.getMethod("refresh")
+            val cleared = refresh.invoke(gatt) as? Boolean ?: false
+            if (cleared) {
+                ProtectionRuntimeBridge.recordBleEvent(
+                    context = context,
+                    type = "gattCacheCleared",
+                    reason = "android_stale_handle_guard",
+                )
+            }
+            cleared
+        } catch (error: Exception) {
+            Log.w(logTag, "GATT cache refresh unavailable: ${error.message}")
+            false
+        }
+    }
+
+    @SuppressLint("MissingPermission")
     private fun discoverServices(gatt: BluetoothGatt) {
+        // Provision/unprovision reboot adds or removes Meshtastic Phone BLE.
+        // Android's per-MAC cache then points SOS CCCD at a read-only handle.
+        refreshGattCache(gatt)
         val discovered = gatt.discoverServices()
         if (!discovered) {
             runtimeStore.markRuntimeFailure("Protection Mode service discovery failed to start.")
