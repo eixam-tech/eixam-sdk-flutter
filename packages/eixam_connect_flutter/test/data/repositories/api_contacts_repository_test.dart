@@ -1,4 +1,3 @@
-import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_contacts_remote_data_source.dart';
 import 'package:eixam_connect_flutter/src/data/dtos/sdk_contact_dto.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/api_contacts_repository.dart';
