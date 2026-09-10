@@ -31,7 +31,7 @@ apply plugin: 'kotlin-android'
 
 android {
     namespace 'dev.eixam.connect.flutter'
-    compileSdk 34
+    compileSdk 36
 
     defaultConfig {
         minSdk 21

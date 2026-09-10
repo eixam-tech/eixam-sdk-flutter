@@ -33,7 +33,7 @@ Mqtt5TransportEndpointSettings resolveMqtt5TransportEndpointSettings(
   final secure = brokerUri.scheme == 'ssl' || brokerUri.scheme == 'tls';
   final server = useWebSocket
       ? '${brokerUri.scheme}://${brokerUri.host}'
-          '${brokerUri.path.isEmpty ? '' : brokerUri.path}'
+            '${brokerUri.path.isEmpty ? '' : brokerUri.path}'
       : brokerUri.host;
   final defaultPort = switch (brokerUri.scheme) {
     'wss' => 443,
@@ -50,10 +50,7 @@ Mqtt5TransportEndpointSettings resolveMqtt5TransportEndpointSettings(
 }
 
 class Mqtt5SdkTransport implements SdkMqttTransport {
-  Mqtt5SdkTransport({
-    required this.request,
-    required this.enableLogging,
-  }) {
+  Mqtt5SdkTransport({required this.request, required this.enableLogging}) {
     SdkTransportSecurityValidator.validateRealtimeEndpoint(
       EixamSdkConfig(
         apiBaseUrl: 'https://transport-validation.local',
@@ -99,19 +96,19 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
     client.secure = endpoint.secure;
     client.socketTimeout = request.connectTimeout.inMilliseconds;
     client.onDisconnected = () {
-      final solicited = client.connectionStatus?.disconnectionOrigin ==
+      final solicited =
+          client.connectionStatus?.disconnectionOrigin ==
           MqttDisconnectionOrigin.solicited;
-      _logTransport(
-        'MQTT_TRANSPORT_DISCONNECT_HANDLED solicited=$solicited',
-      );
+      _logTransport('MQTT_TRANSPORT_DISCONNECT_HANDLED solicited=$solicited');
       _safeAddDisconnect(
         SdkMqttDisconnectEvent(solicited: solicited),
         source: 'on_disconnected',
       );
     };
     client.onBadCertificate = (_) => false;
-    var connectMessage =
-        MqttConnectMessage().withClientIdentifier(request.clientIdentifier);
+    var connectMessage = MqttConnectMessage().withClientIdentifier(
+      request.clientIdentifier,
+    );
     if (request.cleanSession) {
       connectMessage = connectMessage.startClean();
     }
@@ -152,42 +149,62 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
     }
     _logTransport('connect_success uri=${_redactedUri(brokerUri)}');
 
-    _client = client;
-    _updatesSub = client.updates.listen((messages) {
+    // mqtt5_client 5.0: `updates` is nullable after disconnect races.
+    // Do not `?.listen` — a silent drop would miss SOS realtime.
+    final updates = client.updates;
+    if (updates == null) {
       try {
-        for (final message in messages) {
-          final publishMessage = message.payload;
-          if (publishMessage is! MqttPublishMessage) {
-            continue;
-          }
-          final payload = MqttUtilities.bytesToStringAsString(
-              publishMessage.payload.message!);
-          _safeAddMessage(
-            SdkMqttIncomingMessage(
-              topic: message.topic ?? '',
-              payload: payload,
-            ),
-          );
-        }
-      } catch (error, stackTrace) {
+        client.disconnect();
+      } catch (error) {
         _logTransport(
           'MQTT_TRANSPORT_DISCONNECT_HANDLED '
-          'phase=message_handler error=$error stack=${_stackSummary(stackTrace)}',
+          'phase=updates_unavailable error=$error',
         );
       }
-    }, onError: (Object error, StackTrace stackTrace) {
-      final marker = error is SocketException
-          ? 'MQTT_TRANSPORT_SOCKET_ERROR_HANDLED'
-          : 'MQTT_TRANSPORT_DISCONNECT_HANDLED';
-      _logTransport(
-        '$marker phase=updates_stream error=$error '
-        'stack=${_stackSummary(stackTrace)}',
-      );
-      _safeAddDisconnect(
-        const SdkMqttDisconnectEvent(solicited: false),
-        source: 'updates_error',
-      );
-    });
+      throw StateError('MQTT updates stream unavailable after connect');
+    }
+    _client = client;
+    _updatesSub = updates.listen(
+      (messages) {
+        try {
+          for (final message in messages) {
+            final publishMessage = message.payload;
+            if (publishMessage is! MqttPublishMessage) {
+              continue;
+            }
+            final bytes = publishMessage.payload.message;
+            if (bytes == null) {
+              continue;
+            }
+            final payload = MqttUtilities.bytesToStringAsString(bytes);
+            _safeAddMessage(
+              SdkMqttIncomingMessage(
+                topic: message.topic ?? '',
+                payload: payload,
+              ),
+            );
+          }
+        } catch (error, stackTrace) {
+          _logTransport(
+            'MQTT_TRANSPORT_DISCONNECT_HANDLED '
+            'phase=message_handler error=$error stack=${_stackSummary(stackTrace)}',
+          );
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        final marker = error is SocketException
+            ? 'MQTT_TRANSPORT_SOCKET_ERROR_HANDLED'
+            : 'MQTT_TRANSPORT_DISCONNECT_HANDLED';
+        _logTransport(
+          '$marker phase=updates_stream error=$error '
+          'stack=${_stackSummary(stackTrace)}',
+        );
+        _safeAddDisconnect(
+          const SdkMqttDisconnectEvent(solicited: false),
+          source: 'updates_error',
+        );
+      },
+    );
   }
 
   @override

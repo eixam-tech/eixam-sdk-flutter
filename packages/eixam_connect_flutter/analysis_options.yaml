@@ -9,3 +9,5 @@ linter:
     avoid_print: true
     sort_constructors_first: true
     unawaited_futures: true
+    # flutter_lints 6. Mechanical SOS map rewrites are out of scope.
+    use_null_aware_elements: false

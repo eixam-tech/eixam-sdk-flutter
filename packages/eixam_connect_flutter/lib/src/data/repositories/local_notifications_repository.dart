@@ -39,7 +39,7 @@ class LocalNotificationsRepository implements NotificationsRepository {
     );
 
     final ok = await _plugin.initialize(
-      settings,
+      settings: settings,
       onDidReceiveNotificationResponse: _handleNotificationResponse,
     );
     // iOS returns `false` when no permission types are requested (all
@@ -118,10 +118,10 @@ class LocalNotificationsRepository implements NotificationsRepository {
     );
 
     await _plugin.show(
-      notificationId ?? _nextNotificationId(),
-      title,
-      body,
-      details,
+      id: notificationId ?? _nextNotificationId(),
+      title: title,
+      body: body,
+      notificationDetails: details,
       payload: payload,
     );
   }
@@ -178,7 +178,7 @@ class LocalNotificationsRepository implements NotificationsRepository {
 
     for (final id in notificationIds) {
       try {
-        await _plugin.cancel(id);
+        await _plugin.cancel(id: id);
       } catch (_) {
         // Keep cancelling the rest even if one cancellation fails.
       }

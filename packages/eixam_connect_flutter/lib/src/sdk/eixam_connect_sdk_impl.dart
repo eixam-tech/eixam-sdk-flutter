@@ -230,7 +230,7 @@ class EixamConnectSdkImpl
             ),
           );
         },
-        onError: (Object _, StackTrace __) {
+        onError: (Object _, StackTrace _) {
           SosLocationTrace.emit('ios_native_sample', {
             'action': 'rejected',
             'context': 'unknown',
