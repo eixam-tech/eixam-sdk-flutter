@@ -19,7 +19,25 @@ class SosRuntimeRehydrationResult {
 }
 
 abstract interface class SosRuntimeRehydrationSupport {
-  Future<SosRuntimeRehydrationResult> rehydrateRuntimeStateFromBackend();
+  Future<SosRuntimeRehydrationResult> rehydrateRuntimeStateFromBackend({
+    bool terminalAbsenceExpected = false,
+  });
+}
+
+/// A parsed, authenticated MQTT terminal update that deliberately failed the
+/// lifecycle-correlation check. The terminal stage is only a hint: consumers
+/// must first establish authenticated active-SOS absence before applying it.
+class SosRejectedTerminalReconciliationRequest {
+  const SosRejectedTerminalReconciliationRequest({required this.terminalState});
+
+  final SosState terminalState;
+}
+
+/// Implemented by live repositories which can ask the SDK to reconcile a
+/// correlation-rejected terminal MQTT update through the authenticated API.
+abstract interface class SosRejectedTerminalReconciliationSource {
+  Stream<SosRejectedTerminalReconciliationRequest>
+      watchRejectedTerminalReconciliations();
 }
 
 /// Marks a repository whose active SOS lifecycle must not be recovered through

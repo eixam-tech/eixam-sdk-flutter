@@ -96,12 +96,15 @@ class LocalStateSerializers {
       'cycleKey': incident.cycleKey,
       'message': incident.message,
       'deliveryChannel': incident.deliveryChannel?.name,
+      'terminalReason': incident.terminalReason?.name,
       'originKind': incident.originKind.name,
       'actionability': incident.actionability.name,
       'displaySurface': incident.displaySurface.name,
       'actuators': incident.actuators?.toJson(),
       'isBackendConfirmed': incident.isBackendConfirmed,
       'isUsingCachedData': incident.isUsingCachedData,
+      'provisionalIncidentId': incident.provisionalIncidentId,
+      'preservedLocalOwnership': incident.preservedLocalOwnership,
       'positionSnapshot': incident.positionSnapshot == null
           ? null
           : trackingPositionToJson(incident.positionSnapshot!),
@@ -111,6 +114,7 @@ class LocalStateSerializers {
   static SosIncident sosIncidentFromJson(Map<String, dynamic> json) {
     final snapshot = json['positionSnapshot'];
     final deliveryChannelName = json['deliveryChannel'] as String?;
+    final terminalReasonName = json['terminalReason'] as String?;
     final actuators = json['actuators'];
     return SosIncident(
       id: json['id'] as String,
@@ -135,6 +139,12 @@ class LocalStateSerializers {
               (value) => value.name == deliveryChannelName,
               orElse: () => SosDeliveryChannel.backendOnly,
             ),
+      terminalReason: terminalReasonName == null
+          ? null
+          : SosTerminalReason.values.firstWhere(
+              (value) => value.name == terminalReasonName,
+              orElse: () => SosTerminalReason.unknown,
+            ),
       originKind: _enumFromName(
         SosOriginKind.values,
         json['originKind'] as String?,
@@ -157,6 +167,9 @@ class LocalStateSerializers {
           : null,
       isBackendConfirmed: json['isBackendConfirmed'] as bool? ?? false,
       isUsingCachedData: json['isUsingCachedData'] as bool? ?? false,
+      provisionalIncidentId: json['provisionalIncidentId'] as String?,
+      preservedLocalOwnership:
+          json['preservedLocalOwnership'] as bool? ?? false,
       positionSnapshot: snapshot is Map<String, dynamic>
           ? trackingPositionFromJson(snapshot)
           : null,

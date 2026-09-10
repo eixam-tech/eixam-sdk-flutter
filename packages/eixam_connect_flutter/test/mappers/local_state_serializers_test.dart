@@ -65,6 +65,9 @@ void main() {
         createdAt: DateTime.utc(2026, 7, 20),
         isBackendConfirmed: true,
         isUsingCachedData: true,
+        provisionalIncidentId: 'sos-provisional-cached',
+        preservedLocalOwnership: true,
+        terminalReason: SosTerminalReason.cancelledByUser,
         actuators: SosActuatorSnapshot.fromJson(<String, dynamic>{
           'snapshotVersion': 5,
           'items': <Map<String, dynamic>>[
@@ -84,6 +87,9 @@ void main() {
 
       expect(restored.isUsingCachedData, isTrue);
       expect(restored.isBackendConfirmed, isTrue);
+      expect(restored.provisionalIncidentId, 'sos-provisional-cached');
+      expect(restored.preservedLocalOwnership, isTrue);
+      expect(restored.terminalReason, SosTerminalReason.cancelledByUser);
       expect(restored.actuators?.snapshotVersion, 5);
       expect(restored.progress.steps.first.state, SosProgressState.succeeded);
     });

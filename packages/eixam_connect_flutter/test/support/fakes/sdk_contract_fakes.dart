@@ -146,7 +146,9 @@ class FakeRehydratingSosRepository extends FakeSosRepository
   int clearForSessionChangeCallCount = 0;
 
   @override
-  Future<SosRuntimeRehydrationResult> rehydrateRuntimeStateFromBackend() async {
+  Future<SosRuntimeRehydrationResult> rehydrateRuntimeStateFromBackend({
+    bool terminalAbsenceExpected = false,
+  }) async {
     rehydrateCallCount++;
     currentIncident = currentIncident.copyWith(
       state: rehydrationResult.resultingState,
@@ -160,6 +162,31 @@ class FakeRehydratingSosRepository extends FakeSosRepository
     clearForSessionChangeCallCount++;
     currentIncident = currentIncident.copyWith(state: SosState.idle);
     stateController.add(SosState.idle);
+  }
+}
+
+class FakeRejectedTerminalRehydratingSosRepository
+    extends FakeRehydratingSosRepository
+    implements SosRejectedTerminalReconciliationSource {
+  final StreamController<SosRejectedTerminalReconciliationRequest>
+      _rejectedTerminalController =
+      StreamController<SosRejectedTerminalReconciliationRequest>.broadcast();
+
+  @override
+  Stream<SosRejectedTerminalReconciliationRequest>
+      watchRejectedTerminalReconciliations() =>
+          _rejectedTerminalController.stream;
+
+  void emitRejectedTerminal(SosState terminalState) {
+    _rejectedTerminalController.add(
+      SosRejectedTerminalReconciliationRequest(terminalState: terminalState),
+    );
+  }
+
+  @override
+  Future<void> dispose() async {
+    await _rejectedTerminalController.close();
+    await super.dispose();
   }
 }
 

@@ -195,14 +195,15 @@ abstract class EixamConnectSdk {
   Future<DeviceReadyResult> ensureDeviceReady();
   Stream<DeviceProvisioningState> watchDeviceProvisioningState();
 
-  /// Lab/debug: wipe SoftSIM + SOS RF (`0x25`) then reboot (`0x22`).
+  /// Lab/debug: wipe provisioned runtime credentials and SOS RF (`0x25`),
+  /// then reboot (`0x22`).
   ///
   /// Hosts must not construct the BLE frame. Firmware ≥ 2.7.53. Always
   /// reboots after OK / OK_NOCHANGE, including when `0x23` already reports
   /// unprovisioned — disk can be clear while the Eixam stack is still in
-  /// RAM. Does not revert LoRa region or the Meshtastic PRIMARY PSK; the
-  /// next [ensureDeviceReady] COMMIT overwrites the PSK. Never call during
-  /// SOS, DMP, protection, or firmware transfer.
+  /// RAM. Does not revert LoRa region or existing mesh credentials; the next
+  /// [ensureDeviceReady] COMMIT overwrites the managed network configuration.
+  /// Never call during SOS, DMP, protection, or firmware transfer.
   Future<DeviceUnprovisionResult> unprovisionDevice();
   Future<PreferredDeviceReconnectResult> bootstrapPreferredDeviceReconnect({
     String reason = 'startup',

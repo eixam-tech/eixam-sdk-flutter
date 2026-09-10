@@ -350,7 +350,9 @@ class ApiSosRepository
   }
 
   @override
-  Future<SosRuntimeRehydrationResult> rehydrateRuntimeStateFromBackend() async {
+  Future<SosRuntimeRehydrationResult> rehydrateRuntimeStateFromBackend({
+    bool terminalAbsenceExpected = false,
+  }) async {
     final active = await remoteDataSource.getActiveSos();
     if (active == null) {
       _activeIncident = null;

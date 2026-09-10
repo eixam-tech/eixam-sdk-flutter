@@ -342,7 +342,7 @@ void main() {
     });
 
     test(
-      'reconnect restores full readiness while old notification cleanup waits',
+      'reconnect restores readiness and retains the remote-terminal 0x04 writer',
       () async {
         await runtimeProvider.dispose();
         await bleClient.dispose();
@@ -407,6 +407,18 @@ void main() {
           expect(controlledBleClient.activeNotificationGeneration, 2);
           expect(
               controlledBleClient.cancelledNotificationGenerations, <int>[1]);
+
+          // The SDK remote-terminal path reaches this attached writer after
+          // selecting EixamDeviceCommand.sosCancel(). Reconnect cleanup must
+          // not detach or replace the generation-2 command route.
+          await runtimeProvider.deviceSosController.sendAttachedCommand(
+            EixamDeviceCommand.sosCancel(forceCmdCharacteristic: true),
+          );
+          expect(controlledBleClient.writtenCommands.last.bytes, <int>[0x04]);
+          expect(
+            controlledBleClient.writtenCommands.last.usesCmdCharacteristic,
+            isTrue,
+          );
         } finally {
           controlledBleClient.finishOldCleanup();
           await statusSubscription.cancel();

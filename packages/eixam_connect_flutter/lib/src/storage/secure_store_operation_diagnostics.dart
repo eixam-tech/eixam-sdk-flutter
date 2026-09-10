@@ -6,6 +6,7 @@ enum SecureStoreOperation {
   sessionWriteVerifyRead('session_write_verify_read'),
   sessionDelete('session_delete'),
   sosLifecycleRead('sos_lifecycle_read'),
+  sosLifecycleWrite('sos_lifecycle_write'),
   sosLifecycleDelete('sos_lifecycle_delete');
 
   const SecureStoreOperation(this.label);

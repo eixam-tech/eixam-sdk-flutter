@@ -11,6 +11,7 @@ class MqttSosLifecycleUpdate {
     this.clientIncidentId,
     this.correlationId,
     this.cycleKey,
+    this.incidentOccurredAt,
     this.source,
     this.triggerSource,
     this.relaySource,
@@ -32,6 +33,7 @@ class MqttSosLifecycleUpdate {
   final String? clientIncidentId;
   final String? correlationId;
   final String? cycleKey;
+  final DateTime? incidentOccurredAt;
   final String? source;
   final String? triggerSource;
   final String? relaySource;
@@ -72,6 +74,10 @@ class MqttSosLifecycleUpdate {
         const ['correlationId', 'correlation_id'],
       ),
       cycleKey: _stringFromPayload(payload, const ['cycleKey', 'cycle_key']),
+      incidentOccurredAt: _dateTimeFromPayload(
+        payload,
+        const ['occurredAt', 'occurred_at'],
+      ),
       source: _stringFromPayload(payload, const ['source']),
       triggerSource: _stringFromPayload(
         payload,
@@ -110,7 +116,8 @@ class MqttSosLifecycleUpdate {
   }
 
   static String? _incidentIdFrom(Map<String, dynamic> payload) {
-    final direct = payload['incidentId'] ?? payload['id'];
+    final direct =
+        payload['incidentId'] ?? payload['incident_id'] ?? payload['id'];
     if (direct is String && direct.trim().isNotEmpty) {
       return direct.trim();
     }
@@ -247,6 +254,22 @@ class MqttSosLifecycleUpdate {
     }
     if (incident is Map) {
       return _stringFromMap(Map<String, dynamic>.from(incident), keys);
+    }
+    return null;
+  }
+
+  static DateTime? _dateTimeFromPayload(
+    Map<String, dynamic> payload,
+    List<String> keys,
+  ) {
+    for (final key in keys) {
+      final value = payload[key];
+      if (value is String) {
+        final parsed = DateTime.tryParse(value.trim());
+        if (parsed != null) {
+          return parsed.toUtc();
+        }
+      }
     }
     return null;
   }

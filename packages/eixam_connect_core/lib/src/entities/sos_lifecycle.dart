@@ -77,6 +77,7 @@ final class SosLifecycleSnapshot {
     this.deviceId,
     this.nodeId,
     this.hardwareId,
+    this.deviceCycleKey,
     this.triggerSource,
     this.activationTimestamp,
     this.cancellationPhase = SosCancellationPhase.none,
@@ -110,6 +111,13 @@ final class SosLifecycleSnapshot {
   final String? deviceId;
   final int? nodeId;
   final String? hardwareId;
+
+  /// BLE/device-runtime cycle correlated to this authoritative lifecycle.
+  ///
+  /// This is cycle identity rather than device identity so terminal evidence
+  /// can reject retries from an old physical SOS without rejecting a later
+  /// SOS from the same device.
+  final String? deviceCycleKey;
   final String? triggerSource;
   final DateTime? activationTimestamp;
   final DateTime lastAuthoritativeObservation;
@@ -142,6 +150,7 @@ final class SosLifecycleSnapshot {
     Object? deviceId = _unset,
     Object? nodeId = _unset,
     Object? hardwareId = _unset,
+    Object? deviceCycleKey = _unset,
     Object? triggerSource = _unset,
     Object? activationTimestamp = _unset,
     DateTime? lastAuthoritativeObservation,
@@ -171,6 +180,9 @@ final class SosLifecycleSnapshot {
         hardwareId: identical(hardwareId, _unset)
             ? this.hardwareId
             : hardwareId as String?,
+        deviceCycleKey: identical(deviceCycleKey, _unset)
+            ? this.deviceCycleKey
+            : deviceCycleKey as String?,
         triggerSource: identical(triggerSource, _unset)
             ? this.triggerSource
             : triggerSource as String?,

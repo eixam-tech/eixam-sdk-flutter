@@ -8,6 +8,7 @@ import 'eixam_sos_event_packet.dart';
 import 'eixam_sos_packet.dart';
 
 typedef DeviceCommandWriter = Future<void> Function(EixamDeviceCommand command);
+typedef DeviceTerminalOperationGuard = bool Function();
 
 class DeviceSosController {
   DeviceSosController({
@@ -211,6 +212,7 @@ class DeviceSosController {
     String terminalAction = 'cancel',
     bool? terminalCmdAvailable,
     bool? waitForCloseAcknowledgement,
+    DeviceTerminalOperationGuard? operationIsCurrent,
   }) async {
     final writer = commandWriterOverride ?? _commandWriter;
     if (writer == null) {
@@ -219,25 +221,38 @@ class DeviceSosController {
         reason: 'no_command_characteristic_ready',
         commandWriterOverride: commandWriterOverride,
         commandRouteLabel: commandRouteLabel,
+        operationIsCurrent: operationIsCurrent,
       );
     }
     final previous = _status;
-    final sent = await _dispatchTerminalCommand(
-      writer: writer,
-      previous: previous,
-      commandRouteLabel: commandRouteLabel,
-      allowCmd: terminalCmdAvailable ?? longCommandAvailable,
-      allowInet: commandWriterOverride != null || shortCommandAvailable,
-      action: terminalAction,
-      commandWriterOverride: commandWriterOverride,
-    );
+    late final bool sent;
+    try {
+      sent = await _dispatchTerminalCommand(
+        writer: writer,
+        previous: previous,
+        commandRouteLabel: commandRouteLabel,
+        allowCmd: terminalCmdAvailable ?? longCommandAvailable,
+        allowInet: commandWriterOverride != null || shortCommandAvailable,
+        action: terminalAction,
+        commandWriterOverride: commandWriterOverride,
+        operationIsCurrent: operationIsCurrent,
+      );
+    } on _StaleDeviceTerminalOperation {
+      _recordStaleTerminalOperation(commandRouteLabel);
+      return _status;
+    }
     if (!sent) {
       return _queueTerminalCommand(
         action: terminalAction,
         reason: 'no_command_characteristic_ready',
         commandWriterOverride: commandWriterOverride,
         commandRouteLabel: commandRouteLabel,
+        operationIsCurrent: operationIsCurrent,
       );
+    }
+    if (!_terminalOperationIsCurrent(operationIsCurrent)) {
+      _recordStaleTerminalOperation(commandRouteLabel);
+      return _status;
     }
     if (_isClosedState(previous.state)) {
       return _status;
@@ -249,6 +264,10 @@ class DeviceSosController {
         'DEVICE_SOS_CLOSE_COMMAND_DISPATCHED_WITHOUT_ACK_WAIT route=$commandRouteLabel previousState=${previous.state.name}',
       );
       final now = _now();
+      if (!_terminalOperationIsCurrent(operationIsCurrent)) {
+        _recordStaleTerminalOperation(commandRouteLabel);
+        return _status;
+      }
       final nextState = terminalAction == 'resolve'
           ? DeviceSosState.resolved
           : DeviceSosState.inactive;
@@ -277,11 +296,19 @@ class DeviceSosController {
         description: 'DEVICE_SOS_CLOSE_ACK_OBSERVED_AFTER_CANCEL',
         predicate: _isObservedClosedAfterCancel,
       );
+      if (!_terminalOperationIsCurrent(operationIsCurrent)) {
+        _recordStaleTerminalOperation(commandRouteLabel);
+        return _status;
+      }
       BleDebugRegistry.instance.recordEvent(
         'DEVICE_SOS_CLOSE_COMMAND_ACKNOWLEDGED route=$commandRouteLabel state=${closed.state.name} previousState=${previous.state.name}',
       );
       return closed;
     } catch (error) {
+      if (!_terminalOperationIsCurrent(operationIsCurrent)) {
+        _recordStaleTerminalOperation(commandRouteLabel);
+        return _status;
+      }
       BleDebugRegistry.instance.recordEvent(
         'DEVICE_SOS_CLOSE_COMMAND_ACK_TIMEOUT_OR_FAILED route=$commandRouteLabel lastState=${_status.state.name} previousState=${previous.state.name} error=$error',
       );
@@ -506,6 +533,7 @@ class DeviceSosController {
     required bool allowInet,
     required String action,
     DeviceCommandWriter? commandWriterOverride,
+    DeviceTerminalOperationGuard? operationIsCurrent,
   }) async {
     Object? cmdError;
     if (allowCmd) {
@@ -513,10 +541,12 @@ class DeviceSosController {
         forceCmdCharacteristic: true,
       );
       try {
+        _requireCurrentTerminalOperation(operationIsCurrent);
         BleDebugRegistry.instance.recordEvent(
           'DEVICE_SOS_COMMAND_DISPATCH route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
         );
         await writer(command);
+        _requireCurrentTerminalOperation(operationIsCurrent);
         BleDebugRegistry.instance.recordEvent(
           'DEVICE_SOS_COMMAND_SENT route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
         );
@@ -525,8 +555,11 @@ class DeviceSosController {
           action: action,
           commandWriterOverride: commandWriterOverride,
           commandRouteLabel: commandRouteLabel,
+          operationIsCurrent: operationIsCurrent,
         );
         return true;
+      } on _StaleDeviceTerminalOperation {
+        rethrow;
       } catch (error) {
         cmdError = error;
       }
@@ -540,10 +573,12 @@ class DeviceSosController {
       }
       final command = EixamDeviceCommand.sosCancel();
       try {
+        _requireCurrentTerminalOperation(operationIsCurrent);
         BleDebugRegistry.instance.recordEvent(
           'DEVICE_SOS_COMMAND_DISPATCH route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
         );
         await writer(command);
+        _requireCurrentTerminalOperation(operationIsCurrent);
         BleDebugRegistry.instance.recordEvent(
           'DEVICE_SOS_COMMAND_SENT route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
         );
@@ -552,8 +587,11 @@ class DeviceSosController {
           action: action,
           commandWriterOverride: commandWriterOverride,
           commandRouteLabel: commandRouteLabel,
+          operationIsCurrent: operationIsCurrent,
         );
         return true;
+      } on _StaleDeviceTerminalOperation {
+        rethrow;
       } catch (_) {
         return false;
       }
@@ -567,7 +605,14 @@ class DeviceSosController {
     required String reason,
     DeviceCommandWriter? commandWriterOverride,
     String? commandRouteLabel,
+    DeviceTerminalOperationGuard? operationIsCurrent,
   }) {
+    if (!_terminalOperationIsCurrent(operationIsCurrent)) {
+      _recordStaleTerminalOperation(
+        commandRouteLabel ?? 'attached_writer',
+      );
+      return _status;
+    }
     final now = _now();
     _pendingTerminalCommand = _PendingTerminalDeviceCommand(
       action: action,
@@ -575,6 +620,7 @@ class DeviceSosController {
       requestedAt: now,
       commandWriterOverride: commandWriterOverride,
       commandRouteLabel: commandRouteLabel,
+      operationIsCurrent: operationIsCurrent,
     );
     _cancelCountdownTimer();
     BleDebugRegistry.instance.recordEvent(
@@ -600,6 +646,13 @@ class DeviceSosController {
     if (pending == null || writer == null) {
       return;
     }
+    if (!_terminalOperationIsCurrent(pending.operationIsCurrent)) {
+      _pendingTerminalCommand = null;
+      _recordStaleTerminalOperation(
+        pending.commandRouteLabel ?? 'attached_writer',
+      );
+      return;
+    }
     final usesOverride = pending.commandWriterOverride != null;
     if (!usesOverride && !longCommandAvailable && !shortCommandAvailable) {
       return;
@@ -609,15 +662,25 @@ class DeviceSosController {
         'SOS_TRACE device_terminal_command_retry reason=$reason',
       );
     }
-    final sent = await _dispatchTerminalCommand(
-      writer: writer,
-      previous: _status,
-      commandRouteLabel: pending.commandRouteLabel ?? 'attached_writer',
-      allowCmd: !usesOverride && longCommandAvailable,
-      allowInet: usesOverride || shortCommandAvailable,
-      action: pending.action,
-      commandWriterOverride: pending.commandWriterOverride,
-    );
+    late final bool sent;
+    try {
+      sent = await _dispatchTerminalCommand(
+        writer: writer,
+        previous: _status,
+        commandRouteLabel: pending.commandRouteLabel ?? 'attached_writer',
+        allowCmd: !usesOverride && longCommandAvailable,
+        allowInet: usesOverride || shortCommandAvailable,
+        action: pending.action,
+        commandWriterOverride: pending.commandWriterOverride,
+        operationIsCurrent: pending.operationIsCurrent,
+      );
+    } on _StaleDeviceTerminalOperation {
+      _pendingTerminalCommand = null;
+      _recordStaleTerminalOperation(
+        pending.commandRouteLabel ?? 'attached_writer',
+      );
+      return;
+    }
     if (sent) {
       _pendingTerminalCommand = pending.copyWith(sentAt: _now());
     }
@@ -628,6 +691,7 @@ class DeviceSosController {
     required String action,
     DeviceCommandWriter? commandWriterOverride,
     String? commandRouteLabel,
+    DeviceTerminalOperationGuard? operationIsCurrent,
   }) {
     final pending = _pendingTerminalCommand;
     _pendingTerminalCommand = (pending ??
@@ -637,6 +701,7 @@ class DeviceSosController {
               requestedAt: _now(),
               commandWriterOverride: commandWriterOverride,
               commandRouteLabel: commandRouteLabel,
+              operationIsCurrent: operationIsCurrent,
             ))
         .copyWith(sentAt: _now());
     BleDebugRegistry.instance.recordEvent(
@@ -1347,6 +1412,26 @@ class DeviceSosController {
     return _status;
   }
 
+  bool _terminalOperationIsCurrent(
+    DeviceTerminalOperationGuard? operationIsCurrent,
+  ) =>
+      operationIsCurrent?.call() ?? true;
+
+  void _requireCurrentTerminalOperation(
+    DeviceTerminalOperationGuard? operationIsCurrent,
+  ) {
+    if (!_terminalOperationIsCurrent(operationIsCurrent)) {
+      throw const _StaleDeviceTerminalOperation();
+    }
+  }
+
+  void _recordStaleTerminalOperation(String commandRouteLabel) {
+    BleDebugRegistry.instance.recordEvent(
+      'DEVICE_SOS_CLOSE_COMMAND_ABORTED reason=stale_lifecycle '
+      'route=$commandRouteLabel',
+    );
+  }
+
   bool _shouldSuppressForPendingTerminalCommand(
     int nodeId, {
     required DeviceSosTransitionSource source,
@@ -1355,6 +1440,13 @@ class DeviceSosController {
   }) {
     final pending = _pendingTerminalCommand;
     if (pending == null) {
+      return false;
+    }
+    if (!_terminalOperationIsCurrent(pending.operationIsCurrent)) {
+      _pendingTerminalCommand = null;
+      _recordStaleTerminalOperation(
+        pending.commandRouteLabel ?? 'attached_writer',
+      );
       return false;
     }
     final anchor = pending.sentAt ?? pending.requestedAt;
@@ -1707,6 +1799,7 @@ class _PendingTerminalDeviceCommand {
     required this.requestedAt,
     this.commandWriterOverride,
     this.commandRouteLabel,
+    this.operationIsCurrent,
     this.sentAt,
   });
 
@@ -1715,6 +1808,7 @@ class _PendingTerminalDeviceCommand {
   final DateTime requestedAt;
   final DeviceCommandWriter? commandWriterOverride;
   final String? commandRouteLabel;
+  final DeviceTerminalOperationGuard? operationIsCurrent;
   final DateTime? sentAt;
 
   _PendingTerminalDeviceCommand copyWith({DateTime? sentAt}) {
@@ -1724,9 +1818,14 @@ class _PendingTerminalDeviceCommand {
       requestedAt: requestedAt,
       commandWriterOverride: commandWriterOverride,
       commandRouteLabel: commandRouteLabel,
+      operationIsCurrent: operationIsCurrent,
       sentAt: sentAt ?? this.sentAt,
     );
   }
+}
+
+class _StaleDeviceTerminalOperation implements Exception {
+  const _StaleDeviceTerminalOperation();
 }
 
 class _MeshPacketResolution {
