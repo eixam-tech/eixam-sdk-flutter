@@ -1,22 +1,24 @@
 class SdkDeviceDto {
   factory SdkDeviceDto.fromJson(Map<String, dynamic> json) {
     return SdkDeviceDto(
-      id: _requiredString(json, const ['id']) ??
+      id:
+          _requiredString(json, const ['id']) ??
           _requiredString(json, const ['hardware_id', 'hardwareId']) ??
           (throw const FormatException('Missing id')),
-      hardwareId: _requiredString(json, const ['hardware_id', 'hardwareId']) ??
+      hardwareId:
+          _requiredString(json, const ['hardware_id', 'hardwareId']) ??
           (throw const FormatException('Missing hardware_id')),
-      firmwareVersion: _optionalString(
-            json,
-            const ['firmware_version', 'firmwareVersion'],
-          ) ??
+      firmwareVersion:
+          _optionalString(json, const [
+            'firmware_version',
+            'firmwareVersion',
+          ]) ??
           'unknown',
-      hardwareModel: _optionalString(
-            json,
-            const ['hardware_model', 'hardwareModel'],
-          ) ??
+      hardwareModel:
+          _optionalString(json, const ['hardware_model', 'hardwareModel']) ??
           'EIXAM R1',
-      pairedAt: _optionalString(json, const ['paired_at', 'pairedAt']) ??
+      pairedAt:
+          _optionalString(json, const ['paired_at', 'pairedAt']) ??
           DateTime.now().toUtc().toIso8601String(),
       createdAt: _optionalString(json, const ['created_at', 'createdAt']),
       updatedAt: _optionalString(json, const ['updated_at', 'updatedAt']),

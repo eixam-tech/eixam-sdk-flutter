@@ -246,6 +246,9 @@ class BleOperationalRuntimeBridge {
         _observeSosIfValid(event);
         return;
       case BleIncomingEventType.sosDeviceEvent:
+      case BleIncomingEventType.nearbyTextRx:
+      case BleIncomingEventType.nearbyTextTxStatus:
+      case BleIncomingEventType.nearbyOwnerName:
       case BleIncomingEventType.unknownProtocolPacket:
         return;
     }

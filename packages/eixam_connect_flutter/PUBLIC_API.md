@@ -112,3 +112,36 @@ ordering. Host consumers merge equal revisions and reject stale ones.
 
 See [SOS orchestration](SOS_ORCHESTRATION.md) and the repository
 [authoritative lifecycle architecture](../../docs/SOS_LIFECYCLE_ARCHITECTURE_2026.md).
+
+## Nearby LoRa text
+
+`sendNearbyBroadcastText(String)` writes UTF-8 to the connected TAG. The TAG
+broadcasts on mesh port 262 (hop 0, PRIMARY PSK). `sendNearbyDirectText` is a
+PKI 1:1 (needs dest public key already on the TAG). `sendNearbyGroupText`
+uses a SECONDARY PSK installed with `setNearbyGroup` — never a PRIMARY swap.
+`NearbyGroupCommandResult.slotsFull` is REJECT detail `0xFF` (7 SECONDARY slots).
+`setNearbyGroup(..., replace: true)` wipes tag groups when full (action 2).
+`setNearbyGroup` retries once on ACK timeout while the TAG stays connected.
+`badKey` is `0xFE`, `persistFailed` is `0xFD`, `sosBlocked` is `0x01`.
+`watchNearbyText()` emits incoming messages with dest / groupId / pki flag.
+`watchNearbyNodeNames()` emits NodeInfo `long_name` heard by the connected TAG
+(`0xDB`). That is the display name of the phone currently on that TAG, or
+`EIXAM_<nodeId>` when nobody is connected. `setNearbyOwnerDisplayName` pushes
+this phone's profile name onto the TAG (`0x42`, 1–39 UTF-8 bytes). Empty names
+are ignored. Cached and resent on the next connect. Old firmware that ignores
+`0x42` still advertises `EIXAM_<nodeId>`.
+
+Text caps: 231 B UTF-8 for plaza and group (`tooLong` above that; the mesh
+`Data` protobuf costs 8 B and 233 B would not fit the LoRa frame), 200 B for
+PKI DMs.
+
+Hosts persist messages. The SDK does not. There is no cellular fallback.
+`NearbyTextTxStatus.timeout` means the TAG never answered `0xDA`.
+`NearbyTextTxStatus.bleOwnedByProtection` (and
+`NearbyGroupCommandResult.bleOwnedByProtection`) is returned before any BLE
+write while the native protection runtime owns the link: it does not bridge
+TEL notifies to Dart, so Nearby cannot confirm or receive until Flutter owns
+BLE again. Hosts should show "unavailable" rather than retry.
+Firmware ≥ **2.7.56** is required; 2.7.55 plaza-only framing is not compatible.
+Firmware ≥ **2.7.57** enforces the 231 B cap and ignores SECONDARY group keys
+on TEL/SOS/cluster ports. Firmware ≥ **2.7.58** for owner-name `0x42` / `0xDB`.

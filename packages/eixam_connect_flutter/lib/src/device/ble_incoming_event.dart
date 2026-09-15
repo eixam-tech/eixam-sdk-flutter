@@ -8,6 +8,7 @@ import 'eixam_sos_packet.dart';
 import 'eixam_tel_fragment.dart';
 import 'eixam_tel_live_batch_packet.dart';
 import 'eixam_position_backlog_packet.dart';
+import 'eixam_nearby_text_packet.dart';
 import 'eixam_tel_packet.dart';
 import 'eixam_tel_relay_rx_packet.dart';
 import '../provisioning/provisioning_command_result.dart';
@@ -51,6 +52,9 @@ enum BleIncomingEventType {
   clusterHeartbeat,
   sosMeshPacket,
   sosDeviceEvent,
+  nearbyTextRx,
+  nearbyTextTxStatus,
+  nearbyOwnerName,
   unknownProtocolPacket,
 }
 
@@ -77,6 +81,9 @@ class BleIncomingEvent {
     this.telRelayRxPacket,
     this.sosPacket,
     this.sosEventPacket,
+    this.nearbyTextPacket,
+    this.nearbyTextTxStatusPacket,
+    this.nearbyOwnerNamePacket,
     this.classification = const BleIncomingPayloadClassification(
       kind: BleIncomingPayloadKind.unknown,
     ),
@@ -104,6 +111,9 @@ class BleIncomingEvent {
   final EixamTelRelayRxPacket? telRelayRxPacket;
   final EixamSosPacket? sosPacket;
   final EixamSosEventPacket? sosEventPacket;
+  final EixamNearbyTextPacket? nearbyTextPacket;
+  final EixamNearbyTextTxStatusPacket? nearbyTextTxStatusPacket;
+  final EixamNearbyOwnerNamePacket? nearbyOwnerNamePacket;
   final BleIncomingPayloadClassification classification;
   final RemoteRelaySosSnapshot? remoteRelaySosSnapshot;
 

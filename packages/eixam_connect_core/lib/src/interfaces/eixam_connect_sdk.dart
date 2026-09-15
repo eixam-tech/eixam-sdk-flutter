@@ -24,6 +24,7 @@ import '../entities/preferred_device.dart';
 import '../entities/preferred_device_reconnect_result.dart';
 import '../entities/protection_mode_models.dart';
 import '../entities/public_pre_sos_status.dart';
+import '../entities/nearby_text.dart';
 import '../entities/os_sos_widget_activation.dart';
 import '../entities/runtime_identity_snapshot.dart';
 import '../entities/permission_disclosure.dart';
@@ -46,8 +47,8 @@ import '../events/eixam_sdk_event.dart';
 import '../events/realtime_event.dart';
 
 /// Public SDK contract consumed by host apps.
-typedef EixamConnectSdkBootstrapper = Future<EixamConnectSdk> Function(
-    EixamBootstrapConfig config);
+typedef EixamConnectSdkBootstrapper =
+    Future<EixamConnectSdk> Function(EixamBootstrapConfig config);
 
 EixamConnectSdkBootstrapper? _bootstrapper;
 
@@ -303,6 +304,48 @@ abstract class EixamConnectSdk {
   Future<void> sendShutdownToDevice();
   Future<void> setDeviceNotificationVolume(int volume);
   Future<void> setDeviceSosVolume(int volume);
+
+  /// Broadcast UTF-8 over LoRa via the connected TAG (port 262, plaza).
+  ///
+  /// Does not fall back to MQTT/HTTP. [NearbyTextTxStatus.timeout] means the
+  /// TAG did not answer `0xDA` (typically firmware before Nearby).
+  Future<NearbyTextTxResult> sendNearbyBroadcastText(String text);
+
+  /// PKI 1:1 on port 262. Requires the dest public key already on the TAG
+  /// (heard NodeInfo / plaza). Never falls back to channel-key DMs.
+  Future<NearbyTextTxResult> sendNearbyDirectText(
+    String text, {
+    required int destNodeId,
+  });
+
+  /// Group UTF-8 on a SECONDARY channel already installed with [setNearbyGroup].
+  Future<NearbyTextTxResult> sendNearbyGroupText(
+    String text, {
+    required int groupId,
+  });
+
+  /// Install a 32-byte group key on the TAG as a SECONDARY channel. Does not
+  /// replace the fleet PRIMARY channel key. [replace] wipes tag groups first
+  /// when every SECONDARY slot is already used (tag handed to a new user).
+  Future<NearbyGroupCommandResult> setNearbyGroup({
+    required int groupId,
+    required List<int> keyBytes,
+    bool replace = false,
+  });
+
+  Future<NearbyGroupCommandResult> removeNearbyGroup(int groupId);
+
+  /// Live Nearby RX from the connected TAG. Hosts persist; the SDK does not.
+  Stream<NearbyIncomingText> watchNearbyText();
+
+  /// NodeInfo long_name heard by the connected TAG (`0xDB`). Hardware
+  /// fallback is `EIXAM_<nodeId>` when no phone is on that TAG.
+  Stream<NearbyNodeName> watchNearbyNodeNames();
+
+  /// Pushes this phone's profile name onto the TAG (`0x42`). Cached and
+  /// resent on the next connect. Empty names are ignored.
+  Future<void> setNearbyOwnerDisplayName(String name);
+
   Future<DeviceRuntimeStatus> getDeviceRuntimeStatus();
   Future<RuntimeIdentitySnapshot> getRuntimeIdentitySnapshot();
   Future<void> rebootDevice();
@@ -343,9 +386,9 @@ abstract class EixamConnectSdk {
   Future<DeviceCountryConfigStatus> ensureDeviceCountryConfig({String reason});
 
   Future<BleNotificationNavigationRequest?>
-      consumePendingBleNotificationNavigationRequest();
+  consumePendingBleNotificationNavigationRequest();
   Stream<BleNotificationNavigationRequest>
-      watchBleNotificationNavigationRequests();
+  watchBleNotificationNavigationRequests();
   Future<List<EixamNotificationIntent>> consumePendingNotificationIntents();
   Stream<EixamNotificationIntent> watchNotificationIntents();
 

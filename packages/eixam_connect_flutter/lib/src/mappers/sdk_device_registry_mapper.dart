@@ -13,8 +13,9 @@ class SdkDeviceRegistryMapper {
       hardwareModel: dto.hardwareModel,
       pairedAt: DateTime.parse(dto.pairedAt).toUtc(),
       createdAt: DateTime.parse(dto.createdAt ?? dto.pairedAt).toUtc(),
-      updatedAt: DateTime.parse(dto.updatedAt ?? dto.createdAt ?? dto.pairedAt)
-          .toUtc(),
+      updatedAt: DateTime.parse(
+        dto.updatedAt ?? dto.createdAt ?? dto.pairedAt,
+      ).toUtc(),
     );
   }
 }

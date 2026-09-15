@@ -125,8 +125,10 @@ class FakeSosRepository implements SosRepository {
   }
 
   @override
-  Future<SosHistoryPage> listSosHistory(
-      {String? cursor, int limit = 20}) async {
+  Future<SosHistoryPage> listSosHistory({
+    String? cursor,
+    int limit = 20,
+  }) async {
     return const SosHistoryPage(items: [], hasMore: false);
   }
 
@@ -139,9 +141,9 @@ class FakeRehydratingSosRepository extends FakeSosRepository
     implements SosRuntimeRehydrationSupport, SosRuntimeSessionIsolation {
   SosRuntimeRehydrationResult rehydrationResult =
       const SosRuntimeRehydrationResult(
-    outcome: SosRuntimeRehydrationOutcome.clearedToIdle,
-    resultingState: SosState.idle,
-  );
+        outcome: SosRuntimeRehydrationOutcome.clearedToIdle,
+        resultingState: SosState.idle,
+      );
   int rehydrateCallCount = 0;
   int clearForSessionChangeCallCount = 0;
 
@@ -169,13 +171,12 @@ class FakeRejectedTerminalRehydratingSosRepository
     extends FakeRehydratingSosRepository
     implements SosRejectedTerminalReconciliationSource {
   final StreamController<SosRejectedTerminalReconciliationRequest>
-      _rejectedTerminalController =
+  _rejectedTerminalController =
       StreamController<SosRejectedTerminalReconciliationRequest>.broadcast();
 
   @override
   Stream<SosRejectedTerminalReconciliationRequest>
-      watchRejectedTerminalReconciliations() =>
-          _rejectedTerminalController.stream;
+  watchRejectedTerminalReconciliations() => _rejectedTerminalController.stream;
 
   void emitRejectedTerminal(SosState terminalState) {
     _rejectedTerminalController.add(
@@ -194,8 +195,8 @@ class FakeTrackingRepository implements TrackingRepository {
   FakeTrackingRepository({
     TrackingPosition? currentPosition,
     TrackingState initialState = TrackingState.idle,
-  })  : _currentPosition = currentPosition,
-        _state = initialState;
+  }) : _currentPosition = currentPosition,
+       _state = initialState;
 
   final StreamController<TrackingPosition> _positionsController =
       StreamController<TrackingPosition>.broadcast();
@@ -315,7 +316,8 @@ class FakeContactsRepository implements ContactsRepository {
 
   @override
   Future<EmergencyContact> updateEmergencyContact(
-      EmergencyContact contact) async {
+    EmergencyContact contact,
+  ) async {
     final index = contacts.indexWhere((item) => item.id == contact.id);
     if (index < 0) {
       throw StateError('Emergency contact not found: ${contact.id}');
@@ -381,8 +383,9 @@ class FakeSdkDeviceRegistryRepository implements SdkDeviceRegistryRepository {
     lastFirmwareVersion = firmwareVersion;
     lastHardwareModel = hardwareModel;
     lastPairedAt = pairedAt;
-    final existingIndex =
-        devices.indexWhere((device) => device.hardwareId == hardwareId);
+    final existingIndex = devices.indexWhere(
+      (device) => device.hardwareId == hardwareId,
+    );
     final now = DateTime.utc(2026, 3, 31, 12);
     final device = BackendRegisteredDevice(
       id: existingIndex >= 0
@@ -407,7 +410,7 @@ class FakeSdkDeviceRegistryRepository implements SdkDeviceRegistryRepository {
 class FakeDeviceRepository
     implements DeviceRepository, KnownDeviceReconnectRepository {
   FakeDeviceRepository({required DeviceStatus initialStatus})
-      : _status = initialStatus;
+    : _status = initialStatus;
 
   final StreamController<DeviceStatus> _controller =
       StreamController<DeviceStatus>.broadcast();
@@ -427,8 +430,10 @@ class FakeDeviceRepository
   }
 
   @override
-  Future<DeviceStatus> reconnectDevice(
-      {required PreferredDevice device, String? attemptId}) async {
+  Future<DeviceStatus> reconnectDevice({
+    required PreferredDevice device,
+    String? attemptId,
+  }) async {
     reconnectCallCount++;
     _status = _status.copyWith(
       deviceId: device.deviceId,
@@ -559,9 +564,7 @@ class FakeDeathManRepository implements DeathManRepository {
 }
 
 class FakePermissionsRepository implements PermissionsRepository {
-  FakePermissionsRepository({
-    this.permissionState = const PermissionState(),
-  });
+  FakePermissionsRepository({this.permissionState = const PermissionState()});
   PermissionState permissionState;
   Object? getPermissionStateError;
   int requestNotificationPermissionCallCount = 0;

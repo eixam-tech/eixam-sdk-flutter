@@ -26,6 +26,11 @@ int? inferMeshPortForLiveNotification({
       payload.first == 0xD3) {
     return EixamBleProtocol.telMeshPort;
   }
+  if (payload.first == EixamBleProtocol.nearbyTextRxOpcode ||
+      payload.first == EixamBleProtocol.nearbyTextTxStatusOpcode ||
+      payload.first == EixamBleProtocol.nearbyOwnerNameRxOpcode) {
+    return EixamBleProtocol.nearbyTextMeshPort;
+  }
 
   if (payload.length == 7 || payload.length == 10 || payload.length == 12) {
     final sosPacket = EixamSosPacket.tryParse(payload);

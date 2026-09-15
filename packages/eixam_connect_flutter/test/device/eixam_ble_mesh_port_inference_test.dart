@@ -104,5 +104,22 @@ void main() {
         isNull,
       );
     });
+
+    test('infers nearby port for 0xD8 RX and 0xDA TX status', () {
+      expect(
+        inferMeshPortForLiveNotification(
+          channel: EixamBleChannel.tel,
+          payload: const <int>[0xD8, 0x01],
+        ),
+        EixamBleProtocol.nearbyTextMeshPort,
+      );
+      expect(
+        inferMeshPortForLiveNotification(
+          channel: EixamBleChannel.tel,
+          payload: const <int>[0xDA, 0x22, 0, 0, 0, 0],
+        ),
+        EixamBleProtocol.nearbyTextMeshPort,
+      );
+    });
   });
 }

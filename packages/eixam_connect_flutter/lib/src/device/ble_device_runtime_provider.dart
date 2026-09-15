@@ -18,6 +18,7 @@ import 'eixam_ble_command.dart';
 import 'eixam_ble_notification.dart';
 import 'eixam_ble_protocol.dart';
 import 'eixam_cluster_heartbeat_packet.dart';
+import 'eixam_nearby_text_packet.dart';
 import 'eixam_device_runtime_status_packet.dart';
 import 'eixam_last_known_position_store.dart';
 import 'eixam_sos_event_packet.dart';
@@ -1631,6 +1632,96 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     );
   }
 
+  bool _dispatchNearbyTextPayload({
+    required String deviceId,
+    required EixamBleNotification notification,
+    required List<int> payload,
+    required String payloadHex,
+    required DeviceSosTransitionSource source,
+    EixamTelFragment? telFragment,
+    List<int>? aggregatePayload,
+  }) {
+    final txStatus = EixamNearbyTextTxStatusPacket.tryParse(payload);
+    if (txStatus != null) {
+      BleDebugRegistry.instance.recordDecodedIncomingEvent(
+        eventType: BleIncomingEventType.nearbyTextTxStatus.name,
+        outcome: BleIncomingEventType.nearbyTextTxStatus.name,
+        receivedAt: notification.receivedAt,
+      );
+      _incomingEventsController.add(
+        BleIncomingEvent(
+          deviceId: deviceId,
+          canonicalHardwareId: _connectedCanonicalHardwareId,
+          deviceAlias: _connectedDeviceAlias,
+          type: BleIncomingEventType.nearbyTextTxStatus,
+          channel: notification.channel,
+          payload: List<int>.unmodifiable(payload),
+          payloadHex: payloadHex,
+          source: source,
+          receivedAt: notification.receivedAt,
+          meshPort: EixamBleProtocol.nearbyTextMeshPort,
+          telFragment: telFragment,
+          aggregatePayload: aggregatePayload,
+          nearbyTextTxStatusPacket: txStatus,
+        ),
+      );
+      return true;
+    }
+    final ownerName = EixamNearbyOwnerNamePacket.tryParse(payload);
+    if (ownerName != null) {
+      BleDebugRegistry.instance.recordDecodedIncomingEvent(
+        eventType: BleIncomingEventType.nearbyOwnerName.name,
+        outcome: BleIncomingEventType.nearbyOwnerName.name,
+        receivedAt: notification.receivedAt,
+      );
+      _incomingEventsController.add(
+        BleIncomingEvent(
+          deviceId: deviceId,
+          canonicalHardwareId: _connectedCanonicalHardwareId,
+          deviceAlias: _connectedDeviceAlias,
+          type: BleIncomingEventType.nearbyOwnerName,
+          channel: notification.channel,
+          payload: List<int>.unmodifiable(payload),
+          payloadHex: payloadHex,
+          source: source,
+          receivedAt: notification.receivedAt,
+          meshPort: EixamBleProtocol.nearbyTextMeshPort,
+          telFragment: telFragment,
+          aggregatePayload: aggregatePayload,
+          nearbyOwnerNamePacket: ownerName,
+        ),
+      );
+      return true;
+    }
+    final rx = EixamNearbyTextPacket.tryParse(payload);
+    if (rx == null) {
+      return false;
+    }
+    BleDebugRegistry.instance.recordDecodedIncomingEvent(
+      eventType: BleIncomingEventType.nearbyTextRx.name,
+      outcome: BleIncomingEventType.nearbyTextRx.name,
+      receivedAt: notification.receivedAt,
+    );
+    _incomingEventsController.add(
+      BleIncomingEvent(
+        deviceId: deviceId,
+        canonicalHardwareId: _connectedCanonicalHardwareId,
+        deviceAlias: _connectedDeviceAlias,
+        type: BleIncomingEventType.nearbyTextRx,
+        channel: notification.channel,
+        payload: List<int>.unmodifiable(payload),
+        payloadHex: payloadHex,
+        source: source,
+        receivedAt: notification.receivedAt,
+        meshPort: EixamBleProtocol.nearbyTextMeshPort,
+        telFragment: telFragment,
+        aggregatePayload: aggregatePayload,
+        nearbyTextPacket: rx,
+      ),
+    );
+    return true;
+  }
+
   Future<void> _dispatchClassifiedTelPayload({
     required String deviceId,
     required EixamBleNotification notification,
@@ -1670,6 +1761,19 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
           positionBacklogPacket: backlogPacket,
         ),
       );
+      return;
+    }
+    // Nearby first: a 6 B `0xDA` status is "SOS-like" by length and would
+    // otherwise leave a bogus BLE_SOS_CLASSIFY_DECISION line per text send.
+    if (_dispatchNearbyTextPayload(
+      deviceId: deviceId,
+      notification: notification,
+      payload: payload,
+      payloadHex: payloadHex,
+      source: source,
+      telFragment: telFragment,
+      aggregatePayload: aggregatePayload,
+    )) {
       return;
     }
     _logRawIncomingSosPacket(

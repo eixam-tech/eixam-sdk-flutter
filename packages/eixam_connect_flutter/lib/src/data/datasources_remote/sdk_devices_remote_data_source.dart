@@ -51,8 +51,10 @@ class HttpSdkDevicesRemoteDataSource implements SdkDevicesRemoteDataSource {
       );
     }
     try {
-      final payload =
-          _decode(response.body, errorCode: 'E_HTTP_DEVICE_UPSERT_FAILED');
+      final payload = _decode(
+        response.body,
+        errorCode: 'E_HTTP_DEVICE_UPSERT_FAILED',
+      );
       final device = _deviceObject(payload);
       if (device != null) {
         return SdkDeviceDto.fromJson(device);
@@ -76,8 +78,10 @@ class HttpSdkDevicesRemoteDataSource implements SdkDevicesRemoteDataSource {
     if (response.statusCode != 200) {
       throw DeviceException('E_HTTP_DEVICE_LIST_FAILED', response.body);
     }
-    final payload =
-        _decode(response.body, errorCode: 'E_HTTP_DEVICE_LIST_FAILED');
+    final payload = _decode(
+      response.body,
+      errorCode: 'E_HTTP_DEVICE_LIST_FAILED',
+    );
     final devices = _deviceList(payload);
     if (devices == null) {
       throw const DeviceException(
@@ -110,10 +114,7 @@ class HttpSdkDevicesRemoteDataSource implements SdkDevicesRemoteDataSource {
     }
   }
 
-  Map<String, dynamic> _decode(
-    String body, {
-    required String errorCode,
-  }) {
+  Map<String, dynamic> _decode(String body, {required String errorCode}) {
     final Object decoded;
     try {
       decoded = jsonDecode(body);

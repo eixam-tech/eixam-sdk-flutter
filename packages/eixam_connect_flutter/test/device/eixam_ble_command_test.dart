@@ -1,4 +1,5 @@
 import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_nearby_text_packet.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -67,8 +68,10 @@ void main() {
         <int>[0x31, 7, 0x78, 0x56, 0x34, 0x12],
       );
       expect(
-        EixamDeviceCommand.positionBacklogAbort(sessionId: 7, reason: 3)
-            .encode(),
+        EixamDeviceCommand.positionBacklogAbort(
+          sessionId: 7,
+          reason: 3,
+        ).encode(),
         <int>[0x32, 7, 3],
       );
     });
@@ -87,6 +90,19 @@ void main() {
         expect(command.diagnosticPayload, '<redacted-operational-payload>');
         expect(command.diagnosticPayload, isNot(contains('12345678')));
       }
+    });
+
+    test('redacts nearby group key fragments', () {
+      final command = EixamDeviceCommand.nearbyGroupFragment(
+        EixamNearbyTextFramer.groupFragments(
+          action: 1,
+          groupId: 7,
+          psk: List<int>.filled(32, 0xAB),
+        ).first,
+      );
+      expect(command.opcode, 0x41);
+      expect(command.encodedHex, '<redacted-secret-payload>');
+      expect(command.diagnosticPayload, isNot(contains('ab')));
     });
   });
 }
