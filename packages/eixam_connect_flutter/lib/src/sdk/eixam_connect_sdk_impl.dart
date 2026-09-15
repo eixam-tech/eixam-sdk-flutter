@@ -276,7 +276,15 @@ class EixamConnectSdkImpl
           .watchRejectedTerminalReconciliations()
           .listen(_handleRejectedTerminalReconciliationRequest);
     }
-    _sosCapabilityLifecycleSub = _sosLifecycle.stream.listen((_) {
+    _sosCapabilityLifecycleSub = _sosLifecycle.stream.listen((lifecycle) {
+      if (lifecycle.isTerminal) {
+        final status = deviceSosController.currentStatus;
+        _rememberTerminalDeviceCycleFence(
+          status: status,
+          effectiveNodeId:
+              lifecycle.nodeId ?? status.nodeId ?? _knownLocalDeviceNodeId,
+        );
+      }
       unawaited(_emitSosCapability(reason: 'lifecycle_change'));
     });
   }
@@ -491,6 +499,8 @@ class EixamConnectSdkImpl
   _PhysicalSosTerminationTarget? _remoteTerminalDeviceClearAwaitingAckProof;
   _PhysicalSosTerminationTarget? _remoteTerminalDeviceClearAcknowledgedProof;
   int? _deviceInactiveBoundaryAfterTerminalGeneration;
+  _ObservedOwnDeviceInactiveBoundary? _latestOwnDeviceInactiveBoundary;
+  _TerminalDeviceCycleFence? _terminalDeviceCycleFence;
   int? _knownLocalDeviceNodeId;
   SosDeliveryChannel? _lastPublishedCurrentSosCapabilityChannel;
   String? _lastSosCapabilityEvaluationSignature;
@@ -1522,6 +1532,8 @@ class EixamConnectSdkImpl
     _remoteTerminalDeviceClearAwaitingAckProof = null;
     _remoteTerminalDeviceClearAcknowledgedProof = null;
     _deviceInactiveBoundaryAfterTerminalGeneration = null;
+    _latestOwnDeviceInactiveBoundary = null;
+    _terminalDeviceCycleFence = null;
     _clearPreSosSession(reason: 'session_cleared', emitIdleState: false);
     _clearPendingAppTriggeredSosBridge(reason: 'session_cleared');
     _clearDeviceRuntimeSosOwnership(reason: 'session_cleared');
@@ -4022,7 +4034,11 @@ class EixamConnectSdkImpl
   }
 
   Future<void> _handleDeviceSosStatus(DeviceSosStatus status) async {
-    _recordTerminalFenceDeviceInactiveBoundary(status);
+    final sosStatusEventSequence = ++_deviceSosStatusEventSequence;
+    _recordTerminalFenceDeviceInactiveBoundary(
+      status,
+      eventSequence: sosStatusEventSequence,
+    );
     if (_consumeRemoteTerminalDeviceClearAck(status)) {
       return;
     }
@@ -4033,7 +4049,10 @@ class EixamConnectSdkImpl
     if ((status.state == DeviceSosState.preConfirm ||
             status.state == DeviceSosState.active ||
             status.state == DeviceSosState.acknowledged) &&
-        _terminalFenceSuppressesDeviceOpen(status)) {
+        _terminalFenceSuppressesDeviceOpen(
+          status,
+          eventSequence: sosStatusEventSequence,
+        )) {
       BleDebugRegistry.instance.recordEvent(
         'SOS_TERMINAL_FENCE_SUPPRESSED_OPEN source=device_active '
         'reason=authoritative_backend_terminal '
@@ -4049,6 +4068,14 @@ class EixamConnectSdkImpl
     if (_isNoOpInactiveDeviceSosStatus(status)) {
       return;
     }
+    if (_shouldRejectStalePreSosPhysicalCancel(status)) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_PHYSICAL_PRE_SOS_CANCEL_REJECTED '
+        'reason=older_terminal_generation currentGeneration=${_sosLifecycle.current.generation} '
+        'nodeId=${status.nodeId?.toString() ?? "-"}',
+      );
+      return;
+    }
     _emitOperationalDiagnostics();
     _consumePendingAppTriggeredSosBridge(status);
     final deviceOwnedPreSosActivation =
@@ -4056,7 +4083,6 @@ class EixamConnectSdkImpl
         status.state == DeviceSosState.active &&
         status.previousState == DeviceSosState.preConfirm &&
         status.nodeId != null;
-    final sosStatusEventSequence = ++_deviceSosStatusEventSequence;
     final isCorrelatedAppTriggeredStatus = _isCorrelatedAppTriggeredSosStatus(
       status,
     );
@@ -4064,6 +4090,7 @@ class EixamConnectSdkImpl
     await _advanceConnectedLocalDeviceLifecycleBeforeHandoff(
       status,
       cycleKey: cycleKey,
+      eventSequence: sosStatusEventSequence,
     );
     final isAppOriginatedStatus =
         status.triggerOrigin == DeviceSosTransitionSource.app;
@@ -4295,6 +4322,7 @@ class EixamConnectSdkImpl
   Future<void> _advanceConnectedLocalDeviceLifecycleBeforeHandoff(
     DeviceSosStatus status, {
     required String? cycleKey,
+    required int eventSequence,
   }) async {
     if (cycleKey == null ||
         status.triggerOrigin != DeviceSosTransitionSource.device) {
@@ -4304,6 +4332,7 @@ class EixamConnectSdkImpl
     final terminalFence = _sosLifecycle.activeTerminalWatermark;
     final mayStartAfterTerminal = _terminalFenceAllowsFreshDeviceGeneration(
       status,
+      eventSequence: eventSequence,
     );
     if (status.state == DeviceSosState.preConfirm) {
       if (!_sosLifecycle.current.isOpen) {
@@ -4319,6 +4348,7 @@ class EixamConnectSdkImpl
         if (terminalFence != null &&
             lifecycle.generation > terminalFence.generation) {
           _deviceInactiveBoundaryAfterTerminalGeneration = null;
+          _latestOwnDeviceInactiveBoundary = null;
         }
       }
       _traceConnectedLocalDeviceHandoff(
@@ -4347,6 +4377,7 @@ class EixamConnectSdkImpl
       if (terminalFence != null &&
           lifecycle.generation > terminalFence.generation) {
         _deviceInactiveBoundaryAfterTerminalGeneration = null;
+        _latestOwnDeviceInactiveBoundary = null;
       }
     }
     if (lifecycle.stage == SosLifecycleStage.arming) {
@@ -5189,6 +5220,8 @@ class EixamConnectSdkImpl
   @override
   Future<void> cancelPreSos() async {
     final previousClosureInFlight = _publicSosClosureInFlight;
+    final lifecycleAtCancellationStart = _sosLifecycle.current;
+    final pendingActivationAtCancellationStart = _pendingSosActivation;
     _publicSosClosureInFlight = _SosClosureIntent.cancel;
     try {
       final status = await deviceSosController.getStatus();
@@ -5284,6 +5317,12 @@ class EixamConnectSdkImpl
       if (status.state == DeviceSosState.preConfirm) {
         deviceSosController.clearPreSosLocally(reason: 'app_cancel_pre_sos');
       }
+      await _terminalizeCancelledPreSosGeneration(
+        expectedLifecycle: lifecycleAtCancellationStart,
+        pendingActivation: pendingActivationAtCancellationStart,
+        cycleKey: activeSession?.cycleKey,
+        hasBackendIncident: hasIncidentId,
+      );
       _clearPreSosSession(
         reason: 'public_pre_sos_cancelled',
         emitIdleState: true,
@@ -5295,6 +5334,66 @@ class EixamConnectSdkImpl
     } finally {
       _publicSosClosureInFlight = previousClosureInFlight;
     }
+  }
+
+  Future<void> _terminalizeCancelledPreSosGeneration({
+    required SosLifecycleSnapshot expectedLifecycle,
+    required _PendingSosActivationOperation? pendingActivation,
+    required String? cycleKey,
+    required bool hasBackendIncident,
+  }) async {
+    final current = _sosLifecycle.current;
+    final matchingGeneration = _sameSosGeneration(current, expectedLifecycle);
+    final pendingMatchesGeneration = pendingActivation == null
+        ? _pendingSosActivation == null
+        : (identical(_pendingSosActivation, pendingActivation) &&
+              pendingActivation.generation == expectedLifecycle.generation &&
+              pendingActivation.operationRevision ==
+                  _pendingSosActivationRevision);
+    final canTerminalize =
+        matchingGeneration &&
+        pendingMatchesGeneration &&
+        current.stage == SosLifecycleStage.arming &&
+        !hasBackendIncident &&
+        current.backendIncidentId == null &&
+        current.incident?.isBackendConfirmed != true &&
+        pendingActivation?.dispatchCommitted != true;
+    if (!canTerminalize) {
+      final reason = !matchingGeneration
+          ? 'newer_generation'
+          : !pendingMatchesGeneration
+          ? 'pending_generation_mismatch'
+          : current.stage != SosLifecycleStage.arming
+          ? 'not_arming'
+          : hasBackendIncident ||
+                current.backendIncidentId != null ||
+                current.incident?.isBackendConfirmed == true
+          ? 'backend_incident_present'
+          : 'backend_dispatch_committed';
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_PRE_SOS_LIFECYCLE_TERMINALIZATION_SKIPPED '
+        'reason=$reason generation=${current.generation} '
+        'stage=${current.stage.name}',
+      );
+      return;
+    }
+
+    if (pendingActivation != null && !pendingActivation.cancelled) {
+      pendingActivation.cancelled = true;
+      _pendingSosActivationRevision += 1;
+    }
+    final terminal = await _sosLifecycle.confirmTerminal(
+      stage: SosLifecycleStage.cancelled,
+      deviceCycleKey: cycleKey,
+    );
+    if (identical(_pendingSosActivation, pendingActivation)) {
+      _pendingSosActivation = null;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_PRE_SOS_LIFECYCLE_TERMINALIZED '
+      'reason=pre_sos_cancelled generation=${terminal.generation} '
+      'cycleKey=${cycleKey ?? "-"}',
+    );
   }
 
   @override
@@ -9103,10 +9202,53 @@ class EixamConnectSdkImpl
     if (preSosStatus == null && _publicSosState != SosState.arming) {
       return false;
     }
-    return _matchesAppOriginMirroredPreSosBridge(
+    final matchesBridge = _matchesAppOriginMirroredPreSosBridge(
       status,
       runtimeCycleKey: cycleKey,
     );
+    if (!matchesBridge) {
+      return false;
+    }
+    if (_isPhysicalPreSosUserCancellation(status)) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_PHYSICAL_PRE_SOS_CANCEL_ACCEPTED '
+        'reason=matching_app_origin_bridge '
+        'generation=${_sosLifecycle.current.generation} '
+        'nodeId=${status.nodeId?.toString() ?? "-"}',
+      );
+      return false;
+    }
+    return true;
+  }
+
+  bool _isPhysicalPreSosUserCancellation(DeviceSosStatus status) {
+    final eventBytes = _parseHexBytes(status.lastPacketHex);
+    // Firmware subcode 0x01 is the physical countdown-cancel gesture. E2 never
+    // reaches this branch because DeviceSosController consumes it as an ACK.
+    return _isOwnDeviceUserDeactivatedEvent(status) &&
+        status.previousState == DeviceSosState.preConfirm &&
+        eventBytes != null &&
+        eventBytes.length >= 2 &&
+        eventBytes[1] == 0x01;
+  }
+
+  bool _shouldRejectStalePreSosPhysicalCancel(DeviceSosStatus status) {
+    if (!_isOwnDeviceUserDeactivatedEvent(status)) {
+      return false;
+    }
+    final eventBytes = _parseHexBytes(status.lastPacketHex);
+    if (eventBytes == null || eventBytes.length < 2 || eventBytes[1] != 0x01) {
+      return false;
+    }
+    final terminal = _sosLifecycle.activeTerminalWatermark;
+    final current = _sosLifecycle.current;
+    // An E1/0x01 belongs to a pre-SOS countdown. Once a later generation is
+    // already beyond arming, it cannot be allowed to close that generation.
+    return terminal != null &&
+        current.isOpen &&
+        current.generation > terminal.generation &&
+        current.stage != SosLifecycleStage.arming &&
+        status.previousState != DeviceSosState.preConfirm;
   }
 
   bool _isAppOwnedBleRuntimeStatus(
@@ -12149,55 +12291,199 @@ class EixamConnectSdkImpl
     return true;
   }
 
-  void _recordTerminalFenceDeviceInactiveBoundary(DeviceSosStatus status) {
+  void _recordTerminalFenceDeviceInactiveBoundary(
+    DeviceSosStatus status, {
+    required int eventSequence,
+  }) {
     if (!_isDeviceSosCycleClosed(status.state) ||
+        !_isDeviceSosCycleOpenState(status.previousState) ||
         !status.derivedFromBlePacket ||
-        status.transitionSource != DeviceSosTransitionSource.device) {
+        status.transitionSource != DeviceSosTransitionSource.device ||
+        !_isConnectedOwnDeviceSosStatus(status)) {
       return;
     }
+    final observedAt = (status.lastPacketAt ?? status.updatedAt).toUtc();
+    final nodeId = _normalizeNodeIdOrNull(
+      status.nodeId ?? _knownLocalDeviceNodeId ?? _lastDeviceStatus?.nodeId,
+    );
+    final boundary = _ObservedOwnDeviceInactiveBoundary(
+      lifecycleGeneration: _sosLifecycle.current.generation,
+      eventSequence: eventSequence,
+      nodeId: nodeId,
+      observedAt: observedAt,
+      runtimeCycleKey: _runtimeDeviceSosCycleKey(
+        status: status,
+        nodeId: nodeId,
+      ),
+      terminalState: status.state,
+      previousState: status.previousState!,
+      observedBeforeTerminal:
+          _sosLifecycle.activeTerminalWatermark?.generation !=
+          _sosLifecycle.current.generation,
+    );
+    _latestOwnDeviceInactiveBoundary = boundary;
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_DEVICE_INACTIVE_BOUNDARY_RECORDED '
+      'lifecycleGeneration=${boundary.lifecycleGeneration} '
+      'eventSeq=${boundary.eventSequence} '
+      'nodeId=${boundary.nodeId?.toString() ?? "none"} '
+      'previous=${boundary.previousState.name} state=${boundary.terminalState.name} '
+      'cycle=${boundary.runtimeCycleKey ?? "none"}',
+    );
     final terminal = _sosLifecycle.activeTerminalWatermark;
     final current = _sosLifecycle.current;
     if (terminal == null ||
         current.generation > terminal.generation ||
-        (terminal.nodeId != null &&
-            status.nodeId != null &&
-            terminal.nodeId != status.nodeId)) {
+        !_inactiveBoundaryBelongsToTerminal(boundary, terminal: terminal)) {
       return;
     }
-    final observedAt = status.lastPacketAt ?? status.updatedAt;
-    if (observedAt.toUtc().isBefore(terminal.lastAuthoritativeObservation)) {
-      return;
-    }
-    _deviceInactiveBoundaryAfterTerminalGeneration = terminal.generation;
-    BleDebugRegistry.instance.recordEvent(
-      'SOS_TERMINAL_FENCE_DEVICE_CLEANUP_OBSERVED '
-      'generation=${terminal.generation} state=${status.state.name} '
-      'effect=inactive_boundary_only',
+    _associateInactiveBoundaryWithTerminal(
+      boundary,
+      terminal: terminal,
+      fallbackCycleKey: boundary.runtimeCycleKey,
+      ordering: boundary.observedBeforeTerminal
+          ? 'before_terminal'
+          : 'after_terminal',
     );
   }
 
-  bool _terminalFenceAllowsFreshDeviceGeneration(DeviceSosStatus status) {
-    final terminal = _sosLifecycle.activeTerminalWatermark;
-    final current = _sosLifecycle.current;
-    if (terminal == null || current.generation > terminal.generation) {
-      return false;
-    }
-    return _deviceInactiveBoundaryAfterTerminalGeneration ==
-            terminal.generation &&
-        status.derivedFromBlePacket &&
-        status.transitionSource == DeviceSosTransitionSource.device &&
-        (status.lastPacketAt ?? status.updatedAt).toUtc().isAfter(
-          terminal.lastAuthoritativeObservation,
-        );
+  bool _isDeviceSosCycleOpenState(DeviceSosState? state) {
+    return state == DeviceSosState.preConfirm ||
+        state == DeviceSosState.active ||
+        state == DeviceSosState.acknowledged;
   }
 
-  bool _terminalFenceSuppressesDeviceOpen(DeviceSosStatus status) {
+  bool _isConnectedOwnDeviceSosStatus(DeviceSosStatus status) {
+    final connectedDevice = _lastPublicDeviceStatus ?? _lastDeviceStatus;
+    if (connectedDevice?.connected != true) {
+      return false;
+    }
+    final statusNodeId = _normalizeNodeIdOrNull(status.nodeId);
+    final knownNodeId = _normalizeNodeIdOrNull(
+      _knownLocalDeviceNodeId ?? connectedDevice?.nodeId,
+    );
+    return statusNodeId == null ||
+        knownNodeId == null ||
+        statusNodeId == knownNodeId;
+  }
+
+  bool _inactiveBoundaryBelongsToTerminal(
+    _ObservedOwnDeviceInactiveBoundary boundary, {
+    required SosLifecycleSnapshot terminal,
+  }) {
+    if (boundary.lifecycleGeneration != terminal.generation) {
+      return false;
+    }
+    final terminalNodeId = _normalizeNodeIdOrNull(terminal.nodeId);
+    if (terminalNodeId != null &&
+        boundary.nodeId != null &&
+        terminalNodeId != boundary.nodeId) {
+      return false;
+    }
+    final activatedAt = terminal.activationTimestamp?.toUtc();
+    return activatedAt == null || !boundary.observedAt.isBefore(activatedAt);
+  }
+
+  void _associateInactiveBoundaryWithTerminal(
+    _ObservedOwnDeviceInactiveBoundary boundary, {
+    required SosLifecycleSnapshot terminal,
+    required String? fallbackCycleKey,
+    required String ordering,
+  }) {
+    _deviceInactiveBoundaryAfterTerminalGeneration = terminal.generation;
+    final existingFence = _terminalDeviceCycleFence;
+    final normalizedFallback = fallbackCycleKey?.trim();
+    _terminalDeviceCycleFence = _TerminalDeviceCycleFence(
+      generation: terminal.generation,
+      nodeId: terminal.nodeId ?? boundary.nodeId,
+      runtimeCycleKey: existingFence?.generation == terminal.generation
+          ? existingFence?.runtimeCycleKey
+          : (normalizedFallback?.isNotEmpty == true
+                ? normalizedFallback
+                : boundary.runtimeCycleKey),
+      inactiveBoundaryEventSequence: boundary.eventSequence,
+      inactiveBoundaryObservedAt: boundary.observedAt,
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_TERMINAL_FENCE_DEVICE_CLEANUP_PRESERVED '
+      'generation=${terminal.generation} state=${boundary.terminalState.name} '
+      'boundarySeq=${boundary.eventSequence} ordering=$ordering',
+    );
+  }
+
+  bool _terminalFenceAllowsFreshDeviceGeneration(
+    DeviceSosStatus status, {
+    required int eventSequence,
+  }) {
     final terminal = _sosLifecycle.activeTerminalWatermark;
     final current = _sosLifecycle.current;
     if (terminal == null || current.generation > terminal.generation) {
       return false;
     }
-    return !_terminalFenceAllowsFreshDeviceGeneration(status);
+    if (!status.derivedFromBlePacket ||
+        status.transitionSource != DeviceSosTransitionSource.device ||
+        status.triggerOrigin != DeviceSosTransitionSource.device ||
+        !_isConnectedOwnDeviceSosStatus(status)) {
+      return false;
+    }
+    final observedAt = (status.lastPacketAt ?? status.updatedAt).toUtc();
+    if (!observedAt.isAfter(terminal.lastAuthoritativeObservation)) {
+      return false;
+    }
+    final hasInactiveBoundary =
+        _deviceInactiveBoundaryAfterTerminalGeneration == terminal.generation;
+    final fence = _terminalDeviceCycleFence;
+    if (!hasInactiveBoundary ||
+        fence == null ||
+        fence.generation != terminal.generation) {
+      return false;
+    }
+    final nodeId = status.nodeId ?? _knownLocalDeviceNodeId;
+    if (fence.nodeId != null && nodeId != null && fence.nodeId != nodeId) {
+      return false;
+    }
+    final incomingCycleKey = _runtimeDeviceSosCycleKey(
+      status: status,
+      nodeId: nodeId,
+    );
+    final validFreshPhysicalEdge =
+        status.state == DeviceSosState.preConfirm &&
+        (status.previousState == DeviceSosState.inactive ||
+            status.previousState == DeviceSosState.resolved) &&
+        fence.inactiveBoundaryEventSequence != null &&
+        eventSequence > fence.inactiveBoundaryEventSequence! &&
+        fence.inactiveBoundaryObservedAt != null &&
+        observedAt.isAfter(fence.inactiveBoundaryObservedAt!);
+    if (!validFreshPhysicalEdge) {
+      return false;
+    }
+    final rawIdentityReused =
+        incomingCycleKey == null || incomingCycleKey == fence.runtimeCycleKey;
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_TERMINAL_FENCE_FRESH_PHYSICAL_EDGE_ACCEPTED '
+      'terminalGeneration=${terminal.generation} '
+      'nodeId=${nodeId?.toString() ?? "none"} '
+      'boundarySeq=${fence.inactiveBoundaryEventSequence} '
+      'eventSeq=$eventSequence rawIdentityReused=$rawIdentityReused '
+      'oldCycle=${fence.runtimeCycleKey ?? "none"} '
+      'newCycle=${incomingCycleKey ?? "none"}',
+    );
+    return true;
+  }
+
+  bool _terminalFenceSuppressesDeviceOpen(
+    DeviceSosStatus status, {
+    required int eventSequence,
+  }) {
+    final terminal = _sosLifecycle.activeTerminalWatermark;
+    final current = _sosLifecycle.current;
+    if (terminal == null || current.generation > terminal.generation) {
+      return false;
+    }
+    return !_terminalFenceAllowsFreshDeviceGeneration(
+      status,
+      eventSequence: eventSequence,
+    );
   }
 
   bool _shouldClearRecentAppOriginBridge(String reason) {
@@ -17341,6 +17627,10 @@ class EixamConnectSdkImpl
     final boundDeviceId = _lastDeviceStatus?.deviceId.trim();
     final status = deviceSosController.currentStatus;
     final effectiveNodeId = nodeId ?? status.nodeId ?? _knownLocalDeviceNodeId;
+    _rememberTerminalDeviceCycleFence(
+      status: status,
+      effectiveNodeId: effectiveNodeId,
+    );
     if (terminalState == SosState.cancelled) {
       final session = _preSosSession;
       if (session != null && session.owner == _SosOwner.device) {
@@ -17405,6 +17695,58 @@ class EixamConnectSdkImpl
         terminalState: terminalState,
       ),
     );
+  }
+
+  void _rememberTerminalDeviceCycleFence({
+    required DeviceSosStatus status,
+    required int? effectiveNodeId,
+  }) {
+    final terminal = _sosLifecycle.activeTerminalWatermark;
+    if (terminal == null) {
+      return;
+    }
+    final cycleKey = _runtimeDeviceSosCycleKey(
+      status: status,
+      nodeId: effectiveNodeId,
+    );
+    final boundary = _latestOwnDeviceInactiveBoundary;
+    final usableBoundary =
+        boundary != null &&
+            _deviceSosStatusEventSequence == boundary.eventSequence &&
+            _isDeviceSosCycleClosed(status.state) &&
+            _inactiveBoundaryBelongsToTerminal(boundary, terminal: terminal)
+        ? boundary
+        : null;
+    if (cycleKey == null && usableBoundary == null) {
+      return;
+    }
+    final existingFence = _terminalDeviceCycleFence;
+    final matchingExistingFence =
+        existingFence?.generation == terminal.generation ? existingFence : null;
+    _terminalDeviceCycleFence = _TerminalDeviceCycleFence(
+      generation: terminal.generation,
+      nodeId: effectiveNodeId ?? matchingExistingFence?.nodeId,
+      runtimeCycleKey: cycleKey?.trim().isNotEmpty == true
+          ? cycleKey
+          : matchingExistingFence?.runtimeCycleKey ??
+                usableBoundary?.runtimeCycleKey,
+      inactiveBoundaryEventSequence:
+          usableBoundary?.eventSequence ??
+          matchingExistingFence?.inactiveBoundaryEventSequence,
+      inactiveBoundaryObservedAt:
+          usableBoundary?.observedAt ??
+          matchingExistingFence?.inactiveBoundaryObservedAt,
+    );
+    if (usableBoundary != null) {
+      _associateInactiveBoundaryWithTerminal(
+        usableBoundary,
+        terminal: terminal,
+        fallbackCycleKey: cycleKey,
+        ordering: usableBoundary.observedBeforeTerminal
+            ? 'before_terminal'
+            : 'after_terminal',
+      );
+    }
   }
 
   void _applyDeviceTerminalPublicSosClose({
@@ -17597,8 +17939,21 @@ class EixamConnectSdkImpl
     final current = _sosLifecycle.current;
     final terminalTargetsPacket =
         terminal != null && current.generation <= terminal.generation;
+    final packet = EixamSosPacket.tryParse(
+      _tryDecodeHexPayload(rawHex) ?? const <int>[],
+    );
+    final platformPacketStartsFreshCycle =
+        terminalTargetsPacket &&
+        packet != null &&
+        _terminalFenceAllowsFreshDevicePacket(
+          terminal: terminal,
+          nodeId: originatorNodeId ?? packet.nodeId,
+          packetId: packet.packetId,
+          observedAt: DateTime.now().toUtc(),
+        );
     if (terminalTargetsPacket &&
-        _deviceInactiveBoundaryAfterTerminalGeneration != terminal.generation) {
+        _deviceInactiveBoundaryAfterTerminalGeneration != terminal.generation &&
+        !platformPacketStartsFreshCycle) {
       BleDebugRegistry.instance.recordEvent(
         'SOS_TERMINAL_FENCE_SUPPRESSED_OPEN source=platform_device_packet '
         'reason=authoritative_backend_terminal '
@@ -17609,6 +17964,9 @@ class EixamConnectSdkImpl
         'reason=authoritative_terminal_fence',
       );
       return true;
+    }
+    if (platformPacketStartsFreshCycle) {
+      return false;
     }
     final now = DateTime.now();
     _pruneTerminalSosSuppressions(now);
@@ -17643,6 +18001,28 @@ class EixamConnectSdkImpl
     return false;
   }
 
+  bool _terminalFenceAllowsFreshDevicePacket({
+    required SosLifecycleSnapshot terminal,
+    required int? nodeId,
+    required int packetId,
+    required DateTime observedAt,
+  }) {
+    if (!observedAt.isAfter(terminal.lastAuthoritativeObservation)) {
+      return false;
+    }
+    final fence = _terminalDeviceCycleFence;
+    if (fence == null || fence.generation != terminal.generation) {
+      return false;
+    }
+    if (fence.nodeId != null && nodeId != null && fence.nodeId != nodeId) {
+      return false;
+    }
+    if (fence.runtimeCycleKey == null) {
+      return false;
+    }
+    return 'sos:${nodeId ?? fence.nodeId}:$packetId' != fence.runtimeCycleKey;
+  }
+
   Iterable<String> _terminalSosSuppressionKeys({
     required int? originatorNodeId,
     required String? boundDeviceId,
@@ -17668,6 +18048,9 @@ class EixamConnectSdkImpl
     _activeDeviceRuntimeCycleKey = null;
     _activeDeviceRuntimeLocalCycleKey = null;
     _lastClosedDeviceRuntimeLocalCycleKey = null;
+    _deviceInactiveBoundaryAfterTerminalGeneration = null;
+    _latestOwnDeviceInactiveBoundary = null;
+    _terminalDeviceCycleFence = null;
     _deviceOwnedBackendIncidentId = null;
     _lastDeviceRuntimeCanonicalIncidentSignature = null;
     _lastDeviceRuntimeCanonicalIncident = null;
@@ -20307,6 +20690,44 @@ class _TerminalSosSuppression {
   final String? boundDeviceId;
   final DateTime expiresAt;
   final String reason;
+}
+
+class _TerminalDeviceCycleFence {
+  const _TerminalDeviceCycleFence({
+    required this.generation,
+    required this.nodeId,
+    required this.runtimeCycleKey,
+    required this.inactiveBoundaryEventSequence,
+    required this.inactiveBoundaryObservedAt,
+  });
+
+  final int generation;
+  final int? nodeId;
+  final String? runtimeCycleKey;
+  final int? inactiveBoundaryEventSequence;
+  final DateTime? inactiveBoundaryObservedAt;
+}
+
+class _ObservedOwnDeviceInactiveBoundary {
+  const _ObservedOwnDeviceInactiveBoundary({
+    required this.lifecycleGeneration,
+    required this.eventSequence,
+    required this.nodeId,
+    required this.observedAt,
+    required this.runtimeCycleKey,
+    required this.terminalState,
+    required this.previousState,
+    required this.observedBeforeTerminal,
+  });
+
+  final int lifecycleGeneration;
+  final int eventSequence;
+  final int? nodeId;
+  final DateTime observedAt;
+  final String? runtimeCycleKey;
+  final DeviceSosState terminalState;
+  final DeviceSosState previousState;
+  final bool observedBeforeTerminal;
 }
 
 class _PreSosTerminalCancelContext {
