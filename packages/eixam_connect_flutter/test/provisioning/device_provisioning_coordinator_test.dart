@@ -12,19 +12,21 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
 void main() {
-  test('already-provisioned exact assignment is ready without writes',
-      () async {
-    final harness = _Harness(initiallyProvisioned: true);
-    final result = await harness.coordinator.ensureReady();
+  test(
+    'already-provisioned exact assignment is ready without writes',
+    () async {
+      final harness = _Harness(initiallyProvisioned: true);
+      final result = await harness.coordinator.ensureReady();
 
-    expect(result.disposition, DeviceReadyDisposition.ready);
-    expect(harness.commands, isEmpty);
-    expect(harness.pskClient.requestCount, 0);
-    expect(harness.registry.listCalls, 1);
-    expect(harness.registry.upsertCalls, 0);
-    expect(harness.diagnostics, contains('ASSIGNMENT_VERIFY result=matched'));
-    await harness.dispose();
-  });
+      expect(result.disposition, DeviceReadyDisposition.ready);
+      expect(harness.commands, isEmpty);
+      expect(harness.pskClient.requestCount, 0);
+      expect(harness.registry.listCalls, 1);
+      expect(harness.registry.upsertCalls, 0);
+      expect(harness.diagnostics, contains('ASSIGNMENT_VERIFY result=matched'));
+      await harness.dispose();
+    },
+  );
 
   for (final testCase in <({String name, List<String> hardwareIds})>[
     (name: 'completely absent row', hardwareIds: <String>[]),
@@ -37,54 +39,55 @@ void main() {
       hardwareIds: <String>['AA:BB:CC:DD:EE:FF'],
     ),
   ]) {
-    test('already-provisioned ${testCase.name} is claimed then ready',
-        () async {
-      final harness = _Harness(
-        initiallyProvisioned: true,
-        assignmentHardwareIds: testCase.hardwareIds,
-      );
+    test(
+      'already-provisioned ${testCase.name} is claimed then ready',
+      () async {
+        final harness = _Harness(
+          initiallyProvisioned: true,
+          assignmentHardwareIds: testCase.hardwareIds,
+        );
 
-      final result = await harness.coordinator.ensureReady();
+        final result = await harness.coordinator.ensureReady();
 
-      expect(result.disposition, DeviceReadyDisposition.ready);
-      expect(harness.commands, isEmpty);
-      expect(harness.pskClient.requestCount, 0);
-      expect(harness.registry.listCalls, 2);
-      expect(harness.registry.upsertCalls, 1);
-      expect(
-        harness.diagnostics,
-        contains('ASSIGNMENT_CREATE reason=provisioned_assignment_missing'),
-      );
-      expect(
-        harness.diagnostics,
-        contains('ASSIGNMENT_READBACK result=matched'),
-      );
-      await harness.dispose();
-    });
+        expect(result.disposition, DeviceReadyDisposition.ready);
+        expect(harness.commands, isEmpty);
+        expect(harness.pskClient.requestCount, 0);
+        expect(harness.registry.listCalls, 2);
+        expect(harness.registry.upsertCalls, 1);
+        expect(
+          harness.diagnostics,
+          contains('ASSIGNMENT_CREATE reason=provisioned_assignment_missing'),
+        );
+        expect(
+          harness.diagnostics,
+          contains('ASSIGNMENT_READBACK result=matched'),
+        );
+        await harness.dispose();
+      },
+    );
   }
 
-  test('already-provisioned padded hardware id matches without rewrite',
-      () async {
-    final harness = _Harness(
-      initiallyProvisioned: true,
-      assignmentHardwareIds: const <String>[' 305419896 '],
-    );
+  test(
+    'already-provisioned padded hardware id matches without rewrite',
+    () async {
+      final harness = _Harness(
+        initiallyProvisioned: true,
+        assignmentHardwareIds: const <String>[' 305419896 '],
+      );
 
-    expect(
-      (await harness.coordinator.ensureReady()).disposition,
-      DeviceReadyDisposition.ready,
-    );
-    expect(harness.commands, isEmpty);
-    expect(harness.registry.listCalls, 1);
-    expect(harness.registry.upsertCalls, 0);
-    await harness.dispose();
-  });
+      expect(
+        (await harness.coordinator.ensureReady()).disposition,
+        DeviceReadyDisposition.ready,
+      );
+      expect(harness.commands, isEmpty);
+      expect(harness.registry.listCalls, 1);
+      expect(harness.registry.upsertCalls, 0);
+      await harness.dispose();
+    },
+  );
 
   for (final testCase in <({String name, Object error})>[
-    (
-      name: 'backend timeout',
-      error: TimeoutException('registry timeout'),
-    ),
+    (name: 'backend timeout', error: TimeoutException('registry timeout')),
     (
       name: 'auth failure',
       error: const AuthException('E_TEST_AUTH', 'E_TEST_AUTH'),
@@ -94,54 +97,58 @@ void main() {
       error: const DeviceException('E_TEST_REGISTRY', 'E_TEST_REGISTRY'),
     ),
   ]) {
-    test('already-provisioned ${testCase.name} still becomes ready after claim',
-        () async {
+    test(
+      'already-provisioned ${testCase.name} still becomes ready after claim',
+      () async {
+        final harness = _Harness(
+          initiallyProvisioned: true,
+          registryError: testCase.error,
+        );
+
+        final result = await harness.coordinator.ensureReady();
+
+        expect(result.disposition, DeviceReadyDisposition.ready);
+        expect(result.isReady, isTrue);
+        expect(result.failure, isNull);
+        expect(harness.commands, isEmpty);
+        expect(harness.registry.listCalls, 2);
+        expect(harness.registry.upsertCalls, 1);
+        expect(
+          harness.diagnostics,
+          contains('ASSIGNMENT_VERIFY result=backend_unavailable'),
+        );
+        expect(
+          harness.diagnostics,
+          contains('ASSIGNMENT remaining=unverified action=ready_provisioned'),
+        );
+        await harness.dispose();
+      },
+    );
+  }
+
+  test(
+    'already-provisioned list and create failure still leaves the TAG ready',
+    () async {
       final harness = _Harness(
         initiallyProvisioned: true,
-        registryError: testCase.error,
+        registryError: TimeoutException('registry timeout'),
+        assignmentCreateError: StateError('assignment failed'),
       );
 
       final result = await harness.coordinator.ensureReady();
 
       expect(result.disposition, DeviceReadyDisposition.ready);
       expect(result.isReady, isTrue);
-      expect(result.failure, isNull);
       expect(harness.commands, isEmpty);
-      expect(harness.registry.listCalls, 2);
+      expect(harness.registry.listCalls, 1);
       expect(harness.registry.upsertCalls, 1);
-      expect(
-        harness.diagnostics,
-        contains('ASSIGNMENT_VERIFY result=backend_unavailable'),
-      );
       expect(
         harness.diagnostics,
         contains('ASSIGNMENT remaining=unverified action=ready_provisioned'),
       );
       await harness.dispose();
-    });
-  }
-
-  test('already-provisioned list and create failure still leaves the TAG ready',
-      () async {
-    final harness = _Harness(
-      initiallyProvisioned: true,
-      registryError: TimeoutException('registry timeout'),
-      assignmentCreateError: StateError('assignment failed'),
-    );
-
-    final result = await harness.coordinator.ensureReady();
-
-    expect(result.disposition, DeviceReadyDisposition.ready);
-    expect(result.isReady, isTrue);
-    expect(harness.commands, isEmpty);
-    expect(harness.registry.listCalls, 1);
-    expect(harness.registry.upsertCalls, 1);
-    expect(
-      harness.diagnostics,
-      contains('ASSIGNMENT remaining=unverified action=ready_provisioned'),
-    );
-    await harness.dispose();
-  });
+    },
+  );
 
   test('exact assignment among multiple registered devices is ready', () async {
     final harness = _Harness(
@@ -167,75 +174,67 @@ void main() {
 
     final result = await harness.coordinator.ensureReady();
 
-    expect(
-      result.disposition,
-      DeviceReadyDisposition.ready,
-    );
+    expect(result.disposition, DeviceReadyDisposition.ready);
     expect(harness.commands, isNotEmpty);
     expect(harness.rebootCount, 1);
     expect(harness.runtimeReadCount, 2);
     expect(harness.registry.listCalls, 1);
     expect(harness.registry.upsertCalls, 1);
-    expect(
-      harness.diagnostics,
-      contains('ASSIGNMENT_CREATE result=success'),
-    );
-    expect(
-      harness.diagnostics,
-      contains('ASSIGNMENT_READBACK result=matched'),
-    );
+    expect(harness.diagnostics, contains('ASSIGNMENT_CREATE result=success'));
+    expect(harness.diagnostics, contains('ASSIGNMENT_READBACK result=matched'));
     await harness.dispose();
   });
 
-  test('fresh provisioning assignment failure still leaves the TAG ready',
-      () async {
-    final harness = _Harness(
-      assignmentHardwareIds: const <String>[],
-      assignmentCreateError: StateError('assignment failed'),
-    );
+  test(
+    'fresh provisioning assignment failure still leaves the TAG ready',
+    () async {
+      final harness = _Harness(
+        assignmentHardwareIds: const <String>[],
+        assignmentCreateError: StateError('assignment failed'),
+      );
 
-    final result = await harness.coordinator.ensureReady();
+      final result = await harness.coordinator.ensureReady();
 
-    expect(result.disposition, DeviceReadyDisposition.ready);
-    expect(result.isReady, isTrue);
-    expect(harness.rebootCount, 1);
-    expect(harness.registry.upsertCalls, 1);
-    expect(harness.registry.listCalls, 0);
-    expect(
-      harness.diagnostics,
-      contains('ASSIGNMENT_CREATE result=failed'),
-    );
-    expect(
-      harness.diagnostics,
-      contains('ASSIGNMENT remaining=unverified action=ready_provisioned'),
-    );
-    final commandCount = harness.commands.length;
-    final retry = await harness.coordinator.ensureReady();
-    expect(retry.disposition, DeviceReadyDisposition.ready);
-    expect(harness.commands.length, commandCount);
-    expect(harness.registry.upsertCalls, 2);
-    await harness.dispose();
-  });
+      expect(result.disposition, DeviceReadyDisposition.ready);
+      expect(result.isReady, isTrue);
+      expect(harness.rebootCount, 1);
+      expect(harness.registry.upsertCalls, 1);
+      expect(harness.registry.listCalls, 0);
+      expect(harness.diagnostics, contains('ASSIGNMENT_CREATE result=failed'));
+      expect(
+        harness.diagnostics,
+        contains('ASSIGNMENT remaining=unverified action=ready_provisioned'),
+      );
+      final commandCount = harness.commands.length;
+      final retry = await harness.coordinator.ensureReady();
+      expect(retry.disposition, DeviceReadyDisposition.ready);
+      expect(harness.commands.length, commandCount);
+      expect(harness.registry.upsertCalls, 2);
+      await harness.dispose();
+    },
+  );
 
-  test('fresh provisioning assignment response mismatch still becomes ready',
-      () async {
-    final harness = _Harness(
-      assignmentHardwareIds: const <String>[],
-      assignmentCreateResponseHardwareId: '7',
-    );
+  test(
+    'fresh provisioning assignment response mismatch still becomes ready',
+    () async {
+      final harness = _Harness(
+        assignmentHardwareIds: const <String>[],
+        assignmentCreateResponseHardwareId: '7',
+      );
 
-    final result = await harness.coordinator.ensureReady();
+      final result = await harness.coordinator.ensureReady();
 
-    expect(result.disposition, DeviceReadyDisposition.ready);
-    expect(result.isReady, isTrue);
-    expect(harness.registry.upsertCalls, 1);
-    expect(harness.registry.listCalls, 0);
-    expect(
-      harness.diagnostics,
-      contains('ASSIGNMENT remaining=unverified action=ready_provisioned'),
-    );
-    await harness.dispose();
-  });
+      expect(result.disposition, DeviceReadyDisposition.ready);
+      expect(result.isReady, isTrue);
+      expect(harness.registry.upsertCalls, 1);
+      expect(harness.registry.listCalls, 0);
+      expect(
+        harness.diagnostics,
+        contains('ASSIGNMENT remaining=unverified action=ready_provisioned'),
+      );
+      await harness.dispose();
+    },
+  );
 
   test('fresh provisioning missing read-back still becomes ready', () async {
     final harness = _Harness(
@@ -260,16 +259,21 @@ void main() {
     await harness.dispose();
   });
 
-  test('assignment is not read before live provisioned state is established',
-      () async {
-    final harness = _Harness(liveFirmwareVersion: '2.7.31');
+  test(
+    'assignment is not read before live provisioned state is established',
+    () async {
+      final harness = _Harness(liveFirmwareVersion: '2.7.31');
 
-    final result = await harness.coordinator.ensureReady();
+      final result = await harness.coordinator.ensureReady();
 
-    expect(result.failure?.code, DeviceReadyFailureCode.firmwareUpdateRequired);
-    expect(harness.registry.listCalls, 0);
-    await harness.dispose();
-  });
+      expect(
+        result.failure?.code,
+        DeviceReadyFailureCode.firmwareUpdateRequired,
+      );
+      expect(harness.registry.listCalls, 0);
+      await harness.dispose();
+    },
+  );
 
   test('2.7.31 requires firmware update before provisioning writes', () async {
     final harness = _Harness(liveFirmwareVersion: '2.7.31');
@@ -285,8 +289,10 @@ void main() {
     expect(result.failure?.code, DeviceReadyFailureCode.firmwareUpdateRequired);
     expect(harness.commands, isEmpty);
     expect(harness.pskClient.requestCount, 0);
-    expect(states.map((state) => state.phase),
-        contains(DeviceProvisioningPhase.firmwareUpdateRequired));
+    expect(
+      states.map((state) => state.phase),
+      contains(DeviceProvisioningPhase.firmwareUpdateRequired),
+    );
     await subscription.cancel();
     await harness.dispose();
   });
@@ -305,10 +311,16 @@ void main() {
     expect(harness.reconnectOwnershipAcquireCount, 1);
     expect(harness.reconnectOwnershipReleaseCount, 1);
     expect(harness.reconnectOwnershipHeld, isFalse);
-    expect(harness.rebootBoundaryEvents,
-        <String>['acquire', 'reboot', 'reconnect', 'release']);
+    expect(harness.rebootBoundaryEvents, <String>[
+      'acquire',
+      'reboot',
+      'reconnect',
+      'release',
+    ]);
     expect(
-      harness.commands.where((command) => command.opcode == 0x24).every(
+      harness.commands
+          .where((command) => command.opcode == 0x24)
+          .every(
             (command) =>
                 command.payloadSensitivity ==
                 BleCommandPayloadSensitivity.secret,
@@ -316,29 +328,31 @@ void main() {
       isTrue,
     );
     expect(
-      harness.commands.where((command) => command.opcode == 0x24).every(
-            (command) => command.bytes.every((byte) => byte == 0),
-          ),
+      harness.commands
+          .where((command) => command.opcode == 0x24)
+          .every((command) => command.bytes.every((byte) => byte == 0)),
       isTrue,
     );
     await harness.dispose();
   });
 
-  test('0x20 OK_NOCHANGE is semantic success under corrected contract',
-      () async {
-    final harness = _Harness(
-      noChangeOpcode: 0x20,
-    );
-    expect((await harness.coordinator.ensureReady()).isReady, isTrue);
-    await harness.dispose();
-  });
+  test(
+    '0x20 OK_NOCHANGE is semantic success under corrected contract',
+    () async {
+      final harness = _Harness(noChangeOpcode: 0x20);
+      expect((await harness.coordinator.ensureReady()).isReady, isTrue);
+      await harness.dispose();
+    },
+  );
 
   test('OK_NOCHANGE is rejected for opcode 0x21', () async {
     final harness = _Harness(noChangeOpcode: 0x21);
     final result = await harness.coordinator.ensureReady();
 
-    expect(result.failure?.code,
-        DeviceReadyFailureCode.deviceConfigurationRejected);
+    expect(
+      result.failure?.code,
+      DeviceReadyFailureCode.deviceConfigurationRejected,
+    );
     await harness.dispose();
   });
 
@@ -393,38 +407,64 @@ void main() {
     await harness.dispose();
   });
 
-  test('connected status without node identity fails closed before writes',
-      () async {
-    final harness = _Harness(statusHasInitialNodeId: false);
+  test(
+    'connected status without node identity fails closed before writes',
+    () async {
+      final harness = _Harness(statusHasInitialNodeId: false);
 
-    final result = await harness.coordinator.ensureReady();
+      final result = await harness.coordinator.ensureReady();
 
-    expect(
-      result.failure?.code,
-      DeviceReadyFailureCode.missingNodeIdentity,
-    );
-    expect(result.failure?.retryable, isTrue);
-    expect(harness.commands, isEmpty);
-    expect(harness.pskClient.requestCount, 0);
-    expect(
-      harness.diagnostics,
-      contains(
-        'PROVISIONING_FAILURE '
-        'reason=missingNodeIdentity phase=checkingDevice',
-      ),
-    );
-    await harness.dispose();
-  });
+      expect(result.failure?.code, DeviceReadyFailureCode.missingNodeIdentity);
+      expect(result.failure?.retryable, isTrue);
+      expect(harness.commands, isEmpty);
+      expect(harness.pskClient.requestCount, 0);
+      expect(
+        harness.diagnostics,
+        contains(
+          'PROVISIONING_FAILURE '
+          'reason=missingNodeIdentity phase=checkingDevice',
+        ),
+      );
+      await harness.dispose();
+    },
+  );
+
+  test(
+    'invalid backend config reports its exact rule before PSK or writes',
+    () async {
+      final harness = _Harness(
+        configSource: const _InvalidConfigSource(
+          DeviceReadyFailureDetail.planNotVerified,
+        ),
+      );
+
+      final result = await harness.coordinator.ensureReady();
+
+      expect(result.failure?.code, DeviceReadyFailureCode.configurationInvalid);
+      expect(result.failure?.detail, DeviceReadyFailureDetail.planNotVerified);
+      expect(harness.pskClient.requestCount, 0);
+      expect(harness.commands, isEmpty);
+      expect(
+        harness.diagnostics,
+        contains(
+          'PROVISIONING_FAILURE reason=configurationInvalid '
+          'phase=fetchingConfiguration detail=planNotVerified',
+        ),
+      );
+      await harness.dispose();
+    },
+  );
 
   for (final version in <String?>['unreadable', null]) {
-    test(
-        '${version ?? 'missing'} firmware metadata fails closed before '
+    test('${version ?? 'missing'} firmware metadata fails closed before '
         'mutating writes', () async {
       final harness = _Harness(liveFirmwareVersion: version);
       final result = await harness.coordinator.ensureReady();
 
       expect(
-          result.failure?.code, DeviceReadyFailureCode.firmwareUpdateRequired);
+        result.failure?.code,
+        DeviceReadyFailureCode.firmwareUpdateRequired,
+      );
       expect(harness.commands, isEmpty);
       expect(harness.pskClient.requestCount, 0);
       await harness.dispose();
@@ -442,16 +482,20 @@ void main() {
   });
 
   for (final opcode in <int>[0x24, 0x20, 0x21]) {
-    test('opcode 0x${opcode.toRadixString(16)} REJECT is typed failure',
-        () async {
-      final harness = _Harness(rejectedOpcode: opcode);
-      final result = await harness.coordinator.ensureReady();
+    test(
+      'opcode 0x${opcode.toRadixString(16)} REJECT is typed failure',
+      () async {
+        final harness = _Harness(rejectedOpcode: opcode);
+        final result = await harness.coordinator.ensureReady();
 
-      expect(result.failure?.code,
-          DeviceReadyFailureCode.deviceConfigurationRejected);
-      expect(result.failure?.retryable, isFalse);
-      await harness.dispose();
-    });
+        expect(
+          result.failure?.code,
+          DeviceReadyFailureCode.deviceConfigurationRejected,
+        );
+        expect(result.failure?.retryable, isFalse);
+        await harness.dispose();
+      },
+    );
   }
 
   test('reconnect failure is retryable', () async {
@@ -494,46 +538,52 @@ void main() {
     await harness.dispose();
   });
 
-  test('provisioning retries a post-reboot 0x23 timeout then verifies',
-      () async {
-    final harness = _Harness(runtimeFailuresAfterReboot: 2);
-    final result = await harness.coordinator.ensureReady();
+  test(
+    'provisioning retries a post-reboot 0x23 timeout then verifies',
+    () async {
+      final harness = _Harness(runtimeFailuresAfterReboot: 2);
+      final result = await harness.coordinator.ensureReady();
 
-    expect(result.isReady, isTrue);
-    expect(harness.runtimeReadCount, greaterThan(1));
-    expect(
-      harness.diagnostics,
-      contains(
-        'PROVISIONING_REBOOT verify_retry attempt=1 reason=device_exception',
-      ),
-    );
-    await harness.dispose();
-  });
+      expect(result.isReady, isTrue);
+      expect(harness.runtimeReadCount, greaterThan(1));
+      expect(
+        harness.diagnostics,
+        contains(
+          'PROVISIONING_REBOOT verify_retry attempt=1 reason=device_exception',
+        ),
+      );
+      await harness.dispose();
+    },
+  );
 
-  test('provisioning retries a disconnected post-reboot status then verifies',
-      () async {
-    final harness = _Harness(disconnectedStatusReadsAfterReboot: 2);
-    final result = await harness.coordinator.ensureReady();
+  test(
+    'provisioning retries a disconnected post-reboot status then verifies',
+    () async {
+      final harness = _Harness(disconnectedStatusReadsAfterReboot: 2);
+      final result = await harness.coordinator.ensureReady();
 
-    expect(result.isReady, isTrue);
-    expect(
-      harness.diagnostics,
-      contains(
-        'PROVISIONING_REBOOT verify_retry attempt=1 reason=not_connected',
-      ),
-    );
-    await harness.dispose();
-  });
+      expect(result.isReady, isTrue);
+      expect(
+        harness.diagnostics,
+        contains(
+          'PROVISIONING_REBOOT verify_retry attempt=1 reason=not_connected',
+        ),
+      );
+      await harness.dispose();
+    },
+  );
 
-  test('provisioning maps a stuck post-reboot disconnect to reconnectFailed',
-      () async {
-    final harness = _Harness(disconnectedStatusReadsAfterReboot: 99);
-    final result = await harness.coordinator.ensureReady();
+  test(
+    'provisioning maps a stuck post-reboot disconnect to reconnectFailed',
+    () async {
+      final harness = _Harness(disconnectedStatusReadsAfterReboot: 99);
+      final result = await harness.coordinator.ensureReady();
 
-    expect(result.failure?.code, DeviceReadyFailureCode.reconnectFailed);
-    expect(result.failure?.retryable, isTrue);
-    await harness.dispose();
-  });
+      expect(result.failure?.code, DeviceReadyFailureCode.reconnectFailed);
+      expect(result.failure?.retryable, isTrue);
+      await harness.dispose();
+    },
+  );
 
   test('stale pre-reboot unprovisioned 0x23 cannot produce ready', () async {
     final harness = _Harness(finalProvisioned: false);
@@ -555,8 +605,10 @@ void main() {
     harness.releaseReboot.complete();
     await dispose;
 
-    expect((await result).failure?.code,
-        DeviceReadyFailureCode.deviceCommunicationInterrupted);
+    expect(
+      (await result).failure?.code,
+      DeviceReadyFailureCode.deviceCommunicationInterrupted,
+    );
     expect(harness.reconnectOwnershipHeld, isFalse);
     expect(harness.reconnectOwnershipReleaseCount, 1);
     expect(
@@ -569,28 +621,33 @@ void main() {
     await harness.dispose(closeCoordinator: false);
   });
 
-  test('live unsupported firmware overrides supported cached metadata',
-      () async {
-    final harness = _Harness(
-      liveFirmwareVersion: '2.7.31',
-    );
-    final result = await harness.coordinator.ensureReady();
+  test(
+    'live unsupported firmware overrides supported cached metadata',
+    () async {
+      final harness = _Harness(liveFirmwareVersion: '2.7.31');
+      final result = await harness.coordinator.ensureReady();
 
-    expect(result.failure?.code, DeviceReadyFailureCode.firmwareUpdateRequired);
-    expect(harness.commands, isEmpty);
-    expect(harness.pskClient.requestCount, 0);
-    await harness.dispose();
-  });
+      expect(
+        result.failure?.code,
+        DeviceReadyFailureCode.firmwareUpdateRequired,
+      );
+      expect(harness.commands, isEmpty);
+      expect(harness.pskClient.requestCount, 0);
+      await harness.dispose();
+    },
+  );
 
-  test('nodeId maximum unsigned value is provisioned without truncation',
-      () async {
-    final harness = _Harness(
-      initialNodeId: 0xffffffff,
-      finalNodeId: 0xffffffff,
-    );
-    expect((await harness.coordinator.ensureReady()).isReady, isTrue);
-    await harness.dispose();
-  });
+  test(
+    'nodeId maximum unsigned value is provisioned without truncation',
+    () async {
+      final harness = _Harness(
+        initialNodeId: 0xffffffff,
+        finalNodeId: 0xffffffff,
+      );
+      expect((await harness.coordinator.ensureReady()).isReady, isTrue);
+      await harness.dispose();
+    },
+  );
 
   test('ready state resets on disconnect', () async {
     final harness = _Harness();
@@ -621,75 +678,84 @@ void main() {
 
   for (final blockAt in <int>[1, 2]) {
     test(
-        'dispose during ${blockAt == 1 ? 'BEGIN' : 'CHUNK'} stops all later writes',
-        () async {
-      final harness = _Harness(blockAtWrite: blockAt);
-      final result = harness.coordinator.ensureReady();
-      await harness.writeBlocked.future;
-      final writesAtDispose = harness.commands.length;
+      'dispose during ${blockAt == 1 ? 'BEGIN' : 'CHUNK'} stops all later writes',
+      () async {
+        final harness = _Harness(blockAtWrite: blockAt);
+        final result = harness.coordinator.ensureReady();
+        await harness.writeBlocked.future;
+        final writesAtDispose = harness.commands.length;
 
-      await harness.coordinator.dispose();
-      harness.releaseWrite.complete();
-      expect((await result).isReady, isFalse);
-      expect(harness.commands, hasLength(writesAtDispose));
-      expect(
-        harness.commands.every(
-          (command) => command.bytes.every((byte) => byte == 0),
-        ),
-        isTrue,
-      );
-      expect(
-          harness.commands.any((command) => command.opcode == 0x20), isFalse);
-      expect(harness.rebootCount, 0);
-      await harness.dispose(closeCoordinator: false);
-    });
+        await harness.coordinator.dispose();
+        harness.releaseWrite.complete();
+        expect((await result).isReady, isFalse);
+        expect(harness.commands, hasLength(writesAtDispose));
+        expect(
+          harness.commands.every(
+            (command) => command.bytes.every((byte) => byte == 0),
+          ),
+          isTrue,
+        );
+        expect(
+          harness.commands.any((command) => command.opcode == 0x20),
+          isFalse,
+        );
+        expect(harness.rebootCount, 0);
+        await harness.dispose(closeCoordinator: false);
+      },
+    );
   }
 
-  test('disconnect during reconnect wait does not cancel provisioning',
-      () async {
-    final reconnect = Completer<bool>();
-    final harness = _Harness(reconnectCompleter: reconnect);
-    final result = harness.coordinator.ensureReady();
-    await harness.reconnectStarted.future;
+  test(
+    'disconnect during reconnect wait does not cancel provisioning',
+    () async {
+      final reconnect = Completer<bool>();
+      final harness = _Harness(reconnectCompleter: reconnect);
+      final result = harness.coordinator.ensureReady();
+      await harness.reconnectStarted.future;
 
-    harness.statuses.add(harness.status(connected: false));
-    await Future<void>.delayed(Duration.zero);
-    reconnect.complete(true);
+      harness.statuses.add(harness.status(connected: false));
+      await Future<void>.delayed(Duration.zero);
+      reconnect.complete(true);
 
-    expect((await result).isReady, isTrue);
-    expect(harness.reconnectCount, 1);
-    await harness.dispose();
-  });
+      expect((await result).isReady, isTrue);
+      expect(harness.reconnectCount, 1);
+      await harness.dispose();
+    },
+  );
 
-  test('wrong final platform identity fails before fresh 0x23 verification',
-      () async {
-    final harness = _Harness(finalDeviceId: 'ble-device-2');
-    final result = await harness.coordinator.ensureReady();
-    expect(result.failure?.code, DeviceReadyFailureCode.identityMismatch);
-    expect(harness.runtimeReadCount, 1);
-    await harness.dispose();
-  });
+  test(
+    'wrong final platform identity fails before fresh 0x23 verification',
+    () async {
+      final harness = _Harness(finalDeviceId: 'ble-device-2');
+      final result = await harness.coordinator.ensureReady();
+      expect(result.failure?.code, DeviceReadyFailureCode.identityMismatch);
+      expect(harness.runtimeReadCount, 1);
+      await harness.dispose();
+    },
+  );
 
-  test('unprovision still writes 0x25 and reboots when 0x23 is already 0',
-      () async {
-    final harness = _Harness(
-      initiallyProvisioned: false,
-      finalProvisioned: false,
-      noChangeOpcode: 0x25,
-      liveFirmwareVersion: '2.7.53',
-    );
-    final result = await harness.coordinator.unprovision();
+  test(
+    'unprovision still writes 0x25 and reboots when 0x23 is already 0',
+    () async {
+      final harness = _Harness(
+        initiallyProvisioned: false,
+        finalProvisioned: false,
+        noChangeOpcode: 0x25,
+        liveFirmwareVersion: '2.7.53',
+      );
+      final result = await harness.coordinator.unprovision();
 
-    expect(
-      result.disposition,
-      DeviceUnprovisionDisposition.alreadyUnprovisioned,
-    );
-    expect(harness.commands.single.opcode, 0x25);
-    expect(harness.rebootCount, 1);
-    expect(harness.reconnectCount, 1);
-    expect(harness.reconnectOwnershipHeld, isFalse);
-    await harness.dispose();
-  });
+      expect(
+        result.disposition,
+        DeviceUnprovisionDisposition.alreadyUnprovisioned,
+      );
+      expect(harness.commands.single.opcode, 0x25);
+      expect(harness.rebootCount, 1);
+      expect(harness.reconnectCount, 1);
+      expect(harness.reconnectOwnershipHeld, isFalse);
+      await harness.dispose();
+    },
+  );
 
   test('unprovision wipes then reboots and verifies PROVISIONED=0', () async {
     final harness = _Harness(
@@ -716,8 +782,10 @@ void main() {
     );
     final result = await harness.coordinator.unprovision();
 
-    expect(result.failure?.code,
-        DeviceUnprovisionFailureCode.firmwareUpdateRequired);
+    expect(
+      result.failure?.code,
+      DeviceUnprovisionFailureCode.firmwareUpdateRequired,
+    );
     expect(harness.commands, isEmpty);
     expect(harness.rebootCount, 0);
     await harness.dispose();
@@ -731,8 +799,10 @@ void main() {
     );
     final result = await harness.coordinator.unprovision();
 
-    expect(result.failure?.code,
-        DeviceUnprovisionFailureCode.deviceConfigurationRejected);
+    expect(
+      result.failure?.code,
+      DeviceUnprovisionFailureCode.deviceConfigurationRejected,
+    );
     expect(harness.commands.single.opcode, 0x25);
     expect(harness.rebootCount, 0);
     await harness.dispose();
@@ -753,75 +823,86 @@ void main() {
     await harness.dispose();
   });
 
-  test('unprovision retries 0x25 and reboot after wipe without reboot',
-      () async {
-    final harness = _Harness(
-      initiallyProvisioned: true,
-      finalProvisioned: false,
-      liveFirmwareVersion: '2.7.53',
-      rebootFails: true,
-    );
-    final first = await harness.coordinator.unprovision();
+  test(
+    'unprovision retries 0x25 and reboot after wipe without reboot',
+    () async {
+      final harness = _Harness(
+        initiallyProvisioned: true,
+        finalProvisioned: false,
+        liveFirmwareVersion: '2.7.53',
+        rebootFails: true,
+      );
+      final first = await harness.coordinator.unprovision();
 
-    expect(first.failure?.code, DeviceUnprovisionFailureCode.rebootFailed);
-    expect(harness.commands.single.opcode, 0x25);
-    expect(harness.rebootCount, 1);
+      expect(first.failure?.code, DeviceUnprovisionFailureCode.rebootFailed);
+      expect(harness.commands.single.opcode, 0x25);
+      expect(harness.rebootCount, 1);
 
-    harness.rebootFails = false;
-    harness.noChangeOpcode = 0x25;
-    final retry = await harness.coordinator.unprovision();
+      harness.rebootFails = false;
+      harness.noChangeOpcode = 0x25;
+      final retry = await harness.coordinator.unprovision();
 
-    expect(retry.succeeded, isTrue);
-    expect(harness.commands.map((command) => command.opcode), [0x25, 0x25]);
-    expect(harness.rebootCount, 2);
-    expect(harness.reconnectCount, 1);
-    expect(harness.reconnectOwnershipHeld, isFalse);
-    await harness.dispose();
-  });
+      expect(retry.succeeded, isTrue);
+      expect(harness.commands.map((command) => command.opcode), [0x25, 0x25]);
+      expect(harness.rebootCount, 2);
+      expect(harness.reconnectCount, 1);
+      expect(harness.reconnectOwnershipHeld, isFalse);
+      await harness.dispose();
+    },
+  );
 
-  test('unprovision retries a post-reboot 0x23 timeout then verifies',
-      () async {
-    final harness = _Harness(
-      initiallyProvisioned: true,
-      finalProvisioned: false,
-      liveFirmwareVersion: '2.7.53',
-      runtimeFailuresAfterReboot: 2,
-    );
-    final result = await harness.coordinator.unprovision();
+  test(
+    'unprovision retries a post-reboot 0x23 timeout then verifies',
+    () async {
+      final harness = _Harness(
+        initiallyProvisioned: true,
+        finalProvisioned: false,
+        liveFirmwareVersion: '2.7.53',
+        runtimeFailuresAfterReboot: 2,
+      );
+      final result = await harness.coordinator.unprovision();
 
-    expect(result.disposition, DeviceUnprovisionDisposition.unprovisioned);
-    expect(harness.runtimeReadCount, greaterThan(1));
-    await harness.dispose();
-  });
+      expect(result.disposition, DeviceUnprovisionDisposition.unprovisioned);
+      expect(harness.runtimeReadCount, greaterThan(1));
+      await harness.dispose();
+    },
+  );
 
-  test('unprovision retries a disconnected post-reboot status then verifies',
-      () async {
-    final harness = _Harness(
-      initiallyProvisioned: true,
-      finalProvisioned: false,
-      liveFirmwareVersion: '2.7.53',
-      disconnectedStatusReadsAfterReboot: 2,
-    );
-    final result = await harness.coordinator.unprovision();
+  test(
+    'unprovision retries a disconnected post-reboot status then verifies',
+    () async {
+      final harness = _Harness(
+        initiallyProvisioned: true,
+        finalProvisioned: false,
+        liveFirmwareVersion: '2.7.53',
+        disconnectedStatusReadsAfterReboot: 2,
+      );
+      final result = await harness.coordinator.unprovision();
 
-    expect(result.disposition, DeviceUnprovisionDisposition.unprovisioned);
-    await harness.dispose();
-  });
+      expect(result.disposition, DeviceUnprovisionDisposition.unprovisioned);
+      await harness.dispose();
+    },
+  );
 
-  test('unprovision maps a stuck post-reboot disconnect to reconnectFailed',
-      () async {
-    final harness = _Harness(
-      initiallyProvisioned: true,
-      finalProvisioned: false,
-      liveFirmwareVersion: '2.7.53',
-      disconnectedStatusReadsAfterReboot: 99,
-    );
-    final result = await harness.coordinator.unprovision();
+  test(
+    'unprovision maps a stuck post-reboot disconnect to reconnectFailed',
+    () async {
+      final harness = _Harness(
+        initiallyProvisioned: true,
+        finalProvisioned: false,
+        liveFirmwareVersion: '2.7.53',
+        disconnectedStatusReadsAfterReboot: 99,
+      );
+      final result = await harness.coordinator.unprovision();
 
-    expect(result.failure?.code, DeviceUnprovisionFailureCode.reconnectFailed);
-    expect(result.failure?.retryable, isTrue);
-    await harness.dispose();
-  });
+      expect(
+        result.failure?.code,
+        DeviceUnprovisionFailureCode.reconnectFailed,
+      );
+      expect(result.failure?.retryable, isTrue);
+      await harness.dispose();
+    },
+  );
 }
 
 final class _Harness {
@@ -847,6 +928,7 @@ final class _Harness {
     Object? assignmentCreateError,
     String? assignmentCreateResponseHardwareId,
     bool persistCreatedAssignment = true,
+    StrictDeviceProvisioningConfigSource configSource = const _ConfigSource(),
   }) {
     pskClient = _PskClient();
     final session = SdkSessionContext()
@@ -899,7 +981,7 @@ final class _Harness {
       },
       countryIsoProvider: () async => 'ES',
       pskSource: pskSource,
-      configSource: const _ConfigSource(),
+      configSource: configSource,
       assignmentVerifier: RegisteredDeviceAssignmentVerifier(
         repository: registry,
       ),
@@ -986,23 +1068,21 @@ final class _Harness {
   DeviceStatus _status({
     required bool afterReboot,
     String? firmwareVersion = '2.7.37',
-  }) =>
-      DeviceStatus(
-        deviceId: afterReboot ? finalDeviceId : 'ble-device-1',
-        nodeId: afterReboot
-            ? finalNodeId
-            : statusHasInitialNodeId
-                ? initialNodeId
-                : null,
-        paired: true,
-        activated: false,
-        connected: true,
-        provisioningStatus:
-            (afterReboot ? finalProvisioned : initiallyProvisioned)
-                ? DeviceProvisioningStatus.provisioned
-                : DeviceProvisioningStatus.unprovisioned,
-        firmwareVersion: firmwareVersion,
-      );
+  }) => DeviceStatus(
+    deviceId: afterReboot ? finalDeviceId : 'ble-device-1',
+    nodeId: afterReboot
+        ? finalNodeId
+        : statusHasInitialNodeId
+        ? initialNodeId
+        : null,
+    paired: true,
+    activated: false,
+    connected: true,
+    provisioningStatus: (afterReboot ? finalProvisioned : initiallyProvisioned)
+        ? DeviceProvisioningStatus.provisioned
+        : DeviceProvisioningStatus.unprovisioned,
+    firmwareVersion: firmwareVersion,
+  );
 
   DeviceRuntimeStatus _runtime({required bool afterReboot}) {
     runtimeReadCount++;
@@ -1024,11 +1104,9 @@ final class _Harness {
   DeviceStatus status({
     bool connected = true,
     String deviceId = 'ble-device-1',
-  }) =>
-      _status(afterReboot: true).copyWith(
-        connected: connected,
-        deviceId: deviceId,
-      );
+  }) => _status(
+    afterReboot: true,
+  ).copyWith(connected: connected, deviceId: deviceId);
 
   Future<void> _write(EixamDeviceCommand command) async {
     commands.add(command);
@@ -1045,8 +1123,8 @@ final class _Harness {
     final result = command.opcode == rejectedOpcode
         ? 0x02
         : command.opcode == noChangeOpcode
-            ? 0x01
-            : 0x00;
+        ? 0x01
+        : 0x00;
     scheduleMicrotask(
       () => packets.add(<int>[
         0xe9,
@@ -1075,18 +1153,18 @@ final class _RegistryRepository implements SdkDeviceRegistryRepository {
     this.createResponseHardwareId,
     this.persistCreatedAssignment = true,
   }) : devices = hardwareIds
-            .map(
-              (hardwareId) => BackendRegisteredDevice(
-                id: 'device-$hardwareId',
-                hardwareId: hardwareId,
-                firmwareVersion: '2.7.37',
-                hardwareModel: 'EIXAM R1',
-                pairedAt: DateTime.utc(2026),
-                createdAt: DateTime.utc(2026),
-                updatedAt: DateTime.utc(2026),
-              ),
-            )
-            .toList();
+           .map(
+             (hardwareId) => BackendRegisteredDevice(
+               id: 'device-$hardwareId',
+               hardwareId: hardwareId,
+               firmwareVersion: '2.7.37',
+               hardwareModel: 'EIXAM R1',
+               pairedAt: DateTime.utc(2026),
+               createdAt: DateTime.utc(2026),
+               updatedAt: DateTime.utc(2026),
+             ),
+           )
+           .toList();
 
   final List<BackendRegisteredDevice> devices;
   final Object? error;
@@ -1142,10 +1220,13 @@ final class _ConfigSource implements StrictDeviceProvisioningConfigSource {
   const _ConfigSource();
 
   @override
-  Future<StrictDeviceProvisioningConfig> fetch(
-      {required String countryIso}) async {
+  Future<StrictDeviceProvisioningConfig> fetch({
+    required String countryIso,
+  }) async {
     if (countryIso != 'ES') {
-      throw const ProvisioningContractException();
+      throw const ProvisioningContractException(
+        DeviceReadyFailureDetail.countryIsoMissing,
+      );
     }
     return StrictDeviceProvisioningConfig.parse(<String, dynamic>{
       'lora_region_code': 3,
@@ -1159,14 +1240,26 @@ final class _ConfigSource implements StrictDeviceProvisioningConfigSource {
         'tx_power_uplink_dbm': 14,
       },
       'sos': <String, dynamic>{
-        'freq_mhz': 869.4625,
+        'freq_mhz': 869.618,
         'bw_khz': 62.5,
-        'sf': 12,
-        'cr': '4/8',
+        'sf': 7,
+        'cr': '4/5',
         'tx_power_dbm': 22,
-        'preamble_symbols': 8,
+        'preamble_symbols': 16,
       },
     });
+  }
+}
+
+final class _InvalidConfigSource
+    implements StrictDeviceProvisioningConfigSource {
+  const _InvalidConfigSource(this.detail);
+
+  final DeviceReadyFailureDetail detail;
+
+  @override
+  Future<StrictDeviceProvisioningConfig> fetch({required String countryIso}) {
+    throw ProvisioningContractException(detail);
   }
 }
 
@@ -1176,7 +1269,8 @@ final class _PskClient extends http.BaseClient {
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
     requestCount++;
-    const body = '{"psk":"000102030405060708090a0b0c0d0e0f'
+    const body =
+        '{"psk":"000102030405060708090a0b0c0d0e0f'
         '101112131415161718191a1b1c1d1e1f",'
         '"algorithm":"AES-256","bytes":32,"scope":"app"}';
     return http.StreamedResponse(

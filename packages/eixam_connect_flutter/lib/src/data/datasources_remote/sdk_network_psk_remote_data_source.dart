@@ -13,10 +13,8 @@ enum EffectiveNetworkPskScope { app, global }
 /// This type is intentionally kept under `lib/src`, is not exported by either
 /// public package barrel, and must never be persisted or included in SDK state.
 final class EffectiveNetworkPsk {
-  EffectiveNetworkPsk._({
-    required Uint8List bytes,
-    required this.scope,
-  }) : _bytes = bytes;
+  EffectiveNetworkPsk._({required Uint8List bytes, required this.scope})
+    : _bytes = bytes;
 
   Uint8List _bytes;
   final EffectiveNetworkPskScope scope;
@@ -57,12 +55,15 @@ enum ProvisioningMaterialFailureCode {
 
 /// Secret-safe internal failure for provisioning-material acquisition.
 final class ProvisioningMaterialException implements Exception {
-  const ProvisioningMaterialException(this.code);
+  const ProvisioningMaterialException(this.code, {this.detail});
 
   final ProvisioningMaterialFailureCode code;
+  final DeviceReadyFailureDetail? detail;
 
   @override
-  String toString() => 'ProvisioningMaterialException(code: ${code.name})';
+  String toString() =>
+      'ProvisioningMaterialException(code: ${code.name}, '
+      'detail: ${detail?.name ?? 'none'})';
 }
 
 abstract interface class SdkNetworkPskRemoteDataSource {
@@ -151,11 +152,13 @@ final class HttpSdkNetworkPskRemoteDataSource
     } on FormatException {
       throw const ProvisioningMaterialException(
         ProvisioningMaterialFailureCode.malformedResponse,
+        detail: DeviceReadyFailureDetail.networkMaterialInvalidJson,
       );
     }
     if (decoded is! Map<String, dynamic>) {
       throw const ProvisioningMaterialException(
         ProvisioningMaterialFailureCode.malformedResponse,
+        detail: DeviceReadyFailureDetail.networkMaterialResponseNotObject,
       );
     }
     return decoded;
@@ -166,20 +169,35 @@ final class HttpSdkNetworkPskRemoteDataSource
         !_responseKeys.every(body.containsKey)) {
       throw const ProvisioningMaterialException(
         ProvisioningMaterialFailureCode.malformedResponse,
+        detail: DeviceReadyFailureDetail.networkMaterialFieldSetInvalid,
       );
     }
     final psk = body['psk'];
     final algorithm = body['algorithm'];
     final byteCount = body['bytes'];
     final scopeValue = body['scope'];
-    if (psk is! String ||
-        !_lowerHex64.hasMatch(psk) ||
-        algorithm != 'AES-256' ||
-        byteCount is! int ||
-        byteCount != 32 ||
-        (scopeValue != 'app' && scopeValue != 'global')) {
+    if (psk is! String || !_lowerHex64.hasMatch(psk)) {
       throw const ProvisioningMaterialException(
         ProvisioningMaterialFailureCode.malformedResponse,
+        detail: DeviceReadyFailureDetail.networkMaterialPskInvalid,
+      );
+    }
+    if (algorithm != 'AES-256') {
+      throw const ProvisioningMaterialException(
+        ProvisioningMaterialFailureCode.malformedResponse,
+        detail: DeviceReadyFailureDetail.networkMaterialAlgorithmInvalid,
+      );
+    }
+    if (byteCount is! int || byteCount != 32) {
+      throw const ProvisioningMaterialException(
+        ProvisioningMaterialFailureCode.malformedResponse,
+        detail: DeviceReadyFailureDetail.networkMaterialByteCountInvalid,
+      );
+    }
+    if (scopeValue != 'app' && scopeValue != 'global') {
+      throw const ProvisioningMaterialException(
+        ProvisioningMaterialFailureCode.malformedResponse,
+        detail: DeviceReadyFailureDetail.networkMaterialScopeInvalid,
       );
     }
 

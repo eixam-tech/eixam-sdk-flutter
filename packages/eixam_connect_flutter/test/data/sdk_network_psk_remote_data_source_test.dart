@@ -42,42 +42,46 @@ void main() {
   }
 
   group('HttpSdkNetworkPskRemoteDataSource success', () {
-    test('uses signed session and decodes exactly 32 app-scoped bytes',
-        () async {
-      final client = _RecordingClient(
-        response: http.Response(responseBody(), 200),
-      );
-      final dataSource = buildDataSource(client);
+    test(
+      'uses signed session and decodes exactly 32 app-scoped bytes',
+      () async {
+        final client = _RecordingClient(
+          response: http.Response(responseBody(), 200),
+        );
+        final dataSource = buildDataSource(client);
 
-      final material = await dataSource.fetchEffectivePsk();
-      final request = client.requests.single;
+        final material = await dataSource.fetchEffectivePsk();
+        final request = client.requests.single;
 
-      expect(request.method, 'GET');
-      expect(request.url.path, '/v1/sdk/network/psk');
-      expect(request.url.query, isEmpty);
-      expect(request.headers['X-App-ID'], 'app-demo');
-      expect(request.headers['X-User-ID'], 'user-1');
-      expect(request.headers['Authorization'], 'Bearer signed-user-hash');
-      expect(material.scope, EffectiveNetworkPskScope.app);
-      expect(material.bytes, List<int>.generate(32, (index) => index));
+        expect(request.method, 'GET');
+        expect(request.url.path, '/v1/sdk/network/psk');
+        expect(request.url.query, isEmpty);
+        expect(request.headers['X-App-ID'], 'app-demo');
+        expect(request.headers['X-User-ID'], 'user-1');
+        expect(request.headers['Authorization'], 'Bearer signed-user-hash');
+        expect(material.scope, EffectiveNetworkPskScope.app);
+        expect(material.bytes, List<int>.generate(32, (index) => index));
 
-      final ownedBytes = material.bytes;
-      material.dispose();
-      expect(ownedBytes, everyElement(0));
-      expect(() => material.bytes, throwsStateError);
-    });
+        final ownedBytes = material.bytes;
+        material.dispose();
+        expect(ownedBytes, everyElement(0));
+        expect(() => material.bytes, throwsStateError);
+      },
+    );
 
-    test('accepts the source-certified global scope without local fallback',
-        () async {
-      final client = _RecordingClient(
-        response: http.Response(responseBody(scope: 'global'), 200),
-      );
-      final material = await buildDataSource(client).fetchEffectivePsk();
+    test(
+      'accepts the source-certified global scope without local fallback',
+      () async {
+        final client = _RecordingClient(
+          response: http.Response(responseBody(scope: 'global'), 200),
+        );
+        final material = await buildDataSource(client).fetchEffectivePsk();
 
-      expect(material.scope, EffectiveNetworkPskScope.global);
-      material.dispose();
-      expect(client.requests, hasLength(1));
-    });
+        expect(material.scope, EffectiveNetworkPskScope.global);
+        material.dispose();
+        expect(client.requests, hasLength(1));
+      },
+    );
   });
 
   group('HttpSdkNetworkPskRemoteDataSource malformed response', () {
@@ -92,11 +96,12 @@ void main() {
       'non-integer byte metadata': responseBody(bytes: '"32"'),
       'floating-point byte metadata': responseBody(bytes: 32.0),
       'unknown scope': responseBody(scope: 'device'),
-      'missing field': '{"psk":"$_validPsk","algorithm":"AES-256",'
+      'missing field':
+          '{"psk":"$_validPsk","algorithm":"AES-256",'
           '"bytes":32}',
       'extra field':
           '${responseBody().substring(0, responseBody().length - 1)},'
-              '"fallback":"global"}',
+          '"fallback":"global"}',
       'invalid JSON': '{"psk":',
       'non-object JSON': '[]',
     };
@@ -113,6 +118,31 @@ void main() {
         );
       });
     }
+
+    test('reports a secret-safe exact validation detail', () async {
+      final dataSource = buildDataSource(
+        _RecordingClient(
+          response: http.Response(responseBody(algorithm: 'AES-128'), 200),
+        ),
+      );
+
+      await expectLater(
+        dataSource.fetchEffectivePsk(),
+        throwsA(
+          isA<ProvisioningMaterialException>()
+              .having(
+                (error) => error.code,
+                'code',
+                ProvisioningMaterialFailureCode.malformedResponse,
+              )
+              .having(
+                (error) => error.detail,
+                'detail',
+                DeviceReadyFailureDetail.networkMaterialAlgorithmInvalid,
+              ),
+        ),
+      );
+    });
   });
 
   group('HttpSdkNetworkPskRemoteDataSource errors', () {
@@ -143,10 +173,7 @@ void main() {
       test('maps HTTP ${entry.key}', () async {
         final dataSource = buildDataSource(
           _RecordingClient(
-            response: http.Response(
-              '{"error":"$_validPsk"}',
-              entry.key,
-            ),
+            response: http.Response('{"error":"$_validPsk"}', entry.key),
           ),
         );
 
@@ -179,26 +206,28 @@ void main() {
       );
     });
 
-    test('exceptions and material diagnostics never contain PSK bytes',
-        () async {
-      final dataSource = buildDataSource(
-        _RecordingClient(response: http.Response('$_validPsk-not-json', 200)),
-      );
+    test(
+      'exceptions and material diagnostics never contain PSK bytes',
+      () async {
+        final dataSource = buildDataSource(
+          _RecordingClient(response: http.Response('$_validPsk-not-json', 200)),
+        );
 
-      try {
-        await dataSource.fetchEffectivePsk();
-        fail('Expected malformed response.');
-      } on ProvisioningMaterialException catch (error) {
-        expect(error.toString(), isNot(contains(_validPsk)));
-      }
+        try {
+          await dataSource.fetchEffectivePsk();
+          fail('Expected malformed response.');
+        } on ProvisioningMaterialException catch (error) {
+          expect(error.toString(), isNot(contains(_validPsk)));
+        }
 
-      final material = await buildDataSource(
-        _RecordingClient(response: http.Response(responseBody(), 200)),
-      ).fetchEffectivePsk();
-      expect(material.toString(), isNot(contains(_validPsk)));
-      expect(material.toString(), contains('<redacted>'));
-      material.dispose();
-    });
+        final material = await buildDataSource(
+          _RecordingClient(response: http.Response(responseBody(), 200)),
+        ).fetchEffectivePsk();
+        expect(material.toString(), isNot(contains(_validPsk)));
+        expect(material.toString(), contains('<redacted>'));
+        material.dispose();
+      },
+    );
   });
 }
 

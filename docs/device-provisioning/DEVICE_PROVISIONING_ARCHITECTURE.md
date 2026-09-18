@@ -238,12 +238,12 @@ the required fields and accepts only the source-certified EU868 plan below.
     "tx_power_uplink_dbm": 14
   },
   "sos": {
-    "freq_mhz": 869.4625,
+    "freq_mhz": 869.618,
     "bw_khz": 62.5,
-    "sf": 12,
-    "cr": "4/8",
+    "sf": 7,
+    "cr": "4/5",
     "tx_power_dbm": 22,
-    "preamble_symbols": 8
+    "preamble_symbols": 16
   }
 }
 ```
@@ -265,7 +265,7 @@ explicit source-certified plan and SDK validation update.
 The SDK parses the JSON number's canonical decimal representation into a
 rational integer calculation using `BigInt`. It requires exact divisibility,
 rejects overflow, and never silently rounds binary floating-point values.
-Examples include `866.5 -> 866500`, `869.4625 -> 869462500`, `62.5 -> 62500`,
+Examples include `866.5 -> 866500`, `869.618 -> 869618000`, `62.5 -> 62500`,
 and `128.002 × 1000 -> 128002`. Exponent notation is supported when it denotes
 an exact target integer.
 
@@ -424,8 +424,8 @@ Phase 2A sends exactly 14 bytes:
 | 12 | 1 | TX power in dBm, signed i8 |
 | 13 | 1 | preamble symbols |
 
-The current certified EU868 values are 869,462,500 Hz, 62,500 Hz bandwidth,
-SF12, coding rate 4/8, 22 dBm, and preamble 8. The entire channel must fit in
+The current certified EU868 values are 869,618,000 Hz, 62,500 Hz bandwidth,
+SF7, coding rate 4/5, 22 dBm, and preamble 16. The entire channel must fit in
 the firmware SOS band 869.4–869.65 MHz.
 
 Firmware validates and persists the complete SOS RF record. Sending the same

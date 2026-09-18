@@ -32,16 +32,55 @@ enum DeviceReadyFailureCode {
   internal,
 }
 
+enum DeviceReadyFailureDetail {
+  countryLocationUnavailable,
+  countryIsoMissing,
+  configurationResponseInvalidJson,
+  configurationResponseNotObject,
+  loraRegionCodeInvalid,
+  planNotVerified,
+  regionUnsupported,
+  telConfigurationMissing,
+  sosConfigurationMissing,
+  telFrequencyInvalid,
+  telBandwidthInvalid,
+  telSpreadingFactorInvalid,
+  telCodingRateInvalid,
+  telPowerInvalid,
+  sosFrequencyInvalid,
+  sosBandwidthInvalid,
+  sosSpreadingFactorInvalid,
+  sosSpreadingFactorMissing,
+  sosSpreadingFactorTypeInvalid,
+  sosSpreadingFactorNotCertified,
+  sosCodingRateInvalid,
+  sosPowerInvalid,
+  sosPreambleInvalid,
+  certifiedPlanMismatch,
+  configurationNumericValueInvalid,
+  networkMaterialInvalidJson,
+  networkMaterialResponseNotObject,
+  networkMaterialFieldSetInvalid,
+  networkMaterialPskInvalid,
+  networkMaterialAlgorithmInvalid,
+  networkMaterialByteCountInvalid,
+  networkMaterialScopeInvalid,
+}
+
 enum DeviceReadyDisposition { ready, provisionedAssignmentUnverified, failed }
 
 class DeviceReadyFailure {
   const DeviceReadyFailure({
     required this.code,
     required this.retryable,
+    this.detail,
+    this.observedInteger,
   });
 
   final DeviceReadyFailureCode code;
   final bool retryable;
+  final DeviceReadyFailureDetail? detail;
+  final int? observedInteger;
 }
 
 class DeviceProvisioningState {

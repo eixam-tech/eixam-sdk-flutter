@@ -2657,7 +2657,9 @@ class EixamConnectSdkImpl
           useCase: SdkResolvedLocationUseCase.emergencyBackend,
         );
         if (location == null) {
-          throw const ProvisioningContractException();
+          throw const ProvisioningContractException(
+            DeviceReadyFailureDetail.countryLocationUnavailable,
+          );
         }
         final country = await geoSource.resolveCountry(
           latitude: location.latitude,
