@@ -35,6 +35,7 @@ enum FirmwareUpdateBlocker {
 class FirmwareUpdatePolicy {
   const FirmwareUpdatePolicy({
     this.minDeviceBatteryPercentage = 20,
+    this.requireKnownDeviceBattery = true,
     this.requireForeground = true,
     this.supportedHardwareModels = const <String>[],
     this.allowDowngrade = false,
@@ -42,6 +43,7 @@ class FirmwareUpdatePolicy {
   });
 
   final int minDeviceBatteryPercentage;
+  final bool requireKnownDeviceBattery;
   final bool requireForeground;
 
   /// Optional allow-list. Empty means the backend release metadata is trusted.

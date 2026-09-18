@@ -10,6 +10,7 @@ import '../entities/device_ready.dart';
 import '../entities/device_unprovision.dart';
 import '../entities/device_sos_status.dart';
 import '../entities/device_status.dart';
+import '../entities/device_migration.dart';
 import '../entities/device_runtime_status.dart';
 import '../entities/eixam_ble_diagnostics.dart';
 import '../entities/eixam_ble_scan_result.dart';
@@ -186,6 +187,17 @@ abstract class EixamConnectSdk {
   Future<void> disconnectDevice();
   Future<List<EixamBleScanResult>> scanBleDevices({
     Duration timeout = const Duration(seconds: 8),
+  });
+
+  /// Inspects stock Meshtastic firmware without changing device configuration.
+  Future<DeviceMigrationCandidate> inspectDeviceMigrationCandidate({
+    required String deviceId,
+    String? advertisedName,
+  });
+
+  /// Revalidates and migrates a previously compatible candidate to Eixam.
+  Future<DeviceMigrationResult> migrateDeviceToEixam({
+    required DeviceMigrationCandidate candidate,
   });
   Future<EixamBleDiagnostics> getBleDiagnostics();
   Stream<EixamBleDiagnostics> watchBleDiagnostics();

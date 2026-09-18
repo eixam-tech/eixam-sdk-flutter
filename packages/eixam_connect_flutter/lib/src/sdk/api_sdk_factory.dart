@@ -31,8 +31,10 @@ import '../device/ble_device_runtime_provider.dart';
 import '../device/ble_debug_registry.dart';
 import '../device/lazy_initializing_ble_client.dart';
 import '../device/real_ble_client.dart';
+import '../device/meshtastic_metadata_probe.dart';
 import '../provisioning/strict_device_provisioning_config.dart';
 import 'eixam_connect_sdk_impl.dart';
+import 'device_migration_coordinator.dart';
 import 'firmware_dfu_transport_factory.dart';
 import 'firmware_update_coordinator.dart';
 import 'mqtt5_sdk_transport.dart';
@@ -176,6 +178,32 @@ class ApiSdkFactory {
     await contactsRepository.restoreState();
 
     late final EixamConnectSdkImpl sdk;
+    late final FirmwareUpdateCoordinator firmwareUpdateCoordinator;
+    firmwareUpdateCoordinator = FirmwareUpdateCoordinator(
+      deviceRepository: deviceRepository,
+      sosRepository: sosRepository,
+      deathManRepository: deathManRepository,
+      remoteDataSource: firmwareRemoteDataSource,
+      dfuTransport: buildDefaultFirmwareDfuTransport(),
+      protectionStatusProvider: () => sdk.getProtectionStatus(),
+      deviceSosStatusProvider:
+          deviceRuntimeProvider.deviceSosController.getStatus,
+      preSosStatusProvider: () => sdk.getPreSosStatus(),
+      appLifecycleStateProvider: () => WidgetsBinding.instance.lifecycleState,
+      prepareForDfuTransfer: ({required deviceId}) =>
+          sdk.prepareForFirmwareDfuTransfer(deviceId: deviceId),
+      releaseBleForDfuTransfer: ({required deviceId}) =>
+          sdk.releaseBleForFirmwareDfuTransfer(deviceId: deviceId),
+      restoreBleAfterDfuTransfer: ({required deviceId}) =>
+          sdk.restoreBleAfterFirmwareDfuTransfer(deviceId: deviceId),
+      postDfuStatusRefresh:
+          ({required deviceId, required attempt, required targetVersion}) =>
+              sdk.refreshFirmwareDfuInstalledVersionStatus(
+                deviceId: deviceId,
+                attempt: attempt,
+                targetVersion: targetVersion,
+              ),
+    );
     sdk = EixamConnectSdkImpl(
       sosRepository: sosRepository,
       trackingRepository: trackingRepository,
@@ -209,33 +237,11 @@ class ApiSdkFactory {
       provisioningConfigSource: provisioningConfigSource,
       provisioningBackendUrl: apiBaseUrl,
       deviceConfigStore: deviceConfigStore,
-      firmwareUpdateCoordinator: FirmwareUpdateCoordinator(
-        deviceRepository: deviceRepository,
-        sosRepository: sosRepository,
-        deathManRepository: deathManRepository,
-        remoteDataSource: firmwareRemoteDataSource,
-        dfuTransport: buildDefaultFirmwareDfuTransport(),
-        protectionStatusProvider: () => sdk.getProtectionStatus(),
-        deviceSosStatusProvider:
-            deviceRuntimeProvider.deviceSosController.getStatus,
-        preSosStatusProvider: () => sdk.getPreSosStatus(),
-        appLifecycleStateProvider: () => WidgetsBinding.instance.lifecycleState,
-        prepareForDfuTransfer: ({required deviceId}) =>
-            sdk.prepareForFirmwareDfuTransfer(deviceId: deviceId),
-        releaseBleForDfuTransfer: ({required deviceId}) =>
-            sdk.releaseBleForFirmwareDfuTransfer(deviceId: deviceId),
-        restoreBleAfterDfuTransfer: ({required deviceId}) =>
-            sdk.restoreBleAfterFirmwareDfuTransfer(deviceId: deviceId),
-        postDfuStatusRefresh: ({
-          required deviceId,
-          required attempt,
-          required targetVersion,
-        }) =>
-            sdk.refreshFirmwareDfuInstalledVersionStatus(
-          deviceId: deviceId,
-          attempt: attempt,
-          targetVersion: targetVersion,
-        ),
+      firmwareUpdateCoordinator: firmwareUpdateCoordinator,
+      deviceMigrationCoordinator: DeviceMigrationCoordinator(
+        bleClient: bleClient,
+        metadataProbe: FlutterBlueMeshtasticMetadataProbe(),
+        firmwareUpdates: firmwareUpdateCoordinator,
       ),
       notificationPolicy: notificationPolicy,
       notificationTexts: notificationTexts,

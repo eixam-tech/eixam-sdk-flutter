@@ -8,6 +8,7 @@ export 'package:eixam_connect_core/src/entities/device_runtime.dart';
 export 'package:eixam_connect_core/src/entities/device_runtime_status.dart';
 export 'package:eixam_connect_core/src/entities/device_sos_status.dart';
 export 'package:eixam_connect_core/src/entities/device_status.dart';
+export 'package:eixam_connect_core/src/entities/device_migration.dart';
 export 'package:eixam_connect_core/src/entities/device_ready.dart';
 export 'package:eixam_connect_core/src/entities/device_unprovision.dart';
 export 'package:eixam_connect_core/src/entities/device_tel_relay_rx.dart';

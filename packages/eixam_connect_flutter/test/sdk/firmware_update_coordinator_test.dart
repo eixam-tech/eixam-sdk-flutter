@@ -276,6 +276,95 @@ void main() {
       );
     });
 
+    test(
+      'migration resolves only active model-specific EIXAM R1 artifacts',
+      () async {
+        remote.availableReleases = <SdkFirmwareDto>[
+          SdkFirmwareDto(
+            id: 'universal',
+            version: '9.0.0',
+            sha256Hash: _sha256(remote.artifactBytes),
+            fileSizeBytes: remote.artifactBytes.length,
+            isActive: true,
+          ),
+          SdkFirmwareDto(
+            id: 'wrong-model',
+            version: '8.0.0',
+            hardwareModel: 'WISMESH_TAG',
+            sha256Hash: _sha256(remote.artifactBytes),
+            fileSizeBytes: remote.artifactBytes.length,
+            isActive: true,
+          ),
+          SdkFirmwareDto(
+            id: 'inactive',
+            version: '7.0.0',
+            hardwareModel: 'EIXAM R1',
+            sha256Hash: _sha256(remote.artifactBytes),
+            fileSizeBytes: remote.artifactBytes.length,
+            isActive: false,
+          ),
+          SdkFirmwareDto(
+            id: 'safe',
+            version: '3.0.0',
+            hardwareModel: 'EIXAM R1',
+            sha256Hash: _sha256(remote.artifactBytes),
+            fileSizeBytes: remote.artifactBytes.length,
+            isActive: true,
+          ),
+        ];
+        final coordinator = buildCoordinator();
+        addTearDown(coordinator.dispose);
+
+        final release = await coordinator.resolveMigrationRelease(
+          hardwareModel: 'EIXAM R1',
+        );
+
+        expect(release?.releaseId, 'safe');
+      },
+    );
+
+    test(
+      'migration reuses download, SHA validation, DFU and version check',
+      () async {
+        remote.availableReleases = <SdkFirmwareDto>[
+          SdkFirmwareDto(
+            id: 'safe',
+            version: '3.0.0',
+            hardwareModel: 'EIXAM R1',
+            sha256Hash: _sha256(remote.artifactBytes),
+            fileSizeBytes: remote.artifactBytes.length,
+            isActive: true,
+          ),
+        ];
+        final coordinator = buildCoordinator(
+          transport: _SuccessfulDfuTransport(),
+        );
+        addTearDown(coordinator.dispose);
+        final release = await coordinator.resolveMigrationRelease(
+          hardwareModel: 'EIXAM R1',
+        );
+
+        final session = await coordinator.startMigrationFirmwareUpdate(
+          sourceStatus: _readyStatus().copyWith(model: 'EIXAM R1'),
+          release: release!,
+          policy: const FirmwareUpdatePolicy(
+            supportedHardwareModels: <String>['EIXAM R1'],
+          ),
+          postMigrationStatusRefresh:
+              ({
+                required deviceId,
+                required attempt,
+                required targetVersion,
+              }) async => _readyStatus(
+                firmwareVersion: targetVersion,
+              ).copyWith(model: 'EIXAM R1'),
+        );
+
+        expect(session.state, FirmwareUpdateState.completed);
+        expect(remote.downloadCallCount, 1);
+      },
+    );
+
     test('fails on hash mismatch', () async {
       remote.artifactBytes = <int>[1, 2, 3];
       remote.downloadHash = 'not-the-real-hash';

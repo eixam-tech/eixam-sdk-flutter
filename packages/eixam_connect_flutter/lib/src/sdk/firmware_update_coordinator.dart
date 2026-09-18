@@ -9,6 +9,9 @@ import '../data/datasources_remote/sdk_firmware_remote_data_source.dart';
 import '../device/ble_debug_registry.dart';
 import '../firmware_version.dart';
 import 'firmware_dfu_transport.dart';
+import 'device_migration_firmware_service.dart';
+export 'device_migration_firmware_service.dart'
+    show FirmwareDfuStatusRefreshHook;
 
 typedef ProtectionStatusProvider = Future<ProtectionStatus> Function();
 typedef DeviceSosStatusProvider = Future<DeviceSosStatus> Function();
@@ -18,13 +21,8 @@ typedef FirmwareDfuPreparationHook = Future<DeviceStatus> Function(
     {required String deviceId});
 typedef FirmwareDfuConnectionHook = Future<void> Function(
     {required String deviceId});
-typedef FirmwareDfuStatusRefreshHook = Future<DeviceStatus> Function({
-  required String deviceId,
-  required int attempt,
-  required String targetVersion,
-});
 
-class FirmwareUpdateCoordinator {
+class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
   FirmwareUpdateCoordinator({
     required this.deviceRepository,
     required this.sosRepository,
@@ -262,10 +260,104 @@ class FirmwareUpdateCoordinator {
         session,
         state: FirmwareUpdateState.blocked,
         failureCode: 'firmwareUpdateBlocked',
-        failureMessage:
-            check.eligibility.blockers.map((blocker) => blocker.name).join(','),
+        failureMessage: check.eligibility.blockers
+            .map((blocker) => blocker.name)
+            .join(','),
       );
     }
+
+    return _startVerifiedReleaseTransfer(session: session, release: release);
+  }
+
+  /// Resolves an active, model-specific catalog artifact for a stock-firmware
+  /// migration. Universal artifacts are deliberately excluded: migration is
+  /// allowed only when the backend explicitly publishes this hardware model.
+  @override
+  Future<FirmwareRelease?> resolveMigrationRelease({
+    required String hardwareModel,
+  }) async {
+    final expected = hardwareModel.trim();
+    if (expected.isEmpty) return null;
+    final response = await remoteDataSource.listReleases(
+      hardwareModel: expected,
+    );
+    FirmwareRelease? newest;
+    for (final dto in response.firmwareVersions) {
+      if (dto.id.isEmpty || dto.version.isEmpty || dto.isActive == false) {
+        continue;
+      }
+      if (dto.hardwareModel?.trim().toLowerCase() != expected.toLowerCase()) {
+        continue;
+      }
+      final release = dto.toDomain();
+      if (release.sha256Hash == null || release.sha256Hash!.isEmpty) continue;
+      try {
+        validateFirmwareArtifactMetadataSize(release.fileSizeBytes);
+      } on FirmwareUpdateException {
+        continue;
+      }
+      if (newest == null) {
+        newest = release;
+        continue;
+      }
+      final comparison = compareEixamFirmwareVersions(
+        newest.version,
+        release.version,
+      );
+      if (comparison != null && comparison < 0) newest = release;
+    }
+    return newest;
+  }
+
+  /// Runs a stock-firmware migration through the same artifact validation,
+  /// native DFU, watchdog, recovery and installed-version state machine used
+  /// by ordinary Eixam OTA.
+  @override
+  Future<FirmwareUpdateSession> startMigrationFirmwareUpdate({
+    required DeviceStatus sourceStatus,
+    required FirmwareRelease release,
+    required FirmwareDfuStatusRefreshHook postMigrationStatusRefresh,
+    FirmwareUpdatePolicy policy = const FirmwareUpdatePolicy(),
+  }) async {
+    final eligibility = await evaluateEligibility(
+      status: sourceStatus,
+      release: release,
+      policy: policy,
+    );
+    final now = DateTime.now();
+    final session = FirmwareUpdateSession(
+      sessionId: _newSessionId(now),
+      deviceId: sourceStatus.deviceId,
+      releaseId: release.releaseId,
+      fromVersion: sourceStatus.firmwareVersion ?? '',
+      targetVersion: release.version,
+      state: FirmwareUpdateState.idle,
+      startedAt: now,
+    );
+    _sessions[session.sessionId] = session;
+    if (!eligibility.eligible) {
+      return _completeSession(
+        session,
+        state: FirmwareUpdateState.blocked,
+        failureCode: 'firmwareUpdateBlocked',
+        failureMessage: eligibility.blockers
+            .map((blocker) => blocker.name)
+            .join(','),
+      );
+    }
+    return _startVerifiedReleaseTransfer(
+      session: session,
+      release: release,
+      statusRefresh: postMigrationStatusRefresh,
+    );
+  }
+
+  Future<FirmwareUpdateSession> _startVerifiedReleaseTransfer({
+    required FirmwareUpdateSession session,
+    required FirmwareRelease release,
+    FirmwareDfuStatusRefreshHook? statusRefresh,
+  }) async {
+    final releaseId = release.releaseId;
 
     // Set as soon as the native DFU emits any event; a failure before that
     // cannot have stranded the device in the bootloader, so it must NOT be
@@ -329,6 +421,7 @@ class FirmwareUpdateCoordinator {
       final verification = await _waitForInstalledVersion(
         session: session,
         targetVersion: release.version,
+        statusRefresh: statusRefresh,
       );
       if (!verification.matchesTarget) {
         final requiresRecovery = verification.requiresRecovery;
@@ -671,7 +764,8 @@ class FirmwareUpdateCoordinator {
       );
     }
     final battery = status.approximateBatteryPercentage;
-    if (battery == null || battery < policy.minDeviceBatteryPercentage) {
+    if ((battery == null && policy.requireKnownDeviceBattery) ||
+        (battery != null && battery < policy.minDeviceBatteryPercentage)) {
       add(
         FirmwareUpdateBlocker.lowDeviceBattery,
         'Device battery is below the OTA threshold.',
@@ -879,6 +973,7 @@ class FirmwareUpdateCoordinator {
   Future<_InstalledVersionVerification> _waitForInstalledVersion({
     required FirmwareUpdateSession session,
     required String targetVersion,
+    FirmwareDfuStatusRefreshHook? statusRefresh,
   }) async {
     final deadline = DateTime.now().add(_postDfuVerificationTimeout);
     var attempt = 0;
@@ -892,9 +987,10 @@ class FirmwareUpdateCoordinator {
             ? FirmwareUpdateState.verifyingInstalledVersion
             : FirmwareUpdateState.reconnecting,
       );
-      final status = postDfuStatusRefresh == null
+      final refresh = statusRefresh ?? postDfuStatusRefresh;
+      final status = refresh == null
           ? await deviceRepository.refreshDeviceStatus()
-          : await postDfuStatusRefresh!(
+          : await refresh(
               deviceId: session.deviceId,
               attempt: attempt,
               targetVersion: targetVersion,

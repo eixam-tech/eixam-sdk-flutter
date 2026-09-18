@@ -52,6 +52,7 @@ import 'device_country_config_controller.dart';
 import 'device_position_batch_normalizer.dart';
 import 'device_position_backlog_coordinator.dart';
 import 'firmware_update_coordinator.dart';
+import 'device_migration_coordinator.dart';
 import 'nearby_text_controller.dart';
 import 'operational_telemetry_coordinator.dart';
 import 'operational_realtime_client.dart';
@@ -111,6 +112,7 @@ class EixamConnectSdkImpl
     this.provisioningBackendUrl,
     this.deviceConfigStore,
     this.firmwareUpdateCoordinator,
+    this.deviceMigrationCoordinator,
     this.notificationPolicy = EixamNotificationPolicy.sdkManaged,
     this.notificationTexts = _fallbackNotificationTexts,
     this.permissionDisclosureConfig = const EixamPermissionDisclosureConfig(),
@@ -369,6 +371,7 @@ class EixamConnectSdkImpl
   final BackgroundLocationPlatformAdapter backgroundLocationPlatformAdapter;
   final BackgroundTelemetryPlatformAdapter backgroundTelemetryPlatformAdapter;
   final FirmwareUpdateCoordinator? firmwareUpdateCoordinator;
+  final DeviceMigrationCoordinator? deviceMigrationCoordinator;
   DeviceCountryConfigController? _deviceCountryConfigController;
   DeviceProvisioningCoordinator? _deviceProvisioningCoordinator;
   final StreamController<DeviceCountryConfigStatus>
@@ -2432,6 +2435,51 @@ class EixamConnectSdkImpl
   }) async {
     final scans = await BleDebugRegistry.instance.startScan();
     return scans.map(_toPublicBleScanResult).toList(growable: false);
+  }
+
+  @override
+  Future<DeviceMigrationCandidate> inspectDeviceMigrationCandidate({
+    required String deviceId,
+    String? advertisedName,
+  }) {
+    final coordinator = deviceMigrationCoordinator;
+    if (coordinator == null) {
+      return Future<DeviceMigrationCandidate>.value(
+        DeviceMigrationCandidate(
+          deviceId: deviceId,
+          advertisedName: advertisedName,
+          compatibility: DeviceMigrationCompatibility.unableToVerify,
+          identityKind: DeviceMigrationIdentityKind.none,
+          detailCode: 'migrationUnavailable',
+          inspectedAt: DateTime.now(),
+        ),
+      );
+    }
+    return coordinator.inspect(
+      deviceId: deviceId,
+      advertisedName: advertisedName,
+    );
+  }
+
+  @override
+  Future<DeviceMigrationResult> migrateDeviceToEixam({
+    required DeviceMigrationCandidate candidate,
+  }) async {
+    final coordinator = deviceMigrationCoordinator;
+    if (coordinator == null) {
+      return DeviceMigrationResult(
+        outcome: DeviceMigrationOutcome.blocked,
+        candidate: candidate,
+        failureCode: 'migrationUnavailable',
+      );
+    }
+    await _devicePositionBacklogCoordinator.cancel();
+    _firmwareOtaInProgress = true;
+    try {
+      return await coordinator.migrate(candidate);
+    } finally {
+      _firmwareOtaInProgress = false;
+    }
   }
 
   @override
