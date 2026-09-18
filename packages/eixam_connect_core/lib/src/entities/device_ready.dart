@@ -17,6 +17,7 @@ enum DeviceProvisioningPhase {
 
 enum DeviceReadyFailureCode {
   notConnected,
+  missingNodeIdentity,
   firmwareUpdateRequired,
   configurationUnavailable,
   configurationInvalid,

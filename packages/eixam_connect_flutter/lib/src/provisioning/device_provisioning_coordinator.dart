@@ -607,8 +607,12 @@ final class DeviceProvisioningCoordinator {
       _emit(DeviceProvisioningPhase.checkingDevice);
       final initialStatus = await statusProvider();
       _check(operation);
-      if (!initialStatus.connected || initialStatus.nodeId == null) {
+      if (!initialStatus.connected) {
         return _fail(DeviceReadyFailureCode.notConnected, retryable: true);
+      }
+      if (initialStatus.nodeId == null) {
+        return _fail(DeviceReadyFailureCode.missingNodeIdentity,
+            retryable: true);
       }
       _activeDeviceId = initialStatus.deviceId;
       final initialRuntime = await runtimeStatusProvider();
@@ -988,6 +992,10 @@ final class DeviceProvisioningCoordinator {
 
   DeviceReadyResult _fail(DeviceReadyFailureCode code,
       {required bool retryable}) {
+    final failedPhase = _state.phase;
+    diagnosticLog?.call(
+      'PROVISIONING_FAILURE reason=${code.name} phase=${failedPhase.name}',
+    );
     if (_operation?.rebootBoundaryStarted == true) {
       diagnosticLog?.call(
         'PROVISIONING_REBOOT failure_code=${code.name}',

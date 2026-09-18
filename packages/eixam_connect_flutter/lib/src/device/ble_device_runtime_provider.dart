@@ -971,6 +971,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     );
     final nextStatus = currentStatus.copyWith(
       connected: connected,
+      nodeId: runtimeStatus?.nodeId,
       canonicalHardwareId: currentStatus.canonicalHardwareId,
       provisioningStatus: mode == DeviceRefreshMode.heartbeat
           ? currentStatus.provisioningStatus

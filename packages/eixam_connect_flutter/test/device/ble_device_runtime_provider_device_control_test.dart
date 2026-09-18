@@ -202,6 +202,31 @@ void main() {
       expect(status.batterySource, DeviceBatterySource.unknown);
     });
 
+    test('manual refresh hydrates a migrated device missing its node id',
+        () async {
+      await _pairDemoDevice(runtimeProvider);
+      bleClient.runtimeStatusPayload[6] = 0x00;
+      final migratedStatus = buildDeviceStatus(
+        deviceId: MockBleClient.demoDeviceId,
+        nodeId: null,
+        canonicalHardwareId: MockBleClient.demoCanonicalHardwareId,
+        activated: false,
+        connected: true,
+        provisioningStatus: DeviceProvisioningStatus.unknown,
+        firmwareVersion: '2.7.54.2e69695',
+        lifecycleState: DeviceLifecycleState.paired,
+      );
+
+      final refreshed = await runtimeProvider.refresh(migratedStatus);
+
+      expect(refreshed.connected, isTrue);
+      expect(refreshed.nodeId, 0x1234);
+      expect(
+        refreshed.provisioningStatus,
+        DeviceProvisioningStatus.unprovisioned,
+      );
+    });
+
     test('overlapping 0x23 callers join the in-flight reply', () async {
       await _pairDemoDevice(runtimeProvider);
       bleClient.runtimeStatusReplyDelay = const Duration(milliseconds: 80);

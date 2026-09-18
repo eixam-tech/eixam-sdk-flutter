@@ -370,9 +370,8 @@ void main() {
     }
   });
 
-  test('physical dotted build passes the live provisioning firmware gate',
-      () async {
-    final harness = _Harness(liveFirmwareVersion: '2.7.37.4ef9d04');
+  test('migrated TAG with physical firmware reaches provisioning', () async {
+    final harness = _Harness(liveFirmwareVersion: '2.7.54.2e69695');
     final states = <DeviceProvisioningState>[];
     final subscription = harness.coordinator.watchState().listen(states.add);
 
@@ -381,11 +380,39 @@ void main() {
 
     expect(result.isReady, isTrue);
     expect(result.failure, isNull);
+    expect(harness.pskClient.requestCount, 1);
+    expect(
+      harness.commands.map((command) => command.opcode),
+      containsAllInOrder(<int>[0x24, 0x20, 0x21]),
+    );
     expect(
       states.map((state) => state.phase),
       isNot(contains(DeviceProvisioningPhase.firmwareUpdateRequired)),
     );
     await subscription.cancel();
+    await harness.dispose();
+  });
+
+  test('connected status without node identity fails closed before writes',
+      () async {
+    final harness = _Harness(statusHasInitialNodeId: false);
+
+    final result = await harness.coordinator.ensureReady();
+
+    expect(
+      result.failure?.code,
+      DeviceReadyFailureCode.missingNodeIdentity,
+    );
+    expect(result.failure?.retryable, isTrue);
+    expect(harness.commands, isEmpty);
+    expect(harness.pskClient.requestCount, 0);
+    expect(
+      harness.diagnostics,
+      contains(
+        'PROVISIONING_FAILURE '
+        'reason=missingNodeIdentity phase=checkingDevice',
+      ),
+    );
     await harness.dispose();
   });
 
@@ -807,6 +834,7 @@ final class _Harness {
     this.finalProvisioned = true,
     this.liveFirmwareVersion = '2.7.37',
     this.initialNodeId = 305419896,
+    this.statusHasInitialNodeId = true,
     this.finalDeviceId = 'ble-device-1',
     this.blockAtWrite,
     this.rebootFails = false,
@@ -925,6 +953,7 @@ final class _Harness {
   final bool finalProvisioned;
   final String? liveFirmwareVersion;
   final int initialNodeId;
+  final bool statusHasInitialNodeId;
   final String finalDeviceId;
   final int? blockAtWrite;
   bool rebootFails;
@@ -960,7 +989,11 @@ final class _Harness {
   }) =>
       DeviceStatus(
         deviceId: afterReboot ? finalDeviceId : 'ble-device-1',
-        nodeId: afterReboot ? finalNodeId : initialNodeId,
+        nodeId: afterReboot
+            ? finalNodeId
+            : statusHasInitialNodeId
+                ? initialNodeId
+                : null,
         paired: true,
         activated: false,
         connected: true,
