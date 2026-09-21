@@ -1488,6 +1488,10 @@ class EixamConnectSdkImpl
   }
 
   Future<void> _handleRepositorySosState(SosState state) async {
+    if (await _repositoryTerminalIsStaleForNewGeneration(state)) {
+      _scheduleForegroundSosReconciliationIfNeeded();
+      return;
+    }
     await _syncPublicSosStateFromRepository(state);
     _scheduleForegroundSosReconciliationIfNeeded();
     if (state == SosState.cancelled || state == SosState.resolved) {
@@ -1511,6 +1515,31 @@ class EixamConnectSdkImpl
         state == SosState.resolved) {
       _pendingCancelledIncidentId = null;
     }
+  }
+
+  Future<bool> _repositoryTerminalIsStaleForNewGeneration(
+    SosState state,
+  ) async {
+    if (!_isTerminalPublicSosState(state) ||
+        !_hasNewAuthoritativeGenerationSinceTerminal()) {
+      return false;
+    }
+    final lifecycle = _sosLifecycle.current;
+    final incident = await sosRepository.getCurrentIncident();
+    if (!_sameSosGeneration(lifecycle, _sosLifecycle.current) ||
+        !_hasNewAuthoritativeGenerationSinceTerminal()) {
+      return false;
+    }
+    if (incident != null &&
+        sosIncidentEvidenceMatchesLifecycle(lifecycle, incident)) {
+      return false;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_STALE_TERMINAL_IGNORED_FOR_NEW_GENERATION '
+      'terminalGeneration=${_sosLifecycle.activeTerminalWatermark?.generation ?? 0} '
+      'activeGeneration=${lifecycle.generation} reason=identity_mismatch',
+    );
+    return true;
   }
 
   @override
@@ -2019,6 +2048,16 @@ class EixamConnectSdkImpl
             BleDebugRegistry.instance.recordEvent(
               'SOS_TERMINAL_LIFECYCLE_PUBLISHED terminal=${state.name}',
             );
+          }
+          if (!terminalConfirmed &&
+              _hasNewAuthoritativeGenerationSinceTerminal()) {
+            BleDebugRegistry.instance.recordEvent(
+              'SOS_STALE_TERMINAL_IGNORED_FOR_NEW_GENERATION '
+              'terminalGeneration=${_sosLifecycle.activeTerminalWatermark?.generation ?? 0} '
+              'activeGeneration=${lifecycle.generation} '
+              'reason=rehydration_identity_mismatch',
+            );
+            return;
           }
           _applyTerminalSosSuppression(
             reason: 'backend_terminal_state:${state.name}',
@@ -4449,6 +4488,14 @@ class EixamConnectSdkImpl
         );
         if (terminalFence != null &&
             lifecycle.generation > terminalFence.generation) {
+          BleDebugRegistry.instance.recordEvent(
+            'SOS_NEW_GENERATION_ACCEPTED '
+            'previousGeneration=${terminalFence.generation} '
+            'newGeneration=${lifecycle.generation} source=device '
+            'strongIdentity=${_hasStrongConnectedOwnDeviceSosIdentity(status, terminal: terminalFence)} '
+            'newCycle=${_deviceStatusHasNewCycleIdentity(status, terminalFence)} '
+            'afterTerminalBoundary=true',
+          );
           _deviceInactiveBoundaryAfterTerminalGeneration = null;
           _latestOwnDeviceInactiveBoundary = null;
         }
@@ -4478,6 +4525,14 @@ class EixamConnectSdkImpl
       );
       if (terminalFence != null &&
           lifecycle.generation > terminalFence.generation) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_NEW_GENERATION_ACCEPTED '
+          'previousGeneration=${terminalFence.generation} '
+          'newGeneration=${lifecycle.generation} source=device '
+          'strongIdentity=${_hasStrongConnectedOwnDeviceSosIdentity(status, terminal: terminalFence)} '
+          'newCycle=${_deviceStatusHasNewCycleIdentity(status, terminalFence)} '
+          'afterTerminalBoundary=true',
+        );
         _deviceInactiveBoundaryAfterTerminalGeneration = null;
         _latestOwnDeviceInactiveBoundary = null;
       }
@@ -12503,6 +12558,11 @@ class EixamConnectSdkImpl
           : (normalizedFallback?.isNotEmpty == true
                 ? normalizedFallback
                 : boundary.runtimeCycleKey),
+      terminalBoundaryEventSequence:
+          existingFence?.generation == terminal.generation
+          ? existingFence?.terminalBoundaryEventSequence ??
+                _deviceSosStatusEventSequence
+          : _deviceSosStatusEventSequence,
       inactiveBoundaryEventSequence: boundary.eventSequence,
       inactiveBoundaryObservedAt: boundary.observedAt,
     );
@@ -12526,29 +12586,47 @@ class EixamConnectSdkImpl
         status.transitionSource != DeviceSosTransitionSource.device ||
         status.triggerOrigin != DeviceSosTransitionSource.device ||
         !_isConnectedOwnDeviceSosStatus(status)) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_REPLAY_REJECTED reason=weak_identity '
+        'terminalGeneration=${terminal.generation}',
+      );
       return false;
     }
     final observedAt = (status.lastPacketAt ?? status.updatedAt).toUtc();
     if (!observedAt.isAfter(terminal.lastAuthoritativeObservation)) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_REPLAY_REJECTED reason=stale_packet '
+        'terminalGeneration=${terminal.generation}',
+      );
       return false;
     }
     final hasInactiveBoundary =
         _deviceInactiveBoundaryAfterTerminalGeneration == terminal.generation;
     final fence = _terminalDeviceCycleFence;
-    if (!hasInactiveBoundary ||
-        fence == null ||
-        fence.generation != terminal.generation) {
-      return false;
-    }
     final nodeId = status.nodeId ?? _knownLocalDeviceNodeId;
-    if (fence.nodeId != null && nodeId != null && fence.nodeId != nodeId) {
+    final fencedNodeId = fence?.generation == terminal.generation
+        ? fence?.nodeId
+        : terminal.nodeId;
+    if (fencedNodeId != null && nodeId != null && fencedNodeId != nodeId) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_REPLAY_REJECTED reason=weak_identity '
+        'terminalGeneration=${terminal.generation}',
+      );
       return false;
     }
     final incomingCycleKey = _runtimeDeviceSosCycleKey(
       status: status,
       nodeId: nodeId,
     );
+    final fencedCycleKey =
+        (fence?.generation == terminal.generation
+            ? fence?.runtimeCycleKey
+            : null) ??
+        terminal.deviceCycleKey?.trim();
     final validFreshPhysicalEdge =
+        hasInactiveBoundary &&
+        fence != null &&
+        fence.generation == terminal.generation &&
         status.state == DeviceSosState.preConfirm &&
         (status.previousState == DeviceSosState.inactive ||
             status.previousState == DeviceSosState.resolved) &&
@@ -12556,21 +12634,100 @@ class EixamConnectSdkImpl
         eventSequence > fence.inactiveBoundaryEventSequence! &&
         fence.inactiveBoundaryObservedAt != null &&
         observedAt.isAfter(fence.inactiveBoundaryObservedAt!);
-    if (!validFreshPhysicalEdge) {
+    final terminalBoundaryEventSequence =
+        (fence?.generation == terminal.generation
+            ? fence?.terminalBoundaryEventSequence
+            : null) ??
+        0;
+    final hasStrongConnectedIdentity = _hasStrongConnectedOwnDeviceSosIdentity(
+      status,
+      terminal: terminal,
+    );
+    final validStrongNewCycle =
+        status.state == DeviceSosState.preConfirm &&
+        status.previousState == DeviceSosState.inactive &&
+        hasStrongConnectedIdentity &&
+        incomingCycleKey != null &&
+        fencedCycleKey != null &&
+        incomingCycleKey != fencedCycleKey &&
+        eventSequence > terminalBoundaryEventSequence;
+    if (!validFreshPhysicalEdge && !validStrongNewCycle) {
+      final rejectionReason = eventSequence <= terminalBoundaryEventSequence
+          ? 'old_sequence'
+          : incomingCycleKey == null ||
+                fencedCycleKey == null ||
+                incomingCycleKey == fencedCycleKey
+          ? 'same_cycle'
+          : 'weak_identity';
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_REPLAY_REJECTED reason=$rejectionReason '
+        'terminalGeneration=${terminal.generation}',
+      );
       return false;
     }
     final rawIdentityReused =
-        incomingCycleKey == null || incomingCycleKey == fence.runtimeCycleKey;
+        incomingCycleKey == null || incomingCycleKey == fencedCycleKey;
     BleDebugRegistry.instance.recordEvent(
       'SOS_TERMINAL_FENCE_FRESH_PHYSICAL_EDGE_ACCEPTED '
       'terminalGeneration=${terminal.generation} '
-      'nodeId=${nodeId?.toString() ?? "none"} '
-      'boundarySeq=${fence.inactiveBoundaryEventSequence} '
+      'admission=${validFreshPhysicalEdge ? "inactive_boundary" : "strong_new_cycle"} '
       'eventSeq=$eventSequence rawIdentityReused=$rawIdentityReused '
-      'oldCycle=${fence.runtimeCycleKey ?? "none"} '
-      'newCycle=${incomingCycleKey ?? "none"}',
+      'strongIdentity=$hasStrongConnectedIdentity newCycle=${!rawIdentityReused} '
+      'afterTerminalBoundary=true',
     );
     return true;
+  }
+
+  bool _hasStrongConnectedOwnDeviceSosIdentity(
+    DeviceSosStatus status, {
+    SosLifecycleSnapshot? terminal,
+  }) {
+    final connectedDevice = _lastPublicDeviceStatus ?? _lastDeviceStatus;
+    if (connectedDevice?.connected != true) {
+      return false;
+    }
+    final statusNodeId = _normalizeNodeIdOrNull(status.nodeId);
+    final connectedNodeId = _normalizeNodeIdOrNull(
+      connectedDevice?.nodeId ?? _knownLocalDeviceNodeId,
+    );
+    if (statusNodeId == null ||
+        connectedNodeId == null ||
+        statusNodeId != connectedNodeId ||
+        (terminal?.nodeId != null && terminal?.nodeId != statusNodeId)) {
+      return false;
+    }
+    final connectedDeviceId = connectedDevice?.deviceId.trim();
+    final terminalDeviceId = terminal?.deviceId?.trim();
+    if (connectedDeviceId?.isNotEmpty == true &&
+        terminalDeviceId?.isNotEmpty == true &&
+        connectedDeviceId != terminalDeviceId) {
+      return false;
+    }
+    final connectedHardwareId = _physicalHardwareIdForStatus(connectedDevice);
+    final terminalHardwareId = terminal?.hardwareId?.trim();
+    return connectedHardwareId == null ||
+        terminalHardwareId == null ||
+        connectedHardwareId == terminalHardwareId;
+  }
+
+  bool _deviceStatusHasNewCycleIdentity(
+    DeviceSosStatus status,
+    SosLifecycleSnapshot terminal,
+  ) {
+    final nodeId = status.nodeId ?? _knownLocalDeviceNodeId;
+    final incomingCycleKey = _runtimeDeviceSosCycleKey(
+      status: status,
+      nodeId: nodeId,
+    );
+    final fence = _terminalDeviceCycleFence;
+    final fencedCycleKey =
+        (fence?.generation == terminal.generation
+            ? fence?.runtimeCycleKey
+            : null) ??
+        terminal.deviceCycleKey?.trim();
+    return incomingCycleKey != null &&
+        fencedCycleKey != null &&
+        incomingCycleKey != fencedCycleKey;
   }
 
   bool _terminalFenceSuppressesDeviceOpen(
@@ -13449,7 +13606,19 @@ class EixamConnectSdkImpl
         repositoryIncident.isBackendConfirmed &&
         lifecycle.isOpen &&
         lifecycle.localActionable &&
-        !lifecycle.externalOnly;
+        !lifecycle.externalOnly &&
+        !_hasNewAuthoritativeGenerationSinceTerminal();
+    if (repositoryHasTerminalIncident &&
+        lifecycle.isOpen &&
+        _hasNewAuthoritativeGenerationSinceTerminal() &&
+        !repositoryIncidentMatchesLifecycle) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_STALE_TERMINAL_IGNORED_FOR_NEW_GENERATION '
+        'terminalGeneration=${_sosLifecycle.activeTerminalWatermark?.generation ?? 0} '
+        'activeGeneration=${lifecycle.generation} reason=identity_mismatch',
+      );
+      return;
+    }
     if (repositoryHasTerminalIncident &&
         (repositoryIncidentMatchesLifecycle ||
             productionMqttTerminalAccepted)) {
@@ -17832,6 +18001,9 @@ class EixamConnectSdkImpl
           ? cycleKey
           : matchingExistingFence?.runtimeCycleKey ??
                 usableBoundary?.runtimeCycleKey,
+      terminalBoundaryEventSequence:
+          matchingExistingFence?.terminalBoundaryEventSequence ??
+          _deviceSosStatusEventSequence,
       inactiveBoundaryEventSequence:
           usableBoundary?.eventSequence ??
           matchingExistingFence?.inactiveBoundaryEventSequence,
@@ -20799,6 +20971,7 @@ class _TerminalDeviceCycleFence {
     required this.generation,
     required this.nodeId,
     required this.runtimeCycleKey,
+    required this.terminalBoundaryEventSequence,
     required this.inactiveBoundaryEventSequence,
     required this.inactiveBoundaryObservedAt,
   });
@@ -20806,6 +20979,7 @@ class _TerminalDeviceCycleFence {
   final int generation;
   final int? nodeId;
   final String? runtimeCycleKey;
+  final int terminalBoundaryEventSequence;
   final int? inactiveBoundaryEventSequence;
   final DateTime? inactiveBoundaryObservedAt;
 }

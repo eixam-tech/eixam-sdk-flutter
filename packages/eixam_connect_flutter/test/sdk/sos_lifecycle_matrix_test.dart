@@ -529,6 +529,350 @@ void main() {
     }
 
     test(
+      'migrated connected TAG starts N+1 from a new packet cycle after restored cancelled N',
+      () async {
+        final terminalAt = DateTime.now().toUtc();
+        var deviceNow = terminalAt.add(const Duration(seconds: 1));
+        final secureStore = InMemorySecureKeyValueStore();
+        await _seedTerminalDeviceLifecycle(
+          secureStore: secureStore,
+          terminalAt: terminalAt,
+          deviceCycleKey: 'sos:4660:0',
+        );
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          sosLifecycleSecureStore: secureStore,
+          deviceClock: () => deviceNow,
+        );
+        final observed = <SosLifecycleSnapshot>[];
+        final subscription = harness.sdk.sosLifecycleStream.listen(
+          observed.add,
+        );
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          harness.deviceRepository.emitStatus(
+            buildDeviceStatus(
+              deviceId: 'ble-1',
+              nodeId: 0x1234,
+              canonicalHardwareId: 'CF:82:00:00:00:01',
+            ),
+          );
+          await pumpEventQueue(times: 2);
+
+          harness.deviceSosController.handleIncomingSosPacket(
+            _deviceOriginActivePacketForCycle(packetId: 1),
+            source: DeviceSosTransitionSource.device,
+          );
+          await pumpEventQueue(times: 6);
+
+          final next = await harness.sdk.getSosLifecycle();
+          expect(next.generation, 2);
+          expect(next.stage, SosLifecycleStage.arming);
+          expect(next.origin, SosLifecycleOrigin.connectedLocalDevice);
+          expect(await harness.sdk.getSosState(), SosState.arming);
+          expect((await harness.sdk.getPreSosStatus())?.packetId, 1);
+          expect(
+            observed,
+            contains(
+              isA<SosLifecycleSnapshot>()
+                  .having((value) => value.generation, 'generation', 2)
+                  .having(
+                    (value) => value.stage,
+                    'stage',
+                    SosLifecycleStage.arming,
+                  ),
+            ),
+          );
+          expect(
+            secureStore.values.values.single,
+            contains('"stage":"cancelled"'),
+          );
+        } finally {
+          await subscription.cancel();
+          await harness.dispose();
+        }
+      },
+    );
+
+    test('restored terminal rejects the same cancelled packet cycle', () async {
+      final terminalAt = DateTime.now().toUtc();
+      final secureStore = InMemorySecureKeyValueStore();
+      await _seedTerminalDeviceLifecycle(
+        secureStore: secureStore,
+        terminalAt: terminalAt,
+        deviceCycleKey: 'sos:4660:0',
+      );
+      final harness = _SdkSosHarness(
+        connectedBle: true,
+        sosLifecycleSecureStore: secureStore,
+        deviceClock: () => terminalAt.add(const Duration(seconds: 1)),
+      );
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await harness.setSession();
+
+        harness.deviceSosController.handleIncomingSosPacket(
+          _deviceOriginActivePacketForCycle(packetId: 0),
+          source: DeviceSosTransitionSource.device,
+        );
+        await pumpEventQueue(times: 4);
+        var lifecycle = await harness.sdk.getSosLifecycle();
+        expect(lifecycle.generation, 1);
+        expect(lifecycle.stage, SosLifecycleStage.cancelled);
+        expect(
+          _hasDebugMessage('SOS_REPLAY_REJECTED reason=same_cycle'),
+          isTrue,
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test(
+      'restored terminal rejects a new cycle with weak device identity',
+      () async {
+        final terminalAt = DateTime.now().toUtc();
+        final secureStore = InMemorySecureKeyValueStore();
+        await _seedTerminalDeviceLifecycle(
+          secureStore: secureStore,
+          terminalAt: terminalAt,
+          deviceCycleKey: 'sos:4660:0',
+        );
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          sosLifecycleSecureStore: secureStore,
+          deviceClock: () => terminalAt.add(const Duration(seconds: 1)),
+        );
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+
+          harness.deviceSosController.handleIncomingSosPacket(
+            _deviceOriginActivePacketForCycle(packetId: 1),
+            source: DeviceSosTransitionSource.device,
+          );
+          await pumpEventQueue(times: 4);
+
+          final lifecycle = await harness.sdk.getSosLifecycle();
+          expect(lifecycle.generation, 1);
+          expect(lifecycle.stage, SosLifecycleStage.cancelled);
+          expect(
+            _hasDebugMessage('SOS_REPLAY_REJECTED reason=weak_identity'),
+            isTrue,
+          );
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'restored terminal rejects a new cycle observed before its boundary',
+      () async {
+        final terminalAt = DateTime.now().toUtc();
+        final secureStore = InMemorySecureKeyValueStore();
+        await _seedTerminalDeviceLifecycle(
+          secureStore: secureStore,
+          terminalAt: terminalAt,
+          deviceCycleKey: 'sos:4660:0',
+        );
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          sosLifecycleSecureStore: secureStore,
+          deviceClock: () => terminalAt.subtract(const Duration(seconds: 1)),
+        );
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          harness.deviceRepository.emitStatus(
+            buildDeviceStatus(
+              deviceId: 'ble-1',
+              nodeId: 0x1234,
+              canonicalHardwareId: 'CF:82:00:00:00:01',
+            ),
+          );
+          await pumpEventQueue(times: 2);
+
+          harness.deviceSosController.handleIncomingSosPacket(
+            _deviceOriginActivePacketForCycle(packetId: 1),
+            source: DeviceSosTransitionSource.device,
+          );
+          await pumpEventQueue(times: 4);
+
+          final lifecycle = await harness.sdk.getSosLifecycle();
+          expect(lifecycle.generation, 1);
+          expect(lifecycle.stage, SosLifecycleStage.cancelled);
+          expect(
+            _hasDebugMessage('SOS_REPLAY_REJECTED reason=stale_packet'),
+            isTrue,
+          );
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'device cancel after restored terminal closes only accepted N+1',
+      () async {
+        final terminalAt = DateTime.now().toUtc();
+        var deviceNow = terminalAt.add(const Duration(seconds: 1));
+        final secureStore = InMemorySecureKeyValueStore();
+        await _seedTerminalDeviceLifecycle(
+          secureStore: secureStore,
+          terminalAt: terminalAt,
+          deviceCycleKey: 'sos:4660:0',
+        );
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          sosLifecycleSecureStore: secureStore,
+          deviceClock: () => deviceNow,
+        );
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          harness.deviceRepository.emitStatus(
+            buildDeviceStatus(
+              deviceId: 'ble-1',
+              nodeId: 0x1234,
+              canonicalHardwareId: 'CF:82:00:00:00:01',
+            ),
+          );
+          await pumpEventQueue(times: 2);
+          harness.deviceSosController.handleIncomingSosPacket(
+            _deviceOriginActivePacketForCycle(packetId: 1),
+            source: DeviceSosTransitionSource.device,
+          );
+          await pumpEventQueue(times: 5);
+          expect((await harness.sdk.getSosLifecycle()).generation, 2);
+
+          deviceNow = deviceNow.add(const Duration(seconds: 1));
+          harness.deviceSosController.handleIncomingSosEventPacket(
+            _deviceCancelPacket(),
+            source: DeviceSosTransitionSource.device,
+          );
+          await pumpEventQueue(times: 6);
+
+          final cancelled = await harness.sdk.getSosLifecycle();
+          expect(cancelled.generation, 2);
+          expect(cancelled.stage, SosLifecycleStage.cancelled);
+          expect(await harness.sdk.getPreSosStatus(), isNull);
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'late backend terminal for N cannot close N+1 but matching N+1 terminal does',
+      () async {
+        final terminalAt = DateTime.now().toUtc();
+        var deviceNow = terminalAt.add(const Duration(seconds: 1));
+        final secureStore = InMemorySecureKeyValueStore();
+        await _seedTerminalDeviceLifecycle(
+          secureStore: secureStore,
+          terminalAt: terminalAt,
+          deviceCycleKey: 'sos:4660:0',
+        );
+        final realtime = _OnDemandOperationalRealtimeClient();
+        final repository = _ControllableMqttOperationalSosRepository(realtime);
+        final harness = _SdkSosHarness(
+          sdkSosRepository: repository,
+          realtimeClient: realtime,
+          connectedBle: true,
+          sosLifecycleSecureStore: secureStore,
+          deviceClock: () => deviceNow,
+        );
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          harness.deviceRepository.emitStatus(
+            buildDeviceStatus(
+              deviceId: 'ble-1',
+              nodeId: 0x1234,
+              canonicalHardwareId: 'CF:82:00:00:00:01',
+            ),
+          );
+          await pumpEventQueue(times: 2);
+          harness.deviceSosController.handleIncomingSosPacket(
+            _deviceOriginActivePacketForCycle(packetId: 1),
+            source: DeviceSosTransitionSource.device,
+          );
+          await pumpEventQueue(times: 5);
+          deviceNow = deviceNow.add(const Duration(seconds: 21));
+          harness.deviceSosController.handleIncomingSosPacket(
+            _deviceOriginActivePacketForCycle(packetId: 1),
+            source: DeviceSosTransitionSource.device,
+          );
+          await pumpEventQueue(times: 8);
+
+          final active = await harness.sdk.getSosLifecycle();
+          final activeIncident = await repository.getCurrentIncident();
+          expect(active.generation, 2);
+          expect(active.stage, SosLifecycleStage.active);
+          expect(activeIncident, isNotNull);
+          expect(active.localIncidentId, isNotNull);
+
+          repository.emitTerminal(
+            SosIncident(
+              id: 'old-generation-terminal',
+              state: SosState.cancelled,
+              createdAt: terminalAt,
+              originatorNodeId: 0x1234,
+              deviceId: 'ble-1',
+              hardwareId: 'CF:82:00:00:00:01',
+              cycleKey: 'sos:4660:0',
+              isBackendConfirmed: true,
+            ),
+          );
+          await pumpEventQueue(times: 6);
+
+          var current = await harness.sdk.getSosLifecycle();
+          expect(current.generation, 2);
+          expect(current.stage, SosLifecycleStage.active);
+          expect(
+            harness.deviceSosController.currentStatus.state,
+            DeviceSosState.active,
+          );
+          expect(await harness.sdk.getSosState(), SosState.sent);
+
+          repository.emitTerminal(
+            SosIncident(
+              id: active.localIncidentId!,
+              state: SosState.resolved,
+              createdAt: active.activationTimestamp!,
+              originatorNodeId: 0x1234,
+              deviceId: 'ble-1',
+              hardwareId: 'CF:82:00:00:00:01',
+              isBackendConfirmed: true,
+            ),
+          );
+          await pumpEventQueue(times: 6);
+
+          current = await harness.sdk.getSosLifecycle();
+          expect(current.generation, 2);
+          expect(current.stage, SosLifecycleStage.resolved);
+        } finally {
+          await harness.dispose(disposeSosRepository: false);
+          await repository.dispose();
+        }
+      },
+    );
+
+    test(
       'physical inactive boundary permits a fresh device SOS generation',
       () async {
         var deviceNow = DateTime.now();
@@ -5153,6 +5497,39 @@ final class _OnDemandOperationalRealtimeClient extends FakeRealtimeClient
   Future<void> reconnectIfSessionChanged(EixamSession session) => connect();
 }
 
+final class _ControllableMqttOperationalSosRepository
+    extends MqttOperationalSosRepository {
+  _ControllableMqttOperationalSosRepository(
+    OperationalRealtimeClient realtimeClient,
+  ) : super(realtimeClient: realtimeClient) {
+    _baseStateSubscription = super.watchSosState().listen(_stateController.add);
+  }
+
+  final StreamController<SosState> _stateController =
+      StreamController<SosState>.broadcast();
+  late final StreamSubscription<SosState> _baseStateSubscription;
+  SosIncident? _forcedIncident;
+
+  void emitTerminal(SosIncident incident) {
+    _forcedIncident = incident;
+    _stateController.add(incident.state);
+  }
+
+  @override
+  Future<SosIncident?> getCurrentIncident() async =>
+      _forcedIncident ?? await super.getCurrentIncident();
+
+  @override
+  Stream<SosState> watchSosState() => _stateController.stream;
+
+  @override
+  Future<void> dispose() async {
+    await _baseStateSubscription.cancel();
+    await _stateController.close();
+    await super.dispose();
+  }
+}
+
 final class _DelayableMqttOperationalSosRepository
     extends MqttOperationalSosRepository {
   _DelayableMqttOperationalSosRepository(OperationalRealtimeClient realtime)
@@ -5592,6 +5969,42 @@ RealtimeEvent _processedEvent({
       '_mqttTopicCategory': 'legacy_alias',
     },
   );
+}
+
+Future<void> _seedTerminalDeviceLifecycle({
+  required InMemorySecureKeyValueStore secureStore,
+  required DateTime terminalAt,
+  required String deviceCycleKey,
+}) async {
+  final controller = AuthoritativeSosLifecycleController(
+    secureStore: secureStore,
+    clock: () => terminalAt,
+  );
+  await controller.restoreFor(
+    const EixamSession.signed(
+      appId: 'app-demo',
+      externalUserId: 'external-123',
+      userHash: 'deadbeef',
+    ),
+  );
+  await controller.beginActivating(
+    origin: SosLifecycleOrigin.connectedLocalDevice,
+    nodeId: 0x1234,
+    deviceId: 'ble-1',
+    hardwareId: 'CF:82:00:00:00:01',
+  );
+  await controller.confirmActive(
+    origin: SosLifecycleOrigin.connectedLocalDevice,
+    localIncidentId: 'device-runtime-$deviceCycleKey',
+    nodeId: 0x1234,
+    deviceId: 'ble-1',
+    hardwareId: 'CF:82:00:00:00:01',
+  );
+  await controller.confirmTerminal(
+    stage: SosLifecycleStage.cancelled,
+    deviceCycleKey: deviceCycleKey,
+  );
+  await controller.dispose();
 }
 
 EixamSosPacket _deviceOriginCountdownPacket({int packetId = 0}) {
