@@ -106,6 +106,23 @@ void main() {
       );
     });
 
+    test('stable identifier markers correlate without exposing identifiers',
+        () {
+      final marker = SecurityDiagnosticsRedactor.stableIdentifierMarker(
+        'F4:F2:18:F4:99:79',
+      );
+
+      expect(marker, startsWith('fnv32-'));
+      expect(
+        marker,
+        SecurityDiagnosticsRedactor.stableIdentifierMarker(
+          ' f4:f2:18:f4:99:79 ',
+        ),
+      );
+      expect(marker, isNot(contains('99:79')));
+      expect(SecurityDiagnosticsRedactor.stableIdentifierMarker(''), 'none');
+    });
+
     test('redacts sensitive JSON values directly', () {
       final redacted = SecurityDiagnosticsRedactor.redactJsonValue(
         <String, Object?>{

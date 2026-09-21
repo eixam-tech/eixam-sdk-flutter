@@ -14,6 +14,7 @@ import '../data/datasources_remote/sos_remote_data_source.dart';
 import '../data/repositories/in_memory_device_repository.dart';
 import '../data/repositories/api_sos_repository.dart';
 import '../data/repositories/mqtt_operational_sos_repository.dart';
+import '../diagnostics/security_diagnostics_redactor.dart';
 import '../data/datasources_remote/sdk_device_config_remote_data_source.dart';
 import '../data/datasources_remote/sdk_feedback_remote_data_source.dart';
 import '../data/datasources_remote/sdk_geo_country_remote_data_source.dart';
@@ -446,6 +447,7 @@ class EixamConnectSdkImpl
   bool _lastProtectionServiceBleReady = false;
   ProtectionBleOwner _lastProtectionBleOwner = ProtectionBleOwner.flutter;
   bool _firmwareOtaInProgress = false;
+  bool _migrationInspectionInProgress = false;
 
   Timer? _deathManTimer;
   bool _deathManCheckInNotified = false;
@@ -2441,24 +2443,70 @@ class EixamConnectSdkImpl
   Future<DeviceMigrationCandidate> inspectDeviceMigrationCandidate({
     required String deviceId,
     String? advertisedName,
-  }) {
+  }) async {
+    final identityMarker =
+        SecurityDiagnosticsRedactor.stableIdentifierMarker(deviceId);
+    safeSdkDebugPrint(
+      'MIGRATION_INSPECTION_SELECTED brand=meshtastic '
+      'selectedMarker=$identityMarker '
+      'selectedNamePresent=${advertisedName?.trim().isNotEmpty == true}',
+    );
     final coordinator = deviceMigrationCoordinator;
     if (coordinator == null) {
-      return Future<DeviceMigrationCandidate>.value(
-        DeviceMigrationCandidate(
-          deviceId: deviceId,
-          advertisedName: advertisedName,
-          compatibility: DeviceMigrationCompatibility.unableToVerify,
-          identityKind: DeviceMigrationIdentityKind.none,
-          detailCode: 'migrationUnavailable',
-          inspectedAt: DateTime.now(),
-        ),
+      return DeviceMigrationCandidate(
+        deviceId: deviceId,
+        advertisedName: advertisedName,
+        compatibility: DeviceMigrationCompatibility.unableToVerify,
+        identityKind: DeviceMigrationIdentityKind.none,
+        detailCode: 'migrationUnavailable',
+        inspectedAt: DateTime.now(),
       );
     }
-    return coordinator.inspect(
-      deviceId: deviceId,
-      advertisedName: advertisedName,
-    );
+    if (_migrationInspectionInProgress) {
+      return DeviceMigrationCandidate(
+        deviceId: deviceId,
+        advertisedName: advertisedName,
+        compatibility: DeviceMigrationCompatibility.unableToVerify,
+        identityKind: DeviceMigrationIdentityKind.none,
+        detailCode: 'candidateInspectionInProgress',
+        inspectedAt: DateTime.now(),
+      );
+    }
+
+    _migrationInspectionInProgress = true;
+    var ownershipReleaseAttempted = false;
+    try {
+      await _bleAutoReconnectCoordinator.suspendForCandidateInspection(
+        reason: 'explicit_migration_candidate_inspection',
+      );
+      final repository = deviceRepository;
+      if (repository is InMemoryDeviceRepository) {
+        ownershipReleaseAttempted = true;
+        _lastDeviceStatus = await repository.releaseBleOwnershipToProtectionMode(
+          reason: 'explicit_migration_candidate_inspection',
+        );
+      }
+      return await coordinator.inspect(
+        deviceId: deviceId,
+        advertisedName: advertisedName,
+      );
+    } finally {
+      try {
+        final repository = deviceRepository;
+        if (ownershipReleaseAttempted &&
+            repository is InMemoryDeviceRepository) {
+          _lastDeviceStatus =
+              await repository.reclaimBleOwnershipFromProtectionMode(
+            reason: 'explicit_migration_candidate_inspection_complete',
+          );
+        }
+      } finally {
+        _bleAutoReconnectCoordinator.resumeAfterCandidateInspection(
+          reason: 'explicit_migration_candidate_inspection_complete',
+        );
+        _migrationInspectionInProgress = false;
+      }
+    }
   }
 
   @override

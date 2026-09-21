@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
+import '../diagnostics/security_diagnostics_redactor.dart';
+import 'ble_debug_registry.dart';
 import 'meshtastic_phone_api_codec.dart';
 
 abstract interface class MeshtasticMetadataProbe {
@@ -25,6 +27,10 @@ final class MeshtasticProbeResult {
   final int? nodeNumber;
   final String? hardwareMac;
   final int? batteryPercentage;
+}
+
+final class MeshtasticDeviceUnavailableException implements Exception {
+  const MeshtasticDeviceUnavailableException();
 }
 
 final class FlutterBlueMeshtasticMetadataProbe
@@ -53,11 +59,13 @@ final class FlutterBlueMeshtasticMetadataProbe
     String deviceId, {
     Duration timeout = const Duration(seconds: 8),
   }) async {
-    final normalized = deviceId.trim();
-    if (normalized.isEmpty) {
+    if (deviceId.isEmpty) {
       throw const FormatException('Missing BLE platform identifier.');
     }
-    return _inspect(BluetoothDevice.fromId(normalized)).timeout(timeout);
+    if (deviceId != deviceId.trim()) {
+      throw const FormatException('Invalid BLE platform identifier.');
+    }
+    return _inspect(BluetoothDevice.fromId(deviceId)).timeout(timeout);
   }
 
   Future<MeshtasticProbeResult> _inspect(BluetoothDevice device) async {
@@ -73,6 +81,9 @@ final class FlutterBlueMeshtasticMetadataProbe
     int? batteryPercentage;
     final macsByNode = <int, String>{};
     var readInFlight = false;
+    final identityMarker = SecurityDiagnosticsRedactor.stableIdentifierMarker(
+      device.remoteId.str,
+    );
 
     void consume(List<int> payload) {
       if (payload.isEmpty || result.isCompleted) return;
@@ -124,13 +135,30 @@ final class FlutterBlueMeshtasticMetadataProbe
 
     try {
       final wasConnected = device.isConnected;
-      if (!wasConnected) {
-        await device.connect(timeout: const Duration(seconds: 10), mtu: null);
-        connectedHere = true;
-      }
-      final services = await device.discoverServices(
-        subscribeToServicesChanged: false,
+      safeSdkDebugPrint(
+        'MIGRATION_INSPECTION_CONNECT_BEGIN brand=meshtastic '
+        'selectedMarker=$identityMarker',
       );
+      List<BluetoothService> services;
+      try {
+        if (!wasConnected) {
+          await device.connect(timeout: const Duration(seconds: 10), mtu: null);
+          connectedHere = true;
+        }
+        services = await device.discoverServices(
+          subscribeToServicesChanged: false,
+        );
+        safeSdkDebugPrint(
+          'MIGRATION_INSPECTION_CONNECT_RESULT success=true '
+          'selectedMarker=$identityMarker',
+        );
+      } catch (_) {
+        safeSdkDebugPrint(
+          'MIGRATION_INSPECTION_CONNECT_RESULT success=false '
+          'selectedMarker=$identityMarker',
+        );
+        throw const MeshtasticDeviceUnavailableException();
+      }
       BluetoothCharacteristic? toRadio;
       BluetoothCharacteristic? battery;
       for (final service in services) {

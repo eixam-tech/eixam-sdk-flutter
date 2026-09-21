@@ -29,24 +29,23 @@ final class DeviceMigrationCoordinator {
     required String deviceId,
     String? advertisedName,
   }) async {
-    final normalized = deviceId.trim();
-    if (normalized.isEmpty) {
+    if (deviceId.trim().isEmpty) {
       return _unableCandidate(
-        deviceId: normalized,
+        deviceId: deviceId,
         advertisedName: advertisedName,
         code: 'missingDeviceId',
       );
     }
     try {
-      final probe = await metadataProbe.inspect(normalized);
+      final probe = await metadataProbe.inspect(deviceId);
       final model = probe.hardwareModel;
       final identity = _strongestIdentity(
-        deviceId: normalized,
+        deviceId: deviceId,
         hardwareMac: probe.hardwareMac,
         nodeNumber: probe.nodeNumber,
       );
       return DeviceMigrationCandidate(
-        deviceId: normalized,
+        deviceId: deviceId,
         advertisedName: advertisedName,
         compatibility: model == 0
             ? DeviceMigrationCompatibility.unableToVerify
@@ -62,9 +61,15 @@ final class DeviceMigrationCoordinator {
         detailCode: model == 0 ? 'hardwareModelUnset' : null,
         inspectedAt: DateTime.now(),
       );
+    } on MeshtasticDeviceUnavailableException {
+      return _unableCandidate(
+        deviceId: deviceId,
+        advertisedName: advertisedName,
+        code: 'selectedDeviceUnavailable',
+      );
     } catch (_) {
       return _unableCandidate(
-        deviceId: normalized,
+        deviceId: deviceId,
         advertisedName: advertisedName,
         code: 'hardwareVerificationFailed',
       );

@@ -22,15 +22,38 @@ void main() {
   );
 
   test('trusted metadata model 105 is compatible', () async {
+    final probe = _FakeProbe(_probe(model: 105));
     final candidate = await build(
-      probe: _FakeProbe(_probe(model: 105)),
+      probe: probe,
     ).inspect(deviceId: selectedId, advertisedName: 'Meshtastic_EEFF');
 
     expect(candidate.compatibility, DeviceMigrationCompatibility.compatible);
     expect(candidate.sourceHardwareModel, 105);
     expect(candidate.sourceFirmwareVersion, '2.5.0');
     expect(candidate.stableIdentity, selectedId);
+    expect(probe.inspectedDeviceIds, <String>[selectedId]);
   });
+
+  test(
+    'a disappeared selected device fails without substituting another id',
+    () async {
+      final probe = _FakeProbe.error(
+        const MeshtasticDeviceUnavailableException(),
+      );
+
+      final candidate = await build(
+        probe: probe,
+      ).inspect(deviceId: selectedId, advertisedName: 'Meshtastic_EEFF');
+
+      expect(
+        candidate.compatibility,
+        DeviceMigrationCompatibility.unableToVerify,
+      );
+      expect(candidate.deviceId, selectedId);
+      expect(candidate.detailCode, 'selectedDeviceUnavailable');
+      expect(probe.inspectedDeviceIds, <String>[selectedId]);
+    },
+  );
 
   for (final entry in <(int, String)>[(9, 'RAK4631'), (84, 'WISMESH_TAP')]) {
     test('${entry.$2} model ${entry.$1} is unsupported', () async {
@@ -206,6 +229,7 @@ final class _FakeProbe implements MeshtasticMetadataProbe {
   final MeshtasticProbeResult? result;
   final Object? error;
   int calls = 0;
+  final List<String> inspectedDeviceIds = <String>[];
 
   @override
   Future<MeshtasticProbeResult> inspect(
@@ -213,6 +237,7 @@ final class _FakeProbe implements MeshtasticMetadataProbe {
     Duration timeout = const Duration(seconds: 8),
   }) async {
     calls += 1;
+    inspectedDeviceIds.add(deviceId);
     if (error != null) throw error!;
     return result!;
   }

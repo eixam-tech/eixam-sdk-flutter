@@ -83,6 +83,7 @@ class BleAutoReconnectCoordinator {
   Timer? _readinessReconnectTimer;
   Future<PreferredDeviceReconnectResult>? _preferredReconnectCampaign;
   Completer<void>? _preferredReconnectCancellation;
+  Future<void>? _activeConnectionOperationSettlement;
   DeviceStatus? _lastStatus;
   PermissionState? _lastReadinessForReconnectMonitor;
   bool _readinessReconnectPollInFlight = false;
@@ -90,6 +91,7 @@ class BleAutoReconnectCoordinator {
   bool _isConnectionAttemptInProgress = false;
   bool _isAppForeground = true;
   bool _dfuTransferSuppressed = false;
+  bool _candidateInspectionSuppressed = false;
   bool _provisioningReconnectOwned = false;
   bool _disposed = false;
   int _retryAttempt = 0;
@@ -225,6 +227,7 @@ class BleAutoReconnectCoordinator {
         // reconnect after the reboot disconnect has been validated.
       }
     }
+    await _drainActiveConnectionOperation();
     BleDebugRegistry.instance.recordEvent(
       'PROVISIONING_REBOOT reconnect_ownership_acquired=true',
     );
@@ -237,6 +240,35 @@ class BleAutoReconnectCoordinator {
     _provisioningReconnectOwned = false;
     BleDebugRegistry.instance.recordEvent(
       'PROVISIONING_REBOOT reconnect_ownership_acquired=false',
+    );
+  }
+
+  /// Gives an explicit candidate inspection priority over every background
+  /// preferred-device reconnect trigger without altering persisted preference.
+  Future<void> suspendForCandidateInspection({required String reason}) async {
+    _candidateInspectionSuppressed = true;
+    _cancelPreferredReconnectCampaign(reason: 'candidate_inspection');
+    _retryTimer?.cancel();
+    _retryTimer = null;
+    BleDebugRegistry.instance.recordEvent(
+      'BLE_AUTO_RECONNECT_SUSPENDED_FOR_CANDIDATE_INSPECTION reason=$reason',
+    );
+    final campaign = _preferredReconnectCampaign;
+    if (campaign != null) {
+      try {
+        await campaign;
+      } catch (_) {
+        // Settlement is sufficient. BLE ownership is released by the SDK
+        // before the selected candidate connection begins.
+      }
+    }
+    await _drainActiveConnectionOperation();
+  }
+
+  void resumeAfterCandidateInspection({required String reason}) {
+    _candidateInspectionSuppressed = false;
+    BleDebugRegistry.instance.recordEvent(
+      'BLE_AUTO_RECONNECT_RESUMED_AFTER_CANDIDATE_INSPECTION reason=$reason',
     );
   }
 
@@ -279,6 +311,7 @@ class BleAutoReconnectCoordinator {
         // settled so no connect resolves after the ownership handoff.
       }
     }
+    await _drainActiveConnectionOperation();
   }
 
   /// Lifts the DFU suppression once the transfer (or its failure handling) is
@@ -298,6 +331,12 @@ class BleAutoReconnectCoordinator {
     if (_dfuTransferSuppressed) {
       BleDebugRegistry.instance.recordEvent(
         'Reconnect skipped because a firmware DFU transfer is in progress',
+      );
+      return;
+    }
+    if (_candidateInspectionSuppressed) {
+      _recordCandidateInspectionReconnectSuppressed(
+        trigger: 'unexpected_disconnect',
       );
       return;
     }
@@ -448,6 +487,10 @@ class BleAutoReconnectCoordinator {
       _recordProvisioningReconnectSuppressed(trigger: trigger);
       return;
     }
+    if (_candidateInspectionSuppressed) {
+      _recordCandidateInspectionReconnectSuppressed(trigger: trigger);
+      return;
+    }
     if (_preferredReconnectCampaign != null || _isConnectionAttemptInProgress) {
       _traceReconnect('sdk_ble_ready_reconnect_skipped reason=inflight');
       return;
@@ -518,6 +561,16 @@ class BleAutoReconnectCoordinator {
       );
       return const PreferredDeviceReconnectResult.failed(
         reason: 'dfu_transfer_in_progress',
+      );
+    }
+    if (_candidateInspectionSuppressed) {
+      _recordCandidateInspectionReconnectSuppressed(trigger: trigger);
+      _recordNoProviderCall(
+        attemptId: attemptId,
+        reason: 'candidate_inspection_in_progress',
+      );
+      return const PreferredDeviceReconnectResult.failed(
+        reason: 'candidate_inspection_in_progress',
       );
     }
     if (_isNativeProtectionOwningBle?.call() == true) {
@@ -711,6 +764,16 @@ class BleAutoReconnectCoordinator {
       );
       return const PreferredDeviceReconnectResult.failed(
         reason: 'dfu_transfer_in_progress',
+      );
+    }
+    if (_candidateInspectionSuppressed) {
+      _recordCandidateInspectionReconnectSuppressed(trigger: trigger);
+      _recordNoProviderCall(
+        attemptId: attemptId,
+        reason: 'candidate_inspection_in_progress',
+      );
+      return const PreferredDeviceReconnectResult.failed(
+        reason: 'candidate_inspection_in_progress',
       );
     }
     if (_manualDisconnectRequested) {
@@ -1148,6 +1211,7 @@ class BleAutoReconnectCoordinator {
       'manual_disconnect' || 'manual_connect_requested' => 'manual_disconnect',
       'dispose' => 'disposed',
       'dfu_transfer' => 'dfu_transfer_in_progress',
+      'candidate_inspection' => 'candidate_inspection_in_progress',
       'provisioning_reboot' => 'provisioning_reconnect_owned',
       'app_not_foreground' => 'app_not_foreground',
       _ => 'unknown',
@@ -1160,6 +1224,19 @@ class BleAutoReconnectCoordinator {
     );
     _traceReconnect(
       'sdk_campaign_cancelled reason=provisioning_reconnect_owned '
+      'source=$trigger',
+    );
+  }
+
+  void _recordCandidateInspectionReconnectSuppressed({
+    required String trigger,
+  }) {
+    BleDebugRegistry.instance.recordEvent(
+      'MIGRATION_INSPECTION generic_reconnect_suppressed=true '
+      'trigger=$trigger',
+    );
+    _traceReconnect(
+      'sdk_campaign_cancelled reason=candidate_inspection_in_progress '
       'source=$trigger',
     );
   }
@@ -1239,9 +1316,10 @@ class BleAutoReconnectCoordinator {
     try {
       DeviceStatus result;
       try {
+        final operation = _startTrackedConnectionOperation(action);
         result = timeout == null
-            ? await action()
-            : await _withReconnectAbort(action(), timeout: timeout);
+            ? await operation
+            : await _withReconnectAbort(operation, timeout: timeout);
       } catch (error) {
         if (!allowSingleTransientDisconnectRetry ||
             !_isTransientDisconnectError(error)) {
@@ -1252,9 +1330,10 @@ class BleAutoReconnectCoordinator {
         );
         BleDebugRegistry.instance.recordEvent('manual_connect_retry_start');
         try {
+          final operation = _startTrackedConnectionOperation(action);
           result = timeout == null
-              ? await action()
-              : await _withReconnectAbort(action(), timeout: timeout);
+              ? await operation
+              : await _withReconnectAbort(operation, timeout: timeout);
         } catch (retryError) {
           BleDebugRegistry.instance.recordEvent(
             'manual_connect_retry_failed error=$retryError',
@@ -1275,6 +1354,32 @@ class BleAutoReconnectCoordinator {
       rethrow;
     } finally {
       _isConnectionAttemptInProgress = false;
+    }
+  }
+
+  Future<DeviceStatus> _startTrackedConnectionOperation(
+    Future<DeviceStatus> Function() action,
+  ) {
+    final operation = action();
+    final settlement = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    _activeConnectionOperationSettlement = settlement;
+    unawaited(
+      settlement.whenComplete(() {
+        if (identical(_activeConnectionOperationSettlement, settlement)) {
+          _activeConnectionOperationSettlement = null;
+        }
+      }),
+    );
+    return operation;
+  }
+
+  Future<void> _drainActiveConnectionOperation() async {
+    final settlement = _activeConnectionOperationSettlement;
+    if (settlement != null) {
+      await settlement;
     }
   }
 

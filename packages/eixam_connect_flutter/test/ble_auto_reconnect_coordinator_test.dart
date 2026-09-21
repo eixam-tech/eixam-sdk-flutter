@@ -173,6 +173,64 @@ void main() {
     });
 
     test(
+        'candidate inspection suppresses preferred reconnect and restores it '
+        'after completion', () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _FakeDeviceRepository();
+      final store = PreferredBleDeviceStore(localStore: SharedPrefsSdkStore());
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: 'CF:82:59:4B:1A:A8',
+          displayName: 'EIXAM_594B1AA8',
+          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+        ),
+      );
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+      );
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+
+      await coordinator.suspendForCandidateInspection(
+        reason: 'explicit_migration_candidate_inspection',
+      );
+      final duringInspection = await coordinator.tryAutoConnectForHandoff(
+        trigger: 'startup',
+        attemptId: 'candidate-inspection',
+      );
+      coordinator.onUnexpectedDisconnect();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(
+        duringInspection.status,
+        PreferredDeviceReconnectResultStatus.failed,
+      );
+      expect(duringInspection.reason, 'candidate_inspection_in_progress');
+      expect(repository.reconnectCallCount, 0);
+      expect(repository.lastReconnectedDeviceId, isNull);
+
+      coordinator.resumeAfterCandidateInspection(
+        reason: 'explicit_migration_candidate_inspection_complete',
+      );
+      final afterInspection = await coordinator.tryAutoConnectForHandoff(
+        trigger: 'startup',
+        attemptId: 'after-candidate-inspection',
+      );
+
+      expect(
+        afterInspection.status,
+        PreferredDeviceReconnectResultStatus.connected,
+      );
+      expect(repository.reconnectCallCount, 1);
+      expect(repository.lastReconnectedDeviceId, 'CF:82:59:4B:1A:A8');
+      await coordinator.dispose();
+    });
+
+    test(
         'native protection BLE owner skips Flutter reconnect and notifies native',
         () async {
       SharedPreferences.setMockInitialValues(<String, Object>{});

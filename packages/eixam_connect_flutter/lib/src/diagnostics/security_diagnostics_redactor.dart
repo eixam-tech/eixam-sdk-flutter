@@ -53,6 +53,21 @@ class SecurityDiagnosticsRedactor {
     return redacted;
   }
 
+  /// Returns a stable, non-reversible marker suitable for correlating the
+  /// same identifier across adjacent diagnostics without logging the value.
+  static String stableIdentifierMarker(Object? value) {
+    final normalized = value?.toString().trim().toLowerCase() ?? '';
+    if (normalized.isEmpty) {
+      return 'none';
+    }
+    var hash = 0x811c9dc5;
+    for (final byte in utf8.encode(normalized)) {
+      hash ^= byte;
+      hash = (hash * 0x01000193) & 0xffffffff;
+    }
+    return 'fnv32-${hash.toRadixString(16).padLeft(8, '0')}';
+  }
+
   static String formatCoordinateForDiagnostics(
     num? value, {
     required bool allowSensitive,
