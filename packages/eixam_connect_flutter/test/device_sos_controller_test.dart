@@ -328,55 +328,57 @@ void main() {
       expect(controller.currentStatus.state, DeviceSosState.inactive);
     });
 
-    test('stale terminal write completion cannot close a newer generation',
-        () async {
-      BleDebugRegistry.instance.reset();
-      final clearWriteStarted = Completer<void>();
-      final finishClearWrite = Completer<void>();
-      final commands = <EixamDeviceCommand>[];
-      var generation = 1;
-      final controller = DeviceSosController(
-        countdownDuration: const Duration(milliseconds: 5),
-        countdownTick: const Duration(milliseconds: 1),
-        appActivationObservationTimeout: const Duration(milliseconds: 20),
-      );
-      addTearDown(controller.dispose);
-      await controller.attach(
-        commandWriter: (command) async {
-          commands.add(command);
-          if (command.opcode == 0x04) {
-            clearWriteStarted.complete();
-            await finishClearWrite.future;
-          }
-        },
-      );
-      await _promoteDeviceSosToActive(controller);
+    test(
+      'stale terminal write completion cannot close a newer generation',
+      () async {
+        BleDebugRegistry.instance.reset();
+        final clearWriteStarted = Completer<void>();
+        final finishClearWrite = Completer<void>();
+        final commands = <EixamDeviceCommand>[];
+        var generation = 1;
+        final controller = DeviceSosController(
+          countdownDuration: const Duration(milliseconds: 5),
+          countdownTick: const Duration(milliseconds: 1),
+          appActivationObservationTimeout: const Duration(milliseconds: 20),
+        );
+        addTearDown(controller.dispose);
+        await controller.attach(
+          commandWriter: (command) async {
+            commands.add(command);
+            if (command.opcode == 0x04) {
+              clearWriteStarted.complete();
+              await finishClearWrite.future;
+            }
+          },
+        );
+        await _promoteDeviceSosToActive(controller);
 
-      final close = controller.cancelSos(
-        operationIsCurrent: () => generation == 1,
-      );
-      await clearWriteStarted.future;
-      generation = 2;
-      controller.handleIncomingSosPacket(
-        _activePacket(packetId: 1),
-        source: DeviceSosTransitionSource.device,
-      );
-      finishClearWrite.complete();
+        final close = controller.cancelSos(
+          operationIsCurrent: () => generation == 1,
+        );
+        await clearWriteStarted.future;
+        generation = 2;
+        controller.handleIncomingSosPacket(
+          _activePacket(packetId: 1),
+          source: DeviceSosTransitionSource.device,
+        );
+        finishClearWrite.complete();
 
-      final result = await close;
+        final result = await close;
 
-      expect(commands.map((command) => command.opcode), <int>[0x04]);
-      expect(result.state, DeviceSosState.active);
-      expect(controller.currentStatus.state, DeviceSosState.active);
-      expect(
-        BleDebugRegistry.instance.currentState.events.any(
-          (event) => event.message.contains(
-            'DEVICE_SOS_CLOSE_COMMAND_ABORTED reason=stale_lifecycle',
+        expect(commands.map((command) => command.opcode), <int>[0x04]);
+        expect(result.state, DeviceSosState.active);
+        expect(controller.currentStatus.state, DeviceSosState.active);
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) => event.message.contains(
+              'DEVICE_SOS_CLOSE_COMMAND_ABORTED reason=stale_lifecycle',
+            ),
           ),
-        ),
-        isTrue,
-      );
-    });
+          isTrue,
+        );
+      },
+    );
 
     test('stale terminal operation aborts before command dispatch', () async {
       final commands = <EixamDeviceCommand>[];
@@ -739,7 +741,7 @@ void main() {
     });
 
     test(
-      'active SOS + incoming device cancel packet keeps terminal cancelled and does not reopen preConfirm',
+      'fresh packet fingerprint reopens immediately after device cancel',
       () {
         final controller = DeviceSosController(
           countdownDuration: const Duration(milliseconds: 40),
@@ -769,20 +771,15 @@ void main() {
         );
 
         final status = controller.currentStatus;
-        expect(status.state, DeviceSosState.inactive);
+        expect(status.state, DeviceSosState.preConfirm);
         expect(status.packetId, 0);
-        expect(status.countdownStartedAt, isNull);
-        expect(status.expectedActivationAt, isNull);
-        expect(status.countdownRemainingSeconds, isNull);
-        expect(
-          status.decoderNote,
-          contains('REOPEN_SUPPRESSED_AFTER_TERMINAL'),
-        );
+        expect(status.countdownStartedAt, isNotNull);
+        expect(status.expectedActivationAt, isNotNull);
       },
     );
 
     test(
-      'terminal cancel suppresses late same-node SOS packets even when packet id changes',
+      'new packet cycle reopens immediately after terminal without cooldown',
       () {
         final controller = DeviceSosController(
           countdownDuration: const Duration(milliseconds: 40),
@@ -812,16 +809,47 @@ void main() {
         );
 
         final status = controller.currentStatus;
-        expect(status.state, DeviceSosState.inactive);
-        expect(status.packetId, 0);
-        expect(status.countdownStartedAt, isNull);
-        expect(status.expectedActivationAt, isNull);
-        expect(status.decoderNote, contains('SAME_NODE_REOPEN_SUPPRESSED'));
+        expect(status.state, DeviceSosState.preConfirm);
+        expect(status.packetId, 2);
+        expect(status.countdownStartedAt, isNotNull);
+        expect(status.expectedActivationAt, isNotNull);
       },
     );
 
+    test('terminal cancel rejects the exact consumed packet replay', () {
+      final controller = DeviceSosController(
+        countdownDuration: const Duration(milliseconds: 40),
+        countdownTick: const Duration(milliseconds: 5),
+      );
+      addTearDown(controller.dispose);
+
+      final consumedPacket = _activePacket();
+      controller.handleIncomingSosPacket(
+        consumedPacket,
+        source: DeviceSosTransitionSource.device,
+      );
+      controller.handleIncomingSosEventPacket(
+        _deviceClearPacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+      final terminalStatus = controller.currentStatus;
+
+      controller.handleIncomingSosPacket(
+        consumedPacket,
+        source: DeviceSosTransitionSource.device,
+      );
+
+      final status = controller.currentStatus;
+      expect(status.state, DeviceSosState.inactive);
+      expect(status.packetId, 0);
+      expect(status.countdownStartedAt, isNull);
+      expect(status.expectedActivationAt, isNull);
+      expect(status.updatedAt, terminalStatus.updatedAt);
+      expect(status.lastPacketSignature, terminalStatus.lastPacketSignature);
+    });
+
     test(
-      'active SOS + incoming device E1 02 packet keeps terminal cancelled and does not reopen preConfirm',
+      'fresh packet fingerprint reopens immediately after post-fire cancel',
       () {
         final controller = DeviceSosController(
           countdownDuration: const Duration(milliseconds: 40),
@@ -851,15 +879,10 @@ void main() {
         );
 
         final status = controller.currentStatus;
-        expect(status.state, DeviceSosState.inactive);
+        expect(status.state, DeviceSosState.preConfirm);
         expect(status.packetId, 0);
-        expect(status.countdownStartedAt, isNull);
-        expect(status.expectedActivationAt, isNull);
-        expect(status.countdownRemainingSeconds, isNull);
-        expect(
-          status.decoderNote,
-          contains('REOPEN_SUPPRESSED_AFTER_TERMINAL'),
-        );
+        expect(status.countdownStartedAt, isNotNull);
+        expect(status.expectedActivationAt, isNotNull);
       },
     );
 
@@ -1241,8 +1264,8 @@ void main() {
         addTearDown(controller.dispose);
         final availability = <bool>[];
         final sub = controller.watchControlCommandPathAvailability().listen(
-              availability.add,
-            );
+          availability.add,
+        );
         addTearDown(sub.cancel);
         await Future<void>.delayed(Duration.zero);
 
@@ -1310,44 +1333,46 @@ void main() {
       expect(controller.currentStatus.state, isNot(DeviceSosState.inactive));
     });
 
-    test('0xE3 after a valid fix stays acknowledged and keeps hasLocation',
-        () async {
-      final controller = DeviceSosController(
-        countdownDuration: const Duration(milliseconds: 5),
-        countdownTick: const Duration(milliseconds: 2),
-        appActivationObservationTimeout: const Duration(milliseconds: 20),
-      );
-      addTearDown(controller.dispose);
-      await controller.attach(commandWriter: (_) async {});
-      final sosFlags = EixamSosPacket.packFlags(sosType: 2);
-      controller.handleIncomingSosPacket(
-        EixamSosPacket.tryParse(<int>[
-          0x34,
-          0x12,
-          0x00,
-          0x00,
-          ...EixamPositionData.encode(latitude: 42.5, longitude: 1.5),
-          sosFlags & 0xFF,
-          (sosFlags >> 8) & 0xFF,
-        ])!,
-        source: DeviceSosTransitionSource.device,
-      );
-      await Future<void>.delayed(const Duration(milliseconds: 15));
-      expect(controller.currentStatus.hasLocation, isTrue);
-      controller.handleIncomingSosEventPacket(
-        EixamSosEventPacket.tryParse(<int>[
-          0xE3,
-          0x00,
-          0x34,
-          0x12,
-          0x00,
-          0x00,
-        ])!,
-        source: DeviceSosTransitionSource.device,
-      );
-      expect(controller.currentStatus.state, DeviceSosState.acknowledged);
-      expect(controller.currentStatus.hasLocation, isTrue);
-    });
+    test(
+      '0xE3 after a valid fix stays acknowledged and keeps hasLocation',
+      () async {
+        final controller = DeviceSosController(
+          countdownDuration: const Duration(milliseconds: 5),
+          countdownTick: const Duration(milliseconds: 2),
+          appActivationObservationTimeout: const Duration(milliseconds: 20),
+        );
+        addTearDown(controller.dispose);
+        await controller.attach(commandWriter: (_) async {});
+        final sosFlags = EixamSosPacket.packFlags(sosType: 2);
+        controller.handleIncomingSosPacket(
+          EixamSosPacket.tryParse(<int>[
+            0x34,
+            0x12,
+            0x00,
+            0x00,
+            ...EixamPositionData.encode(latitude: 42.5, longitude: 1.5),
+            sosFlags & 0xFF,
+            (sosFlags >> 8) & 0xFF,
+          ])!,
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 15));
+        expect(controller.currentStatus.hasLocation, isTrue);
+        controller.handleIncomingSosEventPacket(
+          EixamSosEventPacket.tryParse(<int>[
+            0xE3,
+            0x00,
+            0x34,
+            0x12,
+            0x00,
+            0x00,
+          ])!,
+          source: DeviceSosTransitionSource.device,
+        );
+        expect(controller.currentStatus.state, DeviceSosState.acknowledged);
+        expect(controller.currentStatus.hasLocation, isTrue);
+      },
+    );
   });
 }
 

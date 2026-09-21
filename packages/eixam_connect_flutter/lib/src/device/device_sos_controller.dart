@@ -43,6 +43,8 @@ class DeviceSosController {
   _PendingTerminalDeviceCommand? _pendingTerminalCommand;
   String? _lastPromotedPreConfirmCycleKey;
   DateTime? _lastPromotedPreConfirmAt;
+  final Set<String> _openCyclePacketSignatures = <String>{};
+  final Set<String> _terminalCyclePacketSignatures = <String>{};
 
   static const Duration _terminalCycleSuppressionWindow = Duration(seconds: 5);
   static const Duration _promotedPreConfirmSuppressionWindow = Duration(
@@ -804,10 +806,13 @@ class DeviceSosController {
     final previousStatus = _status;
     final previous = previousStatus.state;
     final now = _now();
+    final packetSignature =
+        '${packet.nodeId}:${packet.packetId}:${packet.rawHex}';
     final resolution = _resolveMeshPacketState(
       packet,
       currentStatus: previousStatus,
       source: source,
+      packetSignature: packetSignature,
     );
     final nextState = resolution.resolvedState;
     final event =
@@ -855,6 +860,14 @@ class DeviceSosController {
       'reason=${resolution.classificationReason}',
     );
 
+    if (resolution.reason == 'DEVICE_SOS_TERMINAL_PACKET_REPLAY_SUPPRESSED') {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_DEVICE_TERMINAL_PACKET_REPLAY_REJECTED '
+        'nodeId=${_formatNodeId(packet.nodeId)} packetId=${packet.packetId}',
+      );
+      return;
+    }
+
     if (_shouldSuppressForPendingTerminalCommand(
       packet.nodeId,
       source: source,
@@ -876,6 +889,7 @@ class DeviceSosController {
     }
 
     if (nextState == DeviceSosState.preConfirm) {
+      _recordAcceptedOpenPacketSignature(packetSignature);
       _enterPreConfirm(
         source: source,
         event: event,
@@ -889,8 +903,7 @@ class DeviceSosController {
         lastPacketHex: packet.rawHex,
         lastPacketLength: packet.rawBytes.length,
         lastPacketAt: now,
-        lastPacketSignature:
-            '${packet.nodeId}:${packet.packetId}:${packet.rawHex}',
+        lastPacketSignature: packetSignature,
         nodeId: packet.nodeId,
         flags: packet.flagsWord,
         sosType: packet.sosType,
@@ -917,6 +930,10 @@ class DeviceSosController {
     if (nextState == DeviceSosState.active) {
       _awaitingObservedAppActivation = false;
     }
+    if (nextState == DeviceSosState.active ||
+        nextState == DeviceSosState.acknowledged) {
+      _recordAcceptedOpenPacketSignature(packetSignature);
+    }
     final preserveCurrentPacketMetadata =
         resolution.downgradeSuppressed && nextState == _status.state;
     _emit(
@@ -935,8 +952,7 @@ class DeviceSosController {
         lastPacketHex: packet.rawHex,
         lastPacketLength: packet.rawBytes.length,
         lastPacketAt: now,
-        lastPacketSignature:
-            '${packet.nodeId}:${packet.packetId}:${packet.rawHex}',
+        lastPacketSignature: packetSignature,
         nodeId: preserveCurrentPacketMetadata ? _status.nodeId : packet.nodeId,
         flags: preserveCurrentPacketMetadata ? _status.flags : packet.flagsWord,
         sosType: preserveCurrentPacketMetadata
@@ -1101,6 +1117,7 @@ class DeviceSosController {
     EixamSosPacket packet, {
     required DeviceSosStatus currentStatus,
     required DeviceSosTransitionSource source,
+    required String packetSignature,
   }) {
     final protocolState = _resolveProtocolSosPacketState(packet);
     final cycleKey = _deriveDeviceSosCycleKey(
@@ -1133,17 +1150,10 @@ class DeviceSosController {
       );
     }
 
-    final recentlyClosedSameCycle =
-        sameCycle &&
+    final replaysConsumedTerminalPacket =
         _isClosedState(currentStatus.state) &&
-        _now().difference(currentStatus.updatedAt) <=
-            _terminalCycleSuppressionWindow;
-    final recentlyClosedSameOrigin =
-        sameOriginNode &&
-        _isClosedState(currentStatus.state) &&
-        _now().difference(currentStatus.updatedAt) <=
-            _terminalCycleSuppressionWindow;
-    if (recentlyClosedSameCycle || recentlyClosedSameOrigin) {
+        _terminalCyclePacketSignatures.contains(packetSignature);
+    if (replaysConsumedTerminalPacket) {
       final closedDecision = currentStatus.state == DeviceSosState.inactive
           ? 'terminal_cancelled'
           : 'terminal_resolved';
@@ -1156,15 +1166,9 @@ class DeviceSosController {
         cycleKey: cycleKey,
         downgradeSuppressed: true,
         classificationDecision: closedDecision,
-        classificationReason: recentlyClosedSameCycle
-            ? closedReason
-            : '${closedReason}_same_node',
-        reason: recentlyClosedSameCycle
-            ? 'DEVICE_SOS_SAME_CYCLE_REOPEN_SUPPRESSED_AFTER_TERMINAL'
-            : 'DEVICE_SOS_SAME_NODE_REOPEN_SUPPRESSED_AFTER_TERMINAL',
-        decoderNote: recentlyClosedSameCycle
-            ? 'DEVICE_SOS_SAME_CYCLE_REOPEN_SUPPRESSED_AFTER_TERMINAL'
-            : 'DEVICE_SOS_SAME_NODE_REOPEN_SUPPRESSED_AFTER_TERMINAL',
+        classificationReason: '${closedReason}_packet_replay',
+        reason: 'DEVICE_SOS_TERMINAL_PACKET_REPLAY_SUPPRESSED',
+        decoderNote: 'DEVICE_SOS_TERMINAL_PACKET_REPLAY_SUPPRESSED',
       );
     }
 
@@ -1816,8 +1820,28 @@ class DeviceSosController {
   }
 
   void _emit(DeviceSosStatus next) {
+    final previousState = _status.state;
+    final closesOpenCycle =
+        _isPacketTrackingOpenState(previousState) && _isClosedState(next.state);
+    if (closesOpenCycle) {
+      _terminalCyclePacketSignatures
+        ..clear()
+        ..addAll(_openCyclePacketSignatures);
+      _openCyclePacketSignatures.clear();
+    }
     _status = next;
     _controller.add(next);
+  }
+
+  void _recordAcceptedOpenPacketSignature(String signature) {
+    if (_isClosedState(_status.state)) {
+      _openCyclePacketSignatures.clear();
+    }
+    _openCyclePacketSignatures.add(signature);
+  }
+
+  bool _isPacketTrackingOpenState(DeviceSosState state) {
+    return state == DeviceSosState.preConfirm || _isOpenSosState(state);
   }
 
   void _emitCommandPathAvailabilityIfChanged(bool previousAvailability) {

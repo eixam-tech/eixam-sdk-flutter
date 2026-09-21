@@ -103,6 +103,30 @@ void main() {
   });
 
   group('SOS-01..SOS-16 SDK lifecycle matrix', () {
+    test('terminal receive sequence rejects equal and older evidence', () {
+      expect(
+        isStrictlyNewerSosReceiveSequence(
+          incomingSequence: 41,
+          terminalBoundarySequence: 42,
+        ),
+        isFalse,
+      );
+      expect(
+        isStrictlyNewerSosReceiveSequence(
+          incomingSequence: 42,
+          terminalBoundarySequence: 42,
+        ),
+        isFalse,
+      );
+      expect(
+        isStrictlyNewerSosReceiveSequence(
+          incomingSequence: 43,
+          terminalBoundarySequence: 42,
+        ),
+        isTrue,
+      );
+    });
+
     test(
       'SOS-01 app-origin resolve during countdown resolves and clears',
       () async {
@@ -720,105 +744,135 @@ void main() {
       },
     );
 
-    test(
-      'post-terminal physical rising edge reuses raw identity without a new inactive packet',
-      () async {
-        final terminalAt = DateTime.now().toUtc();
-        var deviceNow = terminalAt.add(const Duration(seconds: 11));
-        final secureStore = InMemorySecureKeyValueStore();
-        await _seedTerminalDeviceLifecycle(
-          secureStore: secureStore,
-          terminalAt: terminalAt,
-          deviceCycleKey: 'sos:4660:0',
-          generation: 6,
-        );
-        final harness = _SdkSosHarness(
-          connectedBle: true,
-          sosLifecycleSecureStore: secureStore,
-          deviceClock: () => deviceNow,
-        );
-        try {
-          await harness.sdk.initialize(
-            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+    for (final retryDelay in <Duration>[
+      const Duration(milliseconds: 500),
+      const Duration(seconds: 11),
+    ]) {
+      test(
+        'physical retry reuses raw identity after ${retryDelay.inMilliseconds}ms without a cooldown',
+        () async {
+          final terminalAt = DateTime.now().toUtc();
+          var deviceNow = terminalAt.add(const Duration(seconds: 1));
+          final secureStore = InMemorySecureKeyValueStore();
+          await _seedTerminalDeviceLifecycle(
+            secureStore: secureStore,
+            terminalAt: terminalAt,
+            deviceCycleKey: 'sos:4660:1',
+            generation: 5,
           );
-          await harness.setSession();
-          harness.deviceRepository.emitStatus(
-            buildDeviceStatus(
-              deviceId: 'ble-1',
-              nodeId: 0x1234,
-              canonicalHardwareId: 'CF:82:00:00:00:01',
-            ),
+          final harness = _SdkSosHarness(
+            connectedBle: true,
+            sosLifecycleSecureStore: secureStore,
+            deviceClock: () => deviceNow,
           );
-          await pumpEventQueue(times: 2);
+          try {
+            await harness.sdk.initialize(
+              const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+            );
+            await harness.setSession();
+            harness.deviceRepository.emitStatus(
+              buildDeviceStatus(
+                deviceId: 'ble-1',
+                nodeId: 0x1234,
+                canonicalHardwareId: 'CF:82:00:00:00:01',
+              ),
+            );
+            await pumpEventQueue(times: 2);
 
-          expect(
-            harness.deviceSosController.currentStatus.state,
-            DeviceSosState.inactive,
-          );
-          expect(
-            _hasDebugMessage('SOS_DEVICE_INACTIVE_BOUNDARY_RECORDED'),
-            isFalse,
-          );
+            final generationPacket = _deviceOriginActivePacketForCycle(
+              packetId: 0,
+            );
+            harness.deviceSosController.handleIncomingSosPacket(
+              generationPacket,
+              source: DeviceSosTransitionSource.device,
+            );
+            await pumpEventQueue(times: 6);
+            expect((await harness.sdk.getSosLifecycle()).generation, 6);
 
-          // Firmware has no per-activation timestamp and resets packet/retry
-          // counters only on ACTIVE. Its first fresh countdown observation can
-          // therefore carry generation 6's packet id without a preceding E1.
-          harness.deviceSosController.handleIncomingSosPacket(
-            _deviceOriginActivePacketForCycle(packetId: 0),
-            source: DeviceSosTransitionSource.device,
-          );
-          await pumpEventQueue(times: 6);
+            deviceNow = deviceNow.add(const Duration(seconds: 21));
+            harness.deviceSosController.handleIncomingSosPacket(
+              generationPacket,
+              source: DeviceSosTransitionSource.device,
+            );
+            await pumpEventQueue(times: 6);
+            expect(
+              (await harness.sdk.getSosLifecycle()).stage,
+              SosLifecycleStage.active,
+            );
 
-          final arming = await harness.sdk.getSosLifecycle();
-          expect(arming.generation, 7);
-          expect(arming.stage, SosLifecycleStage.arming);
-          expect(arming.origin, SosLifecycleOrigin.connectedLocalDevice);
-          expect((await harness.sdk.getPreSosStatus())?.packetId, 0);
-          expect(
-            _hasDebugMessage('SOS_TERMINAL_FENCE_FRESH_PHYSICAL_EDGE_ACCEPTED'),
-            isTrue,
-          );
-          expect(
-            _hasDebugMessage('admission=direct_device_rising_edge'),
-            isTrue,
-          );
-          expect(_hasDebugMessage('SOS_NEW_GENERATION_ACCEPTED'), isTrue);
+            deviceNow = deviceNow.add(const Duration(seconds: 1));
+            harness.deviceSosController.handleIncomingSosEventPacket(
+              _devicePostFireCancelPacket(),
+              source: DeviceSosTransitionSource.device,
+            );
+            await pumpEventQueue(times: 6);
+            final terminal = await harness.sdk.getSosLifecycle();
+            expect(terminal.generation, 6);
+            expect(terminal.stage, SosLifecycleStage.cancelled);
 
-          harness.deviceSosController.handleIncomingSosPacket(
-            _deviceOriginActivePacketForCycle(packetId: 0),
-            source: DeviceSosTransitionSource.device,
-          );
-          await pumpEventQueue(times: 3);
-          expect((await harness.sdk.getSosLifecycle()).generation, 7);
-          expect(
-            (await harness.sdk.getSosLifecycle()).stage,
-            SosLifecycleStage.arming,
-          );
+            // An exact notification from N remains a replay even with no delay.
+            harness.deviceSosController.handleIncomingSosPacket(
+              generationPacket,
+              source: DeviceSosTransitionSource.device,
+            );
+            await pumpEventQueue(times: 4);
+            expect((await harness.sdk.getSosLifecycle()).generation, 6);
+            expect(
+              (await harness.sdk.getSosLifecycle()).stage,
+              SosLifecycleStage.cancelled,
+            );
 
-          deviceNow = deviceNow.add(const Duration(seconds: 21));
-          harness.deviceSosController.handleIncomingSosPacket(
-            _deviceOriginActivePacketForCycle(packetId: 0),
-            source: DeviceSosTransitionSource.device,
-          );
-          await pumpEventQueue(times: 6);
-          final active = await harness.sdk.getSosLifecycle();
-          expect(active.generation, 7);
-          expect(active.stage, SosLifecycleStage.active);
+            deviceNow = deviceNow.add(retryDelay);
+            final retryPacket = _deviceOriginActivePacketForCycle(
+              packetId: 0,
+              batteryLevel: 1,
+            );
+            harness.deviceSosController.handleIncomingSosPacket(
+              retryPacket,
+              source: DeviceSosTransitionSource.device,
+            );
+            await pumpEventQueue(times: 6);
 
-          deviceNow = deviceNow.add(const Duration(seconds: 1));
-          harness.deviceSosController.handleIncomingSosEventPacket(
-            _devicePostFireCancelPacket(),
-            source: DeviceSosTransitionSource.device,
-          );
-          await pumpEventQueue(times: 6);
-          final cancelled = await harness.sdk.getSosLifecycle();
-          expect(cancelled.generation, 7);
-          expect(cancelled.stage, SosLifecycleStage.cancelled);
-        } finally {
-          await harness.dispose();
-        }
-      },
-    );
+            final arming = await harness.sdk.getSosLifecycle();
+            expect(arming.generation, 7);
+            expect(arming.stage, SosLifecycleStage.arming);
+            expect(arming.origin, SosLifecycleOrigin.connectedLocalDevice);
+            expect((await harness.sdk.getPreSosStatus())?.packetId, 0);
+            expect(
+              _hasDebugMessage(
+                'SOS_TERMINAL_FENCE_FRESH_PHYSICAL_EDGE_ACCEPTED',
+              ),
+              isTrue,
+            );
+            expect(
+              BleDebugRegistry.instance.currentState.events.any(
+                (event) =>
+                    event.message.contains(
+                      'admission=direct_device_rising_edge',
+                    ) ||
+                    event.message.contains('admission=inactive_boundary'),
+              ),
+              isTrue,
+            );
+            expect(_hasDebugMessage('SOS_NEW_GENERATION_ACCEPTED'), isTrue);
+
+            // The same N+1 notification remains in generation 7.
+            harness.deviceSosController.handleIncomingSosPacket(
+              retryPacket,
+              source: DeviceSosTransitionSource.device,
+            );
+            await pumpEventQueue(times: 3);
+            expect((await harness.sdk.getSosLifecycle()).generation, 7);
+            expect(
+              (await harness.sdk.getSosLifecycle()).stage,
+              SosLifecycleStage.arming,
+            );
+          } finally {
+            await harness.dispose();
+          }
+        },
+      );
+    }
 
     test(
       'relay packet cannot reuse a terminal own-device cycle identity',
@@ -906,7 +960,7 @@ void main() {
     );
 
     test(
-      'restored terminal rejects a new cycle observed before its boundary',
+      'wall-clock skew does not block a monotonic new physical cycle',
       () async {
         final terminalAt = DateTime.now().toUtc();
         final secureStore = InMemorySecureKeyValueStore();
@@ -941,12 +995,9 @@ void main() {
           await pumpEventQueue(times: 4);
 
           final lifecycle = await harness.sdk.getSosLifecycle();
-          expect(lifecycle.generation, 1);
-          expect(lifecycle.stage, SosLifecycleStage.cancelled);
-          expect(
-            _hasDebugMessage('SOS_REPLAY_REJECTED reason=stale_packet'),
-            isTrue,
-          );
+          expect(lifecycle.generation, 2);
+          expect(lifecycle.stage, SosLifecycleStage.arming);
+          expect(_hasDebugMessage('wallClockAfterTerminal=false'), isTrue);
         } finally {
           await harness.dispose();
         }
@@ -1158,9 +1209,9 @@ void main() {
             SosLifecycleStage.resolved,
           );
 
-          deviceNow = deviceNow.add(const Duration(seconds: 6));
+          deviceNow = deviceNow.add(const Duration(milliseconds: 500));
           harness.deviceSosController.handleIncomingSosPacket(
-            _deviceOriginCountdownPacket(),
+            _deviceOriginCountdownPacket(batteryLevel: 1),
             source: DeviceSosTransitionSource.device,
           );
           await pumpEventQueue(times: 4);
@@ -1247,9 +1298,9 @@ void main() {
             );
             expect(_hasDebugMessage('ordering=before_terminal'), isTrue);
 
-            deviceNow = deviceNow.add(const Duration(seconds: 6));
+            deviceNow = deviceNow.add(const Duration(milliseconds: 500));
             harness.deviceSosController.handleIncomingSosPacket(
-              _deviceOriginCountdownPacket(),
+              _deviceOriginCountdownPacket(batteryLevel: 1),
               source: DeviceSosTransitionSource.device,
             );
             await pumpEventQueue(times: 5);
@@ -1361,9 +1412,7 @@ void main() {
             DeviceSosState.inactive,
           );
           expect(
-            _hasDebugMessage(
-              'DEVICE_SOS_SAME_CYCLE_REOPEN_SUPPRESSED_AFTER_TERMINAL',
-            ),
+            _hasDebugMessage('SOS_DEVICE_TERMINAL_PACKET_REPLAY_REJECTED'),
             isTrue,
           );
 
@@ -1433,9 +1482,9 @@ void main() {
           );
           await pumpEventQueue(times: 8);
 
-          deviceNow = deviceNow.add(const Duration(seconds: 6));
+          deviceNow = deviceNow.add(const Duration(milliseconds: 500));
           harness.deviceSosController.handleIncomingSosPacket(
-            _deviceOriginCountdownPacket(),
+            _deviceOriginCountdownPacket(batteryLevel: 1),
             source: DeviceSosTransitionSource.device,
           );
           await pumpEventQueue(times: 5);
@@ -2155,7 +2204,7 @@ void main() {
     );
 
     test(
-      'cancelled generation cannot affect an immediately-started generation',
+      'app-originated retry starts immediately without a terminal cooldown',
       () async {
         final harness = _SdkSosHarness();
         try {
@@ -2165,6 +2214,7 @@ void main() {
             first.outcome,
             SosCancellationOutcome.pendingActivationCancelled,
           );
+          final firstGeneration = first.lifecycle.generation;
 
           await harness.sdk.startPreSos(
             countdown: const Duration(milliseconds: 60),
@@ -2175,6 +2225,10 @@ void main() {
           expect(
             (await harness.sdk.getSosLifecycle()).stage,
             SosLifecycleStage.active,
+          );
+          expect(
+            (await harness.sdk.getSosLifecycle()).generation,
+            firstGeneration + 1,
           );
         } finally {
           await harness.dispose();
@@ -4338,7 +4392,7 @@ void main() {
                   'reason=authoritative_terminal_same_cycle',
                 ) ||
                 event.message.contains(
-                  'DEVICE_SOS_SAME_CYCLE_REOPEN_SUPPRESSED_AFTER_TERMINAL',
+                  'SOS_DEVICE_TERMINAL_PACKET_REPLAY_REJECTED',
                 ),
           ),
           isTrue,
@@ -6501,7 +6555,10 @@ Future<void> _seedTerminalDeviceLifecycle({
   await controller.dispose();
 }
 
-EixamSosPacket _deviceOriginCountdownPacket({int packetId = 0}) {
+EixamSosPacket _deviceOriginCountdownPacket({
+  int packetId = 0,
+  int batteryLevel = 0,
+}) {
   return EixamSosPacket.tryParse(<int>[
     0x34,
     0x12,
@@ -6514,7 +6571,7 @@ EixamSosPacket _deviceOriginCountdownPacket({int packetId = 0}) {
     0x00,
     0x00,
     packetId & 0x0F,
-    0x50,
+    0x50 | (batteryLevel & 0x03),
   ])!;
 }
 
@@ -6542,6 +6599,7 @@ EixamSosPacket _deviceOriginActivePacketForCycle({
   required int packetId,
   int nodeId = 0x1234,
   int relayCount = 0,
+  int batteryLevel = 0,
 }) {
   return EixamSosPacket.tryParse(<int>[
     nodeId & 0xFF,
@@ -6555,7 +6613,7 @@ EixamSosPacket _deviceOriginActivePacketForCycle({
     0x00,
     0x00,
     packetId & 0x0F,
-    0x80 | ((relayCount & 0x03) << 2),
+    0x80 | ((relayCount & 0x03) << 2) | (batteryLevel & 0x03),
   ])!;
 }
 
