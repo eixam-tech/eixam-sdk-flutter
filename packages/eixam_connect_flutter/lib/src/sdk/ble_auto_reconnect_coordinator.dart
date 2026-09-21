@@ -245,9 +245,41 @@ class BleAutoReconnectCoordinator {
 
   /// Gives an explicit candidate inspection priority over every background
   /// preferred-device reconnect trigger without altering persisted preference.
-  Future<void> suspendForCandidateInspection({required String reason}) async {
+  Future<T> runWithCandidateInspectionPriority<T>({
+    required String reason,
+    required String selectedMarker,
+    required Future<T> Function() operation,
+  }) async {
+    safeSdkDebugPrint(
+      'MIGRATION_INSPECTION_PRIORITY_REQUESTED '
+      'selectedMarker=$selectedMarker',
+    );
+    await suspendForCandidateInspection(
+      reason: reason,
+      selectedMarker: selectedMarker,
+    );
+    try {
+      return await operation();
+    } finally {
+      resumeAfterCandidateInspection(
+        reason: '${reason}_complete',
+        selectedMarker: selectedMarker,
+      );
+    }
+  }
+
+  Future<void> suspendForCandidateInspection({
+    required String reason,
+    String selectedMarker = 'unknown',
+  }) async {
     _candidateInspectionSuppressed = true;
-    _cancelPreferredReconnectCampaign(reason: 'candidate_inspection');
+    safeSdkDebugPrint(
+      'MIGRATION_INSPECTION_PRIORITY_ACQUIRED '
+      'selectedMarker=$selectedMarker',
+    );
+    _cancelPreferredReconnectCampaign(
+      reason: 'explicit_migration_inspection_owner',
+    );
     _retryTimer?.cancel();
     _retryTimer = null;
     BleDebugRegistry.instance.recordEvent(
@@ -263,12 +295,23 @@ class BleAutoReconnectCoordinator {
       }
     }
     await _drainActiveConnectionOperation();
+    safeSdkDebugPrint(
+      'MIGRATION_INSPECTION_RECONNECT_DRAINED '
+      'selectedMarker=$selectedMarker',
+    );
   }
 
-  void resumeAfterCandidateInspection({required String reason}) {
+  void resumeAfterCandidateInspection({
+    required String reason,
+    String selectedMarker = 'unknown',
+  }) {
     _candidateInspectionSuppressed = false;
     BleDebugRegistry.instance.recordEvent(
       'BLE_AUTO_RECONNECT_RESUMED_AFTER_CANDIDATE_INSPECTION reason=$reason',
+    );
+    safeSdkDebugPrint(
+      'MIGRATION_INSPECTION_PRIORITY_RELEASED '
+      'selectedMarker=$selectedMarker',
     );
   }
 
@@ -567,10 +610,10 @@ class BleAutoReconnectCoordinator {
       _recordCandidateInspectionReconnectSuppressed(trigger: trigger);
       _recordNoProviderCall(
         attemptId: attemptId,
-        reason: 'candidate_inspection_in_progress',
+        reason: 'explicit_migration_inspection_owner',
       );
       return const PreferredDeviceReconnectResult.failed(
-        reason: 'candidate_inspection_in_progress',
+        reason: 'explicit_migration_inspection_owner',
       );
     }
     if (_isNativeProtectionOwningBle?.call() == true) {
@@ -770,10 +813,10 @@ class BleAutoReconnectCoordinator {
       _recordCandidateInspectionReconnectSuppressed(trigger: trigger);
       _recordNoProviderCall(
         attemptId: attemptId,
-        reason: 'candidate_inspection_in_progress',
+        reason: 'explicit_migration_inspection_owner',
       );
       return const PreferredDeviceReconnectResult.failed(
-        reason: 'candidate_inspection_in_progress',
+        reason: 'explicit_migration_inspection_owner',
       );
     }
     if (_manualDisconnectRequested) {
@@ -1211,7 +1254,8 @@ class BleAutoReconnectCoordinator {
       'manual_disconnect' || 'manual_connect_requested' => 'manual_disconnect',
       'dispose' => 'disposed',
       'dfu_transfer' => 'dfu_transfer_in_progress',
-      'candidate_inspection' => 'candidate_inspection_in_progress',
+      'explicit_migration_inspection_owner' =>
+        'explicit_migration_inspection_owner',
       'provisioning_reboot' => 'provisioning_reconnect_owned',
       'app_not_foreground' => 'app_not_foreground',
       _ => 'unknown',
@@ -1236,7 +1280,7 @@ class BleAutoReconnectCoordinator {
       'trigger=$trigger',
     );
     _traceReconnect(
-      'sdk_campaign_cancelled reason=candidate_inspection_in_progress '
+      'sdk_campaign_cancelled reason=explicit_migration_inspection_owner '
       'source=$trigger',
     );
   }

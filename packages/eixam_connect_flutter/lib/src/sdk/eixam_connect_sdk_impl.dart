@@ -2444,8 +2444,9 @@ class EixamConnectSdkImpl
     required String deviceId,
     String? advertisedName,
   }) async {
-    final identityMarker =
-        SecurityDiagnosticsRedactor.stableIdentifierMarker(deviceId);
+    final identityMarker = SecurityDiagnosticsRedactor.stableIdentifierMarker(
+      deviceId,
+    );
     safeSdkDebugPrint(
       'MIGRATION_INSPECTION_SELECTED brand=meshtastic '
       'selectedMarker=$identityMarker '
@@ -2474,38 +2475,41 @@ class EixamConnectSdkImpl
     }
 
     _migrationInspectionInProgress = true;
-    var ownershipReleaseAttempted = false;
     try {
-      await _bleAutoReconnectCoordinator.suspendForCandidateInspection(
-        reason: 'explicit_migration_candidate_inspection',
-      );
-      final repository = deviceRepository;
-      if (repository is InMemoryDeviceRepository) {
-        ownershipReleaseAttempted = true;
-        _lastDeviceStatus = await repository.releaseBleOwnershipToProtectionMode(
-          reason: 'explicit_migration_candidate_inspection',
-        );
-      }
-      return await coordinator.inspect(
-        deviceId: deviceId,
-        advertisedName: advertisedName,
-      );
-    } finally {
-      try {
-        final repository = deviceRepository;
-        if (ownershipReleaseAttempted &&
-            repository is InMemoryDeviceRepository) {
-          _lastDeviceStatus =
-              await repository.reclaimBleOwnershipFromProtectionMode(
-            reason: 'explicit_migration_candidate_inspection_complete',
+      return await _bleAutoReconnectCoordinator
+          .runWithCandidateInspectionPriority<DeviceMigrationCandidate>(
+            reason: 'explicit_migration_candidate_inspection',
+            selectedMarker: identityMarker,
+            operation: () async {
+              var ownershipReleaseAttempted = false;
+              try {
+                final repository = deviceRepository;
+                if (repository is InMemoryDeviceRepository) {
+                  ownershipReleaseAttempted = true;
+                  _lastDeviceStatus = await repository
+                      .releaseBleOwnershipToProtectionMode(
+                        reason: 'explicit_migration_candidate_inspection',
+                      );
+                }
+                return await coordinator.inspect(
+                  deviceId: deviceId,
+                  advertisedName: advertisedName,
+                );
+              } finally {
+                final repository = deviceRepository;
+                if (ownershipReleaseAttempted &&
+                    repository is InMemoryDeviceRepository) {
+                  _lastDeviceStatus = await repository
+                      .reclaimBleOwnershipFromProtectionMode(
+                        reason:
+                            'explicit_migration_candidate_inspection_complete',
+                      );
+                }
+              }
+            },
           );
-        }
-      } finally {
-        _bleAutoReconnectCoordinator.resumeAfterCandidateInspection(
-          reason: 'explicit_migration_candidate_inspection_complete',
-        );
-        _migrationInspectionInProgress = false;
-      }
+    } finally {
+      _migrationInspectionInProgress = false;
     }
   }
 
