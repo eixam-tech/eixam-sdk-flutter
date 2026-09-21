@@ -650,8 +650,6 @@ class EixamConnectSdkImpl
   _recentExternalRelaySosContexts = <String, _RecentExternalRelaySosContext>{};
   final Map<String, _PendingExternalRelayCancel> _pendingExternalRelayCancels =
       <String, _PendingExternalRelayCancel>{};
-  final Map<String, _TerminalSosSuppression> _terminalSosSuppressionByKey =
-      <String, _TerminalSosSuppression>{};
   final Map<String, _PreSosTerminalCancelContext>
   _preSosTerminalCancelContextByKey = <String, _PreSosTerminalCancelContext>{};
   final Map<String, _SosClosureIntent>
@@ -728,7 +726,6 @@ class EixamConnectSdkImpl
     seconds: 15,
   );
   static const Duration _preSosTickInterval = Duration(milliseconds: 50);
-  static const Duration _terminalSosSuppressionWindow = Duration(seconds: 10);
   static const Duration _preSosTerminalCancelGraceWindow = Duration(seconds: 5);
   static const Duration _preSosTerminalCancelContextTtl = Duration(seconds: 30);
   static const Duration _osSosWidgetActionDedupeWindow = Duration(minutes: 10);
@@ -18406,15 +18403,6 @@ class EixamConnectSdkImpl
         EixamSosPacket.tryParse(bytes)?.nodeId ??
         EixamSosEventPacket.tryParse(bytes)?.nodeId;
     final platformSosEventPacket = EixamSosEventPacket.tryParse(bytes);
-    if (isNativeApprovedOwnLifecycle &&
-        platformSosEventPacket?.opcode !=
-            EixamBleProtocol.sosEventAppCancelAckOpcode &&
-        _shouldSuppressRecentTerminalOwnSosPacket(
-          originatorNodeId: originatorNodeId,
-          rawHex: rawHex,
-        )) {
-      return;
-    }
     final effectiveClassificationKind = isNativeApprovedOwnLifecycle
         ? BleIncomingPayloadKind.ownDeviceSos
         : remoteClassification.kind;
@@ -18438,6 +18426,55 @@ class EixamConnectSdkImpl
       'receiveSequence=${receiveSequence ?? -1} '
       'characteristic=${characteristicUuid ?? "unknown"}',
     );
+    if (isNativeApprovedOwnLifecycle) {
+      final currentLifecycle = _sosLifecycle.current;
+      final terminalLifecycle = _sosLifecycle.activeTerminalWatermark;
+      final physicalIdentityMatch =
+          payloadReason.identityOwn &&
+          (platformConnectedBleNodeId == null ||
+              originatorNodeId == null ||
+              platformConnectedBleNodeId == originatorNodeId);
+      final admission = platformSosEventPacket != null
+          ? const _OwnDeviceLifecycleAdmission(
+              admitted: true,
+              predicate: 'terminal_packet_bypasses_start_fence',
+              reason: 'physical_terminal_boundary',
+            )
+          : _evaluateOwnDeviceLifecycleAdmission(
+              originatorNodeId: originatorNodeId,
+              rawHex: rawHex,
+              observedAt: event.timestamp,
+            );
+      final parsedPacket = EixamSosPacket.tryParse(bytes);
+      final mirrorGeneration = currentLifecycle.generation;
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_OWN_DEVICE_LIFECYCLE_ADMISSION '
+        'lifecycleStage=${currentLifecycle.stage.name} '
+        'terminalState=${terminalLifecycle?.stage.name ?? "none"} '
+        'currentGeneration=${currentLifecycle.generation} '
+        'terminalGeneration=${terminalLifecycle?.generation ?? 0} '
+        'localAppSosActive=${currentLifecycle.isOpen && currentLifecycle.origin == SosLifecycleOrigin.localApp} '
+        'appTagMirrorDispatched=${_deviceMirrorDispatchedGenerations.contains(mirrorGeneration)} '
+        'incomingSource=${payloadReason.source?.name ?? "unknown"} '
+        'producer=native_bridge '
+        'receiveSequence=${receiveSequence ?? -1} '
+        'characteristic=${characteristicUuid ?? "unknown"} '
+        'physicalIdentityMatch=$physicalIdentityMatch '
+        'packetIdentity=${originatorNodeId ?? "none"}:${parsedPacket?.packetId ?? "event"} '
+        'fingerprintSha256=${_sosFingerprintDiagnosticMarker(rawHex)} '
+        'suppressionPredicate=${admission.predicate} '
+        'reason=${admission.reason} admitted=${admission.admitted}',
+      );
+      if (!admission.admitted) {
+        if (matchesRawNotification) {
+          _lastNativeRawPayloadHex = null;
+          _lastNativeRawReceiveCorrelation = null;
+          _lastNativeRawReceiveSequence = null;
+          _lastNativeRawCharacteristicUuid = null;
+        }
+        return;
+      }
+    }
     if (matchesRawNotification) {
       _lastNativeRawPayloadHex = null;
       _lastNativeRawReceiveCorrelation = null;
@@ -18779,9 +18816,6 @@ class EixamConnectSdkImpl
       _clearDeviceRuntimeResidueAfterManualDisconnect();
       return;
     }
-    final now = DateTime.now();
-    _pruneTerminalSosSuppressions(now);
-    final boundDeviceId = _lastDeviceStatus?.deviceId.trim();
     final status = deviceSosController.currentStatus;
     final effectiveNodeId = nodeId ?? status.nodeId ?? _knownLocalDeviceNodeId;
     _rememberTerminalDeviceCycleFence(
@@ -18812,37 +18846,6 @@ class EixamConnectSdkImpl
         );
       }
     }
-    final keys = _terminalSosSuppressionKeys(
-      originatorNodeId: effectiveNodeId,
-      boundDeviceId: boundDeviceId,
-    );
-    if (keys.isEmpty) {
-      _applyDeviceTerminalPublicSosClose(
-        reason: reason,
-        terminalState: terminalState,
-        nodeId: effectiveNodeId,
-        terminalReason: _publicSosTerminalReasonForClose(
-          source: reason,
-          terminalState: terminalState,
-        ),
-      );
-      return;
-    }
-    final suppression = _TerminalSosSuppression(
-      originatorNodeId: effectiveNodeId,
-      boundDeviceId: boundDeviceId?.isEmpty == true ? null : boundDeviceId,
-      expiresAt: now.add(_terminalSosSuppressionWindow),
-      reason: reason,
-    );
-    for (final key in keys) {
-      _terminalSosSuppressionByKey[key] = suppression;
-    }
-    _logSosTrace(
-      'terminal_suppression_applied '
-      'reason=$reason '
-      'originatorNodeId=${effectiveNodeId?.toString() ?? "none"} '
-      'boundDeviceId=${boundDeviceId?.isNotEmpty == true ? boundDeviceId : "none"}',
-    );
     _applyDeviceTerminalPublicSosClose(
       reason: reason,
       terminalState: terminalState,
@@ -19090,13 +19093,18 @@ class EixamConnectSdkImpl
         normalized.contains('device_close_command_without_ack');
   }
 
-  bool _shouldSuppressRecentTerminalOwnSosPacket({
+  _OwnDeviceLifecycleAdmission _evaluateOwnDeviceLifecycleAdmission({
     required int? originatorNodeId,
     required String rawHex,
+    required DateTime observedAt,
   }) {
     if (_manualDisconnectRequested) {
       _clearDeviceRuntimeResidueAfterManualDisconnect();
-      return true;
+      return const _OwnDeviceLifecycleAdmission(
+        admitted: false,
+        predicate: 'manual_disconnect_requested',
+        reason: 'manual_disconnect_transport_boundary',
+      );
     }
     final terminal = _sosLifecycle.activeTerminalWatermark;
     final current = _sosLifecycle.current;
@@ -19112,7 +19120,7 @@ class EixamConnectSdkImpl
           terminal: terminal,
           nodeId: originatorNodeId ?? packet.nodeId,
           packetId: packet.packetId,
-          observedAt: DateTime.now().toUtc(),
+          observedAt: observedAt.toUtc(),
         );
     if (terminalTargetsPacket &&
         _deviceInactiveBoundaryAfterTerminalGeneration != terminal.generation &&
@@ -19126,42 +19134,48 @@ class EixamConnectSdkImpl
         'dart_platform_event_route route=ignored '
         'reason=authoritative_terminal_fence',
       );
-      return true;
+      return const _OwnDeviceLifecycleAdmission(
+        admitted: false,
+        predicate: 'terminal_without_physical_inactive_boundary',
+        reason: 'authoritative_terminal_fence',
+      );
     }
     if (platformPacketStartsFreshCycle) {
-      return false;
+      return const _OwnDeviceLifecycleAdmission(
+        admitted: true,
+        predicate: 'new_cycle_identity_after_terminal',
+        reason: 'fresh_physical_start_after_terminal',
+      );
     }
-    final now = DateTime.now();
-    _pruneTerminalSosSuppressions(now);
-    final boundDeviceId = _lastDeviceStatus?.deviceId.trim();
-    final keys = _terminalSosSuppressionKeys(
-      originatorNodeId: originatorNodeId,
-      boundDeviceId: boundDeviceId,
+    if (terminalTargetsPacket &&
+        _deviceInactiveBoundaryAfterTerminalGeneration == terminal.generation) {
+      return const _OwnDeviceLifecycleAdmission(
+        admitted: true,
+        predicate: 'physical_inactive_boundary_then_new_receive',
+        reason: 'immediate_physical_restart_after_terminal',
+      );
+    }
+    if (current.isOpen &&
+        current.origin == SosLifecycleOrigin.localApp &&
+        _deviceMirrorDispatchedGenerations.contains(current.generation)) {
+      return const _OwnDeviceLifecycleAdmission(
+        admitted: true,
+        predicate: 'open_app_generation',
+        reason: 'app_triggered_tag_evidence',
+      );
+    }
+    if (current.isOpen) {
+      return const _OwnDeviceLifecycleAdmission(
+        admitted: true,
+        predicate: 'open_device_generation',
+        reason: 'same_active_cycle_evidence',
+      );
+    }
+    return const _OwnDeviceLifecycleAdmission(
+      admitted: true,
+      predicate: 'no_terminal_fence',
+      reason: 'fresh_physical_start',
     );
-    for (final key in keys) {
-      final suppression = _terminalSosSuppressionByKey[key];
-      if (suppression == null || now.isAfter(suppression.expiresAt)) {
-        continue;
-      }
-      _logSosTrace(
-        'terminal_suppression_applied '
-        'reason=recent_terminal_action '
-        'originatorNodeId=${originatorNodeId?.toString() ?? "none"} '
-        'boundDeviceId=${boundDeviceId?.isNotEmpty == true ? boundDeviceId : "none"} '
-        'suppressionReason=${suppression.reason}',
-      );
-      _logSosTrace(
-        'dart_platform_event_route route=ignored reason=recent_terminal_action',
-      );
-      BleDebugRegistry.instance.recordEvent(
-        'Protection SOS payload suppressed -> reason=recent_terminal_action '
-        'originatorNodeId=${originatorNodeId?.toString() ?? "-"} '
-        'boundDeviceId=${boundDeviceId?.isNotEmpty == true ? boundDeviceId : "-"} '
-        'payload=$rawHex',
-      );
-      return true;
-    }
-    return false;
   }
 
   bool _terminalFenceAllowsFreshDevicePacket({
@@ -19186,22 +19200,7 @@ class EixamConnectSdkImpl
     return 'sos:${nodeId ?? fence.nodeId}:$packetId' != fence.runtimeCycleKey;
   }
 
-  Iterable<String> _terminalSosSuppressionKeys({
-    required int? originatorNodeId,
-    required String? boundDeviceId,
-  }) sync* {
-    if (originatorNodeId != null) {
-      yield 'node:$originatorNodeId';
-      return;
-    }
-    final deviceId = boundDeviceId?.trim();
-    if (deviceId != null && deviceId.isNotEmpty) {
-      yield 'device:$deviceId';
-    }
-  }
-
   void _clearDeviceRuntimeResidueAfterManualDisconnect() {
-    _terminalSosSuppressionByKey.clear();
     _sosRuntimeNodeIdByHardwareId.clear();
     _knownLocalDeviceNodeId = null;
     _activeDeviceSosCycleKey = null;
@@ -19219,12 +19218,6 @@ class EixamConnectSdkImpl
     _deviceOwnedBackendIncidentId = null;
     _lastDeviceRuntimeCanonicalIncidentSignature = null;
     _lastDeviceRuntimeCanonicalIncident = null;
-  }
-
-  void _pruneTerminalSosSuppressions(DateTime now) {
-    _terminalSosSuppressionByKey.removeWhere(
-      (_, suppression) => now.isAfter(suppression.expiresAt),
-    );
   }
 
   bool _isTerminalSosEventPacket(EixamSosEventPacket packet) {
@@ -21904,20 +21897,6 @@ class _CurrentSosCapabilitySnapshot {
   final SosDeliveryChannel? capability;
 }
 
-class _TerminalSosSuppression {
-  const _TerminalSosSuppression({
-    required this.originatorNodeId,
-    required this.boundDeviceId,
-    required this.expiresAt,
-    required this.reason,
-  });
-
-  final int? originatorNodeId;
-  final String? boundDeviceId;
-  final DateTime expiresAt;
-  final String reason;
-}
-
 class _TerminalDeviceCycleFence {
   const _TerminalDeviceCycleFence({
     required this.generation,
@@ -21936,6 +21915,18 @@ class _TerminalDeviceCycleFence {
   final int? inactiveBoundaryEventSequence;
   final DateTime? inactiveBoundaryObservedAt;
   final Set<String> consumedPacketSignatures;
+}
+
+final class _OwnDeviceLifecycleAdmission {
+  const _OwnDeviceLifecycleAdmission({
+    required this.admitted,
+    required this.predicate,
+    required this.reason,
+  });
+
+  final bool admitted;
+  final String predicate;
+  final String reason;
 }
 
 class _ObservedOwnDeviceInactiveBoundary {

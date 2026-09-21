@@ -54,9 +54,6 @@ internal class ProtectionBleRuntimeOwner(
     private var notificationReceiveSequence: Long = 0
     private var boundDeviceId: String? = null
     private var boundNodeId: Int? = null
-    private val terminalSosSuppressionByKey = mutableMapOf<String, TerminalSosSuppression>()
-    private val closedPreSosCycleUntilMs = mutableMapOf<String, Long>()
-    private val completedPreSosCycleUntilMs = mutableMapOf<String, Long>()
     private val backendHandoff =
         ProtectionSosBackendHandoff(
             context = context,
@@ -80,9 +77,6 @@ internal class ProtectionBleRuntimeOwner(
         }
         targetDeviceId = deviceId
         connectedBleNodeId = null
-        terminalSosSuppressionByKey.clear()
-        closedPreSosCycleUntilMs.clear()
-        completedPreSosCycleUntilMs.clear()
         bindDeviceIdentity(deviceId, backendHardwareId)
         this.reconnectBackoffMs = reconnectBackoffMs.coerceAtLeast(1000L)
         isStopping = false
@@ -120,9 +114,6 @@ internal class ProtectionBleRuntimeOwner(
         pendingSosLifecycleState = ProtectionSosLifecycleState.idle
         runtimeStore.clearPreSosLifecycle()
         connectedBleNodeId = null
-        terminalSosSuppressionByKey.clear()
-        closedPreSosCycleUntilMs.clear()
-        completedPreSosCycleUntilMs.clear()
         clearCharacteristicRefs()
         closeCurrentGattSession(reason)
         runtimeStore.markServiceBleDisconnected()
@@ -184,12 +175,6 @@ internal class ProtectionBleRuntimeOwner(
     ) {
         val route = "androidService"
         runtimeStore.recordCommandRoute(route)
-        if (label == "SOS CANCEL") {
-            applyTerminalSosSuppression(
-                reason = "native_terminal_command_${label.lowercase(Locale.US).replace(' ', '_')}",
-                originatorNodeId = connectedBleNodeId ?: boundNodeId,
-            )
-        }
         if (!runtimeActive) {
             val error = "Protection Mode native BLE owner is not active."
             runtimeStore.recordCommandError(error)
@@ -1474,9 +1459,6 @@ internal class ProtectionBleRuntimeOwner(
                         source = ProtectionBleSosRelaySource.tel,
                         classificationLabel = "ownDeviceSos",
                     )
-                    if (shouldSuppressRecentTerminalOwnSosPacket(payload)) {
-                        return
-                    }
                     logSosTrace(
                         "native_lifecycle_gate classification=ownDeviceSos " +
                             "action=observe_local_lifecycle observeSosLifecycle_called=true",
@@ -1502,9 +1484,6 @@ internal class ProtectionBleRuntimeOwner(
                         bleLinkActive = bleLinkActive,
                         identityProof = classification.identityProof,
                     )
-                    if (shouldSuppressRecentTerminalOwnSosPacket(payload)) {
-                        return
-                    }
                     logSosTrace(
                         "native_lifecycle_gate classification=ownDeviceSos " +
                             "action=observe_local_lifecycle observeSosLifecycle_called=true",
@@ -1596,9 +1575,6 @@ internal class ProtectionBleRuntimeOwner(
                 bleLinkActive = bleLinkActive,
                 identityProof = classification.identityProof,
             )
-            if (shouldSuppressRecentTerminalOwnSosPacket(payload)) {
-                return
-            }
             logSosTrace(
                 "native_lifecycle_gate classification=ownDeviceSos " +
                     "action=observe_local_lifecycle observeSosLifecycle_called=true",
@@ -1803,83 +1779,6 @@ internal class ProtectionBleRuntimeOwner(
             )
     }
 
-    private fun applyTerminalSosSuppression(
-        reason: String,
-        originatorNodeId: Int? = null,
-    ) {
-        val now = SystemClock.elapsedRealtime()
-        pruneTerminalSosSuppressions(now)
-        val effectiveNodeId = originatorNodeId ?: connectedBleNodeId ?: boundNodeId
-        val keys = terminalSuppressionKeys(effectiveNodeId, boundDeviceId)
-        if (keys.isEmpty()) {
-            return
-        }
-        val suppression = TerminalSosSuppression(
-            originatorNodeId = effectiveNodeId,
-            boundDeviceId = boundDeviceId,
-            expiresAtMs = now + terminalSosSuppressionWindowMs,
-            reason = reason,
-        )
-        keys.forEach { key -> terminalSosSuppressionByKey[key] = suppression }
-        logSosTrace(
-            "terminal_suppression_applied reason=$reason " +
-                "originatorNodeId=${effectiveNodeId ?: "none"} " +
-                "boundDeviceId=${boundDeviceId ?: "none"}",
-        )
-    }
-
-    private fun shouldSuppressRecentTerminalOwnSosPacket(payload: List<Int>): Boolean {
-        val now = SystemClock.elapsedRealtime()
-        pruneTerminalSosSuppressions(now)
-        val originatorNodeId = readPacketOriginatorNodeId(payload)
-        val keys = terminalSuppressionKeys(originatorNodeId, boundDeviceId)
-        for (key in keys) {
-            val suppression = terminalSosSuppressionByKey[key] ?: continue
-            if (now > suppression.expiresAtMs) {
-                continue
-            }
-            logSosTrace(
-                "terminal_suppression_applied reason=recent_terminal_action " +
-                    "originatorNodeId=${originatorNodeId ?: "none"} " +
-                    "boundDeviceId=${boundDeviceId ?: "none"} " +
-                    "suppressionReason=${suppression.reason}",
-            )
-            logSosTrace(
-                "native_lifecycle_gate classification=ownDeviceSos " +
-                    "action=suppress_recent_terminal observeSosLifecycle_called=false",
-            )
-            ProtectionRuntimeBridge.recordBleEvent(
-                context = context,
-                type = "ownDeviceSosLifecycleSuppressed",
-                reason =
-                    "recent_terminal_action:" +
-                        "${originatorNodeId ?: "none"}:" +
-                        "${boundDeviceId ?: "none"}:${payloadHex(payload)}",
-            )
-            return true
-        }
-        return false
-    }
-
-    private fun terminalSuppressionKeys(
-        originatorNodeId: Int?,
-        boundDeviceId: String?,
-    ): List<String> {
-        if (originatorNodeId != null) {
-            return listOf("node:$originatorNodeId")
-        }
-        if (!boundDeviceId.isNullOrBlank()) {
-            return listOf("device:$boundDeviceId")
-        }
-        return emptyList()
-    }
-
-    private fun pruneTerminalSosSuppressions(nowMs: Long) {
-        terminalSosSuppressionByKey.entries.removeIf { entry ->
-            nowMs > entry.value.expiresAtMs
-        }
-    }
-
     private fun payloadHex(payload: List<Int>): String =
         payload.joinToString(separator = "") { byte -> "%02x".format(byte) }
 
@@ -2012,16 +1911,9 @@ internal class ProtectionBleRuntimeOwner(
                 val subcode = payload[1] and 0xFF
                 val closed = (opcode == 0xE1 && (subcode == 0x01 || subcode == 0x02)) ||
                     (opcode == 0xE2 && (subcode == 0x01 || subcode == 0x02 || subcode == 0x03))
-                if (closed) {
-                    applyTerminalSosSuppression(
-                        reason = "own_device_terminal_packet",
-                        originatorNodeId = readPacketOriginatorNodeId(payload),
-                    )
-                }
                 if (closed && pendingSosLifecycleState != ProtectionSosLifecycleState.idle) {
                     val lifecycleSnapshot = runtimeStore.snapshot()
                     val closedCycleKey = lifecycleSnapshot["preSosCycleKey"] as? String
-                    rememberClosedPreSosCycle(closedCycleKey)
                     val closeOutcome =
                         ProtectionSosLifecycleLogic.onClosePacket(pendingSosLifecycleState)
                     pendingSosLifecycleState = closeOutcome.nextState
@@ -2046,11 +1938,6 @@ internal class ProtectionBleRuntimeOwner(
 
             5, 7, 10, 12 -> {
                 val parsedCycle = parsePreSosCycle(payload)
-                if (shouldSuppressClosedPreSosCycle(parsedCycle?.cycleKey) ||
-                    shouldSuppressCompletedPreSosCycle(parsedCycle?.cycleKey)
-                ) {
-                    return
-                }
                 val nextState = ProtectionSosLifecycleLogic.onMeshPacket(pendingSosLifecycleState)
                 if (nextState == ProtectionSosLifecycleState.preConfirmSeen &&
                     pendingSosLifecycleState != ProtectionSosLifecycleState.preConfirmSeen
@@ -2086,7 +1973,6 @@ internal class ProtectionBleRuntimeOwner(
             ) {
                 pendingSosLifecycleState = nextState
                 val snapshot = runtimeStore.snapshot()
-                rememberCompletedPreSosCycle(snapshot["preSosCycleKey"] as? String)
                 runtimeStore.recordPreSosLifecycle(
                     state = pendingSosLifecycleState.name,
                     cycleKey = snapshot["preSosCycleKey"] as? String,
@@ -2108,54 +1994,6 @@ internal class ProtectionBleRuntimeOwner(
     private fun cancelSosActivationTimeout() {
         sosActivationRunnable?.let(mainHandler::removeCallbacks)
         sosActivationRunnable = null
-    }
-
-    private fun rememberClosedPreSosCycle(cycleKey: String?) {
-        val key = cycleKey?.trim()
-        if (key.isNullOrEmpty()) {
-            return
-        }
-        val now = System.currentTimeMillis()
-        pruneClosedPreSosCycles(now)
-        closedPreSosCycleUntilMs[key] = now + closedPreSosCycleSuppressionMs
-    }
-
-    private fun rememberCompletedPreSosCycle(cycleKey: String?) {
-        val key = cycleKey?.trim()
-        if (key.isNullOrEmpty()) {
-            return
-        }
-        val now = System.currentTimeMillis()
-        pruneCompletedPreSosCycles(now)
-        completedPreSosCycleUntilMs[key] = now + completedPreSosCycleSuppressionMs
-    }
-
-    private fun shouldSuppressClosedPreSosCycle(cycleKey: String?): Boolean {
-        val key = cycleKey?.trim()
-        if (key.isNullOrEmpty()) {
-            return false
-        }
-        val now = System.currentTimeMillis()
-        pruneClosedPreSosCycles(now)
-        return closedPreSosCycleUntilMs.containsKey(key)
-    }
-
-    private fun shouldSuppressCompletedPreSosCycle(cycleKey: String?): Boolean {
-        val key = cycleKey?.trim()
-        if (key.isNullOrEmpty()) {
-            return false
-        }
-        val now = System.currentTimeMillis()
-        pruneCompletedPreSosCycles(now)
-        return completedPreSosCycleUntilMs.containsKey(key)
-    }
-
-    private fun pruneClosedPreSosCycles(now: Long = System.currentTimeMillis()) {
-        closedPreSosCycleUntilMs.entries.removeIf { (_, expiresAt) -> expiresAt <= now }
-    }
-
-    private fun pruneCompletedPreSosCycles(now: Long = System.currentTimeMillis()) {
-        completedPreSosCycleUntilMs.entries.removeIf { (_, expiresAt) -> expiresAt <= now }
     }
 
     private fun rehydratePreSosLifecycle(reason: String) {
@@ -2374,7 +2212,9 @@ internal class ProtectionBleRuntimeOwner(
                 pending.timeoutRunnable?.let(mainHandler::removeCallbacks)
                 val command = pending.command
                 val terminalCancelSucceeded =
-                    status == BluetoothGatt.GATT_SUCCESS && command.label == "SOS CANCEL"
+                    status == BluetoothGatt.GATT_SUCCESS &&
+                        protectionTransportActionAfterSuccessfulCommand(command.label) ==
+                        ProtectionSuccessfulCommandTransportAction.keepAliveAfterSosTerminal
                 if (status == BluetoothGatt.GATT_SUCCESS) {
                     val result =
                         "${command.label} native write succeeded via androidService."
@@ -2441,10 +2281,13 @@ internal class ProtectionBleRuntimeOwner(
                     return
                 }
                 if (terminalCancelSucceeded) {
-                    stop("sos_cancel_command_succeeded")
-                    runtimeStore.markStopped()
-                    ProtectionForegroundService.stop(context)
-                    return
+                    Log.i(
+                        logTag,
+                        "SOS_NATIVE_CANCEL_TRANSPORT_PRESERVED " +
+                            "gattConnected=${bluetoothGatt === gatt} " +
+                            "subscriptionsActive=${subscriptionStep == SubscriptionStep.complete} " +
+                            "nativeCommandReady=${lastPublishedCommandReadiness?.ready == true}",
+                    )
                 }
                 drainQueuedCommand(gatt)
             }
@@ -2487,9 +2330,6 @@ internal class ProtectionBleRuntimeOwner(
         private const val nativeWriteSubmitRejected = -1
         private const val sosActivationDelayMs = 20_000L
         private const val observedPreSosSkewMs = 2000L
-        private const val terminalSosSuppressionWindowMs = 10_000L
-        private const val closedPreSosCycleSuppressionMs = 120_000L
-        private const val completedPreSosCycleSuppressionMs = 120_000L
         private const val logTag = "EixamProtectionBle"
         private val sosCommandOpcodes = setOf(0x04, 0x05, 0x06)
 
@@ -2547,10 +2387,4 @@ internal class ProtectionBleRuntimeOwner(
         val completion: (Map<String, Any?>) -> Unit,
     )
 
-    private data class TerminalSosSuppression(
-        val originatorNodeId: Int?,
-        val boundDeviceId: String?,
-        val expiresAtMs: Long,
-        val reason: String,
-    )
 }

@@ -2606,6 +2606,308 @@ void main() {
     );
 
     test(
+      'native physical start duplicate cancel and immediate restart preserve transport and generations',
+      () async {
+        const firstStartHex = '34120000a5b109';
+        const secondStartHex = '34120000a6b109';
+        const cancelHex = 'e10234120000';
+        final adapter = _SnapshotProtectionPlatformAdapter(
+          const ProtectionPlatformSnapshot(
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            runtimeState: ProtectionRuntimeState.active,
+            coverageLevel: ProtectionCoverageLevel.full,
+            platform: ProtectionPlatform.android,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: true,
+            serviceBleReady: true,
+            nativeCommandServiceReady: true,
+            nativeCommandEa04Ready: true,
+            nativeCommandIdentityReady: true,
+            nativeCommandQueueHealthy: true,
+            nativeCommandReady: true,
+            protectedDeviceId: 'CF:82:00:00:00:01',
+            activeDeviceId: 'CF:82:00:00:00:01',
+          ),
+        );
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+          protectionPlatformAdapter: adapter,
+        );
+        final observedMessages = <String>[];
+        final debugSubscription = BleDebugRegistry.instance.watch().listen((
+          state,
+        ) {
+          if (state.events.isNotEmpty) {
+            observedMessages.add(state.events.last.message);
+          }
+        });
+        final observedAt = DateTime.now().toUtc();
+        void emitOwnPacket({
+          required String payloadHex,
+          required int receiveSequence,
+          required String characteristicUuid,
+          required String source,
+        }) {
+          final timestamp = observedAt.add(
+            Duration(milliseconds: receiveSequence),
+          );
+          adapter.emit(
+            ProtectionPlatformEvent(
+              type: ProtectionPlatformEventType.bleNotificationReceived,
+              timestamp: timestamp,
+              payloadHex: payloadHex,
+              source: source,
+              characteristicUuid: characteristicUuid,
+              byteLength: payloadHex.length ~/ 2,
+              packetType: payloadHex.length == 12 ? 'sos_event' : 'sos',
+              firstOpcode: '0x${payloadHex.substring(0, 2)}',
+              receiveSequence: receiveSequence,
+              receiveCorrelation: 'physical-$receiveSequence',
+              connectedDeviceMarker: 'CF:82:00:00:00:01',
+            ),
+          );
+          adapter.emit(
+            ProtectionPlatformEvent(
+              type: ProtectionPlatformEventType.ownDeviceSosLifecycleObserved,
+              timestamp: timestamp,
+              reason: 'own:$source:$payloadHex',
+              classification: 'ownDeviceSos',
+            ),
+          );
+        }
+
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await harness.sdk.rehydrateProtectionState();
+
+          emitOwnPacket(
+            payloadHex: firstStartHex,
+            receiveSequence: 1,
+            characteristicUuid: EixamBleProtocol.sosNotifyCharacteristicUuid,
+            source: 'sos',
+          );
+          emitOwnPacket(
+            payloadHex: firstStartHex,
+            receiveSequence: 2,
+            characteristicUuid: EixamBleProtocol.telNotifyCharacteristicUuid,
+            source: 'tel',
+          );
+          await pumpEventQueue(times: 10);
+
+          final firstGeneration = await harness.sdk.getSosLifecycle();
+          expect(firstGeneration.generation, 1);
+          expect(firstGeneration.stage, SosLifecycleStage.arming);
+          expect(
+            firstGeneration.origin,
+            SosLifecycleOrigin.connectedLocalDevice,
+          );
+          expect(
+            observedMessages.any(
+              (message) =>
+                  message.contains('SOS_DEVICE_STATE_OBSERVED') &&
+                  message.contains('state=preConfirm'),
+            ),
+            isTrue,
+          );
+
+          emitOwnPacket(
+            payloadHex: firstStartHex,
+            receiveSequence: 3,
+            characteristicUuid: EixamBleProtocol.sosNotifyCharacteristicUuid,
+            source: 'sos',
+          );
+          await pumpEventQueue(times: 6);
+          expect(
+            (await harness.sdk.getSosLifecycle()).generation,
+            firstGeneration.generation,
+          );
+
+          emitOwnPacket(
+            payloadHex: cancelHex,
+            receiveSequence: 4,
+            characteristicUuid: EixamBleProtocol.sosNotifyCharacteristicUuid,
+            source: 'sos',
+          );
+          emitOwnPacket(
+            payloadHex: cancelHex,
+            receiveSequence: 5,
+            characteristicUuid: EixamBleProtocol.telNotifyCharacteristicUuid,
+            source: 'tel',
+          );
+          await pumpEventQueue(times: 10);
+
+          final cancelled = await harness.sdk.getSosLifecycle();
+          expect(cancelled.generation, firstGeneration.generation);
+          expect(cancelled.stage, SosLifecycleStage.cancelled);
+          final afterCancelProtection = await harness.sdk.getProtectionStatus();
+          expect(
+            afterCancelProtection.bleOwner,
+            ProtectionBleOwner.androidService,
+          );
+          expect(afterCancelProtection.serviceBleConnected, isTrue);
+          expect(afterCancelProtection.serviceBleReady, isTrue);
+          expect(afterCancelProtection.nativeCommandReady, isTrue);
+
+          emitOwnPacket(
+            payloadHex: secondStartHex,
+            receiveSequence: 6,
+            characteristicUuid: EixamBleProtocol.sosNotifyCharacteristicUuid,
+            source: 'sos',
+          );
+          await pumpEventQueue(times: 10);
+
+          final secondGeneration = await harness.sdk.getSosLifecycle();
+          expect(secondGeneration.generation, firstGeneration.generation + 1);
+          expect(secondGeneration.stage, SosLifecycleStage.arming);
+          expect(
+            observedMessages
+                .where(
+                  (message) => message.contains('SOS_NEW_GENERATION_ACCEPTED'),
+                )
+                .length,
+            1,
+          );
+          expect(
+            observedMessages.any(
+              (message) => message.contains(
+                'reason=immediate_physical_restart_after_terminal admitted=true',
+              ),
+            ),
+            isTrue,
+          );
+          expect(
+            observedMessages.any(
+              (message) => message.contains(
+                'SOS_OWN_DEVICE_LIFECYCLE_ADMISSION lifecycleStage=cancelled',
+              ),
+            ),
+            isTrue,
+          );
+          final afterRestartProtection = await harness.sdk
+              .getProtectionStatus();
+          expect(afterRestartProtection.serviceBleConnected, isTrue);
+          expect(afterRestartProtection.serviceBleReady, isTrue);
+          expect(afterRestartProtection.nativeCommandReady, isTrue);
+        } finally {
+          await debugSubscription.cancel();
+          await harness.dispose();
+          await adapter.dispose();
+        }
+      },
+    );
+
+    test(
+      'App-triggered native TAG packet is ACK evidence for the existing generation',
+      () async {
+        const payloadHex = '34120000a5b109';
+        final adapter = _SnapshotProtectionPlatformAdapter(
+          const ProtectionPlatformSnapshot(
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            runtimeState: ProtectionRuntimeState.active,
+            coverageLevel: ProtectionCoverageLevel.full,
+            platform: ProtectionPlatform.android,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: true,
+            serviceBleReady: true,
+            nativeCommandServiceReady: true,
+            nativeCommandEa04Ready: true,
+            nativeCommandIdentityReady: true,
+            nativeCommandQueueHealthy: true,
+            nativeCommandReady: true,
+            protectedDeviceId: 'CF:82:00:00:00:01',
+            activeDeviceId: 'CF:82:00:00:00:01',
+          ),
+        );
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+          protectionPlatformAdapter: adapter,
+        );
+        final observedMessages = <String>[];
+        final debugSubscription = BleDebugRegistry.instance.watch().listen((
+          state,
+        ) {
+          if (state.events.isNotEmpty) {
+            observedMessages.add(state.events.last.message);
+          }
+        });
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await harness.sdk.rehydrateProtectionState();
+          await harness.sdk.startPreSos(countdown: const Duration(seconds: 20));
+          final appGeneration = await harness.sdk.getSosLifecycle();
+          expect(adapter.commands.single.bytes, <int>[0x06]);
+
+          final observedAt = DateTime.now().toUtc();
+          adapter.emit(
+            ProtectionPlatformEvent(
+              type: ProtectionPlatformEventType.bleNotificationReceived,
+              timestamp: observedAt,
+              payloadHex: payloadHex,
+              source: 'sos',
+              characteristicUuid: EixamBleProtocol.sosNotifyCharacteristicUuid,
+              byteLength: 7,
+              packetType: 'sos',
+              firstOpcode: '0x34',
+              receiveSequence: 20,
+              receiveCorrelation: 'app-mirror-20',
+              connectedDeviceMarker: 'CF:82:00:00:00:01',
+            ),
+          );
+          adapter.emit(
+            ProtectionPlatformEvent(
+              type: ProtectionPlatformEventType.ownDeviceSosLifecycleObserved,
+              timestamp: observedAt,
+              reason: 'own:sos:$payloadHex',
+              classification: 'ownDeviceSos',
+            ),
+          );
+          await pumpEventQueue(times: 10);
+
+          expect(
+            (await harness.sdk.getSosLifecycle()).generation,
+            appGeneration.generation,
+          );
+          expect(
+            observedMessages.any(
+              (message) => message.contains('SOS_DEVICE_COMMAND_ACK_OBSERVED'),
+            ),
+            isTrue,
+          );
+          expect(
+            observedMessages.any(
+              (message) => message.contains(
+                'reason=app_triggered_tag_evidence admitted=true',
+              ),
+            ),
+            isTrue,
+          );
+          expect(
+            observedMessages.any(
+              (message) => message.contains('SOS_NEW_GENERATION_ACCEPTED'),
+            ),
+            isFalse,
+          );
+        } finally {
+          await debugSubscription.cancel();
+          await harness.dispose();
+          await adapter.dispose();
+        }
+      },
+    );
+
+    test(
       'native raw SOS diagnostic precedes classifier with matching receive marker',
       () async {
         const payloadHex = 'a81a4b5948cd1b34442800c0';

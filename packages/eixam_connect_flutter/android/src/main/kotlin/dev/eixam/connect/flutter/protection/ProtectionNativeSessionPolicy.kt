@@ -8,6 +8,20 @@ internal enum class ProtectionNativePreparationFailure(val wireReason: String) {
     queueUnhealthy("operation_queue_unhealthy"),
 }
 
+internal enum class ProtectionSuccessfulCommandTransportAction {
+    keepAlive,
+    keepAliveAfterSosTerminal,
+}
+
+internal fun protectionTransportActionAfterSuccessfulCommand(
+    commandLabel: String,
+): ProtectionSuccessfulCommandTransportAction =
+    if (commandLabel == "SOS CANCEL") {
+        ProtectionSuccessfulCommandTransportAction.keepAliveAfterSosTerminal
+    } else {
+        ProtectionSuccessfulCommandTransportAction.keepAlive
+    }
+
 internal fun evaluateProtectionNativePreparationFailure(
     gattConnected: Boolean,
     discoveryCompleted: Boolean,

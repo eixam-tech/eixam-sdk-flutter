@@ -74,4 +74,21 @@ class ProtectionNativeSessionPolicyTest {
 
         assertNull(failure)
     }
+
+    @Test
+    fun `successful SOS cancel preserves the persistent Protection transport`() {
+        val action = protectionTransportActionAfterSuccessfulCommand("SOS CANCEL")
+
+        assertEquals(
+            ProtectionSuccessfulCommandTransportAction.keepAliveAfterSosTerminal,
+            action,
+        )
+    }
+
+    @Test
+    fun `successful non-terminal command keeps the persistent Protection transport`() {
+        val action = protectionTransportActionAfterSuccessfulCommand("SOS TRIGGER APP")
+
+        assertEquals(ProtectionSuccessfulCommandTransportAction.keepAlive, action)
+    }
 }
