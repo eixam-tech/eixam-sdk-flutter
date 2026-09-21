@@ -446,6 +446,118 @@ void main() {
     });
 
     test(
+        'authoritative connected snapshot cancels retry wait without a second attempt',
+        () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _FakeDeviceRepository()
+        ..pairErrors = <Object>[
+          PlatformException(
+            code: 'deviceDisconnected',
+            message: 'deviceDisconnected',
+          ),
+        ];
+      final store = PreferredBleDeviceStore(localStore: SharedPrefsSdkStore());
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: 'ble-demo-r1',
+          displayName: 'EIXAM Demo',
+          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+        ),
+      );
+      final retryWaitStarted = Completer<void>();
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+        preferredReconnectDelay: (_) {
+          if (!retryWaitStarted.isCompleted) retryWaitStarted.complete();
+          return Completer<void>().future;
+        },
+      );
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+
+      final campaign = coordinator.tryAutoConnectForHandoff(
+        trigger: 'startup',
+      );
+      await retryWaitStarted.future;
+      repository.setConnected(commandCapable: true);
+      final result = await campaign;
+
+      expect(result.connected, isTrue);
+      expect(result.reason, 'authoritative_device_status');
+      expect(repository.reconnectCallCount, 1);
+      expect(
+        BleDebugRegistry.instance.currentState.events
+            .map((event) => event.message),
+        contains(
+          'BLE_PREFERRED_RECONNECT_CAMPAIGN_CANCELLED '
+          'reason=authoritative_connected',
+        ),
+      );
+      await coordinator.dispose();
+    });
+
+    test(
+        'native protection ownership cancels an existing campaign and blocks foreground retries',
+        () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _FakeDeviceRepository()
+        ..pairErrors = <Object>[
+          PlatformException(
+            code: 'deviceDisconnected',
+            message: 'deviceDisconnected',
+          ),
+        ];
+      final store = PreferredBleDeviceStore(localStore: SharedPrefsSdkStore());
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: 'ble-demo-r1',
+          displayName: 'EIXAM Demo',
+          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+        ),
+      );
+      var nativeOwnsBle = false;
+      final retryWaitStarted = Completer<void>();
+      final nativeTriggers = <String>[];
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+        isNativeProtectionOwningBle: () => nativeOwnsBle,
+        onNativeProtectionOwnsBle: (trigger) async {
+          nativeTriggers.add(trigger);
+        },
+        preferredReconnectDelay: (_) {
+          if (!retryWaitStarted.isCompleted) retryWaitStarted.complete();
+          return Completer<void>().future;
+        },
+      );
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+
+      final campaign = coordinator.tryAutoConnectForHandoff(
+        trigger: 'startup',
+      );
+      await retryWaitStarted.future;
+      nativeOwnsBle = true;
+      final foregroundResult = await coordinator.tryAutoConnectForHandoff(
+        trigger: 'resume',
+      );
+      final campaignResult = await campaign;
+
+      expect(foregroundResult.reason, 'native_protection_ble_owner');
+      expect(campaignResult.reason, 'native_protection_ble_owner');
+      expect(repository.reconnectCallCount, 1);
+      expect(nativeTriggers, <String>['resume']);
+      await coordinator.dispose();
+    });
+
+    test(
         'provisioning ownership suppresses generic triggers but allows its '
         'explicit reconnect', () async {
       SharedPreferences.setMockInitialValues(<String, Object>{});
@@ -2067,7 +2179,6 @@ void main() {
     );
   });
 }
-
 Future<void> _verifyInspectionWinsActiveReconnect(String activeSource) async {
   SharedPreferences.setMockInitialValues(<String, Object>{});
   BleDebugRegistry.instance.reset();

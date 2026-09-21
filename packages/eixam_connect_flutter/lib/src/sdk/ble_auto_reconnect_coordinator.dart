@@ -96,6 +96,7 @@ class BleAutoReconnectCoordinator {
   bool _disposed = false;
   int _retryAttempt = 0;
   int _preferredReconnectCampaignToken = 0;
+  int _authoritativeConnectedRevision = 0;
 
   Future<void> initialize({
     required DeviceStatus initialStatus,
@@ -617,6 +618,7 @@ class BleAutoReconnectCoordinator {
       );
     }
     if (_isNativeProtectionOwningBle?.call() == true) {
+      _cancelPreferredReconnectCampaign(reason: 'native_protection_ble_owner');
       _traceReconnect(
         'sdk_campaign_cancelled reason=native_protection_ble_owner '
         'source=$trigger',
@@ -660,6 +662,7 @@ class BleAutoReconnectCoordinator {
       attemptId: attemptId,
       platformRemoteId: platformRemoteId,
       token: token,
+      connectedRevisionAtStart: _authoritativeConnectedRevision,
     );
     _preferredReconnectCampaign = campaign;
     try {
@@ -682,6 +685,7 @@ class BleAutoReconnectCoordinator {
     required String? attemptId,
     required String? platformRemoteId,
     required int token,
+    required int connectedRevisionAtStart,
   }) async {
     _traceReconnect(
       'sdk_campaign_start source=$trigger '
@@ -697,9 +701,8 @@ class BleAutoReconnectCoordinator {
         attempt <= _preferredReconnectMaxAttempts;
         attempt++) {
       if (!_isPreferredReconnectCampaignCurrent(token)) {
-        _traceReconnect('sdk_campaign_cancelled reason=disposed');
-        return const PreferredDeviceReconnectResult.failed(
-          reason: 'campaign_cancelled',
+        return _preferredReconnectCancellationResult(
+          connectedRevisionAtStart: connectedRevisionAtStart,
         );
       }
       _traceReconnect(
@@ -716,6 +719,11 @@ class BleAutoReconnectCoordinator {
         attemptId: attemptId,
         platformRemoteId: platformRemoteId,
       );
+      if (!_isPreferredReconnectCampaignCurrent(token)) {
+        return _preferredReconnectCancellationResult(
+          connectedRevisionAtStart: connectedRevisionAtStart,
+        );
+      }
       if (lastResult.connected) {
         _traceReconnect(
           'sdk_campaign_attempt_result attemptNumber=$attempt '
@@ -772,9 +780,8 @@ class BleAutoReconnectCoordinator {
       );
       await _waitForPreferredReconnectDelay(delay);
       if (!_isPreferredReconnectCampaignCurrent(token)) {
-        _traceReconnect('sdk_campaign_cancelled reason=disposed');
-        return const PreferredDeviceReconnectResult.failed(
-          reason: 'campaign_cancelled',
+        return _preferredReconnectCancellationResult(
+          connectedRevisionAtStart: connectedRevisionAtStart,
         );
       }
     }
@@ -817,6 +824,23 @@ class BleAutoReconnectCoordinator {
       );
       return const PreferredDeviceReconnectResult.failed(
         reason: 'explicit_migration_inspection_owner',
+      );
+    }
+    if (_isNativeProtectionOwningBle?.call() == true) {
+      _traceReconnect(
+        'sdk_campaign_cancelled reason=native_protection_ble_owner '
+        'source=$trigger',
+      );
+      _recordNoProviderCall(
+        attemptId: attemptId,
+        reason: 'native_protection_ble_owner',
+      );
+      final notifyNative = _onNativeProtectionOwnsBle;
+      if (notifyNative != null) {
+        unawaited(notifyNative(trigger));
+      }
+      return const PreferredDeviceReconnectResult.reconnecting(
+        reason: 'native_protection_ble_owner',
       );
     }
     if (_manualDisconnectRequested) {
@@ -1118,6 +1142,9 @@ class BleAutoReconnectCoordinator {
   bool _shouldRetryPreferredReconnectResult(
     PreferredDeviceReconnectResult result,
   ) {
+    if (result.reason == 'native_protection_ble_owner') {
+      return false;
+    }
     if (_isTransientAttemptBluetoothOff(result)) {
       return true;
     }
@@ -1204,6 +1231,30 @@ class BleAutoReconnectCoordinator {
     _traceReconnect('sdk_inflight_changed value=false reason=$reason');
   }
 
+  PreferredDeviceReconnectResult _preferredReconnectCancellationResult({
+    required int connectedRevisionAtStart,
+  }) {
+    if (_lastStatus?.connected == true &&
+        _authoritativeConnectedRevision > connectedRevisionAtStart) {
+      _traceReconnect('sdk_campaign_cancelled reason=authoritative_connected');
+      return const PreferredDeviceReconnectResult.connected(
+        reason: 'authoritative_device_status',
+      );
+    }
+    if (_isNativeProtectionOwningBle?.call() == true) {
+      _traceReconnect(
+        'sdk_campaign_cancelled reason=native_protection_ble_owner',
+      );
+      return const PreferredDeviceReconnectResult.reconnecting(
+        reason: 'native_protection_ble_owner',
+      );
+    }
+    _traceReconnect('sdk_campaign_cancelled reason=disposed');
+    return const PreferredDeviceReconnectResult.failed(
+      reason: 'campaign_cancelled',
+    );
+  }
+
   bool _hasReconnectPermission(PermissionState? readiness) {
     return readiness == null ||
         readiness.bluetooth == SdkPermissionStatus.granted;
@@ -1258,6 +1309,8 @@ class BleAutoReconnectCoordinator {
         'explicit_migration_inspection_owner',
       'provisioning_reboot' => 'provisioning_reconnect_owned',
       'app_not_foreground' => 'app_not_foreground',
+      'native_protection_ble_owner' => 'native_protection_ble_owner',
+      'authoritative_connected' => 'authoritative_connected',
       _ => 'unknown',
     };
   }
@@ -1596,6 +1649,8 @@ class BleAutoReconnectCoordinator {
     _lastStatus = status;
 
     if (status.connected) {
+      _authoritativeConnectedRevision++;
+      _cancelPreferredReconnectCampaign(reason: 'authoritative_connected');
       _retryAttempt = 0;
       _retryTimer?.cancel();
       _retryTimer = null;
