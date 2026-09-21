@@ -43,6 +43,7 @@ class EixamDeviceCommand {
     opcode: 0x06,
     label: 'SOS TRIGGER APP',
     bytes: <int>[0x06],
+    forceCmdCharacteristic: true,
   );
 
   factory EixamDeviceCommand.sosAck() => const EixamDeviceCommand._(
@@ -288,6 +289,10 @@ class EixamDeviceCommand {
   bool get usesCmdCharacteristic =>
       forceCmdCharacteristic ||
       encode().length > EixamBleProtocol.inetMaxPayloadLength;
+
+  bool get supportsLegacyInetFallback =>
+      encode().length <= EixamBleProtocol.inetMaxPayloadLength &&
+      (opcode == 0x04 || opcode == 0x05 || opcode == 0x06);
 
   String get targetCharacteristicUuid => usesCmdCharacteristic
       ? EixamBleProtocol.cmdWriteCharacteristicUuid

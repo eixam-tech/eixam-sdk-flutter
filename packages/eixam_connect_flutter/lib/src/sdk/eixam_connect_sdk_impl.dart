@@ -12742,7 +12742,31 @@ class EixamConnectSdkImpl
         fencedCycleKey != null &&
         incomingCycleKey != fencedCycleKey &&
         eventSequence > terminalBoundaryEventSequence;
-    if (!validFreshPhysicalEdge && !validStrongNewCycle) {
+    // Firmware resets its packet/retry counters only when countdown promotes
+    // to ACTIVE. The first BLE countdown packet can therefore legitimately
+    // reuse generation N's raw identity. On that first packet the strongest
+    // available edge is the composite below: real direct-device BLE evidence,
+    // exact connected identity, an inactive -> preConfirm reducer edge, and
+    // receive time/order strictly after N's terminal watermark. retryCount is
+    // deliberately excluded because it is not a per-activation counter.
+    final validStrongReusedPhysicalRisingEdge =
+        status.state == DeviceSosState.preConfirm &&
+        status.previousState == DeviceSosState.inactive &&
+        status.lastPacketAt != null &&
+        status.sosType != null &&
+        (status.relayCount ?? 0) == 0 &&
+        hasStrongConnectedIdentity &&
+        _hasExactConnectedHardwareIdentity(terminal) &&
+        incomingCycleKey != null &&
+        fencedCycleKey != null &&
+        incomingCycleKey == fencedCycleKey &&
+        eventSequence > terminalBoundaryEventSequence &&
+        observedAt.isAfter(terminal.lastAuthoritativeObservation) &&
+        observedAt.difference(terminal.lastAuthoritativeObservation) >
+            _terminalSosSuppressionWindow;
+    if (!validFreshPhysicalEdge &&
+        !validStrongNewCycle &&
+        !validStrongReusedPhysicalRisingEdge) {
       final rejectionReason = eventSequence <= terminalBoundaryEventSequence
           ? 'old_sequence'
           : incomingCycleKey == null ||
@@ -12761,7 +12785,11 @@ class EixamConnectSdkImpl
     BleDebugRegistry.instance.recordEvent(
       'SOS_TERMINAL_FENCE_FRESH_PHYSICAL_EDGE_ACCEPTED '
       'terminalGeneration=${terminal.generation} '
-      'admission=${validFreshPhysicalEdge ? "inactive_boundary" : "strong_new_cycle"} '
+      'admission=${validFreshPhysicalEdge
+          ? "inactive_boundary"
+          : validStrongReusedPhysicalRisingEdge
+          ? "direct_device_rising_edge"
+          : "strong_new_cycle"} '
       'eventSeq=$eventSequence rawIdentityReused=$rawIdentityReused '
       'strongIdentity=$hasStrongConnectedIdentity newCycle=${!rawIdentityReused} '
       'afterTerminalBoundary=true',
@@ -12799,6 +12827,24 @@ class EixamConnectSdkImpl
     return connectedHardwareId == null ||
         terminalHardwareId == null ||
         connectedHardwareId == terminalHardwareId;
+  }
+
+  bool _hasExactConnectedHardwareIdentity(SosLifecycleSnapshot terminal) {
+    final connectedDevice = _lastPublicDeviceStatus ?? _lastDeviceStatus;
+    if (connectedDevice?.connected != true) {
+      return false;
+    }
+    final connectedDeviceId = connectedDevice?.deviceId.trim();
+    final terminalDeviceId = terminal.deviceId?.trim();
+    final connectedHardwareId = _physicalHardwareIdForStatus(connectedDevice);
+    final terminalHardwareId = terminal.hardwareId?.trim();
+    return connectedDeviceId?.isNotEmpty == true &&
+        terminalDeviceId?.isNotEmpty == true &&
+        (connectedDeviceId!.toLowerCase() == terminalDeviceId!.toLowerCase() ||
+            _samePhysicalHardwareId(connectedDeviceId, terminalDeviceId)) &&
+        connectedHardwareId?.isNotEmpty == true &&
+        terminalHardwareId?.isNotEmpty == true &&
+        _samePhysicalHardwareId(connectedHardwareId!, terminalHardwareId!);
   }
 
   bool _deviceStatusHasNewCycleIdentity(

@@ -51,40 +51,43 @@ class RealBleClient implements BleClient {
     @visibleForTesting NativeBleStopScan? stopScan,
     @visibleForTesting
     Future<void> Function(BluetoothDevice device)? androidGattCacheClearer,
-  })  : _meshPortResolver = meshPortResolver,
-        _isSupportedProvider =
-            isSupportedProvider ?? (() => FlutterBluePlus.isSupported),
-        _adapterStateProvider =
-            adapterStateProvider ?? (() => FlutterBluePlus.adapterStateNow),
-        _isScanningProvider =
-            isScanningProvider ?? (() => FlutterBluePlus.isScanningNow),
-        _adapterStateStreamProvider =
-            adapterStateStreamProvider ?? (() => FlutterBluePlus.adapterState),
-        _scanResultsProvider =
-            scanResultsProvider ?? (() => FlutterBluePlus.scanResults),
-        _startScan = startScan ??
-            ((timeout) => FlutterBluePlus.startScan(
-                  timeout: timeout,
-                  androidScanMode: AndroidScanMode.lowLatency,
-                  androidUsesFineLocation: true,
-                  androidCheckLocationServices: true,
-                )),
-        _stopScan = stopScan ?? (() => FlutterBluePlus.stopScan()),
-        _androidGattCacheClearer =
-            androidGattCacheClearer ?? _defaultAndroidGattCacheClearer;
+  }) : _meshPortResolver = meshPortResolver,
+       _isSupportedProvider =
+           isSupportedProvider ?? (() => FlutterBluePlus.isSupported),
+       _adapterStateProvider =
+           adapterStateProvider ?? (() => FlutterBluePlus.adapterStateNow),
+       _isScanningProvider =
+           isScanningProvider ?? (() => FlutterBluePlus.isScanningNow),
+       _adapterStateStreamProvider =
+           adapterStateStreamProvider ?? (() => FlutterBluePlus.adapterState),
+       _scanResultsProvider =
+           scanResultsProvider ?? (() => FlutterBluePlus.scanResults),
+       _startScan =
+           startScan ??
+           ((timeout) => FlutterBluePlus.startScan(
+             timeout: timeout,
+             androidScanMode: AndroidScanMode.lowLatency,
+             androidUsesFineLocation: true,
+             androidCheckLocationServices: true,
+           )),
+       _stopScan = stopScan ?? (() => FlutterBluePlus.stopScan()),
+       _androidGattCacheClearer =
+           androidGattCacheClearer ?? _defaultAndroidGattCacheClearer;
 
   static const Duration _connectTimeout = Duration(seconds: 10);
   static const Duration _commandWriteTimeout = Duration(seconds: 8);
-  static const Duration _postConnectStabilizationDelay =
-      Duration(milliseconds: 350);
-  static const Duration _connectedStateConfirmationTimeout =
-      Duration(seconds: 2);
+  static const Duration _postConnectStabilizationDelay = Duration(
+    milliseconds: 350,
+  );
+  static const Duration _connectedStateConfirmationTimeout = Duration(
+    seconds: 2,
+  );
 
   final Map<String, BluetoothDevice> _devices = {};
   final Map<String, List<BluetoothService>> _servicesCache = {};
   StreamSubscription<BluetoothAdapterState>? _adapterStateSub;
   final int? Function(EixamBleChannel channel, List<int> payload)?
-      _meshPortResolver;
+  _meshPortResolver;
   final Future<bool> Function() _isSupportedProvider;
   final BluetoothAdapterState Function() _adapterStateProvider;
   final bool Function() _isScanningProvider;
@@ -95,14 +98,18 @@ class RealBleClient implements BleClient {
   final Future<void> Function(BluetoothDevice device) _androidGattCacheClearer;
 
   static final Guid eixamServiceUuid = Guid(EixamBleProtocol.serviceUuid);
-  static final Guid telNotifyCharUuid =
-      Guid(EixamBleProtocol.telNotifyCharacteristicUuid);
-  static final Guid sosNotifyCharUuid =
-      Guid(EixamBleProtocol.sosNotifyCharacteristicUuid);
-  static final Guid inetWriteCharUuid =
-      Guid(EixamBleProtocol.inetWriteCharacteristicUuid);
-  static final Guid cmdWriteCharUuid =
-      Guid(EixamBleProtocol.cmdWriteCharacteristicUuid);
+  static final Guid telNotifyCharUuid = Guid(
+    EixamBleProtocol.telNotifyCharacteristicUuid,
+  );
+  static final Guid sosNotifyCharUuid = Guid(
+    EixamBleProtocol.sosNotifyCharacteristicUuid,
+  );
+  static final Guid inetWriteCharUuid = Guid(
+    EixamBleProtocol.inetWriteCharacteristicUuid,
+  );
+  static final Guid cmdWriteCharUuid = Guid(
+    EixamBleProtocol.cmdWriteCharacteristicUuid,
+  );
 
   static final Guid batteryServiceUuid = Guid(
     '0000180F-0000-1000-8000-00805F9B34FB',
@@ -229,8 +236,8 @@ class RealBleClient implements BleClient {
         final name = r.advertisementData.advName.isNotEmpty
             ? r.advertisementData.advName
             : (r.device.platformName.isNotEmpty
-                ? r.device.platformName
-                : 'Unknown');
+                  ? r.device.platformName
+                  : 'Unknown');
 
         _log(
           'BLE scan -> id=$id name="$name" rssi=${r.rssi} connectable=${r.advertisementData.connectable} serviceUuids=$advertisedServiceUuids',
@@ -265,7 +272,8 @@ class RealBleClient implements BleClient {
       await sub.cancel();
     } catch (error) {
       safeSdkDebugPrint(
-          'SDK_DISCOVERY_NATIVE_START_SCAN_CALL_FAILED error=$error');
+        'SDK_DISCOVERY_NATIVE_START_SCAN_CALL_FAILED error=$error',
+      );
       safeSdkDebugPrint(
         'SDK_DISCOVERY_ERROR_ORIGIN '
         'origin=flutter_blue_plus_native error=$error',
@@ -304,8 +312,8 @@ class RealBleClient implements BleClient {
     final scannerReady = _isScanningProvider()
         ? 'ready'
         : supported && adapterState == BleAdapterState.poweredOn
-            ? 'unknown'
-            : 'false';
+        ? 'unknown'
+        : 'false';
     if (!supported) {
       return _SdkDiscoveryPrecheck(
         supported: supported,
@@ -358,9 +366,7 @@ class RealBleClient implements BleClient {
       telNotifySubscribed: false,
       sosNotifySubscribed: false,
     );
-    BleDebugRegistry.instance.recordEvent(
-      'Connecting to hardwareId=$deviceId',
-    );
+    BleDebugRegistry.instance.recordEvent('Connecting to hardwareId=$deviceId');
     BleDebugRegistry.instance.recordEvent(
       'BLE connect selected device found -> hardwareId=$deviceId platformName="${device.platformName}"',
     );
@@ -428,8 +434,9 @@ class RealBleClient implements BleClient {
       _servicesCache[deviceId] = services;
 
       BleDebugRegistry.instance.update(
-        discoveredServices:
-            services.map((service) => service.uuid.str).toList(),
+        discoveredServices: services
+            .map((service) => service.uuid.str)
+            .toList(),
       );
       BleDebugRegistry.instance.registerCommandWriter(
         (command) => writeDeviceCommand(deviceId, command),
@@ -577,10 +584,11 @@ class RealBleClient implements BleClient {
       if (deviceId.isEmpty || byId.containsKey(deviceId)) {
         return;
       }
-      final name = (device.platformName.trim().isNotEmpty
-              ? device.platformName
-              : device.advName)
-          .trim();
+      final name =
+          (device.platformName.trim().isNotEmpty
+                  ? device.platformName
+                  : device.advName)
+              .trim();
       // systemDevices([eixamServiceUuid]) already filtered by service UUID.
       // bondedDevices are not — never inject a fake EIXAM UUID into the
       // classifier or headphones/cars become preferred after reinstall.
@@ -590,7 +598,8 @@ class RealBleClient implements BleClient {
             ? const <String>[EixamBleProtocol.serviceUuid]
             : const <String>[],
       );
-      final looksEixam = brand == BleDiscoveredDeviceBrand.eixam ||
+      final looksEixam =
+          brand == BleDiscoveredDeviceBrand.eixam ||
           name.toLowerCase().contains('eixam');
       if (!looksEixam) {
         return;
@@ -613,14 +622,11 @@ class RealBleClient implements BleClient {
     }
 
     try {
-      final systemDevices =
-          await FlutterBluePlus.systemDevices([eixamServiceUuid]);
+      final systemDevices = await FlutterBluePlus.systemDevices([
+        eixamServiceUuid,
+      ]);
       for (final device in systemDevices) {
-        remember(
-          device,
-          source: 'system_devices',
-          trustServiceUuidMatch: true,
-        );
+        remember(device, source: 'system_devices', trustServiceUuidMatch: true);
       }
     } catch (error) {
       BleDebugRegistry.instance.recordEvent(
@@ -732,15 +738,18 @@ class RealBleClient implements BleClient {
       throw Exception('E_BLE_COMMAND_PAYLOAD_EMPTY');
     }
 
-    var targetUuid =
-        command.usesCmdCharacteristic ? cmdWriteCharUuid : inetWriteCharUuid;
+    var targetUuid = command.usesCmdCharacteristic
+        ? cmdWriteCharUuid
+        : inetWriteCharUuid;
     var c = await _findCharacteristic(deviceId, eixamServiceUuid, targetUuid);
     if (c == null &&
-        command.opcode == 0x04 &&
+        _canUseLegacyInetFallback(command) &&
         command.usesCmdCharacteristic &&
         data.length <= EixamBleProtocol.inetMaxPayloadLength) {
       BleDebugRegistry.instance.recordEvent(
-        'SOS_TRACE device_terminal_command_fallback channel=inet reason=cmd_not_ready',
+        'SOS_TRACE device_command_fallback channel=inet '
+        'opcode=0x${command.opcode.toRadixString(16).padLeft(2, '0')} '
+        'reason=cmd_not_ready',
       );
       targetUuid = inetWriteCharUuid;
       c = await _findCharacteristic(deviceId, eixamServiceUuid, targetUuid);
@@ -766,25 +775,37 @@ class RealBleClient implements BleClient {
     );
     if (command.opcode == 0x06 || command.opcode == 0x05) {
       BleDebugRegistry.instance.recordEvent(
-        'SOS_DEVICE_COMMAND_WRITE_SUBMITTED '
+        'SOS_DEVICE_COMMAND_GATT_WRITE_BEGIN '
         'owner=flutter hardwareId=$deviceId target=${targetUuid.str} '
         'opcode=0x${command.opcode.toRadixString(16).padLeft(2, '0')} '
+        'byteLength=${data.length} '
+        'writeType=${c.properties.writeWithoutResponse ? "without_response" : "with_response"} '
         'payload=$payload',
       );
     }
     try {
       if (c.properties.writeWithoutResponse) {
-        await c.write(data, withoutResponse: true).timeout(
+        await c
+            .write(data, withoutResponse: true)
+            .timeout(
               _commandWriteTimeout,
               onTimeout: () => throw TimeoutException('E_BLE_WRITE_TIMEOUT'),
             );
       } else {
-        await c.write(data, withoutResponse: false).timeout(
+        await c
+            .write(data, withoutResponse: false)
+            .timeout(
               _commandWriteTimeout,
               onTimeout: () => throw TimeoutException('E_BLE_WRITE_TIMEOUT'),
             );
       }
       if (command.opcode == 0x06 || command.opcode == 0x05) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_DEVICE_COMMAND_GATT_WRITE_RESULT '
+          'owner=flutter hardwareId=$deviceId target=${targetUuid.str} '
+          'opcode=0x${command.opcode.toRadixString(16).padLeft(2, '0')} '
+          'success=true nativeStatus=plugin_completed',
+        );
         BleDebugRegistry.instance.recordEvent(
           'SOS_DEVICE_COMMAND_WRITE_SUCCESS '
           'owner=flutter hardwareId=$deviceId target=${targetUuid.str} '
@@ -793,6 +814,14 @@ class RealBleClient implements BleClient {
         );
       }
     } catch (error) {
+      if (command.opcode == 0x06 || command.opcode == 0x05) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_DEVICE_COMMAND_GATT_WRITE_RESULT '
+          'owner=flutter hardwareId=$deviceId target=${targetUuid.str} '
+          'opcode=0x${command.opcode.toRadixString(16).padLeft(2, '0')} '
+          'success=false nativeStatus=${error.runtimeType}',
+        );
+      }
       BleDebugRegistry.instance.update(
         lastWriteTargetCharacteristic: targetUuid.str,
         lastWriteResult: 'FAILED: $error',
@@ -822,14 +851,15 @@ class RealBleClient implements BleClient {
     }
   }
 
+  bool _canUseLegacyInetFallback(EixamDeviceCommand command) {
+    return command.supportsLegacyInetFallback;
+  }
+
   @override
   Future<Stream<EixamBleNotification>> subscribeEixamNotifications(
     String deviceId,
   ) {
-    return _subscribeEixamNotifications(
-      deviceId,
-      allowStaleGattRetry: true,
-    );
+    return _subscribeEixamNotifications(deviceId, allowStaleGattRetry: true);
   }
 
   Future<Stream<EixamBleNotification>> _subscribeEixamNotifications(
@@ -869,10 +899,7 @@ class RealBleClient implements BleClient {
       if (!refreshed) {
         rethrow;
       }
-      return _subscribeEixamNotifications(
-        deviceId,
-        allowStaleGattRetry: false,
-      );
+      return _subscribeEixamNotifications(deviceId, allowStaleGattRetry: false);
     }
     BleDebugRegistry.instance.update(
       telNotifySubscribed: true,
@@ -885,34 +912,30 @@ class RealBleClient implements BleClient {
       'BLE notify subscribe -> hardwareId=$deviceId tel=${tel.uuid.str} sos=${sos.uuid.str}',
     );
 
-    final telStream = tel.lastValueStream.map(
-      (v) {
-        final payload = v.toList();
-        return EixamBleNotification(
+    final telStream = tel.lastValueStream.map((v) {
+      final payload = v.toList();
+      return EixamBleNotification(
+        channel: EixamBleChannel.tel,
+        payload: payload,
+        receivedAt: DateTime.now(),
+        meshPort: _meshPortForLiveNotification(
           channel: EixamBleChannel.tel,
           payload: payload,
-          receivedAt: DateTime.now(),
-          meshPort: _meshPortForLiveNotification(
-            channel: EixamBleChannel.tel,
-            payload: payload,
-          ),
-        );
-      },
-    );
-    final sosStream = sos.lastValueStream.map(
-      (v) {
-        final payload = v.toList();
-        return EixamBleNotification(
+        ),
+      );
+    });
+    final sosStream = sos.lastValueStream.map((v) {
+      final payload = v.toList();
+      return EixamBleNotification(
+        channel: EixamBleChannel.sos,
+        payload: payload,
+        receivedAt: DateTime.now(),
+        meshPort: _meshPortForLiveNotification(
           channel: EixamBleChannel.sos,
           payload: payload,
-          receivedAt: DateTime.now(),
-          meshPort: _meshPortForLiveNotification(
-            channel: EixamBleChannel.sos,
-            payload: payload,
-          ),
-        );
-      },
-    );
+        ),
+      );
+    });
 
     return StreamGroup.merge([telStream, sosStream]).map((notification) {
       BleDebugRegistry.instance.update(
@@ -1118,10 +1141,7 @@ class RealBleClient implements BleClient {
   /// TEL/SOS/CMD and SoftSIM chunks fit ATT MTU 23. Nordic DFU uses its own
   /// session. On Android, request a high-priority connection interval.
   Future<void> _connectNative(BluetoothDevice device) async {
-    await device.connect(
-      timeout: _connectTimeout,
-      mtu: null,
-    );
+    await device.connect(timeout: _connectTimeout, mtu: null);
     await _requestAndroidHighConnectionPriority(device);
   }
 
@@ -1205,9 +1225,7 @@ class RealBleClient implements BleClient {
     }
   }
 
-  static Future<void> _defaultAndroidGattCacheClearer(
-    BluetoothDevice device,
-  ) {
+  static Future<void> _defaultAndroidGattCacheClearer(BluetoothDevice device) {
     return device.clearGattCache();
   }
 

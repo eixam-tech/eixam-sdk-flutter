@@ -37,6 +37,17 @@ void main() {
       expect(command.usesCmdCharacteristic, isTrue);
     });
 
+    test('app SOS trigger uses opcode 0x06 on the CMD characteristic', () {
+      final command = EixamDeviceCommand.sosTriggerApp();
+
+      expect(command.encode(), <int>[0x06]);
+      expect(command.usesCmdCharacteristic, isTrue);
+      expect(
+        command.targetCharacteristicUuid,
+        '6ba1b218-15a8-461f-9fa8-5dcae273ea04',
+      );
+    });
+
     test('setRegion encodes opcode 0x20 plus the region byte', () {
       expect(EixamDeviceCommand.setRegion(3).encode(), <int>[0x20, 0x03]);
       expect(EixamDeviceCommand.setRegion(1).encode(), <int>[0x20, 0x01]);

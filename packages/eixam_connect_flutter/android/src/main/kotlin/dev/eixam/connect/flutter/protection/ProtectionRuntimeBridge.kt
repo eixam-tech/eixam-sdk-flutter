@@ -254,13 +254,13 @@ internal object ProtectionRuntimeBridge {
                     )
                     return
                 }
-                result.success(
-                    ensureRuntimeOwner(context).sendCommand(
-                        label = label,
-                        payload = payload,
-                        forceCmdCharacteristic = forceCmdCharacteristic,
-                    ),
-                )
+                ensureRuntimeOwner(context).sendCommand(
+                    label = label,
+                    payload = payload,
+                    forceCmdCharacteristic = forceCmdCharacteristic,
+                ) { commandResult ->
+                    result.success(commandResult)
+                }
             }
             else -> result.notImplemented()
         }
