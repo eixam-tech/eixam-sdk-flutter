@@ -5,6 +5,64 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import '../data/datasources_remote/sdk_http_transport.dart';
 
+const Set<int> _sx1262TelBandwidthsKhz = <int>{125, 250, 500};
+const Set<int> _sx1262SosBandwidthsHz = <int>{
+  7800,
+  10400,
+  15600,
+  20800,
+  31250,
+  41700,
+  62500,
+  125000,
+  250000,
+  500000,
+};
+const int _sx1262MaxPowerDbm = 22;
+
+final class _RegulatoryRegion {
+  const _RegulatoryRegion({
+    required this.code,
+    required this.name,
+    required this.telBandLowHz,
+    required this.telBandHighHz,
+    required this.telMinSpreadingFactor,
+    required this.telMaxSpreadingFactor,
+    required this.telMaxPowerDbm,
+    required this.sosBandLowHz,
+    required this.sosBandHighHz,
+    required this.sosMaxPowerDbm,
+  });
+
+  final int code;
+  final String name;
+  final int telBandLowHz;
+  final int telBandHighHz;
+  final int telMinSpreadingFactor;
+  final int telMaxSpreadingFactor;
+  final int telMaxPowerDbm;
+  final int sosBandLowHz;
+  final int sosBandHighHz;
+  final int sosMaxPowerDbm;
+}
+
+// This mirrors the verified regulatory envelope in firmware's generated
+// EixamRegionPlanTable, not the backend-owned operational profile within it.
+const _RegulatoryRegion _eu868 = _RegulatoryRegion(
+  code: 3,
+  name: 'EU868',
+  telBandLowHz: 865000000,
+  telBandHighHz: 868000000,
+  telMinSpreadingFactor: 7,
+  telMaxSpreadingFactor: 9,
+  telMaxPowerDbm: 14,
+  sosBandLowHz: 869400000,
+  sosBandHighHz: 869650000,
+  sosMaxPowerDbm: 27,
+);
+
+const List<_RegulatoryRegion> _supportedRegions = <_RegulatoryRegion>[_eu868];
+
 final class ProvisioningContractException implements Exception {
   const ProvisioningContractException(this.detail, {this.observedInteger});
 
@@ -68,8 +126,8 @@ final class StrictDeviceProvisioningConfig {
     final regionCode = _requiredInt(
       json,
       'lora_region_code',
-      min: 3,
-      max: 3,
+      min: 0,
+      max: 0xff,
       detail: DeviceReadyFailureDetail.loraRegionCodeInvalid,
     );
     if (json['plan_verified'] != true) {
@@ -77,8 +135,15 @@ final class StrictDeviceProvisioningConfig {
         DeviceReadyFailureDetail.planNotVerified,
       );
     }
-    final region = json['region'];
-    if (region is! String || region.trim().toUpperCase() != 'EU868') {
+    final regionValue = json['region'];
+    if (regionValue is! String) {
+      throw const ProvisioningContractException(
+        DeviceReadyFailureDetail.regionUnsupported,
+      );
+    }
+    final regionName = regionValue.trim().toUpperCase();
+    final regulatoryRegion = _regionFor(regionCode, regionName);
+    if (regulatoryRegion == null) {
       throw const ProvisioningContractException(
         DeviceReadyFailureDetail.regionUnsupported,
       );
@@ -95,7 +160,7 @@ final class StrictDeviceProvisioningConfig {
     );
     final config = StrictDeviceProvisioningConfig(
       regionCode: regionCode,
-      region: region,
+      region: regionValue,
       tel: ProvisioningTelConfig(
         frequencyKhz: _scaledExact(
           tel,
@@ -118,20 +183,21 @@ final class StrictDeviceProvisioningConfig {
         spreadingFactor: _requiredInt(
           tel,
           'sf_default',
-          min: 7,
-          max: 9,
+          min: 0,
+          max: 0xff,
           detail: DeviceReadyFailureDetail.telSpreadingFactorInvalid,
         ),
         codingRateDenominator: _codingRate(
           tel,
           'cr',
           detail: DeviceReadyFailureDetail.telCodingRateInvalid,
+          rangeDetail: DeviceReadyFailureDetail.invalidCodingRate,
         ),
         txPowerDbm: _requiredInt(
           tel,
           'tx_power_uplink_dbm',
-          min: 0,
-          max: 14,
+          min: -0x80,
+          max: 0x7f,
           detail: DeviceReadyFailureDetail.telPowerInvalid,
         ),
       ),
@@ -157,35 +223,35 @@ final class StrictDeviceProvisioningConfig {
         spreadingFactor: _requiredInt(
           sos,
           'sf',
-          min: 7,
-          max: 7,
+          min: 0,
+          max: 0xff,
           detail: DeviceReadyFailureDetail.sosSpreadingFactorInvalid,
           missingDetail: DeviceReadyFailureDetail.sosSpreadingFactorMissing,
           typeDetail: DeviceReadyFailureDetail.sosSpreadingFactorTypeInvalid,
-          rangeDetail: DeviceReadyFailureDetail.sosSpreadingFactorNotCertified,
         ),
         codingRateDenominator: _codingRate(
           sos,
           'cr',
           detail: DeviceReadyFailureDetail.sosCodingRateInvalid,
+          rangeDetail: DeviceReadyFailureDetail.invalidCodingRate,
         ),
         txPowerDbm: _requiredInt(
           sos,
           'tx_power_dbm',
-          min: 0,
-          max: 22,
+          min: -0x80,
+          max: 0x7f,
           detail: DeviceReadyFailureDetail.sosPowerInvalid,
         ),
         preambleSymbols: _requiredInt(
           sos,
           'preamble_symbols',
-          min: 16,
-          max: 16,
+          min: 0,
+          max: 0xff,
           detail: DeviceReadyFailureDetail.sosPreambleInvalid,
         ),
       ),
     );
-    _validateCertifiedEu868(config);
+    _validateCapabilitiesAndRegion(config, regulatoryRegion);
     return config;
   }
 
@@ -251,6 +317,7 @@ final class StrictDeviceProvisioningConfig {
     Map<String, dynamic> map,
     String key, {
     required DeviceReadyFailureDetail detail,
+    required DeviceReadyFailureDetail rangeDetail,
   }) {
     final value = map[key];
     if (value is! String) {
@@ -258,36 +325,111 @@ final class StrictDeviceProvisioningConfig {
     }
     final match = RegExp(r'^4/([0-9]+)$').firstMatch(value);
     final denominator = match == null ? null : int.tryParse(match.group(1)!);
-    if (denominator == null || denominator < 5 || denominator > 8) {
+    if (denominator == null) {
       throw ProvisioningContractException(detail);
+    }
+    if (denominator < 5 || denominator > 8) {
+      throw ProvisioningContractException(
+        rangeDetail,
+        observedInteger: denominator,
+      );
     }
     return denominator;
   }
 
-  static void _validateCertifiedEu868(StrictDeviceProvisioningConfig config) {
-    // Mirrors firmware EixamRegionPlanTable's sole source-certified plan.
-    const telBandLowHz = 865000000;
-    const telBandHighHz = 868000000;
-    const sosBandLowHz = 869400000;
-    const sosBandHighHz = 869650000;
+  static void _validateCapabilitiesAndRegion(
+    StrictDeviceProvisioningConfig config,
+    _RegulatoryRegion region,
+  ) {
     final telCenterHz = config.tel.frequencyKhz * 1000;
     final telBandwidthHz = config.tel.bandwidthKhz * 1000;
-    final telFits =
-        telCenterHz - telBandwidthHz ~/ 2 >= telBandLowHz &&
-        telCenterHz + telBandwidthHz ~/ 2 <= telBandHighHz;
-    final sosFits =
-        config.sos.frequencyHz - config.sos.bandwidthHz ~/ 2 >= sosBandLowHz &&
-        config.sos.frequencyHz + config.sos.bandwidthHz ~/ 2 <= sosBandHighHz;
-    if (!telFits ||
-        !sosFits ||
-        config.tel.bandwidthKhz != 250 ||
-        config.tel.codingRateDenominator != 5 ||
-        config.sos.bandwidthHz != 62500 ||
-        config.sos.codingRateDenominator != 5) {
+    if (!_channelFitsBand(
+      centerHz: telCenterHz,
+      bandwidthHz: telBandwidthHz,
+      bandLowHz: region.telBandLowHz,
+      bandHighHz: region.telBandHighHz,
+    )) {
       throw const ProvisioningContractException(
-        DeviceReadyFailureDetail.certifiedPlanMismatch,
+        DeviceReadyFailureDetail.frequencyOutOfRegion,
       );
     }
+    if (!_channelFitsBand(
+      centerHz: config.sos.frequencyHz,
+      bandwidthHz: config.sos.bandwidthHz,
+      bandLowHz: region.sosBandLowHz,
+      bandHighHz: region.sosBandHighHz,
+    )) {
+      throw const ProvisioningContractException(
+        DeviceReadyFailureDetail.frequencyOutOfRegion,
+      );
+    }
+    if (!_sx1262TelBandwidthsKhz.contains(config.tel.bandwidthKhz)) {
+      throw ProvisioningContractException(
+        DeviceReadyFailureDetail.unsupportedBandwidth,
+        observedInteger: config.tel.bandwidthKhz,
+      );
+    }
+    if (!_sx1262SosBandwidthsHz.contains(config.sos.bandwidthHz)) {
+      throw ProvisioningContractException(
+        DeviceReadyFailureDetail.unsupportedBandwidth,
+        observedInteger: config.sos.bandwidthHz,
+      );
+    }
+    if (config.tel.spreadingFactor < region.telMinSpreadingFactor ||
+        config.tel.spreadingFactor > region.telMaxSpreadingFactor) {
+      throw ProvisioningContractException(
+        DeviceReadyFailureDetail.unsupportedSpreadingFactor,
+        observedInteger: config.tel.spreadingFactor,
+      );
+    }
+    if (config.sos.spreadingFactor < 7 || config.sos.spreadingFactor > 12) {
+      throw ProvisioningContractException(
+        DeviceReadyFailureDetail.unsupportedSpreadingFactor,
+        observedInteger: config.sos.spreadingFactor,
+      );
+    }
+    if (config.tel.txPowerDbm < 0 ||
+        config.tel.txPowerDbm > region.telMaxPowerDbm ||
+        config.tel.txPowerDbm > _sx1262MaxPowerDbm) {
+      throw ProvisioningContractException(
+        DeviceReadyFailureDetail.txPowerOutOfRange,
+        observedInteger: config.tel.txPowerDbm,
+      );
+    }
+    if (config.sos.txPowerDbm < 0 ||
+        config.sos.txPowerDbm > region.sosMaxPowerDbm ||
+        config.sos.txPowerDbm > _sx1262MaxPowerDbm) {
+      throw ProvisioningContractException(
+        DeviceReadyFailureDetail.txPowerOutOfRange,
+        observedInteger: config.sos.txPowerDbm,
+      );
+    }
+    // Firmware rejects fewer than six symbols. The one-byte 0x21 field is the
+    // upper bound; 16 remains the current ES backend policy, not an SDK rule.
+    if (config.sos.preambleSymbols < 6) {
+      throw ProvisioningContractException(
+        DeviceReadyFailureDetail.invalidPreamble,
+        observedInteger: config.sos.preambleSymbols,
+      );
+    }
+  }
+
+  static _RegulatoryRegion? _regionFor(int code, String name) {
+    for (final region in _supportedRegions) {
+      if (region.code == code && region.name == name) return region;
+    }
+    return null;
+  }
+
+  static bool _channelFitsBand({
+    required int centerHz,
+    required int bandwidthHz,
+    required int bandLowHz,
+    required int bandHighHz,
+  }) {
+    final halfBandwidthHz = bandwidthHz ~/ 2;
+    return centerHz - halfBandwidthHz >= bandLowHz &&
+        centerHz + halfBandwidthHz <= bandHighHz;
   }
 }
 

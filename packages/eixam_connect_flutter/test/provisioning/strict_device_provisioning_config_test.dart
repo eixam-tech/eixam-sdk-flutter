@@ -41,6 +41,34 @@ void main() {
     expect(config.sos.codingRateDenominator, 5);
   });
 
+  test('accepts a second supported EU868 profile supplied by backend', () {
+    final alternative = fixture();
+    (alternative['tel'] as Map<String, dynamic>)
+      ..['bw_khz'] = 125
+      ..['sf_default'] = 7
+      ..['cr'] = '4/8'
+      ..['tx_power_uplink_dbm'] = 10;
+    (alternative['sos'] as Map<String, dynamic>)
+      ..['freq_mhz'] = 869.5
+      ..['bw_khz'] = 125
+      ..['sf'] = 12
+      ..['cr'] = '4/8'
+      ..['tx_power_dbm'] = 20
+      ..['preamble_symbols'] = 8;
+
+    final config = StrictDeviceProvisioningConfig.parse(alternative);
+
+    expect(config.tel.bandwidthKhz, 125);
+    expect(config.tel.spreadingFactor, 7);
+    expect(config.tel.codingRateDenominator, 8);
+    expect(config.sos.frequencyHz, 869500000);
+    expect(config.sos.bandwidthHz, 125000);
+    expect(config.sos.spreadingFactor, 12);
+    expect(config.sos.codingRateDenominator, 8);
+    expect(config.sos.txPowerDbm, 20);
+    expect(config.sos.preambleSymbols, 8);
+  });
+
   test('decimal scaling is rational and supports exponent notation', () {
     expect(scaleProvisioningDecimalExact(128.002, 1000), 128002);
     expect(scaleProvisioningDecimalExact(1.28002e2, 1000), 128002);
@@ -51,24 +79,24 @@ void main() {
     );
   });
 
-  test('fails closed outside the source-certified EU868 plan', () {
+  test('fails closed for unknown regions and out-of-region channels', () {
     final wrongRegion = fixture()..['lora_region_code'] = 4;
     final wrongName = fixture()..['region'] = 'US915';
-    final wrongTelCr = fixture();
-    (wrongTelCr['tel'] as Map<String, dynamic>)['cr'] = '4/6';
     final outOfBand = fixture();
     (outOfBand['tel'] as Map<String, dynamic>)['freq_mhz'] = 868.0;
-    for (final invalid in <Map<String, dynamic>>[
-      wrongRegion,
-      wrongName,
-      wrongTelCr,
-      outOfBand,
-    ]) {
-      expect(
-        () => StrictDeviceProvisioningConfig.parse(invalid),
-        throwsA(isA<ProvisioningContractException>()),
-      );
-    }
+
+    expect(
+      () => StrictDeviceProvisioningConfig.parse(wrongRegion),
+      throwsA(_contractFailure(DeviceReadyFailureDetail.regionUnsupported)),
+    );
+    expect(
+      () => StrictDeviceProvisioningConfig.parse(wrongName),
+      throwsA(_contractFailure(DeviceReadyFailureDetail.regionUnsupported)),
+    );
+    expect(
+      () => StrictDeviceProvisioningConfig.parse(outOfBand),
+      throwsA(_contractFailure(DeviceReadyFailureDetail.frequencyOutOfRegion)),
+    );
   });
 
   test('requires every field, exact type, and verified plan', () {
@@ -107,13 +135,13 @@ void main() {
     );
   });
 
-  test('distinguishes missing, mistyped, and non-certified SOS SF', () {
+  test('distinguishes missing, mistyped, and unsupported SOS SF', () {
     final missing = fixture();
     (missing['sos'] as Map<String, dynamic>).remove('sf');
     final mistyped = fixture();
     (mistyped['sos'] as Map<String, dynamic>)['sf'] = '12';
-    final retiredPlan = fixture();
-    (retiredPlan['sos'] as Map<String, dynamic>)['sf'] = 12;
+    final unsupported = fixture();
+    (unsupported['sos'] as Map<String, dynamic>)['sf'] = 6;
 
     expect(
       () => StrictDeviceProvisioningConfig.parse(missing),
@@ -130,11 +158,11 @@ void main() {
       ),
     );
     expect(
-      () => StrictDeviceProvisioningConfig.parse(retiredPlan),
+      () => StrictDeviceProvisioningConfig.parse(unsupported),
       throwsA(
         _contractFailure(
-          DeviceReadyFailureDetail.sosSpreadingFactorNotCertified,
-        ).having((error) => error.observedInteger, 'observedInteger', 12),
+          DeviceReadyFailureDetail.unsupportedSpreadingFactor,
+        ).having((error) => error.observedInteger, 'observedInteger', 6),
       ),
     );
   });
@@ -166,20 +194,47 @@ void main() {
   );
 
   test('rejects invalid SF, power, bandwidth, region and preamble ranges', () {
-    final mutations = <void Function(Map<String, dynamic>)>[
-      (json) => (json['tel'] as Map<String, dynamic>)['sf_default'] = 13,
-      (json) =>
-          (json['tel'] as Map<String, dynamic>)['tx_power_uplink_dbm'] = 128,
-      (json) => (json['sos'] as Map<String, dynamic>)['bw_khz'] = 0,
-      (json) => json['lora_region_code'] = 256,
-      (json) => (json['sos'] as Map<String, dynamic>)['preamble_symbols'] = 0,
-    ];
-    for (final mutate in mutations) {
+    final cases =
+        <(void Function(Map<String, dynamic>), DeviceReadyFailureDetail)>[
+          (
+            (json) => (json['tel'] as Map<String, dynamic>)['sf_default'] = 10,
+            DeviceReadyFailureDetail.unsupportedSpreadingFactor,
+          ),
+          (
+            (json) =>
+                (json['tel'] as Map<String, dynamic>)['tx_power_uplink_dbm'] =
+                    15,
+            DeviceReadyFailureDetail.txPowerOutOfRange,
+          ),
+          (
+            (json) => (json['sos'] as Map<String, dynamic>)['bw_khz'] = 50,
+            DeviceReadyFailureDetail.unsupportedBandwidth,
+          ),
+          (
+            (json) => (json['sos'] as Map<String, dynamic>)['cr'] = '4/9',
+            DeviceReadyFailureDetail.invalidCodingRate,
+          ),
+          (
+            (json) =>
+                (json['sos'] as Map<String, dynamic>)['tx_power_dbm'] = 23,
+            DeviceReadyFailureDetail.txPowerOutOfRange,
+          ),
+          (
+            (json) =>
+                (json['sos'] as Map<String, dynamic>)['preamble_symbols'] = 5,
+            DeviceReadyFailureDetail.invalidPreamble,
+          ),
+          (
+            (json) => json['lora_region_code'] = 256,
+            DeviceReadyFailureDetail.loraRegionCodeInvalid,
+          ),
+        ];
+    for (final (mutate, detail) in cases) {
       final json = fixture();
       mutate(json);
       expect(
         () => StrictDeviceProvisioningConfig.parse(json),
-        throwsA(isA<ProvisioningContractException>()),
+        throwsA(_contractFailure(detail)),
       );
     }
   });

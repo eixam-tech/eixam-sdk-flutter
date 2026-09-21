@@ -223,7 +223,10 @@ GET /v1/sdk/device-configs?country_iso=<ISO>
 
 The backend currently stores and returns the selected device configuration as
 free-form JSON. Phase 2A does not trust that shape implicitly: it strict-parses
-the required fields and accepts only the source-certified EU868 plan below.
+the required fields, resolves the declared regulatory region, and validates
+that the backend-selected values are representable by the protocol, supported
+by the TAG radio/firmware, and contained within that region's verified bands.
+The backend remains the source of truth for the operational profile.
 
 ```json
 {
@@ -248,10 +251,13 @@ the required fields and accepts only the source-certified EU868 plan below.
 }
 ```
 
-No provisioning fallback or legacy default is allowed. A missing, malformed,
-unverified, non-EU868, or unsupported plan produces `configurationInvalid` or
-`configurationUnavailable` before mutation. Adding another region requires an
-explicit source-certified plan and SDK validation update.
+The JSON above is the current ES deployment profile, not a universal SDK
+constant. A different profile is accepted when it passes the same capability
+and EU868 safety checks. No provisioning fallback or legacy default is allowed.
+A missing, malformed, unverified, unknown-region, or unsupported plan produces
+`configurationInvalid` or `configurationUnavailable` before mutation. Adding
+another region requires an explicit verified regulatory envelope in firmware
+and the SDK; it does not require hardcoding per-country operational profiles.
 
 ### Exact conversions
 
@@ -388,15 +394,19 @@ Phase 2A sends the exact 12-byte full form:
 | 10 | 1 | coding-rate denominator |
 | 11 | 1 | TX power in dBm, signed i8 |
 
-The accepted source-certified EU868 constraints are:
+The accepted EU868 capability and regulatory constraints are:
 
 - region code 3 and textual region `EU868`;
 - `plan_verified=true`;
 - TEL channel fully contained within 865–868 MHz;
-- bandwidth exactly 250 kHz;
-- SF 7–9, with backend default currently 9;
-- coding rate exactly 4/5;
+- bandwidth 125, 250, or 500 kHz (the values exactly representable end to end
+  by the integer-kHz `0x20` field and the SX1262);
+- SF 7–9;
+- coding-rate denominator 5–8;
 - uplink power 0–14 dBm.
+
+Frequency 866.5 MHz, BW250, SF9, CR4/5, and 14 dBm are the current backend
+selection. The SDK does not require that exact combination.
 
 The readiness orchestrator always sends the full `0x20` TEL RF frame. It does
 not attempt alternate provisioning behavior for older firmware.
@@ -424,9 +434,18 @@ Phase 2A sends exactly 14 bytes:
 | 12 | 1 | TX power in dBm, signed i8 |
 | 13 | 1 | preamble symbols |
 
-The current certified EU868 values are 869,618,000 Hz, 62,500 Hz bandwidth,
-SF7, coding rate 4/5, 22 dBm, and preamble 16. The entire channel must fit in
-the firmware SOS band 869.4–869.65 MHz.
+The SDK accepts SX1262 SOS bandwidths 7.8, 10.4, 15.6, 20.8, 31.25, 41.7,
+62.5, 125, 250, or 500 kHz when the complete channel fits inside the verified
+EU868 SOS band 869.4–869.65 MHz. It also requires SF7–12, coding-rate
+denominator 5–8, conducted power 0–22 dBm, and a 6–255-symbol preamble. The
+current ES backend selection remains 869,618,000 Hz, BW62.5, SF7, CR4/5,
+22 dBm, and preamble 16.
+
+Preamble 16 and the other exact ES values are deployment interoperability
+policy: every participant in that deployed network must receive the same
+backend profile. Preamble 8 is nevertheless a valid firmware/protocol value
+and is not rejected merely for differing from ES policy. The SDK validates
+safety and capability; it does not replace backend profile selection.
 
 Firmware validates and persists the complete SOS RF record. Sending the same
 valid record is operationally idempotent: it persists the same values and
@@ -1015,7 +1034,7 @@ High-value covered scenarios include:
 - reboot lower bound, accepted disconnect, and missing disconnect;
 - reconnect platform identity, node identity, and fresh final `0x23`;
 - exact RF decimal conversion, exponent input, fractional rejection, and overflow;
-- strict source-certified EU868 constraints;
+- strict capability and EU868 regulatory-envelope constraints;
 - `E9 7A`/`E9 78`/D3/TEL/SOS routing without collisions;
 - D3-shaped SOS/TEL collision regressions and existing SOS regressions.
 
@@ -1081,7 +1100,7 @@ Phase 2A does not include:
 
 - automatic reprovisioning of an already-provisioned TAG;
 - automatic app reassignment or ownership transfer;
-- multi-region RF support beyond source-certified EU868;
+- multi-region RF support beyond the verified EU868 regulatory envelope;
 - a raw provisioning API for partner applications;
 - firmware OTA/DFU implementation changes;
 - backend schema redesign solely to replace free-form configuration JSON;
