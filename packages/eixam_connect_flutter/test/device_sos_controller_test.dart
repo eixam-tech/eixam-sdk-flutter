@@ -294,6 +294,42 @@ void main() {
       },
     );
 
+    test(
+      'proven physical edge bypasses pending cancel retry without cooldown',
+      () async {
+        final controller = DeviceSosController(
+          countdownDuration: const Duration(milliseconds: 5),
+          countdownTick: const Duration(milliseconds: 1),
+          appActivationObservationTimeout: const Duration(milliseconds: 20),
+        );
+        addTearDown(controller.dispose);
+        await controller.attach(commandWriter: (_) async {});
+        await _promoteDeviceSosToActive(controller);
+        await controller.cancelSos();
+        expect(controller.currentStatus.state, DeviceSosState.inactive);
+
+        controller.handleIncomingSosPacket(
+          _activePacket(),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: const DeviceSosStateResolutionContext(
+            incomingPacketType: 'sos',
+            incomingClassification: 'ownDeviceSos',
+            incomingReceiveSequence: 3,
+            previousLifecycleState: 'cancelled',
+            terminalGeneration: 1,
+            currentGeneration: 1,
+            appOwnedGeneration: null,
+            appMirrorDispatched: false,
+            afterTerminalBoundary: true,
+            allowFreshPhysicalStartAfterTerminal: true,
+          ),
+        );
+
+        expect(controller.currentStatus.state, DeviceSosState.preConfirm);
+        expect(controller.currentStatus.previousState, DeviceSosState.inactive);
+      },
+    );
+
     test('pending cancel retry remains alive while waiting for ACK', () async {
       final commands = <EixamDeviceCommand>[];
       final controller = DeviceSosController(
@@ -847,6 +883,51 @@ void main() {
       expect(status.updatedAt, terminalStatus.updatedAt);
       expect(status.lastPacketSignature, terminalStatus.lastPacketSignature);
     });
+
+    test(
+      'newer proven physical edge overrides a consumed terminal fingerprint',
+      () {
+        final controller = DeviceSosController(
+          countdownDuration: const Duration(milliseconds: 40),
+          countdownTick: const Duration(milliseconds: 5),
+        );
+        addTearDown(controller.dispose);
+
+        final reusedPacket = _activePacket();
+        controller.handleIncomingSosPacket(
+          reusedPacket,
+          source: DeviceSosTransitionSource.device,
+        );
+        controller.handleIncomingSosEventPacket(
+          _deviceClearPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+
+        controller.handleIncomingSosPacket(
+          reusedPacket,
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: const DeviceSosStateResolutionContext(
+            incomingPacketType: 'sos',
+            incomingClassification: 'ownDeviceSos',
+            incomingReceiveSequence: 3,
+            previousLifecycleState: 'cancelled',
+            terminalGeneration: 1,
+            currentGeneration: 1,
+            appOwnedGeneration: null,
+            appMirrorDispatched: false,
+            afterTerminalBoundary: true,
+            allowFreshPhysicalStartAfterTerminal: true,
+          ),
+        );
+
+        final status = controller.currentStatus;
+        expect(status.state, DeviceSosState.preConfirm);
+        expect(status.previousState, DeviceSosState.inactive);
+        expect(status.packetId, reusedPacket.packetId);
+        expect(status.countdownStartedAt, isNotNull);
+        expect(status.expectedActivationAt, isNotNull);
+      },
+    );
 
     test(
       'fresh packet fingerprint reopens immediately after post-fire cancel',

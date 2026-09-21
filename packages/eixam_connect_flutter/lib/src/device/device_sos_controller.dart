@@ -10,6 +10,32 @@ import 'eixam_sos_packet.dart';
 typedef DeviceCommandWriter = Future<void> Function(EixamDeviceCommand command);
 typedef DeviceTerminalOperationGuard = bool Function();
 
+class DeviceSosStateResolutionContext {
+  const DeviceSosStateResolutionContext({
+    required this.incomingPacketType,
+    required this.incomingClassification,
+    required this.incomingReceiveSequence,
+    required this.previousLifecycleState,
+    required this.terminalGeneration,
+    required this.currentGeneration,
+    required this.appOwnedGeneration,
+    required this.appMirrorDispatched,
+    required this.afterTerminalBoundary,
+    required this.allowFreshPhysicalStartAfterTerminal,
+  });
+
+  final String incomingPacketType;
+  final String incomingClassification;
+  final int? incomingReceiveSequence;
+  final String previousLifecycleState;
+  final int terminalGeneration;
+  final int currentGeneration;
+  final int? appOwnedGeneration;
+  final bool appMirrorDispatched;
+  final bool afterTerminalBoundary;
+  final bool allowFreshPhysicalStartAfterTerminal;
+}
+
 class DeviceSosController {
   DeviceSosController({
     Duration countdownDuration = const Duration(seconds: 20),
@@ -802,17 +828,35 @@ class DeviceSosController {
   void handleIncomingSosPacket(
     EixamSosPacket packet, {
     required DeviceSosTransitionSource source,
+    DeviceSosStateResolutionContext? resolutionContext,
   }) {
     final previousStatus = _status;
     final previous = previousStatus.state;
     final now = _now();
     final packetSignature =
         '${packet.nodeId}:${packet.packetId}:${packet.rawHex}';
+    final incomingCycleKey = _deriveDeviceSosCycleKey(
+      nodeId: packet.nodeId,
+      packetId: packet.packetId,
+    );
+    final previousCycleKey = _deriveDeviceSosCycleKey(
+      nodeId: previousStatus.nodeId,
+      packetId: previousStatus.packetId,
+    );
+    final rawIdentityReused =
+        _isClosedState(previous) &&
+        incomingCycleKey != null &&
+        incomingCycleKey == previousCycleKey;
+    final fingerprintConsumed =
+        _isClosedState(previous) &&
+        _terminalCyclePacketSignatures.contains(packetSignature);
     final resolution = _resolveMeshPacketState(
       packet,
       currentStatus: previousStatus,
       source: source,
       packetSignature: packetSignature,
+      allowFreshPhysicalStartAfterTerminal:
+          resolutionContext?.allowFreshPhysicalStartAfterTerminal ?? false,
     );
     final nextState = resolution.resolvedState;
     final event =
@@ -839,6 +883,29 @@ class DeviceSosController {
       'finalResolvedState=${nextState.name} '
       'reason=${resolution.reason} '
       'cycleKey=${resolution.cycleKey ?? "-"}',
+    );
+    final historicalTerminalOverrideDefeated =
+        fingerprintConsumed &&
+        resolutionContext?.allowFreshPhysicalStartAfterTerminal == true &&
+        nextState == DeviceSosState.preConfirm;
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_DEVICE_STATE_RESOLUTION '
+      'incomingPacketType=${resolutionContext?.incomingPacketType ?? "sos"} '
+      'incomingClassification=${resolutionContext?.incomingClassification ?? "unknown"} '
+      'incomingReceiveSequence=${resolutionContext?.incomingReceiveSequence ?? -1} '
+      'previousLifecycleState=${resolutionContext?.previousLifecycleState ?? "unknown"} '
+      'previousDeviceState=${previous.name} '
+      'terminalGeneration=${resolutionContext?.terminalGeneration ?? 0} '
+      'currentGeneration=${resolutionContext?.currentGeneration ?? 0} '
+      'appOwnedGeneration=${resolutionContext?.appOwnedGeneration ?? "none"} '
+      'appMirrorDispatched=${resolutionContext?.appMirrorDispatched ?? false} '
+      'rawIdentityReused=$rawIdentityReused '
+      'fingerprintConsumed=$fingerprintConsumed '
+      'afterTerminalBoundary=${resolutionContext?.afterTerminalBoundary ?? false} '
+      'protocolResolvedState=${resolution.protocolState.name} '
+      'finalResolvedState=${nextState.name} '
+      'winningPredicate=${historicalTerminalOverrideDefeated ? "fresh_physical_edge_after_terminal" : resolution.reason} '
+      'reason=${historicalTerminalOverrideDefeated ? "live_start_precedes_historical_terminal_fingerprint" : resolution.classificationReason}',
     );
     if (previousStatus.optimistic &&
         previousStatus.triggerOrigin == DeviceSosTransitionSource.app) {
@@ -873,6 +940,8 @@ class DeviceSosController {
       source: source,
       currentStatus: previousStatus,
       resolution: resolution,
+      allowFreshPhysicalStartAfterTerminal:
+          resolutionContext?.allowFreshPhysicalStartAfterTerminal ?? false,
     )) {
       BleDebugRegistry.instance.recordEvent(
         'SOS_TRACE device_rearm_suppressed reason=pending_terminal_command',
@@ -1118,6 +1187,7 @@ class DeviceSosController {
     required DeviceSosStatus currentStatus,
     required DeviceSosTransitionSource source,
     required String packetSignature,
+    required bool allowFreshPhysicalStartAfterTerminal,
   }) {
     final protocolState = _resolveProtocolSosPacketState(packet);
     final cycleKey = _deriveDeviceSosCycleKey(
@@ -1153,7 +1223,8 @@ class DeviceSosController {
     final replaysConsumedTerminalPacket =
         _isClosedState(currentStatus.state) &&
         _terminalCyclePacketSignatures.contains(packetSignature);
-    if (replaysConsumedTerminalPacket) {
+    if (replaysConsumedTerminalPacket &&
+        !allowFreshPhysicalStartAfterTerminal) {
       final closedDecision = currentStatus.state == DeviceSosState.inactive
           ? 'terminal_cancelled'
           : 'terminal_resolved';
@@ -1494,6 +1565,7 @@ class DeviceSosController {
     required DeviceSosTransitionSource source,
     required DeviceSosStatus currentStatus,
     required _MeshPacketResolution resolution,
+    required bool allowFreshPhysicalStartAfterTerminal,
   }) {
     final pending = _pendingTerminalCommand;
     if (pending == null) {
@@ -1509,6 +1581,16 @@ class DeviceSosController {
     final anchor = pending.sentAt ?? pending.requestedAt;
     if (_now().difference(anchor) > _terminalCycleSuppressionWindow) {
       _pendingTerminalCommand = null;
+      return false;
+    }
+    if (allowFreshPhysicalStartAfterTerminal &&
+        source == DeviceSosTransitionSource.device &&
+        _isClosedState(currentStatus.state) &&
+        resolution.resolvedState == DeviceSosState.preConfirm) {
+      _pendingTerminalCommand = null;
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_TRACE device_rearm_allowed reason=fresh_physical_edge_after_terminal',
+      );
       return false;
     }
     if (source == DeviceSosTransitionSource.device &&
