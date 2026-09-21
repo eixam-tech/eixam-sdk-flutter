@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_core/src/interfaces/realtime_client.dart';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, kDebugMode, visibleForTesting;
 import 'package:flutter/widgets.dart';
@@ -93,6 +95,52 @@ SosBleRuntimeOwner resolveAuthoritativeSosBleRuntimeOwner({
   return declaredOwner != ProtectionBleOwner.flutter && nativeConnectionLive
       ? SosBleRuntimeOwner.nativeProtection
       : SosBleRuntimeOwner.flutter;
+}
+
+@visibleForTesting
+enum NativeProtectionCommandReadinessFailure {
+  none,
+  ownerNotNative,
+  gattNotConnected,
+  canonicalCommandPathNotReady,
+  targetIdentityMismatch,
+  operationQueueFailed,
+}
+
+@visibleForTesting
+class NativeProtectionCommandReadiness {
+  const NativeProtectionCommandReadiness({
+    required this.ready,
+    required this.failure,
+  });
+
+  final bool ready;
+  final NativeProtectionCommandReadinessFailure failure;
+}
+
+@visibleForTesting
+NativeProtectionCommandReadiness evaluateNativeProtectionCommandReadiness({
+  required ProtectionBleOwner declaredOwner,
+  required bool serviceBleConnected,
+  required bool serviceBleReady,
+  required bool exactTargetIdentityMatch,
+  required bool operationQueueOperational,
+}) {
+  final failure = declaredOwner == ProtectionBleOwner.flutter
+      ? NativeProtectionCommandReadinessFailure.ownerNotNative
+      : !serviceBleConnected
+      ? NativeProtectionCommandReadinessFailure.gattNotConnected
+      : !serviceBleReady
+      ? NativeProtectionCommandReadinessFailure.canonicalCommandPathNotReady
+      : !exactTargetIdentityMatch
+      ? NativeProtectionCommandReadinessFailure.targetIdentityMismatch
+      : !operationQueueOperational
+      ? NativeProtectionCommandReadinessFailure.operationQueueFailed
+      : NativeProtectionCommandReadinessFailure.none;
+  return NativeProtectionCommandReadiness(
+    ready: failure == NativeProtectionCommandReadinessFailure.none,
+    failure: failure,
+  );
 }
 
 /// Main SDK orchestrator used by host apps.
@@ -470,6 +518,7 @@ class EixamConnectSdkImpl
   bool _firmwareOtaInProgress = false;
   bool _migrationInspectionInProgress = false;
   bool _bleOwnershipHandoffInFlight = false;
+  bool _nativeCommandReadinessRefreshInFlight = false;
 
   Timer? _deathManTimer;
   bool _deathManCheckInNotified = false;
@@ -530,6 +579,7 @@ class EixamConnectSdkImpl
   _TerminalDeviceCycleFence? _terminalDeviceCycleFence;
   final Map<int, Set<String>> _devicePacketSignaturesByGeneration =
       <int, Set<String>>{};
+  final Set<int> _deviceMirrorDispatchedGenerations = <int>{};
   int? _knownLocalDeviceNodeId;
   SosDeliveryChannel? _lastPublishedCurrentSosCapabilityChannel;
   String? _lastSosCapabilityEvaluationSignature;
@@ -993,10 +1043,15 @@ class EixamConnectSdkImpl
       }
       final nativeOwnershipStarted =
           nativeOwnsBle && previousOwner == ProtectionBleOwner.flutter;
+      final nativeConnectionBecameLive =
+          nativeOwnsBle && nativeLive && !previousConnected;
+      final nativeCommandPathBecameReady =
+          nativeOwnsBle && status.serviceBleReady && !previousReady;
       final nativeBecameAuthoritative =
-          nativeOwnsBle &&
           nativeLive &&
-          (nativeOwnershipStarted || !previousConnected || !previousReady);
+          (nativeOwnershipStarted ||
+              nativeConnectionBecameLive ||
+              nativeCommandPathBecameReady);
       if (nativeBecameAuthoritative) {
         unawaited(_handleProtectionBleOwnershipChanged(status.bleOwner));
       }
@@ -1600,6 +1655,7 @@ class EixamConnectSdkImpl
     _latestOwnDeviceInactiveBoundary = null;
     _terminalDeviceCycleFence = null;
     _devicePacketSignaturesByGeneration.clear();
+    _deviceMirrorDispatchedGenerations.clear();
     _clearPreSosSession(reason: 'session_cleared', emitIdleState: false);
     _clearPendingAppTriggeredSosBridge(reason: 'session_cleared');
     _clearDeviceRuntimeSosOwnership(reason: 'session_cleared');
@@ -5360,6 +5416,7 @@ class EixamConnectSdkImpl
           'path=ble_inet_sos_trigger countdown=${countdown.inSeconds}',
         );
         final deviceStatus = await triggerDeviceSos();
+        _deviceMirrorDispatchedGenerations.add(armingLifecycle.generation);
         mirroredOnDevice =
             deviceStatus.derivedFromBlePacket &&
             deviceStatus.transitionSource == DeviceSosTransitionSource.device &&
@@ -7698,6 +7755,14 @@ class EixamConnectSdkImpl
       return 'none';
     }
     return summary.length <= 240 ? summary : '${summary.substring(0, 240)}...';
+  }
+
+  String _sosFingerprintDiagnosticMarker(String? fingerprint) {
+    final normalized = fingerprint?.trim();
+    if (normalized == null || normalized.isEmpty) {
+      return 'none';
+    }
+    return sha256.convert(utf8.encode(normalized)).toString();
   }
 
   SdkDeviceBatterySnapshot? _buildDeviceBatterySnapshot(DeviceStatus? status) {
@@ -12863,15 +12928,31 @@ class EixamConnectSdkImpl
     final packetWasConsumedByTerminalGeneration =
         hasPacketFingerprint &&
         terminalConsumedPacketSignatures.contains(incomingPacketSignature);
+    final packetWasPreviouslyConsumed =
+        hasPacketFingerprint &&
+        _devicePacketSignaturesByGeneration.values.any(
+          (signatures) => signatures.contains(incomingPacketSignature),
+        );
     final hasUnconsumedPacketFingerprint =
-        hasPacketFingerprint && !packetWasConsumedByTerminalGeneration;
+        hasPacketFingerprint && !packetWasPreviouslyConsumed;
+    final localReceiveAfterTerminal = isStrictlyNewerSosReceiveSequence(
+      incomingSequence: eventSequence,
+      terminalBoundarySequence: terminalBoundaryEventSequence,
+    );
+    final exactHardwareMatch = _hasExactConnectedHardwareIdentity(terminal);
+    final exactIncomingPhysicalIdentity =
+        _hasExactConnectedPhysicalIdentityForStatus(status);
+    final terminalWasBackendOnlyAppGeneration =
+        terminal.origin == SosLifecycleOrigin.localApp &&
+        !_deviceMirrorDispatchedGenerations.contains(terminal.generation) &&
+        terminalConsumedPacketSignatures.isEmpty;
     final validFreshPhysicalEdge =
         validFreshPhysicalEdgeWithoutReplayCheck &&
         status.lastPacketAt != null &&
         status.sosType != null &&
         (status.relayCount ?? 0) == 0 &&
         hasStrongConnectedIdentity &&
-        _hasExactConnectedHardwareIdentity(terminal) &&
+        exactHardwareMatch &&
         incomingCycleKey != null &&
         fencedCycleKey != null &&
         hasUnconsumedPacketFingerprint;
@@ -12880,14 +12961,11 @@ class EixamConnectSdkImpl
         status.previousState == DeviceSosState.inactive &&
         (status.relayCount ?? 0) == 0 &&
         hasStrongConnectedIdentity &&
-        _hasExactConnectedHardwareIdentity(terminal) &&
+        exactHardwareMatch &&
         incomingCycleKey != null &&
         fencedCycleKey != null &&
         incomingCycleKey != fencedCycleKey &&
-        isStrictlyNewerSosReceiveSequence(
-          incomingSequence: eventSequence,
-          terminalBoundarySequence: terminalBoundaryEventSequence,
-        ) &&
+        localReceiveAfterTerminal &&
         hasUnconsumedPacketFingerprint;
     // Firmware resets its packet/retry counters only when countdown promotes
     // to ACTIVE. The first BLE countdown packet can therefore legitimately
@@ -12905,26 +12983,81 @@ class EixamConnectSdkImpl
         status.sosType != null &&
         (status.relayCount ?? 0) == 0 &&
         hasStrongConnectedIdentity &&
-        _hasExactConnectedHardwareIdentity(terminal) &&
+        exactHardwareMatch &&
         incomingCycleKey != null &&
         fencedCycleKey != null &&
         incomingCycleKey == fencedCycleKey &&
-        isStrictlyNewerSosReceiveSequence(
-          incomingSequence: eventSequence,
-          terminalBoundarySequence: terminalBoundaryEventSequence,
-        ) &&
+        localReceiveAfterTerminal &&
         terminalConsumedPacketSignatures.isNotEmpty &&
         hasUnconsumedPacketFingerprint;
+    final validBackendOnlyAppThenPhysicalRisingEdge =
+        terminalWasBackendOnlyAppGeneration &&
+        status.state == DeviceSosState.preConfirm &&
+        status.previousState == DeviceSosState.inactive &&
+        status.lastPacketAt != null &&
+        status.sosType != null &&
+        (status.relayCount ?? 0) == 0 &&
+        hasStrongConnectedIdentity &&
+        exactIncomingPhysicalIdentity &&
+        incomingCycleKey != null &&
+        localReceiveAfterTerminal &&
+        hasUnconsumedPacketFingerprint;
+    final connectedDevice = _lastPublicDeviceStatus ?? _lastDeviceStatus;
+    final normalizedStatusNodeId = _normalizeNodeIdOrNull(status.nodeId);
+    final normalizedConnectedNodeId = _normalizeNodeIdOrNull(
+      connectedDevice?.nodeId ?? _knownLocalDeviceNodeId,
+    );
+    final nodeMatch =
+        normalizedStatusNodeId != null &&
+        normalizedConnectedNodeId != null &&
+        normalizedStatusNodeId == normalizedConnectedNodeId;
+    final terminalDeviceId = terminal.deviceId?.trim();
+    final connectedDeviceId = connectedDevice?.deviceId.trim();
+    final deviceMatch =
+        terminalDeviceId?.isNotEmpty != true ||
+        (connectedDeviceId?.isNotEmpty == true &&
+            (connectedDeviceId!.toLowerCase() ==
+                    terminalDeviceId!.toLowerCase() ||
+                _samePhysicalHardwareId(connectedDeviceId, terminalDeviceId)));
+    final terminalHardwareId = terminal.hardwareId?.trim();
+    final connectedHardwareId = _physicalHardwareIdForStatus(connectedDevice);
+    final hardwareMatch =
+        terminalHardwareId?.isNotEmpty != true ||
+        (connectedHardwareId?.isNotEmpty == true &&
+            _samePhysicalHardwareId(connectedHardwareId!, terminalHardwareId!));
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_FRESH_GENERATION_EVAL '
+      'terminalGeneration=${terminal.generation} '
+      'currentGeneration=${current.generation} '
+      'rawPacketId=${status.packetId?.toString() ?? "none"} '
+      'fingerprintSha256=${_sosFingerprintDiagnosticMarker(incomingPacketSignature)} '
+      'fingerprintConsumed=$packetWasPreviouslyConsumed '
+      'consumedByTerminal=$packetWasConsumedByTerminalGeneration '
+      'receiveSequence=$eventSequence '
+      'terminalBoundarySequence=$terminalBoundaryEventSequence '
+      'reducerPrevious=${status.previousState?.name ?? "none"} '
+      'reducerNext=${status.state.name} '
+      'nodeMatch=$nodeMatch deviceMatch=$deviceMatch '
+      'hardwareMatch=$hardwareMatch exactHardwareMatch=$exactHardwareMatch '
+      'exactIncomingPhysicalIdentity=$exactIncomingPhysicalIdentity '
+      'relayCount=${status.relayCount ?? 0} '
+      'sourceBle=${status.derivedFromBlePacket && status.transitionSource == DeviceSosTransitionSource.device} '
+      'localReceiveAfterTerminal=$localReceiveAfterTerminal '
+      'inactiveBoundary=$hasInactiveBoundary '
+      'terminalDeviceMirrorDispatched=${_deviceMirrorDispatchedGenerations.contains(terminal.generation)} '
+      'terminalBackendOnlyApp=$terminalWasBackendOnlyAppGeneration '
+      'admitInactiveBoundary=$validFreshPhysicalEdge '
+      'admitDistinctProtocolCounter=$validStrongNewCycle '
+      'admitReusedProtocolCounter=$validStrongReusedPhysicalRisingEdge '
+      'admitBackendOnlyAppEdge=$validBackendOnlyAppThenPhysicalRisingEdge',
+    );
     if (!validFreshPhysicalEdge &&
         !validStrongNewCycle &&
-        !validStrongReusedPhysicalRisingEdge) {
-      final rejectionReason =
-          !isStrictlyNewerSosReceiveSequence(
-            incomingSequence: eventSequence,
-            terminalBoundarySequence: terminalBoundaryEventSequence,
-          )
+        !validStrongReusedPhysicalRisingEdge &&
+        !validBackendOnlyAppThenPhysicalRisingEdge) {
+      final rejectionReason = !localReceiveAfterTerminal
           ? 'old_sequence'
-          : packetWasConsumedByTerminalGeneration
+          : packetWasPreviouslyConsumed
           ? 'packet_replay'
           : incomingCycleKey == null ||
                 fencedCycleKey == null ||
@@ -12945,6 +13078,8 @@ class EixamConnectSdkImpl
           ? "inactive_boundary"
           : validStrongReusedPhysicalRisingEdge
           ? "direct_device_rising_edge"
+          : validBackendOnlyAppThenPhysicalRisingEdge
+          ? "backend_only_app_then_physical_edge"
           : "strong_new_cycle"} '
       'eventSeq=$eventSequence rawIdentityReused=$rawIdentityReused '
       'strongIdentity=$hasStrongConnectedIdentity newCycle=${!rawIdentityReused} '
@@ -13019,6 +13154,24 @@ class EixamConnectSdkImpl
         connectedHardwareId?.isNotEmpty == true &&
         terminalHardwareId?.isNotEmpty == true &&
         _samePhysicalHardwareId(connectedHardwareId!, terminalHardwareId!);
+  }
+
+  bool _hasExactConnectedPhysicalIdentityForStatus(DeviceSosStatus status) {
+    final connectedDevice = _lastPublicDeviceStatus ?? _lastDeviceStatus;
+    if (connectedDevice?.connected != true) {
+      return false;
+    }
+    final connectedDeviceId = connectedDevice?.deviceId.trim();
+    final connectedHardwareId = _physicalHardwareIdForStatus(connectedDevice);
+    final statusNodeId = _normalizeNodeIdOrNull(status.nodeId);
+    final connectedNodeId = _normalizeNodeIdOrNull(
+      connectedDevice?.nodeId ?? _knownLocalDeviceNodeId,
+    );
+    return connectedDeviceId?.isNotEmpty == true &&
+        connectedHardwareId?.isNotEmpty == true &&
+        statusNodeId != null &&
+        connectedNodeId != null &&
+        statusNodeId == connectedNodeId;
   }
 
   bool _deviceStatusHasNewCycleIdentity(
@@ -17642,6 +17795,39 @@ class EixamConnectSdkImpl
       ? 'native_protection'
       : 'flutter_writer';
 
+  bool _nativeProtectionTargetMatchesConnectedDevice(
+    ProtectionStatus protectionStatus,
+  ) {
+    final connectedDevice = _lastPublicDeviceStatus ?? _lastDeviceStatus;
+    final expectedTargets =
+        <String?>[
+              connectedDevice?.deviceId,
+              connectedDevice?.canonicalHardwareId,
+            ]
+            .whereType<String>()
+            .map((value) => value.trim())
+            .where((value) => value.isNotEmpty)
+            .toSet();
+    final nativeTargets =
+        <String?>[
+              protectionStatus.activeDeviceId,
+              protectionStatus.protectedDeviceId,
+            ]
+            .whereType<String>()
+            .map((value) => value.trim())
+            .where((value) => value.isNotEmpty)
+            .toSet();
+    return expectedTargets.isNotEmpty &&
+        nativeTargets.isNotEmpty &&
+        expectedTargets.any(
+          (expected) => nativeTargets.any(
+            (actual) =>
+                expected.toLowerCase() == actual.toLowerCase() ||
+                _samePhysicalHardwareId(expected, actual),
+          ),
+        );
+  }
+
   bool get _isAuthoritativeNativeProtectionBleOwner {
     final status = _protectionModeController.currentStatus;
     if (status.modeState == ProtectionModeState.off) {
@@ -18719,6 +18905,7 @@ class EixamConnectSdkImpl
     _latestOwnDeviceInactiveBoundary = null;
     _terminalDeviceCycleFence = null;
     _devicePacketSignaturesByGeneration.clear();
+    _deviceMirrorDispatchedGenerations.clear();
     _deviceOwnedBackendIncidentId = null;
     _lastDeviceRuntimeCanonicalIncidentSignature = null;
     _lastDeviceRuntimeCanonicalIncident = null;
@@ -20147,6 +20334,7 @@ class EixamConnectSdkImpl
   Future<SosCapabilitySnapshot> _buildSosCapability({
     required String reason,
   }) async {
+    await _refreshNativeProtectionCommandReadiness(reason: reason);
     final route = _computeCurrentSosCapabilitySnapshot(
       reason: reason,
       recordDiagnostics: reason != 'lifecycle_change',
@@ -20237,6 +20425,54 @@ class EixamConnectSdkImpl
           blockingReason == SosCapabilityBlockingReason.noActivationPath,
     );
     return capability;
+  }
+
+  Future<void> _refreshNativeProtectionCommandReadiness({
+    required String reason,
+  }) async {
+    // A rehydration publishes a protection status of its own. Do not let that
+    // publication recursively start another native snapshot read when the
+    // command path is still unavailable.
+    if (reason.startsWith('protection_status:')) {
+      return;
+    }
+    final status = _protectionModeController.currentStatus;
+    if (status.modeState == ProtectionModeState.off ||
+        status.bleOwner == ProtectionBleOwner.flutter ||
+        _nativeCommandReadinessRefreshInFlight) {
+      return;
+    }
+    final currentReadiness = evaluateNativeProtectionCommandReadiness(
+      declaredOwner: status.bleOwner,
+      serviceBleConnected: status.serviceBleConnected,
+      serviceBleReady: status.serviceBleReady,
+      exactTargetIdentityMatch: _nativeProtectionTargetMatchesConnectedDevice(
+        status,
+      ),
+      operationQueueOperational:
+          status.lastCommandError?.trim().isNotEmpty != true,
+    );
+    if (currentReadiness.ready) {
+      return;
+    }
+    _nativeCommandReadinessRefreshInFlight = true;
+    try {
+      final refreshed = await _protectionModeController.rehydrate();
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_NATIVE_COMMAND_READINESS_REFRESH '
+        'reason=$reason connected=${refreshed.serviceBleConnected} '
+        'canonicalCmdReady=${refreshed.serviceBleReady} '
+        'targetMatch=${_nativeProtectionTargetMatchesConnectedDevice(refreshed)} '
+        'operationQueueOperational=${refreshed.lastCommandError?.trim().isNotEmpty != true}',
+      );
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_NATIVE_COMMAND_READINESS_REFRESH_FAILED '
+        'reason=$reason errorType=${error.runtimeType}',
+      );
+    } finally {
+      _nativeCommandReadinessRefreshInFlight = false;
+    }
   }
 
   void _logSosCapabilityEvaluation({
@@ -20347,6 +20583,16 @@ class EixamConnectSdkImpl
     final backendAvailable = _isBackendSosChannelAvailable();
     final protectionStatus = _protectionModeController.currentStatus;
     final platformOwnsBle = _isAuthoritativeNativeProtectionBleOwner;
+    final nativeCommandReadiness = evaluateNativeProtectionCommandReadiness(
+      declaredOwner: protectionStatus.bleOwner,
+      serviceBleConnected: protectionStatus.serviceBleConnected,
+      serviceBleReady: protectionStatus.serviceBleReady,
+      exactTargetIdentityMatch: _nativeProtectionTargetMatchesConnectedDevice(
+        protectionStatus,
+      ),
+      operationQueueOperational:
+          protectionStatus.lastCommandError?.trim().isNotEmpty != true,
+    );
     final chosenConnected =
         statusOverride?.connected ?? _lastDeviceStatus?.connected;
     final flutterShortCommandPath = deviceSosController.shortCommandAvailable;
@@ -20355,7 +20601,7 @@ class EixamConnectSdkImpl
         ? protectionStatus.serviceBleConnected
         : null;
     final serviceBleReady = platformOwnsBle
-        ? protectionStatus.serviceBleReady
+        ? nativeCommandReadiness.ready
         : null;
     final deviceConnected = platformOwnsBle
         ? protectionStatus.deviceConnected ||
@@ -20365,10 +20611,10 @@ class EixamConnectSdkImpl
               flutterShortCommandPath ||
               flutterLongCommandPath;
     final shortCommandAvailable = platformOwnsBle
-        ? protectionStatus.serviceBleReady || flutterShortCommandPath
+        ? nativeCommandReadiness.ready
         : flutterShortCommandPath;
     final longCommandAvailable = platformOwnsBle
-        ? protectionStatus.serviceBleReady || flutterLongCommandPath
+        ? nativeCommandReadiness.ready
         : flutterLongCommandPath;
     final deviceSosAvailable = deviceConnected && shortCommandAvailable;
     final capability = backendAvailable
@@ -20385,6 +20631,8 @@ class EixamConnectSdkImpl
         'chosenConnected=${chosenConnected ?? false} '
         'serviceBleConnected=${serviceBleConnected ?? false} '
         'serviceBleReady=${serviceBleReady ?? false} '
+        'nativeCommandReady=${nativeCommandReadiness.ready} '
+        'nativeReadinessFailure=${nativeCommandReadiness.failure.name} '
         'shortCommandAvailable=$shortCommandAvailable '
         'longCommandAvailable=$longCommandAvailable '
         'result=${capability?.name ?? "unavailable"}',

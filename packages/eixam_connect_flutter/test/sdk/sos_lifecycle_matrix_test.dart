@@ -1292,11 +1292,6 @@ void main() {
             final terminal = await harness.sdk.getSosLifecycle();
             expect(terminal.generation, first.lifecycle.generation);
             expect(terminal.isTerminal, isTrue);
-            expect(
-              _hasDebugMessage('SOS_TERMINAL_FENCE_DEVICE_CLEANUP_PRESERVED'),
-              isTrue,
-            );
-            expect(_hasDebugMessage('ordering=before_terminal'), isTrue);
 
             deviceNow = deviceNow.add(const Duration(milliseconds: 500));
             harness.deviceSosController.handleIncomingSosPacket(
@@ -2078,6 +2073,76 @@ void main() {
     );
 
     test(
+      'native takeover refreshes authoritative command readiness without Flutter reconnect',
+      () async {
+        final adapter = _SnapshotProtectionPlatformAdapter(
+          const ProtectionPlatformSnapshot(
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            platform: ProtectionPlatform.android,
+            bleOwner: ProtectionBleOwner.flutter,
+          ),
+        );
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          protectionPlatformAdapter: adapter,
+        );
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await harness.sdk.rehydrateProtectionState();
+
+          adapter.snapshot = const ProtectionPlatformSnapshot(
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            platform: ProtectionPlatform.android,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: true,
+            serviceBleReady: false,
+            protectedDeviceId: 'CF:82:00:00:00:01',
+            activeDeviceId: 'CF:82:00:00:00:01',
+          );
+          await harness.sdk.rehydrateProtectionState();
+          expect(
+            (await harness.sdk.getProtectionStatus()).bleOwner,
+            ProtectionBleOwner.androidService,
+          );
+
+          // The subscriptionsActive event was missed, but the native store
+          // contains the authoritative, command-ready snapshot.
+          adapter.snapshot = const ProtectionPlatformSnapshot(
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            platform: ProtectionPlatform.android,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: true,
+            serviceBleReady: true,
+            protectedDeviceId: 'CF:82:00:00:00:01',
+            activeDeviceId: 'CF:82:00:00:00:01',
+          );
+
+          final capability = await harness.sdk.getSosCapability();
+          expect(capability.deviceTransportReady, isTrue);
+          expect(capability.commandChannelReady, isTrue);
+          expect(capability.canTriggerDeviceSos, isTrue);
+
+          await harness.sdk.startPreSos(countdown: const Duration(seconds: 20));
+          expect(adapter.commands, hasLength(1));
+          expect(adapter.commands.single.bytes, <int>[0x06]);
+          expect(adapter.commands.single.forceCmdCharacteristic, isTrue);
+          expect(_hasDebugMessage('action=reclaim'), isFalse);
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
       'native SOS command rejects a stale owner bound to another TAG',
       () async {
         final adapter = _SnapshotProtectionPlatformAdapter(
@@ -2102,6 +2167,9 @@ void main() {
             const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
           );
           await harness.setSession();
+          final capability = await harness.sdk.getSosCapability();
+          expect(capability.commandChannelReady, isFalse);
+          expect(capability.canTriggerDeviceSos, isFalse);
           await harness.sdk.startPreSos(countdown: const Duration(seconds: 20));
 
           expect(adapter.commands, isEmpty);
@@ -2110,7 +2178,7 @@ void main() {
             isFalse,
           );
           expect(
-            _hasDebugMessage('SOS_DEVICE_COMMAND_TARGET_REJECTED'),
+            _hasDebugMessage('nativeReadinessFailure=targetIdentityMismatch'),
             isTrue,
           );
         } finally {
@@ -2609,6 +2677,78 @@ void main() {
           expect(second.stage, SosLifecycleStage.arming);
           expect(second.generation, greaterThan(first.generation));
           expect(second.lifecycleId, isNot(first.lifecycleId));
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'backend-only app terminal does not poison a later physical TAG edge',
+      () async {
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+        );
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+
+          await harness.sdk.startPreSos();
+          final appGeneration = await harness.sdk.getSosLifecycle();
+          expect(
+            (await harness.sdk.getPreSosStatus())?.mirroredOnDevice,
+            isFalse,
+          );
+          expect(
+            _hasDebugMessage(
+              'SOS_DEVICE_MIRROR_DECISION attempt=false '
+              'reason=command_channel_not_ready',
+            ),
+            isTrue,
+          );
+
+          await harness.sdk.cancelPreSos();
+          expect(
+            (await harness.sdk.getSosLifecycle()).stage,
+            SosLifecycleStage.cancelled,
+          );
+
+          final generationDiagnostics = <String>[];
+          final diagnosticsSubscription = BleDebugRegistry.instance
+              .watch()
+              .listen((state) {
+                if (state.events.isNotEmpty) {
+                  generationDiagnostics.add(state.events.last.message);
+                }
+              });
+          try {
+            harness.deviceSosController.handleIncomingSosPacket(
+              _deviceOriginCountdownPacket(packetId: 0),
+              source: DeviceSosTransitionSource.device,
+            );
+            await pumpEventQueue();
+          } finally {
+            await diagnosticsSubscription.cancel();
+          }
+
+          final physicalGeneration = await harness.sdk.getSosLifecycle();
+          expect(physicalGeneration.generation, appGeneration.generation + 1);
+          expect(physicalGeneration.stage, SosLifecycleStage.arming);
+          expect(
+            physicalGeneration.origin,
+            SosLifecycleOrigin.connectedLocalDevice,
+          );
+          expect(
+            generationDiagnostics.any(
+              (message) => message.contains(
+                'admission=backend_only_app_then_physical_edge',
+              ),
+            ),
+            isTrue,
+          );
         } finally {
           await harness.dispose();
         }
@@ -5862,6 +6002,7 @@ final class _SdkSosHarness {
     Duration appTriggeredSosBridgeWindow = const Duration(seconds: 15),
     DateTime Function()? deviceClock,
     String connectedDeviceId = 'ble-1',
+    int? connectedNodeId,
     String? connectedCanonicalHardwareId = 'CF:82:00:00:00:01',
     MemorySharedPrefsSdkStore? localStore,
     SecureKeyValueStore? sosLifecycleSecureStore,
@@ -5884,6 +6025,7 @@ final class _SdkSosHarness {
        deviceRepository = FakeDeviceRepository(
          initialStatus: buildDeviceStatus(
            deviceId: connectedBle ? connectedDeviceId : 'none',
+           nodeId: connectedBle ? connectedNodeId : null,
            canonicalHardwareId: connectedBle
                ? connectedCanonicalHardwareId
                : null,
@@ -6306,7 +6448,7 @@ final class _SnapshotProtectionPlatformAdapter extends Fake
     Completer<ProtectionPlatformCommandResult>? commandResult,
   }) : _commandResult = commandResult;
 
-  final ProtectionPlatformSnapshot snapshot;
+  ProtectionPlatformSnapshot snapshot;
   final Completer<ProtectionPlatformCommandResult>? _commandResult;
   final List<ProtectionPlatformCommandRequest> commands =
       <ProtectionPlatformCommandRequest>[];

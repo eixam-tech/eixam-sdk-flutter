@@ -362,6 +362,7 @@ internal class ProtectionRuntimeStore(context: Context) {
         preferences.edit()
             .putBoolean(keyServiceBleReady, true)
             .putString(keyReadinessFailureReason, null)
+            .remove(keyLastCommandError)
             .apply()
     }
 

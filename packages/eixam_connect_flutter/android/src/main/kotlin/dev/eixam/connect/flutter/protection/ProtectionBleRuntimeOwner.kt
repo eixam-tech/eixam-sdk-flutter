@@ -326,9 +326,7 @@ internal class ProtectionBleRuntimeOwner(
                     error = error,
                 ),
             )
-            if (queued) {
-                drainQueuedCommand(gatt)
-            }
+            invalidateCommandPathAndReconnect(gatt, "characteristic_not_writable")
             return
         }
 
@@ -437,7 +435,7 @@ internal class ProtectionBleRuntimeOwner(
                     error = error,
                 ),
             )
-            drainQueuedCommand(gatt)
+            invalidateCommandPathAndReconnect(gatt, "write_submit_rejected")
             return
         }
         if (opcode == 0x04) {
@@ -802,11 +800,17 @@ internal class ProtectionBleRuntimeOwner(
         inetWriteCharacteristic = service.getCharacteristic(inetWriteUuid)
         cmdWriteCharacteristic = service.getCharacteristic(cmdWriteUuid)
 
-        if (telNotifyCharacteristic == null || sosNotifyCharacteristic == null || inetWriteCharacteristic == null) {
+        if (
+            telNotifyCharacteristic == null ||
+            sosNotifyCharacteristic == null ||
+            inetWriteCharacteristic == null ||
+            cmdWriteCharacteristic == null
+        ) {
             val missingCharacteristics = buildList<String> {
                 if (telNotifyCharacteristic == null) add(telNotifyUuid.toString().lowercase(Locale.US))
                 if (sosNotifyCharacteristic == null) add(sosNotifyUuid.toString().lowercase(Locale.US))
                 if (inetWriteCharacteristic == null) add(inetWriteUuid.toString().lowercase(Locale.US))
+                if (cmdWriteCharacteristic == null) add(cmdWriteUuid.toString().lowercase(Locale.US))
             }
             val discoveredCharacteristics = service.characteristics.joinToString(separator = ",") {
                 it.uuid.toString().lowercase(Locale.US)
@@ -889,6 +893,27 @@ internal class ProtectionBleRuntimeOwner(
         inetWriteCharacteristic = null
         cmdWriteCharacteristic = null
         clearPendingCommandWrites()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun invalidateCommandPathAndReconnect(
+        gatt: BluetoothGatt,
+        reason: String,
+    ) {
+        if (bluetoothGatt !== gatt) {
+            return
+        }
+        runtimeStore.markServiceBleDisconnected()
+        clearCharacteristicRefs()
+        bluetoothGatt = null
+        gatt.disconnect()
+        gatt.close()
+        ProtectionRuntimeBridge.recordBleEvent(
+            context = context,
+            type = "deviceDisconnected",
+            reason = reason,
+        )
+        scheduleReconnect(reason)
     }
 
     private fun clearPendingCommandWrites() {
@@ -2098,6 +2123,10 @@ internal class ProtectionBleRuntimeOwner(
                     if (pendingCommandResult === pending) {
                         pendingCommandResult = null
                     }
+                }
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    invalidateCommandPathAndReconnect(gatt, "command_write_status_$status")
+                    return
                 }
                 if (terminalCancelSucceeded) {
                     stop("sos_cancel_command_succeeded")

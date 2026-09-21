@@ -12,20 +12,20 @@ class ProtectionModeController {
     required Future<DeviceStatus> Function() deviceStatusProvider,
     required Future<PermissionState> Function() permissionStateProvider,
     required Future<SdkOperationalDiagnostics> Function()
-        operationalDiagnosticsProvider,
+    operationalDiagnosticsProvider,
     Future<String?> Function()? backendHardwareIdProvider,
     bool Function()? hostAppManagedNotificationsProvider,
     EixamNotificationTexts Function()? notificationTextsProvider,
     this.onBleOwnershipChanged,
-  })  : _sessionProvider = sessionProvider,
-        _sdkConfigProvider = sdkConfigProvider,
-        _deviceStatusProvider = deviceStatusProvider,
-        _permissionStateProvider = permissionStateProvider,
-        _operationalDiagnosticsProvider = operationalDiagnosticsProvider,
-        _backendHardwareIdProvider = backendHardwareIdProvider,
-        _hostAppManagedNotificationsProvider =
-            hostAppManagedNotificationsProvider,
-        _notificationTextsProvider = notificationTextsProvider {
+  }) : _sessionProvider = sessionProvider,
+       _sdkConfigProvider = sdkConfigProvider,
+       _deviceStatusProvider = deviceStatusProvider,
+       _permissionStateProvider = permissionStateProvider,
+       _operationalDiagnosticsProvider = operationalDiagnosticsProvider,
+       _backendHardwareIdProvider = backendHardwareIdProvider,
+       _hostAppManagedNotificationsProvider =
+           hostAppManagedNotificationsProvider,
+       _notificationTextsProvider = notificationTextsProvider {
     _platformEventsSub = platformAdapter.watchPlatformEvents().listen(
       _handlePlatformEvent,
       onError: (_) {
@@ -43,7 +43,7 @@ class ProtectionModeController {
   final Future<DeviceStatus> Function() _deviceStatusProvider;
   final Future<PermissionState> Function() _permissionStateProvider;
   final Future<SdkOperationalDiagnostics> Function()
-      _operationalDiagnosticsProvider;
+  _operationalDiagnosticsProvider;
   final Future<String?> Function()? _backendHardwareIdProvider;
   final bool Function()? _hostAppManagedNotificationsProvider;
   final EixamNotificationTexts Function()? _notificationTextsProvider;
@@ -156,7 +156,8 @@ class ProtectionModeController {
       request: startRequest,
     );
     if (!startResult.success) {
-      final failureReason = _semanticCodeOrFallback(
+      final failureReason =
+          _semanticCodeOrFallback(
             startResult.failureReason,
             ProtectionSemanticCode.hostRuntimeStartFailed,
           ) ??
@@ -183,8 +184,8 @@ class ProtectionModeController {
       );
     }
 
-    final postStartPlatformSnapshot =
-        await platformAdapter.getPlatformSnapshot();
+    final postStartPlatformSnapshot = await platformAdapter
+        .getPlatformSnapshot();
     final postStartDeviceConnected = _isProtectionDeviceConnected(
       armingSnapshot.status,
       postStartPlatformSnapshot,
@@ -217,7 +218,8 @@ class ProtectionModeController {
                 bleOwner: postStartPlatformSnapshot.bleOwner,
               ),
               platformCoverageLevel: postStartPlatformSnapshot.coverageLevel,
-              platformStatusMessage: startResult.statusMessage ??
+              platformStatusMessage:
+                  startResult.statusMessage ??
                   postStartPlatformSnapshot.degradationReason,
             )
           : null,
@@ -277,8 +279,10 @@ class ProtectionModeController {
   }
 
   Future<ProtectionStatus> rehydrate() async {
+    final previousBleOwner = _status.bleOwner;
     final platformSnapshot = await platformAdapter.getPlatformSnapshot();
-    final hasRecoveredRuntime = platformSnapshot.runtimeActive ||
+    final hasRecoveredRuntime =
+        platformSnapshot.runtimeActive ||
         platformSnapshot.serviceRunning ||
         platformSnapshot.runtimeState == ProtectionRuntimeState.active ||
         platformSnapshot.runtimeState == ProtectionRuntimeState.recovering;
@@ -290,20 +294,20 @@ class ProtectionModeController {
     final targetModeState = _activeOptions == null
         ? ProtectionModeState.off
         : platformSnapshot.coverageLevel == ProtectionCoverageLevel.partial
-            ? ProtectionModeState.degraded
-            : ProtectionModeState.armed;
+        ? ProtectionModeState.degraded
+        : ProtectionModeState.armed;
     final targetRuntimeState = _activeOptions == null
         ? ProtectionRuntimeState.inactive
         : platformSnapshot.runtimeState == ProtectionRuntimeState.inactive
-            ? (_status.runtimeState == ProtectionRuntimeState.failed
-                ? ProtectionRuntimeState.failed
-                : ProtectionRuntimeState.active)
-            : platformSnapshot.runtimeState;
+        ? (_status.runtimeState == ProtectionRuntimeState.failed
+              ? ProtectionRuntimeState.failed
+              : ProtectionRuntimeState.active)
+        : platformSnapshot.runtimeState;
     final targetCoverageLevel = _activeOptions == null
         ? ProtectionCoverageLevel.none
         : platformSnapshot.coverageLevel == ProtectionCoverageLevel.none
-            ? _status.coverageLevel
-            : platformSnapshot.coverageLevel;
+        ? _status.coverageLevel
+        : platformSnapshot.coverageLevel;
     final snapshot = await _buildSnapshot(
       targetModeState: targetModeState,
       targetRuntimeState: targetRuntimeState,
@@ -325,7 +329,9 @@ class ProtectionModeController {
     );
     _status = snapshot.status;
     _diagnostics = snapshot.diagnostics;
-    await onBleOwnershipChanged?.call(_status.bleOwner);
+    if (previousBleOwner != _status.bleOwner) {
+      await onBleOwnershipChanged?.call(_status.bleOwner);
+    }
     _emitStatus();
     _emitDiagnostics();
     return _status;
@@ -341,8 +347,8 @@ class ProtectionModeController {
           : pendingSos - platformFlushResult.flushedSosCount,
       pendingTelemetryCount:
           pendingTelemetry - platformFlushResult.flushedTelemetryCount < 0
-              ? 0
-              : pendingTelemetry - platformFlushResult.flushedTelemetryCount,
+          ? 0
+          : pendingTelemetry - platformFlushResult.flushedTelemetryCount,
     );
     _status = _status.copyWith(
       pendingSosCount: _diagnostics.pendingSosCount,
@@ -379,21 +385,24 @@ class ProtectionModeController {
     final platformSnapshot =
         platformSnapshotOverride ?? await platformAdapter.getPlatformSnapshot();
 
-    final sessionReady = session != null &&
+    final sessionReady =
+        session != null &&
         session.appId.trim().isNotEmpty &&
         session.externalUserId.trim().isNotEmpty &&
         session.userHash.trim().isNotEmpty;
     final bluetoothEnabled =
         platformSnapshot.bluetoothEnabled ?? permissionState.canUseBluetooth;
-    final notificationsGranted = platformSnapshot.notificationsGranted ??
+    final notificationsGranted =
+        platformSnapshot.notificationsGranted ??
         permissionState.hasNotificationAccess;
     final backendReachable = sessionReady;
-    final realtimeReady = operationalDiagnostics.connectionState ==
+    final realtimeReady =
+        operationalDiagnostics.connectionState ==
             RealtimeConnectionState.connected &&
         operationalDiagnostics.sosEventTopics.isNotEmpty;
     final pendingSosCount = [
       operationalDiagnostics.bridge.pendingSos == null ? 0 : 1,
-      platformSnapshot.pendingSosCount
+      platformSnapshot.pendingSosCount,
     ].reduce((a, b) => a > b ? a : b);
     final pendingTelemetryCount = [
       operationalDiagnostics.bridge.pendingTelemetry == null ? 0 : 1,
@@ -518,7 +527,8 @@ class ProtectionModeController {
           platformSnapshot.lastNativeBackendHandoffError,
       protectedDeviceId:
           platformSnapshot.protectedDeviceId ?? platformSnapshot.activeDeviceId,
-      activeDeviceId: platformSnapshot.activeDeviceId ??
+      activeDeviceId:
+          platformSnapshot.activeDeviceId ??
           (deviceStatus.deviceId.trim().isEmpty ? null : deviceStatus.deviceId),
       degradationReason: _semanticCodeOrFallback(
         degradationReason,
@@ -549,18 +559,24 @@ class ProtectionModeController {
           platformSnapshot.lastFailureReason ?? _diagnostics.lastFailureReason,
       lastPlatformEvent:
           platformSnapshot.lastPlatformEvent ?? _diagnostics.lastPlatformEvent,
-      lastPlatformEventAt: platformSnapshot.lastPlatformEventAt ??
+      lastPlatformEventAt:
+          platformSnapshot.lastPlatformEventAt ??
           _diagnostics.lastPlatformEventAt,
-      lastRestorationEvent: platformSnapshot.lastRestorationEvent ??
+      lastRestorationEvent:
+          platformSnapshot.lastRestorationEvent ??
           _diagnostics.lastRestorationEvent,
-      lastRestorationEventAt: platformSnapshot.lastRestorationEventAt ??
+      lastRestorationEventAt:
+          platformSnapshot.lastRestorationEventAt ??
           _diagnostics.lastRestorationEventAt,
-      lastBleServiceEvent: platformSnapshot.lastBleServiceEvent ??
+      lastBleServiceEvent:
+          platformSnapshot.lastBleServiceEvent ??
           _diagnostics.lastBleServiceEvent,
-      lastBleServiceEventAt: platformSnapshot.lastBleServiceEventAt ??
+      lastBleServiceEventAt:
+          platformSnapshot.lastBleServiceEventAt ??
           _diagnostics.lastBleServiceEventAt,
       reconnectAttemptCount: platformSnapshot.reconnectAttemptCount,
-      lastReconnectAttemptAt: platformSnapshot.lastReconnectAttemptAt ??
+      lastReconnectAttemptAt:
+          platformSnapshot.lastReconnectAttemptAt ??
           _diagnostics.lastReconnectAttemptAt,
       pendingSosCount: pendingSosCount,
       pendingTelemetryCount: pendingTelemetryCount,
@@ -717,8 +733,8 @@ class ProtectionModeController {
           bleOwner: nativeOwner,
           runtimeState:
               event.type == ProtectionPlatformEventType.runtimeRecovered
-                  ? ProtectionRuntimeState.recovering
-                  : ProtectionRuntimeState.active,
+              ? ProtectionRuntimeState.recovering
+              : ProtectionRuntimeState.active,
           lastPlatformEvent: event.type.name,
           lastPlatformEventAt: event.timestamp,
           updatedAt: event.timestamp,
@@ -761,12 +777,12 @@ class ProtectionModeController {
       case ProtectionPlatformEventType.nativeBackendSyncFailed:
         final result =
             event.type == ProtectionPlatformEventType.nativeBackendSyncSucceeded
-                ? event.reason
-                : _status.lastNativeBackendHandoffResult;
+            ? event.reason
+            : _status.lastNativeBackendHandoffResult;
         final error =
             event.type == ProtectionPlatformEventType.nativeBackendSyncFailed
-                ? event.reason
-                : _status.lastNativeBackendHandoffError;
+            ? event.reason
+            : _status.lastNativeBackendHandoffError;
         _status = _status.copyWith(
           lastPlatformEvent: event.type.name,
           lastPlatformEventAt: event.timestamp,
@@ -806,8 +822,8 @@ class ProtectionModeController {
           deviceConnected: true,
           serviceBleReady:
               event.type == ProtectionPlatformEventType.subscriptionsActive
-                  ? true
-                  : _status.serviceBleReady,
+              ? true
+              : _status.serviceBleReady,
           lastBleServiceEvent: event.type.name,
           lastBleServiceEventAt: event.timestamp,
           updatedAt: event.timestamp,
@@ -902,7 +918,8 @@ class ProtectionModeController {
         break;
     }
 
-    final shouldRehydrate = _activeOptions != null &&
+    final shouldRehydrate =
+        _activeOptions != null &&
         (event.type == ProtectionPlatformEventType.woke ||
             event.type == ProtectionPlatformEventType.runtimeStarted ||
             event.type == ProtectionPlatformEventType.runtimeActive ||

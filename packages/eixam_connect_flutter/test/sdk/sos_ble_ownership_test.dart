@@ -43,13 +43,10 @@ void main() {
         ),
       ];
 
-      expect(
-        ownershipAcrossHandoff,
-        <SosBleRuntimeOwner>[
-          SosBleRuntimeOwner.flutter,
-          SosBleRuntimeOwner.nativeProtection,
-        ],
-      );
+      expect(ownershipAcrossHandoff, <SosBleRuntimeOwner>[
+        SosBleRuntimeOwner.flutter,
+        SosBleRuntimeOwner.nativeProtection,
+      ]);
     });
 
     test('START and CANCEL use one authoritative consumer per state', () {
@@ -66,6 +63,42 @@ void main() {
         expect(cancelOwner, startOwner);
         expect(<SosBleRuntimeOwner>{startOwner, cancelOwner}, hasLength(1));
       }
+    });
+
+    test('native command readiness requires every typed predicate', () {
+      NativeProtectionCommandReadiness evaluate({
+        ProtectionBleOwner owner = ProtectionBleOwner.androidService,
+        bool connected = true,
+        bool canonicalCommandPathReady = true,
+        bool targetMatches = true,
+        bool operationQueueOperational = true,
+      }) {
+        return evaluateNativeProtectionCommandReadiness(
+          declaredOwner: owner,
+          serviceBleConnected: connected,
+          serviceBleReady: canonicalCommandPathReady,
+          exactTargetIdentityMatch: targetMatches,
+          operationQueueOperational: operationQueueOperational,
+        );
+      }
+
+      expect(evaluate().ready, isTrue);
+      expect(
+        evaluate(targetMatches: false).failure,
+        NativeProtectionCommandReadinessFailure.targetIdentityMismatch,
+      );
+      expect(
+        evaluate(canonicalCommandPathReady: false).failure,
+        NativeProtectionCommandReadinessFailure.canonicalCommandPathNotReady,
+      );
+      expect(
+        evaluate(operationQueueOperational: false).failure,
+        NativeProtectionCommandReadinessFailure.operationQueueFailed,
+      );
+      expect(
+        evaluate(owner: ProtectionBleOwner.flutter).failure,
+        NativeProtectionCommandReadinessFailure.ownerNotNative,
+      );
     });
   });
 }
