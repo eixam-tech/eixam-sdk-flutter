@@ -643,6 +643,7 @@ internal class ProtectionBleRuntimeOwner(
                 context = context,
                 previous = previous,
                 readiness = readiness,
+                sessionGeneration = gattSessionGeneration,
                 reason = reason,
             )
         }

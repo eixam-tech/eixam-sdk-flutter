@@ -62,6 +62,114 @@ void main() {
       ]);
     },
   );
+
+  test(
+    'native readiness atomically establishes ownership and rejects an older session',
+    () async {
+      final adapter = _OrderingProtectionPlatformAdapter(
+        flutterReleased: () => true,
+      );
+      final controller = _testController(adapter);
+      addTearDown(controller.dispose);
+      addTearDown(adapter.dispose);
+
+      adapter.emit(
+        ProtectionPlatformEvent(
+          type: ProtectionPlatformEventType.nativeCommandReadinessChanged,
+          timestamp: DateTime.utc(2026, 9, 21, 22, 40, 8),
+          reason: 'eixam_service_and_ea04_discovered',
+          nativeOwner: true,
+          gattConnected: true,
+          serviceReady: true,
+          cmdEa04Ready: true,
+          identityReady: true,
+          queueHealthy: true,
+          nativeCommandReady: true,
+          sessionGeneration: 8,
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.currentStatus.modeState, ProtectionModeState.armed);
+      expect(
+        controller.currentStatus.bleOwner,
+        ProtectionBleOwner.androidService,
+      );
+      expect(controller.currentStatus.nativeCommandReady, isTrue);
+
+      adapter.emit(
+        ProtectionPlatformEvent(
+          type: ProtectionPlatformEventType.ownDeviceSosLifecycleSuppressed,
+          timestamp: DateTime.utc(2026, 9, 21, 22, 40, 9),
+          reason: 'recent_terminal_action',
+        ),
+      );
+      adapter.emit(
+        ProtectionPlatformEvent(
+          type: ProtectionPlatformEventType.serviceRestarted,
+          timestamp: DateTime.utc(2026, 9, 21, 22, 40, 10),
+          reason: 'service_restart_marker',
+        ),
+      );
+      adapter.emit(
+        ProtectionPlatformEvent(
+          type: ProtectionPlatformEventType.nativeCommandReadinessChanged,
+          timestamp: DateTime.utc(2026, 9, 21, 22, 40, 7),
+          reason: 'stale_previous_session',
+          nativeOwner: false,
+          gattConnected: false,
+          serviceReady: false,
+          cmdEa04Ready: false,
+          identityReady: false,
+          queueHealthy: false,
+          nativeCommandReady: false,
+          sessionGeneration: 7,
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.currentStatus.modeState, ProtectionModeState.armed);
+      expect(
+        controller.currentStatus.bleOwner,
+        ProtectionBleOwner.androidService,
+      );
+      expect(controller.currentStatus.nativeCommandReady, isTrue);
+      expect(
+        (await controller.getDiagnostics()).lastBleServiceEvent,
+        'staleNativeCommandReadinessIgnored',
+      );
+    },
+  );
+}
+
+ProtectionModeController _testController(ProtectionPlatformAdapter adapter) {
+  return ProtectionModeController(
+    platformAdapter: adapter,
+    sessionProvider: () async => const EixamSession.signed(
+      appId: 'app-demo',
+      externalUserId: 'external-123',
+      userHash: 'deadbeef',
+    ),
+    sdkConfigProvider: () =>
+        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+    deviceStatusProvider: () async => buildDeviceStatus(
+      deviceId: 'CF:82:00:00:00:01',
+      canonicalHardwareId: 'CF:82:00:00:00:01',
+      connected: false,
+      paired: true,
+      activated: true,
+    ),
+    permissionStateProvider: () async => const PermissionState(
+      location: SdkPermissionStatus.granted,
+      notifications: SdkPermissionStatus.granted,
+      bluetooth: SdkPermissionStatus.granted,
+      bluetoothEnabled: true,
+    ),
+    operationalDiagnosticsProvider: () async => const SdkOperationalDiagnostics(
+      connectionState: RealtimeConnectionState.connected,
+      bridge: SdkBridgeDiagnostics(),
+    ),
+  );
 }
 
 final class _OrderingProtectionPlatformAdapter extends Fake
@@ -73,6 +181,8 @@ final class _OrderingProtectionPlatformAdapter extends Fake
       StreamController<ProtectionPlatformEvent>.broadcast();
   bool started = false;
   bool startObservedFlutterReleased = false;
+
+  void emit(ProtectionPlatformEvent event) => _events.add(event);
 
   @override
   ProtectionPlatform get platform => ProtectionPlatform.android;

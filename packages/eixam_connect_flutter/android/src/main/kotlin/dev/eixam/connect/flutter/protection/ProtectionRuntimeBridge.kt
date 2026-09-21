@@ -341,6 +341,7 @@ internal object ProtectionRuntimeBridge {
         context: Context,
         previous: Boolean,
         readiness: ProtectionNativeCommandReadiness,
+        sessionGeneration: Long,
         reason: String,
     ) {
         ProtectionRuntimeStore(context).recordEvent(
@@ -354,6 +355,7 @@ internal object ProtectionRuntimeBridge {
                 "timestamp" to System.currentTimeMillis(),
                 "reason" to reason,
                 "previous" to previous,
+                "sessionGeneration" to sessionGeneration,
                 "nativeOwner" to readiness.owner,
                 "gattConnected" to readiness.gattConnected,
                 "serviceReady" to readiness.serviceReady,

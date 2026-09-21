@@ -173,6 +173,7 @@ void main() {
         'timestamp': DateTime.utc(2026, 9, 21).millisecondsSinceEpoch,
         'reason': 'eixam_service_and_ea04_discovered',
         'previous': false,
+        'sessionGeneration': 17,
         'nativeOwner': true,
         'gattConnected': true,
         'serviceReady': true,
@@ -187,6 +188,7 @@ void main() {
         ProtectionPlatformEventType.nativeCommandReadinessChanged,
       );
       expect(event.previousNativeCommandReady, isFalse);
+      expect(event.sessionGeneration, 17);
       expect(event.nativeOwner, isTrue);
       expect(event.gattConnected, isTrue);
       expect(event.serviceReady, isTrue);
@@ -194,6 +196,20 @@ void main() {
       expect(event.identityReady, isTrue);
       expect(event.queueHealthy, isTrue);
       expect(event.nativeCommandReady, isTrue);
+    });
+
+    test('maps suppressed own SOS lifecycle as diagnostics only', () {
+      final event = mapAndroidProtectionPlatformEvent(<Object?, Object?>{
+        'type': 'ownDeviceSosLifecycleSuppressed',
+        'timestamp': DateTime.utc(2026, 9, 21).millisecondsSinceEpoch,
+        'reason': 'recent_terminal_action',
+      });
+
+      expect(
+        event.type,
+        ProtectionPlatformEventType.ownDeviceSosLifecycleSuppressed,
+      );
+      expect(event.reason, 'recent_terminal_action');
     });
 
     test('maps GATT cache maintenance without treating it as a wake', () {

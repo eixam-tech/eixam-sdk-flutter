@@ -2182,6 +2182,135 @@ void main() {
     );
 
     test(
+      'owner transition recomputes capability when native predicates arrived first',
+      () async {
+        final adapter = _SnapshotProtectionPlatformAdapter(
+          const ProtectionPlatformSnapshot(
+            backgroundCapabilityReady: true,
+            platform: ProtectionPlatform.android,
+            bleOwner: ProtectionBleOwner.flutter,
+          ),
+        );
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+          protectionPlatformAdapter: adapter,
+        );
+        StreamSubscription<SosCapabilitySnapshot>? capabilitySubscription;
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          harness.deviceRepository.emitStatus(
+            buildDeviceStatus(
+              deviceId: 'ble-1',
+              nodeId: 0x1234,
+              canonicalHardwareId: 'CF:82:00:00:00:01',
+              connected: false,
+              paired: true,
+              activated: true,
+            ),
+          );
+          await pumpEventQueue(times: 3);
+
+          // Models a legacy/out-of-order readiness payload which contains all
+          // transport predicates but does not yet declare native ownership.
+          adapter.emit(
+            ProtectionPlatformEvent(
+              type: ProtectionPlatformEventType.nativeCommandReadinessChanged,
+              timestamp: DateTime.now().toUtc(),
+              reason: 'predicates_before_owner',
+              gattConnected: true,
+              serviceReady: true,
+              cmdEa04Ready: true,
+              identityReady: true,
+              queueHealthy: true,
+              nativeCommandReady: true,
+              sessionGeneration: 3,
+            ),
+          );
+          await pumpEventQueue(times: 3);
+          expect(
+            (await harness.sdk.getProtectionStatus()).modeState,
+            ProtectionModeState.off,
+          );
+          expect(
+            (await harness.sdk.getSosCapability()).canTriggerDeviceSos,
+            isFalse,
+          );
+
+          final readyCapability = Completer<SosCapabilitySnapshot>();
+          capabilitySubscription = harness.sdk.watchSosCapability().listen((
+            capability,
+          ) {
+            if (capability.canTriggerDeviceSos &&
+                !readyCapability.isCompleted) {
+              readyCapability.complete(capability);
+            }
+          });
+          adapter.snapshot = const ProtectionPlatformSnapshot(
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            runtimeState: ProtectionRuntimeState.active,
+            coverageLevel: ProtectionCoverageLevel.full,
+            platform: ProtectionPlatform.android,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: true,
+            serviceBleReady: true,
+            nativeCommandServiceReady: true,
+            nativeCommandEa04Ready: true,
+            nativeCommandIdentityReady: true,
+            nativeCommandQueueHealthy: true,
+            nativeCommandReady: true,
+            lastPlatformEvent: 'ownDeviceSosLifecycleSuppressed',
+            protectedDeviceId: 'CF:82:00:00:00:01',
+            activeDeviceId: 'CF:82:00:00:00:01',
+          );
+          await harness.sdk.rehydrateProtectionState();
+
+          final capability = await readyCapability.future.timeout(
+            const Duration(seconds: 1),
+          );
+          expect(capability.deviceTransportReady, isTrue);
+          expect(capability.commandChannelReady, isTrue);
+          expect(capability.canTriggerDeviceSos, isTrue);
+          expect(
+            _hasDebugMessage('SOS_NATIVE_OWNER_READY_CAPABILITY_REFRESH'),
+            isTrue,
+          );
+          expect(
+            _hasDebugMessage(
+              'SOS_BLE_OWNER_TRANSITION previous=none next=nativeReady '
+              'reason=protection_status:native_readiness_snapshot',
+            ),
+            isTrue,
+          );
+          expect(
+            _hasDebugMessage(
+              'SOS_BLE_OWNER_TRANSITION previous=none next=nativeReady '
+              'reason=protection_status:ownDeviceSosLifecycleSuppressed',
+            ),
+            isFalse,
+          );
+          expect(
+            _hasDebugMessage(
+              'SOS_NATIVE_COMMAND_READINESS_PROPAGATED '
+              'deviceTransportReady=true commandChannelReady=true '
+              'canTriggerDeviceSos=true',
+            ),
+            isTrue,
+          );
+        } finally {
+          await capabilitySubscription?.cancel();
+          await harness.dispose();
+          await adapter.dispose();
+        }
+      },
+    );
+
+    test(
       'native command-ready event makes immediate App SOS mirror available before subscriptions finish',
       () async {
         final adapter = _SnapshotProtectionPlatformAdapter(
@@ -2258,6 +2387,7 @@ void main() {
               type: ProtectionPlatformEventType.nativeCommandReadinessChanged,
               timestamp: DateTime.now().toUtc(),
               reason: 'eixam_service_and_ea04_discovered',
+              nativeOwner: true,
               gattConnected: true,
               serviceReady: true,
               cmdEa04Ready: true,
@@ -2265,6 +2395,7 @@ void main() {
               queueHealthy: true,
               nativeCommandReady: true,
               previousNativeCommandReady: false,
+              sessionGeneration: 2,
             ),
           );
           await pumpEventQueue(times: 5);
@@ -2305,6 +2436,169 @@ void main() {
           );
           expect(_hasDebugMessage('action=reclaim'), isFalse);
         } finally {
+          await harness.dispose();
+          await adapter.dispose();
+        }
+      },
+    );
+
+    test(
+      'Flutter GATT cleanup cannot tear down native-ready ownership or subscriptions',
+      () async {
+        final adapter = _SnapshotProtectionPlatformAdapter(
+          const ProtectionPlatformSnapshot(
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            runtimeState: ProtectionRuntimeState.active,
+            coverageLevel: ProtectionCoverageLevel.full,
+            platform: ProtectionPlatform.android,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: true,
+            serviceBleReady: true,
+            nativeCommandServiceReady: true,
+            nativeCommandEa04Ready: true,
+            nativeCommandIdentityReady: true,
+            nativeCommandQueueHealthy: true,
+            nativeCommandReady: true,
+            protectedDeviceId: 'CF:82:00:00:00:01',
+            activeDeviceId: 'CF:82:00:00:00:01',
+          ),
+        );
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+          protectionPlatformAdapter: adapter,
+        );
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await harness.sdk.rehydrateProtectionState();
+          harness.deviceRepository.emitStatus(
+            buildDeviceStatus(
+              deviceId: 'ble-1',
+              nodeId: 0x1234,
+              canonicalHardwareId: 'CF:82:00:00:00:01',
+              connected: false,
+              paired: true,
+              activated: true,
+            ),
+          );
+          await pumpEventQueue(times: 5);
+
+          final protectionStatus = await harness.sdk.getProtectionStatus();
+          final capability = await harness.sdk.getSosCapability();
+          expect(protectionStatus.bleOwner, ProtectionBleOwner.androidService);
+          expect(protectionStatus.serviceBleConnected, isTrue);
+          expect(protectionStatus.serviceBleReady, isTrue);
+          expect(protectionStatus.nativeCommandReady, isTrue);
+          expect(capability.deviceTransportReady, isTrue);
+          expect(capability.commandChannelReady, isTrue);
+          expect(capability.canTriggerDeviceSos, isTrue);
+          expect(_hasDebugMessage('SOS_FLUTTER_GATT_CLEANUP_ISOLATED'), isTrue);
+        } finally {
+          await harness.dispose();
+          await adapter.dispose();
+        }
+      },
+    );
+
+    test(
+      'native-ready EA02 delivers the first physical seven-byte SOS packet',
+      () async {
+        const payloadHex = '34120000a5b109';
+        final adapter = _SnapshotProtectionPlatformAdapter(
+          const ProtectionPlatformSnapshot(
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            runtimeState: ProtectionRuntimeState.active,
+            coverageLevel: ProtectionCoverageLevel.full,
+            platform: ProtectionPlatform.android,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: true,
+            serviceBleReady: true,
+            nativeCommandServiceReady: true,
+            nativeCommandEa04Ready: true,
+            nativeCommandIdentityReady: true,
+            nativeCommandQueueHealthy: true,
+            nativeCommandReady: true,
+            protectedDeviceId: 'CF:82:00:00:00:01',
+            activeDeviceId: 'CF:82:00:00:00:01',
+          ),
+        );
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+          protectionPlatformAdapter: adapter,
+        );
+        StreamSubscription<BleDebugState>? debugSubscription;
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await harness.sdk.rehydrateProtectionState();
+          final observedMessages = <String>[];
+          debugSubscription = BleDebugRegistry.instance.watch().listen((state) {
+            if (state.events.isNotEmpty) {
+              observedMessages.add(state.events.last.message);
+            }
+          });
+
+          final observedAt = DateTime.now().toUtc();
+          adapter.emit(
+            ProtectionPlatformEvent(
+              type: ProtectionPlatformEventType.bleNotificationReceived,
+              timestamp: observedAt,
+              payloadHex: payloadHex,
+              source: 'sos_notify',
+              characteristicUuid: EixamBleProtocol.sosNotifyCharacteristicUuid,
+              byteLength: 7,
+              packetType: 'sos',
+              firstOpcode: '0x34',
+              receiveSequence: 1,
+              receiveCorrelation: 'native-physical-1',
+              connectedDeviceMarker: 'CF:82:00:00:00:01',
+            ),
+          );
+          adapter.emit(
+            ProtectionPlatformEvent(
+              type: ProtectionPlatformEventType.ownDeviceSosLifecycleObserved,
+              timestamp: observedAt,
+              reason: 'own:sos:$payloadHex',
+              classification: 'ownDeviceSos',
+            ),
+          );
+          await pumpEventQueue(times: 10);
+
+          final protectionStatus = await harness.sdk.getProtectionStatus();
+          final lifecycle = await harness.sdk.getSosLifecycle();
+          expect(protectionStatus.serviceBleReady, isTrue);
+          expect(protectionStatus.nativeCommandReady, isTrue);
+          expect(lifecycle.stage, SosLifecycleStage.arming);
+          expect(lifecycle.origin, SosLifecycleOrigin.connectedLocalDevice);
+          expect(
+            observedMessages.any(
+              (message) =>
+                  message.contains('BLE_SOS_CLASSIFY_DECISION') &&
+                  message.contains('classification=ownDeviceSos') &&
+                  message.contains('correlation=native-physical-1'),
+            ),
+            isTrue,
+          );
+          expect(
+            observedMessages.any(
+              (message) => message.contains(
+                'Protection SOS payload forwarded -> type=sosMeshPacket',
+              ),
+            ),
+            isTrue,
+          );
+        } finally {
+          await debugSubscription?.cancel();
           await harness.dispose();
           await adapter.dispose();
         }

@@ -27,6 +27,7 @@ enum ProtectionPlatformEventType {
   packetReceived,
   sosEventReceived,
   ownDeviceSosLifecycleObserved,
+  ownDeviceSosLifecycleSuppressed,
   runtimeError,
   restorationDetected,
   restorationRehydrated,
@@ -291,6 +292,7 @@ class ProtectionPlatformEvent {
     this.queueHealthy,
     this.nativeCommandReady,
     this.previousNativeCommandReady,
+    this.sessionGeneration,
     this.characteristicUuid,
     this.byteLength,
     this.packetType,
@@ -314,6 +316,7 @@ class ProtectionPlatformEvent {
   final bool? queueHealthy;
   final bool? nativeCommandReady;
   final bool? previousNativeCommandReady;
+  final int? sessionGeneration;
   final String? characteristicUuid;
   final int? byteLength;
   final String? packetType;

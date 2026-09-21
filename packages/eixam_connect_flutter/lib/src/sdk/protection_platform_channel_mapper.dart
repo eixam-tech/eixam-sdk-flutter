@@ -280,6 +280,7 @@ ProtectionPlatformEvent mapIosProtectionPlatformEvent(
     queueHealthy: data['queueHealthy'] as bool?,
     nativeCommandReady: data['nativeCommandReady'] as bool?,
     previousNativeCommandReady: data['previous'] as bool?,
+    sessionGeneration: (data['sessionGeneration'] as num?)?.toInt(),
     characteristicUuid: data['characteristicUuid'] as String?,
     byteLength: (data['byteLength'] as num?)?.toInt(),
     packetType: data['packetType'] as String?,
@@ -310,6 +311,7 @@ ProtectionPlatformEvent mapAndroidProtectionPlatformEvent(
     queueHealthy: data['queueHealthy'] as bool?,
     nativeCommandReady: data['nativeCommandReady'] as bool?,
     previousNativeCommandReady: data['previous'] as bool?,
+    sessionGeneration: (data['sessionGeneration'] as num?)?.toInt(),
     characteristicUuid: data['characteristicUuid'] as String?,
     byteLength: (data['byteLength'] as num?)?.toInt(),
     packetType: data['packetType'] as String?,
@@ -358,6 +360,8 @@ ProtectionPlatformEventType parseIosProtectionPlatformEventType(String? value) {
       return ProtectionPlatformEventType.sosEventReceived;
     case 'ownDeviceSosLifecycleObserved':
       return ProtectionPlatformEventType.ownDeviceSosLifecycleObserved;
+    case 'ownDeviceSosLifecycleSuppressed':
+      return ProtectionPlatformEventType.ownDeviceSosLifecycleSuppressed;
     case 'restorationDetected':
       return ProtectionPlatformEventType.restorationDetected;
     case 'restorationRehydrated':
@@ -424,6 +428,8 @@ ProtectionPlatformEventType parseAndroidProtectionPlatformEventType(
       return ProtectionPlatformEventType.sosEventReceived;
     case 'ownDeviceSosLifecycleObserved':
       return ProtectionPlatformEventType.ownDeviceSosLifecycleObserved;
+    case 'ownDeviceSosLifecycleSuppressed':
+      return ProtectionPlatformEventType.ownDeviceSosLifecycleSuppressed;
     case 'runtimeError':
       return ProtectionPlatformEventType.runtimeError;
     case 'restorationDetected':

@@ -56,6 +56,7 @@ class ProtectionModeController {
 
   StreamSubscription<ProtectionPlatformEvent>? _platformEventsSub;
   ProtectionModeOptions? _activeOptions;
+  int? _latestNativeCommandSessionGeneration;
   ProtectionStatus _status = ProtectionStatus(
     modeState: ProtectionModeState.off,
     coverageLevel: ProtectionCoverageLevel.none,
@@ -890,20 +891,63 @@ class ProtectionModeController {
         _emitDiagnostics();
         break;
       case ProtectionPlatformEventType.nativeCommandReadinessChanged:
+        final sessionGeneration = event.sessionGeneration;
+        final latestSessionGeneration = _latestNativeCommandSessionGeneration;
+        if (sessionGeneration != null &&
+            latestSessionGeneration != null &&
+            sessionGeneration < latestSessionGeneration) {
+          _diagnostics = _diagnostics.copyWith(
+            lastBleServiceEvent: 'staleNativeCommandReadinessIgnored',
+            lastBleServiceEventAt: event.timestamp,
+          );
+          _emitDiagnostics();
+          break;
+        }
+        if (sessionGeneration != null) {
+          _latestNativeCommandSessionGeneration = sessionGeneration;
+        }
+        final nativeOwnerDeclared =
+            event.nativeOwner ??
+            (_isPlatformBleOwner(_status.bleOwner) &&
+                _status.modeState != ProtectionModeState.off);
+        final gattConnected = event.gattConnected == true;
+        final serviceReady = event.serviceReady == true;
+        final ea04Ready = event.cmdEa04Ready == true;
+        final identityReady = event.identityReady == true;
+        final queueHealthy = event.queueHealthy == true;
+        final nativeCommandReady =
+            nativeOwnerDeclared &&
+            gattConnected &&
+            serviceReady &&
+            ea04Ready &&
+            identityReady &&
+            queueHealthy;
         _status = _status.copyWith(
-          bleOwner: event.nativeOwner == false
+          modeState:
+              nativeOwnerDeclared &&
+                  _status.modeState == ProtectionModeState.off
+              ? nativeCommandReady
+                    ? ProtectionModeState.armed
+                    : ProtectionModeState.arming
+              : _status.modeState,
+          runtimeState:
+              nativeOwnerDeclared &&
+                  _status.runtimeState == ProtectionRuntimeState.inactive
+              ? ProtectionRuntimeState.active
+              : _status.runtimeState,
+          protectionRuntimeActive:
+              nativeOwnerDeclared || _status.protectionRuntimeActive,
+          bleOwner: !nativeOwnerDeclared && event.nativeOwner == false
               ? ProtectionBleOwner.flutter
               : nativeOwner,
-          deviceConnected: event.gattConnected == true,
-          serviceBleConnected: event.gattConnected == true,
-          nativeCommandServiceReady: event.serviceReady ?? false,
-          nativeCommandEa04Ready: event.cmdEa04Ready ?? false,
-          nativeCommandIdentityReady: event.identityReady ?? false,
-          nativeCommandQueueHealthy: event.queueHealthy ?? false,
-          nativeCommandReady: event.nativeCommandReady ?? false,
-          lastCommandError: event.queueHealthy == true
-              ? null
-              : _status.lastCommandError,
+          deviceConnected: gattConnected,
+          serviceBleConnected: gattConnected,
+          nativeCommandServiceReady: serviceReady,
+          nativeCommandEa04Ready: ea04Ready,
+          nativeCommandIdentityReady: identityReady,
+          nativeCommandQueueHealthy: queueHealthy,
+          nativeCommandReady: nativeCommandReady,
+          lastCommandError: queueHealthy ? null : _status.lastCommandError,
           lastBleServiceEvent: event.type.name,
           lastBleServiceEventAt: event.timestamp,
           updatedAt: event.timestamp,
@@ -916,6 +960,7 @@ class ProtectionModeController {
         _emitDiagnostics();
         break;
       case ProtectionPlatformEventType.bleNotificationReceived:
+      case ProtectionPlatformEventType.ownDeviceSosLifecycleSuppressed:
         _diagnostics = _diagnostics.copyWith(
           lastBleServiceEvent: event.type.name,
           lastBleServiceEventAt: event.timestamp,

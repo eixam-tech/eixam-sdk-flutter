@@ -553,6 +553,8 @@ class EixamConnectSdkImpl
   bool _lastNativeProtectionCommandReady = false;
   ProtectionBleOwner _lastProtectionBleOwner = ProtectionBleOwner.flutter;
   ProtectionModeState _lastProtectionModeState = ProtectionModeState.off;
+  SosBleOwnershipState _lastSosBleOwnershipState =
+      SosBleOwnershipState.flutterOwner;
   bool _firmwareOtaInProgress = false;
   bool _migrationInspectionInProgress = false;
   bool _bleOwnershipHandoffInFlight = false;
@@ -911,6 +913,17 @@ class EixamConnectSdkImpl
         reason: 'flutter_device_status',
         status: _protectionModeController.currentStatus,
       );
+      final protectionStatus = _protectionModeController.currentStatus;
+      if (!promotedStatus.connected &&
+          _sosBleOwnershipState == SosBleOwnershipState.nativeReadyOwner) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_FLUTTER_GATT_CLEANUP_ISOLATED '
+          'nativeOwner=nativeReady '
+          'nativeGattConnected=${protectionStatus.serviceBleConnected} '
+          'subscriptionsActive=${protectionStatus.serviceBleReady} '
+          'nativeCommandReady=${protectionStatus.nativeCommandReady}',
+        );
+      }
       if (promotedStatus.nodeId != null) {
         _knownLocalDeviceNodeId = promotedStatus.nodeId;
       }
@@ -1079,6 +1092,20 @@ class EixamConnectSdkImpl
       final nativeOwnsBle =
           status.modeState != ProtectionModeState.off &&
           status.bleOwner != ProtectionBleOwner.flutter;
+      final currentSosBleOwnershipState =
+          status.modeState == ProtectionModeState.off
+          ? SosBleOwnershipState.flutterOwner
+          : resolveSosBleOwnershipState(
+              declaredOwner: status.bleOwner,
+              nativeCommandReady: _nativeCommandReadinessForStatus(
+                status,
+              ).ready,
+            );
+      final nativeOwnerBecameReady =
+          currentSosBleOwnershipState ==
+              SosBleOwnershipState.nativeReadyOwner &&
+          _lastSosBleOwnershipState != SosBleOwnershipState.nativeReadyOwner;
+      _lastSosBleOwnershipState = currentSosBleOwnershipState;
       if (nativeOwnsBle && !previousNativeOwnsBle) {
         _flutterBleReleaseCompletedForNativeOwnership = false;
       }
@@ -1086,10 +1113,10 @@ class EixamConnectSdkImpl
         _flutterBleReleaseCompletedForNativeOwnership = false;
         _nativePreparationRequestedForOwnership = false;
       }
-      _logSosBleOwnerState(
-        reason: 'protection_status:${status.lastPlatformEvent ?? "snapshot"}',
-        status: status,
-      );
+      final ownershipStatusReason = nativeOwnerBecameReady
+          ? 'protection_status:native_readiness_snapshot'
+          : 'protection_status:${status.lastPlatformEvent ?? "snapshot"}';
+      _logSosBleOwnerState(reason: ownershipStatusReason, status: status);
       _reconcileProtectionDisconnectLifecycle(
         previousConnected: previousConnected,
         status: status,
@@ -1123,9 +1150,11 @@ class EixamConnectSdkImpl
       if (nativeOwnershipNeedsHandoff) {
         unawaited(_handleProtectionBleOwnershipChanged(status.bleOwner));
       }
-      if (status.lastPlatformEvent ==
+      final nativeReadinessEvent =
+          status.lastPlatformEvent ==
               ProtectionPlatformEventType.nativeCommandReadinessChanged.name ||
-          previousNativeCommandReady != status.nativeCommandReady) {
+          previousNativeCommandReady != status.nativeCommandReady;
+      if (nativeReadinessEvent || nativeOwnerBecameReady) {
         final falsePredicate = !nativeOwnsBle
             ? 'nativeOwner'
             : !status.serviceBleConnected
@@ -1148,7 +1177,8 @@ class EixamConnectSdkImpl
           'exactIdentityMatch=${status.nativeCommandIdentityReady} '
           'queueHealthy=${status.nativeCommandQueueHealthy} '
           'nativeCommandReady=${status.nativeCommandReady} '
-          'falsePredicate=$falsePredicate',
+          'falsePredicate=$falsePredicate '
+          'ownerTransitionReady=$nativeOwnerBecameReady',
         );
         BleDebugRegistry.instance.recordEvent(
           'SOS_NATIVE_COMMAND_READINESS_CHANGED '
@@ -1156,9 +1186,18 @@ class EixamConnectSdkImpl
           'next=${status.nativeCommandReady} '
           'reason=${status.lastBleServiceEvent ?? "platform_event"}',
         );
-        unawaited(
-          _emitSosCapability(reason: 'native_command_readiness_changed'),
-        );
+        final capabilityReason = nativeOwnerBecameReady
+            ? 'native_owner_ready'
+            : 'native_command_readiness_changed';
+        if (nativeOwnerBecameReady) {
+          BleDebugRegistry.instance.recordEvent(
+            'SOS_NATIVE_OWNER_READY_CAPABILITY_REFRESH '
+            'trigger=resolved_owner_transition '
+            'snapshotEvent=${status.lastPlatformEvent ?? "none"} '
+            'nativeCommandReady=${status.nativeCommandReady}',
+          );
+        }
+        unawaited(_emitSosCapability(reason: capabilityReason));
       }
       if (nativeOwnsBle &&
           status.deviceConnected &&
@@ -18215,6 +18254,14 @@ class EixamConnectSdkImpl
         'previous=${_lastSosBleOwnerDiagnostic ?? "none"} '
         'next=$owner reason=$reason',
       );
+      if (owner == 'nativeReady') {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_NATIVE_GATT_ISOLATION owner=nativeReady '
+          'nativeRuntime=ProtectionBleRuntimeOwner '
+          'flutterPluginGattIndependent=true '
+          'subscriptionsActive=${status.serviceBleReady}',
+        );
+      }
       _lastSosBleOwnerDiagnostic = owner;
     }
     final invariant = evaluateSosBleSingleOwnerInvariant(
@@ -18694,6 +18741,7 @@ class EixamConnectSdkImpl
       case ProtectionPlatformEventType.packetReceived:
       case ProtectionPlatformEventType.sosEventReceived:
       case ProtectionPlatformEventType.ownDeviceSosLifecycleObserved:
+      case ProtectionPlatformEventType.ownDeviceSosLifecycleSuppressed:
       case ProtectionPlatformEventType.runtimeError:
       case ProtectionPlatformEventType.restorationDetected:
       case ProtectionPlatformEventType.restorationRehydrated:
@@ -20785,7 +20833,8 @@ class EixamConnectSdkImpl
     if (revision == _sosCapabilityEmissionRevision &&
         !_sosCapabilityController.isClosed) {
       _logSosCapabilityEvaluation(source: reason, capability: capability);
-      if (reason == 'native_command_readiness_changed') {
+      if (reason == 'native_command_readiness_changed' ||
+          reason == 'native_owner_ready') {
         BleDebugRegistry.instance.recordEvent(
           'SOS_NATIVE_COMMAND_READINESS_PROPAGATED '
           'deviceTransportReady=${capability.deviceTransportReady} '
