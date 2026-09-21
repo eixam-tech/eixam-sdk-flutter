@@ -3353,31 +3353,24 @@ class EixamConnectSdkImpl
   }
 
   Future<DeviceSosStatus> _activateActiveSosOnNativeOwnerFromApp() async {
-    try {
-      return await deviceSosController.activateSosFromApp(
-        commandWriterOverride: _sendDeviceCommandThroughActiveOwner,
-        commandRouteLabel: _currentDeviceCommandOwnerRoute,
+    final current = await deviceSosController.getStatus();
+    if (current.triggerOrigin == DeviceSosTransitionSource.app &&
+        !current.derivedFromBlePacket &&
+        (current.state == DeviceSosState.preConfirm ||
+            current.state == DeviceSosState.active ||
+            current.state == DeviceSosState.acknowledged)) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_DEVICE_COMMAND_ACK_MISSING '
+        'command=SOS_TRIGGER_APP state=${current.state.name} '
+        'optimistic=${current.optimistic} derivedFromBlePacket=false '
+        'reason=native_owner_activation_requires_device_packet',
       );
-    } catch (error) {
-      final status = await deviceSosController.getStatus();
-      final canFallbackToImmediateConfirm =
-          status.state == DeviceSosState.preConfirm &&
-          status.triggerOrigin == DeviceSosTransitionSource.app;
-      if (!canFallbackToImmediateConfirm) {
-        rethrow;
-      }
-      try {
-        return await deviceSosController.confirmSos(
-          commandWriterOverride: _sendDeviceCommandThroughActiveOwner,
-          commandRouteLabel: _currentDeviceCommandOwnerRoute,
-        );
-      } catch (confirmError) {
-        BleDebugRegistry.instance.recordEvent(
-          'App SOS device activation incomplete -> route=$_currentDeviceCommandOwnerRoute state=${status.state.name} error=$confirmError note=device_stayed_in_pre_sos',
-        );
-        rethrow;
-      }
+      return current;
     }
+    return deviceSosController.activateSosFromApp(
+      commandWriterOverride: _sendDeviceCommandThroughActiveOwner,
+      commandRouteLabel: _currentDeviceCommandOwnerRoute,
+    );
   }
 
   @override
@@ -5299,21 +5292,38 @@ class EixamConnectSdkImpl
         );
         final deviceStatus = await triggerDeviceSos();
         mirroredOnDevice =
-            deviceStatus.state == DeviceSosState.preConfirm ||
-            deviceStatus.state == DeviceSosState.active;
+            deviceStatus.derivedFromBlePacket &&
+            deviceStatus.transitionSource == DeviceSosTransitionSource.device &&
+            (deviceStatus.state == DeviceSosState.preConfirm ||
+                deviceStatus.state == DeviceSosState.active);
         BleDebugRegistry.instance.recordEvent(
           '[APP_PRE_SOS_DEVICE_COMMAND] action=sent '
-          'path=ble_inet_sos_trigger',
+          'path=ble_inet_sos_trigger '
+          'deviceAcknowledged=$mirroredOnDevice',
         );
+        if (!mirroredOnDevice) {
+          BleDebugRegistry.instance.recordEvent(
+            'SOS_DEVICE_COMMAND_ACK_MISSING '
+            'command=SOS_TRIGGER_APP state=${deviceStatus.state.name} '
+            'optimistic=${deviceStatus.optimistic} '
+            'derivedFromBlePacket=${deviceStatus.derivedFromBlePacket}',
+          );
+        }
+        final observedDeviceCycleKey = mirroredOnDevice
+            ? _preSosCycleKeyFromDeviceStatus(deviceStatus)
+            : null;
+        final localStartedAt =
+            deviceStatus.countdownStartedAt ?? DateTime.now();
         _syncPreSosSession(
-          startedAt: deviceStatus.countdownStartedAt ?? DateTime.now(),
+          startedAt: localStartedAt,
           expectedActivationAt:
               deviceStatus.expectedActivationAt ??
               DateTime.now().add(countdown),
           mirroredOnDevice: mirroredOnDevice,
           origin: DeviceSosTransitionSource.app,
           owner: owner,
-          cycleKey: _preSosCycleKeyFromDeviceStatus(deviceStatus),
+          cycleKey:
+              observedDeviceCycleKey ?? _newLocalPreSosCycleKey(localStartedAt),
           originatorNodeId: deviceStatus.nodeId ?? runtimeStatus.nodeId,
           packetId: deviceStatus.packetId,
           activationPayload: activationPayload,
@@ -7783,7 +7793,28 @@ class EixamConnectSdkImpl
       BleDebugRegistry.instance.recordEvent(
         'Public SOS device sync attempting -> action=$action deviceId=${runtimeStatus.nodeId?.toString() ?? "-"} hardwareId=${runtimeStatus.deviceId} route=$_currentDeviceCommandOwnerRoute state=${deviceSosStatus.state.name} commandPathAvailable=true',
       );
-      await operation();
+      final resultingStatus = await operation();
+      final deviceStateObserved =
+          action != 'trigger' ||
+          (resultingStatus.derivedFromBlePacket &&
+              resultingStatus.transitionSource ==
+                  DeviceSosTransitionSource.device &&
+              (resultingStatus.state == DeviceSosState.active ||
+                  resultingStatus.state == DeviceSosState.acknowledged));
+      if (!deviceStateObserved) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_DEVICE_COMMAND_ACK_MISSING '
+          'command=SOS_TRIGGER_APP state=${resultingStatus.state.name} '
+          'optimistic=${resultingStatus.optimistic} '
+          'derivedFromBlePacket=${resultingStatus.derivedFromBlePacket} '
+          'reason=device_activation_not_observed',
+        );
+        return const _PublicSosDeviceAttempt(
+          available: true,
+          attempted: true,
+          succeeded: false,
+        );
+      }
       BleDebugRegistry.instance.recordEvent(
         'Public SOS device sync succeeded -> action=$action deviceId=${runtimeStatus.nodeId?.toString() ?? "-"} hardwareId=${runtimeStatus.deviceId} route=$_currentDeviceCommandOwnerRoute',
       );
@@ -7962,6 +7993,11 @@ class EixamConnectSdkImpl
     DeviceSosStatus status,
     String? cycleKey,
   ) {
+    if (status.transitionSource != DeviceSosTransitionSource.device ||
+        (!status.derivedFromBlePacket &&
+            status.triggerOrigin != DeviceSosTransitionSource.device)) {
+      return;
+    }
     final incident = _buildDeviceRuntimePublicSosIncident(status);
     if (incident == null || !_hasBackendVisibleSosIncident(incident)) {
       return;
@@ -9475,6 +9511,8 @@ class EixamConnectSdkImpl
   }) {
     return state != null &&
         _isOpenSosState(state) &&
+        status.derivedFromBlePacket &&
+        status.transitionSource == DeviceSosTransitionSource.device &&
         _isAppOwnedBleRuntimeStatus(status, cycleKey: cycleKey);
   }
 
@@ -9482,6 +9520,31 @@ class EixamConnectSdkImpl
     DeviceSosStatus status, {
     required String? cycleKey,
   }) {
+    if (!status.derivedFromBlePacket ||
+        status.transitionSource != DeviceSosTransitionSource.device) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_DEVICE_COMMAND_ACK_MISSING '
+        'command=SOS_TRIGGER_APP state=${status.state.name} '
+        'optimistic=${status.optimistic} '
+        'derivedFromBlePacket=${status.derivedFromBlePacket} '
+        'reason=synthetic_device_active_not_accepted',
+      );
+      if (_preSosSession?.owner == _SosOwner.app &&
+          _pendingPreSosConfirmation == null &&
+          !_publicSosActionInFlight &&
+          _pendingAppTriggeredSosBridge == null) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_APP_PRE_SOS_LOCAL_COUNTDOWN_ELAPSED '
+          'action=publish_backend_without_device_ack',
+        );
+        unawaited(
+          confirmPreSos(
+            _preSosSession?.activationPayload ?? const SosTriggerPayload(),
+          ),
+        );
+      }
+      return;
+    }
     final incidentId =
         _lastKnownActiveSosIncident?.id ??
         _publicSosFallbackIncident?.id ??
@@ -9710,7 +9773,18 @@ class EixamConnectSdkImpl
   bool get _hasActivePreSosSession => _buildCurrentPreSosStatus() != null;
 
   void _syncPreSosSessionFromDeviceStatus(DeviceSosStatus status) {
-    if (status.state != DeviceSosState.preConfirm) {
+    if (status.state != DeviceSosState.preConfirm ||
+        !status.derivedFromBlePacket ||
+        status.transitionSource != DeviceSosTransitionSource.device) {
+      if (status.state == DeviceSosState.preConfirm && status.optimistic) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_DEVICE_COMMAND_ACK_MISSING '
+          'command=SOS_TRIGGER_APP state=${status.state.name} '
+          'optimistic=${status.optimistic} '
+          'derivedFromBlePacket=${status.derivedFromBlePacket} '
+          'reason=synthetic_device_status_not_accepted',
+        );
+      }
       return;
     }
     final cycleKey = _preSosCycleKeyFromDeviceStatus(status);
@@ -12452,8 +12526,12 @@ class EixamConnectSdkImpl
     DeviceSosStatus status, {
     required int eventSequence,
   }) {
+    final explicitDeviceTerminalBoundary = _isExplicitBleDeviceTerminalBoundary(
+      status,
+    );
     if (!_isDeviceSosCycleClosed(status.state) ||
-        !_isDeviceSosCycleOpenState(status.previousState) ||
+        (!_isDeviceSosCycleOpenState(status.previousState) &&
+            !explicitDeviceTerminalBoundary) ||
         !status.derivedFromBlePacket ||
         status.transitionSource != DeviceSosTransitionSource.device ||
         !_isConnectedOwnDeviceSosStatus(status)) {
@@ -12504,6 +12582,16 @@ class EixamConnectSdkImpl
     );
   }
 
+  bool _isExplicitBleDeviceTerminalBoundary(DeviceSosStatus status) {
+    if (!status.derivedFromBlePacket ||
+        status.transitionSource != DeviceSosTransitionSource.device) {
+      return false;
+    }
+    final opcode = status.lastOpcode;
+    return opcode == EixamBleProtocol.sosEventUserDeactivatedOpcode ||
+        opcode == EixamBleProtocol.sosEventBackendResolvedOpcode;
+  }
+
   bool _isDeviceSosCycleOpenState(DeviceSosState? state) {
     return state == DeviceSosState.preConfirm ||
         state == DeviceSosState.active ||
@@ -12550,14 +12638,17 @@ class EixamConnectSdkImpl
     _deviceInactiveBoundaryAfterTerminalGeneration = terminal.generation;
     final existingFence = _terminalDeviceCycleFence;
     final normalizedFallback = fallbackCycleKey?.trim();
+    final terminalCycleKey = terminal.deviceCycleKey?.trim();
     _terminalDeviceCycleFence = _TerminalDeviceCycleFence(
       generation: terminal.generation,
       nodeId: terminal.nodeId ?? boundary.nodeId,
-      runtimeCycleKey: existingFence?.generation == terminal.generation
+      runtimeCycleKey: terminalCycleKey?.isNotEmpty == true
+          ? terminalCycleKey
+          : existingFence?.generation == terminal.generation
           ? existingFence?.runtimeCycleKey
-          : (normalizedFallback?.isNotEmpty == true
-                ? normalizedFallback
-                : boundary.runtimeCycleKey),
+          : normalizedFallback?.isNotEmpty == true
+          ? normalizedFallback
+          : boundary.runtimeCycleKey,
       terminalBoundaryEventSequence:
           existingFence?.generation == terminal.generation
           ? existingFence?.terminalBoundaryEventSequence ??
@@ -14102,6 +14193,11 @@ class EixamConnectSdkImpl
   }
 
   SosIncident? _buildDeviceRuntimePublicSosIncident(DeviceSosStatus status) {
+    if (status.transitionSource != DeviceSosTransitionSource.device ||
+        (!status.derivedFromBlePacket &&
+            status.triggerOrigin != DeviceSosTransitionSource.device)) {
+      return null;
+    }
     final deviceCountdownExpired =
         status.expectedActivationAt != null &&
         !DateTime.now().isBefore(status.expectedActivationAt!);
@@ -17332,6 +17428,54 @@ class EixamConnectSdkImpl
       'Device leg owner chosen -> owner=$ownerRoute command=${command.label}',
     );
     if (_isProtectionPlatformOwningBle) {
+      final connectedDevice = _lastPublicDeviceStatus ?? _lastDeviceStatus;
+      final protectionStatus = _protectionModeController.currentStatus;
+      final expectedTargets =
+          <String?>[
+                connectedDevice?.deviceId,
+                connectedDevice?.canonicalHardwareId,
+              ]
+              .whereType<String>()
+              .map((value) => value.trim())
+              .where((value) => value.isNotEmpty)
+              .toSet();
+      final nativeTargets =
+          <String?>[
+                protectionStatus.activeDeviceId,
+                protectionStatus.protectedDeviceId,
+              ]
+              .whereType<String>()
+              .map((value) => value.trim())
+              .where((value) => value.isNotEmpty)
+              .toSet();
+      final targetMatches =
+          expectedTargets.isNotEmpty &&
+          nativeTargets.isNotEmpty &&
+          expectedTargets.any(
+            (expected) => nativeTargets.any(
+              (actual) =>
+                  expected.toLowerCase() == actual.toLowerCase() ||
+                  _samePhysicalHardwareId(expected, actual),
+            ),
+          );
+      if (!targetMatches) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_DEVICE_COMMAND_TARGET_REJECTED '
+          'owner=$ownerRoute command=${command.label} '
+          'connectedTargets=${expectedTargets.join(",")} '
+          'nativeTargets=${nativeTargets.join(",")}',
+        );
+        throw const DeviceException(
+          'E_SOS_DEVICE_COMMAND_TARGET_MISMATCH',
+          'E_SOS_DEVICE_COMMAND_TARGET_MISMATCH',
+        );
+      }
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_DEVICE_COMMAND_TARGET_CONFIRMED '
+        'owner=$ownerRoute command=${command.label} '
+        'connectedTargets=${expectedTargets.join(",")} '
+        'nativeTargets=${nativeTargets.join(",")}',
+      );
       final result = await protectionPlatformAdapter.sendProtectionCommand(
         request: ProtectionPlatformCommandRequest(
           label: command.label,

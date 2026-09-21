@@ -14,6 +14,8 @@ import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_state.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_sos_event_packet.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_sos_packet.dart';
 import 'package:eixam_connect_flutter/src/mappers/local_state_serializers.dart';
@@ -632,6 +634,91 @@ void main() {
         await harness.dispose();
       }
     });
+
+    test(
+      'post-terminal device E1 boundary admits a later reused packet cycle',
+      () async {
+        final terminalAt = DateTime.now().toUtc();
+        var deviceNow = terminalAt.add(const Duration(seconds: 1));
+        final secureStore = InMemorySecureKeyValueStore();
+        await _seedTerminalDeviceLifecycle(
+          secureStore: secureStore,
+          terminalAt: terminalAt,
+          deviceCycleKey: 'sos:4660:0',
+        );
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          sosLifecycleSecureStore: secureStore,
+          deviceClock: () => deviceNow,
+        );
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          harness.deviceRepository.emitStatus(
+            buildDeviceStatus(
+              deviceId: 'ble-1',
+              nodeId: 0x1234,
+              canonicalHardwareId: 'CF:82:00:00:00:01',
+            ),
+          );
+          await pumpEventQueue(times: 2);
+
+          // Backend terminal handling has already closed the local controller.
+          // This real E1 is still the authoritative physical inactive edge.
+          expect(
+            harness.deviceSosController.currentStatus.state,
+            DeviceSosState.inactive,
+          );
+          harness.deviceSosController.handleIncomingSosEventPacket(
+            _deviceCancelPacket(),
+            source: DeviceSosTransitionSource.device,
+          );
+          await pumpEventQueue(times: 4);
+          expect(
+            _hasDebugMessage('SOS_DEVICE_INACTIVE_BOUNDARY_RECORDED'),
+            isTrue,
+          );
+          expect(_hasDebugMessage('ordering=after_terminal'), isTrue);
+
+          deviceNow = deviceNow.add(const Duration(seconds: 6));
+          harness.deviceSosController.handleIncomingSosPacket(
+            _deviceOriginCountdownPacket(packetId: 0),
+            source: DeviceSosTransitionSource.device,
+          );
+          await pumpEventQueue(times: 6);
+
+          final arming = await harness.sdk.getSosLifecycle();
+          expect(arming.generation, 2);
+          expect(arming.stage, SosLifecycleStage.arming);
+          expect(arming.origin, SosLifecycleOrigin.connectedLocalDevice);
+          expect((await harness.sdk.getPreSosStatus())?.packetId, 0);
+
+          deviceNow = deviceNow.add(const Duration(seconds: 21));
+          harness.deviceSosController.handleIncomingSosPacket(
+            _deviceOriginActivePacketForCycle(packetId: 0),
+            source: DeviceSosTransitionSource.device,
+          );
+          await pumpEventQueue(times: 6);
+          final active = await harness.sdk.getSosLifecycle();
+          expect(active.generation, arming.generation);
+          expect(active.stage, SosLifecycleStage.active);
+
+          deviceNow = deviceNow.add(const Duration(seconds: 1));
+          harness.deviceSosController.handleIncomingSosEventPacket(
+            _devicePostFireCancelPacket(),
+            source: DeviceSosTransitionSource.device,
+          );
+          await pumpEventQueue(times: 6);
+          final cancelled = await harness.sdk.getSosLifecycle();
+          expect(cancelled.generation, arming.generation);
+          expect(cancelled.stage, SosLifecycleStage.cancelled);
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
 
     test(
       'restored terminal rejects a new cycle with weak device identity',
@@ -1645,6 +1732,180 @@ void main() {
           expect(harness.sosRepository.cancelCallCount, 0);
           expect(await harness.sdk.getPreSosStatus(), isNull);
           expect(await harness.sdk.getSosState(), SosState.idle);
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'app pre-SOS write completion awaits real TAG evidence before mirror confirmation',
+      () async {
+        var deviceNow = DateTime.now();
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          deviceClock: () => deviceNow,
+        );
+        final commands = <EixamDeviceCommand>[];
+        try {
+          await harness.deviceSosController.attach(
+            commandWriter: (command) async => commands.add(command),
+          );
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await harness.sdk.startPreSos(countdown: const Duration(seconds: 20));
+
+          var preSos = await harness.sdk.getPreSosStatus();
+          expect(commands, hasLength(1));
+          expect(commands.single.opcode, 0x06);
+          expect(commands.single.encode(), <int>[0x06]);
+          expect(
+            commands.single.targetCharacteristicUuid,
+            EixamBleProtocol.inetWriteCharacteristicUuid,
+          );
+          expect(preSos, isNotNull);
+          expect(preSos!.mirroredOnDevice, isFalse);
+          expect(harness.deviceSosController.currentStatus.optimistic, isTrue);
+          expect(_hasDebugMessage('SOS_DEVICE_COMMAND_ACK_MISSING'), isTrue);
+
+          final generation = (await harness.sdk.getSosLifecycle()).generation;
+          harness.deviceSosController.handleIncomingSosPacket(
+            _deviceOriginCountdownPacket(),
+            source: DeviceSosTransitionSource.device,
+          );
+          await pumpEventQueue(times: 5);
+
+          preSos = await harness.sdk.getPreSosStatus();
+          expect(preSos, isNotNull);
+          expect(preSos!.mirroredOnDevice, isTrue);
+          expect((await harness.sdk.getSosLifecycle()).generation, generation);
+          expect(_hasDebugMessage('SOS_DEVICE_COMMAND_ACK_OBSERVED'), isTrue);
+          expect(
+            _hasDebugMessage('SOS_DEVICE_STATE_OBSERVED state=preConfirm'),
+            isTrue,
+          );
+
+          deviceNow = deviceNow.add(const Duration(seconds: 21));
+          harness.deviceSosController.handleIncomingSosPacket(
+            _deviceOriginActivePacket(),
+            source: DeviceSosTransitionSource.device,
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          await pumpEventQueue(times: 6);
+          expect((await harness.sdk.getSosLifecycle()).generation, generation);
+          expect(
+            (await harness.sdk.getSosLifecycle()).stage,
+            SosLifecycleStage.active,
+          );
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'app pre-SOS without a ready command channel never claims device mirroring',
+      () async {
+        final harness = _SdkSosHarness(connectedBle: true);
+        try {
+          await harness.sdk.startPreSos(countdown: const Duration(seconds: 20));
+
+          final preSos = await harness.sdk.getPreSosStatus();
+          expect(preSos, isNotNull);
+          expect(preSos!.mirroredOnDevice, isFalse);
+          expect(
+            _hasDebugMessage('reason=pre_sos_device_path_unavailable'),
+            isTrue,
+          );
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'native SOS command targets the exact connected TAG and awaits its packet',
+      () async {
+        final adapter = _SnapshotProtectionPlatformAdapter(
+          const ProtectionPlatformSnapshot(
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            platform: ProtectionPlatform.android,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: true,
+            serviceBleReady: true,
+            protectedDeviceId: 'CF:82:00:00:00:01',
+            activeDeviceId: 'CF:82:00:00:00:01',
+          ),
+        );
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          protectionPlatformAdapter: adapter,
+        );
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await harness.sdk.startPreSos(countdown: const Duration(seconds: 20));
+
+          expect(adapter.commands, hasLength(1));
+          expect(adapter.commands.single.label, 'SOS TRIGGER APP');
+          expect(adapter.commands.single.bytes, <int>[0x06]);
+          expect(adapter.commands.single.forceCmdCharacteristic, isFalse);
+          expect(
+            (await harness.sdk.getPreSosStatus())?.mirroredOnDevice,
+            isFalse,
+          );
+          expect(
+            _hasDebugMessage('SOS_DEVICE_COMMAND_TARGET_CONFIRMED'),
+            isTrue,
+          );
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'native SOS command rejects a stale owner bound to another TAG',
+      () async {
+        final adapter = _SnapshotProtectionPlatformAdapter(
+          const ProtectionPlatformSnapshot(
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            platform: ProtectionPlatform.android,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: true,
+            serviceBleReady: true,
+            protectedDeviceId: 'CF:82:00:00:00:99',
+            activeDeviceId: 'CF:82:00:00:00:99',
+          ),
+        );
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          protectionPlatformAdapter: adapter,
+        );
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await harness.sdk.startPreSos(countdown: const Duration(seconds: 20));
+
+          expect(adapter.commands, isEmpty);
+          expect(
+            (await harness.sdk.getPreSosStatus())?.mirroredOnDevice,
+            isFalse,
+          );
+          expect(
+            _hasDebugMessage('SOS_DEVICE_COMMAND_TARGET_REJECTED'),
+            isTrue,
+          );
         } finally {
           await harness.dispose();
         }
@@ -5770,12 +6031,26 @@ final class _SnapshotProtectionPlatformAdapter extends Fake
   _SnapshotProtectionPlatformAdapter(this.snapshot);
 
   final ProtectionPlatformSnapshot snapshot;
+  final List<ProtectionPlatformCommandRequest> commands =
+      <ProtectionPlatformCommandRequest>[];
 
   @override
   ProtectionPlatform get platform => snapshot.platform;
 
   @override
   Future<ProtectionPlatformSnapshot> getPlatformSnapshot() async => snapshot;
+
+  @override
+  Future<ProtectionPlatformCommandResult> sendProtectionCommand({
+    required ProtectionPlatformCommandRequest request,
+  }) async {
+    commands.add(request);
+    return const ProtectionPlatformCommandResult(
+      success: true,
+      route: 'testNativeOwner',
+      result: 'write submitted',
+    );
+  }
 
   @override
   Stream<ProtectionPlatformEvent> watchPlatformEvents() =>

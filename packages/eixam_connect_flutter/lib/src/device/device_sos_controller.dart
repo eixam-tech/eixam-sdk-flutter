@@ -442,6 +442,14 @@ class DeviceSosController {
       _ensureCommandAvailable(command: command);
     }
 
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_DEVICE_COMMAND_REQUESTED '
+      'route=$commandRouteLabel command=${command.label} '
+      'opcode=0x${command.opcode.toRadixString(16).padLeft(2, '0')} '
+      'payload=${command.diagnosticPayload} '
+      'characteristic=${command.targetCharacteristicUuid}',
+    );
+
     final previous = _status;
     final now = _now();
     if (optimisticState == DeviceSosState.preConfirm) {
@@ -501,9 +509,20 @@ class DeviceSosController {
       BleDebugRegistry.instance.recordEvent(
         'DEVICE_SOS_COMMAND_DISPATCH route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
       );
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_DEVICE_COMMAND_WRITE_SUBMITTED '
+        'route=$commandRouteLabel command=${command.label} '
+        'opcode=0x${command.opcode.toRadixString(16).padLeft(2, '0')} '
+        'characteristic=${command.targetCharacteristicUuid}',
+      );
       await writer(command);
       BleDebugRegistry.instance.recordEvent(
         'DEVICE_SOS_COMMAND_SENT route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_DEVICE_COMMAND_TRANSPORT_COMPLETED '
+        'route=$commandRouteLabel command=${command.label} '
+        'note=transport_completion_is_not_device_acknowledgement',
       );
       return;
     } catch (error) {
@@ -818,6 +837,19 @@ class DeviceSosController {
       'finalResolvedState=${nextState.name} '
       'reason=${resolution.reason} '
       'cycleKey=${resolution.cycleKey ?? "-"}',
+    );
+    if (previousStatus.optimistic &&
+        previousStatus.triggerOrigin == DeviceSosTransitionSource.app) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_DEVICE_COMMAND_ACK_OBSERVED '
+        'evidence=device_packet state=${nextState.name} '
+        'nodeId=${_formatNodeId(packet.nodeId)} packetId=${packet.packetId}',
+      );
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_DEVICE_STATE_OBSERVED state=${nextState.name} '
+      'source=${source.name} nodeId=${_formatNodeId(packet.nodeId)} '
+      'packetId=${packet.packetId} derivedFromBlePacket=true',
     );
     BleDebugRegistry.instance.recordEvent(
       '[SDK_SOS_CLASSIFY] '

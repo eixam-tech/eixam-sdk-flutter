@@ -311,6 +311,15 @@ internal class ProtectionBleRuntimeOwner(
                     gatt.writeCharacteristic(characteristic)
                 }
             }
+        if (command.payload.getOrNull(0)?.toInt()?.and(0xFF) in listOf(0x05, 0x06)) {
+            Log.i(
+                logTag,
+                "SOS_DEVICE_COMMAND_WRITE_SUBMITTED owner=androidService " +
+                    "targetDeviceId=${targetDeviceId ?: "none"} " +
+                    "characteristic=${characteristic.uuid} " +
+                    "opcode=0x${command.payload[0].toInt().and(0xFF).toString(16).padStart(2, '0')}",
+            )
+        }
         if (!writeAccepted) {
             synchronized(commandLock) {
                 if (pendingCommandResult?.label == command.label) {
@@ -1731,6 +1740,15 @@ internal class ProtectionBleRuntimeOwner(
                     pending.complete(
                         result = result,
                     )
+                    if (pending.label == "SOS TRIGGER APP" || pending.label == "SOS CONFIRM") {
+                        Log.i(
+                            logTag,
+                            "SOS_DEVICE_COMMAND_WRITE_SUCCESS owner=androidService " +
+                                "targetDeviceId=${targetDeviceId ?: "none"} " +
+                                "characteristic=${characteristic.uuid} " +
+                                "gattStatus=$status note=gatt_write_completed_not_device_acknowledgement",
+                        )
+                    }
                 } else {
                     runtimeStore.recordCommandError(
                         "${pending.label} native write failed with status $status.",

@@ -764,6 +764,14 @@ class RealBleClient implements BleClient {
       lastWriteAt: DateTime.now(),
       lastWriteError: null,
     );
+    if (command.opcode == 0x06 || command.opcode == 0x05) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_DEVICE_COMMAND_WRITE_SUBMITTED '
+        'owner=flutter hardwareId=$deviceId target=${targetUuid.str} '
+        'opcode=0x${command.opcode.toRadixString(16).padLeft(2, '0')} '
+        'payload=$payload',
+      );
+    }
     try {
       if (c.properties.writeWithoutResponse) {
         await c.write(data, withoutResponse: true).timeout(
@@ -775,6 +783,14 @@ class RealBleClient implements BleClient {
               _commandWriteTimeout,
               onTimeout: () => throw TimeoutException('E_BLE_WRITE_TIMEOUT'),
             );
+      }
+      if (command.opcode == 0x06 || command.opcode == 0x05) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_DEVICE_COMMAND_WRITE_SUCCESS '
+          'owner=flutter hardwareId=$deviceId target=${targetUuid.str} '
+          'opcode=0x${command.opcode.toRadixString(16).padLeft(2, '0')} '
+          'note=gatt_write_completed_not_device_acknowledgement',
+        );
       }
     } catch (error) {
       BleDebugRegistry.instance.update(

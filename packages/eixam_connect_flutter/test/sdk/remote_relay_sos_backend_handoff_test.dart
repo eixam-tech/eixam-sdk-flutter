@@ -1450,7 +1450,8 @@ void main() {
       expect(sosRepository.triggerCallCount, 1);
     });
 
-    test('backend publish after countdown records device-origin SOS', () async {
+    test('backend publish after countdown stays backend-only without TAG ack',
+        () async {
       await rebuildSdkWithDeviceSosTiming(
         countdownDuration: const Duration(milliseconds: 35),
         countdownTick: const Duration(seconds: 1),
@@ -1475,7 +1476,7 @@ void main() {
       expect(states, contains(SosState.sending));
       final incident = await sdk.getCurrentSosIncident();
       expect(incident?.state, SosState.sent);
-      expect(incident?.deliveryChannel, SosDeliveryChannel.deviceOnly);
+      expect(incident?.deliveryChannel, SosDeliveryChannel.backendOnly);
       expect(sosRepository.lastDeviceId, '1498094248');
       expect(sosRepository.lastOriginatorNodeId, 1498094248);
 
