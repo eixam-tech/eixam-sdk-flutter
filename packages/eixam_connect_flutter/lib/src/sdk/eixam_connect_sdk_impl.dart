@@ -122,7 +122,8 @@ class NativeProtectionCommandReadiness {
 NativeProtectionCommandReadiness evaluateNativeProtectionCommandReadiness({
   required ProtectionBleOwner declaredOwner,
   required bool serviceBleConnected,
-  required bool serviceBleReady,
+  required bool serviceReady,
+  required bool cmdEa04Ready,
   required bool exactTargetIdentityMatch,
   required bool operationQueueOperational,
 }) {
@@ -130,7 +131,7 @@ NativeProtectionCommandReadiness evaluateNativeProtectionCommandReadiness({
       ? NativeProtectionCommandReadinessFailure.ownerNotNative
       : !serviceBleConnected
       ? NativeProtectionCommandReadinessFailure.gattNotConnected
-      : !serviceBleReady
+      : !serviceReady || !cmdEa04Ready
       ? NativeProtectionCommandReadinessFailure.canonicalCommandPathNotReady
       : !exactTargetIdentityMatch
       ? NativeProtectionCommandReadinessFailure.targetIdentityMismatch
@@ -514,11 +515,16 @@ class EixamConnectSdkImpl
   Timer? _protectionDisconnectGraceTimer;
   bool _lastProtectionDeviceConnected = false;
   bool _lastProtectionServiceBleReady = false;
+  bool _lastNativeProtectionCommandReady = false;
   ProtectionBleOwner _lastProtectionBleOwner = ProtectionBleOwner.flutter;
   bool _firmwareOtaInProgress = false;
   bool _migrationInspectionInProgress = false;
   bool _bleOwnershipHandoffInFlight = false;
   bool _nativeCommandReadinessRefreshInFlight = false;
+  String? _lastNativeRawPayloadHex;
+  String? _lastNativeRawReceiveCorrelation;
+  int? _lastNativeRawReceiveSequence;
+  String? _lastNativeRawCharacteristicUuid;
 
   Timer? _deathManTimer;
   bool _deathManCheckInNotified = false;
@@ -1015,9 +1021,11 @@ class EixamConnectSdkImpl
     ) {
       final previousConnected = _lastProtectionDeviceConnected;
       final previousReady = _lastProtectionServiceBleReady;
+      final previousNativeCommandReady = _lastNativeProtectionCommandReady;
       final previousOwner = _lastProtectionBleOwner;
       _lastProtectionDeviceConnected = status.deviceConnected;
       _lastProtectionServiceBleReady = status.serviceBleReady;
+      _lastNativeProtectionCommandReady = status.nativeCommandReady;
       _lastProtectionBleOwner = status.bleOwner;
       _reconcileProtectionDisconnectLifecycle(
         previousConnected: previousConnected,
@@ -1046,7 +1054,9 @@ class EixamConnectSdkImpl
       final nativeConnectionBecameLive =
           nativeOwnsBle && nativeLive && !previousConnected;
       final nativeCommandPathBecameReady =
-          nativeOwnsBle && status.serviceBleReady && !previousReady;
+          nativeOwnsBle &&
+          status.nativeCommandReady &&
+          !previousNativeCommandReady;
       final nativeBecameAuthoritative =
           nativeLive &&
           (nativeOwnershipStarted ||
@@ -1054,6 +1064,42 @@ class EixamConnectSdkImpl
               nativeCommandPathBecameReady);
       if (nativeBecameAuthoritative) {
         unawaited(_handleProtectionBleOwnershipChanged(status.bleOwner));
+      }
+      if (status.lastPlatformEvent ==
+              ProtectionPlatformEventType.nativeCommandReadinessChanged.name ||
+          previousNativeCommandReady != status.nativeCommandReady) {
+        final falsePredicate = !nativeOwnsBle
+            ? 'owner'
+            : !status.serviceBleConnected
+            ? 'gattConnected'
+            : !status.nativeCommandServiceReady
+            ? 'serviceReady'
+            : !status.nativeCommandEa04Ready
+            ? 'cmdEa04Ready'
+            : !status.nativeCommandIdentityReady
+            ? 'identityReady'
+            : !status.nativeCommandQueueHealthy
+            ? 'queueHealthy'
+            : 'none';
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_NATIVE_COMMAND_READINESS_INPUT '
+          'owner=$nativeOwnsBle '
+          'gattConnected=${status.serviceBleConnected} '
+          'serviceReady=${status.nativeCommandServiceReady} '
+          'cmdEa04Ready=${status.nativeCommandEa04Ready} '
+          'identityReady=${status.nativeCommandIdentityReady} '
+          'queueHealthy=${status.nativeCommandQueueHealthy} '
+          'falsePredicate=$falsePredicate',
+        );
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_NATIVE_COMMAND_READINESS_CHANGED '
+          'previous=$previousNativeCommandReady '
+          'next=${status.nativeCommandReady} '
+          'reason=${status.lastBleServiceEvent ?? "platform_event"}',
+        );
+        unawaited(
+          _emitSosCapability(reason: 'native_command_readiness_changed'),
+        );
       }
       if (nativeOwnsBle &&
           status.deviceConnected &&
@@ -18038,6 +18084,24 @@ class EixamConnectSdkImpl
   }
 
   void _handleProtectionPlatformSosEvent(ProtectionPlatformEvent event) {
+    if (event.type == ProtectionPlatformEventType.bleNotificationReceived) {
+      _lastNativeRawPayloadHex = event.payloadHex;
+      _lastNativeRawReceiveCorrelation = event.receiveCorrelation;
+      _lastNativeRawReceiveSequence = event.receiveSequence;
+      _lastNativeRawCharacteristicUuid = event.characteristicUuid;
+      BleDebugRegistry.instance.recordEvent(
+        'EIXAM_BLE_NOTIFICATION_RX '
+        'owner=native_protection '
+        'correlation=${event.receiveCorrelation ?? "none"} '
+        'characteristic=${event.characteristicUuid ?? "unknown"} '
+        'byteLength=${event.byteLength ?? 0} '
+        'packetType=${event.packetType ?? "unknown"} '
+        'firstOpcode=${event.firstOpcode ?? "none"} '
+        'receiveSequence=${event.receiveSequence ?? -1} '
+        'connectedDevice=${event.connectedDeviceMarker ?? "none"}',
+      );
+      return;
+    }
     if (_handleProtectionPlatformBackendSyncEvent(event)) {
       return;
     }
@@ -18138,6 +18202,32 @@ class EixamConnectSdkImpl
     final effectiveClassificationKind = isNativeApprovedOwnLifecycle
         ? BleIncomingPayloadKind.ownDeviceSos
         : remoteClassification.kind;
+    final matchesRawNotification =
+        _lastNativeRawPayloadHex?.toLowerCase() == rawHex.toLowerCase();
+    final receiveCorrelation = matchesRawNotification
+        ? _lastNativeRawReceiveCorrelation
+        : null;
+    final receiveSequence = matchesRawNotification
+        ? _lastNativeRawReceiveSequence
+        : null;
+    final characteristicUuid = matchesRawNotification
+        ? _lastNativeRawCharacteristicUuid
+        : null;
+    BleDebugRegistry.instance.recordEvent(
+      'BLE_SOS_CLASSIFY_DECISION raw=$rawHex '
+      'packetType=${platformSosEventPacket == null ? "sos" : "sos_event"} '
+      'classification=${effectiveClassificationKind.name} '
+      'source=native_protection '
+      'correlation=${receiveCorrelation ?? "none"} '
+      'receiveSequence=${receiveSequence ?? -1} '
+      'characteristic=${characteristicUuid ?? "unknown"}',
+    );
+    if (matchesRawNotification) {
+      _lastNativeRawPayloadHex = null;
+      _lastNativeRawReceiveCorrelation = null;
+      _lastNativeRawReceiveSequence = null;
+      _lastNativeRawCharacteristicUuid = null;
+    }
     final isLocalPlatformSosClassification =
         isNativeApprovedOwnLifecycle ||
         hasTrustedPlatformConnectedNode &&
@@ -18429,6 +18519,8 @@ class EixamConnectSdkImpl
       case ProtectionPlatformEventType.reconnectFailed:
       case ProtectionPlatformEventType.servicesDiscovered:
       case ProtectionPlatformEventType.subscriptionsActive:
+      case ProtectionPlatformEventType.nativeCommandReadinessChanged:
+      case ProtectionPlatformEventType.bleNotificationReceived:
       case ProtectionPlatformEventType.packetReceived:
       case ProtectionPlatformEventType.sosEventReceived:
       case ProtectionPlatformEventType.ownDeviceSosLifecycleObserved:
@@ -20445,11 +20537,13 @@ class EixamConnectSdkImpl
     final currentReadiness = evaluateNativeProtectionCommandReadiness(
       declaredOwner: status.bleOwner,
       serviceBleConnected: status.serviceBleConnected,
-      serviceBleReady: status.serviceBleReady,
-      exactTargetIdentityMatch: _nativeProtectionTargetMatchesConnectedDevice(
-        status,
-      ),
+      serviceReady: status.nativeCommandServiceReady || status.serviceBleReady,
+      cmdEa04Ready: status.nativeCommandEa04Ready || status.serviceBleReady,
+      exactTargetIdentityMatch:
+          (status.nativeCommandIdentityReady || status.serviceBleReady) &&
+          _nativeProtectionTargetMatchesConnectedDevice(status),
       operationQueueOperational:
+          status.nativeCommandQueueHealthy &&
           status.lastCommandError?.trim().isNotEmpty != true,
     );
     if (currentReadiness.ready) {
@@ -20461,7 +20555,10 @@ class EixamConnectSdkImpl
       BleDebugRegistry.instance.recordEvent(
         'SOS_NATIVE_COMMAND_READINESS_REFRESH '
         'reason=$reason connected=${refreshed.serviceBleConnected} '
-        'canonicalCmdReady=${refreshed.serviceBleReady} '
+        'serviceReady=${refreshed.nativeCommandServiceReady} '
+        'cmdEa04Ready=${refreshed.nativeCommandEa04Ready} '
+        'identityReady=${refreshed.nativeCommandIdentityReady} '
+        'queueHealthy=${refreshed.nativeCommandQueueHealthy} '
         'targetMatch=${_nativeProtectionTargetMatchesConnectedDevice(refreshed)} '
         'operationQueueOperational=${refreshed.lastCommandError?.trim().isNotEmpty != true}',
       );
@@ -20529,6 +20626,14 @@ class EixamConnectSdkImpl
     if (revision == _sosCapabilityEmissionRevision &&
         !_sosCapabilityController.isClosed) {
       _logSosCapabilityEvaluation(source: reason, capability: capability);
+      if (reason == 'native_command_readiness_changed') {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_NATIVE_COMMAND_READINESS_PROPAGATED '
+          'deviceTransportReady=${capability.deviceTransportReady} '
+          'commandChannelReady=${capability.commandChannelReady} '
+          'canTriggerDeviceSos=${capability.canTriggerDeviceSos}',
+        );
+      }
       _sosCapabilityController.add(capability);
     }
   }
@@ -20586,11 +20691,18 @@ class EixamConnectSdkImpl
     final nativeCommandReadiness = evaluateNativeProtectionCommandReadiness(
       declaredOwner: protectionStatus.bleOwner,
       serviceBleConnected: protectionStatus.serviceBleConnected,
-      serviceBleReady: protectionStatus.serviceBleReady,
-      exactTargetIdentityMatch: _nativeProtectionTargetMatchesConnectedDevice(
-        protectionStatus,
-      ),
+      serviceReady:
+          protectionStatus.nativeCommandServiceReady ||
+          protectionStatus.serviceBleReady,
+      cmdEa04Ready:
+          protectionStatus.nativeCommandEa04Ready ||
+          protectionStatus.serviceBleReady,
+      exactTargetIdentityMatch:
+          (protectionStatus.nativeCommandIdentityReady ||
+              protectionStatus.serviceBleReady) &&
+          _nativeProtectionTargetMatchesConnectedDevice(protectionStatus),
       operationQueueOperational:
+          protectionStatus.nativeCommandQueueHealthy &&
           protectionStatus.lastCommandError?.trim().isNotEmpty != true,
     );
     final chosenConnected =

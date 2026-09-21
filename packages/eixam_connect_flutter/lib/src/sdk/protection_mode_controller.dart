@@ -513,6 +513,11 @@ class ProtectionModeController {
       restorationConfigured: platformSnapshot.restorationConfigured,
       serviceBleConnected: platformSnapshot.serviceBleConnected,
       serviceBleReady: platformSnapshot.serviceBleReady,
+      nativeCommandServiceReady: platformSnapshot.nativeCommandServiceReady,
+      nativeCommandEa04Ready: platformSnapshot.nativeCommandEa04Ready,
+      nativeCommandIdentityReady: platformSnapshot.nativeCommandIdentityReady,
+      nativeCommandQueueHealthy: platformSnapshot.nativeCommandQueueHealthy,
+      nativeCommandReady: platformSnapshot.nativeCommandReady,
       lastPlatformEvent: platformSnapshot.lastPlatformEvent,
       lastPlatformEventAt: platformSnapshot.lastPlatformEventAt,
       lastRestorationEvent: platformSnapshot.lastRestorationEvent,
@@ -747,6 +752,11 @@ class ProtectionModeController {
           bleOwner: nativeOwner,
           serviceBleConnected: false,
           serviceBleReady: false,
+          nativeCommandServiceReady: false,
+          nativeCommandEa04Ready: false,
+          nativeCommandIdentityReady: false,
+          nativeCommandQueueHealthy: false,
+          nativeCommandReady: false,
           lastBleServiceEvent: event.type.name,
           lastBleServiceEventAt: event.timestamp,
           updatedAt: event.timestamp,
@@ -835,11 +845,47 @@ class ProtectionModeController {
         _emitStatus();
         _emitDiagnostics();
         break;
+      case ProtectionPlatformEventType.nativeCommandReadinessChanged:
+        _status = _status.copyWith(
+          bleOwner: nativeOwner,
+          deviceConnected: event.gattConnected == true,
+          serviceBleConnected: event.gattConnected == true,
+          nativeCommandServiceReady: event.serviceReady ?? false,
+          nativeCommandEa04Ready: event.cmdEa04Ready ?? false,
+          nativeCommandIdentityReady: event.identityReady ?? false,
+          nativeCommandQueueHealthy: event.queueHealthy ?? false,
+          nativeCommandReady: event.nativeCommandReady ?? false,
+          lastCommandError: event.queueHealthy == true
+              ? null
+              : _status.lastCommandError,
+          lastBleServiceEvent: event.type.name,
+          lastBleServiceEventAt: event.timestamp,
+          updatedAt: event.timestamp,
+        );
+        _diagnostics = _diagnostics.copyWith(
+          lastBleServiceEvent: event.type.name,
+          lastBleServiceEventAt: event.timestamp,
+        );
+        _emitStatus();
+        _emitDiagnostics();
+        break;
+      case ProtectionPlatformEventType.bleNotificationReceived:
+        _diagnostics = _diagnostics.copyWith(
+          lastBleServiceEvent: event.type.name,
+          lastBleServiceEventAt: event.timestamp,
+        );
+        _emitDiagnostics();
+        break;
       case ProtectionPlatformEventType.deviceDisconnected:
         _status = _status.copyWith(
           deviceConnected: false,
           serviceBleConnected: false,
           serviceBleReady: false,
+          nativeCommandServiceReady: false,
+          nativeCommandEa04Ready: false,
+          nativeCommandIdentityReady: false,
+          nativeCommandQueueHealthy: false,
+          nativeCommandReady: false,
           lastBleServiceEvent: event.type.name,
           lastBleServiceEventAt: event.timestamp,
           updatedAt: event.timestamp,
@@ -929,6 +975,8 @@ class ProtectionModeController {
             event.type == ProtectionPlatformEventType.deviceDisconnected ||
             event.type == ProtectionPlatformEventType.servicesDiscovered ||
             event.type == ProtectionPlatformEventType.subscriptionsActive ||
+            event.type ==
+                ProtectionPlatformEventType.nativeCommandReadinessChanged ||
             event.type == ProtectionPlatformEventType.reconnectScheduled ||
             event.type == ProtectionPlatformEventType.reconnectFailed ||
             event.type == ProtectionPlatformEventType.nativeBackendSyncQueued ||

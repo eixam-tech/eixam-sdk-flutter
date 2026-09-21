@@ -8,64 +8,81 @@ void main() {
 
   group('AndroidProtectionPlatformAdapter mapping', () {
     test('maps native snapshot into SDK platform snapshot fields', () {
-      final snapshot = mapAndroidProtectionPlatformSnapshot(
-        <String, dynamic>{
-          'backgroundCapabilityReady': true,
-          'platformRuntimeConfigured': true,
-          'foregroundServiceConfigured': true,
-          'serviceRunning': true,
-          'runtimeActive': true,
-          'bluetoothEnabled': true,
-          'notificationsGranted': true,
-          'lastFailureReason': null,
-          'lastPlatformEvent': 'runtimeStarted',
-          'lastPlatformEventAt':
-              DateTime.utc(2026, 4, 5, 10).millisecondsSinceEpoch,
-          'runtimeState': 'active',
-          'coverageLevel': 'partial',
-          'bleOwner': 'androidService',
-          'backgroundCapabilityState': 'configured',
-          'restorationConfigured': true,
-          'serviceBleConnected': true,
-          'serviceBleReady': false,
-          'expectedBleServiceUuid': '6ba1b218-15a8-461f-9fa8-5dcae273ea00',
-          'expectedBleCharacteristicUuids': <String>[
-            '6ba1b218-15a8-461f-9fa8-5dcae273ea01',
-            '6ba1b218-15a8-461f-9fa8-5dcae273ea02',
-            '6ba1b218-15a8-461f-9fa8-5dcae273ea03',
-            '6ba1b218-15a8-461f-9fa8-5dcae273ea04',
-          ],
-          'discoveredBleServicesSummary':
-              '180f[] | 6ba1b218-15a8-461f-9fa8-5dcae273ea00[6ba1b218-15a8-461f-9fa8-5dcae273ea01,6ba1b218-15a8-461f-9fa8-5dcae273ea02,6ba1b218-15a8-461f-9fa8-5dcae273ea03]',
-          'readinessFailureReason':
-              'Required EIXAM protection characteristics are missing.',
-          'nativeBackendBaseUrl': 'https://api.example.test',
-          'nativeBackendConfigValid': true,
-          'nativeBackendConfigIssue': null,
-          'debugLocalhostBackendAllowed': false,
-          'debugCleartextBackendAllowed': false,
-          'pendingNativeSosCreateCount': 1,
-          'pendingNativeSosCancelCount': 0,
-          'lastRestorationEvent': 'restorationDetected',
-          'lastRestorationEventAt':
-              DateTime.utc(2026, 4, 5, 10, 4).millisecondsSinceEpoch,
-          'lastBleServiceEvent': 'deviceConnected',
-          'lastBleServiceEventAt':
-              DateTime.utc(2026, 4, 5, 10, 5).millisecondsSinceEpoch,
-          'reconnectAttemptCount': 2,
-          'lastReconnectAttemptAt':
-              DateTime.utc(2026, 4, 5, 10, 6).millisecondsSinceEpoch,
-          'lastNativeBackendHandoffResult': 'create_synced',
-          'lastNativeBackendHandoffError': null,
-          'protectedDeviceId': 'device-123',
-          'lastCommandRoute': 'androidService',
-          'lastCommandResult':
-              'SHUTDOWN native write succeeded via androidService.',
-          'lastCommandError': null,
-          'lastWakeAt': DateTime.utc(2026, 4, 5, 9).millisecondsSinceEpoch,
-          'lastWakeReason': 'enter_protection_mode',
-        },
-      );
+      final snapshot = mapAndroidProtectionPlatformSnapshot(<String, dynamic>{
+        'backgroundCapabilityReady': true,
+        'platformRuntimeConfigured': true,
+        'foregroundServiceConfigured': true,
+        'serviceRunning': true,
+        'runtimeActive': true,
+        'bluetoothEnabled': true,
+        'notificationsGranted': true,
+        'lastFailureReason': null,
+        'lastPlatformEvent': 'runtimeStarted',
+        'lastPlatformEventAt': DateTime.utc(
+          2026,
+          4,
+          5,
+          10,
+        ).millisecondsSinceEpoch,
+        'runtimeState': 'active',
+        'coverageLevel': 'partial',
+        'bleOwner': 'androidService',
+        'backgroundCapabilityState': 'configured',
+        'restorationConfigured': true,
+        'serviceBleConnected': true,
+        'serviceBleReady': false,
+        'expectedBleServiceUuid': '6ba1b218-15a8-461f-9fa8-5dcae273ea00',
+        'expectedBleCharacteristicUuids': <String>[
+          '6ba1b218-15a8-461f-9fa8-5dcae273ea01',
+          '6ba1b218-15a8-461f-9fa8-5dcae273ea02',
+          '6ba1b218-15a8-461f-9fa8-5dcae273ea03',
+          '6ba1b218-15a8-461f-9fa8-5dcae273ea04',
+        ],
+        'discoveredBleServicesSummary':
+            '180f[] | 6ba1b218-15a8-461f-9fa8-5dcae273ea00[6ba1b218-15a8-461f-9fa8-5dcae273ea01,6ba1b218-15a8-461f-9fa8-5dcae273ea02,6ba1b218-15a8-461f-9fa8-5dcae273ea03]',
+        'readinessFailureReason':
+            'Required EIXAM protection characteristics are missing.',
+        'nativeBackendBaseUrl': 'https://api.example.test',
+        'nativeBackendConfigValid': true,
+        'nativeBackendConfigIssue': null,
+        'debugLocalhostBackendAllowed': false,
+        'debugCleartextBackendAllowed': false,
+        'pendingNativeSosCreateCount': 1,
+        'pendingNativeSosCancelCount': 0,
+        'lastRestorationEvent': 'restorationDetected',
+        'lastRestorationEventAt': DateTime.utc(
+          2026,
+          4,
+          5,
+          10,
+          4,
+        ).millisecondsSinceEpoch,
+        'lastBleServiceEvent': 'deviceConnected',
+        'lastBleServiceEventAt': DateTime.utc(
+          2026,
+          4,
+          5,
+          10,
+          5,
+        ).millisecondsSinceEpoch,
+        'reconnectAttemptCount': 2,
+        'lastReconnectAttemptAt': DateTime.utc(
+          2026,
+          4,
+          5,
+          10,
+          6,
+        ).millisecondsSinceEpoch,
+        'lastNativeBackendHandoffResult': 'create_synced',
+        'lastNativeBackendHandoffError': null,
+        'protectedDeviceId': 'device-123',
+        'lastCommandRoute': 'androidService',
+        'lastCommandResult':
+            'SHUTDOWN native write succeeded via androidService.',
+        'lastCommandError': null,
+        'lastWakeAt': DateTime.utc(2026, 4, 5, 9).millisecondsSinceEpoch,
+        'lastWakeReason': 'enter_protection_mode',
+      });
 
       expect(snapshot.backgroundCapabilityReady, isTrue);
       expect(snapshot.platformRuntimeConfigured, isTrue);
@@ -120,14 +137,13 @@ void main() {
         'flushedTelemetryCount': 0,
         'success': true,
       });
-      final commandResult = mapProtectionPlatformCommandResult(
-        <String, dynamic>{
-          'success': true,
-          'route': 'androidService',
-          'result': 'SHUTDOWN native write succeeded via androidService.',
-          'error': null,
-        },
-      );
+      final commandResult =
+          mapProtectionPlatformCommandResult(<String, dynamic>{
+            'success': true,
+            'route': 'androidService',
+            'result': 'SHUTDOWN native write succeeded via androidService.',
+            'error': null,
+          });
 
       expect(startResult.success, isTrue);
       expect(startResult.coverageLevel, ProtectionCoverageLevel.partial);
@@ -146,6 +162,56 @@ void main() {
 
       expect(event.type, ProtectionPlatformEventType.runtimeRestarted);
       expect(event.reason, 'system_restart');
+    });
+
+    test('maps event-driven native command readiness predicates', () {
+      final event = mapAndroidProtectionPlatformEvent(<Object?, Object?>{
+        'type': 'nativeCommandReadinessChanged',
+        'timestamp': DateTime.utc(2026, 9, 21).millisecondsSinceEpoch,
+        'reason': 'eixam_service_and_ea04_discovered',
+        'previous': false,
+        'gattConnected': true,
+        'serviceReady': true,
+        'cmdEa04Ready': true,
+        'identityReady': true,
+        'queueHealthy': true,
+        'nativeCommandReady': true,
+      });
+
+      expect(
+        event.type,
+        ProtectionPlatformEventType.nativeCommandReadinessChanged,
+      );
+      expect(event.previousNativeCommandReady, isFalse);
+      expect(event.gattConnected, isTrue);
+      expect(event.serviceReady, isTrue);
+      expect(event.cmdEa04Ready, isTrue);
+      expect(event.identityReady, isTrue);
+      expect(event.queueHealthy, isTrue);
+      expect(event.nativeCommandReady, isTrue);
+    });
+
+    test('maps raw native notification correlation before SOS parsing', () {
+      final event = mapAndroidProtectionPlatformEvent(<Object?, Object?>{
+        'type': 'bleNotificationReceived',
+        'timestamp': DateTime.utc(2026, 9, 21).millisecondsSinceEpoch,
+        'payloadHex': 'a81a4b5948cd1b34442800c0',
+        'source': 'tel_notify',
+        'characteristicUuid': '6ba1b218-15a8-461f-9fa8-5dcae273ea01',
+        'byteLength': 12,
+        'packetType': 'sos',
+        'firstOpcode': '0xa8',
+        'receiveSequence': 1,
+        'receiveCorrelation': 'native-1',
+        'connectedDeviceMarker': '**:**:**:**:1A:A8',
+      });
+
+      expect(event.type, ProtectionPlatformEventType.bleNotificationReceived);
+      expect(event.packetType, 'sos');
+      expect(event.firstOpcode, '0xa8');
+      expect(event.receiveSequence, 1);
+      expect(event.receiveCorrelation, 'native-1');
+      expect(event.byteLength, 12);
     });
 
     test('maps structured native SOS lifecycle payload fields', () {

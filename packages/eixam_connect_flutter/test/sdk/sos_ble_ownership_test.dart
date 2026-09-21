@@ -69,14 +69,16 @@ void main() {
       NativeProtectionCommandReadiness evaluate({
         ProtectionBleOwner owner = ProtectionBleOwner.androidService,
         bool connected = true,
-        bool canonicalCommandPathReady = true,
+        bool serviceReady = true,
+        bool cmdEa04Ready = true,
         bool targetMatches = true,
         bool operationQueueOperational = true,
       }) {
         return evaluateNativeProtectionCommandReadiness(
           declaredOwner: owner,
           serviceBleConnected: connected,
-          serviceBleReady: canonicalCommandPathReady,
+          serviceReady: serviceReady,
+          cmdEa04Ready: cmdEa04Ready,
           exactTargetIdentityMatch: targetMatches,
           operationQueueOperational: operationQueueOperational,
         );
@@ -88,7 +90,11 @@ void main() {
         NativeProtectionCommandReadinessFailure.targetIdentityMismatch,
       );
       expect(
-        evaluate(canonicalCommandPathReady: false).failure,
+        evaluate(serviceReady: false).failure,
+        NativeProtectionCommandReadinessFailure.canonicalCommandPathNotReady,
+      );
+      expect(
+        evaluate(cmdEa04Ready: false).failure,
         NativeProtectionCommandReadinessFailure.canonicalCommandPathNotReady,
       );
       expect(

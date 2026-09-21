@@ -1,43 +1,14 @@
-enum ProtectionModeState {
-  off,
-  arming,
-  armed,
-  degraded,
-  stopping,
-  error,
-}
+enum ProtectionModeState { off, arming, armed, degraded, stopping, error }
 
-enum ProtectionCoverageLevel {
-  none,
-  partial,
-  full,
-}
+enum ProtectionCoverageLevel { none, partial, full }
 
-enum ProtectionBleOwner {
-  flutter,
-  androidService,
-  iosPlugin,
-}
+enum ProtectionBleOwner { flutter, androidService, iosPlugin }
 
-enum ProtectionPlatform {
-  unknown,
-  android,
-  ios,
-}
+enum ProtectionPlatform { unknown, android, ios }
 
-enum ProtectionCapabilityState {
-  unknown,
-  unavailable,
-  configured,
-}
+enum ProtectionCapabilityState { unknown, unavailable, configured }
 
-enum ProtectionRuntimeState {
-  inactive,
-  starting,
-  active,
-  recovering,
-  failed,
-}
+enum ProtectionRuntimeState { inactive, starting, active, recovering, failed }
 
 enum ProtectionBlockingIssueType {
   noSession,
@@ -119,6 +90,11 @@ class ProtectionStatus {
     this.restorationConfigured = false,
     this.serviceBleConnected = false,
     this.serviceBleReady = false,
+    this.nativeCommandServiceReady = false,
+    this.nativeCommandEa04Ready = false,
+    this.nativeCommandIdentityReady = false,
+    this.nativeCommandQueueHealthy = true,
+    this.nativeCommandReady = false,
     this.lastPlatformEvent,
     this.lastPlatformEventAt,
     this.lastRestorationEvent,
@@ -172,6 +148,11 @@ class ProtectionStatus {
   final bool restorationConfigured;
   final bool serviceBleConnected;
   final bool serviceBleReady;
+  final bool nativeCommandServiceReady;
+  final bool nativeCommandEa04Ready;
+  final bool nativeCommandIdentityReady;
+  final bool nativeCommandQueueHealthy;
+  final bool nativeCommandReady;
   final String? lastPlatformEvent;
   final DateTime? lastPlatformEventAt;
   final String? lastRestorationEvent;
@@ -226,6 +207,11 @@ class ProtectionStatus {
     bool? restorationConfigured,
     bool? serviceBleConnected,
     bool? serviceBleReady,
+    bool? nativeCommandServiceReady,
+    bool? nativeCommandEa04Ready,
+    bool? nativeCommandIdentityReady,
+    bool? nativeCommandQueueHealthy,
+    bool? nativeCommandReady,
     Object? lastPlatformEvent = _unset,
     Object? lastPlatformEventAt = _unset,
     Object? lastRestorationEvent = _unset,
@@ -265,7 +251,8 @@ class ProtectionStatus {
           locationPermissionGranted ?? this.locationPermissionGranted,
       notificationsPermissionGranted:
           notificationsPermissionGranted ?? this.notificationsPermissionGranted,
-      platformBackgroundCapabilityReady: platformBackgroundCapabilityReady ??
+      platformBackgroundCapabilityReady:
+          platformBackgroundCapabilityReady ??
           this.platformBackgroundCapabilityReady,
       backendReachable: backendReachable ?? this.backendReachable,
       realtimeReady: realtimeReady ?? this.realtimeReady,
@@ -292,6 +279,15 @@ class ProtectionStatus {
           restorationConfigured ?? this.restorationConfigured,
       serviceBleConnected: serviceBleConnected ?? this.serviceBleConnected,
       serviceBleReady: serviceBleReady ?? this.serviceBleReady,
+      nativeCommandServiceReady:
+          nativeCommandServiceReady ?? this.nativeCommandServiceReady,
+      nativeCommandEa04Ready:
+          nativeCommandEa04Ready ?? this.nativeCommandEa04Ready,
+      nativeCommandIdentityReady:
+          nativeCommandIdentityReady ?? this.nativeCommandIdentityReady,
+      nativeCommandQueueHealthy:
+          nativeCommandQueueHealthy ?? this.nativeCommandQueueHealthy,
+      nativeCommandReady: nativeCommandReady ?? this.nativeCommandReady,
       lastPlatformEvent: identical(lastPlatformEvent, _unset)
           ? this.lastPlatformEvent
           : lastPlatformEvent as String?,
@@ -317,12 +313,12 @@ class ProtectionStatus {
           : lastReconnectAttemptAt as DateTime?,
       lastNativeBackendHandoffResult:
           identical(lastNativeBackendHandoffResult, _unset)
-              ? this.lastNativeBackendHandoffResult
-              : lastNativeBackendHandoffResult as String?,
+          ? this.lastNativeBackendHandoffResult
+          : lastNativeBackendHandoffResult as String?,
       lastNativeBackendHandoffError:
           identical(lastNativeBackendHandoffError, _unset)
-              ? this.lastNativeBackendHandoffError
-              : lastNativeBackendHandoffError as String?,
+          ? this.lastNativeBackendHandoffError
+          : lastNativeBackendHandoffError as String?,
       protectedDeviceId: identical(protectedDeviceId, _unset)
           ? this.protectedDeviceId
           : protectedDeviceId as String?,
@@ -339,8 +335,8 @@ class ProtectionStatus {
           expectedBleCharacteristicUuids ?? this.expectedBleCharacteristicUuids,
       discoveredBleServicesSummary:
           identical(discoveredBleServicesSummary, _unset)
-              ? this.discoveredBleServicesSummary
-              : discoveredBleServicesSummary as String?,
+          ? this.discoveredBleServicesSummary
+          : discoveredBleServicesSummary as String?,
       readinessFailureReason: identical(readinessFailureReason, _unset)
           ? this.readinessFailureReason
           : readinessFailureReason as String?,
@@ -523,12 +519,12 @@ class ProtectionDiagnostics {
           pendingNativeSosCancelCount ?? this.pendingNativeSosCancelCount,
       lastNativeBackendHandoffResult:
           identical(lastNativeBackendHandoffResult, _unset)
-              ? this.lastNativeBackendHandoffResult
-              : lastNativeBackendHandoffResult as String?,
+          ? this.lastNativeBackendHandoffResult
+          : lastNativeBackendHandoffResult as String?,
       lastNativeBackendHandoffError:
           identical(lastNativeBackendHandoffError, _unset)
-              ? this.lastNativeBackendHandoffError
-              : lastNativeBackendHandoffError as String?,
+          ? this.lastNativeBackendHandoffError
+          : lastNativeBackendHandoffError as String?,
       protectedDeviceId: identical(protectedDeviceId, _unset)
           ? this.protectedDeviceId
           : protectedDeviceId as String?,
@@ -539,8 +535,8 @@ class ProtectionDiagnostics {
           expectedBleCharacteristicUuids ?? this.expectedBleCharacteristicUuids,
       discoveredBleServicesSummary:
           identical(discoveredBleServicesSummary, _unset)
-              ? this.discoveredBleServicesSummary
-              : discoveredBleServicesSummary as String?,
+          ? this.discoveredBleServicesSummary
+          : discoveredBleServicesSummary as String?,
       readinessFailureReason: identical(readinessFailureReason, _unset)
           ? this.readinessFailureReason
           : readinessFailureReason as String?,
@@ -596,7 +592,6 @@ class ProtectionReadinessReport {
 }
 
 class ProtectionModeOptions {
-
   const ProtectionModeOptions({
     this.enableStoreAndForward = true,
     this.autoReconnectBle = true,

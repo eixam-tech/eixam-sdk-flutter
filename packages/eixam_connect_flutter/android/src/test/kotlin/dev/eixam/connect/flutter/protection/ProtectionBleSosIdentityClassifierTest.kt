@@ -6,6 +6,62 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ProtectionBleSosIdentityClassifierTest {
+    private val firmwareFullSosFixture = listOf(
+        0xA8,
+        0x1A,
+        0x4B,
+        0x59,
+        0x48,
+        0xCD,
+        0x1B,
+        0x34,
+        0x44,
+        0x28,
+        0x00,
+        0xC0,
+    )
+
+    @Test
+    fun `firmware full SOS START on EA01 TEL is recognized as own-device`() {
+        val classification = ProtectionBleSosIdentityClassifier.classify(
+            payload = firmwareFullSosFixture,
+            connectedNodeId = 1498094248,
+            source = ProtectionBleSosRelaySource.tel,
+        )
+
+        assertTrue(classification is ProtectionBleSosIdentityClassification.OwnSos)
+        assertEquals(IdentityProof.StrictConnectedNode, classification.identityProof)
+        assertTrue(ProtectionBleSosNativeRouting.route(classification).observeLocalLifecycle)
+    }
+
+    @Test
+    fun `firmware full SOS START on EA02 SOS is recognized as own-device`() {
+        val classification = ProtectionBleSosIdentityClassifier.classify(
+            payload = firmwareFullSosFixture,
+            connectedNodeId = 1498094248,
+            source = ProtectionBleSosRelaySource.sos,
+        )
+
+        assertTrue(classification is ProtectionBleSosIdentityClassification.OwnSos)
+        assertEquals(IdentityProof.StrictConnectedNode, classification.identityProof)
+        assertTrue(ProtectionBleSosNativeRouting.route(classification).observeLocalLifecycle)
+    }
+
+    @Test
+    fun `firmware duplicated E1 cancel on TEL and SOS stays own-device`() {
+        val cancel = listOf(0xE1, 0x02, 0xA8, 0x1A, 0x4B, 0x59)
+
+        for (source in listOf(ProtectionBleSosRelaySource.tel, ProtectionBleSosRelaySource.sos)) {
+            val classification = ProtectionBleSosIdentityClassifier.classify(
+                payload = cancel,
+                connectedNodeId = 1498094248,
+                source = source,
+            )
+            assertTrue(classification is ProtectionBleSosIdentityClassification.OwnEvent)
+            assertTrue(ProtectionBleSosNativeRouting.route(classification).observeLocalLifecycle)
+        }
+    }
+
     @Test
     fun `own-device SOS payload is classified as local`() {
         val classification = ProtectionBleSosIdentityClassifier.classify(

@@ -23,6 +23,7 @@ internal object ProtectionRuntimeBridge {
     private var applicationContext: Context? = null
     private var eventSink: EventChannel.EventSink? = null
     private var runtimeOwner: ProtectionBleRuntimeOwner? = null
+    private val pendingEvents = ProtectionPlatformEventBuffer(maxPendingEvents)
 
     fun register(
         messenger: BinaryMessenger,
@@ -36,6 +37,8 @@ internal object ProtectionRuntimeBridge {
             object : EventChannel.StreamHandler {
                 override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
                     eventSink = events
+                    val sink = events ?: return
+                    pendingEvents.drain(sink::success)
                 }
 
                 override fun onCancel(arguments: Any?) {
@@ -334,6 +337,61 @@ internal object ProtectionRuntimeBridge {
         emitEvent(type, reason)
     }
 
+    fun recordNativeCommandReadinessEvent(
+        context: Context,
+        previous: Boolean,
+        readiness: ProtectionNativeCommandReadiness,
+        reason: String,
+    ) {
+        ProtectionRuntimeStore(context).recordEvent(
+            type = "nativeCommandReadinessChanged",
+            reason = reason,
+            isBleEvent = true,
+        )
+        emitSuccess(
+            mapOf(
+                "type" to "nativeCommandReadinessChanged",
+                "timestamp" to System.currentTimeMillis(),
+                "reason" to reason,
+                "previous" to previous,
+                "gattConnected" to readiness.gattConnected,
+                "serviceReady" to readiness.serviceReady,
+                "cmdEa04Ready" to readiness.cmdEa04Ready,
+                "identityReady" to readiness.identityReady,
+                "queueHealthy" to readiness.queueHealthy,
+                "nativeCommandReady" to readiness.ready,
+            ),
+        )
+    }
+
+    fun recordRawBleNotification(
+        payloadHex: String,
+        source: String,
+        characteristicUuid: String,
+        byteLength: Int,
+        packetType: String,
+        firstOpcode: String,
+        receiveSequence: Long,
+        receiveCorrelation: String,
+        connectedDeviceMarker: String,
+    ) {
+        emitSuccess(
+            mapOf(
+                "type" to "bleNotificationReceived",
+                "timestamp" to System.currentTimeMillis(),
+                "payloadHex" to payloadHex,
+                "source" to source,
+                "characteristicUuid" to characteristicUuid,
+                "byteLength" to byteLength,
+                "packetType" to packetType,
+                "firstOpcode" to firstOpcode,
+                "receiveSequence" to receiveSequence,
+                "receiveCorrelation" to receiveCorrelation,
+                "connectedDeviceMarker" to connectedDeviceMarker,
+            ),
+        )
+    }
+
     private fun emitEvent(type: String, reason: String?) {
         emitSuccess(
             mapOf(
@@ -346,7 +404,12 @@ internal object ProtectionRuntimeBridge {
 
     private fun emitSuccess(event: Map<String, Any?>) {
         dispatchToMainThread {
-            eventSink?.success(event)
+            val sink = eventSink
+            if (sink == null) {
+                pendingEvents.add(event)
+            } else {
+                sink.success(event)
+            }
         }
     }
 
@@ -428,4 +491,6 @@ internal object ProtectionRuntimeBridge {
         val context = applicationContext ?: return false
         return (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
     }
+
+    private const val maxPendingEvents = 32
 }

@@ -85,6 +85,7 @@ class BleDebugRegistry {
     'PROVISIONING_REBOOT',
     'SOS_CAPABILITY_EVAL',
     'EXTERNAL_SOS',
+    'EIXAM_BLE_NOTIFICATION_RX',
     'BLE_SOS_PACKET_RAW',
     'BLE_SOS_CLASSIFY_DECISION',
     'REMOTE_RELAY_CANCEL_DETECT',
@@ -236,9 +237,9 @@ class BleDebugRegistry {
   }) {
     final safePayload =
         SecurityDiagnosticsRedactor.formatHexPayloadForDiagnostics(
-      payloadHex,
-      allowSensitive: _allowSensitiveDiagnostics,
-    );
+          payloadHex,
+          allowSensitive: _allowSensitiveDiagnostics,
+        );
     _state = _state.copyWith(
       lastPacketReceived: safePayload,
       lastRawNotificationChannel: channel,

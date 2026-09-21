@@ -15,6 +15,16 @@ internal class ProtectionRuntimeStore(context: Context) {
         val serviceBleConnected =
             preferences.getBoolean(keyServiceBleConnected, false)
         val serviceBleReady = preferences.getBoolean(keyServiceBleReady, false)
+        val nativeCommandServiceReady =
+            preferences.getBoolean(keyNativeCommandServiceReady, false)
+        val nativeCommandEa04Ready =
+            preferences.getBoolean(keyNativeCommandEa04Ready, false)
+        val nativeCommandIdentityReady =
+            preferences.getBoolean(keyNativeCommandIdentityReady, false)
+        val nativeCommandQueueHealthy =
+            preferences.getBoolean(keyNativeCommandQueueHealthy, true)
+        val nativeCommandReady =
+            preferences.getBoolean(keyNativeCommandReady, false)
         val backgroundCapabilityState =
             preferences.getString(keyBackgroundCapabilityState, "configured")
                 ?: "configured"
@@ -44,6 +54,11 @@ internal class ProtectionRuntimeStore(context: Context) {
             "bleOwner" to bleOwner,
             "serviceBleConnected" to serviceBleConnected,
             "serviceBleReady" to serviceBleReady,
+            "nativeCommandServiceReady" to nativeCommandServiceReady,
+            "nativeCommandEa04Ready" to nativeCommandEa04Ready,
+            "nativeCommandIdentityReady" to nativeCommandIdentityReady,
+            "nativeCommandQueueHealthy" to nativeCommandQueueHealthy,
+            "nativeCommandReady" to nativeCommandReady,
             "protectedDeviceId" to preferences.getString(keyTargetDeviceId, null),
             "activeDeviceId" to preferences.getString(keyTargetDeviceId, null),
             "targetDeviceId" to preferences.getString(keyTargetDeviceId, null),
@@ -149,6 +164,11 @@ internal class ProtectionRuntimeStore(context: Context) {
             .putString(keyBleOwner, "androidService")
             .putBoolean(keyServiceBleConnected, false)
             .putBoolean(keyServiceBleReady, false)
+            .putBoolean(keyNativeCommandServiceReady, false)
+            .putBoolean(keyNativeCommandEa04Ready, false)
+            .putBoolean(keyNativeCommandIdentityReady, false)
+            .putBoolean(keyNativeCommandQueueHealthy, true)
+            .putBoolean(keyNativeCommandReady, false)
             .putBoolean(keyHostAppManagedNotifications, hostAppManagedNotifications)
             .putNotificationText(
                 keyProtectionModeTitle,
@@ -237,6 +257,11 @@ internal class ProtectionRuntimeStore(context: Context) {
             .putString(keyBleOwner, "flutter")
             .putBoolean(keyServiceBleConnected, false)
             .putBoolean(keyServiceBleReady, false)
+            .putBoolean(keyNativeCommandServiceReady, false)
+            .putBoolean(keyNativeCommandEa04Ready, false)
+            .putBoolean(keyNativeCommandIdentityReady, false)
+            .putBoolean(keyNativeCommandQueueHealthy, false)
+            .putBoolean(keyNativeCommandReady, false)
             .putString(keyDegradationReason, null)
             .putString(keyReadinessFailureReason, null)
             .apply()
@@ -246,6 +271,11 @@ internal class ProtectionRuntimeStore(context: Context) {
         preferences.edit()
             .putString(keyLastFailureReason, reason)
             .putBoolean(keyRuntimeActive, false)
+            .putBoolean(keyNativeCommandServiceReady, false)
+            .putBoolean(keyNativeCommandEa04Ready, false)
+            .putBoolean(keyNativeCommandIdentityReady, false)
+            .putBoolean(keyNativeCommandQueueHealthy, false)
+            .putBoolean(keyNativeCommandReady, false)
             .putString(keyDegradationReason, reason)
             .putString(keyReadinessFailureReason, reason)
             .apply()
@@ -343,10 +373,32 @@ internal class ProtectionRuntimeStore(context: Context) {
             .apply()
     }
 
+    fun recordNativeCommandReadiness(
+        readiness: ProtectionNativeCommandReadiness,
+    ): Boolean {
+        val previous = preferences.getBoolean(keyNativeCommandReady, false)
+        val editor = preferences.edit()
+            .putBoolean(keyNativeCommandServiceReady, readiness.serviceReady)
+            .putBoolean(keyNativeCommandEa04Ready, readiness.cmdEa04Ready)
+            .putBoolean(keyNativeCommandIdentityReady, readiness.identityReady)
+            .putBoolean(keyNativeCommandQueueHealthy, readiness.queueHealthy)
+            .putBoolean(keyNativeCommandReady, readiness.ready)
+        if (readiness.ready) {
+            editor.remove(keyLastCommandError)
+        }
+        editor.apply()
+        return previous
+    }
+
     fun markServiceBleDisconnected() {
         preferences.edit()
             .putBoolean(keyServiceBleConnected, false)
             .putBoolean(keyServiceBleReady, false)
+            .putBoolean(keyNativeCommandServiceReady, false)
+            .putBoolean(keyNativeCommandEa04Ready, false)
+            .putBoolean(keyNativeCommandIdentityReady, false)
+            .putBoolean(keyNativeCommandQueueHealthy, false)
+            .putBoolean(keyNativeCommandReady, false)
             .putString(
                 keyDegradationReason,
                 "Android foreground service is reconnecting to the protected BLE device.",
@@ -1097,6 +1149,11 @@ internal class ProtectionRuntimeStore(context: Context) {
         private const val keyBleOwner = "ble_owner"
         private const val keyServiceBleConnected = "service_ble_connected"
         private const val keyServiceBleReady = "service_ble_ready"
+        private const val keyNativeCommandServiceReady = "native_command_service_ready"
+        private const val keyNativeCommandEa04Ready = "native_command_ea04_ready"
+        private const val keyNativeCommandIdentityReady = "native_command_identity_ready"
+        private const val keyNativeCommandQueueHealthy = "native_command_queue_healthy"
+        private const val keyNativeCommandReady = "native_command_ready"
         private const val keyTargetDeviceId = "target_device_id"
         private const val keyBackendHardwareId = "backend_hardware_id"
         private const val keyBleHardwareId = "ble_hardware_id"

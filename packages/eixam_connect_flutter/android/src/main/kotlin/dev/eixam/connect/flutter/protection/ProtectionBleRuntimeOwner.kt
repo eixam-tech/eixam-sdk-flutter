@@ -36,6 +36,8 @@ internal class ProtectionBleRuntimeOwner(
     private var sosNotifyCharacteristic: BluetoothGattCharacteristic? = null
     private var inetWriteCharacteristic: BluetoothGattCharacteristic? = null
     private var cmdWriteCharacteristic: BluetoothGattCharacteristic? = null
+    private var eixamServiceReady = false
+    private var commandQueueHealthy = true
     private var subscriptionStep = SubscriptionStep.idle
     private var pendingSosLifecycleState = ProtectionSosLifecycleState.idle
     private var sosActivationRunnable: Runnable? = null
@@ -118,6 +120,7 @@ internal class ProtectionBleRuntimeOwner(
         bluetoothGatt?.close()
         bluetoothGatt = null
         runtimeStore.markServiceBleDisconnected()
+        publishNativeCommandReadiness(reason = reason, force = true)
         ProtectionRuntimeBridge.recordBleEvent(
             context = context,
             type = "deviceDisconnected",
@@ -500,9 +503,14 @@ internal class ProtectionBleRuntimeOwner(
         )
         clearPendingCommandWrites()
         if (bluetoothGatt === gatt) {
+            commandQueueHealthy = false
             runtimeStore.markServiceBleDisconnected()
             clearCharacteristicRefs()
             bluetoothGatt = null
+            publishNativeCommandReadiness(
+                reason = "command_write_timeout",
+                force = true,
+            )
             gatt.disconnect()
             gatt.close()
             ProtectionRuntimeBridge.recordBleEvent(
@@ -564,29 +572,56 @@ internal class ProtectionBleRuntimeOwner(
     private fun safePacketType(
         payload: List<Int>,
         characteristic: BluetoothGattCharacteristic,
-    ): String {
-        if (payload.isEmpty()) {
-            return "empty"
-        }
-        if (payload.size == 6 && payload.first() in setOf(0xE1, 0xE2, 0xE3)) {
-            return "sos_event"
-        }
-        if (
-            characteristic.uuid == sosNotifyUuid &&
-            (payload.size == 7 || payload.size == 10 || payload.size == 12)
-        ) {
-            return "sos"
-        }
-        if (payload.size == 7 || payload.size == 10 || payload.size == 12) {
-            return "sos_or_tel"
-        }
-        return when (payload.first()) {
-            0xE9 -> "device_status"
-            0xD0 -> "tel_fragment"
-            0xD1 -> "tel_backlog"
-            0xD2 -> "d2_relay"
-            0xD3 -> "tel_live_batch"
-            else -> "unknown"
+    ): String = ProtectionBleRawPacketType.classify(
+        payload = payload,
+        isSosCharacteristic = characteristic.uuid == sosNotifyUuid,
+    )
+
+    private fun exactConnectedDeviceIdentityReady(gatt: BluetoothGatt?): Boolean {
+        val actual = gatt?.device?.address?.trim()
+        val expected = runtimeStore.currentBleHardwareId()?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: targetDeviceId?.trim()?.takeIf { it.isNotBlank() }
+        return actual != null &&
+            expected != null &&
+            actual.equals(expected, ignoreCase = true)
+    }
+
+    private fun publishNativeCommandReadiness(
+        reason: String,
+        force: Boolean = false,
+    ) {
+        val gatt = bluetoothGatt
+        val readiness = ProtectionNativeCommandReadiness(
+            owner = runtimeActive && !isStopping,
+            gattConnected = gatt != null &&
+                runtimeStore.snapshot()["serviceBleConnected"] == true,
+            serviceReady = eixamServiceReady,
+            cmdEa04Ready = cmdWriteCharacteristic != null,
+            identityReady = exactConnectedDeviceIdentityReady(gatt),
+            queueHealthy = commandQueueHealthy,
+        )
+        val previous = runtimeStore.recordNativeCommandReadiness(readiness)
+        Log.i(
+            logTag,
+            "SOS_NATIVE_COMMAND_READINESS_INPUT " +
+                "owner=${readiness.owner} gattConnected=${readiness.gattConnected} " +
+                "serviceReady=${readiness.serviceReady} cmdEa04Ready=${readiness.cmdEa04Ready} " +
+                "identityReady=${readiness.identityReady} queueHealthy=${readiness.queueHealthy} " +
+                "falsePredicate=${readiness.falsePredicate ?: "none"} reason=$reason",
+        )
+        if (force || previous != readiness.ready) {
+            Log.i(
+                logTag,
+                "SOS_NATIVE_COMMAND_READINESS_CHANGED " +
+                    "previous=$previous next=${readiness.ready} reason=$reason",
+            )
+            ProtectionRuntimeBridge.recordNativeCommandReadinessEvent(
+                context = context,
+                previous = previous,
+                readiness = readiness,
+                reason = reason,
+            )
         }
     }
 
@@ -630,6 +665,8 @@ internal class ProtectionBleRuntimeOwner(
         connectedBleNodeId = null
         bindDeviceIdentity(deviceId, runtimeStore.currentBackendHardwareId())
         clearCharacteristicRefs()
+        commandQueueHealthy = true
+        publishNativeCommandReadiness(reason = reason, force = true)
         subscriptionStep = SubscriptionStep.idle
         runtimeStore.recordReadinessFailureReason(
             "Android foreground service is connecting to the protected BLE device.",
@@ -783,6 +820,11 @@ internal class ProtectionBleRuntimeOwner(
         runtimeStore.recordDiscoveredServicesSummary(discoveredServicesSummary)
         val service = gatt.getService(serviceUuid)
         if (service == null) {
+            eixamServiceReady = false
+            publishNativeCommandReadiness(
+                reason = "eixam_service_missing",
+                force = true,
+            )
             val failureReason =
                 "Expected BLE service ${serviceUuid.toString().lowercase(Locale.US)} was not found. Discovered services: ${if (discoveredServicesSummary.isBlank()) "none" else discoveredServicesSummary}"
             runtimeStore.markRuntimeFailure(failureReason)
@@ -806,6 +848,11 @@ internal class ProtectionBleRuntimeOwner(
             inetWriteCharacteristic == null ||
             cmdWriteCharacteristic == null
         ) {
+            eixamServiceReady = false
+            publishNativeCommandReadiness(
+                reason = "required_characteristics_missing",
+                force = true,
+            )
             val missingCharacteristics = buildList<String> {
                 if (telNotifyCharacteristic == null) add(telNotifyUuid.toString().lowercase(Locale.US))
                 if (sosNotifyCharacteristic == null) add(sosNotifyUuid.toString().lowercase(Locale.US))
@@ -826,6 +873,13 @@ internal class ProtectionBleRuntimeOwner(
             scheduleReconnect("required_characteristics_missing")
             return
         }
+
+        eixamServiceReady = true
+        commandQueueHealthy = true
+        publishNativeCommandReadiness(
+            reason = "eixam_service_and_ea04_discovered",
+            force = true,
+        )
 
         runtimeStore.recordReadinessFailureReason(
             "Expected BLE service and required characteristics were discovered. Enabling TEL/SOS notifications.",
@@ -888,6 +942,7 @@ internal class ProtectionBleRuntimeOwner(
     }
 
     private fun clearCharacteristicRefs() {
+        eixamServiceReady = false
         telNotifyCharacteristic = null
         sosNotifyCharacteristic = null
         inetWriteCharacteristic = null
@@ -903,8 +958,10 @@ internal class ProtectionBleRuntimeOwner(
         if (bluetoothGatt !== gatt) {
             return
         }
+        commandQueueHealthy = false
         runtimeStore.markServiceBleDisconnected()
         clearCharacteristicRefs()
+        publishNativeCommandReadiness(reason = reason, force = true)
         bluetoothGatt = null
         gatt.disconnect()
         gatt.close()
@@ -1056,13 +1113,28 @@ internal class ProtectionBleRuntimeOwner(
             }
             else -> "unknown"
         }
+        val packetType = safePacketType(payload, characteristic)
+        val receiveCorrelation = "native-$receiveSequence"
+        val connectedDeviceMarker = redactDeviceTarget(activeBleHardwareId ?: targetDeviceId)
         Log.i(
             logTag,
-            "EIXAM_BLE_NOTIFICATION_RX owner=native_protection " +
+            "EIXAM_NATIVE_NOTIFICATION_RX owner=native_protection " +
                 "characteristic=${characteristic.uuid} byteLength=${payload.size} " +
-                "packetType=${safePacketType(payload, characteristic)} " +
+                "packetType=$packetType " +
                 "firstOpcode=${payload.firstOrNull()?.let(::formatOpcode) ?: "none"} " +
-                "receiveSequence=$receiveSequence target=${redactDeviceTarget(targetDeviceId)}",
+                "receiveSequence=$receiveSequence correlation=$receiveCorrelation " +
+                "connectedDevice=$connectedDeviceMarker",
+        )
+        ProtectionRuntimeBridge.recordRawBleNotification(
+            payloadHex = payloadHex(payload),
+            source = sourceLabel,
+            characteristicUuid = characteristic.uuid.toString(),
+            byteLength = payload.size,
+            packetType = packetType,
+            firstOpcode = payload.firstOrNull()?.let(::formatOpcode) ?: "none",
+            receiveSequence = receiveSequence,
+            receiveCorrelation = receiveCorrelation,
+            connectedDeviceMarker = connectedDeviceMarker,
         )
         logSosTrace(
             "native_raw_notify source=$sourceLabel payloadLen=${payload.size} " +
@@ -1962,6 +2034,10 @@ internal class ProtectionBleRuntimeOwner(
                             type = "deviceConnected",
                             reason = "gatt_connected",
                         )
+                        publishNativeCommandReadiness(
+                            reason = "gatt_connected",
+                            force = true,
+                        )
                         backendHandoff.flushPendingActions("gatt_connected")
                         discoverServices(gatt)
                     }
@@ -1969,6 +2045,11 @@ internal class ProtectionBleRuntimeOwner(
                     BluetoothGatt.STATE_DISCONNECTED -> {
                         connectionInFlight = false
                         runtimeStore.markServiceBleDisconnected()
+                        clearCharacteristicRefs()
+                        publishNativeCommandReadiness(
+                            reason = "gatt_disconnected_$status",
+                            force = true,
+                        )
                         ProtectionRuntimeBridge.recordBleEvent(
                             context = context,
                             type = "deviceDisconnected",

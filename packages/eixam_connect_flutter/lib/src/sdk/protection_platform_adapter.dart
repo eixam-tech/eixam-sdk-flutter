@@ -21,6 +21,8 @@ enum ProtectionPlatformEventType {
   reconnectFailed,
   servicesDiscovered,
   subscriptionsActive,
+  nativeCommandReadinessChanged,
+  bleNotificationReceived,
   packetReceived,
   sosEventReceived,
   ownDeviceSosLifecycleObserved,
@@ -96,6 +98,11 @@ class ProtectionPlatformSnapshot {
     this.bleOwner = ProtectionBleOwner.flutter,
     this.serviceBleConnected = false,
     this.serviceBleReady = false,
+    this.nativeCommandServiceReady = false,
+    this.nativeCommandEa04Ready = false,
+    this.nativeCommandIdentityReady = false,
+    this.nativeCommandQueueHealthy = true,
+    this.nativeCommandReady = false,
     this.pendingSosCount = 0,
     this.pendingTelemetryCount = 0,
     this.pendingNativeSosCreateCount = 0,
@@ -162,6 +169,11 @@ class ProtectionPlatformSnapshot {
   final ProtectionBleOwner bleOwner;
   final bool serviceBleConnected;
   final bool serviceBleReady;
+  final bool nativeCommandServiceReady;
+  final bool nativeCommandEa04Ready;
+  final bool nativeCommandIdentityReady;
+  final bool nativeCommandQueueHealthy;
+  final bool nativeCommandReady;
   final int pendingSosCount;
   final int pendingTelemetryCount;
   final int pendingNativeSosCreateCount;
@@ -270,6 +282,20 @@ class ProtectionPlatformEvent {
     this.payloadHex,
     this.source,
     this.classification,
+    this.gattConnected,
+    this.serviceReady,
+    this.cmdEa04Ready,
+    this.identityReady,
+    this.queueHealthy,
+    this.nativeCommandReady,
+    this.previousNativeCommandReady,
+    this.characteristicUuid,
+    this.byteLength,
+    this.packetType,
+    this.firstOpcode,
+    this.receiveSequence,
+    this.receiveCorrelation,
+    this.connectedDeviceMarker,
   });
 
   final ProtectionPlatformEventType type;
@@ -278,6 +304,20 @@ class ProtectionPlatformEvent {
   final String? payloadHex;
   final String? source;
   final String? classification;
+  final bool? gattConnected;
+  final bool? serviceReady;
+  final bool? cmdEa04Ready;
+  final bool? identityReady;
+  final bool? queueHealthy;
+  final bool? nativeCommandReady;
+  final bool? previousNativeCommandReady;
+  final String? characteristicUuid;
+  final int? byteLength;
+  final String? packetType;
+  final String? firstOpcode;
+  final int? receiveSequence;
+  final String? receiveCorrelation;
+  final String? connectedDeviceMarker;
 }
 
 class ProtectionPendingExternalRelayCancelEvent {
@@ -348,7 +388,7 @@ abstract class ProtectionPlatformAdapter {
   });
   Future<ProtectionPlatformFlushResult> flushProtectionQueues();
   Future<List<ProtectionPendingExternalRelayCancelEvent>>
-      peekPendingExternalRelayCancels();
+  peekPendingExternalRelayCancels();
   Future<bool> ackPendingExternalRelayCancel(String signature);
   Future<ProtectionPendingNativeSosCreate?> peekPendingNativeSosCreate();
   Future<void> markPendingNativeSosCreateMqttFlushStarted(String signature);
@@ -381,9 +421,7 @@ class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
 
   @override
   Future<ProtectionPlatformSnapshot> getPlatformSnapshot() async {
-    return const ProtectionPlatformSnapshot(
-      backgroundCapabilityReady: false,
-    );
+    return const ProtectionPlatformSnapshot(backgroundCapabilityReady: false);
   }
 
   @override
@@ -414,7 +452,7 @@ class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
 
   @override
   Future<List<ProtectionPendingExternalRelayCancelEvent>>
-      peekPendingExternalRelayCancels() async {
+  peekPendingExternalRelayCancels() async {
     return const <ProtectionPendingExternalRelayCancelEvent>[];
   }
 

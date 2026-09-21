@@ -35,6 +35,24 @@ ProtectionPlatformSnapshot mapIosProtectionPlatformSnapshot(
     bleOwner: parseProtectionBleOwner(snapshot['bleOwner'] as String?),
     serviceBleConnected: snapshot['serviceBleConnected'] as bool? ?? false,
     serviceBleReady: snapshot['serviceBleReady'] as bool? ?? false,
+    nativeCommandServiceReady:
+        snapshot['nativeCommandServiceReady'] as bool? ??
+        snapshot['serviceBleReady'] as bool? ??
+        false,
+    nativeCommandEa04Ready:
+        snapshot['nativeCommandEa04Ready'] as bool? ??
+        snapshot['serviceBleReady'] as bool? ??
+        false,
+    nativeCommandIdentityReady:
+        snapshot['nativeCommandIdentityReady'] as bool? ??
+        snapshot['serviceBleReady'] as bool? ??
+        false,
+    nativeCommandQueueHealthy:
+        snapshot['nativeCommandQueueHealthy'] as bool? ?? true,
+    nativeCommandReady:
+        snapshot['nativeCommandReady'] as bool? ??
+        snapshot['serviceBleReady'] as bool? ??
+        false,
     pendingSosCount: snapshot['pendingSosCount'] as int? ?? 0,
     pendingTelemetryCount: snapshot['pendingTelemetryCount'] as int? ?? 0,
     lastRestorationEvent: snapshot['lastRestorationEvent'] as String?,
@@ -49,7 +67,8 @@ ProtectionPlatformSnapshot mapIosProtectionPlatformSnapshot(
     lastReconnectAttemptAt: readProtectionPlatformDateTime(
       snapshot['lastReconnectAttemptAt'],
     ),
-    protectedDeviceId: snapshot['protectedDeviceId'] as String? ??
+    protectedDeviceId:
+        snapshot['protectedDeviceId'] as String? ??
         snapshot['activeDeviceId'] as String?,
     activeDeviceId: snapshot['activeDeviceId'] as String?,
     degradationReason: snapshot['degradationReason'] as String?,
@@ -132,6 +151,15 @@ ProtectionPlatformSnapshot mapAndroidProtectionPlatformSnapshot(
     bleOwner: parseProtectionBleOwner(snapshot['bleOwner'] as String?),
     serviceBleConnected: snapshot['serviceBleConnected'] as bool? ?? false,
     serviceBleReady: snapshot['serviceBleReady'] as bool? ?? false,
+    nativeCommandServiceReady:
+        snapshot['nativeCommandServiceReady'] as bool? ?? false,
+    nativeCommandEa04Ready:
+        snapshot['nativeCommandEa04Ready'] as bool? ?? false,
+    nativeCommandIdentityReady:
+        snapshot['nativeCommandIdentityReady'] as bool? ?? false,
+    nativeCommandQueueHealthy:
+        snapshot['nativeCommandQueueHealthy'] as bool? ?? true,
+    nativeCommandReady: snapshot['nativeCommandReady'] as bool? ?? false,
     pendingSosCount: snapshot['pendingSosCount'] as int? ?? 0,
     pendingTelemetryCount: snapshot['pendingTelemetryCount'] as int? ?? 0,
     pendingNativeSosCreateCount:
@@ -154,7 +182,8 @@ ProtectionPlatformSnapshot mapAndroidProtectionPlatformSnapshot(
         snapshot['lastNativeBackendHandoffResult'] as String?,
     lastNativeBackendHandoffError:
         snapshot['lastNativeBackendHandoffError'] as String?,
-    protectedDeviceId: snapshot['protectedDeviceId'] as String? ??
+    protectedDeviceId:
+        snapshot['protectedDeviceId'] as String? ??
         snapshot['targetDeviceId'] as String? ??
         snapshot['activeDeviceId'] as String?,
     activeDeviceId: snapshot['activeDeviceId'] as String?,
@@ -199,8 +228,9 @@ ProtectionPlatformStartResult mapProtectionPlatformStartResult(
 ) {
   return ProtectionPlatformStartResult(
     success: result['success'] as bool? ?? false,
-    runtimeState:
-        parseProtectionRuntimeState(result['runtimeState'] as String?),
+    runtimeState: parseProtectionRuntimeState(
+      result['runtimeState'] as String?,
+    ),
     coverageLevel: parseProtectionCoverageLevel(
       result['coverageLevel'] as String?,
     ),
@@ -235,12 +265,27 @@ ProtectionPlatformEvent mapIosProtectionPlatformEvent(
 ) {
   return ProtectionPlatformEvent(
     type: parseIosProtectionPlatformEventType(data['type'] as String?),
-    timestamp: readProtectionPlatformDateTime(data['timestamp']) ??
+    timestamp:
+        readProtectionPlatformDateTime(data['timestamp']) ??
         DateTime.now().toUtc(),
     reason: data['reason'] as String?,
     payloadHex: data['payloadHex'] as String?,
     source: data['source'] as String?,
     classification: data['classification'] as String?,
+    gattConnected: data['gattConnected'] as bool?,
+    serviceReady: data['serviceReady'] as bool?,
+    cmdEa04Ready: data['cmdEa04Ready'] as bool?,
+    identityReady: data['identityReady'] as bool?,
+    queueHealthy: data['queueHealthy'] as bool?,
+    nativeCommandReady: data['nativeCommandReady'] as bool?,
+    previousNativeCommandReady: data['previous'] as bool?,
+    characteristicUuid: data['characteristicUuid'] as String?,
+    byteLength: (data['byteLength'] as num?)?.toInt(),
+    packetType: data['packetType'] as String?,
+    firstOpcode: data['firstOpcode'] as String?,
+    receiveSequence: (data['receiveSequence'] as num?)?.toInt(),
+    receiveCorrelation: data['receiveCorrelation'] as String?,
+    connectedDeviceMarker: data['connectedDeviceMarker'] as String?,
   );
 }
 
@@ -249,12 +294,27 @@ ProtectionPlatformEvent mapAndroidProtectionPlatformEvent(
 ) {
   return ProtectionPlatformEvent(
     type: parseAndroidProtectionPlatformEventType(data['type'] as String?),
-    timestamp: readProtectionPlatformDateTime(data['timestamp']) ??
+    timestamp:
+        readProtectionPlatformDateTime(data['timestamp']) ??
         DateTime.now().toUtc(),
     reason: data['reason'] as String?,
     payloadHex: data['payloadHex'] as String?,
     source: data['source'] as String?,
     classification: data['classification'] as String?,
+    gattConnected: data['gattConnected'] as bool?,
+    serviceReady: data['serviceReady'] as bool?,
+    cmdEa04Ready: data['cmdEa04Ready'] as bool?,
+    identityReady: data['identityReady'] as bool?,
+    queueHealthy: data['queueHealthy'] as bool?,
+    nativeCommandReady: data['nativeCommandReady'] as bool?,
+    previousNativeCommandReady: data['previous'] as bool?,
+    characteristicUuid: data['characteristicUuid'] as String?,
+    byteLength: (data['byteLength'] as num?)?.toInt(),
+    packetType: data['packetType'] as String?,
+    firstOpcode: data['firstOpcode'] as String?,
+    receiveSequence: (data['receiveSequence'] as num?)?.toInt(),
+    receiveCorrelation: data['receiveCorrelation'] as String?,
+    connectedDeviceMarker: data['connectedDeviceMarker'] as String?,
   );
 }
 
@@ -284,6 +344,10 @@ ProtectionPlatformEventType parseIosProtectionPlatformEventType(String? value) {
       return ProtectionPlatformEventType.servicesDiscovered;
     case 'subscriptionsActive':
       return ProtectionPlatformEventType.subscriptionsActive;
+    case 'nativeCommandReadinessChanged':
+      return ProtectionPlatformEventType.nativeCommandReadinessChanged;
+    case 'bleNotificationReceived':
+      return ProtectionPlatformEventType.bleNotificationReceived;
     case 'packetReceived':
       return ProtectionPlatformEventType.packetReceived;
     case 'sosEventReceived':
@@ -344,6 +408,10 @@ ProtectionPlatformEventType parseAndroidProtectionPlatformEventType(
       return ProtectionPlatformEventType.servicesDiscovered;
     case 'subscriptionsActive':
       return ProtectionPlatformEventType.subscriptionsActive;
+    case 'nativeCommandReadinessChanged':
+      return ProtectionPlatformEventType.nativeCommandReadinessChanged;
+    case 'bleNotificationReceived':
+      return ProtectionPlatformEventType.bleNotificationReceived;
     case 'packetReceived':
       return ProtectionPlatformEventType.packetReceived;
     case 'sosEventReceived':
