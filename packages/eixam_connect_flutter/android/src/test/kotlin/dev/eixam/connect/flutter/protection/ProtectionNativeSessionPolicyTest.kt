@@ -1,36 +1,70 @@
 package dev.eixam.connect.flutter.protection
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class ProtectionNativeSessionPolicyTest {
     @Test
-    fun `connected stale session prepares then restarts on discovery timeout`() {
-        val preparing = evaluateProtectionNativeSessionAction(
+    fun `preparation failures are typed after discovery begins`() {
+        val timeout = evaluateProtectionNativePreparationFailure(
             gattConnected = true,
-            serviceReady = false,
-            ea04Ready = false,
-            identityReady = false,
-            queueHealthy = true,
-            discoveryTimedOut = false,
-        )
-        val timedOut = evaluateProtectionNativeSessionAction(
-            gattConnected = true,
+            discoveryCompleted = false,
             serviceReady = false,
             ea04Ready = false,
             identityReady = false,
             queueHealthy = true,
             discoveryTimedOut = true,
         )
+        val serviceAbsent = evaluateProtectionNativePreparationFailure(
+            gattConnected = true,
+            discoveryCompleted = true,
+            serviceReady = false,
+            ea04Ready = false,
+            identityReady = true,
+            queueHealthy = true,
+            discoveryTimedOut = false,
+        )
+        val ea04Absent = evaluateProtectionNativePreparationFailure(
+            gattConnected = true,
+            discoveryCompleted = true,
+            serviceReady = true,
+            ea04Ready = false,
+            identityReady = true,
+            queueHealthy = true,
+            discoveryTimedOut = false,
+        )
+        val identityMismatch = evaluateProtectionNativePreparationFailure(
+            gattConnected = true,
+            discoveryCompleted = true,
+            serviceReady = true,
+            ea04Ready = true,
+            identityReady = false,
+            queueHealthy = true,
+            discoveryTimedOut = false,
+        )
+        val queueUnhealthy = evaluateProtectionNativePreparationFailure(
+            gattConnected = true,
+            discoveryCompleted = true,
+            serviceReady = true,
+            ea04Ready = true,
+            identityReady = true,
+            queueHealthy = false,
+            discoveryTimedOut = false,
+        )
 
-        assertEquals(ProtectionNativeSessionAction.preparing, preparing)
-        assertEquals(ProtectionNativeSessionAction.restart, timedOut)
+        assertEquals(ProtectionNativePreparationFailure.discoveryTimeout, timeout)
+        assertEquals(ProtectionNativePreparationFailure.serviceAbsent, serviceAbsent)
+        assertEquals(ProtectionNativePreparationFailure.ea04Absent, ea04Absent)
+        assertEquals(ProtectionNativePreparationFailure.identityMismatch, identityMismatch)
+        assertEquals(ProtectionNativePreparationFailure.queueUnhealthy, queueUnhealthy)
     }
 
     @Test
-    fun `only complete current session becomes ready`() {
-        val ready = evaluateProtectionNativeSessionAction(
+    fun `complete preparation has no typed failure`() {
+        val failure = evaluateProtectionNativePreparationFailure(
             gattConnected = true,
+            discoveryCompleted = true,
             serviceReady = true,
             ea04Ready = true,
             identityReady = true,
@@ -38,6 +72,6 @@ class ProtectionNativeSessionPolicyTest {
             discoveryTimedOut = false,
         )
 
-        assertEquals(ProtectionNativeSessionAction.ready, ready)
+        assertNull(failure)
     }
 }

@@ -1,31 +1,42 @@
 package dev.eixam.connect.flutter.protection
 
-internal enum class ProtectionNativeSessionAction {
-    preparing,
-    ready,
-    restart,
+internal enum class ProtectionNativePreparationFailure(val wireReason: String) {
+    discoveryTimeout("native_service_discovery_timeout"),
+    serviceAbsent("eixam_service_absent"),
+    ea04Absent("ea04_absent"),
+    identityMismatch("exact_identity_mismatch"),
+    queueUnhealthy("operation_queue_unhealthy"),
 }
 
-internal fun evaluateProtectionNativeSessionAction(
+internal fun evaluateProtectionNativePreparationFailure(
     gattConnected: Boolean,
+    discoveryCompleted: Boolean,
     serviceReady: Boolean,
     ea04Ready: Boolean,
     identityReady: Boolean,
     queueHealthy: Boolean,
     discoveryTimedOut: Boolean,
-): ProtectionNativeSessionAction {
-    if (
-        gattConnected &&
-        serviceReady &&
-        ea04Ready &&
-        identityReady &&
-        queueHealthy
-    ) {
-        return ProtectionNativeSessionAction.ready
+): ProtectionNativePreparationFailure? {
+    if (!gattConnected) {
+        return null
     }
-    return if (gattConnected && discoveryTimedOut) {
-        ProtectionNativeSessionAction.restart
-    } else {
-        ProtectionNativeSessionAction.preparing
+    if (discoveryTimedOut) {
+        return ProtectionNativePreparationFailure.discoveryTimeout
     }
+    if (!discoveryCompleted) {
+        return null
+    }
+    if (!serviceReady) {
+        return ProtectionNativePreparationFailure.serviceAbsent
+    }
+    if (!ea04Ready) {
+        return ProtectionNativePreparationFailure.ea04Absent
+    }
+    if (!identityReady) {
+        return ProtectionNativePreparationFailure.identityMismatch
+    }
+    if (!queueHealthy) {
+        return ProtectionNativePreparationFailure.queueUnhealthy
+    }
+    return null
 }

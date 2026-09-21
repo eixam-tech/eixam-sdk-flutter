@@ -2221,6 +2221,7 @@ void main() {
             activeDeviceId: 'CF:82:00:00:00:01',
           );
           await harness.sdk.rehydrateProtectionState();
+          await pumpEventQueue(times: 5);
           final preparingCapability = await harness.sdk.getSosCapability();
           expect(preparingCapability.deviceTransportReady, isFalse);
           expect(preparingCapability.commandChannelReady, isFalse);
@@ -2231,6 +2232,10 @@ void main() {
               'next=nativePreparing',
             ),
             isTrue,
+          );
+          expect(
+            adapter.ensureRuntimeReasons,
+            contains('flutter_yielded_ble_to_native_preparation'),
           );
           adapter.snapshot = const ProtectionPlatformSnapshot(
             backgroundCapabilityReady: true,
@@ -2275,6 +2280,9 @@ void main() {
             ),
             1,
           );
+          expect(adapter.ensureRuntimeReasons, <String>[
+            'flutter_yielded_ble_to_native_preparation',
+          ]);
           expect(
             _hasDebugMessage('SOS_NATIVE_COMMAND_READINESS_INPUT'),
             isTrue,
@@ -6720,6 +6728,7 @@ final class _SnapshotProtectionPlatformAdapter extends Fake
   final Completer<ProtectionPlatformCommandResult>? _commandResult;
   final List<ProtectionPlatformCommandRequest> commands =
       <ProtectionPlatformCommandRequest>[];
+  final List<String> ensureRuntimeReasons = <String>[];
   final StreamController<ProtectionPlatformEvent> _events =
       StreamController<ProtectionPlatformEvent>.broadcast();
 
@@ -6732,6 +6741,13 @@ final class _SnapshotProtectionPlatformAdapter extends Fake
 
   @override
   Future<ProtectionPlatformSnapshot> getPlatformSnapshot() async => snapshot;
+
+  @override
+  Future<void> ensureProtectionRuntimeActive({
+    String reason = 'app_foreground_resume',
+  }) async {
+    ensureRuntimeReasons.add(reason);
+  }
 
   @override
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({

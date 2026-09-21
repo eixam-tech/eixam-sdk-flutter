@@ -111,6 +111,7 @@ void main() {
       expect(
         evaluateSosBleSingleOwnerInvariant(
           nativeDeclared: true,
+          flutterOwner: false,
           flutterReleaseSettled: true,
           nativeGattConnected: true,
           flutterGattConnected: true,
@@ -120,6 +121,7 @@ void main() {
       expect(
         evaluateSosBleSingleOwnerInvariant(
           nativeDeclared: true,
+          flutterOwner: false,
           flutterReleaseSettled: false,
           nativeGattConnected: true,
           flutterGattConnected: true,
@@ -129,11 +131,22 @@ void main() {
       expect(
         evaluateSosBleSingleOwnerInvariant(
           nativeDeclared: false,
+          flutterOwner: true,
           flutterReleaseSettled: false,
           nativeGattConnected: true,
           flutterGattConnected: false,
         ),
         SosBleSingleOwnerViolation.flutterOwnerWithNativeGatt,
+      );
+      expect(
+        evaluateSosBleSingleOwnerInvariant(
+          nativeDeclared: false,
+          flutterOwner: false,
+          flutterReleaseSettled: false,
+          nativeGattConnected: true,
+          flutterGattConnected: false,
+        ),
+        SosBleSingleOwnerViolation.none,
       );
     });
   });

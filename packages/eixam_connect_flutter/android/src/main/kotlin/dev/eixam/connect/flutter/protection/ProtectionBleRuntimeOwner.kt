@@ -28,6 +28,7 @@ internal class ProtectionBleRuntimeOwner(
     private var bluetoothGatt: BluetoothGatt? = null
     private var gattSessionGeneration: Long = 0
     private var serviceDiscoveryTimeoutRunnable: Runnable? = null
+    private var skipGattCacheRefreshForNextSession = false
     private var targetDeviceId: String? = null
     private var reconnectBackoffMs: Long = defaultReconnectBackoffMs
     private var reconnectRunnable: Runnable? = null
@@ -112,6 +113,7 @@ internal class ProtectionBleRuntimeOwner(
         sosActivationRunnable?.let(mainHandler::removeCallbacks)
         reconnectRunnable = null
         serviceDiscoveryTimeoutRunnable = null
+        skipGattCacheRefreshForNextSession = false
         backendRetryRunnable = null
         sosActivationRunnable = null
         subscriptionStep = SubscriptionStep.idle
@@ -708,8 +710,16 @@ internal class ProtectionBleRuntimeOwner(
 
         reconnectRunnable?.let(mainHandler::removeCallbacks)
         reconnectRunnable = null
+        val existingGatt = bluetoothGatt != null
+        val connected = runtimeStore.snapshot()["serviceBleConnected"] == true
         closeCurrentGattSession("replace_for_$reason")
         gattSessionGeneration += 1
+        Log.i(
+            logTag,
+            "SOS_NATIVE_SESSION_PREPARATION_START " +
+                "sessionGeneration=$gattSessionGeneration " +
+                "existingGatt=$existingGatt connected=$connected reason=$reason",
+        )
         connectionInFlight = true
         connectedBleNodeId = null
         bindDeviceIdentity(deviceId, runtimeStore.currentBackendHardwareId())
@@ -881,10 +891,39 @@ internal class ProtectionBleRuntimeOwner(
             return
         }
         // Provision/unprovision reboot adds or removes Meshtastic Phone BLE.
-        // Android's per-MAC cache then points SOS CCCD at a read-only handle.
-        refreshGattCache(gatt)
+        // Android's per-MAC cache can then point SOS CCCD at a read-only
+        // handle. A successful refresh invalidates this live session, so
+        // discovery must run on a newly created generation.
+        val skipCacheRefresh = skipGattCacheRefreshForNextSession
+        skipGattCacheRefreshForNextSession = false
+        if (!skipCacheRefresh && refreshGattCache(gatt)) {
+            skipGattCacheRefreshForNextSession = true
+            connectionInFlight = false
+            clearCharacteristicRefs()
+            closeCurrentGattSession("gatt_cache_cleared_recreate")
+            publishNativeCommandReadiness(
+                reason = "gatt_cache_cleared_recreate",
+                force = true,
+            )
+            mainHandler.post {
+                if (!isStopping && runtimeActive && bluetoothGatt == null) {
+                    connect(reason = "gatt_cache_cleared_recreate")
+                }
+            }
+            return
+        }
+        Log.i(
+            logTag,
+            "SOS_NATIVE_SESSION_DISCOVERY_BEGIN " +
+                "sessionGeneration=$gattSessionGeneration",
+        )
         val discovered = gatt.discoverServices()
         if (!discovered) {
+            logNativeSessionDiscoveryResult(
+                serviceReady = false,
+                ea04Ready = false,
+                reason = "discover_services_failed",
+            )
             failCurrentNativeSession(gatt, "discover_services_failed")
             return
         }
@@ -897,8 +936,9 @@ internal class ProtectionBleRuntimeOwner(
     ) {
         serviceDiscoveryTimeoutRunnable?.let(mainHandler::removeCallbacks)
         serviceDiscoveryTimeoutRunnable = Runnable {
-            val action = evaluateProtectionNativeSessionAction(
+            val failure = evaluateProtectionNativePreparationFailure(
                 gattConnected = runtimeStore.snapshot()["serviceBleConnected"] == true,
+                discoveryCompleted = false,
                 serviceReady = eixamServiceReady,
                 ea04Ready = cmdWriteCharacteristic != null,
                 identityReady = exactConnectedDeviceIdentityReady(gatt),
@@ -907,13 +947,31 @@ internal class ProtectionBleRuntimeOwner(
             )
             if (gatt === bluetoothGatt &&
                 sessionGeneration == gattSessionGeneration &&
-                action == ProtectionNativeSessionAction.restart
+                failure != null
             ) {
-                failCurrentNativeSession(gatt, "native_service_discovery_timeout")
+                logNativeSessionDiscoveryResult(
+                    serviceReady = eixamServiceReady,
+                    ea04Ready = cmdWriteCharacteristic != null,
+                    reason = failure.wireReason,
+                )
+                failCurrentNativeSession(gatt, failure.wireReason)
             }
         }.also {
             mainHandler.postDelayed(it, serviceDiscoveryTimeoutMs)
         }
+    }
+
+    private fun logNativeSessionDiscoveryResult(
+        serviceReady: Boolean,
+        ea04Ready: Boolean,
+        reason: String,
+    ) {
+        Log.i(
+            logTag,
+            "SOS_NATIVE_SESSION_DISCOVERY_RESULT " +
+                "sessionGeneration=$gattSessionGeneration " +
+                "serviceReady=$serviceReady ea04Ready=$ea04Ready reason=$reason",
+        )
     }
 
     @SuppressLint("MissingPermission")
@@ -957,8 +1015,22 @@ internal class ProtectionBleRuntimeOwner(
         val service = gatt.getService(serviceUuid)
         if (service == null) {
             eixamServiceReady = false
+            val failure = evaluateProtectionNativePreparationFailure(
+                gattConnected = true,
+                discoveryCompleted = true,
+                serviceReady = false,
+                ea04Ready = false,
+                identityReady = exactConnectedDeviceIdentityReady(gatt),
+                queueHealthy = commandQueueHealthy,
+                discoveryTimedOut = false,
+            ) ?: ProtectionNativePreparationFailure.serviceAbsent
+            logNativeSessionDiscoveryResult(
+                serviceReady = false,
+                ea04Ready = false,
+                reason = failure.wireReason,
+            )
             publishNativeCommandReadiness(
-                reason = "eixam_service_missing",
+                reason = failure.wireReason,
                 force = true,
             )
             val failureReason =
@@ -969,14 +1041,20 @@ internal class ProtectionBleRuntimeOwner(
                 type = "runtimeError",
                 reason = failureReason,
             )
-            failCurrentNativeSession(gatt, "eixam_service_missing")
+            failCurrentNativeSession(gatt, failure.wireReason)
             return
         }
 
+        eixamServiceReady = true
         telNotifyCharacteristic = service.getCharacteristic(telNotifyUuid)
         sosNotifyCharacteristic = service.getCharacteristic(sosNotifyUuid)
         inetWriteCharacteristic = service.getCharacteristic(inetWriteUuid)
         cmdWriteCharacteristic = service.getCharacteristic(cmdWriteUuid)
+        logNativeSessionDiscoveryResult(
+            serviceReady = true,
+            ea04Ready = cmdWriteCharacteristic != null,
+            reason = "services_discovered",
+        )
 
         if (
             telNotifyCharacteristic == null ||
@@ -984,9 +1062,14 @@ internal class ProtectionBleRuntimeOwner(
             inetWriteCharacteristic == null ||
             cmdWriteCharacteristic == null
         ) {
-            eixamServiceReady = false
+            val typedFailureReason = if (cmdWriteCharacteristic == null) {
+                ProtectionNativePreparationFailure.ea04Absent.wireReason
+            } else {
+                "required_characteristics_missing"
+            }
+            commandQueueHealthy = false
             publishNativeCommandReadiness(
-                reason = "required_characteristics_missing",
+                reason = typedFailureReason,
                 force = true,
             )
             val missingCharacteristics = buildList<String> {
@@ -998,20 +1081,36 @@ internal class ProtectionBleRuntimeOwner(
             val discoveredCharacteristics = service.characteristics.joinToString(separator = ",") {
                 it.uuid.toString().lowercase(Locale.US)
             }
-            val failureReason =
+            val humanFailureReason =
                 "Required EIXAM protection characteristics are missing. Expected ${missingCharacteristics.joinToString()} but discovered $discoveredCharacteristics."
-            runtimeStore.markRuntimeFailure(failureReason)
+            runtimeStore.markRuntimeFailure(humanFailureReason)
             ProtectionRuntimeBridge.recordPlatformEvent(
                 context = context,
                 type = "runtimeError",
-                reason = failureReason,
+                reason = humanFailureReason,
             )
-            failCurrentNativeSession(gatt, "required_characteristics_missing")
+            failCurrentNativeSession(gatt, typedFailureReason)
             return
         }
 
-        eixamServiceReady = true
         commandQueueHealthy = true
+        val preparationFailure = evaluateProtectionNativePreparationFailure(
+            gattConnected = true,
+            discoveryCompleted = true,
+            serviceReady = eixamServiceReady,
+            ea04Ready = cmdWriteCharacteristic != null,
+            identityReady = exactConnectedDeviceIdentityReady(gatt),
+            queueHealthy = commandQueueHealthy,
+            discoveryTimedOut = false,
+        )
+        if (preparationFailure != null) {
+            publishNativeCommandReadiness(
+                reason = preparationFailure.wireReason,
+                force = true,
+            )
+            failCurrentNativeSession(gatt, preparationFailure.wireReason)
+            return
+        }
         publishNativeCommandReadiness(
             reason = "eixam_service_and_ea04_discovered",
             force = true,
@@ -2198,6 +2297,11 @@ internal class ProtectionBleRuntimeOwner(
                 if (status == BluetoothGatt.GATT_SUCCESS) {
                     configureSubscriptions(gatt)
                 } else {
+                    logNativeSessionDiscoveryResult(
+                        serviceReady = false,
+                        ea04Ready = false,
+                        reason = "services_discovered_status_$status",
+                    )
                     failCurrentNativeSession(gatt, "services_discovered_status_$status")
                 }
             }
