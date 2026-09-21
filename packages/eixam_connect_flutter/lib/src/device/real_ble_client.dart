@@ -773,6 +773,12 @@ class RealBleClient implements BleClient {
       lastWriteAt: DateTime.now(),
       lastWriteError: null,
     );
+    BleDebugRegistry.instance.recordEvent(
+      'EIXAM_COMMAND_WRITE source=flutter '
+      'opcode=0x${command.opcode.toRadixString(16).padLeft(2, '0')} '
+      'byteLength=${data.length} characteristic=${targetUuid.str} '
+      'target=${_commandTargetMarker(deviceId)}',
+    );
     if (command.opcode == 0x06 || command.opcode == 0x05) {
       BleDebugRegistry.instance.recordEvent(
         'SOS_DEVICE_COMMAND_GATT_WRITE_BEGIN '
@@ -853,6 +859,18 @@ class RealBleClient implements BleClient {
 
   bool _canUseLegacyInetFallback(EixamDeviceCommand command) {
     return command.supportsLegacyInetFallback;
+  }
+
+  String _commandTargetMarker(String deviceId) {
+    final normalized = deviceId.trim().toUpperCase();
+    if (normalized.isEmpty) {
+      return 'none';
+    }
+    final compact = normalized.replaceAll(':', '');
+    final suffix = compact.length <= 4
+        ? compact
+        : compact.substring(compact.length - 4);
+    return 'device:**$suffix';
   }
 
   @override

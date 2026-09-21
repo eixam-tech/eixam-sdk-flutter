@@ -1949,6 +1949,12 @@ void main() {
             const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
           );
           await harness.setSession();
+          final capability = await harness.sdk.getSosCapability();
+          expect(
+            capability.preferredActivationPath,
+            SosActivationPath.appBackend,
+          );
+          expect(capability.canTriggerDeviceSos, isTrue);
           await harness.sdk.startPreSos(countdown: const Duration(seconds: 20));
 
           var preSos = await harness.sdk.getPreSosStatus();
@@ -2011,6 +2017,13 @@ void main() {
           expect(preSos!.mirroredOnDevice, isFalse);
           expect(
             _hasDebugMessage('reason=pre_sos_device_path_unavailable'),
+            isTrue,
+          );
+          expect(
+            _hasDebugMessage(
+              'SOS_DEVICE_MIRROR_DECISION attempt=false '
+              'reason=command_channel_not_ready',
+            ),
             isTrue,
           );
         } finally {

@@ -37,9 +37,9 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     required BleClient bleClient,
     DeviceSosController? deviceSosController,
     @visibleForTesting bool Function()? isIosPlatform,
-  })  : _bleClient = bleClient,
-        _deviceSosController = deviceSosController ?? DeviceSosController(),
-        _isIosPlatform = isIosPlatform ?? (() => Platform.isIOS);
+  }) : _bleClient = bleClient,
+       _deviceSosController = deviceSosController ?? DeviceSosController(),
+       _isIosPlatform = isIosPlatform ?? (() => Platform.isIOS);
 
   final BleClient _bleClient;
   final DeviceSosController _deviceSosController;
@@ -64,6 +64,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   int? _lastTelBatteryLevel;
   int? _lastSosBatteryLevel;
   int? _connectedBleTagNodeId;
+  int _notificationReceiveSequence = 0;
   final Map<String, DateTime> _recentSosPacketSignatures = <String, DateTime>{};
   bool _ownershipSuspended = false;
   Completer<DeviceRuntimeStatus>? _pendingRuntimeStatusRequest;
@@ -133,19 +134,21 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   Future<RuntimeIdentitySnapshot> getRuntimeIdentitySnapshot(
     DeviceStatus currentStatus,
   ) async {
-    final deviceId = _connectedDeviceId ??
+    final deviceId =
+        _connectedDeviceId ??
         (currentStatus.connected ? currentStatus.deviceId : null);
     final serviceBleConnected = deviceId != null;
     final commandCapable = hasCommandChannel;
-    final connectedBleNodeId =
-        serviceBleConnected ? _connectedBleTagNodeId : null;
+    final connectedBleNodeId = serviceBleConnected
+        ? _connectedBleTagNodeId
+        : null;
     final readinessReason = !serviceBleConnected
         ? RuntimeIdentityReadinessReason.noConnectedDevice
         : connectedBleNodeId == null
-            ? RuntimeIdentityReadinessReason.connectedIdentityUnknown
-            : commandCapable
-                ? RuntimeIdentityReadinessReason.ready
-                : RuntimeIdentityReadinessReason.commandPathNotReady;
+        ? RuntimeIdentityReadinessReason.connectedIdentityUnknown
+        : commandCapable
+        ? RuntimeIdentityReadinessReason.ready
+        : RuntimeIdentityReadinessReason.commandPathNotReady;
 
     return RuntimeIdentitySnapshot(
       connectedBleNodeId: connectedBleNodeId,
@@ -153,7 +156,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       serviceBleConnected: serviceBleConnected,
       commandCapable: commandCapable,
       readinessReason: readinessReason,
-      lastUpdatedAt: _lastRuntimeStatus?.lastSyncedAt ??
+      lastUpdatedAt:
+          _lastRuntimeStatus?.lastSyncedAt ??
           currentStatus.lastSyncedAt ??
           currentStatus.lastSeen,
     );
@@ -178,10 +182,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
     final scanResults = await _bleClient.scan();
     if (scanResults.isEmpty) {
-      throw const DeviceException(
-        'E_DEVICE_NOT_FOUND',
-        'E_DEVICE_NOT_FOUND',
-      );
+      throw const DeviceException('E_DEVICE_NOT_FOUND', 'E_DEVICE_NOT_FOUND');
     }
 
     final selectedDeviceId =
@@ -195,10 +196,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
     final candidate = _findSelectedCandidate(scanResults, selectedDeviceId);
     if (candidate == null) {
-      throw const DeviceException(
-        'E_DEVICE_NOT_FOUND',
-        'E_DEVICE_NOT_FOUND',
-      );
+      throw const DeviceException('E_DEVICE_NOT_FOUND', 'E_DEVICE_NOT_FOUND');
     }
     try {
       _log(
@@ -284,8 +282,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         batterySource: runtimeStatus == null
             ? _effectiveBatterySource(currentStatus)
             : runtimeStatus.batteryPercent != null
-                ? DeviceBatterySource.deviceStatus
-                : DeviceBatterySource.unknown,
+            ? DeviceBatterySource.deviceStatus
+            : DeviceBatterySource.unknown,
         firmwareVersion: hydration.firmwareVersion,
         signalQuality: hydration.signalQuality,
         lastSeen: DateTime.now(),
@@ -461,8 +459,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         batterySource: runtimeStatus == null
             ? _effectiveBatterySource(currentStatus)
             : runtimeStatus.batteryPercent != null
-                ? DeviceBatterySource.deviceStatus
-                : DeviceBatterySource.unknown,
+            ? DeviceBatterySource.deviceStatus
+            : DeviceBatterySource.unknown,
         firmwareVersion: hydration.firmwareVersion,
         signalQuality: hydration.signalQuality,
         lastSeen: DateTime.now(),
@@ -496,7 +494,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       );
       if (kDebugMode) {
         safeSdkDebugPrint(
-            'BLE reconnect failed -> hardwareId=$deviceId error=$error');
+          'BLE reconnect failed -> hardwareId=$deviceId error=$error',
+        );
       }
 
       await _resetFailedPairingAttempt(deviceId);
@@ -576,8 +575,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
     final hardwareId =
         currentStatus.canonicalHardwareId?.trim().isNotEmpty == true
-            ? currentStatus.canonicalHardwareId!.trim()
-            : currentStatus.deviceId;
+        ? currentStatus.canonicalHardwareId!.trim()
+        : currentStatus.deviceId;
     BleDebugRegistry.instance.recordEvent(
       'BLE_RECONNECT_SKIPPED_INVALID_REMOTE_ID '
       'platform=ios hardwareId=${_redactedBleIdentifier(hardwareId)} '
@@ -639,7 +638,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         currentStatus: currentStatus,
         preferredDevice: preferredDevice,
       );
-      final nameMatch = _normalizedReconnectText(scan.name).isNotEmpty &&
+      final nameMatch =
+          _normalizedReconnectText(scan.name).isNotEmpty &&
           _normalizedReconnectText(scan.name) ==
               _normalizedReconnectText(
                 preferredDevice.displayName ?? currentStatus.deviceAlias ?? '',
@@ -651,8 +651,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
           reason: identityMatch
               ? 'known_identity_match'
               : nameMatch
-                  ? 'display_name_match'
-                  : 'single_eixam_candidate',
+              ? 'display_name_match'
+              : 'single_eixam_candidate',
         ),
       );
     }
@@ -667,8 +667,9 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       return b.scan.rssi.compareTo(a.scan.rssi);
     });
     final bestRank = candidates.first.rank;
-    final bestRankCount =
-        candidates.where((candidate) => candidate.rank == bestRank).length;
+    final bestRankCount = candidates
+        .where((candidate) => candidate.rank == bestRank)
+        .length;
     if (bestRankCount != 1) {
       return null;
     }
@@ -728,8 +729,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       currentStatus.deviceId,
       currentStatus.canonicalHardwareId,
       currentStatus.deviceAlias,
-    ]).toList()
-      ..sort();
+    ]).toList()..sort();
     return keys.join('|');
   }
 
@@ -792,6 +792,17 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     String deviceId,
     EixamBleNotification notification,
   ) async {
+    final receiveSequence = ++_notificationReceiveSequence;
+    final payload = notification.payload;
+    BleDebugRegistry.instance.recordEvent(
+      'EIXAM_BLE_NOTIFICATION_RX '
+      'owner=flutter characteristic=${_characteristicLabelForChannel(notification.channel)} '
+      'byteLength=${payload.length} '
+      'packetType=${_rawNotificationPacketType(payload)} '
+      'firstOpcode=${payload.isEmpty ? "none" : _hexByte(payload.first)} '
+      'receiveSequence=$receiveSequence '
+      'target=${_redactedBleIdentifier(deviceId)}',
+    );
     try {
       switch (notification.channel) {
         case EixamBleChannel.tel:
@@ -806,6 +817,25 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         'Notify processing error for $deviceId channel=${notification.channel.name}: $error',
       );
     }
+  }
+
+  String _rawNotificationPacketType(List<int> payload) {
+    if (payload.isEmpty) {
+      return 'empty';
+    }
+    if (EixamSosEventPacket.tryParse(payload) != null) {
+      return 'sos_event';
+    }
+    if (EixamSosPacket.tryParse(payload) != null) {
+      return 'sos';
+    }
+    return switch (payload.first) {
+      0xE9 => 'device_status',
+      EixamBleProtocol.telAggregateFragmentOpcode => 'tel_fragment',
+      EixamBleProtocol.telLiveBatchOpcode => 'tel_live_batch',
+      EixamBleProtocol.telBacklogOpcode => 'tel_backlog',
+      _ => 'unknown',
+    };
   }
 
   Future<void> _resetFailedPairingAttempt(String deviceId) async {
@@ -834,9 +864,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     _telReassembler.reset();
   }
 
-  Future<DeviceStatus?> suspendOwnership({
-    required String reason,
-  }) async {
+  Future<DeviceStatus?> suspendOwnership({required String reason}) async {
     _ownershipSuspended = true;
     await _notificationSubscription?.cancel();
     _notificationSubscription = null;
@@ -868,9 +896,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     return nextStatus;
   }
 
-  Future<DeviceStatus?> resumeOwnership({
-    required String reason,
-  }) async {
+  Future<DeviceStatus?> resumeOwnership({required String reason}) async {
     _ownershipSuspended = false;
     final currentStatus = _lastRuntimeStatus;
     if (currentStatus == null) {
@@ -934,7 +960,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     if (!currentStatus.paired) return currentStatus;
 
     final adapterState = await _bleClient.getAdapterState();
-    final connected = adapterState == BleAdapterState.poweredOn &&
+    final connected =
+        adapterState == BleAdapterState.poweredOn &&
         await _resolveConnection(currentStatus.deviceId);
     final readFirmware = mode != DeviceRefreshMode.heartbeat;
     final readSignalQuality = mode != DeviceRefreshMode.heartbeat;
@@ -985,8 +1012,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
           : _effectiveBatteryState(currentStatus),
       batterySource: connected && runtimeStatus != null
           ? runtimeStatus.batteryPercent != null
-              ? DeviceBatterySource.deviceStatus
-              : DeviceBatterySource.unknown
+                ? DeviceBatterySource.deviceStatus
+                : DeviceBatterySource.unknown
           : _effectiveBatterySource(currentStatus),
       firmwareVersion: firmwareVersion,
       signalQuality: signalQuality,
@@ -1043,10 +1070,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       }
       return currentStatus.signalQuality;
     }
-    return _readSignalQuality(
-      currentStatus.deviceId,
-      reason: mode.name,
-    );
+    return _readSignalQuality(currentStatus.deviceId, reason: mode.name);
   }
 
   Future<String?> _readFirmwareMetadata(
@@ -1103,9 +1127,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       return;
     }
     _lastIosSignalQualityThrottleLog = signature;
-    BleDebugRegistry.instance.recordEvent(
-      'PERF_RSSI_THROTTLED $signature',
-    );
+    BleDebugRegistry.instance.recordEvent('PERF_RSSI_THROTTLED $signature');
   }
 
   Future<_ConnectedDeviceHydration> _hydrateAfterNotifications({
@@ -1119,21 +1141,16 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     BleDebugRegistry.instance.recordEvent(
       'BLE_POST_CONNECT_HYDRATE_START reason=$reason',
     );
-    final hydration = await Future.wait<Object?>(
-      <Future<Object?>>[
-        _readRuntimeStatusAfterConnection(
-          deviceId: deviceId,
-          reason: reason,
-        ),
-        _readFirmwareMetadata(
-          deviceId,
-          currentFirmwareVersion: currentFirmwareVersion,
-          reason: reason,
-          force: forceFirmwareRead,
-        ),
-        _readSignalQuality(deviceId, reason: reason),
-      ],
-    );
+    final hydration = await Future.wait<Object?>(<Future<Object?>>[
+      _readRuntimeStatusAfterConnection(deviceId: deviceId, reason: reason),
+      _readFirmwareMetadata(
+        deviceId,
+        currentFirmwareVersion: currentFirmwareVersion,
+        reason: reason,
+        force: forceFirmwareRead,
+      ),
+      _readSignalQuality(deviceId, reason: reason),
+    ]);
     BleDebugRegistry.instance.recordEvent(
       'BLE_POST_CONNECT_HYDRATE_DONE reason=$reason',
     );
@@ -1183,8 +1200,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   Future<DeviceStatus> unpair(DeviceStatus currentStatus) async {
     final systemAssociationDeviceId =
         _connectedDeviceId?.trim().isNotEmpty == true
-            ? _connectedDeviceId!
-            : currentStatus.deviceId.trim();
+        ? _connectedDeviceId!
+        : currentStatus.deviceId.trim();
     await _connectionStateSubscription?.cancel();
     _connectionStateSubscription = null;
     await _notificationSubscription?.cancel();
@@ -1197,8 +1214,9 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       await _bleClient.disconnect(_connectedDeviceId!);
     }
     if (systemAssociationDeviceId.isNotEmpty) {
-      final removed =
-          await _bleClient.removeSystemAssociation(systemAssociationDeviceId);
+      final removed = await _bleClient.removeSystemAssociation(
+        systemAssociationDeviceId,
+      );
       BleDebugRegistry.instance.recordEvent(
         removed
             ? 'Device system association removed'
@@ -1350,8 +1368,9 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       return;
     }
     final sosPacket = EixamSosPacket.tryParse(payload);
-    final eventPacket =
-        payload.length == 6 ? EixamSosEventPacket.tryParse(payload) : null;
+    final eventPacket = payload.length == 6
+        ? EixamSosEventPacket.tryParse(payload)
+        : null;
     final decodedNodeId = sosPacket?.nodeId ?? eventPacket?.nodeId;
     BleDebugRegistry.instance.recordEvent(
       'BLE_SOS_PACKET_RAW source=$source raw=$payloadHex '
@@ -1385,23 +1404,29 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     }
     final sosPacket =
         classification.sosPacket ?? EixamSosPacket.tryParse(payload);
-    final eventPacket = classification.sosEventPacket ??
+    final eventPacket =
+        classification.sosEventPacket ??
         (payload.length == 6 ? EixamSosEventPacket.tryParse(payload) : null);
     final nodeId = sosPacket?.nodeId ?? eventPacket?.nodeId;
     final remoteSnapshot = classification.remoteRelaySosSnapshot;
-    final terminalFlag = eventPacket != null ||
+    final terminalFlag =
+        eventPacket != null ||
         classification.kind == BleIncomingPayloadKind.sosCancel ||
         classification.kind == BleIncomingPayloadKind.sosClear ||
         remoteSnapshot?.kind == RemoteRelaySosKind.cancel ||
         remoteSnapshot?.kind == RemoteRelaySosKind.clear;
     final cancelFlag =
         classification.kind == BleIncomingPayloadKind.sosCancel ||
-            classification.kind == BleIncomingPayloadKind.sosClear ||
-            remoteSnapshot?.kind == RemoteRelaySosKind.cancel ||
-            remoteSnapshot?.kind == RemoteRelaySosKind.clear;
+        classification.kind == BleIncomingPayloadKind.sosClear ||
+        remoteSnapshot?.kind == RemoteRelaySosKind.cancel ||
+        remoteSnapshot?.kind == RemoteRelaySosKind.clear;
     BleDebugRegistry.instance.recordEvent(
       'BLE_SOS_CLASSIFY_DECISION raw=$payloadHex '
-      'packetType=${eventPacket != null ? "sos_event" : sosPacket != null ? "sos" : _packetTypeByte(payload)} '
+      'packetType=${eventPacket != null
+          ? "sos_event"
+          : sosPacket != null
+          ? "sos"
+          : _packetTypeByte(payload)} '
       'classification=${classification.kind.name} '
       'reason=${_classificationReason(classification)} '
       'source=$source nodeId=${nodeId?.toString() ?? "none"} '
@@ -1412,7 +1437,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   }
 
   String _classificationReason(
-      BleIncomingPayloadClassification classification) {
+    BleIncomingPayloadClassification classification,
+  ) {
     switch (classification.kind) {
       case BleIncomingPayloadKind.ownDeviceSos:
         return 'originator_matches_connected_ble_node';
@@ -1566,7 +1592,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     EixamBleNotification notification,
   ) async {
     final source = DeviceSosTransitionSource.device;
-    final redactsBacklogTransport = notification.payload.isNotEmpty &&
+    final redactsBacklogTransport =
+        notification.payload.isNotEmpty &&
         (notification.payload.first ==
                 EixamBleProtocol.telAggregateFragmentOpcode ||
             notification.payload.first == EixamPositionBacklogPacket.marker);
@@ -1920,17 +1947,17 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
           platformEventType: null,
           decision:
               d2RelayClassification.kind == BleIncomingPayloadKind.ownDeviceSos
-                  ? 'own_device'
-                  : d2RelayClassification.kind ==
-                          BleIncomingPayloadKind.remoteRelaySos
-                      ? 'remote_relay'
-                      : 'unknown_hold',
+              ? 'own_device'
+              : d2RelayClassification.kind ==
+                    BleIncomingPayloadKind.remoteRelaySos
+              ? 'remote_relay'
+              : 'unknown_hold',
           reason:
               d2RelayClassification.kind == BleIncomingPayloadKind.ownDeviceSos
-                  ? 'originator_matches_connected_ble_node'
-                  : _connectedBleTagNodeId == null
-                      ? 'connected_ble_node_unknown'
-                      : 'originator_differs_from_connected_ble_node',
+              ? 'originator_matches_connected_ble_node'
+              : _connectedBleTagNodeId == null
+              ? 'connected_ble_node_unknown'
+              : 'originator_differs_from_connected_ble_node',
         );
       }
       BleDebugRegistry.instance.recordDecodedIncomingEvent(
@@ -2282,11 +2309,13 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     final kind = connectedNodeId == null
         ? BleIncomingPayloadKind.unknownOriginSos
         : sosPacket.nodeId == connectedNodeId
-            ? BleIncomingPayloadKind.ownDeviceSos
-            : BleIncomingPayloadKind.remoteRelaySos;
+        ? BleIncomingPayloadKind.ownDeviceSos
+        : BleIncomingPayloadKind.remoteRelaySos;
     if (kind != BleIncomingPayloadKind.remoteRelaySos) {
-      final classification =
-          BleIncomingPayloadClassification(kind: kind, sosPacket: sosPacket);
+      final classification = BleIncomingPayloadClassification(
+        kind: kind,
+        sosPacket: sosPacket,
+      );
       _logIncomingSosClassifyDecision(
         payload: payload,
         payloadHex: payloadHex,
@@ -2322,19 +2351,21 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
   Future<void> _bindConnectionMonitor(String deviceId) async {
     await _connectionStateSubscription?.cancel();
-    _connectionStateSubscription = _bleClient.watchConnection(deviceId).listen(
-      (isConnected) {
-        if (isConnected) {
-          return;
-        }
-        unawaited(_handleUnexpectedDisconnect(deviceId));
-      },
-      onError: (Object error) {
-        BleDebugRegistry.instance.recordEvent(
-          'Connection monitor error for $deviceId: $error',
+    _connectionStateSubscription = _bleClient
+        .watchConnection(deviceId)
+        .listen(
+          (isConnected) {
+            if (isConnected) {
+              return;
+            }
+            unawaited(_handleUnexpectedDisconnect(deviceId));
+          },
+          onError: (Object error) {
+            BleDebugRegistry.instance.recordEvent(
+              'Connection monitor error for $deviceId: $error',
+            );
+          },
         );
-      },
-    );
   }
 
   Future<bool> _dispatchSosEventPayload({
@@ -2361,7 +2392,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         kind: BleIncomingPayloadKind.remoteRelaySos,
       ),
     );
-    classification = (await _resolveUnknownOriginSosEventClassification(
+    classification =
+        (await _resolveUnknownOriginSosEventClassification(
           classification: classification,
           receivedAt: notification.receivedAt,
           reason: unknownOriginReason,
@@ -2392,13 +2424,13 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       decision: isLocalEvent
           ? 'own_device'
           : _connectedBleTagNodeId == null
-              ? 'unknown_hold'
-              : 'remote_relay',
+          ? 'unknown_hold'
+          : 'remote_relay',
       reason: isLocalEvent
           ? 'originator_matches_connected_ble_node'
           : _connectedBleTagNodeId == null
-              ? 'connected_ble_node_unknown'
-              : 'originator_differs_from_connected_ble_node',
+          ? 'connected_ble_node_unknown'
+          : 'originator_differs_from_connected_ble_node',
     );
     BleDebugRegistry.instance.recordEvent(
       'SOS device event decoded -> role=${isLocalEvent ? "connected_tag" : "remote_relay"} nodeId=${_formatNodeId(packet.nodeId)} opcode=0x${packet.opcode.toRadixString(16).padLeft(2, '0')} subcode=0x${packet.subcode.toRadixString(16).padLeft(2, '0')} channel=${notification.channel.name}',
@@ -2516,13 +2548,13 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         decision: sosClassification.kind == BleIncomingPayloadKind.ownDeviceSos
             ? 'own_device'
             : sosClassification.kind == BleIncomingPayloadKind.remoteRelaySos
-                ? 'remote_relay'
-                : 'unknown_hold',
+            ? 'remote_relay'
+            : 'unknown_hold',
         reason: sosClassification.kind == BleIncomingPayloadKind.ownDeviceSos
             ? 'originator_matches_connected_ble_node'
             : _connectedBleTagNodeId == null
-                ? 'connected_ble_node_unknown'
-                : 'originator_differs_from_connected_ble_node',
+            ? 'connected_ble_node_unknown'
+            : 'originator_differs_from_connected_ble_node',
       );
       BleDebugRegistry.instance.recordEvent(
         'SOS packet decoded -> role=${sosClassification.kind.name} nodeId=${_formatNodeId(sosPacket.nodeId)} sosType=${sosPacket.sosType} packetId=${sosPacket.packetId} relayCount=${sosPacket.relayCount}',
@@ -2594,7 +2626,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   }
 
   Future<BleIncomingPayloadClassification?>
-      _resolveUnknownOriginSosEventClassification({
+  _resolveUnknownOriginSosEventClassification({
     required BleIncomingPayloadClassification? classification,
     required DateTime receivedAt,
     required String reason,
@@ -2617,8 +2649,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     final isLocalEvent = packet.nodeId == resolvedNodeId;
     final isExternalBackendCancel =
         packet.opcode == EixamBleProtocol.sosEventUserDeactivatedOpcode &&
-            packet.subcode == 0x02 &&
-            !isLocalEvent;
+        packet.subcode == 0x02 &&
+        !isLocalEvent;
     final resolved = BleIncomingPayloadClassification(
       kind: packet.isAppCancelAck
           ? BleIncomingPayloadKind.unknown
@@ -2644,8 +2676,16 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       'rawType=sos_event nodeId=${packet.nodeId} '
       'originatorNodeId=${packet.nodeId} relayNodeId=$resolvedNodeId '
       'relayHardwareId=${_connectedCanonicalHardwareId ?? "none"} '
-      'classifiedAs=${isExternalBackendCancel ? "remoteRelay" : isLocalEvent ? "ownDevice" : "unknown"} '
-      'action=${isExternalBackendCancel ? "emit_remote_cancel_snapshot" : isLocalEvent ? "local_terminal" : "non_backend_event"}',
+      'classifiedAs=${isExternalBackendCancel
+          ? "remoteRelay"
+          : isLocalEvent
+          ? "ownDevice"
+          : "unknown"} '
+      'action=${isExternalBackendCancel
+          ? "emit_remote_cancel_snapshot"
+          : isLocalEvent
+          ? "local_terminal"
+          : "non_backend_event"}',
     );
     if (isExternalBackendCancel) {
       BleDebugRegistry.instance.recordEvent(
@@ -2659,13 +2699,17 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       'SOS event unknown origin reclassified -> reason=$reason '
       'connectedNodeId=${_formatNodeId(resolvedNodeId)} '
       'originatorNodeId=${_formatNodeId(packet.nodeId)} '
-      'role=${isExternalBackendCancel ? "remoteRelayEvent" : isLocalEvent ? "ownDeviceEvent" : "nonBackendEvent"}',
+      'role=${isExternalBackendCancel
+          ? "remoteRelayEvent"
+          : isLocalEvent
+          ? "ownDeviceEvent"
+          : "nonBackendEvent"}',
     );
     return resolved;
   }
 
   Future<BleIncomingPayloadClassification>
-      _resolveUnknownOriginSosClassification({
+  _resolveUnknownOriginSosClassification({
     required BleIncomingPayloadClassification classification,
     required List<int> payload,
     required String payloadHex,
@@ -2920,7 +2964,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       clearProvisioningError: true,
     );
 
-    final unchanged = currentStatus.batteryLevel == nextStatus.batteryLevel &&
+    final unchanged =
+        currentStatus.batteryLevel == nextStatus.batteryLevel &&
         currentStatus.effectiveBatteryState ==
             nextStatus.effectiveBatteryState &&
         currentStatus.batterySource == nextStatus.batterySource;
@@ -2953,7 +2998,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       lastSyncedAt: DateTime.now(),
       clearProvisioningError: true,
     );
-    final unchanged = currentStatus.nodeId == nextStatus.nodeId &&
+    final unchanged =
+        currentStatus.nodeId == nextStatus.nodeId &&
         currentStatus.provisioningStatus == nextStatus.provisioningStatus &&
         currentStatus.batteryPercent == nextStatus.batteryPercent &&
         currentStatus.batteryLevel == nextStatus.batteryLevel &&
@@ -2961,10 +3007,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     if (unchanged) {
       return;
     }
-    _publishRuntimeStatus(
-      nextStatus,
-      reason: 'device_runtime_status_updated',
-    );
+    _publishRuntimeStatus(nextStatus, reason: 'device_runtime_status_updated');
   }
 
   DeviceProvisioningStatus _provisioningStatusFromRuntime(
@@ -3004,8 +3047,10 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     return currentStatus.batterySource;
   }
 
-  void _publishRuntimeStatus(DeviceStatus nextStatus,
-      {required String reason}) {
+  void _publishRuntimeStatus(
+    DeviceStatus nextStatus, {
+    required String reason,
+  }) {
     _lastRuntimeStatus = nextStatus;
     BleDebugRegistry.instance.recordEvent(
       'Final battery value sent to UI -> source=${nextStatus.batterySource?.name ?? "-"} exact=${nextStatus.batteryPercent?.toString() ?? "-"} raw=${nextStatus.batteryLevel?.toString() ?? "-"} state=${nextStatus.effectiveBatteryState?.label ?? "-"} displayed=${nextStatus.approximateBatteryPercentage?.toString() ?? "-"} changed=true reason=$reason',

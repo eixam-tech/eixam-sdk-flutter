@@ -70,6 +70,67 @@ void main() {
     );
 
     test(
+      'raw RX traces START and CANCEL before independent classification',
+      () async {
+        await runtimeProvider.requestDeviceRuntimeStatus();
+        final startEvent = runtimeProvider.watchIncomingEvents().firstWhere(
+          (event) =>
+              event.type == BleIncomingEventType.sosMeshPacket &&
+              event.classification.kind == BleIncomingPayloadKind.ownDeviceSos,
+        );
+        bleClient.emitNotification(
+          MockBleClient.demoDeviceId,
+          channel: EixamBleChannel.sos,
+          payload: _sosPayloadForNode(0x1234),
+        );
+        expect(
+          (await startEvent).classification.kind,
+          BleIncomingPayloadKind.ownDeviceSos,
+        );
+
+        final cancelEvent = runtimeProvider.watchIncomingEvents().firstWhere(
+          (event) =>
+              event.type == BleIncomingEventType.sosDeviceEvent &&
+              event.classification.kind == BleIncomingPayloadKind.sosCancel,
+        );
+        bleClient.emitNotification(
+          MockBleClient.demoDeviceId,
+          channel: EixamBleChannel.sos,
+          payload: const <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00],
+        );
+        expect(
+          (await cancelEvent).classification.kind,
+          BleIncomingPayloadKind.sosCancel,
+        );
+
+        final rawRx = BleDebugRegistry.instance.currentState.events
+            .map((event) => event.message)
+            .where((message) => message.startsWith('EIXAM_BLE_NOTIFICATION_RX'))
+            .toList();
+        final startTrace = rawRx.lastWhere(
+          (message) =>
+              message.contains('characteristic=ea02') &&
+              message.contains('packetType=sos '),
+        );
+        final cancelTrace = rawRx.lastWhere(
+          (message) =>
+              message.contains('characteristic=ea02') &&
+              message.contains('packetType=sos_event') &&
+              message.contains('firstOpcode=0xe1'),
+        );
+        final startSequence = int.parse(
+          RegExp(r'receiveSequence=(\d+)').firstMatch(startTrace)!.group(1)!,
+        );
+        final cancelSequence = int.parse(
+          RegExp(r'receiveSequence=(\d+)').firstMatch(cancelTrace)!.group(1)!,
+        );
+        expect(cancelSequence, greaterThan(startSequence));
+        expect(startTrace, isNot(contains('payload=')));
+        expect(cancelTrace, isNot(contains('payload=')));
+      },
+    );
+
+    test(
       'relay origin decision table preserves own, relay, and fallback cases',
       () {
         final classifier = const BleIncomingPayloadClassifier();

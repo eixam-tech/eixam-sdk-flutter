@@ -82,6 +82,19 @@ bool isStrictlyNewerSosReceiveSequence({
   return incomingSequence > terminalBoundarySequence;
 }
 
+@visibleForTesting
+enum SosBleRuntimeOwner { flutter, nativeProtection }
+
+@visibleForTesting
+SosBleRuntimeOwner resolveAuthoritativeSosBleRuntimeOwner({
+  required ProtectionBleOwner declaredOwner,
+  required bool nativeConnectionLive,
+}) {
+  return declaredOwner != ProtectionBleOwner.flutter && nativeConnectionLive
+      ? SosBleRuntimeOwner.nativeProtection
+      : SosBleRuntimeOwner.flutter;
+}
+
 /// Main SDK orchestrator used by host apps.
 ///
 /// It composes repositories, exposes a stable public API and coordinates
@@ -163,7 +176,7 @@ class EixamConnectSdkImpl
       // The native owner writes CMD but never bridges TEL notifies back to
       // Dart (only SOS events cross the platform channel), so Nearby must
       // fail fast instead of timing out and poisoning the group epoch.
-      bleOwnedByProtection: () => _isProtectionPlatformOwningBle,
+      bleOwnedByProtection: () => _isAuthoritativeNativeProtectionBleOwner,
     );
     _bleAutoReconnectCoordinator = BleAutoReconnectCoordinator(
       deviceRepository: deviceRepository,
@@ -456,6 +469,7 @@ class EixamConnectSdkImpl
   ProtectionBleOwner _lastProtectionBleOwner = ProtectionBleOwner.flutter;
   bool _firmwareOtaInProgress = false;
   bool _migrationInspectionInProgress = false;
+  bool _bleOwnershipHandoffInFlight = false;
 
   Timer? _deathManTimer;
   bool _deathManCheckInNotified = false;
@@ -979,6 +993,13 @@ class EixamConnectSdkImpl
       }
       final nativeOwnershipStarted =
           nativeOwnsBle && previousOwner == ProtectionBleOwner.flutter;
+      final nativeBecameAuthoritative =
+          nativeOwnsBle &&
+          nativeLive &&
+          (nativeOwnershipStarted || !previousConnected || !previousReady);
+      if (nativeBecameAuthoritative) {
+        unawaited(_handleProtectionBleOwnershipChanged(status.bleOwner));
+      }
       if (nativeOwnsBle &&
           status.deviceConnected &&
           (!previousConnected || nativeOwnershipStarted)) {
@@ -3354,7 +3375,7 @@ class EixamConnectSdkImpl
   }
 
   Future<DeviceSosStatus> _activateActiveSosOnDeviceFromApp() {
-    if (_isProtectionPlatformOwningBle) {
+    if (_isAuthoritativeNativeProtectionBleOwner) {
       return _activateActiveSosOnNativeOwnerFromApp();
     }
     return deviceSosController.activateSosFromApp(
@@ -3560,7 +3581,7 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> sendShutdownToDevice() async {
-    if (!_isProtectionPlatformOwningBle &&
+    if (!_isAuthoritativeNativeProtectionBleOwner &&
         !deviceSosController.hasSosCommandPath) {
       await _ensureCommandCapableDeviceRepository(action: 'send_shutdown');
     }
@@ -3857,7 +3878,7 @@ class EixamConnectSdkImpl
     if (status?.connected != true) {
       return false;
     }
-    if (_isProtectionPlatformOwningBle) {
+    if (_isAuthoritativeNativeProtectionBleOwner) {
       final protectionStatus = _protectionModeController.currentStatus;
       return protectionStatus.deviceConnected &&
           protectionStatus.serviceBleReady;
@@ -5235,8 +5256,19 @@ class EixamConnectSdkImpl
     required Duration countdown,
     SosTriggerPayload? activationPayload,
   }) async {
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_SDK_TRIGGER_ENTERED api=startPreSos countdown=${countdown.inSeconds}',
+    );
+    final entryCapability = await _buildSosCapability(
+      reason: 'start_pre_sos_entry',
+    );
+    _logSosPathDecision(entryCapability);
     await _restorePersistedPreSosSession(trigger: 'startPreSos');
     if (await _settleExpiredPreSosSession(trigger: 'startPreSos')) {
+      _logSosDeviceMirrorDecision(
+        attempt: false,
+        reason: 'expired_pre_sos_settled',
+      );
       return;
     }
     _clearStaleTerminalRuntimeResidueForFreshAppSosStart();
@@ -5250,6 +5282,12 @@ class EixamConnectSdkImpl
     if ((_hasBackendVisibleSosIncident(existingIncident) &&
             !existingIsFencedProjection) ||
         _hasActivePreSosSession) {
+      _logSosDeviceMirrorDecision(
+        attempt: false,
+        reason: _hasActivePreSosSession
+            ? 'active_pre_sos_session'
+            : 'active_backend_incident',
+      );
       return;
     }
 
@@ -5258,6 +5296,10 @@ class EixamConnectSdkImpl
         !(_sosLifecycle.activeTerminalWatermark != null &&
             !_hasNewAuthoritativeGenerationSinceTerminal())) {
       _syncPreSosSessionFromDeviceStatus(currentDeviceStatus);
+      _logSosDeviceMirrorDecision(
+        attempt: false,
+        reason: 'device_pre_confirm_already_active',
+      );
       return;
     }
 
@@ -5266,6 +5308,10 @@ class EixamConnectSdkImpl
       action: 'pre_sos_start',
       refreshRuntimeStatus: true,
     );
+    final executionCapability = await _buildSosCapability(
+      reason: 'start_pre_sos_execution',
+    );
+    _logSosPathDecision(executionCapability);
     final armingLifecycle = await _sosLifecycle.beginArming(
       origin: SosLifecycleOrigin.localApp,
       triggerSource: activationPayload?.triggerSource ?? 'commercial_app',
@@ -5280,6 +5326,14 @@ class EixamConnectSdkImpl
       operationRevision: ++_pendingSosActivationRevision,
     );
     final canMirrorPreSosOnDevice = runtimeStatus != null;
+    _logSosDeviceMirrorDecision(
+      attempt: canMirrorPreSosOnDevice,
+      reason: canMirrorPreSosOnDevice
+          ? 'connected_command_ready_tag'
+          : executionCapability.hasConnectedDevice
+          ? 'command_channel_not_ready'
+          : 'connected_device_not_present',
+    );
     final owner = _SosOwner.app;
     _logAppPreSosRouteDecision(
       runtimeStatus: runtimeStatus,
@@ -5298,6 +5352,9 @@ class EixamConnectSdkImpl
     );
     if (canMirrorPreSosOnDevice) {
       try {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_TRIGGER_DEVICE_SOS_ENTERED route=$_currentDeviceCommandOwnerRoute',
+        );
         BleDebugRegistry.instance.recordEvent(
           '[APP_PRE_SOS_DEVICE_COMMAND] action=attempt '
           'path=ble_inet_sos_trigger countdown=${countdown.inSeconds}',
@@ -7998,6 +8055,27 @@ class EixamConnectSdkImpl
       'bleConnected=$bleConnected cmd=$longPath '
       'preSosDevicePath=$path decision=$decision '
       'countdown=${countdown.inSeconds}',
+    );
+  }
+
+  void _logSosPathDecision(SosCapabilitySnapshot capability) {
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_PATH_DECISION '
+      'primaryPath=${capability.preferredActivationPath?.name ?? "none"} '
+      'canTriggerAppSos=${capability.canTriggerAppSos} '
+      'canTriggerDeviceSos=${capability.canTriggerDeviceSos} '
+      'deviceTransportReady=${capability.deviceTransportReady} '
+      'commandChannelReady=${capability.commandChannelReady} '
+      'connectedDevicePresent=${capability.hasConnectedDevice}',
+    );
+  }
+
+  void _logSosDeviceMirrorDecision({
+    required bool attempt,
+    required String reason,
+  }) {
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_DEVICE_MIRROR_DECISION attempt=$attempt reason=$reason',
     );
   }
 
@@ -17560,7 +17638,21 @@ class EixamConnectSdkImpl
   }
 
   String get _currentDeviceCommandOwnerRoute =>
-      _isProtectionPlatformOwningBle ? 'native_protection' : 'flutter_writer';
+      _isAuthoritativeNativeProtectionBleOwner
+      ? 'native_protection'
+      : 'flutter_writer';
+
+  bool get _isAuthoritativeNativeProtectionBleOwner {
+    final status = _protectionModeController.currentStatus;
+    if (status.modeState == ProtectionModeState.off) {
+      return false;
+    }
+    return resolveAuthoritativeSosBleRuntimeOwner(
+          declaredOwner: status.bleOwner,
+          nativeConnectionLive: _protectionReportsLiveBleConnection(status),
+        ) ==
+        SosBleRuntimeOwner.nativeProtection;
+  }
 
   Future<void> _sendDeviceCommandThroughActiveOwner(
     EixamDeviceCommand command,
@@ -17569,7 +17661,7 @@ class EixamConnectSdkImpl
     BleDebugRegistry.instance.recordEvent(
       'Device leg owner chosen -> owner=$ownerRoute command=${command.label}',
     );
-    if (_isProtectionPlatformOwningBle) {
+    if (_isAuthoritativeNativeProtectionBleOwner) {
       final connectedDevice = _lastPublicDeviceStatus ?? _lastDeviceStatus;
       final protectionStatus = _protectionModeController.currentStatus;
       final expectedTargets =
@@ -17671,79 +17763,91 @@ class EixamConnectSdkImpl
   Future<void> _handleProtectionBleOwnershipChanged(
     ProtectionBleOwner owner,
   ) async {
-    final protectionStatus = _protectionModeController.currentStatus;
-    BleDebugRegistry.instance.recordEvent(
-      '[DEVICE_FLOW] ble_owner_transition '
-      'flutterConnected=${_lastDeviceStatus?.connected ?? false} '
-      'protectionDeviceConnected=${protectionStatus.deviceConnected} '
-      'serviceBleConnected=${protectionStatus.serviceBleConnected} '
-      'serviceBleReady=${protectionStatus.serviceBleReady} '
-      'bleOwner=${owner.name} '
-      'finalPublicConnected=${_lastPublicDeviceStatus?.connected ?? _lastDeviceStatus?.connected ?? false} '
-      'deviceId=${_lastDeviceStatus?.nodeId?.toString() ?? "-"} nodeId=${_lastDeviceStatus?.nodeId?.toString() ?? "-"} hardwareId=${_lastDeviceStatus?.deviceId ?? "-"}',
-    );
-    if (deviceRepository is! InMemoryDeviceRepository) {
+    if (_bleOwnershipHandoffInFlight) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_BLE_OWNER_DECISION owner=${owner.name} action=dedupe_handoff',
+      );
       return;
     }
-    final repository = deviceRepository as InMemoryDeviceRepository;
-    if (owner != ProtectionBleOwner.flutter) {
-      final nativeLive = _protectionReportsLiveBleConnection(protectionStatus);
-      final flutterConnected =
-          (_lastPublicDeviceStatus ?? _lastDeviceStatus)?.connected == true;
-      if (!_isAppBackgrounded) {
-        // Foreground: never close a working radio. Native already live →
-        // keep that GATT and bridge it. Native claimed owner but is not
-        // connected → keep Flutter (or let Flutter reconnect). Yielding
-        // here used to force-reconnect native and leave the UI disconnected
-        // while Android Bluetooth still showed the native session.
-        final rawStatus = _lastDeviceStatus;
-        if (nativeLive && rawStatus != null) {
+    _bleOwnershipHandoffInFlight = true;
+    try {
+      final protectionStatus = _protectionModeController.currentStatus;
+      BleDebugRegistry.instance.recordEvent(
+        '[DEVICE_FLOW] ble_owner_transition '
+        'flutterConnected=${_lastDeviceStatus?.connected ?? false} '
+        'protectionDeviceConnected=${protectionStatus.deviceConnected} '
+        'serviceBleConnected=${protectionStatus.serviceBleConnected} '
+        'serviceBleReady=${protectionStatus.serviceBleReady} '
+        'bleOwner=${owner.name} '
+        'finalPublicConnected=${_lastPublicDeviceStatus?.connected ?? _lastDeviceStatus?.connected ?? false} '
+        'deviceId=${_lastDeviceStatus?.nodeId?.toString() ?? "-"} nodeId=${_lastDeviceStatus?.nodeId?.toString() ?? "-"} hardwareId=${_lastDeviceStatus?.deviceId ?? "-"}',
+      );
+      if (deviceRepository is! InMemoryDeviceRepository) {
+        return;
+      }
+      final repository = deviceRepository as InMemoryDeviceRepository;
+      if (owner != ProtectionBleOwner.flutter) {
+        final nativeLive = _protectionReportsLiveBleConnection(
+          protectionStatus,
+        );
+        final flutterConnected =
+            (_lastPublicDeviceStatus ?? _lastDeviceStatus)?.connected == true;
+        if (!_isAppBackgrounded && !nativeLive) {
           BleDebugRegistry.instance.recordEvent(
             'EIXAM_RECONNECT_TRACE protection_ble_yield_deferred '
-            'reason=native_live_foreground '
+            'reason=${flutterConnected ? 'flutter_foreground_connected' : 'native_not_live_foreground'} '
             'bleOwner=${owner.name}',
           );
-          _publishPublicDeviceStatus(
-            rawStatus: rawStatus,
-            reason: 'native_live_foreground',
+          BleDebugRegistry.instance.recordEvent(
+            'SOS_BLE_OWNER_DECISION owner=flutter action=retain '
+            'reason=native_not_live foreground=true',
           );
           return;
         }
         BleDebugRegistry.instance.recordEvent(
-          'EIXAM_RECONNECT_TRACE protection_ble_yield_deferred '
-          'reason=${flutterConnected ? 'flutter_foreground_connected' : 'native_not_live_foreground'} '
-          'bleOwner=${owner.name}',
+          'SOS_BLE_OWNER_DECISION owner=native_protection '
+          'action=release_flutter '
+          'reason=${nativeLive ? "native_live" : "background_handoff"}',
         );
+        _lastDeviceStatus = await repository
+            .releaseBleOwnershipToProtectionMode(
+              reason: 'Protection Mode native runtime is armed',
+            );
+        _publishPublicDeviceStatus(
+          rawStatus: _lastDeviceStatus!,
+          reason: 'protection_ble_ownership_released',
+        );
+        if (!nativeLive) {
+          unawaited(
+            _delegateBleToNativeProtection(
+              reason: 'flutter_yielded_ble_to_native',
+            ),
+          );
+        } else {
+          _bleAutoReconnectCoordinator.setAppForeground(false);
+        }
         return;
       }
-      _lastDeviceStatus = await repository.releaseBleOwnershipToProtectionMode(
-        reason: 'Protection Mode native runtime is armed',
+      await repository.reclaimBleOwnershipFromProtectionMode(
+        reason: 'Protection Mode returned BLE ownership to Flutter',
       );
-      _publishPublicDeviceStatus(
-        rawStatus: _lastDeviceStatus!,
-        reason: 'protection_ble_ownership_released',
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_BLE_OWNER_DECISION owner=flutter action=reclaim '
+        'reason=platform_owner_returned',
       );
+      _bleAutoReconnectCoordinator.setAppForeground(true);
       unawaited(
-        _delegateBleToNativeProtection(reason: 'flutter_yielded_ble_to_native'),
+        _bleAutoReconnectCoordinator.tryAutoConnect(
+          trigger: 'flutter_ble_ownership_reclaimed',
+        ),
       );
-      if (nativeLive) {
-        _bleAutoReconnectCoordinator.setAppForeground(false);
+      if ((_lastPublicDeviceStatus ?? _lastDeviceStatus)?.connected == true) {
+        unawaited(
+          _maybeCheckDeviceCountryConfig('flutter_ble_ownership_reclaimed'),
+        );
       }
-      return;
-    }
-    await repository.reclaimBleOwnershipFromProtectionMode(
-      reason: 'Protection Mode returned BLE ownership to Flutter',
-    );
-    _bleAutoReconnectCoordinator.setAppForeground(true);
-    unawaited(
-      _bleAutoReconnectCoordinator.tryAutoConnect(
-        trigger: 'flutter_ble_ownership_reclaimed',
-      ),
-    );
-    if ((_lastPublicDeviceStatus ?? _lastDeviceStatus)?.connected == true) {
-      unawaited(
-        _maybeCheckDeviceCountryConfig('flutter_ble_ownership_reclaimed'),
-      );
+    } finally {
+      _bleOwnershipHandoffInFlight = false;
     }
   }
 
@@ -20242,7 +20346,7 @@ class EixamConnectSdkImpl
   }) {
     final backendAvailable = _isBackendSosChannelAvailable();
     final protectionStatus = _protectionModeController.currentStatus;
-    final platformOwnsBle = _isPlatformBleOwner(protectionStatus.bleOwner);
+    final platformOwnsBle = _isAuthoritativeNativeProtectionBleOwner;
     final chosenConnected =
         statusOverride?.connected ?? _lastDeviceStatus?.connected;
     final flutterShortCommandPath = deviceSosController.shortCommandAvailable;
@@ -20404,7 +20508,7 @@ class EixamConnectSdkImpl
     required String action,
     required EixamDeviceCommand command,
   }) async {
-    if (!_isProtectionPlatformOwningBle) {
+    if (!_isAuthoritativeNativeProtectionBleOwner) {
       await _ensureCommandCapableDeviceRepository(action: action);
     }
     await _sendDeviceCommandThroughActiveOwner(command);

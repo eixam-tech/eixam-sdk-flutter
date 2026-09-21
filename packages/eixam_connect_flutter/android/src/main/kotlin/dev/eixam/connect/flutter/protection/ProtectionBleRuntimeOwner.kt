@@ -45,6 +45,7 @@ internal class ProtectionBleRuntimeOwner(
     private val pendingCommandQueue = java.util.ArrayDeque<QueuedCommand>()
     private var pendingCommandResult: PendingCommandResult? = null
     private var connectedBleNodeId: Int? = null
+    private var notificationReceiveSequence: Long = 0
     private var boundDeviceId: String? = null
     private var boundNodeId: Int? = null
     private val terminalSosSuppressionByKey = mutableMapOf<String, TerminalSosSuppression>()
@@ -349,6 +350,13 @@ internal class ProtectionBleRuntimeOwner(
             pendingCommandResult = pending
         }
         val target = redactDeviceTarget(targetDeviceId)
+        Log.i(
+            logTag,
+            "EIXAM_COMMAND_WRITE source=native_protection " +
+                "opcode=${opcode?.let(::formatOpcode) ?: "none"} " +
+                "byteLength=${command.payload.size} characteristic=${characteristic.uuid} " +
+                "target=$target",
+        )
         val nativeMethod = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             "BluetoothGatt.writeCharacteristic(characteristic,payload,writeType)"
         } else {
@@ -554,6 +562,35 @@ internal class ProtectionBleRuntimeOwner(
 
     private fun formatOpcode(opcode: Int): String =
         "0x${opcode.toString(16).padStart(2, '0')}"
+
+    private fun safePacketType(
+        payload: List<Int>,
+        characteristic: BluetoothGattCharacteristic,
+    ): String {
+        if (payload.isEmpty()) {
+            return "empty"
+        }
+        if (payload.size == 6 && payload.first() in setOf(0xE1, 0xE2, 0xE3)) {
+            return "sos_event"
+        }
+        if (
+            characteristic.uuid == sosNotifyUuid &&
+            (payload.size == 7 || payload.size == 10 || payload.size == 12)
+        ) {
+            return "sos"
+        }
+        if (payload.size == 7 || payload.size == 10 || payload.size == 12) {
+            return "sos_or_tel"
+        }
+        return when (payload.first()) {
+            0xE9 -> "device_status"
+            0xD0 -> "tel_fragment"
+            0xD1 -> "tel_backlog"
+            0xD2 -> "d2_relay"
+            0xD3 -> "tel_live_batch"
+            else -> "unknown"
+        }
+    }
 
     private fun redactDeviceTarget(deviceId: String?): String {
         val normalized = deviceId?.trim()?.uppercase(Locale.US)
@@ -979,6 +1016,7 @@ internal class ProtectionBleRuntimeOwner(
         rawBytes: ByteArray,
     ) {
         val payload = rawBytes.map { byte -> byte.toInt() and 0xFF }
+        val receiveSequence = ++notificationReceiveSequence
         val activeBleHardwareId = gatt.device?.address
         val bleLinkActive = runtimeActive &&
             !isStopping &&
@@ -993,6 +1031,14 @@ internal class ProtectionBleRuntimeOwner(
             }
             else -> "unknown"
         }
+        Log.i(
+            logTag,
+            "EIXAM_BLE_NOTIFICATION_RX owner=native_protection " +
+                "characteristic=${characteristic.uuid} byteLength=${payload.size} " +
+                "packetType=${safePacketType(payload, characteristic)} " +
+                "firstOpcode=${payload.firstOrNull()?.let(::formatOpcode) ?: "none"} " +
+                "receiveSequence=$receiveSequence target=${redactDeviceTarget(targetDeviceId)}",
+        )
         logSosTrace(
             "native_raw_notify source=$sourceLabel payloadLen=${payload.size} " +
                 "payloadHex=${payloadHex(payload)} connectedBleNodeId=${connectedBleNodeId ?: "none"}",
