@@ -342,6 +342,8 @@ ProtectionPlatformEventType parseIosProtectionPlatformEventType(String? value) {
       return ProtectionPlatformEventType.reconnectScheduled;
     case 'reconnectFailed':
       return ProtectionPlatformEventType.reconnectFailed;
+    case 'gattCacheCleared':
+      return ProtectionPlatformEventType.gattCacheCleared;
     case 'servicesDiscovered':
       return ProtectionPlatformEventType.servicesDiscovered;
     case 'subscriptionsActive':
@@ -406,6 +408,8 @@ ProtectionPlatformEventType parseAndroidProtectionPlatformEventType(
       return ProtectionPlatformEventType.reconnectScheduled;
     case 'reconnectFailed':
       return ProtectionPlatformEventType.reconnectFailed;
+    case 'gattCacheCleared':
+      return ProtectionPlatformEventType.gattCacheCleared;
     case 'servicesDiscovered':
       return ProtectionPlatformEventType.servicesDiscovered;
     case 'subscriptionsActive':

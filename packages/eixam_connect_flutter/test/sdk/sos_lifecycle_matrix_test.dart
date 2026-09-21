@@ -2056,6 +2056,11 @@ void main() {
             bleOwner: ProtectionBleOwner.androidService,
             serviceBleConnected: true,
             serviceBleReady: true,
+            nativeCommandServiceReady: true,
+            nativeCommandEa04Ready: true,
+            nativeCommandIdentityReady: true,
+            nativeCommandQueueHealthy: true,
+            nativeCommandReady: true,
             protectedDeviceId: 'CF:82:00:00:00:01',
             activeDeviceId: 'CF:82:00:00:00:01',
           ),
@@ -2151,6 +2156,11 @@ void main() {
             bleOwner: ProtectionBleOwner.androidService,
             serviceBleConnected: true,
             serviceBleReady: true,
+            nativeCommandServiceReady: true,
+            nativeCommandEa04Ready: true,
+            nativeCommandIdentityReady: true,
+            nativeCommandQueueHealthy: true,
+            nativeCommandReady: true,
             protectedDeviceId: 'CF:82:00:00:00:01',
             activeDeviceId: 'CF:82:00:00:00:01',
           );
@@ -2202,6 +2212,34 @@ void main() {
             bleOwner: ProtectionBleOwner.androidService,
             serviceBleConnected: true,
             serviceBleReady: false,
+            nativeCommandServiceReady: false,
+            nativeCommandEa04Ready: false,
+            nativeCommandIdentityReady: false,
+            nativeCommandQueueHealthy: true,
+            nativeCommandReady: false,
+            protectedDeviceId: 'CF:82:00:00:00:01',
+            activeDeviceId: 'CF:82:00:00:00:01',
+          );
+          await harness.sdk.rehydrateProtectionState();
+          final preparingCapability = await harness.sdk.getSosCapability();
+          expect(preparingCapability.deviceTransportReady, isFalse);
+          expect(preparingCapability.commandChannelReady, isFalse);
+          expect(preparingCapability.canTriggerDeviceSos, isFalse);
+          expect(
+            _hasDebugMessage(
+              'SOS_BLE_OWNER_TRANSITION previous=flutter '
+              'next=nativePreparing',
+            ),
+            isTrue,
+          );
+          adapter.snapshot = const ProtectionPlatformSnapshot(
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            platform: ProtectionPlatform.android,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: true,
+            serviceBleReady: false,
             nativeCommandServiceReady: true,
             nativeCommandEa04Ready: true,
             nativeCommandIdentityReady: true,
@@ -2230,6 +2268,13 @@ void main() {
           expect(capability.deviceTransportReady, isTrue);
           expect(capability.commandChannelReady, isTrue);
           expect(capability.canTriggerDeviceSos, isTrue);
+          expect(
+            _debugMessageCount(
+              'SOS_BLE_OWNER_TRANSITION previous=nativePreparing '
+              'next=nativeReady',
+            ),
+            1,
+          );
           expect(
             _hasDebugMessage('SOS_NATIVE_COMMAND_READINESS_INPUT'),
             isTrue,
@@ -2367,6 +2412,11 @@ void main() {
             bleOwner: ProtectionBleOwner.androidService,
             serviceBleConnected: true,
             serviceBleReady: true,
+            nativeCommandServiceReady: true,
+            nativeCommandEa04Ready: true,
+            nativeCommandIdentityReady: true,
+            nativeCommandQueueHealthy: true,
+            nativeCommandReady: true,
             protectedDeviceId: 'CF:82:00:00:00:99',
             activeDeviceId: 'CF:82:00:00:00:99',
           ),
@@ -2413,6 +2463,11 @@ void main() {
             bleOwner: ProtectionBleOwner.androidService,
             serviceBleConnected: true,
             serviceBleReady: true,
+            nativeCommandServiceReady: true,
+            nativeCommandEa04Ready: true,
+            nativeCommandIdentityReady: true,
+            nativeCommandQueueHealthy: true,
+            nativeCommandReady: true,
             protectedDeviceId: 'CF:82:00:00:00:01',
             activeDeviceId: 'CF:82:00:00:00:01',
           ),
@@ -6862,6 +6917,12 @@ bool _hasDebugMessage(String token) {
   return BleDebugRegistry.instance.currentState.events.any(
     (event) => event.message.contains(token),
   );
+}
+
+int _debugMessageCount(String token) {
+  return BleDebugRegistry.instance.currentState.events
+      .where((event) => event.message.contains(token))
+      .length;
 }
 
 RealtimeEvent _processedEvent({

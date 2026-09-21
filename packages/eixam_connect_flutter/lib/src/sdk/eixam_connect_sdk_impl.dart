@@ -85,16 +85,42 @@ bool isStrictlyNewerSosReceiveSequence({
 }
 
 @visibleForTesting
-enum SosBleRuntimeOwner { flutter, nativeProtection }
+enum SosBleOwnershipState { flutterOwner, nativePreparing, nativeReadyOwner }
 
 @visibleForTesting
-SosBleRuntimeOwner resolveAuthoritativeSosBleRuntimeOwner({
+enum SosBleSingleOwnerViolation {
+  none,
+  nativeOwnerWithFlutterGatt,
+  flutterOwnerWithNativeGatt,
+}
+
+@visibleForTesting
+SosBleOwnershipState resolveSosBleOwnershipState({
   required ProtectionBleOwner declaredOwner,
-  required bool nativeConnectionLive,
+  required bool nativeCommandReady,
 }) {
-  return declaredOwner != ProtectionBleOwner.flutter && nativeConnectionLive
-      ? SosBleRuntimeOwner.nativeProtection
-      : SosBleRuntimeOwner.flutter;
+  if (declaredOwner == ProtectionBleOwner.flutter) {
+    return SosBleOwnershipState.flutterOwner;
+  }
+  return nativeCommandReady
+      ? SosBleOwnershipState.nativeReadyOwner
+      : SosBleOwnershipState.nativePreparing;
+}
+
+@visibleForTesting
+SosBleSingleOwnerViolation evaluateSosBleSingleOwnerInvariant({
+  required bool nativeDeclared,
+  required bool flutterReleaseSettled,
+  required bool nativeGattConnected,
+  required bool flutterGattConnected,
+}) {
+  if (nativeDeclared && flutterReleaseSettled && flutterGattConnected) {
+    return SosBleSingleOwnerViolation.nativeOwnerWithFlutterGatt;
+  }
+  if (!nativeDeclared && nativeGattConnected) {
+    return SosBleSingleOwnerViolation.flutterOwnerWithNativeGatt;
+  }
+  return SosBleSingleOwnerViolation.none;
 }
 
 @visibleForTesting
@@ -225,13 +251,21 @@ class EixamConnectSdkImpl
       // The native owner writes CMD but never bridges TEL notifies back to
       // Dart (only SOS events cross the platform channel), so Nearby must
       // fail fast instead of timing out and poisoning the group epoch.
-      bleOwnedByProtection: () => _isAuthoritativeNativeProtectionBleOwner,
+      bleOwnedByProtection: () => _isProtectionPlatformOwningBle,
     );
     _bleAutoReconnectCoordinator = BleAutoReconnectCoordinator(
       deviceRepository: deviceRepository,
       preferredDeviceStore: preferredBleDeviceStore,
       permissionStateProvider: permissionsRepository.getPermissionState,
       isNativeProtectionOwningBle: () => _shouldSkipFlutterBleReconnect,
+      nativeProtectionReconnectSuppressionReason: () {
+        if (!_isProtectionPlatformOwningBle) {
+          return null;
+        }
+        return _isAuthoritativeNativeProtectionBleOwner
+            ? 'native_ready'
+            : 'native_preparing';
+      },
       onNativeProtectionOwnsBle: (trigger) {
         return _delegateBleToNativeProtection(reason: 'native_owner_$trigger');
       },
@@ -522,8 +556,10 @@ class EixamConnectSdkImpl
   bool _migrationInspectionInProgress = false;
   bool _bleOwnershipHandoffInFlight = false;
   bool _nativeCommandReadinessRefreshInFlight = false;
+  bool _flutterBleReleaseCompletedForNativeOwnership = false;
   String? _lastSosBleOwnerDiagnostic;
   String? _lastSosBleOwnerStateSignature;
+  String? _lastSosBleSingleOwnerViolationSignature;
   String? _lastNativeRawPayloadHex;
   String? _lastNativeRawReceiveCorrelation;
   int? _lastNativeRawReceiveSequence;
@@ -1038,6 +1074,14 @@ class EixamConnectSdkImpl
       _lastNativeProtectionCommandReady = status.nativeCommandReady;
       _lastProtectionBleOwner = status.bleOwner;
       _lastProtectionModeState = status.modeState;
+      final nativeOwnsBle =
+          status.modeState != ProtectionModeState.off &&
+          status.bleOwner != ProtectionBleOwner.flutter;
+      if (nativeOwnsBle && !previousNativeOwnsBle) {
+        _flutterBleReleaseCompletedForNativeOwnership = false;
+      } else if (!nativeOwnsBle) {
+        _flutterBleReleaseCompletedForNativeOwnership = false;
+      }
       _logSosBleOwnerState(
         reason: 'protection_status:${status.lastPlatformEvent ?? "snapshot"}',
         status: status,
@@ -1057,9 +1101,6 @@ class EixamConnectSdkImpl
           reason: 'protection_status_stream',
         );
       }
-      final nativeOwnsBle =
-          status.modeState != ProtectionModeState.off &&
-          status.bleOwner != ProtectionBleOwner.flutter;
       final nativeLive = _protectionReportsLiveBleConnection(status);
       if (nativeOwnsBle && nativeLive && _isAppBackgrounded) {
         _bleAutoReconnectCoordinator.setAppForeground(false);
@@ -3697,7 +3738,11 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> sendShutdownToDevice() async {
-    if (!_isAuthoritativeNativeProtectionBleOwner &&
+    if (_isProtectionPlatformOwningBle &&
+        !_isAuthoritativeNativeProtectionBleOwner) {
+      _throwDeviceCommandNotReady();
+    }
+    if (!_isProtectionPlatformOwningBle &&
         !deviceSosController.hasSosCommandPath) {
       await _ensureCommandCapableDeviceRepository(action: 'send_shutdown');
     }
@@ -17845,10 +17890,16 @@ class EixamConnectSdkImpl
     );
   }
 
-  String get _currentDeviceCommandOwnerRoute =>
-      _isAuthoritativeNativeProtectionBleOwner
-      ? 'native_protection'
-      : 'flutter_writer';
+  String get _currentDeviceCommandOwnerRoute {
+    switch (_sosBleOwnershipState) {
+      case SosBleOwnershipState.flutterOwner:
+        return 'flutter_writer';
+      case SosBleOwnershipState.nativePreparing:
+        return 'native_preparing';
+      case SosBleOwnershipState.nativeReadyOwner:
+        return 'native_protection';
+    }
+  }
 
   bool _nativeProtectionTargetMatchesConnectedDevice(
     ProtectionStatus protectionStatus,
@@ -17883,16 +17934,39 @@ class EixamConnectSdkImpl
         );
   }
 
-  bool get _isAuthoritativeNativeProtectionBleOwner {
+  NativeProtectionCommandReadiness _nativeCommandReadinessForStatus(
+    ProtectionStatus status,
+  ) {
+    final legacyIosCommandReady =
+        status.bleOwner == ProtectionBleOwner.iosPlugin &&
+        status.serviceBleReady;
+    return evaluateNativeProtectionCommandReadiness(
+      declaredOwner: status.bleOwner,
+      serviceBleConnected: status.serviceBleConnected,
+      serviceReady: status.nativeCommandServiceReady || legacyIosCommandReady,
+      cmdEa04Ready: status.nativeCommandEa04Ready || legacyIosCommandReady,
+      exactTargetIdentityMatch:
+          (status.nativeCommandIdentityReady || legacyIosCommandReady) &&
+          _nativeProtectionTargetMatchesConnectedDevice(status),
+      operationQueueOperational:
+          status.nativeCommandQueueHealthy &&
+          status.lastCommandError?.trim().isNotEmpty != true,
+    );
+  }
+
+  SosBleOwnershipState get _sosBleOwnershipState {
     final status = _protectionModeController.currentStatus;
     if (status.modeState == ProtectionModeState.off) {
-      return false;
+      return SosBleOwnershipState.flutterOwner;
     }
-    return resolveAuthoritativeSosBleRuntimeOwner(
-          declaredOwner: status.bleOwner,
-          nativeConnectionLive: _protectionReportsLiveBleConnection(status),
-        ) ==
-        SosBleRuntimeOwner.nativeProtection;
+    return resolveSosBleOwnershipState(
+      declaredOwner: status.bleOwner,
+      nativeCommandReady: _nativeCommandReadinessForStatus(status).ready,
+    );
+  }
+
+  bool get _isAuthoritativeNativeProtectionBleOwner {
+    return _sosBleOwnershipState == SosBleOwnershipState.nativeReadyOwner;
   }
 
   Future<void> _sendDeviceCommandThroughActiveOwner(
@@ -17902,6 +17976,13 @@ class EixamConnectSdkImpl
     BleDebugRegistry.instance.recordEvent(
       'Device leg owner chosen -> owner=$ownerRoute command=${command.label}',
     );
+    if (_sosBleOwnershipState == SosBleOwnershipState.nativePreparing) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_DEVICE_COMMAND_REJECTED owner=native_preparing '
+        'reason=native_command_not_ready command=${command.label}',
+      );
+      _throwDeviceCommandNotReady();
+    }
     if (_isAuthoritativeNativeProtectionBleOwner) {
       final connectedDevice = _lastPublicDeviceStatus ?? _lastDeviceStatus;
       final protectionStatus = _protectionModeController.currentStatus;
@@ -18051,6 +18132,7 @@ class EixamConnectSdkImpl
           rawStatus: _lastDeviceStatus!,
           reason: 'protection_ble_ownership_released',
         );
+        _flutterBleReleaseCompletedForNativeOwnership = true;
         _logSosBleOwnerState(
           reason: 'flutter_release_completed',
           status: protectionStatus,
@@ -18070,6 +18152,7 @@ class EixamConnectSdkImpl
       await repository.reclaimBleOwnershipFromProtectionMode(
         reason: 'Protection Mode returned BLE ownership to Flutter',
       );
+      _flutterBleReleaseCompletedForNativeOwnership = false;
       BleDebugRegistry.instance.recordEvent(
         'SOS_BLE_OWNER_DECISION owner=flutter action=reclaim '
         'reason=platform_owner_returned',
@@ -18104,8 +18187,12 @@ class EixamConnectSdkImpl
     final flutterGattConnected = _lastDeviceStatus?.connected == true;
     final nativeGattConnected =
         status.serviceBleConnected || status.serviceBleReady;
+    final nativeReady =
+        nativeDeclared && _nativeCommandReadinessForStatus(status).ready;
     final owner = nativeDeclared
-        ? 'native'
+        ? nativeReady
+              ? 'nativeReady'
+              : 'nativePreparing'
         : flutterGattConnected
         ? 'flutter'
         : 'none';
@@ -18116,6 +18203,28 @@ class EixamConnectSdkImpl
         'next=$owner reason=$reason',
       );
       _lastSosBleOwnerDiagnostic = owner;
+    }
+    final invariant = evaluateSosBleSingleOwnerInvariant(
+      nativeDeclared: nativeDeclared,
+      flutterReleaseSettled: _flutterBleReleaseCompletedForNativeOwnership,
+      nativeGattConnected: nativeGattConnected,
+      flutterGattConnected: flutterGattConnected,
+    );
+    if (invariant == SosBleSingleOwnerViolation.none) {
+      _lastSosBleSingleOwnerViolationSignature = null;
+    } else {
+      final violation = invariant.name;
+      final violationSignature =
+          '$violation|$owner|$nativeGattConnected|$flutterGattConnected';
+      if (_lastSosBleSingleOwnerViolationSignature != violationSignature) {
+        _lastSosBleSingleOwnerViolationSignature = violationSignature;
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_BLE_SINGLE_OWNER_VIOLATION violation=$violation '
+          'owner=$owner reason=$reason '
+          'nativeGattConnected=$nativeGattConnected '
+          'flutterGattConnected=$flutterGattConnected',
+        );
+      }
     }
     final signature = '$owner|$nativeGattConnected|$flutterGattConnected';
     if (_lastSosBleOwnerStateSignature == signature) {
@@ -18563,6 +18672,7 @@ class EixamConnectSdkImpl
       case ProtectionPlatformEventType.deviceDisconnected:
       case ProtectionPlatformEventType.reconnectScheduled:
       case ProtectionPlatformEventType.reconnectFailed:
+      case ProtectionPlatformEventType.gattCacheCleared:
       case ProtectionPlatformEventType.servicesDiscovered:
       case ProtectionPlatformEventType.subscriptionsActive:
       case ProtectionPlatformEventType.nativeCommandReadinessChanged:
@@ -20580,18 +20690,7 @@ class EixamConnectSdkImpl
         _nativeCommandReadinessRefreshInFlight) {
       return;
     }
-    final currentReadiness = evaluateNativeProtectionCommandReadiness(
-      declaredOwner: status.bleOwner,
-      serviceBleConnected: status.serviceBleConnected,
-      serviceReady: status.nativeCommandServiceReady || status.serviceBleReady,
-      cmdEa04Ready: status.nativeCommandEa04Ready || status.serviceBleReady,
-      exactTargetIdentityMatch:
-          (status.nativeCommandIdentityReady || status.serviceBleReady) &&
-          _nativeProtectionTargetMatchesConnectedDevice(status),
-      operationQueueOperational:
-          status.nativeCommandQueueHealthy &&
-          status.lastCommandError?.trim().isNotEmpty != true,
-    );
+    final currentReadiness = _nativeCommandReadinessForStatus(status);
     if (currentReadiness.ready) {
       return;
     }
@@ -20733,23 +20832,9 @@ class EixamConnectSdkImpl
   }) {
     final backendAvailable = _isBackendSosChannelAvailable();
     final protectionStatus = _protectionModeController.currentStatus;
-    final platformOwnsBle = _isAuthoritativeNativeProtectionBleOwner;
-    final nativeCommandReadiness = evaluateNativeProtectionCommandReadiness(
-      declaredOwner: protectionStatus.bleOwner,
-      serviceBleConnected: protectionStatus.serviceBleConnected,
-      serviceReady:
-          protectionStatus.nativeCommandServiceReady ||
-          protectionStatus.serviceBleReady,
-      cmdEa04Ready:
-          protectionStatus.nativeCommandEa04Ready ||
-          protectionStatus.serviceBleReady,
-      exactTargetIdentityMatch:
-          (protectionStatus.nativeCommandIdentityReady ||
-              protectionStatus.serviceBleReady) &&
-          _nativeProtectionTargetMatchesConnectedDevice(protectionStatus),
-      operationQueueOperational:
-          protectionStatus.nativeCommandQueueHealthy &&
-          protectionStatus.lastCommandError?.trim().isNotEmpty != true,
+    final platformOwnsBle = _isProtectionPlatformOwningBle;
+    final nativeCommandReadiness = _nativeCommandReadinessForStatus(
+      protectionStatus,
     );
     final chosenConnected =
         statusOverride?.connected ?? _lastDeviceStatus?.connected;
@@ -20914,7 +20999,11 @@ class EixamConnectSdkImpl
     required String action,
     required EixamDeviceCommand command,
   }) async {
-    if (!_isAuthoritativeNativeProtectionBleOwner) {
+    if (_isProtectionPlatformOwningBle &&
+        !_isAuthoritativeNativeProtectionBleOwner) {
+      _throwDeviceCommandNotReady();
+    }
+    if (!_isProtectionPlatformOwningBle) {
       await _ensureCommandCapableDeviceRepository(action: action);
     }
     await _sendDeviceCommandThroughActiveOwner(command);

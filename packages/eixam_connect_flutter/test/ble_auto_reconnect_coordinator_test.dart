@@ -558,6 +558,84 @@ void main() {
     });
 
     test(
+        'native preparing and ready prevent an in-flight campaign from creating Flutter GATT',
+        () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final reconnectStarted = Completer<void>();
+      final reconnectGate = Completer<void>();
+      final repository = _FakeDeviceRepository()
+        ..reconnectGate = reconnectGate
+        ..onReconnectStarted = (_) {
+          if (!reconnectStarted.isCompleted) reconnectStarted.complete();
+        };
+      final store = PreferredBleDeviceStore(localStore: SharedPrefsSdkStore());
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: 'ble-demo-r1',
+          displayName: 'EIXAM Demo',
+          lastConnectedAt: DateTime.parse('2026-09-21T10:00:00Z'),
+        ),
+      );
+      String? nativeState;
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+        nativeProtectionReconnectSuppressionReason: () => nativeState,
+      );
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+
+      final campaign = coordinator.tryAutoConnectForHandoff(
+        trigger: 'startup',
+      );
+      await reconnectStarted.future;
+      nativeState = 'native_preparing';
+      coordinator.cancelPreferredReconnect(
+        reason: 'native_protection_ble_owner',
+      );
+      reconnectGate.complete();
+
+      final preparingResult = await campaign;
+      expect(preparingResult.reason, 'native_protection_ble_owner');
+      expect(repository.reconnectCallCount, 1);
+      expect(repository.gattCreateCallCount, 0);
+
+      final suppressedPreparing = await coordinator.tryAutoConnectForHandoff(
+        trigger: 'resume',
+      );
+      nativeState = 'native_ready';
+      final suppressedReady = await coordinator.tryAutoConnectForHandoff(
+        trigger: 'foreground',
+      );
+
+      expect(suppressedPreparing.reason, 'native_protection_ble_owner');
+      expect(suppressedReady.reason, 'native_protection_ble_owner');
+      expect(repository.reconnectCallCount, 1);
+      expect(repository.gattCreateCallCount, 0);
+      final messages = BleDebugRegistry.instance.currentState.events
+          .map((event) => event.message)
+          .join('\n');
+      expect(
+        messages,
+        contains(
+          'SOS_FLUTTER_RECONNECT_SUPPRESSED '
+          'reason=native_preparing source=resume',
+        ),
+      );
+      expect(
+        messages,
+        contains(
+          'SOS_FLUTTER_RECONNECT_SUPPRESSED '
+          'reason=native_ready source=foreground',
+        ),
+      );
+      await coordinator.dispose();
+    });
+
+    test(
         'provisioning ownership suppresses generic triggers but allows its '
         'explicit reconnect', () async {
       SharedPreferences.setMockInitialValues(<String, Object>{});
@@ -2301,6 +2379,7 @@ class _FakeDeviceRepository
 
   int pairCallCount = 0;
   int reconnectCallCount = 0;
+  int gattCreateCallCount = 0;
   int refreshCallCount = 0;
   String? lastPairingCode;
   String? lastReconnectedDeviceId;
@@ -2366,6 +2445,7 @@ class _FakeDeviceRepository
   Future<DeviceStatus> reconnectDevice({
     required PreferredDevice device,
     String? attemptId,
+    bool Function()? canCreateGatt,
   }) async {
     reconnectCallCount++;
     lastReconnectedDeviceId = device.deviceId;
@@ -2378,6 +2458,13 @@ class _FakeDeviceRepository
     if (reconnectDelay > Duration.zero) {
       await Future<void>.delayed(reconnectDelay);
     }
+    if (canCreateGatt?.call() == false) {
+      throw const DeviceException(
+        'E_FLUTTER_BLE_OWNERSHIP_SUPPRESSED',
+        'E_FLUTTER_BLE_OWNERSHIP_SUPPRESSED',
+      );
+    }
+    gattCreateCallCount++;
     if (pairErrors.isNotEmpty) {
       throw pairErrors.removeAt(0);
     }

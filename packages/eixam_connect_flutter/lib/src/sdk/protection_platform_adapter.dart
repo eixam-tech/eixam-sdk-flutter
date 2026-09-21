@@ -19,6 +19,7 @@ enum ProtectionPlatformEventType {
   deviceDisconnected,
   reconnectScheduled,
   reconnectFailed,
+  gattCacheCleared,
   servicesDiscovered,
   subscriptionsActive,
   nativeCommandReadinessChanged,

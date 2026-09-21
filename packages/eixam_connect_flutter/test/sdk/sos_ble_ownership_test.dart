@@ -4,64 +4,64 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('SOS BLE ownership arbitration', () {
-    test('keeps Flutter authoritative until native GATT is live', () {
+    test('native connected without command readiness remains preparing', () {
       expect(
-        resolveAuthoritativeSosBleRuntimeOwner(
+        resolveSosBleOwnershipState(
           declaredOwner: ProtectionBleOwner.androidService,
-          nativeConnectionLive: false,
+          nativeCommandReady: false,
         ),
-        SosBleRuntimeOwner.flutter,
+        SosBleOwnershipState.nativePreparing,
       );
     });
 
-    test('hands all SOS traffic to the live native owner', () {
+    test('hands SOS traffic to native only after command readiness', () {
       expect(
-        resolveAuthoritativeSosBleRuntimeOwner(
+        resolveSosBleOwnershipState(
           declaredOwner: ProtectionBleOwner.androidService,
-          nativeConnectionLive: true,
+          nativeCommandReady: true,
         ),
-        SosBleRuntimeOwner.nativeProtection,
+        SosBleOwnershipState.nativeReadyOwner,
       );
       expect(
-        resolveAuthoritativeSosBleRuntimeOwner(
+        resolveSosBleOwnershipState(
           declaredOwner: ProtectionBleOwner.flutter,
-          nativeConnectionLive: true,
+          nativeCommandReady: true,
         ),
-        SosBleRuntimeOwner.flutter,
+        SosBleOwnershipState.flutterOwner,
       );
     });
 
-    test('handoff always leaves a receiver for a physical START', () {
-      final ownershipAcrossHandoff = <SosBleRuntimeOwner>[
-        resolveAuthoritativeSosBleRuntimeOwner(
+    test('handoff exposes preparing before ready exactly once', () {
+      final ownershipAcrossHandoff = <SosBleOwnershipState>[
+        resolveSosBleOwnershipState(
           declaredOwner: ProtectionBleOwner.androidService,
-          nativeConnectionLive: false,
+          nativeCommandReady: false,
         ),
-        resolveAuthoritativeSosBleRuntimeOwner(
+        resolveSosBleOwnershipState(
           declaredOwner: ProtectionBleOwner.androidService,
-          nativeConnectionLive: true,
+          nativeCommandReady: true,
         ),
       ];
 
-      expect(ownershipAcrossHandoff, <SosBleRuntimeOwner>[
-        SosBleRuntimeOwner.flutter,
-        SosBleRuntimeOwner.nativeProtection,
+      expect(ownershipAcrossHandoff, <SosBleOwnershipState>[
+        SosBleOwnershipState.nativePreparing,
+        SosBleOwnershipState.nativeReadyOwner,
       ]);
     });
 
     test('START and CANCEL use one authoritative consumer per state', () {
-      for (final nativeConnectionLive in <bool>[false, true]) {
-        final startOwner = resolveAuthoritativeSosBleRuntimeOwner(
+      for (final nativeCommandReady in <bool>[false, true]) {
+        final startOwner = resolveSosBleOwnershipState(
           declaredOwner: ProtectionBleOwner.androidService,
-          nativeConnectionLive: nativeConnectionLive,
+          nativeCommandReady: nativeCommandReady,
         );
-        final cancelOwner = resolveAuthoritativeSosBleRuntimeOwner(
+        final cancelOwner = resolveSosBleOwnershipState(
           declaredOwner: ProtectionBleOwner.androidService,
-          nativeConnectionLive: nativeConnectionLive,
+          nativeCommandReady: nativeCommandReady,
         );
 
         expect(cancelOwner, startOwner);
-        expect(<SosBleRuntimeOwner>{startOwner, cancelOwner}, hasLength(1));
+        expect(<SosBleOwnershipState>{startOwner, cancelOwner}, hasLength(1));
       }
     });
 
@@ -104,6 +104,36 @@ void main() {
       expect(
         evaluate(owner: ProtectionBleOwner.flutter).failure,
         NativeProtectionCommandReadinessFailure.ownerNotNative,
+      );
+    });
+
+    test('single-owner invariant rejects settled dual GATT state', () {
+      expect(
+        evaluateSosBleSingleOwnerInvariant(
+          nativeDeclared: true,
+          flutterReleaseSettled: true,
+          nativeGattConnected: true,
+          flutterGattConnected: true,
+        ),
+        SosBleSingleOwnerViolation.nativeOwnerWithFlutterGatt,
+      );
+      expect(
+        evaluateSosBleSingleOwnerInvariant(
+          nativeDeclared: true,
+          flutterReleaseSettled: false,
+          nativeGattConnected: true,
+          flutterGattConnected: true,
+        ),
+        SosBleSingleOwnerViolation.none,
+      );
+      expect(
+        evaluateSosBleSingleOwnerInvariant(
+          nativeDeclared: false,
+          flutterReleaseSettled: false,
+          nativeGattConnected: true,
+          flutterGattConnected: false,
+        ),
+        SosBleSingleOwnerViolation.flutterOwnerWithNativeGatt,
       );
     });
   });

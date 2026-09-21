@@ -18,6 +18,7 @@ class BleAutoReconnectCoordinator {
     Future<PermissionState> Function()? permissionStateProvider,
     bool Function()? isIosPlatform,
     bool Function()? isNativeProtectionOwningBle,
+    String? Function()? nativeProtectionReconnectSuppressionReason,
     Future<void> Function(String trigger)? onNativeProtectionOwnsBle,
     Future<void> Function(Duration delay)? preferredReconnectDelay,
     List<Duration>? preferredReconnectRetryDelays,
@@ -27,6 +28,8 @@ class BleAutoReconnectCoordinator {
         _preferredDeviceStore = preferredDeviceStore,
         _permissionStateProvider = permissionStateProvider,
         _isNativeProtectionOwningBle = isNativeProtectionOwningBle,
+        _nativeProtectionReconnectSuppressionReason =
+            nativeProtectionReconnectSuppressionReason,
         _onNativeProtectionOwnsBle = onNativeProtectionOwnsBle,
         _preferredReconnectDelay = preferredReconnectDelay,
         _preferredReconnectRetryDelays =
@@ -68,6 +71,7 @@ class BleAutoReconnectCoordinator {
   final PreferredBleDeviceStore _preferredDeviceStore;
   final Future<PermissionState> Function()? _permissionStateProvider;
   final bool Function()? _isNativeProtectionOwningBle;
+  final String? Function()? _nativeProtectionReconnectSuppressionReason;
   final Future<void> Function(String trigger)? _onNativeProtectionOwnsBle;
   final Future<void> Function(Duration delay)? _preferredReconnectDelay;
   final List<Duration> _preferredReconnectRetryDelays;
@@ -76,6 +80,34 @@ class BleAutoReconnectCoordinator {
       _retryTimerFactory;
   final String autoReconnectPairingCode;
   final bool Function() _isIosPlatform;
+
+  String? get _nativeReconnectSuppressionReason {
+    final typedReason = _nativeProtectionReconnectSuppressionReason?.call();
+    if (typedReason != null) {
+      return typedReason;
+    }
+    return _isNativeProtectionOwningBle?.call() == true
+        ? 'native_owner'
+        : null;
+  }
+
+  void _recordNativeReconnectSuppressed({
+    required String trigger,
+    required String reason,
+    String? attemptId,
+  }) {
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_FLUTTER_RECONNECT_SUPPRESSED reason=$reason source=$trigger',
+    );
+    _traceReconnect(
+      'sdk_campaign_cancelled reason=native_protection_ble_owner '
+      'nativeState=$reason source=$trigger',
+    );
+    _recordNoProviderCall(
+      attemptId: attemptId,
+      reason: 'native_protection_ble_owner',
+    );
+  }
 
   StreamSubscription<DeviceStatus>? _deviceStatusSub;
   StreamSubscription<PermissionState>? _readinessReconnectSub;
@@ -617,15 +649,13 @@ class BleAutoReconnectCoordinator {
         reason: 'explicit_migration_inspection_owner',
       );
     }
-    if (_isNativeProtectionOwningBle?.call() == true) {
+    final nativeSuppressionReason = _nativeReconnectSuppressionReason;
+    if (nativeSuppressionReason != null) {
       _cancelPreferredReconnectCampaign(reason: 'native_protection_ble_owner');
-      _traceReconnect(
-        'sdk_campaign_cancelled reason=native_protection_ble_owner '
-        'source=$trigger',
-      );
-      _recordNoProviderCall(
+      _recordNativeReconnectSuppressed(
+        trigger: trigger,
+        reason: nativeSuppressionReason,
         attemptId: attemptId,
-        reason: 'native_protection_ble_owner',
       );
       final notifyNative = _onNativeProtectionOwnsBle;
       if (notifyNative != null) {
@@ -718,6 +748,7 @@ class BleAutoReconnectCoordinator {
         trigger: trigger,
         attemptId: attemptId,
         platformRemoteId: platformRemoteId,
+        campaignToken: token,
       );
       if (!_isPreferredReconnectCampaignCurrent(token)) {
         return _preferredReconnectCancellationResult(
@@ -800,6 +831,7 @@ class BleAutoReconnectCoordinator {
 
   Future<PreferredDeviceReconnectResult> _tryPreferredReconnectAttempt({
     required String trigger,
+    required int campaignToken,
     String? attemptId,
     String? platformRemoteId,
   }) async {
@@ -826,14 +858,12 @@ class BleAutoReconnectCoordinator {
         reason: 'explicit_migration_inspection_owner',
       );
     }
-    if (_isNativeProtectionOwningBle?.call() == true) {
-      _traceReconnect(
-        'sdk_campaign_cancelled reason=native_protection_ble_owner '
-        'source=$trigger',
-      );
-      _recordNoProviderCall(
+    final nativeSuppressionReason = _nativeReconnectSuppressionReason;
+    if (nativeSuppressionReason != null) {
+      _recordNativeReconnectSuppressed(
+        trigger: trigger,
+        reason: nativeSuppressionReason,
         attemptId: attemptId,
-        reason: 'native_protection_ble_owner',
       );
       final notifyNative = _onNativeProtectionOwnsBle;
       if (notifyNative != null) {
@@ -1070,6 +1100,22 @@ class BleAutoReconnectCoordinator {
         reason: 'unsupported_repository',
       );
     }
+    if (!_isPreferredReconnectCampaignCurrent(campaignToken)) {
+      return const PreferredDeviceReconnectResult.failed(
+        reason: 'campaign_cancelled',
+      );
+    }
+    final finalNativeSuppressionReason = _nativeReconnectSuppressionReason;
+    if (finalNativeSuppressionReason != null) {
+      _recordNativeReconnectSuppressed(
+        trigger: trigger,
+        reason: finalNativeSuppressionReason,
+        attemptId: attemptId,
+      );
+      return const PreferredDeviceReconnectResult.reconnecting(
+        reason: 'native_protection_ble_owner',
+      );
+    }
     final knownDeviceReconnectRepository =
         reconnectRepository as KnownDeviceReconnectRepository;
     try {
@@ -1080,6 +1126,7 @@ class BleAutoReconnectCoordinator {
         action: () => knownDeviceReconnectRepository.reconnectDevice(
           device: reconnectDevice,
           attemptId: attemptId,
+          canCreateGatt: () => _nativeReconnectSuppressionReason == null,
         ),
       );
       return const PreferredDeviceReconnectResult.connected(
@@ -1241,9 +1288,14 @@ class BleAutoReconnectCoordinator {
         reason: 'authoritative_device_status',
       );
     }
-    if (_isNativeProtectionOwningBle?.call() == true) {
+    final nativeSuppressionReason = _nativeReconnectSuppressionReason;
+    if (nativeSuppressionReason != null) {
       _traceReconnect(
         'sdk_campaign_cancelled reason=native_protection_ble_owner',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_FLUTTER_RECONNECT_SUPPRESSED '
+        'reason=$nativeSuppressionReason source=campaign_cancelled',
       );
       return const PreferredDeviceReconnectResult.reconnecting(
         reason: 'native_protection_ble_owner',

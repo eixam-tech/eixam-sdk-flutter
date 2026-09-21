@@ -43,6 +43,7 @@ class FakeDeviceRuntimeProvider implements DeviceRuntimeProvider {
     required DeviceStatus currentStatus,
     required PreferredDevice preferredDevice,
     String? attemptId,
+    bool Function()? canCreateGatt,
   }) async {
     if (reconnectError != null) {
       throw reconnectError!;

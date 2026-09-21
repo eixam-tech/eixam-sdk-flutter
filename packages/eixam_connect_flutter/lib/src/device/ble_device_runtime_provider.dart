@@ -321,7 +321,12 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     required DeviceStatus currentStatus,
     required PreferredDevice preferredDevice,
     String? attemptId,
+    bool Function()? canCreateGatt,
   }) async {
+    _ensureFlutterGattCreationAllowed(
+      canCreateGatt: canCreateGatt,
+      stage: 'reconnect_start',
+    );
     var deviceId = preferredDevice.deviceId.trim();
     if (deviceId.isEmpty) {
       throw const DeviceException(
@@ -331,6 +336,10 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     }
 
     final adapterState = await _bleClient.getAdapterState();
+    _ensureFlutterGattCreationAllowed(
+      canCreateGatt: canCreateGatt,
+      stage: 'adapter_ready',
+    );
     if (adapterState != BleAdapterState.poweredOn) {
       BleDebugRegistry.instance.recordEvent(
         'BLE_RECONNECT_FAILED_NO_PROVIDER_CALL '
@@ -357,6 +366,10 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         _mobileBondRequiredCode,
       );
     }
+    _ensureFlutterGattCreationAllowed(
+      canCreateGatt: canCreateGatt,
+      stage: 'association_ready',
+    );
 
     try {
       BleDebugRegistry.instance.update(
@@ -372,6 +385,10 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         'attemptId=${attemptId ?? 'none'}',
       );
       try {
+        _ensureFlutterGattCreationAllowed(
+          canCreateGatt: canCreateGatt,
+          stage: 'before_connect_gatt',
+        );
         await _bleClient.connect(deviceId);
         BleDebugRegistry.instance.recordEvent(
           'BLE_RECONNECT_LIFECYCLE connected=true',
@@ -504,6 +521,23 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       } catch (_) {}
       rethrow;
     }
+  }
+
+  void _ensureFlutterGattCreationAllowed({
+    required bool Function()? canCreateGatt,
+    required String stage,
+  }) {
+    if (!_ownershipSuspended && (canCreateGatt?.call() ?? true)) {
+      return;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_FLUTTER_RECONNECT_SUPPRESSED '
+      'reason=native_owner stage=$stage',
+    );
+    throw const DeviceException(
+      'E_FLUTTER_BLE_OWNERSHIP_SUPPRESSED',
+      'E_FLUTTER_BLE_OWNERSHIP_SUPPRESSED',
+    );
   }
 
   bool _isValidIosBleRemoteId(String value) {

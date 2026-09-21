@@ -811,6 +811,21 @@ class ProtectionModeController {
         _emitStatus();
         _emitDiagnostics();
         break;
+      case ProtectionPlatformEventType.gattCacheCleared:
+        // Cache maintenance is not evidence that the current native session
+        // discovered Eixam or EA04. Preserve the preparing readiness state.
+        _status = _status.copyWith(
+          lastBleServiceEvent: event.type.name,
+          lastBleServiceEventAt: event.timestamp,
+          updatedAt: event.timestamp,
+        );
+        _diagnostics = _diagnostics.copyWith(
+          lastBleServiceEvent: event.type.name,
+          lastBleServiceEventAt: event.timestamp,
+        );
+        _emitStatus();
+        _emitDiagnostics();
+        break;
       case ProtectionPlatformEventType.nativeBackendSyncQueued:
       case ProtectionPlatformEventType.nativeBackendSyncSucceeded:
       case ProtectionPlatformEventType.nativeBackendSyncFailed:

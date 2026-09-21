@@ -7,6 +7,21 @@ import org.junit.Test
 
 class ProtectionNativeCommandReadinessTest {
     @Test
+    fun `connected stale GATT is preparing and never command ready`() {
+        val readiness = ProtectionNativeCommandReadiness(
+            owner = true,
+            gattConnected = true,
+            serviceReady = false,
+            cmdEa04Ready = false,
+            identityReady = false,
+            queueHealthy = true,
+        )
+
+        assertFalse(readiness.ready)
+        assertEquals("serviceDiscovered", readiness.falsePredicate)
+    }
+
+    @Test
     fun `EA04 discovery makes command ready before notification subscriptions complete`() {
         val readiness = ProtectionNativeCommandReadiness(
             owner = true,

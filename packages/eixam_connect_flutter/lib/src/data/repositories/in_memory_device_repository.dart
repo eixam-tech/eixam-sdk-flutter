@@ -96,6 +96,7 @@ class InMemoryDeviceRepository
   Future<DeviceStatus> reconnectDevice({
     required PreferredDevice device,
     String? attemptId,
+    bool Function()? canCreateGatt,
   }) async {
     if (device.deviceId.trim().isEmpty) {
       throw const DeviceException(
@@ -122,6 +123,7 @@ class InMemoryDeviceRepository
         currentStatus: _status,
         preferredDevice: device,
         attemptId: attemptId,
+        canCreateGatt: canCreateGatt,
       );
       await _persistAndEmit();
       _startHeartbeat();

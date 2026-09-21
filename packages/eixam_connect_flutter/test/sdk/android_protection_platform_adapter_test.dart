@@ -196,6 +196,17 @@ void main() {
       expect(event.nativeCommandReady, isTrue);
     });
 
+    test('maps GATT cache maintenance without treating it as a wake', () {
+      final event = mapAndroidProtectionPlatformEvent(<Object?, Object?>{
+        'type': 'gattCacheCleared',
+        'timestamp': DateTime.utc(2026, 9, 21).millisecondsSinceEpoch,
+        'reason': 'android_stale_handle_guard',
+      });
+
+      expect(event.type, ProtectionPlatformEventType.gattCacheCleared);
+      expect(event.reason, 'android_stale_handle_guard');
+    });
+
     test(
       'hydrates command readiness when native became ready before listener attach',
       () async {

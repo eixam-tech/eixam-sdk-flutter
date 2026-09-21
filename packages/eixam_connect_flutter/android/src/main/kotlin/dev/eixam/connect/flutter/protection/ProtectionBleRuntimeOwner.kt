@@ -26,6 +26,8 @@ internal class ProtectionBleRuntimeOwner(
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var bluetoothGatt: BluetoothGatt? = null
+    private var gattSessionGeneration: Long = 0
+    private var serviceDiscoveryTimeoutRunnable: Runnable? = null
     private var targetDeviceId: String? = null
     private var reconnectBackoffMs: Long = defaultReconnectBackoffMs
     private var reconnectRunnable: Runnable? = null
@@ -105,9 +107,11 @@ internal class ProtectionBleRuntimeOwner(
         isStopping = true
         runtimeActive = false
         reconnectRunnable?.let(mainHandler::removeCallbacks)
+        serviceDiscoveryTimeoutRunnable?.let(mainHandler::removeCallbacks)
         backendRetryRunnable?.let(mainHandler::removeCallbacks)
         sosActivationRunnable?.let(mainHandler::removeCallbacks)
         reconnectRunnable = null
+        serviceDiscoveryTimeoutRunnable = null
         backendRetryRunnable = null
         sosActivationRunnable = null
         subscriptionStep = SubscriptionStep.idle
@@ -118,8 +122,7 @@ internal class ProtectionBleRuntimeOwner(
         closedPreSosCycleUntilMs.clear()
         completedPreSosCycleUntilMs.clear()
         clearCharacteristicRefs()
-        bluetoothGatt?.close()
-        bluetoothGatt = null
+        closeCurrentGattSession(reason)
         runtimeStore.markServiceBleDisconnected()
         publishNativeCommandReadiness(reason = reason, force = true)
         ProtectionRuntimeBridge.recordBleEvent(
@@ -148,7 +151,7 @@ internal class ProtectionBleRuntimeOwner(
             connect(reason = reason)
             return
         }
-        if (runtimeStore.snapshot()["serviceBleReady"] == true) {
+        if (bluetoothGatt != null && lastPublishedCommandReadiness?.ready == true) {
             ProtectionRuntimeBridge.recordPlatformEvent(
                 context = context,
                 type = "runtimeRecovered",
@@ -602,6 +605,16 @@ internal class ProtectionBleRuntimeOwner(
             identityReady = exactConnectedDeviceIdentityReady(gatt),
             queueHealthy = commandQueueHealthy,
         )
+        Log.i(
+            logTag,
+            "SOS_NATIVE_SESSION_DISCOVERY " +
+                "gattSessionGeneration=$gattSessionGeneration " +
+                "nativeGattConnected=${readiness.gattConnected} " +
+                "serviceReady=${readiness.serviceReady} " +
+                "ea04Ready=${readiness.cmdEa04Ready} " +
+                "identityReady=${readiness.identityReady} " +
+                "queueHealthy=${readiness.queueHealthy} reason=$reason",
+        )
         logNativeCommandPredicateTransitions(
             previous = lastPublishedCommandReadiness,
             next = readiness,
@@ -695,6 +708,8 @@ internal class ProtectionBleRuntimeOwner(
 
         reconnectRunnable?.let(mainHandler::removeCallbacks)
         reconnectRunnable = null
+        closeCurrentGattSession("replace_for_$reason")
+        gattSessionGeneration += 1
         connectionInFlight = true
         connectedBleNodeId = null
         bindDeviceIdentity(deviceId, runtimeStore.currentBackendHardwareId())
@@ -725,7 +740,6 @@ internal class ProtectionBleRuntimeOwner(
                 return
             }
             val device = adapter.getRemoteDevice(deviceId)
-            bluetoothGatt?.close()
             bluetoothGatt =
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                     device.connectGatt(
@@ -756,6 +770,41 @@ internal class ProtectionBleRuntimeOwner(
                 reason = "invalid_device_id",
             )
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun closeCurrentGattSession(reason: String) {
+        serviceDiscoveryTimeoutRunnable?.let(mainHandler::removeCallbacks)
+        serviceDiscoveryTimeoutRunnable = null
+        val current = bluetoothGatt ?: return
+        bluetoothGatt = null
+        try {
+            current.disconnect()
+        } catch (_: Exception) {
+        }
+        current.close()
+        runtimeStore.markServiceBleDisconnected()
+        Log.i(
+            logTag,
+            "SOS_NATIVE_SESSION_CLOSED " +
+                "gattSessionGeneration=$gattSessionGeneration reason=$reason",
+        )
+    }
+
+    private fun isCurrentGattSession(gatt: BluetoothGatt, callback: String): Boolean {
+        if (gatt === bluetoothGatt) {
+            return true
+        }
+        Log.w(
+            logTag,
+            "SOS_NATIVE_SESSION_STALE_CALLBACK " +
+                "gattSessionGeneration=$gattSessionGeneration callback=$callback",
+        )
+        try {
+            gatt.close()
+        } catch (_: Exception) {
+        }
+        return false
     }
 
     @SuppressLint("MissingPermission")
@@ -828,23 +877,76 @@ internal class ProtectionBleRuntimeOwner(
 
     @SuppressLint("MissingPermission")
     private fun discoverServices(gatt: BluetoothGatt) {
+        if (!isCurrentGattSession(gatt, "discoverServices")) {
+            return
+        }
         // Provision/unprovision reboot adds or removes Meshtastic Phone BLE.
         // Android's per-MAC cache then points SOS CCCD at a read-only handle.
         refreshGattCache(gatt)
         val discovered = gatt.discoverServices()
         if (!discovered) {
-            runtimeStore.markRuntimeFailure("Protection Mode service discovery failed to start.")
-            ProtectionRuntimeBridge.recordPlatformEvent(
-                context = context,
-                type = "runtimeError",
-                reason = "discover_services_failed",
+            failCurrentNativeSession(gatt, "discover_services_failed")
+            return
+        }
+        scheduleServiceDiscoveryTimeout(gatt, gattSessionGeneration)
+    }
+
+    private fun scheduleServiceDiscoveryTimeout(
+        gatt: BluetoothGatt,
+        sessionGeneration: Long,
+    ) {
+        serviceDiscoveryTimeoutRunnable?.let(mainHandler::removeCallbacks)
+        serviceDiscoveryTimeoutRunnable = Runnable {
+            val action = evaluateProtectionNativeSessionAction(
+                gattConnected = runtimeStore.snapshot()["serviceBleConnected"] == true,
+                serviceReady = eixamServiceReady,
+                ea04Ready = cmdWriteCharacteristic != null,
+                identityReady = exactConnectedDeviceIdentityReady(gatt),
+                queueHealthy = commandQueueHealthy,
+                discoveryTimedOut = true,
             )
-            scheduleReconnect("discover_services_failed")
+            if (gatt === bluetoothGatt &&
+                sessionGeneration == gattSessionGeneration &&
+                action == ProtectionNativeSessionAction.restart
+            ) {
+                failCurrentNativeSession(gatt, "native_service_discovery_timeout")
+            }
+        }.also {
+            mainHandler.postDelayed(it, serviceDiscoveryTimeoutMs)
         }
     }
 
     @SuppressLint("MissingPermission")
+    private fun failCurrentNativeSession(gatt: BluetoothGatt, reason: String) {
+        if (!isCurrentGattSession(gatt, "failure_$reason")) {
+            return
+        }
+        serviceDiscoveryTimeoutRunnable?.let(mainHandler::removeCallbacks)
+        serviceDiscoveryTimeoutRunnable = null
+        connectionInFlight = false
+        commandQueueHealthy = false
+        clearCharacteristicRefs()
+        runtimeStore.markRuntimeFailure("E_NATIVE_BLE_PREPARATION_FAILED:$reason")
+        closeCurrentGattSession(reason)
+        publishNativeCommandReadiness(reason = reason, force = true)
+        ProtectionRuntimeBridge.recordPlatformEvent(
+            context = context,
+            type = "runtimeError",
+            reason = "native_preparation_failed:$reason",
+        )
+        ProtectionRuntimeBridge.recordBleEvent(
+            context = context,
+            type = "reconnectFailed",
+            reason = reason,
+        )
+        scheduleReconnect(reason)
+    }
+
+    @SuppressLint("MissingPermission")
     private fun configureSubscriptions(gatt: BluetoothGatt) {
+        if (!isCurrentGattSession(gatt, "configureSubscriptions")) {
+            return
+        }
         val discoveredServicesSummary = gatt.services.joinToString(separator = " | ") { service ->
             val characteristics = service.characteristics.joinToString(separator = ",") {
                 it.uuid.toString().lowercase(Locale.US)
@@ -867,7 +969,7 @@ internal class ProtectionBleRuntimeOwner(
                 type = "runtimeError",
                 reason = failureReason,
             )
-            scheduleReconnect("eixam_service_missing")
+            failCurrentNativeSession(gatt, "eixam_service_missing")
             return
         }
 
@@ -904,7 +1006,7 @@ internal class ProtectionBleRuntimeOwner(
                 type = "runtimeError",
                 reason = failureReason,
             )
-            scheduleReconnect("required_characteristics_missing")
+            failCurrentNativeSession(gatt, "required_characteristics_missing")
             return
         }
 
@@ -932,6 +1034,9 @@ internal class ProtectionBleRuntimeOwner(
         gatt: BluetoothGatt,
         characteristic: BluetoothGattCharacteristic,
     ) {
+        if (!isCurrentGattSession(gatt, "enableCharacteristicNotifications")) {
+            return
+        }
         val notificationEnabled = gatt.setCharacteristicNotification(characteristic, true)
         if (!notificationEnabled) {
             runtimeStore.markRuntimeFailure("Could not enable notifications for ${characteristic.uuid}.")
@@ -940,7 +1045,7 @@ internal class ProtectionBleRuntimeOwner(
                 type = "runtimeError",
                 reason = "set_notify_failed",
             )
-            scheduleReconnect("set_notify_failed")
+            failCurrentNativeSession(gatt, "set_notify_failed")
             return
         }
 
@@ -952,7 +1057,7 @@ internal class ProtectionBleRuntimeOwner(
                 type = "runtimeError",
                 reason = "cccd_missing",
             )
-            scheduleReconnect("cccd_missing")
+            failCurrentNativeSession(gatt, "cccd_missing")
             return
         }
 
@@ -971,7 +1076,7 @@ internal class ProtectionBleRuntimeOwner(
                 type = "runtimeError",
                 reason = "cccd_write_failed",
             )
-            scheduleReconnect("cccd_write_failed")
+            failCurrentNativeSession(gatt, "cccd_write_failed")
         }
     }
 
@@ -989,22 +1094,7 @@ internal class ProtectionBleRuntimeOwner(
         gatt: BluetoothGatt,
         reason: String,
     ) {
-        if (bluetoothGatt !== gatt) {
-            return
-        }
-        commandQueueHealthy = false
-        runtimeStore.markServiceBleDisconnected()
-        clearCharacteristicRefs()
-        publishNativeCommandReadiness(reason = reason, force = true)
-        bluetoothGatt = null
-        gatt.disconnect()
-        gatt.close()
-        ProtectionRuntimeBridge.recordBleEvent(
-            context = context,
-            type = "deviceDisconnected",
-            reason = reason,
-        )
-        scheduleReconnect(reason)
+        failCurrentNativeSession(gatt, reason)
     }
 
     private fun clearPendingCommandWrites() {
@@ -2048,6 +2138,9 @@ internal class ProtectionBleRuntimeOwner(
                 status: Int,
                 newState: Int,
             ) {
+                if (!isCurrentGattSession(gatt, "onConnectionStateChange")) {
+                    return
+                }
                 if (status != BluetoothGatt.GATT_SUCCESS &&
                     newState != BluetoothGatt.STATE_CONNECTED
                 ) {
@@ -2078,7 +2171,7 @@ internal class ProtectionBleRuntimeOwner(
 
                     BluetoothGatt.STATE_DISCONNECTED -> {
                         connectionInFlight = false
-                        runtimeStore.markServiceBleDisconnected()
+                        closeCurrentGattSession("gatt_disconnected_$status")
                         clearCharacteristicRefs()
                         publishNativeCommandReadiness(
                             reason = "gatt_disconnected_$status",
@@ -2097,17 +2190,15 @@ internal class ProtectionBleRuntimeOwner(
             }
 
             override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+                if (!isCurrentGattSession(gatt, "onServicesDiscovered")) {
+                    return
+                }
+                serviceDiscoveryTimeoutRunnable?.let(mainHandler::removeCallbacks)
+                serviceDiscoveryTimeoutRunnable = null
                 if (status == BluetoothGatt.GATT_SUCCESS) {
                     configureSubscriptions(gatt)
                 } else {
-                    connectionInFlight = false
-                    runtimeStore.markRuntimeFailure("Protection Mode service discovery failed with status $status.")
-                    ProtectionRuntimeBridge.recordPlatformEvent(
-                        context = context,
-                        type = "runtimeError",
-                        reason = "services_discovered_status_$status",
-                    )
-                    scheduleReconnect("services_discovered_status_$status")
+                    failCurrentNativeSession(gatt, "services_discovered_status_$status")
                 }
             }
 
@@ -2116,13 +2207,11 @@ internal class ProtectionBleRuntimeOwner(
                 descriptor: BluetoothGattDescriptor,
                 status: Int,
             ) {
+                if (!isCurrentGattSession(gatt, "onDescriptorWrite")) {
+                    return
+                }
                 if (status != BluetoothGatt.GATT_SUCCESS) {
-                    ProtectionRuntimeBridge.recordBleEvent(
-                        context = context,
-                        type = "reconnectFailed",
-                        reason = "descriptor_write_status_$status",
-                    )
-                    scheduleReconnect("descriptor_write_status_$status")
+                    failCurrentNativeSession(gatt, "descriptor_write_status_$status")
                     return
                 }
 
@@ -2161,6 +2250,9 @@ internal class ProtectionBleRuntimeOwner(
                 characteristic: BluetoothGattCharacteristic,
                 status: Int,
             ) {
+                if (!isCurrentGattSession(gatt, "onCharacteristicWrite")) {
+                    return
+                }
                 val pending =
                     synchronized(commandLock) {
                         pendingCommandResult
@@ -2257,6 +2349,9 @@ internal class ProtectionBleRuntimeOwner(
                 characteristic: BluetoothGattCharacteristic,
                 value: ByteArray,
             ) {
+                if (!isCurrentGattSession(gatt, "onCharacteristicChanged")) {
+                    return
+                }
                 handleIncomingPacket(gatt, characteristic, value)
             }
 
@@ -2265,6 +2360,9 @@ internal class ProtectionBleRuntimeOwner(
                 gatt: BluetoothGatt,
                 characteristic: BluetoothGattCharacteristic,
             ) {
+                if (!isCurrentGattSession(gatt, "onCharacteristicChangedLegacy")) {
+                    return
+                }
                 handleIncomingPacket(gatt, characteristic, characteristic.value ?: ByteArray(0))
             }
         }
@@ -2280,6 +2378,7 @@ internal class ProtectionBleRuntimeOwner(
         private const val defaultReconnectBackoffMs = 5000L
         private const val inetMaxPayloadLength = 4
         private const val commandWriteTimeoutMs = 10_000L
+        private const val serviceDiscoveryTimeoutMs = 10_000L
         private const val nativeWriteSubmitRejected = -1
         private const val sosActivationDelayMs = 20_000L
         private const val observedPreSosSkewMs = 2000L

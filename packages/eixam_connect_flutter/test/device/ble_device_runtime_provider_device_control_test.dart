@@ -467,6 +467,43 @@ void main() {
       expect(restored?.provisioningError, isNull);
     });
 
+    test('native ownership guard prevents Flutter GATT creation', () async {
+      await expectLater(
+        runtimeProvider.reconnect(
+          currentStatus: buildDeviceStatus(
+            deviceId: MockBleClient.demoDeviceId,
+            paired: true,
+            activated: true,
+            connected: false,
+            lifecycleState: DeviceLifecycleState.paired,
+          ),
+          preferredDevice: PreferredDevice(
+            deviceId: MockBleClient.demoDeviceId,
+            displayName: 'EIXAM R1 Demo',
+            lastConnectedAt: DateTime.utc(2026, 9, 21),
+          ),
+          canCreateGatt: () => false,
+        ),
+        throwsA(
+          isA<DeviceException>().having(
+            (error) => error.code,
+            'code',
+            'E_FLUTTER_BLE_OWNERSHIP_SUPPRESSED',
+          ),
+        ),
+      );
+
+      expect(await bleClient.isConnected(MockBleClient.demoDeviceId), isFalse);
+      expect(
+        BleDebugRegistry.instance.currentState.events.any(
+          (event) => event.message.contains(
+            'SOS_FLUTTER_RECONNECT_SUPPRESSED reason=native_owner',
+          ),
+        ),
+        isTrue,
+      );
+    });
+
     test('reconnect rejects known device when phone Bluetooth bond is missing',
         () async {
       bleClient.systemAssociationAvailable = false;

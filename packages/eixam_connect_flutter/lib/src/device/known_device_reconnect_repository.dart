@@ -6,5 +6,6 @@ abstract class KnownDeviceReconnectRepository {
   Future<DeviceStatus> reconnectDevice({
     required PreferredDevice device,
     String? attemptId,
+    bool Function()? canCreateGatt,
   });
 }

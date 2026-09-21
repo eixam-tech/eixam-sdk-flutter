@@ -433,6 +433,7 @@ class FakeDeviceRepository
   Future<DeviceStatus> reconnectDevice({
     required PreferredDevice device,
     String? attemptId,
+    bool Function()? canCreateGatt,
   }) async {
     reconnectCallCount++;
     _status = _status.copyWith(

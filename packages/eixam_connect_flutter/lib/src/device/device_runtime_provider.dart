@@ -17,6 +17,7 @@ abstract class DeviceRuntimeProvider {
     required DeviceStatus currentStatus,
     required PreferredDevice preferredDevice,
     String? attemptId,
+    bool Function()? canCreateGatt,
   });
   Future<DeviceStatus> activate(
       {required DeviceStatus currentStatus, required String activationCode});
