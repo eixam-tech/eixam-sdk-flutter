@@ -38,6 +38,7 @@ internal class ProtectionBleRuntimeOwner(
     private var cmdWriteCharacteristic: BluetoothGattCharacteristic? = null
     private var eixamServiceReady = false
     private var commandQueueHealthy = true
+    private var lastPublishedCommandReadiness: ProtectionNativeCommandReadiness? = null
     private var subscriptionStep = SubscriptionStep.idle
     private var pendingSosLifecycleState = ProtectionSosLifecycleState.idle
     private var sosActivationRunnable: Runnable? = null
@@ -601,13 +602,20 @@ internal class ProtectionBleRuntimeOwner(
             identityReady = exactConnectedDeviceIdentityReady(gatt),
             queueHealthy = commandQueueHealthy,
         )
+        logNativeCommandPredicateTransitions(
+            previous = lastPublishedCommandReadiness,
+            next = readiness,
+            reason = reason,
+        )
+        lastPublishedCommandReadiness = readiness
         val previous = runtimeStore.recordNativeCommandReadiness(readiness)
         Log.i(
             logTag,
             "SOS_NATIVE_COMMAND_READINESS_INPUT " +
-                "owner=${readiness.owner} gattConnected=${readiness.gattConnected} " +
-                "serviceReady=${readiness.serviceReady} cmdEa04Ready=${readiness.cmdEa04Ready} " +
-                "identityReady=${readiness.identityReady} queueHealthy=${readiness.queueHealthy} " +
+                "nativeOwner=${readiness.owner} nativeGattConnected=${readiness.gattConnected} " +
+                "serviceDiscovered=${readiness.serviceReady} ea04Present=${readiness.cmdEa04Ready} " +
+                "exactIdentityMatch=${readiness.identityReady} queueHealthy=${readiness.queueHealthy} " +
+                "nativeCommandReady=${readiness.ready} " +
                 "falsePredicate=${readiness.falsePredicate ?: "none"} reason=$reason",
         )
         if (force || previous != readiness.ready) {
@@ -622,6 +630,32 @@ internal class ProtectionBleRuntimeOwner(
                 readiness = readiness,
                 reason = reason,
             )
+        }
+    }
+
+    private fun logNativeCommandPredicateTransitions(
+        previous: ProtectionNativeCommandReadiness?,
+        next: ProtectionNativeCommandReadiness,
+        reason: String,
+    ) {
+        val predicates = listOf(
+            "nativeOwner" to (previous?.owner to next.owner),
+            "nativeGattConnected" to (previous?.gattConnected to next.gattConnected),
+            "serviceDiscovered" to (previous?.serviceReady to next.serviceReady),
+            "ea04Present" to (previous?.cmdEa04Ready to next.cmdEa04Ready),
+            "exactIdentityMatch" to (previous?.identityReady to next.identityReady),
+            "queueHealthy" to (previous?.queueHealthy to next.queueHealthy),
+            "nativeCommandReady" to (previous?.ready to next.ready),
+        )
+        predicates.forEach { (predicate, transition) ->
+            if (transition.first == null || transition.first != transition.second) {
+                Log.i(
+                    logTag,
+                    "SOS_NATIVE_COMMAND_PREDICATE_TRANSITION " +
+                        "predicate=$predicate previous=${transition.first ?: "unknown"} " +
+                        "next=${transition.second} reason=$reason",
+                )
+            }
         }
     }
 
@@ -1118,7 +1152,7 @@ internal class ProtectionBleRuntimeOwner(
         val connectedDeviceMarker = redactDeviceTarget(activeBleHardwareId ?: targetDeviceId)
         Log.i(
             logTag,
-            "EIXAM_NATIVE_NOTIFICATION_RX owner=native_protection " +
+            "EIXAM_NATIVE_NOTIFICATION_RX producer=native_bridge owner=native_protection " +
                 "characteristic=${characteristic.uuid} byteLength=${payload.size} " +
                 "packetType=$packetType " +
                 "firstOpcode=${payload.firstOrNull()?.let(::formatOpcode) ?: "none"} " +

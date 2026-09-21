@@ -282,6 +282,7 @@ class ProtectionPlatformEvent {
     this.payloadHex,
     this.source,
     this.classification,
+    this.nativeOwner,
     this.gattConnected,
     this.serviceReady,
     this.cmdEa04Ready,
@@ -304,6 +305,7 @@ class ProtectionPlatformEvent {
   final String? payloadHex;
   final String? source;
   final String? classification;
+  final bool? nativeOwner;
   final bool? gattConnected;
   final bool? serviceReady;
   final bool? cmdEa04Ready;

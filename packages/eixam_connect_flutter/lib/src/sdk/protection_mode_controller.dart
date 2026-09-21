@@ -137,6 +137,29 @@ class ProtectionModeController {
       );
     }
 
+    final preStartNativeOwner = _nativeBleOwner;
+    final handedBleToNativeBeforeStart =
+        preStartNativeOwner != ProtectionBleOwner.flutter;
+    if (handedBleToNativeBeforeStart) {
+      // A native runtime must never begin its GATT connection while Flutter
+      // still owns the same TAG. Publish the preparing owner first and await
+      // the host-side Flutter disconnect before starting the platform runtime.
+      _status = armingSnapshot.status.copyWith(
+        bleOwner: preStartNativeOwner,
+        deviceConnected: false,
+        serviceBleConnected: false,
+        serviceBleReady: false,
+        nativeCommandServiceReady: false,
+        nativeCommandEa04Ready: false,
+        nativeCommandIdentityReady: false,
+        nativeCommandQueueHealthy: true,
+        nativeCommandReady: false,
+        updatedAt: DateTime.now().toUtc(),
+      );
+      _emitStatus();
+      await onBleOwnershipChanged?.call(preStartNativeOwner);
+    }
+
     final startDeviceStatus = await _deviceStatusProvider();
     final startRequest = ProtectionPlatformStartRequest(
       modeOptions: options,
@@ -177,6 +200,9 @@ class ProtectionModeController {
       );
       _emitDiagnostics();
       _emitStatus();
+      if (handedBleToNativeBeforeStart) {
+        await onBleOwnershipChanged?.call(ProtectionBleOwner.flutter);
+      }
       return EnterProtectionModeResult(
         success: false,
         status: _status,
@@ -227,7 +253,10 @@ class ProtectionModeController {
     );
     _status = finalSnapshot.status;
     _diagnostics = finalSnapshot.diagnostics;
-    await onBleOwnershipChanged?.call(_status.bleOwner);
+    if (!handedBleToNativeBeforeStart ||
+        _status.bleOwner != preStartNativeOwner) {
+      await onBleOwnershipChanged?.call(_status.bleOwner);
+    }
     _emitStatus();
     _emitDiagnostics();
     return EnterProtectionModeResult(
@@ -847,7 +876,9 @@ class ProtectionModeController {
         break;
       case ProtectionPlatformEventType.nativeCommandReadinessChanged:
         _status = _status.copyWith(
-          bleOwner: nativeOwner,
+          bleOwner: event.nativeOwner == false
+              ? ProtectionBleOwner.flutter
+              : nativeOwner,
           deviceConnected: event.gattConnected == true,
           serviceBleConnected: event.gattConnected == true,
           nativeCommandServiceReady: event.serviceReady ?? false,

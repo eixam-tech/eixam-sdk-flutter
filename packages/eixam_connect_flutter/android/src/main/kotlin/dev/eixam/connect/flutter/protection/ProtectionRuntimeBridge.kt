@@ -354,6 +354,7 @@ internal object ProtectionRuntimeBridge {
                 "timestamp" to System.currentTimeMillis(),
                 "reason" to reason,
                 "previous" to previous,
+                "nativeOwner" to readiness.owner,
                 "gattConnected" to readiness.gattConnected,
                 "serviceReady" to readiness.serviceReady,
                 "cmdEa04Ready" to readiness.cmdEa04Ready,

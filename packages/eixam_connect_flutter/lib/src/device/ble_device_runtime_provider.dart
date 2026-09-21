@@ -794,9 +794,21 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   ) async {
     final receiveSequence = ++_notificationReceiveSequence;
     final payload = notification.payload;
+    if (_ownershipSuspended) {
+      BleDebugRegistry.instance.recordEvent(
+        'EIXAM_BLE_NOTIFICATION_RX_DROPPED '
+        'producer=flutter_gatt owner=native '
+        'reason=flutter_ownership_suspended '
+        'characteristic=${_characteristicLabelForChannel(notification.channel)} '
+        'byteLength=${payload.length} receiveSequence=$receiveSequence '
+        'target=${_redactedBleIdentifier(deviceId)}',
+      );
+      return;
+    }
     BleDebugRegistry.instance.recordEvent(
       'EIXAM_BLE_NOTIFICATION_RX '
-      'owner=flutter characteristic=${_characteristicLabelForChannel(notification.channel)} '
+      'producer=flutter_gatt owner=flutter '
+      'characteristic=${_characteristicLabelForChannel(notification.channel)} '
       'byteLength=${payload.length} '
       'packetType=${_rawNotificationPacketType(payload)} '
       'firstOpcode=${payload.isEmpty ? "none" : _hexByte(payload.first)} '

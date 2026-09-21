@@ -2317,7 +2317,8 @@ void main() {
           await pumpEventQueue(times: 3);
           expect(
             _hasDebugMessage(
-              'EIXAM_BLE_NOTIFICATION_RX owner=native_protection '
+              'EIXAM_BLE_NOTIFICATION_RX producer=native_bridge '
+              'owner=native_protection '
               'correlation=native-41',
             ),
             isTrue,

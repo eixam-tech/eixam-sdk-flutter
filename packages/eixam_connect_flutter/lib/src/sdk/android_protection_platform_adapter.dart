@@ -13,10 +13,12 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     MethodChannel? methodChannel,
     EventChannel? eventChannel,
     Stream<dynamic> Function()? eventStreamFactory,
+    Future<ProtectionPlatformSnapshot> Function()? platformSnapshotLoader,
   })  : _methodChannel =
             methodChannel ?? const MethodChannel(_methodChannelName),
         _eventChannel = eventChannel ?? const EventChannel(_eventChannelName),
-        _eventStreamFactory = eventStreamFactory;
+        _eventStreamFactory = eventStreamFactory,
+        _platformSnapshotLoader = platformSnapshotLoader;
 
   static const String _methodChannelName =
       'dev.eixam.connect_flutter/protection_runtime/methods';
@@ -26,6 +28,7 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   final MethodChannel _methodChannel;
   final EventChannel _eventChannel;
   final Stream<dynamic> Function()? _eventStreamFactory;
+  final Future<ProtectionPlatformSnapshot> Function()? _platformSnapshotLoader;
 
   Stream<ProtectionPlatformEvent>? _events;
 
@@ -34,6 +37,10 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
 
   @override
   Future<ProtectionPlatformSnapshot> getPlatformSnapshot() async {
+    final loader = _platformSnapshotLoader;
+    if (loader != null) {
+      return loader();
+    }
     final raw = await _methodChannel.invokeMapMethod<String, dynamic>(
       'getPlatformSnapshot',
     );
@@ -360,13 +367,47 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
 
   @override
   Stream<ProtectionPlatformEvent> watchPlatformEvents() {
-    return _events ??=
-        (_eventStreamFactory?.call() ?? _eventChannel.receiveBroadcastStream())
-            .map((dynamic event) {
-      final data = Map<Object?, Object?>.from(
-        event as Map<Object?, Object?>,
-      );
-      return mapAndroidProtectionPlatformEvent(data);
-    }).asBroadcastStream();
+    return _events ??= _watchPlatformEventsWithCurrentReadiness()
+        .asBroadcastStream();
+  }
+
+  Stream<ProtectionPlatformEvent>
+  _watchPlatformEventsWithCurrentReadiness() async* {
+    // Native Protection can discover EA04 before Dart attaches the EventChannel.
+    // Hydrate from the persisted native snapshot first so readiness never waits
+    // for a later periodic status refresh. The native bounded event buffer then
+    // supplies anything emitted between this read and live stream attachment.
+    try {
+      final snapshot = await getPlatformSnapshot();
+      final nativeOwner =
+          snapshot.bleOwner == ProtectionBleOwner.androidService;
+      if (nativeOwner && (snapshot.runtimeActive || snapshot.serviceRunning)) {
+        yield ProtectionPlatformEvent(
+          type: ProtectionPlatformEventType.nativeCommandReadinessChanged,
+          timestamp: DateTime.now().toUtc(),
+          reason: 'event_listener_current_state',
+          nativeOwner: true,
+          gattConnected: snapshot.serviceBleConnected,
+          serviceReady: snapshot.nativeCommandServiceReady,
+          cmdEa04Ready: snapshot.nativeCommandEa04Ready,
+          identityReady: snapshot.nativeCommandIdentityReady,
+          queueHealthy: snapshot.nativeCommandQueueHealthy,
+          nativeCommandReady: snapshot.nativeCommandReady,
+          previousNativeCommandReady: snapshot.nativeCommandReady,
+        );
+      }
+    } catch (_) {
+      // The live EventChannel remains authoritative when a snapshot cannot be
+      // read (for example while an engine is still attaching).
+    }
+
+    yield* (_eventStreamFactory?.call() ??
+            _eventChannel.receiveBroadcastStream())
+        .map((dynamic event) {
+          final data = Map<Object?, Object?>.from(
+            event as Map<Object?, Object?>,
+          );
+          return mapAndroidProtectionPlatformEvent(data);
+        });
   }
 }

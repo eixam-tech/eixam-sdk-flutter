@@ -18,11 +18,11 @@ internal data class ProtectionNativeCommandReadiness(
 
     val falsePredicate: String?
         get() = when {
-            !owner -> "owner"
-            !gattConnected -> "gattConnected"
-            !serviceReady -> "serviceReady"
-            !cmdEa04Ready -> "cmdEa04Ready"
-            !identityReady -> "identityReady"
+            !owner -> "nativeOwner"
+            !gattConnected -> "nativeGattConnected"
+            !serviceReady -> "serviceDiscovered"
+            !cmdEa04Ready -> "ea04Present"
+            !identityReady -> "exactIdentityMatch"
             !queueHealthy -> "queueHealthy"
             else -> null
         }

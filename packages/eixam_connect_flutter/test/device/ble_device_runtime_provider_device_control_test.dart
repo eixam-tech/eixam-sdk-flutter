@@ -458,6 +458,7 @@ void main() {
       final released = await runtimeProvider.suspendOwnership(
         reason: 'native protection mode',
       );
+      expect(await bleClient.isConnected(MockBleClient.demoDeviceId), isFalse);
       final restored = await runtimeProvider.resumeOwnership(
         reason: 'app foreground',
       );

@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:eixam_connect_flutter/src/sdk/android_protection_platform_adapter.dart';
 import 'package:eixam_connect_flutter/src/sdk/protection_platform_channel_mapper.dart';
 import 'package:eixam_connect_flutter/src/sdk/protection_platform_adapter.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -170,6 +173,7 @@ void main() {
         'timestamp': DateTime.utc(2026, 9, 21).millisecondsSinceEpoch,
         'reason': 'eixam_service_and_ea04_discovered',
         'previous': false,
+        'nativeOwner': true,
         'gattConnected': true,
         'serviceReady': true,
         'cmdEa04Ready': true,
@@ -183,6 +187,7 @@ void main() {
         ProtectionPlatformEventType.nativeCommandReadinessChanged,
       );
       expect(event.previousNativeCommandReady, isFalse);
+      expect(event.nativeOwner, isTrue);
       expect(event.gattConnected, isTrue);
       expect(event.serviceReady, isTrue);
       expect(event.cmdEa04Ready, isTrue);
@@ -190,6 +195,52 @@ void main() {
       expect(event.queueHealthy, isTrue);
       expect(event.nativeCommandReady, isTrue);
     });
+
+    test(
+      'hydrates command readiness when native became ready before listener attach',
+      () async {
+        final nativeEvents = StreamController<dynamic>.broadcast();
+        addTearDown(nativeEvents.close);
+        final adapter = AndroidProtectionPlatformAdapter(
+          eventStreamFactory: () => nativeEvents.stream,
+          platformSnapshotLoader: () async => const ProtectionPlatformSnapshot(
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            platform: ProtectionPlatform.android,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: true,
+            nativeCommandServiceReady: true,
+            nativeCommandEa04Ready: true,
+            nativeCommandIdentityReady: true,
+            nativeCommandQueueHealthy: true,
+            nativeCommandReady: true,
+          ),
+        );
+
+        // This models the physical race: native EA04 discovery completes while
+        // no Dart EventChannel listener exists, so this broadcast is lost.
+        nativeEvents.add(<String, Object?>{
+          'type': 'nativeCommandReadinessChanged',
+          'nativeCommandReady': true,
+        });
+
+        final replayed = await adapter.watchPlatformEvents().first;
+
+        expect(
+          replayed.type,
+          ProtectionPlatformEventType.nativeCommandReadinessChanged,
+        );
+        expect(replayed.reason, 'event_listener_current_state');
+        expect(replayed.nativeOwner, isTrue);
+        expect(replayed.gattConnected, isTrue);
+        expect(replayed.serviceReady, isTrue);
+        expect(replayed.cmdEa04Ready, isTrue);
+        expect(replayed.identityReady, isTrue);
+        expect(replayed.queueHealthy, isTrue);
+        expect(replayed.nativeCommandReady, isTrue);
+      },
+    );
 
     test('maps raw native notification correlation before SOS parsing', () {
       final event = mapAndroidProtectionPlatformEvent(<Object?, Object?>{

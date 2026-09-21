@@ -37,9 +37,9 @@ class ProtectionNativeCommandReadinessTest {
         )
 
         assertFalse(mismatch.ready)
-        assertEquals("identityReady", mismatch.falsePredicate)
+        assertEquals("exactIdentityMatch", mismatch.falsePredicate)
         assertFalse(missingEa04.ready)
-        assertEquals("cmdEa04Ready", missingEa04.falsePredicate)
+        assertEquals("ea04Present", missingEa04.falsePredicate)
     }
 
     @Test
