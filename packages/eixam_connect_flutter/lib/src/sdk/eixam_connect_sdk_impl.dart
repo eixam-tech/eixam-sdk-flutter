@@ -15595,6 +15595,23 @@ class EixamConnectSdkImpl
 
     if (chosenPublicState != null && _isOpenSosState(chosenPublicState)) {
       final latestRepositoryIncident = await sosRepository.getCurrentIncident();
+      final latestIsCorrelatedAcknowledgement =
+          latestRepositoryIncident?.state == SosState.acknowledged &&
+          latestRepositoryIncident!.isBackendConfirmed &&
+          sosIncidentEvidenceMatchesLifecycle(
+            _sosLifecycle.current,
+            latestRepositoryIncident,
+          );
+      if (latestIsCorrelatedAcknowledgement &&
+          chosenPublicState != SosState.acknowledged) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_BACKEND_ACK_PUBLIC_PROJECTION '
+          'action=preserve_acknowledged '
+          'deviceState=${status.state.name} '
+          'incomingPublicState=${chosenPublicState.name}',
+        );
+        chosenPublicState = SosState.acknowledged;
+      }
       final latestIsCorrelatedTerminal =
           latestRepositoryIncident != null &&
           (latestRepositoryIncident.state == SosState.cancelled ||

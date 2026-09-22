@@ -3205,10 +3205,26 @@ void main() {
               (await harness.sdk.getSosLifecycle()).stage,
               SosLifecycleStage.active,
             );
+            expect(await harness.sdk.getSosState(), SosState.acknowledged);
+            expect(
+              (await harness.sdk.getSosLifecycle()).incident?.state,
+              SosState.acknowledged,
+            );
             expect(
               adapter.commands.where((command) => command.bytes[0] == 0x07),
               hasLength(cycle - 1),
               reason: 'backend ACK must not terminalize the local TAG',
+            );
+            expect(
+              observedMessages
+                  .where(
+                    (message) =>
+                        message.contains('SOS_PUBLIC_LIFECYCLE_STATE') &&
+                        message.contains('incidentState=acknowledged') &&
+                        message.contains('deviceMirrorState=synchronized'),
+                  )
+                  .length,
+              cycle,
             );
 
             harness.sosRepository.currentIncident = harness
@@ -5971,6 +5987,8 @@ void main() {
         appTriggeredSosBridgeWindow: const Duration(milliseconds: 100),
       );
       final commands = <EixamDeviceCommand>[];
+      final publicStates = <SosState>[];
+      StreamSubscription<SosState>? publicStateSubscription;
       final resolveDiagnostics = <String>[];
       StreamSubscription<BleDebugState>? resolveDiagnosticSubscription;
       try {
@@ -5998,6 +6016,9 @@ void main() {
           const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
         );
         await harness.setSession();
+        publicStateSubscription = harness.sdk.currentSosStateStream.listen(
+          publicStates.add,
+        );
         await harness.sdk.triggerSosAuthoritatively(
           const SosTriggerPayload(triggerSource: 'commercial_app'),
         );
@@ -6049,7 +6070,25 @@ void main() {
           (await harness.sdk.getSosLifecycle()).stage,
           SosLifecycleStage.active,
         );
+        expect(
+          (await harness.sdk.getSosLifecycle()).incident?.state,
+          SosState.acknowledged,
+        );
+        expect(await harness.sdk.getSosState(), SosState.acknowledged);
+        expect(publicStates, contains(SosState.acknowledged));
+        expect(
+          _hasDebugMessage(
+            'SOS_PUBLIC_LIFECYCLE_STATE incidentState=acknowledged '
+            'deviceMirrorState=synchronized generation=1',
+          ),
+          isTrue,
+        );
+        expect(
+          harness.deviceSosController.currentStatus.state,
+          anyOf(DeviceSosState.active, DeviceSosState.acknowledged),
+        );
         expect(commands.where((command) => command.opcode == 0x07), isEmpty);
+        expect(commands.where((command) => command.opcode == 0x04), isEmpty);
         expect(
           _hasDebugMessage(
             'SOS_BACKEND_ACK_DEVICE_MIRROR '
@@ -6057,6 +6096,32 @@ void main() {
           ),
           isTrue,
         );
+
+        realtime.emitEvent(
+          backendEvent(<String, dynamic>{
+            'type': 'processed',
+            'appId': '550e8400-e29b-41d4-a716-446655440001',
+            'userId': 'external-123',
+            'incidentId': canonicalIncidentId,
+            'status': 'active',
+            'occurredAt': publishedAt.toIso8601String(),
+            'openedAt': publishedAt.toIso8601String(),
+            'updatedAt': publishedAt
+                .add(const Duration(milliseconds: 1500))
+                .toIso8601String(),
+          }),
+        );
+        await pumpEventQueue(times: 8);
+
+        expect(await repository.getSosState(), SosState.acknowledged);
+        expect(await harness.sdk.getSosState(), SosState.acknowledged);
+        expect(
+          (await harness.sdk.getSosLifecycle()).incident?.state,
+          SosState.acknowledged,
+        );
+        expect(publicStates.last, SosState.acknowledged);
+        expect(commands.where((command) => command.opcode == 0x07), isEmpty);
+        expect(commands.where((command) => command.opcode == 0x04), isEmpty);
 
         await BleDebugRegistry.instance.resetForLifecycle();
         resolveDiagnosticSubscription = BleDebugRegistry.instance
@@ -6331,6 +6396,7 @@ void main() {
           hasLength(1),
         );
       } finally {
+        await publicStateSubscription?.cancel();
         await resolveDiagnosticSubscription?.cancel();
         await harness.dispose(disposeSosRepository: false);
         await repository.dispose();
