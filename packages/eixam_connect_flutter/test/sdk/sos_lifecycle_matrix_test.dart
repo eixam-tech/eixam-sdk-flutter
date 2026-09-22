@@ -5607,6 +5607,227 @@ void main() {
       },
     );
 
+    test('physical START then literal backend ACK and RESOLVE payloads mirror '
+        'one forced-EA04 0x07 and wait for E3', () async {
+      final realtime = _OnDemandOperationalRealtimeClient();
+      final repository = MqttOperationalSosRepository(realtimeClient: realtime);
+      final harness = _SdkSosHarness(
+        sdkSosRepository: repository,
+        realtimeClient: realtime,
+        connectedBle: true,
+        connectedDeviceId: 'ble-1',
+        connectedCanonicalHardwareId: 'CF:82:00:00:00:01',
+        sosLifecycleSecureStore: InMemorySecureKeyValueStore(),
+        appTriggeredSosBridgeWindow: const Duration(milliseconds: 100),
+      );
+      final commands = <EixamDeviceCommand>[];
+      final resolveDiagnostics = <String>[];
+      StreamSubscription<BleDebugState>? resolveDiagnosticSubscription;
+      try {
+        await harness.deviceSosController.attach(
+          commandWriter: (command) async {
+            commands.add(command);
+            if (command.opcode == 0x06) {
+              scheduleMicrotask(() {
+                harness.deviceSosController.handleIncomingSosPacket(
+                  _deviceOriginCountdownPacket(),
+                  source: DeviceSosTransitionSource.device,
+                );
+              });
+            } else if (command.opcode == 0x05) {
+              scheduleMicrotask(() {
+                harness.deviceSosController.handleIncomingSosPacket(
+                  _deviceOriginActivePacket(),
+                  source: DeviceSosTransitionSource.device,
+                );
+              });
+            }
+          },
+        );
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await harness.setSession();
+        await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        await harness.deviceSosController.triggerSos();
+        await pumpEventQueue(times: 3);
+        await harness.deviceSosController.confirmSos();
+        await pumpEventQueue(times: 6);
+
+        final publishedAt = realtime.publishedSos.single.timestamp.toUtc();
+        const canonicalIncidentId = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
+
+        RealtimeEvent backendEvent(Map<String, dynamic> payload) {
+          final parsed = SdkMqttContract.parseRealtimeEvent(
+            topic: 'sos/events/external-123',
+            payload: jsonEncode(payload),
+          );
+          return RealtimeEvent(
+            type: parsed.type,
+            timestamp: parsed.timestamp,
+            payload: <String, dynamic>{
+              ...?parsed.payload,
+              '_mqttAuthenticatedUserScoped': true,
+              '_mqttTopicCategory': 'legacy_alias',
+            },
+          );
+        }
+
+        realtime.emitEvent(
+          backendEvent(<String, dynamic>{
+            'type': 'acknowledged',
+            'appId': '550e8400-e29b-41d4-a716-446655440001',
+            'userId': 'external-123',
+            'incidentId': canonicalIncidentId,
+            'status': 'acknowledged',
+            'occurredAt': publishedAt.toIso8601String(),
+            'openedAt': publishedAt.toIso8601String(),
+            'updatedAt': publishedAt
+                .add(const Duration(seconds: 1))
+                .toIso8601String(),
+            'acknowledgedAt': publishedAt
+                .add(const Duration(seconds: 1))
+                .toIso8601String(),
+          }),
+        );
+        await pumpEventQueue(times: 8);
+
+        expect(await repository.getSosState(), SosState.acknowledged);
+        expect(
+          (await harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.active,
+        );
+        expect(commands.where((command) => command.opcode == 0x07), isEmpty);
+        expect(
+          _hasDebugMessage(
+            'SOS_BACKEND_ACK_DEVICE_MIRROR '
+            'action=preserve_physical_sos command=none',
+          ),
+          isTrue,
+        );
+
+        await BleDebugRegistry.instance.resetForLifecycle();
+        resolveDiagnosticSubscription = BleDebugRegistry.instance
+            .watch()
+            .listen((state) {
+              if (state.events.isNotEmpty) {
+                resolveDiagnostics.add(state.events.last.message);
+              }
+            });
+        realtime.emitEvent(
+          backendEvent(<String, dynamic>{
+            'type': 'resolved',
+            'appId': '550e8400-e29b-41d4-a716-446655440001',
+            'userId': 'external-123',
+            'incidentId': canonicalIncidentId,
+            'status': 'resolved',
+            'occurredAt': publishedAt.toIso8601String(),
+            'openedAt': publishedAt.toIso8601String(),
+            'updatedAt': publishedAt
+                .add(const Duration(seconds: 2))
+                .toIso8601String(),
+            'acknowledgedAt': publishedAt
+                .add(const Duration(seconds: 1))
+                .toIso8601String(),
+            'resolvedAt': publishedAt
+                .add(const Duration(seconds: 2))
+                .toIso8601String(),
+          }),
+        );
+        await pumpEventQueue(times: 12);
+
+        expect(
+          (await harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.resolved,
+        );
+        expect(
+          resolveDiagnostics.any(
+            (message) =>
+                message.contains('SOS_BACKEND_EVENT_RX') &&
+                message.contains('rawStatus=resolved') &&
+                message.contains('normalizedStatus=resolved') &&
+                message.contains('source=mqtt:legacy_alias') &&
+                message.contains('payloadPresent=true'),
+          ),
+          isTrue,
+        );
+        expect(
+          resolveDiagnostics.any(
+            (message) =>
+                message.contains('SOS_BACKEND_EVENT_CORRELATION') &&
+                message.contains('generation=1') &&
+                message.contains('correlated=true') &&
+                message.contains('reason=active_incident_match'),
+          ),
+          isTrue,
+        );
+        expect(
+          resolveDiagnostics.any(
+            (message) =>
+                message.contains('SOS_BACKEND_EVENT_LIFECYCLE_DECISION') &&
+                message.contains('requestedLifecycle=resolved') &&
+                message.contains('admitted=true'),
+          ),
+          isTrue,
+        );
+        expect(
+          resolveDiagnostics.any(
+            (message) =>
+                message.contains('SOS_BACKEND_RESOLVE_HANDLER_ENTERED'),
+          ),
+          isTrue,
+        );
+        final resolveCommands = commands
+            .where((command) => command.opcode == 0x07)
+            .toList();
+        expect(resolveCommands, hasLength(1));
+        expect(resolveCommands.single.forceCmdCharacteristic, isTrue);
+        expect(
+          harness.deviceSosController.currentStatus.state,
+          anyOf(DeviceSosState.active, DeviceSosState.acknowledged),
+          reason: 'EA04 write completion must still wait for matching E3',
+        );
+        harness.deviceSosController.handleIncomingSosEventPacket(
+          _deviceBackendResolvedPacket(),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: _physicalResolutionContext(
+            receiveSequence: 1,
+            terminal: true,
+            receiveSequenceDomain: 'literal-backend-resolve-payload',
+          ),
+        );
+        await pumpEventQueue(times: 8);
+
+        expect(
+          harness.deviceSosController.currentStatus.state,
+          DeviceSosState.resolved,
+        );
+        expect(
+          commands.where((command) => command.opcode == 0x07),
+          hasLength(1),
+        );
+        expect(
+          resolveDiagnostics.any(
+            (message) =>
+                message.contains(
+                  'SOS_BACKEND_RESOLVE_DEVICE_RESULT command=SOS_ACK_0x07',
+                ) &&
+                message.contains('writeSubmitted=true') &&
+                message.contains('writeSuccess=true') &&
+                message.contains('physicalTerminalObserved=true') &&
+                message.contains('terminalPacketType=E3'),
+          ),
+          isTrue,
+        );
+      } finally {
+        await resolveDiagnosticSubscription?.cancel();
+        await harness.dispose(disposeSosRepository: false);
+        await repository.dispose();
+      }
+    });
+
     for (final testCase
         in <
           ({
@@ -6263,136 +6484,165 @@ void main() {
       },
     );
 
-    test('backend terminal absence closes app lifecycle and dispatches the '
-        'shared device convergence hook', () async {
-      final repository = FakeRejectedTerminalRehydratingSosRepository()
-        ..rehydrationResult = const SosRuntimeRehydrationResult(
-          outcome: SosRuntimeRehydrationOutcome.clearedToIdle,
-          resultingState: SosState.idle,
+    test(
+      'generic authenticated backend absence after confirmed ACK closes the '
+      'same lifecycle and dispatches the shared device convergence hook',
+      () async {
+        final repository = FakeRehydratingSosRepository()
+          ..rehydrationResult = const SosRuntimeRehydrationResult(
+            outcome: SosRuntimeRehydrationOutcome.clearedToIdle,
+            resultingState: SosState.idle,
+          );
+        final harness = _SdkSosHarness(
+          sosRepository: repository,
+          connectedBle: true,
+          connectedDeviceId: 'cf:82:00:00:00:01',
+          connectedCanonicalHardwareId: null,
+          appTriggeredSosBridgeWindow: const Duration(milliseconds: 50),
         );
-      final harness = _SdkSosHarness(
-        sosRepository: repository,
-        connectedBle: true,
-        connectedDeviceId: 'cf:82:00:00:00:01',
-        connectedCanonicalHardwareId: null,
-        appTriggeredSosBridgeWindow: const Duration(milliseconds: 50),
-      );
-      final commands = <int>[];
-      final terminalDiagnostics = <String>[];
-      StreamSubscription<BleDebugState>? terminalDiagnosticsSubscription;
-      try {
-        await harness.deviceSosController.attach(
-          commandWriter: (command) async {
-            commands.add(command.opcode);
-            if (command.opcode == 0x07) {
-              scheduleMicrotask(() {
-                harness.deviceSosController.handleIncomingSosEventPacket(
-                  _deviceBackendResolvedPacket(),
-                  source: DeviceSosTransitionSource.device,
-                  resolutionContext: _physicalResolutionContext(
-                    receiveSequence: 1,
-                    terminal: true,
-                    receiveSequenceDomain: 'backend-terminal-absence',
-                  ),
-                );
-              });
-            }
-          },
-        );
-        await harness.sdk.initialize(
-          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
-        );
-        await harness.setSession();
-        await harness.sdk.triggerSosAuthoritatively(
-          const SosTriggerPayload(triggerSource: 'commercial_app'),
-        );
-        await harness.deviceSosController.triggerSos();
-        harness.deviceSosController.handleIncomingSosPacket(
-          _deviceOriginCountdownPacket(),
-          source: DeviceSosTransitionSource.device,
-        );
-        await harness.deviceSosController.confirmSos();
-        harness.deviceSosController.handleIncomingSosPacket(
-          _deviceOriginActivePacket(),
-          source: DeviceSosTransitionSource.device,
-        );
-        await pumpEventQueue(times: 3);
-        expect(
-          harness.deviceSosController.currentStatus.state,
-          DeviceSosState.active,
-        );
-        expect(
-          (await harness.sdk.getSosLifecycle()).hardwareId,
-          'CF:82:00:00:00:01',
-        );
-        await Future<void>.delayed(const Duration(milliseconds: 75));
-        commands.clear();
-        await BleDebugRegistry.instance.resetForLifecycle();
-        terminalDiagnosticsSubscription = BleDebugRegistry.instance
-            .watch()
-            .listen((state) {
-              if (state.events.isNotEmpty) {
-                terminalDiagnostics.add(state.events.last.message);
+        final commands = <int>[];
+        final terminalDiagnostics = <String>[];
+        StreamSubscription<BleDebugState>? terminalDiagnosticsSubscription;
+        try {
+          await harness.deviceSosController.attach(
+            commandWriter: (command) async {
+              commands.add(command.opcode);
+              if (command.opcode == 0x07) {
+                scheduleMicrotask(() {
+                  harness.deviceSosController.handleIncomingSosEventPacket(
+                    _deviceBackendResolvedPacket(),
+                    source: DeviceSosTransitionSource.device,
+                    resolutionContext: _physicalResolutionContext(
+                      receiveSequence: 1,
+                      terminal: true,
+                      receiveSequenceDomain: 'backend-terminal-absence',
+                    ),
+                  );
+                });
               }
-            });
+            },
+          );
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await harness.sdk.triggerSosAuthoritatively(
+            const SosTriggerPayload(triggerSource: 'commercial_app'),
+          );
+          await harness.deviceSosController.triggerSos();
+          harness.deviceSosController.handleIncomingSosPacket(
+            _deviceOriginCountdownPacket(),
+            source: DeviceSosTransitionSource.device,
+          );
+          await harness.deviceSosController.confirmSos();
+          harness.deviceSosController.handleIncomingSosPacket(
+            _deviceOriginActivePacket(),
+            source: DeviceSosTransitionSource.device,
+          );
+          await pumpEventQueue(times: 3);
+          expect(
+            harness.deviceSosController.currentStatus.state,
+            DeviceSosState.active,
+          );
+          expect(
+            (await harness.sdk.getSosLifecycle()).hardwareId,
+            'CF:82:00:00:00:01',
+          );
+          repository.currentIncident = repository.currentIncident.copyWith(
+            state: SosState.acknowledged,
+            isBackendConfirmed: true,
+          );
+          repository.stateController.add(SosState.acknowledged);
+          await pumpEventQueue(times: 4);
+          expect(
+            (await harness.sdk.getSosLifecycle()).backendIncidentId,
+            repository.currentIncident.id,
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 75));
+          commands.clear();
+          await BleDebugRegistry.instance.resetForLifecycle();
+          terminalDiagnosticsSubscription = BleDebugRegistry.instance
+              .watch()
+              .listen((state) {
+                if (state.events.isNotEmpty) {
+                  terminalDiagnostics.add(state.events.last.message);
+                }
+              });
 
-        repository.emitRejectedTerminal(SosState.resolved);
-        await pumpEventQueue(times: 5);
+          harness.sdk.didChangeAppLifecycleState(AppLifecycleState.resumed);
+          await pumpEventQueue(times: 8);
 
-        expect(
-          (await harness.sdk.getSosLifecycle()).stage,
-          SosLifecycleStage.resolved,
-        );
-        expect(commands, contains(0x07));
-        expect(
-          terminalDiagnostics.any(
-            (message) =>
-                message.contains('SOS_REMOTE_TERMINAL_DEVICE_CLEAR_ELIGIBLE'),
-          ),
-          isTrue,
-        );
-        expect(
-          _hasDebugMessage('SOS_REMOTE_TERMINAL_DEVICE_CLEAR_DISPATCHED'),
-          isTrue,
-        );
-        expect(
-          _hasDebugMessage('SOS_REMOTE_TERMINAL_DEVICE_CLEAR_ACKNOWLEDGED'),
-          isTrue,
-        );
-        expect(
-          harness.deviceSosController.currentStatus.state,
-          DeviceSosState.resolved,
-        );
+          expect(
+            (await harness.sdk.getSosLifecycle()).stage,
+            SosLifecycleStage.resolved,
+          );
+          expect(commands, contains(0x07));
+          expect(
+            terminalDiagnostics.any(
+              (message) =>
+                  message.contains('SOS_BACKEND_EVENT_RX') &&
+                  message.contains('rawStatus=incident_null') &&
+                  message.contains('normalizedStatus=resolved'),
+            ),
+            isTrue,
+          );
+          expect(
+            terminalDiagnostics.any(
+              (message) =>
+                  message.contains('SOS_BACKEND_RESOLVE_HANDLER_ENTERED'),
+            ),
+            isTrue,
+          );
+          expect(
+            terminalDiagnostics.any(
+              (message) =>
+                  message.contains('SOS_REMOTE_TERMINAL_DEVICE_CLEAR_ELIGIBLE'),
+            ),
+            isTrue,
+          );
+          expect(
+            _hasDebugMessage('SOS_REMOTE_TERMINAL_DEVICE_CLEAR_DISPATCHED'),
+            isTrue,
+          );
+          expect(
+            _hasDebugMessage('SOS_REMOTE_TERMINAL_DEVICE_CLEAR_ACKNOWLEDGED'),
+            isTrue,
+          );
+          expect(
+            harness.deviceSosController.currentStatus.state,
+            DeviceSosState.resolved,
+          );
 
-        harness.deviceSosController.handleIncomingSosPacket(
-          _deviceOriginActivePacket(),
-          source: DeviceSosTransitionSource.device,
-        );
-        await pumpEventQueue(times: 4);
+          harness.deviceSosController.handleIncomingSosPacket(
+            _deviceOriginActivePacket(),
+            source: DeviceSosTransitionSource.device,
+          );
+          await pumpEventQueue(times: 4);
 
-        expect(
-          (await harness.sdk.getSosLifecycle()).stage,
-          SosLifecycleStage.resolved,
-        );
-        expect(await harness.sdk.getSosState(), SosState.idle);
-        expect(
-          BleDebugRegistry.instance.currentState.events.any(
-            (event) =>
-                event.message.contains(
-                  'DEVICE_SOS_ACTIVE_SUPPRESSED '
-                  'reason=authoritative_terminal_same_cycle',
-                ) ||
-                event.message.contains(
-                  'SOS_DEVICE_TERMINAL_PACKET_REPLAY_REJECTED',
-                ),
-          ),
-          isTrue,
-        );
-      } finally {
-        await terminalDiagnosticsSubscription?.cancel();
-        await harness.dispose();
-      }
-    });
+          expect(
+            (await harness.sdk.getSosLifecycle()).stage,
+            SosLifecycleStage.resolved,
+          );
+          expect(await harness.sdk.getSosState(), SosState.idle);
+          expect(
+            BleDebugRegistry.instance.currentState.events.any(
+              (event) =>
+                  event.message.contains(
+                    'DEVICE_SOS_ACTIVE_SUPPRESSED '
+                    'reason=authoritative_terminal_same_cycle',
+                  ) ||
+                  event.message.contains(
+                    'SOS_DEVICE_TERMINAL_PACKET_REPLAY_REJECTED',
+                  ),
+            ),
+            isTrue,
+          );
+        } finally {
+          await terminalDiagnosticsSubscription?.cancel();
+          await harness.dispose();
+        }
+      },
+    );
 
     test(
       'remote terminal skips physical clear for conflicting device ownership',

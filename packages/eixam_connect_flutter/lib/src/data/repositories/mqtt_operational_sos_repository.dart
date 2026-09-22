@@ -37,14 +37,14 @@ class MqttOperationalSosRepository
     Duration processedHandoffWindow = const Duration(minutes: 2),
     Duration processedClockSkewTolerance = const Duration(seconds: 30),
     DateTime Function()? nowProvider,
-  })  : remoteDataSource = remoteDataSource ?? cancelRemoteDataSource,
-        _localStore = localStore,
-        _destructiveRehydrationGracePeriod = destructiveRehydrationGracePeriod,
-        _mqttConfirmationWarningDelay = mqttConfirmationWarningDelay,
-        _actuatorBufferTtl = actuatorBufferTtl,
-        _processedHandoffWindow = processedHandoffWindow,
-        _processedClockSkewTolerance = processedClockSkewTolerance,
-        _nowProvider = nowProvider ?? DateTime.now {
+  }) : remoteDataSource = remoteDataSource ?? cancelRemoteDataSource,
+       _localStore = localStore,
+       _destructiveRehydrationGracePeriod = destructiveRehydrationGracePeriod,
+       _mqttConfirmationWarningDelay = mqttConfirmationWarningDelay,
+       _actuatorBufferTtl = actuatorBufferTtl,
+       _processedHandoffWindow = processedHandoffWindow,
+       _processedClockSkewTolerance = processedClockSkewTolerance,
+       _nowProvider = nowProvider ?? DateTime.now {
     _stateController.add(_stateMachine.current);
     _realtimeSub = realtimeClient.watchEvents().listen(_handleRealtimeEvent);
     BleDebugRegistry.instance.recordEvent(
@@ -68,13 +68,15 @@ class MqttOperationalSosRepository
     required String? cycleKey,
     required int? originatorNodeId,
     required int? packetId,
-  })? preSosBackendPublishBlocker;
+  })?
+  preSosBackendPublishBlocker;
+  int Function()? lifecycleGenerationProvider;
   final SosIncidentMapper _mapper = const SosIncidentMapper();
   SosStateMachine _stateMachine = SosStateMachine();
   final StreamController<SosState> _stateController =
       StreamController<SosState>.broadcast();
   final StreamController<SosRejectedTerminalReconciliationRequest>
-      _rejectedTerminalReconciliationController =
+  _rejectedTerminalReconciliationController =
       StreamController<SosRejectedTerminalReconciliationRequest>.broadcast();
 
   StreamSubscription<RealtimeEvent>? _realtimeSub;
@@ -95,20 +97,23 @@ class MqttOperationalSosRepository
   @visibleForTesting
   String? get debugLastTrustedCorrelationId =>
       _trustedLifecycleCorrelationIds.isEmpty
-          ? null
-          : _trustedLifecycleCorrelationIds.keys.last;
+      ? null
+      : _trustedLifecycleCorrelationIds.keys.last;
 
   Future<void> restoreState() async {
     if (_localStore == null) {
       return;
     }
 
-    final incidentJson =
-        await _localStore.readJson(SharedPrefsSdkStore.sosIncidentKey);
-    final stateRaw =
-        await _localStore.readString(SharedPrefsSdkStore.sosStateKey);
-    _locallyClosedIncidentId =
-        await _localStore.readString(SharedPrefsSdkStore.sosClosedIncidentKey);
+    final incidentJson = await _localStore.readJson(
+      SharedPrefsSdkStore.sosIncidentKey,
+    );
+    final stateRaw = await _localStore.readString(
+      SharedPrefsSdkStore.sosStateKey,
+    );
+    _locallyClosedIncidentId = await _localStore.readString(
+      SharedPrefsSdkStore.sosClosedIncidentKey,
+    );
 
     if (incidentJson != null) {
       _activeIncident = LocalStateSerializers.sosIncidentFromJson(
@@ -182,7 +187,8 @@ class MqttOperationalSosRepository
         );
       }
     }
-    final appOwnedSos = _isAppOwnedTriggerSource(triggerSource) ||
+    final appOwnedSos =
+        _isAppOwnedTriggerSource(triggerSource) ||
         (originatorNodeId == null && relayNodeId == null);
     BleDebugRegistry.instance.recordEvent(
       'SOS_TRANSPORT_DECISION flow=sos_trigger transport=mqtt '
@@ -220,7 +226,8 @@ class MqttOperationalSosRepository
       }
       await _persistState();
       return SosIncident(
-        id: incidentId ??
+        id:
+            incidentId ??
             'external-sos-${DateTime.now().microsecondsSinceEpoch}',
         state: SosState.idle,
         createdAt: DateTime.now().toUtc(),
@@ -270,7 +277,8 @@ class MqttOperationalSosRepository
         mobileCoverage: mobileCoverage,
       );
       final latestIncident = _activeIncident;
-      final authoritativeIncident = latestIncident != null &&
+      final authoritativeIncident =
+          latestIncident != null &&
               latestIncident.isBackendConfirmed &&
               sosIncidentEvidenceMatches(incident, latestIncident)
           ? latestIncident
@@ -365,7 +373,8 @@ class MqttOperationalSosRepository
     final rehydration = await rehydrateRuntimeStateFromBackend();
     final rehydratedState = _stateMachine.current;
     final rehydratedIncident = _activeIncident;
-    final hasBackendActive = rehydration.outcome ==
+    final hasBackendActive =
+        rehydration.outcome ==
             SosRuntimeRehydrationOutcome.hydratedFromBackend &&
         rehydratedIncident != null &&
         _isActiveLikeState(rehydratedState);
@@ -441,7 +450,8 @@ class MqttOperationalSosRepository
     required String reason,
   }) {
     final incidentIdPresent = _normalizeIdentity(incident?.id) != null;
-    final hasDeviceIdentity = originatorNodeId != null ||
+    final hasDeviceIdentity =
+        originatorNodeId != null ||
         relayNodeId != null ||
         _normalizeIdentity(deviceId) != null ||
         _normalizeIdentity(hardwareId) != null ||
@@ -510,7 +520,8 @@ class MqttOperationalSosRepository
       relayNodeId: relayNodeId,
       deviceId: deviceId,
       hardwareId: hardwareId,
-      owner: _isAppOwnedTriggerSource(triggerSource) ||
+      owner:
+          _isAppOwnedTriggerSource(triggerSource) ||
               (originatorNodeId == null && relayNodeId == null)
           ? 'app'
           : 'device',
@@ -911,8 +922,9 @@ class MqttOperationalSosRepository
       );
     }
 
-    _activeIncident =
-        _activeIncident!.copyWith(state: SosState.cancelRequested);
+    _activeIncident = _activeIncident!.copyWith(
+      state: SosState.cancelRequested,
+    );
     final cancellationTarget = _activeIncident!;
     _rememberActiveLikeState();
     _emit(SosState.cancelRequested);
@@ -944,9 +956,7 @@ class MqttOperationalSosRepository
           'SOS_CANCEL_PROVISIONAL_LOCAL_SETTLE '
           'incidentId=${_activeIncident?.id ?? "none"} error=$error',
         );
-        return _locallySettleProvisionalCancel(
-          reason: 'cancel_http_failed',
-        );
+        return _locallySettleProvisionalCancel(reason: 'cancel_http_failed');
       }
       _activeIncident = _activeIncident!.copyWith(state: SosState.sent);
       _emit(SosState.sent);
@@ -1204,8 +1214,10 @@ class MqttOperationalSosRepository
   }
 
   @override
-  Future<SosHistoryPage> listSosHistory(
-      {String? cursor, int limit = 20}) async {
+  Future<SosHistoryPage> listSosHistory({
+    String? cursor,
+    int limit = 20,
+  }) async {
     final dataSource = remoteDataSource;
     if (dataSource == null) {
       return const SosHistoryPage(items: [], hasMore: false);
@@ -1219,7 +1231,8 @@ class MqttOperationalSosRepository
             state: incident.state,
             createdAt: incident.createdAt,
             positionSnapshot: incident.positionSnapshot,
-            triggerSource: incident.triggerSource ??
+            triggerSource:
+                incident.triggerSource ??
                 incident.source ??
                 incident.relaySource,
             message: incident.message,
@@ -1229,8 +1242,9 @@ class MqttOperationalSosRepository
                 ? null
                 : SosHistoryTelemetry(
                     id: item.creationTelemetry!.id,
-                    occurredAt:
-                        DateTime.parse(item.creationTelemetry!.occurredAt),
+                    occurredAt: DateTime.parse(
+                      item.creationTelemetry!.occurredAt,
+                    ),
                     latitude: item.creationTelemetry!.latitude,
                     longitude: item.creationTelemetry!.longitude,
                     altitude: item.creationTelemetry!.altitude,
@@ -1240,13 +1254,15 @@ class MqttOperationalSosRepository
                     mobileCoverage: item.creationTelemetry!.mobileCoverage,
                   ),
             trail: item.trail
-                .map((p) => TrackingPosition(
-                      latitude: p.latitude,
-                      longitude: p.longitude,
-                      timestamp: DateTime.parse(p.occurredAt),
-                      altitude: p.altitude,
-                      source: DeliveryMode.mobile,
-                    ))
+                .map(
+                  (p) => TrackingPosition(
+                    latitude: p.latitude,
+                    longitude: p.longitude,
+                    timestamp: DateTime.parse(p.occurredAt),
+                    altitude: p.altitude,
+                    source: DeliveryMode.mobile,
+                  ),
+                )
                 .toList(),
           );
         }).toList(),
@@ -1418,10 +1434,14 @@ class MqttOperationalSosRepository
         return;
       }
       final backendIncident = _mapper.toDomain(active);
-      final directIdentityMatch =
-          sosIncidentEvidenceMatches(current, backendIncident);
-      final actuatorCanonicalMatch =
-          _hasAuthenticatedActuatorCanonicalMatch(current, backendIncident);
+      final directIdentityMatch = sosIncidentEvidenceMatches(
+        current,
+        backendIncident,
+      );
+      final actuatorCanonicalMatch = _hasAuthenticatedActuatorCanonicalMatch(
+        current,
+        backendIncident,
+      );
       if (!_isBackendActiveEvidenceState(backendIncident.state) ||
           (!directIdentityMatch && !actuatorCanonicalMatch) ||
           classifySosIncidentOrigin(backendIncident).isExternalOnly) {
@@ -1544,11 +1564,22 @@ class MqttOperationalSosRepository
 
   @override
   Stream<SosRejectedTerminalReconciliationRequest>
-      watchRejectedTerminalReconciliations() =>
-          _rejectedTerminalReconciliationController.stream;
+  watchRejectedTerminalReconciliations() =>
+      _rejectedTerminalReconciliationController.stream;
 
   void _handleRealtimeEvent(RealtimeEvent event) {
     final update = MqttSosLifecycleUpdate.fromRealtimeEvent(event);
+    final rawStatus = _rawMqttStatus(event);
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_BACKEND_EVENT_RX '
+      'incidentId=${update?.incidentId ?? _eventIncidentId(event) ?? "none"} '
+      'rawStatus=$rawStatus '
+      'normalizedStatus=${update?.state?.name ?? "unknown"} '
+      'revision=${_mqttEventRevision(event)} '
+      'timestamp=${event.timestamp.toUtc().toIso8601String()} '
+      'source=mqtt:${update?.topicCategory ?? _mqttTopicCategory(event)} '
+      'payloadPresent=${event.payload != null}',
+    );
     if (update == null) {
       BleDebugRegistry.instance.recordEvent(
         'SOS_MQTT_EVENT_PARSE_REJECTED '
@@ -1577,6 +1608,13 @@ class MqttOperationalSosRepository
       return;
     }
     final authority = _lifecycleAuthorityFor(update);
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_BACKEND_EVENT_CORRELATION '
+      'incidentId=${update.incidentId} '
+      'currentIncidentId=${_activeIncident?.id ?? "none"} '
+      'generation=${lifecycleGenerationProvider?.call() ?? 0} '
+      'correlated=${authority.accepted} reason=${authority.reason}',
+    );
     if (!authority.accepted) {
       _requestAuthenticatedTerminalReconciliationIfEligible(update);
       if (actuators != null) {
@@ -1611,12 +1649,14 @@ class MqttOperationalSosRepository
       _activeIncident = _incidentWithId(
         previousIncident,
         update.incidentId,
-        trustedCanonicalHandoff: !previousIncident.isBackendConfirmed &&
+        trustedCanonicalHandoff:
+            !previousIncident.isBackendConfirmed &&
             _isProvisionalLocalSosIncidentId(previousIncident.id),
       );
     }
     var currentIncident = _activeIncident!;
-    var shouldPersist = !currentIncident.isBackendConfirmed ||
+    var shouldPersist =
+        !currentIncident.isBackendConfirmed ||
         currentIncident.isUsingCachedData;
     currentIncident = currentIncident.copyWith(
       isBackendConfirmed: true,
@@ -1700,12 +1740,20 @@ class MqttOperationalSosRepository
     // observation. Stream listeners may run before this stack unwinds, so the
     // incident must already carry the accepted state when the state event is
     // delivered.
+    final previousState = _stateMachine.current;
     _activeIncident = nextIncident;
     final accepted = _emit(
       state,
       previousIncident: currentIncident,
       incomingIncident: nextIncident,
       reason: 'realtime_event',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_BACKEND_EVENT_LIFECYCLE_DECISION '
+      'rawStatus=$rawStatus normalizedStatus=${state.name} '
+      'previousLifecycle=${previousState.name} '
+      'requestedLifecycle=${state.name} admitted=$accepted '
+      'reason=${accepted ? "repository_transition_accepted" : "repository_transition_rejected"}',
     );
     if (!accepted) {
       _activeIncident = currentIncident;
@@ -2101,8 +2149,9 @@ class MqttOperationalSosRepository
     final eventAt = update.eventTimestamp.toUtc();
     final createdAt = activeIncident.createdAt.toUtc();
     final earliest = createdAt.subtract(_processedClockSkewTolerance);
-    final futureLimit =
-        _nowProvider().toUtc().add(_processedClockSkewTolerance);
+    final futureLimit = _nowProvider().toUtc().add(
+      _processedClockSkewTolerance,
+    );
     return !eventAt.isBefore(earliest) && !eventAt.isAfter(futureLimit);
   }
 
@@ -2122,8 +2171,9 @@ class MqttOperationalSosRepository
     final createdAt = activeIncident.createdAt.toUtc();
     final earliest = createdAt.subtract(_processedClockSkewTolerance);
     final latest = createdAt.add(_processedHandoffWindow);
-    final futureLimit =
-        _nowProvider().toUtc().add(_processedClockSkewTolerance);
+    final futureLimit = _nowProvider().toUtc().add(
+      _processedClockSkewTolerance,
+    );
     return !eventAt.isBefore(earliest) &&
         !eventAt.isAfter(latest) &&
         !eventAt.isAfter(futureLimit);
@@ -2234,6 +2284,36 @@ class MqttOperationalSosRepository
     return 'unsupported_event_type';
   }
 
+  String _rawMqttStatus(RealtimeEvent event) {
+    final payload = event.payload;
+    for (final value in <Object?>[
+      payload?['status'],
+      payload?['state'],
+      payload?['type'],
+      event.type,
+    ]) {
+      final normalized = value?.toString().trim();
+      if (normalized != null && normalized.isNotEmpty) {
+        return normalized;
+      }
+    }
+    return 'unknown';
+  }
+
+  String _mqttEventRevision(RealtimeEvent event) {
+    final payload = event.payload;
+    final revision =
+        payload?['revision'] ??
+        payload?['snapshotVersion'] ??
+        payload?['snapshot_version'];
+    return revision?.toString() ?? 'none';
+  }
+
+  String _mqttTopicCategory(RealtimeEvent event) {
+    final value = event.payload?['_mqttTopicCategory']?.toString().trim();
+    return value == null || value.isEmpty ? 'unknown' : value;
+  }
+
   bool _shouldAcceptActuatorSnapshot({
     required SosActuatorSnapshot? current,
     required SosActuatorSnapshot incoming,
@@ -2281,17 +2361,20 @@ class MqttOperationalSosRepository
     if (snapshot.items.isEmpty) {
       return 'none';
     }
-    return snapshot.items.map((item) {
-      final type =
-          item.rawType.trim().isNotEmpty ? item.rawType.trim() : item.type.name;
-      final status = item.rawStatus.trim().isNotEmpty
-          ? item.rawStatus.trim()
-          : item.status.name;
-      final outcome = item.rawOutcome.trim().isNotEmpty
-          ? item.rawOutcome.trim()
-          : item.outcome.name;
-      return '$type:$status:$outcome';
-    }).join(',');
+    return snapshot.items
+        .map((item) {
+          final type = item.rawType.trim().isNotEmpty
+              ? item.rawType.trim()
+              : item.type.name;
+          final status = item.rawStatus.trim().isNotEmpty
+              ? item.rawStatus.trim()
+              : item.status.name;
+          final outcome = item.rawOutcome.trim().isNotEmpty
+              ? item.rawOutcome.trim()
+              : item.outcome.name;
+          return '$type:$status:$outcome';
+        })
+        .join(',');
   }
 
   bool _emit(
@@ -2384,7 +2467,8 @@ class MqttOperationalSosRepository
       incomingState: incomingState,
       previousIncident: previousIncident,
       incomingIncident: incomingIncident,
-      reason: 'invalid_state_machine_transition:$reason '
+      reason:
+          'invalid_state_machine_transition:$reason '
           'previousTerminal=$previousTerminal incomingTerminal=$incomingTerminal',
     );
     return false;
@@ -2399,10 +2483,7 @@ class MqttOperationalSosRepository
       return null;
     }
     if (to == SosState.triggerRequested) {
-      return const <SosState>[
-        SosState.idle,
-        SosState.triggerRequested,
-      ];
+      return const <SosState>[SosState.idle, SosState.triggerRequested];
     }
     return null;
   }
@@ -2414,10 +2495,7 @@ class MqttOperationalSosRepository
     required SosIncident? incomingIncident,
     required String reason,
   }) {
-    final path = _liveTransitionPath(
-      from: previousState,
-      to: incomingState,
-    );
+    final path = _liveTransitionPath(from: previousState, to: incomingState);
     if (path == null) {
       _logTransitionGuard(
         decision: 'ignore_invalid_transition',
@@ -2454,16 +2532,10 @@ class MqttOperationalSosRepository
       return <SosState>[to];
     }
     if (from == SosState.sent && to == SosState.cancelled) {
-      return const <SosState>[
-        SosState.cancelRequested,
-        SosState.cancelled,
-      ];
+      return const <SosState>[SosState.cancelRequested, SosState.cancelled];
     }
     if (from == SosState.sending && to == SosState.acknowledged) {
-      return const <SosState>[
-        SosState.sent,
-        SosState.acknowledged,
-      ];
+      return const <SosState>[SosState.sent, SosState.acknowledged];
     }
     return null;
   }
@@ -2531,53 +2603,53 @@ class MqttOperationalSosRepository
       SosState.arming => const <SosState>[SosState.arming],
       SosState.triggerRequested => const <SosState>[SosState.triggerRequested],
       SosState.triggeredLocal => const <SosState>[
-          SosState.triggerRequested,
-          SosState.triggeredLocal,
-        ],
+        SosState.triggerRequested,
+        SosState.triggeredLocal,
+      ],
       SosState.sending => const <SosState>[
-          SosState.triggerRequested,
-          SosState.triggeredLocal,
-          SosState.sending,
-        ],
+        SosState.triggerRequested,
+        SosState.triggeredLocal,
+        SosState.sending,
+      ],
       SosState.sent => const <SosState>[
-          SosState.triggerRequested,
-          SosState.triggeredLocal,
-          SosState.sending,
-          SosState.sent,
-        ],
+        SosState.triggerRequested,
+        SosState.triggeredLocal,
+        SosState.sending,
+        SosState.sent,
+      ],
       SosState.acknowledged => const <SosState>[
-          SosState.triggerRequested,
-          SosState.triggeredLocal,
-          SosState.sending,
-          SosState.sent,
-          SosState.acknowledged,
-        ],
+        SosState.triggerRequested,
+        SosState.triggeredLocal,
+        SosState.sending,
+        SosState.sent,
+        SosState.acknowledged,
+      ],
       SosState.cancelRequested => const <SosState>[
-          SosState.triggerRequested,
-          SosState.triggeredLocal,
-          SosState.sending,
-          SosState.sent,
-          SosState.cancelRequested,
-        ],
+        SosState.triggerRequested,
+        SosState.triggeredLocal,
+        SosState.sending,
+        SosState.sent,
+        SosState.cancelRequested,
+      ],
       SosState.cancelled => const <SosState>[
-          SosState.triggerRequested,
-          SosState.triggeredLocal,
-          SosState.sending,
-          SosState.sent,
-          SosState.cancelRequested,
-          SosState.cancelled,
-        ],
+        SosState.triggerRequested,
+        SosState.triggeredLocal,
+        SosState.sending,
+        SosState.sent,
+        SosState.cancelRequested,
+        SosState.cancelled,
+      ],
       SosState.resolved => const <SosState>[
-          SosState.triggerRequested,
-          SosState.triggeredLocal,
-          SosState.sending,
-          SosState.sent,
-          SosState.resolved,
-        ],
+        SosState.triggerRequested,
+        SosState.triggeredLocal,
+        SosState.sending,
+        SosState.sent,
+        SosState.resolved,
+      ],
       SosState.failed => const <SosState>[
-          SosState.triggerRequested,
-          SosState.failed,
-        ],
+        SosState.triggerRequested,
+        SosState.failed,
+      ],
     };
 
     for (final next in path) {

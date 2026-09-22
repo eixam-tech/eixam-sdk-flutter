@@ -380,6 +380,8 @@ class EixamConnectSdkImpl
     if (repository is MqttOperationalSosRepository) {
       repository.preSosBackendPublishBlocker =
           _shouldBlockDeviceOriginPreSosBackendPublish;
+      repository.lifecycleGenerationProvider = () =>
+          _sosLifecycle.current.generation;
     }
     _maybeBuildDeviceCountryConfigController();
     _bindSosStreams();
@@ -2193,13 +2195,57 @@ class EixamConnectSdkImpl
         if (_sosLifecycle.current.isOpen) {
           final lifecycle = _sosLifecycle.current;
           final ownedIncident = lifecycle.incident ?? restoredOpenIncident;
+          final backendIncidentId = lifecycle.backendIncidentId?.trim();
+          final absenceCorrelatesToOwnedBackendIncident =
+              ownedIncident != null &&
+              ownedIncident.isBackendConfirmed &&
+              backendIncidentId != null &&
+              backendIncidentId.isNotEmpty &&
+              ownedIncident.id == backendIncidentId;
           SosIncident? authoritativeTerminalIncident;
-          if (terminalHint != null && ownedIncident != null) {
+          final absenceTerminalState = terminalHint ?? SosState.resolved;
+          final absenceAdmitted =
+              ownedIncident != null &&
+              (terminalHint != null || absenceCorrelatesToOwnedBackendIncident);
+          BleDebugRegistry.instance.recordEvent(
+            'SOS_BACKEND_EVENT_RX '
+            'incidentId=${ownedIncident?.id ?? backendIncidentId ?? "none"} '
+            'rawStatus=incident_null '
+            'normalizedStatus=${absenceTerminalState.name} '
+            'revision=none timestamp=${DateTime.now().toUtc().toIso8601String()} '
+            'source=authenticated_active_sos_lookup payloadPresent=true',
+          );
+          BleDebugRegistry.instance.recordEvent(
+            'SOS_BACKEND_EVENT_CORRELATION '
+            'incidentId=${ownedIncident?.id ?? "none"} '
+            'currentIncidentId=${backendIncidentId ?? "none"} '
+            'generation=${lifecycle.generation} '
+            'correlated=$absenceAdmitted '
+            'reason=${absenceAdmitted ? "same_generation_backend_incident_absent" : "absence_identity_unproven"}',
+          );
+          BleDebugRegistry.instance.recordEvent(
+            'SOS_BACKEND_EVENT_LIFECYCLE_DECISION '
+            'rawStatus=incident_null '
+            'normalizedStatus=${absenceTerminalState.name} '
+            'previousLifecycle=${lifecycle.stage.name} '
+            'requestedLifecycle=${terminalStage.name} admitted=$absenceAdmitted '
+            'reason=${absenceAdmitted ? "authenticated_backend_absence" : "absence_identity_unproven"}',
+          );
+          if (absenceAdmitted) {
             authoritativeTerminalIncident = ownedIncident.copyWith(
-              state: terminalHint,
+              state: absenceTerminalState,
               isBackendConfirmed: true,
               isUsingCachedData: false,
             );
+            if (absenceTerminalState == SosState.resolved) {
+              BleDebugRegistry.instance.recordEvent(
+                'SOS_BACKEND_RESOLVE_HANDLER_ENTERED '
+                'incidentId=${authoritativeTerminalIncident.id} '
+                'generation=${lifecycle.generation} '
+                'currentLifecycle=${lifecycle.stage.name} '
+                'connectedDevicePresent=${(_lastPublicDeviceStatus ?? _lastDeviceStatus)?.connected == true}',
+              );
+            }
             deviceClearProof = await _captureCurrentPhysicalSosTarget(
               lifecycle: lifecycle,
               terminalIncident: authoritativeTerminalIncident,
@@ -14613,6 +14659,42 @@ class EixamConnectSdkImpl
         lifecycle.localActionable &&
         !lifecycle.externalOnly &&
         !_hasNewAuthoritativeGenerationSinceTerminal();
+    final requestedLifecycle = switch (state) {
+      SosState.resolved => SosLifecycleStage.resolved,
+      SosState.cancelled => SosLifecycleStage.cancelled,
+      SosState.arming => SosLifecycleStage.arming,
+      SosState.triggerRequested ||
+      SosState.triggeredLocal ||
+      SosState.sending ||
+      SosState.sent ||
+      SosState.acknowledged ||
+      SosState.cancelRequested => SosLifecycleStage.active,
+      SosState.idle || SosState.failed => SosLifecycleStage.idle,
+    };
+    final terminalLifecycleAdmitted =
+        repositoryHasTerminalIncident &&
+        (repositoryIncidentMatchesLifecycle || productionMqttTerminalAccepted);
+    final activeLifecycleAdmitted =
+        repositoryIncident != null &&
+        lifecycle.isOpen &&
+        (repositoryIncident.state == SosState.sent ||
+            repositoryIncident.state == SosState.acknowledged) &&
+        repositoryIncidentMatchesLifecycle &&
+        repositoryIncident.isBackendConfirmed;
+    final lifecycleAdmitted =
+        terminalLifecycleAdmitted || activeLifecycleAdmitted;
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_BACKEND_EVENT_LIFECYCLE_DECISION '
+      'rawStatus=${state.name} normalizedStatus=${state.name} '
+      'previousLifecycle=${lifecycle.stage.name} '
+      'requestedLifecycle=${requestedLifecycle.name} '
+      'admitted=$lifecycleAdmitted '
+      'reason=${terminalLifecycleAdmitted
+          ? "correlated_terminal_incident"
+          : activeLifecycleAdmitted
+          ? "correlated_active_incident"
+          : "repository_evidence_not_admitted"}',
+    );
     if (repositoryHasTerminalIncident &&
         lifecycle.isOpen &&
         _hasNewAuthoritativeGenerationSinceTerminal() &&
@@ -14628,6 +14710,15 @@ class EixamConnectSdkImpl
         (repositoryIncidentMatchesLifecycle ||
             productionMqttTerminalAccepted)) {
       final terminalState = repositoryIncident.state;
+      if (terminalState == SosState.resolved) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_BACKEND_RESOLVE_HANDLER_ENTERED '
+          'incidentId=${repositoryIncident.id} '
+          'generation=${lifecycle.generation} '
+          'currentLifecycle=${lifecycle.stage.name} '
+          'connectedDevicePresent=${(_lastPublicDeviceStatus ?? _lastDeviceStatus)?.connected == true}',
+        );
+      }
       final deviceClearProof = await _captureCurrentPhysicalSosTarget(
         lifecycle: lifecycle,
         terminalIncident: repositoryIncident,
