@@ -3,12 +3,50 @@ import 'dart:async';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import 'ble_debug_registry.dart';
+import 'ble_incoming_event.dart';
 import 'eixam_ble_command.dart';
 import 'eixam_sos_event_packet.dart';
 import 'eixam_sos_packet.dart';
 
 typedef DeviceCommandWriter = Future<void> Function(EixamDeviceCommand command);
 typedef DeviceTerminalOperationGuard = bool Function();
+
+/// Immutable evidence captured at the physical BLE receive boundary and kept
+/// intact through classification, device-state reduction, and SDK lifecycle
+/// admission.
+final class PhysicalSosReceiveEvidence {
+  const PhysicalSosReceiveEvidence({
+    required this.classification,
+    required this.receiveSequence,
+    required this.receiveSequenceDomain,
+    required this.processSessionId,
+    required this.producer,
+    required this.characteristic,
+    required this.correlationId,
+    required this.exactPhysicalIdentityMatch,
+    required this.packetType,
+    required this.hasStartSemantics,
+    required this.hasTerminalSemantics,
+    required this.packetFingerprint,
+    required this.cycleIdentity,
+    required this.receivedAt,
+  });
+
+  final BleIncomingPayloadKind classification;
+  final int receiveSequence;
+  final String receiveSequenceDomain;
+  final String processSessionId;
+  final String producer;
+  final String characteristic;
+  final String correlationId;
+  final bool exactPhysicalIdentityMatch;
+  final String packetType;
+  final bool hasStartSemantics;
+  final bool hasTerminalSemantics;
+  final String packetFingerprint;
+  final String cycleIdentity;
+  final DateTime receivedAt;
+}
 
 class DeviceSosStateResolutionContext {
   const DeviceSosStateResolutionContext({
@@ -22,6 +60,21 @@ class DeviceSosStateResolutionContext {
     required this.appMirrorDispatched,
     required this.afterTerminalBoundary,
     required this.allowFreshPhysicalStartAfterTerminal,
+    this.physicalEvidence,
+  });
+
+  const DeviceSosStateResolutionContext.fromPhysicalEvidence(
+    this.physicalEvidence, {
+    this.incomingPacketType = 'sos',
+    this.incomingClassification = 'unknown',
+    this.incomingReceiveSequence,
+    this.previousLifecycleState = 'unknown',
+    this.terminalGeneration = 0,
+    this.currentGeneration = 0,
+    this.appOwnedGeneration,
+    this.appMirrorDispatched = false,
+    this.afterTerminalBoundary = false,
+    this.allowFreshPhysicalStartAfterTerminal = false,
   });
 
   final String incomingPacketType;
@@ -34,6 +87,7 @@ class DeviceSosStateResolutionContext {
   final bool appMirrorDispatched;
   final bool afterTerminalBoundary;
   final bool allowFreshPhysicalStartAfterTerminal;
+  final PhysicalSosReceiveEvidence? physicalEvidence;
 }
 
 class DeviceSosController {
@@ -71,6 +125,8 @@ class DeviceSosController {
   DateTime? _lastPromotedPreConfirmAt;
   final Set<String> _openCyclePacketSignatures = <String>{};
   final Set<String> _terminalCyclePacketSignatures = <String>{};
+  PhysicalSosReceiveEvidence? _lastPhysicalReceiveEvidence;
+  PhysicalSosReceiveEvidence? _terminalPhysicalReceiveEvidence;
 
   static const Duration _terminalCycleSuppressionWindow = Duration(seconds: 5);
   static const Duration _promotedPreConfirmSuppressionWindow = Duration(
@@ -79,6 +135,10 @@ class DeviceSosController {
   static const Duration _observedDevicePreSosSkew = Duration(seconds: 2);
 
   DeviceSosStatus get currentStatus => _status;
+  PhysicalSosReceiveEvidence? get lastPhysicalReceiveEvidence =>
+      _lastPhysicalReceiveEvidence;
+  PhysicalSosReceiveEvidence? get terminalPhysicalReceiveEvidence =>
+      _terminalPhysicalReceiveEvidence;
   bool get shortCommandAvailable =>
       _commandWriter != null && _shortCommandAvailable;
   bool get longCommandAvailable =>
@@ -830,6 +890,30 @@ class DeviceSosController {
     required DeviceSosTransitionSource source,
     DeviceSosStateResolutionContext? resolutionContext,
   }) {
+    final physicalEvidence = resolutionContext?.physicalEvidence;
+    final terminalPhysicalEvidence = _terminalPhysicalReceiveEvidence;
+    final sameReceiveDomain =
+        physicalEvidence != null &&
+        terminalPhysicalEvidence != null &&
+        physicalEvidence.receiveSequenceDomain ==
+            terminalPhysicalEvidence.receiveSequenceDomain;
+    final freshPhysicalReceiveEdge =
+        physicalEvidence != null &&
+        terminalPhysicalEvidence != null &&
+        sameReceiveDomain &&
+        physicalEvidence.hasStartSemantics &&
+        !physicalEvidence.hasTerminalSemantics &&
+        physicalEvidence.exactPhysicalIdentityMatch &&
+        physicalEvidence.classification ==
+            BleIncomingPayloadKind.ownDeviceSos &&
+        physicalEvidence.receiveSequence >
+            terminalPhysicalEvidence.receiveSequence;
+    final allowFreshPhysicalStartAfterTerminal =
+        resolutionContext?.allowFreshPhysicalStartAfterTerminal == true ||
+        freshPhysicalReceiveEdge;
+    final afterTerminalBoundary =
+        resolutionContext?.afterTerminalBoundary == true ||
+        terminalPhysicalEvidence != null;
     final previousStatus = _status;
     final previous = previousStatus.state;
     final now = _now();
@@ -856,7 +940,7 @@ class DeviceSosController {
       source: source,
       packetSignature: packetSignature,
       allowFreshPhysicalStartAfterTerminal:
-          resolutionContext?.allowFreshPhysicalStartAfterTerminal ?? false,
+          allowFreshPhysicalStartAfterTerminal,
     );
     final nextState = resolution.resolvedState;
     final event =
@@ -886,13 +970,23 @@ class DeviceSosController {
     );
     final historicalTerminalOverrideDefeated =
         fingerprintConsumed &&
-        resolutionContext?.allowFreshPhysicalStartAfterTerminal == true &&
+        allowFreshPhysicalStartAfterTerminal &&
         nextState == DeviceSosState.preConfirm;
     BleDebugRegistry.instance.recordEvent(
       'SOS_DEVICE_STATE_RESOLUTION '
-      'incomingPacketType=${resolutionContext?.incomingPacketType ?? "sos"} '
-      'incomingClassification=${resolutionContext?.incomingClassification ?? "unknown"} '
-      'incomingReceiveSequence=${resolutionContext?.incomingReceiveSequence ?? -1} '
+      'incomingPacketType=${physicalEvidence?.packetType ?? resolutionContext?.incomingPacketType ?? "sos"} '
+      'incomingClassification=${physicalEvidence?.classification.name ?? resolutionContext?.incomingClassification ?? "unknown"} '
+      'incomingReceiveSequence=${physicalEvidence?.receiveSequence ?? resolutionContext?.incomingReceiveSequence ?? -1} '
+      'terminalReceiveSequence=${terminalPhysicalEvidence?.receiveSequence ?? -1} '
+      'receiveSequenceDomain=${physicalEvidence?.receiveSequenceDomain ?? "none"} '
+      'terminalReceiveSequenceDomain=${terminalPhysicalEvidence?.receiveSequenceDomain ?? "none"} '
+      'sameReceiveDomain=$sameReceiveDomain '
+      'freshPhysicalReceiveEdge=$freshPhysicalReceiveEdge '
+      'physicalProducer=${physicalEvidence?.producer ?? "unknown"} '
+      'physicalProcessSessionId=${physicalEvidence?.processSessionId ?? "none"} '
+      'physicalCharacteristic=${physicalEvidence?.characteristic ?? "unknown"} '
+      'physicalCorrelation=${physicalEvidence?.correlationId ?? "none"} '
+      'exactPhysicalIdentityMatch=${physicalEvidence?.exactPhysicalIdentityMatch ?? false} '
       'previousLifecycleState=${resolutionContext?.previousLifecycleState ?? "unknown"} '
       'previousDeviceState=${previous.name} '
       'terminalGeneration=${resolutionContext?.terminalGeneration ?? 0} '
@@ -901,7 +995,7 @@ class DeviceSosController {
       'appMirrorDispatched=${resolutionContext?.appMirrorDispatched ?? false} '
       'rawIdentityReused=$rawIdentityReused '
       'fingerprintConsumed=$fingerprintConsumed '
-      'afterTerminalBoundary=${resolutionContext?.afterTerminalBoundary ?? false} '
+      'afterTerminalBoundary=$afterTerminalBoundary '
       'protocolResolvedState=${resolution.protocolState.name} '
       'finalResolvedState=${nextState.name} '
       'winningPredicate=${historicalTerminalOverrideDefeated ? "fresh_physical_edge_after_terminal" : resolution.reason} '
@@ -941,7 +1035,7 @@ class DeviceSosController {
       currentStatus: previousStatus,
       resolution: resolution,
       allowFreshPhysicalStartAfterTerminal:
-          resolutionContext?.allowFreshPhysicalStartAfterTerminal ?? false,
+          allowFreshPhysicalStartAfterTerminal,
     )) {
       BleDebugRegistry.instance.recordEvent(
         'SOS_TRACE device_rearm_suppressed reason=pending_terminal_command',
@@ -955,6 +1049,10 @@ class DeviceSosController {
         ),
       );
       return;
+    }
+
+    if (physicalEvidence != null) {
+      _lastPhysicalReceiveEvidence = physicalEvidence;
     }
 
     if (nextState == DeviceSosState.preConfirm) {
@@ -1065,6 +1163,7 @@ class DeviceSosController {
   void handleIncomingSosEventPacket(
     EixamSosEventPacket packet, {
     required DeviceSosTransitionSource source,
+    DeviceSosStateResolutionContext? resolutionContext,
   }) {
     final now = _now();
     final previous = _status.state;
@@ -1098,6 +1197,16 @@ class DeviceSosController {
       _cancelCountdownTimer();
       _awaitingObservedAppActivation = false;
       _pendingTerminalCommand = null;
+    }
+    final physicalEvidence = resolutionContext?.physicalEvidence;
+    if (physicalEvidence != null) {
+      _lastPhysicalReceiveEvidence = physicalEvidence;
+      if ((nextState == DeviceSosState.inactive ||
+              nextState == DeviceSosState.resolved) &&
+          physicalEvidence.hasTerminalSemantics &&
+          physicalEvidence.exactPhysicalIdentityMatch) {
+        _terminalPhysicalReceiveEvidence = physicalEvidence;
+      }
     }
     _emit(
       _status.copyWith(

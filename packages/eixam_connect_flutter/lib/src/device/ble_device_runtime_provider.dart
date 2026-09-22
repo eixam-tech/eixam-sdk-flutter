@@ -32,6 +32,13 @@ import 'eixam_tel_reassembler.dart';
 import 'eixam_tel_relay_rx_packet.dart';
 import '../provisioning/provisioning_command_result.dart';
 
+final String _flutterSosProcessSessionId =
+    'dart-${DateTime.now().toUtc().microsecondsSinceEpoch}';
+int _flutterSosReceiveDomainSequence = 0;
+
+String _nextFlutterSosReceiveDomain() =>
+    'flutter_gatt:$_flutterSosProcessSessionId:${++_flutterSosReceiveDomainSequence}';
+
 class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   BleDeviceRuntimeProvider({
     required BleClient bleClient,
@@ -65,6 +72,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   int? _lastSosBatteryLevel;
   int? _connectedBleTagNodeId;
   int _notificationReceiveSequence = 0;
+  final String _sosReceiveSequenceDomain = _nextFlutterSosReceiveDomain();
   final Map<String, DateTime> _recentSosPacketSignatures = <String, DateTime>{};
   bool _ownershipSuspended = false;
   Completer<DeviceRuntimeStatus>? _pendingRuntimeStatusRequest;
@@ -86,6 +94,11 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   DeviceSosController get deviceSosController => _deviceSosController;
   Stream<BleIncomingEvent> watchIncomingEvents() =>
       _incomingEventsController.stream;
+
+  @visibleForTesting
+  void setNotificationReceiveSequenceForTesting(int receiveSequence) {
+    _notificationReceiveSequence = receiveSequence;
+  }
 
   Future<PreferredDevice?> recoverPreferredFromSystemAssociation() async {
     try {
@@ -852,10 +865,18 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     try {
       switch (notification.channel) {
         case EixamBleChannel.tel:
-          await _handleTelNotification(deviceId, notification);
+          await _handleTelNotification(
+            deviceId,
+            notification,
+            receiveSequence: receiveSequence,
+          );
           break;
         case EixamBleChannel.sos:
-          await _handleSosNotification(deviceId, notification);
+          await _handleSosNotification(
+            deviceId,
+            notification,
+            receiveSequence: receiveSequence,
+          );
           break;
       }
     } catch (error) {
@@ -1635,8 +1656,9 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
   Future<void> _handleTelNotification(
     String deviceId,
-    EixamBleNotification notification,
-  ) async {
+    EixamBleNotification notification, {
+    required int receiveSequence,
+  }) async {
     final source = DeviceSosTransitionSource.device;
     final redactsBacklogTransport =
         notification.payload.isNotEmpty &&
@@ -1687,6 +1709,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         await _dispatchClassifiedTelPayload(
           deviceId: deviceId,
           notification: notification,
+          receiveSequence: receiveSequence,
           payload: completedPayload,
           payloadHex: EixamBleProtocol.hex(completedPayload),
           source: source,
@@ -1700,6 +1723,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     await _dispatchClassifiedTelPayload(
       deviceId: deviceId,
       notification: notification,
+      receiveSequence: receiveSequence,
       payload: notification.payload,
       payloadHex: notification.payloadHex,
       source: source,
@@ -1799,6 +1823,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   Future<void> _dispatchClassifiedTelPayload({
     required String deviceId,
     required EixamBleNotification notification,
+    required int receiveSequence,
     required List<int> payload,
     required String payloadHex,
     required DeviceSosTransitionSource source,
@@ -2106,6 +2131,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     if (await _dispatchSosEventPayload(
       deviceId: deviceId,
       notification: notification,
+      receiveSequence: receiveSequence,
       payload: payload,
       payloadHex: payloadHex,
       source: source,
@@ -2176,6 +2202,15 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
           _deviceSosController.handleIncomingSosPacket(
             sosPacket,
             source: source,
+            resolutionContext:
+                DeviceSosStateResolutionContext.fromPhysicalEvidence(
+                  _physicalSosMeshReceiveEvidence(
+                    notification: notification,
+                    receiveSequence: receiveSequence,
+                    classification: classification.kind,
+                    packet: sosPacket,
+                  ),
+                ),
           );
         } else {
           BleDebugRegistry.instance.recordEvent(
@@ -2417,6 +2452,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   Future<bool> _dispatchSosEventPayload({
     required String deviceId,
     required EixamBleNotification notification,
+    required int receiveSequence,
     required List<int> payload,
     required String payloadHex,
     required DeviceSosTransitionSource source,
@@ -2495,7 +2531,26 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         _deviceSosController.handleIncomingSosEventPacket(
           packet,
           source: source,
+          resolutionContext:
+              DeviceSosStateResolutionContext.fromPhysicalEvidence(
+                _physicalSosEventReceiveEvidence(
+                  notification: notification,
+                  receiveSequence: receiveSequence,
+                  classification: classification.kind,
+                  packet: packet,
+                  exactPhysicalIdentityMatch:
+                      _connectedBleTagNodeId != null &&
+                      packet.nodeId == _connectedBleTagNodeId,
+                ),
+                incomingPacketType: 'sos_event',
+              ),
         );
+        if (packet.isUserDeactivated || packet.isBackendResolved) {
+          final terminalSignature = '${packet.nodeId}:na:${packet.rawHex}';
+          _recentSosPacketSignatures.removeWhere(
+            (signature, _) => signature != terminalSignature,
+          );
+        }
       } else {
         BleDebugRegistry.instance.recordEvent(
           'SOS duplicate suppressed -> ${packet.rawHex}',
@@ -2526,8 +2581,9 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
   Future<void> _handleSosNotification(
     String deviceId,
-    EixamBleNotification notification,
-  ) async {
+    EixamBleNotification notification, {
+    required int receiveSequence,
+  }) async {
     final source = _inferPacketSource();
     BleDebugRegistry.instance.recordIncomingNotification(
       channel: notification.channel.name,
@@ -2549,6 +2605,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     if (await _dispatchSosEventPayload(
       deviceId: deviceId,
       notification: notification,
+      receiveSequence: receiveSequence,
       payload: notification.payload,
       payloadHex: notification.payloadHex,
       source: source,
@@ -2620,6 +2677,15 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
           _deviceSosController.handleIncomingSosPacket(
             sosPacket,
             source: source,
+            resolutionContext:
+                DeviceSosStateResolutionContext.fromPhysicalEvidence(
+                  _physicalSosMeshReceiveEvidence(
+                    notification: notification,
+                    receiveSequence: receiveSequence,
+                    classification: sosClassification.kind,
+                    packet: sosPacket,
+                  ),
+                ),
           );
         } else {
           BleDebugRegistry.instance.recordEvent(
@@ -2940,6 +3006,59 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
     _recentSosPacketSignatures[signature] = now;
     return true;
+  }
+
+  PhysicalSosReceiveEvidence _physicalSosMeshReceiveEvidence({
+    required EixamBleNotification notification,
+    required int receiveSequence,
+    required BleIncomingPayloadKind classification,
+    required EixamSosPacket packet,
+  }) {
+    return PhysicalSosReceiveEvidence(
+      classification: classification,
+      receiveSequence: receiveSequence,
+      receiveSequenceDomain: _sosReceiveSequenceDomain,
+      processSessionId: _flutterSosProcessSessionId,
+      producer: 'flutter_gatt',
+      characteristic: _characteristicLabelForChannel(notification.channel),
+      correlationId: 'flutter-gatt-$receiveSequence',
+      exactPhysicalIdentityMatch:
+          _connectedBleTagNodeId != null &&
+          packet.nodeId == _connectedBleTagNodeId,
+      packetType: 'sos',
+      hasStartSemantics: packet.sosType != 0,
+      hasTerminalSemantics: false,
+      packetFingerprint: '${packet.nodeId}:${packet.packetId}:${packet.rawHex}',
+      cycleIdentity: '${packet.nodeId}:${packet.packetId}',
+      receivedAt: notification.receivedAt,
+    );
+  }
+
+  PhysicalSosReceiveEvidence _physicalSosEventReceiveEvidence({
+    required EixamBleNotification notification,
+    required int receiveSequence,
+    required BleIncomingPayloadKind classification,
+    required EixamSosEventPacket packet,
+    required bool exactPhysicalIdentityMatch,
+  }) {
+    return PhysicalSosReceiveEvidence(
+      classification: classification,
+      receiveSequence: receiveSequence,
+      receiveSequenceDomain: _sosReceiveSequenceDomain,
+      processSessionId: _flutterSosProcessSessionId,
+      producer: 'flutter_gatt',
+      characteristic: _characteristicLabelForChannel(notification.channel),
+      correlationId: 'flutter-gatt-$receiveSequence',
+      exactPhysicalIdentityMatch: exactPhysicalIdentityMatch,
+      packetType: 'sos_event',
+      hasStartSemantics: false,
+      hasTerminalSemantics:
+          packet.isUserDeactivated || packet.isBackendResolved,
+      packetFingerprint:
+          '${packet.nodeId}:${packet.opcode}:${packet.subcode}:${packet.rawHex}',
+      cycleIdentity: '${packet.nodeId}:event:${packet.opcode}',
+      receivedAt: notification.receivedAt,
+    );
   }
 
   void _logSosIdentityDecision({

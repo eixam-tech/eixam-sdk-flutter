@@ -1852,6 +1852,12 @@ void main() {
         const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
       );
       final subscription = sdk.watchEvents().listen(events.add);
+      final diagnosticMessages = <String>[];
+      final diagnosticSubscription = BleDebugRegistry.instance.watch().listen((state) {
+        if (state.events.isNotEmpty) {
+          diagnosticMessages.add(state.events.last.message);
+        }
+      });
       await sdk.enterProtectionMode();
 
       platformEvents.add(
@@ -1873,12 +1879,13 @@ void main() {
       expect(realtimeClient.publishedSos, isEmpty);
       expect(events.whereType<RemoteRelaySosObservedEvent>(), isEmpty);
       expect(
-        BleDebugRegistry.instance.currentState.events.any(
-          (event) => event.message.contains('native_own_device_sos'),
+        diagnosticMessages.any(
+          (message) => message.contains('native_own_device_sos'),
         ),
         isTrue,
       );
 
+      await diagnosticSubscription.cancel();
       await subscription.cancel();
       await platformEvents.close();
     });

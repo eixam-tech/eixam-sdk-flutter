@@ -13,6 +13,7 @@ import 'package:eixam_connect_flutter/src/data/repositories/sos_runtime_rehydrat
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_state.dart';
+import 'package:eixam_connect_flutter/src/device/ble_device_runtime_provider.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
@@ -32,6 +33,7 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/builders/device_status_builder.dart';
 import '../support/fakes/memory_shared_prefs_sdk_store.dart';
 import '../support/fakes/sdk_contract_fakes.dart';
+import '../support/device/mock_ble_client.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -765,6 +767,14 @@ void main() {
             sosLifecycleSecureStore: secureStore,
             deviceClock: () => deviceNow,
           );
+          final observedMessages = <String>[];
+          final debugSubscription = BleDebugRegistry.instance.watch().listen((
+            state,
+          ) {
+            if (state.events.isNotEmpty) {
+              observedMessages.add(state.events.last.message);
+            }
+          });
           try {
             await harness.sdk.initialize(
               const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
@@ -839,22 +849,27 @@ void main() {
             expect(arming.origin, SosLifecycleOrigin.connectedLocalDevice);
             expect((await harness.sdk.getPreSosStatus())?.packetId, 0);
             expect(
-              _hasDebugMessage(
-                'SOS_TERMINAL_FENCE_FRESH_PHYSICAL_EDGE_ACCEPTED',
+              observedMessages.any(
+                (message) => message.contains(
+                  'SOS_TERMINAL_FENCE_FRESH_PHYSICAL_EDGE_ACCEPTED',
+                ),
               ),
               isTrue,
             );
             expect(
-              BleDebugRegistry.instance.currentState.events.any(
-                (event) =>
-                    event.message.contains(
-                      'admission=direct_device_rising_edge',
-                    ) ||
-                    event.message.contains('admission=inactive_boundary'),
+              observedMessages.any(
+                (message) =>
+                    message.contains('admission=direct_device_rising_edge') ||
+                    message.contains('admission=inactive_boundary'),
               ),
               isTrue,
             );
-            expect(_hasDebugMessage('SOS_NEW_GENERATION_ACCEPTED'), isTrue);
+            expect(
+              observedMessages.any(
+                (message) => message.contains('SOS_NEW_GENERATION_ACCEPTED'),
+              ),
+              isTrue,
+            );
 
             // The same N+1 notification remains in generation 7.
             harness.deviceSosController.handleIncomingSosPacket(
@@ -868,6 +883,7 @@ void main() {
               SosLifecycleStage.arming,
             );
           } finally {
+            await debugSubscription.cancel();
             await harness.dispose();
           }
         },
@@ -2949,6 +2965,215 @@ void main() {
           await debugSubscription.cancel();
           await harness.dispose();
           await adapter.dispose();
+        }
+      },
+    );
+
+    test(
+      'Flutter GATT START 28 after CANCEL 34/35 reopens at 36 with intact evidence',
+      () async {
+        const startPayload = <int>[
+          0x34,
+          0x12,
+          0x00,
+          0x00,
+          0x48,
+          0xCD,
+          0x1B,
+          0x34,
+          0x44,
+          0x28,
+          0x00,
+          0x40,
+        ];
+        const cancelPayload = <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00];
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+        );
+        final bleClient = MockBleClient();
+        final runtimeProvider = BleDeviceRuntimeProvider(
+          bleClient: bleClient,
+          deviceSosController: harness.deviceSosController,
+        );
+        final observedMessages = <String>[];
+        final debugSubscription = BleDebugRegistry.instance.watch().listen((
+          state,
+        ) {
+          if (state.events.isNotEmpty) {
+            observedMessages.add(state.events.last.message);
+          }
+        });
+
+        Future<BleIncomingEvent> emitAndAwait({
+          required EixamBleChannel channel,
+          required List<int> payload,
+          required BleIncomingEventType eventType,
+        }) {
+          final event = runtimeProvider.watchIncomingEvents().firstWhere(
+            (candidate) => candidate.type == eventType,
+          );
+          bleClient.emitNotification(
+            MockBleClient.demoDeviceId,
+            channel: channel,
+            payload: payload,
+          );
+          return event;
+        }
+
+        try {
+          await bleClient.initialize();
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          BleDebugRegistry.instance.update(
+            selectedDeviceId: MockBleClient.demoDeviceId,
+          );
+          await runtimeProvider.pair(
+            currentStatus: buildDeviceStatus(
+              paired: false,
+              activated: false,
+              connected: false,
+              lifecycleState: DeviceLifecycleState.unpaired,
+            ),
+            pairingCode: '1234',
+          );
+
+          runtimeProvider.setNotificationReceiveSequenceForTesting(27);
+          final firstStart = await emitAndAwait(
+            channel: EixamBleChannel.sos,
+            payload: startPayload,
+            eventType: BleIncomingEventType.sosMeshPacket,
+          );
+          await pumpEventQueue(times: 10);
+          expect(
+            firstStart.classification.kind,
+            BleIncomingPayloadKind.ownDeviceSos,
+          );
+          expect(firstStart.sosPacket?.hasPosition, isTrue);
+          final firstGeneration = await harness.sdk.getSosLifecycle();
+          expect(firstGeneration.stage, SosLifecycleStage.arming);
+          expect(
+            harness
+                .deviceSosController
+                .lastPhysicalReceiveEvidence
+                ?.receiveSequence,
+            28,
+          );
+
+          runtimeProvider.setNotificationReceiveSequenceForTesting(33);
+          await emitAndAwait(
+            channel: EixamBleChannel.sos,
+            payload: cancelPayload,
+            eventType: BleIncomingEventType.sosDeviceEvent,
+          );
+          await pumpEventQueue(times: 10);
+          final terminal = await harness.sdk.getSosLifecycle();
+          expect(terminal.generation, firstGeneration.generation);
+          expect(terminal.stage, SosLifecycleStage.cancelled);
+          expect(
+            harness
+                .deviceSosController
+                .terminalPhysicalReceiveEvidence
+                ?.receiveSequence,
+            34,
+          );
+          expect(
+            harness
+                .deviceSosController
+                .terminalPhysicalReceiveEvidence
+                ?.characteristic,
+            'ea02',
+          );
+
+          await emitAndAwait(
+            channel: EixamBleChannel.tel,
+            payload: cancelPayload,
+            eventType: BleIncomingEventType.sosDeviceEvent,
+          );
+          await pumpEventQueue(times: 6);
+          expect(
+            harness
+                .deviceSosController
+                .terminalPhysicalReceiveEvidence
+                ?.receiveSequence,
+            34,
+          );
+
+          final secondStart = await emitAndAwait(
+            channel: EixamBleChannel.sos,
+            payload: startPayload,
+            eventType: BleIncomingEventType.sosMeshPacket,
+          );
+          await pumpEventQueue(times: 12);
+          final reopened = await harness.sdk.getSosLifecycle();
+          expect(reopened.generation, firstGeneration.generation + 1);
+          expect(reopened.stage, SosLifecycleStage.arming);
+          expect(
+            secondStart.classification.kind,
+            BleIncomingPayloadKind.ownDeviceSos,
+          );
+          expect(secondStart.sosPacket?.hasPosition, isTrue);
+          final canonicalStartEvidence =
+              harness.deviceSosController.lastPhysicalReceiveEvidence;
+          expect(canonicalStartEvidence?.receiveSequence, 36);
+          expect(canonicalStartEvidence?.characteristic, 'ea02');
+          expect(
+            canonicalStartEvidence?.classification,
+            BleIncomingPayloadKind.ownDeviceSos,
+          );
+          expect(canonicalStartEvidence?.hasStartSemantics, isTrue);
+          expect(
+            harness.deviceSosController.currentStatus.lastPacketLength,
+            12,
+          );
+
+          await emitAndAwait(
+            channel: EixamBleChannel.tel,
+            payload: startPayload,
+            eventType: BleIncomingEventType.sosMeshPacket,
+          );
+          await pumpEventQueue(times: 6);
+          expect(
+            (await harness.sdk.getSosLifecycle()).generation,
+            reopened.generation,
+          );
+          expect(
+            harness.deviceSosController.lastPhysicalReceiveEvidence,
+            same(canonicalStartEvidence),
+          );
+
+          expect(
+            observedMessages.any(
+              (message) =>
+                  message.contains('SOS_DEVICE_STATE_RESOLUTION') &&
+                  message.contains('incomingClassification=ownDeviceSos') &&
+                  message.contains('incomingReceiveSequence=36') &&
+                  message.contains('terminalReceiveSequence=34') &&
+                  message.contains('sameReceiveDomain=true') &&
+                  message.contains('freshPhysicalReceiveEdge=true') &&
+                  message.contains('finalResolvedState=preConfirm') &&
+                  message.contains(
+                    'winningPredicate=fresh_physical_edge_after_terminal',
+                  ),
+            ),
+            isTrue,
+          );
+          expect(
+            observedMessages.any(
+              (message) =>
+                  message.contains('SOS_RECEIVE_SEQUENCE_TERMINAL_BOUNDARY') &&
+                  message.contains('terminalReceiveSequence=34') &&
+                  message.contains('receiveSequenceDomain=flutter_gatt:'),
+            ),
+            isTrue,
+          );
+        } finally {
+          await debugSubscription.cancel();
+          await runtimeProvider.dispose();
+          await bleClient.dispose();
+          await harness.dispose();
         }
       },
     );
