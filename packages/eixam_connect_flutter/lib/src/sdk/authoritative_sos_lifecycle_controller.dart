@@ -260,6 +260,7 @@ final class AuthoritativeSosLifecycleController {
     int? nodeId,
     String? hardwareId,
     bool startNewGenerationAfterTerminal = false,
+    bool emitToStream = true,
   }) async {
     final terminalFence = _terminalWatermark;
     final replacingFencedGeneration = terminalFence != null &&
@@ -303,6 +304,7 @@ final class AuthoritativeSosLifecycleController {
       ),
       // Arming alone is not proof of an active locally-owned SOS.
       persist: false,
+      emitToStream: emitToStream,
     );
   }
 

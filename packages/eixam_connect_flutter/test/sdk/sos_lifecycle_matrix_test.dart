@@ -864,6 +864,7 @@ void main() {
             expect(arming.stage, SosLifecycleStage.arming);
             expect(arming.origin, SosLifecycleOrigin.connectedLocalDevice);
             expect((await harness.sdk.getPreSosStatus())?.packetId, 0);
+            expect(await harness.sdk.getSosState(), SosState.arming);
             expect(
               observedMessages.any(
                 (message) => message.contains(
@@ -1301,6 +1302,14 @@ void main() {
             sosLifecycleSecureStore: InMemorySecureKeyValueStore(),
             deviceClock: () => deviceNow,
           );
+          final observedMessages = <String>[];
+          final debugSubscription = BleDebugRegistry.instance.watch().listen((
+            state,
+          ) {
+            if (state.events.isNotEmpty) {
+              observedMessages.add(state.events.last.message);
+            }
+          });
           try {
             await harness.deviceSosController.attach(
               commandWriter: (command) async {
@@ -1380,12 +1389,19 @@ void main() {
             expect(arming.origin, SosLifecycleOrigin.connectedLocalDevice);
             expect((await harness.sdk.getPreSosStatus())?.packetId, 0);
             expect(
-              _hasDebugMessage(
-                'SOS_TERMINAL_FENCE_FRESH_PHYSICAL_EDGE_ACCEPTED',
+              observedMessages.any(
+                (message) => message.contains(
+                  'SOS_TERMINAL_FENCE_FRESH_PHYSICAL_EDGE_ACCEPTED',
+                ),
               ),
               isTrue,
             );
-            expect(_hasDebugMessage('rawIdentityReused=true'), isTrue);
+            expect(
+              observedMessages.any(
+                (message) => message.contains('rawIdentityReused=true'),
+              ),
+              isTrue,
+            );
 
             // The same accepted TAG generation still promotes through the full
             // device-originated activation path.
@@ -1399,6 +1415,7 @@ void main() {
             expect(active.generation, arming.generation);
             expect(active.stage, SosLifecycleStage.active);
           } finally {
+            await debugSubscription.cancel();
             await harness.dispose();
           }
         },
@@ -3193,6 +3210,7 @@ void main() {
         );
         final observedMessages = <String>[];
         final visibleConnectionStates = <bool>[];
+        final publicSosStates = <SosState>[];
         final debugSubscription = BleDebugRegistry.instance.watch().listen((
           state,
         ) {
@@ -3201,6 +3219,7 @@ void main() {
           }
         });
         StreamSubscription<DeviceStatus>? deviceStatusSubscription;
+        StreamSubscription<SosState>? publicSosStateSubscription;
         var receiveSequence = 0;
 
         void emitPhysicalStart() {
@@ -3321,11 +3340,15 @@ void main() {
           deviceStatusSubscription = harness.sdk.watchDeviceStatus().listen(
             (status) => visibleConnectionStates.add(status.connected),
           );
+          publicSosStateSubscription = harness.sdk.currentSosStateStream.listen(
+            publicSosStates.add,
+          );
           await pumpEventQueue(times: 3);
           final runtimeEnsureCountBeforeCycles =
               adapter.ensureRuntimeReasons.length;
 
           for (var cycle = 1; cycle <= 3; cycle += 1) {
+            final publicStateCountBeforeStart = publicSosStates.length;
             emitPhysicalStart();
             await waitFor(() async {
               final lifecycle = await harness.sdk.getSosLifecycle();
@@ -3337,6 +3360,42 @@ void main() {
             expect(active.generation, cycle);
             expect(active.stage, SosLifecycleStage.active);
             expect(active.origin, SosLifecycleOrigin.connectedLocalDevice);
+            await waitFor(
+              () => publicSosStates
+                  .skip(publicStateCountBeforeStart)
+                  .contains(SosState.sent),
+            );
+            expect(
+              publicSosStates
+                  .skip(publicStateCountBeforeStart)
+                  .contains(SosState.arming),
+              isTrue,
+            );
+            if (cycle > 1) {
+              expect(
+                publicSosStates
+                    .skip(publicStateCountBeforeStart)
+                    .contains(SosState.idle),
+                isTrue,
+                reason:
+                    'cycle $cycle must clear the prior terminal projection '
+                    'before arming',
+              );
+            }
+            expect(
+              publicSosStates
+                  .skip(publicStateCountBeforeStart)
+                  .where(
+                    (state) =>
+                        state == SosState.resolved ||
+                        state == SosState.cancelled,
+                  ),
+              isEmpty,
+              reason:
+                  'cycle $cycle must project the new generation before any '
+                  'previous terminal summary can reappear',
+            );
+            expect(await harness.sdk.getSosState(), SosState.sent);
             await waitFor(
               () => harness.sosRepository.triggerCallCount == cycle,
             );
@@ -3585,12 +3644,20 @@ void main() {
             await pumpEventQueue(times: 5);
           }
 
+          final publicStateCountBeforeCancellationStart =
+              publicSosStates.length;
           emitPhysicalStart();
           await waitFor(() async {
             final lifecycle = await harness.sdk.getSosLifecycle();
             return lifecycle.generation == 4 &&
                 lifecycle.stage == SosLifecycleStage.active;
           });
+          await waitFor(
+            () => publicSosStates
+                .skip(publicStateCountBeforeCancellationStart)
+                .contains(SosState.sent),
+          );
+          expect(await harness.sdk.getSosState(), SosState.sent);
           final cancellation = harness.sdk.cancelSos();
           await waitFor(
             () => adapter.commands.any((command) => command.bytes[0] == 0x04),
@@ -3611,12 +3678,27 @@ void main() {
           );
           expect((await harness.sdk.getDeviceStatus()).connected, isTrue);
           expect(harness.deviceRepository.reconnectCallCount, 0);
+          expect(
+            publicSosStates
+                .skip(publicStateCountBeforeCancellationStart)
+                .where((state) => state == SosState.resolved),
+            isEmpty,
+            reason:
+                'cancel for generation 4 must not inherit the prior resolve',
+          );
 
+          final publicStateCountBeforeFifthStart = publicSosStates.length;
           emitPhysicalStart();
           await waitFor(() async {
             final lifecycle = await harness.sdk.getSosLifecycle();
             return lifecycle.generation == 5 && lifecycle.isOpen;
           });
+          await waitFor(
+            () => publicSosStates
+                .skip(publicStateCountBeforeFifthStart)
+                .contains(SosState.sent),
+          );
+          expect(await harness.sdk.getSosState(), SosState.sent);
           expect((await harness.sdk.getDeviceStatus()).connected, isTrue);
           expect(harness.deviceRepository.reconnectCallCount, 0);
           expect(
@@ -3641,6 +3723,32 @@ void main() {
             adapter.commands.where((command) => command.bytes[0] == 0x07),
             hasLength(3),
           );
+          expect(
+            observedMessages
+                .where(
+                  (message) =>
+                      message.contains('SOS_PUBLIC_GENERATION_PROJECTION') &&
+                      message.contains('action=reset_previous_generation') &&
+                      message.contains('reason=proven_new_physical_generation'),
+                )
+                .length,
+            4,
+          );
+          for (var generation = 2; generation <= 5; generation += 1) {
+            expect(
+              observedMessages.any(
+                (message) =>
+                    message.contains('SOS_PUBLIC_GENERATION_PROJECTION') &&
+                    message.contains('lifecycleGeneration=$generation') &&
+                    message.contains('projectedGeneration=$generation') &&
+                    message.contains('publicSosState=idle') &&
+                    message.contains('latchedTerminalGeneration=none') &&
+                    message.contains('ackLatchGeneration=none') &&
+                    message.contains('action=reset_previous_generation'),
+              ),
+              isTrue,
+            );
+          }
           expect(
             observedMessages
                 .where(
@@ -3801,6 +3909,7 @@ void main() {
             isTrue,
           );
         } finally {
+          await publicSosStateSubscription?.cancel();
           await deviceStatusSubscription?.cancel();
           await debugSubscription.cancel();
           await harness.dispose();
@@ -7608,6 +7717,22 @@ void main() {
         expect(lifecycle.generation, second.lifecycle.generation);
         expect(lifecycle.stage, SosLifecycleStage.active);
         expect(lifecycle.localIncidentId, 'sos-b');
+        expect(await harness.sdk.getSosState(), SosState.sent);
+        expect(
+          _hasDebugMessage(
+            'SOS_PUBLIC_GENERATION_PROJECTION '
+            'lifecycleGeneration=${second.lifecycle.generation} '
+            'projectedGeneration=${second.lifecycle.generation}',
+          ),
+          isTrue,
+        );
+        expect(
+          _hasDebugMessage(
+            'action=ignore_stale_rehydration '
+            'reason=generation_changed_during_lookup',
+          ),
+          isTrue,
+        );
       } finally {
         await harness.dispose();
       }
