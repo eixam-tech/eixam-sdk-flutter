@@ -106,6 +106,230 @@ void main() {
   });
 
   group('SOS-01..SOS-16 SDK lifecycle matrix', () {
+    test(
+      'public command channel follows Flutter-owned EA04 readiness',
+      () async {
+        final harness = _SdkSosHarness(connectedBle: true);
+        StreamSubscription<BleCommandChannelStatus>? subscription;
+        final statuses = <BleCommandChannelStatus>[];
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          subscription = harness.sdk.watchDeviceCommandChannelStatus().listen(
+            statuses.add,
+          );
+          await harness.deviceSosController.attach(
+            commandWriter: (_) async {},
+            shortCommandAvailable: true,
+            longCommandAvailable: true,
+          );
+          await pumpEventQueue(times: 2);
+
+          expect(
+            (await harness.sdk.getDeviceCommandChannelStatus()).isReady,
+            isTrue,
+          );
+          expect(statuses.last.isReady, isTrue);
+        } finally {
+          await subscription?.cancel();
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'public command channel follows native-owned EA04 readiness',
+      () async {
+        final adapter = _SnapshotProtectionPlatformAdapter(
+          const ProtectionPlatformSnapshot(
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            platform: ProtectionPlatform.android,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: true,
+            serviceBleReady: true,
+            nativeCommandServiceReady: true,
+            nativeCommandEa04Ready: true,
+            nativeCommandIdentityReady: true,
+            nativeCommandQueueHealthy: true,
+            nativeCommandReady: true,
+            protectedDeviceId: 'CF:82:00:00:00:01',
+            activeDeviceId: 'CF:82:00:00:00:01',
+          ),
+        );
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          protectionPlatformAdapter: adapter,
+        );
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.sdk.rehydrateProtectionState();
+
+          expect(
+            (await harness.sdk.getDeviceCommandChannelStatus()).isReady,
+            isTrue,
+          );
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'native-owned command channel is unavailable without writable EA04',
+      () async {
+        final adapter = _SnapshotProtectionPlatformAdapter(
+          const ProtectionPlatformSnapshot(
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            platform: ProtectionPlatform.android,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: true,
+            serviceBleReady: true,
+            nativeCommandServiceReady: true,
+            nativeCommandEa04Ready: false,
+            nativeCommandIdentityReady: true,
+            nativeCommandQueueHealthy: true,
+            nativeCommandReady: false,
+            protectedDeviceId: 'CF:82:00:00:00:01',
+            activeDeviceId: 'CF:82:00:00:00:01',
+          ),
+        );
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          protectionPlatformAdapter: adapter,
+        );
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.sdk.rehydrateProtectionState();
+
+          expect(
+            (await harness.sdk.getDeviceCommandChannelStatus()).isReady,
+            isFalse,
+          );
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    test('public command channel rejects a real Flutter disconnect', () async {
+      final harness = _SdkSosHarness(connectedBle: true);
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await harness.deviceSosController.attach(
+          commandWriter: (_) async {},
+          longCommandAvailable: true,
+        );
+        expect(
+          (await harness.sdk.getDeviceCommandChannelStatus()).isReady,
+          isTrue,
+        );
+
+        final connected = await harness.deviceRepository.getDeviceStatus();
+        harness.deviceRepository.emitStatus(
+          connected.copyWith(
+            deviceId: 'none',
+            canonicalHardwareId: null,
+            connected: false,
+            paired: false,
+            activated: false,
+          ),
+        );
+        await pumpEventQueue(times: 2);
+
+        expect(
+          (await harness.sdk.getDeviceCommandChannelStatus()).isReady,
+          isFalse,
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test(
+      'native-owned command channel rejects a mismatched physical identity',
+      () async {
+        final adapter = _SnapshotProtectionPlatformAdapter(
+          const ProtectionPlatformSnapshot(
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            platform: ProtectionPlatform.android,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: true,
+            serviceBleReady: true,
+            nativeCommandServiceReady: true,
+            nativeCommandEa04Ready: true,
+            nativeCommandIdentityReady: true,
+            nativeCommandQueueHealthy: true,
+            nativeCommandReady: true,
+            protectedDeviceId: 'CF:82:00:00:00:02',
+            activeDeviceId: 'CF:82:00:00:00:02',
+          ),
+        );
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          protectionPlatformAdapter: adapter,
+        );
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.sdk.rehydrateProtectionState();
+
+          expect(
+            (await harness.sdk.getDeviceCommandChannelStatus()).isReady,
+            isFalse,
+          );
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'SOS capability uses EA04 readiness while short capability stays separate',
+      () async {
+        final harness = _SdkSosHarness(connectedBle: true);
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.deviceSosController.attach(
+            commandWriter: (_) async {},
+            shortCommandAvailable: true,
+            longCommandAvailable: false,
+          );
+          expect(
+            (await harness.sdk.getSosCapability()).commandChannelReady,
+            isFalse,
+          );
+
+          await harness.deviceSosController.attach(
+            commandWriter: (_) async {},
+            shortCommandAvailable: true,
+            longCommandAvailable: true,
+          );
+          expect(
+            (await harness.sdk.getSosCapability()).commandChannelReady,
+            isTrue,
+          );
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
     test('terminal receive sequence rejects equal and older evidence', () {
       expect(
         isStrictlyNewerSosReceiveSequence(

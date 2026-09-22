@@ -2971,9 +2971,7 @@ class EixamConnectSdkImpl
 
   @override
   Future<BleCommandChannelStatus> getDeviceCommandChannelStatus() async {
-    return _toPublicCommandChannelStatus(
-      BleDebugRegistry.instance.currentState,
-    );
+    return _toPublicCommandChannelStatus();
   }
 
   @override
@@ -2989,11 +2987,9 @@ class EixamConnectSdkImpl
     }
 
     return _seedThenReplayLiveStream<BleCommandChannelStatus>(
-      seed: () =>
-          _toPublicCommandChannelStatus(BleDebugRegistry.instance.currentState),
-      live: BleDebugRegistry.instance
-          .watch()
-          .map(_toPublicCommandChannelStatus)
+      seed: () => _toPublicCommandChannelStatus(),
+      live: _operationalDiagnosticsController.stream
+          .map((_) => _toPublicCommandChannelStatus())
           .distinct(sameStatus),
       equals: sameStatus,
     );
@@ -3005,19 +3001,12 @@ class EixamConnectSdkImpl
       isScanning: state.isScanning,
       hasSelectedDevice: state.selectedDeviceId != null,
       eixamServiceDetected: state.eixamServiceFound,
-      commandChannelStatus: _toPublicCommandChannelStatus(state),
+      commandChannelStatus: _toPublicCommandChannelStatus(),
     );
   }
 
-  BleCommandChannelStatus _toPublicCommandChannelStatus(BleDebugState state) {
-    return BleCommandChannelStatus(
-      readiness: state.cmdFound
-          ? BleCommandChannelReadiness.ready
-          : BleCommandChannelReadiness.unavailable,
-      hasSelectedDevice: state.selectedDeviceId != null,
-      serviceConnected: state.eixamServiceFound,
-      commandWriterReady: state.commandWriterReady,
-    );
+  BleCommandChannelStatus _toPublicCommandChannelStatus() {
+    return _computeCommandChannelReadiness();
   }
 
   EixamBleScanResult _toPublicBleScanResult(BleScanResult scan) {
@@ -22890,7 +22879,7 @@ class EixamConnectSdkImpl
       hasAuthenticatedSession: authenticated,
       hasRegisteredDevice: hasRegisteredDevice,
       hasConnectedDevice: route.deviceConnected,
-      commandChannelReady: route.shortCommandAvailable,
+      commandChannelReady: route.longCommandAvailable,
       locationAvailable: locationAvailable,
       lifecycleAllowsActivation: lifecycleAllowsActivation,
       availableActivationPaths: Set<SosActivationPath>.unmodifiable(paths),
@@ -23072,6 +23061,9 @@ class EixamConnectSdkImpl
     final backendAvailable = _isBackendSosChannelAvailable();
     final protectionStatus = _protectionModeController.currentStatus;
     final platformOwnsBle = _isProtectionPlatformOwningBle;
+    final commandReadiness = _computeCommandChannelReadiness(
+      statusOverride: statusOverride,
+    );
     final nativeCommandReadiness = _nativeCommandReadinessForStatus(
       protectionStatus,
     );
@@ -23095,9 +23087,7 @@ class EixamConnectSdkImpl
     final shortCommandAvailable = platformOwnsBle
         ? nativeCommandReadiness.ready
         : flutterShortCommandPath;
-    final longCommandAvailable = platformOwnsBle
-        ? nativeCommandReadiness.ready
-        : flutterLongCommandPath;
+    final longCommandAvailable = commandReadiness.isReady;
     final deviceSosAvailable = deviceConnected && shortCommandAvailable;
     final capability = backendAvailable
         ? (deviceSosAvailable
@@ -23131,6 +23121,60 @@ class EixamConnectSdkImpl
       longCommandAvailable: longCommandAvailable,
       deviceSosAvailable: deviceSosAvailable,
       capability: capability,
+    );
+  }
+
+  BleCommandChannelStatus _computeCommandChannelReadiness({
+    DeviceStatus? statusOverride,
+  }) {
+    final connectedDevice =
+        statusOverride ?? _lastPublicDeviceStatus ?? _lastDeviceStatus;
+    final canonicalIdentityConnected =
+        connectedDevice?.connected == true &&
+        _physicalHardwareIdForStatus(connectedDevice) != null;
+    final protectionStatus = _protectionModeController.currentStatus;
+    final nativeOwner = _protectionNativeOwnerDeclared(protectionStatus);
+    final nativeReadiness = nativeOwner
+        ? _nativeCommandReadinessForStatus(protectionStatus)
+        : null;
+    final serviceConnected = nativeOwner
+        ? protectionStatus.serviceBleConnected
+        : connectedDevice?.connected == true;
+    final hasSelectedDevice = nativeOwner
+        ? canonicalIdentityConnected &&
+              _nativeProtectionTargetMatchesConnectedDevice(protectionStatus)
+        : canonicalIdentityConnected &&
+              _flutterCommandTargetMatchesConnectedIdentity(connectedDevice!);
+    final commandWriterReady = nativeOwner
+        ? nativeReadiness?.ready == true
+        : canonicalIdentityConnected &&
+              deviceSosController.longCommandAvailable;
+    final ready =
+        canonicalIdentityConnected &&
+        serviceConnected &&
+        hasSelectedDevice &&
+        commandWriterReady;
+    return BleCommandChannelStatus(
+      readiness: ready
+          ? BleCommandChannelReadiness.ready
+          : BleCommandChannelReadiness.unavailable,
+      hasSelectedDevice: hasSelectedDevice,
+      serviceConnected: serviceConnected,
+      commandWriterReady: commandWriterReady,
+    );
+  }
+
+  bool _flutterCommandTargetMatchesConnectedIdentity(DeviceStatus status) {
+    final selectedDeviceId =
+        BleDebugRegistry.instance.currentState.selectedDeviceId;
+    if (selectedDeviceId == null || selectedDeviceId.trim().isEmpty) {
+      return true;
+    }
+    return <String?>[
+      status.deviceId,
+      status.canonicalHardwareId,
+    ].whereType<String>().any(
+      (identity) => _connectionIdentitiesMatch(identity, selectedDeviceId),
     );
   }
 
