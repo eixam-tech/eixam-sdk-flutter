@@ -642,6 +642,9 @@ class EixamConnectSdkImpl
   _PhysicalSosTerminationTarget? _remoteTerminalDeviceClearPendingProof;
   _PhysicalSosTerminationTarget? _remoteTerminalDeviceClearAwaitingAckProof;
   _PhysicalSosTerminationTarget? _remoteTerminalDeviceClearAcknowledgedProof;
+  final Set<String> _supersededRemoteTerminalDeviceClearKeys = <String>{};
+  int? _freshPhysicalStartSupersededRemoteClearGeneration;
+  int? _postResolvePhysicalRxGeneration;
   int? _deviceInactiveBoundaryAfterTerminalGeneration;
   _ObservedOwnDeviceInactiveBoundary? _latestOwnDeviceInactiveBoundary;
   _TerminalDeviceCycleFence? _terminalDeviceCycleFence;
@@ -1844,6 +1847,9 @@ class EixamConnectSdkImpl
     _remoteTerminalDeviceClearPendingProof = null;
     _remoteTerminalDeviceClearAwaitingAckProof = null;
     _remoteTerminalDeviceClearAcknowledgedProof = null;
+    _supersededRemoteTerminalDeviceClearKeys.clear();
+    _freshPhysicalStartSupersededRemoteClearGeneration = null;
+    _postResolvePhysicalRxGeneration = null;
     _deviceInactiveBoundaryAfterTerminalGeneration = null;
     _latestOwnDeviceInactiveBoundary = null;
     _terminalDeviceCycleFence = null;
@@ -4469,6 +4475,7 @@ class EixamConnectSdkImpl
       return;
     }
     _clearRemoteTerminalAcknowledgementForNewDeviceCycle(status);
+    _supersedeRemoteTerminalDeviceClearForFreshPhysicalStart(status);
     if (_shouldSuppressDeviceSosWhileRemoteTerminalClearPending(status)) {
       return;
     }
@@ -4785,6 +4792,7 @@ class EixamConnectSdkImpl
           _deviceInactiveBoundaryAfterTerminalGeneration = null;
           _latestOwnDeviceInactiveBoundary = null;
           _pendingFreshPhysicalStartProof = null;
+          _freshPhysicalStartSupersededRemoteClearGeneration = null;
           _terminalBoundaryFromPreviousProcessGeneration = null;
         }
       }
@@ -4824,6 +4832,7 @@ class EixamConnectSdkImpl
         _deviceInactiveBoundaryAfterTerminalGeneration = null;
         _latestOwnDeviceInactiveBoundary = null;
         _pendingFreshPhysicalStartProof = null;
+        _freshPhysicalStartSupersededRemoteClearGeneration = null;
         _terminalBoundaryFromPreviousProcessGeneration = null;
       }
     }
@@ -12490,6 +12499,9 @@ class EixamConnectSdkImpl
     final device = _lastDeviceStatus;
     final hardwareId = _physicalHardwareIdForStatus(device);
     return !_disposed &&
+        !_supersededRemoteTerminalDeviceClearKeys.contains(
+          proof.operationKey,
+        ) &&
         session != null &&
         AuthoritativeSosLifecycleController.ownerScopeFor(session) ==
             proof.ownerScope &&
@@ -12658,6 +12670,41 @@ class EixamConnectSdkImpl
     return false;
   }
 
+  void _supersedeRemoteTerminalDeviceClearForFreshPhysicalStart(
+    DeviceSosStatus status,
+  ) {
+    final proof = _remoteTerminalDeviceClearPendingProof;
+    final freshStart = _pendingFreshPhysicalStartProof;
+    final packetSignature = status.lastPacketSignature?.trim();
+    if (proof == null ||
+        freshStart == null ||
+        freshStart.terminalGeneration != proof.generation ||
+        packetSignature == null ||
+        packetSignature != freshStart.packetSignature ||
+        !status.derivedFromBlePacket ||
+        status.transitionSource != DeviceSosTransitionSource.device ||
+        (status.state != DeviceSosState.preConfirm &&
+            status.state != DeviceSosState.active)) {
+      return;
+    }
+    _supersededRemoteTerminalDeviceClearKeys.add(proof.operationKey);
+    _freshPhysicalStartSupersededRemoteClearGeneration = proof.generation;
+    _remoteTerminalDeviceClearPendingProof = null;
+    if (_remoteTerminalDeviceClearAwaitingAckProof?.operationKey ==
+        proof.operationKey) {
+      _remoteTerminalDeviceClearAwaitingAckProof = null;
+    }
+    if (_remoteTerminalDeviceClearAcknowledgedProof?.operationKey ==
+        proof.operationKey) {
+      _remoteTerminalDeviceClearAcknowledgedProof = null;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_SUPERSEDED '
+      'reason=fresh_physical_start terminalGeneration=${proof.generation} '
+      'receiveSequence=${freshStart.nativeReceiveSequence}',
+    );
+  }
+
   void _scheduleRemoteTerminalDeviceClear(
     _PhysicalSosTerminationTarget? proof,
   ) {
@@ -12746,6 +12793,7 @@ class EixamConnectSdkImpl
       if (_remoteTerminalDeviceClearInFlightKey == proof.operationKey) {
         _remoteTerminalDeviceClearInFlightKey = null;
       }
+      _supersededRemoteTerminalDeviceClearKeys.remove(proof.operationKey);
     }
   }
 
@@ -13252,7 +13300,11 @@ class EixamConnectSdkImpl
     final validTerminalBoundaryPhysicalRisingEdge =
         status.state == DeviceSosState.preConfirm &&
         (status.previousState == DeviceSosState.inactive ||
-            status.previousState == DeviceSosState.resolved) &&
+            status.previousState == DeviceSosState.resolved ||
+            (_freshPhysicalStartSupersededRemoteClearGeneration ==
+                    terminal.generation &&
+                (status.previousState == DeviceSosState.active ||
+                    status.previousState == DeviceSosState.acknowledged))) &&
         status.lastPacketAt != null &&
         status.sosType != null &&
         (status.relayCount ?? 0) == 0 &&
@@ -14402,6 +14454,20 @@ class EixamConnectSdkImpl
           'SOS_TERMINAL_LIFECYCLE_PUBLISHED '
           'terminal=${terminalState.name}',
         );
+        if (terminalState == SosState.resolved) {
+          _recordBackendTerminalTransportState(
+            backendAction: 'resolve',
+            lifecycleStage: acceptedTerminal.stage,
+            terminalState: terminalState.name,
+          );
+          _postResolvePhysicalRxGeneration = acceptedTerminal.generation;
+          BleDebugRegistry.instance.recordEvent(
+            'SOS_TRANSPORT_TEARDOWN_DECISION '
+            'trigger=backend_resolved action=preserve '
+            'reason=incident_terminal_transport_persistent '
+            'lifecycleGeneration=${acceptedTerminal.generation}',
+          );
+        }
         _applyTerminalSosSuppression(
           reason: 'backend_terminal_state:${terminalState.name}',
           terminalState: terminalState,
@@ -14459,6 +14525,13 @@ class EixamConnectSdkImpl
           incident: repositoryIncident,
           recoveryStatus: lifecycle.recoveryStatus,
         );
+        if (repositoryIncident.state == SosState.acknowledged) {
+          _recordBackendTerminalTransportState(
+            backendAction: 'ack',
+            lifecycleStage: confirmedLifecycle.stage,
+            terminalState: repositoryIncident.state.name,
+          );
+        }
         final deviceSosStatus = deviceSosController.currentStatus;
         if (confirmedLifecycle.origin == SosLifecycleOrigin.localApp &&
             confirmedLifecycle.incident?.isBackendConfirmed == true &&
@@ -18423,6 +18496,58 @@ class EixamConnectSdkImpl
     );
   }
 
+  void _recordBackendTerminalTransportState({
+    required String backendAction,
+    required SosLifecycleStage lifecycleStage,
+    required String terminalState,
+  }) {
+    final protection = _protectionModeController.currentStatus;
+    final debug = BleDebugRegistry.instance.currentState;
+    final nativeOwner =
+        protection.modeState != ProtectionModeState.off &&
+        protection.bleOwner != ProtectionBleOwner.flutter;
+    final nativeGattConnected =
+        protection.serviceBleConnected || protection.serviceBleReady;
+    final flutterGattConnected = _lastDeviceStatus?.connected == true;
+    final owner = nativeOwner
+        ? _nativeCommandReadinessForStatus(protection).ready
+              ? 'nativeReady'
+              : 'nativePreparing'
+        : flutterGattConnected
+        ? 'flutter'
+        : 'none';
+    final ea01Subscribed = nativeOwner
+        ? protection.serviceBleReady
+        : debug.telNotifySubscribed;
+    final ea02Subscribed = nativeOwner
+        ? protection.serviceBleReady
+        : debug.sosNotifySubscribed;
+    final commandReady = nativeOwner
+        ? _nativeCommandReadinessForStatus(protection).ready
+        : debug.commandWriterReady ||
+              deviceSosController.shortCommandAvailable ||
+              deviceSosController.longCommandAvailable;
+    final deviceTransportReady =
+        (owner == 'nativeReady' && nativeGattConnected) ||
+        (owner == 'flutter' && flutterGattConnected && commandReady);
+    final connectedDevice = _lastPublicDeviceStatus ?? _lastDeviceStatus;
+    final connectedIdentityPresent =
+        connectedDevice?.deviceId.trim().isNotEmpty == true &&
+        (_physicalHardwareIdForStatus(connectedDevice)?.isNotEmpty == true ||
+            connectedDevice?.nodeId != null);
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_BACKEND_TERMINAL_TRANSPORT_STATE '
+      'backendAction=$backendAction lifecycleStage=${lifecycleStage.name} '
+      'terminalState=$terminalState '
+      'lifecycleGeneration=${_sosLifecycle.current.generation} owner=$owner '
+      'nativeGattConnected=$nativeGattConnected '
+      'flutterGattConnected=$flutterGattConnected '
+      'ea01Subscribed=$ea01Subscribed ea02Subscribed=$ea02Subscribed '
+      'commandReady=$commandReady deviceTransportReady=$deviceTransportReady '
+      'connectedIdentityPresent=$connectedIdentityPresent',
+    );
+  }
+
   void _handleProtectionPlatformSosEvent(ProtectionPlatformEvent event) {
     if (event.type == ProtectionPlatformEventType.bleNotificationReceived) {
       _lastNativeRawPayloadHex = event.payloadHex;
@@ -18665,6 +18790,23 @@ class EixamConnectSdkImpl
         'suppressionPredicate=${admission.predicate} '
         'reason=${admission.reason} admitted=${admission.admitted}',
       );
+      final postResolveGeneration = _postResolvePhysicalRxGeneration;
+      if (postResolveGeneration != null &&
+          terminalLifecycle?.generation == postResolveGeneration &&
+          parsedPacket != null &&
+          parsedPacket.sosType != 0) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_POST_RESOLVE_PHYSICAL_RX '
+          'producer=native_bridge '
+          'characteristic=${characteristicUuid ?? "unknown"} '
+          'byteLength=${bytes.length} packetType=sos '
+          'receiveSequence=${receiveSequence ?? -1} '
+          'classification=${effectiveClassificationKind.name} '
+          'admitted=${admission.admitted} rejected=${!admission.admitted} '
+          'reason=${admission.reason}',
+        );
+        _postResolvePhysicalRxGeneration = null;
+      }
       if (platformSosEventPacket != null &&
           physicalIdentityMatch &&
           receiveSequence != null) {
@@ -19603,6 +19745,7 @@ class EixamConnectSdkImpl
     _latestOwnDeviceInactiveBoundary = null;
     _terminalDeviceCycleFence = null;
     _pendingFreshPhysicalStartProof = null;
+    _freshPhysicalStartSupersededRemoteClearGeneration = null;
     _lastOwnDeviceTerminalNativeReceiveSequence = null;
     _lastOwnDeviceTerminalNativeGeneration = null;
     _lastOwnDeviceTerminalReceiveSequenceDomain = null;

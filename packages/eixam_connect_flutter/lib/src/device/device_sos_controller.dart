@@ -1329,6 +1329,20 @@ class DeviceSosController {
       );
     }
 
+    if (allowFreshPhysicalStartAfterTerminal &&
+        source == DeviceSosTransitionSource.device) {
+      return _MeshPacketResolution(
+        protocolState: protocolState,
+        resolvedState: DeviceSosState.preConfirm,
+        cycleKey: cycleKey,
+        downgradeSuppressed: protocolState == DeviceSosState.active,
+        classificationDecision: 'pre_sos',
+        classificationReason: 'fresh_physical_start_after_terminal',
+        reason: 'DEVICE_SOS_FRESH_PHYSICAL_START_AFTER_TERMINAL',
+        decoderNote: 'DEVICE_SOS_FRESH_PHYSICAL_START_AFTER_TERMINAL',
+      );
+    }
+
     final replaysConsumedTerminalPacket =
         _isClosedState(currentStatus.state) &&
         _terminalCyclePacketSignatures.contains(packetSignature);
@@ -1694,7 +1708,6 @@ class DeviceSosController {
     }
     if (allowFreshPhysicalStartAfterTerminal &&
         source == DeviceSosTransitionSource.device &&
-        _isClosedState(currentStatus.state) &&
         resolution.resolvedState == DeviceSosState.preConfirm) {
       _pendingTerminalCommand = null;
       BleDebugRegistry.instance.recordEvent(

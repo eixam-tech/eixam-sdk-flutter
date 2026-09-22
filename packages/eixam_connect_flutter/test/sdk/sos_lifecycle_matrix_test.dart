@@ -25,6 +25,7 @@ import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
 import 'package:eixam_connect_flutter/src/sdk/operational_realtime_client.dart';
 import 'package:eixam_connect_flutter/src/sdk/protection_platform_adapter.dart';
 import 'package:eixam_connect_flutter/src/sdk/sdk_mqtt_contract.dart';
+import 'package:eixam_connect_flutter/src/sdk/sos_incident_correlation.dart';
 import 'package:eixam_connect_flutter/src/sdk/sos_location_ownership_orchestrator.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -2957,6 +2958,255 @@ void main() {
             observedMessages
                 .where(
                   (message) => message.contains('SOS_NEW_GENERATION_ACCEPTED'),
+                )
+                .length,
+            2,
+          );
+        } finally {
+          await debugSubscription.cancel();
+          await harness.dispose();
+          await adapter.dispose();
+        }
+      },
+    );
+
+    test(
+      'three physical starts survive backend acknowledge and resolve with native transport ready',
+      () async {
+        const startHex = '34120000a5b109';
+        final adapter = _SnapshotProtectionPlatformAdapter(
+          const ProtectionPlatformSnapshot(
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            runtimeState: ProtectionRuntimeState.active,
+            coverageLevel: ProtectionCoverageLevel.full,
+            platform: ProtectionPlatform.android,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: true,
+            serviceBleReady: true,
+            nativeCommandServiceReady: true,
+            nativeCommandEa04Ready: true,
+            nativeCommandIdentityReady: true,
+            nativeCommandQueueHealthy: true,
+            nativeCommandReady: true,
+            protectedDeviceId: 'CF:82:00:00:00:01',
+            activeDeviceId: 'CF:82:00:00:00:01',
+          ),
+        );
+        final repository = _IncidentIdAwareSosRepository();
+        final harness = _SdkSosHarness(
+          sosRepository: repository,
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+          protectionPlatformAdapter: adapter,
+          deviceCountdown: Duration.zero,
+          appTriggeredSosBridgeWindow: const Duration(milliseconds: 10),
+        );
+        final observedMessages = <String>[];
+        final debugSubscription = BleDebugRegistry.instance.watch().listen((
+          state,
+        ) {
+          if (state.events.isNotEmpty) {
+            observedMessages.add(state.events.last.message);
+          }
+        });
+        var receiveSequence = 0;
+
+        void emitPhysicalStart() {
+          receiveSequence += 1;
+          final timestamp = DateTime.now().toUtc().add(
+            Duration(milliseconds: receiveSequence),
+          );
+          adapter.emit(
+            ProtectionPlatformEvent(
+              type: ProtectionPlatformEventType.bleNotificationReceived,
+              timestamp: timestamp,
+              payloadHex: startHex,
+              source: 'sos',
+              characteristicUuid: EixamBleProtocol.sosNotifyCharacteristicUuid,
+              byteLength: startHex.length ~/ 2,
+              packetType: 'sos',
+              firstOpcode: '0x34',
+              receiveSequence: receiveSequence,
+              receiveCorrelation: 'post-resolve-$receiveSequence',
+              connectedDeviceMarker: 'CF:82:00:00:00:01',
+            ),
+          );
+          adapter.emit(
+            ProtectionPlatformEvent(
+              type: ProtectionPlatformEventType.ownDeviceSosLifecycleObserved,
+              timestamp: timestamp,
+              reason: 'own:sos:$startHex',
+              classification: 'ownDeviceSos',
+            ),
+          );
+        }
+
+        Future<void> waitFor(FutureOr<bool> Function() predicate) async {
+          for (var attempt = 0; attempt < 100; attempt += 1) {
+            if (await predicate()) {
+              return;
+            }
+            await Future<void>.delayed(const Duration(milliseconds: 2));
+            await pumpEventQueue(times: 2);
+          }
+        }
+
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await harness.deviceRegistryRepository.upsertRegisteredDevice(
+            hardwareId: '4660',
+            firmwareVersion: '2.7.54',
+            hardwareModel: 'EIXAM R1',
+            pairedAt: DateTime.utc(2026, 9, 22),
+          );
+          await harness.sdk.rehydrateProtectionState();
+
+          for (var cycle = 1; cycle <= 3; cycle += 1) {
+            emitPhysicalStart();
+            await waitFor(() async {
+              final lifecycle = await harness.sdk.getSosLifecycle();
+              return lifecycle.generation == cycle &&
+                  lifecycle.stage == SosLifecycleStage.active;
+            });
+
+            final active = await harness.sdk.getSosLifecycle();
+            expect(active.generation, cycle);
+            expect(active.stage, SosLifecycleStage.active);
+            expect(active.origin, SosLifecycleOrigin.connectedLocalDevice);
+            await waitFor(
+              () => harness.sosRepository.triggerCallCount == cycle,
+            );
+            expect(harness.sosRepository.triggerCallCount, cycle);
+            final backendBound = await harness.sdk.getSosLifecycle();
+            expect(
+              sosIncidentEvidenceMatchesLifecycle(
+                backendBound,
+                harness.sosRepository.currentIncident,
+              ),
+              isTrue,
+              reason: 'cycle $cycle must bind its backend incident',
+            );
+
+            harness.sosRepository.currentIncident = harness
+                .sosRepository
+                .currentIncident
+                .copyWith(
+                  state: SosState.acknowledged,
+                  isBackendConfirmed: true,
+                );
+            harness.sosRepository.stateController.add(SosState.acknowledged);
+            await waitFor(
+              () =>
+                  observedMessages
+                      .where(
+                        (message) => message.contains(
+                          'SOS_BACKEND_TERMINAL_TRANSPORT_STATE '
+                          'backendAction=ack',
+                        ),
+                      )
+                      .length ==
+                  cycle,
+            );
+            expect(
+              (await harness.sdk.getSosLifecycle()).stage,
+              SosLifecycleStage.active,
+            );
+
+            harness.sosRepository.currentIncident = harness
+                .sosRepository
+                .currentIncident
+                .copyWith(state: SosState.resolved, isBackendConfirmed: true);
+            harness.sosRepository.stateController.add(SosState.resolved);
+            await waitFor(() async {
+              final lifecycle = await harness.sdk.getSosLifecycle();
+              return lifecycle.generation == cycle &&
+                  lifecycle.stage == SosLifecycleStage.resolved;
+            });
+
+            final resolved = await harness.sdk.getSosLifecycle();
+            expect(resolved.generation, cycle);
+            expect(resolved.stage, SosLifecycleStage.resolved);
+            final protection = await harness.sdk.getProtectionStatus();
+            expect(protection.bleOwner, ProtectionBleOwner.androidService);
+            expect(protection.serviceBleConnected, isTrue);
+            expect(protection.serviceBleReady, isTrue);
+            expect(protection.nativeCommandReady, isTrue);
+          }
+
+          expect(
+            adapter.commands.where((command) => command.bytes[0] == 0x04),
+            hasLength(3),
+          );
+          expect(
+            observedMessages
+                .where(
+                  (message) =>
+                      message.contains(
+                        'SOS_BACKEND_TERMINAL_TRANSPORT_STATE '
+                        'backendAction=ack',
+                      ) &&
+                      message.contains('owner=nativeReady') &&
+                      message.contains('nativeGattConnected=true') &&
+                      message.contains('ea01Subscribed=true') &&
+                      message.contains('ea02Subscribed=true') &&
+                      message.contains('commandReady=true') &&
+                      message.contains('deviceTransportReady=true') &&
+                      message.contains('connectedIdentityPresent=true'),
+                )
+                .length,
+            3,
+          );
+          expect(
+            observedMessages
+                .where(
+                  (message) =>
+                      message.contains(
+                        'SOS_BACKEND_TERMINAL_TRANSPORT_STATE '
+                        'backendAction=resolve',
+                      ) &&
+                      message.contains('lifecycleStage=resolved') &&
+                      message.contains('nativeGattConnected=true') &&
+                      message.contains('ea01Subscribed=true') &&
+                      message.contains('ea02Subscribed=true'),
+                )
+                .length,
+            3,
+          );
+          expect(
+            observedMessages
+                .where(
+                  (message) =>
+                      message.contains('SOS_POST_RESOLVE_PHYSICAL_RX') &&
+                      message.contains('classification=ownDeviceSos') &&
+                      message.contains('admitted=true') &&
+                      message.contains('rejected=false'),
+                )
+                .length,
+            2,
+          );
+          expect(
+            observedMessages
+                .where(
+                  (message) => message.contains(
+                    'SOS_TRANSPORT_TEARDOWN_DECISION '
+                    'trigger=backend_resolved action=preserve',
+                  ),
+                )
+                .length,
+            3,
+          );
+          expect(
+            observedMessages
+                .where(
+                  (message) => message.contains(
+                    'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_SUPERSEDED '
+                    'reason=fresh_physical_start',
+                  ),
                 )
                 .length,
             2,
@@ -7956,6 +8206,70 @@ final class _SnapshotProtectionPlatformAdapter extends Fake
   @override
   Future<ProtectionPendingNativeSosCreate?>
   peekPendingNativeSosCreate() async => null;
+}
+
+final class _IncidentIdAwareSosRepository extends FakeSosRepository {
+  @override
+  Future<SosIncident> triggerSos({
+    String? message,
+    required String triggerSource,
+    TrackingPosition? positionSnapshot,
+    String? deviceId,
+    String? hardwareId,
+    int? originatorNodeId,
+    int? relayNodeId,
+    String? relayDeviceId,
+    String? relayHardwareId,
+    String? relaySource,
+    String? incidentId,
+    String? cycleKey,
+    OsSosWidgetActivation? osWidgetActivation,
+    SdkDeviceBatterySnapshot? deviceBattery,
+    SdkCoverageSnapshot? deviceCoverage,
+    int? mobileBattery,
+    SdkCoverageSnapshot? mobileCoverage,
+  }) async {
+    final created = await super.triggerSos(
+      message: message,
+      triggerSource: triggerSource,
+      positionSnapshot: positionSnapshot,
+      deviceId: deviceId,
+      hardwareId: hardwareId,
+      originatorNodeId: originatorNodeId,
+      relayNodeId: relayNodeId,
+      relayDeviceId: relayDeviceId,
+      relayHardwareId: relayHardwareId,
+      relaySource: relaySource,
+      incidentId: incidentId,
+      cycleKey: cycleKey,
+      osWidgetActivation: osWidgetActivation,
+      deviceBattery: deviceBattery,
+      deviceCoverage: deviceCoverage,
+      mobileBattery: mobileBattery,
+      mobileCoverage: mobileCoverage,
+    );
+    final provisionalIncidentId = incidentId == null || incidentId.isEmpty
+        ? created.id
+        : incidentId;
+    currentIncident = SosIncident(
+      id: 'backend-incident-$triggerCallCount',
+      state: created.state,
+      createdAt: created.createdAt,
+      positionSnapshot: created.positionSnapshot,
+      triggerSource: created.triggerSource,
+      message: created.message,
+      deviceId: created.deviceId,
+      hardwareId: created.hardwareId,
+      originatorNodeId: created.originatorNodeId,
+      relayNodeId: created.relayNodeId,
+      relaySource: created.relaySource,
+      cycleKey: cycleKey,
+      deliveryChannel: created.deliveryChannel,
+      isBackendConfirmed: created.isBackendConfirmed,
+      provisionalIncidentId: provisionalIncidentId,
+    );
+    return currentIncident;
+  }
 }
 
 final class _AlreadyActiveLookupRepository extends FakeSosRepository

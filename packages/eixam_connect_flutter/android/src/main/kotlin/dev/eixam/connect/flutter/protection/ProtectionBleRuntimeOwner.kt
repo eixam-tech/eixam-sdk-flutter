@@ -1810,7 +1810,10 @@ internal class ProtectionBleRuntimeOwner(
     }
 
     private fun readPacketOriginatorNodeId(payload: List<Int>): Int? {
-        if (payload.size == 6 && (payload[0] == 0xE1 || payload[0] == 0xE2)) {
+        if (
+            payload.size == 6 &&
+            (payload[0] == 0xE1 || payload[0] == 0xE2 || payload[0] == 0xE3)
+        ) {
             return readU32OrNull(payload, 2)
         }
         if (payload.size == 7 || payload.size == 12) {
@@ -2287,6 +2290,12 @@ internal class ProtectionBleRuntimeOwner(
                             "gattConnected=${bluetoothGatt === gatt} " +
                             "subscriptionsActive=${subscriptionStep == SubscriptionStep.complete} " +
                             "nativeCommandReady=${lastPublishedCommandReadiness?.ready == true}",
+                    )
+                    Log.i(
+                        logTag,
+                        "SOS_TRANSPORT_TEARDOWN_DECISION " +
+                            "trigger=sos_terminal_command_success action=preserve " +
+                            "reason=incident_terminal_transport_persistent",
                     )
                 }
                 drainQueuedCommand(gatt)

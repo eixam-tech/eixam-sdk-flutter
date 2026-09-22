@@ -186,7 +186,7 @@ internal object ProtectionBleSosIdentityClassifier {
         }
         val opcode = payload[0] and 0xFF
         val subcode = payload[1] and 0xFF
-        if (opcode != 0xE1 && opcode != 0xE2) {
+        if (opcode != 0xE1 && opcode != 0xE2 && opcode != 0xE3) {
             return null
         }
         if (subcode !in 0x01..0x03) {

@@ -63,6 +63,24 @@ class ProtectionBleSosIdentityClassifierTest {
     }
 
     @Test
+    fun `firmware E3 backend evidence stays own-device and lifecycle-only`() {
+        val backendEvidence = listOf(0xE3, 0x01, 0xA8, 0x1A, 0x4B, 0x59)
+
+        for (source in listOf(ProtectionBleSosRelaySource.tel, ProtectionBleSosRelaySource.sos)) {
+            val classification = ProtectionBleSosIdentityClassifier.classify(
+                payload = backendEvidence,
+                connectedNodeId = 1498094248,
+                source = source,
+            )
+            val route = ProtectionBleSosNativeRouting.route(classification)
+
+            assertTrue(classification is ProtectionBleSosIdentityClassification.OwnEvent)
+            assertTrue(route.observeLocalLifecycle)
+            assertFalse(route.emitSosEventReceived)
+        }
+    }
+
+    @Test
     fun `own-device SOS payload is classified as local`() {
         val classification = ProtectionBleSosIdentityClassifier.classify(
             payload = listOf(0x34, 0x12, 0x00, 0x00, 0x00, 0x40, 0x09),
