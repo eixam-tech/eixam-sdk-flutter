@@ -37,6 +37,74 @@ void main() {
     );
   });
 
+  test('retained same native session preserves a preparing transition', () {
+    final projection = projectDeviceConnection(
+      flutterRepositoryConnected: false,
+      nativeOwnerDeclared: true,
+      nativeOwnerReady: false,
+      nativeGattConnected: true,
+      sameDeviceIdentity: true,
+      nativeConnectionContinuityProven: true,
+    );
+
+    expect(projection.visibleConnected, isTrue);
+    expect(projection.falseDisconnectBlocked, isTrue);
+    expect(
+      projection.reason,
+      DeviceConnectionProjectionReason.sameNativeSessionContinuity,
+    );
+  });
+
+  test('cold native preparing state has no connection continuity', () {
+    final projection = projectDeviceConnection(
+      flutterRepositoryConnected: false,
+      nativeOwnerDeclared: true,
+      nativeOwnerReady: false,
+      nativeGattConnected: true,
+      sameDeviceIdentity: true,
+    );
+
+    expect(projection.visibleConnected, isFalse);
+    expect(
+      projection.reason,
+      DeviceConnectionProjectionReason.nativeOwnerNotReady,
+    );
+  });
+
+  test('continuity proof cannot hide native GATT loss', () {
+    final projection = projectDeviceConnection(
+      flutterRepositoryConnected: false,
+      nativeOwnerDeclared: true,
+      nativeOwnerReady: false,
+      nativeGattConnected: false,
+      sameDeviceIdentity: true,
+      nativeConnectionContinuityProven: true,
+    );
+
+    expect(projection.visibleConnected, isFalse);
+    expect(
+      projection.reason,
+      DeviceConnectionProjectionReason.nativeGattDisconnected,
+    );
+  });
+
+  test('continuity proof cannot hide a physical identity change', () {
+    final projection = projectDeviceConnection(
+      flutterRepositoryConnected: false,
+      nativeOwnerDeclared: true,
+      nativeOwnerReady: false,
+      nativeGattConnected: true,
+      sameDeviceIdentity: false,
+      nativeConnectionContinuityProven: true,
+    );
+
+    expect(projection.visibleConnected, isFalse);
+    expect(
+      projection.reason,
+      DeviceConnectionProjectionReason.nativeIdentityMismatch,
+    );
+  });
+
   test('native identity mismatch cannot mask a real disconnect', () {
     final projection = projectDeviceConnection(
       flutterRepositoryConnected: false,
@@ -87,34 +155,36 @@ void main() {
     );
   });
 
-  test('does not bridge when Flutter is already connected or native is dark',
-      () {
-    expect(
-      shouldBridgeProtectionBleConnection(
-        rawConnected: true,
-        bleOwner: ProtectionBleOwner.androidService,
-        protectionReportsLiveConnection: true,
-        belongsToKnownDevice: true,
-      ),
-      isFalse,
-    );
-    expect(
-      shouldBridgeProtectionBleConnection(
-        rawConnected: false,
-        bleOwner: ProtectionBleOwner.androidService,
-        protectionReportsLiveConnection: false,
-        belongsToKnownDevice: true,
-      ),
-      isFalse,
-    );
-    expect(
-      shouldBridgeProtectionBleConnection(
-        rawConnected: false,
-        bleOwner: ProtectionBleOwner.androidService,
-        protectionReportsLiveConnection: true,
-        belongsToKnownDevice: false,
-      ),
-      isFalse,
-    );
-  });
+  test(
+    'does not bridge when Flutter is already connected or native is dark',
+    () {
+      expect(
+        shouldBridgeProtectionBleConnection(
+          rawConnected: true,
+          bleOwner: ProtectionBleOwner.androidService,
+          protectionReportsLiveConnection: true,
+          belongsToKnownDevice: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldBridgeProtectionBleConnection(
+          rawConnected: false,
+          bleOwner: ProtectionBleOwner.androidService,
+          protectionReportsLiveConnection: false,
+          belongsToKnownDevice: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldBridgeProtectionBleConnection(
+          rawConnected: false,
+          bleOwner: ProtectionBleOwner.androidService,
+          protectionReportsLiveConnection: true,
+          belongsToKnownDevice: false,
+        ),
+        isFalse,
+      );
+    },
+  );
 }

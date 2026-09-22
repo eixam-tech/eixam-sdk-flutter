@@ -3,6 +3,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 enum DeviceConnectionProjectionReason {
   flutterRepositoryConnected,
   authoritativeNativeConnection,
+  sameNativeSessionContinuity,
   nativeOwnerNotReady,
   nativeGattDisconnected,
   nativeIdentityMismatch,
@@ -35,6 +36,7 @@ DeviceConnectionProjection projectDeviceConnection({
   required bool nativeOwnerReady,
   required bool nativeGattConnected,
   required bool sameDeviceIdentity,
+  bool nativeConnectionContinuityProven = false,
 }) {
   if (flutterRepositoryConnected) {
     return const DeviceConnectionProjection(
@@ -48,6 +50,16 @@ DeviceConnectionProjection projectDeviceConnection({
       visibleConnected: true,
       falseDisconnectBlocked: true,
       reason: DeviceConnectionProjectionReason.authoritativeNativeConnection,
+    );
+  }
+  if (nativeOwnerDeclared &&
+      nativeConnectionContinuityProven &&
+      nativeGattConnected &&
+      sameDeviceIdentity) {
+    return const DeviceConnectionProjection(
+      visibleConnected: true,
+      falseDisconnectBlocked: true,
+      reason: DeviceConnectionProjectionReason.sameNativeSessionContinuity,
     );
   }
   final reason = !nativeOwnerDeclared

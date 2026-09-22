@@ -2580,6 +2580,136 @@ void main() {
     );
 
     test(
+      'native connection continuity preserves preparing but clears on real disconnect',
+      () async {
+        const readySnapshot = ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          serviceRunning: true,
+          runtimeActive: true,
+          runtimeState: ProtectionRuntimeState.active,
+          coverageLevel: ProtectionCoverageLevel.full,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          serviceBleConnected: true,
+          serviceBleReady: true,
+          nativeCommandServiceReady: true,
+          nativeCommandEa04Ready: true,
+          nativeCommandIdentityReady: true,
+          nativeCommandQueueHealthy: true,
+          nativeCommandReady: true,
+          lastPlatformEvent: 'nativeCommandReadinessChanged',
+          protectedDeviceId: 'CF:82:00:00:00:01',
+          activeDeviceId: 'CF:82:00:00:00:01',
+        );
+        final adapter = _SnapshotProtectionPlatformAdapter(readySnapshot);
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+          protectionPlatformAdapter: adapter,
+        );
+        final observedMessages = <String>[];
+        final visibleConnectionStates = <bool>[];
+        StreamSubscription<DeviceStatus>? deviceStatusSubscription;
+        final debugSubscription = BleDebugRegistry.instance.watch().listen((
+          state,
+        ) {
+          if (state.events.isNotEmpty) {
+            observedMessages.add(state.events.last.message);
+          }
+        });
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await harness.sdk.rehydrateProtectionState();
+          deviceStatusSubscription = harness.sdk.watchDeviceStatus().listen(
+            (status) => visibleConnectionStates.add(status.connected),
+          );
+          harness.deviceRepository.emitStatus(
+            buildDeviceStatus(
+              deviceId: 'ble-1',
+              nodeId: 0x1234,
+              canonicalHardwareId: 'CF:82:00:00:00:01',
+              connected: false,
+              paired: true,
+              activated: true,
+            ),
+          );
+          await pumpEventQueue(times: 5);
+          expect((await harness.sdk.getDeviceStatus()).connected, isTrue);
+
+          adapter.snapshot = const ProtectionPlatformSnapshot(
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            runtimeState: ProtectionRuntimeState.active,
+            coverageLevel: ProtectionCoverageLevel.full,
+            platform: ProtectionPlatform.android,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: true,
+            serviceBleReady: false,
+            nativeCommandQueueHealthy: true,
+            nativeCommandReady: false,
+            lastPlatformEvent: 'runtimeStarted',
+            protectedDeviceId: 'CF:82:00:00:00:01',
+            activeDeviceId: 'CF:82:00:00:00:01',
+          );
+          await harness.sdk.rehydrateProtectionState();
+          await pumpEventQueue(times: 5);
+          expect((await harness.sdk.getDeviceStatus()).connected, isTrue);
+          expect(
+            observedMessages.any(
+              (message) =>
+                  message.contains('DEVICE_CONNECTION_TRANSITION_PRESERVED') &&
+                  message.contains('previousOwner=nativeReady') &&
+                  message.contains('nextOwner=nativePreparing') &&
+                  message.contains('visibleConnected=true') &&
+                  message.contains(
+                    'preservationReason='
+                    'same_native_session_internal_transition',
+                  ),
+            ),
+            isTrue,
+          );
+
+          adapter.snapshot = const ProtectionPlatformSnapshot(
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            runtimeState: ProtectionRuntimeState.active,
+            coverageLevel: ProtectionCoverageLevel.partial,
+            platform: ProtectionPlatform.android,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: false,
+            serviceBleReady: false,
+            nativeCommandQueueHealthy: false,
+            nativeCommandReady: false,
+            lastBleServiceEvent: 'deviceDisconnected',
+            protectedDeviceId: 'CF:82:00:00:00:01',
+            activeDeviceId: 'CF:82:00:00:00:01',
+          );
+          await harness.sdk.rehydrateProtectionState();
+          await pumpEventQueue(times: 5);
+          expect((await harness.sdk.getDeviceStatus()).connected, isFalse);
+          expect(
+            observedMessages.any(
+              (message) =>
+                  message.contains('DEVICE_CONNECTION_CONTINUITY_CLEARED') &&
+                  message.contains('reason=explicit_native_gatt_disconnect'),
+            ),
+            isTrue,
+          );
+        } finally {
+          await deviceStatusSubscription?.cancel();
+          await debugSubscription.cancel();
+          await harness.dispose();
+          await adapter.dispose();
+        }
+      },
+    );
+
+    test(
       'native-ready EA02 delivers the first physical seven-byte SOS packet',
       () async {
         const payloadHex = '34120000a5b109';
@@ -3221,6 +3351,32 @@ void main() {
               reason: 'cycle $cycle must bind its backend incident',
             );
 
+            adapter.snapshot = const ProtectionPlatformSnapshot(
+              backgroundCapabilityReady: true,
+              serviceRunning: true,
+              runtimeActive: true,
+              runtimeState: ProtectionRuntimeState.active,
+              coverageLevel: ProtectionCoverageLevel.full,
+              platform: ProtectionPlatform.android,
+              bleOwner: ProtectionBleOwner.androidService,
+              serviceBleConnected: true,
+              serviceBleReady: false,
+              nativeCommandQueueHealthy: true,
+              nativeCommandReady: false,
+              lastPlatformEvent: 'runtimeStarted',
+              protectedDeviceId: 'CF:82:00:00:00:01',
+              activeDeviceId: 'CF:82:00:00:00:01',
+            );
+            await harness.sdk.rehydrateProtectionState();
+            await pumpEventQueue(times: 5);
+            expect(
+              (await harness.sdk.getDeviceStatus()).connected,
+              isTrue,
+              reason:
+                  'cycle $cycle must preserve the established native session '
+                  'while command readiness is rebuilt',
+            );
+
             harness.sosRepository.currentIncident = harness
                 .sosRepository
                 .currentIncident
@@ -3250,6 +3406,18 @@ void main() {
               (await harness.sdk.getSosLifecycle()).incident?.state,
               SosState.acknowledged,
             );
+            harness.sosRepository.currentIncident = harness
+                .sosRepository
+                .currentIncident
+                .copyWith(state: SosState.sent, isBackendConfirmed: true);
+            harness.sosRepository.stateController.add(SosState.sent);
+            await pumpEventQueue(times: 5);
+            expect(
+              await harness.sdk.getSosState(),
+              SosState.acknowledged,
+              reason:
+                  'cycle $cycle device/readiness refresh must not regress ACK',
+            );
             expect(
               adapter.commands.where((command) => command.bytes[0] == 0x07),
               hasLength(cycle - 1),
@@ -3266,6 +3434,28 @@ void main() {
                   .length,
               cycle,
             );
+
+            adapter.snapshot = const ProtectionPlatformSnapshot(
+              backgroundCapabilityReady: true,
+              serviceRunning: true,
+              runtimeActive: true,
+              runtimeState: ProtectionRuntimeState.active,
+              coverageLevel: ProtectionCoverageLevel.full,
+              platform: ProtectionPlatform.android,
+              bleOwner: ProtectionBleOwner.androidService,
+              serviceBleConnected: true,
+              serviceBleReady: true,
+              nativeCommandServiceReady: true,
+              nativeCommandEa04Ready: true,
+              nativeCommandIdentityReady: true,
+              nativeCommandQueueHealthy: true,
+              nativeCommandReady: true,
+              lastPlatformEvent: 'nativeCommandReadinessChanged',
+              protectedDeviceId: 'CF:82:00:00:00:01',
+              activeDeviceId: 'CF:82:00:00:00:01',
+            );
+            await harness.sdk.rehydrateProtectionState();
+            await pumpEventQueue(times: 5);
 
             harness.sosRepository.currentIncident = harness
                 .sosRepository
@@ -3351,6 +3541,48 @@ void main() {
               runtimeEnsureCountBeforeCycles,
               reason: 'terminal cleanup must not restart Protection runtime',
             );
+
+            adapter.snapshot = const ProtectionPlatformSnapshot(
+              backgroundCapabilityReady: true,
+              serviceRunning: true,
+              runtimeActive: true,
+              runtimeState: ProtectionRuntimeState.active,
+              coverageLevel: ProtectionCoverageLevel.full,
+              platform: ProtectionPlatform.android,
+              bleOwner: ProtectionBleOwner.androidService,
+              serviceBleConnected: true,
+              serviceBleReady: false,
+              nativeCommandQueueHealthy: true,
+              nativeCommandReady: false,
+              lastPlatformEvent: 'runtimeStarted',
+              protectedDeviceId: 'CF:82:00:00:00:01',
+              activeDeviceId: 'CF:82:00:00:00:01',
+            );
+            await harness.sdk.rehydrateProtectionState();
+            await pumpEventQueue(times: 5);
+            expect((await harness.sdk.getDeviceStatus()).connected, isTrue);
+
+            adapter.snapshot = const ProtectionPlatformSnapshot(
+              backgroundCapabilityReady: true,
+              serviceRunning: true,
+              runtimeActive: true,
+              runtimeState: ProtectionRuntimeState.active,
+              coverageLevel: ProtectionCoverageLevel.full,
+              platform: ProtectionPlatform.android,
+              bleOwner: ProtectionBleOwner.androidService,
+              serviceBleConnected: true,
+              serviceBleReady: true,
+              nativeCommandServiceReady: true,
+              nativeCommandEa04Ready: true,
+              nativeCommandIdentityReady: true,
+              nativeCommandQueueHealthy: true,
+              nativeCommandReady: true,
+              lastPlatformEvent: 'nativeCommandReadinessChanged',
+              protectedDeviceId: 'CF:82:00:00:00:01',
+              activeDeviceId: 'CF:82:00:00:00:01',
+            );
+            await harness.sdk.rehydrateProtectionState();
+            await pumpEventQueue(times: 5);
           }
 
           emitPhysicalStart();
@@ -3433,16 +3665,61 @@ void main() {
                         'SOS_BACKEND_TERMINAL_TRANSPORT_STATE '
                         'backendAction=ack',
                       ) &&
-                      message.contains('owner=nativeReady') &&
+                      message.contains('owner=nativePreparing') &&
                       message.contains('nativeGattConnected=true') &&
-                      message.contains('ea01Subscribed=true') &&
-                      message.contains('ea02Subscribed=true') &&
-                      message.contains('commandReady=true') &&
-                      message.contains('deviceTransportReady=true') &&
+                      message.contains('ea01Subscribed=false') &&
+                      message.contains('ea02Subscribed=false') &&
+                      message.contains('commandReady=false') &&
+                      message.contains('deviceTransportReady=false') &&
                       message.contains('connectedIdentityPresent=true'),
                 )
                 .length,
             3,
+          );
+          expect(
+            observedMessages
+                .where(
+                  (message) =>
+                      message.contains('SOS_ACK_PRESENTATION_CONTINUITY') &&
+                      message.contains('action=apply_acknowledged') &&
+                      message.contains('owner=nativePreparing') &&
+                      message.contains('visibleConnected=true'),
+                )
+                .length,
+            3,
+          );
+          expect(
+            observedMessages
+                .where(
+                  (message) =>
+                      message.contains('SOS_ACK_PRESENTATION_CONTINUITY') &&
+                      message.contains('action=preserve_acknowledged'),
+                )
+                .length,
+            greaterThanOrEqualTo(3),
+          );
+          expect(
+            observedMessages
+                .where(
+                  (message) =>
+                      message.contains(
+                        'DEVICE_CONNECTION_TRANSITION_PRESERVED',
+                      ) &&
+                      message.contains('previousOwner=nativeReady') &&
+                      message.contains('nextOwner=nativePreparing') &&
+                      message.contains('visibleConnected=true') &&
+                      message.contains('retainedIdentityPresent=true') &&
+                      message.contains('nativeGattConnected=true') &&
+                      message.contains('nativeCommandReady=false') &&
+                      message.contains('runtimeRunning=true') &&
+                      message.contains('reason=runtimeStarted') &&
+                      message.contains(
+                        'preservationReason='
+                        'same_native_session_internal_transition',
+                      ),
+                )
+                .length,
+            greaterThanOrEqualTo(1),
           );
           expect(
             observedMessages

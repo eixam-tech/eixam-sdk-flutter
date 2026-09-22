@@ -601,6 +601,10 @@ class EixamConnectSdkImpl
   RealtimeEvent? _lastRealtimeEvent;
   DeviceStatus? _lastDeviceStatus;
   DeviceStatus? _lastPublicDeviceStatus;
+  _CanonicalNativeConnectionProof? _canonicalNativeConnectionProof;
+  int _canonicalNativeConnectionProofSequence = 0;
+  String? _lastProjectedDeviceConnectionOwner;
+  String? _lastConnectionTransitionPreservedSignature;
   BleNotificationNavigationRequest? _pendingBleNotificationNavigationRequest;
   final List<EixamNotificationIntent> _pendingNotificationIntents =
       <EixamNotificationIntent>[];
@@ -621,6 +625,7 @@ class EixamConnectSdkImpl
   SdkBridgeDiagnostics _bridgeDiagnostics = const SdkBridgeDiagnostics();
   SdkResolvedLocation? _lastResolvedLocation;
   SosState _publicSosState = SosState.idle;
+  int? _publicAcknowledgedGeneration;
   static const Duration _foregroundSosReconciliationInitialDelay = Duration(
     seconds: 5,
   );
@@ -14263,6 +14268,15 @@ class EixamConnectSdkImpl
     required String source,
     required bool emit,
   }) {
+    if (_publicSosState == SosState.acknowledged &&
+        nextState == SosState.sent &&
+        _publicAcknowledgedGeneration == _sosLifecycle.current.generation) {
+      _recordSosAckPresentationContinuity(
+        source: source,
+        action: 'preserve_acknowledged',
+      );
+      return false;
+    }
     if (nextState == SosState.idle &&
         _shouldPreserveAuthoritativeTerminalSummary(source)) {
       _logPublicSosLifecycleState(source: '$source:terminal_summary_preserved');
@@ -14300,6 +14314,15 @@ class EixamConnectSdkImpl
       return false;
     }
     _publicSosState = nextState;
+    if (nextState == SosState.acknowledged) {
+      _publicAcknowledgedGeneration = _sosLifecycle.current.generation;
+      _recordSosAckPresentationContinuity(
+        source: source,
+        action: 'apply_acknowledged',
+      );
+    } else {
+      _publicAcknowledgedGeneration = null;
+    }
     _logPublicSosLifecycleState(source: source);
     if (emit && !_publicSosStateController.isClosed) {
       _publicSosStateController.add(nextState);
@@ -14308,6 +14331,21 @@ class EixamConnectSdkImpl
       _updateBackgroundTelemetryState(reason: 'sos_state:${nextState.name}'),
     );
     return true;
+  }
+
+  void _recordSosAckPresentationContinuity({
+    required String source,
+    required String action,
+  }) {
+    final protectionStatus = _protectionModeController.currentStatus;
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_ACK_PRESENTATION_CONTINUITY '
+      'generation=${_sosLifecycle.current.generation} '
+      'sdkPublicState=${_publicSosState.name} '
+      'owner=${_deviceConnectionOwner(protectionStatus)} '
+      'visibleConnected=${(_lastPublicDeviceStatus ?? _lastDeviceStatus)?.connected == true} '
+      'source=$source action=$action',
+    );
   }
 
   bool _shouldPreserveAuthoritativeTerminalSummary(String source) {
@@ -18850,13 +18888,37 @@ class EixamConnectSdkImpl
       baseStatus: rawStatus,
       protectionStatus: protectionStatus,
     );
+    final previousConnectionOwner = _lastProjectedDeviceConnectionOwner;
+    final currentConnectionOwner = _deviceConnectionOwner(protectionStatus);
+    final nativeConnectionContinuityProven =
+        _refreshCanonicalNativeConnectionProof(
+          rawStatus: rawStatus,
+          protectionStatus: protectionStatus,
+          nativeCommandReady: nativeCommandReady,
+          sameDeviceIdentity: sameDeviceIdentity,
+        );
     final projection = projectDeviceConnection(
       flutterRepositoryConnected: rawStatus.connected,
       nativeOwnerDeclared: nativeOwnerDeclared,
       nativeOwnerReady: nativeOwnerDeclared && nativeCommandReady,
       nativeGattConnected: protectionStatus.serviceBleConnected,
       sameDeviceIdentity: sameDeviceIdentity,
+      nativeConnectionContinuityProven: nativeConnectionContinuityProven,
     );
+    if (projection.reason ==
+            DeviceConnectionProjectionReason.sameNativeSessionContinuity &&
+        previousConnectionOwner == 'nativeReady' &&
+        currentConnectionOwner == 'nativePreparing') {
+      _recordDeviceConnectionTransitionPreserved(
+        previousOwner: previousConnectionOwner!,
+        nextOwner: currentConnectionOwner,
+        protectionStatus: protectionStatus,
+        reason: reason,
+      );
+    } else if (currentConnectionOwner == 'nativeReady') {
+      _lastConnectionTransitionPreservedSignature = null;
+    }
+    _lastProjectedDeviceConnectionOwner = currentConnectionOwner;
     if (!projection.falseDisconnectBlocked &&
         !rawStatus.connected &&
         _protectionReportsLiveBleConnection(protectionStatus) &&
@@ -18975,6 +19037,221 @@ class EixamConnectSdkImpl
     );
   }
 
+  bool _refreshCanonicalNativeConnectionProof({
+    required DeviceStatus rawStatus,
+    required ProtectionStatus protectionStatus,
+    required bool nativeCommandReady,
+    required bool sameDeviceIdentity,
+  }) {
+    final existing = _canonicalNativeConnectionProof;
+    if (existing != null &&
+        !_canonicalNativeConnectionProofIsValid(
+          rawStatus: rawStatus,
+          protectionStatus: protectionStatus,
+        )) {
+      _clearCanonicalNativeConnectionProof(
+        reason: _canonicalNativeConnectionProofInvalidationReason(
+          rawStatus: rawStatus,
+          protectionStatus: protectionStatus,
+          proof: existing,
+        ),
+      );
+    }
+
+    if (_canonicalNativeConnectionProof == null &&
+        _protectionNativeOwnerDeclared(protectionStatus) &&
+        nativeCommandReady &&
+        protectionStatus.serviceBleConnected &&
+        sameDeviceIdentity &&
+        _protectionRuntimeRunning(protectionStatus)) {
+      final identity = _matchingNativeConnectionIdentity(
+        rawStatus: rawStatus,
+        protectionStatus: protectionStatus,
+      );
+      if (identity != null) {
+        _canonicalNativeConnectionProofSequence += 1;
+        _canonicalNativeConnectionProof = _CanonicalNativeConnectionProof(
+          physicalIdentity: identity,
+          nativeOwner: protectionStatus.bleOwner,
+          establishedAt: _clock().toUtc(),
+          sequence: _canonicalNativeConnectionProofSequence,
+        );
+        _lastConnectionTransitionPreservedSignature = null;
+        BleDebugRegistry.instance.recordEvent(
+          'DEVICE_CONNECTION_CONTINUITY_ESTABLISHED '
+          'owner=nativeReady retainedIdentityPresent=true '
+          'nativeGattConnected=${protectionStatus.serviceBleConnected} '
+          'nativeCommandReady=$nativeCommandReady '
+          'runtimeRunning=${_protectionRuntimeRunning(protectionStatus)} '
+          'proofSequence=$_canonicalNativeConnectionProofSequence',
+        );
+      }
+    }
+
+    return _canonicalNativeConnectionProofIsValid(
+      rawStatus: rawStatus,
+      protectionStatus: protectionStatus,
+    );
+  }
+
+  bool _canonicalNativeConnectionProofIsValid({
+    required DeviceStatus rawStatus,
+    required ProtectionStatus protectionStatus,
+  }) {
+    final proof = _canonicalNativeConnectionProof;
+    if (proof == null ||
+        !_protectionNativeOwnerDeclared(protectionStatus) ||
+        protectionStatus.bleOwner != proof.nativeOwner ||
+        !protectionStatus.serviceBleConnected ||
+        !_protectionRuntimeRunning(protectionStatus)) {
+      return false;
+    }
+    return _deviceStatusContainsConnectionIdentity(
+          rawStatus,
+          proof.physicalIdentity,
+        ) &&
+        _protectionStatusContainsConnectionIdentity(
+          protectionStatus,
+          proof.physicalIdentity,
+        );
+  }
+
+  String? _matchingNativeConnectionIdentity({
+    required DeviceStatus rawStatus,
+    required ProtectionStatus protectionStatus,
+  }) {
+    final expectedTargets = <String?>[
+      rawStatus.canonicalHardwareId,
+      rawStatus.deviceId,
+    ].whereType<String>();
+    final nativeTargets = <String?>[
+      protectionStatus.activeDeviceId,
+      protectionStatus.protectedDeviceId,
+    ].whereType<String>();
+    for (final expected in expectedTargets) {
+      final normalizedExpected = expected.trim();
+      if (normalizedExpected.isEmpty) {
+        continue;
+      }
+      for (final actual in nativeTargets) {
+        final normalizedActual = actual.trim();
+        if (normalizedActual.isNotEmpty &&
+            _connectionIdentitiesMatch(normalizedExpected, normalizedActual)) {
+          return normalizedExpected;
+        }
+      }
+    }
+    return null;
+  }
+
+  bool _deviceStatusContainsConnectionIdentity(
+    DeviceStatus status,
+    String identity,
+  ) {
+    return <String?>[status.canonicalHardwareId, status.deviceId]
+        .whereType<String>()
+        .any((candidate) => _connectionIdentitiesMatch(candidate, identity));
+  }
+
+  bool _protectionStatusContainsConnectionIdentity(
+    ProtectionStatus status,
+    String identity,
+  ) {
+    return <String?>[status.activeDeviceId, status.protectedDeviceId]
+        .whereType<String>()
+        .any((candidate) => _connectionIdentitiesMatch(candidate, identity));
+  }
+
+  bool _connectionIdentitiesMatch(String left, String right) {
+    final normalizedLeft = left.trim();
+    final normalizedRight = right.trim();
+    if (normalizedLeft.isEmpty || normalizedRight.isEmpty) {
+      return false;
+    }
+    return normalizedLeft.toLowerCase() == normalizedRight.toLowerCase() ||
+        _samePhysicalHardwareId(normalizedLeft, normalizedRight);
+  }
+
+  String _canonicalNativeConnectionProofInvalidationReason({
+    required DeviceStatus rawStatus,
+    required ProtectionStatus protectionStatus,
+    required _CanonicalNativeConnectionProof proof,
+  }) {
+    if (!protectionStatus.serviceBleConnected) {
+      return 'explicit_native_gatt_disconnect';
+    }
+    if (!_protectionNativeOwnerDeclared(protectionStatus)) {
+      return rawStatus.connected
+          ? 'flutter_owner_connected'
+          : 'native_session_terminated';
+    }
+    if (protectionStatus.bleOwner != proof.nativeOwner) {
+      return 'native_owner_changed';
+    }
+    if (!_deviceStatusContainsConnectionIdentity(
+          rawStatus,
+          proof.physicalIdentity,
+        ) ||
+        !_protectionStatusContainsConnectionIdentity(
+          protectionStatus,
+          proof.physicalIdentity,
+        )) {
+      return 'physical_identity_changed_or_lost';
+    }
+    if (!_protectionRuntimeRunning(protectionStatus)) {
+      return rawStatus.connected
+          ? 'runtime_stopped_flutter_connected'
+          : 'runtime_stopped_without_flutter_connection';
+    }
+    return 'native_session_no_longer_authoritative';
+  }
+
+  void _clearCanonicalNativeConnectionProof({required String reason}) {
+    final proof = _canonicalNativeConnectionProof;
+    if (proof == null) {
+      return;
+    }
+    _canonicalNativeConnectionProof = null;
+    _lastConnectionTransitionPreservedSignature = null;
+    BleDebugRegistry.instance.recordEvent(
+      'DEVICE_CONNECTION_CONTINUITY_CLEARED reason=$reason '
+      'proofSequence=${proof.sequence} '
+      'proofAgeMs=${_clock().toUtc().difference(proof.establishedAt).inMilliseconds}',
+    );
+  }
+
+  void _recordDeviceConnectionTransitionPreserved({
+    required String previousOwner,
+    required String nextOwner,
+    required ProtectionStatus protectionStatus,
+    required String reason,
+  }) {
+    final proof = _canonicalNativeConnectionProof;
+    if (proof == null) {
+      return;
+    }
+    final transitionReason =
+        protectionStatus.lastPlatformEvent ??
+        protectionStatus.lastBleServiceEvent ??
+        reason;
+    final signature =
+        '${proof.sequence}|$previousOwner|$nextOwner|$transitionReason';
+    if (_lastConnectionTransitionPreservedSignature == signature) {
+      return;
+    }
+    _lastConnectionTransitionPreservedSignature = signature;
+    BleDebugRegistry.instance.recordEvent(
+      'DEVICE_CONNECTION_TRANSITION_PRESERVED '
+      'previousOwner=$previousOwner nextOwner=$nextOwner '
+      'visibleConnected=true retainedIdentityPresent=true '
+      'nativeGattConnected=${protectionStatus.serviceBleConnected} '
+      'nativeCommandReady=${_nativeCommandReadinessForStatus(protectionStatus).ready} '
+      'runtimeRunning=${_protectionRuntimeRunning(protectionStatus)} '
+      'reason=$transitionReason '
+      'preservationReason=same_native_session_internal_transition',
+    );
+  }
+
   void _recordDeviceConnectionProjection({
     required DeviceStatus rawStatus,
     required DeviceStatus publicStatus,
@@ -18996,6 +19273,10 @@ class EixamConnectSdkImpl
           _protectionNativeOwnerDeclared(protection) && nativeCommandReady,
       nativeGattConnected: protection.serviceBleConnected,
       sameDeviceIdentity: sameDeviceIdentity,
+      nativeConnectionContinuityProven: _canonicalNativeConnectionProofIsValid(
+        rawStatus: rawStatus,
+        protectionStatus: protection,
+      ),
     );
     BleDebugRegistry.instance.recordEvent(
       'DEVICE_CONNECTION_PROJECTION '
@@ -23516,6 +23797,20 @@ class _CapturedPhysicalDeviceConnection {
   final bool nativeGattConnected;
   final String owner;
   final String identityMarker;
+}
+
+class _CanonicalNativeConnectionProof {
+  const _CanonicalNativeConnectionProof({
+    required this.physicalIdentity,
+    required this.nativeOwner,
+    required this.establishedAt,
+    required this.sequence,
+  });
+
+  final String physicalIdentity;
+  final ProtectionBleOwner nativeOwner;
+  final DateTime establishedAt;
+  final int sequence;
 }
 
 class _TerminalDeviceCaptureSnapshot {
