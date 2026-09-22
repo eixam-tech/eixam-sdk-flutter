@@ -4,6 +4,8 @@ class EixamTelReassembler {
   int? _activeTotalLength;
   final Map<int, List<int>> _fragmentsByOffset = <int, List<int>>{};
 
+  int get fragmentCount => _fragmentsByOffset.length;
+
   List<int>? addFragment(EixamTelFragment fragment) {
     if (fragment.offset < 0) {
       reset();

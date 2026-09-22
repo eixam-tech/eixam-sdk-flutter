@@ -72,6 +72,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   int? _lastSosBatteryLevel;
   int? _connectedBleTagNodeId;
   int _notificationReceiveSequence = 0;
+  String? _nativeBridgeConnectedDeviceMarker;
+  bool _telRelayAssemblyActive = false;
   final String _sosReceiveSequenceDomain = _nextFlutterSosReceiveDomain();
   final Map<String, DateTime> _recentSosPacketSignatures = <String, DateTime>{};
   bool _ownershipSuspended = false;
@@ -94,6 +96,60 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   DeviceSosController get deviceSosController => _deviceSosController;
   Stream<BleIncomingEvent> watchIncomingEvents() =>
       _incomingEventsController.stream;
+
+  /// Routes a raw notification received by the native Protection BLE owner
+  /// through the same Dart decoder used by Flutter GATT.
+  ///
+  /// Native EA02 packets keep using the native SOS lifecycle route. TEL is
+  /// decoded here because D0/D2 reassembly and relay classification are
+  /// intentionally SDK-owned and shared by both BLE owners.
+  Future<bool> ingestNativeBridgeTelNotification({
+    required DeviceStatus connectedDevice,
+    required List<int> payload,
+    required DateTime receivedAt,
+    required int receiveSequence,
+    String? connectedDeviceMarker,
+  }) async {
+    if (_disposed || payload.isEmpty) {
+      return false;
+    }
+    final normalizedMarker = connectedDeviceMarker?.trim();
+    if (_nativeBridgeConnectedDeviceMarker != null &&
+        normalizedMarker != null &&
+        normalizedMarker.isNotEmpty &&
+        _nativeBridgeConnectedDeviceMarker != normalizedMarker) {
+      final pendingFragments = _telReassembler.fragmentCount;
+      _telReassembler.reset();
+      _telRelayAssemblyActive = false;
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_RELAY_REASSEMBLY_RESULT success=false payloadLength=0 '
+        'packetCycle=unknown remoteOriginator=unknown relayNode=unknown '
+        'semantics=other failureReason=native_connected_device_changed '
+        'discardedFragmentCount=$pendingFragments',
+      );
+    }
+    if (normalizedMarker != null && normalizedMarker.isNotEmpty) {
+      _nativeBridgeConnectedDeviceMarker = normalizedMarker;
+    }
+    _connectedBleTagNodeId ??= connectedDevice.nodeId;
+    _connectedCanonicalHardwareId ??= connectedDevice.canonicalHardwareId;
+    _connectedDeviceAlias ??= connectedDevice.deviceAlias;
+    final deviceId = connectedDevice.deviceId.trim().isNotEmpty
+        ? connectedDevice.deviceId
+        : normalizedMarker ?? 'native-protection-device';
+    await _handleTelNotification(
+      deviceId,
+      EixamBleNotification(
+        channel: EixamBleChannel.tel,
+        payload: List<int>.unmodifiable(payload),
+        receivedAt: receivedAt,
+        meshPort: EixamBleProtocol.telMeshPort,
+      ),
+      receiveSequence: receiveSequence,
+      producer: 'native_bridge',
+    );
+    return true;
+  }
 
   @visibleForTesting
   void setNotificationReceiveSequenceForTesting(int receiveSequence) {
@@ -929,6 +985,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     _connectedBleTagNodeId = null;
     _recentSosPacketSignatures.clear();
     _telReassembler.reset();
+    _telRelayAssemblyActive = false;
   }
 
   Future<DeviceStatus?> suspendOwnership({required String reason}) async {
@@ -1299,6 +1356,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     _connectedBleTagNodeId = null;
     _recentSosPacketSignatures.clear();
     _telReassembler.reset();
+    _telRelayAssemblyActive = false;
     BleDebugRegistry.instance.update(
       connectionStatus: BleConnectionStatus.disconnectedManual,
       connectionError: null,
@@ -1658,6 +1716,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     String deviceId,
     EixamBleNotification notification, {
     required int receiveSequence,
+    String producer = 'flutter_gatt',
   }) async {
     final source = DeviceSosTransitionSource.device;
     final redactsBacklogTransport =
@@ -1701,7 +1760,41 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         ),
       );
 
+      if (telFragment.offset == 0) {
+        _telRelayAssemblyActive =
+            telFragment.totalLength == EixamTelRelayRxPacket.payloadLength &&
+            telFragment.fragmentPayload.first == EixamTelRelayRxPacket.opcode;
+      }
+      final fragmentCountBefore = _telReassembler.fragmentCount;
       final completedPayload = _telReassembler.addFragment(telFragment);
+      final originatorNodeId =
+          telFragment.offset == 0 &&
+              telFragment.fragmentPayload.length >= 5 &&
+              telFragment.fragmentPayload.first == EixamTelRelayRxPacket.opcode
+          ? telFragment.fragmentPayload[1] |
+                (telFragment.fragmentPayload[2] << 8) |
+                (telFragment.fragmentPayload[3] << 16) |
+                (telFragment.fragmentPayload[4] << 24)
+          : null;
+      final assemblerIdentity =
+          _connectedBleTagNodeId?.toString() ??
+          _connectedCanonicalHardwareId ??
+          _nativeBridgeConnectedDeviceMarker ??
+          deviceId;
+      if (_telRelayAssemblyActive) {
+        final currentFragmentCount = completedPayload == null
+            ? _telReassembler.fragmentCount
+            : fragmentCountBefore + 1;
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_RELAY_FRAGMENT_RX producer=$producer characteristic=ea01 '
+          'fragmentSequence=${telFragment.offset ~/ EixamBleProtocol.telAggregateFragmentMaxPayloadLength} '
+          'fragmentOffset=${telFragment.offset} byteLength=${notification.payload.length} '
+          'originator=${originatorNodeId?.toString() ?? "unknown"} '
+          'relayIdentity=${_connectedBleTagNodeId?.toString() ?? assemblerIdentity} '
+          'assemblerKey=$assemblerIdentity:${telFragment.totalLength} '
+          'currentFragmentCount=$currentFragmentCount',
+        );
+      }
       if (completedPayload != null) {
         BleDebugRegistry.instance.recordEvent(
           'TEL aggregate completed -> totalLen=${completedPayload.length}',
@@ -1715,9 +1808,22 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
           source: source,
           telFragment: telFragment,
           aggregatePayload: completedPayload,
+          producer: producer,
         );
+        _telRelayAssemblyActive = false;
       }
       return;
+    }
+
+    if (notification.payload.isNotEmpty &&
+        notification.payload.first ==
+            EixamBleProtocol.telAggregateFragmentOpcode) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_RELAY_REASSEMBLY_RESULT success=false payloadLength=0 '
+        'packetCycle=unknown remoteOriginator=unknown '
+        'relayNode=${_connectedBleTagNodeId?.toString() ?? "unknown"} '
+        'semantics=other failureReason=malformed_d0_fragment',
+      );
     }
 
     await _dispatchClassifiedTelPayload(
@@ -1727,6 +1833,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       payload: notification.payload,
       payloadHex: notification.payloadHex,
       source: source,
+      producer: producer,
     );
   }
 
@@ -1827,6 +1934,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     required List<int> payload,
     required String payloadHex,
     required DeviceSosTransitionSource source,
+    String producer = 'flutter_gatt',
     EixamTelFragment? telFragment,
     List<int>? aggregatePayload,
   }) async {
@@ -2009,6 +2117,19 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         receivedAt: notification.receivedAt,
       );
       final d2SosPacket = d2RelayClassification.sosPacket;
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_RELAY_REASSEMBLY_RESULT success=${relayPacket != null} '
+        'payloadLength=${payload.length} '
+        'packetCycle=${d2SosPacket == null ? "unknown" : "${d2SosPacket.nodeId}:${d2SosPacket.packetId}"} '
+        'remoteOriginator=${d2SosPacket?.nodeId.toString() ?? "unknown"} '
+        'relayNode=${_connectedBleTagNodeId?.toString() ?? "unknown"} '
+        'semantics=${d2SosPacket?.isActiveSos == true
+            ? "START"
+            : d2SosPacket?.isClear == true
+            ? "CANCEL"
+            : "other"} '
+        'producer=$producer failureReason=${relayPacket == null ? "invalid_d2_payload" : "none"}',
+      );
       if (d2SosPacket != null) {
         _logSosIdentityDecision(
           originatorNodeId: d2SosPacket.nodeId,
@@ -2764,7 +2885,9 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         packet.subcode == 0x02 &&
         !isLocalEvent;
     final resolved = BleIncomingPayloadClassification(
-      kind: packet.isAppCancelAck
+      kind: isExternalBackendCancel
+          ? BleIncomingPayloadKind.remoteRelaySos
+          : packet.isAppCancelAck
           ? BleIncomingPayloadKind.unknown
           : BleIncomingPayloadKind.sosCancel,
       sosEventPacket: packet,

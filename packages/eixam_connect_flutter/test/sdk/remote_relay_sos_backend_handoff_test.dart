@@ -492,6 +492,26 @@ void main() {
       expect(dedupIndex, greaterThan(clearIndex));
     });
 
+    test('EA02 SOS and EA01 TEL relay representations create one incident',
+        () async {
+      final snapshot = _snapshot();
+      bleEvents.add(_remoteRelayEvent(snapshot: snapshot));
+      await _eventually(() => realtimeClient.publishedSos.length == 1);
+
+      bleEvents.add(
+        _remoteRelayEvent(
+          snapshot: snapshot,
+          type: BleIncomingEventType.telRelayRx,
+          channel: EixamBleChannel.tel,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+
+      expect(realtimeClient.publishSosCallCount, 1);
+      expect(realtimeClient.publishedSos, hasLength(1));
+      expect(realtimeClient.publishedSos.single.originatorNodeId, 0x01020304);
+    });
+
     test('backend failure emits failed event and leaves local SOS state idle',
         () async {
       realtimeClient.publishSosError = const SosException(
@@ -2647,22 +2667,22 @@ BleIncomingEvent _remoteRelayEvent({
   RemoteRelaySosSnapshot? snapshot,
   String deviceId = 'relay-tag',
   String canonicalHardwareId = 'relay-node',
+  BleIncomingEventType type = BleIncomingEventType.sosMeshPacket,
+  EixamBleChannel channel = EixamBleChannel.sos,
 }) {
   final resolvedSnapshot = snapshot ?? _snapshot();
   return BleIncomingEvent(
     deviceId: deviceId,
     canonicalHardwareId: canonicalHardwareId,
-    type: BleIncomingEventType.sosMeshPacket,
-    channel: EixamBleChannel.sos,
+    type: type,
+    channel: channel,
     payload: resolvedSnapshot.rawPayload,
     payloadHex: EixamBleProtocol.hex(resolvedSnapshot.rawPayload),
     source: DeviceSosTransitionSource.device,
     receivedAt: resolvedSnapshot.receivedAt,
     remoteRelaySosSnapshot: resolvedSnapshot,
     classification: BleIncomingPayloadClassification(
-      kind: resolvedSnapshot.kind == RemoteRelaySosKind.sos
-          ? BleIncomingPayloadKind.remoteRelaySos
-          : BleIncomingPayloadKind.sosCancel,
+      kind: BleIncomingPayloadKind.remoteRelaySos,
       remoteRelaySosSnapshot: resolvedSnapshot,
     ),
   );

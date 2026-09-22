@@ -230,6 +230,25 @@ class InMemoryDeviceRepository
     return runtimeProvider.recoverPreferredFromSystemAssociation();
   }
 
+  Future<bool> ingestNativeBridgeTelNotification({
+    required List<int> payload,
+    required DateTime receivedAt,
+    required int receiveSequence,
+    String? connectedDeviceMarker,
+  }) async {
+    final runtimeProvider = _runtimeProvider;
+    if (runtimeProvider is! BleDeviceRuntimeProvider) {
+      return false;
+    }
+    return runtimeProvider.ingestNativeBridgeTelNotification(
+      connectedDevice: _status,
+      payload: payload,
+      receivedAt: receivedAt,
+      receiveSequence: receiveSequence,
+      connectedDeviceMarker: connectedDeviceMarker,
+    );
+  }
+
   Future<DeviceStatus> releaseBleOwnershipToProtectionMode({
     required String reason,
   }) async {

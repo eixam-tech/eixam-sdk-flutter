@@ -74,7 +74,9 @@ class BleIncomingPayloadClassifier {
         cancelFlag: classification == BleIncomingPayloadKind.sosCancel,
       );
       return BleIncomingPayloadClassification(
-        kind: classification,
+        kind: isExternalBackendCancel
+            ? BleIncomingPayloadKind.remoteRelaySos
+            : classification,
         sosEventPacket: eventPacket,
         remoteRelaySosSnapshot: isExternalBackendCancel
             ? RemoteRelaySosSnapshot(

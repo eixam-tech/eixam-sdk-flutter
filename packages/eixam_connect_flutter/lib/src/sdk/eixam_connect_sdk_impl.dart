@@ -256,9 +256,9 @@ class EixamConnectSdkImpl
     _nearbyTextController = NearbyTextController(
       incomingEvents: bleIncomingEvents,
       writeCommand: _sendDeviceCommandThroughActiveOwner,
-      // The native owner writes CMD but never bridges TEL notifies back to
-      // Dart (only SOS events cross the platform channel), so Nearby must
-      // fail fast instead of timing out and poisoning the group epoch.
+      // Passive native TEL notifications now share the Dart decoder. Nearby
+      // request/response still fails fast until its command transaction is
+      // explicitly owner-aware, avoiding timeouts that poison the group epoch.
       bleOwnedByProtection: () => _isProtectionPlatformOwningBle,
     );
     _bleAutoReconnectCoordinator = BleAutoReconnectCoordinator(
@@ -1258,6 +1258,19 @@ class EixamConnectSdkImpl
         }
         final remoteRelaySnapshot = event.remoteRelaySosSnapshot;
         if (remoteRelaySnapshot != null) {
+          BleDebugRegistry.instance.recordEvent(
+            'SOS_REMOTE_RELAY_CLASSIFICATION '
+            'classification=${remoteRelaySnapshot.kind == RemoteRelaySosKind.sos ? "remoteRelaySos" : "remoteRelayCancel"} '
+            'remoteOriginator=${remoteRelaySnapshot.originatorNodeId} '
+            'connectedRelay=${remoteRelaySnapshot.relayNodeId?.toString() ?? "unknown"} '
+            'lifecycleAction=${remoteRelaySnapshot.kind == RemoteRelaySosKind.sos ? "START" : "CANCEL"}',
+          );
+          BleDebugRegistry.instance.recordEvent(
+            'SOS_REMOTE_LIFECYCLE_ADMISSION admitted=true '
+            'reason=external_relay_evidence '
+            'remoteIdentity=${remoteRelaySnapshot.originatorNodeId} '
+            'cycleCorrelation=${_remoteRelayCycleCorrelation(remoteRelaySnapshot)}',
+          );
           _logRemoteRelayTelClearDetected(remoteRelaySnapshot);
           _logRemoteRelayCancelDetection(
             source: 'ble_incoming_event',
@@ -18418,6 +18431,30 @@ class EixamConnectSdkImpl
         'receiveSequence=${event.receiveSequence ?? -1} '
         'connectedDevice=${event.connectedDeviceMarker ?? "none"}',
       );
+      final characteristic = event.characteristicUuid?.toLowerCase();
+      final isTelNotification =
+          characteristic == EixamBleProtocol.telNotifyCharacteristicUuid ||
+          characteristic == 'ea01' ||
+          event.source == 'tel_fragment' ||
+          event.source == 'd2_relay' ||
+          event.source == 'tel_notify';
+      final rawPayload = event.payloadHex == null
+          ? null
+          : _tryDecodeHexPayload(event.payloadHex!);
+      final repository = deviceRepository;
+      if (isTelNotification &&
+          rawPayload != null &&
+          rawPayload.isNotEmpty &&
+          repository is InMemoryDeviceRepository) {
+        unawaited(
+          repository.ingestNativeBridgeTelNotification(
+            payload: rawPayload,
+            receivedAt: event.timestamp,
+            receiveSequence: event.receiveSequence ?? -1,
+            connectedDeviceMarker: event.connectedDeviceMarker,
+          ),
+        );
+      }
       return;
     }
     if (_handleProtectionPlatformBackendSyncEvent(event)) {
@@ -18701,6 +18738,20 @@ class EixamConnectSdkImpl
       'hasLocation=${remoteRelaySnapshot?.location != null}',
     );
     if (remoteRelaySnapshot != null) {
+      if (remoteRelaySnapshot.kind != RemoteRelaySosKind.sos) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_REMOTE_RELAY_CLASSIFICATION classification=remoteRelayCancel '
+          'remoteOriginator=${remoteRelaySnapshot.originatorNodeId} '
+          'connectedRelay=${remoteRelaySnapshot.relayNodeId?.toString() ?? "unknown"} '
+          'lifecycleAction=CANCEL',
+        );
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_REMOTE_LIFECYCLE_ADMISSION admitted=true '
+          'reason=external_relay_terminal_evidence '
+          'remoteIdentity=${remoteRelaySnapshot.originatorNodeId} '
+          'cycleCorrelation=${_remoteRelayCycleCorrelation(remoteRelaySnapshot)}',
+        );
+      }
       final route = unknownRemoteRelaySnapshot != null
           ? 'unknown_remote_candidate'
           : 'remote_relay';
@@ -20699,6 +20750,18 @@ class EixamConnectSdkImpl
   String _remoteRelayCorrelationId(RemoteRelaySosSnapshot snapshot) {
     return 'remote-relay-${_normalizeNodeId(snapshot.originatorNodeId)}-'
         '${snapshot.receivedAt.toUtc().microsecondsSinceEpoch}';
+  }
+
+  String _remoteRelayCycleCorrelation(RemoteRelaySosSnapshot snapshot) {
+    final packet = EixamSosPacket.tryParse(snapshot.rawPayload);
+    if (packet != null) {
+      return '${_normalizeNodeId(snapshot.originatorNodeId)}:${packet.packetId}';
+    }
+    if (snapshot.eventOpcode != null) {
+      return '${_normalizeNodeId(snapshot.originatorNodeId)}:event:'
+          '${snapshot.eventOpcode}:${snapshot.eventSubcode ?? 0}';
+    }
+    return '${_normalizeNodeId(snapshot.originatorNodeId)}:unknown';
   }
 
   void _logRemoteRelayBackendOutbound({

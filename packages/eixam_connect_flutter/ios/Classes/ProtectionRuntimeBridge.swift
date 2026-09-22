@@ -83,6 +83,7 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
   private var subscriptionsActive = false
   private var servicesDiscovered = false
   private var restoredLastLaunch = false
+  private var notificationReceiveSequence = 0
 
   @objc static func register(with registrar: FlutterPluginRegistrar) {
     let instance = ProtectionRuntimeBridge()
@@ -848,9 +849,63 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     }
 
     if let value = characteristic.value {
+      recordRawBleNotification(value, characteristic: characteristic, peripheral: peripheral)
       recordBleEvent(type: "packetReceived")
       captureBleSosPayload(value, characteristic: characteristic)
     }
+  }
+
+  private func recordRawBleNotification(
+    _ data: Data,
+    characteristic: CBCharacteristic,
+    peripheral: CBPeripheral
+  ) {
+    let bytes = [UInt8](data)
+    notificationReceiveSequence += 1
+    let receiveSequence = notificationReceiveSequence
+    let characteristicUuid = characteristic.uuid.uuidString.lowercased()
+    let source: String
+    if characteristic.uuid == Self.telCharacteristicUuid {
+      switch bytes.first {
+      case 0xD0:
+        source = "tel_fragment"
+      case 0xD2:
+        source = "d2_relay"
+      default:
+        source = "tel_notify"
+      }
+    } else if characteristic.uuid == Self.sosCharacteristicUuid {
+      source = "sos_notify"
+    } else {
+      source = "unknown"
+    }
+    let packetType: String
+    if bytes.count == 6, bytes.first == 0xE1 || bytes.first == 0xE2 || bytes.first == 0xE3 {
+      packetType = "sos_event"
+    } else if bytes.first == 0xD0 {
+      packetType = "tel_fragment"
+    } else if bytes.first == 0xD2 {
+      packetType = "tel_relay"
+    } else if bytes.count == 7 || bytes.count == 10 || bytes.count == 12 {
+      packetType = "sos_or_tel"
+    } else {
+      packetType = "unknown"
+    }
+    emitEvent(
+      type: "bleNotificationReceived",
+      reason: nil,
+      payload: [
+        "payloadHex": bytes.map { String(format: "%02x", $0) }.joined(separator: " "),
+        "source": source,
+        "characteristicUuid": characteristicUuid,
+        "byteLength": bytes.count,
+        "packetType": packetType,
+        "firstOpcode": bytes.first.map { String(format: "0x%02x", $0) } ?? "none",
+        "receiveSequence": receiveSequence,
+        "receiveCorrelation": "native-ios-\(receiveSequence)",
+        "connectedDeviceMarker": peripheral.identifier.uuidString,
+      ]
+    )
   }
 
   private func captureBleSosPayload(_ data: Data, characteristic: CBCharacteristic) {

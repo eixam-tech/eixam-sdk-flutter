@@ -495,6 +495,132 @@ void main() {
     );
 
     test(
+      'Flutter GATT and native bridge reassemble identical D0 relay SOS fragments',
+      () async {
+        await runtimeProvider.requestDeviceRuntimeStatus();
+        final flutterEventFuture = runtimeProvider
+            .watchIncomingEvents()
+            .firstWhere(
+              (event) => event.type == BleIncomingEventType.telRelayRx,
+            );
+        for (final fragment in _remoteRelayD0Fragments) {
+          bleClient.emitNotification(
+            MockBleClient.demoDeviceId,
+            channel: EixamBleChannel.tel,
+            payload: fragment,
+          );
+        }
+        final flutterEvent = await flutterEventFuture.timeout(
+          const Duration(seconds: 2),
+        );
+
+        final nativeEventFuture = runtimeProvider
+            .watchIncomingEvents()
+            .firstWhere(
+              (event) => event.type == BleIncomingEventType.telRelayRx,
+            );
+        var receiveSequence = 100;
+        for (final fragment in _remoteRelayD0Fragments) {
+          await runtimeProvider.ingestNativeBridgeTelNotification(
+            connectedDevice: buildDeviceStatus(
+              deviceId: MockBleClient.demoDeviceId,
+              nodeId: 0x1234,
+              canonicalHardwareId: 'CF:82:00:00:00:01',
+              connected: true,
+              paired: true,
+              activated: true,
+            ),
+            payload: fragment,
+            receivedAt: DateTime.utc(2026, 9, 22, 12),
+            receiveSequence: receiveSequence++,
+            connectedDeviceMarker: 'CF:82:...:01',
+          );
+        }
+        final nativeEvent = await nativeEventFuture.timeout(
+          const Duration(seconds: 2),
+        );
+
+        expect(nativeEvent.aggregatePayload, flutterEvent.aggregatePayload);
+        expect(
+          nativeEvent.classification.kind,
+          flutterEvent.classification.kind,
+        );
+        expect(
+          nativeEvent.remoteRelaySosSnapshot?.originatorNodeId,
+          flutterEvent.remoteRelaySosSnapshot?.originatorNodeId,
+        );
+        expect(
+          nativeEvent.remoteRelaySosSnapshot?.relayNodeId,
+          flutterEvent.remoteRelaySosSnapshot?.relayNodeId,
+        );
+        expect(
+          nativeEvent.remoteRelaySosSnapshot?.kind,
+          RemoteRelaySosKind.sos,
+        );
+        expect(
+          (await runtimeProvider.deviceSosController.getStatus()).state,
+          DeviceSosState.inactive,
+        );
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) =>
+                event.message.contains('SOS_RELAY_FRAGMENT_RX') &&
+                event.message.contains('producer=native_bridge'),
+          ),
+          isTrue,
+        );
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (event) =>
+                event.message.contains('SOS_RELAY_REASSEMBLY_RESULT') &&
+                event.message.contains('success=true') &&
+                event.message.contains('semantics=START'),
+          ),
+          isTrue,
+        );
+      },
+    );
+
+    test(
+      'ownership takeover preserves an in-flight common D0 assembly',
+      () async {
+        await runtimeProvider.requestDeviceRuntimeStatus();
+        final nextEvent = runtimeProvider.watchIncomingEvents().firstWhere(
+          (event) => event.type == BleIncomingEventType.telRelayRx,
+        );
+        bleClient.emitNotification(
+          MockBleClient.demoDeviceId,
+          channel: EixamBleChannel.tel,
+          payload: _remoteRelayD0Fragments.first,
+        );
+        await pumpEventQueue();
+        await runtimeProvider.suspendOwnership(reason: 'test_native_takeover');
+        await runtimeProvider.ingestNativeBridgeTelNotification(
+          connectedDevice: buildDeviceStatus(
+            deviceId: MockBleClient.demoDeviceId,
+            nodeId: 0x1234,
+            canonicalHardwareId: 'CF:82:00:00:00:01',
+            connected: true,
+            paired: true,
+            activated: true,
+          ),
+          payload: _remoteRelayD0Fragments.last,
+          receivedAt: DateTime.utc(2026, 9, 22, 12),
+          receiveSequence: 201,
+          connectedDeviceMarker: 'CF:82:...:01',
+        );
+
+        final event = await nextEvent.timeout(const Duration(seconds: 2));
+        expect(
+          event.classification.kind,
+          BleIncomingPayloadKind.remoteRelaySos,
+        );
+        expect(event.remoteRelaySosSnapshot?.originatorNodeId, 0x12345678);
+        expect(event.remoteRelaySosSnapshot?.relayNodeId, 0x1234);
+      },
+    );
+
+    test(
       'classifies a 7-byte SOS notify from another node as remote relay without location',
       () async {
         await runtimeProvider.requestDeviceRuntimeStatus();
@@ -535,7 +661,10 @@ void main() {
 
         final event = await nextEvent;
         expect(event.type, BleIncomingEventType.sosDeviceEvent);
-        expect(event.classification.kind, BleIncomingPayloadKind.sosCancel);
+        expect(
+          event.classification.kind,
+          BleIncomingPayloadKind.remoteRelaySos,
+        );
         expect(event.remoteRelaySosSnapshot, isNotNull);
         expect(event.remoteRelaySosSnapshot!.kind, RemoteRelaySosKind.cancel);
         expect(event.remoteRelaySosSnapshot!.originatorNodeId, 0x12345678);
@@ -1121,6 +1250,50 @@ List<int> _sosPayloadForNode(int nodeId) {
     0x09,
   ];
 }
+
+const List<List<int>> _remoteRelayD0Fragments = <List<int>>[
+  <int>[
+    0xD0,
+    0x1B,
+    0x00,
+    0x00,
+    0x00,
+    0xD2,
+    0x78,
+    0x56,
+    0x34,
+    0x12,
+    0x48,
+    0xCD,
+    0x1B,
+    0x34,
+    0x44,
+    0x28,
+    0x00,
+    0x40,
+    0xF6,
+    0xC4,
+  ],
+  <int>[
+    0xD0,
+    0x1B,
+    0x00,
+    0x0F,
+    0x00,
+    0x34,
+    0x12,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x87,
+    0x25,
+  ],
+];
 
 List<int> _maximumLiveBatchPayload() {
   final payload = <int>[0xD3, 24];
