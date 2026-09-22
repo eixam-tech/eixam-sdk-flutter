@@ -12630,9 +12630,7 @@ class EixamConnectSdkImpl
         protection.serviceBleConnected || protection.serviceBleReady;
     final rawDevice = _lastDeviceStatus;
     final publicDevice = _lastPublicDeviceStatus;
-    final device = nativeOwner
-        ? (publicDevice ?? rawDevice)
-        : (rawDevice ?? publicDevice);
+    final device = publicDevice ?? rawDevice;
     final capability = _computeCurrentSosCapabilitySnapshot(
       reason: reason,
       statusOverride: device,
@@ -12640,7 +12638,7 @@ class EixamConnectSdkImpl
     );
     final transportConnected = nativeOwner
         ? nativeGattConnected
-        : rawDevice?.connected == true;
+        : device?.connected == true;
     final identityPresent =
         device?.deviceId.trim().isNotEmpty == true &&
         (_physicalHardwareIdForStatus(device)?.isNotEmpty == true ||
