@@ -669,6 +669,7 @@ class EixamConnectSdkImpl
   _ObservedOwnDeviceInactiveBoundary? _latestOwnDeviceInactiveBoundary;
   _TerminalDeviceCycleFence? _terminalDeviceCycleFence;
   _FreshPhysicalStartProof? _pendingFreshPhysicalStartProof;
+  final Set<String> _acceptedPhysicalStartPacketSignatures = <String>{};
   final Map<int, Set<String>> _devicePacketSignaturesByGeneration =
       <int, Set<String>>{};
   final Set<int> _deviceMirrorDispatchedGenerations = <int>{};
@@ -1905,6 +1906,7 @@ class EixamConnectSdkImpl
     _latestOwnDeviceInactiveBoundary = null;
     _terminalDeviceCycleFence = null;
     _pendingFreshPhysicalStartProof = null;
+    _acceptedPhysicalStartPacketSignatures.clear();
     _lastOwnDeviceTerminalNativeReceiveSequence = null;
     _lastOwnDeviceTerminalNativeGeneration = null;
     _lastOwnDeviceTerminalReceiveSequenceDomain = null;
@@ -4581,6 +4583,11 @@ class EixamConnectSdkImpl
     if (_consumeRemoteTerminalDeviceClearAck(status)) {
       return;
     }
+    final acceptedPhysicalStart =
+        status.lastPacketSignature != null &&
+        _acceptedPhysicalStartPacketSignatures.contains(
+          status.lastPacketSignature,
+        );
     final statusHasPhysicalStartSemantics =
         status.derivedFromBlePacket &&
         status.transitionSource == DeviceSosTransitionSource.device &&
@@ -4604,7 +4611,7 @@ class EixamConnectSdkImpl
                 sosStatusEventSequence,
           )
         : null;
-    if (convergenceEvaluation?.suppress == true) {
+    if (!acceptedPhysicalStart && convergenceEvaluation?.suppress == true) {
       _logPostTerminalInflightStartSuppressed(convergenceEvaluation!);
       return;
     }
@@ -4613,12 +4620,14 @@ class EixamConnectSdkImpl
       status,
       provenNewCycle: convergenceEvaluation?.provenNewCycle == true,
     );
-    if (_shouldSuppressDeviceSosWhileRemoteTerminalClearPending(status)) {
+    if (!acceptedPhysicalStart &&
+        _shouldSuppressDeviceSosWhileRemoteTerminalClearPending(status)) {
       return;
     }
     if ((status.state == DeviceSosState.preConfirm ||
             status.state == DeviceSosState.active ||
             status.state == DeviceSosState.acknowledged) &&
+        !acceptedPhysicalStart &&
         _terminalFenceSuppressesDeviceOpen(
           status,
           eventSequence: sosStatusEventSequence,
@@ -4661,6 +4670,7 @@ class EixamConnectSdkImpl
       status,
       cycleKey: cycleKey,
       eventSequence: sosStatusEventSequence,
+      acceptedPhysicalStart: acceptedPhysicalStart,
     );
     _recordAcceptedDevicePacketSignature(status);
     final isAppOriginatedStatus =
@@ -4894,24 +4904,63 @@ class EixamConnectSdkImpl
     DeviceSosStatus status, {
     required String? cycleKey,
     required int eventSequence,
+    required bool acceptedPhysicalStart,
   }) async {
-    if (cycleKey == null ||
+    final effectiveCycleKey = cycleKey ??
+        (acceptedPhysicalStart
+            ? 'accepted:${status.nodeId ?? _knownLocalDeviceNodeId ?? "unknown"}:'
+                  '${status.lastPacketSignature ?? status.lastPacketHex ?? status.updatedAt.microsecondsSinceEpoch}'
+            : null);
+    if (effectiveCycleKey == null ||
         status.triggerOrigin != DeviceSosTransitionSource.device) {
       return;
     }
     final device = _lastDeviceStatus;
+    final previousGeneration = _sosLifecycle.current.generation;
     final terminalFence = _sosLifecycle.activeTerminalWatermark;
-    final mayStartAfterTerminal = _terminalFenceAllowsFreshDeviceGeneration(
-      status,
-      eventSequence: eventSequence,
-    );
+    final mayStartAfterTerminal =
+        acceptedPhysicalStart ||
+        _terminalFenceAllowsFreshDeviceGeneration(
+          status,
+          eventSequence: eventSequence,
+        );
     final deferFreshGenerationPublication =
         terminalFence != null && mayStartAfterTerminal;
+    void recordPhysicalStartCommit(SosLifecycleSnapshot lifecycle) {
+      if (!acceptedPhysicalStart) {
+        return;
+      }
+      final committed = lifecycle.generation > previousGeneration;
+      final packetSignature = status.lastPacketSignature;
+      if (packetSignature != null) {
+        _acceptedPhysicalStartPacketSignatures.remove(packetSignature);
+      }
+      if (committed && terminalFence == null) {
+        _resetPublicSosPresentationForGeneration(
+          lifecycle.generation,
+          reason: 'accepted_physical_start',
+          emitIdle: true,
+        );
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_NEW_GENERATION_ACCEPTED '
+          'previousGeneration=$previousGeneration '
+          'newGeneration=${lifecycle.generation} source=device',
+        );
+      }
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_PHYSICAL_START_COMMIT '
+        'decision=accept_new_generation '
+        'previousGeneration=$previousGeneration '
+        'committedGeneration=${lifecycle.generation} '
+        'success=$committed '
+        'reason=${committed ? "generation_committed" : "newer_generation_won"}',
+      );
+    }
     if (status.state == DeviceSosState.preConfirm) {
       if (!_sosLifecycle.current.isOpen) {
         final lifecycle = await _sosLifecycle.beginArming(
           origin: SosLifecycleOrigin.connectedLocalDevice,
-          lifecycleId: 'device-cycle:$cycleKey',
+          lifecycleId: 'device-cycle:$effectiveCycleKey',
           triggerSource: 'ble_device_runtime_status',
           deviceId: device?.deviceId,
           nodeId: status.nodeId ?? device?.nodeId,
@@ -4929,6 +4978,7 @@ class EixamConnectSdkImpl
           );
         }
       }
+      recordPhysicalStartCommit(_sosLifecycle.current);
       _traceConnectedLocalDeviceHandoff(
         action: 'accepted',
         from: 'preconfirm',
@@ -4945,7 +4995,7 @@ class EixamConnectSdkImpl
     if (!lifecycle.isOpen || lifecycle.isTerminal) {
       lifecycle = await _sosLifecycle.beginArming(
         origin: SosLifecycleOrigin.connectedLocalDevice,
-        lifecycleId: 'device-cycle:$cycleKey',
+        lifecycleId: 'device-cycle:$effectiveCycleKey',
         triggerSource: 'ble_device_runtime_status',
         deviceId: device?.deviceId,
         nodeId: status.nodeId ?? device?.nodeId,
@@ -4975,13 +5025,14 @@ class EixamConnectSdkImpl
     if (lifecycle.stage == SosLifecycleStage.activating) {
       await _sosLifecycle.confirmActive(
         origin: SosLifecycleOrigin.connectedLocalDevice,
-        localIncidentId: 'device-runtime-$cycleKey',
+        localIncidentId: 'device-runtime-$effectiveCycleKey',
         triggerSource: 'ble_device_runtime_status',
         deviceId: device?.deviceId,
         nodeId: status.nodeId ?? device?.nodeId,
         hardwareId: _physicalHardwareIdForStatus(device),
       );
     }
+    recordPhysicalStartCommit(lifecycle);
     _traceConnectedLocalDeviceHandoff(
       action: 'accepted',
       from: status.previousState == DeviceSosState.preConfirm
@@ -13338,6 +13389,12 @@ class EixamConnectSdkImpl
       pendingTerminalFence: pendingTerminalFence,
       admission: admission,
     );
+    if (admission.decision ==
+        PhysicalSosStartAdmissionDecision.acceptNewGeneration) {
+      _acceptedPhysicalStartPacketSignatures.add(
+        '${packet.nodeId}:${packet.packetId}:${packet.rawHex}',
+      );
+    }
     return admission;
   }
 
@@ -21289,6 +21346,7 @@ class EixamConnectSdkImpl
     _latestOwnDeviceInactiveBoundary = null;
     _terminalDeviceCycleFence = null;
     _pendingFreshPhysicalStartProof = null;
+    _acceptedPhysicalStartPacketSignatures.clear();
     _freshPhysicalStartSupersededRemoteClearGeneration = null;
     _lastOwnDeviceTerminalNativeReceiveSequence = null;
     _lastOwnDeviceTerminalNativeGeneration = null;
