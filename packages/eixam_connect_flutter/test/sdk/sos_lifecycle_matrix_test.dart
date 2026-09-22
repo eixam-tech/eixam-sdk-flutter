@@ -1006,6 +1006,14 @@ void main() {
           sosLifecycleSecureStore: secureStore,
           deviceClock: () => terminalAt.subtract(const Duration(seconds: 1)),
         );
+        final diagnostics = <String>[];
+        final diagnosticSubscription = BleDebugRegistry.instance.watch().listen(
+          (state) {
+            if (state.events.isNotEmpty) {
+              diagnostics.add(state.events.last.message);
+            }
+          },
+        );
         try {
           await harness.sdk.initialize(
             const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
@@ -1029,8 +1037,14 @@ void main() {
           final lifecycle = await harness.sdk.getSosLifecycle();
           expect(lifecycle.generation, 2);
           expect(lifecycle.stage, SosLifecycleStage.arming);
-          expect(_hasDebugMessage('wallClockAfterTerminal=false'), isTrue);
+          expect(
+            diagnostics.any(
+              (message) => message.contains('wallClockAfterTerminal=false'),
+            ),
+            isTrue,
+          );
         } finally {
+          await diagnosticSubscription.cancel();
           await harness.dispose();
         }
       },
@@ -4421,8 +4435,15 @@ void main() {
             DeviceSosState.active,
           );
 
+          final cachedConnectedStatus = await harness.deviceRepository
+              .getDeviceStatus();
+          harness.deviceRepository.setCurrentStatusSilently(
+            cachedConnectedStatus.copyWith(connected: false),
+          );
           final cancellation = harness.sdk.cancelSos();
-          await cancelCommandDispatched.future;
+          await cancelCommandDispatched.future.timeout(
+            const Duration(seconds: 1),
+          );
           await pumpEventQueue(times: 2);
 
           expect(await harness.sdk.getSosState(), SosState.cancelRequested);
@@ -5793,6 +5814,11 @@ void main() {
                 resolveDiagnostics.add(state.events.last.message);
               }
             });
+        final cachedConnectedStatus = await harness.deviceRepository
+            .getDeviceStatus();
+        harness.deviceRepository.setCurrentStatusSilently(
+          cachedConnectedStatus.copyWith(connected: false),
+        );
         realtime.emitEvent(
           backendEvent(<String, dynamic>{
             'type': 'resolved',
@@ -5855,6 +5881,22 @@ void main() {
                 message.contains('SOS_BACKEND_RESOLVE_HANDLER_ENTERED'),
           ),
           isTrue,
+        );
+        expect(
+          resolveDiagnostics.any(
+            (message) =>
+                message.contains('SOS_BACKEND_RESOLVE_DEVICE_MIRROR') &&
+                message.contains('connectedDevicePresent=true') &&
+                message.contains('commandChannelReady=true') &&
+                message.contains('mirrorRequired=true'),
+          ),
+          isTrue,
+        );
+        expect(
+          resolveDiagnostics.any(
+            (message) => message.contains('reason=device_absence_policy'),
+          ),
+          isFalse,
         );
         final resolveCommands = commands
             .where((command) => command.opcode == 0x07)
@@ -5930,6 +5972,14 @@ void main() {
           hasLength(1),
         );
         expect(
+          resolveDiagnostics.any(
+            (message) =>
+                message.contains('SOS_BACKEND_RESOLVE_DEVICE_MIRROR') &&
+                message.contains('mirrorAttempted=true'),
+          ),
+          isTrue,
+        );
+        expect(
           resolveDiagnostics
               .where(
                 (message) =>
@@ -5989,6 +6039,175 @@ void main() {
         await repository.dispose();
       }
     });
+
+    test(
+      'disconnect after terminal acceptance rejects captured mirror proof safely',
+      () async {
+        final secureStore = _BlockingNextWriteSecureKeyValueStore();
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          deviceCountdown: Duration.zero,
+          sosLifecycleSecureStore: secureStore,
+        );
+        final commands = <EixamDeviceCommand>[];
+        try {
+          await harness.deviceSosController.attach(
+            commandWriter: (command) async => commands.add(command),
+          );
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await harness.sdk.triggerSosAuthoritatively(
+            const SosTriggerPayload(triggerSource: 'commercial_app'),
+          );
+          harness.deviceSosController.handleIncomingSosPacket(
+            _deviceOriginActivePacket(),
+            source: DeviceSosTransitionSource.device,
+          );
+          for (
+            var attempt = 0;
+            attempt < 20 &&
+                harness.deviceSosController.currentStatus.state !=
+                    DeviceSosState.active;
+            attempt += 1
+          ) {
+            await pumpEventQueue();
+          }
+          expect(
+            harness.deviceSosController.currentStatus.state,
+            DeviceSosState.active,
+          );
+
+          secureStore.blockNextWrite();
+          harness.sosRepository.currentIncident = harness
+              .sosRepository
+              .currentIncident
+              .copyWith(state: SosState.resolved, isBackendConfirmed: true);
+          harness.sosRepository.stateController.add(SosState.resolved);
+          await secureStore.blockedWriteStarted.timeout(
+            const Duration(seconds: 1),
+          );
+          await pumpEventQueue(times: 2);
+
+          expect(await harness.sdk.getSosState(), SosState.resolved);
+          expect(
+            BleDebugRegistry.instance.currentState.events.any(
+              (event) =>
+                  event.message.contains('SOS_BACKEND_RESOLVE_DEVICE_MIRROR') &&
+                  event.message.contains('connectedDevicePresent=true') &&
+                  event.message.contains('mirrorRequired=true'),
+            ),
+            isTrue,
+          );
+
+          final connectedStatus = await harness.deviceRepository
+              .getDeviceStatus();
+          harness.deviceRepository.emitStatus(
+            connectedStatus.copyWith(connected: false),
+          );
+          await pumpEventQueue(times: 4);
+          secureStore.releaseBlockedWrite();
+          await pumpEventQueue(times: 12);
+
+          expect(await harness.sdk.getSosState(), SosState.resolved);
+          expect(commands.where((command) => command.opcode == 0x07), isEmpty);
+          expect(
+            BleDebugRegistry.instance.currentState.events.any(
+              (event) =>
+                  event.message.contains(
+                    'SOS_TERMINAL_DEVICE_PROOF_MISMATCH',
+                  ) &&
+                  event.message.contains('generation=1') &&
+                  event.message.contains('terminalState=resolved') &&
+                  event.message.contains('capturedDevicePresent=true') &&
+                  event.message.contains('currentDevicePresent=false') &&
+                  event.message.contains('commandChannelReady=true') &&
+                  event.message.contains('reason=stale_before_dispatch'),
+            ),
+            isTrue,
+          );
+        } finally {
+          secureStore.releaseBlockedWrite();
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'authoritative disconnect evidence keeps resolved logical state and skips physical mirror',
+      () async {
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          deviceCountdown: Duration.zero,
+          sosLifecycleSecureStore: InMemorySecureKeyValueStore(),
+        );
+        final commands = <EixamDeviceCommand>[];
+        try {
+          await harness.deviceSosController.attach(
+            commandWriter: (command) async => commands.add(command),
+          );
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await harness.sdk.triggerSosAuthoritatively(
+            const SosTriggerPayload(triggerSource: 'commercial_app'),
+          );
+          harness.deviceSosController.handleIncomingSosPacket(
+            _deviceOriginActivePacket(),
+            source: DeviceSosTransitionSource.device,
+          );
+          for (
+            var attempt = 0;
+            attempt < 20 &&
+                harness.deviceSosController.currentStatus.state !=
+                    DeviceSosState.active;
+            attempt += 1
+          ) {
+            await pumpEventQueue();
+          }
+          expect(
+            harness.deviceSosController.currentStatus.state,
+            DeviceSosState.active,
+          );
+
+          final connectedStatus = await harness.deviceRepository
+              .getDeviceStatus();
+          harness.deviceRepository.emitStatus(
+            connectedStatus.copyWith(connected: false),
+          );
+          await pumpEventQueue(times: 4);
+
+          harness.sosRepository.currentIncident = harness
+              .sosRepository
+              .currentIncident
+              .copyWith(state: SosState.resolved, isBackendConfirmed: true);
+          harness.sosRepository.stateController.add(SosState.resolved);
+          await pumpEventQueue(times: 12);
+
+          expect(await harness.sdk.getSosState(), SosState.resolved);
+          expect(
+            (await harness.sdk.getSosLifecycle()).stage,
+            SosLifecycleStage.resolved,
+          );
+          expect(commands.where((command) => command.opcode == 0x07), isEmpty);
+          expect(
+            BleDebugRegistry.instance.currentState.events.any(
+              (event) =>
+                  event.message.contains('SOS_BACKEND_RESOLVE_DEVICE_MIRROR') &&
+                  event.message.contains('connectedDevicePresent=false') &&
+                  event.message.contains('commandChannelReady=true') &&
+                  event.message.contains('mirrorRequired=false') &&
+                  event.message.contains('reason=device_absence_policy'),
+            ),
+            isTrue,
+          );
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
 
     for (final testCase
         in <
@@ -8249,6 +8468,66 @@ void main() {
       }
     });
   });
+}
+
+final class _BlockingNextWriteSecureKeyValueStore
+    implements SecureKeyValueStore {
+  final InMemorySecureKeyValueStore _delegate = InMemorySecureKeyValueStore();
+  Completer<void>? _blockedWriteStarted;
+  Completer<void>? _blockedWriteRelease;
+
+  Future<void> get blockedWriteStarted {
+    final started = _blockedWriteStarted;
+    if (started == null) {
+      throw StateError('No blocked secure-store write is armed.');
+    }
+    return started.future;
+  }
+
+  void blockNextWrite() {
+    if (_blockedWriteRelease != null) {
+      throw StateError('A secure-store write is already blocked.');
+    }
+    _blockedWriteStarted = Completer<void>();
+    _blockedWriteRelease = Completer<void>();
+  }
+
+  void releaseBlockedWrite() {
+    final release = _blockedWriteRelease;
+    if (release != null && !release.isCompleted) {
+      release.complete();
+    }
+  }
+
+  @override
+  Future<bool> containsKey(String key) => _delegate.containsKey(key);
+
+  @override
+  Future<void> delete(String key) => _delegate.delete(key);
+
+  @override
+  Future<void> deleteAll({String? namespace}) =>
+      _delegate.deleteAll(namespace: namespace);
+
+  @override
+  Future<String?> read(String key) => _delegate.read(key);
+
+  @override
+  Future<void> write(String key, String value) async {
+    final started = _blockedWriteStarted;
+    final release = _blockedWriteRelease;
+    if (started != null && release != null) {
+      if (!started.isCompleted) {
+        started.complete();
+      }
+      await release.future;
+      if (identical(_blockedWriteRelease, release)) {
+        _blockedWriteStarted = null;
+        _blockedWriteRelease = null;
+      }
+    }
+    await _delegate.write(key, value);
+  }
 }
 
 final class _SdkSosHarness {

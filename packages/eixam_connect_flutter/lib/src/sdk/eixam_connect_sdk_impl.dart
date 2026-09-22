@@ -2376,7 +2376,7 @@ class EixamConnectSdkImpl
           if (lifecycle.isOpen &&
               incident != null &&
               sosIncidentEvidenceMatchesLifecycle(lifecycle, incident)) {
-            deviceClearProof = await _captureCurrentPhysicalSosTarget(
+            deviceClearProof = _captureCurrentPhysicalSosTarget(
               lifecycle: lifecycle,
               terminalIncident: incident,
             );
@@ -2463,7 +2463,7 @@ class EixamConnectSdkImpl
               lifecycle,
               repositoryIncident,
             )) {
-          final deviceClearProof = await _captureCurrentPhysicalSosTarget(
+          final deviceClearProof = _captureCurrentPhysicalSosTarget(
             lifecycle: lifecycle,
             terminalIncident: repositoryIncident,
           );
@@ -3755,10 +3755,12 @@ class EixamConnectSdkImpl
     required _SosClosureIntent intent,
     bool syncBackendForDeviceOriginatedCycle = true,
     bool? waitForDeviceAcknowledgement,
+    _CapturedPhysicalDeviceConnection? capturedDeviceConnection,
   }) async {
     final status = await _terminatePhysicalSosOnCurrentDevice(
       intent: intent,
       waitForDeviceAcknowledgement: waitForDeviceAcknowledgement,
+      capturedDeviceConnection: capturedDeviceConnection,
     );
     if (syncBackendForDeviceOriginatedCycle) {
       await _applyBackendClosureForDeviceOriginatedCycle(
@@ -3773,13 +3775,18 @@ class EixamConnectSdkImpl
     required _SosClosureIntent intent,
     bool? waitForDeviceAcknowledgement,
     _PhysicalSosTerminationTarget? capturedTarget,
+    _CapturedPhysicalDeviceConnection? capturedDeviceConnection,
     void Function()? onCommandSubmit,
     void Function()? onCommandDispatch,
   }) async {
-    if (capturedTarget == null) {
+    if (capturedTarget == null && capturedDeviceConnection == null) {
       await _loadRuntimeReadyDeviceStatusForSosSync(action: intent.name);
-    } else if (!_physicalSosTerminationTargetIsCurrent(capturedTarget)) {
+    } else if (capturedTarget != null &&
+        !_physicalSosTerminationTargetIsCurrent(capturedTarget)) {
       throw StateError('stale remote terminal device clear');
+    } else if (capturedDeviceConnection != null &&
+        !_capturedPhysicalDeviceConnectionIsCurrent(capturedDeviceConnection)) {
+      throw StateError('stale captured device connection');
     }
     final currentStatus = await deviceSosController.getStatus();
     final shouldWaitForDeviceAcknowledgement =
@@ -3822,7 +3829,11 @@ class EixamConnectSdkImpl
         terminalCmdAvailable: capabilitySnapshot.longCommandAvailable,
         waitForCloseAcknowledgement: shouldWaitForDeviceAcknowledgement,
         operationIsCurrent: capturedTarget == null
-            ? null
+            ? capturedDeviceConnection == null
+                  ? null
+                  : () => _capturedPhysicalDeviceConnectionIsCurrent(
+                      capturedDeviceConnection,
+                    )
             : () => _physicalSosTerminationTargetIsCurrent(capturedTarget),
       );
     } catch (error) {
@@ -7199,6 +7210,9 @@ class EixamConnectSdkImpl
         action: 'cancel',
         capabilitySnapshot: cancelCapabilitySnapshot,
       );
+      final cancellationDeviceSnapshot = _captureTerminalDeviceSnapshot(
+        reason: 'public_cancel_acceptance',
+      );
       final cancellationLifecycle = _sosLifecycle.current;
       if (cancellationLifecycle.isOpen &&
           cancellationLifecycle.stage != SosLifecycleStage.cancelling) {
@@ -7227,6 +7241,7 @@ class EixamConnectSdkImpl
       );
       final deviceSync = await _attemptPublicSosDeviceAction(
         action: 'cancel',
+        capturedDeviceConnection: cancellationDeviceSnapshot.connection,
         shouldRun: (status) => _shouldCloseDeviceForPublicSos(
           status,
           activeIncident: activeIncident,
@@ -7234,6 +7249,7 @@ class EixamConnectSdkImpl
         operation: () => _closeDeviceSos(
           intent: _SosClosureIntent.cancel,
           syncBackendForDeviceOriginatedCycle: false,
+          capturedDeviceConnection: cancellationDeviceSnapshot.connection,
         ),
         refreshRuntimeStatus: true,
       );
@@ -8236,14 +8252,22 @@ class EixamConnectSdkImpl
     required bool Function(DeviceSosStatus status) shouldRun,
     required Future<DeviceSosStatus> Function() operation,
     bool refreshRuntimeStatus = false,
+    _CapturedPhysicalDeviceConnection? capturedDeviceConnection,
   }) async {
-    final runtimeStatus = await _loadRuntimeReadyDeviceStatusForSosSync(
-      action: action,
-      refreshRuntimeStatus: refreshRuntimeStatus,
-    );
+    final runtimeStatus = capturedDeviceConnection == null
+        ? await _loadRuntimeReadyDeviceStatusForSosSync(
+            action: action,
+            refreshRuntimeStatus: refreshRuntimeStatus,
+          )
+        : capturedDeviceConnection.devicePresent &&
+              _capturedPhysicalDeviceConnectionIsCurrent(
+                capturedDeviceConnection,
+              )
+        ? capturedDeviceConnection.device
+        : null;
     if (runtimeStatus == null) {
-      return const _PublicSosDeviceAttempt(
-        available: false,
+      return _PublicSosDeviceAttempt(
+        available: capturedDeviceConnection?.devicePresent ?? false,
         attempted: false,
         succeeded: false,
       );
@@ -12526,16 +12550,90 @@ class EixamConnectSdkImpl
     await _clearPersistedPreSosSession();
   }
 
-  Future<_PhysicalSosTerminationTarget?> _captureCurrentPhysicalSosTarget({
+  _TerminalDeviceCaptureSnapshot _captureTerminalDeviceSnapshot({
+    required String reason,
+  }) {
+    final protection = _protectionModeController.currentStatus;
+    final nativeOwner = _isProtectionPlatformOwningBle;
+    final nativeGattConnected =
+        protection.serviceBleConnected || protection.serviceBleReady;
+    final rawDevice = _lastDeviceStatus;
+    final publicDevice = _lastPublicDeviceStatus;
+    final device = nativeOwner
+        ? (publicDevice ?? rawDevice)
+        : (rawDevice ?? publicDevice);
+    final capability = _computeCurrentSosCapabilitySnapshot(
+      reason: reason,
+      statusOverride: device,
+      recordDiagnostics: false,
+    );
+    final transportConnected = nativeOwner
+        ? nativeGattConnected
+        : rawDevice?.connected == true;
+    final identityPresent =
+        device?.deviceId.trim().isNotEmpty == true &&
+        (_physicalHardwareIdForStatus(device)?.isNotEmpty == true ||
+            device?.nodeId != null);
+    final connection = _CapturedPhysicalDeviceConnection(
+      device: device,
+      devicePresent:
+          device?.connected == true && transportConnected && identityPresent,
+      shortCommandReady: capability.shortCommandAvailable,
+      commandChannelReady: capability.longCommandAvailable,
+      nativeGattConnected: nativeGattConnected,
+      owner: _currentDeviceCommandOwnerRoute,
+      identityMarker: _terminalDeviceIdentityMarker(device),
+    );
+    return _TerminalDeviceCaptureSnapshot(
+      connection: connection,
+      deviceSos: deviceSosController.currentStatus,
+      activePhysicalEvidence: deviceSosController.lastPhysicalReceiveEvidence,
+    );
+  }
+
+  String _terminalDeviceIdentityMarker(DeviceStatus? device) {
+    final identity =
+        _physicalHardwareIdForStatus(device) ??
+        device?.deviceId.trim() ??
+        device?.nodeId?.toString() ??
+        '';
+    return SecurityDiagnosticsRedactor.stableIdentifierMarker(identity);
+  }
+
+  bool _capturedPhysicalDeviceConnectionIsCurrent(
+    _CapturedPhysicalDeviceConnection captured,
+  ) {
+    if (!captured.devicePresent || captured.device == null) {
+      return false;
+    }
+    final current = _captureTerminalDeviceSnapshot(
+      reason: 'terminal_device_proof_current_validation',
+    ).connection;
+    final capturedHardwareId = _physicalHardwareIdForStatus(captured.device);
+    final currentHardwareId = _physicalHardwareIdForStatus(current.device);
+    final nodeMatches =
+        captured.device?.nodeId == null ||
+        current.device?.nodeId == null ||
+        captured.device?.nodeId == current.device?.nodeId;
+    return current.devicePresent &&
+        nodeMatches &&
+        _samePhysicalHardwareId(currentHardwareId, capturedHardwareId);
+  }
+
+  _PhysicalSosTerminationTarget? _captureCurrentPhysicalSosTarget({
     required SosLifecycleSnapshot lifecycle,
     required SosIncident terminalIncident,
-  }) async {
+    _TerminalDeviceCaptureSnapshot? capturedSnapshot,
+  }) {
     final session = _session;
-    final device = await _loadRuntimeReadyDeviceStatusForSosSync(
-      action: terminalIncident.state.name,
-      refreshRuntimeStatus: true,
-    );
-    final deviceSos = deviceSosController.currentStatus;
+    final snapshot =
+        capturedSnapshot ??
+        _captureTerminalDeviceSnapshot(
+          reason: 'remote_terminal_device_target_capture',
+        );
+    final connection = snapshot.connection;
+    final device = connection.device;
+    final deviceSos = snapshot.deviceSos;
     final terminalState = terminalIncident.state;
     final isBackendResolve = terminalState == SosState.resolved;
     if (session == null ||
@@ -12546,14 +12644,11 @@ class EixamConnectSdkImpl
         (terminalState != SosState.cancelled &&
             terminalState != SosState.resolved)) {
       if (isBackendResolve) {
-        final capability = _computeCurrentSosCapabilitySnapshot(
-          reason: 'remote_terminal_device_target_rejected',
-        );
         _logBackendResolveDeviceMirror(
           incidentIdentityPresent: terminalIncident.id.trim().isNotEmpty,
           generation: lifecycle.generation,
-          connectedDevicePresent: device?.connected == true,
-          commandChannelReady: capability.longCommandAvailable,
+          connectedDevicePresent: connection.devicePresent,
+          commandChannelReady: connection.commandChannelReady,
           mirrorRequired: false,
           mirrorAttempted: false,
           reason: 'authoritative_lifecycle_identity_unproven',
@@ -12577,12 +12672,9 @@ class EixamConnectSdkImpl
       nodeId: _appOriginRuntimeNodeId(deviceSos),
     )?.trim();
     final activeObservedAt = deviceSos.lastPacketAt ?? deviceSos.updatedAt;
-    final capability = _computeCurrentSosCapabilitySnapshot(
-      reason: 'remote_terminal_device_target_capture',
-    );
     final incidentIdentityPresent = terminalIncident.id.trim().isNotEmpty;
-    final connectedDevicePresent = device != null && device.connected;
-    final commandChannelReady = capability.longCommandAvailable;
+    final connectedDevicePresent = connection.devicePresent;
+    final commandChannelReady = connection.commandChannelReady;
     final deviceSosOpen =
         deviceSos.state == DeviceSosState.preConfirm ||
         deviceSos.state == DeviceSosState.active ||
@@ -12597,14 +12689,13 @@ class EixamConnectSdkImpl
         nodeId != null &&
         lifecycle.nodeId != nodeId;
     if (device == null ||
-        !device.connected ||
+        !connectedDevicePresent ||
         connectedDeviceId == null ||
         connectedDeviceId.isEmpty ||
         connectedHardwareId == null ||
-        !capability.deviceConnected ||
         (!isBackendResolve &&
-            !capability.shortCommandAvailable &&
-            !capability.longCommandAvailable) ||
+            !connection.shortCommandReady &&
+            !connection.commandChannelReady) ||
         hardwareConflicts ||
         nodeConflicts) {
       if (isBackendResolve) {
@@ -12625,7 +12716,7 @@ class EixamConnectSdkImpl
       BleDebugRegistry.instance.recordEvent(
         'SOS_REMOTE_TERMINAL_DEVICE_TARGET_REJECTED '
         'devicePresent=${device != null} connected=${device?.connected == true} '
-        'commandPath=${capability.shortCommandAvailable || capability.longCommandAvailable} '
+        'commandPath=${connection.commandChannelReady} '
         'hardwareMatch=${!hardwareConflicts} nodeMatch=${!nodeConflicts}',
       );
       _logRemoteTerminalDeviceClearSkipped('device_target_mismatch');
@@ -12643,8 +12734,6 @@ class EixamConnectSdkImpl
       );
       return null;
     }
-    final activePhysicalEvidence =
-        deviceSosController.lastPhysicalReceiveEvidence;
     final proof = _PhysicalSosTerminationTarget(
       lifecycleId: lifecycle.lifecycleId,
       generation: lifecycle.generation,
@@ -12657,9 +12746,16 @@ class EixamConnectSdkImpl
       runtimeCycleKey: currentRuntimeCycleKey,
       packetId: packetId,
       deviceActiveObservedAt: activeObservedAt,
-      activeReceiveSequence: activePhysicalEvidence?.receiveSequence,
+      activeReceiveSequence: snapshot.activePhysicalEvidence?.receiveSequence,
       activeReceiveSequenceDomain:
-          activePhysicalEvidence?.receiveSequenceDomain,
+          snapshot.activePhysicalEvidence?.receiveSequenceDomain,
+      capturedDevicePresent: connection.devicePresent,
+      capturedCommandChannelReady: isBackendResolve
+          ? connection.commandChannelReady
+          : connection.shortCommandReady || connection.commandChannelReady,
+      capturedNativeGattConnected: connection.nativeGattConnected,
+      capturedOwner: connection.owner,
+      capturedIdentityMarker: connection.identityMarker,
     );
     if (isBackendResolve) {
       _logBackendResolveDeviceMirror(
@@ -12726,12 +12822,36 @@ class EixamConnectSdkImpl
     );
   }
 
+  void _logTerminalDeviceProofMismatch({
+    required _PhysicalSosTerminationTarget proof,
+    required String reason,
+  }) {
+    final current = _captureTerminalDeviceSnapshot(
+      reason: 'terminal_device_proof_mismatch',
+    ).connection;
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_TERMINAL_DEVICE_PROOF_MISMATCH '
+      'generation=${proof.generation} '
+      'terminalState=${proof.terminalState.name} '
+      'capturedDevicePresent=${proof.capturedDevicePresent} '
+      'currentDevicePresent=${current.devicePresent} '
+      'commandChannelReady=${proof.terminalState == SosState.resolved ? current.commandChannelReady : current.shortCommandReady || current.commandChannelReady} '
+      'nativeGattConnected=${current.nativeGattConnected} '
+      'owner=${current.owner} '
+      'capturedIdentity=${proof.capturedIdentityMarker} '
+      'currentIdentity=${current.identityMarker} reason=$reason',
+    );
+  }
+
   bool _physicalSosTerminationTargetIsCurrent(
     _PhysicalSosTerminationTarget proof,
   ) {
     final session = _session;
     final lifecycle = _sosLifecycle.current;
-    final device = _lastDeviceStatus;
+    final connection = _captureTerminalDeviceSnapshot(
+      reason: 'terminal_device_target_current_validation',
+    ).connection;
+    final device = connection.device;
     final hardwareId = _physicalHardwareIdForStatus(device);
     return !_disposed &&
         !_supersededRemoteTerminalDeviceClearKeys.contains(
@@ -12749,8 +12869,8 @@ class EixamConnectSdkImpl
                 lifecycle.stage == SosLifecycleStage.resolved)) &&
         (lifecycle.backendIncidentId == proof.incidentId ||
             lifecycle.incident?.id == proof.incidentId) &&
+        connection.devicePresent &&
         device != null &&
-        device.connected &&
         (proof.nodeId == null ||
             device.nodeId == null ||
             device.nodeId == proof.nodeId) &&
@@ -12850,10 +12970,13 @@ class EixamConnectSdkImpl
         return false;
       }
     }
-    final device = _lastDeviceStatus;
+    final connection = _captureTerminalDeviceSnapshot(
+      reason: 'terminal_device_ack_current_validation',
+    ).connection;
+    final device = connection.device;
     final hardwareId = _physicalHardwareIdForStatus(device);
-    if (device == null ||
-        !device.connected ||
+    if (!connection.devicePresent ||
+        device == null ||
         !_samePhysicalHardwareId(hardwareId, proof.hardwareId)) {
       return false;
     }
@@ -12999,6 +13122,10 @@ class EixamConnectSdkImpl
     var dispatched = false;
     try {
       if (!_physicalSosTerminationTargetIsCurrent(proof)) {
+        _logTerminalDeviceProofMismatch(
+          proof: proof,
+          reason: 'stale_before_dispatch',
+        );
         _logRemoteTerminalDeviceClearSkipped('stale_before_dispatch');
         return;
       }
@@ -14814,8 +14941,7 @@ class EixamConnectSdkImpl
     if (!lifecycle.isOpen ||
         !lifecycle.localActionable ||
         lifecycle.externalOnly ||
-        !(evidenceMatches ||
-            immutableRepositoryAcceptanceMatchesGeneration)) {
+        !(evidenceMatches || immutableRepositoryAcceptanceMatchesGeneration)) {
       if (sameTerminalLifecycle) {
         _emitPublicSosState(terminalState, source: 'sos_state_stream');
         _logPublicSosLifecycleState(source: '$source:terminal_duplicate');
@@ -14850,6 +14976,9 @@ class EixamConnectSdkImpl
       lifecycle,
       incident: terminalIncident,
     );
+    final capturedDeviceSnapshot = _captureTerminalDeviceSnapshot(
+      reason: 'authoritative_terminal_acceptance',
+    );
     final confirmation = _sosLifecycle.confirmTerminal(
       stage: terminalState == SosState.cancelled
           ? SosLifecycleStage.cancelled
@@ -14865,6 +14994,11 @@ class EixamConnectSdkImpl
       source: '$source:terminal_accepted',
     );
     _emitPublicSosState(terminalState, source: 'sos_state_stream');
+    final deviceClearProof = _captureCurrentPhysicalSosTarget(
+      lifecycle: lifecycle,
+      terminalIncident: terminalIncident,
+      capturedSnapshot: capturedDeviceSnapshot,
+    );
 
     final acceptedTerminal = await confirmation;
     if (!acceptedTerminal.isTerminal ||
@@ -14877,10 +15011,6 @@ class EixamConnectSdkImpl
       return true;
     }
 
-    final deviceClearProof = await _captureCurrentPhysicalSosTarget(
-      lifecycle: lifecycle,
-      terminalIncident: terminalIncident,
-    );
     BleDebugRegistry.instance.recordEvent(
       'SOS_TERMINAL_CONFIRMED source=$source '
       'terminal=${terminalState.name} '
@@ -22903,6 +23033,11 @@ class _PhysicalSosTerminationTarget {
     required this.deviceActiveObservedAt,
     required this.activeReceiveSequence,
     required this.activeReceiveSequenceDomain,
+    required this.capturedDevicePresent,
+    required this.capturedCommandChannelReady,
+    required this.capturedNativeGattConnected,
+    required this.capturedOwner,
+    required this.capturedIdentityMarker,
   });
 
   final String lifecycleId;
@@ -22918,8 +23053,45 @@ class _PhysicalSosTerminationTarget {
   final DateTime deviceActiveObservedAt;
   final int? activeReceiveSequence;
   final String? activeReceiveSequenceDomain;
+  final bool capturedDevicePresent;
+  final bool capturedCommandChannelReady;
+  final bool capturedNativeGattConnected;
+  final String capturedOwner;
+  final String capturedIdentityMarker;
 
   String get operationKey => '$lifecycleId:$generation:${terminalState.name}';
+}
+
+class _CapturedPhysicalDeviceConnection {
+  const _CapturedPhysicalDeviceConnection({
+    required this.device,
+    required this.devicePresent,
+    required this.shortCommandReady,
+    required this.commandChannelReady,
+    required this.nativeGattConnected,
+    required this.owner,
+    required this.identityMarker,
+  });
+
+  final DeviceStatus? device;
+  final bool devicePresent;
+  final bool shortCommandReady;
+  final bool commandChannelReady;
+  final bool nativeGattConnected;
+  final String owner;
+  final String identityMarker;
+}
+
+class _TerminalDeviceCaptureSnapshot {
+  const _TerminalDeviceCaptureSnapshot({
+    required this.connection,
+    required this.deviceSos,
+    required this.activePhysicalEvidence,
+  });
+
+  final _CapturedPhysicalDeviceConnection connection;
+  final DeviceSosStatus deviceSos;
+  final PhysicalSosReceiveEvidence? activePhysicalEvidence;
 }
 
 class _AppOriginDeviceOwnershipContext {
