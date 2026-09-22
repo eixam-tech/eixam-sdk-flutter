@@ -864,8 +864,12 @@ class EixamConnectSdkImpl
     );
     WidgetsBinding.instance.addObserver(this);
     await _bleAutoReconnectCoordinator.initialize(
-      initialStatus: _lastDeviceStatus!,
-      deviceStatusStream: deviceRepository.watchDeviceStatus(),
+      initialStatus: _publishPublicDeviceStatus(
+        rawStatus: _lastDeviceStatus!,
+        reason: 'auto_reconnect_initialize',
+        emit: false,
+      ),
+      deviceStatusStream: _publicDeviceStatusController.stream,
     );
     _bindDeviceStreams();
     if (_sdkSosNotificationsEnabled) {
@@ -18820,6 +18824,14 @@ class EixamConnectSdkImpl
             _hasEffectivePublicDeviceStatusChange(previous, publicStatus))) {
       _publicDeviceStatusController.add(publicStatus);
     }
+    if (previous == null || previous.connected != publicStatus.connected) {
+      _recordDeviceConnectionProjection(
+        rawStatus: rawStatus,
+        publicStatus: publicStatus,
+        previousVisibleConnected: previous?.connected ?? false,
+        source: reason,
+      );
+    }
     return publicStatus;
   }
 
@@ -18828,30 +18840,34 @@ class EixamConnectSdkImpl
     required String reason,
   }) {
     final protectionStatus = _protectionModeController.currentStatus;
-    final protectionLive = _protectionReportsLiveBleConnection(
+    final nativeOwnerDeclared = _protectionNativeOwnerDeclared(
       protectionStatus,
     );
-    final belongsToKnownDevice = _protectionConnectionBelongsToKnownDevice(
+    final nativeCommandReady = _nativeCommandReadinessForStatus(
+      protectionStatus,
+    ).ready;
+    final sameDeviceIdentity = _nativeProtectionTargetMatchesDeviceStatus(
       baseStatus: rawStatus,
       protectionStatus: protectionStatus,
     );
-    final shouldBridge = shouldBridgeProtectionBleConnection(
-      rawConnected: rawStatus.connected,
-      bleOwner: protectionStatus.bleOwner,
-      protectionReportsLiveConnection: protectionLive,
-      belongsToKnownDevice: belongsToKnownDevice,
+    final projection = projectDeviceConnection(
+      flutterRepositoryConnected: rawStatus.connected,
+      nativeOwnerDeclared: nativeOwnerDeclared,
+      nativeOwnerReady: nativeOwnerDeclared && nativeCommandReady,
+      nativeGattConnected: protectionStatus.serviceBleConnected,
+      sameDeviceIdentity: sameDeviceIdentity,
     );
-    if (!shouldBridge &&
+    if (!projection.falseDisconnectBlocked &&
         !rawStatus.connected &&
-        protectionLive &&
-        belongsToKnownDevice &&
+        _protectionReportsLiveBleConnection(protectionStatus) &&
+        sameDeviceIdentity &&
         protectionStatus.bleOwner == ProtectionBleOwner.flutter) {
       BleDebugRegistry.instance.recordEvent(
         '[DEVICE_FLOW] protection_connection_bridge_skipped '
         'reason=flutter_ble_owner',
       );
     }
-    final publicStatus = shouldBridge
+    final publicStatus = projection.visibleConnected && !rawStatus.connected
         ? rawStatus.copyWith(
             connected: true,
             lifecycleState: rawStatus.activated
@@ -18877,7 +18893,7 @@ class EixamConnectSdkImpl
       'finalConnected=${publicStatus.connected} '
       'finalPublicConnected=${publicStatus.connected}',
     );
-    if (shouldBridge) {
+    if (projection.falseDisconnectBlocked) {
       BleDebugRegistry.instance.recordEvent(
         '[DEVICE_FLOW] protection_connection_bridge '
         'flutterConnected=${rawStatus.connected} '
@@ -18888,31 +18904,189 @@ class EixamConnectSdkImpl
         'finalPublicConnected=${publicStatus.connected} '
         'deviceId=${rawStatus.nodeId?.toString() ?? "-"} nodeId=${rawStatus.nodeId?.toString() ?? "-"} hardwareId=${rawStatus.deviceId}',
       );
+      _recordFalseDeviceDisconnectBlocked(
+        rawStatus: rawStatus,
+        protectionStatus: protectionStatus,
+        source: reason,
+        projectionReason: projection.reason.name,
+        sameDeviceIdentity: sameDeviceIdentity,
+      );
     }
     return publicStatus;
+  }
+
+  bool _protectionNativeOwnerDeclared(ProtectionStatus status) {
+    return status.modeState != ProtectionModeState.off &&
+        status.bleOwner != ProtectionBleOwner.flutter;
+  }
+
+  bool _nativeProtectionTargetMatchesDeviceStatus({
+    required DeviceStatus baseStatus,
+    required ProtectionStatus protectionStatus,
+  }) {
+    final expectedTargets =
+        <String?>[baseStatus.deviceId, baseStatus.canonicalHardwareId]
+            .whereType<String>()
+            .map((value) => value.trim())
+            .where((value) => value.isNotEmpty)
+            .toSet();
+    final nativeTargets =
+        <String?>[
+              protectionStatus.activeDeviceId,
+              protectionStatus.protectedDeviceId,
+            ]
+            .whereType<String>()
+            .map((value) => value.trim())
+            .where((value) => value.isNotEmpty)
+            .toSet();
+    return expectedTargets.isNotEmpty &&
+        nativeTargets.isNotEmpty &&
+        expectedTargets.any(
+          (expected) => nativeTargets.any(
+            (actual) =>
+                expected.toLowerCase() == actual.toLowerCase() ||
+                _samePhysicalHardwareId(expected, actual),
+          ),
+        );
+  }
+
+  String _deviceConnectionOwner(ProtectionStatus status) {
+    if (_protectionNativeOwnerDeclared(status)) {
+      return _nativeCommandReadinessForStatus(status).ready
+          ? 'nativeReady'
+          : 'nativePreparing';
+    }
+    return _lastDeviceStatus?.connected == true ? 'flutter' : 'none';
+  }
+
+  bool _protectionRuntimeRunning(ProtectionStatus status) {
+    return status.protectionRuntimeActive ||
+        status.foregroundServiceRunning ||
+        status.runtimeState == ProtectionRuntimeState.starting ||
+        status.runtimeState == ProtectionRuntimeState.active ||
+        status.runtimeState == ProtectionRuntimeState.recovering;
+  }
+
+  String _nativeConnectedIdentity(ProtectionStatus status) {
+    return SecurityDiagnosticsRedactor.stableIdentifierMarker(
+      status.activeDeviceId ??
+          status.protectedDeviceId ??
+          _lastNativeRawConnectedDeviceMarker,
+    );
+  }
+
+  void _recordDeviceConnectionProjection({
+    required DeviceStatus rawStatus,
+    required DeviceStatus publicStatus,
+    required bool previousVisibleConnected,
+    required String source,
+  }) {
+    final protection = _protectionModeController.currentStatus;
+    final nativeCommandReady = _nativeCommandReadinessForStatus(
+      protection,
+    ).ready;
+    final sameDeviceIdentity = _nativeProtectionTargetMatchesDeviceStatus(
+      baseStatus: rawStatus,
+      protectionStatus: protection,
+    );
+    final projection = projectDeviceConnection(
+      flutterRepositoryConnected: rawStatus.connected,
+      nativeOwnerDeclared: _protectionNativeOwnerDeclared(protection),
+      nativeOwnerReady:
+          _protectionNativeOwnerDeclared(protection) && nativeCommandReady,
+      nativeGattConnected: protection.serviceBleConnected,
+      sameDeviceIdentity: sameDeviceIdentity,
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'DEVICE_CONNECTION_PROJECTION '
+      'visibleConnected=${publicStatus.connected} '
+      'previousVisibleConnected=$previousVisibleConnected source=$source '
+      'bleOwner=${_deviceConnectionOwner(protection)} '
+      'nativeGattConnected=${protection.serviceBleConnected} '
+      'flutterGattConnected=${rawStatus.connected} '
+      'protectionRuntimeRunning=${_protectionRuntimeRunning(protection)} '
+      'nativeCommandReady=$nativeCommandReady '
+      'connectedIdentityPresent=$sameDeviceIdentity '
+      'nativeConnectedIdentity=${_nativeConnectedIdentity(protection)} '
+      'flutterRepositoryConnected=${rawStatus.connected} '
+      'lifecycleGeneration=${_sosLifecycle.current.generation} '
+      'deviceMirrorState=${_sosDeviceMirrorState.name} '
+      'reason=${projection.reason.name}',
+    );
+    if (!publicStatus.connected) {
+      final nativeOwner = _protectionNativeOwnerDeclared(protection);
+      _recordDeviceConnectionReconnectDecision(
+        rawStatus: rawStatus,
+        protectionStatus: protection,
+        requested: !nativeOwner,
+        trigger: source,
+        action: nativeOwner ? 'handoff' : 'reconnect',
+        reason: projection.reason.name,
+        sameDeviceIdentity: sameDeviceIdentity,
+      );
+    }
+  }
+
+  void _recordFalseDeviceDisconnectBlocked({
+    required DeviceStatus rawStatus,
+    required ProtectionStatus protectionStatus,
+    required String source,
+    required String projectionReason,
+    required bool sameDeviceIdentity,
+  }) {
+    final nativeCommandReady = _nativeCommandReadinessForStatus(
+      protectionStatus,
+    ).ready;
+    BleDebugRegistry.instance.recordEvent(
+      'DEVICE_CONNECTION_FALSE_DISCONNECT_BLOCKED '
+      'source=$source bleOwner=${_deviceConnectionOwner(protectionStatus)} '
+      'nativeGattConnected=${protectionStatus.serviceBleConnected} '
+      'flutterGattConnected=${rawStatus.connected} '
+      'nativeCommandReady=$nativeCommandReady '
+      'sameDeviceIdentity=$sameDeviceIdentity '
+      'lifecycleGeneration=${_sosLifecycle.current.generation} '
+      'deviceMirrorState=${_sosDeviceMirrorState.name} '
+      'reason=$projectionReason',
+    );
+    _recordDeviceConnectionReconnectDecision(
+      rawStatus: rawStatus,
+      protectionStatus: protectionStatus,
+      requested: false,
+      trigger: source,
+      action: 'preserve_native',
+      reason: projectionReason,
+      sameDeviceIdentity: sameDeviceIdentity,
+    );
+  }
+
+  void _recordDeviceConnectionReconnectDecision({
+    required DeviceStatus rawStatus,
+    required ProtectionStatus protectionStatus,
+    required bool requested,
+    required String trigger,
+    required String action,
+    required String reason,
+    required bool sameDeviceIdentity,
+  }) {
+    final nativeCommandReady = _nativeCommandReadinessForStatus(
+      protectionStatus,
+    ).ready;
+    BleDebugRegistry.instance.recordEvent(
+      'DEVICE_CONNECTION_RECONNECT_DECISION requested=$requested '
+      'trigger=$trigger bleOwner=${_deviceConnectionOwner(protectionStatus)} '
+      'nativeGattConnected=${protectionStatus.serviceBleConnected} '
+      'flutterGattConnected=${rawStatus.connected} '
+      'nativeCommandReady=$nativeCommandReady '
+      'sameDeviceIdentity=$sameDeviceIdentity action=$action '
+      'lifecycleGeneration=${_sosLifecycle.current.generation} '
+      'deviceMirrorState=${_sosDeviceMirrorState.name} reason=$reason',
+    );
   }
 
   bool _protectionReportsLiveBleConnection(ProtectionStatus status) {
     return status.deviceConnected ||
         status.serviceBleConnected ||
         status.serviceBleReady;
-  }
-
-  bool _protectionConnectionBelongsToKnownDevice({
-    required DeviceStatus baseStatus,
-    required ProtectionStatus protectionStatus,
-  }) {
-    if (!baseStatus.paired) {
-      return false;
-    }
-    // Native GATT is bound to the protected TAG. Flutter may key it by node
-    // id / backend id while native uses the BLE MAC — do not require a
-    // string match or the UI stays disconnected while Android is connected.
-    return protectionStatus.devicePaired ||
-        protectionStatus.deviceConnected ||
-        protectionStatus.serviceBleConnected ||
-        protectionStatus.serviceBleReady ||
-        baseStatus.paired;
   }
 
   bool _hasEffectivePublicDeviceStatusChange(
@@ -19025,32 +19199,10 @@ class EixamConnectSdkImpl
     ProtectionStatus protectionStatus,
   ) {
     final connectedDevice = _lastPublicDeviceStatus ?? _lastDeviceStatus;
-    final expectedTargets =
-        <String?>[
-              connectedDevice?.deviceId,
-              connectedDevice?.canonicalHardwareId,
-            ]
-            .whereType<String>()
-            .map((value) => value.trim())
-            .where((value) => value.isNotEmpty)
-            .toSet();
-    final nativeTargets =
-        <String?>[
-              protectionStatus.activeDeviceId,
-              protectionStatus.protectedDeviceId,
-            ]
-            .whereType<String>()
-            .map((value) => value.trim())
-            .where((value) => value.isNotEmpty)
-            .toSet();
-    return expectedTargets.isNotEmpty &&
-        nativeTargets.isNotEmpty &&
-        expectedTargets.any(
-          (expected) => nativeTargets.any(
-            (actual) =>
-                expected.toLowerCase() == actual.toLowerCase() ||
-                _samePhysicalHardwareId(expected, actual),
-          ),
+    return connectedDevice != null &&
+        _nativeProtectionTargetMatchesDeviceStatus(
+          baseStatus: connectedDevice,
+          protectionStatus: protectionStatus,
         );
   }
 

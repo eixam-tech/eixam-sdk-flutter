@@ -434,6 +434,18 @@ class BleAutoReconnectCoordinator {
       );
       return;
     }
+    final nativeSuppressionReason = _nativeReconnectSuppressionReason;
+    if (nativeSuppressionReason != null) {
+      _recordNativeReconnectSuppressed(
+        trigger: 'unexpected_disconnect',
+        reason: nativeSuppressionReason,
+      );
+      final notifyNative = _onNativeProtectionOwnsBle;
+      if (notifyNative != null) {
+        unawaited(notifyNative('unexpected_disconnect'));
+      }
+      return;
+    }
     if (_retryTimer != null) {
       BleDebugRegistry.instance.recordEvent(
         'Reconnect already scheduled; skipping duplicate request',

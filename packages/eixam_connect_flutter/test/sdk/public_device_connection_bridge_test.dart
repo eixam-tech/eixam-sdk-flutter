@@ -3,6 +3,57 @@ import 'package:eixam_connect_flutter/src/sdk/public_device_connection_bridge.da
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('native-ready GATT is the canonical connection authority', () {
+    final projection = projectDeviceConnection(
+      flutterRepositoryConnected: false,
+      nativeOwnerDeclared: true,
+      nativeOwnerReady: true,
+      nativeGattConnected: true,
+      sameDeviceIdentity: true,
+    );
+
+    expect(projection.visibleConnected, isTrue);
+    expect(projection.falseDisconnectBlocked, isTrue);
+    expect(
+      projection.reason,
+      DeviceConnectionProjectionReason.authoritativeNativeConnection,
+    );
+  });
+
+  test('real native GATT disconnect is visible immediately', () {
+    final projection = projectDeviceConnection(
+      flutterRepositoryConnected: false,
+      nativeOwnerDeclared: true,
+      nativeOwnerReady: false,
+      nativeGattConnected: false,
+      sameDeviceIdentity: true,
+    );
+
+    expect(projection.visibleConnected, isFalse);
+    expect(projection.falseDisconnectBlocked, isFalse);
+    expect(
+      projection.reason,
+      DeviceConnectionProjectionReason.nativeGattDisconnected,
+    );
+  });
+
+  test('native identity mismatch cannot mask a real disconnect', () {
+    final projection = projectDeviceConnection(
+      flutterRepositoryConnected: false,
+      nativeOwnerDeclared: true,
+      nativeOwnerReady: true,
+      nativeGattConnected: true,
+      sameDeviceIdentity: false,
+    );
+
+    expect(projection.visibleConnected, isFalse);
+    expect(projection.falseDisconnectBlocked, isFalse);
+    expect(
+      projection.reason,
+      DeviceConnectionProjectionReason.nativeIdentityMismatch,
+    );
+  });
+
   test('does not bridge a Flutter-owned GATT drop', () {
     expect(
       shouldBridgeProtectionBleConnection(

@@ -82,6 +82,7 @@ class BleDebugRegistry {
   static const List<String> _consoleDiagnosticPrefixes = <String>[
     'EIXAM_SDK_BUILD_MARKER',
     'EIXAM_RECONNECT_TRACE',
+    'DEVICE_CONNECTION_',
     'PROVISIONING_REBOOT',
     'SOS_CAPABILITY_EVAL',
     'EXTERNAL_SOS',

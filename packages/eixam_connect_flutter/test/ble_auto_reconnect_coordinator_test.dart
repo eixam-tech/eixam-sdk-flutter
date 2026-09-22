@@ -446,6 +446,49 @@ void main() {
     });
 
     test(
+        'native owner handles a real disconnect without scheduling Flutter GATT',
+        () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _FakeDeviceRepository();
+      final store = PreferredBleDeviceStore(localStore: SharedPrefsSdkStore());
+      final nativeTriggers = <String>[];
+      Duration? scheduledDelay;
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+        nativeProtectionReconnectSuppressionReason: () => 'native_preparing',
+        onNativeProtectionOwnsBle: (trigger) async {
+          nativeTriggers.add(trigger);
+        },
+        retryTimerFactory: (delay, callback) {
+          scheduledDelay = delay;
+          return Timer(const Duration(days: 1), callback);
+        },
+      );
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+
+      coordinator.onUnexpectedDisconnect();
+      await pumpEventQueue();
+
+      expect(scheduledDelay, isNull);
+      expect(repository.reconnectCallCount, 0);
+      expect(nativeTriggers, <String>['unexpected_disconnect']);
+      expect(
+        BleDebugRegistry.instance.currentState.events
+            .map((event) => event.message),
+        contains(
+          'SOS_FLUTTER_RECONNECT_SUPPRESSED '
+          'reason=native_preparing source=unexpected_disconnect',
+        ),
+      );
+      await coordinator.dispose();
+    });
+
+    test(
         'authoritative connected snapshot cancels retry wait without a second attempt',
         () async {
       SharedPreferences.setMockInitialValues(<String, Object>{});

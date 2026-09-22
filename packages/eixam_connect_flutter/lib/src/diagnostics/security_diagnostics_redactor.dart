@@ -151,7 +151,7 @@ class SecurityDiagnosticsRedactor {
     );
     sanitized = sanitized.replaceAllMapped(
       RegExp(
-        r'\b([A-Za-z0-9_]*(?:deviceId|hardwareId|deviceIdentity|hardwareIdentity|deviceMac|hardwareMac)[A-Za-z0-9_]*)=(.*?)(?=\s+[A-Za-z][A-Za-z0-9_]*=|$)',
+        r'\b((?!sameDeviceIdentity\b)[A-Za-z0-9_]*(?:deviceId|hardwareId|deviceIdentity|hardwareIdentity|deviceMac|hardwareMac)[A-Za-z0-9_]*)=(.*?)(?=\s+[A-Za-z][A-Za-z0-9_]*=|$)',
         caseSensitive: false,
       ),
       (match) => 'device_identity_present=${_isPresentToken(match[2])}',

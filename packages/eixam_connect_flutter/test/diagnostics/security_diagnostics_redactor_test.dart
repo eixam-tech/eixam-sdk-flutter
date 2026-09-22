@@ -78,6 +78,20 @@ void main() {
       expect(message, isNot(contains('sos:4660:5')));
     });
 
+    test('preserves boolean connection identity decisions', () {
+      final message = SecurityDiagnosticsRedactor.sanitizeEventMessage(
+        'DEVICE_CONNECTION_RECONNECT_DECISION '
+        'sameDeviceIdentity=true nativeConnectedIdentity=fnv32-12345678 '
+        'deviceId=device-secret',
+        allowSensitive: false,
+      );
+
+      expect(message, contains('sameDeviceIdentity=true'));
+      expect(message, contains('nativeConnectedIdentity=fnv32-12345678'));
+      expect(message, contains('device_identity_present=true'));
+      expect(message, isNot(contains('device-secret')));
+    });
+
     test('formatters suppress raw BLE payloads, identifiers, and coordinates',
         () {
       expect(

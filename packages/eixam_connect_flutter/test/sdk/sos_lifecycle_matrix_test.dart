@@ -3062,6 +3062,7 @@ void main() {
           appTriggeredSosBridgeWindow: const Duration(milliseconds: 10),
         );
         final observedMessages = <String>[];
+        final visibleConnectionStates = <bool>[];
         final debugSubscription = BleDebugRegistry.instance.watch().listen((
           state,
         ) {
@@ -3069,6 +3070,7 @@ void main() {
             observedMessages.add(state.events.last.message);
           }
         });
+        StreamSubscription<DeviceStatus>? deviceStatusSubscription;
         var receiveSequence = 0;
 
         void emitPhysicalStart() {
@@ -3132,6 +3134,37 @@ void main() {
           );
         }
 
+        void emitPhysicalAppCancelAcknowledged() {
+          receiveSequence += 1;
+          const terminalHex = 'e20134120000';
+          final timestamp = DateTime.now().toUtc().add(
+            Duration(milliseconds: receiveSequence),
+          );
+          adapter.emit(
+            ProtectionPlatformEvent(
+              type: ProtectionPlatformEventType.bleNotificationReceived,
+              timestamp: timestamp,
+              payloadHex: terminalHex,
+              source: 'sos',
+              characteristicUuid: EixamBleProtocol.sosNotifyCharacteristicUuid,
+              byteLength: terminalHex.length ~/ 2,
+              packetType: 'sos_event',
+              firstOpcode: '0xe2',
+              receiveSequence: receiveSequence,
+              receiveCorrelation: 'app-cancelled-$receiveSequence',
+              connectedDeviceMarker: 'CF:82:00:00:00:01',
+            ),
+          );
+          adapter.emit(
+            ProtectionPlatformEvent(
+              type: ProtectionPlatformEventType.ownDeviceSosLifecycleObserved,
+              timestamp: timestamp,
+              reason: 'own:sos:$terminalHex',
+              classification: 'ownDeviceSos',
+            ),
+          );
+        }
+
         Future<void> waitFor(FutureOr<bool> Function() predicate) async {
           for (var attempt = 0; attempt < 100; attempt += 1) {
             if (await predicate()) {
@@ -3140,6 +3173,7 @@ void main() {
             await Future<void>.delayed(const Duration(milliseconds: 2));
             await pumpEventQueue(times: 2);
           }
+          fail('Timed out waiting for the SOS lifecycle condition.');
         }
 
         try {
@@ -3154,6 +3188,12 @@ void main() {
             pairedAt: DateTime.utc(2026, 9, 22),
           );
           await harness.sdk.rehydrateProtectionState();
+          deviceStatusSubscription = harness.sdk.watchDeviceStatus().listen(
+            (status) => visibleConnectionStates.add(status.connected),
+          );
+          await pumpEventQueue(times: 3);
+          final runtimeEnsureCountBeforeCycles =
+              adapter.ensureRuntimeReasons.length;
 
           for (var cycle = 1; cycle <= 3; cycle += 1) {
             emitPhysicalStart();
@@ -3292,11 +3332,78 @@ void main() {
             expect(protection.serviceBleConnected, isTrue);
             expect(protection.serviceBleReady, isTrue);
             expect(protection.nativeCommandReady, isTrue);
+            final rawStatus = await harness.deviceRepository.getDeviceStatus();
+            harness.deviceRepository.emitStatus(
+              rawStatus.copyWith(
+                connected: false,
+                lifecycleState: DeviceLifecycleState.paired,
+              ),
+            );
+            await pumpEventQueue(times: 5);
+            expect(
+              (await harness.sdk.getDeviceStatus()).connected,
+              isTrue,
+              reason: 'native GATT must remain the visible authority after E3',
+            );
+            expect(harness.deviceRepository.reconnectCallCount, 0);
+            expect(
+              adapter.ensureRuntimeReasons.length,
+              runtimeEnsureCountBeforeCycles,
+              reason: 'terminal cleanup must not restart Protection runtime',
+            );
           }
+
+          emitPhysicalStart();
+          await waitFor(() async {
+            final lifecycle = await harness.sdk.getSosLifecycle();
+            return lifecycle.generation == 4 &&
+                lifecycle.stage == SosLifecycleStage.active;
+          });
+          final cancellation = harness.sdk.cancelSos();
+          await waitFor(
+            () => adapter.commands.any((command) => command.bytes[0] == 0x04),
+          );
+          await waitFor(
+            () =>
+                harness.sosRepository.currentIncident.state ==
+                SosState.cancelled,
+          );
+          await pumpEventQueue(times: 5);
+          emitPhysicalAppCancelAcknowledged();
+          final cancelled = await cancellation;
+          expect(cancelled.state, SosState.cancelled);
+          expect((await harness.sdk.getSosLifecycle()).generation, 4);
+          expect(
+            (await harness.sdk.getSosLifecycle()).stage,
+            SosLifecycleStage.cancelled,
+          );
+          expect((await harness.sdk.getDeviceStatus()).connected, isTrue);
+          expect(harness.deviceRepository.reconnectCallCount, 0);
+
+          emitPhysicalStart();
+          await waitFor(() async {
+            final lifecycle = await harness.sdk.getSosLifecycle();
+            return lifecycle.generation == 5 && lifecycle.isOpen;
+          });
+          expect((await harness.sdk.getDeviceStatus()).connected, isTrue);
+          expect(harness.deviceRepository.reconnectCallCount, 0);
+          expect(
+            adapter.ensureRuntimeReasons.length,
+            runtimeEnsureCountBeforeCycles,
+          );
+          expect(visibleConnectionStates, isNotEmpty);
+          expect(
+            visibleConnectionStates.every((connected) => connected),
+            isTrue,
+            reason: 'no public disconnected projection is allowed',
+          );
 
           expect(
             adapter.commands.where((command) => command.bytes[0] == 0x04),
-            isEmpty,
+            hasLength(2),
+            reason:
+                'app cancel plus backend terminal convergence use the same '
+                'native owner without starting Flutter GATT',
           );
           expect(
             adapter.commands.where((command) => command.bytes[0] == 0x07),
@@ -3363,7 +3470,7 @@ void main() {
                       message.contains('rejected=false'),
                 )
                 .length,
-            2,
+            3,
           );
           expect(
             observedMessages
@@ -3391,7 +3498,33 @@ void main() {
                 .length,
             3,
           );
+          for (var generation = 1; generation <= 3; generation += 1) {
+            expect(
+              observedMessages.any(
+                (message) =>
+                    message.contains(
+                      'DEVICE_CONNECTION_FALSE_DISCONNECT_BLOCKED',
+                    ) &&
+                    message.contains('bleOwner=nativeReady') &&
+                    message.contains('nativeGattConnected=true') &&
+                    message.contains('nativeCommandReady=true') &&
+                    message.contains('sameDeviceIdentity=true') &&
+                    message.contains('lifecycleGeneration=$generation'),
+              ),
+              isTrue,
+            );
+          }
+          expect(
+            observedMessages.any(
+              (message) =>
+                  message.contains('DEVICE_CONNECTION_RECONNECT_DECISION') &&
+                  message.contains('requested=false') &&
+                  message.contains('action=preserve_native'),
+            ),
+            isTrue,
+          );
         } finally {
+          await deviceStatusSubscription?.cancel();
           await debugSubscription.cancel();
           await harness.dispose();
           await adapter.dispose();
