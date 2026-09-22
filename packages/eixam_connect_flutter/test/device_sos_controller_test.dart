@@ -154,11 +154,7 @@ void main() {
         );
 
         final status = controller.currentStatus;
-        expect(commands.map((command) => command.opcode), <int>[
-          0x06,
-          0x04,
-          0x04,
-        ]);
+        expect(commands.map((command) => command.opcode), <int>[0x06, 0x04]);
         expect(cancelled.state, DeviceSosState.inactive);
         expect(status.state, DeviceSosState.inactive);
         expect(status.decoderNote, isNot(contains('PACKET_EXPLICIT_ACTIVE')));
@@ -385,19 +381,23 @@ void main() {
 
     test('pending cancel retry remains alive while waiting for ACK', () async {
       final commands = <EixamDeviceCommand>[];
+      DateTime? controlledNow;
       final controller = DeviceSosController(
         countdownDuration: const Duration(milliseconds: 5),
         countdownTick: const Duration(milliseconds: 1),
         appActivationObservationTimeout: const Duration(milliseconds: 80),
+        now: () => controlledNow ?? DateTime.now(),
       );
       addTearDown(controller.dispose);
       await controller.attach(
         commandWriter: (command) async => commands.add(command),
       );
       await _promoteDeviceSosToActive(controller);
+      controlledNow = DateTime.now();
 
       final cancelFuture = controller.cancelSos();
       await Future<void>.delayed(const Duration(milliseconds: 5));
+      controlledNow = controlledNow.add(const Duration(milliseconds: 1001));
       controller.handleIncomingSosPacket(
         _activePacket(),
         source: DeviceSosTransitionSource.device,

@@ -653,6 +653,7 @@ class EixamConnectSdkImpl
   final Set<String> _authoritativeTerminalOperationKeys = <String>{};
   _SosDeviceMirrorState _sosDeviceMirrorState =
       _SosDeviceMirrorState.synchronized;
+  _TerminalConvergenceFence? _terminalConvergenceFence;
   int? _freshPhysicalStartSupersededRemoteClearGeneration;
   int? _postResolvePhysicalRxGeneration;
   int? _deviceInactiveBoundaryAfterTerminalGeneration;
@@ -1884,6 +1885,7 @@ class EixamConnectSdkImpl
     _backendResolveWriteSuccessKeys.clear();
     _authoritativeTerminalOperationKeys.clear();
     _sosDeviceMirrorState = _SosDeviceMirrorState.synchronized;
+    _terminalConvergenceFence = null;
     _freshPhysicalStartSupersededRemoteClearGeneration = null;
     _postResolvePhysicalRxGeneration = null;
     _deviceInactiveBoundaryAfterTerminalGeneration = null;
@@ -4559,8 +4561,38 @@ class EixamConnectSdkImpl
     if (_consumeRemoteTerminalDeviceClearAck(status)) {
       return;
     }
+    final statusHasPhysicalStartSemantics =
+        status.derivedFromBlePacket &&
+        status.transitionSource == DeviceSosTransitionSource.device &&
+        (status.state == DeviceSosState.preConfirm ||
+            status.state == DeviceSosState.active ||
+            status.state == DeviceSosState.acknowledged);
+    final convergenceEvaluation = statusHasPhysicalStartSemantics
+        ? _evaluateTerminalConvergenceStart(
+            incomingNodeId: status.nodeId,
+            incomingPacketId: status.packetId,
+            incomingPacketSignature: status.lastPacketSignature,
+            incomingCycleKey: _runtimeDeviceSosCycleKey(
+              status: status,
+              nodeId: status.nodeId ?? _knownLocalDeviceNodeId,
+            ),
+            sameDevice: _terminalConvergenceFenceMatchesStatusDevice(status),
+            receiveSequence:
+                deviceSosController
+                    .lastPhysicalReceiveEvidence
+                    ?.receiveSequence ??
+                sosStatusEventSequence,
+          )
+        : null;
+    if (convergenceEvaluation?.suppress == true) {
+      _logPostTerminalInflightStartSuppressed(convergenceEvaluation!);
+      return;
+    }
     _clearRemoteTerminalAcknowledgementForNewDeviceCycle(status);
-    _supersedeRemoteTerminalDeviceClearForFreshPhysicalStart(status);
+    _supersedeRemoteTerminalDeviceClearForFreshPhysicalStart(
+      status,
+      provenNewCycle: convergenceEvaluation?.provenNewCycle == true,
+    );
     if (_shouldSuppressDeviceSosWhileRemoteTerminalClearPending(status)) {
       return;
     }
@@ -7225,6 +7257,12 @@ class EixamConnectSdkImpl
       _setSosDeviceMirrorState(
         _SosDeviceMirrorState.pendingCancel,
         source: 'public_cancel_device_mirror_pending',
+      );
+      _armTerminalConvergenceFence(
+        generation: cancellationLifecycle.generation,
+        terminalState: SosState.cancelled,
+        connection: cancellationDeviceSnapshot.connection,
+        deviceSos: cancellationDeviceSnapshot.deviceSos,
       );
       BleDebugRegistry.instance.recordEvent(
         'SOS_APP_CANCEL_LOGICAL_TERMINAL '
@@ -12745,6 +12783,7 @@ class EixamConnectSdkImpl
       nodeId: nodeId,
       runtimeCycleKey: currentRuntimeCycleKey,
       packetId: packetId,
+      packetSignature: deviceSos.lastPacketSignature,
       deviceActiveObservedAt: activeObservedAt,
       activeReceiveSequence: snapshot.activePhysicalEvidence?.receiveSequence,
       activeReceiveSequenceDomain:
@@ -12985,6 +13024,147 @@ class EixamConnectSdkImpl
             proof.runtimeCycleKey;
   }
 
+  bool get _terminalDeviceMirrorIsPending =>
+      _sosDeviceMirrorState == _SosDeviceMirrorState.pendingResolve ||
+      _sosDeviceMirrorState == _SosDeviceMirrorState.pendingCancel;
+
+  void _armTerminalConvergenceFenceFromProof(
+    _PhysicalSosTerminationTarget proof,
+  ) {
+    _terminalConvergenceFence = _TerminalConvergenceFence(
+      generation: proof.generation,
+      terminalState: proof.terminalState,
+      deviceId: proof.deviceId,
+      hardwareId: proof.hardwareId,
+      nodeId: proof.nodeId,
+      runtimeCycleKey: proof.runtimeCycleKey,
+      packetId: proof.packetId,
+      packetSignature: proof.packetSignature,
+    );
+  }
+
+  void _armTerminalConvergenceFence({
+    required int generation,
+    required SosState terminalState,
+    required _CapturedPhysicalDeviceConnection connection,
+    required DeviceSosStatus deviceSos,
+  }) {
+    final device = connection.device;
+    final deviceSosOpen =
+        deviceSos.state == DeviceSosState.preConfirm ||
+        deviceSos.state == DeviceSosState.active ||
+        deviceSos.state == DeviceSosState.acknowledged;
+    if (!connection.devicePresent || device == null || !deviceSosOpen) {
+      _terminalConvergenceFence = null;
+      return;
+    }
+    _terminalConvergenceFence = _TerminalConvergenceFence(
+      generation: generation,
+      terminalState: terminalState,
+      deviceId: device.deviceId.trim(),
+      hardwareId: _physicalHardwareIdForStatus(device),
+      nodeId: deviceSos.nodeId ?? device.nodeId,
+      runtimeCycleKey: _runtimeDeviceSosCycleKey(
+        status: deviceSos,
+        nodeId: deviceSos.nodeId ?? device.nodeId,
+      ),
+      packetId: deviceSos.packetId,
+      packetSignature: deviceSos.lastPacketSignature,
+    );
+  }
+
+  bool _terminalConvergenceFenceMatchesStatusDevice(DeviceSosStatus status) {
+    final fence = _terminalConvergenceFence;
+    if (fence == null) {
+      return false;
+    }
+    final incomingNodeId = _normalizeNodeIdOrNull(status.nodeId);
+    final capturedNodeId = _normalizeNodeIdOrNull(fence.nodeId);
+    if (incomingNodeId == null ||
+        capturedNodeId == null ||
+        incomingNodeId != capturedNodeId) {
+      return false;
+    }
+    final current = _captureTerminalDeviceSnapshot(
+      reason: 'terminal_convergence_device_match',
+    ).connection;
+    final currentHardwareId = _physicalHardwareIdForStatus(current.device);
+    return current.devicePresent &&
+        _samePhysicalHardwareId(currentHardwareId, fence.hardwareId);
+  }
+
+  _TerminalConvergenceStartEvaluation? _evaluateTerminalConvergenceStart({
+    required int? incomingNodeId,
+    required int? incomingPacketId,
+    required String? incomingPacketSignature,
+    required String? incomingCycleKey,
+    required bool sameDevice,
+    required int receiveSequence,
+  }) {
+    final fence = _terminalConvergenceFence;
+    if (!_terminalDeviceMirrorIsPending || fence == null) {
+      return null;
+    }
+    final capturedCycleKey = fence.runtimeCycleKey?.trim();
+    final normalizedIncomingCycleKey = incomingCycleKey?.trim();
+    final sameCycle =
+        capturedCycleKey?.isNotEmpty == true &&
+        normalizedIncomingCycleKey?.isNotEmpty == true &&
+        capturedCycleKey == normalizedIncomingCycleKey;
+    final capturedPacketSignature = fence.packetSignature?.trim();
+    final normalizedIncomingPacketSignature = incomingPacketSignature?.trim();
+    final samePacketIdentity =
+        (fence.packetId != null &&
+            incomingPacketId != null &&
+            fence.packetId == incomingPacketId) ||
+        (capturedPacketSignature?.isNotEmpty == true &&
+            normalizedIncomingPacketSignature?.isNotEmpty == true &&
+            capturedPacketSignature == normalizedIncomingPacketSignature);
+    final provenNewCycle =
+        sameDevice &&
+        capturedCycleKey?.isNotEmpty == true &&
+        normalizedIncomingCycleKey?.isNotEmpty == true &&
+        capturedCycleKey != normalizedIncomingCycleKey &&
+        fence.packetId != null &&
+        incomingPacketId != null &&
+        fence.packetId != incomingPacketId;
+    return _TerminalConvergenceStartEvaluation(
+      fence: fence,
+      incomingNodeId: incomingNodeId,
+      incomingCycleKey: normalizedIncomingCycleKey,
+      receiveSequence: receiveSequence,
+      sameDevice: sameDevice,
+      sameCycle: sameCycle,
+      samePacketIdentity: samePacketIdentity,
+      provenNewCycle: provenNewCycle,
+      suppress: !provenNewCycle,
+      reason: sameCycle
+          ? 'same_terminalizing_cycle'
+          : samePacketIdentity
+          ? 'same_packet_identity'
+          : 'new_physical_cycle_not_proven',
+    );
+  }
+
+  void _logPostTerminalInflightStartSuppressed(
+    _TerminalConvergenceStartEvaluation evaluation,
+  ) {
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_POST_TERMINAL_INFLIGHT_START_SUPPRESSED '
+      'terminalGeneration=${evaluation.fence.generation} '
+      'incomingGenerationCandidate=${evaluation.fence.generation + 1} '
+      'terminalState=${evaluation.fence.terminalState.name} '
+      'deviceMirrorState=${_sosDeviceMirrorState.name} '
+      'sameDevice=${evaluation.sameDevice} '
+      'sameCycle=${evaluation.sameCycle} '
+      'samePacketIdentity=${evaluation.samePacketIdentity} '
+      'capturedCycleKey=${SecurityDiagnosticsRedactor.stableIdentifierMarker(evaluation.fence.runtimeCycleKey)} '
+      'incomingCycleKey=${SecurityDiagnosticsRedactor.stableIdentifierMarker(evaluation.incomingCycleKey)} '
+      'receiveSequence=${evaluation.receiveSequence} '
+      'reason=${evaluation.reason}',
+    );
+  }
+
   void _clearRemoteTerminalAcknowledgementForNewDeviceCycle(
     DeviceSosStatus status,
   ) {
@@ -13065,16 +13245,20 @@ class EixamConnectSdkImpl
   }
 
   void _supersedeRemoteTerminalDeviceClearForFreshPhysicalStart(
-    DeviceSosStatus status,
-  ) {
+    DeviceSosStatus status, {
+    required bool provenNewCycle,
+  }) {
     final proof = _remoteTerminalDeviceClearPendingProof;
     final freshStart = _pendingFreshPhysicalStartProof;
     final packetSignature = status.lastPacketSignature?.trim();
+    final nativeFreshStartMatches =
+        freshStart != null &&
+        proof != null &&
+        freshStart.terminalGeneration == proof.generation &&
+        packetSignature != null &&
+        packetSignature == freshStart.packetSignature;
     if (proof == null ||
-        freshStart == null ||
-        freshStart.terminalGeneration != proof.generation ||
-        packetSignature == null ||
-        packetSignature != freshStart.packetSignature ||
+        (!nativeFreshStartMatches && !provenNewCycle) ||
         !status.derivedFromBlePacket ||
         status.transitionSource != DeviceSosTransitionSource.device ||
         (status.state != DeviceSosState.preConfirm &&
@@ -13095,7 +13279,7 @@ class EixamConnectSdkImpl
     BleDebugRegistry.instance.recordEvent(
       'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_SUPERSEDED '
       'reason=fresh_physical_start terminalGeneration=${proof.generation} '
-      'receiveSequence=${freshStart.nativeReceiveSequence}',
+      'receiveSequence=${freshStart?.nativeReceiveSequence ?? deviceSosController.lastPhysicalReceiveEvidence?.receiveSequence ?? -1}',
     );
   }
 
@@ -14139,6 +14323,10 @@ class EixamConnectSdkImpl
     required String source,
   }) {
     _sosDeviceMirrorState = state;
+    if (state != _SosDeviceMirrorState.pendingResolve &&
+        state != _SosDeviceMirrorState.pendingCancel) {
+      _terminalConvergenceFence = null;
+    }
     _logPublicSosLifecycleState(source: source);
   }
 
@@ -14999,6 +15187,9 @@ class EixamConnectSdkImpl
       terminalIncident: terminalIncident,
       capturedSnapshot: capturedDeviceSnapshot,
     );
+    if (deviceClearProof != null) {
+      _armTerminalConvergenceFenceFromProof(deviceClearProof);
+    }
 
     final acceptedTerminal = await confirmation;
     if (!acceptedTerminal.isTerminal ||
@@ -19477,7 +19668,9 @@ class EixamConnectSdkImpl
           'admitted=${admission.admitted} rejected=${!admission.admitted} '
           'reason=${admission.reason}',
         );
-        _postResolvePhysicalRxGeneration = null;
+        if (admission.admitted) {
+          _postResolvePhysicalRxGeneration = null;
+        }
       }
       if (platformSosEventPacket != null &&
           physicalIdentityMatch &&
@@ -20336,6 +20529,30 @@ class EixamConnectSdkImpl
                         terminal.lastAuthoritativeObservation,
                       )));
     final packetHasStartSemantics = packet != null && packet.sosType != 0;
+    final convergenceFence = _terminalConvergenceFence;
+    final convergenceEvaluation = packetHasStartSemantics
+        ? _evaluateTerminalConvergenceStart(
+            incomingNodeId: packet.nodeId,
+            incomingPacketId: packet.packetId,
+            incomingPacketSignature:
+                '${packet.nodeId}:${packet.packetId}:$rawHex',
+            incomingCycleKey: 'sos:${packet.nodeId}:${packet.packetId}',
+            sameDevice:
+                exactPhysicalIdentityMatch &&
+                convergenceFence != null &&
+                (convergenceFence.nodeId == null ||
+                    convergenceFence.nodeId == packet.nodeId),
+            receiveSequence: receiveSequence ?? -1,
+          )
+        : null;
+    if (convergenceEvaluation?.suppress == true) {
+      _logPostTerminalInflightStartSuppressed(convergenceEvaluation!);
+      return const _OwnDeviceLifecycleAdmission(
+        admitted: false,
+        predicate: 'terminal_convergence_same_cycle',
+        reason: 'post_terminal_inflight_start',
+      );
+    }
     final terminalBoundaryAdmitsFreshPhysicalStart =
         terminalTargetsPacket && !current.isOpen;
     final validTerminalBoundaryPhysicalStart =
@@ -22909,6 +23126,54 @@ enum _SosDeviceMirrorState {
   failed,
 }
 
+final class _TerminalConvergenceFence {
+  const _TerminalConvergenceFence({
+    required this.generation,
+    required this.terminalState,
+    required this.deviceId,
+    required this.hardwareId,
+    required this.nodeId,
+    required this.runtimeCycleKey,
+    required this.packetId,
+    required this.packetSignature,
+  });
+
+  final int generation;
+  final SosState terminalState;
+  final String? deviceId;
+  final String? hardwareId;
+  final int? nodeId;
+  final String? runtimeCycleKey;
+  final int? packetId;
+  final String? packetSignature;
+}
+
+final class _TerminalConvergenceStartEvaluation {
+  const _TerminalConvergenceStartEvaluation({
+    required this.fence,
+    required this.incomingNodeId,
+    required this.incomingCycleKey,
+    required this.receiveSequence,
+    required this.sameDevice,
+    required this.sameCycle,
+    required this.samePacketIdentity,
+    required this.provenNewCycle,
+    required this.suppress,
+    required this.reason,
+  });
+
+  final _TerminalConvergenceFence fence;
+  final int? incomingNodeId;
+  final String? incomingCycleKey;
+  final int receiveSequence;
+  final bool sameDevice;
+  final bool sameCycle;
+  final bool samePacketIdentity;
+  final bool provenNewCycle;
+  final bool suppress;
+  final String reason;
+}
+
 class _OperationalSosIdentity {
   const _OperationalSosIdentity({
     this.deviceId,
@@ -23030,6 +23295,7 @@ class _PhysicalSosTerminationTarget {
     required this.nodeId,
     required this.runtimeCycleKey,
     required this.packetId,
+    required this.packetSignature,
     required this.deviceActiveObservedAt,
     required this.activeReceiveSequence,
     required this.activeReceiveSequenceDomain,
@@ -23050,6 +23316,7 @@ class _PhysicalSosTerminationTarget {
   final int? nodeId;
   final String? runtimeCycleKey;
   final int? packetId;
+  final String? packetSignature;
   final DateTime deviceActiveObservedAt;
   final int? activeReceiveSequence;
   final String? activeReceiveSequenceDomain;

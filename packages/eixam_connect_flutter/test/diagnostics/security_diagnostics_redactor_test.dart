@@ -63,6 +63,21 @@ void main() {
       expect(message, contains('packet_bytes_present=true'));
     });
 
+    test('preserves safe terminal convergence fields', () {
+      final message = SecurityDiagnosticsRedactor.sanitizeEventMessage(
+        'SOS_POST_TERMINAL_INFLIGHT_START_SUPPRESSED '
+        'sameCycle=true capturedCycleKey=fnv32-12345678 '
+        'incomingCycleKey=fnv32-12345678 cycleKey=sos:4660:5',
+        allowSensitive: false,
+      );
+
+      expect(message, contains('sameCycle=true'));
+      expect(message, contains('capturedCycleKey=fnv32-12345678'));
+      expect(message, contains('incomingCycleKey=fnv32-12345678'));
+      expect(message, contains('packet_identity_present=true'));
+      expect(message, isNot(contains('sos:4660:5')));
+    });
+
     test('formatters suppress raw BLE payloads, identifiers, and coordinates',
         () {
       expect(

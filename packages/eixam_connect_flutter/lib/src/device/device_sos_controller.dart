@@ -771,8 +771,7 @@ class DeviceSosController {
       return;
     }
     final sentAt = pending.sentAt;
-    if (pending.action == 'resolve' &&
-        reason == 'sos_still_observed_after_terminal' &&
+    if (reason == 'sos_still_observed_after_terminal' &&
         sentAt != null &&
         _now().difference(sentAt) < _terminalCommandRetryInterval) {
       return;

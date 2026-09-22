@@ -173,7 +173,7 @@ class SecurityDiagnosticsRedactor {
     );
     sanitized = sanitized.replaceAllMapped(
       RegExp(
-        r'\b(cycle|[A-Za-z0-9_]*Cycle(?:Id|Key)?[A-Za-z0-9_]*)=(.*?)(?=\s+[A-Za-z][A-Za-z0-9_]*=|$)',
+        r'\b((?!(?:sameCycle|capturedCycleKey|incomingCycleKey)=)(?:cycle|[A-Za-z0-9_]*Cycle(?:Id|Key)?[A-Za-z0-9_]*))=(.*?)(?=\s+[A-Za-z][A-Za-z0-9_]*=|$)',
       ),
       (match) => 'packet_identity_present=${_isPresentToken(match[2])}',
     );
