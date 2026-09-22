@@ -13246,6 +13246,8 @@ class EixamConnectSdkImpl
         receiveSequence: evidence.receiveSequence,
       );
       final convergenceSuppresses =
+          (pendingTerminalFence &&
+              _sosDeviceMirrorState != _SosDeviceMirrorState.failed) ||
           convergenceEvaluation?.suppress == true ||
           (_terminalDeviceMirrorIsPending &&
               convergenceEvaluation?.provenNewCycle != true);
