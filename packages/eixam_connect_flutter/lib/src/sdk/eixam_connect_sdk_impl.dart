@@ -13225,6 +13225,12 @@ class EixamConnectSdkImpl
         decision: PhysicalSosStartAdmissionDecision.sameCycle,
         reason: 'current_generation_open',
       );
+    } else if (lifecycle.generation == 0) {
+      admission = PhysicalSosStartAdmission(
+        decision: PhysicalSosStartAdmissionDecision.acceptNewGeneration,
+        reason: 'first_physical_generation',
+        allowFreshStartAfterTerminal: terminal?.generation == 0,
+      );
     } else if (!afterTerminalBoundary) {
       admission = const PhysicalSosStartAdmission(
         decision: PhysicalSosStartAdmissionDecision.acceptNewGeneration,
@@ -14022,6 +14028,9 @@ class EixamConnectSdkImpl
     final current = _sosLifecycle.current;
     if (terminal == null || current.generation > terminal.generation) {
       return false;
+    }
+    if (terminal.generation == 0 && current.generation == 0) {
+      return true;
     }
     if (!status.derivedFromBlePacket ||
         status.transitionSource != DeviceSosTransitionSource.device ||

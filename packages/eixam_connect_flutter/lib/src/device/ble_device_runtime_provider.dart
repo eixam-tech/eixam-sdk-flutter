@@ -2341,11 +2341,13 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         );
         final physicalStartAdmission = _deviceSosController
             .evaluatePhysicalSosStartAdmission(sosPacket, physicalEvidence);
-        final packetNotRecentlyProcessed = _shouldProcessSosPacket(
-          nodeId: sosPacket.nodeId,
-          packetId: sosPacket.packetId,
-          rawHex: sosPacket.rawHex,
-        );
+        final packetNotRecentlyProcessed = physicalStartAdmission.shouldProcess
+            ? _shouldProcessSosPacket(
+                nodeId: sosPacket.nodeId,
+                packetId: sosPacket.packetId,
+                rawHex: sosPacket.rawHex,
+              )
+            : false;
         if (physicalStartAdmission.shouldProcess &&
             packetNotRecentlyProcessed) {
           _deviceSosController.handleIncomingSosPacket(
@@ -2839,11 +2841,13 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         );
         final physicalStartAdmission = _deviceSosController
             .evaluatePhysicalSosStartAdmission(sosPacket, physicalEvidence);
-        final packetNotRecentlyProcessed = _shouldProcessSosPacket(
-          nodeId: sosPacket.nodeId,
-          packetId: sosPacket.packetId,
-          rawHex: sosPacket.rawHex,
-        );
+        final packetNotRecentlyProcessed = physicalStartAdmission.shouldProcess
+            ? _shouldProcessSosPacket(
+                nodeId: sosPacket.nodeId,
+                packetId: sosPacket.packetId,
+                rawHex: sosPacket.rawHex,
+              )
+            : false;
         if (physicalStartAdmission.shouldProcess &&
             packetNotRecentlyProcessed) {
           _deviceSosController.handleIncomingSosPacket(
