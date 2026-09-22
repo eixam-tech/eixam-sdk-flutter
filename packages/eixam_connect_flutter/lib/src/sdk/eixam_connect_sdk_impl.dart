@@ -643,6 +643,9 @@ class EixamConnectSdkImpl
   _PhysicalSosTerminationTarget? _remoteTerminalDeviceClearAwaitingAckProof;
   _PhysicalSosTerminationTarget? _remoteTerminalDeviceClearAcknowledgedProof;
   final Set<String> _supersededRemoteTerminalDeviceClearKeys = <String>{};
+  final Set<String> _backendResolvePhysicalTerminalResultKeys = <String>{};
+  final Set<String> _backendResolveWriteSubmittedKeys = <String>{};
+  final Set<String> _backendResolveWriteSuccessKeys = <String>{};
   int? _freshPhysicalStartSupersededRemoteClearGeneration;
   int? _postResolvePhysicalRxGeneration;
   int? _deviceInactiveBoundaryAfterTerminalGeneration;
@@ -1848,6 +1851,9 @@ class EixamConnectSdkImpl
     _remoteTerminalDeviceClearAwaitingAckProof = null;
     _remoteTerminalDeviceClearAcknowledgedProof = null;
     _supersededRemoteTerminalDeviceClearKeys.clear();
+    _backendResolvePhysicalTerminalResultKeys.clear();
+    _backendResolveWriteSubmittedKeys.clear();
+    _backendResolveWriteSuccessKeys.clear();
     _freshPhysicalStartSupersededRemoteClearGeneration = null;
     _postResolvePhysicalRxGeneration = null;
     _deviceInactiveBoundaryAfterTerminalGeneration = null;
@@ -3709,6 +3715,7 @@ class EixamConnectSdkImpl
     required _SosClosureIntent intent,
     bool? waitForDeviceAcknowledgement,
     _PhysicalSosTerminationTarget? capturedTarget,
+    void Function()? onCommandSubmit,
     void Function()? onCommandDispatch,
   }) async {
     if (capturedTarget == null) {
@@ -3737,6 +3744,7 @@ class EixamConnectSdkImpl
                 if (!_physicalSosTerminationTargetIsCurrent(capturedTarget)) {
                   throw StateError('stale remote terminal device clear');
                 }
+                onCommandSubmit?.call();
                 _remoteTerminalDeviceClearAwaitingAckProof = capturedTarget;
                 try {
                   await _sendDeviceCommandThroughActiveOwner(command);
@@ -3760,6 +3768,14 @@ class EixamConnectSdkImpl
             : () => _physicalSosTerminationTargetIsCurrent(capturedTarget),
       );
     } catch (error) {
+      if (intent == _SosClosureIntent.resolve) {
+        BleDebugRegistry.instance.recordEvent(
+          'DEVICE_SOS_RESOLVE_PHYSICAL_STATE_PRESERVED '
+          'reason=command_failure_without_terminal_evidence '
+          'state=${currentStatus.state.name} errorType=${error.runtimeType}',
+        );
+        return currentStatus;
+      }
       if (currentStatus.triggerOrigin != DeviceSosTransitionSource.device ||
           !_canCloseDeviceSosForPublicSos(currentStatus)) {
         rethrow;
@@ -12409,6 +12425,7 @@ class EixamConnectSdkImpl
     );
     final deviceSos = deviceSosController.currentStatus;
     final terminalState = terminalIncident.state;
+    final isBackendResolve = terminalState == SosState.resolved;
     if (session == null ||
         (!lifecycle.isOpen && !lifecycle.isTerminal) ||
         !lifecycle.localActionable ||
@@ -12416,6 +12433,20 @@ class EixamConnectSdkImpl
         !terminalIncident.isBackendConfirmed ||
         (terminalState != SosState.cancelled &&
             terminalState != SosState.resolved)) {
+      if (isBackendResolve) {
+        final capability = _computeCurrentSosCapabilitySnapshot(
+          reason: 'remote_terminal_device_target_rejected',
+        );
+        _logBackendResolveDeviceMirror(
+          incidentIdentityPresent: terminalIncident.id.trim().isNotEmpty,
+          generation: lifecycle.generation,
+          connectedDevicePresent: device?.connected == true,
+          commandChannelReady: capability.longCommandAvailable,
+          mirrorRequired: false,
+          mirrorAttempted: false,
+          reason: 'authoritative_lifecycle_identity_unproven',
+        );
+      }
       _logRemoteTerminalDeviceClearSkipped('lifecycle_unproven');
       return null;
     }
@@ -12437,6 +12468,13 @@ class EixamConnectSdkImpl
     final capability = _computeCurrentSosCapabilitySnapshot(
       reason: 'remote_terminal_device_target_capture',
     );
+    final incidentIdentityPresent = terminalIncident.id.trim().isNotEmpty;
+    final connectedDevicePresent = device != null && device.connected;
+    final commandChannelReady = capability.longCommandAvailable;
+    final deviceSosOpen =
+        deviceSos.state == DeviceSosState.preConfirm ||
+        deviceSos.state == DeviceSosState.active ||
+        deviceSos.state == DeviceSosState.acknowledged;
     final hardwareConflicts =
         lifecycleHardwareId != null &&
         lifecycleHardwareId.isNotEmpty &&
@@ -12452,10 +12490,26 @@ class EixamConnectSdkImpl
         connectedDeviceId.isEmpty ||
         connectedHardwareId == null ||
         !capability.deviceConnected ||
-        (!capability.shortCommandAvailable &&
+        (!isBackendResolve &&
+            !capability.shortCommandAvailable &&
             !capability.longCommandAvailable) ||
         hardwareConflicts ||
         nodeConflicts) {
+      if (isBackendResolve) {
+        _logBackendResolveDeviceMirror(
+          incidentIdentityPresent: incidentIdentityPresent,
+          generation: lifecycle.generation,
+          connectedDevicePresent: connectedDevicePresent,
+          commandChannelReady: commandChannelReady,
+          mirrorRequired: deviceSosOpen && connectedDevicePresent,
+          mirrorAttempted: false,
+          reason: !connectedDevicePresent
+              ? 'device_absence_policy'
+              : !commandChannelReady
+              ? 'ea04_command_channel_not_ready'
+              : 'device_target_identity_mismatch',
+        );
+      }
       BleDebugRegistry.instance.recordEvent(
         'SOS_REMOTE_TERMINAL_DEVICE_TARGET_REJECTED '
         'devicePresent=${device != null} connected=${device?.connected == true} '
@@ -12465,6 +12519,20 @@ class EixamConnectSdkImpl
       _logRemoteTerminalDeviceClearSkipped('device_target_mismatch');
       return null;
     }
+    if (isBackendResolve && !deviceSosOpen) {
+      _logBackendResolveDeviceMirror(
+        incidentIdentityPresent: incidentIdentityPresent,
+        generation: lifecycle.generation,
+        connectedDevicePresent: connectedDevicePresent,
+        commandChannelReady: commandChannelReady,
+        mirrorRequired: false,
+        mirrorAttempted: false,
+        reason: 'physical_sos_already_terminal',
+      );
+      return null;
+    }
+    final activePhysicalEvidence =
+        deviceSosController.lastPhysicalReceiveEvidence;
     final proof = _PhysicalSosTerminationTarget(
       lifecycleId: lifecycle.lifecycleId,
       generation: lifecycle.generation,
@@ -12477,7 +12545,23 @@ class EixamConnectSdkImpl
       runtimeCycleKey: currentRuntimeCycleKey,
       packetId: packetId,
       deviceActiveObservedAt: activeObservedAt,
+      activeReceiveSequence: activePhysicalEvidence?.receiveSequence,
+      activeReceiveSequenceDomain:
+          activePhysicalEvidence?.receiveSequenceDomain,
     );
+    if (isBackendResolve) {
+      _logBackendResolveDeviceMirror(
+        incidentIdentityPresent: incidentIdentityPresent,
+        generation: lifecycle.generation,
+        connectedDevicePresent: connectedDevicePresent,
+        commandChannelReady: commandChannelReady,
+        mirrorRequired: true,
+        mirrorAttempted: false,
+        reason: commandChannelReady
+            ? 'same_tag_active_sos_target_captured'
+            : 'same_tag_active_sos_pending_ea04_readiness',
+      );
+    }
     BleDebugRegistry.instance.recordEvent(
       'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_ELIGIBLE '
       'terminal=${terminalState.name} lifecycleGeneration=${lifecycle.generation}',
@@ -12488,6 +12572,45 @@ class EixamConnectSdkImpl
   void _logRemoteTerminalDeviceClearSkipped(String reason) {
     BleDebugRegistry.instance.recordEvent(
       'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_SKIPPED reason=$reason',
+    );
+  }
+
+  void _logBackendResolveDeviceMirror({
+    required bool incidentIdentityPresent,
+    required int generation,
+    required bool connectedDevicePresent,
+    required bool commandChannelReady,
+    required bool mirrorRequired,
+    required bool mirrorAttempted,
+    required String reason,
+  }) {
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_BACKEND_RESOLVE_DEVICE_MIRROR '
+      'incidentIdentityPresent=$incidentIdentityPresent generation=$generation '
+      'connectedDevicePresent=$connectedDevicePresent '
+      'commandChannelReady=$commandChannelReady mirrorRequired=$mirrorRequired '
+      'mirrorAttempted=$mirrorAttempted command=SOS_ACK_0x07 reason=$reason',
+    );
+  }
+
+  void _logBackendResolveDeviceResult({
+    required _PhysicalSosTerminationTarget proof,
+    required bool writeSubmitted,
+    required bool writeSuccess,
+    required bool physicalTerminalObserved,
+    required String terminalPacketType,
+    required String failureReason,
+  }) {
+    if (physicalTerminalObserved &&
+        !_backendResolvePhysicalTerminalResultKeys.add(proof.operationKey)) {
+      return;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_BACKEND_RESOLVE_DEVICE_RESULT command=SOS_ACK_0x07 '
+      'writeSubmitted=$writeSubmitted writeSuccess=$writeSuccess '
+      'physicalTerminalObserved=$physicalTerminalObserved '
+      'terminalPacketType=$terminalPacketType '
+      'failureReason=$failureReason generation=${proof.generation}',
     );
   }
 
@@ -12559,6 +12682,20 @@ class EixamConnectSdkImpl
           'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_ACKNOWLEDGED '
           'terminal=${proof.terminalState.name}',
         );
+        if (proof.terminalState == SosState.resolved) {
+          _logBackendResolveDeviceResult(
+            proof: proof,
+            writeSubmitted: _backendResolveWriteSubmittedKeys.contains(
+              proof.operationKey,
+            ),
+            writeSuccess: _backendResolveWriteSuccessKeys.contains(
+              proof.operationKey,
+            ),
+            physicalTerminalObserved: true,
+            terminalPacketType: 'E3',
+            failureReason: 'none',
+          );
+        }
       }
       return true;
     }
@@ -12571,6 +12708,8 @@ class EixamConnectSdkImpl
   ) {
     if (!_isDeviceSosCycleClosed(status.state) ||
         !status.derivedFromBlePacket ||
+        (proof.terminalState == SosState.resolved &&
+            status.lastOpcode != 0xE3) ||
         (proof.nodeId != null && status.nodeId != proof.nodeId) ||
         (proof.packetId != null && status.packetId != proof.packetId)) {
       return false;
@@ -12578,6 +12717,21 @@ class EixamConnectSdkImpl
     final observedAt = status.lastPacketAt ?? status.updatedAt;
     if (observedAt.isBefore(proof.deviceActiveObservedAt)) {
       return false;
+    }
+    if (proof.terminalState == SosState.resolved) {
+      final terminalEvidence =
+          deviceSosController.terminalPhysicalReceiveEvidence;
+      if (terminalEvidence == null ||
+          !terminalEvidence.hasTerminalSemantics ||
+          !terminalEvidence.exactPhysicalIdentityMatch ||
+          (proof.activeReceiveSequenceDomain != null &&
+              terminalEvidence.receiveSequenceDomain !=
+                  proof.activeReceiveSequenceDomain) ||
+          (proof.activeReceiveSequence != null &&
+              terminalEvidence.receiveSequence <=
+                  proof.activeReceiveSequence!)) {
+        return false;
+      }
     }
     final device = _lastDeviceStatus;
     final hardwareId = _physicalHardwareIdForStatus(device);
@@ -12724,6 +12878,7 @@ class EixamConnectSdkImpl
   Future<void> _runRemoteTerminalDeviceClear(
     _PhysicalSosTerminationTarget proof,
   ) async {
+    var submitted = false;
     var dispatched = false;
     try {
       if (!_physicalSosTerminationTargetIsCurrent(proof)) {
@@ -12734,14 +12889,37 @@ class EixamConnectSdkImpl
         'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_REQUESTED '
         'terminal=${proof.terminalState.name}',
       );
+      if (proof.terminalState == SosState.resolved) {
+        final capability = _computeCurrentSosCapabilitySnapshot(
+          reason: 'backend_resolve_device_mirror_dispatch',
+        );
+        _logBackendResolveDeviceMirror(
+          incidentIdentityPresent: proof.incidentId.trim().isNotEmpty,
+          generation: proof.generation,
+          connectedDevicePresent: true,
+          commandChannelReady: capability.longCommandAvailable,
+          mirrorRequired: true,
+          mirrorAttempted: true,
+          reason: 'dispatching_same_tag_terminal_command',
+        );
+      }
       final status = await _terminatePhysicalSosOnCurrentDevice(
         intent: proof.terminalState == SosState.resolved
             ? _SosClosureIntent.resolve
             : _SosClosureIntent.cancel,
         waitForDeviceAcknowledgement: true,
         capturedTarget: proof,
+        onCommandSubmit: () {
+          submitted = true;
+          if (proof.terminalState == SosState.resolved) {
+            _backendResolveWriteSubmittedKeys.add(proof.operationKey);
+          }
+        },
         onCommandDispatch: () {
           dispatched = true;
+          if (proof.terminalState == SosState.resolved) {
+            _backendResolveWriteSuccessKeys.add(proof.operationKey);
+          }
           BleDebugRegistry.instance.recordEvent(
             'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_DISPATCHED '
             'terminal=${proof.terminalState.name} channel=existing_device_path',
@@ -12768,6 +12946,21 @@ class EixamConnectSdkImpl
           'terminal=${proof.terminalState.name} deviceState=${status.state.name} '
           'observed=${status.derivedFromBlePacket}',
         );
+        if (proof.terminalState == SosState.resolved) {
+          _logBackendResolveDeviceResult(
+            proof: proof,
+            writeSubmitted: submitted,
+            writeSuccess: dispatched,
+            physicalTerminalObserved: _deviceTerminalStatusMatchesClearProof(
+              status,
+              proof,
+            ),
+            terminalPacketType: status.lastOpcode == 0xE3 ? 'E3' : 'none',
+            failureReason: status.lastOpcode == 0xE3
+                ? 'none'
+                : 'terminal_identity_mismatch',
+          );
+        }
       } else {
         if (!dispatched) {
           BleDebugRegistry.instance.recordEvent(
@@ -12781,6 +12974,20 @@ class EixamConnectSdkImpl
           'terminal=${proof.terminalState.name} deviceState=${status.state.name} '
           'uiAuthority=backend_terminal retryOwner=device_controller',
         );
+        if (proof.terminalState == SosState.resolved) {
+          _logBackendResolveDeviceResult(
+            proof: proof,
+            writeSubmitted: submitted,
+            writeSuccess: dispatched,
+            physicalTerminalObserved: false,
+            terminalPacketType: 'none',
+            failureReason: dispatched
+                ? 'terminal_evidence_timeout'
+                : submitted
+                ? 'gatt_write_failed'
+                : 'command_not_submitted',
+          );
+        }
       }
     } catch (error) {
       BleDebugRegistry.instance.recordEvent(
@@ -12789,6 +12996,16 @@ class EixamConnectSdkImpl
         'reason=device_command_failure errorType=${error.runtimeType} '
         'uiAuthority=backend_terminal',
       );
+      if (proof.terminalState == SosState.resolved) {
+        _logBackendResolveDeviceResult(
+          proof: proof,
+          writeSubmitted: submitted,
+          writeSuccess: dispatched,
+          physicalTerminalObserved: false,
+          terminalPacketType: 'none',
+          failureReason: 'device_command_failure',
+        );
+      }
     } finally {
       if (_remoteTerminalDeviceClearInFlightKey == proof.operationKey) {
         _remoteTerminalDeviceClearInFlightKey = null;
@@ -19760,10 +19977,8 @@ class EixamConnectSdkImpl
   }
 
   bool _isTerminalSosEventPacket(EixamSosEventPacket packet) {
-    if (packet.opcode == EixamBleProtocol.sosEventUserDeactivatedOpcode) {
-      return true;
-    }
-    return false;
+    return packet.opcode == EixamBleProtocol.sosEventUserDeactivatedOpcode ||
+        packet.opcode == EixamBleProtocol.sosEventBackendResolvedOpcode;
   }
 
   Future<void> _evaluateDeathManPlan(String planId) async {
@@ -22353,6 +22568,8 @@ class _PhysicalSosTerminationTarget {
     required this.runtimeCycleKey,
     required this.packetId,
     required this.deviceActiveObservedAt,
+    required this.activeReceiveSequence,
+    required this.activeReceiveSequenceDomain,
   });
 
   final String lifecycleId;
@@ -22366,6 +22583,8 @@ class _PhysicalSosTerminationTarget {
   final String? runtimeCycleKey;
   final int? packetId;
   final DateTime deviceActiveObservedAt;
+  final int? activeReceiveSequence;
+  final String? activeReceiveSequenceDomain;
 
   String get operationKey => '$lifecycleId:$generation:${terminalState.name}';
 }

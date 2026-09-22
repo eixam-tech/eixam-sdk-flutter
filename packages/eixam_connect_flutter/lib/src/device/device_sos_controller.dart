@@ -129,6 +129,7 @@ class DeviceSosController {
   PhysicalSosReceiveEvidence? _terminalPhysicalReceiveEvidence;
 
   static const Duration _terminalCycleSuppressionWindow = Duration(seconds: 5);
+  static const Duration _terminalCommandRetryInterval = Duration(seconds: 1);
   static const Duration _promotedPreConfirmSuppressionWindow = Duration(
     minutes: 2,
   );
@@ -400,6 +401,14 @@ class DeviceSosController {
       BleDebugRegistry.instance.recordEvent(
         'DEVICE_SOS_CLOSE_COMMAND_ACK_TIMEOUT_OR_FAILED route=$commandRouteLabel lastState=${_status.state.name} previousState=${previous.state.name} error=$error',
       );
+      if (terminalAction == 'resolve') {
+        BleDebugRegistry.instance.recordEvent(
+          'DEVICE_SOS_CLOSE_COMMAND_ACK_TIMEOUT_PENDING '
+          'route=$commandRouteLabel action=$terminalAction '
+          'state=${_status.state.name} retry=pending error=$error',
+        );
+        return _status;
+      }
       return _forceTerminalStateAfterMissingCloseAcknowledgement(
         previous: previous,
         terminalAction: terminalAction,
@@ -638,11 +647,12 @@ class DeviceSosController {
     DeviceCommandWriter? commandWriterOverride,
     DeviceTerminalOperationGuard? operationIsCurrent,
   }) async {
+    final terminalCommand = action == 'resolve'
+        ? EixamDeviceCommand.sosAck()
+        : EixamDeviceCommand.sosCancel(forceCmdCharacteristic: true);
     Object? cmdError;
     if (allowCmd) {
-      final command = EixamDeviceCommand.sosCancel(
-        forceCmdCharacteristic: true,
-      );
+      final command = terminalCommand;
       try {
         _requireCurrentTerminalOperation(operationIsCurrent);
         BleDebugRegistry.instance.recordEvent(
@@ -656,6 +666,7 @@ class DeviceSosController {
         _recordTerminalCommandSent(
           channel: 'cmd',
           action: action,
+          opcode: command.opcode,
           commandWriterOverride: commandWriterOverride,
           commandRouteLabel: commandRouteLabel,
           operationIsCurrent: operationIsCurrent,
@@ -668,7 +679,7 @@ class DeviceSosController {
       }
     }
 
-    if (allowInet) {
+    if (allowInet && terminalCommand.supportsLegacyInetFallback) {
       if (cmdError != null || !allowCmd) {
         BleDebugRegistry.instance.recordEvent(
           'SOS_TRACE device_terminal_command_fallback channel=inet reason=cmd_not_ready',
@@ -688,6 +699,7 @@ class DeviceSosController {
         _recordTerminalCommandSent(
           channel: 'inet',
           action: action,
+          opcode: command.opcode,
           commandWriterOverride: commandWriterOverride,
           commandRouteLabel: commandRouteLabel,
           operationIsCurrent: operationIsCurrent,
@@ -758,6 +770,13 @@ class DeviceSosController {
     if (!usesOverride && !longCommandAvailable && !shortCommandAvailable) {
       return;
     }
+    final sentAt = pending.sentAt;
+    if (pending.action == 'resolve' &&
+        reason == 'sos_still_observed_after_terminal' &&
+        sentAt != null &&
+        _now().difference(sentAt) < _terminalCommandRetryInterval) {
+      return;
+    }
     if (reason != 'sos_still_observed_after_terminal') {
       BleDebugRegistry.instance.recordEvent(
         'SOS_TRACE device_terminal_command_retry reason=$reason',
@@ -769,8 +788,12 @@ class DeviceSosController {
         writer: writer,
         previous: _status,
         commandRouteLabel: pending.commandRouteLabel ?? 'attached_writer',
-        allowCmd: !usesOverride && longCommandAvailable,
-        allowInet: usesOverride || shortCommandAvailable,
+        allowCmd: pending.action == 'resolve'
+            ? usesOverride || longCommandAvailable
+            : !usesOverride && longCommandAvailable,
+        allowInet:
+            pending.action != 'resolve' &&
+            (usesOverride || shortCommandAvailable),
         action: pending.action,
         commandWriterOverride: pending.commandWriterOverride,
         operationIsCurrent: pending.operationIsCurrent,
@@ -790,6 +813,7 @@ class DeviceSosController {
   void _recordTerminalCommandSent({
     required String channel,
     required String action,
+    required int opcode,
     DeviceCommandWriter? commandWriterOverride,
     String? commandRouteLabel,
     DeviceTerminalOperationGuard? operationIsCurrent,
@@ -807,7 +831,9 @@ class DeviceSosController {
                 ))
             .copyWith(sentAt: _now());
     BleDebugRegistry.instance.recordEvent(
-      'SOS_TRACE device_terminal_command_sent opcode=0x04 channel=$channel',
+      'SOS_TRACE device_terminal_command_sent '
+      'opcode=0x${opcode.toRadixString(16).padLeft(2, '0')} '
+      'channel=$channel action=$action',
     );
   }
 
@@ -1571,7 +1597,7 @@ class DeviceSosController {
       case 0xE3:
         if (current == DeviceSosState.active ||
             current == DeviceSosState.acknowledged) {
-          return DeviceSosState.acknowledged;
+          return DeviceSosState.resolved;
         }
         return current;
       default:
@@ -1596,8 +1622,8 @@ class DeviceSosController {
         );
       case 0xE3:
         return const _EventPacketClassification(
-          decision: 'acknowledged_sos',
-          reason: 'ack_sos_closed_tag_episode',
+          decision: 'terminal_resolved',
+          reason: 'backend_resolve_closed_tag_episode',
         );
       default:
         return const _EventPacketClassification(
@@ -1615,7 +1641,7 @@ class DeviceSosController {
       return 'app cancel acknowledgment ignored';
     }
     if (packet.isBackendResolved) {
-      return 'backend ack closed tag episode';
+      return 'backend resolve closed tag episode';
     }
     return 'unknown control event';
   }
@@ -1701,11 +1727,6 @@ class DeviceSosController {
       );
       return false;
     }
-    final anchor = pending.sentAt ?? pending.requestedAt;
-    if (_now().difference(anchor) > _terminalCycleSuppressionWindow) {
-      _pendingTerminalCommand = null;
-      return false;
-    }
     if (allowFreshPhysicalStartAfterTerminal &&
         source == DeviceSosTransitionSource.device &&
         resolution.resolvedState == DeviceSosState.preConfirm) {
@@ -1713,6 +1734,12 @@ class DeviceSosController {
       BleDebugRegistry.instance.recordEvent(
         'SOS_TRACE device_rearm_allowed reason=fresh_physical_edge_after_terminal',
       );
+      return false;
+    }
+    final anchor = pending.sentAt ?? pending.requestedAt;
+    if (pending.action != 'resolve' &&
+        _now().difference(anchor) > _terminalCycleSuppressionWindow) {
+      _pendingTerminalCommand = null;
       return false;
     }
     if (source == DeviceSosTransitionSource.device &&

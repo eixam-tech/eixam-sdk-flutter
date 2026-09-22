@@ -295,6 +295,59 @@ void main() {
     );
 
     test(
+      'backend resolve writes 0x07 and remains pending until physical E3',
+      () async {
+        var now = DateTime.utc(2026, 9, 22, 12);
+        final commands = <EixamDeviceCommand>[];
+        final controller = DeviceSosController(
+          countdownDuration: const Duration(milliseconds: 5),
+          countdownTick: const Duration(milliseconds: 1),
+          appActivationObservationTimeout: const Duration(milliseconds: 20),
+          now: () => now,
+        );
+        addTearDown(controller.dispose);
+        await controller.attach(
+          commandWriter: (_) async {
+            fail('resolve should retain and retry the explicit owner writer');
+          },
+        );
+        controller.handleIncomingSosPacket(
+          _activePacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        now = now.add(const Duration(milliseconds: 10));
+        await Future<void>.delayed(const Duration(milliseconds: 15));
+        expect(controller.currentStatus.state, DeviceSosState.active);
+
+        final unresolved = await controller.cancelSos(
+          terminalAction: 'resolve',
+          commandWriterOverride: (command) async => commands.add(command),
+        );
+
+        expect(commands.map((command) => command.opcode), <int>[0x07]);
+        expect(commands.single.usesCmdCharacteristic, isTrue);
+        expect(unresolved.state, DeviceSosState.active);
+
+        now = now.add(const Duration(seconds: 2));
+        controller.handleIncomingSosPacket(
+          _activePacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        expect(commands.map((command) => command.opcode), <int>[0x07, 0x07]);
+        expect(controller.currentStatus.state, DeviceSosState.active);
+
+        controller.handleIncomingSosEventPacket(
+          _backendResolvedPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        expect(controller.currentStatus.state, DeviceSosState.resolved);
+        expect(controller.currentStatus.lastOpcode, 0xE3);
+        expect(controller.currentStatus.derivedFromBlePacket, isTrue);
+      },
+    );
+
+    test(
       'proven physical edge bypasses pending cancel retry without cooldown',
       () async {
         final controller = DeviceSosController(
@@ -1415,7 +1468,7 @@ void main() {
     });
 
     test(
-      '0xE3 after a valid fix stays acknowledged and keeps hasLocation',
+      '0xE3 after a valid fix resolves the physical episode and keeps hasLocation',
       () async {
         final controller = DeviceSosController(
           countdownDuration: const Duration(milliseconds: 5),
@@ -1450,7 +1503,7 @@ void main() {
           ])!,
           source: DeviceSosTransitionSource.device,
         );
-        expect(controller.currentStatus.state, DeviceSosState.acknowledged);
+        expect(controller.currentStatus.state, DeviceSosState.resolved);
         expect(controller.currentStatus.hasLocation, isTrue);
       },
     );
@@ -1497,6 +1550,17 @@ EixamSosEventPacket _deviceClearPacket() {
   return EixamSosEventPacket.tryParse(<int>[
     0xE1,
     0x01,
+    0x34,
+    0x12,
+    0x00,
+    0x00,
+  ])!;
+}
+
+EixamSosEventPacket _backendResolvedPacket() {
+  return EixamSosEventPacket.tryParse(<int>[
+    0xE3,
+    0x02,
     0x34,
     0x12,
     0x00,

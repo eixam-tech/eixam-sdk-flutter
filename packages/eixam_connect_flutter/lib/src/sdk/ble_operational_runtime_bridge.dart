@@ -17,22 +17,23 @@ import '../diagnostics/security_diagnostics_redactor.dart';
 import 'location_debug_log.dart';
 import 'relay_ingest_context.dart';
 
-typedef SosBackendAssignmentVerifiedRetry = Future<bool> Function({
-  required String originalCorrelationId,
-  required String retryCorrelationId,
-  required String signature,
-  required String triggerSource,
-  required String message,
-  required TrackingPosition? positionSnapshot,
-  required String? deviceId,
-  required String? hardwareId,
-  required int? originatorNodeId,
-  required int? relayNodeId,
-  required String? relayDeviceId,
-  required String? relayHardwareId,
-  required String? incidentId,
-  required String? cycleKey,
-});
+typedef SosBackendAssignmentVerifiedRetry =
+    Future<bool> Function({
+      required String originalCorrelationId,
+      required String retryCorrelationId,
+      required String signature,
+      required String triggerSource,
+      required String message,
+      required TrackingPosition? positionSnapshot,
+      required String? deviceId,
+      required String? hardwareId,
+      required int? originatorNodeId,
+      required int? relayNodeId,
+      required String? relayDeviceId,
+      required String? relayHardwareId,
+      required String? incidentId,
+      required String? cycleKey,
+    });
 
 class BleOperationalRuntimeBridge {
   BleOperationalRuntimeBridge({
@@ -47,14 +48,14 @@ class BleOperationalRuntimeBridge {
     SosBackendAssignmentVerifiedRetry? sosBackendAssignmentVerifiedRetry,
     DateTime Function()? now,
     Duration dedupWindow = const Duration(seconds: 3),
-  })  : _bleIncomingEvents = bleIncomingEvents,
-        _connectionStates = connectionStates,
-        _realtimeEvents = realtimeEvents,
-        _sessionProvider = sessionProvider,
-        _backendHardwareIdResolver = backendHardwareIdResolver,
-        _sosBackendAssignmentVerifiedRetry = sosBackendAssignmentVerifiedRetry,
-        _now = now ?? DateTime.now,
-        _dedupWindow = dedupWindow;
+  }) : _bleIncomingEvents = bleIncomingEvents,
+       _connectionStates = connectionStates,
+       _realtimeEvents = realtimeEvents,
+       _sessionProvider = sessionProvider,
+       _backendHardwareIdResolver = backendHardwareIdResolver,
+       _sosBackendAssignmentVerifiedRetry = sosBackendAssignmentVerifiedRetry,
+       _now = now ?? DateTime.now,
+       _dedupWindow = dedupWindow;
 
   final Stream<BleIncomingEvent> _bleIncomingEvents;
   final Stream<RealtimeConnectionState> _connectionStates;
@@ -64,7 +65,7 @@ class BleOperationalRuntimeBridge {
   final DeviceSosController deviceSosController;
   final EixamSession? Function() _sessionProvider;
   final Future<String?> Function(String runtimeDeviceId)?
-      _backendHardwareIdResolver;
+  _backendHardwareIdResolver;
   final SosBackendAssignmentVerifiedRetry? _sosBackendAssignmentVerifiedRetry;
   final DateTime Function() _now;
   final Duration _dedupWindow;
@@ -174,9 +175,7 @@ class BleOperationalRuntimeBridge {
   }) async {
     if (!_registerSignature(_recentSosSignatures, signature)) {
       _emitDiagnostics(
-        _diagnostics.copyWith(
-          lastDecision: 'SOS skipped: duplicate packet',
-        ),
+        _diagnostics.copyWith(lastDecision: 'SOS skipped: duplicate packet'),
       );
       BleDebugRegistry.instance.recordEvent(
         'BLE operational bridge skipped promoted SOS -> reason=duplicate signature=$signature',
@@ -186,9 +185,7 @@ class BleOperationalRuntimeBridge {
 
     if (summary != null && summary.trim().isNotEmpty) {
       _emitDiagnostics(
-        _diagnostics.copyWith(
-          lastBleSosEventSummary: summary.trim(),
-        ),
+        _diagnostics.copyWith(lastBleSosEventSummary: summary.trim()),
       );
     }
 
@@ -303,7 +300,8 @@ class BleOperationalRuntimeBridge {
   }
 
   Future<void> _publishAggregateTelemetryIfMappable(
-      BleIncomingEvent event) async {
+    BleIncomingEvent event,
+  ) async {
     final aggregatePayload = event.aggregatePayload;
     if (aggregatePayload == null || aggregatePayload.isEmpty) {
       _emitDiagnostics(
@@ -409,9 +407,7 @@ class BleOperationalRuntimeBridge {
     final summary =
         'device=${event.deviceId} heartbeat nodeId=${_formatNodeId(packet.nodeId)} clusterId=${packet.clusterId} aggId=0x${packet.aggId.toRadixString(16).padLeft(8, '0')} score=${packet.score} members=${packet.memberCount} aggSf=${packet.aggSpreadingFactor} raw=${packet.rawHex}';
     _emitDiagnostics(
-      _diagnostics.copyWith(
-        lastBleTelemetryEventSummary: summary,
-      ),
+      _diagnostics.copyWith(lastBleTelemetryEventSummary: summary),
     );
 
     final payload = await _buildBackendSafeBleHeartbeatPayload(
@@ -499,11 +495,11 @@ class BleOperationalRuntimeBridge {
       nodeId: packet.nodeId,
       note: relayContext == null
           ? 'packetType=$packetType classification=$classification '
-              'hasLocation=true gpsQuality=${packet.gpsQuality} '
-              'raw=${packet.rawHex}'
+                'hasLocation=true gpsQuality=${packet.gpsQuality} '
+                'raw=${packet.rawHex}'
           : 'packetType=$packetType classification=$classification '
-              'hasLocation=true gpsQuality=${packet.gpsQuality} '
-              'raw=${packet.rawHex}',
+                'hasLocation=true gpsQuality=${packet.gpsQuality} '
+                'raw=${packet.rawHex}',
     );
     _logPositionDecodeDetail(
       event: event,
@@ -531,10 +527,7 @@ class BleOperationalRuntimeBridge {
       classificationReason: _classificationReasonForTel(event),
     );
     if (relayContext == null) {
-      _rememberOwnDeviceLocationFromTel(
-        event: event,
-        packet: packet,
-      );
+      _rememberOwnDeviceLocationFromTel(event: event, packet: packet);
     } else {
       LocationDebugLog.availability(
         flow: 'ble_own_location_store',
@@ -557,9 +550,7 @@ class BleOperationalRuntimeBridge {
       );
     }
     _emitDiagnostics(
-      _diagnostics.copyWith(
-        lastBleTelemetryEventSummary: summary,
-      ),
+      _diagnostics.copyWith(lastBleTelemetryEventSummary: summary),
     );
 
     final payload = await _buildBackendSafeBleTelemetryPayload(
@@ -573,8 +564,9 @@ class BleOperationalRuntimeBridge {
       payload: payload,
       accepted: hasMinimumTelemetry,
       source: relayContext == null ? 'connectedDevice' : 'remoteRelayDevice',
-      rejectionReason:
-          hasMinimumTelemetry ? null : 'minimum_telemetry_fields_missing',
+      rejectionReason: hasMinimumTelemetry
+          ? null
+          : 'minimum_telemetry_fields_missing',
       sentToBackend: false,
     );
     if (!hasMinimumTelemetry) {
@@ -683,10 +675,7 @@ class BleOperationalRuntimeBridge {
     final packet = event.sosPacket;
     if (packet != null &&
         event.classification.kind == BleIncomingPayloadKind.ownDeviceSos) {
-      _rememberOwnDeviceLocationFromSos(
-        event: event,
-        packet: packet,
-      );
+      _rememberOwnDeviceLocationFromSos(event: event, packet: packet);
     } else if (packet != null) {
       final position = packet.position;
       LocationDebugLog.availability(
@@ -695,8 +684,8 @@ class BleOperationalRuntimeBridge {
         accepted: false,
         rejectionReason:
             event.classification.kind == BleIncomingPayloadKind.remoteRelaySos
-                ? 'remote_or_relay_packet'
-                : 'not_own_device',
+            ? 'remote_or_relay_packet'
+            : 'not_own_device',
         authoritativeForBackend: true,
         timestamp: event.receivedAt.toUtc(),
         latitude: position?.latitude,
@@ -715,14 +704,16 @@ class BleOperationalRuntimeBridge {
     if (packet != null) {
       final position = packet.position;
       if (position != null) {
-        final sosCoordinateValid =
-            _isValidCoordinate(position.latitude, position.longitude);
+        final sosCoordinateValid = _isValidCoordinate(
+          position.latitude,
+          position.longitude,
+        );
         LocationDebugLog.raw(
           flow: 'ble_decode',
           source:
               event.classification.kind == BleIncomingPayloadKind.remoteRelaySos
-                  ? 'remoteRelayDevice'
-                  : 'connectedDevice',
+              ? 'remoteRelayDevice'
+              : 'connectedDevice',
           latitude: position.latitude,
           longitude: position.longitude,
           altitude: position.altitudeMeters.toDouble(),
@@ -731,7 +722,9 @@ class BleOperationalRuntimeBridge {
           rejectionReason: sosCoordinateValid
               ? null
               : _coordinateRejectionReason(
-                  position.latitude, position.longitude),
+                  position.latitude,
+                  position.longitude,
+                ),
           authoritativeForBackend:
               event.classification.kind == BleIncomingPayloadKind.ownDeviceSos,
           deviceId: packet.nodeId.toString(),
@@ -746,8 +739,8 @@ class BleOperationalRuntimeBridge {
           event: event,
           source:
               event.classification.kind == BleIncomingPayloadKind.remoteRelaySos
-                  ? 'remoteRelayDevice'
-                  : 'connectedDevice',
+              ? 'remoteRelayDevice'
+              : 'connectedDevice',
           packetType: 'SOS',
           packetLength: packet.rawBytes.length,
           rawBytes: packet.rawBytes,
@@ -756,14 +749,17 @@ class BleOperationalRuntimeBridge {
           latitude: position.latitude,
           longitude: position.longitude,
           altitudeMeters: position.altitudeMeters,
-          gpsQualityByte:
-              packet.rawBytes.length > 10 ? packet.rawBytes[10] : null,
+          gpsQualityByte: packet.rawBytes.length > 10
+              ? packet.rawBytes[10]
+              : null,
           gpsQuality: packet.gpsQuality,
           accepted: sosCoordinateValid,
           rejectionReason: sosCoordinateValid
               ? null
               : _coordinateRejectionReason(
-                  position.latitude, position.longitude),
+                  position.latitude,
+                  position.longitude,
+                ),
           authoritativeForBackend:
               event.classification.kind == BleIncomingPayloadKind.ownDeviceSos,
           deviceId: packet.nodeId.toString(),
@@ -775,8 +771,8 @@ class BleOperationalRuntimeBridge {
           flow: 'ble_decode',
           source:
               event.classification.kind == BleIncomingPayloadKind.remoteRelaySos
-                  ? 'remoteRelayDevice'
-                  : 'connectedDevice',
+              ? 'remoteRelayDevice'
+              : 'connectedDevice',
           accepted: false,
           rejectionReason: 'no_location',
           authoritativeForBackend:
@@ -800,8 +796,8 @@ class BleOperationalRuntimeBridge {
               'device=${event.deviceId} role=${role.label} nodeId=${_formatNodeId(packet.nodeId)} relayCount=${packet.relayCount} raw=${packet.rawHex}',
           lastRelayRemoteDeviceId:
               remoteDeviceId == null || remoteDeviceId.isEmpty
-                  ? _diagnostics.lastRelayRemoteDeviceId
-                  : remoteDeviceId,
+              ? _diagnostics.lastRelayRemoteDeviceId
+              : remoteDeviceId,
         ),
       );
     }
@@ -820,9 +816,7 @@ class BleOperationalRuntimeBridge {
     final signature = 'sos:${event.deviceId}:${packet.rawHex}';
     if (!_registerSignature(_recentSosSignatures, signature)) {
       _emitDiagnostics(
-        _diagnostics.copyWith(
-          lastDecision: 'SOS skipped: duplicate packet',
-        ),
+        _diagnostics.copyWith(lastDecision: 'SOS skipped: duplicate packet'),
       );
       BleDebugRegistry.instance.recordEvent(
         'BLE operational bridge observed duplicate SOS packet -> signature=$signature',
@@ -898,11 +892,14 @@ class BleOperationalRuntimeBridge {
   }) async {
     switch (context.route) {
       case _SosAckRoute.localOrigin:
-        await deviceSosController.acknowledgeSos();
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_BACKEND_ACK_DEVICE_MIRROR action=preserve_physical_sos '
+          'command=none reason=ack_is_non_terminal',
+        );
         _emitDiagnostics(
           _diagnostics.copyWith(
-            lastDeviceCommandSent: 'SOS_ACK',
-            lastDecision: 'Backend confirmation applied: SOS_ACK sent',
+            lastDecision:
+                'Backend acknowledgment applied without terminalizing the local TAG',
           ),
         );
         return;
@@ -942,9 +939,7 @@ class BleOperationalRuntimeBridge {
     if (location == null || !location.isValid) {
       return;
     }
-    _emitDiagnostics(
-      _diagnostics.copyWith(latestOwnDeviceLocation: location),
-    );
+    _emitDiagnostics(_diagnostics.copyWith(latestOwnDeviceLocation: location));
   }
 
   void _rememberOwnDeviceLocationFromTel({
@@ -987,7 +982,8 @@ class BleOperationalRuntimeBridge {
       accepted: location != null,
       rejectionReason: location == null ? 'unknown_packet_type' : null,
       persisted: false,
-      note: 'packetType=TEL classification=${event.classification.kind.name} '
+      note:
+          'packetType=TEL classification=${event.classification.kind.name} '
           'hasLocation=true gpsQuality=${packet.gpsQuality} raw=${packet.rawHex}',
     );
   }
@@ -1043,8 +1039,10 @@ class BleOperationalRuntimeBridge {
       );
       return;
     }
-    final rejectionReason =
-        _coordinateRejectionReason(position.latitude, position.longitude);
+    final rejectionReason = _coordinateRejectionReason(
+      position.latitude,
+      position.longitude,
+    );
     if (rejectionReason != null) {
       LocationDebugLog.availability(
         flow: 'ble_own_location_store',
@@ -1078,7 +1076,8 @@ class BleOperationalRuntimeBridge {
       accepted: location != null,
       rejectionReason: location == null ? 'unknown_packet_type' : null,
       persisted: false,
-      note: 'packetType=SOS classification=${event.classification.kind.name} '
+      note:
+          'packetType=SOS classification=${event.classification.kind.name} '
           'hasLocation=${packet.hasPosition} gpsQuality=${packet.gpsQuality} '
           'raw=${packet.rawHex}',
     );
@@ -1168,7 +1167,8 @@ class BleOperationalRuntimeBridge {
         classification: event.classification.kind.name,
         gpsQuality: gpsQuality,
         rawHex: rawHex,
-        note: 'packetLength=$packetLength '
+        note:
+            'packetLength=$packetLength '
             'parserName=${EixamPositionDecodeDetails.parserName} '
             'protocolVersion=${EixamPositionDecodeDetails.protocolVersion} '
             'positionOffset=$positionOffset '
@@ -1198,7 +1198,8 @@ class BleOperationalRuntimeBridge {
       classification: event.classification.kind.name,
       gpsQuality: gpsQuality,
       rawHex: rawHex,
-      note: 'packetLength=$packetLength '
+      note:
+          'packetLength=$packetLength '
           'parserName=${EixamPositionDecodeDetails.parserName} '
           'protocolVersion=${EixamPositionDecodeDetails.protocolVersion} '
           'fullRaw=${event.payloadHex} '
@@ -1557,9 +1558,7 @@ class BleOperationalRuntimeBridge {
     } on SosException catch (error) {
       if (error.code == 'E_SOS_ALREADY_ACTIVE') {
         _emitDiagnostics(
-          _diagnostics.copyWith(
-            lastDecision: 'SOS skipped: already active',
-          ),
+          _diagnostics.copyWith(lastDecision: 'SOS skipped: already active'),
         );
         BleDebugRegistry.instance.recordEvent(
           'BLE operational bridge skipped SOS publish -> reason=sos_already_active signature=$signature',
@@ -1756,8 +1755,8 @@ class BleOperationalRuntimeBridge {
         lastRelayRemoteDeviceId: relayContext.remoteDeviceId,
         lastRelayTelemetryPublishAttempt:
             relayContext.kind == RelayIngestKind.telemetry
-                ? summary
-                : _diagnostics.lastRelayTelemetryPublishAttempt,
+            ? summary
+            : _diagnostics.lastRelayTelemetryPublishAttempt,
         lastRelaySosPublishAttempt: relayContext.kind == RelayIngestKind.sos
             ? summary
             : _diagnostics.lastRelaySosPublishAttempt,
@@ -1792,18 +1791,24 @@ class BleOperationalRuntimeBridge {
       return diagnostics;
     }
     return diagnostics.copyWith(
-      lastBleTelemetryEventSummary:
-          _safeDiagnosticMessage(diagnostics.lastBleTelemetryEventSummary),
-      lastBleSosEventSummary:
-          _safeDiagnosticMessage(diagnostics.lastBleSosEventSummary),
-      lastRelayRemoteDeviceId:
-          _safeDiagnosticIdentifier(diagnostics.lastRelayRemoteDeviceId),
-      lastRelayTelemetryPublishAttempt:
-          _safeDiagnosticMessage(diagnostics.lastRelayTelemetryPublishAttempt),
-      lastRelaySosPublishAttempt:
-          _safeDiagnosticMessage(diagnostics.lastRelaySosPublishAttempt),
-      lastDeviceCommandSent:
-          _safeDeviceCommand(diagnostics.lastDeviceCommandSent),
+      lastBleTelemetryEventSummary: _safeDiagnosticMessage(
+        diagnostics.lastBleTelemetryEventSummary,
+      ),
+      lastBleSosEventSummary: _safeDiagnosticMessage(
+        diagnostics.lastBleSosEventSummary,
+      ),
+      lastRelayRemoteDeviceId: _safeDiagnosticIdentifier(
+        diagnostics.lastRelayRemoteDeviceId,
+      ),
+      lastRelayTelemetryPublishAttempt: _safeDiagnosticMessage(
+        diagnostics.lastRelayTelemetryPublishAttempt,
+      ),
+      lastRelaySosPublishAttempt: _safeDiagnosticMessage(
+        diagnostics.lastRelaySosPublishAttempt,
+      ),
+      lastDeviceCommandSent: _safeDeviceCommand(
+        diagnostics.lastDeviceCommandSent,
+      ),
     );
   }
 
@@ -1887,11 +1892,7 @@ enum _IncomingSosRole {
   final String label;
 }
 
-enum _SosAckRoute {
-  localOrigin,
-  relayOrigin,
-  none,
-}
+enum _SosAckRoute { localOrigin, relayOrigin, none }
 
 class _PendingTelemetryPublish {
   const _PendingTelemetryPublish({
@@ -1963,12 +1964,7 @@ class _BleBackendConfirmation {
     );
 
     if (_matchesAny(
-      <String?>[
-        type,
-        status,
-        action,
-        command,
-      ],
+      <String?>[type, status, action, command],
       const <String>{
         'position_confirmed',
         'pos_confirmed',
@@ -1983,7 +1979,8 @@ class _BleBackendConfirmation {
     }
 
     final relayNodeId = _relayNodeIdFrom(payload);
-    final isRelayAck = ackType == 'relay' ||
+    final isRelayAck =
+        ackType == 'relay' ||
         relayNodeId != null ||
         _matchesAny(
           <String?>[type, status, action, command],
@@ -2016,7 +2013,8 @@ class _BleBackendConfirmation {
   }
 
   static String _signatureToken(Map<String, dynamic> payload) {
-    final value = payload['incidentId'] ??
+    final value =
+        payload['incidentId'] ??
         payload['id'] ??
         payload['timestamp'] ??
         payload['updatedAt'] ??
@@ -2025,7 +2023,8 @@ class _BleBackendConfirmation {
   }
 
   static int? _relayNodeIdFrom(Map<String, dynamic> payload) {
-    final raw = payload['relayNodeId'] ??
+    final raw =
+        payload['relayNodeId'] ??
         payload['relay_node_id'] ??
         payload['nodeId'] ??
         payload['node_id'];
@@ -2047,10 +2046,7 @@ class _BleBackendConfirmation {
     return value.trim().toLowerCase().replaceAll(' ', '_');
   }
 
-  static bool _matchesAny(
-    List<String?> values,
-    Set<String> accepted,
-  ) {
+  static bool _matchesAny(List<String?> values, Set<String> accepted) {
     for (final value in values) {
       if (value != null && accepted.contains(value)) {
         return true;

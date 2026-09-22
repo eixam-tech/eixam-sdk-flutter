@@ -1913,7 +1913,8 @@ internal class ProtectionBleRuntimeOwner(
                 val opcode = payload[0] and 0xFF
                 val subcode = payload[1] and 0xFF
                 val closed = (opcode == 0xE1 && (subcode == 0x01 || subcode == 0x02)) ||
-                    (opcode == 0xE2 && (subcode == 0x01 || subcode == 0x02 || subcode == 0x03))
+                    (opcode == 0xE2 && (subcode == 0x01 || subcode == 0x02 || subcode == 0x03)) ||
+                    (opcode == 0xE3 && (subcode == 0x01 || subcode == 0x02 || subcode == 0x03))
                 if (closed && pendingSosLifecycleState != ProtectionSosLifecycleState.idle) {
                     val lifecycleSnapshot = runtimeStore.snapshot()
                     val closedCycleKey = lifecycleSnapshot["preSosCycleKey"] as? String

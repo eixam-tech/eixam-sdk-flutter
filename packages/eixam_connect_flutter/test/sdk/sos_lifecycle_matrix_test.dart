@@ -427,7 +427,10 @@ void main() {
           expect(terminal.displaySurface, SosDisplaySurface.historyOnly);
           expect(await harness.sdk.getPreSosStatus(), isNull);
           expect(await harness.sdk.getSosState(), terminalState);
-          expect(commands, contains(0x04));
+          expect(
+            commands,
+            contains(terminalState == SosState.resolved ? 0x07 : 0x04),
+          );
           expect(
             observedDebugMessages.any(
               (message) => message.contains('SOS_TERMINAL_HANDOFF'),
@@ -508,8 +511,17 @@ void main() {
           // A's command was already sent. Its later physical terminal ACK is
           // cleanup evidence for A only and cannot close or replace B.
           harness.deviceSosController.handleIncomingSosEventPacket(
-            _deviceResolveAckPacket(),
+            terminalState == SosState.resolved
+                ? _deviceBackendResolvedPacket()
+                : _deviceCancelAckPacket(),
             source: DeviceSosTransitionSource.device,
+            resolutionContext: terminalState == SosState.resolved
+                ? _physicalResolutionContext(
+                    receiveSequence: 1,
+                    terminal: true,
+                    receiveSequenceDomain: 'late-terminal-cleanup',
+                  )
+                : null,
           );
           await pumpEventQueue(times: 5);
           final afterOldAck = await harness.sdk.getSosLifecycle();
@@ -518,8 +530,11 @@ void main() {
           expect(await harness.sdk.getSosState(), SosState.sent);
           expect(
             _hasDebugMessage(
-              'DEVICE_TERMINAL_ACK_CONSUMED '
-              'reason=authoritative_terminal_cleanup',
+              terminalState == SosState.resolved
+                  ? 'DEVICE_TERMINAL_ACK_CONSUMED '
+                        'reason=authoritative_terminal_cleanup'
+                  : 'SOS_TRACE device_terminal_command_ack_ignored '
+                        'event=0xE2',
             ),
             isTrue,
           );
@@ -1213,8 +1228,13 @@ void main() {
 
           deviceNow = deviceNow.add(const Duration(seconds: 1));
           harness.deviceSosController.handleIncomingSosEventPacket(
-            _deviceResolveAckPacket(),
+            _deviceBackendResolvedPacket(),
             source: DeviceSosTransitionSource.device,
+            resolutionContext: _physicalResolutionContext(
+              receiveSequence: 1,
+              terminal: true,
+              receiveSequenceDomain: 'physical-boundary',
+            ),
           );
           await pumpEventQueue(times: 5);
           expect(
@@ -1230,6 +1250,11 @@ void main() {
           harness.deviceSosController.handleIncomingSosPacket(
             _deviceOriginCountdownPacket(batteryLevel: 1),
             source: DeviceSosTransitionSource.device,
+            resolutionContext: _physicalResolutionContext(
+              receiveSequence: 2,
+              terminal: false,
+              receiveSequenceDomain: 'physical-boundary',
+            ),
           );
           await pumpEventQueue(times: 4);
           deviceNow = deviceNow.add(const Duration(seconds: 21));
@@ -1265,12 +1290,22 @@ void main() {
           try {
             await harness.deviceSosController.attach(
               commandWriter: (command) async {
-                if (command.opcode == 0x04) {
+                if (command.opcode == 0x04 || command.opcode == 0x07) {
                   scheduleMicrotask(() {
                     deviceNow = deviceNow.add(const Duration(seconds: 1));
                     harness.deviceSosController.handleIncomingSosEventPacket(
-                      _deviceResolveAckPacket(),
+                      command.opcode == 0x07
+                          ? _deviceBackendResolvedPacket()
+                          : _deviceResolveAckPacket(),
                       source: DeviceSosTransitionSource.device,
+                      resolutionContext: command.opcode == 0x07
+                          ? _physicalResolutionContext(
+                              receiveSequence: 1,
+                              terminal: true,
+                              receiveSequenceDomain:
+                                  'inactive-before-${terminalState.name}',
+                            )
+                          : null,
                     );
                   });
                 }
@@ -1314,6 +1349,14 @@ void main() {
             harness.deviceSosController.handleIncomingSosPacket(
               _deviceOriginCountdownPacket(batteryLevel: 1),
               source: DeviceSosTransitionSource.device,
+              resolutionContext: terminalState == SosState.resolved
+                  ? _physicalResolutionContext(
+                      receiveSequence: 2,
+                      terminal: false,
+                      receiveSequenceDomain:
+                          'inactive-before-${terminalState.name}',
+                    )
+                  : null,
             );
             await pumpEventQueue(times: 5);
 
@@ -3001,6 +3044,7 @@ void main() {
           connectedNodeId: 0x1234,
           protectionPlatformAdapter: adapter,
           deviceCountdown: Duration.zero,
+          appActivationObservationTimeout: const Duration(milliseconds: 250),
           appTriggeredSosBridgeWindow: const Duration(milliseconds: 10),
         );
         final observedMessages = <String>[];
@@ -3038,6 +3082,37 @@ void main() {
               type: ProtectionPlatformEventType.ownDeviceSosLifecycleObserved,
               timestamp: timestamp,
               reason: 'own:sos:$startHex',
+              classification: 'ownDeviceSos',
+            ),
+          );
+        }
+
+        void emitPhysicalBackendResolved() {
+          receiveSequence += 1;
+          const terminalHex = 'e30234120000';
+          final timestamp = DateTime.now().toUtc().add(
+            Duration(milliseconds: receiveSequence),
+          );
+          adapter.emit(
+            ProtectionPlatformEvent(
+              type: ProtectionPlatformEventType.bleNotificationReceived,
+              timestamp: timestamp,
+              payloadHex: terminalHex,
+              source: 'sos',
+              characteristicUuid: EixamBleProtocol.sosNotifyCharacteristicUuid,
+              byteLength: terminalHex.length ~/ 2,
+              packetType: 'sos_event',
+              firstOpcode: '0xe3',
+              receiveSequence: receiveSequence,
+              receiveCorrelation: 'backend-resolved-$receiveSequence',
+              connectedDeviceMarker: 'CF:82:00:00:00:01',
+            ),
+          );
+          adapter.emit(
+            ProtectionPlatformEvent(
+              type: ProtectionPlatformEventType.ownDeviceSosLifecycleObserved,
+              timestamp: timestamp,
+              reason: 'own:sos:$terminalHex',
               classification: 'ownDeviceSos',
             ),
           );
@@ -3116,6 +3191,11 @@ void main() {
               (await harness.sdk.getSosLifecycle()).stage,
               SosLifecycleStage.active,
             );
+            expect(
+              adapter.commands.where((command) => command.bytes[0] == 0x07),
+              hasLength(cycle - 1),
+              reason: 'backend ACK must not terminalize the local TAG',
+            );
 
             harness.sosRepository.currentIncident = harness
                 .sosRepository
@@ -3131,6 +3211,30 @@ void main() {
             final resolved = await harness.sdk.getSosLifecycle();
             expect(resolved.generation, cycle);
             expect(resolved.stage, SosLifecycleStage.resolved);
+            await waitFor(
+              () =>
+                  adapter.commands
+                      .where((command) => command.bytes[0] == 0x07)
+                      .length ==
+                  cycle,
+            );
+            final resolveCommand = adapter.commands
+                .where((command) => command.bytes[0] == 0x07)
+                .last;
+            expect(resolveCommand.forceCmdCharacteristic, isTrue);
+            expect(
+              harness.deviceSosController.currentStatus.state,
+              anyOf(DeviceSosState.active, DeviceSosState.acknowledged),
+              reason: 'a successful write is not physical terminal evidence',
+            );
+
+            emitPhysicalBackendResolved();
+            await waitFor(
+              () =>
+                  harness.deviceSosController.currentStatus.state ==
+                  DeviceSosState.resolved,
+            );
+            expect(harness.deviceSosController.currentStatus.lastOpcode, 0xE3);
             final protection = await harness.sdk.getProtectionStatus();
             expect(protection.bleOwner, ProtectionBleOwner.androidService);
             expect(protection.serviceBleConnected, isTrue);
@@ -3140,6 +3244,10 @@ void main() {
 
           expect(
             adapter.commands.where((command) => command.bytes[0] == 0x04),
+            isEmpty,
+          );
+          expect(
+            adapter.commands.where((command) => command.bytes[0] == 0x07),
             hasLength(3),
           );
           expect(
@@ -3203,13 +3311,17 @@ void main() {
           expect(
             observedMessages
                 .where(
-                  (message) => message.contains(
-                    'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_SUPERSEDED '
-                    'reason=fresh_physical_start',
-                  ),
+                  (message) =>
+                      message.contains('SOS_BACKEND_RESOLVE_DEVICE_RESULT') &&
+                      message.contains('command=SOS_ACK_0x07') &&
+                      message.contains('writeSubmitted=true') &&
+                      message.contains('writeSuccess=true') &&
+                      message.contains('physicalTerminalObserved=true') &&
+                      message.contains('terminalPacketType=E3') &&
+                      message.contains('failureReason=none'),
                 )
                 .length,
-            2,
+            3,
           );
         } finally {
           await debugSubscription.cancel();
@@ -5331,7 +5443,7 @@ void main() {
             (await harness.sdk.getSosLifecycle()).stage,
             SosLifecycleStage.resolved,
           );
-          expect(commands, contains(0x04));
+          expect(commands, contains(0x07));
           expect(
             _hasDebugMessage('SOS_REMOTE_TERMINAL_DEVICE_CLEAR_DISPATCHED'),
             isTrue,
@@ -5581,7 +5693,7 @@ void main() {
                       source: DeviceSosTransitionSource.device,
                     );
                   });
-                } else if (command.opcode == 0x04) {
+                } else if (command.opcode == 0x04 || command.opcode == 0x07) {
                   if (failDeviceClear) {
                     throw StateError('simulated terminal command failure');
                   }
@@ -5707,7 +5819,10 @@ void main() {
             );
             expect(terminalLifecycle.deviceCycleKey, 'sos:4660:0');
             expect(await harness.sdk.getSosState(), terminalState);
-            expect(commands, contains(0x04));
+            expect(
+              commands,
+              contains(terminalState == SosState.resolved ? 0x07 : 0x04),
+            );
             expect(
               _hasDebugMessage('SOS_REMOTE_TERMINAL_DEVICE_CLEAR_REQUESTED'),
               isTrue,
@@ -5809,8 +5924,18 @@ void main() {
             );
             if (!failDeviceClear) {
               harness.deviceSosController.handleIncomingSosEventPacket(
-                _deviceResolveAckPacket(),
+                terminalState == SosState.resolved
+                    ? _deviceBackendResolvedPacket()
+                    : _deviceResolveAckPacket(),
                 source: DeviceSosTransitionSource.device,
+                resolutionContext: terminalState == SosState.resolved
+                    ? _physicalResolutionContext(
+                        receiveSequence: 1,
+                        terminal: true,
+                        receiveSequenceDomain:
+                            'mqtt-terminal-${terminalState.name}',
+                      )
+                    : null,
               );
               await pumpEventQueue(times: 8);
 
@@ -5829,7 +5954,9 @@ void main() {
               );
               expect(
                 harness.deviceSosController.currentStatus.state,
-                DeviceSosState.inactive,
+                terminalState == SosState.resolved
+                    ? DeviceSosState.resolved
+                    : DeviceSosState.inactive,
               );
               expect(
                 _hasDebugMessage('SOS_DEVICE_ONLY_INCIDENT_RECORDED'),
@@ -6157,11 +6284,16 @@ void main() {
         await harness.deviceSosController.attach(
           commandWriter: (command) async {
             commands.add(command.opcode);
-            if (command.opcode == 0x04) {
+            if (command.opcode == 0x07) {
               scheduleMicrotask(() {
                 harness.deviceSosController.handleIncomingSosEventPacket(
-                  _deviceResolveAckPacket(),
+                  _deviceBackendResolvedPacket(),
                   source: DeviceSosTransitionSource.device,
+                  resolutionContext: _physicalResolutionContext(
+                    receiveSequence: 1,
+                    terminal: true,
+                    receiveSequenceDomain: 'backend-terminal-absence',
+                  ),
                 );
               });
             }
@@ -6211,7 +6343,7 @@ void main() {
           (await harness.sdk.getSosLifecycle()).stage,
           SosLifecycleStage.resolved,
         );
-        expect(commands, contains(0x04));
+        expect(commands, contains(0x07));
         expect(
           terminalDiagnostics.any(
             (message) =>
@@ -6229,7 +6361,7 @@ void main() {
         );
         expect(
           harness.deviceSosController.currentStatus.state,
-          DeviceSosState.inactive,
+          DeviceSosState.resolved,
         );
 
         harness.deviceSosController.handleIncomingSosPacket(
@@ -8603,4 +8735,46 @@ EixamSosEventPacket _deviceResolveAckPacket() {
     0x00,
     0x00,
   ])!;
+}
+
+EixamSosEventPacket _deviceBackendResolvedPacket() {
+  return EixamSosEventPacket.tryParse(<int>[
+    0xE3,
+    0x02,
+    0x34,
+    0x12,
+    0x00,
+    0x00,
+  ])!;
+}
+
+DeviceSosStateResolutionContext _physicalResolutionContext({
+  required int receiveSequence,
+  required bool terminal,
+  required String receiveSequenceDomain,
+}) {
+  final packetType = terminal ? 'sos_event' : 'sos';
+  return DeviceSosStateResolutionContext.fromPhysicalEvidence(
+    PhysicalSosReceiveEvidence(
+      classification: terminal
+          ? BleIncomingPayloadKind.sosClear
+          : BleIncomingPayloadKind.ownDeviceSos,
+      receiveSequence: receiveSequence,
+      receiveSequenceDomain: receiveSequenceDomain,
+      processSessionId: 'matrix-test-process',
+      producer: 'flutter_gatt',
+      characteristic: EixamBleProtocol.sosNotifyCharacteristicUuid,
+      correlationId: '$receiveSequenceDomain-$receiveSequence',
+      exactPhysicalIdentityMatch: true,
+      packetType: packetType,
+      hasStartSemantics: !terminal,
+      hasTerminalSemantics: terminal,
+      packetFingerprint: terminal ? 'e30234120000' : '34120000a5b109',
+      cycleIdentity: 'sos:4660:0',
+      receivedAt: DateTime.now().toUtc(),
+    ),
+    incomingPacketType: packetType,
+    incomingClassification: terminal ? 'sosClear' : 'ownDeviceSos',
+    incomingReceiveSequence: receiveSequence,
+  );
 }

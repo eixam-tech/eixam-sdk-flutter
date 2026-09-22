@@ -50,6 +50,7 @@ class EixamDeviceCommand {
     opcode: 0x07,
     label: 'SOS ACK',
     bytes: <int>[0x07],
+    forceCmdCharacteristic: true,
   );
 
   factory EixamDeviceCommand.sosAckRelay({required int nodeId}) {
@@ -273,6 +274,7 @@ class EixamDeviceCommand {
   BleCommandCriticality get criticality {
     return switch (opcode) {
       0x04 ||
+      0x07 ||
       0x06 ||
       0x10 ||
       0x20 ||

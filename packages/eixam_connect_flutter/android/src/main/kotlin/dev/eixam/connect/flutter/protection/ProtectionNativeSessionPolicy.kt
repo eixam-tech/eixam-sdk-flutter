@@ -16,7 +16,7 @@ internal enum class ProtectionSuccessfulCommandTransportAction {
 internal fun protectionTransportActionAfterSuccessfulCommand(
     commandLabel: String,
 ): ProtectionSuccessfulCommandTransportAction =
-    if (commandLabel == "SOS CANCEL") {
+    if (commandLabel == "SOS CANCEL" || commandLabel == "SOS ACK") {
         ProtectionSuccessfulCommandTransportAction.keepAliveAfterSosTerminal
     } else {
         ProtectionSuccessfulCommandTransportAction.keepAlive
