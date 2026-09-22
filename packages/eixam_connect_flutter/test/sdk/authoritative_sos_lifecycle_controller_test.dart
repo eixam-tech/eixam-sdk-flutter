@@ -336,6 +336,38 @@ void main() {
     );
   });
 
+  test('admitted generation scopes a reused terminal lifecycle identity',
+      () async {
+    const reusedLifecycleId = 'device-cycle:sos:7:3';
+    final first = await controller.beginArming(
+      origin: SosLifecycleOrigin.connectedLocalDevice,
+      lifecycleId: reusedLifecycleId,
+      nodeId: 7,
+    );
+    await controller.confirmActive(
+      origin: SosLifecycleOrigin.connectedLocalDevice,
+      localIncidentId: 'device-runtime-sos:7:3',
+      nodeId: 7,
+    );
+    await controller.confirmTerminal(
+      stage: SosLifecycleStage.cancelled,
+      deviceCycleKey: 'sos:7:3',
+    );
+
+    final next = await controller.beginArming(
+      origin: SosLifecycleOrigin.connectedLocalDevice,
+      lifecycleId: reusedLifecycleId,
+      nodeId: 7,
+      startNewGenerationAfterTerminal: true,
+    );
+
+    expect(next.stage, SosLifecycleStage.arming);
+    expect(next.generation, first.generation + 1);
+    expect(next.lifecycleId, '$reusedLifecycleId:g${next.generation}');
+    expect(controller.activeTerminalWatermark?.lifecycleId, reusedLifecycleId);
+    expect(controller.activeTerminalWatermark?.deviceCycleKey, 'sos:7:3');
+  });
+
   test('terminal device cycle identity is persisted across restart', () async {
     await activate();
     await controller.confirmTerminal(

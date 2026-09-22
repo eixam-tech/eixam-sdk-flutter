@@ -3059,6 +3059,214 @@ void main() {
     );
 
     test(
+      'restored terminal admits first current TAG START with reused fingerprint but rejects callback replay',
+      () async {
+        const startHex = '34120000a5b109';
+        const cancelHex = 'e10234120000';
+        const nativeReadySnapshot = ProtectionPlatformSnapshot(
+          backgroundCapabilityReady: true,
+          serviceRunning: true,
+          runtimeActive: true,
+          runtimeState: ProtectionRuntimeState.active,
+          coverageLevel: ProtectionCoverageLevel.full,
+          platform: ProtectionPlatform.android,
+          bleOwner: ProtectionBleOwner.androidService,
+          serviceBleConnected: true,
+          serviceBleReady: true,
+          nativeCommandServiceReady: true,
+          nativeCommandEa04Ready: true,
+          nativeCommandIdentityReady: true,
+          nativeCommandQueueHealthy: true,
+          nativeCommandReady: true,
+          protectedDeviceId: 'CF:82:00:00:00:01',
+          activeDeviceId: 'CF:82:00:00:00:01',
+        );
+        final secureStore = InMemorySecureKeyValueStore();
+        final repository = FakeSosRepository();
+        final firstAdapter = _SnapshotProtectionPlatformAdapter(
+          nativeReadySnapshot,
+        );
+        final first = _SdkSosHarness(
+          sosRepository: repository,
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+          sosLifecycleSecureStore: secureStore,
+          protectionPlatformAdapter: firstAdapter,
+        );
+
+        void emitPairedPacket(
+          _SnapshotProtectionPlatformAdapter adapter, {
+          required String payloadHex,
+          required int receiveSequence,
+          required DateTime timestamp,
+        }) {
+          adapter.emit(
+            ProtectionPlatformEvent(
+              type: ProtectionPlatformEventType.bleNotificationReceived,
+              timestamp: timestamp,
+              payloadHex: payloadHex,
+              source: 'sos',
+              characteristicUuid: EixamBleProtocol.sosNotifyCharacteristicUuid,
+              byteLength: payloadHex.length ~/ 2,
+              packetType: payloadHex.length == 12 ? 'sos_event' : 'sos',
+              firstOpcode: '0x${payloadHex.substring(0, 2)}',
+              receiveSequence: receiveSequence,
+              receiveCorrelation: 'restart-$receiveSequence',
+              connectedDeviceMarker: 'CF:82:00:00:00:01',
+            ),
+          );
+          adapter.emit(
+            ProtectionPlatformEvent(
+              type: ProtectionPlatformEventType.ownDeviceSosLifecycleObserved,
+              timestamp: timestamp,
+              reason: 'own:sos:$payloadHex',
+              classification: 'ownDeviceSos',
+            ),
+          );
+        }
+
+        late final int terminalGeneration;
+        try {
+          await first.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await first.setSession();
+          await first.sdk.rehydrateProtectionState();
+          final firstObservedAt = DateTime.now().toUtc();
+          emitPairedPacket(
+            firstAdapter,
+            payloadHex: startHex,
+            receiveSequence: 10,
+            timestamp: firstObservedAt,
+          );
+          await pumpEventQueue(times: 10);
+          emitPairedPacket(
+            firstAdapter,
+            payloadHex: cancelHex,
+            receiveSequence: 11,
+            timestamp: firstObservedAt.add(const Duration(milliseconds: 1)),
+          );
+          await pumpEventQueue(times: 10);
+
+          final terminal = await first.sdk.getSosLifecycle();
+          expect(terminal.stage, SosLifecycleStage.cancelled);
+          terminalGeneration = terminal.generation;
+        } finally {
+          await first.dispose(disposeSosRepository: false);
+          await firstAdapter.dispose();
+        }
+
+        final restoredAdapter = _SnapshotProtectionPlatformAdapter(
+          nativeReadySnapshot,
+        );
+        final restored = _SdkSosHarness(
+          sosRepository: repository,
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+          sosLifecycleSecureStore: secureStore,
+          protectionPlatformAdapter: restoredAdapter,
+        );
+        final observedMessages = <String>[];
+        final debugSubscription = BleDebugRegistry.instance.watch().listen((
+          state,
+        ) {
+          if (state.events.isNotEmpty) {
+            observedMessages.add(state.events.last.message);
+          }
+        });
+        try {
+          await restored.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await restored.setSession();
+          await restored.sdk.rehydrateProtectionState();
+
+          final restoredTerminal = await restored.sdk.getSosLifecycle();
+          expect(restoredTerminal.stage, SosLifecycleStage.cancelled);
+          expect(restoredTerminal.generation, terminalGeneration);
+
+          // A lifecycle callback by itself may be a buffered replay. Without
+          // its paired raw notification it provides no current BLE-session
+          // receive ordering and must remain behind the terminal fence.
+          restoredAdapter.emit(
+            ProtectionPlatformEvent(
+              type: ProtectionPlatformEventType.ownDeviceSosLifecycleObserved,
+              timestamp: DateTime.now().toUtc().subtract(
+                const Duration(minutes: 1),
+              ),
+              reason: 'own:sos:$startHex',
+              classification: 'ownDeviceSos',
+            ),
+          );
+          await pumpEventQueue(times: 8);
+          expect(
+            (await restored.sdk.getSosLifecycle()).generation,
+            terminalGeneration,
+          );
+          expect(
+            (await restored.sdk.getSosLifecycle()).stage,
+            SosLifecycleStage.cancelled,
+          );
+
+          final currentObservedAt = DateTime.now().toUtc();
+          emitPairedPacket(
+            restoredAdapter,
+            payloadHex: startHex,
+            receiveSequence: 1,
+            timestamp: currentObservedAt,
+          );
+          await pumpEventQueue(times: 12);
+
+          final reopened = await restored.sdk.getSosLifecycle();
+          expect(reopened.generation, terminalGeneration + 1);
+          expect(reopened.stage, SosLifecycleStage.arming);
+          expect(
+            restored.deviceSosController.currentStatus.state,
+            DeviceSosState.preConfirm,
+          );
+          expect(
+            observedMessages.any(
+              (message) =>
+                  message.contains(
+                    'terminalBoundaryFromPreviousProcess=true',
+                  ) &&
+                  message.contains('currentBleSessionEvidence=true') &&
+                  message.contains(
+                    'suppressionPredicate=terminal_boundary_current_physical_start',
+                  ) &&
+                  message.contains('admitted=true'),
+            ),
+            isTrue,
+          );
+          expect(
+            observedMessages.any(
+              (message) =>
+                  message.contains('SOS_DEVICE_STATE_RESOLUTION') &&
+                  message.contains('afterTerminalBoundary=true') &&
+                  message.contains('finalResolvedState=preConfirm'),
+            ),
+            isTrue,
+          );
+          expect(
+            observedMessages.any(
+              (message) =>
+                  message.contains('SOS_REPLAY_REJECTED') ||
+                  message.contains(
+                    'suppressionPredicate=terminal_without_physical_inactive_boundary',
+                  ),
+            ),
+            isTrue,
+          );
+        } finally {
+          await debugSubscription.cancel();
+          await restored.dispose(disposeSosRepository: false);
+          await restoredAdapter.dispose();
+          await repository.dispose();
+        }
+      },
+    );
+
+    test(
       'native raw SOS diagnostic precedes classifier with matching receive marker',
       () async {
         const payloadHex = 'a81a4b5948cd1b34442800c0';

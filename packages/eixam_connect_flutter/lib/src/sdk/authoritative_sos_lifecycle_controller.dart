@@ -279,10 +279,16 @@ final class AuthoritativeSosLifecycleController {
     _generation += 1;
     final now = _now();
     final identity = nodeId?.toString() ?? deviceId ?? 'local';
+    final requestedLifecycleId = lifecycleId;
+    final effectiveLifecycleId = replacingFencedGeneration &&
+            requestedLifecycleId != null &&
+            requestedLifecycleId == terminalFence.lifecycleId
+        ? '$requestedLifecycleId:g$_generation'
+        : requestedLifecycleId;
     return _publish(
       SosLifecycleSnapshot(
         stage: SosLifecycleStage.arming,
-        lifecycleId: lifecycleId ??
+        lifecycleId: effectiveLifecycleId ??
             'sos:$identity:${now.microsecondsSinceEpoch}:$_generation',
         generation: _generation,
         origin: origin,

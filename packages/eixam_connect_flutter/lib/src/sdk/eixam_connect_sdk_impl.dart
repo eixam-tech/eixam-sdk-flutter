@@ -76,6 +76,13 @@ import 'sos_location_ownership_orchestrator.dart';
 import 'sos_location_ownership_platform_sink.dart';
 import 'sos_location_trace.dart';
 
+int _sosProcessSessionSequence = 0;
+
+String _nextSosProcessSessionId() {
+  _sosProcessSessionSequence += 1;
+  return '${DateTime.now().toUtc().microsecondsSinceEpoch}-$_sosProcessSessionSequence';
+}
+
 @visibleForTesting
 bool isStrictlyNewerSosReceiveSequence({
   required int incomingSequence,
@@ -386,6 +393,7 @@ class EixamConnectSdkImpl
     }
     _sosCapabilityLifecycleSub = _sosLifecycle.stream.listen((lifecycle) {
       if (lifecycle.isTerminal) {
+        _recordTerminalNativeReceiveBoundary(lifecycle);
         final status = deviceSosController.currentStatus;
         _rememberTerminalDeviceCycleFence(
           status: status,
@@ -568,8 +576,15 @@ class EixamConnectSdkImpl
   String? _lastNativeRawReceiveCorrelation;
   int? _lastNativeRawReceiveSequence;
   String? _lastNativeRawCharacteristicUuid;
+  String? _lastNativeRawConnectedDeviceMarker;
+  final String _processSessionId = _nextSosProcessSessionId();
+  final DateTime _processSessionStartedAt = DateTime.now().toUtc();
+  int? _nativeReceiveSequenceDomainStartExclusive;
+  int? _latestNativeReceiveSequence;
   int? _lastOwnDeviceTerminalNativeReceiveSequence;
   int? _lastOwnDeviceTerminalNativeGeneration;
+  int? _terminalBoundaryFromPreviousProcessGeneration;
+  final Set<int> _terminalGenerationsEstablishedThisProcess = <int>{};
 
   Timer? _deathManTimer;
   bool _deathManCheckInNotified = false;
@@ -791,6 +806,7 @@ class EixamConnectSdkImpl
     );
     _session = await _bootstrapSessionIfNeeded(_session);
     await _sosLifecycle.restoreFor(_session, emitToStream: false);
+    _recordRestoredTerminalBoundaryFromPreviousProcess();
     await _refreshBackgroundTelemetryDiagnostics();
     if (_backgroundTelemetryDiagnostics.serviceRunning && _session != null) {
       _backgroundTelemetryStartFingerprint = _backgroundTelemetryFingerprint(
@@ -1432,6 +1448,7 @@ class EixamConnectSdkImpl
     }
     _session = nextSession;
     await _sosLifecycle.restoreFor(_session, emitToStream: false);
+    _recordRestoredTerminalBoundaryFromPreviousProcess();
     if (sessionContext != null) {
       sessionContext!.currentSession = _session;
     }
@@ -1801,6 +1818,8 @@ class EixamConnectSdkImpl
     _pendingFreshPhysicalStartProof = null;
     _lastOwnDeviceTerminalNativeReceiveSequence = null;
     _lastOwnDeviceTerminalNativeGeneration = null;
+    _terminalBoundaryFromPreviousProcessGeneration = null;
+    _terminalGenerationsEstablishedThisProcess.clear();
     _devicePacketSignaturesByGeneration.clear();
     _deviceMirrorDispatchedGenerations.clear();
     _clearPreSosSession(reason: 'session_cleared', emitIdleState: false);
@@ -4732,6 +4751,7 @@ class EixamConnectSdkImpl
           _deviceInactiveBoundaryAfterTerminalGeneration = null;
           _latestOwnDeviceInactiveBoundary = null;
           _pendingFreshPhysicalStartProof = null;
+          _terminalBoundaryFromPreviousProcessGeneration = null;
         }
       }
       _traceConnectedLocalDeviceHandoff(
@@ -4770,6 +4790,7 @@ class EixamConnectSdkImpl
         _deviceInactiveBoundaryAfterTerminalGeneration = null;
         _latestOwnDeviceInactiveBoundary = null;
         _pendingFreshPhysicalStartProof = null;
+        _terminalBoundaryFromPreviousProcessGeneration = null;
       }
     }
     if (lifecycle.stage == SosLifecycleStage.arming) {
@@ -13163,6 +13184,25 @@ class EixamConnectSdkImpl
         incomingCycleKey != null &&
         localReceiveAfterTerminal &&
         (hasUnconsumedPacketFingerprint || hasFreshNativeReceiveEdge);
+    // A terminal lifecycle is itself a completed physical boundary. After
+    // process recreation its native receive sequence and consumed-fingerprint
+    // set are intentionally unavailable, so a current-domain raw BLE edge is
+    // the ordering proof. The platform admission that creates this proof has
+    // already required START semantics, exact connected identity, a closed
+    // lifecycle, and a receive sequence newer than this domain's baseline.
+    final validTerminalBoundaryPhysicalRisingEdge =
+        status.state == DeviceSosState.preConfirm &&
+        (status.previousState == DeviceSosState.inactive ||
+            status.previousState == DeviceSosState.resolved) &&
+        status.lastPacketAt != null &&
+        status.sosType != null &&
+        (status.relayCount ?? 0) == 0 &&
+        hasStrongConnectedIdentity &&
+        exactHardwareMatch &&
+        exactIncomingPhysicalIdentity &&
+        incomingCycleKey != null &&
+        localReceiveAfterTerminal &&
+        hasFreshNativeReceiveEdge;
     final connectedDevice = _lastPublicDeviceStatus ?? _lastDeviceStatus;
     final normalizedStatusNodeId = _normalizeNodeIdOrNull(status.nodeId);
     final normalizedConnectedNodeId = _normalizeNodeIdOrNull(
@@ -13196,6 +13236,8 @@ class EixamConnectSdkImpl
       'consumedByTerminal=$packetWasConsumedByTerminalGeneration '
       'freshNativeReceiveEdge=$hasFreshNativeReceiveEdge '
       'nativeReceiveSequence=${freshPhysicalStartProof?.nativeReceiveSequence ?? -1} '
+      'receiveSequenceDomain=${freshPhysicalStartProof?.receiveSequenceDomain ?? "none"} '
+      'terminalBoundaryFromPreviousProcess=${freshPhysicalStartProof?.terminalBoundaryFromPreviousProcess ?? false} '
       'receiveSequence=$eventSequence '
       'terminalBoundarySequence=$terminalBoundaryEventSequence '
       'reducerPrevious=${status.previousState?.name ?? "none"} '
@@ -13212,12 +13254,14 @@ class EixamConnectSdkImpl
       'admitInactiveBoundary=$validFreshPhysicalEdge '
       'admitDistinctProtocolCounter=$validStrongNewCycle '
       'admitReusedProtocolCounter=$validStrongReusedPhysicalRisingEdge '
-      'admitBackendOnlyAppEdge=$validBackendOnlyAppThenPhysicalRisingEdge',
+      'admitBackendOnlyAppEdge=$validBackendOnlyAppThenPhysicalRisingEdge '
+      'admitTerminalBoundaryEdge=$validTerminalBoundaryPhysicalRisingEdge',
     );
     if (!validFreshPhysicalEdge &&
         !validStrongNewCycle &&
         !validStrongReusedPhysicalRisingEdge &&
-        !validBackendOnlyAppThenPhysicalRisingEdge) {
+        !validBackendOnlyAppThenPhysicalRisingEdge &&
+        !validTerminalBoundaryPhysicalRisingEdge) {
       final rejectionReason = !localReceiveAfterTerminal
           ? 'old_sequence'
           : packetWasPreviouslyConsumed && !hasFreshNativeReceiveEdge
@@ -13243,6 +13287,8 @@ class EixamConnectSdkImpl
           ? "direct_device_rising_edge"
           : validBackendOnlyAppThenPhysicalRisingEdge
           ? "backend_only_app_then_physical_edge"
+          : validTerminalBoundaryPhysicalRisingEdge
+          ? "terminal_boundary_current_physical_edge"
           : "strong_new_cycle"} '
       'eventSeq=$eventSequence rawIdentityReused=$rawIdentityReused '
       'strongIdentity=$hasStrongConnectedIdentity newCycle=${!rawIdentityReused} '
@@ -18320,9 +18366,17 @@ class EixamConnectSdkImpl
       _lastNativeRawReceiveCorrelation = event.receiveCorrelation;
       _lastNativeRawReceiveSequence = event.receiveSequence;
       _lastNativeRawCharacteristicUuid = event.characteristicUuid;
+      _lastNativeRawConnectedDeviceMarker = event.connectedDeviceMarker;
+      final receiveSequence = event.receiveSequence;
+      if (receiveSequence != null) {
+        _nativeReceiveSequenceDomainStartExclusive ??= receiveSequence - 1;
+        _latestNativeReceiveSequence = receiveSequence;
+      }
       BleDebugRegistry.instance.recordEvent(
         'EIXAM_BLE_NOTIFICATION_RX '
         'producer=native_bridge owner=native_protection '
+        'processSessionId=$_processSessionId '
+        'receiveSequenceDomain=process:$_processSessionId '
         'correlation=${event.receiveCorrelation ?? "none"} '
         'characteristic=${event.characteristicUuid ?? "unknown"} '
         'byteLength=${event.byteLength ?? 0} '
@@ -18435,6 +18489,9 @@ class EixamConnectSdkImpl
     final characteristicUuid = matchesRawNotification
         ? _lastNativeRawCharacteristicUuid
         : null;
+    final connectedDeviceMarker = matchesRawNotification
+        ? _lastNativeRawConnectedDeviceMarker
+        : null;
     BleDebugRegistry.instance.recordEvent(
       'BLE_SOS_CLASSIFY_DECISION raw=$rawHex '
       'packetType=${platformSosEventPacket == null ? "sos" : "sos_event"} '
@@ -18448,6 +18505,8 @@ class EixamConnectSdkImpl
     SosLifecycleSnapshot? admissionLifecycle;
     SosLifecycleSnapshot? admissionTerminalLifecycle;
     var physicalIdentityMatch = false;
+    var exactPhysicalIdentityMatch = false;
+    var hasCurrentBleSessionEvidence = false;
     if (isNativeApprovedOwnLifecycle) {
       final currentLifecycle = _sosLifecycle.current;
       final terminalLifecycle = _sosLifecycle.activeTerminalWatermark;
@@ -18458,6 +18517,27 @@ class EixamConnectSdkImpl
           (platformConnectedBleNodeId == null ||
               originatorNodeId == null ||
               platformConnectedBleNodeId == originatorNodeId);
+      final connectedDevice = _lastPublicDeviceStatus ?? _lastDeviceStatus;
+      final connectedNodeId = _normalizeNodeIdOrNull(
+        connectedDevice?.nodeId ?? _knownLocalDeviceNodeId,
+      );
+      final normalizedOriginatorNodeId = _normalizeNodeIdOrNull(
+        originatorNodeId,
+      );
+      exactPhysicalIdentityMatch =
+          physicalIdentityMatch &&
+          connectedDevice?.connected == true &&
+          connectedNodeId != null &&
+          normalizedOriginatorNodeId != null &&
+          connectedNodeId == normalizedOriginatorNodeId &&
+          _physicalHardwareIdForStatus(connectedDevice)?.isNotEmpty == true;
+      hasCurrentBleSessionEvidence =
+          matchesRawNotification &&
+          receiveSequence != null &&
+          _lastNativeRawReceiveCorrelation?.trim().isNotEmpty == true &&
+          characteristicUuid?.trim().isNotEmpty == true &&
+          connectedDeviceMarker?.trim().isNotEmpty == true &&
+          !event.timestamp.toUtc().isBefore(_processSessionStartedAt);
       final admission = platformSosEventPacket != null
           ? const _OwnDeviceLifecycleAdmission(
               admitted: true,
@@ -18468,6 +18548,9 @@ class EixamConnectSdkImpl
               originatorNodeId: originatorNodeId,
               rawHex: rawHex,
               observedAt: event.timestamp,
+              receiveSequence: receiveSequence,
+              exactPhysicalIdentityMatch: exactPhysicalIdentityMatch,
+              hasCurrentBleSessionEvidence: hasCurrentBleSessionEvidence,
             );
       ownLifecycleAdmission = admission;
       final parsedPacket = EixamSosPacket.tryParse(bytes);
@@ -18483,8 +18566,13 @@ class EixamConnectSdkImpl
         'incomingSource=${payloadReason.source?.name ?? "unknown"} '
         'producer=native_bridge '
         'receiveSequence=${receiveSequence ?? -1} '
+        'processSessionId=$_processSessionId '
+        'receiveSequenceDomain=process:$_processSessionId '
+        'terminalBoundaryFromPreviousProcess=${terminalLifecycle != null && _terminalBoundaryFromPreviousProcessGeneration == terminalLifecycle.generation} '
+        'currentBleSessionEvidence=$hasCurrentBleSessionEvidence '
         'characteristic=${characteristicUuid ?? "unknown"} '
         'physicalIdentityMatch=$physicalIdentityMatch '
+        'exactPhysicalIdentityMatch=$exactPhysicalIdentityMatch '
         'packetIdentity=${originatorNodeId ?? "none"}:${parsedPacket?.packetId ?? "event"} '
         'fingerprintSha256=${_sosFingerprintDiagnosticMarker(rawHex)} '
         'suppressionPredicate=${admission.predicate} '
@@ -18502,6 +18590,7 @@ class EixamConnectSdkImpl
           _lastNativeRawReceiveCorrelation = null;
           _lastNativeRawReceiveSequence = null;
           _lastNativeRawCharacteristicUuid = null;
+          _lastNativeRawConnectedDeviceMarker = null;
         }
         return;
       }
@@ -18511,6 +18600,7 @@ class EixamConnectSdkImpl
       _lastNativeRawReceiveCorrelation = null;
       _lastNativeRawReceiveSequence = null;
       _lastNativeRawCharacteristicUuid = null;
+      _lastNativeRawConnectedDeviceMarker = null;
     }
     final isLocalPlatformSosClassification =
         isNativeApprovedOwnLifecycle ||
@@ -18678,20 +18768,16 @@ class EixamConnectSdkImpl
       final currentLifecycle = admissionLifecycle ?? _sosLifecycle.current;
       final terminalLifecycle =
           admissionTerminalLifecycle ?? _sosLifecycle.activeTerminalWatermark;
-      final terminalReceiveSequence =
-          _lastOwnDeviceTerminalNativeReceiveSequence;
       final afterTerminalBoundary =
           terminalLifecycle != null &&
           !currentLifecycle.isOpen &&
-          _lastOwnDeviceTerminalNativeGeneration ==
-              terminalLifecycle.generation &&
-          receiveSequence != null &&
-          terminalReceiveSequence != null &&
-          receiveSequence > terminalReceiveSequence;
+          ownLifecycleAdmission?.predicate ==
+              'terminal_boundary_current_physical_start';
       final allowFreshPhysicalStartAfterTerminal =
           isNativeApprovedOwnLifecycle &&
           ownLifecycleAdmission?.admitted == true &&
-          physicalIdentityMatch &&
+          exactPhysicalIdentityMatch &&
+          hasCurrentBleSessionEvidence &&
           sosPacket.sosType != 0 &&
           afterTerminalBoundary;
       final packetSignature =
@@ -18699,7 +18785,11 @@ class EixamConnectSdkImpl
       if (allowFreshPhysicalStartAfterTerminal) {
         _pendingFreshPhysicalStartProof = _FreshPhysicalStartProof(
           terminalGeneration: terminalLifecycle.generation,
-          nativeReceiveSequence: receiveSequence,
+          nativeReceiveSequence: receiveSequence!,
+          receiveSequenceDomain: 'process:$_processSessionId',
+          terminalBoundaryFromPreviousProcess:
+              _terminalBoundaryFromPreviousProcessGeneration ==
+              terminalLifecycle.generation,
           packetSignature: packetSignature,
         );
       }
@@ -18993,6 +19083,46 @@ class EixamConnectSdkImpl
     }
   }
 
+  void _recordRestoredTerminalBoundaryFromPreviousProcess() {
+    final terminal = _sosLifecycle.activeTerminalWatermark;
+    final current = _sosLifecycle.current;
+    if (terminal == null || !current.isTerminal) {
+      return;
+    }
+    if (_terminalGenerationsEstablishedThisProcess.contains(
+      terminal.generation,
+    )) {
+      return;
+    }
+    _terminalBoundaryFromPreviousProcessGeneration = terminal.generation;
+    _lastOwnDeviceTerminalNativeReceiveSequence = null;
+    _lastOwnDeviceTerminalNativeGeneration = null;
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_RECEIVE_SEQUENCE_DOMAIN_RESTORED '
+      'processSessionId=$_processSessionId '
+      'receiveSequenceDomain=process:$_processSessionId '
+      'terminalGeneration=${terminal.generation} '
+      'terminalBoundaryFromPreviousProcess=true',
+    );
+  }
+
+  void _recordTerminalNativeReceiveBoundary(SosLifecycleSnapshot terminal) {
+    if (_terminalBoundaryFromPreviousProcessGeneration == terminal.generation) {
+      return;
+    }
+    _terminalGenerationsEstablishedThisProcess.add(terminal.generation);
+    _lastOwnDeviceTerminalNativeReceiveSequence = _latestNativeReceiveSequence;
+    _lastOwnDeviceTerminalNativeGeneration = terminal.generation;
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_RECEIVE_SEQUENCE_TERMINAL_BOUNDARY '
+      'processSessionId=$_processSessionId '
+      'receiveSequenceDomain=process:$_processSessionId '
+      'terminalGeneration=${terminal.generation} '
+      'terminalReceiveSequence=${_latestNativeReceiveSequence ?? -1} '
+      'terminalBoundaryFromPreviousProcess=false',
+    );
+  }
+
   void _applyDeviceTerminalPublicSosClose({
     required String reason,
     required SosState terminalState,
@@ -19175,6 +19305,9 @@ class EixamConnectSdkImpl
     required int? originatorNodeId,
     required String rawHex,
     required DateTime observedAt,
+    required int? receiveSequence,
+    required bool exactPhysicalIdentityMatch,
+    required bool hasCurrentBleSessionEvidence,
   }) {
     if (_manualDisconnectRequested) {
       _clearDeviceRuntimeResidueAfterManualDisconnect();
@@ -19191,22 +19324,67 @@ class EixamConnectSdkImpl
     final packet = EixamSosPacket.tryParse(
       _tryDecodeHexPayload(rawHex) ?? const <int>[],
     );
-    final platformPacketStartsFreshCycle =
+    final terminalFromPreviousProcess =
         terminalTargetsPacket &&
-        packet != null &&
-        _terminalFenceAllowsFreshDevicePacket(
-          terminal: terminal,
-          nodeId: originatorNodeId ?? packet.nodeId,
-          packetId: packet.packetId,
-          observedAt: observedAt.toUtc(),
+        _terminalBoundaryFromPreviousProcessGeneration == terminal.generation;
+    final sequenceDomainStart = _nativeReceiveSequenceDomainStartExclusive;
+    final hasNewProcessDomainReceiveOrder =
+        receiveSequence != null &&
+        sequenceDomainStart != null &&
+        isStrictlyNewerSosReceiveSequence(
+          incomingSequence: receiveSequence,
+          terminalBoundarySequence: sequenceDomainStart,
         );
-    if (terminalTargetsPacket &&
-        _deviceInactiveBoundaryAfterTerminalGeneration != terminal.generation &&
-        !platformPacketStartsFreshCycle) {
+    final hasComparableTerminalReceiveBoundary =
+        terminalTargetsPacket &&
+        _lastOwnDeviceTerminalNativeGeneration == terminal.generation &&
+        _lastOwnDeviceTerminalNativeReceiveSequence != null;
+    final receiveOrderAfterTerminal =
+        terminalTargetsPacket &&
+        receiveSequence != null &&
+        (hasComparableTerminalReceiveBoundary
+            ? isStrictlyNewerSosReceiveSequence(
+                incomingSequence: receiveSequence,
+                terminalBoundarySequence:
+                    _lastOwnDeviceTerminalNativeReceiveSequence!,
+              )
+            : hasNewProcessDomainReceiveOrder &&
+                  (terminalFromPreviousProcess ||
+                      !observedAt.toUtc().isBefore(
+                        terminal.lastAuthoritativeObservation,
+                      )));
+    final packetHasStartSemantics = packet != null && packet.sosType != 0;
+    final terminalBoundaryAdmitsFreshPhysicalStart =
+        terminalTargetsPacket && !current.isOpen;
+    final validTerminalBoundaryPhysicalStart =
+        terminalBoundaryAdmitsFreshPhysicalStart &&
+        packetHasStartSemantics &&
+        exactPhysicalIdentityMatch &&
+        hasCurrentBleSessionEvidence &&
+        receiveOrderAfterTerminal;
+    if (validTerminalBoundaryPhysicalStart) {
+      return _OwnDeviceLifecycleAdmission(
+        admitted: true,
+        predicate: 'terminal_boundary_current_physical_start',
+        reason:
+            _deviceInactiveBoundaryAfterTerminalGeneration ==
+                terminal.generation
+            ? 'immediate_physical_restart_after_terminal'
+            : 'fresh_physical_start_after_terminal',
+      );
+    }
+    if (terminalTargetsPacket) {
       BleDebugRegistry.instance.recordEvent(
         'SOS_TERMINAL_FENCE_SUPPRESSED_OPEN source=platform_device_packet '
         'reason=authoritative_backend_terminal '
-        'nodeId=${originatorNodeId ?? "none"}',
+        'nodeId=${originatorNodeId ?? "none"} '
+        'processSessionId=$_processSessionId '
+        'receiveSequenceDomain=process:$_processSessionId '
+        'terminalBoundaryFromPreviousProcess=$terminalFromPreviousProcess '
+        'currentBleSessionEvidence=$hasCurrentBleSessionEvidence '
+        'exactPhysicalIdentityMatch=$exactPhysicalIdentityMatch '
+        'packetHasStartSemantics=$packetHasStartSemantics '
+        'receiveOrderAfterTerminal=$receiveOrderAfterTerminal',
       );
       _logSosTrace(
         'dart_platform_event_route route=ignored '
@@ -19216,21 +19394,6 @@ class EixamConnectSdkImpl
         admitted: false,
         predicate: 'terminal_without_physical_inactive_boundary',
         reason: 'authoritative_terminal_fence',
-      );
-    }
-    if (platformPacketStartsFreshCycle) {
-      return const _OwnDeviceLifecycleAdmission(
-        admitted: true,
-        predicate: 'new_cycle_identity_after_terminal',
-        reason: 'fresh_physical_start_after_terminal',
-      );
-    }
-    if (terminalTargetsPacket &&
-        _deviceInactiveBoundaryAfterTerminalGeneration == terminal.generation) {
-      return const _OwnDeviceLifecycleAdmission(
-        admitted: true,
-        predicate: 'physical_inactive_boundary_then_new_receive',
-        reason: 'immediate_physical_restart_after_terminal',
       );
     }
     if (current.isOpen &&
@@ -19256,28 +19419,6 @@ class EixamConnectSdkImpl
     );
   }
 
-  bool _terminalFenceAllowsFreshDevicePacket({
-    required SosLifecycleSnapshot terminal,
-    required int? nodeId,
-    required int packetId,
-    required DateTime observedAt,
-  }) {
-    if (!observedAt.isAfter(terminal.lastAuthoritativeObservation)) {
-      return false;
-    }
-    final fence = _terminalDeviceCycleFence;
-    if (fence == null || fence.generation != terminal.generation) {
-      return false;
-    }
-    if (fence.nodeId != null && nodeId != null && fence.nodeId != nodeId) {
-      return false;
-    }
-    if (fence.runtimeCycleKey == null) {
-      return false;
-    }
-    return 'sos:${nodeId ?? fence.nodeId}:$packetId' != fence.runtimeCycleKey;
-  }
-
   void _clearDeviceRuntimeResidueAfterManualDisconnect() {
     _sosRuntimeNodeIdByHardwareId.clear();
     _knownLocalDeviceNodeId = null;
@@ -19294,6 +19435,8 @@ class EixamConnectSdkImpl
     _pendingFreshPhysicalStartProof = null;
     _lastOwnDeviceTerminalNativeReceiveSequence = null;
     _lastOwnDeviceTerminalNativeGeneration = null;
+    _terminalBoundaryFromPreviousProcessGeneration = null;
+    _terminalGenerationsEstablishedThisProcess.clear();
     _devicePacketSignaturesByGeneration.clear();
     _deviceMirrorDispatchedGenerations.clear();
     _deviceOwnedBackendIncidentId = null;
@@ -22002,11 +22145,15 @@ final class _FreshPhysicalStartProof {
   const _FreshPhysicalStartProof({
     required this.terminalGeneration,
     required this.nativeReceiveSequence,
+    required this.receiveSequenceDomain,
+    required this.terminalBoundaryFromPreviousProcess,
     required this.packetSignature,
   });
 
   final int terminalGeneration;
   final int nativeReceiveSequence;
+  final String receiveSequenceDomain;
+  final bool terminalBoundaryFromPreviousProcess;
   final String packetSignature;
 }
 
