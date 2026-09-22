@@ -166,7 +166,7 @@ class SecurityDiagnosticsRedactor {
     );
     sanitized = sanitized.replaceAllMapped(
       RegExp(
-        r'\b([A-Za-z0-9_]*incident[A-Za-z0-9_]*)=(.*?)(?=\s+[A-Za-z][A-Za-z0-9_]*=|$)',
+        r'\b((?!incidentState\b)[A-Za-z0-9_]*incident[A-Za-z0-9_]*)=(.*?)(?=\s+[A-Za-z][A-Za-z0-9_]*=|$)',
         caseSensitive: false,
       ),
       (match) => 'incident_present=${_isPresentToken(match[2])}',

@@ -233,6 +233,18 @@ void main() {
       expect(message, isNot(contains('device-secret')));
       expect(message, isNot(contains('raw-secret')));
     });
+
+    test('preserves non-identifying incident lifecycle state', () {
+      final message = SecurityDiagnosticsRedactor.sanitizeEventMessage(
+        'SOS_PUBLIC_LIFECYCLE_STATE incidentState=resolved '
+        'incidentId=incident-secret deviceMirrorState=pendingResolve',
+        allowSensitive: false,
+      );
+
+      expect(message, contains('incidentState=resolved'));
+      expect(message, contains('incident_present=true'));
+      expect(message, isNot(contains('incident-secret')));
+    });
   });
 
   group('BleDebugRegistry release-like diagnostics', () {

@@ -976,7 +976,7 @@ void main() {
             _deviceOriginActivePacketForCycle(packetId: 1),
             source: DeviceSosTransitionSource.device,
           );
-          await pumpEventQueue(times: 4);
+          await pumpEventQueue(times: 12);
 
           final lifecycle = await harness.sdk.getSosLifecycle();
           expect(lifecycle.generation, 1);
@@ -1358,7 +1358,7 @@ void main() {
                     )
                   : null,
             );
-            await pumpEventQueue(times: 5);
+            await pumpEventQueue(times: 12);
 
             final arming = await harness.sdk.getSosLifecycle();
             expect(arming.generation, terminal.generation + 1);
@@ -1380,7 +1380,7 @@ void main() {
               _deviceOriginActivePacketForCycle(packetId: 0),
               source: DeviceSosTransitionSource.device,
             );
-            await pumpEventQueue(times: 6);
+            await pumpEventQueue(times: 12);
             final active = await harness.sdk.getSosLifecycle();
             expect(active.generation, arming.generation);
             expect(active.stage, SosLifecycleStage.active);
@@ -4382,6 +4382,83 @@ void main() {
     );
 
     test(
+      'app cancel publishes cancelRequested before 0x04 receives strict E2',
+      () async {
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          deviceCountdown: Duration.zero,
+        );
+        final commands = <EixamDeviceCommand>[];
+        final cancelCommandDispatched = Completer<void>();
+        try {
+          await harness.deviceSosController.attach(
+            commandWriter: (command) async {
+              commands.add(command);
+              if (command.opcode == 0x04 &&
+                  !cancelCommandDispatched.isCompleted) {
+                cancelCommandDispatched.complete();
+              }
+            },
+          );
+          await harness.sdk.triggerSosAuthoritatively(
+            const SosTriggerPayload(triggerSource: 'commercial_app'),
+          );
+          harness.deviceSosController.handleIncomingSosPacket(
+            _deviceOriginActivePacket(),
+            source: DeviceSosTransitionSource.device,
+          );
+          for (
+            var attempt = 0;
+            attempt < 20 &&
+                harness.deviceSosController.currentStatus.state !=
+                    DeviceSosState.active;
+            attempt += 1
+          ) {
+            await pumpEventQueue();
+          }
+          expect(
+            harness.deviceSosController.currentStatus.state,
+            DeviceSosState.active,
+          );
+
+          final cancellation = harness.sdk.cancelSos();
+          await cancelCommandDispatched.future;
+          await pumpEventQueue(times: 2);
+
+          expect(await harness.sdk.getSosState(), SosState.cancelRequested);
+          expect(
+            commands.where((command) => command.opcode == 0x04),
+            hasLength(1),
+          );
+          expect(_hasDebugMessage('SOS_APP_CANCEL_LOGICAL_TERMINAL'), isTrue);
+          expect(
+            _hasDebugMessage(
+              'SOS_APP_CANCEL_DEVICE_MIRROR incident_present=true '
+              'generation=1 deviceMirrorState=pendingCancel '
+              'command=SOS_CANCEL_0x04 action=dispatch',
+            ),
+            isTrue,
+          );
+
+          harness.deviceSosController.handleIncomingSosEventPacket(
+            _deviceResolveAckPacket(),
+            source: DeviceSosTransitionSource.device,
+          );
+          final cancelled = await cancellation;
+
+          expect(cancelled.state, SosState.cancelled);
+          expect(
+            commands.where((command) => command.opcode == 0x04),
+            hasLength(1),
+          );
+          expect(_hasDebugMessage('deviceMirrorState=synchronized'), isTrue);
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
       'SOS-05 BLE app-origin resolve requests backend and clears state',
       () async {
         final harness = _SdkSosHarness(connectedBle: true);
@@ -5161,7 +5238,7 @@ void main() {
           (await harness.sdk.getSosLifecycle()).stage,
           SosLifecycleStage.resolved,
         );
-        expect(await harness.sdk.getSosState(), SosState.idle);
+        expect(await harness.sdk.getSosState(), SosState.resolved);
       } finally {
         await harness.dispose(disposeSosRepository: false);
         await repository.dispose();
@@ -5785,9 +5862,85 @@ void main() {
         expect(resolveCommands, hasLength(1));
         expect(resolveCommands.single.forceCmdCharacteristic, isTrue);
         expect(
+          await harness.sdk.getSosState(),
+          SosState.resolved,
+          reason: 'logical state must settle before physical E3',
+        );
+        expect(
+          resolveDiagnostics.any(
+            (message) =>
+                message.contains('SOS_PUBLIC_LIFECYCLE_STATE') &&
+                message.contains('incidentState=resolved') &&
+                message.contains('deviceMirrorState=pendingResolve') &&
+                message.contains('generation=1'),
+          ),
+          isTrue,
+        );
+        expect(
           harness.deviceSosController.currentStatus.state,
           anyOf(DeviceSosState.active, DeviceSosState.acknowledged),
           reason: 'EA04 write completion must still wait for matching E3',
+        );
+
+        realtime.emitEvent(
+          backendEvent(<String, dynamic>{
+            'type': 'processed',
+            'appId': '550e8400-e29b-41d4-a716-446655440001',
+            'userId': 'external-123',
+            'incidentId': canonicalIncidentId,
+            'status': 'active',
+            'occurredAt': publishedAt.toIso8601String(),
+            'openedAt': publishedAt.toIso8601String(),
+            'updatedAt': publishedAt
+                .add(const Duration(seconds: 3))
+                .toIso8601String(),
+          }),
+        );
+        realtime.emitEvent(
+          backendEvent(<String, dynamic>{
+            'type': 'sos.actuator_update',
+            'appId': '550e8400-e29b-41d4-a716-446655440001',
+            'userId': 'external-123',
+            'incidentId': canonicalIncidentId,
+            'status': 'active',
+            'snapshotVersion': 9,
+            'updatedAt': publishedAt
+                .add(const Duration(seconds: 4))
+                .toIso8601String(),
+            'actuators': const <Map<String, dynamic>>[
+              <String, dynamic>{
+                'id': 'contacts',
+                'type': 'emergency_contacts',
+                'status': 'delivered',
+                'outcome': 'success',
+              },
+            ],
+          }),
+        );
+        await pumpEventQueue(times: 8);
+
+        expect(await repository.getSosState(), SosState.resolved);
+        expect(await harness.sdk.getSosState(), SosState.resolved);
+        expect(
+          (await harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.resolved,
+        );
+        expect(
+          commands.where((command) => command.opcode == 0x07),
+          hasLength(1),
+        );
+        expect(
+          resolveDiagnostics
+              .where(
+                (message) =>
+                    message.contains('SOS_TERMINAL_REGRESSION_BLOCKED') &&
+                    message.contains('incident_present=true') &&
+                    message.contains('generation=1') &&
+                    message.contains('terminalState=resolved') &&
+                    message.contains('incomingRawStatus=active'),
+              )
+              .length,
+          greaterThanOrEqualTo(2),
         );
         harness.deviceSosController.handleIncomingSosEventPacket(
           _deviceBackendResolvedPacket(),
@@ -5803,6 +5956,15 @@ void main() {
         expect(
           harness.deviceSosController.currentStatus.state,
           DeviceSosState.resolved,
+        );
+        expect(
+          resolveDiagnostics.any(
+            (message) =>
+                message.contains('SOS_PUBLIC_LIFECYCLE_STATE') &&
+                message.contains('incidentState=resolved') &&
+                message.contains('deviceMirrorState=synchronized'),
+          ),
+          isTrue,
         );
         expect(
           commands.where((command) => command.opcode == 0x07),
@@ -6337,7 +6499,10 @@ void main() {
       await lifecycleSeed.cancellationFailed('E_SOS_CANCEL_NOT_ALLOWED');
       await lifecycleSeed.dispose();
 
-      Future<void> verifyRestart({required bool expectLookup}) async {
+      Future<void> verifyRestart({
+        required bool expectLookup,
+        required SosState expectedPublicState,
+      }) async {
         final realtime = _OnDemandOperationalRealtimeClient();
         final remote = _NoActiveSosRemoteDataSource();
         final repository = MqttOperationalSosRepository(
@@ -6361,7 +6526,7 @@ void main() {
           expect(lifecycle.isTerminal, isTrue);
           expect(lifecycle.isOpen, isFalse);
           expect(lifecycle.failureCode, isNull);
-          expect(await harness.sdk.getSosState(), SosState.idle);
+          expect(await harness.sdk.getSosState(), expectedPublicState);
           if (expectLookup) {
             expect(remote.getActiveSosCalls, greaterThan(0));
           }
@@ -6371,8 +6536,14 @@ void main() {
         }
       }
 
-      await verifyRestart(expectLookup: true);
-      await verifyRestart(expectLookup: false);
+      await verifyRestart(
+        expectLookup: true,
+        expectedPublicState: SosState.resolved,
+      );
+      await verifyRestart(
+        expectLookup: false,
+        expectedPublicState: SosState.idle,
+      );
     });
 
     test(
@@ -6419,6 +6590,7 @@ void main() {
 
         repository.currentIncident = repository.currentIncident.copyWith(
           state: SosState.resolved,
+          isBackendConfirmed: true,
         );
         repository.stateController.add(SosState.resolved);
         await pumpEventQueue(times: 3);
@@ -6623,7 +6795,7 @@ void main() {
             (await harness.sdk.getSosLifecycle()).stage,
             SosLifecycleStage.resolved,
           );
-          expect(await harness.sdk.getSosState(), SosState.idle);
+          expect(await harness.sdk.getSosState(), SosState.resolved);
           expect(
             BleDebugRegistry.instance.currentState.events.any(
               (event) =>

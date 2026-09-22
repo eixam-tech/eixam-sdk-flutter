@@ -41,7 +41,11 @@ class SosStateMachine {
         },
       // A backend operator can cancel an acknowledged SOS. This is a normal
       // terminal transition, not a new lifecycle.
-      SosState.acknowledged => {SosState.cancelled, SosState.resolved},
+      SosState.acknowledged => {
+          SosState.cancelRequested,
+          SosState.cancelled,
+          SosState.resolved
+        },
       SosState.cancelRequested => {SosState.cancelled, SosState.failed},
       SosState.cancelled => {SosState.idle},
       SosState.resolved => {SosState.idle},

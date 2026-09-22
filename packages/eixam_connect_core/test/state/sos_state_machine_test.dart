@@ -18,6 +18,7 @@ void main() {
       (from: SosState.sent, to: SosState.acknowledged),
       (from: SosState.sent, to: SosState.cancelRequested),
       (from: SosState.sent, to: SosState.resolved),
+      (from: SosState.acknowledged, to: SosState.cancelRequested),
       (from: SosState.acknowledged, to: SosState.cancelled),
       (from: SosState.acknowledged, to: SosState.resolved),
       (from: SosState.cancelRequested, to: SosState.cancelled),

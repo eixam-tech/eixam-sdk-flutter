@@ -17,6 +17,24 @@ import '../dtos/sos_incident_dto.dart';
 import 'mqtt_sos_lifecycle_update.dart';
 import 'sos_runtime_rehydration_support.dart';
 
+final class MqttAcceptedSosLifecycleTransition {
+  const MqttAcceptedSosLifecycleTransition({
+    required this.previousState,
+    required this.state,
+    required this.incident,
+    required this.generation,
+    required this.rawStatus,
+    required this.source,
+  });
+
+  final SosState previousState;
+  final SosState state;
+  final SosIncident incident;
+  final int generation;
+  final String rawStatus;
+  final String source;
+}
+
 class MqttOperationalSosRepository
     implements
         SosRepository,
@@ -78,6 +96,11 @@ class MqttOperationalSosRepository
   final StreamController<SosRejectedTerminalReconciliationRequest>
   _rejectedTerminalReconciliationController =
       StreamController<SosRejectedTerminalReconciliationRequest>.broadcast();
+  final StreamController<MqttAcceptedSosLifecycleTransition>
+  _acceptedLifecycleTransitionController =
+      StreamController<MqttAcceptedSosLifecycleTransition>.broadcast(
+        sync: true,
+      );
 
   StreamSubscription<RealtimeEvent>? _realtimeSub;
   SosIncident? _activeIncident;
@@ -1559,8 +1582,13 @@ class MqttOperationalSosRepository
     _clearPendingMqttLifecycle(reason: 'repository_disposed');
     await _realtimeSub?.cancel();
     await _stateController.close();
+    await _acceptedLifecycleTransitionController.close();
     await _rejectedTerminalReconciliationController.close();
   }
+
+  Stream<MqttAcceptedSosLifecycleTransition>
+  watchAcceptedLifecycleTransitions() =>
+      _acceptedLifecycleTransitionController.stream;
 
   @override
   Stream<SosRejectedTerminalReconciliationRequest>
@@ -1632,6 +1660,21 @@ class MqttOperationalSosRepository
     }
     _rememberMqttEvent(update);
     if (!_isActiveLikeState(_stateMachine.current)) {
+      if (_isTerminalState(_stateMachine.current) &&
+          (_mqttUpdateRepresentsOpenState(update, rawStatus) ||
+              update.eventType == 'sos.actuator_update')) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_TERMINAL_REGRESSION_BLOCKED '
+          'incidentId=${update.incidentId} '
+          'generation=${lifecycleGenerationProvider?.call() ?? 0} '
+          'terminalState=${_stateMachine.current.name} '
+          'incomingRawStatus=$rawStatus '
+          'incomingNormalizedStatus=${_normalizedMqttStatusLabel(update, rawStatus)} '
+          'incomingEventType=${update.eventType} '
+          'source=mqtt:${update.topicCategory ?? "unknown"} '
+          'reason=same_incident_terminal_monotonicity',
+        );
+      }
       if (actuators != null) {
         BleDebugRegistry.instance.recordEvent(
           'SOS_ACTUATOR_UPDATE_IGNORED reason=stale '
@@ -1768,6 +1811,18 @@ class MqttOperationalSosRepository
         _applyBufferedActuatorUpdate(update.incidentId);
       }
       return;
+    }
+    if (!_acceptedLifecycleTransitionController.isClosed) {
+      _acceptedLifecycleTransitionController.add(
+        MqttAcceptedSosLifecycleTransition(
+          previousState: previousState,
+          state: state,
+          incident: nextIncident,
+          generation: lifecycleGenerationProvider?.call() ?? 0,
+          rawStatus: rawStatus,
+          source: 'mqtt:${update.topicCategory ?? "unknown"}',
+        ),
+      );
     }
     _rememberActiveLikeStateIfNeeded(state);
     unawaited(_persistState());
@@ -2312,6 +2367,41 @@ class MqttOperationalSosRepository
   String _mqttTopicCategory(RealtimeEvent event) {
     final value = event.payload?['_mqttTopicCategory']?.toString().trim();
     return value == null || value.isEmpty ? 'unknown' : value;
+  }
+
+  bool _mqttUpdateRepresentsOpenState(
+    MqttSosLifecycleUpdate update,
+    String rawStatus,
+  ) {
+    final state = update.state;
+    if (state != null && _isActiveLikeState(state)) {
+      return true;
+    }
+    final normalized = rawStatus.trim().toLowerCase();
+    return normalized == 'active' ||
+        normalized == 'opened' ||
+        normalized == 'processed' ||
+        normalized == 'sent' ||
+        normalized == 'triggerrequested' ||
+        normalized == 'triggeredlocal';
+  }
+
+  String _normalizedMqttStatusLabel(
+    MqttSosLifecycleUpdate update,
+    String rawStatus,
+  ) {
+    final state = update.state;
+    if (state != null) {
+      return state.name;
+    }
+    final normalized = rawStatus.trim().toLowerCase();
+    if (normalized == 'active' ||
+        normalized == 'opened' ||
+        normalized == 'processed' ||
+        normalized == 'sent') {
+      return SosState.sent.name;
+    }
+    return 'unknown';
   }
 
   bool _shouldAcceptActuatorSnapshot({

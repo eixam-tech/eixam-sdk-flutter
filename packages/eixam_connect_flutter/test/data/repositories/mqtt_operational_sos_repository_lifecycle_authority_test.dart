@@ -336,6 +336,53 @@ void main() {
       expect(current.terminalReason, SosTerminalReason.backendRejected);
     });
 
+    test(
+        'resolved incident blocks delayed processed and actuator active state',
+        () async {
+      repository.lifecycleGenerationProvider = () => 7;
+      final incident = await _triggerAppSos(repository);
+
+      realtimeClient.emitEvent(_lifecycleEvent(
+        incidentId: incident.id,
+        state: 'resolved',
+      ));
+      await _pumpRealtime();
+
+      realtimeClient.emitEvent(_processedEvent(incidentId: incident.id));
+      final actuator = _actuatorEvent(
+        incidentId: incident.id,
+        snapshotVersion: 10,
+      );
+      realtimeClient.emitEvent(
+        RealtimeEvent(
+          type: actuator.type,
+          timestamp: actuator.timestamp,
+          payload: <String, dynamic>{
+            ...?actuator.payload,
+            'status': 'active',
+          },
+        ),
+      );
+      await _pumpRealtime();
+
+      expect(await repository.getSosState(), SosState.resolved);
+      expect(
+        (await repository.getCurrentIncident())?.state,
+        SosState.resolved,
+      );
+      final regressions = BleDebugRegistry.instance.currentState.events
+          .map((event) => event.message)
+          .where(
+            (message) =>
+                message.contains('SOS_TERMINAL_REGRESSION_BLOCKED') &&
+                message.contains('generation=7') &&
+                message.contains('terminalState=resolved') &&
+                message.contains('incomingRawStatus=active') &&
+                message.contains('reason=same_incident_terminal_monotonicity'),
+          );
+      expect(regressions, hasLength(2));
+    });
+
     test('accepts acknowledged to cancelled terminal transition', () async {
       final incident = await _triggerAppSos(repository);
 
