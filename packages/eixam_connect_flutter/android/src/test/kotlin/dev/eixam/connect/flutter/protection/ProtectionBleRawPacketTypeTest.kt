@@ -71,4 +71,24 @@ class ProtectionBleRawPacketTypeTest {
             ProtectionBleRawPacketType.classify(position, isSosCharacteristic = false),
         )
     }
+
+    @Test
+    fun `legacy-looking 12-byte EA01 payload is not labeled SOS without hop proof`() {
+        val legacy = firmwareFullSos.toMutableList().apply { this[11] = 0x40 }
+
+        assertEquals(
+            "unknown",
+            ProtectionBleRawPacketType.classify(
+                payload = legacy,
+                isSosCharacteristic = false,
+            ),
+        )
+        assertEquals(
+            "sos",
+            ProtectionBleRawPacketType.classify(
+                payload = legacy,
+                isSosCharacteristic = true,
+            ),
+        )
+    }
 }

@@ -90,7 +90,7 @@ void main() {
       expect(classification.kind, BleIncomingPayloadKind.sosClear);
     });
 
-    test('12 B Null Island with gpsQuality 2 is still SOS', () {
+    test('legacy-looking 12 B TEL payload stays TEL without hop proof', () {
       final classification = classify(
         _fullSos(
           sosType: 2,
@@ -99,9 +99,8 @@ void main() {
           gpsQuality: 2,
         ),
       );
-      expect(classification.kind, BleIncomingPayloadKind.ownDeviceSos);
-      expect(classification.sosPacket?.formatBitIsTelPosition, isFalse);
-      expect(classification.sosPacket?.hasValidPosition, isFalse);
+      expect(classification.kind, BleIncomingPayloadKind.telPosition);
+      expect(classification.sosPacket, isNull);
     });
 
     test('0xE3 is not a user cancel', () {

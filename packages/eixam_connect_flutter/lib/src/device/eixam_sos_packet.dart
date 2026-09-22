@@ -115,6 +115,9 @@ class EixamSosPacket {
   }
 
   static EixamSosPacket? tryParse(List<int> bytes) {
+    if (bytes.any((byte) => byte < 0 || byte > 0xFF)) {
+      return null;
+    }
     final hasRemoteDeviceId =
         bytes.length == EixamBleProtocol.sosPacketLengthWithPosition + 6 ||
             bytes.length == EixamBleProtocol.sosPacketLengthDelta + 6 ||

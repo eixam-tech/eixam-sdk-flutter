@@ -494,6 +494,12 @@ void main() {
 
     test('EA02 SOS and EA01 TEL relay representations create one incident',
         () async {
+      final observed = <RemoteRelaySosObservedEvent>[];
+      final subscription = sdk.watchEvents().listen((event) {
+        if (event is RemoteRelaySosObservedEvent) {
+          observed.add(event);
+        }
+      });
       final snapshot = _snapshot();
       bleEvents.add(_remoteRelayEvent(snapshot: snapshot));
       await _eventually(() => realtimeClient.publishedSos.length == 1);
@@ -510,6 +516,15 @@ void main() {
       expect(realtimeClient.publishSosCallCount, 1);
       expect(realtimeClient.publishedSos, hasLength(1));
       expect(realtimeClient.publishedSos.single.originatorNodeId, 0x01020304);
+      expect(observed, hasLength(1));
+      expect(
+        _hasDebugMessage(
+          'SOS_REMOTE_LIFECYCLE_ADMISSION admitted=false',
+          contains('reason=duplicate_cross_characteristic_evidence'),
+        ),
+        isTrue,
+      );
+      await subscription.cancel();
     });
 
     test('backend failure emits failed event and leaves local SOS state idle',

@@ -22,7 +22,11 @@ internal object ProtectionBleRawPacketType {
         val sosType = flags?.let { (it shr 14) and 0x03 }
         val hasSosWireShape = flags != null &&
             sosType != 0 &&
-            (payload.size != 12 || flags and 0x0020 == 0)
+            (
+                payload.size != 12 ||
+                    isSosCharacteristic ||
+                    ProtectionBleSosOverTelClassifier.classify(payload).isModernSos
+                )
         if (hasSosWireShape) {
             return "sos"
         }

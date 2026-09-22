@@ -22,6 +22,7 @@ import 'eixam_nearby_text_packet.dart';
 import 'eixam_device_runtime_status_packet.dart';
 import 'eixam_last_known_position_store.dart';
 import 'eixam_sos_event_packet.dart';
+import 'eixam_sos_over_tel_classifier.dart';
 import 'eixam_sos_packet.dart';
 import 'eixam_tel_fragment.dart';
 import 'eixam_tel_packet.dart';
@@ -60,6 +61,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       const BleIncomingPayloadClassifier();
   final EixamLastKnownPositionStore _lastKnownPositions =
       EixamLastKnownPositionStore();
+  static const EixamSosOverTelClassifier _sosOverTelClassifier =
+      EixamSosOverTelClassifier();
 
   String? _connectedDeviceId;
   String? _connectedDeviceAlias;
@@ -913,7 +916,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       'producer=flutter_gatt owner=flutter '
       'characteristic=${_characteristicLabelForChannel(notification.channel)} '
       'byteLength=${payload.length} '
-      'packetType=${_rawNotificationPacketType(payload)} '
+      'packetType=${_rawNotificationPacketType(payload, notification.channel)} '
       'firstOpcode=${payload.isEmpty ? "none" : _hexByte(payload.first)} '
       'receiveSequence=$receiveSequence '
       'target=${_redactedBleIdentifier(deviceId)}',
@@ -942,12 +945,20 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     }
   }
 
-  String _rawNotificationPacketType(List<int> payload) {
+  String _rawNotificationPacketType(
+    List<int> payload,
+    EixamBleChannel channel,
+  ) {
     if (payload.isEmpty) {
       return 'empty';
     }
     if (EixamSosEventPacket.tryParse(payload) != null) {
       return 'sos_event';
+    }
+    if (channel == EixamBleChannel.tel &&
+        payload.length == EixamBleProtocol.telPacketLength) {
+      final decision = _sosOverTelClassifier.classify(payload);
+      return decision.isModernSos ? 'sos' : 'tel';
     }
     if (EixamSosPacket.tryParse(payload) != null) {
       return 'sos';
@@ -2283,6 +2294,13 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       channel: notification.channel,
       reason: 'tel_sos_unknown_origin',
     );
+    if (payload.length == EixamBleProtocol.telPacketLength) {
+      _logSosOverTelClassification(
+        source: 'rawEA01',
+        payload: payload,
+        classification: classification,
+      );
+    }
     _logIncomingSosClassifyDecision(
       payload: payload,
       payloadHex: payloadHex,
@@ -2435,8 +2453,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   }
 
   String _classifyEmbeddedWireType(List<int> payload) {
-    final sosPacket = EixamSosPacket.tryParse(payload);
-    if (sosPacket != null && sosPacket.isActiveSos) {
+    final sosOverTel = _sosOverTelClassifier.classify(payload);
+    if (sosOverTel.isModernSos) {
       return 'sos';
     }
     if (EixamTelPacket.tryParse(payload) != null) {
@@ -2457,6 +2475,42 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     return null;
   }
 
+  void _logSosOverTelClassification({
+    required String source,
+    required List<int> payload,
+    required BleIncomingPayloadClassification classification,
+  }) {
+    final semantic = _sosOverTelClassifier.classify(payload);
+    final originator = semantic.originatorNodeId;
+    final connectedNodeId = _connectedBleTagNodeId;
+    final exactConnectedIdentityMatch =
+        originator != null &&
+        connectedNodeId != null &&
+        originator == connectedNodeId;
+    final remoteOriginator =
+        originator != null &&
+            classification.kind == BleIncomingPayloadKind.remoteRelaySos
+        ? originator.toString()
+        : 'none';
+    final identityReason =
+        classification.kind == BleIncomingPayloadKind.remoteRelaySos
+        ? 'originator_differs_from_connected_ble_node'
+        : classification.kind == BleIncomingPayloadKind.ownDeviceSos
+        ? 'originator_matches_connected_ble_node'
+        : null;
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_OVER_TEL_CLASSIFICATION source=$source '
+      'byteLength=${payload.length} '
+      'parsedSosType=${semantic.parsedSosType?.toString() ?? "none"} '
+      'packetId=${semantic.packetId?.toString() ?? "none"} '
+      'originator=${originator?.toString() ?? "none"} '
+      'exactConnectedIdentityMatch=$exactConnectedIdentityMatch '
+      'remoteOriginator=$remoteOriginator '
+      'classification=${classification.kind.name} '
+      'reason=${identityReason == null ? semantic.reason : "${semantic.reason}_$identityReason"}',
+    );
+  }
+
   BleIncomingPayloadClassification _classifyBoundSosPayload({
     required List<int> payload,
     required String payloadHex,
@@ -2466,6 +2520,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     required int? connectedBleTagNodeId,
     required BleIncomingPayloadClassification fallbackOnUnknownConnectedNode,
     bool hasRecentExternalRelayContext = false,
+    RemoteRelaySosSource? remoteRelaySource,
   }) {
     return _lastKnownPositions.bind(
       _payloadClassifier.classifySosPayload(
@@ -2477,6 +2532,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         connectedBleTagNodeId: connectedBleTagNodeId,
         fallbackOnUnknownConnectedNode: fallbackOnUnknownConnectedNode,
         hasRecentExternalRelayContext: hasRecentExternalRelayContext,
+        remoteRelaySource: remoteRelaySource,
       ),
       receivedAt: receivedAt,
     );
@@ -2494,61 +2550,36 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       channel: EixamBleChannel.tel,
       classificationBefore: 'before_d2_peer_classifier',
     );
-    final sosPacket = EixamSosPacket.tryParse(payload);
-    if (sosPacket == null || !sosPacket.isActiveSos) {
-      const classification = BleIncomingPayloadClassification(
+    var classification = _classifyBoundSosPayload(
+      payload: payload,
+      payloadHex: payloadHex,
+      receivedAt: receivedAt,
+      source: DeviceSosTransitionSource.device,
+      channel: EixamBleChannel.tel,
+      connectedBleTagNodeId: _connectedBleTagNodeId,
+      fallbackOnUnknownConnectedNode: const BleIncomingPayloadClassification(
+        kind: BleIncomingPayloadKind.unknownOriginSos,
+      ),
+      remoteRelaySource: RemoteRelaySosSource.d2Relay,
+    );
+    if (classification.kind == BleIncomingPayloadKind.telPosition ||
+        classification.kind == BleIncomingPayloadKind.unknown) {
+      classification = const BleIncomingPayloadClassification(
         kind: BleIncomingPayloadKind.telRelayRx,
       );
-      _logIncomingSosClassifyDecision(
-        payload: payload,
-        payloadHex: payloadHex,
-        classification: classification,
-        source: 'ble_device_runtime_provider_d2_relay_peer',
-      );
-      return classification;
     }
-    final connectedNodeId = _connectedBleTagNodeId;
-    final kind = connectedNodeId == null
-        ? BleIncomingPayloadKind.unknownOriginSos
-        : sosPacket.nodeId == connectedNodeId
-        ? BleIncomingPayloadKind.ownDeviceSos
-        : BleIncomingPayloadKind.remoteRelaySos;
-    if (kind != BleIncomingPayloadKind.remoteRelaySos) {
-      final classification = BleIncomingPayloadClassification(
-        kind: kind,
-        sosPacket: sosPacket,
-      );
-      _logIncomingSosClassifyDecision(
-        payload: payload,
-        payloadHex: payloadHex,
-        classification: classification,
-        source: 'ble_device_runtime_provider_d2_relay_peer',
-      );
-      return classification;
-    }
-    final classification = BleIncomingPayloadClassification(
-      kind: BleIncomingPayloadKind.remoteRelaySos,
-      sosPacket: sosPacket,
-      remoteRelaySosSnapshot: RemoteRelaySosSnapshot(
-        kind: RemoteRelaySosKind.sos,
-        originatorNodeId: sosPacket.nodeId,
-        relayNodeId: connectedNodeId,
-        source: RemoteRelaySosSource.d2Relay,
-        sosType: sosPacket.sosType,
-        location: sosPacket.trackingPositionAt(receivedAt),
-        receivedAt: receivedAt,
-        rawPayload: List<int>.unmodifiable(payload),
-        payloadHex: payloadHex,
-        relayCount: sosPacket.relayCount,
-      ),
-    );
     _logIncomingSosClassifyDecision(
       payload: payload,
       payloadHex: payloadHex,
       classification: classification,
       source: 'ble_device_runtime_provider_d2_relay_peer',
     );
-    return _lastKnownPositions.bind(classification, receivedAt: receivedAt);
+    _logSosOverTelClassification(
+      source: 'd2Remote',
+      payload: payload,
+      classification: classification,
+    );
+    return classification;
   }
 
   Future<void> _bindConnectionMonitor(String deviceId) async {

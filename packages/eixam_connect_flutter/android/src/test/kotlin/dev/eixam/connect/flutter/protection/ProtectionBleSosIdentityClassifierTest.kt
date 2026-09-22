@@ -203,6 +203,30 @@ class ProtectionBleSosIdentityClassifierTest {
     }
 
     @Test
+    fun `legacy ambiguous 12-byte TEL payload is not promoted to SOS`() {
+        val classification = ProtectionBleSosIdentityClassifier.classify(
+            payload = listOf(
+                0x78,
+                0x56,
+                0x34,
+                0x12,
+                0x48,
+                0xCD,
+                0x1B,
+                0x34,
+                0x44,
+                0x28,
+                0x00,
+                0x40,
+            ),
+            connectedNodeId = 0x1234,
+            source = ProtectionBleSosRelaySource.tel,
+        )
+
+        assertTrue(classification is ProtectionBleSosIdentityClassification.Unknown)
+    }
+
+    @Test
     fun `remote E1 02 event is classified as remote relay event`() {
         val classification = ProtectionBleSosIdentityClassifier.classify(
             payload = listOf(0xE1, 0x02, 0x78, 0x56, 0x34, 0x12),

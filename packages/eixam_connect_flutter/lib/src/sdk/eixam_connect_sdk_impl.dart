@@ -660,6 +660,10 @@ class EixamConnectSdkImpl
       <String, DateTime>{};
   final Map<String, DateTime> _remoteRelaySosBackendHandoffInFlightBySignature =
       <String, DateTime>{};
+  final Map<String, DateTime> _remoteRelayLifecycleAdmissionBySignature =
+      <String, DateTime>{};
+  final Map<String, String> _remoteRelayLifecycleAdmissionRouteBySignature =
+      <String, String>{};
   final Map<String, DateTime> _remoteRelaySosCancelSucceededBySignature =
       <String, DateTime>{};
   final Map<String, DateTime> _remoteRelaySosCancelInFlightBySignature =
@@ -1258,6 +1262,19 @@ class EixamConnectSdkImpl
         }
         final remoteRelaySnapshot = event.remoteRelaySosSnapshot;
         if (remoteRelaySnapshot != null) {
+          if (!_admitRemoteRelayLifecycleEvidence(
+            remoteRelaySnapshot,
+            evidenceRoute:
+                'flutter:${event.source.name}:${event.channel.name}:${event.type.name}',
+          )) {
+            BleDebugRegistry.instance.recordEvent(
+              'SOS_REMOTE_LIFECYCLE_ADMISSION admitted=false '
+              'reason=duplicate_cross_characteristic_evidence '
+              'remoteIdentity=${remoteRelaySnapshot.originatorNodeId} '
+              'cycleCorrelation=${_remoteRelayCycleCorrelation(remoteRelaySnapshot)}',
+            );
+            return;
+          }
           BleDebugRegistry.instance.recordEvent(
             'SOS_REMOTE_RELAY_CLASSIFICATION '
             'classification=${remoteRelaySnapshot.kind == RemoteRelaySosKind.sos ? "remoteRelaySos" : "remoteRelayCancel"} '
@@ -18738,6 +18755,18 @@ class EixamConnectSdkImpl
       'hasLocation=${remoteRelaySnapshot?.location != null}',
     );
     if (remoteRelaySnapshot != null) {
+      if (!_admitRemoteRelayLifecycleEvidence(
+        remoteRelaySnapshot,
+        evidenceRoute: 'native:${event.type.name}',
+      )) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_REMOTE_LIFECYCLE_ADMISSION admitted=false '
+          'reason=duplicate_cross_owner_evidence '
+          'remoteIdentity=${remoteRelaySnapshot.originatorNodeId} '
+          'cycleCorrelation=${_remoteRelayCycleCorrelation(remoteRelaySnapshot)}',
+        );
+        return;
+      }
       if (remoteRelaySnapshot.kind != RemoteRelaySosKind.sos) {
         BleDebugRegistry.instance.recordEvent(
           'SOS_REMOTE_RELAY_CLASSIFICATION classification=remoteRelayCancel '
@@ -20762,6 +20791,38 @@ class EixamConnectSdkImpl
           '${snapshot.eventOpcode}:${snapshot.eventSubcode ?? 0}';
     }
     return '${_normalizeNodeId(snapshot.originatorNodeId)}:unknown';
+  }
+
+  bool _admitRemoteRelayLifecycleEvidence(
+    RemoteRelaySosSnapshot snapshot, {
+    required String evidenceRoute,
+  }) {
+    final now = DateTime.now().toUtc();
+    final expiredSignatures = _remoteRelayLifecycleAdmissionBySignature.entries
+        .where(
+          (entry) => now.difference(entry.value) > const Duration(seconds: 2),
+        )
+        .map((entry) => entry.key)
+        .toList(growable: false);
+    for (final expiredSignature in expiredSignatures) {
+      _remoteRelayLifecycleAdmissionBySignature.remove(expiredSignature);
+      _remoteRelayLifecycleAdmissionRouteBySignature.remove(expiredSignature);
+    }
+    final signature = <String>[
+      snapshot.kind.name,
+      _normalizeNodeId(snapshot.originatorNodeId).toString(),
+      _normalizeNodeIdOrNull(snapshot.relayNodeId)?.toString() ?? 'none',
+      _remoteRelayCycleCorrelation(snapshot),
+      snapshot.payloadHex ?? EixamBleProtocol.hex(snapshot.rawPayload),
+    ].join(':');
+    final priorRoute =
+        _remoteRelayLifecycleAdmissionRouteBySignature[signature];
+    if (priorRoute != null && priorRoute != evidenceRoute) {
+      return false;
+    }
+    _remoteRelayLifecycleAdmissionBySignature[signature] = now;
+    _remoteRelayLifecycleAdmissionRouteBySignature[signature] = evidenceRoute;
+    return true;
   }
 
   void _logRemoteRelayBackendOutbound({

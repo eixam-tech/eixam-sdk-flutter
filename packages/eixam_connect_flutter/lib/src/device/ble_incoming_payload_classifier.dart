@@ -4,11 +4,15 @@ import 'ble_debug_registry.dart';
 import 'ble_incoming_event.dart';
 import 'eixam_ble_protocol.dart';
 import 'eixam_sos_event_packet.dart';
+import 'eixam_sos_over_tel_classifier.dart';
 import 'eixam_sos_packet.dart';
 import 'eixam_tel_packet.dart';
 
 class BleIncomingPayloadClassifier {
   const BleIncomingPayloadClassifier();
+
+  static const EixamSosOverTelClassifier _sosOverTelClassifier =
+      EixamSosOverTelClassifier();
 
   BleIncomingPayloadClassification classifySosPayload({
     required List<int> payload,
@@ -19,6 +23,7 @@ class BleIncomingPayloadClassifier {
     required int? connectedBleTagNodeId,
     required BleIncomingPayloadClassification fallbackOnUnknownConnectedNode,
     bool hasRecentExternalRelayContext = false,
+    RemoteRelaySosSource? remoteRelaySource,
   }) {
     _logRawSosLikePayload(
       source: 'ble_payload_classifier',
@@ -27,8 +32,9 @@ class BleIncomingPayloadClassifier {
       connectedBleTagNodeId: connectedBleTagNodeId,
       classificationBefore: 'pre_parse',
     );
-    final eventPacket =
-        payload.length == 6 ? EixamSosEventPacket.tryParse(payload) : null;
+    final eventPacket = payload.length == 6
+        ? EixamSosEventPacket.tryParse(payload)
+        : null;
     if (eventPacket != null) {
       _logSosEventRaw(
         payloadHex: payloadHex,
@@ -62,8 +68,9 @@ class BleIncomingPayloadClassifier {
       _logClassifyDecision(
         raw: payloadHex,
         packetType: 'sos_event',
-        classification:
-            isExternalBackendCancel ? 'remoteRelayCancel' : classification.name,
+        classification: isExternalBackendCancel
+            ? 'remoteRelayCancel'
+            : classification.name,
         reason: isExternalBackendCancel
             ? 'e1_02_backend_cancel_originator_differs_from_connected_node'
             : 'local_or_non_backend_sos_event',
@@ -105,14 +112,15 @@ class BleIncomingPayloadClassifier {
       final classification = isRemoteClear
           ? BleIncomingPayloadKind.remoteRelaySos
           : connectedBleTagNodeId != null &&
-                  sosPacket.nodeId == connectedBleTagNodeId
-              ? BleIncomingPayloadKind.sosClear
-              : BleIncomingPayloadKind.unknownOriginSos;
+                sosPacket.nodeId == connectedBleTagNodeId
+          ? BleIncomingPayloadKind.sosClear
+          : BleIncomingPayloadKind.unknownOriginSos;
       _logClassifyDecision(
         raw: payloadHex,
         packetType: 'sos_clear',
-        classification:
-            isRemoteClear ? 'remoteRelayClear' : classification.name,
+        classification: isRemoteClear
+            ? 'remoteRelayClear'
+            : classification.name,
         reason: isRemoteClear
             ? _sosClearPacketClassificationReason(
                 packet: sosPacket,
@@ -150,7 +158,15 @@ class BleIncomingPayloadClassifier {
             : null,
       );
     }
-    if (sosPacket != null && sosPacket.isActiveOnChannel(channel)) {
+    final sosOverTel =
+        channel == EixamBleChannel.tel &&
+            payload.length == EixamBleProtocol.telPacketLength
+        ? _sosOverTelClassifier.classify(payload)
+        : null;
+    final isActiveSos =
+        sosPacket != null &&
+        (sosOverTel?.isModernSos ?? sosPacket.isActiveOnChannel(channel));
+    if (isActiveSos) {
       // Safety-critical rule: decoding a valid BLE SOS payload is not enough to
       // claim that the connected tag itself is in SOS. The originator nodeId in
       // bytes 0..3 must match the connected BLE tag nodeId.
@@ -180,19 +196,19 @@ class BleIncomingPayloadClassifier {
         sosPacket: sosPacket,
         remoteRelaySosSnapshot:
             classification == BleIncomingPayloadKind.remoteRelaySos
-                ? RemoteRelaySosSnapshot(
-                    kind: RemoteRelaySosKind.sos,
-                    originatorNodeId: sosPacket.nodeId,
-                    relayNodeId: connectedBleTagNodeId,
-                    source: _remoteSourceFor(channel),
-                    sosType: sosPacket.sosType,
-                    location: sosPacket.trackingPositionAt(receivedAt),
-                    receivedAt: receivedAt,
-                    rawPayload: List<int>.unmodifiable(payload),
-                    payloadHex: payloadHex,
-                    relayCount: sosPacket.relayCount,
-                  )
-                : null,
+            ? RemoteRelaySosSnapshot(
+                kind: RemoteRelaySosKind.sos,
+                originatorNodeId: sosPacket.nodeId,
+                relayNodeId: connectedBleTagNodeId,
+                source: remoteRelaySource ?? _remoteSourceFor(channel),
+                sosType: sosPacket.sosType,
+                location: sosPacket.trackingPositionAt(receivedAt),
+                receivedAt: receivedAt,
+                rawPayload: List<int>.unmodifiable(payload),
+                payloadHex: payloadHex,
+                relayCount: sosPacket.relayCount,
+              )
+            : null,
       );
     }
 
@@ -310,8 +326,9 @@ class BleIncomingPayloadClassifier {
       return;
     }
     final sosPacket = EixamSosPacket.tryParse(payload);
-    final eventPacket =
-        payload.length == 6 ? EixamSosEventPacket.tryParse(payload) : null;
+    final eventPacket = payload.length == 6
+        ? EixamSosEventPacket.tryParse(payload)
+        : null;
     final decodedNodeId = sosPacket?.nodeId ?? eventPacket?.nodeId;
     BleDebugRegistry.instance.recordEvent(
       'BLE_SOS_PACKET_RAW source=$source raw=$payloadHex '

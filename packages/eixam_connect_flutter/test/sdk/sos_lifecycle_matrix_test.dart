@@ -2984,7 +2984,7 @@ void main() {
           0x44,
           0x28,
           0x00,
-          0x40,
+          0xC0,
         ];
         const cancelPayload = <int>[0xE1, 0x02, 0x34, 0x12, 0x00, 0x00];
         final harness = _SdkSosHarness(

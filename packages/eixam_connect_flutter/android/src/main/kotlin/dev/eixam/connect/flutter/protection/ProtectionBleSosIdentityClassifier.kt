@@ -66,6 +66,12 @@ internal object ProtectionBleSosIdentityClassifier {
         if (sosPacket.sosType == 0) {
             return ProtectionBleSosIdentityClassification.Unknown
         }
+        if ((source == ProtectionBleSosRelaySource.tel || source == ProtectionBleSosRelaySource.d2) &&
+            payload.size == 12 &&
+            !ProtectionBleSosOverTelClassifier.classify(payload).isModernSos
+        ) {
+            return ProtectionBleSosIdentityClassification.Unknown
+        }
         val identity = resolveIdentityProof(
             originatorNodeId = sosPacket.nodeId,
             strictConnectedBleNodeId = connectedNodeId,

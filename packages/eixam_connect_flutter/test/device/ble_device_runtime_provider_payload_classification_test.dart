@@ -54,7 +54,7 @@ void main() {
             0x00,
             0x00,
             0x00,
-            0x40,
+            0xC0,
           ],
         );
 
@@ -240,7 +240,7 @@ void main() {
             0x00,
             0x00,
             0x00,
-            0x40,
+            0xC0,
           ],
         );
 
@@ -342,7 +342,7 @@ void main() {
             0x44,
             0x28,
             0x00,
-            0x40,
+            0xC0,
           ],
         );
 
@@ -369,6 +369,19 @@ void main() {
           (await runtimeProvider.deviceSosController.getStatus()).state,
           DeviceSosState.inactive,
         );
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (entry) =>
+                entry.message.contains('SOS_OVER_TEL_CLASSIFICATION') &&
+                entry.message.contains('source=rawEA01') &&
+                entry.message.contains('parsedSosType=3') &&
+                entry.message.contains('originator=305419896') &&
+                entry.message.contains('exactConnectedIdentityMatch=false') &&
+                entry.message.contains('remoteOriginator=305419896') &&
+                entry.message.contains('classification=remoteRelaySos'),
+          ),
+          isTrue,
+        );
       },
     );
 
@@ -393,7 +406,7 @@ void main() {
             0x44,
             0x28,
             0x00,
-            0x40,
+            0xC0,
           ],
         );
 
@@ -442,7 +455,7 @@ void main() {
             0x44,
             0x28,
             0x00,
-            0x40,
+            0xC0,
             0xF6,
             0xC4,
             0x34,
@@ -476,7 +489,7 @@ void main() {
         expect(event.remoteRelaySosSnapshot!.location, isNotNull);
         expect(
           event.remoteRelaySosSnapshot!.payloadHex,
-          '78 56 34 12 48 cd 1b 34 44 28 00 40',
+          '78 56 34 12 48 cd 1b 34 44 28 00 c0',
         );
         expect(
           event.remoteRelaySosSnapshot!.location!.latitude,
@@ -491,8 +504,72 @@ void main() {
           (await runtimeProvider.deviceSosController.getStatus()).state,
           DeviceSosState.inactive,
         );
+        expect(
+          BleDebugRegistry.instance.currentState.events.any(
+            (entry) =>
+                entry.message.contains('SOS_OVER_TEL_CLASSIFICATION') &&
+                entry.message.contains('source=d2Remote') &&
+                entry.message.contains('parsedSosType=3') &&
+                entry.message.contains('classification=remoteRelaySos'),
+          ),
+          isTrue,
+        );
       },
     );
+
+    test('D2 containing ordinary TEL remains telRelayRx only', () async {
+      await runtimeProvider.requestDeviceRuntimeStatus();
+      final nextEvent = _nextIncomingEvent(runtimeProvider);
+
+      bleClient.emitNotification(
+        MockBleClient.demoDeviceId,
+        channel: EixamBleChannel.tel,
+        payload: const <int>[
+          0xD2,
+          0x78,
+          0x56,
+          0x34,
+          0x12,
+          0x48,
+          0xCD,
+          0x1B,
+          0x34,
+          0x44,
+          0x28,
+          0x27,
+          0x85,
+          0xF6,
+          0xC4,
+          0x34,
+          0x12,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x00,
+          0x87,
+          0x25,
+        ],
+      );
+
+      final event = await nextEvent.timeout(const Duration(seconds: 2));
+      expect(event.type, BleIncomingEventType.telRelayRx);
+      expect(event.classification.kind, BleIncomingPayloadKind.telRelayRx);
+      expect(event.remoteRelaySosSnapshot, isNull);
+      expect(
+        BleDebugRegistry.instance.currentState.events.any(
+          (entry) =>
+              entry.message.contains('SOS_OVER_TEL_CLASSIFICATION') &&
+              entry.message.contains('source=d2Remote') &&
+              entry.message.contains('classification=telRelayRx') &&
+              entry.message.contains('reason=tel_position_format_bit_set'),
+        ),
+        isTrue,
+      );
+    });
 
     test(
       'Flutter GATT and native bridge reassemble identical D0 relay SOS fragments',
@@ -773,7 +850,7 @@ void main() {
             0x00,
             0x00,
             0x00,
-            0x40,
+            0xC0,
           ],
         );
         await activated;
@@ -1085,7 +1162,7 @@ void main() {
           0x05,
           0x06,
           0x00,
-          0x40,
+          0xC0,
         ];
 
         bleClient.emitNotification(
@@ -1164,6 +1241,49 @@ void main() {
       final event = await nextEvent.timeout(const Duration(seconds: 2));
       expect(event.classification.kind, BleIncomingPayloadKind.telPosition);
       expect(event.sosPacket, isNull);
+    });
+
+    test('repeated periodic TEL creates zero false SOS incidents', () async {
+      final eventsFuture = runtimeProvider
+          .watchIncomingEvents()
+          .take(3)
+          .toList();
+      const payload = <int>[
+        0x78,
+        0x56,
+        0x34,
+        0x12,
+        0x48,
+        0xCD,
+        0x1B,
+        0x34,
+        0x44,
+        0x28,
+        0x27,
+        0x85,
+      ];
+
+      for (var index = 0; index < 3; index++) {
+        bleClient.emitNotification(
+          MockBleClient.demoDeviceId,
+          channel: EixamBleChannel.tel,
+          payload: payload,
+        );
+      }
+
+      final events = await eventsFuture.timeout(const Duration(seconds: 2));
+      expect(
+        events.map((event) => event.classification.kind),
+        everyElement(BleIncomingPayloadKind.telPosition),
+      );
+      expect(
+        events.where((event) => event.remoteRelaySosSnapshot != null),
+        isEmpty,
+      );
+      expect(
+        (await runtimeProvider.deviceSosController.getStatus()).state,
+        DeviceSosState.inactive,
+      );
     });
 
     test(
@@ -1246,7 +1366,7 @@ List<int> _sosPayloadForNode(int nodeId) {
     (nodeId >> 16) & 0xFF,
     (nodeId >> 24) & 0xFF,
     0x00,
-    0x40,
+    0xC0,
     0x09,
   ];
 }
@@ -1270,7 +1390,7 @@ const List<List<int>> _remoteRelayD0Fragments = <List<int>>[
     0x44,
     0x28,
     0x00,
-    0x40,
+    0xC0,
     0xF6,
     0xC4,
   ],
