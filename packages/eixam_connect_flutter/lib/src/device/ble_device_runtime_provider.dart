@@ -2333,22 +2333,30 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       );
       if (classification.kind == BleIncomingPayloadKind.ownDeviceSos) {
         _handleSosBatteryUpdate(sosPacket);
-        if (_shouldProcessSosPacket(
+        final physicalEvidence = _physicalSosMeshReceiveEvidence(
+          notification: notification,
+          receiveSequence: receiveSequence,
+          classification: classification.kind,
+          packet: sosPacket,
+        );
+        final physicalStartAdmission = _deviceSosController
+            .evaluatePhysicalSosStartAdmission(sosPacket, physicalEvidence);
+        final packetNotRecentlyProcessed = _shouldProcessSosPacket(
           nodeId: sosPacket.nodeId,
           packetId: sosPacket.packetId,
           rawHex: sosPacket.rawHex,
-        )) {
+        );
+        if (physicalStartAdmission.shouldProcess &&
+            packetNotRecentlyProcessed) {
           _deviceSosController.handleIncomingSosPacket(
             sosPacket,
-            source: source,
+            source: physicalStartAdmission.allowFreshStartAfterTerminal
+                ? DeviceSosTransitionSource.device
+                : source,
             resolutionContext:
                 DeviceSosStateResolutionContext.fromPhysicalEvidence(
-                  _physicalSosMeshReceiveEvidence(
-                    notification: notification,
-                    receiveSequence: receiveSequence,
-                    classification: classification.kind,
-                    packet: sosPacket,
-                  ),
+                  physicalEvidence,
+                  physicalStartAdmission: physicalStartAdmission,
                 ),
           );
         } else {
@@ -2697,7 +2705,9 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
                 incomingPacketType: 'sos_event',
               ),
         );
-        if (packet.isUserDeactivated || packet.isBackendResolved) {
+        if (packet.isUserDeactivated ||
+            packet.isAppCancelAck ||
+            packet.isBackendResolved) {
           final terminalSignature = '${packet.nodeId}:na:${packet.rawHex}';
           _recentSosPacketSignatures.removeWhere(
             (signature, _) => signature != terminalSignature,
@@ -2821,22 +2831,30 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       );
       if (sosClassification.kind == BleIncomingPayloadKind.ownDeviceSos) {
         _handleSosBatteryUpdate(sosPacket);
-        if (_shouldProcessSosPacket(
+        final physicalEvidence = _physicalSosMeshReceiveEvidence(
+          notification: notification,
+          receiveSequence: receiveSequence,
+          classification: sosClassification.kind,
+          packet: sosPacket,
+        );
+        final physicalStartAdmission = _deviceSosController
+            .evaluatePhysicalSosStartAdmission(sosPacket, physicalEvidence);
+        final packetNotRecentlyProcessed = _shouldProcessSosPacket(
           nodeId: sosPacket.nodeId,
           packetId: sosPacket.packetId,
           rawHex: sosPacket.rawHex,
-        )) {
+        );
+        if (physicalStartAdmission.shouldProcess &&
+            packetNotRecentlyProcessed) {
           _deviceSosController.handleIncomingSosPacket(
             sosPacket,
-            source: source,
+            source: physicalStartAdmission.allowFreshStartAfterTerminal
+                ? DeviceSosTransitionSource.device
+                : source,
             resolutionContext:
                 DeviceSosStateResolutionContext.fromPhysicalEvidence(
-                  _physicalSosMeshReceiveEvidence(
-                    notification: notification,
-                    receiveSequence: receiveSequence,
-                    classification: sosClassification.kind,
-                    packet: sosPacket,
-                  ),
+                  physicalEvidence,
+                  physicalStartAdmission: physicalStartAdmission,
                 ),
           );
         } else {
@@ -3207,7 +3225,9 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       packetType: 'sos_event',
       hasStartSemantics: false,
       hasTerminalSemantics:
-          packet.isUserDeactivated || packet.isBackendResolved,
+          packet.isUserDeactivated ||
+          packet.isAppCancelAck ||
+          packet.isBackendResolved,
       packetFingerprint:
           '${packet.nodeId}:${packet.opcode}:${packet.subcode}:${packet.rawHex}',
       cycleIdentity: '${packet.nodeId}:event:${packet.opcode}',

@@ -4072,8 +4072,7 @@ void main() {
           emitPhysicalStart(secondStartHex);
           await waitFor(() async {
             final lifecycle = await harness.sdk.getSosLifecycle();
-            return lifecycle.generation == 2 &&
-                lifecycle.stage == SosLifecycleStage.active;
+            return lifecycle.generation == 2 && lifecycle.isOpen;
           });
 
           final recovered = await harness.sdk.getSosLifecycle();
@@ -4303,6 +4302,291 @@ void main() {
                   message.contains('receiveSequenceDomain=flutter_gatt:'),
             ),
             isTrue,
+          );
+        } finally {
+          await debugSubscription.cancel();
+          await runtimeProvider.dispose();
+          await bleClient.dispose();
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'Flutter GATT physical generations survive app E2 and backend resolve',
+      () async {
+        const startPayload = <int>[
+          0x34,
+          0x12,
+          0x00,
+          0x00,
+          0x48,
+          0xCD,
+          0x1B,
+          0x34,
+          0x44,
+          0x28,
+          0x00,
+          0xC0,
+        ];
+        const cancelAckPayload = <int>[0xE2, 0x01, 0x34, 0x12, 0x00, 0x00];
+        const backendResolvedPayload = <int>[
+          0xE3,
+          0x02,
+          0x34,
+          0x12,
+          0x00,
+          0x00,
+        ];
+        List<int> backendResolvedPayloadFor(int cycle) => <int>[
+          0xE3,
+          cycle & 0xFF,
+          0x34,
+          0x12,
+          0x00,
+          0x00,
+        ];
+        List<int> startPayloadFor(int packetId) => <int>[
+          ...startPayload.sublist(0, 10),
+          packetId & 0x0F,
+          startPayload[11],
+        ];
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+          deviceCountdown: Duration.zero,
+        );
+        final bleClient = MockBleClient();
+        final runtimeProvider = BleDeviceRuntimeProvider(
+          bleClient: bleClient,
+          deviceSosController: harness.deviceSosController,
+        );
+        final observedMessages = <String>[];
+        final debugSubscription = BleDebugRegistry.instance.watch().listen((
+          state,
+        ) {
+          if (state.events.isNotEmpty) {
+            observedMessages.add(state.events.last.message);
+          }
+        });
+
+        Future<void> waitFor(FutureOr<bool> Function() predicate) async {
+          for (var attempt = 0; attempt < 100; attempt += 1) {
+            if (await predicate()) return;
+            await pumpEventQueue(times: 2);
+            await Future<void>.delayed(const Duration(milliseconds: 2));
+          }
+          fail('Timed out waiting for the Flutter SOS lifecycle condition.');
+        }
+
+        Future<void> emitAndAwait({
+          required EixamBleChannel channel,
+          required List<int> payload,
+          required BleIncomingEventType eventType,
+        }) async {
+          final event = runtimeProvider.watchIncomingEvents().firstWhere(
+            (candidate) => candidate.type == eventType,
+          );
+          bleClient.emitNotification(
+            MockBleClient.demoDeviceId,
+            channel: channel,
+            payload: payload,
+          );
+          await event;
+        }
+
+        Future<void> setBackendState(SosState state) async {
+          final lifecycle = await harness.sdk.getSosLifecycle();
+          harness.sosRepository.currentIncident = SosIncident(
+            id:
+                lifecycle.localIncidentId ??
+                'device-runtime-sos:${lifecycle.generation}',
+            state: state,
+            createdAt: lifecycle.activationTimestamp ?? DateTime.now().toUtc(),
+            triggerSource: 'ble_device_runtime_status',
+            deviceId: 'ble-1',
+            hardwareId: MockBleClient.demoCanonicalHardwareId,
+            originatorNodeId: 0x1234,
+            isBackendConfirmed: true,
+          );
+          harness.sosRepository.stateController.add(state);
+          await pumpEventQueue(times: 8);
+        }
+
+        try {
+          await bleClient.initialize();
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          BleDebugRegistry.instance.update(
+            selectedDeviceId: MockBleClient.demoDeviceId,
+          );
+          await runtimeProvider.pair(
+            currentStatus: buildDeviceStatus(
+              paired: false,
+              activated: false,
+              connected: false,
+              lifecycleState: DeviceLifecycleState.unpaired,
+            ),
+            pairingCode: '1234',
+          );
+
+          // Generation 1: physical START, backend ACK, app CANCEL/0x04, E2.
+          runtimeProvider.setNotificationReceiveSequenceForTesting(0);
+          await emitAndAwait(
+            channel: EixamBleChannel.sos,
+            payload: startPayloadFor(0),
+            eventType: BleIncomingEventType.sosMeshPacket,
+          );
+          await waitFor(() async {
+            final lifecycle = await harness.sdk.getSosLifecycle();
+            return lifecycle.generation == 1 &&
+                lifecycle.stage == SosLifecycleStage.active;
+          });
+          await setBackendState(SosState.sent);
+          await setBackendState(SosState.acknowledged);
+          expect(
+            (await harness.sdk.getSosLifecycle()).incident?.state,
+            SosState.acknowledged,
+          );
+
+          final cancellation = harness.sdk.cancelSos();
+          await waitFor(
+            () => bleClient.writtenCommands.any(
+              (command) => command.opcode == 0x04,
+            ),
+          );
+          runtimeProvider.setNotificationReceiveSequenceForTesting(1);
+          await emitAndAwait(
+            channel: EixamBleChannel.sos,
+            payload: cancelAckPayload,
+            eventType: BleIncomingEventType.sosDeviceEvent,
+          );
+          final cancelled = await cancellation;
+          expect(cancelled.state, SosState.cancelled);
+          expect((await harness.sdk.getSosLifecycle()).generation, 1);
+          expect(
+            (await harness.sdk.getSosLifecycle()).stage,
+            SosLifecycleStage.cancelled,
+          );
+          await setBackendState(SosState.resolved);
+          expect(
+            (await harness.sdk.getSosLifecycle()).stage,
+            SosLifecycleStage.cancelled,
+            reason:
+                'the authenticated resolve is retained as terminal history '
+                'after the physical E2 cancellation',
+          );
+          runtimeProvider.setNotificationReceiveSequenceForTesting(2);
+          await emitAndAwait(
+            channel: EixamBleChannel.sos,
+            payload: backendResolvedPayload,
+            eventType: BleIncomingEventType.sosDeviceEvent,
+          );
+
+          // Generation 2: the same physical identity is a new edge after the
+          // authenticated terminal reconciliation; no reconnect is involved.
+          runtimeProvider.setNotificationReceiveSequenceForTesting(3);
+          await emitAndAwait(
+            channel: EixamBleChannel.sos,
+            payload: startPayloadFor(1),
+            eventType: BleIncomingEventType.sosMeshPacket,
+          );
+          await waitFor(() async {
+            final lifecycle = await harness.sdk.getSosLifecycle();
+            return lifecycle.generation == 2 && lifecycle.isOpen;
+          });
+          await waitFor(
+            () => observedMessages.any(
+              (message) =>
+                  message.contains('lifecycleGeneration=2') &&
+                  message.contains('publicSosState=idle'),
+            ),
+          );
+          await setBackendState(SosState.sent);
+          await setBackendState(SosState.acknowledged);
+          expect(
+            (await harness.sdk.getSosLifecycle()).incident?.state,
+            SosState.acknowledged,
+          );
+          await setBackendState(SosState.resolved);
+          runtimeProvider.setNotificationReceiveSequenceForTesting(4);
+          await emitAndAwait(
+            channel: EixamBleChannel.sos,
+            payload: backendResolvedPayloadFor(3),
+            eventType: BleIncomingEventType.sosDeviceEvent,
+          );
+          await waitFor(
+            () =>
+                harness.deviceSosController.currentStatus.state ==
+                DeviceSosState.resolved,
+          );
+
+          // Generation 3: another physical edge is accepted without a new
+          // Flutter/native connection campaign.
+          runtimeProvider.setNotificationReceiveSequenceForTesting(5);
+          await emitAndAwait(
+            channel: EixamBleChannel.sos,
+            payload: startPayloadFor(2),
+            eventType: BleIncomingEventType.sosMeshPacket,
+          );
+          await waitFor(() async {
+            final lifecycle = await harness.sdk.getSosLifecycle();
+            return lifecycle.generation == 3 && lifecycle.isOpen;
+          });
+          await waitFor(
+            () => observedMessages.any(
+              (message) =>
+                  message.contains('lifecycleGeneration=3') &&
+                  message.contains('publicSosState=idle'),
+            ),
+          );
+          await setBackendState(SosState.sent);
+          await setBackendState(SosState.acknowledged);
+          expect(
+            (await harness.sdk.getSosLifecycle()).incident?.state,
+            SosState.acknowledged,
+          );
+
+          expect(harness.deviceRepository.reconnectCallCount, 0);
+          expect(
+            observedMessages.where(
+              (message) =>
+                  message.contains('SOS_PHYSICAL_START_ADMISSION') &&
+                  message.contains('producer=flutter_gatt') &&
+                  message.contains('decision=accept_new_generation'),
+            ),
+            hasLength(3),
+          );
+          expect(
+            observedMessages.where(
+              (message) => message.contains('SOS_NEW_GENERATION_ACCEPTED'),
+            ),
+            hasLength(2),
+          );
+          for (var generation = 2; generation <= 3; generation += 1) {
+            expect(
+              observedMessages.any(
+                (message) =>
+                    message.contains('SOS_PUBLIC_GENERATION_PROJECTION') &&
+                    message.contains('lifecycleGeneration=$generation') &&
+                    message.contains('publicSosState=idle') &&
+                    message.contains('action=reset_previous_generation'),
+              ),
+              isTrue,
+            );
+          }
+          expect(
+            observedMessages
+                .where(
+                  (message) => message.contains(
+                    'SOS_BACKEND_TERMINAL_TRANSPORT_STATE '
+                    'backendAction=ack',
+                  ),
+                )
+                .length,
+            greaterThanOrEqualTo(3),
           );
         } finally {
           await debugSubscription.cancel();

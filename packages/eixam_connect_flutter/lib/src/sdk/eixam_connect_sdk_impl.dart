@@ -330,6 +330,9 @@ class EixamConnectSdkImpl
       locationOwnershipEffectSink: sosLocationOwnershipEffectSink,
       locationOwnershipEffectMode: sosLocationOwnershipEffectMode,
     );
+    deviceSosController.setPhysicalSosStartAdmissionPolicy(
+      _evaluatePhysicalSosStartAdmission,
+    );
     if (sosLocationOwnershipEffectMode ==
         SosLocationOwnershipEffectMode.enabled) {
       _sosLocationOwnershipStatusSub = this.backgroundLocationPlatformAdapter
@@ -583,7 +586,6 @@ class EixamConnectSdkImpl
   String? _lastNativeRawConnectedDeviceMarker;
   final String _processSessionId = _nextSosProcessSessionId();
   final DateTime _processSessionStartedAt = DateTime.now().toUtc();
-  int? _nativeReceiveSequenceDomainStartExclusive;
   int? _latestNativeReceiveSequence;
   int? _lastOwnDeviceTerminalNativeReceiveSequence;
   int? _lastOwnDeviceTerminalNativeGeneration;
@@ -5536,8 +5538,6 @@ class EixamConnectSdkImpl
     );
     _deviceInactiveBoundaryAfterTerminalGeneration = null;
     _latestOwnDeviceInactiveBoundary = null;
-    _pendingFreshPhysicalStartProof = null;
-    _freshPhysicalStartSupersededRemoteClearGeneration = null;
     _terminalBoundaryFromPreviousProcessGeneration = null;
   }
 
@@ -13179,6 +13179,224 @@ class EixamConnectSdkImpl
     );
   }
 
+  PhysicalSosStartAdmission _evaluatePhysicalSosStartAdmission(
+    EixamSosPacket packet,
+    PhysicalSosReceiveEvidence evidence,
+    DeviceSosStatus currentDeviceStatus,
+  ) {
+    final lifecycle = _sosLifecycle.current;
+    final terminal = _sosLifecycle.activeTerminalWatermark;
+    final afterTerminalBoundary =
+        terminal != null &&
+        lifecycle.generation <= terminal.generation &&
+        !lifecycle.isOpen;
+    final pendingTerminalFence =
+        _terminalDeviceMirrorIsPending || _terminalConvergenceFence != null;
+    final incomingCycleKey = 'sos:${packet.nodeId}:${packet.packetId}';
+    final terminalFence = _terminalDeviceCycleFence;
+    final fencedCycleKey =
+        (terminalFence?.generation == terminal?.generation
+            ? terminalFence?.runtimeCycleKey
+            : null) ??
+        terminal?.deviceCycleKey?.trim() ??
+        _runtimeDeviceSosCycleKey(
+          status: currentDeviceStatus,
+          nodeId: currentDeviceStatus.nodeId ?? packet.nodeId,
+        );
+    final packetWasPreviouslyConsumed = _devicePacketSignaturesByGeneration
+        .values
+        .any((signatures) => signatures.contains(evidence.packetFingerprint));
+    final exactCurrentDeviceIdentity =
+        evidence.exactPhysicalIdentityMatch &&
+        evidence.classification == BleIncomingPayloadKind.ownDeviceSos &&
+        evidence.hasStartSemantics &&
+        !evidence.hasTerminalSemantics;
+
+    PhysicalSosStartAdmission admission;
+    if (_manualDisconnectRequested || !exactCurrentDeviceIdentity) {
+      admission = PhysicalSosStartAdmission(
+        decision: PhysicalSosStartAdmissionDecision.rejectOther,
+        reason: _manualDisconnectRequested
+            ? 'manual_disconnect_transport_boundary'
+            : 'physical_identity_not_proven',
+      );
+    } else if (lifecycle.isOpen) {
+      admission = const PhysicalSosStartAdmission(
+        decision: PhysicalSosStartAdmissionDecision.sameCycle,
+        reason: 'current_generation_open',
+      );
+    } else if (!afterTerminalBoundary) {
+      admission = const PhysicalSosStartAdmission(
+        decision: PhysicalSosStartAdmissionDecision.acceptNewGeneration,
+        reason: 'no_current_generation',
+      );
+    } else {
+      final convergenceEvaluation = _evaluateTerminalConvergenceStart(
+        incomingNodeId: packet.nodeId,
+        incomingPacketId: packet.packetId,
+        incomingPacketSignature: evidence.packetFingerprint,
+        incomingCycleKey: incomingCycleKey,
+        sameDevice: exactCurrentDeviceIdentity,
+        receiveSequence: evidence.receiveSequence,
+      );
+      final convergenceSuppresses =
+          convergenceEvaluation?.suppress == true ||
+          (_terminalDeviceMirrorIsPending &&
+              convergenceEvaluation?.provenNewCycle != true);
+      if (convergenceSuppresses) {
+        if (convergenceEvaluation != null) {
+          _logPostTerminalInflightStartSuppressed(convergenceEvaluation);
+        }
+        admission = const PhysicalSosStartAdmission(
+          decision: PhysicalSosStartAdmissionDecision.suppressInflight,
+          reason: 'terminal_convergence_inflight',
+        );
+      } else {
+        final terminalEvidence =
+            deviceSosController.terminalPhysicalReceiveEvidence;
+        final freshReceiveAfterTerminal =
+            terminalEvidence != null &&
+            terminalEvidence.hasTerminalSemantics &&
+            terminalEvidence.exactPhysicalIdentityMatch &&
+            terminalEvidence.receiveSequenceDomain ==
+                evidence.receiveSequenceDomain &&
+            evidence.receiveSequence > terminalEvidence.receiveSequence;
+        final distinctProtocolCycle =
+            fencedCycleKey?.isNotEmpty == true &&
+            incomingCycleKey != fencedCycleKey;
+        final terminalFromPreviousProcess =
+            _terminalBoundaryFromPreviousProcessGeneration ==
+            terminal.generation;
+        final backendOnlyAppGeneration =
+            terminal.origin == SosLifecycleOrigin.localApp &&
+            !_deviceMirrorDispatchedGenerations.contains(terminal.generation);
+        final canAccept =
+            (distinctProtocolCycle && !packetWasPreviouslyConsumed) ||
+            freshReceiveAfterTerminal ||
+            terminalFromPreviousProcess ||
+            backendOnlyAppGeneration ||
+            (fencedCycleKey == null && !packetWasPreviouslyConsumed);
+        if (canAccept) {
+          admission = PhysicalSosStartAdmission(
+            decision: PhysicalSosStartAdmissionDecision.acceptNewGeneration,
+            reason: distinctProtocolCycle
+                ? 'new_protocol_cycle_after_terminal'
+                : freshReceiveAfterTerminal
+                ? 'fresh_physical_receive_after_terminal'
+                : terminalFromPreviousProcess
+                ? 'current_session_start_after_restored_terminal'
+                : backendOnlyAppGeneration
+                ? 'backend_only_generation_then_physical_start'
+                : 'unconsumed_physical_start_after_terminal',
+            allowFreshStartAfterTerminal: true,
+          );
+          _pendingFreshPhysicalStartProof = _FreshPhysicalStartProof(
+            terminalGeneration: terminal.generation,
+            receiveSequence: evidence.receiveSequence,
+            receiveSequenceDomain: evidence.receiveSequenceDomain,
+            terminalBoundaryFromPreviousProcess: terminalFromPreviousProcess,
+            // The reducer carries its canonical packet signature (node/id/raw
+            // bytes), while the admission fingerprint is a SHA marker used
+            // only for evidence deduplication. Keep these domains separate so
+            // the active callback can consume the proof.
+            packetSignature:
+                '${packet.nodeId}:${packet.packetId}:${packet.rawHex}',
+          );
+          _supersedeRemoteTerminalDeviceClearAtAdmission(
+            terminalGeneration: terminal.generation,
+            receiveSequence: evidence.receiveSequence,
+          );
+        } else {
+          admission = PhysicalSosStartAdmission(
+            decision: PhysicalSosStartAdmissionDecision.rejectReplay,
+            reason: packetWasPreviouslyConsumed
+                ? 'packet_fingerprint_consumed_by_terminal_generation'
+                : 'same_protocol_cycle_without_new_physical_edge',
+          );
+        }
+      }
+    }
+    _logPhysicalSosStartAdmission(
+      packet: packet,
+      evidence: evidence,
+      lifecycle: lifecycle,
+      terminal: terminal,
+      currentDeviceStatus: currentDeviceStatus,
+      runtimeCycleKey: incomingCycleKey,
+      afterTerminalBoundary: afterTerminalBoundary,
+      pendingTerminalFence: pendingTerminalFence,
+      admission: admission,
+    );
+    return admission;
+  }
+
+  void _logPhysicalSosStartAdmission({
+    required EixamSosPacket packet,
+    required PhysicalSosReceiveEvidence evidence,
+    required SosLifecycleSnapshot lifecycle,
+    required SosLifecycleSnapshot? terminal,
+    required DeviceSosStatus currentDeviceStatus,
+    required String runtimeCycleKey,
+    required bool afterTerminalBoundary,
+    required bool pendingTerminalFence,
+    required PhysicalSosStartAdmission admission,
+  }) {
+    final currentTerminalState = lifecycle.isTerminal
+        ? lifecycle.stage.name
+        : _isDeviceSosCycleClosed(currentDeviceStatus.state)
+        ? currentDeviceStatus.state.name
+        : 'none';
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_PHYSICAL_START_ADMISSION '
+      'producer=${evidence.producer} '
+      'lifecycleGeneration=${lifecycle.generation} '
+      'publicGeneration=$_publicSosStateGeneration '
+      'currentTerminalState=$currentTerminalState '
+      'terminalSummaryGeneration=${_publicTerminalGeneration ?? terminal?.generation ?? "none"} '
+      'deviceMirrorState=${_sosDeviceMirrorState.name} '
+      'nodeId=${packet.nodeId} packetId=${packet.packetId} '
+      'runtimeCycleKey=$runtimeCycleKey '
+      'packetFingerprint=${_sosFingerprintDiagnosticMarker(evidence.packetFingerprint)} '
+      'receiveSequence=${evidence.receiveSequence} '
+      'afterTerminalBoundary=$afterTerminalBoundary '
+      'pendingTerminalFence=$pendingTerminalFence '
+      'decision=${switch (admission.decision) {
+        PhysicalSosStartAdmissionDecision.acceptNewGeneration => "accept_new_generation",
+        PhysicalSosStartAdmissionDecision.sameCycle => "same_cycle",
+        PhysicalSosStartAdmissionDecision.suppressInflight => "suppress_inflight",
+        PhysicalSosStartAdmissionDecision.rejectReplay => "reject_replay",
+        PhysicalSosStartAdmissionDecision.rejectOther => "reject_other",
+      }} '
+      'reason=${admission.reason}',
+    );
+  }
+
+  void _supersedeRemoteTerminalDeviceClearAtAdmission({
+    required int terminalGeneration,
+    required int receiveSequence,
+  }) {
+    final proof = _remoteTerminalDeviceClearPendingProof;
+    if (proof == null || proof.generation != terminalGeneration) {
+      return;
+    }
+    _supersededRemoteTerminalDeviceClearKeys.add(proof.operationKey);
+    _freshPhysicalStartSupersededRemoteClearGeneration = proof.generation;
+    _remoteTerminalDeviceClearPendingProof = null;
+    if (_remoteTerminalDeviceClearAwaitingAckProof?.operationKey ==
+        proof.operationKey) {
+      _remoteTerminalDeviceClearAwaitingAckProof = null;
+    }
+    if (_remoteTerminalDeviceClearAcknowledgedProof?.operationKey ==
+        proof.operationKey) {
+      _remoteTerminalDeviceClearAcknowledgedProof = null;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_SUPERSEDED '
+      'reason=fresh_physical_start terminalGeneration=${proof.generation} '
+      'receiveSequence=$receiveSequence boundary=shared_admission',
+    );
+  }
+
   void _logPostTerminalInflightStartSuppressed(
     _TerminalConvergenceStartEvaluation evaluation,
   ) {
@@ -13312,7 +13530,7 @@ class EixamConnectSdkImpl
     BleDebugRegistry.instance.recordEvent(
       'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_SUPERSEDED '
       'reason=fresh_physical_start terminalGeneration=${proof.generation} '
-      'receiveSequence=${freshStart?.nativeReceiveSequence ?? deviceSosController.lastPhysicalReceiveEvidence?.receiveSequence ?? -1}',
+      'receiveSequence=${freshStart?.receiveSequence ?? deviceSosController.lastPhysicalReceiveEvidence?.receiveSequence ?? -1}',
     );
   }
 
@@ -14033,7 +14251,7 @@ class EixamConnectSdkImpl
       'consumedByTerminal=$packetWasConsumedByTerminalGeneration '
       'freshNativeReceiveEdge=$hasFreshNativeReceiveEdge '
       'freshPhysicalReceiveEdge=$hasFreshPhysicalReceiveEdge '
-      'nativeReceiveSequence=${freshPhysicalStartProof?.nativeReceiveSequence ?? incomingPhysicalEvidence?.receiveSequence ?? -1} '
+      'physicalReceiveSequence=${freshPhysicalStartProof?.receiveSequence ?? incomingPhysicalEvidence?.receiveSequence ?? -1} '
       'receiveSequenceDomain=${freshPhysicalStartProof?.receiveSequenceDomain ?? incomingPhysicalEvidence?.receiveSequenceDomain ?? "none"} '
       'terminalReceiveSequence=${_lastOwnDeviceTerminalNativeReceiveSequence ?? -1} '
       'terminalReceiveSequenceDomain=${_lastOwnDeviceTerminalReceiveSequenceDomain ?? "none"} '
@@ -20004,7 +20222,6 @@ class EixamConnectSdkImpl
       _lastNativeRawConnectedDeviceMarker = event.connectedDeviceMarker;
       final receiveSequence = event.receiveSequence;
       if (receiveSequence != null) {
-        _nativeReceiveSequenceDomainStartExclusive ??= receiveSequence - 1;
         _latestNativeReceiveSequence = receiveSequence;
       }
       BleDebugRegistry.instance.recordEvent(
@@ -20160,7 +20377,6 @@ class EixamConnectSdkImpl
       'receiveSequence=${receiveSequence ?? -1} '
       'characteristic=${characteristicUuid ?? "unknown"}',
     );
-    _OwnDeviceLifecycleAdmission? ownLifecycleAdmission;
     SosLifecycleSnapshot? admissionLifecycle;
     SosLifecycleSnapshot? admissionTerminalLifecycle;
     var physicalIdentityMatch = false;
@@ -20197,65 +20413,6 @@ class EixamConnectSdkImpl
           characteristicUuid?.trim().isNotEmpty == true &&
           connectedDeviceMarker?.trim().isNotEmpty == true &&
           !event.timestamp.toUtc().isBefore(_processSessionStartedAt);
-      final admission = platformSosEventPacket != null
-          ? const _OwnDeviceLifecycleAdmission(
-              admitted: true,
-              predicate: 'terminal_packet_bypasses_start_fence',
-              reason: 'physical_terminal_boundary',
-            )
-          : _evaluateOwnDeviceLifecycleAdmission(
-              originatorNodeId: originatorNodeId,
-              rawHex: rawHex,
-              observedAt: event.timestamp,
-              receiveSequence: receiveSequence,
-              exactPhysicalIdentityMatch: exactPhysicalIdentityMatch,
-              hasCurrentBleSessionEvidence: hasCurrentBleSessionEvidence,
-            );
-      ownLifecycleAdmission = admission;
-      final parsedPacket = EixamSosPacket.tryParse(bytes);
-      final mirrorGeneration = currentLifecycle.generation;
-      BleDebugRegistry.instance.recordEvent(
-        'SOS_OWN_DEVICE_LIFECYCLE_ADMISSION '
-        'lifecycleStage=${currentLifecycle.stage.name} '
-        'terminalState=${terminalLifecycle?.stage.name ?? "none"} '
-        'currentGeneration=${currentLifecycle.generation} '
-        'terminalGeneration=${terminalLifecycle?.generation ?? 0} '
-        'localAppSosActive=${currentLifecycle.isOpen && currentLifecycle.origin == SosLifecycleOrigin.localApp} '
-        'appTagMirrorDispatched=${_deviceMirrorDispatchedGenerations.contains(mirrorGeneration)} '
-        'incomingSource=${payloadReason.source?.name ?? "unknown"} '
-        'producer=native_bridge '
-        'receiveSequence=${receiveSequence ?? -1} '
-        'processSessionId=$_processSessionId '
-        'receiveSequenceDomain=process:$_processSessionId '
-        'terminalBoundaryFromPreviousProcess=${terminalLifecycle != null && _terminalBoundaryFromPreviousProcessGeneration == terminalLifecycle.generation} '
-        'currentBleSessionEvidence=$hasCurrentBleSessionEvidence '
-        'characteristic=${characteristicUuid ?? "unknown"} '
-        'physicalIdentityMatch=$physicalIdentityMatch '
-        'exactPhysicalIdentityMatch=$exactPhysicalIdentityMatch '
-        'packetIdentity=${originatorNodeId ?? "none"}:${parsedPacket?.packetId ?? "event"} '
-        'fingerprintSha256=${_sosFingerprintDiagnosticMarker(rawHex)} '
-        'suppressionPredicate=${admission.predicate} '
-        'reason=${admission.reason} admitted=${admission.admitted}',
-      );
-      final postResolveGeneration = _postResolvePhysicalRxGeneration;
-      if (postResolveGeneration != null &&
-          terminalLifecycle?.generation == postResolveGeneration &&
-          parsedPacket != null &&
-          parsedPacket.sosType != 0) {
-        BleDebugRegistry.instance.recordEvent(
-          'SOS_POST_RESOLVE_PHYSICAL_RX '
-          'producer=native_bridge '
-          'characteristic=${characteristicUuid ?? "unknown"} '
-          'byteLength=${bytes.length} packetType=sos '
-          'receiveSequence=${receiveSequence ?? -1} '
-          'classification=${effectiveClassificationKind.name} '
-          'admitted=${admission.admitted} rejected=${!admission.admitted} '
-          'reason=${admission.reason}',
-        );
-        if (admission.admitted) {
-          _postResolvePhysicalRxGeneration = null;
-        }
-      }
       if (platformSosEventPacket != null &&
           physicalIdentityMatch &&
           receiveSequence != null) {
@@ -20264,16 +20421,6 @@ class EixamConnectSdkImpl
         _lastOwnDeviceTerminalReceiveSequenceDomain =
             'process:$_processSessionId';
         _lastOwnDeviceTerminalProcessSessionId = _processSessionId;
-      }
-      if (!admission.admitted) {
-        if (matchesRawNotification) {
-          _lastNativeRawPayloadHex = null;
-          _lastNativeRawReceiveCorrelation = null;
-          _lastNativeRawReceiveSequence = null;
-          _lastNativeRawCharacteristicUuid = null;
-          _lastNativeRawConnectedDeviceMarker = null;
-        }
-        return;
       }
     }
     if (matchesRawNotification) {
@@ -20301,7 +20448,8 @@ class EixamConnectSdkImpl
                 parsedPhysicalSosPacket.sosType != 0,
             hasTerminalSemantics:
                 platformSosEventPacket != null &&
-                _isTerminalSosEventPacket(platformSosEventPacket),
+                (_isTerminalSosEventPacket(platformSosEventPacket) ||
+                    platformSosEventPacket.isAppCancelAck),
             packetFingerprint: platformSosEventPacket == null
                 ? '${parsedPhysicalSosPacket?.nodeId ?? originatorNodeId}:${parsedPhysicalSosPacket?.packetId ?? "unknown"}:$rawHex'
                 : '${platformSosEventPacket.nodeId}:${platformSosEventPacket.opcode}:${platformSosEventPacket.subcode}:$rawHex',
@@ -20509,29 +20657,83 @@ class EixamConnectSdkImpl
       final terminalLifecycle =
           admissionTerminalLifecycle ?? _sosLifecycle.activeTerminalWatermark;
       final afterTerminalBoundary =
-          terminalLifecycle != null &&
-          !currentLifecycle.isOpen &&
-          ownLifecycleAdmission?.predicate ==
-              'terminal_boundary_current_physical_start';
-      final allowFreshPhysicalStartAfterTerminal =
-          isNativeApprovedOwnLifecycle &&
-          ownLifecycleAdmission?.admitted == true &&
-          exactPhysicalIdentityMatch &&
-          hasCurrentBleSessionEvidence &&
-          sosPacket.sosType != 0 &&
-          afterTerminalBoundary;
-      final packetSignature =
-          '${sosPacket.nodeId}:${sosPacket.packetId}:${sosPacket.rawHex}';
-      if (allowFreshPhysicalStartAfterTerminal) {
-        _pendingFreshPhysicalStartProof = _FreshPhysicalStartProof(
-          terminalGeneration: terminalLifecycle.generation,
-          nativeReceiveSequence: receiveSequence!,
-          receiveSequenceDomain: 'process:$_processSessionId',
-          terminalBoundaryFromPreviousProcess:
-              _terminalBoundaryFromPreviousProcessGeneration ==
-              terminalLifecycle.generation,
-          packetSignature: packetSignature,
+          terminalLifecycle != null && !currentLifecycle.isOpen;
+      final physicalStartAdmission = physicalReceiveEvidence == null
+          ? null
+          : deviceSosController.evaluatePhysicalSosStartAdmission(
+              sosPacket,
+              physicalReceiveEvidence,
+            );
+      final legacyAdmissionPredicate = afterTerminalBoundary
+          ? physicalStartAdmission?.shouldProcess == true
+                ? 'terminal_boundary_current_physical_start'
+                : 'terminal_without_physical_inactive_boundary'
+          : currentLifecycle.isOpen &&
+                currentLifecycle.origin == SosLifecycleOrigin.localApp &&
+                _deviceMirrorDispatchedGenerations.contains(
+                  currentLifecycle.generation,
+                )
+          ? 'open_app_generation'
+          : currentLifecycle.isOpen
+          ? 'open_device_generation'
+          : 'no_terminal_fence';
+      final legacyAdmissionReason = afterTerminalBoundary
+          ? physicalStartAdmission?.shouldProcess == true
+                ? _deviceInactiveBoundaryAfterTerminalGeneration ==
+                          terminalLifecycle.generation
+                      ? 'immediate_physical_restart_after_terminal'
+                      : 'fresh_physical_start_after_terminal'
+                : 'authoritative_terminal_fence'
+          : currentLifecycle.isOpen &&
+                currentLifecycle.origin == SosLifecycleOrigin.localApp &&
+                _deviceMirrorDispatchedGenerations.contains(
+                  currentLifecycle.generation,
+                )
+          ? 'app_triggered_tag_evidence'
+          : currentLifecycle.isOpen
+          ? 'same_active_cycle_evidence'
+          : 'fresh_physical_start';
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_OWN_DEVICE_LIFECYCLE_ADMISSION '
+        'lifecycleStage=${currentLifecycle.stage.name} '
+        'terminalState=${terminalLifecycle?.stage.name ?? "none"} '
+        'currentGeneration=${currentLifecycle.generation} '
+        'terminalGeneration=${terminalLifecycle?.generation ?? 0} '
+        'localAppSosActive=${currentLifecycle.isOpen && currentLifecycle.origin == SosLifecycleOrigin.localApp} '
+        'appTagMirrorDispatched=${_deviceMirrorDispatchedGenerations.contains(currentLifecycle.generation)} '
+        'incomingSource=${payloadReason.source?.name ?? "unknown"} '
+        'producer=native_bridge '
+        'receiveSequence=${receiveSequence ?? -1} '
+        'processSessionId=$_processSessionId '
+        'receiveSequenceDomain=process:$_processSessionId '
+        'terminalBoundaryFromPreviousProcess=${terminalLifecycle != null && _terminalBoundaryFromPreviousProcessGeneration == terminalLifecycle.generation} '
+        'currentBleSessionEvidence=$hasCurrentBleSessionEvidence '
+        'characteristic=${characteristicUuid ?? "unknown"} '
+        'physicalIdentityMatch=$physicalIdentityMatch '
+        'exactPhysicalIdentityMatch=$exactPhysicalIdentityMatch '
+        'packetIdentity=${originatorNodeId ?? "none"}:${sosPacket.packetId} '
+        'fingerprintSha256=${_sosFingerprintDiagnosticMarker(rawHex)} '
+        'suppressionPredicate=$legacyAdmissionPredicate '
+        'reason=$legacyAdmissionReason '
+        'admitted=${physicalStartAdmission?.shouldProcess == true}',
+      );
+      if (terminalLifecycle != null &&
+          _postResolvePhysicalRxGeneration == terminalLifecycle.generation &&
+          sosPacket.sosType != 0) {
+        final admitted = physicalStartAdmission?.shouldProcess == true;
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_POST_RESOLVE_PHYSICAL_RX '
+          'producer=native_bridge '
+          'characteristic=${characteristicUuid ?? "unknown"} '
+          'byteLength=${bytes.length} packetType=sos '
+          'receiveSequence=${receiveSequence ?? -1} '
+          'classification=${effectiveClassificationKind.name} '
+          'admitted=$admitted rejected=${!admitted} '
+          'reason=${physicalStartAdmission?.reason ?? "missing_physical_evidence"}',
         );
+        if (admitted) {
+          _postResolvePhysicalRxGeneration = null;
+        }
       }
       _logSosTrace(
         'dart_platform_event_route route=local_sos reason=sos_mesh_packet',
@@ -20559,8 +20761,9 @@ class EixamConnectSdkImpl
           ),
           afterTerminalBoundary: afterTerminalBoundary,
           allowFreshPhysicalStartAfterTerminal:
-              allowFreshPhysicalStartAfterTerminal,
+              physicalStartAdmission?.allowFreshStartAfterTerminal == true,
           physicalEvidence: physicalReceiveEvidence,
+          physicalStartAdmission: physicalStartAdmission,
         ),
       );
       return;
@@ -21056,152 +21259,6 @@ class EixamConnectSdkImpl
         normalized.contains('public_cancel_completed') ||
         normalized.contains('public_resolve_completed') ||
         normalized.contains('device_close_command_without_ack');
-  }
-
-  _OwnDeviceLifecycleAdmission _evaluateOwnDeviceLifecycleAdmission({
-    required int? originatorNodeId,
-    required String rawHex,
-    required DateTime observedAt,
-    required int? receiveSequence,
-    required bool exactPhysicalIdentityMatch,
-    required bool hasCurrentBleSessionEvidence,
-  }) {
-    if (_manualDisconnectRequested) {
-      _clearDeviceRuntimeResidueAfterManualDisconnect();
-      return const _OwnDeviceLifecycleAdmission(
-        admitted: false,
-        predicate: 'manual_disconnect_requested',
-        reason: 'manual_disconnect_transport_boundary',
-      );
-    }
-    final terminal = _sosLifecycle.activeTerminalWatermark;
-    final current = _sosLifecycle.current;
-    final terminalTargetsPacket =
-        terminal != null && current.generation <= terminal.generation;
-    final packet = EixamSosPacket.tryParse(
-      _tryDecodeHexPayload(rawHex) ?? const <int>[],
-    );
-    final terminalFromPreviousProcess =
-        terminalTargetsPacket &&
-        _terminalBoundaryFromPreviousProcessGeneration == terminal.generation;
-    final sequenceDomainStart = _nativeReceiveSequenceDomainStartExclusive;
-    final hasNewProcessDomainReceiveOrder =
-        receiveSequence != null &&
-        sequenceDomainStart != null &&
-        isStrictlyNewerSosReceiveSequence(
-          incomingSequence: receiveSequence,
-          terminalBoundarySequence: sequenceDomainStart,
-        );
-    final hasComparableTerminalReceiveBoundary =
-        terminalTargetsPacket &&
-        _lastOwnDeviceTerminalNativeGeneration == terminal.generation &&
-        _lastOwnDeviceTerminalNativeReceiveSequence != null &&
-        _lastOwnDeviceTerminalReceiveSequenceDomain ==
-            'process:$_processSessionId';
-    final receiveOrderAfterTerminal =
-        terminalTargetsPacket &&
-        receiveSequence != null &&
-        (hasComparableTerminalReceiveBoundary
-            ? isStrictlyNewerSosReceiveSequence(
-                incomingSequence: receiveSequence,
-                terminalBoundarySequence:
-                    _lastOwnDeviceTerminalNativeReceiveSequence!,
-              )
-            : hasNewProcessDomainReceiveOrder &&
-                  (terminalFromPreviousProcess ||
-                      !observedAt.toUtc().isBefore(
-                        terminal.lastAuthoritativeObservation,
-                      )));
-    final packetHasStartSemantics = packet != null && packet.sosType != 0;
-    final convergenceFence = _terminalConvergenceFence;
-    final convergenceEvaluation = packetHasStartSemantics
-        ? _evaluateTerminalConvergenceStart(
-            incomingNodeId: packet.nodeId,
-            incomingPacketId: packet.packetId,
-            incomingPacketSignature:
-                '${packet.nodeId}:${packet.packetId}:$rawHex',
-            incomingCycleKey: 'sos:${packet.nodeId}:${packet.packetId}',
-            sameDevice:
-                exactPhysicalIdentityMatch &&
-                convergenceFence != null &&
-                (convergenceFence.nodeId == null ||
-                    convergenceFence.nodeId == packet.nodeId),
-            receiveSequence: receiveSequence ?? -1,
-          )
-        : null;
-    if (convergenceEvaluation?.suppress == true) {
-      _logPostTerminalInflightStartSuppressed(convergenceEvaluation!);
-      return const _OwnDeviceLifecycleAdmission(
-        admitted: false,
-        predicate: 'terminal_convergence_same_cycle',
-        reason: 'post_terminal_inflight_start',
-      );
-    }
-    final terminalBoundaryAdmitsFreshPhysicalStart =
-        terminalTargetsPacket && !current.isOpen;
-    final validTerminalBoundaryPhysicalStart =
-        terminalBoundaryAdmitsFreshPhysicalStart &&
-        packetHasStartSemantics &&
-        exactPhysicalIdentityMatch &&
-        hasCurrentBleSessionEvidence &&
-        receiveOrderAfterTerminal;
-    if (validTerminalBoundaryPhysicalStart) {
-      return _OwnDeviceLifecycleAdmission(
-        admitted: true,
-        predicate: 'terminal_boundary_current_physical_start',
-        reason:
-            _deviceInactiveBoundaryAfterTerminalGeneration ==
-                terminal.generation
-            ? 'immediate_physical_restart_after_terminal'
-            : 'fresh_physical_start_after_terminal',
-      );
-    }
-    if (terminalTargetsPacket) {
-      BleDebugRegistry.instance.recordEvent(
-        'SOS_TERMINAL_FENCE_SUPPRESSED_OPEN source=platform_device_packet '
-        'reason=authoritative_backend_terminal '
-        'nodeId=${originatorNodeId ?? "none"} '
-        'processSessionId=$_processSessionId '
-        'receiveSequenceDomain=process:$_processSessionId '
-        'terminalReceiveSequenceDomain=${_lastOwnDeviceTerminalReceiveSequenceDomain ?? "none"} '
-        'sameReceiveDomain=$hasComparableTerminalReceiveBoundary '
-        'terminalBoundaryFromPreviousProcess=$terminalFromPreviousProcess '
-        'currentBleSessionEvidence=$hasCurrentBleSessionEvidence '
-        'exactPhysicalIdentityMatch=$exactPhysicalIdentityMatch '
-        'packetHasStartSemantics=$packetHasStartSemantics '
-        'receiveOrderAfterTerminal=$receiveOrderAfterTerminal',
-      );
-      _logSosTrace(
-        'dart_platform_event_route route=ignored '
-        'reason=authoritative_terminal_fence',
-      );
-      return const _OwnDeviceLifecycleAdmission(
-        admitted: false,
-        predicate: 'terminal_without_physical_inactive_boundary',
-        reason: 'authoritative_terminal_fence',
-      );
-    }
-    if (current.isOpen &&
-        current.origin == SosLifecycleOrigin.localApp &&
-        _deviceMirrorDispatchedGenerations.contains(current.generation)) {
-      return const _OwnDeviceLifecycleAdmission(
-        admitted: true,
-        predicate: 'open_app_generation',
-        reason: 'app_triggered_tag_evidence',
-      );
-    }
-    if (current.isOpen) {
-      return const _OwnDeviceLifecycleAdmission(
-        admitted: true,
-        predicate: 'open_device_generation',
-        reason: 'same_active_cycle_evidence',
-      );
-    }
-    return const _OwnDeviceLifecycleAdmission(
-      admitted: true,
-      predicate: 'no_terminal_fence',
-      reason: 'fresh_physical_start',
-    );
   }
 
   void _clearDeviceRuntimeResidueAfterManualDisconnect() {
@@ -24092,29 +24149,17 @@ class _TerminalDeviceCycleFence {
 final class _FreshPhysicalStartProof {
   const _FreshPhysicalStartProof({
     required this.terminalGeneration,
-    required this.nativeReceiveSequence,
+    required this.receiveSequence,
     required this.receiveSequenceDomain,
     required this.terminalBoundaryFromPreviousProcess,
     required this.packetSignature,
   });
 
   final int terminalGeneration;
-  final int nativeReceiveSequence;
+  final int receiveSequence;
   final String receiveSequenceDomain;
   final bool terminalBoundaryFromPreviousProcess;
   final String packetSignature;
-}
-
-final class _OwnDeviceLifecycleAdmission {
-  const _OwnDeviceLifecycleAdmission({
-    required this.admitted,
-    required this.predicate,
-    required this.reason,
-  });
-
-  final bool admitted;
-  final String predicate;
-  final String reason;
 }
 
 class _ObservedOwnDeviceInactiveBoundary {

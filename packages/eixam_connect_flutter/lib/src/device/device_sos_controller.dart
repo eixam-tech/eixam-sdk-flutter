@@ -10,6 +10,36 @@ import 'eixam_sos_packet.dart';
 
 typedef DeviceCommandWriter = Future<void> Function(EixamDeviceCommand command);
 typedef DeviceTerminalOperationGuard = bool Function();
+typedef PhysicalSosStartAdmissionPolicy =
+    PhysicalSosStartAdmission Function(
+      EixamSosPacket packet,
+      PhysicalSosReceiveEvidence evidence,
+      DeviceSosStatus currentStatus,
+    );
+
+enum PhysicalSosStartAdmissionDecision {
+  acceptNewGeneration,
+  sameCycle,
+  suppressInflight,
+  rejectReplay,
+  rejectOther,
+}
+
+final class PhysicalSosStartAdmission {
+  const PhysicalSosStartAdmission({
+    required this.decision,
+    required this.reason,
+    this.allowFreshStartAfterTerminal = false,
+  });
+
+  final PhysicalSosStartAdmissionDecision decision;
+  final String reason;
+  final bool allowFreshStartAfterTerminal;
+
+  bool get shouldProcess =>
+      decision == PhysicalSosStartAdmissionDecision.acceptNewGeneration ||
+      decision == PhysicalSosStartAdmissionDecision.sameCycle;
+}
 
 /// Immutable evidence captured at the physical BLE receive boundary and kept
 /// intact through classification, device-state reduction, and SDK lifecycle
@@ -61,6 +91,7 @@ class DeviceSosStateResolutionContext {
     required this.afterTerminalBoundary,
     required this.allowFreshPhysicalStartAfterTerminal,
     this.physicalEvidence,
+    this.physicalStartAdmission,
   });
 
   const DeviceSosStateResolutionContext.fromPhysicalEvidence(
@@ -75,6 +106,7 @@ class DeviceSosStateResolutionContext {
     this.appMirrorDispatched = false,
     this.afterTerminalBoundary = false,
     this.allowFreshPhysicalStartAfterTerminal = false,
+    this.physicalStartAdmission,
   });
 
   final String incomingPacketType;
@@ -88,6 +120,7 @@ class DeviceSosStateResolutionContext {
   final bool afterTerminalBoundary;
   final bool allowFreshPhysicalStartAfterTerminal;
   final PhysicalSosReceiveEvidence? physicalEvidence;
+  final PhysicalSosStartAdmission? physicalStartAdmission;
 }
 
 class DeviceSosController {
@@ -127,6 +160,7 @@ class DeviceSosController {
   final Set<String> _terminalCyclePacketSignatures = <String>{};
   PhysicalSosReceiveEvidence? _lastPhysicalReceiveEvidence;
   PhysicalSosReceiveEvidence? _terminalPhysicalReceiveEvidence;
+  PhysicalSosStartAdmissionPolicy? _physicalSosStartAdmissionPolicy;
 
   static const Duration _terminalCycleSuppressionWindow = Duration(seconds: 5);
   static const Duration _terminalCommandRetryInterval = Duration(seconds: 1);
@@ -212,6 +246,23 @@ class DeviceSosController {
   Future<DeviceSosStatus> getStatus() async => _status;
 
   Stream<DeviceSosStatus> watchStatus() => _controller.stream;
+
+  void setPhysicalSosStartAdmissionPolicy(
+    PhysicalSosStartAdmissionPolicy? policy,
+  ) {
+    _physicalSosStartAdmissionPolicy = policy;
+  }
+
+  PhysicalSosStartAdmission evaluatePhysicalSosStartAdmission(
+    EixamSosPacket packet,
+    PhysicalSosReceiveEvidence evidence,
+  ) {
+    return _physicalSosStartAdmissionPolicy?.call(packet, evidence, _status) ??
+        const PhysicalSosStartAdmission(
+          decision: PhysicalSosStartAdmissionDecision.sameCycle,
+          reason: 'shared_policy_not_attached',
+        );
+  }
 
   DeviceSosStatus settleExpiredPreConfirmCountdown({required String reason}) {
     if (_status.state != DeviceSosState.preConfirm ||
@@ -916,6 +967,20 @@ class DeviceSosController {
     DeviceSosStateResolutionContext? resolutionContext,
   }) {
     final physicalEvidence = resolutionContext?.physicalEvidence;
+    final physicalStartAdmission = physicalEvidence == null
+        ? null
+        : resolutionContext?.physicalStartAdmission ??
+              evaluatePhysicalSosStartAdmission(packet, physicalEvidence);
+    if (physicalStartAdmission != null &&
+        !physicalStartAdmission.shouldProcess) {
+      if (physicalStartAdmission.decision ==
+          PhysicalSosStartAdmissionDecision.suppressInflight) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_TRACE device_rearm_suppressed reason=pending_terminal_command',
+        );
+      }
+      return;
+    }
     final terminalPhysicalEvidence = _terminalPhysicalReceiveEvidence;
     final sameReceiveDomain =
         physicalEvidence != null &&
@@ -935,6 +1000,7 @@ class DeviceSosController {
             terminalPhysicalEvidence.receiveSequence;
     final allowFreshPhysicalStartAfterTerminal =
         resolutionContext?.allowFreshPhysicalStartAfterTerminal == true ||
+        physicalStartAdmission?.allowFreshStartAfterTerminal == true ||
         freshPhysicalReceiveEdge;
     final afterTerminalBoundary =
         resolutionContext?.afterTerminalBoundary == true ||
@@ -1082,16 +1148,29 @@ class DeviceSosController {
 
     if (nextState == DeviceSosState.preConfirm) {
       _recordAcceptedOpenPacketSignature(packetSignature);
+      if (allowFreshPhysicalStartAfterTerminal &&
+          !_isClosedState(_status.state)) {
+        _cancelCountdownTimer();
+        _status = _status.copyWith(
+          state: DeviceSosState.inactive,
+          previousState: _status.state,
+          countdownStartedAt: null,
+          expectedActivationAt: null,
+          countdownRemainingSeconds: null,
+        );
+      }
       _enterPreConfirm(
         source: source,
         event: event,
         at: now,
         optimistic: false,
         derivedFromBlePacket: true,
-        triggerOriginOverride: _resolveObservedTriggerOrigin(
-          source,
-          nodeId: packet.nodeId,
-        ),
+        triggerOriginOverride: allowFreshPhysicalStartAfterTerminal
+            ? DeviceSosTransitionSource.device
+            : _resolveObservedTriggerOrigin(source, nodeId: packet.nodeId),
+        previousStateOverride: allowFreshPhysicalStartAfterTerminal
+            ? DeviceSosState.inactive
+            : null,
         lastPacketHex: packet.rawHex,
         lastPacketLength: packet.rawBytes.length,
         lastPacketAt: now,
@@ -1133,10 +1212,9 @@ class DeviceSosController {
         state: nextState,
         previousState: previous,
         transitionSource: source,
-        triggerOrigin: _resolveObservedTriggerOrigin(
-          source,
-          nodeId: packet.nodeId,
-        ),
+        triggerOrigin: allowFreshPhysicalStartAfterTerminal
+            ? DeviceSosTransitionSource.device
+            : _resolveObservedTriggerOrigin(source, nodeId: packet.nodeId),
         lastEvent: event,
         updatedAt: now,
         optimistic: false,
@@ -1192,9 +1270,18 @@ class DeviceSosController {
   }) {
     final now = _now();
     final previous = _status.state;
-    final nextState = _resolveEventState(packet, previous);
+    final pendingTerminalCommand = _pendingTerminalCommand;
+    final acknowledgesPendingAppCancel =
+        packet.isAppCancelAck &&
+        pendingTerminalCommand?.action == 'cancel' &&
+        _terminalOperationIsCurrent(pendingTerminalCommand?.operationIsCurrent);
+    final nextState = acknowledgesPendingAppCancel
+        ? DeviceSosState.inactive
+        : _resolveEventState(packet, previous);
     final classification = _classifyEventPacket(packet, nextState);
-    final controlEventLabel = _describeEventPacket(packet);
+    final controlEventLabel = acknowledgesPendingAppCancel
+        ? 'app cancel acknowledged to inactive'
+        : _describeEventPacket(packet);
     final event =
         'SOS device event decoded -> $controlEventLabel '
         'nodeId=${_formatNodeId(packet.nodeId)} '
@@ -1210,11 +1297,26 @@ class DeviceSosController {
       'decision=${classification.decision} '
       'reason=${classification.reason}',
     );
+    final physicalEvidence = resolutionContext?.physicalEvidence;
+    if (physicalEvidence != null) {
+      _lastPhysicalReceiveEvidence = physicalEvidence;
+      if (physicalEvidence.hasTerminalSemantics &&
+          physicalEvidence.exactPhysicalIdentityMatch) {
+        _terminalPhysicalReceiveEvidence = physicalEvidence;
+      }
+    }
     if (packet.opcode == 0xE2) {
-      BleDebugRegistry.instance.recordEvent(
-        'SOS_TRACE device_terminal_command_ack_ignored event=0xE2 subcode=0x${packet.subcode.toRadixString(16).padLeft(2, '0')}',
-      );
-      return;
+      _pendingTerminalCommand = null;
+      if (acknowledgesPendingAppCancel) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_TRACE device_terminal_command_ack_observed event=0xE2 action=cancel',
+        );
+      } else {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_TRACE device_terminal_command_ack_ignored event=0xE2 subcode=0x${packet.subcode.toRadixString(16).padLeft(2, '0')}',
+        );
+        return;
+      }
     }
 
     if (nextState == DeviceSosState.inactive ||
@@ -1222,16 +1324,6 @@ class DeviceSosController {
       _cancelCountdownTimer();
       _awaitingObservedAppActivation = false;
       _pendingTerminalCommand = null;
-    }
-    final physicalEvidence = resolutionContext?.physicalEvidence;
-    if (physicalEvidence != null) {
-      _lastPhysicalReceiveEvidence = physicalEvidence;
-      if ((nextState == DeviceSosState.inactive ||
-              nextState == DeviceSosState.resolved) &&
-          physicalEvidence.hasTerminalSemantics &&
-          physicalEvidence.exactPhysicalIdentityMatch) {
-        _terminalPhysicalReceiveEvidence = physicalEvidence;
-      }
     }
     _emit(
       _status.copyWith(
@@ -1761,6 +1853,7 @@ class DeviceSosController {
     required bool optimistic,
     required bool derivedFromBlePacket,
     DeviceSosTransitionSource? triggerOriginOverride,
+    DeviceSosState? previousStateOverride,
     int? lastOpcode,
     String? lastPacketHex,
     int? lastPacketLength,
@@ -1812,7 +1905,7 @@ class DeviceSosController {
     _emit(
       _status.copyWith(
         state: DeviceSosState.preConfirm,
-        previousState: _status.state,
+        previousState: previousStateOverride ?? _status.state,
         transitionSource: source,
         triggerOrigin: triggerOrigin,
         lastEvent: event,
