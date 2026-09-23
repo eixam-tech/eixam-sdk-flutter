@@ -6,6 +6,7 @@ import '../../device/ble_debug_registry.dart';
 import '../../device/device_runtime_provider.dart';
 import '../../device/ble_device_runtime_provider.dart';
 import '../../device/known_device_reconnect_repository.dart';
+import '../../device/preferred_device_connection_suspension_repository.dart';
 import '../../device/preferred_device_availability_repository.dart';
 import '../datasources_local/shared_prefs_sdk_store.dart';
 import '../../mappers/local_state_serializers.dart';
@@ -19,16 +20,18 @@ class InMemoryDeviceRepository
     implements
         DeviceRepository,
         KnownDeviceReconnectRepository,
+        PreferredDeviceConnectionSuspensionRepository,
         PreferredDeviceAvailabilityRepository {
   InMemoryDeviceRepository({
     required DeviceRuntimeProvider runtimeProvider,
     SharedPrefsSdkStore? localStore,
     Duration heartbeatInterval = const Duration(seconds: 15),
-  })  : _runtimeProvider = runtimeProvider,
-        _localStore = localStore,
-        _heartbeatInterval = heartbeatInterval {
-    _runtimeStatusSub =
-        _runtimeProvider.watchRuntimeStatus().listen((status) async {
+  }) : _runtimeProvider = runtimeProvider,
+       _localStore = localStore,
+       _heartbeatInterval = heartbeatInterval {
+    _runtimeStatusSub = _runtimeProvider.watchRuntimeStatus().listen((
+      status,
+    ) async {
       final previous = _status;
       _status = status;
       await _persistAndEmitIfChanged(
@@ -64,8 +67,9 @@ class InMemoryDeviceRepository
 
   /// Restores the last persisted device state, if any.
   Future<void> restoreState() async {
-    final raw =
-        await _localStore?.readJson(SharedPrefsSdkStore.deviceStatusKey);
+    final raw = await _localStore?.readJson(
+      SharedPrefsSdkStore.deviceStatusKey,
+    );
     if (raw != null) {
       _status = _normalizeRestoredStatus(
         LocalStateSerializers.deviceStatusFromJson(raw),
@@ -82,7 +86,9 @@ class InMemoryDeviceRepository
     await _setLifecycle(DeviceLifecycleState.pairing);
     try {
       _status = await _runtimeProvider.pair(
-          currentStatus: _status, pairingCode: pairingCode);
+        currentStatus: _status,
+        pairingCode: pairingCode,
+      );
       await _persistAndEmit();
       _startHeartbeat();
       return _status;
@@ -161,13 +167,14 @@ class InMemoryDeviceRepository
     );
   }
 
-
   @override
   Future<DeviceStatus> activateDevice({required String activationCode}) async {
     await _setLifecycle(DeviceLifecycleState.activating);
     try {
       _status = await _runtimeProvider.activate(
-          currentStatus: _status, activationCode: activationCode);
+        currentStatus: _status,
+        activationCode: activationCode,
+      );
       await _persistAndEmit();
       _startHeartbeat();
       return _status;
@@ -195,14 +202,8 @@ class InMemoryDeviceRepository
     required String reason,
   }) async {
     final previous = _status;
-    _status = await _runtimeProvider.refresh(
-      _status,
-      forceFirmwareRead: true,
-    );
-    await _persistAndEmitIfChanged(
-      previous: previous,
-      source: reason,
-    );
+    _status = await _runtimeProvider.refresh(_status, forceFirmwareRead: true);
+    await _persistAndEmitIfChanged(previous: previous, source: reason);
     return _status;
   }
 
@@ -216,15 +217,24 @@ class InMemoryDeviceRepository
       clearProvisioningError: true,
       lastSyncedAt: DateTime.now(),
     );
-    await _persistAndEmitIfChanged(
-      previous: previous,
-      source: reason,
-    );
+    await _persistAndEmitIfChanged(previous: previous, source: reason);
     return _status;
   }
 
   Future<DeviceStatus> markMobileBondMissing({required String reason}) async {
     await _setMobileBondMissing(source: reason);
+    return _status;
+  }
+
+  @override
+  Future<DeviceStatus> suspendPreferredDeviceConnection() async {
+    _stopHeartbeat();
+    final previous = _status;
+    _status = await _runtimeProvider.suspendConnection(_status);
+    await _persistAndEmitIfChanged(
+      previous: previous,
+      source: 'preferred_device_connection_suspended',
+    );
     return _status;
   }
 
@@ -277,8 +287,9 @@ class InMemoryDeviceRepository
     if (runtimeProvider is! BleDeviceRuntimeProvider) {
       return _status;
     }
-    final runtimeStatus =
-        await runtimeProvider.suspendOwnership(reason: reason);
+    final runtimeStatus = await runtimeProvider.suspendOwnership(
+      reason: reason,
+    );
     if (runtimeStatus != null) {
       final previous = _status;
       _status = runtimeStatus;
@@ -377,10 +388,7 @@ class InMemoryDeviceRepository
           mode: DeviceRefreshMode.heartbeat,
         );
         if (_disposed) return;
-        await _persistAndEmitIfChanged(
-          previous: previous,
-          source: 'heartbeat',
-        );
+        await _persistAndEmitIfChanged(previous: previous, source: 'heartbeat');
       } catch (error) {
         BleDebugRegistry.instance.recordEvent(
           'InMemoryDeviceRepository.heartbeat_failed -> errorType=${error.runtimeType}',
@@ -446,10 +454,7 @@ class InMemoryDeviceRepository
       clearProvisioningError: true,
       lastSyncedAt: DateTime.now(),
     );
-    await _persistAndEmitIfChanged(
-      previous: previous,
-      source: source,
-    );
+    await _persistAndEmitIfChanged(previous: previous, source: source);
   }
 
   bool _isMobileBondRequired(DeviceException error) {

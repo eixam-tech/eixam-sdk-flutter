@@ -22,6 +22,7 @@ import '../entities/app_feedback.dart';
 import '../entities/firmware_update.dart';
 import '../entities/permission_state.dart';
 import '../entities/preferred_device.dart';
+import '../entities/preferred_device_connection_suspension_result.dart';
 import '../entities/preferred_device_reconnect_result.dart';
 import '../entities/protection_mode_models.dart';
 import '../entities/public_pre_sos_status.dart';
@@ -184,6 +185,16 @@ abstract class EixamConnectSdk {
   Future<FlushProtectionQueuesResult> flushProtectionQueues();
 
   Future<DeviceStatus> connectDevice({required String pairingCode});
+
+  /// Intentionally keeps the preferred TAG disconnected without unpairing it.
+  ///
+  /// The operation persists reconnect suppression, cancels and drains active
+  /// reconnect work, and completes only after device state is disconnected and
+  /// reconnect activity is quiescent. An explicit [connectDevice] call clears
+  /// the suppression.
+  Future<PreferredDeviceConnectionSuspensionResult>
+  suspendPreferredDeviceConnection();
+
   Future<void> disconnectDevice();
   Future<List<EixamBleScanResult>> scanBleDevices({
     Duration timeout = const Duration(seconds: 8),

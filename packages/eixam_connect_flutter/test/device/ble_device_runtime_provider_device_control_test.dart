@@ -318,6 +318,45 @@ void main() {
       );
     });
 
+    test('suspend disconnects while preserving the phone association',
+        () async {
+      final pairedStatus = await _pairDemoDevice(runtimeProvider);
+
+      final status = await runtimeProvider.suspendConnection(pairedStatus);
+
+      expect(status.deviceId, MockBleClient.demoDeviceId);
+      expect(status.paired, isTrue);
+      expect(status.connected, isFalse);
+      expect(status.lifecycleState, DeviceLifecycleState.paired);
+      expect(
+        await bleClient.isConnected(MockBleClient.demoDeviceId),
+        isFalse,
+      );
+      expect(bleClient.systemAssociationAvailable, isTrue);
+      expect(bleClient.removedSystemAssociations, isEmpty);
+    });
+
+    test('suspend is idempotent when the paired device is already offline',
+        () async {
+      final currentStatus = buildDeviceStatus(
+        deviceId: MockBleClient.demoDeviceId,
+        paired: true,
+        activated: true,
+        connected: false,
+        lifecycleState: DeviceLifecycleState.paired,
+      );
+
+      final first = await runtimeProvider.suspendConnection(currentStatus);
+      final second = await runtimeProvider.suspendConnection(first);
+
+      expect(second.deviceId, MockBleClient.demoDeviceId);
+      expect(second.paired, isTrue);
+      expect(second.activated, isTrue);
+      expect(second.connected, isFalse);
+      expect(bleClient.systemAssociationAvailable, isTrue);
+      expect(bleClient.removedSystemAssociations, isEmpty);
+    });
+
     test('unpair removes a saved phone Bluetooth association while offline',
         () async {
       final status = await runtimeProvider.unpair(

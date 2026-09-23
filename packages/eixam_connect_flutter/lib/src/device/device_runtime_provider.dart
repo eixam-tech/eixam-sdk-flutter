@@ -1,9 +1,6 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
-enum DeviceRefreshMode {
-  heartbeat,
-  manual,
-}
+enum DeviceRefreshMode { heartbeat, manual }
 
 /// Abstraction for the runtime source of device state.
 ///
@@ -11,16 +8,20 @@ enum DeviceRefreshMode {
 /// public SDK or the repository orchestration layer.
 abstract class DeviceRuntimeProvider {
   Stream<DeviceStatus> watchRuntimeStatus();
-  Future<DeviceStatus> pair(
-      {required DeviceStatus currentStatus, required String pairingCode});
+  Future<DeviceStatus> pair({
+    required DeviceStatus currentStatus,
+    required String pairingCode,
+  });
   Future<DeviceStatus> reconnect({
     required DeviceStatus currentStatus,
     required PreferredDevice preferredDevice,
     String? attemptId,
     bool Function()? canCreateGatt,
   });
-  Future<DeviceStatus> activate(
-      {required DeviceStatus currentStatus, required String activationCode});
+  Future<DeviceStatus> activate({
+    required DeviceStatus currentStatus,
+    required String activationCode,
+  });
   Future<DeviceStatus> refresh(
     DeviceStatus currentStatus, {
     DeviceRefreshMode mode = DeviceRefreshMode.manual,
@@ -29,5 +30,6 @@ abstract class DeviceRuntimeProvider {
   Future<RuntimeIdentitySnapshot> getRuntimeIdentitySnapshot(
     DeviceStatus currentStatus,
   );
+  Future<DeviceStatus> suspendConnection(DeviceStatus currentStatus);
   Future<DeviceStatus> unpair(DeviceStatus currentStatus);
 }

@@ -10,6 +10,7 @@ import '../device/ble_debug_registry.dart';
 import '../device/known_device_reconnect_repository.dart';
 import '../device/preferred_ble_device.dart';
 import '../device/preferred_device_availability_repository.dart';
+import '../device/preferred_device_connection_suspension_repository.dart';
 
 class BleAutoReconnectCoordinator {
   BleAutoReconnectCoordinator({
@@ -246,6 +247,64 @@ class BleAutoReconnectCoordinator {
     _lateAvailabilityWaitingDesired = false;
     _cancelPreferredReconnectCampaign(reason: 'session_cleared');
     _pauseLateAvailabilityWatcher(reason: 'session_cleared');
+  }
+
+  bool get manualDisconnectRequested => _manualDisconnectRequested;
+
+  bool get reconnectCampaignActive => _preferredReconnectCampaign != null;
+
+  bool get lateAvailabilityWatcherActive => _lateAvailabilityWatchTask != null;
+
+  bool get connectionAttemptActive =>
+      _isConnectionAttemptInProgress ||
+      _activeConnectionOperationSettlement != null;
+
+  /// Establishes authoritative, non-destructive preferred-device isolation.
+  Future<DeviceStatus> suspendPreferredDeviceConnection() async {
+    await onManualDisconnect();
+
+    final campaign = _preferredReconnectCampaign;
+    if (campaign != null) {
+      try {
+        await campaign;
+      } catch (_) {
+        // Cancellation/settlement is expected; the underlying operation is
+        // drained below before the runtime connection is detached.
+      }
+    }
+    await _drainActiveConnectionOperation();
+
+    final lateWatcher = _lateAvailabilityWatchTask;
+    if (lateWatcher != null) {
+      await lateWatcher;
+    }
+
+    final repository = _deviceRepository;
+    if (repository is! PreferredDeviceConnectionSuspensionRepository) {
+      throw StateError(
+        'The device repository cannot suspend a preferred connection.',
+      );
+    }
+    final suspensionRepository =
+        repository as PreferredDeviceConnectionSuspensionRepository;
+
+    await suspensionRepository.suspendPreferredDeviceConnection();
+    await _drainActiveConnectionOperation();
+    var status = await _deviceRepository.getDeviceStatus();
+    if (status.connected) {
+      status = await suspensionRepository.suspendPreferredDeviceConnection();
+    }
+
+    if (status.connected ||
+        reconnectCampaignActive ||
+        lateAvailabilityWatcherActive ||
+        connectionAttemptActive ||
+        !_manualDisconnectRequested) {
+      throw StateError(
+        'Preferred device suspension did not reach a quiescent state.',
+      );
+    }
+    return status;
   }
 
   Future<PreferredDeviceReconnectResult> tryAutoConnectForHandoff({

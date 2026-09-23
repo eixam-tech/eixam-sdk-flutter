@@ -188,6 +188,47 @@ void main() {
       await runtimeProvider.dispose();
     });
 
+    test('suspend preserves paired identity and persists disconnected status',
+        () async {
+      final store = MemorySharedPrefsSdkStore();
+      final runtimeProvider = FakeDeviceRuntimeProvider()
+        ..pairResult = buildDeviceStatus(
+          deviceId: 'device-42',
+          paired: true,
+          activated: true,
+          connected: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        );
+      final repository = InMemoryDeviceRepository(
+        runtimeProvider: runtimeProvider,
+        localStore: store,
+      );
+
+      await repository.pairDevice(pairingCode: '1234');
+      final result = await repository.suspendPreferredDeviceConnection();
+
+      expect(runtimeProvider.suspendCallCount, 1);
+      expect(result.deviceId, 'device-42');
+      expect(result.paired, isTrue);
+      expect(result.activated, isTrue);
+      expect(result.connected, isFalse);
+      expect(result.lifecycleState, DeviceLifecycleState.paired);
+      expect(
+        store.jsonValues[SharedPrefsSdkStore.deviceStatusKey]?['deviceId'],
+        'device-42',
+      );
+      expect(
+        store.jsonValues[SharedPrefsSdkStore.deviceStatusKey]?['paired'],
+        isTrue,
+      );
+      expect(
+        store.jsonValues[SharedPrefsSdkStore.deviceStatusKey]?['connected'],
+        isFalse,
+      );
+      await repository.dispose();
+      await runtimeProvider.dispose();
+    });
+
     test('reconnectDevice keeps paired runtime state for non-SDK BLE errors',
         () async {
       final runtimeProvider = FakeDeviceRuntimeProvider()

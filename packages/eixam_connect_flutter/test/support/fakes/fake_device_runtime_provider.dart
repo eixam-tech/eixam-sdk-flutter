@@ -11,12 +11,14 @@ class FakeDeviceRuntimeProvider implements DeviceRuntimeProvider {
   DeviceStatus? reconnectResult;
   DeviceStatus? activateResult;
   DeviceStatus? refreshResult;
+  DeviceStatus? suspendResult;
   DeviceStatus? unpairResult;
   DeviceException? pairError;
   Object? reconnectError;
   DeviceException? activateError;
   final List<Object> refreshErrors = <Object>[];
   int refreshCallCount = 0;
+  int suspendCallCount = 0;
   DeviceRefreshMode? lastRefreshMode;
   bool? lastForceFirmwareRead;
 
@@ -101,6 +103,20 @@ class FakeDeviceRuntimeProvider implements DeviceRuntimeProvider {
           : RuntimeIdentityReadinessReason.noConnectedDevice,
       lastUpdatedAt: currentStatus.lastSyncedAt ?? currentStatus.lastSeen,
     );
+  }
+
+  @override
+  Future<DeviceStatus> suspendConnection(DeviceStatus currentStatus) async {
+    suspendCallCount++;
+    return suspendResult ??
+        currentStatus.copyWith(
+          connected: false,
+          lifecycleState: currentStatus.paired
+              ? DeviceLifecycleState.paired
+              : currentStatus.lifecycleState,
+          signalQuality: null,
+          clearProvisioningError: true,
+        );
   }
 
   @override

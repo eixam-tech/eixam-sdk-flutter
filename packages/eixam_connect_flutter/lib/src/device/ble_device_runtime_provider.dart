@@ -1363,6 +1363,59 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   }
 
   @override
+  Future<DeviceStatus> suspendConnection(DeviceStatus currentStatus) async {
+    await _connectionStateSubscription?.cancel();
+    _connectionStateSubscription = null;
+    await _notificationSubscription?.cancel();
+    _notificationSubscription = null;
+    BleDebugRegistry.instance.recordEvent(
+      'BLE SOS runtime detach requested -> '
+      'hardwareId=${_connectedDeviceId ?? "-"} '
+      'reason=preferred_connection_suspended '
+      'inetAvailable=${BleDebugRegistry.instance.currentState.inetFound} '
+      'cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound}',
+    );
+    await _deviceSosController.detach();
+    final connectedDeviceId = _connectedDeviceId;
+    if (connectedDeviceId != null) {
+      await _bleClient.disconnect(connectedDeviceId);
+    }
+    _connectedDeviceId = null;
+    _connectedDeviceAlias = null;
+    _connectedCanonicalHardwareId = null;
+    _lastAppCommandAt = null;
+    _lastTelBatteryLevel = null;
+    _lastSosBatteryLevel = null;
+    _connectedBleTagNodeId = null;
+    _recentSosPacketSignatures.clear();
+    _telReassembler.reset();
+    _telRelayAssemblyActive = false;
+    BleDebugRegistry.instance.update(
+      connectionStatus: BleConnectionStatus.disconnectedManual,
+      connectionError: null,
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'Preferred device connection suspended',
+    );
+
+    final nextStatus = currentStatus.copyWith(
+      connected: false,
+      lifecycleState: currentStatus.paired
+          ? DeviceLifecycleState.paired
+          : currentStatus.lifecycleState,
+      signalQuality: null,
+      lastSeen: DateTime.now(),
+      lastSyncedAt: DateTime.now(),
+      clearProvisioningError: true,
+    );
+    _publishRuntimeStatus(
+      nextStatus,
+      reason: 'preferred_device_connection_suspended',
+    );
+    return nextStatus;
+  }
+
+  @override
   Future<DeviceStatus> unpair(DeviceStatus currentStatus) async {
     final systemAssociationDeviceId =
         _connectedDeviceId?.trim().isNotEmpty == true

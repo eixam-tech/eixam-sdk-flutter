@@ -2892,6 +2892,46 @@ class EixamConnectSdkImpl
   }
 
   @override
+  Future<PreferredDeviceConnectionSuspensionResult>
+  suspendPreferredDeviceConnection() async {
+    _manualDisconnectRequested = true;
+    await _bleAutoReconnectCoordinator.onManualDisconnect();
+    await _stopProtectionRuntimeForManualUnpair();
+
+    final preferredBefore = await preferredBleDeviceStore.getPreferredDevice();
+    final status = await _bleAutoReconnectCoordinator
+        .suspendPreferredDeviceConnection();
+    _lastDeviceStatus = status;
+    _publishPublicDeviceStatus(
+      rawStatus: status,
+      reason: 'preferred_device_connection_suspended',
+    );
+    final preferredAfter = await preferredBleDeviceStore.getPreferredDevice();
+    final preferredDeviceRetained =
+        preferredBefore == null ||
+        (preferredAfter != null &&
+            preferredAfter.deviceId == preferredBefore.deviceId);
+    final result = PreferredDeviceConnectionSuspensionResult(
+      deviceStatus: status,
+      manualReconnectSuppressed:
+          _bleAutoReconnectCoordinator.manualDisconnectRequested,
+      reconnectCampaignActive:
+          _bleAutoReconnectCoordinator.reconnectCampaignActive,
+      lateAvailabilityWatcherActive:
+          _bleAutoReconnectCoordinator.lateAvailabilityWatcherActive,
+      connectionAttemptActive:
+          _bleAutoReconnectCoordinator.connectionAttemptActive,
+      preferredDeviceRetained: preferredDeviceRetained,
+    );
+    if (!result.isQuiescent || !result.preferredDeviceRetained) {
+      throw StateError(
+        'Preferred device suspension did not complete authoritatively.',
+      );
+    }
+    return result;
+  }
+
+  @override
   Future<void> disconnectDevice() {
     return unpairDevice();
   }
@@ -4939,7 +4979,8 @@ class EixamConnectSdkImpl
     required int eventSequence,
     required bool acceptedPhysicalStart,
   }) async {
-    final effectiveCycleKey = cycleKey ??
+    final effectiveCycleKey =
+        cycleKey ??
         (acceptedPhysicalStart
             ? 'accepted:${status.nodeId ?? _knownLocalDeviceNodeId ?? "unknown"}:'
                   '${status.lastPacketSignature ?? status.lastPacketHex ?? status.updatedAt.microsecondsSinceEpoch}'
@@ -4989,6 +5030,7 @@ class EixamConnectSdkImpl
         'reason=${committed ? "generation_committed" : "newer_generation_won"}',
       );
     }
+
     if (status.state == DeviceSosState.preConfirm) {
       if (!_sosLifecycle.current.isOpen) {
         final lifecycle = await _sosLifecycle.beginArming(
