@@ -9,8 +9,10 @@ class FakeDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
   DeviceStatus? pairResult;
   DeviceStatus? reconnectResult;
+  Future<DeviceStatus>? reconnectFuture;
   DeviceStatus? activateResult;
   DeviceStatus? refreshResult;
+  Future<DeviceStatus>? refreshFuture;
   DeviceStatus? suspendResult;
   DeviceStatus? unpairResult;
   DeviceException? pairError;
@@ -50,6 +52,9 @@ class FakeDeviceRuntimeProvider implements DeviceRuntimeProvider {
     if (reconnectError != null) {
       throw reconnectError!;
     }
+    if (reconnectFuture != null) {
+      return reconnectFuture!;
+    }
     return reconnectResult ??
         currentStatus.copyWith(
           deviceId: preferredDevice.deviceId,
@@ -85,6 +90,9 @@ class FakeDeviceRuntimeProvider implements DeviceRuntimeProvider {
     lastForceFirmwareRead = forceFirmwareRead;
     if (refreshErrors.isNotEmpty) {
       throw refreshErrors.removeAt(0);
+    }
+    if (refreshFuture != null) {
+      return refreshFuture!;
     }
     return refreshResult ?? currentStatus;
   }

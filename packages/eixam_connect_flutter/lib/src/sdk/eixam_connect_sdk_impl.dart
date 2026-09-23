@@ -2896,7 +2896,7 @@ class EixamConnectSdkImpl
   suspendPreferredDeviceConnection() async {
     _manualDisconnectRequested = true;
     await _bleAutoReconnectCoordinator.onManualDisconnect();
-    await _stopProtectionRuntimeForManualUnpair();
+    await _stopProtectionRuntimeForPreferredSuspension();
 
     final preferredBefore = await preferredBleDeviceStore.getPreferredDevice();
     final status = await _bleAutoReconnectCoordinator
@@ -3638,6 +3638,35 @@ class EixamConnectSdkImpl
     } catch (error) {
       BleDebugRegistry.instance.recordEvent(
         'Protection runtime stop before manual unpair failed: $error',
+      );
+    }
+  }
+
+  Future<void> _stopProtectionRuntimeForPreferredSuspension() async {
+    final status = _protectionModeController.currentStatus;
+    if (!status.protectionRuntimeActive &&
+        !status.foregroundServiceRunning &&
+        status.bleOwner == ProtectionBleOwner.flutter) {
+      return;
+    }
+    try {
+      final stopped = await _protectionModeController.exit();
+      if (stopped.protectionRuntimeActive ||
+          stopped.foregroundServiceRunning ||
+          stopped.bleOwner != ProtectionBleOwner.flutter) {
+        throw StateError('Protection runtime remained active after stop.');
+      }
+      BleDebugRegistry.instance.recordEvent(
+        'Protection runtime stopped before preferred device suspension',
+      );
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'Protection runtime stop before preferred device suspension failed: '
+        '$error',
+      );
+      throw DeviceException(
+        'E_DEVICE_PROTECTION_STOP_FAILED',
+        'Protection runtime could not be stopped authoritatively: $error',
       );
     }
   }

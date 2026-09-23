@@ -32,11 +32,20 @@ class InMemoryDeviceRepository
     _runtimeStatusSub = _runtimeProvider.watchRuntimeStatus().listen((
       status,
     ) async {
+      if (_connectivitySuspended && status.connected) {
+        BleDebugRegistry.instance.recordEvent(
+          'InMemoryDeviceRepository.runtime_status -> stale_connected_discarded '
+          'generation=$_deviceStateGeneration',
+        );
+        return;
+      }
+      final generation = ++_deviceStateGeneration;
       final previous = _status;
       _status = status;
       await _persistAndEmitIfChanged(
         previous: previous,
         source: 'runtime_status',
+        generation: generation,
       );
     });
   }
@@ -51,6 +60,9 @@ class InMemoryDeviceRepository
   Timer? _heartbeatTimer;
   bool _disposed = false;
   bool _loggedLightweightHeartbeat = false;
+  int _deviceStateGeneration = 0;
+  bool _connectivitySuspended = false;
+  Future<void> _devicePersistenceTail = Future<void>.value();
   DeviceStatus _status = const DeviceStatus(
     deviceId: '',
     deviceAlias: null,
@@ -83,16 +95,22 @@ class InMemoryDeviceRepository
 
   @override
   Future<DeviceStatus> pairDevice({required String pairingCode}) async {
-    await _setLifecycle(DeviceLifecycleState.pairing);
+    final generation = ++_deviceStateGeneration;
+    _connectivitySuspended = false;
+    await _setLifecycle(DeviceLifecycleState.pairing, generation: generation);
     try {
-      _status = await _runtimeProvider.pair(
+      final result = await _runtimeProvider.pair(
         currentStatus: _status,
         pairingCode: pairingCode,
       );
-      await _persistAndEmit();
+      if (!_isCurrentGeneration(generation)) return _status;
+      _status = result;
+      await _persistAndEmit(generation: generation);
+      if (!_isCurrentGeneration(generation)) return _status;
       _startHeartbeat();
       return _status;
     } on DeviceException catch (error) {
+      if (!_isCurrentGeneration(generation)) return _status;
       if (_isMobileBondRequired(error)) {
         await _setMobileBondMissing(source: 'pair_mobile_bond_missing');
       } else {
@@ -114,6 +132,8 @@ class InMemoryDeviceRepository
         'A preferred BLE device id is required before reconnecting.',
       );
     }
+    final generation = _deviceStateGeneration;
+    if (_connectivitySuspended) return _status;
     final previous = _status;
     final reconnectingStatus = _status.copyWith(
       deviceId: device.deviceId,
@@ -127,18 +147,25 @@ class InMemoryDeviceRepository
     await _persistAndEmitIfChanged(
       previous: previous,
       source: 'reconnect_device_start',
+      generation: generation,
     );
     try {
-      _status = await _runtimeProvider.reconnect(
+      final result = await _runtimeProvider.reconnect(
         currentStatus: _status,
         preferredDevice: device,
         attemptId: attemptId,
         canCreateGatt: canCreateGatt,
       );
-      await _persistAndEmit();
+      if (!_isCurrentGeneration(generation) || _connectivitySuspended) {
+        return _status;
+      }
+      _status = result;
+      await _persistAndEmit(generation: generation);
+      if (!_isCurrentGeneration(generation)) return _status;
       _startHeartbeat();
       return _status;
     } on DeviceException catch (error) {
+      if (!_isCurrentGeneration(generation)) return _status;
       if (_isMobileBondRequired(error)) {
         await _setMobileBondMissing(source: 'mobile_bond_missing');
       } else {
@@ -146,6 +173,7 @@ class InMemoryDeviceRepository
       }
       rethrow;
     } catch (_) {
+      if (!_isCurrentGeneration(generation)) return _status;
       await _setReconnectUnavailable();
       rethrow;
     }
@@ -169,16 +197,24 @@ class InMemoryDeviceRepository
 
   @override
   Future<DeviceStatus> activateDevice({required String activationCode}) async {
-    await _setLifecycle(DeviceLifecycleState.activating);
+    final generation = _deviceStateGeneration;
+    await _setLifecycle(
+      DeviceLifecycleState.activating,
+      generation: generation,
+    );
     try {
-      _status = await _runtimeProvider.activate(
+      final result = await _runtimeProvider.activate(
         currentStatus: _status,
         activationCode: activationCode,
       );
-      await _persistAndEmit();
+      if (!_isCurrentGeneration(generation)) return _status;
+      _status = result;
+      await _persistAndEmit(generation: generation);
+      if (!_isCurrentGeneration(generation)) return _status;
       _startHeartbeat();
       return _status;
     } on DeviceException catch (error) {
+      if (!_isCurrentGeneration(generation)) return _status;
       await _setFailure(error.message);
       rethrow;
     }
@@ -189,11 +225,15 @@ class InMemoryDeviceRepository
 
   @override
   Future<DeviceStatus> refreshDeviceStatus() async {
+    final generation = _deviceStateGeneration;
     final previous = _status;
-    _status = await _runtimeProvider.refresh(_status);
+    final result = await _runtimeProvider.refresh(_status);
+    if (!_isCurrentGeneration(generation)) return _status;
+    _status = result;
     await _persistAndEmitIfChanged(
       previous: previous,
       source: 'refresh_device_status',
+      generation: generation,
     );
     return _status;
   }
@@ -201,9 +241,19 @@ class InMemoryDeviceRepository
   Future<DeviceStatus> refreshDeviceStatusForFirmwareValidation({
     required String reason,
   }) async {
+    final generation = _deviceStateGeneration;
     final previous = _status;
-    _status = await _runtimeProvider.refresh(_status, forceFirmwareRead: true);
-    await _persistAndEmitIfChanged(previous: previous, source: reason);
+    final result = await _runtimeProvider.refresh(
+      _status,
+      forceFirmwareRead: true,
+    );
+    if (!_isCurrentGeneration(generation)) return _status;
+    _status = result;
+    await _persistAndEmitIfChanged(
+      previous: previous,
+      source: reason,
+      generation: generation,
+    );
     return _status;
   }
 
@@ -229,11 +279,23 @@ class InMemoryDeviceRepository
   @override
   Future<DeviceStatus> suspendPreferredDeviceConnection() async {
     _stopHeartbeat();
+    final generation = ++_deviceStateGeneration;
+    _connectivitySuspended = true;
     final previous = _status;
-    _status = await _runtimeProvider.suspendConnection(_status);
+    final result = await _runtimeProvider.suspendConnection(_status);
+    if (!_isCurrentGeneration(generation)) return _status;
+    _status = result.connected
+        ? result.copyWith(
+            connected: false,
+            lifecycleState: result.paired
+                ? DeviceLifecycleState.paired
+                : result.lifecycleState,
+          )
+        : result;
     await _persistAndEmitIfChanged(
       previous: previous,
       source: 'preferred_device_connection_suspended',
+      generation: generation,
     );
     return _status;
   }
@@ -241,8 +303,10 @@ class InMemoryDeviceRepository
   @override
   Future<void> unpairDevice() async {
     _stopHeartbeat();
+    final generation = ++_deviceStateGeneration;
+    _connectivitySuspended = true;
     _status = await _runtimeProvider.unpair(_status);
-    await _persistAndEmit();
+    await _persistAndEmit(generation: generation);
   }
 
   @override
@@ -376,6 +440,7 @@ class InMemoryDeviceRepository
       try {
         if (_disposed) return;
         if (!_status.connected) return;
+        final generation = _deviceStateGeneration;
         final previous = _status;
         if (!_loggedLightweightHeartbeat) {
           BleDebugRegistry.instance.recordEvent(
@@ -383,12 +448,17 @@ class InMemoryDeviceRepository
           );
           _loggedLightweightHeartbeat = true;
         }
-        _status = await _runtimeProvider.refresh(
+        final result = await _runtimeProvider.refresh(
           _status,
           mode: DeviceRefreshMode.heartbeat,
         );
-        if (_disposed) return;
-        await _persistAndEmitIfChanged(previous: previous, source: 'heartbeat');
+        if (_disposed || !_isCurrentGeneration(generation)) return;
+        _status = result;
+        await _persistAndEmitIfChanged(
+          previous: previous,
+          source: 'heartbeat',
+          generation: generation,
+        );
       } catch (error) {
         BleDebugRegistry.instance.recordEvent(
           'InMemoryDeviceRepository.heartbeat_failed -> errorType=${error.runtimeType}',
@@ -413,13 +483,16 @@ class InMemoryDeviceRepository
     );
   }
 
-  Future<void> _setLifecycle(DeviceLifecycleState nextState) async {
+  Future<void> _setLifecycle(
+    DeviceLifecycleState nextState, {
+    int? generation,
+  }) async {
     _status = _status.copyWith(
       lifecycleState: nextState,
       clearProvisioningError: true,
       lastSyncedAt: DateTime.now(),
     );
-    await _persistAndEmit();
+    await _persistAndEmit(generation: generation);
   }
 
   Future<void> _setFailure(String message) async {
@@ -462,11 +535,13 @@ class InMemoryDeviceRepository
         error.code == DeviceException.bleIosPairingInformationRemovedCode;
   }
 
-  Future<void> _persistAndEmit() async {
-    await _localStore?.saveJson(
-      SharedPrefsSdkStore.deviceStatusKey,
-      LocalStateSerializers.deviceStatusToJson(_status),
-    );
+  bool _isCurrentGeneration(int generation) =>
+      generation == _deviceStateGeneration;
+
+  Future<void> _persistAndEmit({int? generation}) async {
+    if (generation != null && !_isCurrentGeneration(generation)) return;
+    await _persistStatusInMutationOrder(_status);
+    if (generation != null && !_isCurrentGeneration(generation)) return;
     if (_controller.isClosed) {
       return;
     }
@@ -476,11 +551,11 @@ class InMemoryDeviceRepository
   Future<void> _persistAndEmitIfChanged({
     required DeviceStatus previous,
     required String source,
+    int? generation,
   }) async {
-    await _localStore?.saveJson(
-      SharedPrefsSdkStore.deviceStatusKey,
-      LocalStateSerializers.deviceStatusToJson(_status),
-    );
+    if (generation != null && !_isCurrentGeneration(generation)) return;
+    await _persistStatusInMutationOrder(_status);
+    if (generation != null && !_isCurrentGeneration(generation)) return;
 
     if (_controller.isClosed) {
       return;
@@ -497,6 +572,26 @@ class InMemoryDeviceRepository
     BleDebugRegistry.instance.recordEvent(
       'InMemoryDeviceRepository.$source -> effective_change=false emit_skipped hardwareId=${_status.deviceId} nodeId=${_status.nodeId?.toString() ?? "-"} connected=${_status.connected} lifecycle=${_status.lifecycleState.name}',
     );
+  }
+
+  Future<void> _persistStatusInMutationOrder(DeviceStatus status) async {
+    final previousPersistence = _devicePersistenceTail;
+    final turn = Completer<void>();
+    _devicePersistenceTail = turn.future;
+    try {
+      try {
+        await previousPersistence;
+      } catch (_) {
+        // The earlier caller observes its own persistence failure. A later,
+        // authoritative state must still get a chance to persist.
+      }
+      await _localStore?.saveJson(
+        SharedPrefsSdkStore.deviceStatusKey,
+        LocalStateSerializers.deviceStatusToJson(status),
+      );
+    } finally {
+      turn.complete();
+    }
   }
 
   bool _hasEffectiveStatusChange(DeviceStatus previous, DeviceStatus next) {

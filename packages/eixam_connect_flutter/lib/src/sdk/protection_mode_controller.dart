@@ -56,6 +56,7 @@ class ProtectionModeController {
 
   StreamSubscription<ProtectionPlatformEvent>? _platformEventsSub;
   ProtectionModeOptions? _activeOptions;
+  bool _nativeConnectivitySuppressed = false;
   int? _latestNativeCommandSessionGeneration;
   ProtectionStatus _status = ProtectionStatus(
     modeState: ProtectionModeState.off,
@@ -137,6 +138,8 @@ class ProtectionModeController {
         blockingIssues: blockingIssues,
       );
     }
+
+    _nativeConnectivitySuppressed = false;
 
     final preStartNativeOwner = _nativeBleOwner;
     final handedBleToNativeBeforeStart =
@@ -268,6 +271,7 @@ class ProtectionModeController {
   }
 
   Future<ProtectionStatus> exit() async {
+    _nativeConnectivitySuppressed = true;
     _status = _status.copyWith(
       modeState: ProtectionModeState.stopping,
       runtimeState: ProtectionRuntimeState.inactive,
@@ -309,6 +313,9 @@ class ProtectionModeController {
   }
 
   Future<ProtectionStatus> rehydrate() async {
+    if (_nativeConnectivitySuppressed) {
+      return _status;
+    }
     final previousBleOwner = _status.bleOwner;
     final platformSnapshot = await platformAdapter.getPlatformSnapshot();
     final hasRecoveredRuntime =
@@ -715,6 +722,15 @@ class ProtectionModeController {
   }
 
   void _handlePlatformEvent(ProtectionPlatformEvent event) {
+    if (_nativeConnectivitySuppressed &&
+        _canEstablishNativeConnectivity(event)) {
+      _diagnostics = _diagnostics.copyWith(
+        lastBleServiceEvent: 'suppressedNativeConnectivityIgnored',
+        lastBleServiceEventAt: event.timestamp,
+      );
+      _emitDiagnostics();
+      return;
+    }
     final nativeOwner = _nativeBleOwner;
     _diagnostics = _diagnostics.copyWith(
       lastPlatformEvent: event.type.name,
@@ -1081,6 +1097,28 @@ class ProtectionModeController {
     if (shouldRehydrate) {
       unawaited(rehydrate());
     }
+  }
+
+  bool _canEstablishNativeConnectivity(ProtectionPlatformEvent event) {
+    return switch (event.type) {
+      ProtectionPlatformEventType.serviceStarted ||
+      ProtectionPlatformEventType.serviceRestarted ||
+      ProtectionPlatformEventType.runtimeStarting ||
+      ProtectionPlatformEventType.runtimeStarted ||
+      ProtectionPlatformEventType.runtimeActive ||
+      ProtectionPlatformEventType.runtimeRecovered ||
+      ProtectionPlatformEventType.runtimeRestarted ||
+      ProtectionPlatformEventType.deviceConnecting ||
+      ProtectionPlatformEventType.deviceConnected ||
+      ProtectionPlatformEventType.servicesDiscovered ||
+      ProtectionPlatformEventType.subscriptionsActive ||
+      ProtectionPlatformEventType.packetReceived ||
+      ProtectionPlatformEventType.sosEventReceived ||
+      ProtectionPlatformEventType.ownDeviceSosLifecycleObserved => true,
+      ProtectionPlatformEventType.nativeCommandReadinessChanged =>
+        event.nativeOwner == true || event.gattConnected == true,
+      _ => false,
+    };
   }
 
   bool _isPlatformBleOwner(ProtectionBleOwner owner) {

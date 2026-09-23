@@ -140,6 +140,53 @@ void main() {
       );
     },
   );
+
+  test(
+    'exit stops native runtime and rejects a late connected event',
+    () async {
+      final adapter = _OrderingProtectionPlatformAdapter(
+        flutterReleased: () => true,
+      );
+      final controller = _testController(adapter);
+      addTearDown(controller.dispose);
+      addTearDown(adapter.dispose);
+      expect((await controller.enter()).success, isTrue);
+
+      final stopped = await controller.exit();
+      adapter.emit(
+        ProtectionPlatformEvent(
+          type: ProtectionPlatformEventType.deviceConnected,
+          timestamp: DateTime.utc(2026, 9, 23),
+          reason: 'late_old_native_session',
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(adapter.stopCalls, 1);
+      expect(stopped.modeState, ProtectionModeState.off);
+      expect(controller.currentStatus.deviceConnected, isFalse);
+      expect(controller.currentStatus.bleOwner, ProtectionBleOwner.flutter);
+      expect(
+        (await controller.getDiagnostics()).lastBleServiceEvent,
+        'suppressedNativeConnectivityIgnored',
+      );
+    },
+  );
+
+  test('exit propagates a native runtime stop failure', () async {
+    final adapter = _OrderingProtectionPlatformAdapter(
+      flutterReleased: () => true,
+    )..stopError = StateError('native stop failed');
+    final controller = _testController(adapter);
+    addTearDown(controller.dispose);
+    addTearDown(adapter.dispose);
+    expect((await controller.enter()).success, isTrue);
+
+    await expectLater(controller.exit(), throwsA(isA<StateError>()));
+
+    expect(adapter.stopCalls, 1);
+    expect(controller.currentStatus.modeState, ProtectionModeState.stopping);
+  });
 }
 
 ProtectionModeController _testController(ProtectionPlatformAdapter adapter) {
@@ -181,6 +228,8 @@ final class _OrderingProtectionPlatformAdapter extends Fake
       StreamController<ProtectionPlatformEvent>.broadcast();
   bool started = false;
   bool startObservedFlutterReleased = false;
+  int stopCalls = 0;
+  Object? stopError;
 
   void emit(ProtectionPlatformEvent event) => _events.add(event);
 
@@ -224,6 +273,14 @@ final class _OrderingProtectionPlatformAdapter extends Fake
       runtimeState: ProtectionRuntimeState.active,
       coverageLevel: ProtectionCoverageLevel.partial,
     );
+  }
+
+  @override
+  Future<void> stopProtectionRuntime() async {
+    stopCalls += 1;
+    final error = stopError;
+    if (error != null) throw error;
+    started = false;
   }
 
   @override

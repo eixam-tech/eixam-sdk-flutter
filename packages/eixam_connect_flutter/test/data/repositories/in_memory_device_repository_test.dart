@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/shared_prefs_sdk_store.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/in_memory_device_repository.dart';
@@ -225,6 +227,112 @@ void main() {
         store.jsonValues[SharedPrefsSdkStore.deviceStatusKey]?['connected'],
         isFalse,
       );
+      await repository.dispose();
+      await runtimeProvider.dispose();
+    });
+
+    test('suspend rejects a stale reconnect completion', () async {
+      final reconnect = Completer<DeviceStatus>();
+      final runtimeProvider = FakeDeviceRuntimeProvider()
+        ..pairResult = buildDeviceStatus(
+          deviceId: 'device-42',
+          paired: true,
+          activated: true,
+          connected: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        )
+        ..reconnectFuture = reconnect.future;
+      final repository = InMemoryDeviceRepository(
+        runtimeProvider: runtimeProvider,
+        localStore: MemorySharedPrefsSdkStore(),
+      );
+      await repository.pairDevice(pairingCode: '1234');
+      final emitted = <DeviceStatus>[];
+      final subscription = repository.watchDeviceStatus().listen(emitted.add);
+
+      final pendingReconnect = repository.reconnectDevice(
+        device: PreferredDevice(
+          deviceId: 'device-42',
+          lastConnectedAt: DateTime(2026),
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      final suspended = await repository.suspendPreferredDeviceConnection();
+      reconnect.complete(
+        suspended.copyWith(
+          connected: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        ),
+      );
+      await pendingReconnect;
+      await Future<void>.delayed(Duration.zero);
+
+      expect((await repository.getDeviceStatus()).connected, isFalse);
+      expect(emitted.where((status) => status.connected), isEmpty);
+      await subscription.cancel();
+      await repository.dispose();
+      await runtimeProvider.dispose();
+    });
+
+    test('suspend rejects a stale refresh completion', () async {
+      final refresh = Completer<DeviceStatus>();
+      final runtimeProvider = FakeDeviceRuntimeProvider()
+        ..pairResult = buildDeviceStatus(
+          deviceId: 'device-42',
+          paired: true,
+          activated: true,
+          connected: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        )
+        ..refreshFuture = refresh.future;
+      final repository = InMemoryDeviceRepository(
+        runtimeProvider: runtimeProvider,
+        localStore: MemorySharedPrefsSdkStore(),
+      );
+      await repository.pairDevice(pairingCode: '1234');
+
+      final pendingRefresh = repository.refreshDeviceStatus();
+      await Future<void>.delayed(Duration.zero);
+      final suspended = await repository.suspendPreferredDeviceConnection();
+      refresh.complete(
+        suspended.copyWith(
+          connected: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        ),
+      );
+      final refreshed = await pendingRefresh;
+
+      expect(refreshed.connected, isFalse);
+      expect((await repository.getDeviceStatus()).connected, isFalse);
+      await repository.dispose();
+      await runtimeProvider.dispose();
+    });
+
+    test('connected runtime event is ignored while suspended', () async {
+      final runtimeProvider = FakeDeviceRuntimeProvider()
+        ..pairResult = buildDeviceStatus(
+          deviceId: 'device-42',
+          paired: true,
+          activated: true,
+          connected: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        );
+      final repository = InMemoryDeviceRepository(
+        runtimeProvider: runtimeProvider,
+        localStore: MemorySharedPrefsSdkStore(),
+      );
+      await repository.pairDevice(pairingCode: '1234');
+      final suspended = await repository.suspendPreferredDeviceConnection();
+
+      runtimeProvider.emitRuntimeStatus(
+        suspended.copyWith(
+          connected: true,
+          lifecycleState: DeviceLifecycleState.ready,
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect((await repository.getDeviceStatus()).connected, isFalse);
       await repository.dispose();
       await runtimeProvider.dispose();
     });
