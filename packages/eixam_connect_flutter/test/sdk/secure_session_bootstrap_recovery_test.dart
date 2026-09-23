@@ -4,6 +4,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/preferred_ble_device_store.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/sdk_session_store.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_identity_remote_data_source.dart';
+import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
 import 'package:eixam_connect_flutter/src/sdk/background_telemetry_platform_adapter.dart';
@@ -60,6 +61,8 @@ void main() {
           await deviceRepository.reconnectStarted.future.timeout(
             const Duration(seconds: 1),
           );
+          await deferredRuntime.timeout(const Duration(seconds: 1));
+          deferredRuntime = null;
 
           expect(deviceRepository.reconnectCallCount, 1);
           final reconnectingCapability = await harness.sdk.getSosCapability();
@@ -69,6 +72,120 @@ void main() {
           await harness.dispose();
           await deferredRuntime?.timeout(const Duration(seconds: 1));
         }
+      },
+    );
+
+    test(
+      'deferred reconnect success still updates the device stream',
+      () async {
+        final deviceRepository = _GatedSuccessfulReconnectDeviceRepository(
+          initialStatus: buildDeviceStatus(
+            paired: false,
+            activated: false,
+            connected: false,
+            lifecycleState: DeviceLifecycleState.unpaired,
+          ),
+        );
+        final harness = _SdkHarness(
+          secureStore: _RecoverySecureStore(startsUnreadable: false),
+          identitySource: _IdentitySource(),
+          recoverUnreadablePersistedSession: false,
+          deviceRepository: deviceRepository,
+          permissionState: const PermissionState(
+            bluetooth: SdkPermissionStatus.granted,
+            bluetoothEnabled: true,
+          ),
+        );
+        addTearDown(harness.dispose);
+        await harness.seedPreferredDevice();
+        await harness.initialize();
+        await harness.attachFreshSession();
+        final connectedStatus = harness.sdk.watchDeviceStatus().firstWhere(
+          (status) => status.connected,
+        );
+
+        await harness.sdk.startDeferredRuntime().timeout(
+          const Duration(seconds: 1),
+        );
+        await deviceRepository.reconnectStarted.future.timeout(
+          const Duration(seconds: 1),
+        );
+        deviceRepository.completeReconnect();
+
+        expect(
+          (await connectedStatus.timeout(const Duration(seconds: 1))).connected,
+          isTrue,
+        );
+      },
+    );
+
+    test('failed mandatory deferred start remains retryable', () async {
+      final registry = _FailOnceDeviceRegistryRepository();
+      final harness = _SdkHarness(
+        secureStore: _RecoverySecureStore(startsUnreadable: false),
+        identitySource: _IdentitySource(),
+        recoverUnreadablePersistedSession: false,
+        deviceRegistryRepository: registry,
+      );
+      addTearDown(harness.dispose);
+      await harness.initialize();
+      await harness.attachFreshSession();
+
+      await expectLater(harness.sdk.startDeferredRuntime(), throwsStateError);
+      await harness.sdk.startDeferredRuntime();
+      await harness.sdk.startDeferredRuntime();
+
+      expect(registry.listCallCount, 2);
+    });
+
+    test(
+      'failed optional reconnect leaves deferred runtime initialized and permits explicit retry',
+      () async {
+        final deviceRepository = FakeDeviceRepository(
+          initialStatus: buildDeviceStatus(
+            paired: false,
+            activated: false,
+            connected: false,
+            lifecycleState: DeviceLifecycleState.unpaired,
+          ),
+        );
+        final harness = _SdkHarness(
+          secureStore: _RecoverySecureStore(startsUnreadable: false),
+          identitySource: _IdentitySource(),
+          recoverUnreadablePersistedSession: false,
+          deviceRepository: deviceRepository,
+          permissionState: const PermissionState(
+            bluetooth: SdkPermissionStatus.granted,
+            bluetoothEnabled: false,
+          ),
+        );
+        addTearDown(harness.dispose);
+        await harness.seedPreferredDevice();
+        await harness.initialize();
+        await harness.attachFreshSession();
+        final reconnectFailed = BleDebugRegistry.instance.watch().firstWhere(
+          (state) => state.events.any(
+            (event) => event.message.contains(
+              'result=bluetoothOff reason=bluetooth_off',
+            ),
+          ),
+        );
+
+        await harness.sdk.startDeferredRuntime();
+        await reconnectFailed.timeout(const Duration(seconds: 1));
+        await harness.sdk.startDeferredRuntime();
+        expect(deviceRepository.reconnectCallCount, 0);
+
+        harness.permissions.permissionState = const PermissionState(
+          bluetooth: SdkPermissionStatus.granted,
+          bluetoothEnabled: true,
+        );
+        final retry = await harness.sdk.reconnectPreferredDevice(
+          reason: 'test_retry',
+        );
+
+        expect(retry.connected, isTrue);
+        expect(deviceRepository.reconnectCallCount, 1);
       },
     );
 
@@ -208,6 +325,7 @@ final class _SdkHarness {
     required _IdentitySource identitySource,
     required bool recoverUnreadablePersistedSession,
     FakeDeviceRepository? deviceRepository,
+    SdkDeviceRegistryRepository? deviceRegistryRepository,
     PermissionState permissionState = const PermissionState(),
   })  : _sosRepository = FakeSosRepository(),
         _trackingRepository = FakeTrackingRepository(),
@@ -222,6 +340,9 @@ final class _SdkHarness {
               ),
             ),
         _deathManRepository = FakeDeathManRepository(),
+        permissions = FakePermissionsRepository(
+          permissionState: permissionState,
+        ),
         _realtimeClient = FakeRealtimeClient(),
         _localStore = MemorySharedPrefsSdkStore() {
     sdk = EixamConnectSdkImpl(
@@ -230,11 +351,10 @@ final class _SdkHarness {
       telemetryRepository: FakeTelemetryRepository(),
       contactsRepository: _contactsRepository,
       deviceRepository: _deviceRepository,
-      deviceRegistryRepository: FakeSdkDeviceRegistryRepository(),
+      deviceRegistryRepository:
+          deviceRegistryRepository ?? FakeSdkDeviceRegistryRepository(),
       deathManRepository: _deathManRepository,
-      permissionsRepository: FakePermissionsRepository(
-        permissionState: permissionState,
-      ),
+      permissionsRepository: permissions,
       notificationsRepository: FakeNotificationsRepository(),
       realtimeClient: _realtimeClient,
       deviceSosController: DeviceSosController(),
@@ -259,6 +379,7 @@ final class _SdkHarness {
   final FakeContactsRepository _contactsRepository;
   final FakeDeviceRepository _deviceRepository;
   final FakeDeathManRepository _deathManRepository;
+  final FakePermissionsRepository permissions;
   final FakeRealtimeClient _realtimeClient;
   final MemorySharedPrefsSdkStore _localStore;
   late final EixamConnectSdkImpl sdk;
@@ -334,6 +455,49 @@ final class _NeverCompletingReconnectDeviceRepository
       reconnectStarted.complete();
     }
     return Completer<DeviceStatus>().future;
+  }
+}
+
+final class _GatedSuccessfulReconnectDeviceRepository
+    extends FakeDeviceRepository {
+  _GatedSuccessfulReconnectDeviceRepository({required super.initialStatus});
+
+  final Completer<void> reconnectStarted = Completer<void>();
+  final Completer<void> _reconnectGate = Completer<void>();
+
+  void completeReconnect() => _reconnectGate.complete();
+
+  @override
+  Future<DeviceStatus> reconnectDevice({
+    required PreferredDevice device,
+    String? attemptId,
+    bool Function()? canCreateGatt,
+  }) async {
+    if (!reconnectStarted.isCompleted) {
+      reconnectStarted.complete();
+    }
+    await _reconnectGate.future;
+    final connected = await super.reconnectDevice(
+      device: device,
+      attemptId: attemptId,
+      canCreateGatt: canCreateGatt,
+    );
+    emitStatus(connected);
+    return connected;
+  }
+}
+
+final class _FailOnceDeviceRegistryRepository
+    extends FakeSdkDeviceRegistryRepository {
+  int listCallCount = 0;
+
+  @override
+  Future<List<BackendRegisteredDevice>> listRegisteredDevices() async {
+    listCallCount++;
+    if (listCallCount == 1) {
+      throw StateError('mandatory startup failed');
+    }
+    return super.listRegisteredDevices();
   }
 }
 

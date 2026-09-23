@@ -749,6 +749,7 @@ class EixamConnectSdkImpl
   late final NearbyTextController _nearbyTextController;
   final Duration _appTriggeredSosBridgeWindow;
   bool _deferredRuntimeWorkPending = false;
+  Future<void>? _deferredRuntimeStart;
   bool _backgroundTelemetryEnabled = false;
   bool _backgroundTelemetryStarted = false;
   BackgroundTrackingState _backgroundTrackingState =
@@ -1541,20 +1542,55 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> startDeferredRuntime() async {
+    final inFlight = _deferredRuntimeStart;
+    if (inFlight != null) {
+      await inFlight;
+      return;
+    }
     final session = _session;
     if (session == null || !_deferredRuntimeWorkPending) {
       return;
     }
-    _deferredRuntimeWorkPending = false;
-    await _startSessionRuntimeWork(
-      trigger: 'deferred_runtime',
-      session: session,
+    final attempt = _startDeferredSessionRuntimeWork(session: session);
+    _deferredRuntimeStart = attempt;
+    try {
+      await attempt;
+      if (_session != null && _sameAuthenticatedPrincipal(_session!, session)) {
+        _deferredRuntimeWorkPending = false;
+      }
+    } finally {
+      if (identical(_deferredRuntimeStart, attempt)) {
+        _deferredRuntimeStart = null;
+      }
+    }
+  }
+
+  Future<void> _startDeferredSessionRuntimeWork({
+    required EixamSession session,
+  }) async {
+    const trigger = 'deferred_runtime';
+    await _startMandatorySessionRuntimeWork(trigger: trigger);
+    _connectRealtimeInBackground(
+      trigger: trigger,
+      sessionForReconnect: session,
     );
+    unawaited(_startBleReconnectInBackground(trigger: trigger));
   }
 
   Future<void> _startSessionRuntimeWork({
     required String trigger,
     required EixamSession session,
+  }) async {
+    await _startMandatorySessionRuntimeWork(trigger: trigger);
+    await _bleAutoReconnectCoordinator.tryAutoConnectOnResume();
+    _connectRealtimeInBackground(
+      trigger: trigger,
+      sessionForReconnect: session,
+    );
+  }
+
+  Future<void> _startMandatorySessionRuntimeWork({
+    required String trigger,
   }) async {
     _operationalTelemetryCoordinator.start(
       initialCadence: _sosLifecycle.currentCadence,
@@ -1564,11 +1600,17 @@ class EixamConnectSdkImpl
       trigger: trigger,
     );
     await _seedPreferredBleDeviceFromBackendRegistryIfNeeded(trigger: trigger);
-    await _bleAutoReconnectCoordinator.tryAutoConnectOnResume();
-    _connectRealtimeInBackground(
-      trigger: trigger,
-      sessionForReconnect: session,
-    );
+  }
+
+  Future<void> _startBleReconnectInBackground({required String trigger}) async {
+    try {
+      await _bleAutoReconnectCoordinator.tryAutoConnectOnResume();
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'BLE deferred runtime reconnect failed -> '
+        'trigger=$trigger errorType=${error.runtimeType}',
+      );
+    }
   }
 
   void _connectRealtimeInBackground({
@@ -1882,6 +1924,7 @@ class EixamConnectSdkImpl
     await _operationalTelemetryCoordinator.stop();
     _bleOperationalRuntimeBridge.clearPendingOperationalItems();
     _session = null;
+    _deferredRuntimeWorkPending = false;
     _clearVerifiedDeviceAssignments();
     _lastSosRehydrationNote = null;
     _publicSosFallbackIncident = null;
