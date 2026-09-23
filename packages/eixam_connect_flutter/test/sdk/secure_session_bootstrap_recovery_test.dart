@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/preferred_ble_device_store.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/sdk_session_store.dart';
@@ -17,6 +19,86 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('factory bootstrap secure-session recovery sequence', () {
+    test(
+      'no-session deferred bootstrap leaves reconnect for deferred runtime',
+      () async {
+        final deviceRepository = _NeverCompletingReconnectDeviceRepository(
+          initialStatus: buildDeviceStatus(
+            paired: false,
+            activated: false,
+            connected: false,
+            lifecycleState: DeviceLifecycleState.unpaired,
+          ),
+        );
+        final harness = _SdkHarness(
+          secureStore: _RecoverySecureStore(startsUnreadable: false),
+          identitySource: _IdentitySource(),
+          recoverUnreadablePersistedSession: false,
+          deviceRepository: deviceRepository,
+          permissionState: const PermissionState(
+            bluetooth: SdkPermissionStatus.granted,
+            bluetoothEnabled: true,
+          ),
+        );
+        Future<void>? deferredRuntime;
+        try {
+          await harness.seedPreferredDevice();
+
+          await harness.initialize().timeout(const Duration(seconds: 1));
+
+          expect(await harness.sdk.getCurrentSession(), isNull);
+          expect(deviceRepository.reconnectCallCount, 0);
+
+          await harness.attachFreshSession();
+
+          expect(deviceRepository.reconnectCallCount, 0);
+          final deferredCapability = await harness.sdk.getSosCapability();
+          expect(deferredCapability.canTriggerAppSos, isTrue);
+          expect(deferredCapability.canTriggerDeviceSos, isFalse);
+
+          deferredRuntime = harness.sdk.startDeferredRuntime();
+          await deviceRepository.reconnectStarted.future.timeout(
+            const Duration(seconds: 1),
+          );
+
+          expect(deviceRepository.reconnectCallCount, 1);
+          final reconnectingCapability = await harness.sdk.getSosCapability();
+          expect(reconnectingCapability.canTriggerAppSos, isTrue);
+          expect(reconnectingCapability.canTriggerDeviceSos, isFalse);
+        } finally {
+          await harness.dispose();
+          await deferredRuntime?.timeout(const Duration(seconds: 1));
+        }
+      },
+    );
+
+    test('no-session normal bootstrap still starts reconnect', () async {
+      final deviceRepository = FakeDeviceRepository(
+        initialStatus: buildDeviceStatus(
+          paired: false,
+          activated: false,
+          connected: false,
+          lifecycleState: DeviceLifecycleState.unpaired,
+        ),
+      );
+      final harness = _SdkHarness(
+        secureStore: _RecoverySecureStore(startsUnreadable: false),
+        identitySource: _IdentitySource(),
+        recoverUnreadablePersistedSession: false,
+        deviceRepository: deviceRepository,
+        permissionState: const PermissionState(
+          bluetooth: SdkPermissionStatus.granted,
+          bluetoothEnabled: true,
+        ),
+      );
+      addTearDown(harness.dispose);
+      await harness.seedPreferredDevice();
+
+      await harness.initialize(deferRuntimeStartup: false);
+
+      expect(deviceRepository.reconnectCallCount, 1);
+    });
+
     test('fresh session recovers, enriches, verifies, and attaches', () async {
       final secureStore = _RecoverySecureStore();
       final identitySource = _IdentitySource();
@@ -125,17 +207,20 @@ final class _SdkHarness {
     required _RecoverySecureStore secureStore,
     required _IdentitySource identitySource,
     required bool recoverUnreadablePersistedSession,
+    FakeDeviceRepository? deviceRepository,
+    PermissionState permissionState = const PermissionState(),
   })  : _sosRepository = FakeSosRepository(),
         _trackingRepository = FakeTrackingRepository(),
         _contactsRepository = FakeContactsRepository(),
-        _deviceRepository = FakeDeviceRepository(
-          initialStatus: buildDeviceStatus(
-            paired: false,
-            activated: false,
-            connected: false,
-            lifecycleState: DeviceLifecycleState.unpaired,
-          ),
-        ),
+        _deviceRepository = deviceRepository ??
+            FakeDeviceRepository(
+              initialStatus: buildDeviceStatus(
+                paired: false,
+                activated: false,
+                connected: false,
+                lifecycleState: DeviceLifecycleState.unpaired,
+              ),
+            ),
         _deathManRepository = FakeDeathManRepository(),
         _realtimeClient = FakeRealtimeClient(),
         _localStore = MemorySharedPrefsSdkStore() {
@@ -147,7 +232,9 @@ final class _SdkHarness {
       deviceRepository: _deviceRepository,
       deviceRegistryRepository: FakeSdkDeviceRegistryRepository(),
       deathManRepository: _deathManRepository,
-      permissionsRepository: FakePermissionsRepository(),
+      permissionsRepository: FakePermissionsRepository(
+        permissionState: permissionState,
+      ),
       notificationsRepository: FakeNotificationsRepository(),
       realtimeClient: _realtimeClient,
       deviceSosController: DeviceSosController(),
@@ -176,12 +263,22 @@ final class _SdkHarness {
   final MemorySharedPrefsSdkStore _localStore;
   late final EixamConnectSdkImpl sdk;
 
-  Future<void> initialize() => sdk.initialize(
-        const EixamSdkConfig(
+  Future<void> initialize({bool deferRuntimeStartup = true}) => sdk.initialize(
+        EixamSdkConfig(
           apiBaseUrl: 'https://api.example.test',
-          deferRuntimeStartup: true,
+          deferRuntimeStartup: deferRuntimeStartup,
         ),
       );
+
+  Future<void> seedPreferredDevice() {
+    return PreferredBleDeviceStore(localStore: _localStore).savePreferredDevice(
+      PreferredDevice(
+        deviceId: 'known-device',
+        displayName: 'Known device',
+        lastConnectedAt: DateTime.utc(2026, 1, 1),
+      ),
+    );
+  }
 
   Future<void> attachFreshSession() => sdk.setSession(
         const EixamSession.signed(
@@ -220,19 +317,42 @@ final class _IdentitySource implements SdkIdentityRemoteDataSource {
   }
 }
 
+final class _NeverCompletingReconnectDeviceRepository
+    extends FakeDeviceRepository {
+  _NeverCompletingReconnectDeviceRepository({required super.initialStatus});
+
+  final Completer<void> reconnectStarted = Completer<void>();
+
+  @override
+  Future<DeviceStatus> reconnectDevice({
+    required PreferredDevice device,
+    String? attemptId,
+    bool Function()? canCreateGatt,
+  }) {
+    reconnectCallCount++;
+    if (!reconnectStarted.isCompleted) {
+      reconnectStarted.complete();
+    }
+    return Completer<DeviceStatus>().future;
+  }
+}
+
 final class _RecoverySecureStore implements SecureKeyValueStore {
   _RecoverySecureStore({
     this.writeFailure,
     this.verificationReadFailure,
+    bool startsUnreadable = true,
   }) : _values = <String, String>{
-          SecureStorageKeys.sdkSessionIdentity.value: 'unreadable-session',
-        };
+         if (startsUnreadable)
+           SecureStorageKeys.sdkSessionIdentity.value: 'unreadable-session',
+       },
+       _sessionReadRecovered = !startsUnreadable;
 
   final Object? writeFailure;
   final Object? verificationReadFailure;
   final Map<String, String> _values;
   final List<String> deletedKeys = <String>[];
-  bool _sessionReadRecovered = false;
+  bool _sessionReadRecovered;
   int sessionWriteCount = 0;
   int sessionVerificationReadCount = 0;
 

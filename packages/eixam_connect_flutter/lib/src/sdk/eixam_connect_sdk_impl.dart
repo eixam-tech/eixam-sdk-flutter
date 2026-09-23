@@ -894,8 +894,8 @@ class EixamConnectSdkImpl
     _operationalTelemetryCoordinator.start(
       initialCadence: _sosLifecycle.currentCadence,
     );
-    if ((_sdkConfig?.deferRuntimeStartup ?? false) && _session != null) {
-      _deferredRuntimeWorkPending = true;
+    if (_sdkConfig?.deferRuntimeStartup ?? false) {
+      _deferredRuntimeWorkPending = _session != null;
       BleDebugRegistry.instance.recordEvent(
         'SDK_CLIENT_CREATION_READY_WITH_TRANSPORT_PENDING '
         'trigger=initialize transport=mqtt status=runtime_deferred',
