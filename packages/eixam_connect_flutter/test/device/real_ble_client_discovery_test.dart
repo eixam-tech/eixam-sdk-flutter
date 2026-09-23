@@ -236,6 +236,55 @@ void main() {
     );
   });
 
+  test('new scan rejects a replayed result from an older scan', () async {
+    final staleResult = _nativeScanResult(
+      deviceId: 'AA:BB:CC:DD:EE:01',
+      observedAt: DateTime.now().subtract(const Duration(seconds: 1)),
+    );
+    final client = _buildRealBleClient(
+      scanResultsProvider: () =>
+          Stream<List<ScanResult>>.value(<ScanResult>[staleResult]),
+    );
+
+    await client.initialize();
+    final results = await client.scan(timeout: Duration.zero);
+
+    expect(results, isEmpty);
+    expect(
+      BleDebugRegistry.instance.currentState.events
+          .map((event) => event.message),
+      contains('BLE_SCAN_RESULT_REJECTED reason=stale_generation generation=1'),
+    );
+  });
+
+  test('new scan accepts a fresh result and preserves its timestamp',
+      () async {
+    final scanResults = StreamController<List<ScanResult>>.broadcast(
+      sync: true,
+    );
+    late final DateTime observedAt;
+    final client = _buildRealBleClient(
+      scanResultsProvider: () => scanResults.stream,
+      startScan: (_) async {
+        observedAt = DateTime.now();
+        scanResults.add(<ScanResult>[
+          _nativeScanResult(
+            deviceId: 'AA:BB:CC:DD:EE:02',
+            observedAt: observedAt,
+          ),
+        ]);
+      },
+    );
+    addTearDown(scanResults.close);
+
+    await client.initialize();
+    final results = await client.scan(timeout: Duration.zero);
+
+    expect(results, hasLength(1));
+    expect(results.single.deviceId, 'AA:BB:CC:DD:EE:02');
+    expect(results.single.discoveredAt, observedAt);
+  });
+
   test('iOS apple-code 14 connect failure maps to typed exception', () {
     final mapped = RealBleClient.mapConnectionFailureForTesting(
       FlutterBluePlusException(
@@ -271,6 +320,7 @@ RealBleClient _buildRealBleClient({
   bool Function()? supportedProvider,
   BluetoothAdapterState adapterState = BluetoothAdapterState.on,
   bool isScanning = false,
+  Stream<List<ScanResult>> Function()? scanResultsProvider,
   NativeBleStartScan? startScan,
 }) {
   return RealBleClient(
@@ -280,9 +330,30 @@ RealBleClient _buildRealBleClient({
     adapterStateStreamProvider: () => Stream<BluetoothAdapterState>.value(
       adapterState,
     ),
-    scanResultsProvider: () => const Stream<List<ScanResult>>.empty(),
+    scanResultsProvider:
+        scanResultsProvider ?? () => const Stream<List<ScanResult>>.empty(),
     startScan: startScan ?? (_) async {},
     stopScan: () async {},
+  );
+}
+
+ScanResult _nativeScanResult({
+  required String deviceId,
+  required DateTime observedAt,
+}) {
+  return ScanResult(
+    device: BluetoothDevice.fromId(deviceId),
+    advertisementData: AdvertisementData(
+      advName: 'EIXAM TAG',
+      txPowerLevel: null,
+      appearance: null,
+      connectable: true,
+      manufacturerData: const <int, List<int>>{},
+      serviceData: const <Guid, List<int>>{},
+      serviceUuids: const <Guid>[],
+    ),
+    rssi: -55,
+    timeStamp: observedAt,
   );
 }
 

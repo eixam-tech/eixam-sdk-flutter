@@ -61,7 +61,7 @@ class RealBleClient implements BleClient {
        _adapterStateStreamProvider =
            adapterStateStreamProvider ?? (() => FlutterBluePlus.adapterState),
        _scanResultsProvider =
-           scanResultsProvider ?? (() => FlutterBluePlus.scanResults),
+           scanResultsProvider ?? (() => FlutterBluePlus.onScanResults),
        _startScan =
            startScan ??
            ((timeout) => FlutterBluePlus.startScan(
@@ -126,6 +126,7 @@ class RealBleClient implements BleClient {
 
   bool _initialized = false;
   bool _reportedAmbiguousTelMeshPort = false;
+  int _scanGeneration = 0;
 
   @override
   Future<void> initialize() async {
@@ -192,6 +193,7 @@ class RealBleClient implements BleClient {
     Duration timeout = const Duration(seconds: 8),
   }) async {
     _ensureInitialized();
+    final generation = ++_scanGeneration;
     final isIos = defaultTargetPlatform == TargetPlatform.iOS;
     safeSdkDebugPrint(
       'SDK_DISCOVERY_START_ENTRY '
@@ -223,10 +225,21 @@ class RealBleClient implements BleClient {
     }
 
     final Map<String, BleScanResult> deduped = {};
+    final scanStartedAt = DateTime.now();
     BleDebugRegistry.instance.update(isScanning: true, scanResults: const []);
 
     final sub = _scanResultsProvider().listen((scanResults) {
+      if (generation != _scanGeneration) {
+        return;
+      }
       for (final r in scanResults) {
+        if (r.timeStamp.isBefore(scanStartedAt)) {
+          BleDebugRegistry.instance.recordEvent(
+            'BLE_SCAN_RESULT_REJECTED reason=stale_generation '
+            'generation=$generation',
+          );
+          continue;
+        }
         final id = r.device.remoteId.str;
         _devices[id] = r.device;
         final advertisedServiceUuids = r.advertisementData.serviceUuids
@@ -254,7 +267,7 @@ class RealBleClient implements BleClient {
             name: name,
             advertisedServiceUuids: advertisedServiceUuids,
           ),
-          discoveredAt: DateTime.now(),
+          discoveredAt: r.timeStamp,
         );
         BleDebugRegistry.instance.update(
           scanResults: deduped.values.toList()
@@ -268,8 +281,6 @@ class RealBleClient implements BleClient {
       await _startScan(timeout);
       safeSdkDebugPrint('SDK_DISCOVERY_NATIVE_START_SCAN_CALL_DONE');
       await Future.delayed(timeout);
-      await _stopScan();
-      await sub.cancel();
     } catch (error) {
       safeSdkDebugPrint(
         'SDK_DISCOVERY_NATIVE_START_SCAN_CALL_FAILED error=$error',
@@ -279,12 +290,20 @@ class RealBleClient implements BleClient {
         'origin=flutter_blue_plus_native error=$error',
       );
       BleDebugRegistry.instance.update(isScanning: false);
-      await sub.cancel();
       final sdkError = _mapNativeStateError(error);
       if (sdkError != null) {
         throw sdkError;
       }
       rethrow;
+    } finally {
+      if (generation == _scanGeneration) {
+        await _stopScan();
+      }
+      await sub.cancel();
+    }
+
+    if (generation != _scanGeneration) {
+      return const <BleScanResult>[];
     }
 
     final results = deduped.values.toList()

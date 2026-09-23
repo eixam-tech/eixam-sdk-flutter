@@ -173,11 +173,11 @@ class BleAutoReconnectCoordinator {
 
   Future<void> unpairDeviceManually(Future<void> Function() action) async {
     await onManualDisconnect();
-    await action();
     await _preferredDeviceStore.clearPreferredDevice();
     BleDebugRegistry.instance.recordEvent(
-      'Preferred BLE device cleared after manual unpair',
+      'Preferred BLE device cleared before manual unpair teardown',
     );
+    await action();
   }
 
   Future<void> tryAutoConnectOnStartup() async {
@@ -237,6 +237,7 @@ class BleAutoReconnectCoordinator {
   }
 
   void cancelPreferredReconnect({String reason = 'host_cancelled'}) {
+    _lateAvailabilityWaitingDesired = false;
     _cancelPreferredReconnectCampaign(reason: reason);
     _pauseLateAvailabilityWatcher(reason: reason);
   }
@@ -587,6 +588,7 @@ class BleAutoReconnectCoordinator {
       'bluetoothReady=${_isReconnectBluetoothReady(readiness)}',
     );
     if (!currentReady) {
+      _lateAvailabilityWaitingDesired = false;
       _pauseLateAvailabilityWatcher(reason: 'bluetooth_not_ready');
       _traceReconnect(
         'sdk_ble_ready_reconnect_skipped '
@@ -809,6 +811,11 @@ class BleAutoReconnectCoordinator {
           if (identical(_lateAvailabilityWatchTask, task)) {
             _lateAvailabilityWatchTask = null;
             _traceReconnect('sdk_waiting_for_preferred_device value=false');
+            if (_lateAvailabilityWaitingDesired &&
+                _preferredReconnectCampaign == null &&
+                !_disposed) {
+              unawaited(_startLateAvailabilityWatcher());
+            }
           }
           if (identical(_lateAvailabilityCancellation, cancellation)) {
             _lateAvailabilityCancellation = null;

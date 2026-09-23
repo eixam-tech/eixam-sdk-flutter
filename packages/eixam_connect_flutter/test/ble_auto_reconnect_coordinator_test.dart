@@ -1461,6 +1461,92 @@ void main() {
     });
 
     test(
+      'manual unpair clears preferred identity before teardown failure',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final repository = _FakeDeviceRepository()..setDisconnected();
+        final store = PreferredBleDeviceStore(
+          localStore: SharedPrefsSdkStore(),
+        );
+        await store.savePreferredDevice(
+          PreferredBleDevice(
+            deviceId: 'ble-demo-r1',
+            displayName: 'EIXAM Demo',
+            lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+          ),
+        );
+        final coordinator = BleAutoReconnectCoordinator(
+          deviceRepository: repository,
+          preferredDeviceStore: store,
+        );
+        await coordinator.initialize(
+          initialStatus: await repository.getDeviceStatus(),
+          deviceStatusStream: repository.watchDeviceStatus(),
+        );
+
+        await expectLater(
+          coordinator.unpairDeviceManually(
+            () async => throw StateError('teardown failed'),
+          ),
+          throwsStateError,
+        );
+
+        expect(await store.getPreferredDevice(), isNull);
+        expect(await store.readManualDisconnectRequested(), isTrue);
+        await coordinator.tryAutoConnectOnStartup();
+        expect(repository.reconnectCallCount, 0);
+        await coordinator.dispose();
+      },
+    );
+
+    test(
+      'old watcher settlement re-arms a requested waiting generation',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final firstScanGate = Completer<void>();
+        final repository = _AvailabilityFakeDeviceRepository()
+          ..pairErrors = List<Object>.filled(
+            20,
+            const DeviceException('E_BLE_DEVICE_NOT_FOUND', 'not found'),
+            growable: true,
+          )
+          ..advertisements = <bool>[false, false]
+          ..availabilityGate = firstScanGate;
+        final store = PreferredBleDeviceStore(
+          localStore: SharedPrefsSdkStore(),
+        );
+        await store.savePreferredDevice(
+          PreferredBleDevice(
+            deviceId: 'ble-demo-r1',
+            lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+          ),
+        );
+        final coordinator = BleAutoReconnectCoordinator(
+          deviceRepository: repository,
+          preferredDeviceStore: store,
+          preferredReconnectDelay: (_) async {},
+          lateAvailabilityScanDelay: const Duration(days: 1),
+        );
+        await coordinator.initialize(
+          initialStatus: await repository.getDeviceStatus(),
+          deviceStatusStream: repository.watchDeviceStatus(),
+        );
+
+        await coordinator.tryAutoConnectOnStartup();
+        await _waitUntil(() => repository.availabilityScanCallCount == 1);
+        coordinator.cancelPreferredReconnect(reason: 'replace_waiter');
+        await coordinator.tryAutoConnectForHandoff(trigger: 'new_exhaustion');
+        repository.availabilityGate = null;
+        firstScanGate.complete();
+        await _waitUntil(() => repository.availabilityScanCallCount == 2);
+
+        expect(repository.reconnectCallCount, 20);
+        expect(repository.availabilityScanCallCount, 2);
+        await coordinator.dispose();
+      },
+    );
+
+    test(
       'failed late campaign returns safely to advertisement waiting',
       () async {
         SharedPreferences.setMockInitialValues(<String, Object>{});
