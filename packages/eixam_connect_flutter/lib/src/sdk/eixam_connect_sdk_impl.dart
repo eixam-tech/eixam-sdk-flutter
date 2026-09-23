@@ -1920,6 +1920,7 @@ class EixamConnectSdkImpl
 
   @override
   Future<void> clearSession() async {
+    _bleAutoReconnectCoordinator.clearReconnectOwnership();
     await _stopBackgroundTelemetry(reason: 'clear_session');
     await _operationalTelemetryCoordinator.stop();
     _bleOperationalRuntimeBridge.clearPendingOperationalItems();

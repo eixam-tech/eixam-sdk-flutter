@@ -67,8 +67,8 @@ class RealBleClient implements BleClient {
            ((timeout) => FlutterBluePlus.startScan(
              timeout: timeout,
              androidScanMode: AndroidScanMode.lowLatency,
-             androidUsesFineLocation: true,
-             androidCheckLocationServices: true,
+             androidUsesFineLocation: false,
+             androidCheckLocationServices: false,
            )),
        _stopScan = stopScan ?? (() => FlutterBluePlus.stopScan()),
        _androidGattCacheClearer =

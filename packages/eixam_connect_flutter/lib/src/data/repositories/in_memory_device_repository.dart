@@ -6,6 +6,7 @@ import '../../device/ble_debug_registry.dart';
 import '../../device/device_runtime_provider.dart';
 import '../../device/ble_device_runtime_provider.dart';
 import '../../device/known_device_reconnect_repository.dart';
+import '../../device/preferred_device_availability_repository.dart';
 import '../datasources_local/shared_prefs_sdk_store.dart';
 import '../../mappers/local_state_serializers.dart';
 
@@ -15,7 +16,10 @@ import '../../mappers/local_state_serializers.dart';
 /// provider and emits heartbeat updates so the host app can build UX around a
 /// living device model before BLE or backend integration lands.
 class InMemoryDeviceRepository
-    implements DeviceRepository, KnownDeviceReconnectRepository {
+    implements
+        DeviceRepository,
+        KnownDeviceReconnectRepository,
+        PreferredDeviceAvailabilityRepository {
   InMemoryDeviceRepository({
     required DeviceRuntimeProvider runtimeProvider,
     SharedPrefsSdkStore? localStore,
@@ -140,6 +144,23 @@ class InMemoryDeviceRepository
       rethrow;
     }
   }
+
+  @override
+  Future<bool> isPreferredDeviceAdvertising({
+    required PreferredDevice device,
+    required Duration scanTimeout,
+  }) async {
+    final runtimeProvider = _runtimeProvider;
+    if (runtimeProvider is! BleDeviceRuntimeProvider) {
+      return false;
+    }
+    return runtimeProvider.isPreferredDeviceAdvertising(
+      preferredDevice: device,
+      currentStatus: _status,
+      scanTimeout: scanTimeout,
+    );
+  }
+
 
   @override
   Future<DeviceStatus> activateDevice({required String activationCode}) async {

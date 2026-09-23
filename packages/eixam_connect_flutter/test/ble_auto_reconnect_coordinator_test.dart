@@ -6,6 +6,7 @@ import 'package:eixam_connect_flutter/src/data/datasources_local/shared_prefs_sd
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/known_device_reconnect_repository.dart';
 import 'package:eixam_connect_flutter/src/device/preferred_ble_device.dart';
+import 'package:eixam_connect_flutter/src/device/preferred_device_availability_repository.dart';
 import 'package:eixam_connect_flutter/src/sdk/ble_auto_reconnect_coordinator.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -1362,6 +1363,235 @@ void main() {
       await coordinator.dispose();
     });
 
+    test(
+      'exhaustion starts late watcher without continuing blind GATT attempts',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        BleDebugRegistry.instance.reset();
+        final repository = _AvailabilityFakeDeviceRepository()
+          ..pairErrors = List<Object>.filled(
+            10,
+            const DeviceException('E_BLE_DEVICE_NOT_FOUND', 'not found'),
+          )
+          ..advertisements = <bool>[false];
+        final store = PreferredBleDeviceStore(
+          localStore: SharedPrefsSdkStore(),
+        );
+        await store.savePreferredDevice(
+          PreferredBleDevice(
+            deviceId: 'ble-demo-r1',
+            displayName: 'EIXAM Demo',
+            lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+          ),
+        );
+        final coordinator = BleAutoReconnectCoordinator(
+          deviceRepository: repository,
+          preferredDeviceStore: store,
+          preferredReconnectDelay: (_) async {},
+          lateAvailabilityScanDelay: const Duration(days: 1),
+        );
+        await coordinator.initialize(
+          initialStatus: await repository.getDeviceStatus(),
+          deviceStatusStream: repository.watchDeviceStatus(),
+        );
+
+        final result = await coordinator.tryAutoConnectForHandoff(
+          trigger: 'startup',
+        );
+        await _waitUntil(() => repository.availabilityScanCallCount == 1);
+
+        expect(result.status, PreferredDeviceReconnectResultStatus.exhausted);
+        expect(repository.reconnectCallCount, 10);
+        expect(
+          BleDebugRegistry.instance.currentState.events.map(
+            (event) => event.message,
+          ),
+          contains(
+            'EIXAM_RECONNECT_TRACE '
+            'sdk_waiting_for_preferred_device value=true',
+          ),
+        );
+        await coordinator.dispose();
+      },
+    );
+
+    test('late advertisement starts exactly one reconnect campaign', () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      BleDebugRegistry.instance.reset();
+      final repository = _AvailabilityFakeDeviceRepository()
+        ..pairErrors = List<Object>.filled(
+          10,
+          const DeviceException('E_BLE_DEVICE_NOT_FOUND', 'not found'),
+          growable: true,
+        )
+        ..advertisements = <bool>[true];
+      final store = PreferredBleDeviceStore(localStore: SharedPrefsSdkStore());
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: 'ble-demo-r1',
+          displayName: 'EIXAM Demo',
+          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+        ),
+      );
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+        preferredReconnectDelay: (_) async {},
+        lateAvailabilityScanDelay: const Duration(milliseconds: 1),
+      );
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+
+      await coordinator.tryAutoConnectOnStartup();
+      await _waitUntil(() => repository.reconnectCallCount == 11);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(repository.reconnectCallCount, 11);
+      expect(repository.availabilityScanCallCount, 1);
+      expect((await repository.getDeviceStatus()).connected, isTrue);
+      expect(
+        BleDebugRegistry.instance.currentState.events.map(
+          (event) => event.message,
+        ),
+        contains('BLE_PREFERRED_DEVICE_OBSERVED_AFTER_EXHAUSTION'),
+      );
+      await coordinator.dispose();
+    });
+
+    test(
+      'failed late campaign returns safely to advertisement waiting',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        BleDebugRegistry.instance.reset();
+      final repository = _AvailabilityFakeDeviceRepository()
+        ..pairErrors = List<Object>.filled(
+          20,
+          const DeviceException('E_BLE_DEVICE_NOT_FOUND', 'not found'),
+          growable: true,
+        )
+          ..advertisements = <bool>[true, false];
+        final store = PreferredBleDeviceStore(
+          localStore: SharedPrefsSdkStore(),
+        );
+        await store.savePreferredDevice(
+          PreferredBleDevice(
+            deviceId: 'ble-demo-r1',
+            displayName: 'EIXAM Demo',
+            lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+          ),
+        );
+        final coordinator = BleAutoReconnectCoordinator(
+          deviceRepository: repository,
+          preferredDeviceStore: store,
+          preferredReconnectDelay: (_) async {},
+          lateAvailabilityScanDelay: const Duration(milliseconds: 1),
+        );
+        await coordinator.initialize(
+          initialStatus: await repository.getDeviceStatus(),
+          deviceStatusStream: repository.watchDeviceStatus(),
+        );
+
+      await coordinator.tryAutoConnectOnStartup();
+      await _waitUntil(() => repository.reconnectCallCount == 20);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(repository.reconnectCallCount, 20);
+      expect(repository.availabilityScanCallCount, greaterThanOrEqualTo(1));
+      expect((await repository.getDeviceStatus()).connected, isFalse);
+        await coordinator.dispose();
+      },
+    );
+
+    test('foreground stop and session clear cancel late watcher', () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final repository = _AvailabilityFakeDeviceRepository()
+        ..pairErrors = List<Object>.filled(
+          10,
+          const DeviceException('E_BLE_DEVICE_NOT_FOUND', 'not found'),
+        )
+        ..availabilityGate = Completer<void>();
+      final store = PreferredBleDeviceStore(localStore: SharedPrefsSdkStore());
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: 'ble-demo-r1',
+          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+        ),
+      );
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+        preferredReconnectDelay: (_) async {},
+      );
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+
+      await coordinator.tryAutoConnectOnStartup();
+      await _waitUntil(() => repository.availabilityScanCallCount == 1);
+      coordinator.setAppForeground(false);
+      coordinator.clearReconnectOwnership();
+      repository.availabilityGate!.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(repository.availabilityScanCallCount, 1);
+      expect(repository.reconnectCallCount, 10);
+      await coordinator.dispose();
+    });
+
+    test('Bluetooth unavailable cancels late watcher', () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final repository = _AvailabilityFakeDeviceRepository()
+        ..pairErrors = List<Object>.filled(
+          10,
+          const DeviceException('E_BLE_DEVICE_NOT_FOUND', 'not found'),
+        )
+        ..availabilityGate = Completer<void>();
+      final store = PreferredBleDeviceStore(localStore: SharedPrefsSdkStore());
+      await store.savePreferredDevice(
+        PreferredBleDevice(
+          deviceId: 'ble-demo-r1',
+          lastConnectedAt: DateTime.parse('2026-03-23T10:00:00Z'),
+        ),
+      );
+      final readiness = StreamController<PermissionState>.broadcast();
+      final coordinator = BleAutoReconnectCoordinator(
+        deviceRepository: repository,
+        preferredDeviceStore: store,
+        permissionStateProvider: () async => const PermissionState(
+          bluetooth: SdkPermissionStatus.granted,
+          bluetoothEnabled: true,
+        ),
+        preferredReconnectDelay: (_) async {},
+      );
+      await coordinator.initialize(
+        initialStatus: await repository.getDeviceStatus(),
+        deviceStatusStream: repository.watchDeviceStatus(),
+      );
+      await coordinator.startBleReadinessReconnectMonitor(
+        readinessStream: readiness.stream,
+      );
+
+      await coordinator.tryAutoConnectOnStartup();
+      await _waitUntil(() => repository.availabilityScanCallCount == 1);
+      readiness.add(
+        const PermissionState(
+          bluetooth: SdkPermissionStatus.granted,
+          bluetoothEnabled: false,
+        ),
+      );
+      await _settleReconnectMonitor();
+      repository.availabilityGate!.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(repository.availabilityScanCallCount, 1);
+      expect(repository.reconnectCallCount, 10);
+      await readiness.close();
+      await coordinator.dispose();
+    });
+
     test('preferred reconnect remains in flight between attempts', () async {
       SharedPreferences.setMockInitialValues(<String, Object>{});
       BleDebugRegistry.instance.reset();
@@ -2398,10 +2628,42 @@ Future<void> _verifyInspectionWinsActiveReconnect(String activeSource) async {
   await readiness.close();
   await coordinator.dispose();
 }
-
 Future<void> _settleReconnectMonitor() async {
   for (var i = 0; i < 6; i++) {
     await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+}
+
+Future<void> _waitUntil(bool Function() predicate) async {
+  for (var i = 0; i < 200; i++) {
+    if (predicate()) {
+      return;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+  fail('Condition was not reached before timeout.');
+}
+
+class _AvailabilityFakeDeviceRepository extends _FakeDeviceRepository
+    implements PreferredDeviceAvailabilityRepository {
+  int availabilityScanCallCount = 0;
+  List<bool> advertisements = <bool>[];
+  Completer<void>? availabilityGate;
+
+  @override
+  Future<bool> isPreferredDeviceAdvertising({
+    required PreferredDevice device,
+    required Duration scanTimeout,
+  }) async {
+    availabilityScanCallCount++;
+    final gate = availabilityGate;
+    if (gate != null) {
+      await gate.future;
+    }
+    if (advertisements.isEmpty) {
+      return false;
+    }
+    return advertisements.removeAt(0);
   }
 }
 

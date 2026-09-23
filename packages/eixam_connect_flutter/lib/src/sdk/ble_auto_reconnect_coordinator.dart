@@ -9,6 +9,7 @@ import '../device/ble_connection_status.dart';
 import '../device/ble_debug_registry.dart';
 import '../device/known_device_reconnect_repository.dart';
 import '../device/preferred_ble_device.dart';
+import '../device/preferred_device_availability_repository.dart';
 
 class BleAutoReconnectCoordinator {
   BleAutoReconnectCoordinator({
@@ -24,20 +25,24 @@ class BleAutoReconnectCoordinator {
     List<Duration>? preferredReconnectRetryDelays,
     Duration? readinessMonitorInterval,
     Timer Function(Duration delay, void Function() callback)? retryTimerFactory,
-  })  : _deviceRepository = deviceRepository,
-        _preferredDeviceStore = preferredDeviceStore,
-        _permissionStateProvider = permissionStateProvider,
-        _isNativeProtectionOwningBle = isNativeProtectionOwningBle,
-        _nativeProtectionReconnectSuppressionReason =
-            nativeProtectionReconnectSuppressionReason,
-        _onNativeProtectionOwnsBle = onNativeProtectionOwnsBle,
-        _preferredReconnectDelay = preferredReconnectDelay,
-        _preferredReconnectRetryDelays =
-            preferredReconnectRetryDelays ?? _preferredReconnectBackoff,
-        _readinessMonitorInterval =
-            readinessMonitorInterval ?? const Duration(seconds: 2),
-        _retryTimerFactory = retryTimerFactory ?? Timer.new,
-        _isIosPlatform = isIosPlatform ?? (() => Platform.isIOS);
+    Duration lateAvailabilityScanTimeout = const Duration(seconds: 8),
+    Duration lateAvailabilityScanDelay = const Duration(seconds: 2),
+  }) : _deviceRepository = deviceRepository,
+       _preferredDeviceStore = preferredDeviceStore,
+       _permissionStateProvider = permissionStateProvider,
+       _isNativeProtectionOwningBle = isNativeProtectionOwningBle,
+       _nativeProtectionReconnectSuppressionReason =
+           nativeProtectionReconnectSuppressionReason,
+       _onNativeProtectionOwnsBle = onNativeProtectionOwnsBle,
+       _preferredReconnectDelay = preferredReconnectDelay,
+       _preferredReconnectRetryDelays =
+           preferredReconnectRetryDelays ?? _preferredReconnectBackoff,
+       _readinessMonitorInterval =
+           readinessMonitorInterval ?? const Duration(seconds: 2),
+       _retryTimerFactory = retryTimerFactory ?? Timer.new,
+       _lateAvailabilityScanTimeout = lateAvailabilityScanTimeout,
+       _lateAvailabilityScanDelay = lateAvailabilityScanDelay,
+       _isIosPlatform = isIosPlatform ?? (() => Platform.isIOS);
 
   // The first retry waits longer than flutter_blue_plus's internal 2 s
   // disconnect-gap so that the previous BluetoothGatt has fully closed
@@ -57,8 +62,9 @@ class BleAutoReconnectCoordinator {
     Duration(seconds: 30),
   ];
   static const int _preferredReconnectMaxAttempts = 10;
-  static const Duration _preferredReconnectAttemptTimeout =
-      Duration(seconds: 15);
+  static const Duration _preferredReconnectAttemptTimeout = Duration(
+    seconds: 15,
+  );
   static const List<Duration> _preferredReconnectBackoff = <Duration>[
     Duration(seconds: 1),
     Duration(seconds: 2),
@@ -77,7 +83,9 @@ class BleAutoReconnectCoordinator {
   final List<Duration> _preferredReconnectRetryDelays;
   final Duration _readinessMonitorInterval;
   final Timer Function(Duration delay, void Function() callback)
-      _retryTimerFactory;
+  _retryTimerFactory;
+  final Duration _lateAvailabilityScanTimeout;
+  final Duration _lateAvailabilityScanDelay;
   final String autoReconnectPairingCode;
   final bool Function() _isIosPlatform;
 
@@ -86,9 +94,7 @@ class BleAutoReconnectCoordinator {
     if (typedReason != null) {
       return typedReason;
     }
-    return _isNativeProtectionOwningBle?.call() == true
-        ? 'native_owner'
-        : null;
+    return _isNativeProtectionOwningBle?.call() == true ? 'native_owner' : null;
   }
 
   void _recordNativeReconnectSuppressed({
@@ -116,6 +122,8 @@ class BleAutoReconnectCoordinator {
   Future<PreferredDeviceReconnectResult>? _preferredReconnectCampaign;
   Completer<void>? _preferredReconnectCancellation;
   Future<void>? _activeConnectionOperationSettlement;
+  Future<void>? _lateAvailabilityWatchTask;
+  Completer<void>? _lateAvailabilityCancellation;
   DeviceStatus? _lastStatus;
   PermissionState? _lastReadinessForReconnectMonitor;
   bool _readinessReconnectPollInFlight = false;
@@ -126,17 +134,19 @@ class BleAutoReconnectCoordinator {
   bool _candidateInspectionSuppressed = false;
   bool _provisioningReconnectOwned = false;
   bool _disposed = false;
+  bool _lateAvailabilityWaitingDesired = false;
   int _retryAttempt = 0;
   int _preferredReconnectCampaignToken = 0;
   int _authoritativeConnectedRevision = 0;
+  int _lateAvailabilityWatchToken = 0;
 
   Future<void> initialize({
     required DeviceStatus initialStatus,
     required Stream<DeviceStatus> deviceStatusStream,
   }) async {
     _lastStatus = initialStatus;
-    _manualDisconnectRequested =
-        await _preferredDeviceStore.readManualDisconnectRequested();
+    _manualDisconnectRequested = await _preferredDeviceStore
+        .readManualDisconnectRequested();
     await _deviceStatusSub?.cancel();
     _deviceStatusSub = deviceStatusStream.listen(_handleDeviceStatus);
   }
@@ -228,6 +238,13 @@ class BleAutoReconnectCoordinator {
 
   void cancelPreferredReconnect({String reason = 'host_cancelled'}) {
     _cancelPreferredReconnectCampaign(reason: reason);
+    _pauseLateAvailabilityWatcher(reason: reason);
+  }
+
+  void clearReconnectOwnership() {
+    _lateAvailabilityWaitingDesired = false;
+    _cancelPreferredReconnectCampaign(reason: 'session_cleared');
+    _pauseLateAvailabilityWatcher(reason: 'session_cleared');
   }
 
   Future<PreferredDeviceReconnectResult> tryAutoConnectForHandoff({
@@ -248,6 +265,7 @@ class BleAutoReconnectCoordinator {
   /// the in-flight native connection attempt is being drained.
   Future<void> acquireProvisioningReconnectOwnership() async {
     _provisioningReconnectOwned = true;
+    _pauseLateAvailabilityWatcher(reason: 'provisioning_reboot');
     _cancelPreferredReconnectCampaign(reason: 'provisioning_reboot');
     _retryTimer?.cancel();
     _retryTimer = null;
@@ -306,6 +324,9 @@ class BleAutoReconnectCoordinator {
     String selectedMarker = 'unknown',
   }) async {
     _candidateInspectionSuppressed = true;
+    _pauseLateAvailabilityWatcher(
+      reason: 'explicit_migration_inspection_owner',
+    );
     safeSdkDebugPrint(
       'MIGRATION_INSPECTION_PRIORITY_ACQUIRED '
       'selectedMarker=$selectedMarker',
@@ -372,6 +393,7 @@ class BleAutoReconnectCoordinator {
   /// that follows tear down whatever it established.
   Future<void> suspendForDfuTransfer({required String reason}) async {
     _dfuTransferSuppressed = true;
+    _pauseLateAvailabilityWatcher(reason: 'dfu_transfer');
     _cancelPreferredReconnectCampaign(reason: 'dfu_transfer');
     _retryTimer?.cancel();
     _retryTimer = null;
@@ -453,8 +475,9 @@ class BleAutoReconnectCoordinator {
       return;
     }
 
-    final retryBackoff =
-        _isIosPlatform() ? _iosRetryBackoff : _androidRetryBackoff;
+    final retryBackoff = _isIosPlatform()
+        ? _iosRetryBackoff
+        : _androidRetryBackoff;
     final backoffIndex = _retryAttempt.clamp(0, retryBackoff.length - 1);
     final delay = retryBackoff[backoffIndex];
     _retryAttempt++;
@@ -472,6 +495,8 @@ class BleAutoReconnectCoordinator {
   }
 
   Future<void> onManualDisconnect() async {
+    _lateAvailabilityWaitingDesired = false;
+    _pauseLateAvailabilityWatcher(reason: 'manual_disconnect');
     _cancelPreferredReconnectCampaign(reason: 'manual_disconnect');
     _manualDisconnectRequested = true;
     await _preferredDeviceStore.saveManualDisconnectRequested(true);
@@ -488,6 +513,8 @@ class BleAutoReconnectCoordinator {
   }
 
   Future<void> onManualConnectRequested() async {
+    _lateAvailabilityWaitingDesired = false;
+    _pauseLateAvailabilityWatcher(reason: 'manual_connect_requested');
     _cancelPreferredReconnectCampaign(reason: 'manual_connect_requested');
     _manualDisconnectRequested = false;
     await _preferredDeviceStore.saveManualDisconnectRequested(false);
@@ -506,6 +533,7 @@ class BleAutoReconnectCoordinator {
       _traceReconnect('sdk_foreground_changed value=$isForeground');
     }
     if (!isForeground) {
+      _pauseLateAvailabilityWatcher(reason: 'app_not_foreground');
       _retryTimer?.cancel();
       _retryTimer = null;
       return;
@@ -517,6 +545,8 @@ class BleAutoReconnectCoordinator {
 
   Future<void> dispose() async {
     _disposed = true;
+    _lateAvailabilityWaitingDesired = false;
+    _pauseLateAvailabilityWatcher(reason: 'dispose');
     _cancelPreferredReconnectCampaign(reason: 'dispose');
     _retryTimer?.cancel();
     await stopBleReadinessReconnectMonitor();
@@ -557,6 +587,7 @@ class BleAutoReconnectCoordinator {
       'bluetoothReady=${_isReconnectBluetoothReady(readiness)}',
     );
     if (!currentReady) {
+      _pauseLateAvailabilityWatcher(reason: 'bluetooth_not_ready');
       _traceReconnect(
         'sdk_ble_ready_reconnect_skipped '
         'reason=${readiness.bluetoothEnabled ? 'permission_missing' : 'bluetooth_not_ready'}',
@@ -610,7 +641,8 @@ class BleAutoReconnectCoordinator {
       );
       return;
     }
-    final preferredDevice = await _preferredDeviceStore.getPreferredDevice() ??
+    final preferredDevice =
+        await _preferredDeviceStore.getPreferredDevice() ??
         _preferredDeviceFromStatus(currentStatus);
     if (preferredDevice == null) {
       _traceReconnect(
@@ -707,8 +739,9 @@ class BleAutoReconnectCoordinator {
       connectedRevisionAtStart: _authoritativeConnectedRevision,
     );
     _preferredReconnectCampaign = campaign;
+    PreferredDeviceReconnectResult result;
     try {
-      return await campaign;
+      result = await campaign;
     } finally {
       if (identical(_preferredReconnectCampaign, campaign)) {
         _preferredReconnectCampaign = null;
@@ -720,6 +753,146 @@ class BleAutoReconnectCoordinator {
         _preferredReconnectCancellation = null;
       }
     }
+    if (result.status == PreferredDeviceReconnectResultStatus.exhausted) {
+      unawaited(_startLateAvailabilityWatcher());
+    } else if (result.connected) {
+      _lateAvailabilityWaitingDesired = false;
+      _pauseLateAvailabilityWatcher(reason: 'connected');
+    }
+    return result;
+  }
+
+  Future<void> _startLateAvailabilityWatcher() async {
+    _lateAvailabilityWaitingDesired = true;
+    if (!_canRunLateAvailabilityWatcher()) {
+      return;
+    }
+    final readiness = await _readReconnectReadiness();
+    if (!_canRunLateAvailabilityWatcher() ||
+        (readiness != null && !readiness.canUseBluetooth)) {
+      return;
+    }
+    final repository = _deviceRepository;
+    if (repository is! PreferredDeviceAvailabilityRepository) {
+      _traceReconnect(
+        'sdk_late_availability_wait_skipped reason=unsupported_repository',
+      );
+      return;
+    }
+    final storedPreferredDevice = await _preferredDeviceStore
+        .getPreferredDevice();
+    if (!_canRunLateAvailabilityWatcher()) {
+      return;
+    }
+    final preferredDevice =
+        storedPreferredDevice ??
+        (_lastStatus == null ? null : _preferredDeviceFromStatus(_lastStatus!));
+    if (preferredDevice == null) {
+      _lateAvailabilityWaitingDesired = false;
+      return;
+    }
+    final token = ++_lateAvailabilityWatchToken;
+    final cancellation = Completer<void>();
+    _lateAvailabilityCancellation = cancellation;
+    _traceReconnect('sdk_waiting_for_preferred_device value=true');
+    BleDebugRegistry.instance.recordEvent(
+      'BLE_PREFERRED_LATE_AVAILABILITY_WATCH_STARTED',
+    );
+    late final Future<void> task;
+    task =
+        _runLateAvailabilityWatcher(
+          repository: repository as PreferredDeviceAvailabilityRepository,
+          preferredDevice: preferredDevice,
+          token: token,
+          cancellation: cancellation.future,
+        ).whenComplete(() {
+          if (identical(_lateAvailabilityWatchTask, task)) {
+            _lateAvailabilityWatchTask = null;
+            _traceReconnect('sdk_waiting_for_preferred_device value=false');
+          }
+          if (identical(_lateAvailabilityCancellation, cancellation)) {
+            _lateAvailabilityCancellation = null;
+          }
+        });
+    _lateAvailabilityWatchTask = task;
+    unawaited(task);
+  }
+
+  bool _canRunLateAvailabilityWatcher() {
+    return !_disposed &&
+        _isAppForeground &&
+        !_manualDisconnectRequested &&
+        !_provisioningReconnectOwned &&
+        !_dfuTransferSuppressed &&
+        !_candidateInspectionSuppressed &&
+        _nativeReconnectSuppressionReason == null &&
+        _preferredReconnectCampaign == null &&
+        !_isConnectionAttemptInProgress &&
+        _lateAvailabilityWatchTask == null;
+  }
+
+  Future<void> _runLateAvailabilityWatcher({
+    required PreferredDeviceAvailabilityRepository repository,
+    required PreferredDevice preferredDevice,
+    required int token,
+    required Future<void> cancellation,
+  }) async {
+    while (_isLateAvailabilityWatcherCurrent(token)) {
+      var observed = false;
+      try {
+        observed = await repository.isPreferredDeviceAdvertising(
+          device: preferredDevice,
+          scanTimeout: _lateAvailabilityScanTimeout,
+        );
+      } catch (error) {
+        _traceReconnect(
+          'sdk_late_availability_scan_failed error=${error.runtimeType}',
+        );
+      }
+      if (!_isLateAvailabilityWatcherCurrent(token)) {
+        return;
+      }
+      if (observed) {
+        _traceReconnect('sdk_preferred_device_observed');
+        BleDebugRegistry.instance.recordEvent(
+          'BLE_PREFERRED_DEVICE_OBSERVED_AFTER_EXHAUSTION',
+        );
+        final result = await _tryAutoConnect(
+          trigger: 'preferred_device_observed',
+        );
+        if (result.connected || !_isLateAvailabilityWatcherCurrent(token)) {
+          return;
+        }
+      }
+      await Future.any(<Future<void>>[
+        if (_lateAvailabilityScanDelay == Duration.zero)
+          Future<void>.value()
+        else
+          Future<void>.delayed(_lateAvailabilityScanDelay),
+        cancellation,
+      ]);
+    }
+  }
+
+  bool _isLateAvailabilityWatcherCurrent(int token) {
+    return !_disposed &&
+        _lateAvailabilityWaitingDesired &&
+        _isAppForeground &&
+        token == _lateAvailabilityWatchToken;
+  }
+
+  void _pauseLateAvailabilityWatcher({required String reason}) {
+    if (_lateAvailabilityWatchTask == null) {
+      return;
+    }
+    _lateAvailabilityWatchToken++;
+    final cancellation = _lateAvailabilityCancellation;
+    if (cancellation != null && !cancellation.isCompleted) {
+      cancellation.complete();
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'BLE_PREFERRED_LATE_AVAILABILITY_WATCH_STOPPED reason=$reason',
+    );
   }
 
   Future<PreferredDeviceReconnectResult> _runPreferredReconnectCampaign({
@@ -739,9 +912,11 @@ class BleAutoReconnectCoordinator {
     );
     PreferredDeviceReconnectResult lastResult =
         const PreferredDeviceReconnectResult.failed(reason: 'not_started');
-    for (var attempt = 1;
-        attempt <= _preferredReconnectMaxAttempts;
-        attempt++) {
+    for (
+      var attempt = 1;
+      attempt <= _preferredReconnectMaxAttempts;
+      attempt++
+    ) {
       if (!_isPreferredReconnectCampaignCurrent(token)) {
         return _preferredReconnectCancellationResult(
           connectedRevisionAtStart: connectedRevisionAtStart,
@@ -1022,7 +1197,8 @@ class BleAutoReconnectCoordinator {
       }
     }
 
-    final preferredDevice = await _preferredDeviceStore.getPreferredDevice() ??
+    final preferredDevice =
+        await _preferredDeviceStore.getPreferredDevice() ??
         _preferredDeviceFromStatus(currentStatus);
     final overrideRemoteId = platformRemoteId?.trim();
     final reconnectDevice = _preferredDeviceWithPlatformRemoteId(
@@ -1261,7 +1437,8 @@ class BleAutoReconnectCoordinator {
   }
 
   Future<void> _waitForPreferredReconnectDelay(Duration delay) {
-    final delayFuture = _preferredReconnectDelay?.call(delay) ??
+    final delayFuture =
+        _preferredReconnectDelay?.call(delay) ??
         (delay == Duration.zero
             ? Future<void>.value()
             : Future<void>.delayed(delay));
@@ -1354,13 +1531,12 @@ class BleAutoReconnectCoordinator {
         result.reason == 'manual_disconnect_requested'
             ? 'manual_disconnect'
             : result.reason == 'unsupported_repository'
-                ? 'unsupported_repository'
-                : result.reason == 'app_not_foreground'
-                    ? 'app_not_foreground'
-                    : 'unknown',
+            ? 'unsupported_repository'
+            : result.reason == 'app_not_foreground'
+            ? 'app_not_foreground'
+            : 'unknown',
       PreferredDeviceReconnectResultStatus.reconnecting ||
-      PreferredDeviceReconnectResultStatus.exhausted =>
-        'unknown',
+      PreferredDeviceReconnectResultStatus.exhausted => 'unknown',
     };
   }
 
@@ -1544,10 +1720,7 @@ class BleAutoReconnectCoordinator {
     }
   }
 
-  Future<T> _withReconnectAbort<T>(
-    Future<T> future, {
-    Duration? timeout,
-  }) {
+  Future<T> _withReconnectAbort<T>(Future<T> future, {Duration? timeout}) {
     final cancellation = _preferredReconnectCancellation?.future;
     if (cancellation == null && timeout == null) {
       return future;
@@ -1713,6 +1886,8 @@ class BleAutoReconnectCoordinator {
     _lastStatus = status;
 
     if (status.connected) {
+      _lateAvailabilityWaitingDesired = false;
+      _pauseLateAvailabilityWatcher(reason: 'connected');
       _authoritativeConnectedRevision++;
       _cancelPreferredReconnectCampaign(reason: 'authoritative_connected');
       _retryAttempt = 0;

@@ -30,6 +30,26 @@ void main() {
       await bleClient.dispose();
     });
 
+    test('preferred availability scan matches the known hardware identity',
+        () async {
+      final observed = await runtimeProvider.isPreferredDeviceAdvertising(
+        preferredDevice: PreferredDevice(
+          deviceId: MockBleClient.demoDeviceId,
+          displayName: 'EIXAM R1 Demo',
+          lastConnectedAt: DateTime.utc(2026, 9, 23),
+        ),
+        currentStatus: buildDeviceStatus(
+          deviceId: MockBleClient.demoDeviceId,
+          canonicalHardwareId: MockBleClient.demoCanonicalHardwareId,
+          paired: true,
+          connected: false,
+        ),
+        scanTimeout: const Duration(milliseconds: 10),
+      );
+
+      expect(observed, isTrue);
+    });
+
     test('sets notification volume through the command channel', () async {
       await _pairDemoDevice(runtimeProvider);
 

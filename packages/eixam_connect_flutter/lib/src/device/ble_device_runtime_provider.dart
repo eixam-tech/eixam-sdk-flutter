@@ -89,6 +89,37 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   String? _lastIosSignalQualityThrottleLog;
   final Map<String, String> _iosResolvedReconnectRemoteIds = <String, String>{};
 
+  Future<bool> isPreferredDeviceAdvertising({
+    required PreferredDevice preferredDevice,
+    required DeviceStatus currentStatus,
+    required Duration scanTimeout,
+  }) async {
+    final scans = await _bleClient.scan(timeout: scanTimeout);
+    if (_isIosPlatform()) {
+      return _selectIosReconnectCandidate(
+            scans,
+            currentStatus: currentStatus,
+            preferredDevice: preferredDevice,
+          ) !=
+          null;
+    }
+    final knownKeys = _normalizedReconnectKeys(<String?>[
+      preferredDevice.deviceId,
+      currentStatus.deviceId,
+      currentStatus.canonicalHardwareId,
+    ]);
+    return scans.any((scan) {
+      if (!scan.connectable) {
+        return false;
+      }
+      final scanKeys = _normalizedReconnectKeys(<String?>[
+        scan.deviceId,
+        scan.canonicalHardwareId,
+      ]);
+      return scanKeys.any(knownKeys.contains);
+    });
+  }
+
   static const Duration _recentSosDedupWindow = Duration(seconds: 2);
   static const Duration _iosSignalQualityThrottleWindow = Duration(seconds: 5);
   static const Duration _iosReconnectScanTimeout = Duration(seconds: 4);
