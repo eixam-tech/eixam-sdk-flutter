@@ -57,6 +57,7 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     static let iosBleSosPacketId = "ios_ble_sos_packet_id"
     static let iosBleSosCycleKey = "ios_ble_sos_cycle_key"
     static let iosBleSosNotifiedKeys = "ios_ble_sos_notified_keys"
+    static let pendingTelNotify = "pending_tel_notify"
     static let notificationProtectionPreSosTitle = "notification_protection_pre_sos_title"
     static let notificationProtectionPreSosBody = "notification_protection_pre_sos_body"
     static let notificationProtectionSosActiveTitle = "notification_protection_sos_active_title"
@@ -65,6 +66,11 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     static let notificationProtectionSosResolvedBody = "notification_protection_sos_resolved_body"
     static let notificationProtectionSosCancelledTitle = "notification_protection_sos_cancelled_title"
     static let notificationProtectionSosCancelledBody = "notification_protection_sos_cancelled_body"
+    static let notificationNearbyMessageChannelName = "notification_nearby_message_channel_name"
+    static let notificationNearbyMessageChannelDescription =
+      "notification_nearby_message_channel_description"
+    static let notificationNearbyMessageFallbackTitle =
+      "notification_nearby_message_fallback_title"
   }
 
   private enum IosBleSosSnapshotKind: String {
@@ -81,9 +87,12 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
   private var inetCharacteristic: CBCharacteristic?
   private var cmdCharacteristic: CBCharacteristic?
   private var subscriptionsActive = false
+  private let telReassembler = TelAggregateReassembler()
   private var servicesDiscovered = false
   private var restoredLastLaunch = false
   private var notificationReceiveSequence = 0
+  private var inFlightProtectionWrite: PendingProtectionWrite?
+  private var protectionWriteQueue: [PendingProtectionWrite] = []
 
   @objc static func register(with registrar: FlutterPluginRegistrar) {
     let instance = ProtectionRuntimeBridge()
@@ -181,11 +190,12 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       let label = (arguments?["label"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
       let bytes = arguments?["bytes"] as? [NSNumber] ?? []
       let forceCmdCharacteristic = arguments?["forceCmdCharacteristic"] as? Bool ?? false
-      result(sendProtectionCommand(
+      enqueueProtectionCommand(
         label: label?.isEmpty == false ? label! : "BLE command",
         bytes: bytes.map(\.intValue),
-        forceCmdCharacteristic: forceCmdCharacteristic
-      ))
+        forceCmdCharacteristic: forceCmdCharacteristic,
+        result: result
+      )
     default:
       result(FlutterMethodNotImplemented)
     }
@@ -193,6 +203,7 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
 
   func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
     eventSink = events
+    drainTelNotify()
     return nil
   }
 
@@ -223,6 +234,9 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
   }
 
   private func stopProtectionRuntime(reason: String) {
+    failPendingProtectionWrites(
+      error: "The iOS Protection runtime stopped before the BLE write completed."
+    )
     defaults.set(false, forKey: Keys.isArmed)
     subscriptionsActive = false
     servicesDiscovered = false
@@ -275,6 +289,18 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     setNotificationText(
       texts["notificationSosCancelledBody"] as? String,
       forKey: Keys.notificationProtectionSosCancelledBody
+    )
+    setNotificationText(
+      texts["nearbyMessageChannelName"] as? String,
+      forKey: Keys.notificationNearbyMessageChannelName
+    )
+    setNotificationText(
+      texts["nearbyMessageChannelDescription"] as? String,
+      forKey: Keys.notificationNearbyMessageChannelDescription
+    )
+    setNotificationText(
+      texts["nearbyMessageFallbackTitle"] as? String,
+      forKey: Keys.notificationNearbyMessageFallbackTitle
     )
   }
 
@@ -569,45 +595,121 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     return max(0, Int(ceil(Double(deadlineAt - Date().millisecondsSince1970) / 1000.0)))
   }
 
-  private func sendProtectionCommand(
+  private struct PendingProtectionWrite {
+    let label: String
+    let payload: Data
+    let forceCmdCharacteristic: Bool
+    let result: FlutterResult
+  }
+
+  private func enqueueProtectionCommand(
     label: String,
     bytes: [Int],
-    forceCmdCharacteristic: Bool
-  ) -> [String: Any?] {
+    forceCmdCharacteristic: Bool,
+    result: @escaping FlutterResult
+  ) {
     let route = "iosPlugin"
     defaults.set(route, forKey: Keys.lastCommandRoute)
 
     guard isArmed else {
       let error = "Protection Mode is off on iOS, so the plugin runtime does not own BLE commands."
       defaults.set(error, forKey: Keys.lastCommandError)
-      return commandResult(success: false, route: route, result: nil, error: error)
+      result(commandResult(success: false, route: route, result: nil, error: error))
+      return
     }
     guard !bytes.isEmpty else {
       let error = "Protection command payload is empty."
       defaults.set(error, forKey: Keys.lastCommandError)
-      return commandResult(success: false, route: route, result: nil, error: error)
+      result(commandResult(success: false, route: route, result: nil, error: error))
+      return
+    }
+
+    let command = PendingProtectionWrite(
+      label: label,
+      payload: Data(bytes.map { UInt8($0 & 0xFF) }),
+      forceCmdCharacteristic: forceCmdCharacteristic,
+      result: result
+    )
+    if inFlightProtectionWrite != nil {
+      protectionWriteQueue.append(command)
+      return
+    }
+    startProtectionWrite(command)
+  }
+
+  private func startProtectionWrite(_ command: PendingProtectionWrite) {
+    let route = "iosPlugin"
+    guard isArmed else {
+      let error = "Protection Mode is off on iOS, so the plugin runtime does not own BLE commands."
+      defaults.set(error, forKey: Keys.lastCommandError)
+      command.result(commandResult(success: false, route: route, result: nil, error: error))
+      startNextProtectionWrite()
+      return
     }
     guard let peripheral = protectedPeripheral, peripheral.state == .connected else {
       let error = "The iOS Protection runtime is armed, but the protected peripheral is not connected yet."
       defaults.set(error, forKey: Keys.lastCommandError)
       defaults.set(error, forKey: Keys.readinessFailureReason)
-      attemptProtectionReconnect(trigger: "native_command_\(label.lowercased())")
-      return commandResult(success: false, route: route, result: nil, error: error)
+      attemptProtectionReconnect(trigger: "native_command_\(command.label.lowercased())")
+      command.result(commandResult(success: false, route: route, result: nil, error: error))
+      startNextProtectionWrite()
+      return
     }
 
-    let payload = Data(bytes.map { UInt8($0 & 0xFF) })
-    let shouldUseCmd = forceCmdCharacteristic || payload.count > 20
+    let shouldUseCmd = command.forceCmdCharacteristic || command.payload.count > 20
     guard let characteristic = shouldUseCmd ? (cmdCharacteristic ?? inetCharacteristic) : (inetCharacteristic ?? cmdCharacteristic) else {
       let error = "The iOS Protection runtime does not have a writable command characteristic ready yet."
       defaults.set(error, forKey: Keys.lastCommandError)
-      return commandResult(success: false, route: route, result: nil, error: error)
+      command.result(commandResult(success: false, route: route, result: nil, error: error))
+      startNextProtectionWrite()
+      return
     }
 
-    let result = "\(label) native write accepted via iosPlugin."
-    defaults.set(result, forKey: Keys.lastCommandResult)
+    inFlightProtectionWrite = command
+    let accepted = "\(command.label) native write accepted via iosPlugin."
+    defaults.set(accepted, forKey: Keys.lastCommandResult)
     defaults.removeObject(forKey: Keys.lastCommandError)
-    peripheral.writeValue(payload, for: characteristic, type: .withResponse)
-    return commandResult(success: true, route: route, result: result, error: nil)
+    peripheral.writeValue(command.payload, for: characteristic, type: .withResponse)
+  }
+
+  private func startNextProtectionWrite() {
+    guard inFlightProtectionWrite == nil, !protectionWriteQueue.isEmpty else {
+      return
+    }
+    startProtectionWrite(protectionWriteQueue.removeFirst())
+  }
+
+  private func failPendingProtectionWrites(error: String) {
+    let route = "iosPlugin"
+    defaults.set(error, forKey: Keys.lastCommandError)
+    let inFlight = inFlightProtectionWrite
+    inFlightProtectionWrite = nil
+    let queued = protectionWriteQueue
+    protectionWriteQueue.removeAll()
+    inFlight?.result(commandResult(success: false, route: route, result: nil, error: error))
+    for command in queued {
+      command.result(commandResult(success: false, route: route, result: nil, error: error))
+    }
+  }
+
+  private func finishProtectionWrite(error: Error?) {
+    guard let command = inFlightProtectionWrite else {
+      return
+    }
+    inFlightProtectionWrite = nil
+    let route = "iosPlugin"
+    if let error {
+      let reason = "The iOS Protection runtime failed to write \(command.label): \(error.localizedDescription)"
+      defaults.set(reason, forKey: Keys.lastCommandError)
+      defaults.set(reason, forKey: Keys.lastFailureReason)
+      recordEvent(type: "runtimeError", reason: reason)
+      command.result(commandResult(success: false, route: route, result: nil, error: reason))
+    } else {
+      let succeeded = "\(command.label) native write succeeded via iosPlugin."
+      defaults.set(succeeded, forKey: Keys.lastCommandResult)
+      command.result(commandResult(success: true, route: route, result: succeeded, error: nil))
+    }
+    startNextProtectionWrite()
   }
 
   private func commandResult(
@@ -724,6 +826,9 @@ extension ProtectionRuntimeBridge: CBCentralManagerDelegate {
   }
 
   func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+    failPendingProtectionWrites(
+      error: "The iOS Protection runtime disconnected before the BLE write completed."
+    )
     subscriptionsActive = false
     servicesDiscovered = false
     telCharacteristic = nil
@@ -851,7 +956,18 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     if let value = characteristic.value {
       recordRawBleNotification(value, characteristic: characteristic, peripheral: peripheral)
       recordBleEvent(type: "packetReceived")
-      captureBleSosPayload(value, characteristic: characteristic)
+      if characteristic.uuid == Self.telCharacteristicUuid {
+        let bytes = [UInt8](value)
+        if TelAggregateFragment.tryParse(bytes) != nil {
+          emitTelNotify(bytes, source: "tel")
+        } else if parseIosBleSosSnapshot(bytes: bytes, receivedAt: Date().millisecondsSince1970) != nil {
+          captureBleSosPayload(value, characteristic: characteristic)
+        } else {
+          emitTelNotify(bytes, source: "tel")
+        }
+      } else {
+        captureBleSosPayload(value, characteristic: characteristic)
+      }
     }
   }
 
@@ -979,6 +1095,83 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       return "sos"
     }
     return characteristic.uuid.uuidString.lowercased()
+  }
+
+  private func emitTelNotify(_ bytes: [UInt8], source: String) {
+    guard !bytes.isEmpty else {
+      return
+    }
+    let payloadHex = bytes.map { String(format: "%02x", $0) }.joined()
+    let assembled = telReassembler.ingest(bytes)
+    if eventSink == nil {
+      // GPS/TEL D0 would fill the 64-slot queue while Dart is detached.
+      // Reassemble first; keep Nearby RX/TX-status/group ACK only.
+      if let assembled, isNearbyTelNotify(assembled) {
+        let queuedHex = assembled.map { String(format: "%02x", $0) }.joined()
+        enqueueTelNotify(payloadHex: queuedHex, source: source)
+      }
+    } else {
+      emitEvent(
+        type: "telNotifyReceived",
+        reason: nil,
+        payload: [
+          "payloadHex": payloadHex,
+          "source": source,
+        ]
+      )
+    }
+    if let assembled {
+      NearbyClosedAppNotifier.maybeNotify(
+        payload: assembled,
+        channelName: notificationText(
+          Keys.notificationNearbyMessageChannelName,
+          fallback: "Nearby"
+        ),
+        fallbackTitle: notificationText(
+          Keys.notificationNearbyMessageFallbackTitle,
+          fallback: "Nearby"
+        )
+      )
+    }
+  }
+
+  private func isNearbyTelNotify(_ bytes: [UInt8]) -> Bool {
+    guard let opcode = bytes.first else {
+      return false
+    }
+    if opcode == 0xD8 || opcode == 0xDA || opcode == 0xDB {
+      return true
+    }
+    return bytes.count >= 2 && opcode == 0xE9 && bytes[1] == 0x7A
+  }
+
+  private func enqueueTelNotify(payloadHex: String, source: String) {
+    var queue = defaults.array(forKey: Keys.pendingTelNotify) as? [[String: Any]] ?? []
+    queue.append([
+      "payloadHex": payloadHex,
+      "source": source,
+      "timestamp": Date().millisecondsSince1970,
+    ])
+    if queue.count > 64 {
+      queue.removeFirst(queue.count - 64)
+    }
+    defaults.set(queue, forKey: Keys.pendingTelNotify)
+  }
+
+  private func drainTelNotify() {
+    let queue = defaults.array(forKey: Keys.pendingTelNotify) as? [[String: Any]] ?? []
+    defaults.removeObject(forKey: Keys.pendingTelNotify)
+    for item in queue {
+      emitEvent(
+        type: "telNotifyReceived",
+        reason: nil,
+        timestamp: item["timestamp"] as? Int,
+        payload: [
+          "payloadHex": item["payloadHex"] as? String ?? "",
+          "source": item["source"] as? String ?? "tel",
+        ]
+      )
+    }
   }
 
   private func shouldSuppressAfterTerminalSnapshot(
@@ -1206,6 +1399,15 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
   }
 
   private func parseIosBleSosSnapshot(bytes: [UInt8], receivedAt: Int) -> (kind: IosBleSosSnapshotKind, nodeId: Int?, packetId: Int?, cycleKey: String?, deadlineAt: Int?)? {
+    // Nearby 0xD8 is chunked as 0xD0. Last fragments of 7/12/13/18 bytes match
+    // SOS snapshot sizes; treat real TEL fragments as not-SOS so emitTelNotify
+    // can reassemble and NearbyClosedAppNotifier can fire with the app killed.
+    // Do not reject 0xD8/0xDA/0xDB by first byte: SOS node id is little-endian
+    // at offset 0. 0xDA status is 6 B and 0xD8 text is ≥ 22 B, so they miss
+    // the 7/12-byte parse below and still reach emitTelNotify.
+    if TelAggregateFragment.tryParse(bytes) != nil {
+      return nil
+    }
     if bytes.count == 6,
        (bytes[0] == 0xE1 || bytes[0] == 0xE2) {
       let nodeId = readUInt32(bytes, offset: 2)
@@ -1249,19 +1451,7 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
   }
 
   func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
-    if let error {
-      let reason = "The iOS Protection runtime failed to write \(characteristic.uuid.uuidString.lowercased()): \(error.localizedDescription)"
-      defaults.set(reason, forKey: Keys.lastCommandError)
-      defaults.set(reason, forKey: Keys.lastFailureReason)
-      recordEvent(type: "runtimeError", reason: reason)
-      return
-    }
-
-    if let currentResult = defaults.string(forKey: Keys.lastCommandResult),
-       currentResult.contains("accepted via iosPlugin") {
-      let finalized = currentResult.replacingOccurrences(of: "accepted via iosPlugin", with: "succeeded via iosPlugin")
-      defaults.set(finalized, forKey: Keys.lastCommandResult)
-    }
+    finishProtectionWrite(error: error)
   }
 }
 

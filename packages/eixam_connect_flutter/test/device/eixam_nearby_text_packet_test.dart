@@ -1,3 +1,4 @@
+import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_nearby_text_packet.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -193,6 +194,31 @@ void main() {
     ]);
     expect(packet?.nodeId, 0x12345678);
     expect(packet?.name, 'Alice');
+  });
+
+  test('parses 0xDA mesh and recipient ACK follow-ups', () {
+    expect(
+      EixamNearbyTextTxStatusPacket.tryParse(const <int>[
+        0xDA,
+        0x22,
+        0,
+        0,
+        0,
+        12,
+      ])?.status,
+      NearbyTextTxStatus.meshAck,
+    );
+    expect(
+      EixamNearbyTextTxStatusPacket.tryParse(const <int>[
+        0xDA,
+        0x22,
+        0,
+        0,
+        0,
+        13,
+      ])?.status,
+      NearbyTextTxStatus.recipientAck,
+    );
   });
 
   test('rejects empty and oversize 0xDB names', () {

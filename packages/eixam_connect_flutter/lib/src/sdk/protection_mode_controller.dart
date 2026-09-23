@@ -967,6 +967,10 @@ class ProtectionModeController {
         );
         _emitDiagnostics();
         break;
+      case ProtectionPlatformEventType.telNotifyReceived:
+        // Nearby TEL is ingested by the SDK. Live GATT already emits
+        // packetReceived; replayed queue items must not look like a live link.
+        break;
       case ProtectionPlatformEventType.deviceDisconnected:
         _status = _status.copyWith(
           deviceConnected: false,

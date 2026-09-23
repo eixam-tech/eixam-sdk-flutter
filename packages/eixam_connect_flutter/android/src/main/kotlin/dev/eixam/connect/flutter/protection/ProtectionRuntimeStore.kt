@@ -230,6 +230,21 @@ internal class ProtectionRuntimeStore(context: Context) {
                 notificationTexts,
                 "protectionSosResolvedBody",
             )
+            .putNotificationText(
+                keyNearbyMessageChannelName,
+                notificationTexts,
+                "nearbyMessageChannelName",
+            )
+            .putNotificationText(
+                keyNearbyMessageChannelDescription,
+                notificationTexts,
+                "nearbyMessageChannelDescription",
+            )
+            .putNotificationText(
+                keyNearbyMessageFallbackTitle,
+                notificationTexts,
+                "nearbyMessageFallbackTitle",
+            )
             .putString(keyReadinessFailureReason, null)
             .putString(keyDiscoveredBleServicesSummary, null)
             .putBoolean(keyStoreAndForwardEnabled, enableStoreAndForward)
@@ -363,6 +378,48 @@ internal class ProtectionRuntimeStore(context: Context) {
     fun protectionSosResolvedBody(): String =
         notificationText(keyProtectionSosResolvedBody, "SOS")
 
+    fun nearbyMessageChannelName(): String =
+        notificationText(keyNearbyMessageChannelName, "Nearby")
+
+    fun nearbyMessageChannelDescription(): String =
+        notificationText(
+            keyNearbyMessageChannelDescription,
+            "Incoming nearby messages",
+        )
+
+    fun nearbyMessageFallbackTitle(): String =
+        notificationText(keyNearbyMessageFallbackTitle, "Nearby")
+
+    fun rememberNearbyNotificationKey(key: String): Boolean {
+        val keys = nearbyNotifiedKeys().toMutableList()
+        if (keys.contains(key)) {
+            return false
+        }
+        keys.add(key)
+        while (keys.size > maxNearbyNotifiedKeys) {
+            keys.removeAt(0)
+        }
+        preferences.edit().putString(keyNearbyNotifiedKeys, JSONArray(keys).toString()).apply()
+        return true
+    }
+
+    private fun nearbyNotifiedKeys(): List<String> {
+        val raw = preferences.getString(keyNearbyNotifiedKeys, null) ?: return emptyList()
+        return try {
+            val array = JSONArray(raw)
+            buildList {
+                for (index in 0 until array.length()) {
+                    val value = array.optString(index).trim()
+                    if (value.isNotEmpty()) {
+                        add(value)
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
     private fun notificationText(key: String, fallback: String): String =
         preferences.getString(key, null)?.trim()?.takeIf { it.isNotBlank() } ?: fallback
 
@@ -480,6 +537,52 @@ internal class ProtectionRuntimeStore(context: Context) {
             )
             .putLong(keyLastPacketAt, System.currentTimeMillis())
             .apply()
+    }
+
+    fun enqueueTelNotify(payloadHex: String, source: String) {
+        val queue = pendingTelNotifyArray()
+        queue.put(
+            JSONObject()
+                .put("payloadHex", payloadHex)
+                .put("source", source)
+                .put("timestamp", System.currentTimeMillis()),
+        )
+        while (queue.length() > maxPendingTelNotify) {
+            queue.remove(0)
+        }
+        preferences.edit().putString(keyPendingTelNotify, queue.toString()).apply()
+    }
+
+    fun drainTelNotify(): List<Map<String, Any?>> {
+        val queue = pendingTelNotifyArray()
+        if (queue.length() == 0) {
+            return emptyList()
+        }
+        preferences.edit().remove(keyPendingTelNotify).apply()
+        return buildList {
+            for (index in 0 until queue.length()) {
+                val item = queue.optJSONObject(index) ?: continue
+                add(
+                    mapOf(
+                        "payloadHex" to item.optString("payloadHex"),
+                        "source" to item.optString("source", "tel"),
+                        "timestamp" to item.optLong(
+                            "timestamp",
+                            System.currentTimeMillis(),
+                        ),
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun pendingTelNotifyArray(): JSONArray {
+        val raw = preferences.getString(keyPendingTelNotify, null) ?: return JSONArray()
+        return try {
+            JSONArray(raw)
+        } catch (_: Exception) {
+            JSONArray()
+        }
     }
 
     fun markPendingSosCreate(reason: String): Map<String, Any?> {
@@ -1179,6 +1282,13 @@ internal class ProtectionRuntimeStore(context: Context) {
             "notification_protection_sos_resolved_title"
         private const val keyProtectionSosResolvedBody =
             "notification_protection_sos_resolved_body"
+        private const val keyNearbyMessageChannelName = "notification_nearby_message_channel_name"
+        private const val keyNearbyMessageChannelDescription =
+            "notification_nearby_message_channel_description"
+        private const val keyNearbyMessageFallbackTitle =
+            "notification_nearby_message_fallback_title"
+        private const val keyNearbyNotifiedKeys = "nearby_notified_keys"
+        private const val maxNearbyNotifiedKeys = 64
         private const val keyPendingSosCount = "pending_sos_count"
         private const val keyPendingSosState = "pending_sos_state"
         private const val keyPendingTelemetryCount = "pending_telemetry_count"
@@ -1194,6 +1304,8 @@ internal class ProtectionRuntimeStore(context: Context) {
         private const val keyLastWakeAt = "last_wake_at"
         private const val keyLastPacketHex = "last_packet_hex"
         private const val keyLastPacketAt = "last_packet_at"
+        private const val keyPendingTelNotify = "pending_tel_notify"
+        private const val maxPendingTelNotify = 64
         private const val keyLastRestorationEvent = "last_restoration_event"
         private const val keyLastRestorationEventAt = "last_restoration_event_at"
         private const val keyLastPlatformEvent = "last_platform_event"

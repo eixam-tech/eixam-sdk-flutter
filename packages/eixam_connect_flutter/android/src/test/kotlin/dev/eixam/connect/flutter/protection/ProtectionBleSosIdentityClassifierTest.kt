@@ -575,4 +575,32 @@ class ProtectionBleSosIdentityClassifierTest {
 
         assertEquals(0x1234, nodeId)
     }
+
+    @Test
+    fun `nearby D0 fragment of SOS length 7 is not classified as SOS`() {
+        val fragment = listOf(0xD0, 23, 0, 15, 0, 0x41, 0x00)
+        assertEquals(7, fragment.size)
+
+        val classification = ProtectionBleSosIdentityClassifier.classify(
+            payload = fragment,
+            connectedNodeId = 0x1234,
+            source = ProtectionBleSosRelaySource.tel,
+        )
+
+        assertTrue(classification is ProtectionBleSosIdentityClassification.Unknown)
+    }
+
+    @Test
+    fun `nearby D0 fragment of SOS length 12 is not classified as SOS`() {
+        val fragment = listOf(0xD0, 22, 0, 15, 0, 1, 2, 3, 4, 5, 6, 7)
+        assertEquals(12, fragment.size)
+
+        val classification = ProtectionBleSosIdentityClassifier.classify(
+            payload = fragment,
+            connectedNodeId = 0x1234,
+            source = ProtectionBleSosRelaySource.tel,
+        )
+
+        assertTrue(classification is ProtectionBleSosIdentityClassification.Unknown)
+    }
 }

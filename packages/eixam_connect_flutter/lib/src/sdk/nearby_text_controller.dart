@@ -17,9 +17,13 @@ class NearbyTextController {
     required this.writeCommand,
     this.txTimeout = const Duration(seconds: 8),
     int Function()? packetIdFactory,
-    bool Function()? bleOwnedByProtection,
-  }) : _packetIdFactory = packetIdFactory ?? _nextPacketId,
-       _bleOwnedByProtection = bleOwnedByProtection ?? _never {
+  }) : _packetIdFactory = packetIdFactory ?? _nextPacketId {
+    _incomingController = StreamController<NearbyIncomingText>.broadcast(
+      onListen: _flushBufferedIncoming,
+    );
+    _txStatusController = StreamController<NearbyTextTxResult>.broadcast(
+      onListen: _flushBufferedTxStatus,
+    );
     _incomingSub = incomingEvents.listen(_onIncoming);
   }
 
@@ -27,15 +31,12 @@ class NearbyTextController {
   final Duration txTimeout;
   final int Function() _packetIdFactory;
 
-  /// True while the native protection runtime owns the GATT link. Commands
-  /// would be written natively, but TEL notifies (`0xDA`, `E9 7A`, `0xD0`)
-  /// are not bridged back to Dart, so every Nearby exchange would time out.
-  final bool Function() _bleOwnedByProtection;
-
-  final StreamController<NearbyIncomingText> _incomingController =
-      StreamController<NearbyIncomingText>.broadcast();
+  late final StreamController<NearbyIncomingText> _incomingController;
   final StreamController<NearbyNodeName> _namesController =
       StreamController<NearbyNodeName>.broadcast();
+  late final StreamController<NearbyTextTxResult> _txStatusController;
+  final List<NearbyIncomingText> _bufferedIncoming = <NearbyIncomingText>[];
+  final List<NearbyTextTxResult> _bufferedTxStatus = <NearbyTextTxResult>[];
   final Map<int, Completer<NearbyTextTxStatus>> _pending =
       <int, Completer<NearbyTextTxStatus>>{};
   Completer<ProvisioningCommandResult>? _groupAck;
@@ -51,6 +52,8 @@ class NearbyTextController {
   Stream<NearbyIncomingText> get incoming => _incomingController.stream;
 
   Stream<NearbyNodeName> get nodeNames => _namesController.stream;
+
+  Stream<NearbyTextTxResult> get txStatus => _txStatusController.stream;
 
   /// E9 7A has no transaction id. After a group timeout, ignore further `0x41`
   /// ACKs for a short drain, then retry while this TAG stays connected.
@@ -100,7 +103,7 @@ class NearbyTextController {
       return;
     }
     _cachedOwnerName = _clipOwnerName(trimmed);
-    if (_disposed || !_connected || _bleOwnedByProtection()) {
+    if (_disposed || !_connected) {
       return;
     }
     await _enqueue(() => _writeOwnerName(_cachedOwnerName!));
@@ -205,12 +208,6 @@ class NearbyTextController {
         status: NearbyTextTxStatus.disconnected,
       );
     }
-    if (_bleOwnedByProtection()) {
-      return const NearbyTextTxResult(
-        packetId: 0,
-        status: NearbyTextTxStatus.bleOwnedByProtection,
-      );
-    }
     final utf8Bytes = utf8.encode(text);
     if (utf8Bytes.isEmpty || _whitespaceOnly(utf8Bytes)) {
       return NearbyTextTxResult(packetId: 0, status: NearbyTextTxStatus.empty);
@@ -227,21 +224,40 @@ class NearbyTextController {
     _pending[packetId] = completer;
 
     try {
-      final frames = EixamNearbyTextFramer.txFragments(
+      await _writeTxFrames(
         packetId: packetId,
         utf8Bytes: utf8Bytes,
         destNodeId: destNodeId,
         groupId: groupId,
       );
-      for (final frame in frames) {
-        await writeCommand(EixamDeviceCommand.nearbyTextTxFragment(frame));
-      }
     } on DeviceException {
-      _pending.remove(packetId);
-      return NearbyTextTxResult(
-        packetId: packetId,
-        status: NearbyTextTxStatus.disconnected,
-      );
+      // Writer miss is transient while TEL RX still works (CMD bind lag,
+      // protection owner claim). One retry, same packet id.
+      final drain = txTimeout < const Duration(milliseconds: 400)
+          ? txTimeout
+          : const Duration(milliseconds: 400);
+      await Future<void>.delayed(drain);
+      if (_disposed) {
+        _pending.remove(packetId);
+        return NearbyTextTxResult(
+          packetId: packetId,
+          status: NearbyTextTxStatus.disconnected,
+        );
+      }
+      try {
+        await _writeTxFrames(
+          packetId: packetId,
+          utf8Bytes: utf8Bytes,
+          destNodeId: destNodeId,
+          groupId: groupId,
+        );
+      } catch (_) {
+        _pending.remove(packetId);
+        return NearbyTextTxResult(
+          packetId: packetId,
+          status: NearbyTextTxStatus.disconnected,
+        );
+      }
     } catch (_) {
       _pending.remove(packetId);
       return NearbyTextTxResult(
@@ -262,6 +278,23 @@ class NearbyTextController {
     }
   }
 
+  Future<void> _writeTxFrames({
+    required int packetId,
+    required List<int> utf8Bytes,
+    required int destNodeId,
+    required int groupId,
+  }) async {
+    final frames = EixamNearbyTextFramer.txFragments(
+      packetId: packetId,
+      utf8Bytes: utf8Bytes,
+      destNodeId: destNodeId,
+      groupId: groupId,
+    );
+    for (final frame in frames) {
+      await writeCommand(EixamDeviceCommand.nearbyTextTxFragment(frame));
+    }
+  }
+
   Future<NearbyGroupCommandResult> _writeGroup({
     required int action,
     required int groupId,
@@ -272,17 +305,6 @@ class NearbyTextController {
     }
     if (groupId == 0) {
       return const NearbyGroupCommandResult(accepted: false, detail: 0);
-    }
-    if (_bleOwnedByProtection()) {
-      // Not attempted: no ACK could reach us, and a timeout here would
-      // poison the group epoch until the next disconnect/reconnect.
-      safeSdkDebugPrint(
-        'NEARBY_GROUP_WRITE phase=blocked_protection action=$action',
-      );
-      return const NearbyGroupCommandResult(
-        accepted: false,
-        detail: NearbyGroupCommandResult.rejectDetailBleOwnedByProtection,
-      );
     }
     if (!_groupEpochValid) {
       if (!_connected) {
@@ -402,6 +424,12 @@ class NearbyTextController {
       if (packet == null) {
         return;
       }
+      _emitTxStatus(
+        NearbyTextTxResult(packetId: packet.packetId, status: packet.status),
+      );
+      if (packet.status.isDeliveryUpdate) {
+        return;
+      }
       if (packet.packetId == 0) {
         final pending = Map<int, Completer<NearbyTextTxStatus>>.from(_pending);
         _pending.clear();
@@ -439,7 +467,7 @@ class NearbyTextController {
     if (packet == null || _incomingController.isClosed) {
       return;
     }
-    _incomingController.add(
+    _emitIncoming(
       NearbyIncomingText(
         fromNodeId: packet.fromNodeId,
         destNodeId: packet.destNodeId,
@@ -450,6 +478,56 @@ class NearbyTextController {
         receivedAt: event.receivedAt,
       ),
     );
+  }
+
+  void _emitIncoming(NearbyIncomingText text) {
+    if (_incomingController.isClosed) {
+      return;
+    }
+    if (_incomingController.hasListener) {
+      _incomingController.add(text);
+      return;
+    }
+    _bufferedIncoming.add(text);
+    if (_bufferedIncoming.length > 64) {
+      _bufferedIncoming.removeAt(0);
+    }
+  }
+
+  void _flushBufferedIncoming() {
+    if (_incomingController.isClosed || _bufferedIncoming.isEmpty) {
+      return;
+    }
+    final pending = List<NearbyIncomingText>.from(_bufferedIncoming);
+    _bufferedIncoming.clear();
+    for (final text in pending) {
+      _incomingController.add(text);
+    }
+  }
+
+  void _emitTxStatus(NearbyTextTxResult status) {
+    if (_txStatusController.isClosed) {
+      return;
+    }
+    if (_txStatusController.hasListener) {
+      _txStatusController.add(status);
+      return;
+    }
+    _bufferedTxStatus.add(status);
+    if (_bufferedTxStatus.length > 32) {
+      _bufferedTxStatus.removeAt(0);
+    }
+  }
+
+  void _flushBufferedTxStatus() {
+    if (_txStatusController.isClosed || _bufferedTxStatus.isEmpty) {
+      return;
+    }
+    final pending = List<NearbyTextTxResult>.from(_bufferedTxStatus);
+    _bufferedTxStatus.clear();
+    for (final status in pending) {
+      _txStatusController.add(status);
+    }
   }
 
   void _failPendingTx(NearbyTextTxStatus status) {
@@ -542,8 +620,11 @@ class NearbyTextController {
     }
     _groupAck = null;
     _failOwnerAck();
+    _bufferedIncoming.clear();
+    _bufferedTxStatus.clear();
     await _incomingController.close();
     await _namesController.close();
+    await _txStatusController.close();
   }
 
   static bool _whitespaceOnly(List<int> bytes) {
@@ -566,8 +647,6 @@ class NearbyTextController {
     }
     return true;
   }
-
-  static bool _never() => false;
 
   static String _clipOwnerName(String name) {
     var clipped = name;

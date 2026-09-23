@@ -28,6 +28,7 @@ enum ProtectionPlatformEventType {
   sosEventReceived,
   ownDeviceSosLifecycleObserved,
   ownDeviceSosLifecycleSuppressed,
+  telNotifyReceived,
   runtimeError,
   restorationDetected,
   restorationRehydrated,

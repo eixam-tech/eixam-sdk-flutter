@@ -256,10 +256,6 @@ class EixamConnectSdkImpl
     _nearbyTextController = NearbyTextController(
       incomingEvents: bleIncomingEvents,
       writeCommand: _sendDeviceCommandThroughActiveOwner,
-      // Passive native TEL notifications now share the Dart decoder. Nearby
-      // request/response still fails fast until its command transaction is
-      // explicitly owner-aware, avoiding timeouts that poison the group epoch.
-      bleOwnedByProtection: () => _isProtectionPlatformOwningBle,
     );
     _bleAutoReconnectCoordinator = BleAutoReconnectCoordinator(
       deviceRepository: deviceRepository,
@@ -593,6 +589,7 @@ class EixamConnectSdkImpl
   String? _lastOwnDeviceTerminalProcessSessionId;
   int? _terminalBoundaryFromPreviousProcessGeneration;
   final Set<int> _terminalGenerationsEstablishedThisProcess = <int>{};
+  bool _nearbyTextRadioConnected = false;
 
   Timer? _deathManTimer;
   bool _deathManCheckInNotified = false;
@@ -990,13 +987,11 @@ class EixamConnectSdkImpl
       );
       _emitOperationalDiagnostics();
       if (!promotedStatus.connected) {
-        _nearbyTextController.markDisconnected();
         unawaited(_devicePositionBacklogCoordinator.disconnected());
-      } else if (previousStatus?.connected != true) {
-        _nearbyTextController.markConnected();
-      } else {
-        _nearbyTextController.noteStillConnected();
       }
+      _syncNearbyTextLink(
+        connected: _lastPublicDeviceStatus?.connected == true,
+      );
       unawaited(
         _updateBackgroundTelemetryState(reason: 'device_status_stream'),
       );
@@ -1180,6 +1175,9 @@ class EixamConnectSdkImpl
         _publishPublicDeviceStatus(
           rawStatus: rawStatus,
           reason: 'protection_status_stream',
+        );
+        _syncNearbyTextLink(
+          connected: _lastPublicDeviceStatus?.connected == true,
         );
       }
       final nativeLive = _protectionReportsLiveBleConnection(status);
@@ -1423,6 +1421,10 @@ class EixamConnectSdkImpl
         .watchPlatformEvents()
         .listen(
           (event) {
+            if (event.type == ProtectionPlatformEventType.telNotifyReceived) {
+              unawaited(_ingestNativeProtectionTelNotify(event));
+              return;
+            }
             _handleProtectionPlatformSosEvent(event);
           },
           onError: (Object error) {
@@ -4016,6 +4018,11 @@ class EixamConnectSdkImpl
   @override
   Stream<NearbyIncomingText> watchNearbyText() {
     return _nearbyTextController.incoming;
+  }
+
+  @override
+  Stream<NearbyTextTxResult> watchNearbyTextTxStatus() {
+    return _nearbyTextController.txStatus;
   }
 
   @override
@@ -19822,6 +19829,50 @@ class EixamConnectSdkImpl
         status.bleOwner != ProtectionBleOwner.flutter;
   }
 
+  void _syncNearbyTextLink({required bool connected}) {
+    if (connected) {
+      if (_nearbyTextRadioConnected) {
+        _nearbyTextController.noteStillConnected();
+      } else {
+        _nearbyTextController.markConnected();
+      }
+      _nearbyTextRadioConnected = true;
+      return;
+    }
+    if (_nearbyTextRadioConnected) {
+      _nearbyTextController.markDisconnected();
+    }
+    _nearbyTextRadioConnected = false;
+  }
+
+  Future<void> _ingestNativeProtectionTelNotify(
+    ProtectionPlatformEvent event,
+  ) async {
+    final rawHex = event.payloadHex?.trim();
+    if (rawHex == null || rawHex.isEmpty) {
+      return;
+    }
+    final bytes = _tryDecodeHexPayload(rawHex);
+    if (bytes == null || bytes.isEmpty) {
+      return;
+    }
+    _syncNearbyTextLink(connected: true);
+    final repository = deviceRepository;
+    if (repository is! InMemoryDeviceRepository) {
+      return;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'NATIVE_TEL_NOTIFY ingest source=${event.source ?? "tel"} '
+      'len=${bytes.length}',
+    );
+    await repository.ingestNativeBleNotification(
+      payload: bytes,
+      channel: event.source == 'sos'
+          ? EixamBleChannel.sos
+          : EixamBleChannel.tel,
+    );
+  }
+
   bool get _isAppBackgrounded {
     return _appLifecycleState == AppLifecycleState.paused ||
         _appLifecycleState == AppLifecycleState.detached;
@@ -19934,13 +19985,43 @@ class EixamConnectSdkImpl
     return _sosBleOwnershipState == SosBleOwnershipState.nativeReadyOwner;
   }
 
+  bool _flutterWriterReadyFor(EixamDeviceCommand command) {
+    return command.usesCmdCharacteristic
+        ? deviceSosController.longCommandAvailable
+        : deviceSosController.shortCommandAvailable ||
+              deviceSosController.longCommandAvailable;
+  }
+
   Future<void> _sendDeviceCommandThroughActiveOwner(
     EixamDeviceCommand command,
   ) async {
-    final ownerRoute = _currentDeviceCommandOwnerRoute;
+    final flutterReady = _flutterWriterReadyFor(command);
+    // Foreground protection often *claims* native owner while Flutter still
+    // holds GATT. TEL RX works; CMD TX through native then fails. Prefer the
+    // writer that can actually send this command.
+    final ownerRoute = flutterReady
+        ? 'flutter_writer'
+        : _currentDeviceCommandOwnerRoute;
     BleDebugRegistry.instance.recordEvent(
       'Device leg owner chosen -> owner=$ownerRoute command=${command.label}',
     );
+    if (flutterReady) {
+      try {
+        await deviceSosController.sendAttachedCommand(command);
+        BleDebugRegistry.instance.recordEvent(
+          'Flutter writer command accepted -> owner=$ownerRoute command=${command.label}',
+        );
+        return;
+      } catch (error) {
+        BleDebugRegistry.instance.recordEvent(
+          'Flutter writer command rejected -> owner=$ownerRoute command=${command.label} error=$error',
+        );
+        if (!_isProtectionPlatformOwningBle) {
+          rethrow;
+        }
+      }
+    }
+
     if (_sosBleOwnershipState == SosBleOwnershipState.nativePreparing) {
       BleDebugRegistry.instance.recordEvent(
         'SOS_DEVICE_COMMAND_REJECTED owner=native_preparing '
@@ -19948,6 +20029,7 @@ class EixamConnectSdkImpl
       );
       _throwDeviceCommandNotReady();
     }
+
     if (_isAuthoritativeNativeProtectionBleOwner) {
       final connectedDevice = _lastPublicDeviceStatus ?? _lastDeviceStatus;
       final protectionStatus = _protectionModeController.currentStatus;
@@ -19997,34 +20079,7 @@ class EixamConnectSdkImpl
         'connectedTargets=${expectedTargets.join(",")} '
         'nativeTargets=${nativeTargets.join(",")}',
       );
-      final result = await protectionPlatformAdapter.sendProtectionCommand(
-        request: ProtectionPlatformCommandRequest(
-          label: command.label,
-          bytes: command.encode(),
-          forceCmdCharacteristic: command.usesCmdCharacteristic,
-        ),
-      );
-      if (command.opcode != EixamBleProtocol.nearbyTextTxOpcode &&
-          command.opcode != EixamBleProtocol.nearbyTextGroupOpcode &&
-          command.opcode != EixamBleProtocol.nearbyOwnerNameOpcode) {
-        await _protectionModeController.rehydrate();
-      }
-      if (!result.success) {
-        BleDebugRegistry.instance.recordEvent(
-          'Native owner command rejected -> owner=$ownerRoute command=${command.label} route=${result.route ?? "-"} error=${result.error ?? result.result ?? "-"}',
-        );
-        final message =
-            result.error ?? 'E_PROTECTION_NATIVE_COMMAND_SEND_FAILED';
-        throw DeviceException(message, message);
-      }
-      BleDebugRegistry.instance.recordEvent(
-        'Native owner command accepted -> owner=$ownerRoute command=${command.label} route=${result.route ?? "-"} result=${result.result ?? "-"}',
-      );
-      return;
-    }
-
-    if (!deviceSosController.shortCommandAvailable &&
-        !deviceSosController.longCommandAvailable) {
+    } else if (!_isProtectionPlatformOwningBle) {
       BleDebugRegistry.instance.recordEvent(
         'Flutter writer command rejected -> owner=$ownerRoute command=${command.label} reason=writer_unavailable',
       );
@@ -20034,17 +20089,28 @@ class EixamConnectSdkImpl
       );
     }
 
-    try {
-      await deviceSosController.sendAttachedCommand(command);
-      BleDebugRegistry.instance.recordEvent(
-        'Flutter writer command accepted -> owner=$ownerRoute command=${command.label}',
-      );
-    } catch (error) {
-      BleDebugRegistry.instance.recordEvent(
-        'Flutter writer command rejected -> owner=$ownerRoute command=${command.label} error=$error',
-      );
-      rethrow;
+    final result = await protectionPlatformAdapter.sendProtectionCommand(
+      request: ProtectionPlatformCommandRequest(
+        label: command.label,
+        bytes: command.encode(),
+        forceCmdCharacteristic: command.usesCmdCharacteristic,
+      ),
+    );
+    if (command.opcode != EixamBleProtocol.nearbyTextTxOpcode &&
+        command.opcode != EixamBleProtocol.nearbyTextGroupOpcode &&
+        command.opcode != EixamBleProtocol.nearbyOwnerNameOpcode) {
+      await _protectionModeController.rehydrate();
     }
+    if (!result.success) {
+      BleDebugRegistry.instance.recordEvent(
+        'Native owner command rejected -> owner=$ownerRoute command=${command.label} route=${result.route ?? "-"} error=${result.error ?? result.result ?? "-"}',
+      );
+      final message = result.error ?? 'E_PROTECTION_NATIVE_COMMAND_SEND_FAILED';
+      throw DeviceException(message, message);
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'Native owner command accepted -> owner=$ownerRoute command=${command.label} route=${result.route ?? "-"} result=${result.result ?? "-"}',
+    );
   }
 
   Future<void> _handleProtectionBleOwnershipChanged(
@@ -20948,6 +21014,7 @@ class EixamConnectSdkImpl
       case ProtectionPlatformEventType.nativeCommandReadinessChanged:
       case ProtectionPlatformEventType.bleNotificationReceived:
       case ProtectionPlatformEventType.packetReceived:
+      case ProtectionPlatformEventType.telNotifyReceived:
       case ProtectionPlatformEventType.sosEventReceived:
       case ProtectionPlatformEventType.ownDeviceSosLifecycleObserved:
       case ProtectionPlatformEventType.ownDeviceSosLifecycleSuppressed:

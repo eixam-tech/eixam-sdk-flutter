@@ -350,6 +350,12 @@ abstract class EixamConnectSdk {
   /// Live Nearby RX from the connected TAG. Hosts persist; the SDK does not.
   Stream<NearbyIncomingText> watchNearbyText();
 
+  /// Follow-up `0xDA` delivery updates (`meshAck` / `recipientAck` /
+  /// `ackTimeout` / `gotNak`) for a packet already returned by send.
+  /// On-air and reject statuses are also emitted. Hosts correlate by
+  /// [NearbyTextTxResult.packetId].
+  Stream<NearbyTextTxResult> watchNearbyTextTxStatus();
+
   /// NodeInfo long_name heard by the connected TAG (`0xDB`). Hardware
   /// fallback is `EIXAM_<nodeId>` when no phone is on that TAG.
   Stream<NearbyNodeName> watchNearbyNodeNames();

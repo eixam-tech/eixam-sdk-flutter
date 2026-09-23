@@ -159,6 +159,27 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     _notificationReceiveSequence = receiveSequence;
   }
 
+  /// Classifies a TEL/SOS notify that arrived on the native protection GATT
+  /// owner. Nearby, group ACKs, and TEL reassembly stay in Dart.
+  Future<void> ingestNativeNotification({
+    required List<int> payload,
+    required EixamBleChannel channel,
+    String? deviceId,
+  }) {
+    if (_disposed || payload.isEmpty) {
+      return Future<void>.value();
+    }
+    return _handleNotification(
+      deviceId ?? _connectedDeviceId ?? 'native-protection',
+      EixamBleNotification(
+        channel: channel,
+        payload: payload,
+        receivedAt: DateTime.now(),
+      ),
+      fromNativeOwner: true,
+    );
+  }
+
   Future<PreferredDevice?> recoverPreferredFromSystemAssociation() async {
     try {
       final associated = await _bleClient.listSystemAssociatedDevices();
@@ -896,11 +917,12 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
   Future<void> _handleNotification(
     String deviceId,
-    EixamBleNotification notification,
-  ) async {
+    EixamBleNotification notification, {
+    bool fromNativeOwner = false,
+  }) async {
     final receiveSequence = ++_notificationReceiveSequence;
     final payload = notification.payload;
-    if (_ownershipSuspended) {
+    if (_ownershipSuspended && !fromNativeOwner) {
       BleDebugRegistry.instance.recordEvent(
         'EIXAM_BLE_NOTIFICATION_RX_DROPPED '
         'producer=flutter_gatt owner=native '
@@ -913,7 +935,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     }
     BleDebugRegistry.instance.recordEvent(
       'EIXAM_BLE_NOTIFICATION_RX '
-      'producer=flutter_gatt owner=flutter '
+      'producer=${fromNativeOwner ? 'native_protection' : 'flutter_gatt'} '
+      'owner=${fromNativeOwner ? 'native' : 'flutter'} '
       'characteristic=${_characteristicLabelForChannel(notification.channel)} '
       'byteLength=${payload.length} '
       'packetType=${_rawNotificationPacketType(payload, notification.channel)} '
@@ -1010,6 +1033,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       'BLE SOS runtime detach requested -> hardwareId=${_connectedDeviceId ?? "-"} inetAvailable=${BleDebugRegistry.instance.currentState.inetFound} cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound}',
     );
     await _deviceSosController.detach();
+    _telReassembler.reset();
     final deviceId = _connectedDeviceId;
     if (deviceId != null) {
       try {

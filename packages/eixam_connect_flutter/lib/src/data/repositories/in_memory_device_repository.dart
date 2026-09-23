@@ -5,6 +5,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import '../../device/ble_debug_registry.dart';
 import '../../device/device_runtime_provider.dart';
 import '../../device/ble_device_runtime_provider.dart';
+import '../../device/eixam_ble_protocol.dart';
 import '../../device/known_device_reconnect_repository.dart';
 import '../datasources_local/shared_prefs_sdk_store.dart';
 import '../../mappers/local_state_serializers.dart';
@@ -286,6 +287,20 @@ class InMemoryDeviceRepository
       );
     }
     return _status;
+  }
+
+  Future<void> ingestNativeBleNotification({
+    required List<int> payload,
+    required EixamBleChannel channel,
+  }) async {
+    final runtimeProvider = _runtimeProvider;
+    if (runtimeProvider is! BleDeviceRuntimeProvider) {
+      return;
+    }
+    await runtimeProvider.ingestNativeNotification(
+      payload: payload,
+      channel: channel,
+    );
   }
 
   bool get hasCommandCapableBleRuntime {

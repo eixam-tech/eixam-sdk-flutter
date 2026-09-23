@@ -24,12 +24,14 @@ internal object ProtectionRuntimeBridge {
     private var eventSink: EventChannel.EventSink? = null
     private var runtimeOwner: ProtectionBleRuntimeOwner? = null
     private val pendingEvents = ProtectionPlatformEventBuffer(maxPendingEvents)
+    private val telReassembler = TelAggregateReassembler()
 
     fun register(
         messenger: BinaryMessenger,
         context: Context,
     ) {
         applicationContext = context.applicationContext
+        HostUiVisibility.install(context.applicationContext)
         MethodChannel(messenger, methodChannelName).setMethodCallHandler { call, result ->
             handleMethodCall(call, result, context.applicationContext)
         }
@@ -39,6 +41,7 @@ internal object ProtectionRuntimeBridge {
                     eventSink = events
                     val sink = events ?: return
                     pendingEvents.drain(sink::success)
+                    flushQueuedTelNotify()
                 }
 
                 override fun onCancel(arguments: Any?) {
@@ -322,6 +325,68 @@ internal object ProtectionRuntimeBridge {
             )
             false
         }
+    }
+
+    private fun flushQueuedTelNotify() {
+        val context = applicationContext ?: return
+        val queued = ProtectionRuntimeStore(context).drainTelNotify()
+        for (item in queued) {
+            emitSuccess(
+                mapOf(
+                    "type" to "telNotifyReceived",
+                    "timestamp" to (
+                        item["timestamp"] as? Long ?: System.currentTimeMillis()
+                    ),
+                    "payloadHex" to item["payloadHex"],
+                    "source" to item["source"],
+                ),
+            )
+        }
+    }
+
+    fun emitTelNotify(
+        context: Context,
+        payload: List<Int>,
+        source: String,
+    ) {
+        val payloadHex = payload.joinToString(separator = "") { byte ->
+            "%02x".format(byte)
+        }
+        // GATT callbacks are not on the main thread. Sink check, D0 reassembly,
+        // enqueue, and EventChannel emit must be serial with onListen.
+        dispatchToMainThread {
+            val assembled = telReassembler.ingest(payload)
+            if (eventSink == null) {
+                val queued = assembled?.takeIf { isNearbyTelNotify(it) }
+                if (queued != null) {
+                    val queuedHex = queued.joinToString(separator = "") { byte ->
+                        "%02x".format(byte)
+                    }
+                    ProtectionRuntimeStore(context).enqueueTelNotify(queuedHex, source)
+                }
+            } else {
+                emitSuccess(
+                    mapOf(
+                        "type" to "telNotifyReceived",
+                        "timestamp" to System.currentTimeMillis(),
+                        "payloadHex" to payloadHex,
+                        "source" to source,
+                    ),
+                )
+            }
+            assembled?.let { NearbyClosedAppNotifier.maybeNotify(context, it) }
+        }
+    }
+
+    private fun isNearbyTelNotify(payload: List<Int>): Boolean {
+        if (payload.isEmpty()) {
+            return false
+        }
+        val opcode = payload[0] and 0xFF
+        if (opcode == 0xD8 || opcode == 0xDA || opcode == 0xDB) {
+            return true
+        }
+        return payload.size >= 2 && opcode == 0xE9 && (payload[1] and 0xFF) == 0x7A
     }
 
     fun recordBleEvent(

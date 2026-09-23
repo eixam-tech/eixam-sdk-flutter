@@ -34,19 +34,16 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
   final TextEditingController _appIdController = TextEditingController(
     text: 'partner-app',
   );
-  final TextEditingController _externalUserIdController =
-      TextEditingController(text: 'partner-user-123');
+  final TextEditingController _externalUserIdController = TextEditingController(
+    text: 'partner-user-123',
+  );
   final TextEditingController _userHashController = TextEditingController(
     text: 'signed-session-hash',
   );
   final TextEditingController _customApiBaseUrlController =
-      TextEditingController(
-    text: 'https://partner-api.example.com',
-  );
+      TextEditingController(text: 'https://partner-api.example.com');
   final TextEditingController _customWebsocketUrlController =
-      TextEditingController(
-    text: 'ssl://partner-mqtt.example.com:8883',
-  );
+      TextEditingController(text: 'ssl://partner-mqtt.example.com:8883');
   final TextEditingController _pairingCodeController = TextEditingController(
     text: 'PAIR-CODE-001',
   );
@@ -200,8 +197,9 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
       });
     });
 
-    _diagnosticsSubscription =
-        sdk.watchOperationalDiagnostics().listen((diagnostics) {
+    _diagnosticsSubscription = sdk.watchOperationalDiagnostics().listen((
+      diagnostics,
+    ) {
       if (!mounted) return;
       setState(() {
         _diagnostics = diagnostics;
@@ -512,9 +510,7 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('EIXAM Partner Example'),
-      ),
+      appBar: AppBar(title: const Text('EIXAM Partner Example')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -548,9 +544,7 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
                 const SizedBox(height: 12),
                 DropdownButtonFormField<EixamEnvironment>(
                   initialValue: _environment,
-                  decoration: const InputDecoration(
-                    labelText: 'Environment',
-                  ),
+                  decoration: const InputDecoration(labelText: 'Environment'),
                   items: EixamEnvironment.values
                       .map(
                         (environment) => DropdownMenuItem<EixamEnvironment>(
@@ -623,8 +617,9 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
                       ),
                     ),
                     OutlinedButton(
-                      onPressed:
-                          !_hasSdk || _clearingSession ? null : _clearSession,
+                      onPressed: !_hasSdk || _clearingSession
+                          ? null
+                          : _clearSession,
                       child: Text(
                         _clearingSession ? 'Clearing...' : 'Clear Session',
                       ),
@@ -706,8 +701,8 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
                 ),
                 _InfoLine(
                   label: 'Pending telemetry',
-                  value:
-                      (_diagnostics.bridge.pendingTelemetry != null).toString(),
+                  value: (_diagnostics.bridge.pendingTelemetry != null)
+                      .toString(),
                 ),
                 _InfoLine(
                   label: 'Last bridge decision',
@@ -732,8 +727,9 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
                 ),
                 const SizedBox(height: 12),
                 FilledButton(
-                  onPressed:
-                      !_hasSdk || _runningDeviceAction ? null : _connectDevice,
+                  onPressed: !_hasSdk || _runningDeviceAction
+                      ? null
+                      : _connectDevice,
                   child: Text(
                     _runningDeviceAction ? 'Working...' : 'Connect Device',
                   ),
@@ -741,13 +737,15 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
                 const SizedBox(height: 12),
                 TextField(
                   controller: _activationCodeController,
-                  decoration:
-                      const InputDecoration(labelText: 'Activation code'),
+                  decoration: const InputDecoration(
+                    labelText: 'Activation code',
+                  ),
                 ),
                 const SizedBox(height: 12),
                 OutlinedButton(
-                  onPressed:
-                      !_hasSdk || _runningDeviceAction ? null : _activateDevice,
+                  onPressed: !_hasSdk || _runningDeviceAction
+                      ? null
+                      : _activateDevice,
                   child: const Text('Activate Device'),
                 ),
                 const SizedBox(height: 8),
@@ -804,8 +802,9 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
                           (contact) => ListTile(
                             contentPadding: EdgeInsets.zero,
                             title: Text(contact.name),
-                            subtitle:
-                                Text('${contact.phone} | ${contact.email}'),
+                            subtitle: Text(
+                              '${contact.phone} | ${contact.email}',
+                            ),
                             trailing: TextButton(
                               onPressed: _savingContact
                                   ? null
@@ -834,15 +833,17 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
                   runSpacing: 12,
                   children: [
                     FilledButton(
-                      onPressed:
-                          !_hasSdk || _runningSosAction ? null : _triggerSos,
+                      onPressed: !_hasSdk || _runningSosAction
+                          ? null
+                          : _triggerSos,
                       child: Text(
                         _runningSosAction ? 'Working...' : 'Trigger SOS',
                       ),
                     ),
                     OutlinedButton(
-                      onPressed:
-                          !_hasSdk || _runningSosAction ? null : _cancelSos,
+                      onPressed: !_hasSdk || _runningSosAction
+                          ? null
+                          : _cancelSos,
                       child: const Text('Cancel SOS'),
                     ),
                   ],
@@ -886,8 +887,8 @@ class _PartnerExampleHomePageState extends State<PartnerExampleHomePage> {
                 ),
                 _InfoLine(
                   label: 'Pending telemetry',
-                  value:
-                      (_diagnostics.bridge.pendingTelemetry != null).toString(),
+                  value: (_diagnostics.bridge.pendingTelemetry != null)
+                      .toString(),
                 ),
                 _InfoLine(
                   label: 'Last bridge decision',
@@ -934,13 +935,14 @@ const _notificationTexts = EixamNotificationTexts(
   protectionSosActiveBody: 'Your device has activated SOS.',
   protectionSosResolvedTitle: 'SOS resolved',
   protectionSosResolvedBody: 'The device SOS has ended.',
+  nearbyMessageChannelName: 'Nearby',
+  nearbyMessageChannelDescription:
+      'Off-grid LoRa messages from tags in radio range',
+  nearbyMessageFallbackTitle: 'Nearby',
 );
 
 class _SectionCard extends StatelessWidget {
-  const _SectionCard({
-    required this.title,
-    required this.child,
-  });
+  const _SectionCard({required this.title, required this.child});
 
   final String title;
   final Widget child;
@@ -954,10 +956,7 @@ class _SectionCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              title,
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
+            Text(title, style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 12),
             child,
           ],
@@ -968,10 +967,7 @@ class _SectionCard extends StatelessWidget {
 }
 
 class _JourneyBanner extends StatelessWidget {
-  const _JourneyBanner({
-    required this.title,
-    required this.steps,
-  });
+  const _JourneyBanner({required this.title, required this.steps});
 
   final String title;
   final List<String> steps;
@@ -988,15 +984,14 @@ class _JourneyBanner extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            title,
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
+          Text(title, style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 8),
-          ...steps.map((step) => Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Text(step),
-              )),
+          ...steps.map(
+            (step) => Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Text(step),
+            ),
+          ),
         ],
       ),
     );
@@ -1004,10 +999,7 @@ class _JourneyBanner extends StatelessWidget {
 }
 
 class _SectionLabel extends StatelessWidget {
-  const _SectionLabel({
-    required this.title,
-    required this.body,
-  });
+  const _SectionLabel({required this.title, required this.body});
 
   final String title;
   final String body;
@@ -1019,10 +1011,7 @@ class _SectionLabel extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            title,
-            style: Theme.of(context).textTheme.titleSmall,
-          ),
+          Text(title, style: Theme.of(context).textTheme.titleSmall),
           const SizedBox(height: 4),
           Text(body),
         ],
@@ -1032,10 +1021,7 @@ class _SectionLabel extends StatelessWidget {
 }
 
 class _InfoLine extends StatelessWidget {
-  const _InfoLine({
-    required this.label,
-    required this.value,
-  });
+  const _InfoLine({required this.label, required this.value});
 
   final String label;
   final String value;

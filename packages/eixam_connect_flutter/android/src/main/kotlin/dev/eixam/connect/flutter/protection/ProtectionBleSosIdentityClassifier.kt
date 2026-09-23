@@ -26,6 +26,12 @@ internal object ProtectionBleSosIdentityClassifier {
         cmdReady: Boolean = false,
         source: ProtectionBleSosRelaySource,
     ): ProtectionBleSosIdentityClassification {
+        // Nearby 0xD8 always arrives as 0xD0 TEL chunks. A last fragment of
+        // 7/12 bytes matches the SOS wire size and must not be swallowed as SOS
+        // or closed-app nearby never reassembles (sender still sees delivered).
+        if (TelAggregateFragment.tryParse(payload) != null) {
+            return ProtectionBleSosIdentityClassification.Unknown
+        }
         val eventPacket = tryParseEventPacket(payload)
         if (eventPacket != null) {
             val identity = resolveIdentityProof(

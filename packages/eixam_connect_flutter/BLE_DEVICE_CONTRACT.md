@@ -117,24 +117,24 @@ Failure semantics:
 ## Nearby LoRa text (port 262)
 
 Host apps call `sendNearbyBroadcastText` / `sendNearbyDirectText` /
-`sendNearbyGroupText` / `watchNearbyText`. They never decode BLE or LoRa bytes.
+`sendNearbyGroupText` / `watchNearbyText` / `watchNearbyTextTxStatus`. They never decode BLE or LoRa bytes.
 
-- mesh port **262** (`EIXAM_TEXT_APP`), hop **0**, `want_ack = false`
+- mesh port **262** (`EIXAM_TEXT_APP`), hop **0**. PKI DMs set `want_ack = true`. Plaza/group stay `want_ack = false` on air; hop-0 receivers send a staggered ROUTING ACK and cancel if they overhear one (firmware ≥ **2.7.63**)
 - plaza: `dest=broadcast`, PRIMARY PSK, UTF-8 1–**231** B on TX (`nearbyTextPayloadMaxBytes`). The firmware router adds `has_bitfield` to its own packets, so the mesh `Data` protobuf costs 8 B on top of the text and 232–233 B would be `TOO_LARGE`. RX still accepts up to 233 B (`nearbyTextRxPayloadMaxBytes`)
 - DM: `dest=nodeId`, PKI (`pki_encrypted`), 1–200 B. No channel-PSK fallback
 - group: `groupId≠0` on a SECONDARY PSK from `setNearbyGroup` (`0x41`), same 231 B cap
 - phone TX: CMD `0x40` fragments (maxLen 20, chunk ≤15). Blob = `dest u32` + `packetId u32` + `groupId u64` + utf8
 - phone RX: TEL notify `0xD8` (22 B header + utf8); blobs reuse `0xD0` reassembly
 - a `0xD8` blob is 22 B header + ≥1 B text, so it never has an SOS/TEL notify size (6/7/10/12/13/16/18). Firmware ≤ 2.7.56 padded with trailing `0xFF`; the SDK still strips those bytes before UTF-8 decode
-- TX status: 6 B `0xDA` (on_air / SOS / rate / PSA / utf8 / too_long / not_prov / empty / bad_frame / pkiNoKey / pkiFailed / unknownGroup)
+- TX status: 6 B `0xDA` (on_air / SOS / rate / PSA / utf8 / too_long / not_prov / empty / bad_frame / pkiNoKey / pkiFailed / unknownGroup / **meshAck / recipientAck / ackTimeout / gotNak**). Delivery statuses `12`–`15` are follow-ups after on-air
+- firmware ≥ **2.7.56** for the framing (2.7.55 plaza-only framing is not compatible); ≥ **2.7.57** for the 231 B cap and the fleet-channel gate (TEL/SOS/cluster ignore SECONDARY group keys); ≥ **2.7.58** for `0x42` / `0xDB`; ≥ **2.7.59** for 7 slots + SET_REPLACE; ≥ **2.7.63** for delivery ACK `0xDA` 12–15
 - `0xD4` / `0xD5` stay reserved dense TEL twins
 - no MQTT/HTTP fallback; `timeout` means the TAG never answered `0xDA`
-- `NearbyTextTxStatus.bleOwnedByProtection` (SDK-local, returned before any write) means the native protection runtime owns the GATT link. It writes CMD but does not bridge TEL notifies (`0xD0`/`0xDA`/`E9 7A`) to Dart, so no confirmation or RX can arrive; `setNearbyGroup`/`removeNearbyGroup` return `bleOwnedByProtection` (detail `0x100`) for the same reason and do not touch the group ACK epoch
+- Native protection owns GATT in background but is the BLE pipe, not a Nearby lock. It writes CMD `0x40`/`0x41`/`0x42` and forwards non-SOS TEL notifies (`0xD0`/`0xDA`/`0xD8`/`0xDB`/`E9 7A`) to Dart as `telNotifyReceived`. If Dart is detached, native queues those payloads and flushes them on the next event-channel listen. `NearbyTextTxStatus.bleOwnedByProtection` is unused on current SDKs
 - TX is refused during pre-SOS/SOS; incoming is still delivered if BLE handed it over
 - `0xDA` is 6 bytes like SOS events `0xE1`/`0xE2`/`0xE3`. Classify by opcode, never by length. Firmware drain: SOS notify, then TEL small, then a burst of up to 8 `0xD0` fragments per 100 ms tick (≥ 2.7.57)
 - `setNearbyGroup` REJECT `detail=0xFF` means all 7 SECONDARY slots are full (`slotsFull`). Pass `replace: true` (CMD action 2) to wipe tag groups and install this one. `0xFE` is a bad key, `0xFD` persist fail, `0x01` SOS.
 - owner name: CMD `0x42` fragments (same header as Nearby text; blob = UTF-8 1–39 B). TAG sets Meshtastic `owner.long_name` in RAM only. Disconnect / reboot restores `EIXAM_<nodeId>`. Heard NodeInfo names arrive as TEL `0xDB` `[opcode][nodeId u32 LE][utf8]`
-- firmware ≥ **2.7.56** for the framing (2.7.55 plaza-only framing is not compatible); ≥ **2.7.57** for the 231 B cap and the fleet-channel gate (TEL/SOS/cluster ignore SECONDARY group keys); ≥ **2.7.58** for `0x42` / `0xDB`; ≥ **2.7.59** for 7 slots + SET_REPLACE
 
 ## TEL Fragment And Relay Support
 

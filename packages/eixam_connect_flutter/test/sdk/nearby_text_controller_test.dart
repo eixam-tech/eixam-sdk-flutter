@@ -93,55 +93,64 @@ void main() {
     expect(total, EixamBleProtocol.nearbyTextTxHeaderLength + 231);
   });
 
-  test('native protection owner fails fast without writing or touching the '
-      'group epoch', () async {
-    final incoming = StreamController<BleIncomingEvent>.broadcast();
-    addTearDown(incoming.close);
-    final commands = <EixamDeviceCommand>[];
-    var nativeOwner = true;
-    final controller = NearbyTextController(
-      incomingEvents: incoming.stream,
-      writeCommand: (command) async => commands.add(command),
-      packetIdFactory: () => 9,
-      txTimeout: const Duration(milliseconds: 20),
-      bleOwnedByProtection: () => nativeOwner,
-    );
-    addTearDown(controller.dispose);
+  test(
+    'native protection owner still writes Nearby over the active command path',
+    () async {
+      final incoming = StreamController<BleIncomingEvent>.broadcast();
+      addTearDown(incoming.close);
+      final commands = <EixamDeviceCommand>[];
+      final controller = NearbyTextController(
+        incomingEvents: incoming.stream,
+        writeCommand: (command) async => commands.add(command),
+        packetIdFactory: () => 9,
+        txTimeout: const Duration(milliseconds: 20),
+      );
+      addTearDown(controller.dispose);
+      controller.markConnected();
 
-    final text = await controller.sendBroadcast('hi');
-    expect(text.status, NearbyTextTxStatus.bleOwnedByProtection);
-    expect(text.accepted, isFalse);
-    final group = await controller.setGroup(
-      groupId: 1,
-      psk: List<int>.filled(32, 3),
-    );
-    expect(group.accepted, isFalse);
-    expect(group.bleOwnedByProtection, isTrue);
-    expect(group.slotsFull, isFalse);
-    expect(commands, isEmpty);
-
-    // Flutter owns BLE again: the group epoch was never invalidated, so the
-    // very next 0x41 goes out and its ACK completes it.
-    nativeOwner = false;
-    final retry = controller.setGroup(groupId: 1, psk: List<int>.filled(32, 3));
-    await Future<void>.delayed(Duration.zero);
-    expect(commands.where((c) => c.opcode == 0x41), isNotEmpty);
-    incoming.add(
-      BleIncomingEvent(
-        deviceId: 'tag',
-        type: BleIncomingEventType.provisioningCommandResult,
-        channel: EixamBleChannel.tel,
-        payload: const <int>[0xE9, 0x7A, 0x01, 0x41, 0x01, 0x01],
-        payloadHex: '',
-        source: DeviceSosTransitionSource.device,
-        receivedAt: DateTime.now(),
-        provisioningCommandResult: ProvisioningCommandResult.tryParse(
-          const <int>[0xE9, 0x7A, 0x01, 0x41, 0x01, 0x01],
+      final text = controller.sendBroadcast('hi');
+      await Future<void>.delayed(Duration.zero);
+      expect(commands.where((c) => c.opcode == 0x40), isNotEmpty);
+      incoming.add(
+        BleIncomingEvent(
+          deviceId: 'tag',
+          type: BleIncomingEventType.nearbyTextTxStatus,
+          channel: EixamBleChannel.tel,
+          payload: const <int>[0xDA, 9, 0, 0, 0, 0],
+          payloadHex: '',
+          source: DeviceSosTransitionSource.device,
+          receivedAt: DateTime.now(),
+          nearbyTextTxStatusPacket: EixamNearbyTextTxStatusPacket.tryParse(
+            const <int>[0xDA, 9, 0, 0, 0, 0],
+          ),
         ),
-      ),
-    );
-    expect((await retry).accepted, isTrue);
-  });
+      );
+      expect((await text).status, NearbyTextTxStatus.onAir);
+
+      commands.clear();
+      final group = controller.setGroup(
+        groupId: 1,
+        psk: List<int>.filled(32, 3),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(commands.where((c) => c.opcode == 0x41), isNotEmpty);
+      incoming.add(
+        BleIncomingEvent(
+          deviceId: 'tag',
+          type: BleIncomingEventType.provisioningCommandResult,
+          channel: EixamBleChannel.tel,
+          payload: const <int>[0xE9, 0x7A, 0x01, 0x41, 0x01, 0x01],
+          payloadHex: '',
+          source: DeviceSosTransitionSource.device,
+          receivedAt: DateTime.now(),
+          provisioningCommandResult: ProvisioningCommandResult.tryParse(
+            const <int>[0xE9, 0x7A, 0x01, 0x41, 0x01, 0x01],
+          ),
+        ),
+      );
+      expect((await group).accepted, isTrue);
+    },
+  );
 
   test('times out when firmware never answers 0xDA', () async {
     final incoming = StreamController<BleIncomingEvent>.broadcast();
@@ -207,6 +216,48 @@ void main() {
       expect(writes, greaterThan(1));
     },
   );
+
+  test('sendBroadcast retries a writer miss then waits for 0xDA', () async {
+    final incoming = StreamController<BleIncomingEvent>.broadcast();
+    addTearDown(incoming.close);
+    var writes = 0;
+    final controller = NearbyTextController(
+      incomingEvents: incoming.stream,
+      writeCommand: (_) async {
+        writes++;
+        if (writes == 1) {
+          throw const DeviceException(
+            'E_BLE_COMMAND_WRITER_NOT_READY',
+            'E_BLE_COMMAND_WRITER_NOT_READY',
+          );
+        }
+      },
+      packetIdFactory: () => 0x22,
+      txTimeout: const Duration(milliseconds: 80),
+    );
+    addTearDown(controller.dispose);
+
+    final future = controller.sendBroadcast('hi');
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    expect(writes, greaterThanOrEqualTo(2));
+    incoming.add(
+      BleIncomingEvent(
+        deviceId: 'tag',
+        type: BleIncomingEventType.nearbyTextTxStatus,
+        channel: EixamBleChannel.tel,
+        payload: const <int>[0xDA, 0x22, 0, 0, 0, 0],
+        payloadHex: '',
+        source: DeviceSosTransitionSource.device,
+        receivedAt: DateTime.now(),
+        nearbyTextTxStatusPacket: EixamNearbyTextTxStatusPacket.tryParse(
+          const <int>[0xDA, 0x22, 0, 0, 0, 0],
+        ),
+      ),
+    );
+    final result = await future;
+    expect(result.status, NearbyTextTxStatus.onAir);
+    expect(result.packetId, 0x22);
+  });
 
   test('serializes overlapping sendBroadcast writes', () async {
     final incoming = StreamController<BleIncomingEvent>.broadcast();
@@ -679,5 +730,163 @@ void main() {
     expect(names, hasLength(1));
     expect(names.single.nodeId, 0xAA);
     expect(names.single.name, 'Bob');
+  });
+
+  test('replays Nearby RX received before the first subscriber', () async {
+    final incoming = StreamController<BleIncomingEvent>.broadcast();
+    addTearDown(incoming.close);
+    final controller = NearbyTextController(
+      incomingEvents: incoming.stream,
+      writeCommand: (_) async {},
+    );
+    addTearDown(controller.dispose);
+    const payload = <int>[
+      0xD8,
+      0x78,
+      0x56,
+      0x34,
+      0x12,
+      0xFF,
+      0xFF,
+      0xFF,
+      0xFF,
+      0x01,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0x6F,
+      0x6B,
+    ];
+    incoming.add(
+      BleIncomingEvent(
+        deviceId: 'tag',
+        type: BleIncomingEventType.nearbyTextRx,
+        channel: EixamBleChannel.tel,
+        payload: payload,
+        payloadHex: '',
+        source: DeviceSosTransitionSource.device,
+        receivedAt: DateTime.utc(2026, 9, 21),
+        nearbyTextPacket: EixamNearbyTextPacket.tryParse(payload),
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    final received = <NearbyIncomingText>[];
+    final sub = controller.incoming.listen(received.add);
+    addTearDown(sub.cancel);
+    await Future<void>.delayed(Duration.zero);
+    expect(received, hasLength(1));
+    expect(received.single.text, 'ok');
+    expect(received.single.fromNodeId, 0x12345678);
+  });
+
+  test('delivery 0xDA does not complete the on-air waiter', () async {
+    final incoming = StreamController<BleIncomingEvent>.broadcast();
+    addTearDown(incoming.close);
+    final controller = NearbyTextController(
+      incomingEvents: incoming.stream,
+      writeCommand: (_) async {},
+      packetIdFactory: () => 0x22,
+    );
+    addTearDown(controller.dispose);
+
+    final future = controller.sendBroadcast('hi');
+    await Future<void>.delayed(Duration.zero);
+    incoming.add(
+      BleIncomingEvent(
+        deviceId: 'tag',
+        type: BleIncomingEventType.nearbyTextTxStatus,
+        channel: EixamBleChannel.tel,
+        payload: const <int>[0xDA, 0x22, 0, 0, 0, 12],
+        payloadHex: '',
+        source: DeviceSosTransitionSource.device,
+        receivedAt: DateTime.now(),
+        nearbyTextTxStatusPacket: EixamNearbyTextTxStatusPacket.tryParse(
+          const <int>[0xDA, 0x22, 0, 0, 0, 12],
+        ),
+      ),
+    );
+    var completed = false;
+    unawaited(future.then((_) => completed = true));
+    await Future<void>.delayed(Duration.zero);
+    expect(completed, isFalse);
+
+    incoming.add(
+      BleIncomingEvent(
+        deviceId: 'tag',
+        type: BleIncomingEventType.nearbyTextTxStatus,
+        channel: EixamBleChannel.tel,
+        payload: const <int>[0xDA, 0x22, 0, 0, 0, 0],
+        payloadHex: '',
+        source: DeviceSosTransitionSource.device,
+        receivedAt: DateTime.now(),
+        nearbyTextTxStatusPacket: EixamNearbyTextTxStatusPacket.tryParse(
+          const <int>[0xDA, 0x22, 0, 0, 0, 0],
+        ),
+      ),
+    );
+    expect((await future).status, NearbyTextTxStatus.onAir);
+  });
+
+  test('watchNearbyTextTxStatus emits on-air then recipient ACK', () async {
+    final incoming = StreamController<BleIncomingEvent>.broadcast();
+    addTearDown(incoming.close);
+    final controller = NearbyTextController(
+      incomingEvents: incoming.stream,
+      writeCommand: (_) async {},
+      packetIdFactory: () => 0x22,
+    );
+    addTearDown(controller.dispose);
+
+    final updates = <NearbyTextTxResult>[];
+    final sub = controller.txStatus.listen(updates.add);
+    addTearDown(sub.cancel);
+
+    final future = controller.sendDirect('hi', destNodeId: 9);
+    await Future<void>.delayed(Duration.zero);
+    incoming.add(
+      BleIncomingEvent(
+        deviceId: 'tag',
+        type: BleIncomingEventType.nearbyTextTxStatus,
+        channel: EixamBleChannel.tel,
+        payload: const <int>[0xDA, 0x22, 0, 0, 0, 0],
+        payloadHex: '',
+        source: DeviceSosTransitionSource.device,
+        receivedAt: DateTime.now(),
+        nearbyTextTxStatusPacket: EixamNearbyTextTxStatusPacket.tryParse(
+          const <int>[0xDA, 0x22, 0, 0, 0, 0],
+        ),
+      ),
+    );
+    expect((await future).status, NearbyTextTxStatus.onAir);
+
+    incoming.add(
+      BleIncomingEvent(
+        deviceId: 'tag',
+        type: BleIncomingEventType.nearbyTextTxStatus,
+        channel: EixamBleChannel.tel,
+        payload: const <int>[0xDA, 0x22, 0, 0, 0, 13],
+        payloadHex: '',
+        source: DeviceSosTransitionSource.device,
+        receivedAt: DateTime.now(),
+        nearbyTextTxStatusPacket: EixamNearbyTextTxStatusPacket.tryParse(
+          const <int>[0xDA, 0x22, 0, 0, 0, 13],
+        ),
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(updates.map((item) => item.status), [
+      NearbyTextTxStatus.onAir,
+      NearbyTextTxStatus.recipientAck,
+    ]);
   });
 }

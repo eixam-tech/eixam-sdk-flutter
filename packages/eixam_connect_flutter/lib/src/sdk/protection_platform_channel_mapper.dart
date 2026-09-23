@@ -362,6 +362,8 @@ ProtectionPlatformEventType parseIosProtectionPlatformEventType(String? value) {
       return ProtectionPlatformEventType.ownDeviceSosLifecycleObserved;
     case 'ownDeviceSosLifecycleSuppressed':
       return ProtectionPlatformEventType.ownDeviceSosLifecycleSuppressed;
+    case 'telNotifyReceived':
+      return ProtectionPlatformEventType.telNotifyReceived;
     case 'restorationDetected':
       return ProtectionPlatformEventType.restorationDetected;
     case 'restorationRehydrated':
@@ -430,6 +432,8 @@ ProtectionPlatformEventType parseAndroidProtectionPlatformEventType(
       return ProtectionPlatformEventType.ownDeviceSosLifecycleObserved;
     case 'ownDeviceSosLifecycleSuppressed':
       return ProtectionPlatformEventType.ownDeviceSosLifecycleSuppressed;
+    case 'telNotifyReceived':
+      return ProtectionPlatformEventType.telNotifyReceived;
     case 'runtimeError':
       return ProtectionPlatformEventType.runtimeError;
     case 'restorationDetected':

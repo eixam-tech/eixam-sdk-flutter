@@ -1408,6 +1408,19 @@ internal class ProtectionBleRuntimeOwner(
                     else -> Unit
                 }
             }
+            // 0xD0 chunks only. Nearby 0xD8/0xDA/0xDB must not be rejected by
+            // first byte: SOS node id is little-endian at offset 0, so a low
+            // byte of 0xD8/0xDA/0xDB is a real SOS. Non-fragment nearby misses
+            // the 7/12-byte SOS parse (0xDA status is 6 B; 0xD8 text is ≥ 22 B)
+            // and is emitted below.
+            if (TelAggregateFragment.tryParse(payload) != null) {
+                ProtectionRuntimeBridge.emitTelNotify(
+                    context = context,
+                    payload = payload,
+                    source = "tel",
+                )
+                return
+            }
             fallbackNodeIdFor(payload)
             when (
                 val classification = ProtectionBleSosIdentityClassifier.classify(
@@ -1498,6 +1511,11 @@ internal class ProtectionBleRuntimeOwner(
                 payload = payload,
                 source = ProtectionBleSosRelaySource.tel,
                 classificationLabel = "notSos",
+            )
+            ProtectionRuntimeBridge.emitTelNotify(
+                context = context,
+                payload = payload,
+                source = "tel",
             )
         }
 

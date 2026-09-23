@@ -13,10 +13,10 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     MethodChannel? methodChannel,
     EventChannel? eventChannel,
     Stream<dynamic> Function()? eventStreamFactory,
-  })  : _methodChannel =
-            methodChannel ?? const MethodChannel(_methodChannelName),
-        _eventChannel = eventChannel ?? const EventChannel(_eventChannelName),
-        _eventStreamFactory = eventStreamFactory;
+  }) : _methodChannel =
+           methodChannel ?? const MethodChannel(_methodChannelName),
+       _eventChannel = eventChannel ?? const EventChannel(_eventChannelName),
+       _eventStreamFactory = eventStreamFactory;
 
   static const String _methodChannelName =
       'dev.eixam.connect_flutter/protection_runtime/methods';
@@ -68,6 +68,10 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
             'protectionSosActiveBody': texts.protectionSosActiveBody,
             'protectionSosResolvedTitle': texts.protectionSosResolvedTitle,
             'protectionSosResolvedBody': texts.protectionSosResolvedBody,
+            'nearbyMessageChannelName': texts.nearbyMessageChannelName,
+            'nearbyMessageChannelDescription':
+                texts.nearbyMessageChannelDescription,
+            'nearbyMessageFallbackTitle': texts.nearbyMessageFallbackTitle,
           },
         'autoReconnectBle': request.modeOptions.autoReconnectBle,
         'autoFlushOnReconnect': request.modeOptions.autoFlushOnReconnect,
@@ -98,7 +102,7 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
 
   @override
   Future<List<ProtectionPendingExternalRelayCancelEvent>>
-      peekPendingExternalRelayCancels() async {
+  peekPendingExternalRelayCancels() async {
     return const <ProtectionPendingExternalRelayCancelEvent>[];
   }
 
@@ -165,7 +169,8 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
       permission_handler.Permission.locationWhenInUse,
     ].request();
     return ProtectionPermissionResult(
-      locationGranted: statuses[permission_handler.Permission.locationWhenInUse]
+      locationGranted:
+          statuses[permission_handler.Permission.locationWhenInUse]
                   ?.isGranted ==
               true ||
           statuses[permission_handler.Permission.locationWhenInUse]
@@ -173,7 +178,7 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
               true,
       notificationsGranted:
           statuses[permission_handler.Permission.notification]?.isGranted ==
-              true,
+          true,
       bluetoothGranted:
           statuses[permission_handler.Permission.bluetooth]?.isGranted == true,
     );
@@ -189,10 +194,11 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     return _events ??=
         (_eventStreamFactory?.call() ?? _eventChannel.receiveBroadcastStream())
             .map((dynamic event) {
-      final data = Map<Object?, Object?>.from(
-        event as Map<Object?, Object?>,
-      );
-      return mapIosProtectionPlatformEvent(data);
-    }).asBroadcastStream();
+              final data = Map<Object?, Object?>.from(
+                event as Map<Object?, Object?>,
+              );
+              return mapIosProtectionPlatformEvent(data);
+            })
+            .asBroadcastStream();
   }
 }

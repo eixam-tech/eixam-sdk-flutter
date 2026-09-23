@@ -309,5 +309,18 @@ void main() {
       expect(event.source, 'sos');
       expect(event.classification, 'ownDeviceSos');
     });
+
+    test('maps native TEL notify payloads used by Nearby', () {
+      final event = mapAndroidProtectionPlatformEvent(<Object?, Object?>{
+        'type': 'telNotifyReceived',
+        'timestamp': DateTime.utc(2026, 9, 21, 10).millisecondsSinceEpoch,
+        'payloadHex': 'da2200000000',
+        'source': 'tel',
+      });
+
+      expect(event.type, ProtectionPlatformEventType.telNotifyReceived);
+      expect(event.payloadHex, 'da2200000000');
+      expect(event.source, 'tel');
+    });
   });
 }
