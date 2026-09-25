@@ -3694,7 +3694,7 @@ void main() {
     );
 
     test(
-      'five-cycle connected soak keeps one dispatch, incident, and EA04 per cycle',
+      'five-cycle connected soak accepts one logical E2 from mirrored deliveries',
       () async {
         const startHex = '34120000a5b109';
         const cancelHex = 'e20134120000';
@@ -3746,7 +3746,13 @@ void main() {
         });
         var receiveSequence = 0;
 
-        void emitOwnPacket(String payloadHex, String label) {
+        void emitOwnPacket(
+          String payloadHex,
+          String label, {
+          String source = 'sos',
+          String characteristicUuid =
+              EixamBleProtocol.sosNotifyCharacteristicUuid,
+        }) {
           receiveSequence += 1;
           final timestamp = DateTime.now().toUtc().add(
             Duration(milliseconds: receiveSequence),
@@ -3756,8 +3762,8 @@ void main() {
               type: ProtectionPlatformEventType.bleNotificationReceived,
               timestamp: timestamp,
               payloadHex: payloadHex,
-              source: 'sos',
-              characteristicUuid: EixamBleProtocol.sosNotifyCharacteristicUuid,
+              source: source,
+              characteristicUuid: characteristicUuid,
               byteLength: payloadHex.length ~/ 2,
               packetType: payloadHex.length == 12 ? 'sos_event' : 'sos',
               firstOpcode: '0x${payloadHex.substring(0, 2)}',
@@ -3808,6 +3814,8 @@ void main() {
           );
           await harness.sdk.rehydrateProtectionState();
           final ensureRuntimeBaseline = adapter.ensureRuntimeReasons.length;
+          final platformWatchBaseline = adapter.watchPlatformEventsCallCount;
+          expect(platformWatchBaseline, greaterThan(0));
 
           for (var cycle = 1; cycle <= 5; cycle += 1) {
             emitOwnPacket(startHex, 'start-$cycle');
@@ -3839,7 +3847,13 @@ void main() {
                       .length ==
                   cycle,
             );
-            emitOwnPacket(cancelHex, 'cancel-$cycle');
+            emitOwnPacket(cancelHex, 'cancel-$cycle-sos');
+            emitOwnPacket(
+              cancelHex,
+              'cancel-$cycle-tel',
+              source: 'tel_notify',
+              characteristicUuid: EixamBleProtocol.telNotifyCharacteristicUuid,
+            );
             await cancellation;
             await waitFor('cycle $cycle cancelled', () async {
               final lifecycle = await harness.sdk.getSosLifecycle();
@@ -3874,6 +3888,7 @@ void main() {
                   'cycle $cycle must retire native Backend cancel work before the next generation',
             );
             expect(adapter.ensureRuntimeReasons.length, ensureRuntimeBaseline);
+            expect(adapter.watchPlatformEventsCallCount, platformWatchBaseline);
           }
 
           expect(harness.sosRepository.triggerCallCount, 5);
@@ -3901,6 +3916,39 @@ void main() {
           expect(
             adapter.commands.where((command) => command.bytes[0] == 0x04),
             hasLength(5),
+          );
+          expect(
+            observedMessages.where(
+              (message) =>
+                  message.contains('EIXAM_BLE_NOTIFICATION_RX') &&
+                  message.contains('firstOpcode=0xe2'),
+            ),
+            hasLength(10),
+          );
+          expect(
+            observedMessages.where(
+              (message) => message.contains(
+                'SOS_DEVICE_CANCEL_ACK_RECEIVED source=device_event',
+              ),
+            ),
+            hasLength(5),
+          );
+          expect(
+            observedMessages.where(
+              (message) => message.contains(
+                'SOS_TERMINAL_DUPLICATE_SUPPRESSED '
+                'reason=mirrored_cross_characteristic_evidence',
+              ),
+            ),
+            hasLength(5),
+          );
+          expect(
+            observedMessages.where(
+              (message) =>
+                  message.contains('app_terminal_ack_ignored') ||
+                  message.contains('device_terminal_command_ack_ignored'),
+            ),
+            isEmpty,
           );
           expect(
             observedMessages.where(
@@ -12005,6 +12053,7 @@ final class _SnapshotProtectionPlatformAdapter extends Fake
   final List<ProtectionPlatformCommandRequest> commands =
       <ProtectionPlatformCommandRequest>[];
   final List<String> ensureRuntimeReasons = <String>[];
+  int watchPlatformEventsCallCount = 0;
   ProtectionPendingNativeSosCreate? pendingNativeSosCreate;
   final List<String> droppedNativeSosCreateSignatures = <String>[];
   final StreamController<ProtectionPlatformEvent> _events =
@@ -12044,7 +12093,10 @@ final class _SnapshotProtectionPlatformAdapter extends Fake
   }
 
   @override
-  Stream<ProtectionPlatformEvent> watchPlatformEvents() => _events.stream;
+  Stream<ProtectionPlatformEvent> watchPlatformEvents() {
+    watchPlatformEventsCallCount += 1;
+    return _events.stream;
+  }
 
   @override
   Future<List<ProtectionPendingExternalRelayCancelEvent>>

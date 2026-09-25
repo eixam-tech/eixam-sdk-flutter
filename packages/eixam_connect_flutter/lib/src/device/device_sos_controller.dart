@@ -375,6 +375,12 @@ class DeviceSosController {
       'cmdReady=${terminalCmdAvailable ?? longCommandAvailable}',
     );
     final previous = _status;
+    _prepareTerminalCommandCorrelation(
+      action: terminalAction,
+      commandWriterOverride: commandWriterOverride,
+      commandRouteLabel: commandRouteLabel,
+      operationIsCurrent: operationIsCurrent,
+    );
     late final bool sent;
     try {
       sent = await _dispatchTerminalCommand(
@@ -844,6 +850,29 @@ class DeviceSosController {
       ),
     );
     return _status;
+  }
+
+  void _prepareTerminalCommandCorrelation({
+    required String action,
+    DeviceCommandWriter? commandWriterOverride,
+    String? commandRouteLabel,
+    DeviceTerminalOperationGuard? operationIsCurrent,
+  }) {
+    if (!_terminalOperationIsCurrent(operationIsCurrent)) {
+      return;
+    }
+    _pendingTerminalCommand = _PendingTerminalDeviceCommand(
+      action: action,
+      nodeId: _status.nodeId,
+      requestedAt: _now(),
+      commandWriterOverride: commandWriterOverride,
+      commandRouteLabel: commandRouteLabel,
+      operationIsCurrent: operationIsCurrent,
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_TRACE device_terminal_command_correlation_armed '
+      'action=$action route=${commandRouteLabel ?? "attached_writer"}',
+    );
   }
 
   Future<void> _flushPendingTerminalCommand({required String reason}) async {
@@ -1317,10 +1346,28 @@ class DeviceSosController {
         packet.isAppCancelAck &&
         pendingTerminalCommand?.action == 'cancel' &&
         _terminalOperationIsCurrent(pendingTerminalCommand?.operationIsCurrent);
+    final physicalEvidence = resolutionContext?.physicalEvidence;
+    if (_isMirroredTerminalDelivery(
+      incoming: physicalEvidence,
+      accepted: _terminalPhysicalReceiveEvidence,
+    )) {
+      _lastPhysicalReceiveEvidence = physicalEvidence;
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_TERMINAL_DUPLICATE_SUPPRESSED '
+        'reason=mirrored_cross_characteristic_evidence '
+        'receiveSequence=${physicalEvidence!.receiveSequence} '
+        'characteristic=${physicalEvidence.characteristic}',
+      );
+      return;
+    }
     final nextState = acknowledgesPendingAppCancel
         ? DeviceSosState.inactive
         : _resolveEventState(packet, previous);
-    final classification = _classifyEventPacket(packet, nextState);
+    final classification = _classifyEventPacket(
+      packet,
+      nextState,
+      acknowledgesPendingAppCancel: acknowledgesPendingAppCancel,
+    );
     final controlEventLabel = acknowledgesPendingAppCancel
         ? 'app cancel acknowledged to inactive'
         : _describeEventPacket(packet);
@@ -1339,18 +1386,14 @@ class DeviceSosController {
       'decision=${classification.decision} '
       'reason=${classification.reason}',
     );
-    final physicalEvidence = resolutionContext?.physicalEvidence;
     if (physicalEvidence != null) {
       _lastPhysicalReceiveEvidence = physicalEvidence;
-      if (physicalEvidence.hasTerminalSemantics &&
-          physicalEvidence.exactPhysicalIdentityMatch) {
-        _terminalPhysicalReceiveEvidence = physicalEvidence;
-      }
     }
     if (packet.opcode == 0xE2) {
       if (acknowledgesPendingAppCancel) {
         BleDebugRegistry.instance.recordEvent(
-          'SOS_DEVICE_CANCEL_ACK_RECEIVED source=device_event',
+          'SOS_DEVICE_CANCEL_ACK_RECEIVED source=device_event '
+          'receiveSequence=${physicalEvidence?.receiveSequence ?? -1}',
         );
         BleDebugRegistry.instance.recordEvent(
           'SOS_TRACE device_terminal_command_ack_observed event=0xE2 action=cancel',
@@ -1361,6 +1404,11 @@ class DeviceSosController {
         );
         return;
       }
+    }
+    if (physicalEvidence != null &&
+        physicalEvidence.hasTerminalSemantics &&
+        physicalEvidence.exactPhysicalIdentityMatch) {
+      _terminalPhysicalReceiveEvidence = physicalEvidence;
     }
 
     if (nextState == DeviceSosState.inactive ||
@@ -1749,8 +1797,9 @@ class DeviceSosController {
 
   _EventPacketClassification _classifyEventPacket(
     EixamSosEventPacket packet,
-    DeviceSosState nextState,
-  ) {
+    DeviceSosState nextState, {
+    required bool acknowledgesPendingAppCancel,
+  }) {
     switch (packet.opcode) {
       case 0xE1:
         return const _EventPacketClassification(
@@ -1758,6 +1807,12 @@ class DeviceSosController {
           reason: 'device_cancel',
         );
       case 0xE2:
+        if (acknowledgesPendingAppCancel) {
+          return const _EventPacketClassification(
+            decision: 'terminal_cancelled',
+            reason: 'app_terminal_ack_current',
+          );
+        }
         return const _EventPacketClassification(
           decision: 'ignored_event',
           reason: 'app_terminal_ack_ignored',
@@ -1773,6 +1828,25 @@ class DeviceSosController {
           reason: 'unknown_event_packet',
         );
     }
+  }
+
+  bool _isMirroredTerminalDelivery({
+    required PhysicalSosReceiveEvidence? incoming,
+    required PhysicalSosReceiveEvidence? accepted,
+  }) {
+    if (incoming == null ||
+        accepted == null ||
+        !incoming.hasTerminalSemantics ||
+        !accepted.hasTerminalSemantics ||
+        !incoming.exactPhysicalIdentityMatch ||
+        !accepted.exactPhysicalIdentityMatch) {
+      return false;
+    }
+    return incoming.processSessionId == accepted.processSessionId &&
+        incoming.receiveSequenceDomain == accepted.receiveSequenceDomain &&
+        incoming.packetFingerprint == accepted.packetFingerprint &&
+        incoming.characteristic != accepted.characteristic &&
+        incoming.receiveSequence == accepted.receiveSequence + 1;
   }
 
   String _describeEventPacket(EixamSosEventPacket packet) {
