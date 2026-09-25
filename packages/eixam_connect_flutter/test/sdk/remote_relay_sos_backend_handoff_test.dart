@@ -60,9 +60,13 @@ void main() {
     late MemorySharedPrefsSdkStore localStore;
     late EixamConnectSdkImpl sdk;
     late List<EixamDeviceCommand> deviceCommands;
+    late List<Map<String, dynamic>> nativePendingExternalRelayCancels;
+    late List<String> acknowledgedNativeExternalRelayCancels;
 
     setUp(() async {
       await BleDebugRegistry.instance.resetForLifecycle();
+      nativePendingExternalRelayCancels = <Map<String, dynamic>>[];
+      acknowledgedNativeExternalRelayCancels = <String>[];
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(protectionMethodChannel, (call) async {
         switch (call.method) {
@@ -83,8 +87,24 @@ void main() {
               'success': true,
             };
           case 'peekPendingExternalRelayCancels':
-            return <dynamic>[];
+            return List<Map<String, dynamic>>.from(
+              nativePendingExternalRelayCancels,
+            );
           case 'ackPendingExternalRelayCancel':
+            final signature = (call.arguments as Map<Object?, Object?>?)
+                ?['signature']
+                ?.toString();
+            if (signature == null) {
+              return false;
+            }
+            final previousLength = nativePendingExternalRelayCancels.length;
+            nativePendingExternalRelayCancels.removeWhere(
+              (event) => event['signature'] == signature,
+            );
+            if (nativePendingExternalRelayCancels.length == previousLength) {
+              return false;
+            }
+            acknowledgedNativeExternalRelayCancels.add(signature);
             return true;
           case 'peekPendingNativeSosCreate':
             return null;
@@ -2264,6 +2284,55 @@ void main() {
         expect(result.deviceId, isNull);
 
         await subscription.cancel();
+      });
+
+      test(
+          'successful live remote cancel acks native residue before next local SOS',
+          () async {
+        await useSdkWithCancelDataSource();
+        const originatorNodeId = 4321;
+        const relayNodeId = 8765;
+        const nativeSignature = '4321:8765:e102';
+
+        bleEvents.add(
+          _remoteRelayEvent(
+            snapshot: _snapshot(
+              originatorNodeId: originatorNodeId,
+              relayNodeId: relayNodeId,
+            ),
+          ),
+        );
+        await _eventually(() => realtimeClient.publishedSos.length == 1);
+        nativePendingExternalRelayCancels.add(<String, dynamic>{
+          'signature': nativeSignature,
+          'originatorNodeId': originatorNodeId,
+          'relayNodeId': relayNodeId,
+          'relayHardwareId': 'relay-node',
+          'payloadHex': 'e10200000000',
+          'source': 'remote_lora_relay',
+          'timestamp': DateTime.now().millisecondsSinceEpoch,
+        });
+
+        final cancel = _cancelSnapshot(
+          originatorNodeId: originatorNodeId,
+          relayNodeId: relayNodeId,
+        );
+        bleEvents.add(_remoteRelayEvent(snapshot: cancel));
+        bleEvents.add(_remoteRelayEvent(snapshot: cancel));
+        await _eventually(() => cancelDataSource.cancelDeviceIds.length == 1);
+        await _eventually(() => nativePendingExternalRelayCancels.isEmpty);
+
+        expect(cancelDataSource.cancelDeviceIds, hasLength(1));
+        expect(
+          acknowledgedNativeExternalRelayCancels,
+          <String>[nativeSignature],
+        );
+
+        await sdk.triggerSos(const SosTriggerPayload(message: 'local SOS'));
+        await sdk.flushProtectionQueues();
+
+        expect(cancelDataSource.cancelDeviceIds, hasLength(1));
+        expect(await sdk.getSosState(), SosState.sent);
       });
 
       test('gateway-scope fallback is blocked while local SOS is active',

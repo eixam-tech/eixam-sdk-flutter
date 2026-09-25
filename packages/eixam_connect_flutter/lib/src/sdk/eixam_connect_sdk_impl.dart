@@ -19304,6 +19304,62 @@ class EixamConnectSdkImpl
     }
   }
 
+  Future<void> _ackMatchingPendingExternalRelayCancelsFromProtectionPlatform({
+    required RemoteRelaySosSnapshot snapshot,
+    required String? relayHardwareId,
+  }) async {
+    final originatorNodeId = _normalizeNodeId(snapshot.originatorNodeId);
+    final relayNodeId = _normalizeNodeIdOrNull(snapshot.relayNodeId);
+    final normalizedRelayHardwareId = relayHardwareId?.trim().toLowerCase();
+    try {
+      final pending = await protectionPlatformAdapter
+          .peekPendingExternalRelayCancels();
+      final matching = pending
+          .where((event) {
+            if (_normalizeNodeId(event.originatorNodeId) != originatorNodeId) {
+              return false;
+            }
+            final eventRelayNodeId = _normalizeNodeIdOrNull(event.relayNodeId);
+            if (relayNodeId != null &&
+                eventRelayNodeId != null &&
+                eventRelayNodeId != relayNodeId) {
+              return false;
+            }
+            final eventRelayHardwareId = event.relayHardwareId
+                ?.trim()
+                .toLowerCase();
+            if (normalizedRelayHardwareId != null &&
+                normalizedRelayHardwareId.isNotEmpty &&
+                eventRelayHardwareId != null &&
+                eventRelayHardwareId.isNotEmpty &&
+                eventRelayHardwareId != normalizedRelayHardwareId) {
+              return false;
+            }
+            return true;
+          })
+          .toList(growable: false);
+      for (final event in matching) {
+        await _ackPendingExternalRelayCancelFromProtectionPlatform(
+          event.signature,
+        );
+      }
+      if (matching.isNotEmpty) {
+        BleDebugRegistry.instance.recordEvent(
+          'EXTERNAL_SOS pending_cancel_matching_ack_complete '
+          'originatorNodeId=$originatorNodeId '
+          'relayNodeId=${relayNodeId?.toString() ?? "none"} '
+          'count=${matching.length}',
+        );
+      }
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS pending_cancel_matching_ack_failed '
+        'originatorNodeId=$originatorNodeId '
+        'relayNodeId=${relayNodeId?.toString() ?? "none"} error=$error',
+      );
+    }
+  }
+
   void _logRemoteRelayCancelDetection({
     required String source,
     required String rawType,
@@ -22924,6 +22980,10 @@ class EixamConnectSdkImpl
       await _ackPendingExternalRelayCancelFromProtectionPlatform(
         nativePendingSignature,
       );
+      await _ackMatchingPendingExternalRelayCancelsFromProtectionPlatform(
+        snapshot: snapshot,
+        relayHardwareId: relayHardwareId,
+      );
       return;
     }
     if (_remoteRelaySosCancelInFlightBySignature.containsKey(signature)) {
@@ -23084,6 +23144,10 @@ class EixamConnectSdkImpl
       });
       await _ackPendingExternalRelayCancelFromProtectionPlatform(
         nativePendingSignature,
+      );
+      await _ackMatchingPendingExternalRelayCancelsFromProtectionPlatform(
+        snapshot: snapshot,
+        relayHardwareId: relayHardwareId,
       );
       _rearmExternalRelayAfterCancelSuccess(
         snapshot: snapshot,
