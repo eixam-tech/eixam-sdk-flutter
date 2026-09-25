@@ -10470,6 +10470,147 @@ void main() {
       },
     );
 
+    test(
+      'background native own-device SOS keeps one incident through resume and cancel',
+      () async {
+        const startHex = '34120000a5b109';
+        const cancelHex = 'e20134120000';
+        final adapter = _SnapshotProtectionPlatformAdapter(
+          const ProtectionPlatformSnapshot(
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            runtimeState: ProtectionRuntimeState.active,
+            coverageLevel: ProtectionCoverageLevel.full,
+            platform: ProtectionPlatform.android,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: true,
+            serviceBleReady: true,
+            nativeCommandServiceReady: true,
+            nativeCommandEa04Ready: true,
+            nativeCommandIdentityReady: true,
+            nativeCommandQueueHealthy: true,
+            nativeCommandReady: true,
+            protectedDeviceId: 'CF:82:00:00:00:01',
+            activeDeviceId: 'CF:82:00:00:00:01',
+          ),
+        );
+        final repository = _IncidentIdAwareSosRepository();
+        final harness = _SdkSosHarness(
+          sosRepository: repository,
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+          protectionPlatformAdapter: adapter,
+          deviceCountdown: Duration.zero,
+        );
+        var receiveSequence = 0;
+
+        void emitOwnPacket(String payloadHex, String label) {
+          receiveSequence += 1;
+          final timestamp = DateTime.now().toUtc().add(
+            Duration(milliseconds: receiveSequence),
+          );
+          adapter.emit(
+            ProtectionPlatformEvent(
+              type: ProtectionPlatformEventType.bleNotificationReceived,
+              timestamp: timestamp,
+              payloadHex: payloadHex,
+              source: 'sos',
+              characteristicUuid: EixamBleProtocol.sosNotifyCharacteristicUuid,
+              byteLength: payloadHex.length ~/ 2,
+              packetType: payloadHex.length == 12 ? 'sos_event' : 'sos',
+              firstOpcode: '0x${payloadHex.substring(0, 2)}',
+              receiveSequence: receiveSequence,
+              receiveCorrelation: '$label-$receiveSequence',
+              connectedDeviceMarker: 'CF:82:00:00:00:01',
+            ),
+          );
+          adapter.emit(
+            ProtectionPlatformEvent(
+              type: ProtectionPlatformEventType.ownDeviceSosLifecycleObserved,
+              timestamp: timestamp,
+              reason: 'own:$label:$payloadHex',
+              classification: 'ownDeviceSos',
+            ),
+          );
+        }
+
+        Future<void> waitFor(FutureOr<bool> Function() predicate) async {
+          for (var attempt = 0; attempt < 1000; attempt += 1) {
+            if (await predicate()) {
+              return;
+            }
+            await Future<void>.delayed(const Duration(milliseconds: 2));
+            await pumpEventQueue(times: 2);
+          }
+          fail('Timed out waiting for background native SOS lifecycle.');
+        }
+
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await harness.deviceRegistryRepository.upsertRegisteredDevice(
+            hardwareId: '4660',
+            firmwareVersion: '2.7.54',
+            hardwareModel: 'EIXAM R1',
+            pairedAt: DateTime.utc(2026, 9, 25),
+          );
+          await harness.sdk.rehydrateProtectionState();
+
+          harness.sdk.didChangeAppLifecycleState(AppLifecycleState.paused);
+          emitOwnPacket(startHex, 'background-start');
+          await waitFor(() async {
+            final lifecycle = await harness.sdk.getSosLifecycle();
+            return lifecycle.stage == SosLifecycleStage.active &&
+                repository.triggerCallCount == 1;
+          });
+          final backgroundActive = await harness.sdk.getSosLifecycle();
+          final incidentId =
+              backgroundActive.backendIncidentId ??
+              backgroundActive.localIncidentId;
+          expect(incidentId, isNotNull);
+          expect(
+            harness.deviceSosController.currentStatus.state,
+            DeviceSosState.active,
+          );
+
+          harness.sdk.didChangeAppLifecycleState(AppLifecycleState.resumed);
+          await pumpEventQueue(times: 8);
+          final resumed = await harness.sdk.getSosLifecycle();
+          expect(resumed.lifecycleId, backgroundActive.lifecycleId);
+          expect(resumed.generation, backgroundActive.generation);
+          expect(
+            resumed.backendIncidentId ?? resumed.localIncidentId,
+            incidentId,
+          );
+          expect(repository.triggerCallCount, 1);
+
+          final cancellation = harness.sdk.cancelSos();
+          await waitFor(
+            () => adapter.commands.any((command) => command.bytes[0] == 0x04),
+          );
+          emitOwnPacket(cancelHex, 'foreground-cancel');
+          await cancellation;
+          await waitFor(() async {
+            return (await harness.sdk.getSosLifecycle()).stage ==
+                SosLifecycleStage.cancelled;
+          });
+
+          expect(repository.triggerCallCount, 1);
+          expect(repository.cancelCallCount, 1);
+          expect(
+            harness.deviceSosController.currentStatus.state,
+            DeviceSosState.inactive,
+          );
+        } finally {
+          await harness.dispose();
+          await adapter.dispose();
+        }
+      },
+    );
+
     test('characterization: external-only relay incident does not become a '
         'locally owned authoritative lifecycle', () async {
       final harness = _SdkSosHarness();

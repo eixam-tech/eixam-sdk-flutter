@@ -22,6 +22,7 @@ import 'package:eixam_connect_flutter/src/sdk/protection_platform_adapter.dart';
 import 'package:eixam_connect_flutter/src/sdk/sdk_mqtt_contract.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/widgets.dart' show AppLifecycleState;
 
 import '../support/builders/device_status_builder.dart';
 import '../support/fakes/memory_shared_prefs_sdk_store.dart';
@@ -1684,7 +1685,7 @@ void main() {
       expect(payload['deviceId'], isNot('CF:82:59:4B:1A:A8'));
     });
 
-    test('platform unknown-origin SOS routes to remote candidate handoff',
+    test('background platform unknown-origin SOS routes once and survives resume',
         () async {
       await sdk.dispose();
       final events = <EixamSdkEvent>[];
@@ -1723,6 +1724,7 @@ void main() {
       final notificationSubscription =
           sdk.watchNotificationIntents().listen(notificationIntents.add);
       await sdk.enterProtectionMode();
+      sdk.didChangeAppLifecycleState(AppLifecycleState.paused);
 
       platformEvents.add(
         ProtectionPlatformEvent(
@@ -1775,6 +1777,19 @@ void main() {
       final result =
           events.whereType<RemoteRelaySosBackendHandoffResultEvent>().single;
       expect(result.ackRelaySent, isFalse);
+
+      sdk.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+      expect(realtimeClient.publishedSos, hasLength(1));
+      expect(events.whereType<RemoteRelaySosObservedEvent>(), hasLength(1));
+      expect(
+        events
+            .whereType<RemoteRelaySosObservedEvent>()
+            .single
+            .snapshot
+            .originatorNodeId,
+        233234039,
+      );
 
       await subscription.cancel();
       await notificationSubscription.cancel();
