@@ -108,6 +108,7 @@ class MqttOperationalSosRepository
   final Map<String, String?> _trustedLifecycleCorrelationIds =
       <String, String?>{};
   _PendingProcessedHandoff? _pendingProcessedHandoff;
+  _PendingExternalRelayHandoff? _pendingExternalRelayHandoff;
   final Map<String, DateTime> _externalRelaySosPublishDedupe =
       <String, DateTime>{};
   Timer? _mqttConfirmationWarningTimer;
@@ -739,6 +740,19 @@ class MqttOperationalSosRepository
       )) {
         return;
       }
+      final pendingExternalRelayHandoff = _PendingExternalRelayHandoff(
+        occurredAt: timestamp.toUtc(),
+        registeredAt: _nowProvider().toUtc(),
+        originatorNodeId: identity.originatorNodeId,
+        relayNodeId: relayNodeId,
+        deviceId: identity.deviceId,
+        hardwareId: identity.hardwareId,
+        relayDeviceId: identity.relayDeviceId,
+        relayHardwareId: relayHardwareId,
+        cycleKey: _normalizeIdentity(cycleKey),
+        source: relaySource ?? triggerSource ?? 'remote_lora_relay',
+      );
+      _pendingExternalRelayHandoff = pendingExternalRelayHandoff;
       try {
         BleDebugRegistry.instance.recordEvent(
           'SOS_TRIGGER_MQTT_PUBLISH_START source=$sourceLabel '
@@ -755,6 +769,12 @@ class MqttOperationalSosRepository
           'SOS_TRIGGER_MQTT_PUBLISH_RESULT source=$sourceLabel success=true',
         );
       } catch (_) {
+        if (identical(
+          _pendingExternalRelayHandoff,
+          pendingExternalRelayHandoff,
+        )) {
+          _pendingExternalRelayHandoff = null;
+        }
         BleDebugRegistry.instance.recordEvent(
           'SOS_TRIGGER_MQTT_PUBLISH_RESULT source=$sourceLabel success=false',
         );
@@ -1343,7 +1363,13 @@ class MqttOperationalSosRepository
 
       final hydratedIncident = _mapper.toDomain(active);
       final originDecision = classifySosIncidentOrigin(hydratedIncident);
-      if (originDecision.isExternalOnly) {
+      final restoresAdmittedExternal =
+          originDecision.isExternalOnly &&
+          _isSameAdmittedExternalIncident(
+            incidentBeforeLookup,
+            hydratedIncident,
+          );
+      if (originDecision.isExternalOnly && !restoresAdmittedExternal) {
         BleDebugRegistry.instance.recordEvent(
           'SOS_ORIGIN_DECISION source=mqtt_repository_rehydrate '
           'actionability=${originDecision.actionability.name} '
@@ -1391,6 +1417,24 @@ class MqttOperationalSosRepository
         diagnosticNote: 'E_SOS_REHYDRATION_FAILED error=$error',
       );
     }
+  }
+
+  bool _isSameAdmittedExternalIncident(
+    SosIncident? persisted,
+    SosIncident hydrated,
+  ) {
+    if (persisted == null ||
+        !persisted.isBackendConfirmed ||
+        persisted.actionability != SosActionability.externalOnly ||
+        persisted.displaySurface != SosDisplaySurface.activeAndHistory ||
+        !_sameIdentity(persisted.id, hydrated.id) ||
+        persisted.originatorNodeId != hydrated.originatorNodeId ||
+        persisted.relayNodeId != hydrated.relayNodeId ||
+        _differentIdentity(persisted.deviceId, hydrated.deviceId) ||
+        _differentIdentity(persisted.hardwareId, hydrated.hardwareId)) {
+      return false;
+    }
+    return true;
   }
 
   void _startMqttConfirmationWait(String localIncidentId) {
@@ -1514,6 +1558,7 @@ class MqttOperationalSosRepository
   void _clearPendingMqttLifecycle({required String reason}) {
     _stopMqttConfirmationWait(reason: reason);
     _pendingProcessedHandoff = null;
+    _pendingExternalRelayHandoff = null;
     if (_bufferedActuatorUpdates.isNotEmpty) {
       BleDebugRegistry.instance.recordEvent(
         'SOS_MQTT_ACTUATOR_UPDATE_BUFFER_CLEARED reason=$reason '
@@ -1635,6 +1680,7 @@ class MqttOperationalSosRepository
       _bufferActuatorUpdate(event, update);
       return;
     }
+    _admitMatchingRemoteCanonicalIncident(update);
     final authority = _lifecycleAuthorityFor(update);
     BleDebugRegistry.instance.recordEvent(
       'SOS_BACKEND_EVENT_CORRELATION '
@@ -1657,6 +1703,7 @@ class MqttOperationalSosRepository
     }
     if (update.eventType == 'processed') {
       _pendingProcessedHandoff = null;
+      _pendingExternalRelayHandoff = null;
     }
     _rememberMqttEvent(update);
     if (!_isActiveLikeState(_stateMachine.current)) {
@@ -1858,7 +1905,13 @@ class MqttOperationalSosRepository
   ) {
     final activeIncident = _activeIncident;
     final activeIncidentId = activeIncident?.id;
-    if (_isExternalOnlyLifecycle(update)) {
+    final admittedExternalIncident =
+        activeIncident != null &&
+        activeIncident.actionability == SosActionability.externalOnly &&
+        activeIncident.displaySurface == SosDisplaySurface.activeAndHistory &&
+        activeIncident.isBackendConfirmed &&
+        _sameIdentity(update.incidentId, activeIncident.id);
+    if (_isExternalOnlyLifecycle(update) && !admittedExternalIncident) {
       _logLifecycleAuthorityRejected(
         update: update,
         activeIncidentId: activeIncidentId,
@@ -1992,6 +2045,55 @@ class MqttOperationalSosRepository
       diagnostic: 'MQTT_SOS_LIFECYCLE_REJECTED_IDENTITY_MISMATCH',
     );
     return const _LifecycleAuthorityDecision.rejected('identity_mismatch');
+  }
+
+  void _admitMatchingRemoteCanonicalIncident(MqttSosLifecycleUpdate update) {
+    final pending = _pendingExternalRelayHandoff;
+    final occurredAt = update.incidentOccurredAt;
+    if ((_activeIncident != null &&
+            !_isTerminalState(_activeIncident!.state)) ||
+        pending == null ||
+        update.eventType != 'processed' ||
+        !update.authenticatedUserScoped ||
+        update.state == null ||
+        !_isActiveLikeState(update.state!) ||
+        occurredAt == null ||
+        occurredAt.toUtc() != pending.occurredAt ||
+        _nowProvider().toUtc().difference(pending.registeredAt) >
+            _processedHandoffWindow) {
+      return;
+    }
+    final canonical = SosIncident(
+      id: update.incidentId,
+      state: update.state!,
+      createdAt: pending.occurredAt,
+      source: pending.source,
+      triggerSource: pending.source,
+      relaySource: pending.source,
+      originatorNodeId: pending.originatorNodeId,
+      relayNodeId: pending.relayNodeId,
+      deviceId: pending.deviceId,
+      hardwareId: pending.hardwareId,
+      owner: 'external',
+      cycleKey: pending.cycleKey,
+      originKind: SosOriginKind.remoteRelay,
+      actionability: SosActionability.externalOnly,
+      displaySurface: SosDisplaySurface.activeAndHistory,
+      isBackendConfirmed: true,
+      preservedLocalOwnership: false,
+    );
+    _activeIncident = canonical;
+    _locallyClosedIncidentId = null;
+    _setState(canonical.state);
+    unawaited(_persistState());
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_MQTT_EVENT_AUTHORITY_ACCEPTED '
+      'reason=remote_canonical_admission eventType=${update.eventType} '
+      'originatorNodeId=${pending.originatorNodeId?.toString() ?? "none"} '
+      'relayNodeId=${pending.relayNodeId?.toString() ?? "none"} '
+      'relayDeviceId=${pending.relayDeviceId ?? "none"} '
+      'relayHardwareId=${pending.relayHardwareId ?? "none"}',
+    );
   }
 
   bool _hasMqttIdentityConflict(
@@ -2963,6 +3065,32 @@ class _PendingProcessedHandoff {
   final String? cycleKey;
   final DateTime occurredAt;
   final DateTime registeredAt;
+}
+
+class _PendingExternalRelayHandoff {
+  const _PendingExternalRelayHandoff({
+    required this.occurredAt,
+    required this.registeredAt,
+    required this.originatorNodeId,
+    required this.relayNodeId,
+    required this.deviceId,
+    required this.hardwareId,
+    required this.relayDeviceId,
+    required this.relayHardwareId,
+    required this.cycleKey,
+    required this.source,
+  });
+
+  final DateTime occurredAt;
+  final DateTime registeredAt;
+  final int? originatorNodeId;
+  final int? relayNodeId;
+  final String? deviceId;
+  final String? hardwareId;
+  final String? relayDeviceId;
+  final String? relayHardwareId;
+  final String? cycleKey;
+  final String source;
 }
 
 class _LifecycleAuthorityDecision {

@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart'
     as permission_handler;
 
+import '../device/ble_debug_registry.dart';
 import 'protection_platform_channel_mapper.dart';
 import 'protection_platform_adapter.dart';
 
@@ -14,11 +15,11 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     EventChannel? eventChannel,
     Stream<dynamic> Function()? eventStreamFactory,
     Future<ProtectionPlatformSnapshot> Function()? platformSnapshotLoader,
-  })  : _methodChannel =
-            methodChannel ?? const MethodChannel(_methodChannelName),
-        _eventChannel = eventChannel ?? const EventChannel(_eventChannelName),
-        _eventStreamFactory = eventStreamFactory,
-        _platformSnapshotLoader = platformSnapshotLoader;
+  }) : _methodChannel =
+           methodChannel ?? const MethodChannel(_methodChannelName),
+       _eventChannel = eventChannel ?? const EventChannel(_eventChannelName),
+       _eventStreamFactory = eventStreamFactory,
+       _platformSnapshotLoader = platformSnapshotLoader;
 
   static const String _methodChannelName =
       'dev.eixam.connect_flutter/protection_runtime/methods';
@@ -45,7 +46,8 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
       'getPlatformSnapshot',
     );
     return mapAndroidProtectionPlatformSnapshot(
-        raw ?? const <String, dynamic>{});
+      raw ?? const <String, dynamic>{},
+    );
   }
 
   @override
@@ -126,7 +128,7 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
 
   @override
   Future<List<ProtectionPendingExternalRelayCancelEvent>>
-      peekPendingExternalRelayCancels() async {
+  peekPendingExternalRelayCancels() async {
     final raw = await _methodChannel.invokeListMethod<dynamic>(
       'peekPendingExternalRelayCancels',
     );
@@ -154,9 +156,7 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }
 
   @override
-  Future<void> markPendingNativeSosCreateMqttFlushStarted(
-    String signature,
-  ) {
+  Future<void> markPendingNativeSosCreateMqttFlushStarted(String signature) {
     return _methodChannel.invokeMethod<void>(
       'markPendingNativeSosCreateMqttFlushStarted',
       <String, dynamic>{'signature': signature},
@@ -164,9 +164,7 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }
 
   @override
-  Future<void> markPendingNativeSosCreateMqttPublished(
-    String signature,
-  ) {
+  Future<void> markPendingNativeSosCreateMqttPublished(String signature) {
     return _methodChannel.invokeMethod<void>(
       'markPendingNativeSosCreateMqttPublished',
       <String, dynamic>{'signature': signature},
@@ -180,10 +178,7 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }) {
     return _methodChannel.invokeMethod<void>(
       'retainPendingNativeSosCreate',
-      <String, dynamic>{
-        'signature': signature,
-        'reason': reason,
-      },
+      <String, dynamic>{'signature': signature, 'reason': reason},
     );
   }
 
@@ -209,10 +204,7 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }) async {
     final dropped = await _methodChannel.invokeMethod<bool>(
       'dropPendingNativeSosCreate',
-      <String, dynamic>{
-        'signature': signature,
-        'reason': reason,
-      },
+      <String, dynamic>{'signature': signature, 'reason': reason},
     );
     return dropped == true;
   }
@@ -244,8 +236,8 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
           : 'native_protection_sos',
       triggerSource:
           (value['triggerSource'] as String?)?.trim().isNotEmpty == true
-              ? (value['triggerSource'] as String).trim()
-              : 'native_protection_sos',
+          ? (value['triggerSource'] as String).trim()
+          : 'native_protection_sos',
       deviceId: (value['deviceId'] as String?)?.trim(),
       hardwareId: (value['hardwareId'] as String?)?.trim(),
       nodeId: (value['nodeId'] as num?)?.toInt(),
@@ -280,8 +272,9 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     final originatorNodeId = _normalizeNodeId(rawOriginatorNodeId);
     final payloadHex = (value['payloadHex'] as String?)?.trim();
     final rawRelayNodeId = (value['relayNodeId'] as num?)?.toInt();
-    final relayNodeId =
-        rawRelayNodeId == null ? null : _normalizeNodeId(rawRelayNodeId);
+    final relayNodeId = rawRelayNodeId == null
+        ? null
+        : _normalizeNodeId(rawRelayNodeId);
     final rawSignature = (value['signature'] as String?)?.trim();
     final rawDedupeKey = (value['dedupeKey'] as String?)?.trim();
     final fallbackSignature = <String>[
@@ -292,8 +285,8 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     final signature = rawSignature?.isNotEmpty == true
         ? rawSignature!
         : rawDedupeKey?.isNotEmpty == true
-            ? rawDedupeKey!
-            : fallbackSignature;
+        ? rawDedupeKey!
+        : fallbackSignature;
     final timestampMs = (value['timestamp'] as num?)?.toInt();
     return ProtectionPendingExternalRelayCancelEvent(
       signature: signature,
@@ -323,24 +316,24 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
       permission_handler.Permission.bluetoothConnect,
     ].request();
 
-    final bluetoothGranted = <permission_handler.Permission>[
-      permission_handler.Permission.bluetooth,
-      permission_handler.Permission.bluetoothScan,
-      permission_handler.Permission.bluetoothConnect,
-    ].every(
-      (permission) =>
-          statuses[permission]?.isGranted == true ||
-          statuses[permission]?.isLimited == true,
-    );
+    final bluetoothGranted =
+        <permission_handler.Permission>[
+          permission_handler.Permission.bluetooth,
+          permission_handler.Permission.bluetoothScan,
+          permission_handler.Permission.bluetoothConnect,
+        ].every(
+          (permission) =>
+              statuses[permission]?.isGranted == true ||
+              statuses[permission]?.isLimited == true,
+        );
 
     return ProtectionPermissionResult(
       locationGranted:
           statuses[permission_handler.Permission.location]?.isGranted == true ||
-              statuses[permission_handler.Permission.location]?.isLimited ==
-                  true,
+          statuses[permission_handler.Permission.location]?.isLimited == true,
       notificationsGranted:
           statuses[permission_handler.Permission.notification]?.isGranted ==
-              true,
+          true,
       bluetoothGranted: bluetoothGranted,
     );
   }
@@ -349,15 +342,35 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({
     required ProtectionPlatformCommandRequest request,
   }) async {
-    final raw = await _methodChannel.invokeMapMethod<String, dynamic>(
-      'sendProtectionCommand',
-      <String, dynamic>{
-        'label': request.label,
-        'bytes': request.bytes,
-        'forceCmdCharacteristic': request.forceCmdCharacteristic,
-      },
+    // This is intentionally categorical: it proves the Dart-to-platform
+    // boundary without logging command payloads or device identifiers.
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_CANCEL_DART_DISPATCH method=sendProtectionCommand',
     );
-    return mapProtectionPlatformCommandResult(raw ?? const <String, dynamic>{});
+    try {
+      final raw = await _methodChannel.invokeMapMethod<String, dynamic>(
+        'sendProtectionCommand',
+        <String, dynamic>{
+          'label': request.label,
+          'bytes': request.bytes,
+          'forceCmdCharacteristic': request.forceCmdCharacteristic,
+        },
+      );
+      return mapProtectionPlatformCommandResult(
+        raw ?? const <String, dynamic>{},
+      );
+    } on MissingPluginException {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_CANCEL_NATIVE_BRIDGE_FAILED category=missing_plugin',
+      );
+      rethrow;
+    } on PlatformException catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_CANCEL_NATIVE_BRIDGE_FAILED category=platform '
+        'code=${error.code}',
+      );
+      rethrow;
+    }
   }
 
   @override

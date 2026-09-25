@@ -187,9 +187,108 @@ void main() {
     expect(adapter.stopCalls, 1);
     expect(controller.currentStatus.modeState, ProtectionModeState.stopping);
   });
+
+  test(
+    'process recreation rehydrates an active native owner before Flutter writes',
+    () async {
+      final ownerTransitions = <ProtectionBleOwner>[];
+      final adapter = _OrderingProtectionPlatformAdapter(
+        flutterReleased: () => true,
+      )..started = true;
+      final controller = _testController(
+        adapter,
+        onBleOwnershipChanged: (owner) async => ownerTransitions.add(owner),
+      );
+      addTearDown(controller.dispose);
+      addTearDown(adapter.dispose);
+
+      final recovered = await controller.rehydrate();
+
+      expect(recovered.foregroundServiceRunning, isTrue);
+      expect(recovered.protectionRuntimeActive, isTrue);
+      expect(recovered.runtimeState, ProtectionRuntimeState.active);
+      expect(recovered.bleOwner, ProtectionBleOwner.androidService);
+      expect(recovered.nativeCommandReady, isFalse);
+      expect(ownerTransitions, <ProtectionBleOwner>[
+        ProtectionBleOwner.androidService,
+      ]);
+    },
+  );
+
+  test('repeated ownership handoff preserves one effective owner', () async {
+    final ownerTransitions = <ProtectionBleOwner>[];
+    final adapter = _OrderingProtectionPlatformAdapter(
+      flutterReleased: () => true,
+    );
+    final controller = _testController(
+      adapter,
+      onBleOwnershipChanged: (owner) async => ownerTransitions.add(owner),
+    );
+    addTearDown(controller.dispose);
+    addTearDown(adapter.dispose);
+
+    for (var cycle = 0; cycle < 2; cycle += 1) {
+      final entered = await controller.enter();
+      expect(entered.success, isTrue);
+      expect(entered.status.bleOwner, ProtectionBleOwner.androidService);
+      expect(entered.status.serviceBleConnected, isFalse);
+
+      final exited = await controller.exit();
+      expect(exited.modeState, ProtectionModeState.off);
+      expect(exited.bleOwner, ProtectionBleOwner.flutter);
+      expect(exited.serviceBleConnected, isFalse);
+    }
+
+    expect(adapter.startCalls, 2);
+    expect(adapter.stopCalls, 2);
+    expect(ownerTransitions, <ProtectionBleOwner>[
+      ProtectionBleOwner.androidService,
+      ProtectionBleOwner.flutter,
+      ProtectionBleOwner.androidService,
+      ProtectionBleOwner.flutter,
+    ]);
+  });
+
+  test(
+    'native owner startup failure restores Flutter ownership without dual writer',
+    () async {
+      final ownerTransitions = <ProtectionBleOwner>[];
+      final adapter = _OrderingProtectionPlatformAdapter(
+        flutterReleased: () => true,
+        startResult: const ProtectionPlatformStartResult(
+          success: false,
+          runtimeState: ProtectionRuntimeState.failed,
+          coverageLevel: ProtectionCoverageLevel.none,
+          failureReason: ProtectionSemanticCode.hostRuntimeStartFailed,
+        ),
+      );
+      final controller = _testController(
+        adapter,
+        onBleOwnershipChanged: (owner) async => ownerTransitions.add(owner),
+      );
+      addTearDown(controller.dispose);
+      addTearDown(adapter.dispose);
+
+      final result = await controller.enter();
+
+      expect(result.success, isFalse);
+      expect(result.status.modeState, ProtectionModeState.error);
+      expect(result.status.runtimeState, ProtectionRuntimeState.failed);
+      expect(result.status.bleOwner, ProtectionBleOwner.flutter);
+      expect(adapter.started, isFalse);
+      expect(adapter.startCalls, 1);
+      expect(ownerTransitions, <ProtectionBleOwner>[
+        ProtectionBleOwner.androidService,
+        ProtectionBleOwner.flutter,
+      ]);
+    },
+  );
 }
 
-ProtectionModeController _testController(ProtectionPlatformAdapter adapter) {
+ProtectionModeController _testController(
+  ProtectionPlatformAdapter adapter, {
+  Future<void> Function(ProtectionBleOwner owner)? onBleOwnershipChanged,
+}) {
   return ProtectionModeController(
     platformAdapter: adapter,
     sessionProvider: () async => const EixamSession.signed(
@@ -216,18 +315,28 @@ ProtectionModeController _testController(ProtectionPlatformAdapter adapter) {
       connectionState: RealtimeConnectionState.connected,
       bridge: SdkBridgeDiagnostics(),
     ),
+    onBleOwnershipChanged: onBleOwnershipChanged,
   );
 }
 
 final class _OrderingProtectionPlatformAdapter extends Fake
     implements ProtectionPlatformAdapter {
-  _OrderingProtectionPlatformAdapter({required this.flutterReleased});
+  _OrderingProtectionPlatformAdapter({
+    required this.flutterReleased,
+    this.startResult = const ProtectionPlatformStartResult(
+      success: true,
+      runtimeState: ProtectionRuntimeState.active,
+      coverageLevel: ProtectionCoverageLevel.partial,
+    ),
+  });
 
   final bool Function() flutterReleased;
+  final ProtectionPlatformStartResult startResult;
   final StreamController<ProtectionPlatformEvent> _events =
       StreamController<ProtectionPlatformEvent>.broadcast();
   bool started = false;
   bool startObservedFlutterReleased = false;
+  int startCalls = 0;
   int stopCalls = 0;
   Object? stopError;
 
@@ -266,13 +375,10 @@ final class _OrderingProtectionPlatformAdapter extends Fake
   Future<ProtectionPlatformStartResult> startProtectionRuntime({
     required ProtectionPlatformStartRequest request,
   }) async {
+    startCalls += 1;
     startObservedFlutterReleased = flutterReleased();
-    started = true;
-    return const ProtectionPlatformStartResult(
-      success: true,
-      runtimeState: ProtectionRuntimeState.active,
-      coverageLevel: ProtectionCoverageLevel.partial,
-    );
+    started = startResult.success;
+    return startResult;
   }
 
   @override

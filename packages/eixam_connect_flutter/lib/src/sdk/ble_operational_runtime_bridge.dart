@@ -35,13 +35,29 @@ typedef SosBackendAssignmentVerifiedRetry =
       required String? cycleKey,
     });
 
+typedef SosGenerationPublisher =
+    Future<SosIncident?> Function({
+      required int lifecycleGeneration,
+      required String triggerSource,
+      required String message,
+      required TrackingPosition? positionSnapshot,
+      required String? deviceId,
+      required String? hardwareId,
+      required int? originatorNodeId,
+      required int? relayNodeId,
+      required String? relayDeviceId,
+      required String? relayHardwareId,
+      required String? incidentId,
+      required String? cycleKey,
+    });
+
 class BleOperationalRuntimeBridge {
   BleOperationalRuntimeBridge({
     required Stream<BleIncomingEvent> bleIncomingEvents,
     required Stream<RealtimeConnectionState> connectionStates,
     required Stream<RealtimeEvent> realtimeEvents,
     required this.telemetryRepository,
-    required this.sosRepository,
+    required SosGenerationPublisher sosGenerationPublisher,
     required this.deviceSosController,
     required EixamSession? Function() sessionProvider,
     Future<String?> Function(String runtimeDeviceId)? backendHardwareIdResolver,
@@ -52,6 +68,7 @@ class BleOperationalRuntimeBridge {
        _connectionStates = connectionStates,
        _realtimeEvents = realtimeEvents,
        _sessionProvider = sessionProvider,
+       _sosGenerationPublisher = sosGenerationPublisher,
        _backendHardwareIdResolver = backendHardwareIdResolver,
        _sosBackendAssignmentVerifiedRetry = sosBackendAssignmentVerifiedRetry,
        _now = now ?? DateTime.now,
@@ -61,9 +78,9 @@ class BleOperationalRuntimeBridge {
   final Stream<RealtimeConnectionState> _connectionStates;
   final Stream<RealtimeEvent> _realtimeEvents;
   final TelemetryRepository telemetryRepository;
-  final SosRepository sosRepository;
   final DeviceSosController deviceSosController;
   final EixamSession? Function() _sessionProvider;
+  final SosGenerationPublisher _sosGenerationPublisher;
   final Future<String?> Function(String runtimeDeviceId)?
   _backendHardwareIdResolver;
   final SosBackendAssignmentVerifiedRetry? _sosBackendAssignmentVerifiedRetry;
@@ -158,6 +175,7 @@ class BleOperationalRuntimeBridge {
   }
 
   Future<bool> promoteDeviceOriginatedSos({
+    required int lifecycleGeneration,
     required String signature,
     required String triggerSource,
     required String message,
@@ -190,6 +208,7 @@ class BleOperationalRuntimeBridge {
     }
 
     return _publishSosPayload(
+      lifecycleGeneration: lifecycleGeneration,
       signature: signature,
       triggerSource: triggerSource,
       message: message,
@@ -1375,6 +1394,7 @@ class BleOperationalRuntimeBridge {
       final pendingSos = _pendingSos;
       if (pendingSos != null) {
         final published = await _publishSosPayload(
+          lifecycleGeneration: pendingSos.lifecycleGeneration,
           signature: pendingSos.signature,
           triggerSource: pendingSos.triggerSource,
           message: pendingSos.message,
@@ -1508,6 +1528,7 @@ class BleOperationalRuntimeBridge {
   }
 
   Future<bool> _publishSosPayload({
+    required int lifecycleGeneration,
     required String signature,
     required String triggerSource,
     required String message,
@@ -1529,7 +1550,8 @@ class BleOperationalRuntimeBridge {
           'remote=${relayContext?.remoteDeviceId ?? "-"} signature=$signature',
     );
     try {
-      await sosRepository.triggerSos(
+      final incident = await _sosGenerationPublisher(
+        lifecycleGeneration: lifecycleGeneration,
         message: message,
         triggerSource: triggerSource,
         positionSnapshot: positionSnapshot,
@@ -1542,6 +1564,14 @@ class BleOperationalRuntimeBridge {
         incidentId: incidentId,
         cycleKey: cycleKey,
       );
+      if (incident == null) {
+        _emitDiagnostics(
+          _diagnostics.copyWith(
+            lastDecision: 'SOS dispatch joined without a reconciled incident',
+          ),
+        );
+        return false;
+      }
       _emitDiagnostics(
         _diagnostics.copyWith(
           pendingSos: null,
@@ -1613,6 +1643,7 @@ class BleOperationalRuntimeBridge {
           }
         }
         _pendingSos = _PendingSosPublish(
+          lifecycleGeneration: lifecycleGeneration,
           signature: signature,
           triggerSource: triggerSource,
           message: message,
@@ -1649,6 +1680,7 @@ class BleOperationalRuntimeBridge {
       }
       if (allowPendingFallback && _isOperationalAvailabilityError(error)) {
         _pendingSos = _PendingSosPublish(
+          lifecycleGeneration: lifecycleGeneration,
           signature: signature,
           triggerSource: triggerSource,
           message: message,
@@ -1908,6 +1940,7 @@ class _PendingTelemetryPublish {
 
 class _PendingSosPublish {
   const _PendingSosPublish({
+    required this.lifecycleGeneration,
     required this.signature,
     required this.triggerSource,
     required this.message,
@@ -1923,6 +1956,7 @@ class _PendingSosPublish {
     this.relayContext,
   });
 
+  final int lifecycleGeneration;
   final String signature;
   final String triggerSource;
   final String message;

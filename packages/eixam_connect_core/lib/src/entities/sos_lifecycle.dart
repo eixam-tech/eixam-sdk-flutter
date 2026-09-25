@@ -25,6 +25,18 @@ enum SosLifecycleOrigin {
   unknown,
 }
 
+/// The single producer allowed to dispatch a Backend publish for a generation.
+enum SosDispatchOwner { unclaimed, app, device, remoteRelay, external }
+
+/// Monotonic Backend dispatch progress for one SOS generation.
+enum SosDispatchState {
+  notClaimed,
+  claimed,
+  transportAccepted,
+  backendConfirmed,
+  terminal,
+}
+
 enum SosCancellationPhase {
   none,
   requested,
@@ -57,7 +69,7 @@ enum SosCancellationOutcome {
   @Deprecated('Use noActionableLifecycle instead.')
   alreadyTerminal,
   @Deprecated('Use cancellationFailed instead.')
-  failed
+  failed,
 }
 
 /// The single public source of truth for an SOS generation.
@@ -84,6 +96,8 @@ final class SosLifecycleSnapshot {
     this.recoveryStatus = SosRecoveryStatus.none,
     this.failureCode,
     this.incident,
+    this.dispatchOwner = SosDispatchOwner.unclaimed,
+    this.dispatchState = SosDispatchState.notClaimed,
   });
 
   factory SosLifecycleSnapshot.idle(DateTime observedAt) =>
@@ -125,6 +139,8 @@ final class SosLifecycleSnapshot {
   final SosRecoveryStatus recoveryStatus;
   final String? failureCode;
   final SosIncident? incident;
+  final SosDispatchOwner dispatchOwner;
+  final SosDispatchState dispatchState;
 
   bool get isTerminal =>
       stage == SosLifecycleStage.cancelled ||
@@ -158,48 +174,50 @@ final class SosLifecycleSnapshot {
     SosRecoveryStatus? recoveryStatus,
     Object? failureCode = _unset,
     Object? incident = _unset,
-  }) =>
-      SosLifecycleSnapshot(
-        revision: revision ?? this.revision,
-        stage: stage ?? this.stage,
-        lifecycleId: lifecycleId,
-        generation: generation,
-        origin: origin ?? this.origin,
-        localActionable: localActionable ?? this.localActionable,
-        externalOnly: externalOnly ?? this.externalOnly,
-        displaySurface: displaySurface ?? this.displaySurface,
-        localIncidentId: identical(localIncidentId, _unset)
-            ? this.localIncidentId
-            : localIncidentId as String?,
-        backendIncidentId: identical(backendIncidentId, _unset)
-            ? this.backendIncidentId
-            : backendIncidentId as String?,
-        deviceId:
-            identical(deviceId, _unset) ? this.deviceId : deviceId as String?,
-        nodeId: identical(nodeId, _unset) ? this.nodeId : nodeId as int?,
-        hardwareId: identical(hardwareId, _unset)
-            ? this.hardwareId
-            : hardwareId as String?,
-        deviceCycleKey: identical(deviceCycleKey, _unset)
-            ? this.deviceCycleKey
-            : deviceCycleKey as String?,
-        triggerSource: identical(triggerSource, _unset)
-            ? this.triggerSource
-            : triggerSource as String?,
-        activationTimestamp: identical(activationTimestamp, _unset)
-            ? this.activationTimestamp
-            : activationTimestamp as DateTime?,
-        lastAuthoritativeObservation:
-            lastAuthoritativeObservation ?? this.lastAuthoritativeObservation,
-        cancellationPhase: cancellationPhase ?? this.cancellationPhase,
-        recoveryStatus: recoveryStatus ?? this.recoveryStatus,
-        failureCode: identical(failureCode, _unset)
-            ? this.failureCode
-            : failureCode as String?,
-        incident: identical(incident, _unset)
-            ? this.incident
-            : incident as SosIncident?,
-      );
+    SosDispatchOwner? dispatchOwner,
+    SosDispatchState? dispatchState,
+  }) => SosLifecycleSnapshot(
+    revision: revision ?? this.revision,
+    stage: stage ?? this.stage,
+    lifecycleId: lifecycleId,
+    generation: generation,
+    origin: origin ?? this.origin,
+    localActionable: localActionable ?? this.localActionable,
+    externalOnly: externalOnly ?? this.externalOnly,
+    displaySurface: displaySurface ?? this.displaySurface,
+    localIncidentId: identical(localIncidentId, _unset)
+        ? this.localIncidentId
+        : localIncidentId as String?,
+    backendIncidentId: identical(backendIncidentId, _unset)
+        ? this.backendIncidentId
+        : backendIncidentId as String?,
+    deviceId: identical(deviceId, _unset) ? this.deviceId : deviceId as String?,
+    nodeId: identical(nodeId, _unset) ? this.nodeId : nodeId as int?,
+    hardwareId: identical(hardwareId, _unset)
+        ? this.hardwareId
+        : hardwareId as String?,
+    deviceCycleKey: identical(deviceCycleKey, _unset)
+        ? this.deviceCycleKey
+        : deviceCycleKey as String?,
+    triggerSource: identical(triggerSource, _unset)
+        ? this.triggerSource
+        : triggerSource as String?,
+    activationTimestamp: identical(activationTimestamp, _unset)
+        ? this.activationTimestamp
+        : activationTimestamp as DateTime?,
+    lastAuthoritativeObservation:
+        lastAuthoritativeObservation ?? this.lastAuthoritativeObservation,
+    cancellationPhase: cancellationPhase ?? this.cancellationPhase,
+    recoveryStatus: recoveryStatus ?? this.recoveryStatus,
+    failureCode: identical(failureCode, _unset)
+        ? this.failureCode
+        : failureCode as String?,
+    incident: identical(incident, _unset)
+        ? this.incident
+        : incident as SosIncident?,
+    dispatchOwner: dispatchOwner ?? this.dispatchOwner,
+    dispatchState: dispatchState ?? this.dispatchState,
+  );
 
   static const Object _unset = Object();
 }

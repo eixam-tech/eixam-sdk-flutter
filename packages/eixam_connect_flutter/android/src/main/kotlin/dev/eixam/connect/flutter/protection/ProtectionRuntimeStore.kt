@@ -36,6 +36,7 @@ internal class ProtectionRuntimeStore(context: Context) {
             preferences.getInt(keyPendingNativeSosCreateCount, 0)
         val pendingNativeSosCancelCount =
             preferences.getInt(keyPendingNativeSosCancelCount, 0)
+        val pendingNativeSosCancel = pendingNativeSosCancelJson()
         val pendingExternalRelayCancelCount = pendingExternalRelayCancelCount()
         val preSosExpectedActivationAt =
             preferences.getLong(keyPreSosExpectedActivationAt, 0L).takeIf { it > 0L }
@@ -102,6 +103,18 @@ internal class ProtectionRuntimeStore(context: Context) {
             "pendingTelemetryCount" to preferences.getInt(keyPendingTelemetryCount, 0),
             "pendingNativeSosCreateCount" to pendingNativeSosCreateCount,
             "pendingNativeSosCancelCount" to pendingNativeSosCancelCount,
+            "pendingNativeSosCancelState" to
+                pendingNativeSosCancel?.optNullableString("state"),
+            "pendingNativeSosCancelLifecyclePresent" to
+                (pendingNativeSosCancel?.optNullableString("lifecycleId") != null),
+            "pendingNativeSosCancelCanonicalTargetPresent" to
+                (pendingNativeSosCancel?.optNullableString(
+                    "canonicalBackendIncidentId",
+                ) != null),
+            "lastNativeSosCancelOutcome" to preferences.getString(
+                keyLastNativeSosCancelOutcome,
+                null,
+            ),
             "pendingExternalRelayCancelCount" to pendingExternalRelayCancelCount,
             "runtimeState" to when {
                 preferences.getString(keyLastPlatformEvent, null) == "runtimeStarting" -> "starting"
@@ -390,6 +403,20 @@ internal class ProtectionRuntimeStore(context: Context) {
         return previous
     }
 
+    fun invalidateProcessLocalCommandReadiness(reason: String) {
+        preferences.edit()
+            .putBoolean(keyServiceBleConnected, false)
+            .putBoolean(keyServiceBleReady, false)
+            .putBoolean(keyNativeCommandServiceReady, false)
+            .putBoolean(keyNativeCommandEa04Ready, false)
+            .putBoolean(keyNativeCommandIdentityReady, false)
+            .putBoolean(keyNativeCommandQueueHealthy, false)
+            .putBoolean(keyNativeCommandReady, false)
+            .putString(keyReadinessFailureReason, reason)
+            .putString(keyDegradationReason, reason)
+            .apply()
+    }
+
     fun markServiceBleDisconnected() {
         preferences.edit()
             .putBoolean(keyServiceBleConnected, false)
@@ -520,12 +547,51 @@ internal class ProtectionRuntimeStore(context: Context) {
         return mapPendingNativeSosCreate(payload)
     }
 
-    fun markPendingSosCancel() {
+    fun markPendingSosCancel(
+        lifecycleId: String?,
+        sessionScope: String?,
+        reason: String,
+    ): ProtectionPendingNativeSosCancel {
+        val now = System.currentTimeMillis()
+        val normalizedLifecycleId = lifecycleId?.trim()?.takeIf { it.isNotEmpty() }
+        val activeLifecycleId = preferences.getString(
+            keyActiveBackendIncidentLifecycleId,
+            null,
+        )
+        val canonicalBackendIncidentId = if (
+            normalizedLifecycleId != null &&
+            normalizedLifecycleId == activeLifecycleId
+        ) {
+            activeBackendIncidentId()
+        } else {
+            null
+        }
+        val pendingCreate = pendingNativeSosCreateJson()
+        val provisionalIncidentId = pendingCreate
+            ?.takeIf { it.optNullableString("cycleKey") == normalizedLifecycleId }
+            ?.optNullableString("incidentId")
+        val pending = ProtectionPendingNativeSosCancel(
+            lifecycleId = normalizedLifecycleId,
+            canonicalBackendIncidentId = canonicalBackendIncidentId,
+            provisionalIncidentId = provisionalIncidentId,
+            sessionScope = sessionScope?.trim()?.takeIf { it.isNotEmpty() },
+            deviceId = currentBleHardwareId() ?: currentTargetDeviceId(),
+            nodeId = currentBoundNodeId(),
+            createdAt = now,
+            state = "pending",
+            transportState = "not_attempted",
+            ackState = "pending",
+        )
         preferences.edit()
             .putInt(keyPendingNativeSosCancelCount, 1)
+            .putString(
+                keyPendingNativeSosCancel,
+                pendingNativeSosCancelJson(pending, reason).toString(),
+            )
             .putString(keyPendingSosState, "cancel_pending")
             .putString(keyPreSosLifecycleState, "cancelPending")
             .apply()
+        return pending
     }
 
     fun clearPendingSosCreate() {
@@ -538,6 +604,48 @@ internal class ProtectionRuntimeStore(context: Context) {
     fun clearPendingSosCancel() {
         preferences.edit()
             .putInt(keyPendingNativeSosCancelCount, 0)
+            .remove(keyPendingNativeSosCancel)
+            .apply()
+    }
+
+    fun pendingNativeSosCancel(): ProtectionPendingNativeSosCancel? =
+        pendingNativeSosCancelJson()?.let(::mapPendingNativeSosCancel)
+
+    fun retirePendingNativeSosCancel(
+        outcome: ProtectionNativeSosCancelOutcome,
+        reason: String,
+    ) {
+        val now = System.currentTimeMillis()
+        val history = pendingNativeSosCancelJson() ?: JSONObject()
+        history
+            .put("state", "terminal")
+            .put(
+                "transportState",
+                if (outcome == ProtectionNativeSosCancelOutcome.flushExecuted) {
+                    "sent"
+                } else {
+                    "not_sent"
+                },
+            )
+            .put(
+                "ackState",
+                if (outcome == ProtectionNativeSosCancelOutcome.flushExecuted) {
+                    "acknowledged"
+                } else {
+                    "rejected"
+                },
+            )
+            .put("updatedAt", now)
+            .put("terminalAt", now)
+            .put("outcome", outcome.diagnosticCode)
+            .put("reason", reason)
+        preferences.edit()
+            .putInt(keyPendingNativeSosCancelCount, 0)
+            .remove(keyPendingNativeSosCancel)
+            .putString(keyLastNativeSosCancelRecord, history.toString())
+            .putString(keyLastNativeSosCancelOutcome, outcome.diagnosticCode)
+            .putString(keyLastNativeBackendHandoffResult, outcome.diagnosticCode)
+            .remove(keyLastNativeBackendHandoffError)
             .apply()
     }
 
@@ -546,6 +654,7 @@ internal class ProtectionRuntimeStore(context: Context) {
             .putInt(keyPendingSosCount, 0)
             .putInt(keyPendingNativeSosCreateCount, 0)
             .putInt(keyPendingNativeSosCancelCount, 0)
+            .remove(keyPendingNativeSosCancel)
             .putString(keyPendingSosState, "idle")
             .putString(keyPreSosLifecycleState, "idle")
             .remove(keyPendingNativeSosCreate)
@@ -558,6 +667,7 @@ internal class ProtectionRuntimeStore(context: Context) {
             .remove(keyActiveBackendIncidentId)
             .remove(keyActiveBackendIncidentState)
             .remove(keyActiveBackendIncidentAt)
+            .remove(keyActiveBackendIncidentLifecycleId)
             .apply()
     }
 
@@ -792,12 +902,25 @@ internal class ProtectionRuntimeStore(context: Context) {
             .remove(keyPendingNativeSosCreate)
             .remove(keyLastNativeBackendHandoffError)
         val incidentId = backendIncidentId?.trim()?.takeIf { it.isNotBlank() }
-            ?: pending.optNullableString("incidentId")
         if (incidentId != null) {
             editor
                 .putString(keyActiveBackendIncidentId, incidentId)
                 .putString(keyActiveBackendIncidentState, "sent")
                 .putLong(keyActiveBackendIncidentAt, System.currentTimeMillis())
+                .putString(
+                    keyActiveBackendIncidentLifecycleId,
+                    pending.optNullableString("cycleKey"),
+                )
+        } else {
+            editor
+                .remove(keyActiveBackendIncidentId)
+                .remove(keyActiveBackendIncidentState)
+                .remove(keyActiveBackendIncidentAt)
+                .remove(keyActiveBackendIncidentLifecycleId)
+                .putString(
+                    keyLastNativeBackendHandoffResult,
+                    "NATIVE_SOS_PENDING_ACKED_NO_CANONICAL_INCIDENT",
+                )
         }
         editor.apply()
         return true
@@ -833,14 +956,31 @@ internal class ProtectionRuntimeStore(context: Context) {
     fun markBackendIncidentActive(
         incidentId: String?,
         incidentState: String?,
+        lifecycleId: String? = null,
     ) {
-        preferences.edit()
+        val previousIncidentId = activeBackendIncidentId()
+        val previousLifecycleId = preferences.getString(
+            keyActiveBackendIncidentLifecycleId,
+            null,
+        )
+        val editor = preferences.edit()
             .putString(keyActiveBackendIncidentId, incidentId)
             .putString(keyActiveBackendIncidentState, incidentState)
             .putLong(keyActiveBackendIncidentAt, System.currentTimeMillis())
             .putString(keyLastNativeBackendHandoffResult, "create_synced")
             .remove(keyLastNativeBackendHandoffError)
-            .apply()
+        if (lifecycleId.isNullOrBlank()) {
+            if (
+                incidentId.isNullOrBlank() ||
+                incidentId != previousIncidentId ||
+                previousLifecycleId.isNullOrBlank()
+            ) {
+                editor.remove(keyActiveBackendIncidentLifecycleId)
+            }
+        } else {
+            editor.putString(keyActiveBackendIncidentLifecycleId, lifecycleId)
+        }
+        editor.apply()
     }
 
     fun markBackendIncidentCleared(result: String = "cancel_synced") {
@@ -848,6 +988,7 @@ internal class ProtectionRuntimeStore(context: Context) {
             .remove(keyActiveBackendIncidentId)
             .remove(keyActiveBackendIncidentState)
             .remove(keyActiveBackendIncidentAt)
+            .remove(keyActiveBackendIncidentLifecycleId)
             .remove(keyPendingNativeSosCreate)
             .putInt(keyPendingNativeSosCreateCount, 0)
             .putString(keyLastNativeBackendHandoffResult, result)
@@ -1033,6 +1174,52 @@ internal class ProtectionRuntimeStore(context: Context) {
         }
     }
 
+    private fun pendingNativeSosCancelJson(): JSONObject? {
+        val raw = preferences.getString(keyPendingNativeSosCancel, null)
+            ?: return null
+        return try {
+            JSONObject(raw)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun pendingNativeSosCancelJson(
+        pending: ProtectionPendingNativeSosCancel,
+        reason: String,
+    ): JSONObject =
+        JSONObject()
+            .put("lifecycleId", pending.lifecycleId)
+            .put("canonicalBackendIncidentId", pending.canonicalBackendIncidentId)
+            .put("provisionalIncidentId", pending.provisionalIncidentId)
+            .put("sessionScope", pending.sessionScope)
+            .put("deviceId", pending.deviceId)
+            .put("nodeId", pending.nodeId)
+            .put("createdAt", pending.createdAt)
+            .put("updatedAt", pending.createdAt)
+            .put("state", pending.state)
+            .put("transportState", pending.transportState)
+            .put("ackState", pending.ackState)
+            .put("reason", reason)
+
+    private fun mapPendingNativeSosCancel(
+        pending: JSONObject,
+    ): ProtectionPendingNativeSosCancel =
+        ProtectionPendingNativeSosCancel(
+            lifecycleId = pending.optNullableString("lifecycleId"),
+            canonicalBackendIncidentId = pending.optNullableString(
+                "canonicalBackendIncidentId",
+            ),
+            provisionalIncidentId = pending.optNullableString("provisionalIncidentId"),
+            sessionScope = pending.optNullableString("sessionScope"),
+            deviceId = pending.optNullableString("deviceId"),
+            nodeId = pending.optIntOrNull("nodeId"),
+            createdAt = pending.optLong("createdAt", 0L),
+            state = pending.optNullableString("state") ?: "pending",
+            transportState = pending.optNullableString("transportState") ?: "not_attempted",
+            ackState = pending.optNullableString("ackState") ?: "pending",
+        )
+
     private fun updatePendingNativeSosCreate(
         signature: String? = null,
         state: String? = null,
@@ -1133,6 +1320,7 @@ internal class ProtectionRuntimeStore(context: Context) {
         preferences.edit()
             .putInt(keyPendingSosCount, 0)
             .putInt(keyPendingNativeSosCancelCount, 0)
+            .remove(keyPendingNativeSosCancel)
             .putInt(keyPendingTelemetryCount, 0)
             .apply()
         return mapOf(
@@ -1185,6 +1373,7 @@ internal class ProtectionRuntimeStore(context: Context) {
         private const val keyPendingNativeSosCreate = "pending_native_sos_create"
         private const val keyPendingNativeSosCreateCount = "pending_native_sos_create_count"
         private const val keyPendingNativeSosCancelCount = "pending_native_sos_cancel_count"
+        private const val keyPendingNativeSosCancel = "pending_native_sos_cancel"
         private const val keyPendingExternalRelayCancels = "pending_external_relay_cancels"
         private const val keyReconnectAttemptCount = "reconnect_attempt_count"
         private const val keyLastReconnectAttemptAt = "last_reconnect_attempt_at"
@@ -1214,8 +1403,12 @@ internal class ProtectionRuntimeStore(context: Context) {
         private const val keyActiveBackendIncidentId = "active_backend_incident_id"
         private const val keyActiveBackendIncidentState = "active_backend_incident_state"
         private const val keyActiveBackendIncidentAt = "active_backend_incident_at"
+        private const val keyActiveBackendIncidentLifecycleId =
+            "active_backend_incident_lifecycle_id"
         private const val keyLastNativeBackendHandoffResult = "last_native_backend_handoff_result"
         private const val keyLastNativeBackendHandoffError = "last_native_backend_handoff_error"
+        private const val keyLastNativeSosCancelRecord = "last_native_sos_cancel_record"
+        private const val keyLastNativeSosCancelOutcome = "last_native_sos_cancel_outcome"
         private const val keyLastCommandRoute = "last_command_route"
         private const val keyLastCommandResult = "last_command_result"
         private const val keyLastCommandError = "last_command_error"

@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.core.app.NotificationManagerCompat
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.EventChannel
@@ -23,32 +24,88 @@ internal object ProtectionRuntimeBridge {
     private var applicationContext: Context? = null
     private var eventSink: EventChannel.EventSink? = null
     private var runtimeOwner: ProtectionBleRuntimeOwner? = null
+    private var attachmentGeneration: Long = 0
+    private var activeAttachmentGeneration: Long? = null
+    private var methodChannel: MethodChannel? = null
+    private var eventChannel: EventChannel? = null
     private val pendingEvents = ProtectionPlatformEventBuffer(maxPendingEvents)
 
     fun register(
         messenger: BinaryMessenger,
         context: Context,
-    ) {
+    ): Long {
+        val generation = ++attachmentGeneration
+        activeAttachmentGeneration = generation
         applicationContext = context.applicationContext
-        MethodChannel(messenger, methodChannelName).setMethodCallHandler { call, result ->
-            handleMethodCall(call, result, context.applicationContext)
+        methodChannel?.setMethodCallHandler(null)
+        eventChannel?.setStreamHandler(null)
+        eventSink = null
+        methodChannel = MethodChannel(messenger, methodChannelName).also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                handleMethodCall(
+                    call = call,
+                    result = result,
+                    context = context.applicationContext,
+                    bridgeGeneration = generation,
+                )
+            }
         }
-        EventChannel(messenger, eventChannelName).setStreamHandler(
-            object : EventChannel.StreamHandler {
-                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
-                    eventSink = events
-                    val sink = events ?: return
-                    pendingEvents.drain(sink::success)
-                }
+        eventChannel = EventChannel(messenger, eventChannelName).also { channel ->
+            channel.setStreamHandler(
+                object : EventChannel.StreamHandler {
+                    override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                        if (activeAttachmentGeneration != generation) {
+                            return
+                        }
+                        eventSink = events
+                        val sink = events ?: return
+                        pendingEvents.drain(sink::success)
+                    }
 
-                override fun onCancel(arguments: Any?) {
-                    eventSink = null
-                }
-            },
-        )
+                    override fun onCancel(arguments: Any?) {
+                        if (activeAttachmentGeneration == generation) {
+                            eventSink = null
+                        }
+                    }
+                },
+            )
+        }
+        val owner = runtimeOwner
+        if (owner == null) {
+            ProtectionRuntimeStore(context.applicationContext)
+                .invalidateProcessLocalCommandReadiness(
+                    "Flutter command bridge attached without a live process-local native BLE owner.",
+                )
+            Log.i(
+                logTag,
+                "SOS_NATIVE_BRIDGE_ATTACHED generation=$generation ownerPresent=false " +
+                    "readinessInvalidated=true",
+            )
+        } else {
+            owner.refreshCommandReadinessForBridgeAttachment(generation)
+            Log.i(
+                logTag,
+                "SOS_NATIVE_BRIDGE_ATTACHED generation=$generation ownerPresent=true " +
+                    "readinessRefreshed=true",
+            )
+        }
+        return generation
     }
 
-    fun unregister() {
+    fun unregister(generation: Long) {
+        if (activeAttachmentGeneration != generation) {
+            Log.i(
+                logTag,
+                "SOS_NATIVE_BRIDGE_DETACH_IGNORED generation=$generation " +
+                    "activeGeneration=${activeAttachmentGeneration ?: -1}",
+            )
+            return
+        }
+        methodChannel?.setMethodCallHandler(null)
+        eventChannel?.setStreamHandler(null)
+        methodChannel = null
+        eventChannel = null
+        activeAttachmentGeneration = null
         val context = applicationContext
         if (context != null && ProtectionRuntimeStore(context).isProtectionArmed()) {
             eventSink = null
@@ -65,7 +122,16 @@ internal object ProtectionRuntimeBridge {
         call: MethodCall,
         result: MethodChannel.Result,
         context: Context,
+        bridgeGeneration: Long,
     ) {
+        if (activeAttachmentGeneration != bridgeGeneration) {
+            result.error(
+                "E_PROTECTION_BRIDGE_GENERATION_STALE",
+                "Protection command bridge attachment is stale.",
+                null,
+            )
+            return
+        }
         val store = ProtectionRuntimeStore(context)
         when (call.method) {
             "getPlatformSnapshot" -> {
@@ -238,6 +304,10 @@ internal object ProtectionRuntimeBridge {
                 result.success(null)
             }
             "sendProtectionCommand" -> {
+                Log.i(
+                    logTag,
+                    "SOS_CANCEL_NATIVE_BRIDGE_ENTERED generation=$bridgeGeneration",
+                )
                 val arguments = call.arguments as? Map<*, *>
                 val label = arguments?.get("label") as? String ?: "BLE command"
                 val forceCmdCharacteristic =
@@ -257,12 +327,33 @@ internal object ProtectionRuntimeBridge {
                     )
                     return
                 }
-                ensureRuntimeOwner(context).sendCommand(
-                    label = label,
-                    payload = payload,
-                    forceCmdCharacteristic = forceCmdCharacteristic,
-                ) { commandResult ->
-                    result.success(commandResult)
+                try {
+                    ensureRuntimeOwner(context).sendCommand(
+                        label = label,
+                        payload = payload,
+                        forceCmdCharacteristic = forceCmdCharacteristic,
+                    ) { commandResult ->
+                        Log.i(
+                            logTag,
+                            "SOS_CANCEL_NATIVE_WRITE_RESULT generation=$bridgeGeneration " +
+                                "success=${commandResult["success"] == true}",
+                        )
+                        result.success(commandResult)
+                    }
+                } catch (error: Exception) {
+                    Log.e(
+                        logTag,
+                        "SOS_CANCEL_NATIVE_SERVICE_DISPATCH_FAILED generation=$bridgeGeneration " +
+                            "errorType=${error.javaClass.simpleName}",
+                    )
+                    result.success(
+                        mapOf(
+                            "success" to false,
+                            "route" to "androidService",
+                            "result" to null,
+                            "error" to "Protection command bridge could not reach the native runtime owner.",
+                        ),
+                    )
                 }
             }
             else -> result.notImplemented()
@@ -496,4 +587,5 @@ internal object ProtectionRuntimeBridge {
     }
 
     private const val maxPendingEvents = 32
+    private const val logTag = "EixamProtectionBridge"
 }

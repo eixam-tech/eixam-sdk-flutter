@@ -130,6 +130,13 @@ internal class ProtectionBleRuntimeOwner(
     fun isRunningFor(deviceId: String): Boolean =
         runtimeActive && targetDeviceId == deviceId
 
+    fun refreshCommandReadinessForBridgeAttachment(bridgeGeneration: Long) {
+        publishNativeCommandReadiness(
+            reason = "flutter_bridge_attached_$bridgeGeneration",
+            force = true,
+        )
+    }
+
     fun flushPendingBackendActions(reason: String): Map<String, Any> =
         backendHandoff.flushPendingActionsSync(reason)
 
@@ -174,6 +181,11 @@ internal class ProtectionBleRuntimeOwner(
         completion: (Map<String, Any?>) -> Unit,
     ) {
         val route = "androidService"
+        Log.i(
+            logTag,
+            "SOS_CANCEL_NATIVE_SERVICE_RECEIVED label=$label " +
+                "runtimeActive=$runtimeActive gattAvailable=${bluetoothGatt != null}",
+        )
         runtimeStore.recordCommandRoute(route)
         if (!runtimeActive) {
             val error = "Protection Mode native BLE owner is not active."
@@ -206,6 +218,10 @@ internal class ProtectionBleRuntimeOwner(
             )
             return
         }
+        Log.i(
+            logTag,
+            "SOS_CANCEL_NATIVE_GATT_AVAILABLE label=$label available=true",
+        )
 
         val command =
             QueuedCommand(
@@ -285,6 +301,11 @@ internal class ProtectionBleRuntimeOwner(
             )
             return
         }
+        Log.i(
+            logTag,
+            "SOS_CANCEL_NATIVE_CHARACTERISTIC_AVAILABLE label=${command.label} " +
+                "available=true role=${selectedRole?.name ?: "none"}",
+        )
 
         val supportsWrite =
             characteristic.properties and BluetoothGattCharacteristic.PROPERTY_WRITE != 0
@@ -348,6 +369,11 @@ internal class ProtectionBleRuntimeOwner(
                 "opcode=${opcode?.let(::formatOpcode) ?: "none"} " +
                 "byteLength=${command.payload.size} characteristic=${characteristic.uuid} " +
                 "target=$target",
+        )
+        Log.i(
+            logTag,
+            "SOS_CANCEL_NATIVE_WRITE_ATTEMPTED label=${command.label} " +
+                "characteristic=${characteristic.uuid}",
         )
         val nativeMethod = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             "BluetoothGatt.writeCharacteristic(characteristic,payload,writeType)"
@@ -1933,7 +1959,10 @@ internal class ProtectionBleRuntimeOwner(
                     )
                     ProtectionForegroundService.showResolvedSosNotification(context)
                     if (closeOutcome.shouldCancelBackend) {
-                        backendHandoff.queueCancel("device_cycle_closed")
+                        backendHandoff.queueCancel(
+                            reason = "device_cycle_closed",
+                            lifecycleId = closedCycleKey,
+                        )
                     }
                     runtimeStore.clearPreSosLifecycle()
                     pendingSosLifecycleState = ProtectionSosLifecycleState.idle

@@ -10,6 +10,20 @@ import 'sos_location_ownership_effect.dart';
 import 'sos_location_ownership_orchestrator.dart';
 import 'sos_location_trace.dart';
 
+enum SosDispatchClaimDecision { acquired, joined, generationMismatch }
+
+final class SosDispatchClaimResult {
+  const SosDispatchClaimResult({
+    required this.decision,
+    required this.lifecycle,
+  });
+
+  final SosDispatchClaimDecision decision;
+  final SosLifecycleSnapshot lifecycle;
+
+  bool get acquired => decision == SosDispatchClaimDecision.acquired;
+}
+
 /// Owns SOS generation, account-scoped provenance and terminal cleanup.
 ///
 /// This controller deliberately persists metadata only. Incident payloads,
@@ -24,16 +38,16 @@ final class AuthoritativeSosLifecycleController {
         const NoopSosLocationOwnershipEffectSink(),
     SosLocationOwnershipEffectMode locationOwnershipEffectMode =
         SosLocationOwnershipEffectMode.disabled,
-  })  : _secureStore = secureStore,
-        _clock = clock ?? DateTime.now,
-        _locationOwnershipOrchestrator =
-            locationOwnershipOrchestrator ?? SosLocationOwnershipOrchestrator(),
-        _locationOwnershipEffectDispatcher =
-            SosLocationOwnershipEffectDispatcher(
-          sink: locationOwnershipEffectSink,
-          effectMode: locationOwnershipEffectMode,
-        ),
-        _current = SosLifecycleSnapshot.idle((clock ?? DateTime.now)().toUtc());
+  }) : _secureStore = secureStore,
+       _clock = clock ?? DateTime.now,
+       _locationOwnershipOrchestrator =
+           locationOwnershipOrchestrator ?? SosLocationOwnershipOrchestrator(),
+       _locationOwnershipEffectDispatcher =
+           SosLocationOwnershipEffectDispatcher(
+             sink: locationOwnershipEffectSink,
+             effectMode: locationOwnershipEffectMode,
+           ),
+       _current = SosLifecycleSnapshot.idle((clock ?? DateTime.now)().toUtc());
 
   final SecureKeyValueStore _secureStore;
   final DateTime Function() _clock;
@@ -64,11 +78,11 @@ final class AuthoritativeSosLifecycleController {
 
   bool get hasActiveTerminalWatermark => activeTerminalWatermark != null;
   AuthoritativeSosCadence get currentCadence => AuthoritativeSosCadence(
-        lifecycleRevision: _current.revision,
-        lifecycleStage: _current.stage,
-        desiredLocalSosOwnership:
-            _locationOwnershipOrchestrator.desiredSosOwnership,
-      );
+    lifecycleRevision: _current.revision,
+    lifecycleStage: _current.stage,
+    desiredLocalSosOwnership:
+        _locationOwnershipOrchestrator.desiredSosOwnership,
+  );
   Stream<AuthoritativeSosCadence> get cadenceStream =>
       _cadenceController.stream;
   SosLocationOwnershipOrchestrator get locationOwnershipOrchestrator =>
@@ -95,7 +109,8 @@ final class AuthoritativeSosLifecycleController {
     }
     final revisionAtStart = _revision;
     final priorOwnerScope = _ownerScope;
-    final replacingDifferentAccount = priorOwnerScope != null &&
+    final replacingDifferentAccount =
+        priorOwnerScope != null &&
         ownerScope != null &&
         priorOwnerScope != ownerScope;
     _ownerScope = ownerScope;
@@ -148,11 +163,12 @@ final class AuthoritativeSosLifecycleController {
       final recoveryStage = restored.stage == SosLifecycleStage.cancelling
           ? SosLifecycleStage.cancelling
           : SosLifecycleStage.recoveryRequired;
+      final restoredExternal = restored.externalOnly;
       return _acceptRestoration(
         restored.copyWith(
           stage: recoveryStage,
-          localActionable: true,
-          externalOnly: false,
+          localActionable: !restoredExternal,
+          externalOnly: restoredExternal,
           displaySurface: SosDisplaySurface.activeAndHistory,
           recoveryStatus: SosRecoveryStatus.reconciling,
           lastAuthoritativeObservation: _now(),
@@ -203,7 +219,8 @@ final class AuthoritativeSosLifecycleController {
     }
 
     final current = _current;
-    final newerLocalLifecycle = current.localActionable &&
+    final newerLocalLifecycle =
+        current.localActionable &&
         !current.externalOnly &&
         current.isOpen &&
         !replacingDifferentAccount;
@@ -263,7 +280,8 @@ final class AuthoritativeSosLifecycleController {
     bool emitToStream = true,
   }) async {
     final terminalFence = _terminalWatermark;
-    final replacingFencedGeneration = terminalFence != null &&
+    final replacingFencedGeneration =
+        terminalFence != null &&
         _current.generation <= terminalFence.generation;
     if (replacingFencedGeneration) {
       if (!startNewGenerationAfterTerminal) {
@@ -281,7 +299,8 @@ final class AuthoritativeSosLifecycleController {
     final now = _now();
     final identity = nodeId?.toString() ?? deviceId ?? 'local';
     final requestedLifecycleId = lifecycleId;
-    final effectiveLifecycleId = replacingFencedGeneration &&
+    final effectiveLifecycleId =
+        replacingFencedGeneration &&
             requestedLifecycleId != null &&
             requestedLifecycleId == terminalFence.lifecycleId
         ? '$requestedLifecycleId:g$_generation'
@@ -289,7 +308,8 @@ final class AuthoritativeSosLifecycleController {
     return _publish(
       SosLifecycleSnapshot(
         stage: SosLifecycleStage.arming,
-        lifecycleId: effectiveLifecycleId ??
+        lifecycleId:
+            effectiveLifecycleId ??
             'sos:$identity:${now.microsecondsSinceEpoch}:$_generation',
         generation: _generation,
         origin: origin,
@@ -331,10 +351,14 @@ final class AuthoritativeSosLifecycleController {
         return arming;
       }
     }
+    final currentOrigin = _current.origin;
+    final effectiveOrigin = currentOrigin == SosLifecycleOrigin.unknown
+        ? origin
+        : currentOrigin;
     return _publish(
       _current.copyWith(
         stage: SosLifecycleStage.activating,
-        origin: origin,
+        origin: effectiveOrigin,
         triggerSource: triggerSource,
         deviceId: deviceId,
         nodeId: nodeId,
@@ -377,7 +401,8 @@ final class AuthoritativeSosLifecycleController {
     final current = _current;
     final confirmedCanonicalIncident = _confirmedCanonicalIncident(current);
     final preserveConfirmedCanonical = confirmedCanonicalIncident != null;
-    final incomingRefreshesConfirmedCanonical = preserveConfirmedCanonical &&
+    final incomingRefreshesConfirmedCanonical =
+        preserveConfirmedCanonical &&
         incident?.isBackendConfirmed == true &&
         incident?.id == confirmedCanonicalIncident.id;
     return _publish(
@@ -386,7 +411,9 @@ final class AuthoritativeSosLifecycleController {
         // Once this generation owns a confirmed canonical Backend incident,
         // later ACTIVE evidence can enrich it but cannot replace its ownership
         // or identity with a stale provisional/device projection.
-        origin: preserveConfirmedCanonical ? current.origin : origin,
+        origin: current.origin == SosLifecycleOrigin.unknown
+            ? origin
+            : current.origin,
         localActionable: true,
         externalOnly: false,
         displaySurface: SosDisplaySurface.activeAndHistory,
@@ -412,8 +439,130 @@ final class AuthoritativeSosLifecycleController {
         failureCode: null,
         incident:
             preserveConfirmedCanonical && !incomingRefreshesConfirmedCanonical
-                ? confirmedCanonicalIncident
-                : incident,
+            ? confirmedCanonicalIncident
+            : incident,
+        dispatchState:
+            incident?.isBackendConfirmed == true &&
+                current.dispatchState != SosDispatchState.notClaimed
+            ? SosDispatchState.backendConfirmed
+            : current.dispatchState,
+        lastAuthoritativeObservation: _now(),
+      ),
+    );
+  }
+
+  Future<SosLifecycleSnapshot> confirmExternalActive({
+    required SosIncident incident,
+  }) {
+    final current = _current;
+    final currentIncidentId = current.backendIncidentId ?? current.incident?.id;
+    if (current.isOpen &&
+        (!current.externalOnly || currentIncidentId != incident.id)) {
+      return Future<SosLifecycleSnapshot>.value(current);
+    }
+    final sameGeneration =
+        current.isOpen &&
+        current.externalOnly &&
+        currentIncidentId == incident.id;
+    if (!sameGeneration) {
+      final fencedGeneration = _terminalWatermark?.generation ?? 0;
+      if (_generation < fencedGeneration) {
+        _generation = fencedGeneration;
+      }
+      _generation += 1;
+    }
+    final now = _now();
+    return _publish(
+      SosLifecycleSnapshot(
+        revision: current.revision,
+        stage: SosLifecycleStage.active,
+        lifecycleId: sameGeneration
+            ? current.lifecycleId
+            : 'sos:remote:${incident.id}:$_generation',
+        generation: sameGeneration ? current.generation : _generation,
+        origin: SosLifecycleOrigin.remoteRelay,
+        localActionable: false,
+        externalOnly: true,
+        displaySurface: SosDisplaySurface.activeAndHistory,
+        backendIncidentId: incident.id,
+        deviceId: incident.deviceId,
+        nodeId: incident.originatorNodeId,
+        hardwareId: incident.hardwareId,
+        deviceCycleKey: incident.cycleKey,
+        triggerSource: incident.triggerSource ?? incident.relaySource,
+        activationTimestamp: incident.createdAt.toUtc(),
+        lastAuthoritativeObservation: now,
+        incident: incident,
+        dispatchOwner: SosDispatchOwner.remoteRelay,
+        dispatchState: SosDispatchState.backendConfirmed,
+      ),
+    );
+  }
+
+  Future<SosDispatchClaimResult> tryClaimDispatch({
+    required int generation,
+    required SosDispatchOwner owner,
+  }) async {
+    final current = _current;
+    if (generation <= 0 || current.generation != generation) {
+      return SosDispatchClaimResult(
+        decision: SosDispatchClaimDecision.generationMismatch,
+        lifecycle: current,
+      );
+    }
+    if (current.dispatchState != SosDispatchState.notClaimed ||
+        current.dispatchOwner != SosDispatchOwner.unclaimed) {
+      return SosDispatchClaimResult(
+        decision: SosDispatchClaimDecision.joined,
+        lifecycle: current,
+      );
+    }
+    final claimed = await _publish(
+      current.copyWith(
+        dispatchOwner: owner,
+        dispatchState: SosDispatchState.claimed,
+        lastAuthoritativeObservation: _now(),
+      ),
+    );
+    return SosDispatchClaimResult(
+      decision: SosDispatchClaimDecision.acquired,
+      lifecycle: claimed,
+    );
+  }
+
+  Future<SosLifecycleSnapshot> markDispatchTransportAccepted({
+    required int generation,
+    required SosDispatchOwner owner,
+  }) {
+    final current = _current;
+    if (current.generation != generation || current.dispatchOwner != owner) {
+      return Future<SosLifecycleSnapshot>.value(current);
+    }
+    if (current.dispatchState.index >=
+        SosDispatchState.transportAccepted.index) {
+      return Future<SosLifecycleSnapshot>.value(current);
+    }
+    return _publish(
+      current.copyWith(
+        dispatchState: SosDispatchState.transportAccepted,
+        lastAuthoritativeObservation: _now(),
+      ),
+    );
+  }
+
+  Future<SosLifecycleSnapshot> markDispatchBackendConfirmed({
+    required int generation,
+  }) {
+    final current = _current;
+    if (current.generation != generation ||
+        current.dispatchState == SosDispatchState.notClaimed ||
+        current.dispatchState.index >=
+            SosDispatchState.backendConfirmed.index) {
+      return Future<SosLifecycleSnapshot>.value(current);
+    }
+    return _publish(
+      current.copyWith(
+        dispatchState: SosDispatchState.backendConfirmed,
         lastAuthoritativeObservation: _now(),
       ),
     );
@@ -440,66 +589,64 @@ final class AuthoritativeSosLifecycleController {
     bool preserveLocalOwnership = true,
     String? backendIncidentId,
     SosIncident? incident,
-  }) =>
-      _publish(
-        _current.copyWith(
-          stage: SosLifecycleStage.recoveryRequired,
-          localActionable:
-              preserveLocalOwnership && _current.localIncidentId != null,
-          recoveryStatus: SosRecoveryStatus.unresolved,
-          failureCode: code,
-          backendIncidentId: backendIncidentId,
-          incident: incident,
-          lastAuthoritativeObservation: _now(),
-        ),
-      );
+  }) => _publish(
+    _current.copyWith(
+      stage: SosLifecycleStage.recoveryRequired,
+      localActionable:
+          preserveLocalOwnership && _current.localIncidentId != null,
+      recoveryStatus: SosRecoveryStatus.unresolved,
+      failureCode: code,
+      backendIncidentId: backendIncidentId,
+      incident: incident,
+      lastAuthoritativeObservation: _now(),
+    ),
+  );
 
   Future<SosLifecycleSnapshot> activationFailed(String code) => _publish(
-        _current.copyWith(
-          stage: SosLifecycleStage.activationFailed,
-          failureCode: code,
-          lastAuthoritativeObservation: _now(),
-        ),
-        persist: false,
-      );
+    _current.copyWith(
+      stage: SosLifecycleStage.activationFailed,
+      failureCode: code,
+      lastAuthoritativeObservation: _now(),
+    ),
+    persist: false,
+  );
 
   Future<SosLifecycleSnapshot> beginCancellation() => _publish(
-        _current.copyWith(
-          stage: SosLifecycleStage.cancelling,
-          cancellationPhase: SosCancellationPhase.requested,
-          failureCode: null,
-          lastAuthoritativeObservation: _now(),
-        ),
-      );
+    _current.copyWith(
+      stage: SosLifecycleStage.cancelling,
+      cancellationPhase: SosCancellationPhase.requested,
+      failureCode: null,
+      lastAuthoritativeObservation: _now(),
+    ),
+  );
 
   Future<SosLifecycleSnapshot> cancellationAccepted({
     required bool backendConfirmed,
     required bool deviceConfirmed,
-  }) =>
-      _publish(
-        _current.copyWith(
-          stage: SosLifecycleStage.cancelling,
-          cancellationPhase: backendConfirmed && deviceConfirmed
-              ? SosCancellationPhase.fullyResolved
-              : backendConfirmed
-                  ? SosCancellationPhase.backendConfirmed
-                  : deviceConfirmed
-                      ? SosCancellationPhase.deviceConfirmed
-                      : SosCancellationPhase.transportAccepted,
-          lastAuthoritativeObservation: _now(),
-        ),
-      );
+  }) => _publish(
+    _current.copyWith(
+      stage: SosLifecycleStage.cancelling,
+      cancellationPhase: backendConfirmed && deviceConfirmed
+          ? SosCancellationPhase.fullyResolved
+          : backendConfirmed
+          ? SosCancellationPhase.backendConfirmed
+          : deviceConfirmed
+          ? SosCancellationPhase.deviceConfirmed
+          : SosCancellationPhase.transportAccepted,
+      lastAuthoritativeObservation: _now(),
+    ),
+  );
 
   Future<SosLifecycleSnapshot> cancellationFailed(String code) => _publish(
-        _current.copyWith(
-          stage: SosLifecycleStage.cancellationFailed,
-          cancellationPhase: SosCancellationPhase.failed,
-          failureCode: code,
-          localActionable: true,
-          externalOnly: false,
-          lastAuthoritativeObservation: _now(),
-        ),
-      );
+    _current.copyWith(
+      stage: SosLifecycleStage.cancellationFailed,
+      cancellationPhase: SosCancellationPhase.failed,
+      failureCode: code,
+      localActionable: true,
+      externalOnly: false,
+      lastAuthoritativeObservation: _now(),
+    ),
+  );
 
   Future<SosLifecycleSnapshot> confirmTerminal({
     required SosLifecycleStage stage,
@@ -520,10 +667,12 @@ final class AuthoritativeSosLifecycleController {
           : _current.cancellationPhase,
       recoveryStatus: SosRecoveryStatus.none,
       failureCode: null,
-      localIncidentId: _current.localIncidentId ??
+      localIncidentId:
+          _current.localIncidentId ??
           incident?.provisionalIncidentId ??
           (incident?.isBackendConfirmed == false ? incident?.id : null),
-      backendIncidentId: _current.backendIncidentId ??
+      backendIncidentId:
+          _current.backendIncidentId ??
           (incident?.isBackendConfirmed == true ? incident?.id : null),
       deviceId: _current.deviceId ?? incident?.deviceId,
       nodeId: _current.nodeId ?? incident?.originatorNodeId,
@@ -534,6 +683,9 @@ final class AuthoritativeSosLifecycleController {
           _current.activationTimestamp ?? incident?.createdAt.toUtc(),
       incident: incident,
       lastAuthoritativeObservation: _now(),
+      dispatchState: _current.dispatchState == SosDispatchState.notClaimed
+          ? SosDispatchState.notClaimed
+          : SosDispatchState.terminal,
     );
     final ownerScope = _ownerScope;
     // Establish precedence before durable I/O yields. Live BLE packets can be
@@ -547,18 +699,10 @@ final class AuthoritativeSosLifecycleController {
     } catch (_) {
       // Durable storage failure is observable to the caller, but cannot revoke
       // authenticated Backend terminal truth in this process.
-      await _publish(
-        terminal,
-        persist: false,
-        emitToStream: emitToStream,
-      );
+      await _publish(terminal, persist: false, emitToStream: emitToStream);
       rethrow;
     }
-    return _publish(
-      terminal,
-      persist: false,
-      emitToStream: emitToStream,
-    );
+    return _publish(terminal, persist: false, emitToStream: emitToStream);
   }
 
   Future<void> detachAccount() async {
@@ -679,6 +823,15 @@ final class AuthoritativeSosLifecycleController {
         SosLocationOwnershipReconciliationReason
             .newerAuthoritativeLifecycleRevision,
   }) async {
+    if (_isSameGenerationStageRegression(_current, next)) {
+      SosLocationTrace.emit('lifecycle_snapshot_ignored', {
+        'reason': 'same_generation_stage_regression',
+        'generation': next.generation,
+        'current_stage': _current.stage.name,
+        'incoming_stage': next.stage.name,
+      });
+      return _current;
+    }
     if (_terminalFenceRejectsLifecycleCandidate(next)) {
       return _rejectFencedOpenTransition(
         source: 'publish',
@@ -732,7 +885,10 @@ final class AuthoritativeSosLifecycleController {
         reconciliationReason,
       );
     }
-    final shouldPersistOpen = next.isOpen && next.localIncidentId != null;
+    final shouldPersistOpen =
+        next.isOpen &&
+        (next.localIncidentId != null ||
+            next.dispatchState != SosDispatchState.notClaimed);
     if (persist &&
         (shouldPersistOpen || next.isTerminal) &&
         _ownerScope != null) {
@@ -744,12 +900,9 @@ final class AuthoritativeSosLifecycleController {
     return next;
   }
 
-  Map<String, Object?> _encode(
-    SosLifecycleSnapshot value,
-    String ownerScope,
-  ) =>
+  Map<String, Object?> _encode(SosLifecycleSnapshot value, String ownerScope) =>
       <String, Object?>{
-        'version': 1,
+        'version': 2,
         'ownerScope': ownerScope,
         'lifecycleId': value.lifecycleId,
         'generation': value.generation,
@@ -765,14 +918,18 @@ final class AuthoritativeSosLifecycleController {
         'activationTimestamp': value.activationTimestamp?.toIso8601String(),
         'lastObservation': value.lastAuthoritativeObservation.toIso8601String(),
         'cancellationPhase': value.cancellationPhase.name,
+        'dispatchOwner': value.dispatchOwner.name,
+        'dispatchState': value.dispatchState.name,
+        'localActionable': value.localActionable,
+        'externalOnly': value.externalOnly,
+        'displaySurface': value.displaySurface.name,
         if (value.isTerminal)
-          'terminalTimestamp':
-              value.lastAuthoritativeObservation.toUtc().toIso8601String(),
+          'terminalTimestamp': value.lastAuthoritativeObservation
+              .toUtc()
+              .toIso8601String(),
       };
 
-  bool _terminalFenceRejectsLifecycleCandidate(
-    SosLifecycleSnapshot candidate,
-  ) {
+  bool _terminalFenceRejectsLifecycleCandidate(SosLifecycleSnapshot candidate) {
     final terminalFence = _terminalWatermark;
     if (terminalFence == null ||
         candidate.isTerminal ||
@@ -812,6 +969,7 @@ final class AuthoritativeSosLifecycleController {
       json['stage'] as String?,
       SosLifecycleStage.recoveryRequired,
     );
+    final externalOnly = json['externalOnly'] as bool? ?? false;
     return SosLifecycleSnapshot(
       stage: stage,
       lifecycleId: json['lifecycleId'] as String,
@@ -821,12 +979,16 @@ final class AuthoritativeSosLifecycleController {
         json['origin'] as String?,
         SosLifecycleOrigin.unknown,
       ),
-      localActionable: true,
-      externalOnly: false,
-      displaySurface: stage == SosLifecycleStage.cancelled ||
-              stage == SosLifecycleStage.resolved
-          ? SosDisplaySurface.historyOnly
-          : SosDisplaySurface.activeAndHistory,
+      localActionable: json['localActionable'] as bool? ?? !externalOnly,
+      externalOnly: externalOnly,
+      displaySurface: enumValue(
+        SosDisplaySurface.values,
+        json['displaySurface'] as String?,
+        stage == SosLifecycleStage.cancelled ||
+                stage == SosLifecycleStage.resolved
+            ? SosDisplaySurface.historyOnly
+            : SosDisplaySurface.activeAndHistory,
+      ),
       localIncidentId: json['localIncidentId'] as String?,
       backendIncidentId: json['backendIncidentId'] as String?,
       deviceId: json['deviceId'] as String?,
@@ -842,7 +1004,40 @@ final class AuthoritativeSosLifecycleController {
         json['cancellationPhase'] as String?,
         SosCancellationPhase.none,
       ),
+      dispatchOwner: enumValue(
+        SosDispatchOwner.values,
+        json['dispatchOwner'] as String?,
+        SosDispatchOwner.unclaimed,
+      ),
+      dispatchState: enumValue(
+        SosDispatchState.values,
+        json['dispatchState'] as String?,
+        SosDispatchState.notClaimed,
+      ),
     );
+  }
+
+  bool _isSameGenerationStageRegression(
+    SosLifecycleSnapshot current,
+    SosLifecycleSnapshot incoming,
+  ) {
+    if (current.generation == 0 || current.generation != incoming.generation) {
+      return false;
+    }
+    final incomingIsEarly =
+        incoming.stage == SosLifecycleStage.arming ||
+        incoming.stage == SosLifecycleStage.activating;
+    if (!incomingIsEarly) {
+      return false;
+    }
+    if (current.stage == SosLifecycleStage.activating) {
+      return incoming.stage == SosLifecycleStage.arming;
+    }
+    return current.stage == SosLifecycleStage.active ||
+        current.stage == SosLifecycleStage.cancelling ||
+        current.stage == SosLifecycleStage.cancellationFailed ||
+        current.stage == SosLifecycleStage.recoveryRequired ||
+        current.isTerminal;
   }
 
   DateTime _now() => _clock().toUtc();

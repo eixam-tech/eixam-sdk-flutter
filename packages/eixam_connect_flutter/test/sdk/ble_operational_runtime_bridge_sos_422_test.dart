@@ -34,6 +34,7 @@ void main() {
         );
 
         final published = await harness.bridge.promoteDeviceOriginatedSos(
+          lifecycleGeneration: 1,
           signature: 'relay-sos-422',
           triggerSource: 'remote_lora_relay',
           message: 'relay SOS',
@@ -100,6 +101,7 @@ void main() {
         );
 
         final published = await harness.bridge.promoteDeviceOriginatedSos(
+          lifecycleGeneration: 1,
           signature: 'local-sos-422',
           triggerSource: 'ble_device_runtime_status',
           message: 'local SOS',
@@ -228,7 +230,33 @@ class _BridgeHarness {
       connectionStates: connectionStates.stream,
       realtimeEvents: realtimeEvents.stream,
       telemetryRepository: telemetryRepository,
-      sosRepository: sosRepository,
+      sosGenerationPublisher:
+          ({
+            required lifecycleGeneration,
+            required triggerSource,
+            required message,
+            required positionSnapshot,
+            required deviceId,
+            required hardwareId,
+            required originatorNodeId,
+            required relayNodeId,
+            required relayDeviceId,
+            required relayHardwareId,
+            required incidentId,
+            required cycleKey,
+          }) => sosRepository.triggerSos(
+            message: message,
+            triggerSource: triggerSource,
+            positionSnapshot: positionSnapshot,
+            deviceId: deviceId,
+            hardwareId: hardwareId,
+            originatorNodeId: originatorNodeId,
+            relayNodeId: relayNodeId,
+            relayDeviceId: relayDeviceId,
+            relayHardwareId: relayHardwareId,
+            incidentId: incidentId,
+            cycleKey: cycleKey,
+          ),
       deviceSosController: deviceSosController,
       sessionProvider: () => null,
       sosBackendAssignmentVerifiedRetry:

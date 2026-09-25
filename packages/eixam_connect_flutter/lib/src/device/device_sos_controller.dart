@@ -354,6 +354,10 @@ class DeviceSosController {
     bool? waitForCloseAcknowledgement,
     DeviceTerminalOperationGuard? operationIsCurrent,
   }) async {
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_DEVICE_CANCEL_CONTROLLER_ENTERED '
+      'route=$commandRouteLabel state=${_status.state.name}',
+    );
     final writer = commandWriterOverride ?? _commandWriter;
     if (writer == null) {
       return _queueTerminalCommand(
@@ -364,6 +368,12 @@ class DeviceSosController {
         operationIsCurrent: operationIsCurrent,
       );
     }
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_DEVICE_CANCEL_WRITER_SELECTED '
+      'route=$commandRouteLabel '
+      'writer=${commandWriterOverride == null ? "attached" : "active_owner"} '
+      'cmdReady=${terminalCmdAvailable ?? longCommandAvailable}',
+    );
     final previous = _status;
     late final bool sent;
     try {
@@ -706,11 +716,23 @@ class DeviceSosController {
       final command = terminalCommand;
       try {
         _requireCurrentTerminalOperation(operationIsCurrent);
+        if (action == 'cancel') {
+          BleDebugRegistry.instance.recordEvent(
+            'SOS_DEVICE_CANCEL_CMD_WRITE_STARTED '
+            'route=$commandRouteLabel channel=cmd',
+          );
+        }
         BleDebugRegistry.instance.recordEvent(
           'DEVICE_SOS_COMMAND_DISPATCH route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
         );
         await writer(command);
         _requireCurrentTerminalOperation(operationIsCurrent);
+        if (action == 'cancel') {
+          BleDebugRegistry.instance.recordEvent(
+            'SOS_DEVICE_CANCEL_CMD_WRITE_SUCCEEDED '
+            'route=$commandRouteLabel channel=cmd',
+          );
+        }
         BleDebugRegistry.instance.recordEvent(
           'DEVICE_SOS_COMMAND_SENT route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
         );
@@ -726,6 +748,13 @@ class DeviceSosController {
       } on _StaleDeviceTerminalOperation {
         rethrow;
       } catch (error) {
+        if (action == 'cancel') {
+          BleDebugRegistry.instance.recordEvent(
+            'SOS_DEVICE_CANCEL_CMD_WRITE_FAILED '
+            'route=$commandRouteLabel channel=cmd '
+            'errorType=${error.runtimeType}',
+          );
+        }
         cmdError = error;
       }
     }
@@ -740,10 +769,18 @@ class DeviceSosController {
       try {
         _requireCurrentTerminalOperation(operationIsCurrent);
         BleDebugRegistry.instance.recordEvent(
+          'SOS_DEVICE_CANCEL_CMD_WRITE_STARTED '
+          'route=$commandRouteLabel channel=inet',
+        );
+        BleDebugRegistry.instance.recordEvent(
           'DEVICE_SOS_COMMAND_DISPATCH route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
         );
         await writer(command);
         _requireCurrentTerminalOperation(operationIsCurrent);
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_DEVICE_CANCEL_CMD_WRITE_SUCCEEDED '
+          'route=$commandRouteLabel channel=inet',
+        );
         BleDebugRegistry.instance.recordEvent(
           'DEVICE_SOS_COMMAND_SENT route=$commandRouteLabel command=${command.label} previousState=${previous.state.name}',
         );
@@ -758,7 +795,12 @@ class DeviceSosController {
         return true;
       } on _StaleDeviceTerminalOperation {
         rethrow;
-      } catch (_) {
+      } catch (error) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_DEVICE_CANCEL_CMD_WRITE_FAILED '
+          'route=$commandRouteLabel channel=inet '
+          'errorType=${error.runtimeType}',
+        );
         return false;
       }
     }
@@ -1306,8 +1348,10 @@ class DeviceSosController {
       }
     }
     if (packet.opcode == 0xE2) {
-      _pendingTerminalCommand = null;
       if (acknowledgesPendingAppCancel) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_DEVICE_CANCEL_ACK_RECEIVED source=device_event',
+        );
         BleDebugRegistry.instance.recordEvent(
           'SOS_TRACE device_terminal_command_ack_observed event=0xE2 action=cancel',
         );
@@ -1321,9 +1365,16 @@ class DeviceSosController {
 
     if (nextState == DeviceSosState.inactive ||
         nextState == DeviceSosState.resolved) {
+      if (nextState == DeviceSosState.inactive) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_DEVICE_CANCEL_INACTIVE_OBSERVED source=device_event',
+        );
+      }
       _cancelCountdownTimer();
       _awaitingObservedAppActivation = false;
-      _pendingTerminalCommand = null;
+      if (!acknowledgesPendingAppCancel) {
+        _pendingTerminalCommand = null;
+      }
     }
     _emit(
       _status.copyWith(

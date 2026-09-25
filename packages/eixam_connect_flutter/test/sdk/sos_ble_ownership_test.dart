@@ -107,6 +107,44 @@ void main() {
       );
     });
 
+    test(
+      'historical command error does not demote a healthy native writer',
+      () {
+        final readiness = evaluateNativeProtectionCommandReadinessForStatus(
+          status: ProtectionStatus(
+            modeState: ProtectionModeState.armed,
+            coverageLevel: ProtectionCoverageLevel.full,
+            runtimeState: ProtectionRuntimeState.active,
+            sessionReady: true,
+            devicePaired: true,
+            deviceConnected: true,
+            bluetoothEnabled: true,
+            locationPermissionGranted: true,
+            notificationsPermissionGranted: true,
+            platformBackgroundCapabilityReady: true,
+            backendReachable: true,
+            realtimeReady: true,
+            storeAndForwardEnabled: true,
+            pendingSosCount: 0,
+            pendingTelemetryCount: 0,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: true,
+            nativeCommandServiceReady: true,
+            nativeCommandEa04Ready: true,
+            nativeCommandIdentityReady: true,
+            nativeCommandQueueHealthy: true,
+            nativeCommandReady: true,
+            lastCommandError: 'historical write error',
+            updatedAt: DateTime.utc(2026, 9, 24),
+          ),
+          exactTargetIdentityMatch: true,
+        );
+
+        expect(readiness.ready, isTrue);
+        expect(readiness.failure, NativeProtectionCommandReadinessFailure.none);
+      },
+    );
+
     test('single-owner invariant rejects settled dual GATT state', () {
       expect(
         evaluateSosBleSingleOwnerInvariant(

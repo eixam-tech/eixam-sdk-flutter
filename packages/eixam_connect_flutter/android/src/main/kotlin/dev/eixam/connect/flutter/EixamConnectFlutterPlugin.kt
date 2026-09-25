@@ -9,10 +9,11 @@ import io.flutter.embedding.engine.plugins.FlutterPlugin
 
 class EixamConnectFlutterPlugin : FlutterPlugin {
     private var applicationContext: Context? = null
+    private var protectionBridgeGeneration: Long? = null
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         applicationContext = binding.applicationContext
-        ProtectionRuntimeBridge.register(
+        protectionBridgeGeneration = ProtectionRuntimeBridge.register(
             messenger = binding.binaryMessenger,
             context = binding.applicationContext,
         )
@@ -32,11 +33,12 @@ class EixamConnectFlutterPlugin : FlutterPlugin {
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         applicationContext?.let {
-            ProtectionRuntimeBridge.unregister()
+            protectionBridgeGeneration?.let(ProtectionRuntimeBridge::unregister)
             BackgroundTelemetryBridge.unregister()
             FirmwareDfuBridge.unregister()
             SecureStorageBridge.unregister()
         }
+        protectionBridgeGeneration = null
         applicationContext = null
     }
 }

@@ -257,6 +257,48 @@ void main() {
     );
 
     test(
+      'two consecutive active SOS cycles each dispatch one cancel',
+      () async {
+        final commands = <EixamDeviceCommand>[];
+        late final DeviceSosController controller;
+        controller = DeviceSosController(
+          countdownDuration: const Duration(milliseconds: 5),
+          countdownTick: const Duration(milliseconds: 1),
+          appActivationObservationTimeout: const Duration(milliseconds: 80),
+        );
+        addTearDown(controller.dispose);
+        await controller.attach(
+          commandWriter: (command) async {
+            commands.add(command);
+            if (command.opcode == 0x04) {
+              scheduleMicrotask(() {
+                controller.handleIncomingSosEventPacket(
+                  _deviceClearPacket(),
+                  source: DeviceSosTransitionSource.device,
+                );
+              });
+            }
+          },
+        );
+
+        await _promoteDeviceSosToActive(controller);
+        expect((await controller.cancelSos()).state, DeviceSosState.inactive);
+        controller.handleIncomingSosPacket(
+          _countdownPacket(packetId: 1),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 15));
+        expect(controller.currentStatus.state, DeviceSosState.active);
+        expect((await controller.cancelSos()).state, DeviceSosState.inactive);
+
+        expect(
+          commands.where((command) => command.opcode == 0x04),
+          hasLength(2),
+        );
+      },
+    );
+
+    test(
       'active device SOS cancel timeout forces terminal with diagnostic',
       () async {
         BleDebugRegistry.instance.reset();
@@ -1537,9 +1579,12 @@ EixamSosPacket _activePacket({int packetId = 0}) {
   ])!;
 }
 
-Future<void> _promoteDeviceSosToActive(DeviceSosController controller) async {
+Future<void> _promoteDeviceSosToActive(
+  DeviceSosController controller, {
+  int packetId = 0,
+}) async {
   controller.handleIncomingSosPacket(
-    _activePacket(),
+    _activePacket(packetId: packetId),
     source: DeviceSosTransitionSource.device,
   );
   await Future<void>.delayed(const Duration(milliseconds: 15));

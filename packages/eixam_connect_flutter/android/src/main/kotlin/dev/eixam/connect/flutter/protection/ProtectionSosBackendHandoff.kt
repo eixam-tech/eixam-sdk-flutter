@@ -8,6 +8,7 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -49,8 +50,23 @@ internal class ProtectionSosBackendHandoff(
         flushPendingActions(reason)
     }
 
-    fun queueCancel(reason: String) {
-        runtimeStore.markPendingSosCancel()
+    fun queueCancel(
+        reason: String,
+        lifecycleId: String?,
+    ) {
+        val pending = runtimeStore.markPendingSosCancel(
+            lifecycleId = lifecycleId,
+            sessionScope = loadSession()?.let(::sessionScope),
+            reason = reason,
+        )
+        Log.i(
+            logTag,
+            "${ProtectionNativeSosCancelOutcome.pendingAccepted.diagnosticCode} " +
+                "lifecycleIdPresent=${!pending.lifecycleId.isNullOrBlank()} " +
+                "canonicalTargetPresent=${!pending.canonicalBackendIncidentId.isNullOrBlank()} " +
+                "sessionScopePresent=${!pending.sessionScope.isNullOrBlank()} " +
+                "deviceIdentityPresent=${pending.nodeId != null || !pending.deviceId.isNullOrBlank()}",
+        )
         runtimeStore.markBackendHandoffQueued("cancel_queued")
         ProtectionRuntimeBridge.recordPlatformEvent(
             context = context,
@@ -142,52 +158,19 @@ internal class ProtectionSosBackendHandoff(
                 )
                 true
             } else {
-                val session = loadSession()
-                    ?: throw IllegalStateException("Missing SDK session for native SOS backend handoff.")
-                val apiBaseUrl = requireValidatedApiBaseUrl()
-                    ?: throw IllegalStateException("Missing API base URL for native SOS backend handoff.")
-                val position = loadTrackingPosition()
-                    ?: throw IllegalStateException("Missing tracking position for native SOS backend handoff.")
-                val existingIncident = fetchActiveIncident(apiBaseUrl, session)
-                if (existingIncident != null) {
-                    runtimeStore.markBackendIncidentActive(
-                        incidentId = existingIncident.id,
-                        incidentState = existingIncident.state,
-                    )
-                    runtimeStore.clearPendingSosCreate()
-                    runtimeStore.markBackendHandoffSuccess("create_already_exists")
-                    ProtectionRuntimeBridge.recordPlatformEvent(
-                        context = context,
-                        type = "nativeBackendSyncSucceeded",
-                        reason = "create_already_exists",
-                    )
-                    true
-                } else {
-                    if (shouldBlockRestTrigger()) {
-                        logSosCreateRestBlocked()
-                        runtimeStore.markPendingNativeSosCreateRestBlocked()
-                        runtimeStore.markBackendHandoffQueued("NATIVE_SOS_REST_RETRY_BLOCKED")
-                        ProtectionRuntimeBridge.recordPlatformEvent(
-                            context = context,
-                            type = "nativeBackendSyncQueued",
-                            reason = "create_mqtt_handoff_pending:$reason",
-                        )
-                        false
-                    } else {
-                        val createdIncident = createIncident(apiBaseUrl, session, position)
-                        runtimeStore.markBackendIncidentActive(
-                            incidentId = createdIncident.id,
-                            incidentState = createdIncident.state,
-                        )
-                        runtimeStore.clearPendingSosCreate()
-                        ProtectionRuntimeBridge.recordPlatformEvent(
-                            context = context,
-                            type = "nativeBackendSyncSucceeded",
-                            reason = "create_synced:${createdIncident.id ?: "unknown"}",
-                        )
-                        true
-                    }
-                }
+                // Native owns BLE continuity, not SOS dispatch authority. A
+                // create remains pending until Dart's generation-scoped MQTT
+                // publisher claims and accepts it. Native must never probe or
+                // POST /v1/sdk/sos for the same physical generation.
+                logSosCreateRestBlocked()
+                runtimeStore.markPendingNativeSosCreateRestBlocked()
+                runtimeStore.markBackendHandoffQueued("NATIVE_SOS_REST_RETRY_BLOCKED")
+                ProtectionRuntimeBridge.recordPlatformEvent(
+                    context = context,
+                    type = "nativeBackendSyncQueued",
+                    reason = "create_mqtt_handoff_pending:$reason",
+                )
+                false
             }
         } catch (error: Exception) {
             handleFailure(
@@ -200,32 +183,78 @@ internal class ProtectionSosBackendHandoff(
     }
 
     private fun syncCancel(reason: String): Boolean {
+        val pending = runtimeStore.pendingNativeSosCancel()
+        if (pending == null) {
+            return retireRejectedCancel(
+                outcome = ProtectionNativeSosCancelOutcome.pendingStaleRejected,
+                reason = "legacy_record_without_identity",
+            )
+        }
+        if (pending.canonicalBackendIncidentId.isNullOrBlank()) {
+            return retireRejectedCancel(
+                outcome = ProtectionNativeSosCancelOutcome.noCanonicalTarget,
+                reason = "missing_canonical_incident",
+            )
+        }
         return try {
             val session = loadSession()
                 ?: throw IllegalStateException("Missing SDK session for native SOS backend cancel.")
             val apiBaseUrl = requireValidatedApiBaseUrl()
                 ?: throw IllegalStateException("Missing API base URL for native SOS backend cancel.")
-            val existingIncident = runtimeStore.activeBackendIncidentId()?.let {
-                BackendIncident(id = it, state = runtimeStore.lastBackendIncidentState())
-            } ?: fetchActiveIncident(apiBaseUrl, session)
+            val existingIncident = fetchActiveIncident(apiBaseUrl, session)
+            val decision = ProtectionNativeSosCancelPolicy.evaluate(
+                pending = pending,
+                activeBackendIncidentId = existingIncident?.id,
+                currentSessionScope = sessionScope(session),
+                currentDeviceId = runtimeStore.currentBleHardwareId()
+                    ?: runtimeStore.currentTargetDeviceId(),
+                currentNodeId = runtimeStore.currentBoundNodeId(),
+            )
 
-            if (existingIncident == null) {
-                runtimeStore.clearPendingSosCancel()
-                runtimeStore.markBackendIncidentCleared("cancel_no_active_incident")
-                ProtectionRuntimeBridge.recordPlatformEvent(
-                    context = context,
-                    type = "nativeBackendSyncSucceeded",
-                    reason = "cancel_no_active_incident",
+            var backendCancelCalled = false
+            val outcome = ProtectionNativeSosCancelFlushGate.execute(decision) {
+                backendCancelCalled = true
+                cancelIncident(apiBaseUrl, session)
+            }
+            if (!backendCancelCalled) {
+                Log.i(
+                    logTag,
+                    "${outcome.diagnosticCode} " +
+                        "reason=${decision.reason} backendCancelCall=false",
                 )
+                runtimeStore.retirePendingNativeSosCancel(
+                    outcome = outcome,
+                    reason = decision.reason,
+                )
+                if (existingIncident == null) {
+                    runtimeStore.markBackendIncidentCleared("cancel_target_terminal")
+                } else {
+                    runtimeStore.markBackendIncidentActive(
+                        incidentId = existingIncident.id,
+                        incidentState = existingIncident.state,
+                    )
+                }
                 true
             } else {
-                cancelIncident(apiBaseUrl, session)
-                runtimeStore.clearPendingSosCancel()
-                runtimeStore.markBackendIncidentCleared("cancel_synced")
+                Log.i(
+                    logTag,
+                    "${decision.outcome.diagnosticCode} " +
+                        "reason=${decision.reason} backendCancelCall=pending",
+                )
+                Log.i(
+                    logTag,
+                    "${outcome.diagnosticCode} " +
+                        "backendCancelCall=true result=success",
+                )
+                runtimeStore.retirePendingNativeSosCancel(
+                    outcome = outcome,
+                    reason = "exact_incident_match_cancelled",
+                )
+                runtimeStore.markBackendIncidentCleared("cancel_synced_exact_incident_match")
                 ProtectionRuntimeBridge.recordPlatformEvent(
                     context = context,
                     type = "nativeBackendSyncSucceeded",
-                    reason = "cancel_synced:${existingIncident.id ?: "unknown"}",
+                    reason = "cancel_synced_exact_incident_match",
                 )
                 true
             }
@@ -237,6 +266,30 @@ internal class ProtectionSosBackendHandoff(
             )
             false
         }
+    }
+
+    private fun retireRejectedCancel(
+        outcome: ProtectionNativeSosCancelOutcome,
+        reason: String,
+    ): Boolean {
+        Log.i(
+            logTag,
+            "${outcome.diagnosticCode} reason=$reason backendCancelCall=false",
+        )
+        runtimeStore.retirePendingNativeSosCancel(
+            outcome = outcome,
+            reason = reason,
+        )
+        return true
+    }
+
+    private fun sessionScope(session: SessionSnapshot): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(
+                "${session.appId}\u0000${session.externalUserId}"
+                    .toByteArray(Charsets.UTF_8),
+            )
+        return digest.joinToString(separator = "") { byte -> "%02x".format(byte) }
     }
 
     private fun handleFailure(
@@ -265,136 +318,6 @@ internal class ProtectionSosBackendHandoff(
             "SOS_TRIGGER_REST_BLOCKED source=native_protection_sos " +
                 "reason=trigger_must_use_mqtt",
         )
-    }
-
-    private fun shouldBlockRestTrigger(): Boolean = true
-
-    private fun createIncident(
-        apiBaseUrl: String,
-        session: SessionSnapshot,
-        position: TrackingPositionSnapshot,
-    ): BackendIncident {
-        val payload = JSONObject()
-            .put("timestamp", position.timestamp)
-            .put("latitude", position.latitude)
-            .put("longitude", position.longitude)
-            .put("altitude", position.altitude)
-        logLocationAuth(
-            flow = "native_protection_final",
-            source = "sdk_resolved",
-            position = position,
-            accepted = true,
-            persisted = true,
-            sentToBackend = true,
-        )
-        val nodeId = runtimeStore.currentBoundNodeId()
-        val hardwareId = currentBleHardwareIdForBackendPayload()
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
-        if (nodeId != null) {
-            payload
-                .put("deviceId", nodeId.toString())
-                .put("nodeId", nodeId)
-                .put("originatorNodeId", nodeId)
-                .put("identitySource", "ble_node")
-        } else {
-            payload.put(
-                "identitySource",
-                if (hardwareId == null) "app" else "device_hardware_pending",
-            )
-        }
-        hardwareId?.let {
-            payload.put("hardwareId", it)
-            if (nodeId == null && !looksLikeBleMac(it)) {
-                payload.put("deviceId", it)
-            }
-        }
-        if (nodeId != null) {
-            registerBackendDevice(
-                apiBaseUrl = apiBaseUrl,
-                session = session,
-                nodeId = nodeId,
-                bleHardwareId = hardwareId,
-            )
-        }
-        val correlationId = nextCorrelationId("sos-native")
-        Log.i(
-            logTag,
-            "[SOS_BACKEND_OUTBOUND_FINAL] transport=http endpoint=/v1/sdk/sos " +
-                "correlationId=$correlationId source=native_protection_sos owner=device " +
-                "deviceId=${payload.optStringOrNone("deviceId")} " +
-                "nodeId=${nodeId?.toString() ?: "none"} " +
-                "originatorNodeId=${payload.optStringOrNone("originatorNodeId")} " +
-                "hardwareId=${payload.optStringOrNone("hardwareId")} " +
-                "identitySource=${payload.optStringOrNone("identitySource")} " +
-                "incidentId=none canonicalIncidentId=none " +
-                "payload=${redactedCompactJson(payload)}",
-        )
-        val response = sendRequest(
-            method = "POST",
-            url = normalizeUrl(apiBaseUrl, "/v1/sdk/sos"),
-            session = session,
-            body = payload.toString(),
-        )
-        Log.i(
-            logTag,
-            "[SOS_BACKEND_RESPONSE] correlationId=$correlationId " +
-                "status=${response.statusCode} " +
-                "backendIncidentId=${backendIncidentIdFrom(response.body) ?: "none"} " +
-                "responseSummary=${compactSummary(response.body)}",
-        )
-        if (response.statusCode == 422 || response.statusCode == 402) {
-            Log.w(
-                logTag,
-                "SOS_RUNTIME_BACKEND_DELIVERY_FAILED status=${response.statusCode} " +
-                    "failure=backend_validation_error pendingSos=1 " +
-                    "localSosPreserved=true correlationId=$correlationId " +
-                    "deviceId=${payload.optStringOrNone("deviceId")} " +
-                    "nodeId=${payload.optStringOrNone("nodeId")} " +
-                    "originatorNodeId=${payload.optStringOrNone("originatorNodeId")} " +
-                    "hardwareId=${payload.optStringOrNone("hardwareId")}",
-            )
-            if (nodeId != null && isReferencedDeviceMissing(response.body)) {
-                registerBackendDevice(
-                    apiBaseUrl = apiBaseUrl,
-                    session = session,
-                    nodeId = nodeId,
-                    bleHardwareId = hardwareId,
-                    force = true,
-                )
-                val retryCorrelationId = nextCorrelationId("sos-native-retry")
-                Log.i(
-                    logTag,
-                    "[SOS_BACKEND_RETRY_AFTER_DEVICE_REGISTER] " +
-                        "originalCorrelationId=$correlationId " +
-                        "retryCorrelationId=$retryCorrelationId " +
-                        "nodeId=$nodeId backendHardwareId=${nodeId} " +
-                        "reason=referenced_device_does_not_exist",
-                )
-                val retryResponse = sendRequest(
-                    method = "POST",
-                    url = normalizeUrl(apiBaseUrl, "/v1/sdk/sos"),
-                    session = session,
-                    body = payload.toString(),
-                )
-                Log.i(
-                    logTag,
-                    "[SOS_BACKEND_RESPONSE] correlationId=$retryCorrelationId " +
-                        "status=${retryResponse.statusCode} " +
-                        "backendIncidentId=${backendIncidentIdFrom(retryResponse.body) ?: "none"} " +
-                        "responseSummary=${compactSummary(retryResponse.body)}",
-                )
-                if (retryResponse.statusCode in 200..299) {
-                    return parseIncidentResponse(retryResponse.body)
-                        ?: throw IllegalStateException("Native SOS create did not return an incident payload.")
-                }
-            }
-        }
-        if (response.statusCode !in 200..299) {
-            throw IllegalStateException("Native SOS create failed: ${response.statusCode} ${response.body}")
-        }
-        return parseIncidentResponse(response.body)
-            ?: throw IllegalStateException("Native SOS create did not return an incident payload.")
     }
 
     private fun cancelIncident(
