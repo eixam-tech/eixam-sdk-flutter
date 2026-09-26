@@ -51,6 +51,8 @@ typedef SosGenerationPublisher =
       required String? cycleKey,
     });
 
+typedef LocalSosWebAcknowledgmentHandler = Future<void> Function();
+
 class BleOperationalRuntimeBridge {
   BleOperationalRuntimeBridge({
     required Stream<BleIncomingEvent> bleIncomingEvents,
@@ -59,6 +61,7 @@ class BleOperationalRuntimeBridge {
     required this.telemetryRepository,
     required SosGenerationPublisher sosGenerationPublisher,
     required this.deviceSosController,
+    required LocalSosWebAcknowledgmentHandler localSosWebAcknowledgmentHandler,
     required EixamSession? Function() sessionProvider,
     Future<String?> Function(String runtimeDeviceId)? backendHardwareIdResolver,
     SosBackendAssignmentVerifiedRetry? sosBackendAssignmentVerifiedRetry,
@@ -69,6 +72,7 @@ class BleOperationalRuntimeBridge {
        _realtimeEvents = realtimeEvents,
        _sessionProvider = sessionProvider,
        _sosGenerationPublisher = sosGenerationPublisher,
+       _localSosWebAcknowledgmentHandler = localSosWebAcknowledgmentHandler,
        _backendHardwareIdResolver = backendHardwareIdResolver,
        _sosBackendAssignmentVerifiedRetry = sosBackendAssignmentVerifiedRetry,
        _now = now ?? DateTime.now,
@@ -81,6 +85,7 @@ class BleOperationalRuntimeBridge {
   final DeviceSosController deviceSosController;
   final EixamSession? Function() _sessionProvider;
   final SosGenerationPublisher _sosGenerationPublisher;
+  final LocalSosWebAcknowledgmentHandler _localSosWebAcknowledgmentHandler;
   final Future<String?> Function(String runtimeDeviceId)?
   _backendHardwareIdResolver;
   final SosBackendAssignmentVerifiedRetry? _sosBackendAssignmentVerifiedRetry;
@@ -911,14 +916,16 @@ class BleOperationalRuntimeBridge {
   }) async {
     switch (context.route) {
       case _SosAckRoute.localOrigin:
+        await _localSosWebAcknowledgmentHandler();
         BleDebugRegistry.instance.recordEvent(
-          'SOS_BACKEND_ACK_DEVICE_MIRROR action=preserve_physical_sos '
-          'command=none reason=ack_is_non_terminal',
+          'SOS_BACKEND_ACK_DEVICE_MIRROR action=silence_physical_sos '
+          'command=0x12,0x00 reason=ack_is_non_terminal',
         );
         _emitDiagnostics(
           _diagnostics.copyWith(
+            lastDeviceCommandSent: 'BUZZER_SOS_VOL(0)',
             lastDecision:
-                'Backend acknowledgment applied without terminalizing the local TAG',
+                'Backend acknowledgment silenced without terminalizing the local TAG',
           ),
         );
         return;

@@ -26,6 +26,9 @@ class SharedPrefsSdkStore {
   // optional refresh token is intentionally not written by SdkSessionStore.
   static const String sdkSessionKey = 'eixam.sdk.session';
   static const String preSosSessionKey = 'eixam.sos.pre_sos_session';
+  // Device-safety recovery metadata is deliberately not user data: it must
+  // survive session clearing until the TAG's audible SOS volume is restored.
+  static const String webAckSosVolumeKey = 'device.sos.web_ack_volume_restore';
   static const String osSosWidgetRecentActionsKey =
       'eixam.sos.os_widget.recent_actions';
   static const String deviceIdentityMappingsKey =

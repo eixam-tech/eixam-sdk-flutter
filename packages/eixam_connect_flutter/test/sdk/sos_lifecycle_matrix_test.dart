@@ -4337,6 +4337,30 @@ void main() {
             );
             await harness.sdk.rehydrateProtectionState();
             await pumpEventQueue(times: 5);
+            await waitFor(
+              () =>
+                  adapter.commands
+                      .where(
+                        (command) =>
+                            command.bytes.length == 2 &&
+                            command.bytes[0] == 0x12 &&
+                            command.bytes[1] == 0x00,
+                      )
+                      .length ==
+                  cycle,
+            );
+            expect(
+              adapter.commands.where(
+                (command) =>
+                    command.bytes.length == 2 &&
+                    command.bytes[0] == 0x12 &&
+                    command.bytes[1] > 0,
+              ),
+              hasLength(cycle - 1),
+              reason:
+                  'each later generation must restore an audible SOS volume '
+                  'before its own ACK silences the TAG',
+            );
 
             harness.sosRepository.currentIncident = harness
                 .sosRepository
@@ -4474,6 +4498,18 @@ void main() {
             return lifecycle.generation == 4 &&
                 lifecycle.stage == SosLifecycleStage.active;
           });
+          await waitFor(
+            () =>
+                adapter.commands
+                    .where(
+                      (command) =>
+                          command.bytes.length == 2 &&
+                          command.bytes[0] == 0x12 &&
+                          command.bytes[1] > 0,
+                    )
+                    .length ==
+                3,
+          );
           await waitFor(
             () => publicSosStates
                 .skip(publicStateCountBeforeCancellationStart)
@@ -8481,7 +8517,8 @@ void main() {
           expect(
             _hasDebugMessage(
               'SOS_BACKEND_ACK_DEVICE_MIRROR '
-              'action=preserve_physical_sos command=none',
+              'action=silence_physical_sos command=0x12,0x00 '
+              'reason=ack_is_non_terminal',
             ),
             isTrue,
           );

@@ -140,7 +140,7 @@ void main() {
     );
 
     test(
-      'local backend ACK keeps the physical TAG active and sends no 0x07',
+      'local backend ACK silences the physical TAG without sending 0x07',
       () async {
         final commands = <EixamDeviceCommand>[];
         await harness.deviceSosController.attach(
@@ -177,19 +177,21 @@ void main() {
         );
         await Future<void>.delayed(const Duration(milliseconds: 5));
 
-        expect(commands, isEmpty);
+        expect(commands, hasLength(1));
+        expect(commands.single.bytes, <int>[0x12, 0x00]);
+        expect(commands.single.usesCmdCharacteristic, isTrue);
         expect(
           harness.deviceSosController.currentStatus.state,
           DeviceSosState.active,
         );
         expect(
           harness.bridge.currentDiagnostics.lastDecision,
-          'Backend acknowledgment applied without terminalizing the local TAG',
+          'Backend acknowledgment silenced without terminalizing the local TAG',
         );
         expect(
           _debugMessagesContaining('SOS_BACKEND_ACK_DEVICE_MIRROR').single,
           allOf(
-            contains('command=none'),
+            contains('command=0x12,0x00'),
             contains('reason=ack_is_non_terminal'),
           ),
         );
@@ -258,6 +260,8 @@ class _BridgeHarness {
             cycleKey: cycleKey,
           ),
       deviceSosController: deviceSosController,
+      localSosWebAcknowledgmentHandler: () => deviceSosController
+          .sendAttachedCommand(EixamDeviceCommand.sosVolume(0)),
       sessionProvider: () => null,
       sosBackendAssignmentVerifiedRetry:
           ({
