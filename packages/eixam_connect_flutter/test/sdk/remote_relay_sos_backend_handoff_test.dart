@@ -2185,7 +2185,7 @@ void main() {
       });
 
       test(
-          'Web ACK stays transport-silent while Web RESOLVE sends exactly one terminal 0x08 through correlated R',
+          'Web ACK sends one remote silence and Web RESOLVE sends one terminal command through correlated R',
           () async {
         await useSdkWithCancelDataSource();
         const originatorNodeId = 0x01020304;
@@ -2243,13 +2243,31 @@ void main() {
             },
           ),
         );
-        await _eventually(
-          () => _hasDebugMessage('SOS_REMOTE_ACK_MIRROR_SKIPPED'),
-        );
+        await _eventually(() => deviceCommands.length == 1);
 
-        expect(deviceCommands, isEmpty);
+        expect(deviceCommands.single.opcode, 0x0A);
+        expect(
+          deviceCommands.single.encode(),
+          <int>[0x0A, 0x04, 0x03, 0x02, 0x01],
+        );
         expect(await sdk.getCurrentSosIncident(), isNull);
         expect(await sdk.getSosState(), SosState.idle);
+
+        realtimeClient.emitEvent(
+          RealtimeEvent(
+            type: 'sos.lifecycle',
+            timestamp: publishedAt.add(const Duration(milliseconds: 1500)),
+            payload: <String, dynamic>{
+              'type': 'sos.lifecycle',
+              'incidentId': canonicalIncidentId,
+              'state': 'acknowledged',
+              '_mqttAuthenticatedUserScoped': true,
+              '_mqttTopicCategory': 'internal',
+            },
+          ),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        expect(deviceCommands, hasLength(1));
 
         realtimeClient.emitEvent(
           RealtimeEvent(
@@ -2264,11 +2282,11 @@ void main() {
             },
           ),
         );
-        await _eventually(() => deviceCommands.length == 1);
+        await _eventually(() => deviceCommands.length == 2);
 
-        expect(deviceCommands.single.opcode, 0x08);
+        expect(deviceCommands.last.opcode, 0x08);
         expect(
-          deviceCommands.single.encode(),
+          deviceCommands.last.encode(),
           <int>[0x08, 0x04, 0x03, 0x02, 0x01],
         );
         expect(await sdk.getCurrentSosIncident(), isNull);
@@ -2300,7 +2318,7 @@ void main() {
           ),
         );
         await Future<void>.delayed(const Duration(milliseconds: 20));
-        expect(deviceCommands, hasLength(1));
+        expect(deviceCommands, hasLength(2));
       });
 
       test('terminal event correlated to R1 is rejected while R2 is connected',

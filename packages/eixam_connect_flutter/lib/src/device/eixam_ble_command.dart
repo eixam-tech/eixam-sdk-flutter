@@ -74,6 +74,21 @@ class EixamDeviceCommand {
     );
   }
 
+  factory EixamDeviceCommand.remoteSosSilence({required int nodeId}) {
+    return EixamDeviceCommand._(
+      opcode: 0x0A,
+      label: 'REMOTE SOS SILENCE',
+      bytes: <int>[
+        0x0A,
+        nodeId & 0xFF,
+        (nodeId >> 8) & 0xFF,
+        (nodeId >> 16) & 0xFF,
+        (nodeId >> 24) & 0xFF,
+      ],
+      forceCmdCharacteristic: true,
+    );
+  }
+
   factory EixamDeviceCommand.shutdown() => const EixamDeviceCommand._(
     opcode: 0x10,
     label: 'SHUTDOWN',
@@ -282,6 +297,7 @@ class EixamDeviceCommand {
     return switch (opcode) {
       0x04 ||
       0x07 ||
+      0x0A ||
       0x06 ||
       0x10 ||
       0x20 ||

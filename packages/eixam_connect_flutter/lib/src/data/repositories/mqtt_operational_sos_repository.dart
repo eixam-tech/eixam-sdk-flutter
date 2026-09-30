@@ -63,6 +63,7 @@ class MqttOperationalSosRepository
         SosRuntimeRehydrationSupport,
         MqttOnlyLiveSosLifecycle,
         SosRuntimeSessionIsolation,
+        SosRuntimeSessionScopeBinding,
         AuthoritativeActiveSosLookup,
         SosRejectedTerminalReconciliationSource {
   MqttOperationalSosRepository({
@@ -76,6 +77,7 @@ class MqttOperationalSosRepository
     Duration actuatorBufferTtl = const Duration(seconds: 30),
     Duration processedHandoffWindow = const Duration(minutes: 2),
     Duration processedClockSkewTolerance = const Duration(seconds: 30),
+    Duration externalRelayLifecycleContextTtl = const Duration(hours: 24),
     DateTime Function()? nowProvider,
   }) : remoteDataSource = remoteDataSource ?? cancelRemoteDataSource,
        _localStore = localStore,
@@ -84,6 +86,7 @@ class MqttOperationalSosRepository
        _actuatorBufferTtl = actuatorBufferTtl,
        _processedHandoffWindow = processedHandoffWindow,
        _processedClockSkewTolerance = processedClockSkewTolerance,
+       _externalRelayLifecycleContextTtl = externalRelayLifecycleContextTtl,
        _nowProvider = nowProvider ?? DateTime.now {
     _stateController.add(_stateMachine.current);
     _realtimeSub = realtimeClient.watchEvents().listen(_handleRealtimeEvent);
@@ -101,6 +104,7 @@ class MqttOperationalSosRepository
   final Duration _actuatorBufferTtl;
   final Duration _processedHandoffWindow;
   final Duration _processedClockSkewTolerance;
+  final Duration _externalRelayLifecycleContextTtl;
   final DateTime Function() _nowProvider;
   bool Function({
     required String source,
@@ -137,6 +141,9 @@ class MqttOperationalSosRepository
   _PendingProcessedHandoff? _pendingProcessedHandoff;
   _PendingExternalRelayHandoff? _pendingExternalRelayHandoff;
   _ExternalRelayLifecycleContext? _externalRelayLifecycleContext;
+  _PersistedExternalRelayLifecycleContext?
+  _restoredExternalRelayLifecycleContext;
+  String? _authenticatedSessionScope;
   final Map<String, DateTime> _externalRelaySosPublishDedupe =
       <String, DateTime>{};
   Timer? _mqttConfirmationWarningTimer;
@@ -166,6 +173,21 @@ class MqttOperationalSosRepository
     _locallyClosedIncidentId = await _localStore.readString(
       SharedPrefsSdkStore.sosClosedIncidentKey,
     );
+    final relayContextJson = await _localStore.readJson(
+      SharedPrefsSdkStore.externalRelayLifecycleContextKey,
+    );
+    _restoredExternalRelayLifecycleContext =
+        _PersistedExternalRelayLifecycleContext.tryParse(
+          relayContextJson,
+          now: _nowProvider().toUtc(),
+          ttl: _externalRelayLifecycleContextTtl,
+        );
+    if (relayContextJson != null &&
+        _restoredExternalRelayLifecycleContext == null) {
+      await _localStore.remove(
+        SharedPrefsSdkStore.externalRelayLifecycleContextKey,
+      );
+    }
 
     if (incidentJson != null) {
       _activeIncident = LocalStateSerializers.sosIncidentFromJson(
@@ -178,6 +200,33 @@ class MqttOperationalSosRepository
       orElse: () => _activeIncident?.state ?? SosState.idle,
     );
     _setState(restoredState);
+  }
+
+  @override
+  Future<void> bindSosRuntimeSessionScope(String scope) async {
+    final normalizedScope = scope.trim();
+    if (normalizedScope.isEmpty) {
+      return;
+    }
+    _authenticatedSessionScope = normalizedScope;
+    final restored = _restoredExternalRelayLifecycleContext;
+    _restoredExternalRelayLifecycleContext = null;
+    if (restored == null) {
+      return;
+    }
+    if (restored.sessionScope != normalizedScope) {
+      await _clearPersistedExternalRelayLifecycleContext(
+        reason: 'session_scope_mismatch',
+      );
+      return;
+    }
+    _externalRelayLifecycleContext = restored.context;
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_REMOTE_RELAY_LIFECYCLE_CONTEXT_RESTORED '
+      'incidentId=${restored.context.incidentId} '
+      'originatorNodeId=${restored.context.originatorNodeId?.toString() ?? "none"} '
+      'relayNodeId=${restored.context.relayNodeId?.toString() ?? "none"}',
+    );
   }
 
   @override
@@ -1619,6 +1668,10 @@ class MqttOperationalSosRepository
   @override
   Future<void> clearSosRuntimeForSessionChange() async {
     _clearPendingMqttLifecycle(reason: 'session_cleared');
+    _authenticatedSessionScope = null;
+    await _clearPersistedExternalRelayLifecycleContext(
+      reason: 'session_cleared',
+    );
     _activeIncident = null;
     _locallyClosedIncidentId = null;
     _trustedLifecycleCorrelationIds.clear();
@@ -2079,6 +2132,7 @@ class MqttOperationalSosRepository
         relayHardwareId: pending.relayHardwareId,
       );
       _externalRelayLifecycleContext = context;
+      unawaited(_persistExternalRelayLifecycleContext(context));
       _pendingExternalRelayHandoff = null;
       _emitRemoteRelayLifecycleTransition(
         context: context,
@@ -2114,8 +2168,61 @@ class MqttOperationalSosRepository
     );
     if (_isTerminalState(state)) {
       _externalRelayLifecycleContext = null;
+      unawaited(
+        _clearPersistedExternalRelayLifecycleContext(
+          reason: 'terminal_${state.name}',
+        ),
+      );
     }
     return true;
+  }
+
+  Future<void> _persistExternalRelayLifecycleContext(
+    _ExternalRelayLifecycleContext context,
+  ) async {
+    final store = _localStore;
+    final sessionScope = _authenticatedSessionScope;
+    final incidentId = context.incidentId.trim();
+    final relayHardwareId = context.relayHardwareId?.trim();
+    if (store == null ||
+        sessionScope == null ||
+        sessionScope.isEmpty ||
+        incidentId.isEmpty ||
+        context.originatorNodeId == null ||
+        context.relayNodeId == null ||
+        context.originatorNodeId == context.relayNodeId ||
+        relayHardwareId == null ||
+        relayHardwareId.isEmpty) {
+      return;
+    }
+    final persistedAt = _nowProvider().toUtc();
+    await store.saveJson(
+      SharedPrefsSdkStore.externalRelayLifecycleContextKey,
+      <String, dynamic>{
+        'sessionScope': sessionScope,
+        'incidentId': incidentId,
+        'occurredAt': context.occurredAt.toUtc().toIso8601String(),
+        if (context.originatorNodeId != null)
+          'originatorNodeId': context.originatorNodeId,
+        if (context.relayNodeId != null) 'relayNodeId': context.relayNodeId,
+        'relayHardwareId': relayHardwareId,
+        'persistedAt': persistedAt.toIso8601String(),
+      },
+    );
+  }
+
+  Future<void> _clearPersistedExternalRelayLifecycleContext({
+    required String reason,
+  }) async {
+    _restoredExternalRelayLifecycleContext = null;
+    final store = _localStore;
+    if (store == null) {
+      return;
+    }
+    await store.remove(SharedPrefsSdkStore.externalRelayLifecycleContextKey);
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_REMOTE_RELAY_LIFECYCLE_CONTEXT_CLEARED reason=$reason',
+    );
   }
 
   void _emitRemoteRelayLifecycleTransition({
@@ -3158,6 +3265,62 @@ class _ExternalRelayLifecycleContext {
   final int? originatorNodeId;
   final int? relayNodeId;
   final String? relayHardwareId;
+}
+
+class _PersistedExternalRelayLifecycleContext {
+  const _PersistedExternalRelayLifecycleContext({
+    required this.sessionScope,
+    required this.context,
+  });
+
+  static _PersistedExternalRelayLifecycleContext? tryParse(
+    Map<String, dynamic>? json, {
+    required DateTime now,
+    required Duration ttl,
+  }) {
+    if (json == null) {
+      return null;
+    }
+    final sessionScope = (json['sessionScope'] as String?)?.trim();
+    final incidentId = (json['incidentId'] as String?)?.trim();
+    final originatorNodeId = (json['originatorNodeId'] as num?)?.toInt();
+    final relayNodeId = (json['relayNodeId'] as num?)?.toInt();
+    final relayHardwareId = (json['relayHardwareId'] as String?)?.trim();
+    final occurredAt = DateTime.tryParse(
+      (json['occurredAt'] as String?) ?? '',
+    )?.toUtc();
+    final persistedAt = DateTime.tryParse(
+      (json['persistedAt'] as String?) ?? '',
+    )?.toUtc();
+    if (sessionScope == null ||
+        sessionScope.isEmpty ||
+        incidentId == null ||
+        incidentId.isEmpty ||
+        originatorNodeId == null ||
+        relayNodeId == null ||
+        originatorNodeId == relayNodeId ||
+        relayHardwareId == null ||
+        relayHardwareId.isEmpty ||
+        occurredAt == null ||
+        persistedAt == null ||
+        persistedAt.isAfter(now.add(const Duration(minutes: 5))) ||
+        now.difference(persistedAt) > ttl) {
+      return null;
+    }
+    return _PersistedExternalRelayLifecycleContext(
+      sessionScope: sessionScope,
+      context: _ExternalRelayLifecycleContext(
+        incidentId: incidentId,
+        occurredAt: occurredAt,
+        originatorNodeId: originatorNodeId,
+        relayNodeId: relayNodeId,
+        relayHardwareId: relayHardwareId,
+      ),
+    );
+  }
+
+  final String sessionScope;
+  final _ExternalRelayLifecycleContext context;
 }
 
 class _LifecycleAuthorityDecision {

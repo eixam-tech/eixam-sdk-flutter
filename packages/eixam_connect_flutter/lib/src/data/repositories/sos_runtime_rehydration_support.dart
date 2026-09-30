@@ -37,7 +37,7 @@ class SosRejectedTerminalReconciliationRequest {
 /// correlation-rejected terminal MQTT update through the authenticated API.
 abstract interface class SosRejectedTerminalReconciliationSource {
   Stream<SosRejectedTerminalReconciliationRequest>
-      watchRejectedTerminalReconciliations();
+  watchRejectedTerminalReconciliations();
 }
 
 /// Marks a repository whose active SOS lifecycle must not be recovered through
@@ -54,4 +54,9 @@ abstract interface class AuthoritativeActiveSosLookup {
 /// changes. This is intentionally separate from the public repository contract.
 abstract interface class SosRuntimeSessionIsolation {
   Future<void> clearSosRuntimeForSessionChange();
+}
+
+/// Binds restart-persisted SOS provenance to the authenticated principal.
+abstract interface class SosRuntimeSessionScopeBinding {
+  Future<void> bindSosRuntimeSessionScope(String scope);
 }

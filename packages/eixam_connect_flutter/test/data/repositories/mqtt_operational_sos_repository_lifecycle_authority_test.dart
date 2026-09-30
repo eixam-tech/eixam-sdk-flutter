@@ -381,6 +381,121 @@ void main() {
     );
 
     test(
+      'remote relay lifecycle context survives restart for terminal correlation',
+      () async {
+        const sessionScope = 'session-scope-a';
+        const originatorNodeId = 0x01020304;
+        const relayNodeId = 0x05060708;
+        const incidentId = 'remote-restart-incident';
+        final occurredAt = DateTime.utc(2026, 9, 30, 10);
+        final store = MemorySharedPrefsSdkStore();
+        await repository.dispose();
+        repository = MqttOperationalSosRepository(
+          realtimeClient: realtimeClient,
+          localStore: store,
+        );
+        await repository.bindSosRuntimeSessionScope(sessionScope);
+        await repository.submitSosToBackend(
+          timestamp: occurredAt,
+          positionSnapshot: null,
+          deviceId: originatorNodeId.toString(),
+          originatorNodeId: originatorNodeId,
+          relayNodeId: relayNodeId,
+          relayDeviceId: relayNodeId.toString(),
+          relayHardwareId: 'relay-hardware',
+          relaySource: 'remote_lora_relay',
+          cycleKey: 'remote:$originatorNodeId:restart',
+        );
+        realtimeClient.emitEvent(
+          _processedEvent(incidentId: incidentId, timestamp: occurredAt),
+        );
+        await _pumpRealtime();
+        expect(
+          store.jsonValues[SharedPrefsSdkStore
+              .externalRelayLifecycleContextKey],
+          isNotNull,
+        );
+
+        await repository.dispose();
+        repository = MqttOperationalSosRepository(
+          realtimeClient: realtimeClient,
+          localStore: store,
+        );
+        await repository.restoreState();
+        await repository.bindSosRuntimeSessionScope(sessionScope);
+        final transitions = <MqttRemoteRelayLifecycleTransition>[];
+        final subscription = repository
+            .watchRemoteRelayLifecycleTransitions()
+            .listen(transitions.add);
+        addTearDown(subscription.cancel);
+
+        realtimeClient.emitEvent(
+          _lifecycleEvent(
+            incidentId: incidentId,
+            state: 'resolved',
+            authenticatedUserScoped: true,
+            topicCategory: 'internal',
+          ),
+        );
+        await _pumpRealtime();
+
+        expect(transitions, hasLength(1));
+        expect(transitions.single.state, SosState.resolved);
+        expect(transitions.single.originatorNodeId, originatorNodeId);
+        expect(transitions.single.relayNodeId, relayNodeId);
+        expect(transitions.single.relayHardwareId, 'relay-hardware');
+        expect(
+          store.jsonValues.containsKey(
+            SharedPrefsSdkStore.externalRelayLifecycleContextKey,
+          ),
+          isFalse,
+        );
+      },
+    );
+
+    test(
+      'remote relay restart context is rejected for another session',
+      () async {
+        final store = MemorySharedPrefsSdkStore()
+          ..jsonValues[SharedPrefsSdkStore.externalRelayLifecycleContextKey] =
+              <String, dynamic>{
+                'sessionScope': 'session-scope-a',
+                'incidentId': 'remote-session-a',
+                'occurredAt': DateTime.now().toUtc().toIso8601String(),
+                'originatorNodeId': 0x01020304,
+                'relayNodeId': 0x05060708,
+                'relayHardwareId': 'relay-hardware',
+                'persistedAt': DateTime.now().toUtc().toIso8601String(),
+              };
+        await repository.dispose();
+        repository = MqttOperationalSosRepository(
+          realtimeClient: realtimeClient,
+          localStore: store,
+        );
+        await repository.restoreState();
+        await repository.bindSosRuntimeSessionScope('session-scope-b');
+
+        realtimeClient.emitEvent(
+          _lifecycleEvent(
+            incidentId: 'remote-session-a',
+            state: 'resolved',
+            authenticatedUserScoped: true,
+            topicCategory: 'internal',
+          ),
+        );
+        await _pumpRealtime();
+
+        expect(
+          store.jsonValues.containsKey(
+            SharedPrefsSdkStore.externalRelayLifecycleContextKey,
+          ),
+          isFalse,
+        );
+        expect(_hasDiagnostic('reason=missing_active_incident'), isTrue);
+      },
+    );
+
+    test(
       'does not restore a remote relay incident as local lifecycle state',
       () async {
         const originatorNodeId = 0x01020304;

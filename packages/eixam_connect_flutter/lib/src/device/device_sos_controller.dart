@@ -570,6 +570,18 @@ class DeviceSosController {
     );
   }
 
+  Future<void> sendRemoteSosSilence({
+    required int nodeId,
+    DeviceCommandWriter? commandWriterOverride,
+    String commandRouteLabel = 'attached_writer',
+  }) {
+    return _sendNonSosCommand(
+      EixamDeviceCommand.remoteSosSilence(nodeId: nodeId),
+      commandWriterOverride: commandWriterOverride,
+      commandRouteLabel: commandRouteLabel,
+    );
+  }
+
   Future<void> sendShutdown({
     DeviceCommandWriter? commandWriterOverride,
     String commandRouteLabel = 'attached_writer',

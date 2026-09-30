@@ -47,6 +47,7 @@ The SDK now exposes the following typed BLE-backed controls:
 - `setDeviceNotificationVolume(int volume)`
 - `setDeviceSosVolume(int volume)`
 - `silenceActiveSos()`
+- `silenceRemoteActiveSos(incidentId:, victimNodeId:, relayNodeId:)`
 - `rebootDevice()`
 - `getDeviceRuntimeStatus()`
 
@@ -68,9 +69,13 @@ The SDK now exposes the following typed BLE-backed controls:
   cancel, or mutate the configured SOS volume
 - WEB ACK uses this command; `0x12` remains configuration-only
 - WEB CANCEL uses terminal `0x04`; WEB RESOLVE uses terminal `0x07`
-- remote WEB ACK requires Rescue `0x04 BUZZER_OFF`; the legacy BLE `0x08`
-  relay command emits terminal Rescue `0x02 ACK_SOS` and is therefore never
-  dispatched for acknowledgment
+- remote WEB ACK maps to BLE `0x0A + victimNodeId`; the connected, identity-
+  matched relay emits Rescue `0x04 BUZZER_OFF` without closing the incident
+- remote terminal resolve/cancel retains BLE `0x08 + victimNodeId`, which emits
+  terminal Rescue `0x02 ACK_SOS`
+- both remote commands require exact incident, victim, relay node, connected
+  hardware and authenticated session-scope correlation; duplicate commands are
+  idempotent and stale or mismatched contexts fail closed
 
 ## Device SOS Command Path
 

@@ -326,6 +326,17 @@ abstract class EixamConnectSdk {
   ///
   /// The episode remains open and the configured SOS volume is unchanged.
   Future<SosSilenceResult> silenceActiveSos();
+
+  /// Silences a correlated remote victim through its connected relay while
+  /// leaving the remote SOS incident active.
+  Future<void> silenceRemoteActiveSos({
+    required String incidentId,
+    required int victimNodeId,
+    required int relayNodeId,
+  }) {
+    throw UnsupportedError('Remote SOS silence is not available.');
+  }
+
   Future<void> sendInetOkToDevice();
   Future<void> sendInetLostToDevice();
   Future<void> sendPositionConfirmedToDevice();

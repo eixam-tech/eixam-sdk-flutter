@@ -33,8 +33,10 @@
 
 ## Relay Acknowledgment Behavior
 
-- The BLE operational bridge can transform backend SOS acknowledgment into relay ACK behavior for an active relay SOS context.
-- Explicit relay ACKs are accepted only when they match the active relay context.
+- The BLE operational bridge transforms backend acknowledgment into `0x0A`
+  remote silence and terminal resolve/cancel into `0x08` remote close.
+- Remote commands are accepted only when incident, originator, relay node,
+  connected hardware, and authenticated session scope match the active context.
 - If active SOS context is local-origin, relay ACK is ignored.
 
 ## Terminal `422` Handling

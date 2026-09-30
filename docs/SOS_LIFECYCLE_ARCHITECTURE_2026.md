@@ -161,6 +161,14 @@ dispatches terminal resolve (`0x07`, despite its firmware ACK name). ACK never
 uses or restores the configured SOS volume (`0x12`). Stale incident identities
 cannot silence a newer generation.
 
+For a correlated remote-relay generation, portal `acknowledged` dispatches
+exactly one `BLE 0x0A + victimNodeId` to the connected relay. Firmware forwards
+Rescue `0x04 BUZZER_OFF`; the remote lifecycle remains open. Terminal remote
+resolve/cancel uses `0x08 + victimNodeId` and Rescue `0x02 ACK_SOS`. The minimal
+incident/victim/relay/hardware correlation context is restart-persisted with a
+TTL and authenticated session scope, then deleted on terminal state or session
+change. Any identity mismatch fails closed and cannot mutate the local SOS.
+
 Diagnostics expose only whether provisional/canonical/correlation values are
 present and which typed category was selected. They do not emit the values or
 derive stable hashes from them.

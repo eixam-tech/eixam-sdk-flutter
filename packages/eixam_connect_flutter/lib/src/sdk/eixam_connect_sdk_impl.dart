@@ -758,6 +758,7 @@ class EixamConnectSdkImpl
   final Map<String, _RecentExternalRelaySosContext>
   _recentExternalRelaySosContexts = <String, _RecentExternalRelaySosContext>{};
   final Set<String> _completedRemoteRelayTerminalCommands = <String>{};
+  final Set<String> _completedRemoteRelaySilenceCommands = <String>{};
   final Map<String, _PendingExternalRelayCancel> _pendingExternalRelayCancels =
       <String, _PendingExternalRelayCancel>{};
   final Map<String, _PreSosTerminalCancelContext>
@@ -1593,6 +1594,13 @@ class EixamConnectSdkImpl
       await _clearSosRuntimeForSessionChange();
     }
     _session = nextSession;
+    final repository = sosRepository;
+    if (repository is SosRuntimeSessionScopeBinding) {
+      await (repository as SosRuntimeSessionScopeBinding)
+          .bindSosRuntimeSessionScope(
+            AuthoritativeSosLifecycleController.ownerScopeFor(nextSession),
+          );
+    }
     await _sosLifecycle.restoreFor(_session, emitToStream: false);
     _recordRestoredTerminalBoundaryFromPreviousProcess();
     if (sessionContext != null) {
@@ -1986,15 +1994,32 @@ class EixamConnectSdkImpl
       }
     }
     if (transition.state == SosState.acknowledged) {
-      BleDebugRegistry.instance.recordEvent(
-        'SOS_REMOTE_ACK_MIRROR_SKIPPED '
-        'incidentId=${transition.incidentId} '
-        'originatorNodeId=$originatorNodeId '
-        'relayNodeId=${transition.relayNodeId?.toString() ?? "none"} '
-        'reason=connected_tag_ble_buzzer_off_transport_unavailable '
-        'edgeGatewayTransport=backend_owned '
-        'forbiddenCommand=SOS_ACK_RELAY_0x08 localStateMutation=false',
-      );
+      try {
+        await _sendRemoteRelaySilence(
+          _RemoteRelaySilenceCommand(
+            incidentId: transition.incidentId,
+            originatorNodeId: originatorNodeId,
+            relayNodeId: transition.relayNodeId,
+            relayHardwareId: transition.relayHardwareId,
+          ),
+        );
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_REMOTE_ACK_BUZZER_OFF_SENT '
+          'incidentId=${transition.incidentId} '
+          'originatorNodeId=$originatorNodeId '
+          'relayNodeId=${transition.relayNodeId?.toString() ?? "none"} '
+          'command=REMOTE_SOS_SILENCE_0x0A rescueCommand=BUZZER_OFF_0x04 '
+          'localStateMutation=false',
+        );
+      } catch (error) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_REMOTE_ACK_BUZZER_OFF_FAILED '
+          'incidentId=${transition.incidentId} '
+          'originatorNodeId=$originatorNodeId '
+          'relayNodeId=${transition.relayNodeId?.toString() ?? "none"} '
+          'error=$error localStateMutation=false',
+        );
+      }
       return;
     }
     if (transition.state != SosState.cancelled &&
@@ -2152,6 +2177,106 @@ class EixamConnectSdkImpl
     );
   }
 
+  @override
+  Future<void> silenceRemoteActiveSos({
+    required String incidentId,
+    required int victimNodeId,
+    required int relayNodeId,
+  }) async {
+    final context = _bestRecentExternalRelayContext(
+      originatorNodeId: _normalizeNodeId(victimNodeId),
+      relayNodeId: _normalizeNodeId(relayNodeId),
+    );
+    await _sendRemoteRelaySilence(
+      _RemoteRelaySilenceCommand(
+        incidentId: incidentId,
+        originatorNodeId: victimNodeId,
+        relayNodeId: relayNodeId,
+        relayHardwareId: context?.relayHardwareId,
+      ),
+    );
+  }
+
+  Future<void> _sendRemoteRelaySilence(
+    _RemoteRelaySilenceCommand request,
+  ) async {
+    final incidentId = request.incidentId.trim();
+    final originatorNodeId = _normalizeNodeId(request.originatorNodeId);
+    final relayNodeId = _normalizeNodeIdOrNull(request.relayNodeId);
+    final relayHardwareId = request.relayHardwareId?.trim();
+    final dedupeKey =
+        '$incidentId:$originatorNodeId:${relayNodeId?.toString() ?? "none"}:silence';
+    if (_completedRemoteRelaySilenceCommands.contains(dedupeKey)) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_REMOTE_RELAY_SILENCE_SKIPPED incidentId=$incidentId '
+        'reason=duplicate_ack_command',
+      );
+      return;
+    }
+    if (incidentId.isEmpty ||
+        relayNodeId == null ||
+        relayHardwareId == null ||
+        relayHardwareId.isEmpty ||
+        originatorNodeId == relayNodeId) {
+      throw const DeviceException(
+        'E_REMOTE_RELAY_IDENTITY_INVALID',
+        'E_REMOTE_RELAY_IDENTITY_INVALID',
+      );
+    }
+    final context = _bestRecentExternalRelayContext(
+      originatorNodeId: originatorNodeId,
+      relayNodeId: relayNodeId,
+    );
+    final contextMatches =
+        context != null &&
+        context.originatorNodeId == originatorNodeId &&
+        context.relayNodeId == relayNodeId &&
+        context.backendIncidentId?.trim() == incidentId &&
+        _sameRelayTransportHardwareIdentity(
+          context.relayHardwareId,
+          relayHardwareId,
+        );
+    if (!contextMatches) {
+      throw const DeviceException(
+        'E_REMOTE_RELAY_CONTEXT_MISMATCH',
+        'E_REMOTE_RELAY_CONTEXT_MISMATCH',
+      );
+    }
+    final refreshedStatus = await deviceRepository.getDeviceStatus();
+    _lastDeviceStatus = refreshedStatus;
+    final connectedStatus = _lastPublicDeviceStatus?.connected == true
+        ? _lastPublicDeviceStatus!
+        : refreshedStatus;
+    final connectedNodeId = connectedStatus.connected
+        ? _normalizeNodeIdOrNull(connectedStatus.nodeId)
+        : null;
+    final connectedHardwareId = _canonicalHardwareIdForStatus(connectedStatus);
+    if (connectedNodeId != relayNodeId ||
+        !_sameRelayTransportHardwareIdentity(
+          connectedHardwareId,
+          relayHardwareId,
+        )) {
+      throw const DeviceException(
+        'E_REMOTE_RELAY_TARGET_MISMATCH',
+        'E_REMOTE_RELAY_TARGET_MISMATCH',
+      );
+    }
+    final command = EixamDeviceCommand.remoteSosSilence(
+      nodeId: originatorNodeId,
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_REMOTE_RELAY_SILENCE_GATT_SUBMISSION incidentId=$incidentId '
+      'originatorNodeId=$originatorNodeId relayNodeId=$relayNodeId '
+      'commandBytes=${EixamBleProtocol.hex(command.encode())}',
+    );
+    await deviceSosController.sendRemoteSosSilence(
+      nodeId: originatorNodeId,
+      commandWriterOverride: _sendDeviceCommandThroughActiveOwner,
+      commandRouteLabel: _currentDeviceCommandOwnerRoute,
+    );
+    _completedRemoteRelaySilenceCommands.add(dedupeKey);
+  }
+
   bool _sameRelayTransportHardwareIdentity(String? left, String? right) {
     if (_samePhysicalHardwareId(left, right)) {
       return true;
@@ -2302,6 +2427,10 @@ class EixamConnectSdkImpl
   }
 
   Future<void> _clearSosRuntimeForSessionChange() async {
+    _completedRemoteRelayTerminalCommands.clear();
+    _completedRemoteRelaySilenceCommands.clear();
+    _recentExternalRelaySosContexts.clear();
+    await _localStore.remove(SharedPrefsSdkStore.externalRelaySosContextsKey);
     final repository = sosRepository;
     if (repository is SosRuntimeSessionIsolation) {
       await (repository as SosRuntimeSessionIsolation)
@@ -25609,6 +25738,20 @@ class _RemoteRelayTerminalCommand {
   final int? relayNodeId;
   final String? relayHardwareId;
   final _RemoteRelayTerminalAction action;
+}
+
+class _RemoteRelaySilenceCommand {
+  const _RemoteRelaySilenceCommand({
+    required this.incidentId,
+    required this.originatorNodeId,
+    required this.relayNodeId,
+    required this.relayHardwareId,
+  });
+
+  final String incidentId;
+  final int originatorNodeId;
+  final int? relayNodeId;
+  final String? relayHardwareId;
 }
 
 class _ObservedRelaySosContext {

@@ -37,6 +37,8 @@ class SharedPrefsSdkStore {
       'eixam.device.identity_mappings';
   static const String externalRelaySosContextsKey =
       'eixam.sos.external_relay_contexts';
+  static const String externalRelayLifecycleContextKey =
+      'eixam.sos.external_relay_lifecycle_context';
   static const String preferredBleDeviceKey = 'eixam.ble.preferred_device';
   static const String manualDisconnectRequestedKey =
       'eixam.ble.manual_disconnect_requested';
@@ -57,6 +59,7 @@ class SharedPrefsSdkStore {
     osSosWidgetRecentActionsKey,
     deviceIdentityMappingsKey,
     externalRelaySosContextsKey,
+    externalRelayLifecycleContextKey,
     preferredBleDeviceKey,
     manualDisconnectRequestedKey,
   ];
