@@ -4524,8 +4524,7 @@ void main() {
           });
           expect(
             adapter.commands.where(
-              (command) =>
-                  command.bytes.isNotEmpty && command.bytes[0] == 0x12,
+              (command) => command.bytes.isNotEmpty && command.bytes[0] == 0x12,
             ),
             isEmpty,
           );
@@ -10756,7 +10755,7 @@ void main() {
     });
 
     test(
-      'canonical remote relay ACTIVE ACK and RESOLVE stay one external generation',
+      'canonical remote relay ACTIVE ACK and RESOLVE stay hidden from local lifecycle',
       () async {
         const originatorNodeId = 0x01020304;
         const relayNodeId = 0x05060708;
@@ -10802,25 +10801,19 @@ void main() {
           await pumpEventQueue(times: 8);
 
           final active = await harness.sdk.getSosLifecycle();
-          expect(active.stage, SosLifecycleStage.active);
-          expect(active.origin, SosLifecycleOrigin.remoteRelay);
+          expect(active.stage, SosLifecycleStage.idle);
           expect(active.localActionable, isFalse);
-          expect(active.externalOnly, isTrue);
-          expect(active.displaySurface, SosDisplaySurface.activeAndHistory);
-          expect(active.backendIncidentId, incidentId);
-          expect(active.nodeId, originatorNodeId);
-          expect(active.incident?.relayNodeId, relayNodeId);
-          expect(await harness.sdk.getSosState(), SosState.sent);
-          expect((await harness.sdk.getCurrentSosIncident())?.id, incidentId);
+          expect(await harness.sdk.getSosState(), SosState.idle);
+          expect(await harness.sdk.getCurrentSosIncident(), isNull);
 
           realtime.emitConnectionState(RealtimeConnectionState.reconnecting);
           realtime.emitConnectionState(RealtimeConnectionState.connected);
           await pumpEventQueue(times: 8);
           final afterReconnect = await harness.sdk.getSosLifecycle();
           expect(afterReconnect.generation, active.generation);
-          expect(afterReconnect.backendIncidentId, incidentId);
-          expect(afterReconnect.nodeId, originatorNodeId);
-          expect(afterReconnect.incident?.relayNodeId, relayNodeId);
+          expect(afterReconnect.stage, SosLifecycleStage.idle);
+          expect(await harness.sdk.getSosState(), SosState.idle);
+          expect(await harness.sdk.getCurrentSosIncident(), isNull);
           expect(realtime.publishedSos, hasLength(1));
 
           realtime.emitEvent(
@@ -10833,9 +10826,9 @@ void main() {
           await pumpEventQueue(times: 8);
           final acknowledged = await harness.sdk.getSosLifecycle();
           expect(acknowledged.generation, active.generation);
-          expect(acknowledged.backendIncidentId, incidentId);
-          expect(acknowledged.externalOnly, isTrue);
-          expect(await harness.sdk.getSosState(), SosState.acknowledged);
+          expect(acknowledged.stage, SosLifecycleStage.idle);
+          expect(await harness.sdk.getSosState(), SosState.idle);
+          expect(commands, isEmpty);
 
           realtime.emitEvent(
             _remoteLifecycleEvent(
@@ -10846,15 +10839,12 @@ void main() {
           );
           await pumpEventQueue(times: 8);
           final resolved = await harness.sdk.getSosLifecycle();
-          expect(resolved.stage, SosLifecycleStage.resolved);
+          expect(resolved.stage, SosLifecycleStage.idle);
           expect(resolved.generation, active.generation);
-          expect(resolved.backendIncidentId, incidentId);
-          expect(resolved.externalOnly, isTrue);
+          expect(await harness.sdk.getSosState(), SosState.idle);
+          expect(await harness.sdk.getCurrentSosIncident(), isNull);
           expect(realtime.publishedSos, hasLength(1));
-          expect(
-            commands.where((opcode) => opcode == 0x04 || opcode == 0x07),
-            isEmpty,
-          );
+          expect(commands, isEmpty);
         } finally {
           await harness.dispose(disposeSosRepository: false);
           await repository.dispose();

@@ -954,7 +954,7 @@ class BleOperationalRuntimeBridge {
           ),
         );
         BleDebugRegistry.instance.recordEvent(
-          'SOS_REMOTE_ACK_MIRROR_SKIPPED reason=rescue_buzzer_off_transport_unavailable '
+          'SOS_REMOTE_ACK_MIRROR_SKIPPED reason=connected_tag_ble_buzzer_off_transport_unavailable '
           'forbiddenCommand=SOS_ACK_RELAY_0x08',
         );
         return;
@@ -1356,7 +1356,7 @@ class BleOperationalRuntimeBridge {
       ),
     );
     BleDebugRegistry.instance.recordEvent(
-      'SOS_REMOTE_ACK_MIRROR_SKIPPED reason=rescue_buzzer_off_transport_unavailable '
+      'SOS_REMOTE_ACK_MIRROR_SKIPPED reason=connected_tag_ble_buzzer_off_transport_unavailable '
       'forbiddenCommand=SOS_ACK_RELAY_0x08 '
       'originatorNodeId=${_formatNodeId(requestedRelayNodeId)}',
     );

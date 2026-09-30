@@ -2088,6 +2088,7 @@ void main() {
 
     group('remote relay cancel handoff', () {
       late _FakeCancelRemoteDataSource cancelDataSource;
+      late MqttOperationalSosRepository operationalSosRepository;
 
       Future<void> useSdkWithCancelDataSource() async {
         await sdk.dispose();
@@ -2099,11 +2100,12 @@ void main() {
           },
         );
         cancelDataSource = _FakeCancelRemoteDataSource();
+        operationalSosRepository = MqttOperationalSosRepository(
+          realtimeClient: realtimeClient,
+          cancelRemoteDataSource: cancelDataSource,
+        );
         sdk = EixamConnectSdkImpl(
-          sosRepository: MqttOperationalSosRepository(
-            realtimeClient: realtimeClient,
-            cancelRemoteDataSource: cancelDataSource,
-          ),
+          sosRepository: operationalSosRepository,
           trackingRepository: trackingRepository,
           telemetryRepository: telemetryRepository,
           contactsRepository: contactsRepository,
@@ -2180,6 +2182,277 @@ void main() {
 
       setUp(() {
         cancelDataSource = _FakeCancelRemoteDataSource();
+      });
+
+      test(
+          'Web ACK stays transport-silent while Web RESOLVE sends exactly one terminal 0x08 through correlated R',
+          () async {
+        await useSdkWithCancelDataSource();
+        const originatorNodeId = 0x01020304;
+        const relayNodeId = 0x05060708;
+        const canonicalIncidentId = 'remote-web-action-incident';
+        deviceRepository.emitStatus(
+          buildDeviceStatus(
+            deviceId: 'relay-tag',
+            nodeId: relayNodeId,
+            canonicalHardwareId: 'relay-node',
+            connected: true,
+            paired: true,
+            activated: true,
+          ),
+        );
+
+        bleEvents.add(
+          _remoteRelayEvent(
+            snapshot: _snapshot(
+              originatorNodeId: originatorNodeId,
+              relayNodeId: relayNodeId,
+            ),
+          ),
+        );
+        await _eventually(() => realtimeClient.publishedSos.length == 1);
+        final publishedAt = realtimeClient.publishedSos.single.timestamp;
+        realtimeClient.emitEvent(
+          RealtimeEvent(
+            type: 'processed',
+            timestamp: publishedAt,
+            payload: <String, dynamic>{
+              'type': 'processed',
+              'incidentId': canonicalIncidentId,
+              'status': 'active',
+              'occurredAt': publishedAt.toIso8601String(),
+              '_mqttAuthenticatedUserScoped': true,
+              '_mqttTopicCategory': 'internal',
+            },
+          ),
+        );
+        await _eventually(
+          () => _hasDebugMessage('reason=remote_canonical_correlation'),
+        );
+
+        realtimeClient.emitEvent(
+          RealtimeEvent(
+            type: 'sos.lifecycle',
+            timestamp: publishedAt.add(const Duration(seconds: 1)),
+            payload: <String, dynamic>{
+              'type': 'sos.lifecycle',
+              'incidentId': canonicalIncidentId,
+              'state': 'acknowledged',
+              '_mqttAuthenticatedUserScoped': true,
+              '_mqttTopicCategory': 'internal',
+            },
+          ),
+        );
+        await _eventually(
+          () => _hasDebugMessage('SOS_REMOTE_ACK_MIRROR_SKIPPED'),
+        );
+
+        expect(deviceCommands, isEmpty);
+        expect(await sdk.getCurrentSosIncident(), isNull);
+        expect(await sdk.getSosState(), SosState.idle);
+
+        realtimeClient.emitEvent(
+          RealtimeEvent(
+            type: 'sos.lifecycle',
+            timestamp: publishedAt.add(const Duration(seconds: 2)),
+            payload: <String, dynamic>{
+              'type': 'sos.lifecycle',
+              'incidentId': canonicalIncidentId,
+              'state': 'resolved',
+              '_mqttAuthenticatedUserScoped': true,
+              '_mqttTopicCategory': 'internal',
+            },
+          ),
+        );
+        await _eventually(() => deviceCommands.length == 1);
+
+        expect(deviceCommands.single.opcode, 0x08);
+        expect(
+          deviceCommands.single.encode(),
+          <int>[0x08, 0x04, 0x03, 0x02, 0x01],
+        );
+        expect(await sdk.getCurrentSosIncident(), isNull);
+        expect(await sdk.getSosState(), SosState.idle);
+        expect(
+          _hasDebugMessage('SOS_REMOTE_RELAY_TERMINAL_COMMAND_SENT'),
+          isTrue,
+        );
+        expect(
+          _hasDebugMessage('SOS_REMOTE_RELAY_TERMINAL_GATT_SUBMISSION'),
+          isTrue,
+        );
+        expect(
+          _hasDebugMessage('SOS_REMOTE_RELAY_TERMINAL_GATT_COMPLETED'),
+          isTrue,
+        );
+
+        realtimeClient.emitEvent(
+          RealtimeEvent(
+            type: 'sos.lifecycle',
+            timestamp: publishedAt.add(const Duration(seconds: 3)),
+            payload: <String, dynamic>{
+              'type': 'sos.lifecycle',
+              'incidentId': canonicalIncidentId,
+              'state': 'resolved',
+              '_mqttAuthenticatedUserScoped': true,
+              '_mqttTopicCategory': 'internal',
+            },
+          ),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        expect(deviceCommands, hasLength(1));
+      });
+
+      test('terminal event correlated to R1 is rejected while R2 is connected',
+          () async {
+        await useSdkWithCancelDataSource();
+        const originatorNodeId = 0x01020304;
+        const relayNodeId = 0x05060708;
+        const wrongRelayNodeId = 0x11121314;
+        const canonicalIncidentId = 'remote-wrong-relay-incident';
+        deviceRepository.emitStatus(
+          buildDeviceStatus(
+            deviceId: 'relay-r1',
+            nodeId: relayNodeId,
+            canonicalHardwareId: 'AA:BB:CC:DD:EE:01',
+            connected: true,
+            paired: true,
+            activated: true,
+          ),
+        );
+
+        bleEvents.add(
+          _remoteRelayEvent(
+            deviceId: 'relay-r1',
+            canonicalHardwareId: 'AA:BB:CC:DD:EE:01',
+            snapshot: _snapshot(
+              originatorNodeId: originatorNodeId,
+              relayNodeId: relayNodeId,
+            ),
+          ),
+        );
+        await _eventually(() => realtimeClient.publishedSos.length == 1);
+        final publishedAt = realtimeClient.publishedSos.single.timestamp;
+        realtimeClient.emitEvent(
+          RealtimeEvent(
+            type: 'processed',
+            timestamp: publishedAt,
+            payload: <String, dynamic>{
+              'type': 'processed',
+              'incidentId': canonicalIncidentId,
+              'status': 'active',
+              'occurredAt': publishedAt.toIso8601String(),
+              '_mqttAuthenticatedUserScoped': true,
+              '_mqttTopicCategory': 'internal',
+            },
+          ),
+        );
+        await _eventually(
+          () => _hasDebugMessage('reason=remote_canonical_correlation'),
+        );
+        deviceRepository.emitStatus(
+          buildDeviceStatus(
+            deviceId: 'relay-r2',
+            nodeId: wrongRelayNodeId,
+            canonicalHardwareId: 'AA:BB:CC:DD:EE:02',
+            connected: true,
+            paired: true,
+            activated: true,
+          ),
+        );
+
+        realtimeClient.emitEvent(
+          RealtimeEvent(
+            type: 'sos.lifecycle',
+            timestamp: publishedAt.add(const Duration(seconds: 1)),
+            payload: <String, dynamic>{
+              'type': 'sos.lifecycle',
+              'incidentId': canonicalIncidentId,
+              'state': 'cancelled',
+              '_mqttAuthenticatedUserScoped': true,
+              '_mqttTopicCategory': 'internal',
+            },
+          ),
+        );
+        await _eventually(
+          () => _hasDebugMessage(
+            'reason=connected_transport_not_correlated_relay',
+          ),
+        );
+
+        expect(deviceCommands, isEmpty);
+        expect(await sdk.getCurrentSosIncident(), isNull);
+        expect(await sdk.getSosState(), SosState.idle);
+      });
+
+      test('Web CANCEL uses the same correlated terminal 0x08 transport',
+          () async {
+        await useSdkWithCancelDataSource();
+        const originatorNodeId = 0x01020304;
+        const relayNodeId = 0x05060708;
+        const canonicalIncidentId = 'remote-web-cancel-incident';
+        deviceRepository.emitStatus(
+          buildDeviceStatus(
+            deviceId: 'relay-tag',
+            nodeId: relayNodeId,
+            canonicalHardwareId: 'AA:BB:CC:DD:EE:01',
+            connected: true,
+            paired: true,
+            activated: true,
+          ),
+        );
+        bleEvents.add(
+          _remoteRelayEvent(
+            deviceId: 'relay-tag',
+            canonicalHardwareId: 'AA:BB:CC:DD:EE:01',
+            snapshot: _snapshot(
+              originatorNodeId: originatorNodeId,
+              relayNodeId: relayNodeId,
+            ),
+          ),
+        );
+        await _eventually(() => realtimeClient.publishedSos.length == 1);
+        final publishedAt = realtimeClient.publishedSos.single.timestamp;
+        realtimeClient.emitEvent(
+          RealtimeEvent(
+            type: 'processed',
+            timestamp: publishedAt,
+            payload: <String, dynamic>{
+              'type': 'processed',
+              'incidentId': canonicalIncidentId,
+              'status': 'active',
+              'occurredAt': publishedAt.toIso8601String(),
+              '_mqttAuthenticatedUserScoped': true,
+              '_mqttTopicCategory': 'internal',
+            },
+          ),
+        );
+        await _eventually(
+          () => _hasDebugMessage('reason=remote_canonical_correlation'),
+        );
+
+        realtimeClient.emitEvent(
+          RealtimeEvent(
+            type: 'sos.lifecycle',
+            timestamp: publishedAt.add(const Duration(seconds: 1)),
+            payload: <String, dynamic>{
+              'type': 'sos.lifecycle',
+              'incidentId': canonicalIncidentId,
+              'state': 'cancelled',
+              '_mqttAuthenticatedUserScoped': true,
+              '_mqttTopicCategory': 'internal',
+            },
+          ),
+        );
+        await _eventually(() => deviceCommands.length == 1);
+
+        expect(deviceCommands.single.opcode, 0x08);
+        expect(
+          deviceCommands.single.encode(),
+          <int>[0x08, 0x04, 0x03, 0x02, 0x01],
+        );
+        expect(await sdk.getCurrentSosIncident(), isNull);
+        expect(await sdk.getSosState(), SosState.idle);
       });
 
       test('remote 0xE1/0x02 cancel uses gateway-scope fallback when safe',
@@ -3259,6 +3532,10 @@ class _FakeOperationalRealtimeClient implements OperationalRealtimeClient {
 
   @override
   Stream<RealtimeEvent> watchEvents() => _eventController.stream;
+
+  void emitEvent(RealtimeEvent event) {
+    _eventController.add(event);
+  }
 
   Future<void> dispose() async {
     await _connectionController.close();

@@ -155,53 +155,6 @@ void main() {
     },
   );
 
-  test(
-    'SDK recreation preserves canonical remote ownership isolation',
-    () async {
-      await controller.restoreFor(owner);
-      final active = await controller.confirmExternalActive(
-        incident: SosIncident(
-          id: 'remote-canonical-i',
-          state: SosState.sent,
-          createdAt: now,
-          triggerSource: 'remote_lora_relay',
-          relaySource: 'remote_lora_relay',
-          originatorNodeId: 0x01020304,
-          relayNodeId: 0x05060708,
-          deviceId: '16909060',
-          cycleKey: 'remote:16909060:1',
-          originKind: SosOriginKind.remoteRelay,
-          actionability: SosActionability.externalOnly,
-          displaySurface: SosDisplaySurface.activeAndHistory,
-          isBackendConfirmed: true,
-        ),
-      );
-      final restoredController = AuthoritativeSosLifecycleController(
-        secureStore: store,
-        clock: () => now.add(const Duration(minutes: 1)),
-      );
-      addTearDown(restoredController.dispose);
-
-      final restored = await restoredController.restoreFor(owner);
-
-      expect(restored.lifecycleId, active.lifecycleId);
-      expect(restored.generation, active.generation);
-      expect(restored.stage, SosLifecycleStage.recoveryRequired);
-      expect(restored.origin, SosLifecycleOrigin.remoteRelay);
-      expect(restored.localActionable, isFalse);
-      expect(restored.externalOnly, isTrue);
-      expect(restored.displaySurface, SosDisplaySurface.activeAndHistory);
-      expect(restored.backendIncidentId, 'remote-canonical-i');
-      expect(restored.nodeId, 0x01020304);
-      expect(restored.dispatchOwner, SosDispatchOwner.remoteRelay);
-      expect(restored.dispatchState, SosDispatchState.backendConfirmed);
-      expect(
-        restoredController.currentCadence.desiredLocalSosOwnership,
-        isFalse,
-      );
-    },
-  );
-
   test('temporary disconnect does not mutate active ownership', () async {
     final active = await activate();
     now = now.add(const Duration(minutes: 5));
@@ -209,33 +162,6 @@ void main() {
     expect(controller.current, same(active));
     expect(controller.current.localActionable, isTrue);
   });
-
-  test(
-    'remote canonical evidence cannot replace an open local generation',
-    () async {
-      final local = await activate();
-      final retained = await controller.confirmExternalActive(
-        incident: SosIncident(
-          id: 'unrelated-remote-i',
-          state: SosState.sent,
-          createdAt: now,
-          originatorNodeId: 0x01020304,
-          relayNodeId: 0x05060708,
-          originKind: SosOriginKind.remoteRelay,
-          actionability: SosActionability.externalOnly,
-          displaySurface: SosDisplaySurface.activeAndHistory,
-          isBackendConfirmed: true,
-        ),
-      );
-
-      expect(retained.lifecycleId, local.lifecycleId);
-      expect(retained.generation, local.generation);
-      expect(retained.origin, SosLifecycleOrigin.localApp);
-      expect(retained.localActionable, isTrue);
-      expect(retained.externalOnly, isFalse);
-      expect(retained.backendIncidentId, 'backend-local-1');
-    },
-  );
 
   test(
     'reconnect enrichment preserves lifecycle and does not duplicate',

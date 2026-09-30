@@ -35,6 +35,28 @@ final class MqttAcceptedSosLifecycleTransition {
   final String source;
 }
 
+final class MqttRemoteRelayLifecycleTransition {
+  const MqttRemoteRelayLifecycleTransition({
+    required this.state,
+    required this.incidentId,
+    required this.originatorNodeId,
+    required this.relayNodeId,
+    required this.relayHardwareId,
+    required this.occurredAt,
+    required this.rawStatus,
+    required this.source,
+  });
+
+  final SosState state;
+  final String incidentId;
+  final int? originatorNodeId;
+  final int? relayNodeId;
+  final String? relayHardwareId;
+  final DateTime occurredAt;
+  final String rawStatus;
+  final String source;
+}
+
 class MqttOperationalSosRepository
     implements
         SosRepository,
@@ -101,6 +123,11 @@ class MqttOperationalSosRepository
       StreamController<MqttAcceptedSosLifecycleTransition>.broadcast(
         sync: true,
       );
+  final StreamController<MqttRemoteRelayLifecycleTransition>
+  _remoteRelayLifecycleTransitionController =
+      StreamController<MqttRemoteRelayLifecycleTransition>.broadcast(
+        sync: true,
+      );
 
   StreamSubscription<RealtimeEvent>? _realtimeSub;
   SosIncident? _activeIncident;
@@ -109,6 +136,7 @@ class MqttOperationalSosRepository
       <String, String?>{};
   _PendingProcessedHandoff? _pendingProcessedHandoff;
   _PendingExternalRelayHandoff? _pendingExternalRelayHandoff;
+  _ExternalRelayLifecycleContext? _externalRelayLifecycleContext;
   final Map<String, DateTime> _externalRelaySosPublishDedupe =
       <String, DateTime>{};
   Timer? _mqttConfirmationWarningTimer;
@@ -1363,13 +1391,7 @@ class MqttOperationalSosRepository
 
       final hydratedIncident = _mapper.toDomain(active);
       final originDecision = classifySosIncidentOrigin(hydratedIncident);
-      final restoresAdmittedExternal =
-          originDecision.isExternalOnly &&
-          _isSameAdmittedExternalIncident(
-            incidentBeforeLookup,
-            hydratedIncident,
-          );
-      if (originDecision.isExternalOnly && !restoresAdmittedExternal) {
+      if (originDecision.isExternalOnly) {
         BleDebugRegistry.instance.recordEvent(
           'SOS_ORIGIN_DECISION source=mqtt_repository_rehydrate '
           'actionability=${originDecision.actionability.name} '
@@ -1417,24 +1439,6 @@ class MqttOperationalSosRepository
         diagnosticNote: 'E_SOS_REHYDRATION_FAILED error=$error',
       );
     }
-  }
-
-  bool _isSameAdmittedExternalIncident(
-    SosIncident? persisted,
-    SosIncident hydrated,
-  ) {
-    if (persisted == null ||
-        !persisted.isBackendConfirmed ||
-        persisted.actionability != SosActionability.externalOnly ||
-        persisted.displaySurface != SosDisplaySurface.activeAndHistory ||
-        !_sameIdentity(persisted.id, hydrated.id) ||
-        persisted.originatorNodeId != hydrated.originatorNodeId ||
-        persisted.relayNodeId != hydrated.relayNodeId ||
-        _differentIdentity(persisted.deviceId, hydrated.deviceId) ||
-        _differentIdentity(persisted.hardwareId, hydrated.hardwareId)) {
-      return false;
-    }
-    return true;
   }
 
   void _startMqttConfirmationWait(String localIncidentId) {
@@ -1559,6 +1563,7 @@ class MqttOperationalSosRepository
     _stopMqttConfirmationWait(reason: reason);
     _pendingProcessedHandoff = null;
     _pendingExternalRelayHandoff = null;
+    _externalRelayLifecycleContext = null;
     if (_bufferedActuatorUpdates.isNotEmpty) {
       BleDebugRegistry.instance.recordEvent(
         'SOS_MQTT_ACTUATOR_UPDATE_BUFFER_CLEARED reason=$reason '
@@ -1628,12 +1633,17 @@ class MqttOperationalSosRepository
     await _realtimeSub?.cancel();
     await _stateController.close();
     await _acceptedLifecycleTransitionController.close();
+    await _remoteRelayLifecycleTransitionController.close();
     await _rejectedTerminalReconciliationController.close();
   }
 
   Stream<MqttAcceptedSosLifecycleTransition>
   watchAcceptedLifecycleTransitions() =>
       _acceptedLifecycleTransitionController.stream;
+
+  Stream<MqttRemoteRelayLifecycleTransition>
+  watchRemoteRelayLifecycleTransitions() =>
+      _remoteRelayLifecycleTransitionController.stream;
 
   @override
   Stream<SosRejectedTerminalReconciliationRequest>
@@ -1680,7 +1690,9 @@ class MqttOperationalSosRepository
       _bufferActuatorUpdate(event, update);
       return;
     }
-    _admitMatchingRemoteCanonicalIncident(update);
+    if (_handleMatchingRemoteRelayLifecycle(update, rawStatus: rawStatus)) {
+      return;
+    }
     final authority = _lifecycleAuthorityFor(update);
     BleDebugRegistry.instance.recordEvent(
       'SOS_BACKEND_EVENT_CORRELATION '
@@ -1905,13 +1917,7 @@ class MqttOperationalSosRepository
   ) {
     final activeIncident = _activeIncident;
     final activeIncidentId = activeIncident?.id;
-    final admittedExternalIncident =
-        activeIncident != null &&
-        activeIncident.actionability == SosActionability.externalOnly &&
-        activeIncident.displaySurface == SosDisplaySurface.activeAndHistory &&
-        activeIncident.isBackendConfirmed &&
-        _sameIdentity(update.incidentId, activeIncident.id);
-    if (_isExternalOnlyLifecycle(update) && !admittedExternalIncident) {
+    if (_isExternalOnlyLifecycle(update)) {
       _logLifecycleAuthorityRejected(
         update: update,
         activeIncidentId: activeIncidentId,
@@ -2047,52 +2053,97 @@ class MqttOperationalSosRepository
     return const _LifecycleAuthorityDecision.rejected('identity_mismatch');
   }
 
-  void _admitMatchingRemoteCanonicalIncident(MqttSosLifecycleUpdate update) {
+  bool _handleMatchingRemoteRelayLifecycle(
+    MqttSosLifecycleUpdate update, {
+    required String rawStatus,
+  }) {
     final pending = _pendingExternalRelayHandoff;
     final occurredAt = update.incidentOccurredAt;
-    if ((_activeIncident != null &&
-            !_isTerminalState(_activeIncident!.state)) ||
-        pending == null ||
-        update.eventType != 'processed' ||
-        !update.authenticatedUserScoped ||
-        update.state == null ||
-        !_isActiveLikeState(update.state!) ||
-        occurredAt == null ||
-        occurredAt.toUtc() != pending.occurredAt ||
-        _nowProvider().toUtc().difference(pending.registeredAt) >
-            _processedHandoffWindow) {
-      return;
+    final matchesPendingCanonical =
+        (_activeIncident == null || _isTerminalState(_activeIncident!.state)) &&
+        pending != null &&
+        update.eventType == 'processed' &&
+        update.authenticatedUserScoped &&
+        update.state != null &&
+        _isActiveLikeState(update.state!) &&
+        occurredAt != null &&
+        occurredAt.toUtc() == pending.occurredAt &&
+        _nowProvider().toUtc().difference(pending.registeredAt) <=
+            _processedHandoffWindow;
+    if (matchesPendingCanonical) {
+      final context = _ExternalRelayLifecycleContext(
+        incidentId: update.incidentId,
+        occurredAt: pending.occurredAt,
+        originatorNodeId: pending.originatorNodeId,
+        relayNodeId: pending.relayNodeId,
+        relayHardwareId: pending.relayHardwareId,
+      );
+      _externalRelayLifecycleContext = context;
+      _pendingExternalRelayHandoff = null;
+      _emitRemoteRelayLifecycleTransition(
+        context: context,
+        state: update.state!,
+        rawStatus: rawStatus,
+        source: 'mqtt:${update.topicCategory ?? "unknown"}',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_MQTT_EVENT_AUTHORITY_ACCEPTED '
+        'reason=remote_canonical_correlation eventType=${update.eventType} '
+        'originatorNodeId=${pending.originatorNodeId?.toString() ?? "none"} '
+        'relayNodeId=${pending.relayNodeId?.toString() ?? "none"} '
+        'relayDeviceId=${pending.relayDeviceId ?? "none"} '
+        'relayHardwareId=${pending.relayHardwareId ?? "none"} '
+        'localStateMutation=false publicIncident=false',
+      );
+      return true;
     }
-    final canonical = SosIncident(
-      id: update.incidentId,
-      state: update.state!,
-      createdAt: pending.occurredAt,
-      source: pending.source,
-      triggerSource: pending.source,
-      relaySource: pending.source,
-      originatorNodeId: pending.originatorNodeId,
-      relayNodeId: pending.relayNodeId,
-      deviceId: pending.deviceId,
-      hardwareId: pending.hardwareId,
-      owner: 'external',
-      cycleKey: pending.cycleKey,
-      originKind: SosOriginKind.remoteRelay,
-      actionability: SosActionability.externalOnly,
-      displaySurface: SosDisplaySurface.activeAndHistory,
-      isBackendConfirmed: true,
-      preservedLocalOwnership: false,
+
+    final context = _externalRelayLifecycleContext;
+    final state = update.state;
+    if (context == null ||
+        state == null ||
+        !_sameIdentity(update.incidentId, context.incidentId) ||
+        !_isTrustedUserScopedAckTopic(update)) {
+      return false;
+    }
+    _emitRemoteRelayLifecycleTransition(
+      context: context,
+      state: state,
+      rawStatus: rawStatus,
+      source: 'mqtt:${update.topicCategory ?? "unknown"}',
     );
-    _activeIncident = canonical;
-    _locallyClosedIncidentId = null;
-    _setState(canonical.state);
-    unawaited(_persistState());
+    if (_isTerminalState(state)) {
+      _externalRelayLifecycleContext = null;
+    }
+    return true;
+  }
+
+  void _emitRemoteRelayLifecycleTransition({
+    required _ExternalRelayLifecycleContext context,
+    required SosState state,
+    required String rawStatus,
+    required String source,
+  }) {
+    if (!_remoteRelayLifecycleTransitionController.isClosed) {
+      _remoteRelayLifecycleTransitionController.add(
+        MqttRemoteRelayLifecycleTransition(
+          state: state,
+          incidentId: context.incidentId,
+          originatorNodeId: context.originatorNodeId,
+          relayNodeId: context.relayNodeId,
+          relayHardwareId: context.relayHardwareId,
+          occurredAt: context.occurredAt,
+          rawStatus: rawStatus,
+          source: source,
+        ),
+      );
+    }
     BleDebugRegistry.instance.recordEvent(
-      'SOS_MQTT_EVENT_AUTHORITY_ACCEPTED '
-      'reason=remote_canonical_admission eventType=${update.eventType} '
-      'originatorNodeId=${pending.originatorNodeId?.toString() ?? "none"} '
-      'relayNodeId=${pending.relayNodeId?.toString() ?? "none"} '
-      'relayDeviceId=${pending.relayDeviceId ?? "none"} '
-      'relayHardwareId=${pending.relayHardwareId ?? "none"}',
+      'SOS_REMOTE_RELAY_LIFECYCLE_CORRELATED '
+      'incidentId=${context.incidentId} state=${state.name} '
+      'originatorNodeId=${context.originatorNodeId?.toString() ?? "none"} '
+      'relayNodeId=${context.relayNodeId?.toString() ?? "none"} '
+      'localStateMutation=false publicIncident=false source=$source',
     );
   }
 
@@ -3091,6 +3142,22 @@ class _PendingExternalRelayHandoff {
   final String? relayHardwareId;
   final String? cycleKey;
   final String source;
+}
+
+class _ExternalRelayLifecycleContext {
+  const _ExternalRelayLifecycleContext({
+    required this.incidentId,
+    required this.occurredAt,
+    required this.originatorNodeId,
+    required this.relayNodeId,
+    required this.relayHardwareId,
+  });
+
+  final String incidentId;
+  final DateTime occurredAt;
+  final int? originatorNodeId;
+  final int? relayNodeId;
+  final String? relayHardwareId;
 }
 
 class _LifecycleAuthorityDecision {

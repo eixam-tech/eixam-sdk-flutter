@@ -451,54 +451,6 @@ final class AuthoritativeSosLifecycleController {
     );
   }
 
-  Future<SosLifecycleSnapshot> confirmExternalActive({
-    required SosIncident incident,
-  }) {
-    final current = _current;
-    final currentIncidentId = current.backendIncidentId ?? current.incident?.id;
-    if (current.isOpen &&
-        (!current.externalOnly || currentIncidentId != incident.id)) {
-      return Future<SosLifecycleSnapshot>.value(current);
-    }
-    final sameGeneration =
-        current.isOpen &&
-        current.externalOnly &&
-        currentIncidentId == incident.id;
-    if (!sameGeneration) {
-      final fencedGeneration = _terminalWatermark?.generation ?? 0;
-      if (_generation < fencedGeneration) {
-        _generation = fencedGeneration;
-      }
-      _generation += 1;
-    }
-    final now = _now();
-    return _publish(
-      SosLifecycleSnapshot(
-        revision: current.revision,
-        stage: SosLifecycleStage.active,
-        lifecycleId: sameGeneration
-            ? current.lifecycleId
-            : 'sos:remote:${incident.id}:$_generation',
-        generation: sameGeneration ? current.generation : _generation,
-        origin: SosLifecycleOrigin.remoteRelay,
-        localActionable: false,
-        externalOnly: true,
-        displaySurface: SosDisplaySurface.activeAndHistory,
-        backendIncidentId: incident.id,
-        deviceId: incident.deviceId,
-        nodeId: incident.originatorNodeId,
-        hardwareId: incident.hardwareId,
-        deviceCycleKey: incident.cycleKey,
-        triggerSource: incident.triggerSource ?? incident.relaySource,
-        activationTimestamp: incident.createdAt.toUtc(),
-        lastAuthoritativeObservation: now,
-        incident: incident,
-        dispatchOwner: SosDispatchOwner.remoteRelay,
-        dispatchState: SosDispatchState.backendConfirmed,
-      ),
-    );
-  }
-
   Future<SosDispatchClaimResult> tryClaimDispatch({
     required int generation,
     required SosDispatchOwner owner,

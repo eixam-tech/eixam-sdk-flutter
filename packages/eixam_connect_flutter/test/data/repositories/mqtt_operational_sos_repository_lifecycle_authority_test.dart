@@ -201,35 +201,21 @@ void main() {
     );
 
     test(
-      'remote relay publish admits the matching canonical backend ACTIVE without local ownership',
+      'remote relay publish retains hidden canonical context while local lifecycle stays idle',
       () async {
         const originatorNodeId = 0x01020304;
         const relayNodeId = 0x05060708;
         const canonicalIncidentId = 'remote-canonical-incident';
         final occurredAt = DateTime.utc(2026, 9, 24, 10, 30);
-        final remoteDataSource = _FakeSosRemoteDataSource()
-          ..active = SosIncidentDto(
-            id: canonicalIncidentId,
-            state: SosState.sent.name,
-            createdAt: occurredAt.toIso8601String(),
-            source: 'remote_lora_relay',
-            triggerSource: 'remote_lora_relay',
-            relaySource: 'remote_lora_relay',
-            owner: 'external',
-            originatorNodeId: originatorNodeId,
-            relayNodeId: relayNodeId,
-            deviceId: originatorNodeId.toString(),
-            hardwareId: 'originator-hardware',
-            cycleKey: 'remote:$originatorNodeId:7',
-            originKind: SosOriginKind.remoteRelay.name,
-            actionability: SosActionability.externalOnly.name,
-            displaySurface: SosDisplaySurface.activeAndHistory.name,
-          );
         await repository.dispose();
         repository = MqttOperationalSosRepository(
           realtimeClient: realtimeClient,
-          remoteDataSource: remoteDataSource,
         );
+        final transitions = <MqttRemoteRelayLifecycleTransition>[];
+        final transitionSub = repository
+            .watchRemoteRelayLifecycleTransitions()
+            .listen(transitions.add);
+        addTearDown(transitionSub.cancel);
 
         await repository.submitSosToBackend(
           timestamp: occurredAt,
@@ -250,45 +236,46 @@ void main() {
         );
         await _pumpRealtime();
 
-        final current = await repository.getCurrentIncident();
-        expect(current?.id, canonicalIncidentId);
-        expect(current?.state, SosState.sent);
-        expect(current?.isBackendConfirmed, isTrue);
-        expect(current?.originKind, SosOriginKind.remoteRelay);
-        expect(current?.actionability, SosActionability.externalOnly);
-        expect(current?.displaySurface, SosDisplaySurface.activeAndHistory);
-        expect(current?.originatorNodeId, originatorNodeId);
-        expect(current?.relayNodeId, relayNodeId);
-        expect(current?.deviceId, originatorNodeId.toString());
+        expect(await repository.getCurrentIncident(), isNull);
+        expect(await repository.getSosState(), SosState.idle);
+        expect(transitions, hasLength(1));
+        expect(transitions.single.incidentId, canonicalIncidentId);
+        expect(transitions.single.state, SosState.sent);
+        expect(transitions.single.originatorNodeId, originatorNodeId);
+        expect(transitions.single.relayNodeId, relayNodeId);
+        expect(transitions.single.relayHardwareId, 'relay-hardware');
         expect(realtimeClient.publishedSos, hasLength(1));
-        expect(_hasDiagnostic('reason=remote_canonical_admission'), isTrue);
+        expect(_hasDiagnostic('reason=remote_canonical_correlation'), isTrue);
+        expect(_hasDiagnostic('localStateMutation=false'), isTrue);
         expect(_hasDiagnostic('reason=missing_active_incident'), isFalse);
 
         realtimeClient.emitEvent(
           _lifecycleEvent(
             incidentId: canonicalIncidentId,
             state: 'acknowledged',
+            authenticatedUserScoped: true,
+            topicCategory: 'internal',
           ),
         );
         await _pumpRealtime();
-        expect(await repository.getSosState(), SosState.acknowledged);
-        expect(
-          (await repository.getCurrentIncident())?.id,
-          canonicalIncidentId,
-        );
+        expect(await repository.getSosState(), SosState.idle);
+        expect(transitions, hasLength(2));
+        expect(transitions.last.state, SosState.acknowledged);
 
         realtimeClient.emitEvent(
           _lifecycleEvent(
             incidentId: canonicalIncidentId,
             state: 'cancelled',
             terminalReason: SosTerminalReason.cancelledByUser.name,
+            authenticatedUserScoped: true,
+            topicCategory: 'internal',
           ),
         );
         await _pumpRealtime();
-        final cancelled = await repository.getCurrentIncident();
-        expect(cancelled?.id, canonicalIncidentId);
-        expect(cancelled?.state, SosState.cancelled);
-        expect(cancelled?.actionability, SosActionability.externalOnly);
+        expect(await repository.getCurrentIncident(), isNull);
+        expect(await repository.getSosState(), SosState.idle);
+        expect(transitions, hasLength(3));
+        expect(transitions.last.state, SosState.cancelled);
         expect(realtimeClient.publishedSos, hasLength(1));
 
         final nextOccurredAt = occurredAt.add(const Duration(minutes: 1));
@@ -311,22 +298,27 @@ void main() {
         );
         await _pumpRealtime();
 
-        final next = await repository.getCurrentIncident();
-        expect(next?.id, 'remote-canonical-incident-next');
-        expect(next?.state, SosState.sent);
-        expect(next?.originatorNodeId, originatorNodeId);
-        expect(next?.relayNodeId, relayNodeId);
+        expect(await repository.getCurrentIncident(), isNull);
+        expect(await repository.getSosState(), SosState.idle);
+        expect(transitions, hasLength(4));
+        expect(transitions.last.incidentId, 'remote-canonical-incident-next');
+        expect(transitions.last.state, SosState.sent);
+        expect(transitions.last.originatorNodeId, originatorNodeId);
+        expect(transitions.last.relayNodeId, relayNodeId);
         expect(realtimeClient.publishedSos, hasLength(2));
 
         realtimeClient.emitEvent(
-          _lifecycleEvent(incidentId: canonicalIncidentId, state: 'resolved'),
+          _lifecycleEvent(
+            incidentId: canonicalIncidentId,
+            state: 'resolved',
+            authenticatedUserScoped: true,
+            topicCategory: 'internal',
+          ),
         );
         await _pumpRealtime();
-        expect(
-          (await repository.getCurrentIncident())?.id,
-          'remote-canonical-incident-next',
-        );
-        expect(await repository.getSosState(), SosState.sent);
+        expect(await repository.getCurrentIncident(), isNull);
+        expect(await repository.getSosState(), SosState.idle);
+        expect(transitions, hasLength(4));
       },
     );
 
@@ -389,7 +381,7 @@ void main() {
     );
 
     test(
-      'restores an already admitted canonical remote incident without republish',
+      'does not restore a remote relay incident as local lifecycle state',
       () async {
         const originatorNodeId = 0x01020304;
         const relayNodeId = 0x05060708;
@@ -442,14 +434,9 @@ void main() {
         await repository.restoreState();
         final result = await repository.rehydrateRuntimeStateFromBackend();
 
-        expect(
-          result.outcome,
-          SosRuntimeRehydrationOutcome.hydratedFromBackend,
-        );
-        final restored = await repository.getCurrentIncident();
-        expect(restored?.id, incidentId);
-        expect(restored?.actionability, SosActionability.externalOnly);
-        expect(restored?.displaySurface, SosDisplaySurface.activeAndHistory);
+        expect(result.outcome, SosRuntimeRehydrationOutcome.clearedToIdle);
+        expect(await repository.getCurrentIncident(), isNull);
+        expect(await repository.getSosState(), SosState.idle);
         expect(realtimeClient.publishedSos, hasLength(1));
       },
     );
@@ -1962,6 +1949,8 @@ RealtimeEvent _lifecycleEvent({
   String? actionability,
   String? displaySurface,
   String? terminalReason,
+  bool authenticatedUserScoped = false,
+  String? topicCategory,
 }) {
   return RealtimeEvent(
     type: 'sos.lifecycle',
@@ -1978,6 +1967,8 @@ RealtimeEvent _lifecycleEvent({
       if (actionability != null) 'actionability': actionability,
       if (displaySurface != null) 'displaySurface': displaySurface,
       if (terminalReason != null) 'terminalReason': terminalReason,
+      '_mqttAuthenticatedUserScoped': authenticatedUserScoped,
+      if (topicCategory != null) '_mqttTopicCategory': topicCategory,
     },
   );
 }
