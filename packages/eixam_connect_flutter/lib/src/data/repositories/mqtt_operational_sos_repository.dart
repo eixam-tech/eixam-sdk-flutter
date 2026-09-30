@@ -2167,6 +2167,7 @@ class MqttOperationalSosRepository
       source: 'mqtt:${update.topicCategory ?? "unknown"}',
     );
     if (_isTerminalState(state)) {
+      _clearExternalRelaySosPublishDedupe(context);
       _externalRelayLifecycleContext = null;
       unawaited(
         _clearPersistedExternalRelayLifecycleContext(
@@ -2175,6 +2176,25 @@ class MqttOperationalSosRepository
       );
     }
     return true;
+  }
+
+  void _clearExternalRelaySosPublishDedupe(
+    _ExternalRelayLifecycleContext context,
+  ) {
+    final originatorNodeId = context.originatorNodeId?.toString() ?? 'none';
+    final relayNodeId = context.relayNodeId?.toString() ?? 'none';
+    _externalRelaySosPublishDedupe.removeWhere((key, _) {
+      final parts = key.split(':');
+      return parts.length >= 5 &&
+          parts[0] == 'remote_lora_relay' &&
+          parts[1] == originatorNodeId &&
+          parts[2] == relayNodeId;
+    });
+    BleDebugRegistry.instance.recordEvent(
+      'EXTERNAL_SOS repository_publish_dedupe_rearmed '
+      'reason=terminal_correlated '
+      'originatorNodeId=$originatorNodeId relayNodeId=$relayNodeId',
+    );
   }
 
   Future<void> _persistExternalRelayLifecycleContext(

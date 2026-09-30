@@ -755,6 +755,8 @@ class EixamConnectSdkImpl
       <String, DateTime>{};
   final Map<String, DateTime> _externalRelayRearmedAtByKey =
       <String, DateTime>{};
+  final Map<String, DateTime> _remoteRelayTerminalCompletedAtByKey =
+      <String, DateTime>{};
   final Map<String, _RecentExternalRelaySosContext>
   _recentExternalRelaySosContexts = <String, _RecentExternalRelaySosContext>{};
   final Set<String> _completedRemoteRelayTerminalCommands = <String>{};
@@ -2046,11 +2048,25 @@ class EixamConnectSdkImpl
         'relayNodeId=${transition.relayNodeId?.toString() ?? "none"} '
         'localStateMutation=false',
       );
-      _removeRecentExternalRelayContextsFor(
-        originatorNodeId: _normalizeNodeId(originatorNodeId),
-        relayNodeId: _normalizeNodeIdOrNull(transition.relayNodeId),
+      _remoteRelayTerminalCompletedAtByKey[_externalRelayRearmKey(
+        originatorNodeId: originatorNodeId,
+        relayNodeId: transition.relayNodeId,
+      )] = DateTime.now()
+          .toUtc();
+      _rearmExternalRelayAfterTerminalSuccess(
+        snapshot: RemoteRelaySosSnapshot(
+          kind: RemoteRelaySosKind.cancel,
+          originatorNodeId: originatorNodeId,
+          relayNodeId: transition.relayNodeId,
+          source: RemoteRelaySosSource.sosNotify,
+          sosType: 0,
+          receivedAt: transition.occurredAt,
+          rawPayload: const <int>[],
+          payloadHex: null,
+        ),
+        backendIncidentId: transition.incidentId,
+        reason: 'web_${transition.state.name}_success',
       );
-      unawaited(_persistRecentExternalRelaySosContexts());
     } catch (error) {
       BleDebugRegistry.instance.recordEvent(
         'SOS_REMOTE_RELAY_TERMINAL_COMMAND_FAILED '
@@ -19318,6 +19334,21 @@ class EixamConnectSdkImpl
     required RemoteRelaySosSnapshot snapshot,
     required _RecentExternalRelaySosContext? context,
   }) async {
+    // A canonical incident correlation is stronger than any opportunistic
+    // node-to-hardware mapping learned over the mesh. Remote victims commonly
+    // belong to another user, so sending their observed hardware id to the
+    // caller-scoped cancel endpoint produces HTTP 422. With an exact O/R and
+    // incident correlation, cancel the caller's open incident without a
+    // deviceId; the backend contract intentionally supports that scope.
+    if (_canUseBackendIncidentForRemoteRelayCancel(
+      snapshot: snapshot,
+      context: context,
+    )) {
+      return const _RemoteRelayCancelDeviceIdentity(
+        deviceId: null,
+        source: 'backend_incident_id',
+      );
+    }
     final hardwareId = (await _resolveOriginatorHardwareId(
       snapshot.originatorNodeId,
     ))?.trim();
@@ -19352,15 +19383,6 @@ class EixamConnectSdkImpl
       return _RemoteRelayCancelDeviceIdentity(
         deviceId: triggerDeviceId,
         source: 'correlated_trigger_device_id',
-      );
-    }
-    if (_canUseBackendIncidentForRemoteRelayCancel(
-      snapshot: snapshot,
-      context: context,
-    )) {
-      return const _RemoteRelayCancelDeviceIdentity(
-        deviceId: null,
-        source: 'backend_incident_id',
       );
     }
     final originatorDeviceId = _remoteRelayOriginatorDeviceId(snapshot);
@@ -19546,15 +19568,17 @@ class EixamConnectSdkImpl
         '${_normalizeNodeIdOrNull(relayNodeId)?.toString() ?? "none"}';
   }
 
-  void _rearmExternalRelayAfterCancelSuccess({
+  void _rearmExternalRelayAfterTerminalSuccess({
     required RemoteRelaySosSnapshot snapshot,
     required String? backendIncidentId,
+    required String reason,
   }) {
     final originatorNodeId = _normalizeNodeId(snapshot.originatorNodeId);
     final relayNodeId = _normalizeNodeIdOrNull(snapshot.relayNodeId);
     final normalizedIncidentId = backendIncidentId?.trim();
     BleDebugRegistry.instance.recordEvent(
-      'EXTERNAL_SOS external_cancel_success_rearm_start '
+      'EXTERNAL_SOS external_terminal_success_rearm_start '
+      'reason=$reason '
       'originatorNodeId=$originatorNodeId '
       'relayNodeId=${relayNodeId?.toString() ?? "none"} '
       'backendIncidentId=${normalizedIncidentId?.isNotEmpty == true ? normalizedIncidentId : "none"}',
@@ -19613,7 +19637,7 @@ class EixamConnectSdkImpl
       }
       closedContext = true;
       BleDebugRegistry.instance.recordEvent(
-        'EXTERNAL_SOS external_context_closed reason=cancel_success '
+        'EXTERNAL_SOS external_context_closed reason=$reason '
         'originatorNodeId=$originatorNodeId '
         'relayNodeId=${context.relayNodeId?.toString() ?? "none"} '
         'backendIncidentId=${contextIncidentId?.isNotEmpty == true ? contextIncidentId : "none"}',
@@ -19622,7 +19646,7 @@ class EixamConnectSdkImpl
     });
     if (!closedContext) {
       BleDebugRegistry.instance.recordEvent(
-        'EXTERNAL_SOS external_context_closed reason=cancel_success '
+        'EXTERNAL_SOS external_context_closed reason=$reason '
         'originatorNodeId=$originatorNodeId '
         'relayNodeId=${relayNodeId?.toString() ?? "none"} '
         'backendIncidentId=${normalizedIncidentId?.isNotEmpty == true ? normalizedIncidentId : "none"} '
@@ -23447,6 +23471,34 @@ class EixamConnectSdkImpl
     snapshot = _normalizeRemoteRelaySosSnapshot(snapshot);
     final relayHardwareId =
         relayHardwareIdOverride ?? _lastDeviceStatus?.canonicalHardwareId;
+    final now = DateTime.now().toUtc();
+    _remoteRelayTerminalCompletedAtByKey.removeWhere(
+      (_, completedAt) =>
+          now.difference(completedAt) > const Duration(seconds: 30),
+    );
+    final terminalCompletionKey = _externalRelayRearmKey(
+      originatorNodeId: snapshot.originatorNodeId,
+      relayNodeId: snapshot.relayNodeId,
+    );
+    if (_recentExternalRelayContextForSnapshot(snapshot) == null &&
+        _remoteRelayTerminalCompletedAtByKey.containsKey(
+          terminalCompletionKey,
+        )) {
+      BleDebugRegistry.instance.recordEvent(
+        'EXTERNAL_SOS remote_cancel_suppressed '
+        'reason=post_web_terminal_device_confirmation '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'relayNodeId=${snapshot.relayNodeId?.toString() ?? "none"}',
+      );
+      await _ackPendingExternalRelayCancelFromProtectionPlatform(
+        nativePendingSignature,
+      );
+      await _ackMatchingPendingExternalRelayCancelsFromProtectionPlatform(
+        snapshot: snapshot,
+        relayHardwareId: relayHardwareId,
+      );
+      return;
+    }
     _rememberRecentExternalRelaySosContext(
       snapshot: snapshot,
       relayHardwareId: relayHardwareId,
@@ -23464,7 +23516,6 @@ class EixamConnectSdkImpl
       backendIncidentId: backendIncidentId,
       relayHardwareId: relayHardwareId,
     );
-    final now = DateTime.now().toUtc();
     _remoteRelaySosCancelSucceededBySignature.removeWhere(
       (_, seenAt) => now.difference(seenAt) > const Duration(seconds: 30),
     );
@@ -23657,9 +23708,10 @@ class EixamConnectSdkImpl
         snapshot: snapshot,
         relayHardwareId: relayHardwareId,
       );
-      _rearmExternalRelayAfterCancelSuccess(
+      _rearmExternalRelayAfterTerminalSuccess(
         snapshot: snapshot,
         backendIncidentId: backendIncidentId,
+        reason: 'device_cancel_success',
       );
       _publishSdkEvent(
         RemoteRelaySosCancelledEvent(
