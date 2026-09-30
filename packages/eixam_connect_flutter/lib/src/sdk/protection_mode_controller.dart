@@ -572,6 +572,7 @@ class ProtectionModeController {
       activeDeviceId:
           platformSnapshot.activeDeviceId ??
           (deviceStatus.deviceId.trim().isEmpty ? null : deviceStatus.deviceId),
+      bleHardwareId: platformSnapshot.bleHardwareId,
       degradationReason: _semanticCodeOrFallback(
         degradationReason,
         _semanticCodeOrFallback(platformSnapshot.degradationReason, null),

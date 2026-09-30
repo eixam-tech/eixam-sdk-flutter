@@ -79,6 +79,7 @@ void main() {
         'lastNativeBackendHandoffResult': 'create_synced',
         'lastNativeBackendHandoffError': null,
         'protectedDeviceId': 'device-123',
+        'bleHardwareId': 'DF:94:AF:46:94:56',
         'lastCommandRoute': 'androidService',
         'lastCommandResult':
             'SHUTDOWN native write succeeded via androidService.',
@@ -122,6 +123,7 @@ void main() {
       expect(snapshot.reconnectAttemptCount, 2);
       expect(snapshot.lastNativeBackendHandoffResult, 'create_synced');
       expect(snapshot.protectedDeviceId, 'device-123');
+      expect(snapshot.bleHardwareId, 'DF:94:AF:46:94:56');
       expect(snapshot.lastCommandRoute, 'androidService');
       expect(snapshot.lastCommandResult, contains('SHUTDOWN'));
       expect(snapshot.runtimeState, ProtectionRuntimeState.active);

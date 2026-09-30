@@ -184,8 +184,10 @@ internal object ProtectionRuntimeBridge {
                     )
                     store.saveReconnectBackoffMs(reconnectBackoffMs)
                     ensureRuntimeOwner(context).start(
-                        deviceId = activeDeviceId
-                            ?: store.currentTargetDeviceId()
+                        deviceId = resolveProtectionBleTarget(
+                            activeDeviceId = activeDeviceId ?: store.currentTargetDeviceId(),
+                            bleHardwareId = bleHardwareId ?: store.currentBleHardwareId(),
+                        )
                             ?: throw IllegalStateException("Protection Mode requires a protected device identifier."),
                         backendHardwareId = backendHardwareId,
                         reconnectBackoffMs = reconnectBackoffMs,

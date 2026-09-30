@@ -63,6 +63,7 @@ internal class ProtectionRuntimeStore(context: Context) {
             "protectedDeviceId" to preferences.getString(keyTargetDeviceId, null),
             "activeDeviceId" to preferences.getString(keyTargetDeviceId, null),
             "targetDeviceId" to preferences.getString(keyTargetDeviceId, null),
+            "bleHardwareId" to preferences.getString(keyBleHardwareId, null),
             "boundDeviceId" to preferences.getString(keyBoundDeviceId, null),
             "boundNodeId" to preferences.getIntOrNull(keyBoundNodeId),
             "expectedBleServiceUuid" to preferences.getString(keyExpectedBleServiceUuid, null),

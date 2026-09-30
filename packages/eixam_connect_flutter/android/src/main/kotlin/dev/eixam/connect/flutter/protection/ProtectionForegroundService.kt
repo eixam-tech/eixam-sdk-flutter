@@ -164,10 +164,14 @@ internal class ProtectionForegroundService : Service() {
         if (!runtimeStore.isProtectionArmed() || protectedDeviceId.isNullOrBlank()) {
             return
         }
+        val bleTarget = resolveProtectionBleTarget(
+            activeDeviceId = protectedDeviceId,
+            bleHardwareId = runtimeStore.currentBleHardwareId(),
+        ) ?: return
         val runtimeOwner = ProtectionRuntimeBridge.ensureRuntimeOwner(applicationContext)
-        if (!runtimeOwner.isRunningFor(protectedDeviceId)) {
+        if (!runtimeOwner.isRunningFor(bleTarget)) {
             runtimeOwner.start(
-                deviceId = protectedDeviceId,
+                deviceId = bleTarget,
                 backendHardwareId = runtimeStore.currentBackendHardwareId(),
                 reconnectBackoffMs = runtimeStore.reconnectBackoffMs(defaultReconnectBackoffMs),
                 restored = restored,

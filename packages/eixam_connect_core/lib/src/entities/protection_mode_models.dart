@@ -107,6 +107,7 @@ class ProtectionStatus {
     this.lastNativeBackendHandoffError,
     this.protectedDeviceId,
     this.activeDeviceId,
+    this.bleHardwareId,
     this.degradationReason,
     this.expectedBleServiceUuid,
     this.expectedBleCharacteristicUuids = const <String>[],
@@ -165,6 +166,7 @@ class ProtectionStatus {
   final String? lastNativeBackendHandoffError;
   final String? protectedDeviceId;
   final String? activeDeviceId;
+  final String? bleHardwareId;
   final String? degradationReason;
   final String? expectedBleServiceUuid;
   final List<String> expectedBleCharacteristicUuids;
@@ -224,6 +226,7 @@ class ProtectionStatus {
     Object? lastNativeBackendHandoffError = _unset,
     Object? protectedDeviceId = _unset,
     Object? activeDeviceId = _unset,
+    Object? bleHardwareId = _unset,
     Object? degradationReason = _unset,
     Object? expectedBleServiceUuid = _unset,
     List<String>? expectedBleCharacteristicUuids,
@@ -325,6 +328,9 @@ class ProtectionStatus {
       activeDeviceId: identical(activeDeviceId, _unset)
           ? this.activeDeviceId
           : activeDeviceId as String?,
+      bleHardwareId: identical(bleHardwareId, _unset)
+          ? this.bleHardwareId
+          : bleHardwareId as String?,
       degradationReason: identical(degradationReason, _unset)
           ? this.degradationReason
           : degradationReason as String?,

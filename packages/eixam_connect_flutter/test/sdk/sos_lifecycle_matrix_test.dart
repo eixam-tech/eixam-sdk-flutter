@@ -221,6 +221,48 @@ void main() {
       },
     );
 
+    test(
+      'native-owned command channel matches the BLE identity when the backend ID differs',
+      () async {
+        final adapter = _SnapshotProtectionPlatformAdapter(
+          const ProtectionPlatformSnapshot(
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            platform: ProtectionPlatform.android,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: true,
+            serviceBleReady: true,
+            nativeCommandServiceReady: true,
+            nativeCommandEa04Ready: true,
+            nativeCommandIdentityReady: true,
+            nativeCommandQueueHealthy: true,
+            nativeCommandReady: true,
+            protectedDeviceId: 'backend-device-id',
+            activeDeviceId: 'backend-device-id',
+            bleHardwareId: 'CF:82:00:00:00:01',
+          ),
+        );
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          protectionPlatformAdapter: adapter,
+        );
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.sdk.rehydrateProtectionState();
+
+          expect(
+            (await harness.sdk.getDeviceCommandChannelStatus()).isReady,
+            isTrue,
+          );
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
     test('public command channel rejects a real Flutter disconnect', () async {
       final harness = _SdkSosHarness(connectedBle: true);
       try {

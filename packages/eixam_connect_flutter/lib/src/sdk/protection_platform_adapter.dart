@@ -119,6 +119,7 @@ class ProtectionPlatformSnapshot {
     this.lastNativeBackendHandoffError,
     this.protectedDeviceId,
     this.activeDeviceId,
+    this.bleHardwareId,
     this.degradationReason,
     this.expectedBleServiceUuid,
     this.expectedBleCharacteristicUuids = const <String>[],
@@ -190,6 +191,7 @@ class ProtectionPlatformSnapshot {
   final String? lastNativeBackendHandoffError;
   final String? protectedDeviceId;
   final String? activeDeviceId;
+  final String? bleHardwareId;
   final String? degradationReason;
   final String? expectedBleServiceUuid;
   final List<String> expectedBleCharacteristicUuids;

@@ -71,6 +71,7 @@ ProtectionPlatformSnapshot mapIosProtectionPlatformSnapshot(
         snapshot['protectedDeviceId'] as String? ??
         snapshot['activeDeviceId'] as String?,
     activeDeviceId: snapshot['activeDeviceId'] as String?,
+    bleHardwareId: snapshot['bleHardwareId'] as String?,
     degradationReason: snapshot['degradationReason'] as String?,
     expectedBleServiceUuid: snapshot['expectedBleServiceUuid'] as String?,
     expectedBleCharacteristicUuids:
@@ -187,6 +188,7 @@ ProtectionPlatformSnapshot mapAndroidProtectionPlatformSnapshot(
         snapshot['targetDeviceId'] as String? ??
         snapshot['activeDeviceId'] as String?,
     activeDeviceId: snapshot['activeDeviceId'] as String?,
+    bleHardwareId: snapshot['bleHardwareId'] as String?,
     degradationReason: snapshot['degradationReason'] as String?,
     expectedBleServiceUuid: snapshot['expectedBleServiceUuid'] as String?,
     expectedBleCharacteristicUuids:

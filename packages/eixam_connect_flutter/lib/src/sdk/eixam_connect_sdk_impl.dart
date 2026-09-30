@@ -20736,6 +20736,7 @@ class EixamConnectSdkImpl
         <String?>[
               protectionStatus.activeDeviceId,
               protectionStatus.protectedDeviceId,
+              protectionStatus.bleHardwareId,
             ]
             .whereType<String>()
             .map((value) => value.trim())
@@ -21306,20 +21307,17 @@ class EixamConnectSdkImpl
           <String?>[
                 protectionStatus.activeDeviceId,
                 protectionStatus.protectedDeviceId,
+                protectionStatus.bleHardwareId,
               ]
               .whereType<String>()
               .map((value) => value.trim())
               .where((value) => value.isNotEmpty)
               .toSet();
       final targetMatches =
-          expectedTargets.isNotEmpty &&
-          nativeTargets.isNotEmpty &&
-          expectedTargets.any(
-            (expected) => nativeTargets.any(
-              (actual) =>
-                  expected.toLowerCase() == actual.toLowerCase() ||
-                  _samePhysicalHardwareId(expected, actual),
-            ),
+          connectedDevice != null &&
+          _nativeProtectionTargetMatchesDeviceStatus(
+            baseStatus: connectedDevice,
+            protectionStatus: protectionStatus,
           );
       if (!targetMatches) {
         BleDebugRegistry.instance.recordEvent(
