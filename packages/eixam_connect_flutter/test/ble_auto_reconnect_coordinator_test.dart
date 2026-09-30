@@ -1336,14 +1336,17 @@ void main() {
         trigger: 'startup',
         attemptId: 'attempt-1',
       );
-      final second = await coordinator.tryAutoConnectForHandoff(
+      final second = coordinator.tryAutoConnectForHandoff(
         trigger: 'startup',
         attemptId: 'attempt-2',
       );
 
-      expect(second.status, PreferredDeviceReconnectResultStatus.reconnecting);
       expect(
         (await first).status,
+        PreferredDeviceReconnectResultStatus.connected,
+      );
+      expect(
+        (await second).status,
         PreferredDeviceReconnectResultStatus.connected,
       );
       expect(repository.reconnectCallCount, 1);
@@ -1758,20 +1761,19 @@ void main() {
       );
       expect(await delayStarted.future, const Duration(seconds: 1));
 
-      final duplicate = await coordinator.tryAutoConnectForHandoff(
+      final duplicate = coordinator.tryAutoConnectForHandoff(
         trigger: 'startup',
         attemptId: 'attempt-2',
       );
-      expect(
-        duplicate.status,
-        PreferredDeviceReconnectResultStatus.reconnecting,
-      );
-      expect(duplicate.reason, 'inflight');
       expect(repository.reconnectCallCount, 1);
 
       delayCompleter.complete();
       expect(
         (await first).status,
+        PreferredDeviceReconnectResultStatus.connected,
+      );
+      expect(
+        (await duplicate).status,
         PreferredDeviceReconnectResultStatus.connected,
       );
       expect(repository.reconnectCallCount, 2);
@@ -1838,19 +1840,18 @@ void main() {
           ),
         );
 
-        final duplicate = await coordinator.tryAutoConnectForHandoff(
+        final duplicate = coordinator.tryAutoConnectForHandoff(
           trigger: 'startup',
           attemptId: 'attempt-2',
         );
-        expect(
-          duplicate.status,
-          PreferredDeviceReconnectResultStatus.reconnecting,
-        );
-        expect(duplicate.reason, 'inflight');
 
         delayCompleter.complete();
         expect(
           (await first).status,
+          PreferredDeviceReconnectResultStatus.connected,
+        );
+        expect(
+          (await duplicate).status,
           PreferredDeviceReconnectResultStatus.connected,
         );
         expect(repository.reconnectCallCount, 2);

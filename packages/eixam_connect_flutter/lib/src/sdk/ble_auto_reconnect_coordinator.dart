@@ -778,15 +778,13 @@ class BleAutoReconnectCoordinator {
     );
     if (activeCampaign != null) {
       _traceReconnect(
-        'sdk_inflight_changed value=true reason=duplicate_bootstrap',
+        'sdk_inflight_changed value=true reason=duplicate_bootstrap_joined',
       );
       BleDebugRegistry.instance.recordEvent(
         'BLE_PREFERRED_RECONNECT_ALREADY_IN_PROGRESS trigger=$trigger',
       );
       _recordNoProviderCall(attemptId: attemptId, reason: 'inflight_blocked');
-      return const PreferredDeviceReconnectResult.reconnecting(
-        reason: 'inflight',
-      );
+      return activeCampaign;
     }
     final cancellation = Completer<void>();
     final token = ++_preferredReconnectCampaignToken;
