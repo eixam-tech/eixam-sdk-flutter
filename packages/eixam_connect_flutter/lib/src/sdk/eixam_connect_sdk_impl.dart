@@ -2291,6 +2291,29 @@ class EixamConnectSdkImpl
   Future<void> _handleAcceptedMqttSosLifecycleTransition(
     MqttAcceptedSosLifecycleTransition transition,
   ) async {
+    if (transition.state == SosState.acknowledged) {
+      final lifecycle = _sosLifecycle.current;
+      if (lifecycle.isOpen &&
+          lifecycle.localActionable &&
+          !lifecycle.externalOnly &&
+          ((transition.generation > 0 &&
+                  transition.generation == lifecycle.generation) ||
+              sosIncidentEvidenceMatchesLifecycle(
+                lifecycle,
+                transition.incident,
+              ))) {
+        await _silenceLocalDeviceSosForWebAcknowledgment(
+          expectedIncidentId: transition.incident.id,
+          acceptedGeneration: transition.generation,
+        );
+      } else {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_WEB_ACK_SILENCE_SKIPPED generation=${lifecycle.generation} '
+          'reason=accepted_mqtt_transition_not_local_correlated',
+        );
+      }
+      return;
+    }
     if (!_isTerminalPublicSosState(transition.state)) {
       return;
     }
@@ -4557,7 +4580,8 @@ class EixamConnectSdkImpl
         lifecycle.isOpen &&
         lifecycle.localActionable &&
         !lifecycle.externalOnly &&
-        (status.state == DeviceSosState.active ||
+        (status.state == DeviceSosState.preConfirm ||
+            status.state == DeviceSosState.active ||
             status.state == DeviceSosState.acknowledged) &&
         (status.relayCount ?? 0) == 0;
     if (!isLocalOpenDeviceSos) {
@@ -4571,8 +4595,11 @@ class EixamConnectSdkImpl
         lifecycle.backendIncidentId ??
         lifecycle.localIncidentId ??
         lifecycle.incident?.id;
-    final operationKey =
-        '${lifecycle.generation}:${lifecycle.lifecycleId}:${incidentId ?? "none"}';
+    // Canonical backend handoff can replace the provisional incident ID while
+    // the same physical SOS generation remains open. Dedupe by the durable
+    // lifecycle identity so both MQTT acceptance paths still produce one
+    // nonterminal silence command.
+    final operationKey = '${lifecycle.generation}:${lifecycle.lifecycleId}';
     final completed = _completedSosSilenceOperations[operationKey];
     if (completed != null) {
       return Future<SosSilenceResult>.value(completed);
@@ -4634,6 +4661,7 @@ class EixamConnectSdkImpl
 
   Future<void> _silenceLocalDeviceSosForWebAcknowledgment({
     required String? expectedIncidentId,
+    int? acceptedGeneration,
   }) async {
     final lifecycle = _sosLifecycle.current;
     final activeIncidentIds = <String>{
@@ -4643,8 +4671,13 @@ class EixamConnectSdkImpl
       if (lifecycle.incident?.provisionalIncidentId != null)
         lifecycle.incident!.provisionalIncidentId!,
     };
+    final acceptedGenerationMatches =
+        acceptedGeneration != null &&
+        acceptedGeneration > 0 &&
+        acceptedGeneration == lifecycle.generation;
     if (expectedIncidentId == null ||
-        !activeIncidentIds.contains(expectedIncidentId)) {
+        (!activeIncidentIds.contains(expectedIncidentId) &&
+            !acceptedGenerationMatches)) {
       BleDebugRegistry.instance.recordEvent(
         'SOS_WEB_ACK_SILENCE_SKIPPED generation=${lifecycle.generation} '
         'reason=incident_identity_mismatch',
@@ -18715,6 +18748,18 @@ class EixamConnectSdkImpl
     required String source,
   }) {
     if (incident == null) {
+      return false;
+    }
+    final lifecycle = _sosLifecycle.current;
+    if (lifecycle.isOpen &&
+        lifecycle.localActionable &&
+        !lifecycle.externalOnly &&
+        sosIncidentEvidenceMatchesLifecycle(lifecycle, incident)) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_ORIGIN_DECISION source=$source '
+        'actionability=localActionable localStateMutation=true '
+        'reason=correlated_authoritative_local_lifecycle',
+      );
       return false;
     }
     final decision = classifySosIncidentOrigin(
