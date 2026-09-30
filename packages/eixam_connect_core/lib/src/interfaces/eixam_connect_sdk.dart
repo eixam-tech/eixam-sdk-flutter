@@ -38,6 +38,7 @@ import '../entities/sos_history_item.dart';
 import '../entities/sos_incident.dart';
 import '../entities/sos_incident_progress.dart';
 import '../entities/sos_lifecycle.dart';
+import '../entities/sos_silence_result.dart';
 import '../entities/sos_capability_snapshot.dart';
 import '../entities/sos_trigger_payload.dart';
 import '../entities/tracking_position.dart';
@@ -320,6 +321,11 @@ abstract class EixamConnectSdk {
   Future<DeviceSosStatus> confirmDeviceSos();
   Future<DeviceSosStatus> cancelDeviceSos();
   Future<DeviceSosStatus> acknowledgeDeviceSos();
+
+  /// Stops only the acoustic tone for the current local SOS episode.
+  ///
+  /// The episode remains open and the configured SOS volume is unchanged.
+  Future<SosSilenceResult> silenceActiveSos();
   Future<void> sendInetOkToDevice();
   Future<void> sendInetLostToDevice();
   Future<void> sendPositionConfirmedToDevice();

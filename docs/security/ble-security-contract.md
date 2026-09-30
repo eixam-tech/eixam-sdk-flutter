@@ -56,6 +56,7 @@ Android native protection mode and iOS protection mode discover the same service
 - `0x06` SOS TRIGGER APP
 - `0x07` SOS ACK
 - `0x08 + nodeId` SOS ACK RELAY
+- `0x09` SOS SILENCE
 - `0x10` SHUTDOWN
 - `0x11 + volume` notification volume
 - `0x12 + volume` SOS volume
@@ -166,6 +167,7 @@ Sensitive operational commands:
 - `0x05` SOS CONFIRM
 - `0x07` SOS ACK
 - `0x08` SOS ACK RELAY
+- `0x09` SOS SILENCE
 - `0x11` notification volume
 - `0x12` SOS volume
 

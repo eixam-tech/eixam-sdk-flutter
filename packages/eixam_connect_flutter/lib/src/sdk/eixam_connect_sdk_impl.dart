@@ -75,6 +75,7 @@ import 'sos_location_ownership_effect.dart';
 import 'sos_location_ownership_orchestrator.dart';
 import 'sos_location_ownership_platform_sink.dart';
 import 'sos_location_trace.dart';
+import 'sos_silence_command_coordinator.dart';
 
 int _sosProcessSessionSequence = 0;
 
@@ -280,6 +281,9 @@ class EixamConnectSdkImpl
       // explicitly owner-aware, avoiding timeouts that poison the group epoch.
       bleOwnedByProtection: () => _isProtectionPlatformOwningBle,
     );
+    _sosSilenceCommandCoordinator = SosSilenceCommandCoordinator(
+      incomingEvents: bleIncomingEvents,
+    );
     _bleAutoReconnectCoordinator = BleAutoReconnectCoordinator(
       deviceRepository: deviceRepository,
       preferredDeviceStore: preferredBleDeviceStore,
@@ -427,12 +431,6 @@ class EixamConnectSdkImpl
               lifecycle.nodeId ?? status.nodeId ?? _knownLocalDeviceNodeId,
         );
       }
-      unawaited(
-        _restoreWebAckSosVolumeIfRequired(
-          lifecycle,
-          trigger: 'lifecycle_change',
-        ),
-      );
       unawaited(_emitSosCapability(reason: 'lifecycle_change'));
     });
   }
@@ -681,10 +679,11 @@ class EixamConnectSdkImpl
   int _publicSosStateGeneration = 0;
   int? _publicTerminalGeneration;
   int? _publicAcknowledgedGeneration;
-  static const int _defaultAudibleSosVolume = 100;
-  int _lastAudibleSosVolume = _defaultAudibleSosVolume;
-  _WebAckSosVolumeRestore? _webAckSosVolumeRestore;
-  bool _webAckSosVolumeTransitionInFlight = false;
+  final Map<String, Future<SosSilenceResult>> _sosSilenceOperations =
+      <String, Future<SosSilenceResult>>{};
+  final Map<String, SosSilenceResult> _completedSosSilenceOperations =
+      <String, SosSilenceResult>{};
+  _PendingWebAckSilence? _pendingWebAckSilence;
   int? _pendingNativeBackendCancelGeneration;
   int? _lastDiagnosticRuntimeGeneration;
   final Map<int, _SosGenerationDispatchOperation> _generationDispatches =
@@ -807,6 +806,7 @@ class EixamConnectSdkImpl
       DevicePositionBatchNormalizer();
   late final DevicePositionBacklogCoordinator _devicePositionBacklogCoordinator;
   late final NearbyTextController _nearbyTextController;
+  late final SosSilenceCommandCoordinator _sosSilenceCommandCoordinator;
   final Duration _appTriggeredSosBridgeWindow;
   bool _deferredRuntimeWorkPending = false;
   Future<void>? _deferredRuntimeStart;
@@ -900,11 +900,7 @@ class EixamConnectSdkImpl
     );
     _session = await _bootstrapSessionIfNeeded(_session);
     await _sosLifecycle.restoreFor(_session, emitToStream: false);
-    await _restorePersistedWebAckSosVolumeState();
-    await _restoreWebAckSosVolumeIfRequired(
-      _sosLifecycle.current,
-      trigger: 'initialize_restore',
-    );
+    await _localStore.remove(SharedPrefsSdkStore.legacyWebAckSosVolumeKey);
     _recordRestoredTerminalBoundaryFromPreviousProcess();
     await _refreshBackgroundTelemetryDiagnostics();
     if (_backgroundTelemetryDiagnostics.serviceRunning && _session != null) {
@@ -1141,6 +1137,7 @@ class EixamConnectSdkImpl
                   connectionEpoch: connectionEpoch,
                 ),
               );
+              unawaited(_retryPendingWebAckSilence());
             }
             await _refreshOperationalDiagnostics(
               trigger: 'device_control_command_path_changed',
@@ -1331,6 +1328,9 @@ class EixamConnectSdkImpl
           );
         }
         unawaited(_emitSosCapability(reason: capabilityReason));
+        if (status.nativeCommandReady) {
+          unawaited(_retryPendingWebAckSilence());
+        }
       }
       if (nativeOwnsBle &&
           status.deviceConnected &&
@@ -2024,6 +2024,8 @@ class EixamConnectSdkImpl
     _backendResolveWriteSubmittedKeys.clear();
     _backendResolveWriteSuccessKeys.clear();
     _authoritativeTerminalOperationKeys.clear();
+    _pendingWebAckSilence = null;
+    _completedSosSilenceOperations.clear();
     _sosDeviceMirrorState = _SosDeviceMirrorState.synchronized;
     _terminalConvergenceFence = null;
     _freshPhysicalStartSupersededRemoteClearGeneration = null;
@@ -4192,16 +4194,10 @@ class EixamConnectSdkImpl
       action: 'set_sos_volume',
       command: EixamDeviceCommand.sosVolume(volume),
     );
-    if (volume > 0) {
-      _lastAudibleSosVolume = volume;
-      if (_webAckSosVolumeRestore != null) {
-        _webAckSosVolumeRestore = null;
-        await _localStore.remove(SharedPrefsSdkStore.webAckSosVolumeKey);
-      }
-    }
   }
 
-  Future<void> _silenceLocalDeviceSosForWebAcknowledgment() async {
+  @override
+  Future<SosSilenceResult> silenceActiveSos() {
     final lifecycle = _sosLifecycle.current;
     final status = deviceSosController.currentStatus;
     final isLocalOpenDeviceSos =
@@ -4212,122 +4208,145 @@ class EixamConnectSdkImpl
             status.state == DeviceSosState.acknowledged) &&
         (status.relayCount ?? 0) == 0;
     if (!isLocalOpenDeviceSos) {
+      throw const DeviceException(
+        'E_DEVICE_SOS_SILENCE_NO_ACTIVE_LOCAL_SOS',
+        'E_DEVICE_SOS_SILENCE_NO_ACTIVE_LOCAL_SOS',
+      );
+    }
+
+    final incidentId =
+        lifecycle.backendIncidentId ??
+        lifecycle.localIncidentId ??
+        lifecycle.incident?.id;
+    final operationKey =
+        '${lifecycle.generation}:${lifecycle.lifecycleId}:${incidentId ?? "none"}';
+    final completed = _completedSosSilenceOperations[operationKey];
+    if (completed != null) {
+      return Future<SosSilenceResult>.value(completed);
+    }
+    final existing = _sosSilenceOperations[operationKey];
+    if (existing != null) {
+      return existing;
+    }
+
+    final operation = _runSosSilenceOperation(
+      lifecycle: lifecycle,
+      operationKey: operationKey,
+      incidentId: incidentId,
+    );
+    _sosSilenceOperations[operationKey] = operation;
+    return operation.whenComplete(() {
+      _sosSilenceOperations.remove(operationKey);
+    });
+  }
+
+  Future<SosSilenceResult> _runSosSilenceOperation({
+    required SosLifecycleSnapshot lifecycle,
+    required String operationKey,
+    required String? incidentId,
+  }) async {
+    final outcome = await _sosSilenceCommandCoordinator.run(
+      write: () => _sendDeviceControlCommandThroughActiveOwner(
+        action: 'silence_active_sos',
+        command: EixamDeviceCommand.sosSilence(),
+      ),
+    );
+    final current = _sosLifecycle.current;
+    if (!current.isOpen ||
+        current.generation != lifecycle.generation ||
+        current.lifecycleId != lifecycle.lifecycleId) {
+      throw const DeviceException(
+        'E_DEVICE_SOS_SILENCE_STALE_RESULT',
+        'E_DEVICE_SOS_SILENCE_STALE_RESULT',
+      );
+    }
+    final result = SosSilenceResult(
+      outcome: outcome,
+      lifecycleId: lifecycle.lifecycleId,
+      generation: lifecycle.generation,
+      incidentId: incidentId,
+    );
+    _completedSosSilenceOperations[operationKey] = result;
+    while (_completedSosSilenceOperations.length > 8) {
+      _completedSosSilenceOperations.remove(
+        _completedSosSilenceOperations.keys.first,
+      );
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_WEB_ACK_SILENCED generation=${lifecycle.generation} '
+      'command=0x09 result=${outcome.name}',
+    );
+    return result;
+  }
+
+  Future<void> _silenceLocalDeviceSosForWebAcknowledgment({
+    required String? expectedIncidentId,
+  }) async {
+    final lifecycle = _sosLifecycle.current;
+    final activeIncidentIds = <String>{
+      if (lifecycle.backendIncidentId != null) lifecycle.backendIncidentId!,
+      if (lifecycle.localIncidentId != null) lifecycle.localIncidentId!,
+      if (lifecycle.incident?.id != null) lifecycle.incident!.id,
+      if (lifecycle.incident?.provisionalIncidentId != null)
+        lifecycle.incident!.provisionalIncidentId!,
+    };
+    if (expectedIncidentId == null ||
+        !activeIncidentIds.contains(expectedIncidentId)) {
       BleDebugRegistry.instance.recordEvent(
         'SOS_WEB_ACK_SILENCE_SKIPPED generation=${lifecycle.generation} '
-        'reason=no_local_open_device_sos',
+        'reason=incident_identity_mismatch',
       );
       return;
     }
-
-    final existing = _webAckSosVolumeRestore;
-    if (existing == null ||
-        existing.generation != lifecycle.generation ||
-        existing.lifecycleId != lifecycle.lifecycleId) {
-      _webAckSosVolumeRestore = _WebAckSosVolumeRestore(
-        generation: lifecycle.generation,
-        lifecycleId: lifecycle.lifecycleId,
-        audibleVolume: _lastAudibleSosVolume,
-        silenceApplied: false,
-      );
-      await _persistWebAckSosVolumeState();
-    }
-    await _reconcileWebAckSosVolume(lifecycle, trigger: 'backend_acknowledged');
-  }
-
-  Future<void> _restoreWebAckSosVolumeIfRequired(
-    SosLifecycleSnapshot lifecycle, {
-    required String trigger,
-  }) {
-    return _reconcileWebAckSosVolume(lifecycle, trigger: trigger);
-  }
-
-  Future<void> _reconcileWebAckSosVolume(
-    SosLifecycleSnapshot lifecycle, {
-    required String trigger,
-  }) async {
-    final pending = _webAckSosVolumeRestore;
-    if (pending == null || _webAckSosVolumeTransitionInFlight) {
-      return;
-    }
-    final sameGeneration =
-        pending.generation == lifecycle.generation &&
-        pending.lifecycleId == lifecycle.lifecycleId;
-    final shouldSilence = sameGeneration && lifecycle.isOpen;
-    final shouldRestore =
-        (sameGeneration && lifecycle.isTerminal) ||
-        (lifecycle.isOpen && !sameGeneration);
-    if (!shouldSilence && !shouldRestore) {
-      return;
-    }
-
-    _webAckSosVolumeTransitionInFlight = true;
+    final pending = _PendingWebAckSilence(
+      generation: lifecycle.generation,
+      lifecycleId: lifecycle.lifecycleId,
+      incidentId: expectedIncidentId,
+    );
+    _pendingWebAckSilence = pending;
     try {
-      if (shouldSilence) {
-        if (pending.silenceApplied) {
-          return;
-        }
-        await setDeviceSosVolume(0);
-        _webAckSosVolumeRestore = pending.copyWith(silenceApplied: true);
-        await _persistWebAckSosVolumeState();
-        BleDebugRegistry.instance.recordEvent(
-          'SOS_WEB_ACK_VOLUME_SILENCED generation=${pending.generation} '
-          'command=0x12,0x00 trigger=$trigger',
-        );
-        return;
+      await silenceActiveSos();
+      if (identical(_pendingWebAckSilence, pending)) {
+        _pendingWebAckSilence = null;
       }
-
-      final restoreVolume = pending.audibleVolume > 0
-          ? pending.audibleVolume
-          : _defaultAudibleSosVolume;
-      await _sendDeviceControlCommandThroughActiveOwner(
-        action: 'restore_sos_volume_after_web_ack',
-        command: EixamDeviceCommand.sosVolume(restoreVolume),
-      );
-      _lastAudibleSosVolume = restoreVolume;
-      _webAckSosVolumeRestore = null;
-      await _localStore.remove(SharedPrefsSdkStore.webAckSosVolumeKey);
+    } on DeviceException catch (error) {
+      if (error.code != 'E_DEVICE_COMMAND_NOT_READY' &&
+          error.code != 'E_BLE_COMMAND_WRITER_NOT_READY') {
+        if (identical(_pendingWebAckSilence, pending)) {
+          _pendingWebAckSilence = null;
+        }
+      }
       BleDebugRegistry.instance.recordEvent(
-        'SOS_WEB_ACK_VOLUME_RESTORED previousGeneration=${pending.generation} '
-        'currentGeneration=${lifecycle.generation} volume=$restoreVolume '
-        'trigger=$trigger',
+        'SOS_WEB_ACK_SILENCE_SKIPPED generation=${lifecycle.generation} '
+        'reason=${error.code}',
       );
-    } catch (error) {
-      BleDebugRegistry.instance.recordEvent(
-        'SOS_WEB_ACK_VOLUME_TRANSITION_FAILED generation=${pending.generation} '
-        'restore=$shouldRestore trigger=$trigger error=$error',
-      );
-    } finally {
-      _webAckSosVolumeTransitionInFlight = false;
     }
   }
 
-  Future<void> _restorePersistedWebAckSosVolumeState() async {
-    final persisted = await _localStore.readJson(
-      SharedPrefsSdkStore.webAckSosVolumeKey,
-    );
-    final restored = _WebAckSosVolumeRestore.tryParse(persisted);
-    if (restored == null) {
-      return;
-    }
-    _webAckSosVolumeRestore = restored;
-    _lastAudibleSosVolume = restored.audibleVolume > 0
-        ? restored.audibleVolume
-        : _defaultAudibleSosVolume;
-    BleDebugRegistry.instance.recordEvent(
-      'SOS_WEB_ACK_VOLUME_STATE_RESTORED generation=${restored.generation} '
-      'silenceApplied=${restored.silenceApplied}',
-    );
-  }
-
-  Future<void> _persistWebAckSosVolumeState() async {
-    final pending = _webAckSosVolumeRestore;
+  Future<void> _retryPendingWebAckSilence() async {
+    final pending = _pendingWebAckSilence;
     if (pending == null) {
-      await _localStore.remove(SharedPrefsSdkStore.webAckSosVolumeKey);
       return;
     }
-    await _localStore.saveJson(
-      SharedPrefsSdkStore.webAckSosVolumeKey,
-      pending.toJson(),
+    final lifecycle = _sosLifecycle.current;
+    if (!lifecycle.isOpen ||
+        lifecycle.generation != pending.generation ||
+        lifecycle.lifecycleId != pending.lifecycleId) {
+      if (identical(_pendingWebAckSilence, pending)) {
+        _pendingWebAckSilence = null;
+      }
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_WEB_ACK_SILENCE_RETRY_SKIPPED generation=${pending.generation} '
+        'reason=stale_lifecycle',
+      );
+      return;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_WEB_ACK_SILENCE_RETRY generation=${pending.generation} '
+      'reason=command_path_ready',
+    );
+    await _silenceLocalDeviceSosForWebAcknowledgment(
+      expectedIncidentId: pending.incidentId,
     );
   }
 
@@ -16739,7 +16758,11 @@ class EixamConnectSdkImpl
             lifecycleStage: confirmedLifecycle.stage,
             terminalState: repositoryIncident.state.name,
           );
-          unawaited(_silenceLocalDeviceSosForWebAcknowledgment());
+          unawaited(
+            _silenceLocalDeviceSosForWebAcknowledgment(
+              expectedIncidentId: repositoryIncident.id,
+            ),
+          );
         }
         final deviceSosStatus = deviceSosController.currentStatus;
         if (confirmedLifecycle.origin == SosLifecycleOrigin.localApp &&
@@ -21318,6 +21341,9 @@ class EixamConnectSdkImpl
       final rawPayload = event.payloadHex == null
           ? null
           : _tryDecodeHexPayload(event.payloadHex!);
+      if (rawPayload != null) {
+        _sosSilenceCommandCoordinator.acceptPayload(rawPayload);
+      }
       final repository = deviceRepository;
       if (isTelNotification &&
           rawPayload != null &&
@@ -22814,55 +22840,21 @@ class EixamConnectSdkImpl
         'deviceId=$deviceId',
       );
 
-      var ackRelaySent = false;
-      String? ackRelayErrorMessage;
-      if (!deviceSosController.longCommandAvailable) {
-        _logSosTrace(
-          'ack_relay_pending_no_long_command_path '
-          'originatorNodeId=${snapshot.originatorNodeId} '
-          'relayNodeId=${snapshot.relayNodeId ?? "none"}',
-        );
-      } else {
-        try {
-          final ackBytes = EixamDeviceCommand.sosAckRelay(
-            nodeId: snapshot.originatorNodeId,
-          ).bytes;
-          _logSosTrace(
-            'ack_relay_write_attempt '
-            'originatorNodeId=${snapshot.originatorNodeId} '
-            'relayNodeId=${snapshot.relayNodeId ?? "none"} '
-            'bytesHex=${EixamBleProtocol.hex(ackBytes)}',
-          );
-          await deviceSosController.sendAckRelay(
-            nodeId: snapshot.originatorNodeId,
-          );
-          ackRelaySent = true;
-          _logSosTrace(
-            'ack_relay_write_result '
-            'originatorNodeId=${snapshot.originatorNodeId} '
-            'relayNodeId=${snapshot.relayNodeId ?? "none"} '
-            'bytesHex=${EixamBleProtocol.hex(ackBytes)} success=true error=none',
-          );
-          BleDebugRegistry.instance.recordEvent(
-            '[REMOTE_RELAY_SOS] ack_relay_sent '
-            'originatorNodeId=${snapshot.originatorNodeId}',
-          );
-        } catch (error) {
-          ackRelayErrorMessage = error.toString();
-          _logSosTrace(
-            'ack_relay_write_result '
-            'originatorNodeId=${snapshot.originatorNodeId} '
-            'relayNodeId=${snapshot.relayNodeId ?? "none"} '
-            'bytesHex=${EixamBleProtocol.hex(EixamDeviceCommand.sosAckRelay(nodeId: snapshot.originatorNodeId).bytes)} '
-            'success=false error=$error',
-          );
-          BleDebugRegistry.instance.recordEvent(
-            '[REMOTE_RELAY_SOS] ack_relay_failed '
-            'originatorNodeId=${snapshot.originatorNodeId} '
-            'error=$error',
-          );
-        }
-      }
+      const ackRelaySent = false;
+      const ackRelayErrorMessage =
+          'Rescue BUZZER_OFF transport unavailable; terminal ACK_SOS suppressed';
+      _logSosTrace(
+        'ack_relay_suppressed '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'relayNodeId=${snapshot.relayNodeId ?? "none"} '
+        'reason=rescue_buzzer_off_transport_unavailable '
+        'forbiddenCommand=SOS_ACK_RELAY_0x08',
+      );
+      BleDebugRegistry.instance.recordEvent(
+        '[REMOTE_RELAY_SOS] ack_relay_suppressed '
+        'originatorNodeId=${snapshot.originatorNodeId} '
+        'reason=backend_ingest_is_non_terminal',
+      );
 
       _publishSdkEvent(
         RemoteRelaySosBackendHandoffResultEvent(
@@ -24076,14 +24068,6 @@ class EixamConnectSdkImpl
     if (_sosCapabilityController.isClosed) {
       return;
     }
-    if (reason == 'native_command_readiness_changed' ||
-        reason == 'native_owner_ready' ||
-        reason == 'retry_sos_capability') {
-      await _restoreWebAckSosVolumeIfRequired(
-        _sosLifecycle.current,
-        trigger: 'capability:$reason',
-      );
-    }
     final revision = ++_sosCapabilityEmissionRevision;
     final capability = await _buildSosCapability(reason: reason);
     if (revision == _sosCapabilityEmissionRevision &&
@@ -24748,6 +24732,7 @@ class EixamConnectSdkImpl
     await _bleIncomingEventDiagnosticsSub?.cancel();
     await _devicePositionBacklogCoordinator.cancel();
     await _nearbyTextController.dispose();
+    await _sosSilenceCommandCoordinator.dispose();
     await _protectionStatusSub?.cancel();
     await _protectionRawSosEventsSub?.cancel();
     await _sosCapabilityLifecycleSub?.cancel();
@@ -25656,67 +25641,23 @@ final class _PendingSosActivationOperation {
   bool cancellationRequested = false;
 }
 
+final class _PendingWebAckSilence {
+  const _PendingWebAckSilence({
+    required this.generation,
+    required this.lifecycleId,
+    required this.incidentId,
+  });
+
+  final int generation;
+  final String lifecycleId;
+  final String incidentId;
+}
+
 final class _SosGenerationDispatchOperation {
   _SosGenerationDispatchOperation({required this.owner});
 
   final SosDispatchOwner owner;
   final Completer<SosIncident?> result = Completer<SosIncident?>();
-}
-
-final class _WebAckSosVolumeRestore {
-  const _WebAckSosVolumeRestore({
-    required this.generation,
-    required this.lifecycleId,
-    required this.audibleVolume,
-    required this.silenceApplied,
-  });
-
-  final int generation;
-  final String lifecycleId;
-  final int audibleVolume;
-  final bool silenceApplied;
-
-  _WebAckSosVolumeRestore copyWith({bool? silenceApplied}) {
-    return _WebAckSosVolumeRestore(
-      generation: generation,
-      lifecycleId: lifecycleId,
-      audibleVolume: audibleVolume,
-      silenceApplied: silenceApplied ?? this.silenceApplied,
-    );
-  }
-
-  Map<String, dynamic> toJson() => <String, dynamic>{
-    'generation': generation,
-    'lifecycleId': lifecycleId,
-    'audibleVolume': audibleVolume,
-    'silenceApplied': silenceApplied,
-  };
-
-  static _WebAckSosVolumeRestore? tryParse(Map<String, dynamic>? value) {
-    if (value == null) {
-      return null;
-    }
-    final generation = (value['generation'] as num?)?.toInt();
-    final lifecycleId = value['lifecycleId'] as String?;
-    final audibleVolume = (value['audibleVolume'] as num?)?.toInt();
-    final silenceApplied = value['silenceApplied'] as bool?;
-    if (generation == null ||
-        generation <= 0 ||
-        lifecycleId == null ||
-        lifecycleId.isEmpty ||
-        audibleVolume == null ||
-        audibleVolume <= 0 ||
-        audibleVolume > 100 ||
-        silenceApplied == null) {
-      return null;
-    }
-    return _WebAckSosVolumeRestore(
-      generation: generation,
-      lifecycleId: lifecycleId,
-      audibleVolume: audibleVolume,
-      silenceApplied: silenceApplied,
-    );
-  }
 }
 
 class _ProtectionSosPayloadReason {

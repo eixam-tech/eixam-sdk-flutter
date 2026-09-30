@@ -51,7 +51,8 @@ typedef SosGenerationPublisher =
       required String? cycleKey,
     });
 
-typedef LocalSosWebAcknowledgmentHandler = Future<void> Function();
+typedef LocalSosWebAcknowledgmentHandler =
+    Future<void> Function({required String? expectedIncidentId});
 
 class BleOperationalRuntimeBridge {
   BleOperationalRuntimeBridge({
@@ -916,38 +917,31 @@ class BleOperationalRuntimeBridge {
   }) async {
     switch (context.route) {
       case _SosAckRoute.localOrigin:
-        await _localSosWebAcknowledgmentHandler();
+        await _localSosWebAcknowledgmentHandler(
+          expectedIncidentId: confirmation.incidentId,
+        );
         BleDebugRegistry.instance.recordEvent(
           'SOS_BACKEND_ACK_DEVICE_MIRROR action=silence_physical_sos '
-          'command=0x12,0x00 reason=ack_is_non_terminal',
+          'command=0x09 reason=ack_is_non_terminal',
         );
         _emitDiagnostics(
           _diagnostics.copyWith(
-            lastDeviceCommandSent: 'BUZZER_SOS_VOL(0)',
+            lastDeviceCommandSent: 'SOS_SILENCE',
             lastDecision:
                 'Backend acknowledgment silenced without terminalizing the local TAG',
           ),
         );
         return;
       case _SosAckRoute.relayOrigin:
-        final relayNodeId = context.nodeId;
-        if (relayNodeId == null) {
-          _emitDiagnostics(
-            _diagnostics.copyWith(
-              lastDecision:
-                  'Backend SOS acknowledgment ignored: relay context is missing the origin node id',
-            ),
-          );
-          return;
-        }
-        await deviceSosController.sendAckRelay(nodeId: relayNodeId);
         _emitDiagnostics(
           _diagnostics.copyWith(
-            lastDeviceCommandSent:
-                'SOS_ACK_RELAY(${_formatNodeId(relayNodeId)})',
             lastDecision:
-                'Backend SOS acknowledgment transformed to SOS_ACK_RELAY using active relay context',
+                'Backend remote SOS acknowledgment not dispatched: Rescue BUZZER_OFF transport is unavailable',
           ),
+        );
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_REMOTE_ACK_MIRROR_SKIPPED reason=rescue_buzzer_off_transport_unavailable '
+          'forbiddenCommand=SOS_ACK_RELAY_0x08',
         );
         return;
       case _SosAckRoute.none:
@@ -1341,15 +1335,16 @@ class BleOperationalRuntimeBridge {
       return;
     }
 
-    await deviceSosController.sendAckRelay(nodeId: requestedRelayNodeId);
     _emitDiagnostics(
       _diagnostics.copyWith(
-        lastDeviceCommandSent:
-            'SOS_ACK_RELAY(${_formatNodeId(requestedRelayNodeId)})',
-        lastDecision: confirmation.relayNodeId == null
-            ? 'Backend relay acknowledgment applied using active relay context node id'
-            : 'Backend confirmation applied: SOS_ACK_RELAY sent',
+        lastDecision:
+            'Backend remote SOS acknowledgment not dispatched: Rescue BUZZER_OFF transport is unavailable',
       ),
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_REMOTE_ACK_MIRROR_SKIPPED reason=rescue_buzzer_off_transport_unavailable '
+      'forbiddenCommand=SOS_ACK_RELAY_0x08 '
+      'originatorNodeId=${_formatNodeId(requestedRelayNodeId)}',
     );
   }
 
@@ -1983,11 +1978,13 @@ class _BleBackendConfirmation {
   const _BleBackendConfirmation({
     required this.kind,
     required this.signature,
+    this.incidentId,
     this.relayNodeId,
   });
 
   final _BleBackendConfirmationKind kind;
   final String signature;
+  final String? incidentId;
   final int? relayNodeId;
 
   static _BleBackendConfirmation? fromRealtimeEvent(RealtimeEvent event) {
@@ -2047,6 +2044,7 @@ class _BleBackendConfirmation {
       return _BleBackendConfirmation(
         kind: _BleBackendConfirmationKind.sosAcknowledged,
         signature: 'ack:${_signatureToken(payload)}',
+        incidentId: _incidentIdFrom(payload),
       );
     }
 
@@ -2061,6 +2059,13 @@ class _BleBackendConfirmation {
         payload['updatedAt'] ??
         payload['occurredAt'];
     return value?.toString() ?? 'event';
+  }
+
+  static String? _incidentIdFrom(Map<String, dynamic> payload) {
+    final raw =
+        payload['incidentId'] ?? payload['incident_id'] ?? payload['id'];
+    final value = raw?.toString().trim();
+    return value == null || value.isEmpty ? null : value;
   }
 
   static int? _relayNodeIdFrom(Map<String, dynamic> payload) {

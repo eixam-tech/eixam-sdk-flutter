@@ -20,6 +20,7 @@ import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_sos_event_packet.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_sos_packet.dart';
 import 'package:eixam_connect_flutter/src/mappers/local_state_serializers.dart';
+import 'package:eixam_connect_flutter/src/provisioning/provisioning_command_result.dart';
 import 'package:eixam_connect_flutter/src/sdk/authoritative_sos_lifecycle_controller.dart';
 import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
 import 'package:eixam_connect_flutter/src/sdk/operational_realtime_client.dart';
@@ -776,6 +777,7 @@ void main() {
             ),
             isTrue,
           );
+
           expect(
             _hasDebugMessage('SOS_DEVICE_ONLY_INCIDENT_RECORDED'),
             isFalse,
@@ -4342,24 +4344,46 @@ void main() {
                   adapter.commands
                       .where(
                         (command) =>
-                            command.bytes.length == 2 &&
-                            command.bytes[0] == 0x12 &&
-                            command.bytes[1] == 0x00,
+                            command.bytes.length == 1 &&
+                            command.bytes[0] == 0x09,
                       )
                       .length ==
                   cycle,
             );
+            adapter.emit(
+              ProtectionPlatformEvent(
+                type: ProtectionPlatformEventType.bleNotificationReceived,
+                timestamp: DateTime.now().toUtc(),
+                payloadHex: 'e97a01090000',
+                source: 'cmd_result',
+                characteristicUuid:
+                    EixamBleProtocol.sosNotifyCharacteristicUuid,
+                byteLength: 6,
+                packetType: 'device_status',
+                firstOpcode: '0xe9',
+                receiveSequence: ++receiveSequence,
+                receiveCorrelation: 'sos-silenced-$cycle',
+                connectedDeviceMarker: 'CF:82:00:00:00:01',
+              ),
+            );
+            await waitFor(
+              () =>
+                  observedMessages
+                      .where(
+                        (message) => message.contains(
+                          'SOS_WEB_ACK_SILENCED generation=$cycle',
+                        ),
+                      )
+                      .length ==
+                  1,
+            );
             expect(
               adapter.commands.where(
                 (command) =>
-                    command.bytes.length == 2 &&
-                    command.bytes[0] == 0x12 &&
-                    command.bytes[1] > 0,
+                    command.bytes.isNotEmpty && command.bytes[0] == 0x12,
               ),
-              hasLength(cycle - 1),
-              reason:
-                  'each later generation must restore an audible SOS volume '
-                  'before its own ACK silences the TAG',
+              isEmpty,
+              reason: 'ACK silence must never mutate the configured SOS volume',
             );
 
             harness.sosRepository.currentIncident = harness
@@ -4498,17 +4522,12 @@ void main() {
             return lifecycle.generation == 4 &&
                 lifecycle.stage == SosLifecycleStage.active;
           });
-          await waitFor(
-            () =>
-                adapter.commands
-                    .where(
-                      (command) =>
-                          command.bytes.length == 2 &&
-                          command.bytes[0] == 0x12 &&
-                          command.bytes[1] > 0,
-                    )
-                    .length ==
-                3,
+          expect(
+            adapter.commands.where(
+              (command) =>
+                  command.bytes.isNotEmpty && command.bytes[0] == 0x12,
+            ),
+            isEmpty,
           );
           await waitFor(
             () => publicSosStates
@@ -8399,6 +8418,8 @@ void main() {
       'one forced-EA04 0x07 and accept matching E3 without transport metadata',
       () async {
         final realtime = _OnDemandOperationalRealtimeClient();
+        final bleIncomingEvents =
+            StreamController<BleIncomingEvent>.broadcast();
         final repository = MqttOperationalSosRepository(
           realtimeClient: realtime,
         );
@@ -8410,6 +8431,7 @@ void main() {
           connectedCanonicalHardwareId: 'CF:82:00:00:00:01',
           sosLifecycleSecureStore: InMemorySecureKeyValueStore(),
           appTriggeredSosBridgeWindow: const Duration(milliseconds: 100),
+          bleIncomingEvents: bleIncomingEvents.stream,
         );
         final commands = <EixamDeviceCommand>[];
         final publicStates = <SosState>[];
@@ -8432,6 +8454,23 @@ void main() {
                   harness.deviceSosController.handleIncomingSosPacket(
                     _deviceOriginActivePacket(),
                     source: DeviceSosTransitionSource.device,
+                  );
+                });
+              } else if (command.opcode == 0x09) {
+                scheduleMicrotask(() {
+                  const payload = <int>[0xE9, 0x7A, 0x01, 0x09, 0x00, 0x00];
+                  bleIncomingEvents.add(
+                    BleIncomingEvent(
+                      deviceId: 'ble-1',
+                      type: BleIncomingEventType.provisioningCommandResult,
+                      channel: EixamBleChannel.tel,
+                      payload: payload,
+                      payloadHex: EixamBleProtocol.hex(payload),
+                      source: DeviceSosTransitionSource.device,
+                      receivedAt: DateTime.now().toUtc(),
+                      provisioningCommandResult:
+                          ProvisioningCommandResult.tryParse(payload),
+                    ),
                   );
                 });
               }
@@ -8515,12 +8554,37 @@ void main() {
           expect(commands.where((command) => command.opcode == 0x07), isEmpty);
           expect(commands.where((command) => command.opcode == 0x04), isEmpty);
           expect(
+            commands.where((command) => command.opcode == 0x09),
+            hasLength(1),
+          );
+          expect(commands.where((command) => command.opcode == 0x12), isEmpty);
+          expect(
             _hasDebugMessage(
               'SOS_BACKEND_ACK_DEVICE_MIRROR '
-              'action=silence_physical_sos command=0x12,0x00 '
+              'action=silence_physical_sos command=0x09 '
               'reason=ack_is_non_terminal',
             ),
             isTrue,
+          );
+
+          realtime.emitEvent(
+            backendEvent(<String, dynamic>{
+              'type': 'acknowledged',
+              'appId': '550e8400-e29b-41d4-a716-446655440001',
+              'userId': 'external-123',
+              'incidentId': canonicalIncidentId,
+              'status': 'acknowledged',
+              'occurredAt': publishedAt.toIso8601String(),
+              'openedAt': publishedAt.toIso8601String(),
+              'updatedAt': publishedAt
+                  .add(const Duration(seconds: 1))
+                  .toIso8601String(),
+            }),
+          );
+          await pumpEventQueue(times: 4);
+          expect(
+            commands.where((command) => command.opcode == 0x09),
+            hasLength(1),
           );
 
           realtime.emitEvent(
@@ -8812,6 +8876,24 @@ void main() {
           expect(nextCycle.generation, 2);
           expect(nextCycle.stage, SosLifecycleStage.arming);
           expect((await harness.sdk.getPreSosStatus())?.packetId, 1);
+          realtime.emitEvent(
+            backendEvent(<String, dynamic>{
+              'type': 'acknowledged',
+              'appId': '550e8400-e29b-41d4-a716-446655440001',
+              'userId': 'external-123',
+              'incidentId': canonicalIncidentId,
+              'status': 'acknowledged',
+              'occurredAt': publishedAt.toIso8601String(),
+              'updatedAt': publishedAt
+                  .add(const Duration(seconds: 5))
+                  .toIso8601String(),
+            }),
+          );
+          await pumpEventQueue(times: 4);
+          expect(
+            commands.where((command) => command.opcode == 0x09),
+            hasLength(1),
+          );
           expect(
             commands.where((command) => command.opcode == 0x07),
             hasLength(1),
@@ -8821,6 +8903,7 @@ void main() {
           await resolveDiagnosticSubscription?.cancel();
           await harness.dispose(disposeSosRepository: false);
           await repository.dispose();
+          await bleIncomingEvents.close();
         }
       },
     );
@@ -11785,6 +11868,8 @@ final class _SdkSosHarness {
     ProtectionPlatformAdapter? protectionPlatformAdapter,
     Future<void> Function(SosDispatchOwner owner)? beforeSosDispatchClaim,
     bool hasLocation = true,
+    Stream<BleIncomingEvent> bleIncomingEvents =
+        const Stream<BleIncomingEvent>.empty(),
   }) : sosRepository = sosRepository ?? FakeSosRepository(),
        trackingRepository = FakeTrackingRepository(
          currentPosition: hasLocation
@@ -11844,7 +11929,7 @@ final class _SdkSosHarness {
       realtimeClient: this.realtimeClient,
       deviceSosController: deviceSosController,
       appTriggeredSosBridgeWindow: appTriggeredSosBridgeWindow,
-      bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+      bleIncomingEvents: bleIncomingEvents,
       preferredBleDeviceStore: preferredBleDeviceStore,
       localStore: this.localStore,
       sosLifecycleSecureStore: sosLifecycleSecureStore,

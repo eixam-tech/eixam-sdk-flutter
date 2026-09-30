@@ -154,6 +154,13 @@ Progress streams are broadcast and deduplicate equivalent state, so multiple
 subscribers observe one repository-owned lifecycle. Terminal incident state
 emits terminal progress and clears buffered correlation state.
 
+For a matching local generation, portal `acknowledged` dispatches exactly one
+semantic `silenceActiveSos()` operation (`BLE 0x09`) and leaves the lifecycle
+open. Portal `cancelled` dispatches terminal cancel (`0x04`); portal `resolved`
+dispatches terminal resolve (`0x07`, despite its firmware ACK name). ACK never
+uses or restores the configured SOS volume (`0x12`). Stale incident identities
+cannot silence a newer generation.
+
 Diagnostics expose only whether provisional/canonical/correlation values are
 present and which typed category was selected. They do not emit the values or
 derive stable hashes from them.

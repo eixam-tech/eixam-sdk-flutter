@@ -370,7 +370,7 @@ void main() {
     });
 
     test(
-        '7-byte remote relay SOS without location still publishes backend SOS and sends ACK_RELAY',
+        '7-byte remote relay SOS without location publishes without terminal ACK_RELAY',
         () async {
       final events = <EixamSdkEvent>[];
       final subscription = sdk.watchEvents().listen(events.add);
@@ -381,17 +381,20 @@ void main() {
         ),
       );
       await _eventually(() => realtimeClient.publishedSos.length == 1);
-      await _eventually(() => deviceCommands.length == 1);
+      await _eventually(
+        () => events.whereType<RemoteRelaySosBackendHandoffResultEvent>().isNotEmpty,
+      );
 
       final request = realtimeClient.publishedSos.single;
       expect(request.deviceId, '16909060');
       expect(request.originatorNodeId, 16909060);
       expect(request.positionSnapshot, isNull);
-      expect(deviceCommands.single.bytes, <int>[0x08, 0x04, 0x03, 0x02, 0x01]);
+      expect(deviceCommands, isEmpty);
       final result =
           events.whereType<RemoteRelaySosBackendHandoffResultEvent>().single;
       expect(result.status, RemoteRelaySosBackendHandoffStatus.submitted);
-      expect(result.ackRelaySent, isTrue);
+      expect(result.ackRelaySent, isFalse);
+      expect(result.ackRelayErrorMessage, contains('BUZZER_OFF'));
 
       await subscription.cancel();
     });
@@ -417,18 +420,18 @@ void main() {
       await notificationSubscription.cancel();
     });
 
-    test('backend success sends SOS_ACK_RELAY 0x08 to originator node',
+    test('backend success does not terminalize the remote SOS with 0x08',
         () async {
       BleDebugRegistry.instance.reset();
 
       bleEvents.add(
         _remoteRelayEvent(snapshot: _snapshot(originatorNodeId: 0x01020304)),
       );
-      await _eventually(() => deviceCommands.length == 1);
+      await _eventually(
+        () => _hasDebugMessage('[REMOTE_RELAY_SOS] ack_relay_suppressed'),
+      );
 
-      final command = deviceCommands.single;
-      expect(command.opcode, 0x08);
-      expect(command.bytes, <int>[0x08, 0x04, 0x03, 0x02, 0x01]);
+      expect(deviceCommands, isEmpty);
       expect(
         BleDebugRegistry.instance.currentState.events.any(
           (event) =>
@@ -607,7 +610,7 @@ void main() {
       expect((await sdk.getCurrentSosIncident())?.triggerSource, 'button_ui');
       expect((await deviceSosController.getStatus()).state,
           DeviceSosState.inactive);
-      expect(deviceCommands.single.bytes, <int>[0x08, 0x04, 0x03, 0x02, 0x01]);
+      expect(deviceCommands, isEmpty);
 
       final observed = events.whereType<RemoteRelaySosObservedEvent>().single;
       expect(observed.snapshot.originatorNodeId, 0x01020304);
@@ -615,7 +618,8 @@ void main() {
       final handoff =
           events.whereType<RemoteRelaySosBackendHandoffResultEvent>().single;
       expect(handoff.status, RemoteRelaySosBackendHandoffStatus.submitted);
-      expect(handoff.ackRelaySent, isTrue);
+      expect(handoff.ackRelaySent, isFalse);
+      expect(handoff.ackRelayErrorMessage, contains('BUZZER_OFF'));
 
       await subscription.cancel();
     });
@@ -1874,17 +1878,11 @@ void main() {
           (await localDeviceSosController.getStatus()).state,
           DeviceSosState.inactive,
         );
-        expect(
-          BleDebugRegistry.instance.currentState.events.any(
-            (event) =>
-                event.message.contains('sos_identity_decision') &&
-                event.message.contains('decision=remote_relay') &&
-                event.message.contains(
-                  'platformEventType=ownDeviceSosLifecycleObserved',
-                ),
-          ),
-          isTrue,
-        );
+        final handoff = events
+            .whereType<RemoteRelaySosBackendHandoffResultEvent>()
+            .single;
+        expect(handoff.status, RemoteRelaySosBackendHandoffStatus.submitted);
+        expect(handoff.ackRelaySent, isFalse);
 
         await subscription.cancel();
         await platformEvents.close();

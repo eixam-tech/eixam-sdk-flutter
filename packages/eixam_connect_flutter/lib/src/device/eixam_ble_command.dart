@@ -53,6 +53,13 @@ class EixamDeviceCommand {
     forceCmdCharacteristic: true,
   );
 
+  factory EixamDeviceCommand.sosSilence() => const EixamDeviceCommand._(
+    opcode: 0x09,
+    label: 'SOS SILENCE',
+    bytes: <int>[0x09],
+    forceCmdCharacteristic: true,
+  );
+
   factory EixamDeviceCommand.sosAckRelay({required int nodeId}) {
     return EixamDeviceCommand._(
       opcode: 0x08,

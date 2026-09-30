@@ -46,6 +46,7 @@ The SDK now exposes the following typed BLE-backed controls:
 
 - `setDeviceNotificationVolume(int volume)`
 - `setDeviceSosVolume(int volume)`
+- `silenceActiveSos()`
 - `rebootDevice()`
 - `getDeviceRuntimeStatus()`
 
@@ -57,6 +58,19 @@ The SDK now exposes the following typed BLE-backed controls:
 - `0` is valid and can be used as mute
 - calls fail with `E_DEVICE_COMMAND_NOT_READY` when no connected command-capable device exists
 - invalid values fail with `E_DEVICE_INVALID_VOLUME`
+
+### Nonterminal SOS Silence
+
+- `silenceActiveSos()` maps to `0x09 SOS_SILENCE`
+- its typed result distinguishes `silenceApplied` (`E9 7A` result `0x00`)
+  from the idempotent `alreadySilent` (`0x01`)
+- the command does not change SOS lifecycle, close the incident, publish a
+  cancel, or mutate the configured SOS volume
+- WEB ACK uses this command; `0x12` remains configuration-only
+- WEB CANCEL uses terminal `0x04`; WEB RESOLVE uses terminal `0x07`
+- remote WEB ACK requires Rescue `0x04 BUZZER_OFF`; the legacy BLE `0x08`
+  relay command emits terminal Rescue `0x02 ACK_SOS` and is therefore never
+  dispatched for acknowledgment
 
 ## Device SOS Command Path
 

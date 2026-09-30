@@ -178,7 +178,7 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 5));
 
         expect(commands, hasLength(1));
-        expect(commands.single.bytes, <int>[0x12, 0x00]);
+        expect(commands.single.bytes, <int>[0x09]);
         expect(commands.single.usesCmdCharacteristic, isTrue);
         expect(
           harness.deviceSosController.currentStatus.state,
@@ -191,7 +191,7 @@ void main() {
         expect(
           _debugMessagesContaining('SOS_BACKEND_ACK_DEVICE_MIRROR').single,
           allOf(
-            contains('command=0x12,0x00'),
+            contains('command=0x09'),
             contains('reason=ack_is_non_terminal'),
           ),
         );
@@ -260,8 +260,9 @@ class _BridgeHarness {
             cycleKey: cycleKey,
           ),
       deviceSosController: deviceSosController,
-      localSosWebAcknowledgmentHandler: () => deviceSosController
-          .sendAttachedCommand(EixamDeviceCommand.sosVolume(0)),
+      localSosWebAcknowledgmentHandler:
+          ({required String? expectedIncidentId}) => deviceSosController
+              .sendAttachedCommand(EixamDeviceCommand.sosSilence()),
       sessionProvider: () => null,
       sosBackendAssignmentVerifiedRetry:
           ({
