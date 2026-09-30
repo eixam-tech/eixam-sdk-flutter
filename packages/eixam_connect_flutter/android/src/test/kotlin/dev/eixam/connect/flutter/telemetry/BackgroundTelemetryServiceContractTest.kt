@@ -28,11 +28,11 @@ class BackgroundTelemetryServiceContractTest {
     }
 
     @Test
-    fun `normal timeout removes temporary listeners and can use stale fallback`() {
-        assertTrue(serviceSource.contains("normalStaleFallbackMaxAgeMs = 600000L"))
-        assertTrue(serviceSource.contains("relaxedNormalFallbackLocation(manager)"))
+    fun `normal timeout removes temporary listeners without stale fallback`() {
+        assertFalse(serviceSource.contains("normalStaleFallbackMaxAgeMs"))
+        assertFalse(serviceSource.contains("relaxedNormalFallbackLocation(manager)"))
         assertTrue(serviceSource.contains("singleLocationListeners.clear()"))
-        assertTrue(serviceSource.contains("remove_single_update"))
+        assertTrue(serviceSource.contains("manager.removeUpdates(listener)"))
     }
 
     @Test

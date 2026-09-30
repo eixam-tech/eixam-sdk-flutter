@@ -113,9 +113,23 @@ class BleOperationalRuntimeBridge {
 
   SdkBridgeDiagnostics get currentDiagnostics => _diagnostics;
 
-  Stream<SdkBridgeDiagnostics> watchDiagnostics() async* {
-    yield _diagnostics;
-    yield* _diagnosticsController.stream;
+  Stream<SdkBridgeDiagnostics> watchDiagnostics() {
+    late final StreamController<SdkBridgeDiagnostics> controller;
+    StreamSubscription<SdkBridgeDiagnostics>? subscription;
+    controller = StreamController<SdkBridgeDiagnostics>(
+      onListen: () {
+        subscription = _diagnosticsController.stream.listen(
+          controller.add,
+          onError: controller.addError,
+          onDone: controller.close,
+        );
+        controller.add(_diagnostics);
+      },
+      onPause: () => subscription?.pause(),
+      onResume: () => subscription?.resume(),
+      onCancel: () => subscription?.cancel(),
+    );
+    return controller.stream;
   }
 
   void start() {
