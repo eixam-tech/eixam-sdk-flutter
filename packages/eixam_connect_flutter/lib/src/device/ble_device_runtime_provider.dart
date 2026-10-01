@@ -1064,7 +1064,6 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       'BLE SOS runtime detach requested -> hardwareId=${_connectedDeviceId ?? "-"} inetAvailable=${BleDebugRegistry.instance.currentState.inetFound} cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound}',
     );
     await _deviceSosController.detach();
-    _telReassembler.reset();
     final deviceId = _connectedDeviceId;
     if (deviceId != null) {
       try {
