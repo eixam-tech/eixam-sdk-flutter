@@ -2287,6 +2287,83 @@ void main() {
       });
 
       test(
+        'Web ACK uses relay deviceId when canonical hardware id is absent',
+        () async {
+          await useSdkWithCancelDataSource();
+          const originatorNodeId = 0x01020304;
+          const relayNodeId = 0x05060708;
+          const canonicalIncidentId = 'remote-device-id-relay-incident';
+          deviceRepository.emitStatus(
+            buildDeviceStatus(
+              deviceId: 'relay-transport-id',
+              nodeId: relayNodeId,
+              connected: true,
+              paired: true,
+              activated: true,
+            ),
+          );
+          await Future<void>.delayed(Duration.zero);
+
+          bleEvents.add(
+            _remoteRelayEvent(
+              deviceId: 'relay-transport-id',
+              canonicalHardwareId: 'relay-transport-id',
+              snapshot: _snapshot(
+                originatorNodeId: originatorNodeId,
+                relayNodeId: relayNodeId,
+              ),
+            ),
+          );
+          await _eventually(() => realtimeClient.publishedSos.length == 1);
+          final publishedAt = realtimeClient.publishedSos.single.timestamp;
+          realtimeClient.emitEvent(
+            RealtimeEvent(
+              type: 'processed',
+              timestamp: publishedAt,
+              payload: <String, dynamic>{
+                'type': 'processed',
+                'incidentId': canonicalIncidentId,
+                'status': 'active',
+                'occurredAt': publishedAt.toIso8601String(),
+                '_mqttAuthenticatedUserScoped': true,
+                '_mqttTopicCategory': 'internal',
+              },
+            ),
+          );
+          await _eventually(
+            () => _hasDebugMessage('reason=remote_canonical_correlation'),
+          );
+
+          realtimeClient.emitEvent(
+            RealtimeEvent(
+              type: 'sos.lifecycle',
+              timestamp: publishedAt.add(const Duration(seconds: 1)),
+              payload: <String, dynamic>{
+                'type': 'sos.lifecycle',
+                'incidentId': canonicalIncidentId,
+                'state': 'acknowledged',
+                '_mqttAuthenticatedUserScoped': true,
+                '_mqttTopicCategory': 'internal',
+              },
+            ),
+          );
+          await _eventually(() => deviceCommands.length == 1);
+
+          expect(
+            realtimeClient.publishedSos.single.relayHardwareId,
+            'relay-transport-id',
+          );
+          expect(deviceCommands.single.encode(), <int>[
+            0x0A,
+            0x04,
+            0x03,
+            0x02,
+            0x01,
+          ]);
+        },
+      );
+
+      test(
         'Web ACK sends one remote silence and Web RESOLVE sends one terminal command through correlated R',
         () async {
           await useSdkWithCancelDataSource();

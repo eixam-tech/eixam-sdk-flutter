@@ -23110,7 +23110,7 @@ class EixamConnectSdkImpl
     final deviceId = _remoteRelayOriginatorDeviceId(snapshot);
     final relayNodeId = snapshot.relayNodeId ?? _lastDeviceStatus?.nodeId;
     final relayDeviceId = relayNodeId?.toString();
-    final relayHardwareId = _lastDeviceStatus?.canonicalHardwareId;
+    final relayHardwareId = hardwareId;
     _rememberRecentExternalRelaySosContext(
       snapshot: snapshot,
       relayHardwareId: relayHardwareId,
