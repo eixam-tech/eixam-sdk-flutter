@@ -42,6 +42,10 @@ class SharedPrefsSdkStore {
   static const String preferredBleDeviceKey = 'eixam.ble.preferred_device';
   static const String manualDisconnectRequestedKey =
       'eixam.ble.manual_disconnect_requested';
+  static const String deviceMigrationSessionKey =
+      'eixam.device.migration_session';
+  static const String firmwareUpdateSessionKey =
+      'eixam.device.firmware_update_session';
   static const List<String> localUserDataKeys = <String>[
     sosIncidentKey,
     sosStateKey,
@@ -62,6 +66,8 @@ class SharedPrefsSdkStore {
     externalRelayLifecycleContextKey,
     preferredBleDeviceKey,
     manualDisconnectRequestedKey,
+    deviceMigrationSessionKey,
+    firmwareUpdateSessionKey,
   ];
 
   SharedPreferences? _prefs;

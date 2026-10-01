@@ -16,6 +16,18 @@ enum FirmwareUpdateState {
   recoveryRequired,
 }
 
+enum FirmwareUpdateNextAction { none, retry, waitForDevice, recover, completed }
+
+enum FirmwareUpdateReconciliationOutcome {
+  deviceFound,
+  recoveryDeviceFound,
+  deviceMissing,
+  wrongDevice,
+  ambiguousCandidates,
+  installedVersionMismatch,
+  completed,
+}
+
 enum FirmwareUpdateBlocker {
   noConnectedDevice,
   unknownFirmwareVersion,
@@ -149,7 +161,16 @@ class FirmwareUpdateSession {
     this.completedAt,
     this.failureCode,
     this.failureMessage,
+    this.nativeTransferEngaged = false,
+    this.requiresRecovery = false,
+    this.schemaVersion = currentSchemaVersion,
+    this.hardwareId,
+    this.updatedAt,
+    this.nextAction = FirmwareUpdateNextAction.none,
+    this.reconciliationOutcome,
   });
+
+  static const int currentSchemaVersion = 1;
 
   final String sessionId;
   final String deviceId;
@@ -161,12 +182,28 @@ class FirmwareUpdateSession {
   final DateTime? completedAt;
   final String? failureCode;
   final String? failureMessage;
+  final bool nativeTransferEngaged;
+  final bool requiresRecovery;
+  final int schemaVersion;
+  final String? hardwareId;
+  final DateTime? updatedAt;
+  final FirmwareUpdateNextAction nextAction;
+  final FirmwareUpdateReconciliationOutcome? reconciliationOutcome;
+
+  bool get isCompleted => state == FirmwareUpdateState.completed;
 
   FirmwareUpdateSession copyWith({
     FirmwareUpdateState? state,
     DateTime? completedAt,
+    bool clearCompletedAt = false,
     String? failureCode,
     String? failureMessage,
+    bool? nativeTransferEngaged,
+    bool? requiresRecovery,
+    String? hardwareId,
+    DateTime? updatedAt,
+    FirmwareUpdateNextAction? nextAction,
+    FirmwareUpdateReconciliationOutcome? reconciliationOutcome,
   }) {
     return FirmwareUpdateSession(
       sessionId: sessionId,
@@ -176,9 +213,18 @@ class FirmwareUpdateSession {
       targetVersion: targetVersion,
       state: state ?? this.state,
       startedAt: startedAt,
-      completedAt: completedAt ?? this.completedAt,
+      completedAt: clearCompletedAt ? null : completedAt ?? this.completedAt,
       failureCode: failureCode ?? this.failureCode,
       failureMessage: failureMessage ?? this.failureMessage,
+      nativeTransferEngaged:
+          nativeTransferEngaged ?? this.nativeTransferEngaged,
+      requiresRecovery: requiresRecovery ?? this.requiresRecovery,
+      schemaVersion: schemaVersion,
+      hardwareId: hardwareId ?? this.hardwareId,
+      updatedAt: updatedAt ?? this.updatedAt,
+      nextAction: nextAction ?? this.nextAction,
+      reconciliationOutcome:
+          reconciliationOutcome ?? this.reconciliationOutcome,
     );
   }
 }
@@ -194,6 +240,8 @@ class FirmwareUpdateProgress {
     this.totalBytes,
     this.failureCode,
     this.failureMessage,
+    this.nativeTransferEngaged = false,
+    this.requiresRecovery = false,
   });
 
   final String sessionId;
@@ -204,6 +252,8 @@ class FirmwareUpdateProgress {
   final int? totalBytes;
   final String? failureCode;
   final String? failureMessage;
+  final bool nativeTransferEngaged;
+  final bool requiresRecovery;
   final DateTime updatedAt;
 
   /// The completion percentage (0–100) to display, preferring the native

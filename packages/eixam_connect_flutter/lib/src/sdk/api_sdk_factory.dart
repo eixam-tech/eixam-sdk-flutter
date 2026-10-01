@@ -35,8 +35,10 @@ import '../device/meshtastic_metadata_probe.dart';
 import '../provisioning/strict_device_provisioning_config.dart';
 import 'eixam_connect_sdk_impl.dart';
 import 'device_migration_coordinator.dart';
+import 'device_migration_session_store.dart';
 import 'firmware_dfu_transport_factory.dart';
 import 'firmware_update_coordinator.dart';
+import 'firmware_update_session_store.dart';
 import 'mqtt5_sdk_transport.dart';
 import 'mqtt_realtime_client.dart';
 import 'eixam_bootstrap_resolver.dart';
@@ -62,19 +64,18 @@ class ApiSdkFactory {
     bool enableLogging = false,
     bool allowInsecureLocalEndpoints = false,
     bool deferRuntimeStartup = false,
-  }) =>
-      _createHttpApi(
-        apiBaseUrl: apiBaseUrl,
-        websocketUrl: websocketUrl,
-        protectionPlatformAdapter: protectionPlatformAdapter,
-        notificationPolicy: notificationPolicy,
-        notificationTexts: notificationTexts,
-        permissionDisclosureConfig: permissionDisclosureConfig,
-        enableLogging: enableLogging,
-        allowInsecureLocalEndpoints: allowInsecureLocalEndpoints,
-        deferRuntimeStartup: deferRuntimeStartup,
-        recoverUnreadablePersistedSession: false,
-      );
+  }) => _createHttpApi(
+    apiBaseUrl: apiBaseUrl,
+    websocketUrl: websocketUrl,
+    protectionPlatformAdapter: protectionPlatformAdapter,
+    notificationPolicy: notificationPolicy,
+    notificationTexts: notificationTexts,
+    permissionDisclosureConfig: permissionDisclosureConfig,
+    enableLogging: enableLogging,
+    allowInsecureLocalEndpoints: allowInsecureLocalEndpoints,
+    deferRuntimeStartup: deferRuntimeStartup,
+    recoverUnreadablePersistedSession: false,
+  );
 
   static Future<EixamConnectSdk> _createHttpApi({
     required String apiBaseUrl,
@@ -116,20 +117,27 @@ class ApiSdkFactory {
       config: config,
       sessionContext: sessionContext,
     );
-    final profileRemoteDataSource =
-        HttpSdkProfileRemoteDataSource(transport: httpTransport);
-    final feedbackRemoteDataSource =
-        HttpSdkFeedbackRemoteDataSource(transport: httpTransport);
-    final firmwareRemoteDataSource =
-        HttpSdkFirmwareRemoteDataSource(transport: httpTransport);
-    final deviceConfigRemoteDataSource =
-        HttpSdkDeviceConfigRemoteDataSource(transport: httpTransport);
-    final networkPskRemoteDataSource =
-        HttpSdkNetworkPskRemoteDataSource(transport: httpTransport);
-    final provisioningConfigSource =
-        HttpStrictDeviceProvisioningConfigSource(transport: httpTransport);
-    final geoCountryRemoteDataSource =
-        HttpSdkGeoCountryRemoteDataSource(transport: httpTransport);
+    final profileRemoteDataSource = HttpSdkProfileRemoteDataSource(
+      transport: httpTransport,
+    );
+    final feedbackRemoteDataSource = HttpSdkFeedbackRemoteDataSource(
+      transport: httpTransport,
+    );
+    final firmwareRemoteDataSource = HttpSdkFirmwareRemoteDataSource(
+      transport: httpTransport,
+    );
+    final deviceConfigRemoteDataSource = HttpSdkDeviceConfigRemoteDataSource(
+      transport: httpTransport,
+    );
+    final networkPskRemoteDataSource = HttpSdkNetworkPskRemoteDataSource(
+      transport: httpTransport,
+    );
+    final provisioningConfigSource = HttpStrictDeviceProvisioningConfigSource(
+      transport: httpTransport,
+    );
+    final geoCountryRemoteDataSource = HttpSdkGeoCountryRemoteDataSource(
+      transport: httpTransport,
+    );
     final deviceConfigStore = DeviceConfigStore(localStore: store);
     final realtimeClient = MqttRealtimeClient(
       config: config,
@@ -141,9 +149,7 @@ class ApiSdkFactory {
     );
     final sosRepository = MqttOperationalSosRepository(
       realtimeClient: realtimeClient,
-      cancelRemoteDataSource: HttpSosRemoteDataSource(
-        transport: httpTransport,
-      ),
+      cancelRemoteDataSource: HttpSosRemoteDataSource(transport: httpTransport),
       localStore: store,
     );
     final telemetryRepository = MqttTelemetryRepository(
@@ -157,8 +163,9 @@ class ApiSdkFactory {
 
     final deathManRepository = InMemoryDeathManRepository(localStore: store);
 
-    final deviceRuntimeProvider =
-        BleDeviceRuntimeProvider(bleClient: bleClient);
+    final deviceRuntimeProvider = BleDeviceRuntimeProvider(
+      bleClient: bleClient,
+    );
     final deviceRepository = InMemoryDeviceRepository(
       runtimeProvider: deviceRuntimeProvider,
       localStore: store,
@@ -185,6 +192,8 @@ class ApiSdkFactory {
       deathManRepository: deathManRepository,
       remoteDataSource: firmwareRemoteDataSource,
       dfuTransport: buildDefaultFirmwareDfuTransport(),
+      bleClient: bleClient,
+      sessionStore: SharedPrefsFirmwareUpdateSessionStore(localStore: store),
       protectionStatusProvider: () => sdk.getProtectionStatus(),
       deviceSosStatusProvider:
           deviceRuntimeProvider.deviceSosController.getStatus,
@@ -242,7 +251,9 @@ class ApiSdkFactory {
         bleClient: bleClient,
         metadataProbe: FlutterBlueMeshtasticMetadataProbe(),
         firmwareUpdates: firmwareUpdateCoordinator,
+        sessionStore: SharedPrefsDeviceMigrationSessionStore(localStore: store),
       ),
+      localStore: store,
       notificationPolicy: notificationPolicy,
       notificationTexts: notificationTexts,
       permissionDisclosureConfig: permissionDisclosureConfig,

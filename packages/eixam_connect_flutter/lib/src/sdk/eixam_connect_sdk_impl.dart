@@ -3532,6 +3532,28 @@ class EixamConnectSdkImpl
   }
 
   @override
+  Future<DeviceMigrationSession?> getActiveDeviceMigration() {
+    return deviceMigrationCoordinator?.getActiveSession() ??
+        Future<DeviceMigrationSession?>.value();
+  }
+
+  @override
+  Stream<DeviceMigrationSession> watchDeviceMigration() {
+    return deviceMigrationCoordinator?.watchSession() ??
+        const Stream<DeviceMigrationSession>.empty();
+  }
+
+  @override
+  Future<DeviceMigrationSession?> reconcileDeviceMigration({
+    bool attemptRecovery = false,
+  }) {
+    return deviceMigrationCoordinator?.reconcile(
+          attemptRecovery: attemptRecovery,
+        ) ??
+        Future<DeviceMigrationSession?>.value();
+  }
+
+  @override
   Future<EixamBleDiagnostics> getBleDiagnostics() async {
     return _toPublicBleDiagnostics(BleDebugRegistry.instance.currentState);
   }
@@ -3907,6 +3929,25 @@ class EixamConnectSdkImpl
         .whenComplete(() {
           _firmwareOtaInProgress = false;
         });
+  }
+
+  @override
+  Future<FirmwareUpdateSession?> getActiveFirmwareUpdate() {
+    return _firmwareUpdates().getActiveFirmwareUpdate();
+  }
+
+  @override
+  Stream<FirmwareUpdateSession> watchFirmwareUpdate() {
+    return _firmwareUpdates().watchFirmwareUpdate();
+  }
+
+  @override
+  Future<FirmwareUpdateSession?> reconcileFirmwareUpdate({
+    bool attemptRecovery = false,
+  }) {
+    return _firmwareUpdates().reconcileFirmwareUpdate(
+      attemptRecovery: attemptRecovery,
+    );
   }
 
   /// Re-flashes a device stranded in the DFU bootloader (recovery after an
@@ -25227,6 +25268,7 @@ class EixamConnectSdkImpl
     await _deviceCountryConfigStatusSub?.cancel();
     await _deviceCountryConfigController?.dispose();
     await _deviceProvisioningCoordinator?.dispose();
+    await deviceMigrationCoordinator?.dispose();
     await firmwareUpdateCoordinator?.dispose();
     await _operationalTelemetryCoordinator.stop();
     await _trackingOwnerArbiter.dispose();

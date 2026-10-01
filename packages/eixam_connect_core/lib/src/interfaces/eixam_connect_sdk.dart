@@ -211,6 +211,20 @@ abstract class EixamConnectSdk {
   Future<DeviceMigrationResult> migrateDeviceToEixam({
     required DeviceMigrationCandidate candidate,
   });
+
+  /// Returns the durable non-terminal physical-device migration, if any.
+  Future<DeviceMigrationSession?> getActiveDeviceMigration();
+
+  /// Watches authoritative migration-domain state, including terminal events.
+  Stream<DeviceMigrationSession> watchDeviceMigration();
+
+  /// Reconciles a durable migration with currently visible BLE evidence.
+  ///
+  /// Recovery is never inferred from an unrelated DFU advertisement. Set
+  /// [attemptRecovery] only in response to the SDK's `recover` next action.
+  Future<DeviceMigrationSession?> reconcileDeviceMigration({
+    bool attemptRecovery = false,
+  });
   Future<EixamBleDiagnostics> getBleDiagnostics();
   Stream<EixamBleDiagnostics> watchBleDiagnostics();
   Future<BleCommandChannelStatus> getDeviceCommandChannelStatus();
@@ -306,6 +320,11 @@ abstract class EixamConnectSdk {
     required String deviceId,
     required String releaseId,
     FirmwareUpdatePolicy policy = const FirmwareUpdatePolicy(),
+  });
+  Future<FirmwareUpdateSession?> getActiveFirmwareUpdate();
+  Stream<FirmwareUpdateSession> watchFirmwareUpdate();
+  Future<FirmwareUpdateSession?> reconcileFirmwareUpdate({
+    bool attemptRecovery = false,
   });
   Stream<FirmwareUpdateProgress> watchFirmwareUpdateProgress({
     String? deviceId,

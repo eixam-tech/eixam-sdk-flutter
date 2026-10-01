@@ -1,18 +1,23 @@
+import 'dart:async';
+
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import '../device/ble_client.dart';
 import '../device/ble_scan_result.dart';
 import '../device/canonical_hardware_id.dart';
 import '../device/meshtastic_metadata_probe.dart';
+import '../firmware_version.dart';
 import 'device_migration_firmware_service.dart';
+import 'device_migration_session_store.dart';
 
 final class DeviceMigrationCoordinator {
   DeviceMigrationCoordinator({
     required this.bleClient,
     required this.metadataProbe,
     required this.firmwareUpdates,
+    DeviceMigrationSessionStore? sessionStore,
     this.rediscoveryTimeout = const Duration(seconds: 12),
-  });
+  }) : sessionStore = sessionStore ?? SharedPrefsDeviceMigrationSessionStore();
 
   static const int wisMeshTagHardwareModel = 105;
   static const String eixamFirmwareCatalogModel = 'EIXAM R1';
@@ -21,9 +26,27 @@ final class DeviceMigrationCoordinator {
   final BleClient bleClient;
   final MeshtasticMetadataProbe metadataProbe;
   final DeviceMigrationFirmwareService firmwareUpdates;
+  final DeviceMigrationSessionStore sessionStore;
   final Duration rediscoveryTimeout;
 
   BleScanResult? _verifiedMigratedDevice;
+  DeviceMigrationSession? _session;
+  Future<void>? _restoreFuture;
+  Future<void> _writeTail = Future<void>.value();
+  final StreamController<DeviceMigrationSession> _sessionController =
+      StreamController<DeviceMigrationSession>.broadcast();
+
+  Future<DeviceMigrationSession?> getActiveSession() async {
+    await _restore();
+    return _session?.state == DeviceMigrationState.completed ? null : _session;
+  }
+
+  Stream<DeviceMigrationSession> watchSession() async* {
+    await _restore();
+    final current = _session;
+    if (current != null) yield current;
+    yield* _sessionController.stream;
+  }
 
   Future<DeviceMigrationCandidate> inspect({
     required String deviceId,
@@ -79,6 +102,22 @@ final class DeviceMigrationCoordinator {
   Future<DeviceMigrationResult> migrate(
     DeviceMigrationCandidate candidate,
   ) async {
+    await _restore();
+    final activeFirmware = await firmwareUpdates
+        .getActiveMigrationFirmwareUpdate();
+    if (activeFirmware != null &&
+        !_firmwareSessionMatchesCandidate(activeFirmware, candidate)) {
+      return _blocked(candidate, 'firmwareUpdateActiveForAnotherDevice');
+    }
+    if (activeFirmware != null) {
+      return _blocked(candidate, 'firmwareUpdateResumeRequired');
+    }
+    final active = _session;
+    if (active != null &&
+        active.state != DeviceMigrationState.completed &&
+        !_samePhysicalDevice(active.candidate, candidate)) {
+      return _blocked(candidate, 'migrationActiveForAnotherDevice');
+    }
     if (!candidate.isCompatible ||
         candidate.sourceHardwareModel != wisMeshTagHardwareModel) {
       return _blocked(candidate, 'migrationCandidateNotCompatible');
@@ -110,6 +149,22 @@ final class DeviceMigrationCoordinator {
       return _blocked(revalidated, 'migrationArtifactUnavailable');
     }
 
+    final now = DateTime.now();
+    await _publish(
+      DeviceMigrationSession(
+        sessionId: 'migration-${now.microsecondsSinceEpoch}',
+        schemaVersion: DeviceMigrationSession.currentSchemaVersion,
+        candidate: revalidated,
+        releaseId: release.releaseId,
+        targetVersion: release.version,
+        state: DeviceMigrationState.prepared,
+        nextAction: DeviceMigrationNextAction.continueMigration,
+        canCancel: true,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+
     _verifiedMigratedDevice = null;
     final sourceStatus = DeviceStatus(
       deviceId: revalidated.deviceId,
@@ -125,23 +180,45 @@ final class DeviceMigrationCoordinator {
       batteryPercent: revalidated.batteryPercentage,
       firmwareVersion: revalidated.sourceFirmwareVersion ?? 'stock-meshtastic',
     );
-    final session = await firmwareUpdates.startMigrationFirmwareUpdate(
-      sourceStatus: sourceStatus,
-      release: release,
-      policy: const FirmwareUpdatePolicy(
-        supportedHardwareModels: <String>[eixamFirmwareCatalogModel],
-        requireKnownDeviceBattery: false,
-      ),
-      postMigrationStatusRefresh:
-          ({required deviceId, required attempt, required targetVersion}) =>
-              _rediscoverAndVerify(
-                candidate: revalidated,
-                targetVersion: targetVersion,
-              ),
-    );
+    final progressSub = firmwareUpdates
+        .watchMigrationFirmwareProgress(deviceId: sourceStatus.deviceId)
+        .listen(_onFirmwareProgress);
+    late final FirmwareUpdateSession session;
+    try {
+      session = await firmwareUpdates.startMigrationFirmwareUpdate(
+        sourceStatus: sourceStatus,
+        release: release,
+        policy: const FirmwareUpdatePolicy(
+          supportedHardwareModels: <String>[eixamFirmwareCatalogModel],
+          requireKnownDeviceBattery: false,
+        ),
+        postMigrationStatusRefresh:
+            ({required deviceId, required attempt, required targetVersion}) =>
+                _rediscoverAndVerify(
+                  candidate: revalidated,
+                  targetVersion: targetVersion,
+                ),
+      );
+    } finally {
+      await progressSub.cancel();
+      await _writeTail;
+    }
 
     if (session.state == FirmwareUpdateState.completed &&
         _verifiedMigratedDevice != null) {
+      await _publish(
+        _session!.copyWith(
+          firmwareSession: session,
+          migratedDevice: _verifiedMigratedDevice!.toPublic(),
+          state: DeviceMigrationState.completed,
+          outcome: DeviceMigrationOutcome.completed,
+          reconciliationOutcome: DeviceMigrationReconciliationOutcome.completed,
+          nextAction: DeviceMigrationNextAction.completed,
+          canCancel: false,
+          updatedAt: DateTime.now(),
+        ),
+        clearPersisted: true,
+      );
       return DeviceMigrationResult(
         outcome: DeviceMigrationOutcome.completed,
         candidate: revalidated,
@@ -150,19 +227,282 @@ final class DeviceMigrationCoordinator {
       );
     }
     final ambiguous = session.failureCode == ambiguousDeviceCode;
+    final outcome = ambiguous
+        ? DeviceMigrationOutcome.ambiguousPostMigrationDevice
+        : session.state == FirmwareUpdateState.recoveryRequired
+        ? DeviceMigrationOutcome.recoveryRequired
+        : session.state == FirmwareUpdateState.blocked
+        ? DeviceMigrationOutcome.blocked
+        : DeviceMigrationOutcome.failed;
+    await _publish(
+      _session!.copyWith(
+        firmwareSession: session,
+        state: session.state == FirmwareUpdateState.recoveryRequired
+            ? DeviceMigrationState.recoveryRequired
+            : session.state == FirmwareUpdateState.blocked
+            ? DeviceMigrationState.blocked
+            : DeviceMigrationState.failed,
+        outcome: outcome,
+        nextAction: session.state == FirmwareUpdateState.recoveryRequired
+            ? DeviceMigrationNextAction.recover
+            : ambiguous
+            ? DeviceMigrationNextAction.reinspect
+            : DeviceMigrationNextAction.retry,
+        canCancel: false,
+        failureCode: session.failureCode,
+        failureMessage: session.failureMessage,
+        updatedAt: DateTime.now(),
+      ),
+    );
     return DeviceMigrationResult(
-      outcome: ambiguous
-          ? DeviceMigrationOutcome.ambiguousPostMigrationDevice
-          : session.state == FirmwareUpdateState.recoveryRequired
-          ? DeviceMigrationOutcome.recoveryRequired
-          : session.state == FirmwareUpdateState.blocked
-          ? DeviceMigrationOutcome.blocked
-          : DeviceMigrationOutcome.failed,
+      outcome: outcome,
       candidate: revalidated,
       firmwareSession: session,
       failureCode: session.failureCode,
       failureMessage: session.failureMessage,
     );
+  }
+
+  /// Reconciles a persisted operation using BLE identity and installed-version
+  /// evidence. Recovery is attempted only for a bootloader with a strong
+  /// identity match and only when [attemptRecovery] is explicitly requested.
+  Future<DeviceMigrationSession?> reconcile({
+    bool attemptRecovery = false,
+  }) async {
+    await _restore();
+    final current = _session;
+    if (current == null || current.state == DeviceMigrationState.completed) {
+      return current;
+    }
+    await _publish(
+      current.copyWith(
+        state: DeviceMigrationState.reconciling,
+        nextAction: DeviceMigrationNextAction.waitForDevice,
+        canCancel: false,
+        updatedAt: DateTime.now(),
+      ),
+    );
+    final scans = await bleClient.scan(timeout: rediscoveryTimeout);
+    final eixam = scans.where(_looksLikeEixam).toList(growable: false);
+    final matchingEixam = eixam
+        .where((scan) => _stronglyMatches(current.candidate, scan))
+        .toList(growable: false);
+    if (matchingEixam.length == 1) {
+      final match = matchingEixam.single;
+      final status = await _verifyMigratedScan(scan: match);
+      if (status.connected &&
+          eixamFirmwareVersionsMatch(
+            status.firmwareVersion,
+            current.targetVersion,
+          )) {
+        final completed = current.copyWith(
+          migratedDevice: match.toPublic(),
+          state: DeviceMigrationState.completed,
+          outcome: DeviceMigrationOutcome.completed,
+          reconciliationOutcome: DeviceMigrationReconciliationOutcome.completed,
+          nextAction: DeviceMigrationNextAction.completed,
+          canCancel: false,
+          updatedAt: DateTime.now(),
+        );
+        await _publish(completed, clearPersisted: true);
+        return completed;
+      }
+      return _reconciled(
+        current,
+        state: DeviceMigrationState.failed,
+        outcome: DeviceMigrationReconciliationOutcome.migratedDeviceVerified,
+        nextAction: DeviceMigrationNextAction.retry,
+        failureCode: 'installedVersionMismatch',
+      );
+    }
+    if (matchingEixam.length > 1 ||
+        (matchingEixam.isEmpty && eixam.length > 1)) {
+      return _reconciled(
+        current,
+        state: DeviceMigrationState.waitingForDevice,
+        outcome: DeviceMigrationReconciliationOutcome.ambiguousCandidates,
+        nextAction: DeviceMigrationNextAction.reinspect,
+        failureCode: ambiguousDeviceCode,
+      );
+    }
+
+    final bootloaders = scans
+        .where((scan) => scan.toPublic().isDfuBootloader)
+        .toList(growable: false);
+    final matchingBootloaders = bootloaders
+        .where((scan) => _stronglyMatches(current.candidate, scan))
+        .toList(growable: false);
+    if (matchingBootloaders.length == 1) {
+      final bootloader = matchingBootloaders.single;
+      if (attemptRecovery) {
+        final recovered = await firmwareUpdates.recoverMigrationFirmwareUpdate(
+          bootloaderDeviceId: bootloader.deviceId,
+          releaseId: current.releaseId,
+          targetVersion: current.targetVersion,
+        );
+        if (recovered.state == FirmwareUpdateState.completed) {
+          await _publish(
+            current.copyWith(
+              firmwareSession: recovered,
+              state: DeviceMigrationState.waitingForDevice,
+              reconciliationOutcome: DeviceMigrationReconciliationOutcome
+                  .matchingRecoveryDeviceFound,
+              nextAction: DeviceMigrationNextAction.waitForDevice,
+              canCancel: false,
+              updatedAt: DateTime.now(),
+            ),
+          );
+          return reconcile();
+        }
+        return _reconciled(
+          current.copyWith(firmwareSession: recovered),
+          state: DeviceMigrationState.recoveryRequired,
+          outcome: DeviceMigrationReconciliationOutcome.recoveryRequired,
+          nextAction: DeviceMigrationNextAction.recover,
+          failureCode: recovered.failureCode ?? 'firmwareRecoveryFailed',
+        );
+      }
+      return _reconciled(
+        current,
+        state: DeviceMigrationState.recoveryRequired,
+        outcome: DeviceMigrationReconciliationOutcome.recoveryRequired,
+        nextAction: DeviceMigrationNextAction.recover,
+      );
+    }
+    if (matchingBootloaders.length > 1 || bootloaders.length > 1) {
+      return _reconciled(
+        current,
+        state: DeviceMigrationState.waitingForDevice,
+        outcome: DeviceMigrationReconciliationOutcome.ambiguousCandidates,
+        nextAction: DeviceMigrationNextAction.reinspect,
+      );
+    }
+
+    final sourceFound = scans.any(
+      (scan) =>
+          !scan.toPublic().isDfuBootloader &&
+          !_looksLikeEixam(scan) &&
+          _stronglyMatches(current.candidate, scan),
+    );
+    if (sourceFound) {
+      return _reconciled(
+        current,
+        state: DeviceMigrationState.prepared,
+        outcome: DeviceMigrationReconciliationOutcome.originalSourceDeviceFound,
+        nextAction: DeviceMigrationNextAction.continueMigration,
+        canCancel: true,
+      );
+    }
+    return _reconciled(
+      current,
+      state: DeviceMigrationState.waitingForDevice,
+      outcome: DeviceMigrationReconciliationOutcome.deviceNotFound,
+      nextAction: DeviceMigrationNextAction.waitForDevice,
+    );
+  }
+
+  Future<void> dispose() async {
+    await _writeTail;
+    await _sessionController.close();
+  }
+
+  Future<void> _restore() {
+    return _restoreFuture ??= () async {
+      _session = await sessionStore.load();
+    }();
+  }
+
+  void _onFirmwareProgress(FirmwareUpdateProgress progress) {
+    final current = _session;
+    if (current == null) return;
+    final terminal =
+        progress.state == FirmwareUpdateState.completed ||
+        progress.state == FirmwareUpdateState.failed ||
+        progress.state == FirmwareUpdateState.cancelled ||
+        progress.state == FirmwareUpdateState.blocked ||
+        progress.state == FirmwareUpdateState.recoveryRequired;
+    final firmwareSession = FirmwareUpdateSession(
+      sessionId: progress.sessionId,
+      deviceId: progress.deviceId,
+      releaseId: current.releaseId,
+      fromVersion: current.candidate.sourceFirmwareVersion ?? '',
+      targetVersion: current.targetVersion,
+      state: progress.state,
+      startedAt: current.createdAt,
+      completedAt: terminal ? progress.updatedAt : null,
+      failureCode: progress.failureCode,
+      failureMessage: progress.failureMessage,
+      nativeTransferEngaged: progress.nativeTransferEngaged,
+      requiresRecovery: progress.requiresRecovery,
+    );
+    final migrationState = switch (progress.state) {
+      FirmwareUpdateState.transferring => DeviceMigrationState.transferring,
+      FirmwareUpdateState.reconnecting ||
+      FirmwareUpdateState.verifyingInstalledVersion =>
+        DeviceMigrationState.waitingForDevice,
+      FirmwareUpdateState.recoveryRequired =>
+        DeviceMigrationState.recoveryRequired,
+      FirmwareUpdateState.blocked => DeviceMigrationState.blocked,
+      FirmwareUpdateState.failed ||
+      FirmwareUpdateState.cancelled => DeviceMigrationState.failed,
+      _ => DeviceMigrationState.prepared,
+    };
+    final nextAction = switch (migrationState) {
+      DeviceMigrationState.transferring ||
+      DeviceMigrationState.waitingForDevice =>
+        DeviceMigrationNextAction.waitForDevice,
+      DeviceMigrationState.recoveryRequired =>
+        DeviceMigrationNextAction.recover,
+      DeviceMigrationState.failed ||
+      DeviceMigrationState.blocked => DeviceMigrationNextAction.retry,
+      _ => DeviceMigrationNextAction.continueMigration,
+    };
+    _writeTail = _writeTail.then(
+      (_) => _publish(
+        current.copyWith(
+          firmwareSession: firmwareSession,
+          state: migrationState,
+          nextAction: nextAction,
+          canCancel: !progress.nativeTransferEngaged && !terminal,
+          failureCode: progress.failureCode,
+          failureMessage: progress.failureMessage,
+          updatedAt: progress.updatedAt,
+        ),
+      ),
+    );
+  }
+
+  Future<DeviceMigrationSession> _reconciled(
+    DeviceMigrationSession session, {
+    required DeviceMigrationState state,
+    required DeviceMigrationReconciliationOutcome outcome,
+    required DeviceMigrationNextAction nextAction,
+    bool canCancel = false,
+    String? failureCode,
+  }) async {
+    final next = session.copyWith(
+      state: state,
+      reconciliationOutcome: outcome,
+      nextAction: nextAction,
+      canCancel: canCancel,
+      failureCode: failureCode,
+      updatedAt: DateTime.now(),
+    );
+    await _publish(next);
+    return next;
+  }
+
+  Future<void> _publish(
+    DeviceMigrationSession session, {
+    bool clearPersisted = false,
+  }) async {
+    _session = session;
+    if (clearPersisted) {
+      await sessionStore.clear();
+    } else {
+      await sessionStore.save(session);
+    }
+    if (!_sessionController.isClosed) _sessionController.add(session);
   }
 
   Future<DeviceStatus> _rediscoverAndVerify({
@@ -186,21 +526,27 @@ final class DeviceMigrationCoordinator {
     }
 
     final match = matches.single;
+    return _verifyMigratedScan(scan: match);
+  }
+
+  Future<DeviceStatus> _verifyMigratedScan({
+    required BleScanResult scan,
+  }) async {
     try {
-      await bleClient.connect(match.deviceId);
-      if (!await bleClient.isEixamCompatible(match.deviceId)) {
+      await bleClient.connect(scan.deviceId);
+      if (!await bleClient.isEixamCompatible(scan.deviceId)) {
         throw const FirmwareUpdateException(
           'postMigrationGattIncompatible',
           'The migrated device did not expose the required Eixam GATT API.',
           requiresRecovery: false,
         );
       }
-      final installed = await bleClient.readFirmwareVersion(match.deviceId);
-      _verifiedMigratedDevice = match;
+      final installed = await bleClient.readFirmwareVersion(scan.deviceId);
+      _verifiedMigratedDevice = scan;
       return DeviceStatus(
-        deviceId: match.deviceId,
-        canonicalHardwareId: match.canonicalHardwareId,
-        deviceAlias: match.name,
+        deviceId: scan.deviceId,
+        canonicalHardwareId: scan.canonicalHardwareId,
+        deviceAlias: scan.name,
         model: eixamFirmwareCatalogModel,
         paired: true,
         activated: false,
@@ -210,7 +556,7 @@ final class DeviceMigrationCoordinator {
     } on FirmwareUpdateException {
       rethrow;
     } catch (_) {
-      return _disconnectedStatus(match.deviceId);
+      return _disconnectedStatus(scan.deviceId);
     }
   }
 
@@ -251,6 +597,32 @@ final class DeviceMigrationCoordinator {
         afterIdentity == null ||
         afterIdentity.isEmpty ||
         beforeIdentity == afterIdentity;
+  }
+
+  bool _samePhysicalDevice(
+    DeviceMigrationCandidate first,
+    DeviceMigrationCandidate second,
+  ) {
+    final firstStable = normalizeCanonicalHardwareId(first.stableIdentity);
+    final secondStable = normalizeCanonicalHardwareId(second.stableIdentity);
+    if (firstStable != null && secondStable != null) {
+      return firstStable == secondStable;
+    }
+    return first.deviceId == second.deviceId;
+  }
+
+  bool _firmwareSessionMatchesCandidate(
+    FirmwareUpdateSession session,
+    DeviceMigrationCandidate candidate,
+  ) {
+    final firmwareStable = normalizeCanonicalHardwareId(session.hardwareId);
+    final candidateStable = normalizeCanonicalHardwareId(
+      candidate.stableIdentity,
+    );
+    if (firmwareStable != null && candidateStable != null) {
+      return firmwareStable == candidateStable;
+    }
+    return session.deviceId == candidate.deviceId;
   }
 
   (String?, DeviceMigrationIdentityKind) _strongestIdentity({

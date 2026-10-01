@@ -15,6 +15,7 @@ import 'package:eixam_connect_flutter/src/sdk/background_telemetry_platform_adap
 import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
 import 'package:eixam_connect_flutter/src/sdk/firmware_dfu_transport.dart';
 import 'package:eixam_connect_flutter/src/sdk/firmware_update_coordinator.dart';
+import 'package:eixam_connect_flutter/src/sdk/firmware_update_session_store.dart';
 import 'package:eixam_connect_flutter/src/sdk/protection_platform_adapter.dart';
 import 'package:eixam_connect_flutter/src/sdk/sos_location_ownership_effect.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -132,6 +133,9 @@ void main() {
         deathManRepository: deathManRepository,
         remoteDataSource: remote,
         dfuTransport: const UnsupportedFirmwareDfuTransport(),
+        sessionStore: SharedPrefsFirmwareUpdateSessionStore(
+          localStore: MemorySharedPrefsSdkStore(),
+        ),
       );
       final sdk = _buildSdk(
         deviceRepository: deviceRepository,
@@ -198,8 +202,7 @@ void main() {
       await runtimeProvider.dispose();
     });
 
-    test(
-        'production defaults to enabled SDK SOS ownership while public '
+    test('production defaults to enabled SDK SOS ownership while public '
         'tracking remains independently idempotent', () async {
       final runtimeProvider = FakeDeviceRuntimeProvider();
       final deviceRepository = InMemoryDeviceRepository(
@@ -232,41 +235,43 @@ void main() {
       await runtimeProvider.dispose();
     });
 
-    test('cascades into geolocator repository and BLE debug registry lifecycle',
-        () async {
-      final runtimeProvider = FakeDeviceRuntimeProvider();
-      final deviceRepository = InMemoryDeviceRepository(
-        runtimeProvider: runtimeProvider,
-      );
-      final trackingRepository = GeolocatorTrackingRepository(
-        permissionsRepository: FakePermissionsRepository(),
-      );
-      final trackingDone = expectLater(
-        trackingRepository.watchTrackingState(),
-        emitsInOrder(<Object>[TrackingState.idle, emitsDone]),
-      );
-      BleDebugRegistry.instance.recordEvent('dispose cascade marker');
-      final registryDone = expectLater(
-        BleDebugRegistry.instance.watch(),
-        emitsDone,
-      );
-      final sdk = _buildSdk(
-        deviceRepository: deviceRepository,
-        trackingRepository: trackingRepository,
-        disposeCallback: () async {
-          await trackingRepository.dispose();
-          await deviceRepository.dispose();
-          await BleDebugRegistry.instance.resetForLifecycle();
-        },
-      );
+    test(
+      'cascades into geolocator repository and BLE debug registry lifecycle',
+      () async {
+        final runtimeProvider = FakeDeviceRuntimeProvider();
+        final deviceRepository = InMemoryDeviceRepository(
+          runtimeProvider: runtimeProvider,
+        );
+        final trackingRepository = GeolocatorTrackingRepository(
+          permissionsRepository: FakePermissionsRepository(),
+        );
+        final trackingDone = expectLater(
+          trackingRepository.watchTrackingState(),
+          emitsInOrder(<Object>[TrackingState.idle, emitsDone]),
+        );
+        BleDebugRegistry.instance.recordEvent('dispose cascade marker');
+        final registryDone = expectLater(
+          BleDebugRegistry.instance.watch(),
+          emitsDone,
+        );
+        final sdk = _buildSdk(
+          deviceRepository: deviceRepository,
+          trackingRepository: trackingRepository,
+          disposeCallback: () async {
+            await trackingRepository.dispose();
+            await deviceRepository.dispose();
+            await BleDebugRegistry.instance.resetForLifecycle();
+          },
+        );
 
-      await sdk.dispose();
+        await sdk.dispose();
 
-      await trackingDone;
-      await registryDone;
-      expect(BleDebugRegistry.instance.currentState.events, isEmpty);
-      await runtimeProvider.dispose();
-    });
+        await trackingDone;
+        await registryDone;
+        expect(BleDebugRegistry.instance.currentState.events, isEmpty);
+        await runtimeProvider.dispose();
+      },
+    );
   });
 
   group('BleDebugRegistry lifecycle', () {
@@ -274,29 +279,32 @@ void main() {
       await BleDebugRegistry.instance.resetForLifecycle();
     });
 
-    test('resetForLifecycle closes old listeners and replaces controller',
-        () async {
-      final firstDone = expectLater(
-        BleDebugRegistry.instance.watch(),
-        emitsDone,
-      );
+    test(
+      'resetForLifecycle closes old listeners and replaces controller',
+      () async {
+        final firstDone = expectLater(
+          BleDebugRegistry.instance.watch(),
+          emitsDone,
+        );
 
-      await BleDebugRegistry.instance.resetForLifecycle();
+        await BleDebugRegistry.instance.resetForLifecycle();
 
-      await firstDone;
-      final nextStates = <Object>[];
-      final subscription =
-          BleDebugRegistry.instance.watch().listen(nextStates.add);
-      BleDebugRegistry.instance.recordEvent('after reset');
-      await Future<void>.delayed(Duration.zero);
+        await firstDone;
+        final nextStates = <Object>[];
+        final subscription = BleDebugRegistry.instance.watch().listen(
+          nextStates.add,
+        );
+        BleDebugRegistry.instance.recordEvent('after reset');
+        await Future<void>.delayed(Duration.zero);
 
-      expect(nextStates, isNotEmpty);
-      expect(
-        BleDebugRegistry.instance.currentState.events.single.message,
-        'after reset',
-      );
-      await subscription.cancel();
-    });
+        expect(nextStates, isNotEmpty);
+        expect(
+          BleDebugRegistry.instance.currentState.events.single.message,
+          'after reset',
+        );
+        await subscription.cancel();
+      },
+    );
   });
 }
 
@@ -346,8 +354,7 @@ class _RecoveryFirmwareRemoteDataSource implements SdkFirmwareRemoteDataSource {
     required String currentVersion,
     bool allowDowngrade = false,
     String? targetReleaseId,
-  }) =>
-      throw UnimplementedError();
+  }) => throw UnimplementedError();
 
   @override
   Future<SdkFirmwareListDto> listReleases({required String? hardwareModel}) =>
@@ -368,6 +375,5 @@ class _RecoveryFirmwareRemoteDataSource implements SdkFirmwareRemoteDataSource {
     int? expectedSizeBytes,
     int maxSizeBytes = maxFirmwareArtifactBytes,
     int sizeToleranceBytes = firmwareArtifactSizeToleranceBytes,
-  }) async =>
-      <int>[1, 2, 3];
+  }) async => <int>[1, 2, 3];
 }

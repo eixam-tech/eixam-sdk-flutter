@@ -6,9 +6,12 @@ import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/widgets.dart';
 
 import '../data/datasources_remote/sdk_firmware_remote_data_source.dart';
+import '../device/ble_client.dart';
 import '../device/ble_debug_registry.dart';
+import '../device/canonical_hardware_id.dart';
 import '../firmware_version.dart';
 import 'firmware_dfu_transport.dart';
+import 'firmware_update_session_store.dart';
 import 'device_migration_firmware_service.dart';
 export 'device_migration_firmware_service.dart'
     show FirmwareDfuStatusRefreshHook;
@@ -17,10 +20,10 @@ typedef ProtectionStatusProvider = Future<ProtectionStatus> Function();
 typedef DeviceSosStatusProvider = Future<DeviceSosStatus> Function();
 typedef PreSosStatusProvider = Future<PublicPreSosStatus?> Function();
 typedef AppLifecycleStateProvider = AppLifecycleState? Function();
-typedef FirmwareDfuPreparationHook = Future<DeviceStatus> Function(
-    {required String deviceId});
-typedef FirmwareDfuConnectionHook = Future<void> Function(
-    {required String deviceId});
+typedef FirmwareDfuPreparationHook =
+    Future<DeviceStatus> Function({required String deviceId});
+typedef FirmwareDfuConnectionHook =
+    Future<void> Function({required String deviceId});
 
 class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
   FirmwareUpdateCoordinator({
@@ -29,6 +32,8 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
     required this.deathManRepository,
     required this.remoteDataSource,
     required this.dfuTransport,
+    this.bleClient,
+    FirmwareUpdateSessionStore? sessionStore,
     this.protectionStatusProvider,
     this.deviceSosStatusProvider,
     this.preSosStatusProvider,
@@ -42,16 +47,19 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
     Duration postDfuVerificationTimeout = _defaultPostDfuVerificationTimeout,
     Duration postDfuVerificationPollInterval =
         _defaultPostDfuVerificationPollInterval,
-  })  : _dfuStallTimeout = dfuStallTimeout,
-        _dfuFirstUploadDeadline = dfuFirstUploadDeadline,
-        _postDfuVerificationTimeout = postDfuVerificationTimeout,
-        _postDfuVerificationPollInterval = postDfuVerificationPollInterval;
+  }) : sessionStore = sessionStore ?? SharedPrefsFirmwareUpdateSessionStore(),
+       _dfuStallTimeout = dfuStallTimeout,
+       _dfuFirstUploadDeadline = dfuFirstUploadDeadline,
+       _postDfuVerificationTimeout = postDfuVerificationTimeout,
+       _postDfuVerificationPollInterval = postDfuVerificationPollInterval;
 
   final DeviceRepository deviceRepository;
   final SosRepository sosRepository;
   final DeathManRepository deathManRepository;
   final SdkFirmwareRemoteDataSource remoteDataSource;
   final FirmwareDfuTransport dfuTransport;
+  final BleClient? bleClient;
+  final FirmwareUpdateSessionStore sessionStore;
   final ProtectionStatusProvider? protectionStatusProvider;
   final DeviceSosStatusProvider? deviceSosStatusProvider;
   final PreSosStatusProvider? preSosStatusProvider;
@@ -97,6 +105,11 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
       StreamController<FirmwareUpdateProgress>.broadcast();
   final Map<String, FirmwareUpdateSession> _sessions =
       <String, FirmwareUpdateSession>{};
+  final StreamController<FirmwareUpdateSession> _sessionController =
+      StreamController<FirmwareUpdateSession>.broadcast();
+  Future<void>? _restoreFuture;
+  Future<void> _persistTail = Future<void>.value();
+  FirmwareUpdateSession? _activeSession;
   FirmwareUpdateCheck? _lastCheck;
 
   /// Whether an update or recovery session is still running (not terminal).
@@ -105,6 +118,23 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
   /// verification breaks the update.
   bool get hasActiveSession =>
       _sessions.values.any((session) => session.completedAt == null);
+
+  Future<FirmwareUpdateSession?> getActiveFirmwareUpdate() async {
+    await _restore();
+    return _activeSession?.isCompleted == true ? null : _activeSession;
+  }
+
+  @override
+  Future<FirmwareUpdateSession?> getActiveMigrationFirmwareUpdate() {
+    return getActiveFirmwareUpdate();
+  }
+
+  Stream<FirmwareUpdateSession> watchFirmwareUpdate() async* {
+    await _restore();
+    final current = _activeSession;
+    if (current != null && !current.isCompleted) yield current;
+    yield* _sessionController.stream;
+  }
 
   Future<DeviceFirmwareInfo> getFirmwareInfo({String? deviceId}) async {
     final status = await deviceRepository.refreshDeviceStatus();
@@ -136,8 +166,8 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
     DeviceStatus status;
     try {
       status = await deviceRepository.refreshDeviceStatus().timeout(
-            const Duration(seconds: 12),
-          );
+        const Duration(seconds: 12),
+      );
     } on TimeoutException {
       _debugLog(
         'OTA_COORDINATOR check_refresh_timeout '
@@ -185,7 +215,8 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
       targetReleaseId: policy.targetReleaseId,
     );
     final release = response.firmware?.toDomain();
-    var actionableRelease = response.updateAvailable &&
+    var actionableRelease =
+        response.updateAvailable &&
             release != null &&
             _firmwareReleaseIsActionable(
               currentVersion: device.currentVersion!,
@@ -223,6 +254,7 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
     required String releaseId,
     FirmwareUpdatePolicy policy = const FirmwareUpdatePolicy(),
   }) async {
+    await _restore();
     var check = await _resolveUsableCheck(
       deviceId: deviceId,
       releaseId: releaseId,
@@ -252,11 +284,16 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
       targetVersion: release?.version ?? '',
       state: FirmwareUpdateState.idle,
       startedAt: now,
+      hardwareId: check.device.hardwareId,
+      updatedAt: now,
+      nextAction: FirmwareUpdateNextAction.retry,
     );
+    _ensureMayStart(session);
     _sessions[session.sessionId] = session;
+    await _persist(session);
 
     if (!check.eligibility.eligible || release == null) {
-      return _completeSession(
+      final blocked = _completeSession(
         session,
         state: FirmwareUpdateState.blocked,
         failureCode: 'firmwareUpdateBlocked',
@@ -264,9 +301,16 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
             .map((blocker) => blocker.name)
             .join(','),
       );
+      await _persistTail;
+      return blocked;
     }
 
-    return _startVerifiedReleaseTransfer(session: session, release: release);
+    final result = await _startVerifiedReleaseTransfer(
+      session: session,
+      release: release,
+    );
+    await _persistTail;
+    return result;
   }
 
   /// Resolves an active, model-specific catalog artifact for a stock-firmware
@@ -319,6 +363,7 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
     required FirmwareDfuStatusRefreshHook postMigrationStatusRefresh,
     FirmwareUpdatePolicy policy = const FirmwareUpdatePolicy(),
   }) async {
+    await _restore();
     final eligibility = await evaluateEligibility(
       status: sourceStatus,
       release: release,
@@ -333,10 +378,15 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
       targetVersion: release.version,
       state: FirmwareUpdateState.idle,
       startedAt: now,
+      hardwareId: sourceStatus.canonicalHardwareId,
+      updatedAt: now,
+      nextAction: FirmwareUpdateNextAction.retry,
     );
+    _ensureMayStart(session);
     _sessions[session.sessionId] = session;
+    await _persist(session);
     if (!eligibility.eligible) {
-      return _completeSession(
+      final blocked = _completeSession(
         session,
         state: FirmwareUpdateState.blocked,
         failureCode: 'firmwareUpdateBlocked',
@@ -344,12 +394,16 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
             .map((blocker) => blocker.name)
             .join(','),
       );
+      await _persistTail;
+      return blocked;
     }
-    return _startVerifiedReleaseTransfer(
+    final result = await _startVerifiedReleaseTransfer(
       session: session,
       release: release,
       statusRefresh: postMigrationStatusRefresh,
     );
+    await _persistTail;
+    return result;
   }
 
   Future<FirmwareUpdateSession> _startVerifiedReleaseTransfer({
@@ -409,12 +463,16 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
           release: release,
           artifactBytes: artifactBytes,
         ),
-        stallMessage: 'The firmware transfer made no upload progress for '
+        stallMessage:
+            'The firmware transfer made no upload progress for '
             '${_dfuStallTimeout.inSeconds}s.',
         firstUploadMessage:
             'The firmware upload never started (the device may have entered '
             'the bootloader but could not be reconnected).',
-        onEngaged: () => nativeDfuEngaged = true,
+        onEngaged: () {
+          nativeDfuEngaged = true;
+          _markNativeTransferEngaged(session);
+        },
       );
 
       _emit(session, FirmwareUpdateState.reconnecting);
@@ -436,7 +494,7 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
           failureMessage: requiresRecovery
               ? 'Device did not reconnect after DFU completion.'
               : 'Expected ${release.version}, found '
-                  '${verification.installedVersion ?? 'unknown'}.',
+                    '${verification.installedVersion ?? 'unknown'}.',
         );
       }
       return _completeSession(session, state: FirmwareUpdateState.completed);
@@ -504,7 +562,8 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
       progress,
     ) {
       onEngaged?.call();
-      final isUploadProgress = progress.progressPercentage != null ||
+      final isUploadProgress =
+          progress.progressPercentage != null ||
           (progress.bytesTransferred ?? 0) > 0;
       if (isUploadProgress) {
         uploadStarted = true;
@@ -624,11 +683,137 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
     );
   }
 
+  Future<FirmwareUpdateSession?> reconcileFirmwareUpdate({
+    bool attemptRecovery = false,
+  }) async {
+    await _restore();
+    final current = _activeSession;
+    if (current == null || current.isCompleted) return current;
+
+    DeviceStatus status;
+    try {
+      status = await deviceRepository.refreshDeviceStatus();
+    } catch (_) {
+      status = await deviceRepository.getDeviceStatus();
+    }
+    if (status.connected && _statusMatchesSession(status, current)) {
+      if (eixamFirmwareVersionsMatch(
+        status.firmwareVersion,
+        current.targetVersion,
+      )) {
+        return _settleReconciliation(
+          current,
+          state: FirmwareUpdateState.completed,
+          outcome: FirmwareUpdateReconciliationOutcome.completed,
+          nextAction: FirmwareUpdateNextAction.completed,
+          clearPersisted: true,
+        );
+      }
+      return _settleReconciliation(
+        current,
+        state: FirmwareUpdateState.failed,
+        outcome: FirmwareUpdateReconciliationOutcome.installedVersionMismatch,
+        nextAction: FirmwareUpdateNextAction.retry,
+        requiresRecovery: false,
+        failureCode: 'installedVersionMismatch',
+      );
+    }
+    if (status.connected && !_statusMatchesSession(status, current)) {
+      return _settleReconciliation(
+        current,
+        state: current.state,
+        outcome: FirmwareUpdateReconciliationOutcome.wrongDevice,
+        nextAction: FirmwareUpdateNextAction.waitForDevice,
+        failureCode: 'firmwareUpdateDeviceMismatch',
+      );
+    }
+
+    final client = bleClient;
+    if (client != null) {
+      final scans = await client.scan(timeout: const Duration(seconds: 8));
+      final bootloaders = scans
+          .where((scan) => scan.toPublic().isDfuBootloader)
+          .toList(growable: false);
+      final matching = bootloaders
+          .where(
+            (scan) => _scanMatchesSession(
+              scan.deviceId,
+              scan.canonicalHardwareId,
+              current,
+            ),
+          )
+          .toList(growable: false);
+      if (matching.length == 1) {
+        if (attemptRecovery) {
+          final recovered = await recoverFirmwareUpdate(
+            bootloaderDeviceId: matching.single.deviceId,
+            releaseId: current.releaseId,
+            targetVersion: current.targetVersion,
+            hardwareId: current.hardwareId,
+            replacingSession: current,
+          );
+          await _persistTail;
+          if (recovered.state == FirmwareUpdateState.completed) {
+            return _settleReconciliation(
+              recovered,
+              state: FirmwareUpdateState.reconnecting,
+              outcome: FirmwareUpdateReconciliationOutcome.recoveryDeviceFound,
+              nextAction: FirmwareUpdateNextAction.waitForDevice,
+            );
+          }
+          return recovered;
+        }
+        return _settleReconciliation(
+          current,
+          state: FirmwareUpdateState.recoveryRequired,
+          outcome: FirmwareUpdateReconciliationOutcome.recoveryDeviceFound,
+          nextAction: FirmwareUpdateNextAction.recover,
+          requiresRecovery: true,
+        );
+      }
+      if (matching.length > 1 || bootloaders.length > 1) {
+        return _settleReconciliation(
+          current,
+          state: current.state,
+          outcome: FirmwareUpdateReconciliationOutcome.ambiguousCandidates,
+          nextAction: FirmwareUpdateNextAction.waitForDevice,
+          failureCode: 'ambiguousFirmwareRecoveryDevice',
+        );
+      }
+    }
+    return _settleReconciliation(
+      current,
+      state: current.requiresRecovery
+          ? FirmwareUpdateState.recoveryRequired
+          : current.state,
+      outcome: FirmwareUpdateReconciliationOutcome.deviceMissing,
+      nextAction: current.requiresRecovery
+          ? FirmwareUpdateNextAction.recover
+          : FirmwareUpdateNextAction.waitForDevice,
+    );
+  }
+
+  @override
+  Stream<FirmwareUpdateProgress> watchMigrationFirmwareProgress({
+    required String deviceId,
+  }) => watchProgress(deviceId: deviceId);
+
+  @override
+  Future<FirmwareUpdateSession> recoverMigrationFirmwareUpdate({
+    required String bootloaderDeviceId,
+    required String releaseId,
+    required String targetVersion,
+  }) => recoverFirmwareUpdate(
+    bootloaderDeviceId: bootloaderDeviceId,
+    releaseId: releaseId,
+    targetVersion: targetVersion,
+  );
+
   Future<void> cancelFirmwareUpdate(String sessionId) async {
     // Once flashing has begun the bootloader has already erased the running
     // app, so aborting cannot restore the previous firmware — it only strands
     // the device in DFU mode. Refuse; the transfer must be allowed to finish.
-    if (_isPastPointOfNoReturn(_sessions[sessionId]?.state)) {
+    if (_sessions[sessionId]?.nativeTransferEngaged == true) {
       throw const FirmwareUpdateException(
         'dfuCancelBlockedInTransfer',
         'The firmware transfer is already in progress and can no longer be '
@@ -651,6 +836,17 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
         state == FirmwareUpdateState.verifyingInstalledVersion;
   }
 
+  void _markNativeTransferEngaged(FirmwareUpdateSession session) {
+    final tracked = _sessions[session.sessionId];
+    if (tracked != null && !tracked.nativeTransferEngaged) {
+      _sessions[session.sessionId] = tracked.copyWith(
+        nativeTransferEngaged: true,
+        updatedAt: DateTime.now(),
+      );
+      _queuePersist(_sessions[session.sessionId]!);
+    }
+  }
+
   /// Re-flashes a device stranded in the DFU bootloader (e.g. after an
   /// interrupted transfer, which erased the previous application).
   ///
@@ -663,18 +859,28 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
     required String bootloaderDeviceId,
     required String releaseId,
     String targetVersion = '',
+    String? hardwareId,
+    FirmwareUpdateSession? replacingSession,
   }) async {
+    await _restore();
     final now = DateTime.now();
     final session = FirmwareUpdateSession(
-      sessionId: _newSessionId(now),
-      deviceId: bootloaderDeviceId,
+      sessionId: replacingSession?.sessionId ?? _newSessionId(now),
+      deviceId: replacingSession?.deviceId ?? bootloaderDeviceId,
       releaseId: releaseId,
-      fromVersion: '',
+      fromVersion: replacingSession?.fromVersion ?? '',
       targetVersion: targetVersion,
       state: FirmwareUpdateState.idle,
-      startedAt: now,
+      startedAt: replacingSession?.startedAt ?? now,
+      hardwareId: hardwareId ?? replacingSession?.hardwareId,
+      updatedAt: now,
+      nativeTransferEngaged: replacingSession?.nativeTransferEngaged ?? false,
+      requiresRecovery: true,
+      nextAction: FirmwareUpdateNextAction.recover,
     );
+    if (replacingSession == null) _ensureMayStart(session);
     _sessions[session.sessionId] = session;
+    await _persist(session);
     try {
       _emit(session, FirmwareUpdateState.downloading);
       final download = await remoteDataSource.prepareDownload(releaseId);
@@ -714,7 +920,8 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
           artifactBytes: artifactBytes,
           forceDfu: true,
         ),
-        stallMessage: 'The recovery transfer made no upload progress for '
+        stallMessage:
+            'The recovery transfer made no upload progress for '
             '${_dfuStallTimeout.inSeconds}s.',
         firstUploadMessage:
             'The recovery upload never started (the bootloader could not be '
@@ -872,7 +1079,123 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
   }
 
   Future<void> dispose() async {
+    await _persistTail;
+    await _sessionController.close();
     await _progressController.close();
+  }
+
+  Future<void> _restore() {
+    return _restoreFuture ??= () async {
+      final restored = await sessionStore.load();
+      if (restored != null) {
+        _activeSession = restored;
+        _sessions[restored.sessionId] = restored;
+      }
+    }();
+  }
+
+  void _ensureMayStart(FirmwareUpdateSession requested) {
+    final active = _activeSession;
+    if (active == null || active.isCompleted) return;
+    final sameDevice = _sameIdentity(
+      active.deviceId,
+      active.hardwareId,
+      requested.deviceId,
+      requested.hardwareId,
+    );
+    throw FirmwareUpdateException(
+      sameDevice
+          ? 'firmwareUpdateResumeRequired'
+          : 'firmwareUpdateActiveForAnotherDevice',
+      sameDevice
+          ? 'An interrupted firmware update must be reconciled before retrying.'
+          : 'A firmware update for another physical device is active.',
+      requiresRecovery: active.requiresRecovery,
+    );
+  }
+
+  bool _statusMatchesSession(
+    DeviceStatus status,
+    FirmwareUpdateSession session,
+  ) {
+    return _sameIdentity(
+      status.deviceId,
+      status.canonicalHardwareId,
+      session.deviceId,
+      session.hardwareId,
+    );
+  }
+
+  bool _scanMatchesSession(
+    String deviceId,
+    String? hardwareId,
+    FirmwareUpdateSession session,
+  ) {
+    return _sameIdentity(
+      deviceId,
+      hardwareId,
+      session.deviceId,
+      session.hardwareId,
+    );
+  }
+
+  bool _sameIdentity(
+    String firstDeviceId,
+    String? firstHardwareId,
+    String secondDeviceId,
+    String? secondHardwareId,
+  ) {
+    final firstStable = normalizeCanonicalHardwareId(firstHardwareId);
+    final secondStable = normalizeCanonicalHardwareId(secondHardwareId);
+    if (firstStable != null && secondStable != null) {
+      return firstStable == secondStable;
+    }
+    return firstDeviceId == secondDeviceId;
+  }
+
+  Future<FirmwareUpdateSession> _settleReconciliation(
+    FirmwareUpdateSession session, {
+    required FirmwareUpdateState state,
+    required FirmwareUpdateReconciliationOutcome outcome,
+    required FirmwareUpdateNextAction nextAction,
+    bool? requiresRecovery,
+    String? failureCode,
+    bool clearPersisted = false,
+  }) async {
+    final now = DateTime.now();
+    final next = session.copyWith(
+      state: state,
+      completedAt: state == FirmwareUpdateState.completed ? now : null,
+      clearCompletedAt: state != FirmwareUpdateState.completed,
+      updatedAt: now,
+      reconciliationOutcome: outcome,
+      nextAction: nextAction,
+      requiresRecovery: requiresRecovery,
+      failureCode: failureCode,
+    );
+    _sessions[next.sessionId] = next;
+    _activeSession = next;
+    if (clearPersisted) {
+      await sessionStore.clear();
+    } else {
+      await sessionStore.save(next);
+    }
+    if (!_sessionController.isClosed) _sessionController.add(next);
+    return next;
+  }
+
+  Future<void> _persist(FirmwareUpdateSession session) async {
+    _activeSession = session;
+    if (session.isCompleted) {
+      await sessionStore.clear();
+    } else {
+      await sessionStore.save(session);
+    }
+    if (!_sessionController.isClosed) _sessionController.add(session);
+  }
+
+  void _queuePersist(FirmwareUpdateSession session) {
+    _persistTail = _persistTail.then((_) => _persist(session));
   }
 
   FirmwareUpdateCheck _rememberCheck(FirmwareUpdateCheck check) {
@@ -1080,9 +1403,7 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
       }
       return newest;
     } catch (error) {
-      _debugLog(
-        'OTA_COORDINATOR catalog_fallback_failed error=$error',
-      );
+      _debugLog('OTA_COORDINATOR catalog_fallback_failed error=$error');
       return null;
     }
   }
@@ -1093,13 +1414,26 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
     String? failureCode,
     String? failureMessage,
   }) {
-    final next = session.copyWith(
+    final tracked = _sessions[session.sessionId] ?? session;
+    final next = tracked.copyWith(
       state: state,
       completedAt: DateTime.now(),
       failureCode: failureCode,
       failureMessage: failureMessage,
+      requiresRecovery: state == FirmwareUpdateState.recoveryRequired,
+      updatedAt: DateTime.now(),
+      nextAction: switch (state) {
+        FirmwareUpdateState.completed => FirmwareUpdateNextAction.completed,
+        FirmwareUpdateState.recoveryRequired =>
+          FirmwareUpdateNextAction.recover,
+        FirmwareUpdateState.reconnecting ||
+        FirmwareUpdateState.verifyingInstalledVersion =>
+          FirmwareUpdateNextAction.waitForDevice,
+        _ => FirmwareUpdateNextAction.retry,
+      },
     );
     _sessions[session.sessionId] = next;
+    _queuePersist(next);
     _emit(
       next,
       state,
@@ -1136,9 +1470,21 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
       // authoritatively by _completeSession, not by a transient progress event.
       final regressesOutOfPointOfNoReturn =
           _isPastPointOfNoReturn(tracked.state) &&
-              !_isPastPointOfNoReturn(state);
+          !_isPastPointOfNoReturn(state);
       if (!regressesOutOfPointOfNoReturn) {
-        _sessions[session.sessionId] = tracked.copyWith(state: state);
+        _sessions[session.sessionId] = tracked.copyWith(
+          state: state,
+          updatedAt: DateTime.now(),
+          nextAction: switch (state) {
+            FirmwareUpdateState.reconnecting ||
+            FirmwareUpdateState.verifyingInstalledVersion =>
+              FirmwareUpdateNextAction.waitForDevice,
+            FirmwareUpdateState.recoveryRequired =>
+              FirmwareUpdateNextAction.recover,
+            _ => FirmwareUpdateNextAction.none,
+          },
+        );
+        _queuePersist(_sessions[session.sessionId]!);
       }
     }
     if (_progressController.isClosed) {
@@ -1154,6 +1500,9 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
         totalBytes: totalBytes,
         failureCode: failureCode,
         failureMessage: failureMessage,
+        nativeTransferEngaged:
+            _sessions[session.sessionId]?.nativeTransferEngaged ?? false,
+        requiresRecovery: state == FirmwareUpdateState.recoveryRequired,
         updatedAt: DateTime.now(),
       ),
     );
@@ -1169,8 +1518,7 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
       SosState.cancelled ||
       SosState.cancelRequested ||
       SosState.resolved ||
-      SosState.failed =>
-        false,
+      SosState.failed => false,
       _ => true,
     };
   }
@@ -1179,8 +1527,7 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
     return switch (status) {
       DeathManStatus.confirmedSafe ||
       DeathManStatus.cancelled ||
-      DeathManStatus.expired =>
-        false,
+      DeathManStatus.expired => false,
       _ => true,
     };
   }

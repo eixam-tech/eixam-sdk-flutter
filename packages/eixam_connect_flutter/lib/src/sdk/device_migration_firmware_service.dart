@@ -8,6 +8,8 @@ typedef FirmwareDfuStatusRefreshHook =
     });
 
 abstract interface class DeviceMigrationFirmwareService {
+  Future<FirmwareUpdateSession?> getActiveMigrationFirmwareUpdate();
+
   Future<FirmwareRelease?> resolveMigrationRelease({
     required String hardwareModel,
   });
@@ -17,5 +19,15 @@ abstract interface class DeviceMigrationFirmwareService {
     required FirmwareRelease release,
     required FirmwareDfuStatusRefreshHook postMigrationStatusRefresh,
     FirmwareUpdatePolicy policy = const FirmwareUpdatePolicy(),
+  });
+
+  Stream<FirmwareUpdateProgress> watchMigrationFirmwareProgress({
+    required String deviceId,
+  });
+
+  Future<FirmwareUpdateSession> recoverMigrationFirmwareUpdate({
+    required String bootloaderDeviceId,
+    required String releaseId,
+    required String targetVersion,
   });
 }
