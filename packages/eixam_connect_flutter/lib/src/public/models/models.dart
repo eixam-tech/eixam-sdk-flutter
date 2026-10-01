@@ -45,6 +45,7 @@ export 'package:eixam_connect_core/src/entities/sos_history_item.dart';
 export 'package:eixam_connect_core/src/entities/sos_capability_snapshot.dart';
 export 'package:eixam_connect_core/src/entities/sos_trigger_payload.dart';
 export 'package:eixam_connect_core/src/entities/tracking_position.dart';
+export 'eixam_hardware_label.dart';
 export '../../device/ble_security_policy.dart'
     show
         BleCommandCriticality,
