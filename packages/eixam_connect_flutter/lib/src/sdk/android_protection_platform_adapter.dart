@@ -82,6 +82,10 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
             'protectionSosActiveBody': texts.protectionSosActiveBody,
             'protectionSosResolvedTitle': texts.protectionSosResolvedTitle,
             'protectionSosResolvedBody': texts.protectionSosResolvedBody,
+            'nearbyMessageChannelName': texts.nearbyMessageChannelName,
+            'nearbyMessageChannelDescription':
+                texts.nearbyMessageChannelDescription,
+            'nearbyMessageFallbackTitle': texts.nearbyMessageFallbackTitle,
           },
         'autoReconnectBle': request.modeOptions.autoReconnectBle,
         'autoFlushOnReconnect': request.modeOptions.autoFlushOnReconnect,

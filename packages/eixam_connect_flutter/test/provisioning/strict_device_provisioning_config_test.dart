@@ -38,7 +38,9 @@ void main() {
     expect(config.tel.codingRateDenominator, 5);
     expect(config.sos.frequencyHz, 869618000);
     expect(config.sos.bandwidthHz, 62500);
+    expect(config.sos.spreadingFactor, 7);
     expect(config.sos.codingRateDenominator, 5);
+    expect(config.sos.preambleSymbols, 16);
   });
 
   test('accepts a second supported EU868 profile supplied by backend', () {
@@ -73,6 +75,7 @@ void main() {
     expect(scaleProvisioningDecimalExact(128.002, 1000), 128002);
     expect(scaleProvisioningDecimalExact(1.28002e2, 1000), 128002);
     expect(scaleProvisioningDecimalExact(869.618, 1000000), 869618000);
+    expect(scaleProvisioningDecimalExact(869.4625, 1000000), 869462500);
     expect(
       () => scaleProvisioningDecimalExact(128.0025, 1000),
       throwsA(isA<ProvisioningContractException>()),

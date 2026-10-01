@@ -49,4 +49,15 @@ void main() {
   test('max SECONDARY group slots match Meshtastic leftover indices', () {
     expect(NearbyGroupCommandResult.maxSecondarySlots, 7);
   });
+
+  test('0xDA delivery bytes map to mesh/recipient/timeout/nak', () {
+    expect(NearbyTextTxStatus.fromWire(12), NearbyTextTxStatus.meshAck);
+    expect(NearbyTextTxStatus.fromWire(13), NearbyTextTxStatus.recipientAck);
+    expect(NearbyTextTxStatus.fromWire(14), NearbyTextTxStatus.ackTimeout);
+    expect(NearbyTextTxStatus.fromWire(15), NearbyTextTxStatus.gotNak);
+    expect(NearbyTextTxStatus.meshAck.isDeliveryUpdate, isTrue);
+    expect(NearbyTextTxStatus.recipientAck.deliveryConfirmed, isTrue);
+    expect(NearbyTextTxStatus.onAir.isDeliveryUpdate, isFalse);
+    expect(NearbyTextTxStatus.fromWire(99), NearbyTextTxStatus.unknown);
+  });
 }

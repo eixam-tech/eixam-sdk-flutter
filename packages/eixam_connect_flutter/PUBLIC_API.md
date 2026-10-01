@@ -124,6 +124,11 @@ uses a SECONDARY PSK installed with `setNearbyGroup` — never a PRIMARY swap.
 `setNearbyGroup` retries once on ACK timeout while the TAG stays connected.
 `badKey` is `0xFE`, `persistFailed` is `0xFD`, `sosBlocked` is `0x01`.
 `watchNearbyText()` emits incoming messages with dest / groupId / pki flag.
+`watchNearbyTextTxStatus()` emits every `0xDA`, including later delivery ACKs
+(`meshAck` / `recipientAck` / `ackTimeout` / `gotNak`) for a packet already
+returned by send. Correlate by `packetId`. Firmware ≥ **2.7.63**. PKI DMs set
+`want_ack`; plaza/group stay hop 0 and get an explicit hop-0 ROUTING ACK from
+a nearby receiver (SNR-staggered; later nodes cancel if they overhear one).
 `watchNearbyNodeNames()` emits NodeInfo `long_name` heard by the connected TAG
 (`0xDB`). That is the display name of the phone currently on that TAG, or
 `EIXAM_<nodeId>` when nobody is connected. `setNearbyOwnerDisplayName` pushes
@@ -137,11 +142,9 @@ PKI DMs.
 
 Hosts persist messages. The SDK does not. There is no cellular fallback.
 `NearbyTextTxStatus.timeout` means the TAG never answered `0xDA`.
-`NearbyTextTxStatus.bleOwnedByProtection` (and
-`NearbyGroupCommandResult.bleOwnedByProtection`) is returned before any BLE
-write while the native protection runtime owns the link: it does not bridge
-TEL notifies to Dart, so Nearby cannot confirm or receive until Flutter owns
-BLE again. Hosts should show "unavailable" rather than retry.
+Native protection keeps the GATT link in background and still carries Nearby:
+writes go through the native command owner, and TEL notifies are forwarded to
+Dart (`telNotifyReceived`). Hosts should not treat protection as a Nearby lock.
 Firmware ≥ **2.7.56** is required; 2.7.55 plaza-only framing is not compatible.
 Firmware ≥ **2.7.57** enforces the 231 B cap and ignores SECONDARY group keys
 on TEL/SOS/cluster ports. Firmware ≥ **2.7.58** for owner-name `0x42` / `0xDB`.

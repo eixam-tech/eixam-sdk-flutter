@@ -3,10 +3,7 @@ import 'eixam_environment.dart';
 import 'eixam_session.dart';
 import '../entities/permission_disclosure.dart';
 
-enum EixamNotificationPolicy {
-  sdkManaged,
-  hostAppManaged,
-}
+enum EixamNotificationPolicy { sdkManaged, hostAppManaged }
 
 class EixamBootstrapConfig {
   const EixamBootstrapConfig({
@@ -50,6 +47,9 @@ class EixamNotificationTexts {
     required this.protectionSosActiveBody,
     required this.protectionSosResolvedTitle,
     required this.protectionSosResolvedBody,
+    this.nearbyMessageChannelName = 'Nearby',
+    this.nearbyMessageChannelDescription = 'Incoming nearby messages',
+    this.nearbyMessageFallbackTitle = 'Nearby',
   });
 
   final String protectionActiveTitle;
@@ -66,4 +66,7 @@ class EixamNotificationTexts {
   final String protectionSosActiveBody;
   final String protectionSosResolvedTitle;
   final String protectionSosResolvedBody;
+  final String nearbyMessageChannelName;
+  final String nearbyMessageChannelDescription;
+  final String nearbyMessageFallbackTitle;
 }

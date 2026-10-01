@@ -12,13 +12,27 @@ enum NearbyTextTxStatus {
   pkiNoKey,
   pkiFailed,
   unknownGroup,
+
+  /// At least one node ACKed a plaza/group (or a non-dest node ACKed a DM).
+  meshAck,
+
+  /// The addressed PKI dest ACKed this packet.
+  recipientAck,
+
+  /// Reliable retries exhausted (`MAX_RETRANSMIT` / `TIMEOUT`).
+  ackTimeout,
+
+  /// Routing NAK other than timeout.
+  gotNak,
+
+  /// Unrecognized `0xDA` status byte. Still classified as Nearby, never SOS.
+  unknown,
+
   timeout,
   disconnected,
 
-  /// SDK-local: the native protection runtime owns the BLE link. It writes
-  /// `0x40`/`0x41` but does not bridge TEL notifies (`0xD0`/`0xDA`/`E9 7A`)
-  /// back to Dart, so no confirmation can arrive. Fail fast instead of
-  /// waiting for [timeout]. Nearby is usable again once Flutter owns BLE.
+  /// Legacy SDK-local status. Current native protection forwards TEL
+  /// notifies to Dart, so Nearby no longer returns this before a write.
   bleOwnedByProtection;
 
   static NearbyTextTxStatus? fromWire(int status) {
@@ -35,9 +49,26 @@ enum NearbyTextTxStatus {
       9 => NearbyTextTxStatus.pkiNoKey,
       10 => NearbyTextTxStatus.pkiFailed,
       11 => NearbyTextTxStatus.unknownGroup,
-      _ => null,
+      12 => NearbyTextTxStatus.meshAck,
+      13 => NearbyTextTxStatus.recipientAck,
+      14 => NearbyTextTxStatus.ackTimeout,
+      15 => NearbyTextTxStatus.gotNak,
+      _ => NearbyTextTxStatus.unknown,
     };
   }
 
   bool get accepted => this == NearbyTextTxStatus.onAir;
+
+  /// Follow-up `0xDA` after on-air. Does not complete the send waiter.
+  bool get isDeliveryUpdate => switch (this) {
+    NearbyTextTxStatus.meshAck ||
+    NearbyTextTxStatus.recipientAck ||
+    NearbyTextTxStatus.ackTimeout ||
+    NearbyTextTxStatus.gotNak => true,
+    _ => false,
+  };
+
+  bool get deliveryConfirmed =>
+      this == NearbyTextTxStatus.meshAck ||
+      this == NearbyTextTxStatus.recipientAck;
 }

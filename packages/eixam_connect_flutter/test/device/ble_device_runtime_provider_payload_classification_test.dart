@@ -1335,6 +1335,26 @@ void main() {
         expect(event.telLiveBatchPacket!.batch.samples.last.packetId, 7);
       },
     );
+
+    test(
+      'ingests native TEL notifies after Flutter BLE ownership is suspended',
+      () async {
+        await runtimeProvider.suspendOwnership(reason: 'test');
+        final nextEvent = runtimeProvider.watchIncomingEvents().firstWhere(
+          (event) => event.type == BleIncomingEventType.nearbyTextTxStatus,
+        );
+        await runtimeProvider.ingestNativeNotification(
+          payload: const <int>[0xDA, 0x22, 0, 0, 0, 0],
+          channel: EixamBleChannel.tel,
+        );
+        final event = await nextEvent.timeout(const Duration(seconds: 2));
+        expect(event.type, BleIncomingEventType.nearbyTextTxStatus);
+        expect(
+          event.nearbyTextTxStatusPacket?.status,
+          NearbyTextTxStatus.onAir,
+        );
+      },
+    );
   });
 }
 

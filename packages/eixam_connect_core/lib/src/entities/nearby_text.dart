@@ -89,9 +89,8 @@ class NearbyGroupCommandResult {
   /// Meshtastic ChannelFile has 8 entries; index 0 is PRIMARY.
   static const int maxSecondarySlots = 7;
 
-  /// SDK-local (outside the u8 wire range): the native protection runtime
-  /// owns BLE and does not bridge the `E9 7A` ACK, so the command was not
-  /// attempted. Retry once Flutter owns the link.
+  /// Legacy SDK-local reject (outside the u8 wire range). Current native
+  /// protection forwards group ACKs, so this is unused.
   static const int rejectDetailBleOwnedByProtection = 0x100;
 
   /// SDK-local: no ready BLE command channel (host should map to disconnected).
