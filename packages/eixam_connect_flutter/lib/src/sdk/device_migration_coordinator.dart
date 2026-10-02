@@ -532,8 +532,10 @@ final class DeviceMigrationCoordinator {
   Future<DeviceStatus> _verifyMigratedScan({
     required BleScanResult scan,
   }) async {
+    var connectedForVerification = false;
     try {
       await bleClient.connect(scan.deviceId);
+      connectedForVerification = true;
       if (!await bleClient.isEixamCompatible(scan.deviceId)) {
         throw const FirmwareUpdateException(
           'postMigrationGattIncompatible',
@@ -557,6 +559,13 @@ final class DeviceMigrationCoordinator {
       rethrow;
     } catch (_) {
       return _disconnectedStatus(scan.deviceId);
+    } finally {
+      // Verification owns only a temporary GATT connection. Normal pairing
+      // must rediscover the TAG and bind its runtime notifications itself; a
+      // connected TAG no longer advertises and cannot appear in that scan.
+      if (connectedForVerification) {
+        await bleClient.disconnect(scan.deviceId);
+      }
     }
   }
 

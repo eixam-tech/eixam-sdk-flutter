@@ -178,6 +178,29 @@ void main() {
     expect(result.outcome, DeviceMigrationOutcome.completed);
     expect(result.migratedDevice?.deviceId, selectedId);
     expect(ble.compatibilityChecks, <String>[selectedId]);
+    expect(ble.connectedIds, isEmpty);
+    expect(ble.disconnectedIds, <String>[selectedId]);
+    // The normal pairing scan must see the verified TAG again.
+    expect(await ble.scan(), hasLength(1));
+  });
+
+  test('failed GATT verification releases its temporary connection', () async {
+    final ble = _MigrationBleClient(
+      scans: <BleScanResult>[_eixamScan(selectedId, selectedId)],
+      compatible: false,
+    );
+    final coordinator = build(probe: _FakeProbe(_probe(model: 105)), ble: ble);
+    final candidate = await coordinator.inspect(deviceId: selectedId);
+
+    final result = await coordinator.migrate(candidate);
+
+    expect(result.outcome, DeviceMigrationOutcome.failed);
+    expect(result.failureCode, 'postMigrationGattIncompatible');
+    expect(ble.connectedIds, isEmpty);
+    expect(ble.disconnectedIds, <String>[selectedId]);
+    await coordinator.dispose();
+    expect(ble.disconnectedIds, <String>[selectedId]);
+    expect(await ble.scan(), hasLength(1));
   });
 
   test(
@@ -714,31 +737,47 @@ final class _MigrationBleClient implements BleClient {
     this.scans = const <BleScanResult>[],
     this.scanBatches = const <List<BleScanResult>>[],
     this.firmwareVersion = '3.0.0',
+    this.compatible = true,
   });
 
   final List<BleScanResult> scans;
   final List<List<BleScanResult>> scanBatches;
   final String firmwareVersion;
+  final bool compatible;
   final List<String> compatibilityChecks = <String>[];
   int _scanIndex = 0;
+  final Set<String> connectedIds = <String>{};
+  final List<String> disconnectedIds = <String>[];
 
   @override
   Future<List<BleScanResult>> scan({
     Duration timeout = const Duration(seconds: 8),
   }) async {
-    if (scanBatches.isEmpty) return scans;
+    if (scanBatches.isEmpty) {
+      return scans
+          .where((scan) => !connectedIds.contains(scan.deviceId))
+          .toList();
+    }
     final index = _scanIndex.clamp(0, scanBatches.length - 1);
     _scanIndex += 1;
     return scanBatches[index];
   }
 
   @override
-  Future<void> connect(String deviceId) async {}
+  Future<void> connect(String deviceId) async {
+    connectedIds.add(deviceId);
+  }
+
+  @override
+  Future<void> disconnect(String deviceId) async {
+    connectedIds.remove(deviceId);
+    disconnectedIds.add(deviceId);
+  }
 
   @override
   Future<bool> isEixamCompatible(String deviceId) async {
     compatibilityChecks.add(deviceId);
-    return true;
+    return compatible;
   }
 
   @override
