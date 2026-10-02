@@ -120,6 +120,7 @@ final class SharedPrefsDeviceMigrationSessionStore
         'sourceNodeNumber': value.sourceNodeNumber,
         'batteryPercentage': value.batteryPercentage,
         'detailCode': value.detailCode,
+        'inspectionFailure': value.inspectionFailure?.name,
         'inspectedAt': value.inspectedAt.toUtc().toIso8601String(),
       };
 
@@ -141,6 +142,12 @@ final class SharedPrefsDeviceMigrationSessionStore
         sourceNodeNumber: json['sourceNodeNumber'] as int?,
         batteryPercentage: json['batteryPercentage'] as int?,
         detailCode: json['detailCode'] as String?,
+        inspectionFailure: json['inspectionFailure'] == null
+            ? null
+            : _enumByName(
+                DeviceMigrationInspectionFailure.values,
+                json['inspectionFailure'],
+              ),
         inspectedAt: DateTime.parse(_requiredString(json, 'inspectedAt')),
       );
 

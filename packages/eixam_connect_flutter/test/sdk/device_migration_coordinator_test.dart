@@ -61,6 +61,24 @@ void main() {
     );
   }
 
+  for (final failure in DeviceMigrationInspectionFailure.values) {
+    test(
+      'typed inspection failure ${failure.name} never evaluates compatibility',
+      () async {
+        final candidate = await build(
+          probe: _FakeProbe.error(MeshtasticInspectionException(failure)),
+        ).inspect(deviceId: selectedId);
+        expect(
+          candidate.compatibility,
+          DeviceMigrationCompatibility.unableToVerify,
+        );
+        expect(candidate.inspectionFailure, failure);
+        expect(candidate.detailCode, failure.name);
+        expect(candidate.sourceHardwareModel, isNull);
+      },
+    );
+  }
+
   test('trusted metadata model 105 is compatible', () async {
     final probe = _FakeProbe(_probe(model: 105));
     final candidate = await build(

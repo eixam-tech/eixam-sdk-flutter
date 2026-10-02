@@ -84,6 +84,13 @@ final class DeviceMigrationCoordinator {
         detailCode: model == 0 ? 'hardwareModelUnset' : null,
         inspectedAt: DateTime.now(),
       );
+    } on MeshtasticInspectionException catch (error) {
+      return _unableCandidate(
+        deviceId: deviceId,
+        advertisedName: advertisedName,
+        code: error.failure.name,
+        inspectionFailure: error.failure,
+      );
     } on MeshtasticDeviceUnavailableException {
       return _unableCandidate(
         deviceId: deviceId,
@@ -661,6 +668,7 @@ final class DeviceMigrationCoordinator {
     required String deviceId,
     required String? advertisedName,
     required String code,
+    DeviceMigrationInspectionFailure? inspectionFailure,
   }) => DeviceMigrationCandidate(
     deviceId: deviceId,
     advertisedName: advertisedName,
@@ -668,6 +676,7 @@ final class DeviceMigrationCoordinator {
     identityKind: DeviceMigrationIdentityKind.none,
     inspectedAt: DateTime.now(),
     detailCode: code,
+    inspectionFailure: inspectionFailure,
   );
 
   DeviceMigrationResult _blocked(

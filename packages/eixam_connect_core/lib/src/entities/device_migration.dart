@@ -16,6 +16,25 @@ enum DeviceMigrationIdentityKind {
   none,
 }
 
+/// Inspection failures remain distinct from hardware incompatibility.
+enum DeviceMigrationInspectionFailure {
+  connectionFailed,
+  serviceDiscoveryFailed,
+  serviceIncomplete,
+  batteryReadFailed,
+  notificationSetupFailed,
+  notificationSetupTimedOut,
+  bondingFailed,
+  bondingTimedOut,
+  metadataRequestFailed,
+  metadataReadFailed,
+  metadataTimedOut,
+  malformedMetadata,
+  cancelled,
+  connectionAlreadyOwned,
+  cleanupFailed,
+}
+
 class DeviceMigrationCandidate {
   const DeviceMigrationCandidate({
     required this.deviceId,
@@ -29,6 +48,7 @@ class DeviceMigrationCandidate {
     this.sourceNodeNumber,
     this.batteryPercentage,
     this.detailCode,
+    this.inspectionFailure,
   });
 
   final String deviceId;
@@ -41,6 +61,7 @@ class DeviceMigrationCandidate {
   final int? sourceNodeNumber;
   final int? batteryPercentage;
   final String? detailCode;
+  final DeviceMigrationInspectionFailure? inspectionFailure;
   final DateTime inspectedAt;
 
   bool get isCompatible =>

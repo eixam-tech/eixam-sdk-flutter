@@ -35,6 +35,36 @@ void main() {
     expect(raw, isNot(contains('credential')));
   });
 
+  test(
+    'typed inspection detail survives persistence and older records remain readable',
+    () async {
+      final store = SharedPrefsDeviceMigrationSessionStore();
+      await store.save(_session());
+      final prefs = await SharedPreferences.getInstance();
+      final raw =
+          jsonDecode(
+                prefs.getString(SharedPrefsSdkStore.deviceMigrationSessionKey)!,
+              )
+              as Map<String, dynamic>;
+      final candidate = raw['candidate'] as Map<String, dynamic>;
+      candidate['inspectionFailure'] = 'bondingTimedOut';
+      await prefs.setString(
+        SharedPrefsSdkStore.deviceMigrationSessionKey,
+        jsonEncode(raw),
+      );
+      expect(
+        (await store.load())?.candidate.inspectionFailure,
+        DeviceMigrationInspectionFailure.bondingTimedOut,
+      );
+      candidate.remove('inspectionFailure');
+      await prefs.setString(
+        SharedPrefsSdkStore.deviceMigrationSessionKey,
+        jsonEncode(raw),
+      );
+      expect((await store.load())?.candidate.inspectionFailure, isNull);
+    },
+  );
+
   test('malformed record is rejected and removed', () async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
