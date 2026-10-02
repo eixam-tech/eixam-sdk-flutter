@@ -1,5 +1,6 @@
 import '../public/enums/discovered_device_brand.dart';
 import 'eixam_ble_protocol.dart';
+import 'meshtastic_ble_protocol.dart';
 
 BleDiscoveredDeviceBrand classifyBleDiscoveredDeviceBrand({
   required String? name,
@@ -12,6 +13,15 @@ BleDiscoveredDeviceBrand classifyBleDiscoveredDeviceBrand({
   final normalizedName = (name ?? '').trim().toLowerCase();
   if (normalizedName.contains('eixam')) {
     return BleDiscoveredDeviceBrand.eixam;
+  }
+  // Discovery identifies a candidate only. The metadata probe still verifies
+  // hardware compatibility before migration; DFU remains a separate scan flag.
+  if (advertisedServiceUuids?.any(
+        (uuid) =>
+            uuid.trim().toLowerCase() == MeshtasticBleProtocol.serviceUuid,
+      ) ==
+      true) {
+    return BleDiscoveredDeviceBrand.meshtastic;
   }
   if (normalizedName.contains('meshtastic')) {
     return BleDiscoveredDeviceBrand.meshtastic;

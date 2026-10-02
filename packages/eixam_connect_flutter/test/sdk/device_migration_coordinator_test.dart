@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/device/ble_client.dart';
 import 'package:eixam_connect_flutter/src/device/ble_scan_result.dart';
+import 'package:eixam_connect_flutter/src/device/ble_scan_result_brand_classifier.dart';
+import 'package:eixam_connect_flutter/src/device/meshtastic_ble_protocol.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
 import 'package:eixam_connect_flutter/src/device/meshtastic_metadata_probe.dart';
 import 'package:eixam_connect_flutter/src/sdk/device_migration_coordinator.dart';
@@ -25,6 +27,39 @@ void main() {
     sessionStore: store ?? _MemoryMigrationStore(),
     rediscoveryTimeout: const Duration(milliseconds: 1),
   );
+
+  for (final model in [0, 9, 105]) {
+    test(
+      'service-identified stock TAG still requires model inspection: $model',
+      () async {
+        final brand = classifyBleDiscoveredDeviceBrand(
+          name: '756E_756e',
+          advertisedServiceUuids: [MeshtasticBleProtocol.serviceUuid],
+        );
+        expect(brand, BleDiscoveredDeviceBrand.meshtastic);
+        final probe = _FakeProbe(_probe(model: model));
+        final firmware = _FakeMigrationFirmwareService();
+        final coordinator = build(probe: probe, firmware: firmware);
+        final candidate = await coordinator.inspect(
+          deviceId: selectedId,
+          advertisedName: '756E_756e',
+        );
+        expect(probe.inspectedDeviceIds, [selectedId]);
+        expect(
+          candidate.compatibility,
+          model == 105
+              ? DeviceMigrationCompatibility.compatible
+              : model == 0
+              ? DeviceMigrationCompatibility.unableToVerify
+              : DeviceMigrationCompatibility.unsupportedHardware,
+        );
+        if (model != 105) {
+          final result = await coordinator.migrate(candidate);
+          expect(result.outcome, DeviceMigrationOutcome.blocked);
+        }
+      },
+    );
+  }
 
   test('trusted metadata model 105 is compatible', () async {
     final probe = _FakeProbe(_probe(model: 105));

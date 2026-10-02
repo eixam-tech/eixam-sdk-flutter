@@ -4,6 +4,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import '../diagnostics/security_diagnostics_redactor.dart';
 import 'ble_debug_registry.dart';
+import 'meshtastic_ble_protocol.dart';
 import 'meshtastic_phone_api_codec.dart';
 
 abstract interface class MeshtasticMetadataProbe {
@@ -39,7 +40,7 @@ final class FlutterBlueMeshtasticMetadataProbe
     MeshtasticPhoneApiCodec codec = const MeshtasticPhoneApiCodec(),
   }) : _codec = codec;
 
-  static final Guid serviceUuid = Guid('6BA1B218-15A8-461F-9FA8-5DCAE273EAFD');
+  static final Guid serviceUuid = Guid(MeshtasticBleProtocol.serviceUuid);
   static final Guid toRadioUuid = Guid('F75C76D2-129E-4DAD-A1DD-7866124401E7');
   static final Guid fromRadioUuid = Guid(
     '2C55E69E-4993-11ED-B878-0242AC120002',
