@@ -1,10 +1,7 @@
 import '../enums/device_battery_level.dart';
 
 class SdkDeviceBatterySnapshot {
-  const SdkDeviceBatterySnapshot({
-    required this.rawValue,
-    required this.range,
-  });
+  const SdkDeviceBatterySnapshot({required this.rawValue, required this.range});
 
   factory SdkDeviceBatterySnapshot.fromLevel(DeviceBatteryLevel level) {
     return SdkDeviceBatterySnapshot(
@@ -15,23 +12,59 @@ class SdkDeviceBatterySnapshot {
 
   factory SdkDeviceBatterySnapshot.fromRawValue(num rawValue) {
     final normalized = rawValue.round().clamp(0, 3);
-    final level = DeviceBatteryLevel.fromProtocolValue(normalized) ??
+    final level =
+        DeviceBatteryLevel.fromProtocolValue(normalized) ??
         DeviceBatteryLevel.critical;
-    return SdkDeviceBatterySnapshot(
-      rawValue: normalized,
-      range: level.name,
-    );
+    return SdkDeviceBatterySnapshot(rawValue: normalized, range: level.name);
   }
 
   final int rawValue;
   final String range;
 
   Map<String, dynamic> toJson() {
+    return <String, dynamic>{'rawValue': rawValue, 'range': range};
+  }
+}
+
+/// Phone radio sample for the coverage grid. CamelCase SDK ingest.
+class SdkRadioSnapshot {
+  const SdkRadioSnapshot({
+    required this.generation,
+    this.fiveGMode,
+    this.connected,
+  });
+
+  final String generation;
+  final String? fiveGMode;
+  final bool? connected;
+
+  Map<String, dynamic> toJson() {
+    final mode = generation == '5g' ? _acceptedFiveGMode(fiveGMode) : null;
     return <String, dynamic>{
-      'rawValue': rawValue,
-      'range': range,
+      'generation': generation,
+      'fiveGMode': ?mode,
+      'connected': ?connected,
     };
   }
+
+  static String? _acceptedFiveGMode(String? mode) {
+    switch (mode) {
+      case 'sa':
+      case 'nsa':
+        return mode;
+      default:
+        return null;
+    }
+  }
+}
+
+/// Drops a missing, non-finite, or negative horizontal accuracy.
+/// A coarser-than-50 m value is still sent. The API skips only the grid write.
+double? finiteHorizontalAccuracyMeters(double? meters) {
+  if (meters == null || !meters.isFinite || meters < 0) {
+    return null;
+  }
+  return meters;
 }
 
 class SdkCoverageSnapshot {
@@ -79,6 +112,9 @@ class SdkTelemetryPayload {
     this.mobileBattery,
     this.mobileCoverage,
     this.mobileCoverageSnapshot,
+    this.horizontalAccuracyMeters,
+    this.radio,
+    this.phoneRadioSampled = false,
   });
 
   final DateTime timestamp;
@@ -104,6 +140,12 @@ class SdkTelemetryPayload {
   final double? mobileBattery;
   final int? mobileCoverage;
   final SdkCoverageSnapshot? mobileCoverageSnapshot;
+  final double? horizontalAccuracyMeters;
+  final SdkRadioSnapshot? radio;
+
+  /// True when a native queue already snapshotted the phone radio for this fix.
+  /// Not sent on the wire. Stops a later flush from reading a different network.
+  final bool phoneRadioSampled;
 
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
@@ -131,6 +173,9 @@ class SdkTelemetryPayload {
         'mobileBattery': mobileBattery!.round().clamp(0, 100),
       if (_resolvedMobileCoverage != null)
         'mobileCoverage': _resolvedMobileCoverage!.toJson(),
+      if (_wireHorizontalAccuracyMeters != null)
+        'horizontalAccuracyMeters': _wireHorizontalAccuracyMeters,
+      if (radio != null) 'radio': radio!.toJson(),
     };
   }
 
@@ -158,6 +203,9 @@ class SdkTelemetryPayload {
     Object? mobileBattery = _unset,
     Object? mobileCoverage = _unset,
     Object? mobileCoverageSnapshot = _unset,
+    Object? horizontalAccuracyMeters = _unset,
+    Object? radio = _unset,
+    bool? phoneRadioSampled,
   }) {
     return SdkTelemetryPayload(
       timestamp: timestamp ?? this.timestamp,
@@ -166,8 +214,9 @@ class SdkTelemetryPayload {
       altitude: altitude ?? this.altitude,
       kind: identical(kind, _unset) ? this.kind : kind as String?,
       nodeId: identical(nodeId, _unset) ? this.nodeId : nodeId as int?,
-      clusterId:
-          identical(clusterId, _unset) ? this.clusterId : clusterId as int?,
+      clusterId: identical(clusterId, _unset)
+          ? this.clusterId
+          : clusterId as int?,
       aggId: identical(aggId, _unset) ? this.aggId : aggId as int?,
       score: identical(score, _unset) ? this.score : score as int?,
       memberCount: identical(memberCount, _unset)
@@ -178,8 +227,9 @@ class SdkTelemetryPayload {
           : aggSpreadingFactor as int?,
       eventId: identical(eventId, _unset) ? this.eventId : eventId as String?,
       userId: identical(userId, _unset) ? this.userId : userId as String?,
-      deviceId:
-          identical(deviceId, _unset) ? this.deviceId : deviceId as String?,
+      deviceId: identical(deviceId, _unset)
+          ? this.deviceId
+          : deviceId as String?,
       hardwareId: identical(hardwareId, _unset)
           ? this.hardwareId
           : hardwareId as String?,
@@ -207,6 +257,11 @@ class SdkTelemetryPayload {
       mobileCoverageSnapshot: identical(mobileCoverageSnapshot, _unset)
           ? this.mobileCoverageSnapshot
           : mobileCoverageSnapshot as SdkCoverageSnapshot?,
+      horizontalAccuracyMeters: identical(horizontalAccuracyMeters, _unset)
+          ? this.horizontalAccuracyMeters
+          : horizontalAccuracyMeters as double?,
+      radio: identical(radio, _unset) ? this.radio : radio as SdkRadioSnapshot?,
+      phoneRadioSampled: phoneRadioSampled ?? this.phoneRadioSampled,
     );
   }
 
@@ -253,6 +308,9 @@ class SdkTelemetryPayload {
       isConnected: true,
     );
   }
+
+  double? get _wireHorizontalAccuracyMeters =>
+      finiteHorizontalAccuracyMeters(horizontalAccuracyMeters);
 
   static bool _hasText(String? value) =>
       value != null && value.trim().isNotEmpty;

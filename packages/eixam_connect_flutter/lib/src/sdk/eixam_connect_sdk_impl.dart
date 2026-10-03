@@ -47,6 +47,7 @@ import 'authoritative_sos_lifecycle_controller.dart';
 import 'background_location_platform_adapter.dart';
 import 'background_location_platform_adapter_factory.dart';
 import 'background_telemetry_platform_adapter.dart';
+import 'phone_radio_platform_probe.dart';
 import 'background_telemetry_platform_adapter_factory.dart';
 import 'ble_operational_runtime_bridge.dart';
 import 'ble_auto_reconnect_coordinator.dart';
@@ -243,6 +244,7 @@ class EixamConnectSdkImpl
     ProtectionPlatformAdapter? protectionPlatformAdapter,
     BackgroundLocationPlatformAdapter? backgroundLocationPlatformAdapter,
     BackgroundTelemetryPlatformAdapter? backgroundTelemetryPlatformAdapter,
+    PhoneRadioPlatformProbe? phoneRadioProbe,
     SharedPrefsSdkStore? localStore,
     DateTime Function()? clock,
     Duration appTriggeredSosBridgeWindow = _defaultAppTriggeredSosBridgeWindow,
@@ -263,7 +265,8 @@ class EixamConnectSdkImpl
            buildDefaultBackgroundLocationPlatformAdapter(),
        backgroundTelemetryPlatformAdapter =
            backgroundTelemetryPlatformAdapter ??
-           buildDefaultBackgroundTelemetryPlatformAdapter() {
+           buildDefaultBackgroundTelemetryPlatformAdapter(),
+       _phoneRadioProbe = phoneRadioProbe ?? const PhoneRadioPlatformProbe() {
     _devicePositionBacklogCoordinator = DevicePositionBacklogCoordinator(
       writeCommand: backlogCommandWriter ?? _writePositionBacklogCommand,
       normalizer: _devicePositionBatchNormalizer,
@@ -533,6 +536,7 @@ class EixamConnectSdkImpl
   final ProtectionPlatformAdapter protectionPlatformAdapter;
   final BackgroundLocationPlatformAdapter backgroundLocationPlatformAdapter;
   final BackgroundTelemetryPlatformAdapter backgroundTelemetryPlatformAdapter;
+  final PhoneRadioPlatformProbe _phoneRadioProbe;
   final FirmwareUpdateCoordinator? firmwareUpdateCoordinator;
   final DeviceMigrationCoordinator? deviceMigrationCoordinator;
   DeviceCountryConfigController? _deviceCountryConfigController;
@@ -9208,6 +9212,7 @@ class EixamConnectSdkImpl
   Future<SdkTelemetryPayload> _enrichOperationalTelemetryPayload(
     SdkTelemetryPayload payload,
   ) async {
+    final fixIdentitySource = payload.identitySource;
     var status = _lastDeviceStatus;
     final hardwareId = await _loadBackendHardwareIdForOperationalPayloads(
       runtimeStatus: status,
@@ -9241,13 +9246,29 @@ class EixamConnectSdkImpl
       );
     }
 
-    return identity.payload.copyWith(
+    final enriched = identity.payload.copyWith(
       userId: null,
       deviceBatterySnapshot:
           payload.deviceBatterySnapshot ?? _buildDeviceBatterySnapshot(status),
       deviceCoverageSnapshot:
           payload.deviceCoverageSnapshot ??
           _buildDeviceCoverageSnapshot(status),
+    );
+    // Device-id normalization rewrites a phone fix to ble_node when a tag is
+    // paired. The coverage sample still belongs to the original phone fix.
+    if (!shouldProbePhoneRadio(
+      fixIdentitySource: fixIdentitySource,
+      payload: enriched,
+    )) {
+      return resolvePhoneRadio(
+        payload: enriched,
+        fixIdentitySource: fixIdentitySource,
+      );
+    }
+    return resolvePhoneRadio(
+      payload: enriched,
+      fixIdentitySource: fixIdentitySource,
+      probed: await _phoneRadioProbe.read(),
     );
   }
 

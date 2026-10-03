@@ -68,6 +68,7 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
             Context.MODE_PRIVATE,
         )
         ensureForegroundStarted(buildForegroundNotification())
+        PhoneRadioMonitor.acquire(applicationContext)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -109,6 +110,7 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         cancelSingleLocationRequest(markTimeout = false)
         stopSosLocationUpdates()
         store.markServiceRunning(false)
+        PhoneRadioMonitor.release()
         super.onDestroy()
     }
 
@@ -290,6 +292,13 @@ internal class EixamTelemetryForegroundService : Service(), LocationListener {
         store.deviceCoverageJson()?.let {
             payload.put("deviceCoverage", JSONObject(it))
         }
+        if (location.hasAccuracy()) {
+            val accuracy = location.accuracy.toDouble()
+            if (!accuracy.isNaN() && accuracy >= 0.0) {
+                payload.put("horizontalAccuracyMeters", accuracy)
+            }
+        }
+        payload.put("phoneRadio", PhoneRadioReader.read(this).toJson())
         return payload
     }
 

@@ -34,6 +34,7 @@ export 'src/entities/runtime_identity_snapshot.dart';
 export 'src/entities/ble_notification_navigation_request.dart';
 export 'src/entities/protection_mode_models.dart';
 export 'src/entities/sdk_telemetry_payload.dart';
+export 'src/entities/sdk_phone_radio.dart';
 export 'src/entities/sdk_bridge_diagnostics.dart';
 export 'src/entities/sdk_operational_diagnostics.dart';
 export 'src/entities/sdk_resolved_location.dart';
