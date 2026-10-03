@@ -36,6 +36,14 @@ class BackgroundTelemetryServiceContractTest {
     }
 
     @Test
+    fun `background telemetry snapshots phone accuracy and raw radio`() {
+        assertTrue(serviceSource.contains("horizontalAccuracyMeters"))
+        assertTrue(serviceSource.contains("payload.put(\"phoneRadio\", PhoneRadioReader.read(this).toJson())"))
+        assertTrue(serviceSource.contains("PhoneRadioMonitor.acquire(applicationContext)"))
+        assertFalse(serviceSource.contains("READ_PHONE_STATE"))
+    }
+
+    @Test
     fun `background telemetry body omits userId`() {
         assertFalse(serviceSource.contains("payload.put(\"userId\""))
     }

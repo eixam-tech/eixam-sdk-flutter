@@ -8,6 +8,55 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('OperationalTelemetryCoordinator', () {
+    test('phone fix copies horizontal accuracy', () {
+      fakeAsync((async) {
+        final harness = _Harness(initialPosition: _position(accuracy: 12));
+        harness.start();
+
+        async.elapse(const Duration(seconds: 60));
+        async.flushMicrotasks();
+
+        final payload = harness.publishedPayloads.single;
+        expect(payload.identitySource, 'app');
+        expect(payload.horizontalAccuracyMeters, 12);
+        expect(payload.toJson()['horizontalAccuracyMeters'], 12);
+      });
+    });
+
+    test('negative phone accuracy is omitted', () {
+      fakeAsync((async) {
+        final harness = _Harness(initialPosition: _position(accuracy: -1));
+        harness.start();
+
+        async.elapse(const Duration(seconds: 60));
+        async.flushMicrotasks();
+
+        final payload = harness.publishedPayloads.single;
+        expect(payload.horizontalAccuracyMeters, isNull);
+        expect(
+          payload.toJson().containsKey('horizontalAccuracyMeters'),
+          isFalse,
+        );
+      });
+    });
+
+    test('tag fix does not copy phone accuracy', () {
+      fakeAsync((async) {
+        final harness = _Harness(
+          initialPosition: _position(accuracy: 12),
+          locationSource: SdkLocationSource.connectedDevice,
+        );
+        harness.start();
+
+        async.elapse(const Duration(seconds: 60));
+        async.flushMicrotasks();
+
+        final payload = harness.publishedPayloads.single;
+        expect(payload.identitySource, 'ble_node');
+        expect(payload.horizontalAccuracyMeters, isNull);
+      });
+    });
+
     test('no SOS publishes once every 60 seconds', () {
       fakeAsync((async) {
         final harness = _Harness();
@@ -54,32 +103,30 @@ void main() {
         harness.emitCadence(SosLifecycleStage.active, desired: true);
         async.flushMicrotasks();
 
-        harness.emitPosition(
-          _position(latitude: 41.38008, longitude: 2.17),
-        );
+        harness.emitPosition(_position(latitude: 41.38008, longitude: 2.17));
         async.flushMicrotasks();
 
         expect(harness.publishedPayloads, hasLength(1));
       });
     });
 
-    test('SOS open does not publish for movement under 7 meters before 20s',
-        () {
-      fakeAsync((async) {
-        final harness = _Harness();
-        harness.start();
-        harness.emitCadence(SosLifecycleStage.active, desired: true);
-        async.flushMicrotasks();
+    test(
+      'SOS open does not publish for movement under 7 meters before 20s',
+      () {
+        fakeAsync((async) {
+          final harness = _Harness();
+          harness.start();
+          harness.emitCadence(SosLifecycleStage.active, desired: true);
+          async.flushMicrotasks();
 
-        harness.emitPosition(
-          _position(latitude: 41.38003, longitude: 2.17),
-        );
-        async.elapse(const Duration(seconds: 19));
-        async.flushMicrotasks();
+          harness.emitPosition(_position(latitude: 41.38003, longitude: 2.17));
+          async.elapse(const Duration(seconds: 19));
+          async.flushMicrotasks();
 
-        expect(harness.publishedPayloads, isEmpty);
-      });
-    });
+          expect(harness.publishedPayloads, isEmpty);
+        });
+      },
+    );
 
     test('SOS closed switches back to 60 second heartbeat', () {
       fakeAsync((async) {
@@ -150,36 +197,32 @@ void main() {
       });
     });
 
-    test('active duplicate revision does not reconfigure or delay SOS timer',
-        () {
-      fakeAsync((async) {
-        final harness = _Harness();
-        harness.start();
-        harness.emitCadence(SosLifecycleStage.active, desired: true);
-        async.elapse(const Duration(seconds: 10));
-        harness.emitCadence(
-          SosLifecycleStage.active,
-          desired: true,
-          revision: harness.lastRevision,
-        );
-        async.elapse(const Duration(seconds: 10));
-        async.flushMicrotasks();
+    test(
+      'active duplicate revision does not reconfigure or delay SOS timer',
+      () {
+        fakeAsync((async) {
+          final harness = _Harness();
+          harness.start();
+          harness.emitCadence(SosLifecycleStage.active, desired: true);
+          async.elapse(const Duration(seconds: 10));
+          harness.emitCadence(
+            SosLifecycleStage.active,
+            desired: true,
+            revision: harness.lastRevision,
+          );
+          async.elapse(const Duration(seconds: 10));
+          async.flushMicrotasks();
 
-        expect(harness.publishedPayloads, hasLength(1));
-      });
-    });
+          expect(harness.publishedPayloads, hasLength(1));
+        });
+      },
+    );
 
     test('valid local recovery retains SOS cadence', () {
       fakeAsync((async) {
         final harness = _Harness();
-        harness.start(
-          stage: SosLifecycleStage.active,
-          desired: true,
-        );
-        harness.emitCadence(
-          SosLifecycleStage.recoveryRequired,
-          desired: true,
-        );
+        harness.start(stage: SosLifecycleStage.active, desired: true);
+        harness.emitCadence(SosLifecycleStage.recoveryRequired, desired: true);
 
         async.elapse(const Duration(seconds: 20));
         async.flushMicrotasks();
@@ -196,10 +239,7 @@ void main() {
       ]) {
         fakeAsync((async) {
           final harness = _Harness();
-          harness.start(
-            stage: SosLifecycleStage.active,
-            desired: true,
-          );
+          harness.start(stage: SosLifecycleStage.active, desired: true);
           harness.emitCadence(stage, desired: false);
 
           async.elapse(const Duration(seconds: 59));
@@ -230,27 +270,29 @@ void main() {
       }
     });
 
-    test('restored local active starts SOS and restored idle starts normal',
-        () {
-      fakeAsync((async) {
-        final active = _Harness();
-        active.start(
-          stage: SosLifecycleStage.recoveryRequired,
-          desired: true,
-        );
-        final idle = _Harness();
-        idle.start();
+    test(
+      'restored local active starts SOS and restored idle starts normal',
+      () {
+        fakeAsync((async) {
+          final active = _Harness();
+          active.start(
+            stage: SosLifecycleStage.recoveryRequired,
+            desired: true,
+          );
+          final idle = _Harness();
+          idle.start();
 
-        async.elapse(const Duration(seconds: 20));
-        async.flushMicrotasks();
-        expect(active.publishedPayloads, hasLength(1));
-        expect(idle.publishedPayloads, isEmpty);
+          async.elapse(const Duration(seconds: 20));
+          async.flushMicrotasks();
+          expect(active.publishedPayloads, hasLength(1));
+          expect(idle.publishedPayloads, isEmpty);
 
-        async.elapse(const Duration(seconds: 40));
-        async.flushMicrotasks();
-        expect(idle.publishedPayloads, hasLength(1));
-      });
-    });
+          async.elapse(const Duration(seconds: 40));
+          async.flushMicrotasks();
+          expect(idle.publishedPayloads, hasLength(1));
+        });
+      },
+    );
 
     test('no valid location skips publish', () {
       fakeAsync((async) {
@@ -337,10 +379,12 @@ class _Harness {
   _Harness({
     TrackingPosition? initialPosition,
     bool hasInitialPosition = true,
+    this.locationSource = SdkLocationSource.phone,
   }) : trackingRepository = _FakeTrackingRepository(
-          currentPosition:
-              hasInitialPosition ? (initialPosition ?? _position()) : null,
-        ) {
+         currentPosition: hasInitialPosition
+             ? (initialPosition ?? _position())
+             : null,
+       ) {
     coordinator = OperationalTelemetryCoordinator(
       trackingRepository: trackingRepository,
       authoritativeSosCadenceStream: _cadenceController.stream,
@@ -355,11 +399,18 @@ class _Harness {
       },
       resolvedLocationProvider: () async {
         final position = await trackingRepository.getCurrentPosition();
-        return position == null
-            ? null
-            : SdkResolvedLocation.fromPhoneTrackingPosition(
-                position: position,
-              );
+        if (position == null) {
+          return null;
+        }
+        if (locationSource == SdkLocationSource.phone) {
+          return SdkResolvedLocation.fromPhoneTrackingPosition(
+            position: position,
+          );
+        }
+        return SdkResolvedLocation.fromTrackingPosition(
+          position: position,
+          source: locationSource,
+        );
       },
       clock: () => DateTime.utc(2026, 1, 1),
       logger: logs.add,
@@ -371,6 +422,7 @@ class _Harness {
   final List<SdkTelemetryPayload> publishedPayloads = <SdkTelemetryPayload>[];
   final List<String> logs = <String>[];
   final _FakeTrackingRepository trackingRepository;
+  final SdkLocationSource locationSource;
   late final OperationalTelemetryCoordinator coordinator;
   EixamSession? session = const EixamSession.signed(
     appId: 'partner-app',
@@ -417,7 +469,7 @@ class _Harness {
 
 class _FakeTrackingRepository implements TrackingRepository {
   _FakeTrackingRepository({TrackingPosition? currentPosition})
-      : _currentPosition = currentPosition;
+    : _currentPosition = currentPosition;
 
   final StreamController<TrackingPosition> _positionsController =
       StreamController<TrackingPosition>.broadcast(sync: true);
@@ -451,11 +503,13 @@ class _FakeTrackingRepository implements TrackingRepository {
 TrackingPosition _position({
   double latitude = 41.38,
   double longitude = 2.17,
+  double? accuracy,
 }) {
   return TrackingPosition(
     latitude: latitude,
     longitude: longitude,
     altitude: 8,
+    accuracy: accuracy,
     timestamp: DateTime.utc(2026, 1, 1),
     source: DeliveryMode.mobile,
   );
