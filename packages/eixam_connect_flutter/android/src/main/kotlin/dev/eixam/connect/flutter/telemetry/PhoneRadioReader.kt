@@ -8,6 +8,7 @@ import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.telephony.CellInfo
 import android.telephony.CellInfoCdma
 import android.telephony.CellInfoGsm
@@ -18,6 +19,7 @@ import android.telephony.CellInfoWcdma
 import android.telephony.PhoneStateListener
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyDisplayInfo
+import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
 import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
@@ -115,62 +117,68 @@ internal object PhoneRadioReader {
             return CellRadioHint(null, null)
         }
         val telephony = telephonyManager(context) ?: return CellRadioHint(null, null)
-        val cells = try {
-            telephony.allCellInfo
-        } catch (_: RuntimeException) {
-            null
-        } ?: return CellRadioHint(null, null)
-        return hintFromCells(cells)
-    }
-
-    internal fun hintFromCells(cells: List<CellInfo>): CellRadioHint {
-        val registered = cells.filter { it.isRegistered }
-        if (registered.isEmpty()) {
+        // getAllCellInfo is device-wide, even on createForSubscriptionId managers.
+        // Public CellInfo has no subscription ID. Only a confirmed single active
+        // subscription makes this fallback attributable; otherwise omit it.
+        // Even with one active SIM, a multi-radio device's global cache cannot
+        // prove ownership. Preserve this fallback only on single-radio devices.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || telephony.phoneCount != 1) {
             return CellRadioHint(null, null)
         }
-        val hasNr = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && hasRegisteredNr(registered)
-        val hasLte = registered.any { it is CellInfoLte }
-        // NR registered beside LTE is NSA. Standalone NR has no LTE anchor.
-        if (hasNr && hasLte) {
-            return CellRadioHint(
-                networkType = TelephonyManager.NETWORK_TYPE_LTE,
-                // TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_NR_NSA. Literal so
-                // API 21–29 never loads that class.
-                overrideNetworkType = 3,
-            )
+        val subscription = soleActiveSubscription(context) ?: return CellRadioHint(null, null)
+        val cells = telephony.allCellInfo ?: return CellRadioHint(null, null)
+        if (soleActiveSubscription(context) != subscription) {
+            return CellRadioHint(null, null)
         }
-        if (hasNr) {
-            return CellRadioHint(TelephonyManager.NETWORK_TYPE_NR, null)
+        return CellRadioPolicy.hint(
+            activeSubscriptionIds = listOf(subscription),
+            radioCount = telephony.phoneCount,
+            cells = cells.map { cell ->
+                CellRadioObservation(cellNetworkType(cell), cell.isRegistered, cellTimestampNanos(cell))
+            },
+            nowNanos = SystemClock.elapsedRealtimeNanos(),
+            authoritativeNetworkType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                try {
+                    telephony.createForSubscriptionId(subscription).dataNetworkType
+                } catch (_: RuntimeException) {
+                    null
+                }
+            } else null,
+        )
+    }
+
+    private fun soleActiveSubscription(context: Context): Int? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP_MR1) return null
+        val manager = context.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE)
+            as? SubscriptionManager ?: return null
+        // May require READ_PHONE_STATE or carrier privileges. Never request new
+        // permissions just for telemetry: denial is an unknown sample.
+        val ids = manager.activeSubscriptionInfoList?.map { it.subscriptionId }
+        return ids?.singleOrNull()?.takeIf { it >= 0 }
+    }
+
+    private fun cellTimestampNanos(cell: CellInfo): Long {
+        @Suppress("DEPRECATION")
+        return cell.timeStamp // API 17+, elapsed realtime nanos, never epoch time.
+    }
+
+    private fun cellNetworkType(cell: CellInfo): Int? {
+        return when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && isNr(cell) -> TelephonyManager.NETWORK_TYPE_NR
+            cell is CellInfoLte -> TelephonyManager.NETWORK_TYPE_LTE
+            cell is CellInfoWcdma -> TelephonyManager.NETWORK_TYPE_UMTS
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && isTdscdma(cell) -> TelephonyManager.NETWORK_TYPE_TD_SCDMA
+            cell is CellInfoGsm -> TelephonyManager.NETWORK_TYPE_GSM
+            cell is CellInfoCdma -> TelephonyManager.NETWORK_TYPE_CDMA
+            else -> null
         }
-        if (hasLte) {
-            return CellRadioHint(TelephonyManager.NETWORK_TYPE_LTE, null)
-        }
-        if (registered.any { it is CellInfoWcdma }) {
-            return CellRadioHint(TelephonyManager.NETWORK_TYPE_UMTS, null)
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-            hasRegisteredTdscdma(registered)
-        ) {
-            return CellRadioHint(TelephonyManager.NETWORK_TYPE_TD_SCDMA, null)
-        }
-        if (registered.any { it is CellInfoGsm }) {
-            return CellRadioHint(TelephonyManager.NETWORK_TYPE_GSM, null)
-        }
-        if (registered.any { it is CellInfoCdma }) {
-            return CellRadioHint(TelephonyManager.NETWORK_TYPE_CDMA, null)
-        }
-        return CellRadioHint(null, null)
     }
 
     @RequiresApi(Build.VERSION_CODES.Q)
-    private fun hasRegisteredNr(cells: List<CellInfo>): Boolean {
-        return cells.any { it is CellInfoNr }
-    }
+    private fun isNr(cell: CellInfo): Boolean = cell is CellInfoNr
 
     @RequiresApi(Build.VERSION_CODES.Q)
-    private fun hasRegisteredTdscdma(cells: List<CellInfo>): Boolean {
-        return cells.any { it is CellInfoTdscdma }
-    }
+    private fun isTdscdma(cell: CellInfo): Boolean = cell is CellInfoTdscdma
 
     private fun cellularDataConnected(context: Context): Boolean {
         val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
