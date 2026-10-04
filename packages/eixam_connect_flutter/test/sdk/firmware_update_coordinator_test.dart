@@ -1,6 +1,9 @@
 import 'dart:async';
 
+import 'dart:io';
+
 import 'package:crypto/crypto.dart';
+import 'package:eixam_connect_flutter/src/sdk/firmware_artifact_cache.dart';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_firmware_remote_data_source.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_http_transport.dart';
@@ -78,6 +81,7 @@ void main() {
     late FakeDeathManRepository deathManRepository;
     late FakeDeviceRepository deviceRepository;
     late _FakeFirmwareRemoteDataSource remote;
+    late Directory cacheDirectory;
 
     FirmwareUpdateCoordinator buildCoordinator({
       FirmwareDfuTransport? transport,
@@ -95,6 +99,9 @@ void main() {
       Duration? postDfuVerificationPollInterval,
       FirmwareUpdateSessionStore? sessionStore,
       BleClient? bleClient,
+      Future<DeviceStatus> Function()? firmwareStatusRefresh,
+      Future<FirmwarePhysicalRecoveryEvidence?> Function()?
+      physicalRecoveryEvidenceProvider,
     }) {
       deviceRepository = FakeDeviceRepository(
         initialStatus: initialStatus ?? _readyStatus(),
@@ -106,7 +113,12 @@ void main() {
         remoteDataSource: remote,
         dfuTransport: transport ?? const UnsupportedFirmwareDfuTransport(),
         sessionStore: sessionStore ?? _MemoryFirmwareStore(),
+        artifactCache: FileFirmwareArtifactCache(
+          directoryProvider: () async => cacheDirectory,
+        ),
         bleClient: bleClient,
+        firmwareStatusRefresh: firmwareStatusRefresh,
+        physicalRecoveryEvidenceProvider: physicalRecoveryEvidenceProvider,
         protectionStatusProvider: protectionStatusProvider,
         deviceSosStatusProvider: deviceSosStatusProvider,
         preSosStatusProvider: preSosStatusProvider,
@@ -124,17 +136,360 @@ void main() {
       );
     }
 
+    test(
+      'firmware info and OTA check use fresh installed version over cached target',
+      () async {
+        var reads = 0;
+        final coordinator = buildCoordinator(
+          initialStatus: _readyStatus(firmwareVersion: '2.0.0'),
+          firmwareStatusRefresh: () async {
+            reads++;
+            return _readyStatus(firmwareVersion: '1.0.0');
+          },
+        );
+        addTearDown(coordinator.dispose);
+        expect((await coordinator.getFirmwareInfo()).currentVersion, '1.0.0');
+        final check = await coordinator.checkFirmwareUpdate();
+        expect(check.device.currentVersion, '1.0.0');
+        expect(check.updateAvailable, isTrue);
+        expect(reads, 2);
+      },
+    );
+
+    test(
+      'recovery cannot complete from cached target when fresh firmware is old',
+      () async {
+        final store = _MemoryFirmwareStore()
+          ..value = _durableFirmwareSession(
+            FirmwareUpdateState.recoveryRequired,
+          ).copyWith(artifactVerified: true);
+        final coordinator = buildCoordinator(
+          sessionStore: store,
+          initialStatus: _readyStatus(firmwareVersion: '2.0.0'),
+          firmwareStatusRefresh: () async =>
+              _readyStatus(firmwareVersion: '1.0.0'),
+        );
+        addTearDown(coordinator.dispose);
+        final session = await coordinator.reconcileFirmwareUpdate();
+        expect(session?.nextAction, FirmwareUpdateNextAction.retryTransfer);
+        expect(session?.isCompleted, isFalse);
+      },
+    );
+
+    test(
+      'failed fresh firmware inspection cannot complete from cached target',
+      () async {
+        final store = _MemoryFirmwareStore()
+          ..value = _durableFirmwareSession(
+            FirmwareUpdateState.recoveryRequired,
+          );
+        final coordinator = buildCoordinator(
+          sessionStore: store,
+          initialStatus: _readyStatus(firmwareVersion: '2.0.0'),
+          firmwareStatusRefresh: () async =>
+              throw StateError('firmware read unavailable'),
+        );
+        addTearDown(coordinator.dispose);
+        final session = await coordinator.reconcileFirmwareUpdate();
+        expect(session?.isCompleted, isFalse);
+        expect(session?.nextAction, FirmwareUpdateNextAction.waitForDevice);
+      },
+    );
+
     setUp(() {
       sosRepository = FakeSosRepository();
       deathManRepository = FakeDeathManRepository();
       remote = _FakeFirmwareRemoteDataSource();
+      cacheDirectory = Directory.systemTemp.createTempSync(
+        'firmware-session-test-',
+      );
     });
 
     tearDown(() async {
       await sosRepository.dispose();
       await deathManRepository.dispose();
       await deviceRepository.dispose();
+      await cacheDirectory.delete(recursive: true);
     });
+
+    for (final phase in [
+      FirmwareUpdateState.downloading,
+      FirmwareUpdateState.verifying,
+      FirmwareUpdateState.readyToTransfer,
+    ]) {
+      test(
+        'restored pre-native $phase reuses verified artifact and starts once',
+        () async {
+          final hash = _sha256(remote.artifactBytes);
+          final reference = firmwareArtifactReference('fw-1', '2.0.0', hash);
+          await FileFirmwareArtifactCache(
+            directoryProvider: () async => cacheDirectory,
+          ).writeVerified(reference, remote.artifactBytes);
+          final store = _MemoryFirmwareStore()
+            ..value = _durableFirmwareSession(phase).copyWith(
+              nativeTransferEngaged: false,
+              artifactReference: reference,
+              artifactSha256: hash,
+              artifactSizeBytes: remote.artifactBytes.length,
+              artifactDownloaded: true,
+              artifactVerified: true,
+            );
+          var starts = 0;
+          final coordinator = buildCoordinator(
+            sessionStore: store,
+            transport: _SuccessfulDfuTransport(
+              onStart: () {
+                starts++;
+                expect(store.value?.nativeTransferEngaged, true);
+                expect(store.value?.artifactVerified, true);
+                deviceRepository.setCurrentStatusSilently(
+                  _readyStatus(firmwareVersion: '2.0.0'),
+                );
+              },
+            ),
+          );
+          addTearDown(coordinator.dispose);
+          final result = await coordinator.startFirmwareUpdate(
+            deviceId: 'demo-device',
+            releaseId: 'fw-1',
+          );
+          expect(result.state, FirmwareUpdateState.completed);
+          expect(result.sessionId, 'fw-restored');
+          expect(starts, 1);
+          expect(remote.downloadCallCount, 0);
+          expect(store.value, isNull);
+        },
+      );
+    }
+
+    test(
+      'process death with incomplete download restarts without recovery',
+      () async {
+        final store = _MemoryFirmwareStore()
+          ..value = _durableFirmwareSession(
+            FirmwareUpdateState.downloading,
+          ).copyWith(nativeTransferEngaged: false);
+        final coordinator = buildCoordinator(sessionStore: store);
+        addTearDown(coordinator.dispose);
+        final result = await coordinator.startFirmwareUpdate(
+          deviceId: 'demo-device',
+          releaseId: 'fw-1',
+        );
+        expect(remote.downloadCallCount, 1);
+        expect(result.requiresRecovery, false);
+        expect(result.artifactVerified, true);
+        expect(result.nativeTransferEngaged, false);
+      },
+    );
+
+    test(
+      'migration missing-device inspection persists canonical wait without physical inference',
+      () async {
+        final store = _MemoryFirmwareStore()
+          ..value = _durableFirmwareSession(
+            FirmwareUpdateState.recoveryRequired,
+          ).copyWith(nativeTransferEngaged: true);
+        final coordinator = buildCoordinator(
+          sessionStore: store,
+          initialStatus: _readyStatus(connected: false),
+        );
+        final result = await coordinator.inspectMigrationPhysicalRecovery();
+        expect(result?.state, FirmwareUpdateState.reconnecting);
+        expect(result?.nextAction, FirmwareUpdateNextAction.waitForDevice);
+        expect(result?.nativeTransferEngaged, true);
+        await coordinator.dispose();
+        expect(store.value?.nextAction, FirmwareUpdateNextAction.waitForDevice);
+      },
+    );
+
+    test('concurrent starts cannot launch duplicate transfers', () async {
+      final coordinator = buildCoordinator();
+      addTearDown(coordinator.dispose);
+      final first = coordinator.startFirmwareUpdate(
+        deviceId: 'demo-device',
+        releaseId: 'fw-1',
+      );
+      await expectLater(
+        coordinator.startFirmwareUpdate(
+          deviceId: 'demo-device',
+          releaseId: 'fw-1',
+        ),
+        throwsA(isA<FirmwareUpdateException>()),
+      );
+      await first;
+      expect(remote.downloadCallCount, 1);
+    });
+
+    for (final scenario in [
+      (
+        name: 'matching invalid application without remote recovery',
+        id: 'AA:BB:CC:DD:EE:FF',
+        invalid: true,
+        unsupported: true,
+        native: true,
+        physical: true,
+      ),
+      (
+        name: 'wrong physical device',
+        id: '11:22:33:44:55:66',
+        invalid: true,
+        unsupported: true,
+        native: true,
+        physical: false,
+      ),
+      (
+        name: 'valid application',
+        id: 'AA:BB:CC:DD:EE:FF',
+        invalid: false,
+        unsupported: true,
+        native: true,
+        physical: false,
+      ),
+      (
+        name: 'remote recovery supported',
+        id: 'AA:BB:CC:DD:EE:FF',
+        invalid: true,
+        unsupported: false,
+        native: true,
+        physical: false,
+      ),
+      (
+        name: 'pre-transfer death',
+        id: 'AA:BB:CC:DD:EE:FF',
+        invalid: true,
+        unsupported: true,
+        native: false,
+        physical: false,
+      ),
+    ]) {
+      test('physical recovery evidence: ${scenario.name}', () async {
+        final store = _MemoryFirmwareStore()
+          ..value = _durableFirmwareSession(
+            FirmwareUpdateState.transferring,
+          ).copyWith(nativeTransferEngaged: scenario.native);
+        final coordinator = buildCoordinator(
+          sessionStore: store,
+          initialStatus: _readyStatus(connected: false),
+          physicalRecoveryEvidenceProvider: () async =>
+              FirmwarePhysicalRecoveryEvidence(
+                deviceId: 'demo-device',
+                hardwareId: scenario.id,
+                applicationInvalid: scenario.invalid,
+                remoteRecoveryUnsupported: scenario.unsupported,
+              ),
+        );
+        addTearDown(coordinator.dispose);
+        final result = await coordinator.reconcileFirmwareUpdate();
+        expect(
+          result?.nextAction,
+          scenario.physical
+              ? FirmwareUpdateNextAction.physicalRecovery
+              : FirmwareUpdateNextAction.waitForDevice,
+        );
+      });
+    }
+
+    test(
+      'disposed download cannot launch a late transfer; restart resumes the same intent',
+      () async {
+        final gate = Completer<List<int>>();
+        remote.downloadGate = gate;
+        final store = _MemoryFirmwareStore();
+        var nativeStarts = 0;
+        final first = buildCoordinator(
+          sessionStore: store,
+          transport: _SuccessfulDfuTransport(onStart: () => nativeStarts++),
+        );
+        final operation = first.startFirmwareUpdate(
+          deviceId: 'demo-device',
+          releaseId: 'fw-1',
+        );
+        while (remote.downloadCallCount == 0) {
+          await Future<void>.delayed(Duration.zero);
+        }
+        final sessionId = store.value!.sessionId;
+        expect(store.value?.state, FirmwareUpdateState.downloading);
+        await first.dispose();
+        gate.complete(remote.artifactBytes);
+        await operation;
+        expect(nativeStarts, 0);
+        expect(store.value?.nativeTransferEngaged, false);
+        await deviceRepository.dispose();
+        remote.downloadGate = null;
+        final restored = buildCoordinator(
+          sessionStore: store,
+          transport: _SuccessfulDfuTransport(
+            onStart: () {
+              nativeStarts++;
+              deviceRepository.setCurrentStatusSilently(
+                _readyStatus(firmwareVersion: '2.0.0'),
+              );
+            },
+          ),
+        );
+        addTearDown(restored.dispose);
+        final result = await restored.startFirmwareUpdate(
+          deviceId: 'demo-device',
+          releaseId: 'fw-1',
+        );
+        expect(result.sessionId, sessionId);
+        expect(result.state, FirmwareUpdateState.completed);
+        expect(nativeStarts, 1);
+        expect(remote.downloadCallCount, 2);
+      },
+    );
+
+    test('disposal during BLE handoff cannot engage native transfer', () async {
+      final entered = Completer<void>();
+      final release = Completer<void>();
+      final store = _MemoryFirmwareStore();
+      var nativeStarts = 0;
+      final coordinator = buildCoordinator(
+        sessionStore: store,
+        transport: _SuccessfulDfuTransport(onStart: () => nativeStarts++),
+        releaseBleForDfuTransfer: ({required String deviceId}) async {
+          entered.complete();
+          await release.future;
+        },
+      );
+      final operation = coordinator.startFirmwareUpdate(
+        deviceId: 'demo-device',
+        releaseId: 'fw-1',
+      );
+      await entered.future;
+      expect(store.value?.artifactVerified, true);
+      expect(store.value?.nativeTransferEngaged, false);
+      await coordinator.dispose();
+      release.complete();
+      await operation;
+      expect(nativeStarts, 0);
+      expect(store.value?.nativeTransferEngaged, false);
+    });
+
+    test(
+      'wrong physical TAG reporting target version cannot complete a transfer',
+      () async {
+        final coordinator = buildCoordinator(
+          transport: _SuccessfulDfuTransport(
+            onStart: () {
+              deviceRepository.setCurrentStatusSilently(
+                _readyStatus(firmwareVersion: '2.0.0').copyWith(
+                  deviceId: 'other-tag',
+                  canonicalHardwareId: '11:22:33:44:55:66',
+                ),
+              );
+            },
+          ),
+          postDfuVerificationTimeout: Duration.zero,
+        );
+        addTearDown(coordinator.dispose);
+        final result = await coordinator.startFirmwareUpdate(
+          deviceId: 'demo-device',
+          releaseId: 'fw-1',
+        );
+        expect(result.state, isNot(FirmwareUpdateState.completed));
+      },
+    );
 
     test('blocks missing firmware version without backend call', () async {
       final coordinator = buildCoordinator(
@@ -372,6 +727,94 @@ void main() {
       },
     );
 
+    for (final scenario
+        in <
+          ({
+            String name,
+            FirmwareUpdateState state,
+            bool recovery,
+            String deviceId,
+            bool allowed,
+          })
+        >[
+          (
+            name: 'verified source after terminal failure',
+            state: FirmwareUpdateState.failed,
+            recovery: false,
+            deviceId: 'demo-device',
+            allowed: true,
+          ),
+          (
+            name: 'restored transfer with verified old application',
+            state: FirmwareUpdateState.transferring,
+            recovery: false,
+            deviceId: 'demo-device',
+            allowed: true,
+          ),
+          (
+            name: 'restored recovery with verified old application',
+            state: FirmwareUpdateState.recoveryRequired,
+            recovery: true,
+            deviceId: 'demo-device',
+            allowed: true,
+          ),
+          (
+            name: 'different physical device',
+            state: FirmwareUpdateState.failed,
+            recovery: false,
+            deviceId: 'other-device',
+            allowed: false,
+          ),
+        ]) {
+      test('migration retry ownership: ${scenario.name}', () async {
+        final now = DateTime.now();
+        final store = _MemoryFirmwareStore()
+          ..value = FirmwareUpdateSession(
+            sessionId: 'previous-attempt',
+            deviceId: scenario.deviceId,
+            releaseId: 'fw-1',
+            fromVersion: '1.0.0',
+            targetVersion: '2.0.0',
+            state: scenario.state,
+            startedAt: now,
+            completedAt: now,
+            requiresRecovery: scenario.recovery,
+            nativeTransferEngaged: true,
+            nextAction: FirmwareUpdateNextAction.retry,
+          );
+        final coordinator = buildCoordinator(
+          sessionStore: store,
+          transport: _SuccessfulDfuTransport(),
+        );
+        addTearDown(coordinator.dispose);
+        final release = FirmwareRelease(
+          releaseId: 'fw-1',
+          version: '2.0.0',
+          hardwareModel: 'WISMESH_TAG',
+          sha256Hash: _sha256(remote.artifactBytes),
+          fileSizeBytes: remote.artifactBytes.length,
+        );
+        final operation = coordinator.startMigrationFirmwareUpdate(
+          sourceStatus: _readyStatus(),
+          release: release,
+          postMigrationStatusRefresh:
+              ({
+                required deviceId,
+                required attempt,
+                required targetVersion,
+              }) async => _readyStatus(firmwareVersion: targetVersion),
+        );
+        if (scenario.allowed) {
+          expect((await operation).state, FirmwareUpdateState.completed);
+          expect(remote.downloadCallCount, 1);
+        } else {
+          await expectLater(operation, throwsA(isA<FirmwareUpdateException>()));
+          expect(remote.downloadCallCount, 0);
+          expect(store.value?.sessionId, 'previous-attempt');
+        }
+      });
+    }
+
     test('fails on hash mismatch', () async {
       remote.artifactBytes = <int>[1, 2, 3];
       remote.downloadHash = 'not-the-real-hash';
@@ -530,7 +973,7 @@ void main() {
           transport: _SuccessfulDfuTransport(
             onStart: () {
               deviceRepository.setCurrentStatusSilently(
-                _readyStatus(firmwareVersion: '  V2.0.0 '),
+                _readyStatus(firmwareVersion: '  V2.0.0\u0000'),
               );
             },
           ),
@@ -561,7 +1004,7 @@ void main() {
           targetVersion: '2.0.0',
         );
 
-        expect(session.state, FirmwareUpdateState.completed);
+        expect(session.state, FirmwareUpdateState.reconnecting);
         expect(session.failureCode, isNull);
       },
     );
@@ -611,8 +1054,8 @@ void main() {
       expect(transport.cancelCount, greaterThanOrEqualTo(1));
     });
 
-    test('a stall with no native event at all reports failed, not recovery '
-        '(device never entered the bootloader)', () async {
+    test('a stall with no native event at all requires reconciliation '
+        '(callback absence cannot prove device state)', () async {
       // If the native side hangs before emitting anything, the enter-DFU write
       // never happened and the running app was never erased — a plain retry is
       // correct, and telling the user to re-flash a healthy device is wrong.
@@ -631,7 +1074,7 @@ void main() {
         releaseId: 'fw-1',
       );
 
-      expect(session.state, FirmwareUpdateState.failed);
+      expect(session.state, FirmwareUpdateState.recoveryRequired);
       expect(session.failureCode, 'dfuStalled');
     });
 
@@ -729,7 +1172,7 @@ void main() {
         targetVersion: '2.0.0',
       );
 
-      expect(session.state, FirmwareUpdateState.completed);
+      expect(session.state, FirmwareUpdateState.reconnecting);
       expect(calls, <String>[
         'release:bootloader-addr',
         'restore:bootloader-addr',
@@ -869,6 +1312,59 @@ void main() {
       },
     );
 
+    for (final error in [
+      StateError('Bluetooth adapter is off'),
+      const FirmwareUpdateException(
+        'bluetoothDisabled',
+        'Bluetooth adapter is off',
+      ),
+    ]) {
+      test(
+        'Bluetooth unavailable after native completion keeps verification waiting: ${error.runtimeType}',
+        () async {
+          var attempts = 0;
+          var nativeStarts = 0;
+          final transport = _SuccessfulDfuTransport(
+            onStart: () => nativeStarts++,
+          );
+          final coordinator = buildCoordinator(
+            transport: transport,
+            postDfuVerificationPollInterval: const Duration(milliseconds: 1),
+            postDfuStatusRefresh:
+                ({
+                  required deviceId,
+                  required attempt,
+                  required targetVersion,
+                }) async {
+                  attempts++;
+                  if (attempts < 3) throw error;
+                  return _readyStatus(firmwareVersion: '2.0.0');
+                },
+          );
+          addTearDown(coordinator.dispose);
+          final progress = <FirmwareUpdateProgress>[];
+          final sub = coordinator
+              .watchProgress(deviceId: 'demo-device')
+              .listen(progress.add);
+          addTearDown(sub.cancel);
+          final session = await coordinator.startFirmwareUpdate(
+            deviceId: 'demo-device',
+            releaseId: 'fw-1',
+          );
+          expect(session.state, FirmwareUpdateState.completed);
+          expect(attempts, 3);
+          expect(nativeStarts, 1);
+          expect(session.requiresRecovery, isFalse);
+          expect(
+            progress.any(
+              (event) => event.state == FirmwareUpdateState.recoveryRequired,
+            ),
+            isFalse,
+          );
+        },
+      );
+    }
+
     test('e2e: a device that never reports the target within the window needs '
         'recovery', () async {
       final coordinator = buildCoordinator(
@@ -1004,6 +1500,56 @@ void main() {
       },
     );
 
+    test(
+      'migration recovery reuses the interrupted firmware session',
+      () async {
+        final original = _durableFirmwareSession(
+          FirmwareUpdateState.transferring,
+        );
+        final coordinator = buildCoordinator(
+          sessionStore: _MemoryFirmwareStore()..value = original,
+          transport: _SuccessfulDfuTransport(),
+        );
+        addTearDown(coordinator.dispose);
+        final recovered = await coordinator.recoverMigrationFirmwareUpdate(
+          bootloaderDeviceId: original.deviceId,
+          releaseId: original.releaseId,
+          targetVersion: original.targetVersion,
+        );
+        expect(recovered.sessionId, original.sessionId);
+        expect(recovered.startedAt, original.startedAt);
+        expect(recovered.state, FirmwareUpdateState.reconnecting);
+      },
+    );
+
+    for (final mismatch in ['device', 'release', 'version']) {
+      test(
+        'migration recovery rejects interrupted $mismatch mismatch',
+        () async {
+          final original = _durableFirmwareSession(
+            FirmwareUpdateState.transferring,
+          );
+          final store = _MemoryFirmwareStore()..value = original;
+          final coordinator = buildCoordinator(sessionStore: store);
+          addTearDown(coordinator.dispose);
+          await expectLater(
+            coordinator.recoverMigrationFirmwareUpdate(
+              bootloaderDeviceId: mismatch == 'device'
+                  ? 'other'
+                  : original.deviceId,
+              releaseId: mismatch == 'release' ? 'other' : original.releaseId,
+              targetVersion: mismatch == 'version'
+                  ? '9.0.0'
+                  : original.targetVersion,
+            ),
+            throwsA(isA<FirmwareUpdateException>()),
+          );
+          expect(store.value?.sessionId, original.sessionId);
+          expect(store.value?.state, original.state);
+        },
+      );
+    }
+
     test('restores every non-terminal OTA restart phase', () async {
       for (final state in <FirmwareUpdateState>[
         FirmwareUpdateState.readyToTransfer,
@@ -1050,12 +1596,12 @@ void main() {
 
       final session = await coordinator.reconcileFirmwareUpdate();
 
-      expect(session?.state, FirmwareUpdateState.failed);
+      expect(session?.state, FirmwareUpdateState.readyToTransfer);
       expect(
         session?.reconciliationOutcome,
         FirmwareUpdateReconciliationOutcome.installedVersionMismatch,
       );
-      expect(session?.nextAction, FirmwareUpdateNextAction.retry);
+      expect(session?.nextAction, FirmwareUpdateNextAction.retryDownload);
     });
 
     test('wrong connected physical device cannot satisfy update', () async {
@@ -1096,8 +1642,225 @@ void main() {
       final session = await coordinator.reconcileFirmwareUpdate();
 
       expect(session?.state, FirmwareUpdateState.recoveryRequired);
-      expect(session?.nextAction, FirmwareUpdateNextAction.recover);
+      expect(session?.nextAction, FirmwareUpdateNextAction.waitForDevice);
     });
+
+    for (final failures in [1, 3]) {
+      test(
+        'GATT 133: $failures failures release lifecycle before retry',
+        () async {
+          final store = _MemoryFirmwareStore()
+            ..value = _durableFirmwareSession(
+              FirmwareUpdateState.recoveryRequired,
+            );
+          final transport = _RetryingRecoveryTransport(failures);
+          var releases = 0;
+          var restores = 0;
+          final coordinator = buildCoordinator(
+            sessionStore: store,
+            transport: transport,
+            initialStatus: _readyStatus(connected: false),
+            bleClient: _FirmwareBleClient([
+              _dfuScan('bootloader', 'AA:BB:CC:DD:EE:FF'),
+            ]),
+            releaseBleForDfuTransfer: ({required deviceId}) async {
+              expect(transport.active, isFalse);
+              expect(transport.listeners, 1);
+              expect(releases, restores);
+              releases++;
+            },
+            restoreBleAfterDfuTransfer: ({required deviceId}) async {
+              expect(transport.active, isFalse);
+              expect(transport.listeners, 0);
+              restores++;
+            },
+          );
+          addTearDown(coordinator.dispose);
+          final result = await coordinator.reconcileFirmwareUpdate(
+            attemptRecovery: true,
+          );
+          expect(transport.starts, failures == 1 ? 2 : 3);
+          expect(transport.ids.toSet().length, transport.starts);
+          expect(releases, restores);
+          expect(transport.listeners, 0);
+          expect(result?.recoveryDeviceMatched, isTrue);
+          expect(
+            result?.nextAction,
+            failures == 1
+                ? FirmwareUpdateNextAction.waitForDevice
+                : FirmwareUpdateNextAction.physicalRecovery,
+          );
+          expect(result?.manualRecoveryRequired, failures == 3);
+          if (failures == 3) {
+            await coordinator.reconcileFirmwareUpdate(attemptRecovery: true);
+            expect(transport.starts, 3);
+            expect(store.value?.remoteRecoveryExhausted, isTrue);
+          }
+        },
+      );
+    }
+
+    test(
+      'failed matched recovery then absence exhausts reconciliation, not identity',
+      () async {
+        final scans = [_dfuScan('bootloader', 'AA:BB:CC:DD:EE:FF')];
+        final store = _MemoryFirmwareStore()
+          ..value = _durableFirmwareSession(
+            FirmwareUpdateState.recoveryRequired,
+          );
+        final transport = _RetryingRecoveryTransport(3, onFailure: scans.clear);
+        final coordinator = buildCoordinator(
+          sessionStore: store,
+          transport: transport,
+          initialStatus: _readyStatus(connected: false),
+          bleClient: _FirmwareBleClient(scans),
+        );
+        addTearDown(coordinator.dispose);
+        final result = await coordinator.reconcileFirmwareUpdate(
+          attemptRecovery: true,
+        );
+        expect(transport.starts, 1);
+        expect(result?.nextAction, FirmwareUpdateNextAction.physicalRecovery);
+        expect(result?.recoveryReconciliationAttempts, 3);
+        expect(result?.remoteRecoveryFailed, isTrue);
+      },
+    );
+
+    test(
+      'restart preserves exhausted verdict and does not duplicate recovery',
+      () async {
+        final store = _MemoryFirmwareStore()
+          ..value =
+              _durableFirmwareSession(
+                FirmwareUpdateState.physicalRecoveryRequired,
+              ).copyWith(
+                recoveryDeviceMatched: true,
+                remoteRecoveryAttempts: 3,
+                remoteRecoveryFailed: true,
+                remoteRecoveryExhausted: true,
+                nextAction: FirmwareUpdateNextAction.physicalRecovery,
+              );
+        final transport = _RetryingRecoveryTransport(0);
+        final coordinator = buildCoordinator(
+          sessionStore: store,
+          transport: transport,
+          initialStatus: _readyStatus(connected: false),
+          bleClient: _FirmwareBleClient([]),
+        );
+        addTearDown(coordinator.dispose);
+        expect(
+          (await coordinator.getActiveFirmwareUpdate())?.nextAction,
+          FirmwareUpdateNextAction.physicalRecovery,
+        );
+        expect(
+          (await coordinator.reconcileFirmwareUpdate(
+            attemptRecovery: true,
+          ))?.nextAction,
+          FirmwareUpdateNextAction.physicalRecovery,
+        );
+        expect(transport.starts, 0);
+        deviceRepository.setCurrentStatusSilently(
+          _readyStatus(firmwareVersion: '2.0.0'),
+        );
+        expect(
+          (await coordinator.reconcileFirmwareUpdate())?.state,
+          FirmwareUpdateState.completed,
+        );
+      },
+    );
+
+    test(
+      'same old valid application returns after manual recovery: safe retry',
+      () async {
+        final store = _MemoryFirmwareStore()
+          ..value =
+              _durableFirmwareSession(
+                FirmwareUpdateState.physicalRecoveryRequired,
+              ).copyWith(
+                recoveryDeviceMatched: true,
+                remoteRecoveryAttempts: 3,
+                remoteRecoveryFailed: true,
+                remoteRecoveryExhausted: true,
+                artifactVerified: true,
+                nextAction: FirmwareUpdateNextAction.physicalRecovery,
+              );
+        final coordinator = buildCoordinator(sessionStore: store);
+        addTearDown(coordinator.dispose);
+        final session = await coordinator.reconcileFirmwareUpdate();
+        expect(session?.nextAction, FirmwareUpdateNextAction.retryTransfer);
+        expect(session?.requiresRecovery, isFalse);
+      },
+    );
+
+    test(
+      'verified source retry clears the exhausted outcome before native transfer',
+      () async {
+        final store = _MemoryFirmwareStore()
+          ..value =
+              _durableFirmwareSession(
+                FirmwareUpdateState.physicalRecoveryRequired,
+              ).copyWith(
+                recoveryDeviceMatched: true,
+                remoteRecoveryAttempts: 3,
+                remoteRecoveryFailed: true,
+                remoteRecoveryExhausted: true,
+                nextAction: FirmwareUpdateNextAction.physicalRecovery,
+              );
+        final coordinator = buildCoordinator(
+          sessionStore: store,
+          transport: _SuccessfulDfuTransport(
+            onStart: () {
+              expect(store.value?.remoteRecoveryExhausted, isFalse);
+              expect(store.value?.remoteRecoveryFailed, isFalse);
+              expect(store.value?.remoteRecoveryAttempts, 0);
+            },
+          ),
+        );
+        addTearDown(coordinator.dispose);
+        final result = await coordinator.startMigrationFirmwareUpdate(
+          sourceStatus: _readyStatus(),
+          release: FirmwareRelease(
+            releaseId: 'fw-1',
+            version: '2.0.0',
+            sha256Hash: sha256.convert([1, 2, 3]).toString(),
+          ),
+          postMigrationStatusRefresh:
+              ({
+                required deviceId,
+                required attempt,
+                required targetVersion,
+              }) async => _readyStatus(firmwareVersion: '2.0.0'),
+        );
+        expect(result.state, FirmwareUpdateState.completed);
+        expect(result.remoteRecoveryExhausted, isFalse);
+      },
+    );
+
+    test(
+      'wrong recovery advertisement cannot establish recovery capability',
+      () async {
+        final store = _MemoryFirmwareStore()
+          ..value = _durableFirmwareSession(
+            FirmwareUpdateState.recoveryRequired,
+          );
+        final transport = _RetryingRecoveryTransport(3);
+        final coordinator = buildCoordinator(
+          sessionStore: store,
+          transport: transport,
+          initialStatus: _readyStatus(connected: false),
+          bleClient: _FirmwareBleClient([
+            _dfuScan('other', '11:22:33:44:55:66'),
+          ]),
+        );
+        addTearDown(coordinator.dispose);
+        final session = await coordinator.reconcileFirmwareUpdate(
+          attemptRecovery: true,
+        );
+        expect(session?.nextAction, FirmwareUpdateNextAction.waitForDevice);
+        expect(session?.manualRecoveryRequired, isFalse);
+        expect(transport.starts, 0);
+      },
+    );
 
     test('multiple matching bootloaders remain ambiguous', () async {
       final store = _MemoryFirmwareStore()
@@ -1312,7 +2075,9 @@ FirmwareUpdateSession _durableFirmwareSession(
     updatedAt: now,
     nativeTransferEngaged: state != FirmwareUpdateState.readyToTransfer,
     requiresRecovery:
-        requiresRecovery ?? state == FirmwareUpdateState.recoveryRequired,
+        requiresRecovery ??
+        (state == FirmwareUpdateState.recoveryRequired ||
+            state == FirmwareUpdateState.physicalRecoveryRequired),
     nextAction: state == FirmwareUpdateState.recoveryRequired
         ? FirmwareUpdateNextAction.recover
         : FirmwareUpdateNextAction.waitForDevice,
@@ -1370,6 +2135,7 @@ class _FakeFirmwareRemoteDataSource implements SdkFirmwareRemoteDataSource {
   int? fileSizeBytes;
   String? downloadHash;
   Object? downloadError;
+  Completer<List<int>>? downloadGate;
 
   @override
   Future<SdkFirmwareCheckDto> checkUpdate({
@@ -1421,6 +2187,7 @@ class _FakeFirmwareRemoteDataSource implements SdkFirmwareRemoteDataSource {
     int sizeToleranceBytes = firmwareArtifactSizeToleranceBytes,
   }) async {
     downloadCallCount++;
+    if (downloadGate != null) return downloadGate!.future;
     final error = downloadError;
     if (error != null) {
       throw error;
@@ -1632,3 +2399,41 @@ final class _StreamingHttpClient extends http.BaseClient {
 }
 
 String _sha256(List<int> bytes) => sha256.convert(bytes).toString();
+
+class _RetryingRecoveryTransport implements FirmwareDfuTransport {
+  _RetryingRecoveryTransport(this.failures, {this.onFailure});
+  final int failures;
+  final void Function()? onFailure;
+  int starts = 0;
+  int listeners = 0;
+  bool active = false;
+  final ids = <String>[];
+
+  @override
+  Stream<DfuProgress> watchProgress(String sessionId) =>
+      StreamController<DfuProgress>(
+        onListen: () => listeners++,
+        onCancel: () => listeners--,
+      ).stream;
+
+  @override
+  Future<void> start(FirmwareDfuTransferRequest request) async {
+    expect(active, isFalse);
+    active = true;
+    starts++;
+    ids.add(request.sessionId);
+    try {
+      if (starts <= failures) {
+        onFailure?.call();
+        throw const FirmwareUpdateException('dfuTransportFailed', 'GATT 133');
+      }
+    } finally {
+      active = false;
+    }
+  }
+
+  @override
+  Future<void> cancel(String sessionId) async {
+    expect(active, isFalse);
+  }
+}

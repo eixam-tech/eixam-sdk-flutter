@@ -43,30 +43,40 @@ final class SharedPrefsFirmwareUpdateSessionStore
 
   @override
   Future<void> save(FirmwareUpdateSession session) {
-    return _localStore.saveJson(
-      SharedPrefsSdkStore.firmwareUpdateSessionKey,
-      <String, dynamic>{
-        'schemaVersion': session.schemaVersion,
-        'sessionId': session.sessionId,
-        'deviceId': session.deviceId,
-        'hardwareId': session.hardwareId,
-        'releaseId': session.releaseId,
-        'fromVersion': session.fromVersion,
-        'targetVersion': session.targetVersion,
-        'state': session.state.name,
-        'startedAt': session.startedAt.toUtc().toIso8601String(),
-        'updatedAt': (session.updatedAt ?? session.startedAt)
-            .toUtc()
-            .toIso8601String(),
-        'completedAt': session.completedAt?.toUtc().toIso8601String(),
-        'failureCode': session.failureCode,
-        'failureMessage': session.failureMessage,
-        'nativeTransferEngaged': session.nativeTransferEngaged,
-        'requiresRecovery': session.requiresRecovery,
-        'nextAction': session.nextAction.name,
-        'reconciliationOutcome': session.reconciliationOutcome?.name,
-      },
-    );
+    return _localStore.saveJson(SharedPrefsSdkStore.firmwareUpdateSessionKey, <
+      String,
+      dynamic
+    >{
+      'schemaVersion': session.schemaVersion,
+      'sessionId': session.sessionId,
+      'deviceId': session.deviceId,
+      'hardwareId': session.hardwareId,
+      'releaseId': session.releaseId,
+      'migrationOwned': session.migrationOwned,
+      'artifactReference': session.artifactReference,
+      'artifactSha256': session.artifactSha256,
+      'artifactSizeBytes': session.artifactSizeBytes,
+      'artifactDownloaded': session.artifactDownloaded,
+      'artifactVerified': session.artifactVerified,
+      'fromVersion': session.fromVersion,
+      'targetVersion': session.targetVersion,
+      'state': session.state.name,
+      'startedAt': session.startedAt.toUtc().toIso8601String(),
+      'updatedAt': (session.updatedAt ?? session.startedAt)
+          .toUtc()
+          .toIso8601String(),
+      'completedAt': session.completedAt?.toUtc().toIso8601String(),
+      'failureCode': session.failureCode,
+      'nativeTransferEngaged': session.nativeTransferEngaged,
+      'recoveryDeviceMatched': session.recoveryDeviceMatched,
+      'remoteRecoveryAttempts': session.remoteRecoveryAttempts,
+      'remoteRecoveryFailed': session.remoteRecoveryFailed,
+      'recoveryReconciliationAttempts': session.recoveryReconciliationAttempts,
+      'remoteRecoveryExhausted': session.remoteRecoveryExhausted,
+      'requiresRecovery': session.requiresRecovery,
+      'nextAction': session.nextAction.name,
+      'reconciliationOutcome': session.reconciliationOutcome?.name,
+    });
   }
 
   @override
@@ -80,8 +90,18 @@ final class SharedPrefsFirmwareUpdateSessionStore
       deviceId: _string(json, 'deviceId'),
       hardwareId: json['hardwareId'] as String?,
       releaseId: _string(json, 'releaseId'),
+      migrationOwned: json['migrationOwned'] as bool? ?? false,
+      artifactReference: json['artifactReference'] as String?,
+      artifactSha256: json['artifactSha256'] as String?,
+      artifactSizeBytes: json['artifactSizeBytes'] as int?,
+      artifactDownloaded: json['artifactDownloaded'] as bool? ?? false,
+      artifactVerified: json['artifactVerified'] as bool? ?? false,
       fromVersion: _string(json, 'fromVersion', allowEmpty: true),
-      targetVersion: _string(json, 'targetVersion'),
+      targetVersion: _string(
+        json,
+        'targetVersion',
+        allowEmpty: json['state'] == FirmwareUpdateState.checking.name,
+      ),
       state: _enum(FirmwareUpdateState.values, json['state']),
       startedAt: DateTime.parse(_string(json, 'startedAt')),
       updatedAt: DateTime.parse(_string(json, 'updatedAt')),
@@ -89,8 +109,14 @@ final class SharedPrefsFirmwareUpdateSessionStore
           ? null
           : DateTime.parse(json['completedAt'] as String),
       failureCode: json['failureCode'] as String?,
-      failureMessage: json['failureMessage'] as String?,
       nativeTransferEngaged: json['nativeTransferEngaged'] as bool? ?? false,
+      recoveryDeviceMatched: json['recoveryDeviceMatched'] as bool? ?? false,
+      remoteRecoveryAttempts: json['remoteRecoveryAttempts'] as int? ?? 0,
+      remoteRecoveryFailed: json['remoteRecoveryFailed'] as bool? ?? false,
+      recoveryReconciliationAttempts:
+          json['recoveryReconciliationAttempts'] as int? ?? 0,
+      remoteRecoveryExhausted:
+          json['remoteRecoveryExhausted'] as bool? ?? false,
       requiresRecovery: json['requiresRecovery'] as bool? ?? false,
       schemaVersion: json['schemaVersion'] as int,
       nextAction: _enum(FirmwareUpdateNextAction.values, json['nextAction']),

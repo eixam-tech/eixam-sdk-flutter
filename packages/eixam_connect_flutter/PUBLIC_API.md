@@ -148,3 +148,47 @@ Dart (`telNotifyReceived`). Hosts should not treat protection as a Nearby lock.
 Firmware ≥ **2.7.56** is required; 2.7.55 plaza-only framing is not compatible.
 Firmware ≥ **2.7.57** enforces the 231 B cap and ignores SECONDARY group keys
 on TEL/SOS/cluster ports. Firmware ≥ **2.7.58** for owner-name `0x42` / `0xDB`.
+
+## Firmware recovery contract
+
+Firmware and migration sessions are SDK-owned. Hosts render `nextAction` and
+call the SDK reconciliation/recovery APIs; they do not infer recovery from BLE
+absence or platform error messages. `waitForDevice` preserves an uncertain or
+temporarily unavailable device. `recover` and `retryRemoteRecovery` identify a
+supported remote opportunity. `physicalRecovery` / `physicalRecoveryRequired`
+represent the manual recovery verdict.
+
+For an interrupted transfer, manual recovery requires durable evidence that
+native transfer engaged, the correct supported recovery endpoint was strongly
+matched, a native remote recovery invocation actually ran and failed terminally,
+bounded recovery opportunities were exhausted, and the expected application
+did not return. GATT 133 is a transport failure; it is not proof of invalid
+firmware. Absence without that evidence remains waiting. An independent
+authoritative platform verdict for the same device can also establish that an
+invalid application has no supported remote recovery capability.
+
+The coordinator permits at most three native remote recovery invocations. It
+fully releases each failed invocation before reconciling/retrying. If the
+matched recovery endpoint disappears after a terminal failure, three fresh
+reconciliation scans exhaust the current remote opportunities. Android Nordic
+DFU 2.11 additionally retries the initial GATT connection three times
+(initial connection plus two retries); its configured DFU disconnect retry
+limit is three. Exhaustion survives process death and prevents endless retries.
+
+After physical recovery, the SDK verifies the same hardware and actual
+application/version. A returned target completes only after verification; a
+valid old application returns a safe transfer retry; a recovered stock source
+returns `continueMigration`. A different hardware identity cannot complete the
+session. Hosts keep showing the SDK-directed journey until that verdict changes.
+
+After native completion, temporary Bluetooth/rediscovery errors stay in bounded
+installed-version verification. They do not turn a completed transfer into a
+failed native operation. If the normal runtime reconnects first, migration
+verifies the captured device identity, Eixam GATT capability, and installed
+version through that connection without disconnecting its owner or requiring
+an advertisement. Unavailable scans do not count as missing recovery evidence.
+
+Firmware information, release eligibility, and reconciliation request a fresh
+installed-version inspection from the connected runtime. A missing or failed
+inspection cannot confirm the target using a cached version. A disconnected
+snapshot remains waiting until the actual application can be verified.

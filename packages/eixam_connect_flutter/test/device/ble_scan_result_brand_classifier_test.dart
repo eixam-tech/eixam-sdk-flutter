@@ -61,6 +61,8 @@ void main() {
         'fe59',
         'FE59',
         '0000fe59-0000-1000-8000-00805f9b34fb',
+        '00001530-1212-efde-1523-785feabcd123',
+        '00001530-1212-EFDE-1523-785FEABCD123',
       ]) {
         for (final services in <List<String>>[
           [dfuUuid],
@@ -68,7 +70,7 @@ void main() {
           [dfuUuid, EixamBleProtocol.serviceUuid],
         ]) {
           final brand = classifyBleDiscoveredDeviceBrand(
-            name: 'DfuTarg',
+            name: 'Unrelated friendly name',
             advertisedServiceUuids: services,
           );
           final result = BleScanResult(

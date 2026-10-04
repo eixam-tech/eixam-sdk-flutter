@@ -3432,6 +3432,11 @@ class EixamConnectSdkImpl
   Future<List<EixamBleScanResult>> scanBleDevices({
     Duration timeout = const Duration(seconds: 8),
   }) async {
+    if (_firmwareOtaInProgress ||
+        deviceMigrationCoordinator?.ownsBleOperation == true) {
+      safeSdkDebugPrint('SDK_DISCOVERY_DEFERRED reason=firmware_operation');
+      return const <EixamBleScanResult>[];
+    }
     final scans = await BleDebugRegistry.instance.startScan();
     return scans.map(_toPublicBleScanResult).toList(growable: false);
   }

@@ -24,6 +24,50 @@ void main() {
     expect(restored?.targetVersion, '2.0.0');
     expect(restored?.nativeTransferEngaged, isTrue);
     expect(restored?.requiresRecovery, isTrue);
+    expect(restored?.artifactReference, 'cache-reference');
+    expect(restored?.artifactSha256, 'sha256');
+    expect(restored?.artifactSizeBytes, 123);
+    expect(restored?.artifactDownloaded, true);
+    expect(restored?.artifactVerified, true);
+  });
+
+  test('manual recovery evidence survives a new store instance', () async {
+    await SharedPrefsFirmwareUpdateSessionStore().save(
+      _session().copyWith(
+        state: FirmwareUpdateState.physicalRecoveryRequired,
+        nextAction: FirmwareUpdateNextAction.physicalRecovery,
+        recoveryDeviceMatched: true,
+        remoteRecoveryAttempts: 3,
+        remoteRecoveryFailed: true,
+        recoveryReconciliationAttempts: 3,
+        remoteRecoveryExhausted: true,
+      ),
+    );
+    final restored = await SharedPrefsFirmwareUpdateSessionStore().load();
+    expect(restored?.manualRecoveryRequired, isTrue);
+    expect(restored?.remoteRecoveryAttempts, 3);
+    expect(restored?.recoveryReconciliationAttempts, 3);
+    expect(restored?.nextAction, FirmwareUpdateNextAction.physicalRecovery);
+  });
+
+  test('metadata resolution intent survives without target version', () async {
+    final now = DateTime.now();
+    final store = SharedPrefsFirmwareUpdateSessionStore();
+    await store.save(
+      FirmwareUpdateSession(
+        sessionId: 'intent',
+        deviceId: 'tag',
+        releaseId: 'release',
+        fromVersion: '1.0.0',
+        targetVersion: '',
+        state: FirmwareUpdateState.checking,
+        startedAt: now,
+      ),
+    );
+    final restored = await SharedPrefsFirmwareUpdateSessionStore().load();
+    expect(restored?.sessionId, 'intent');
+    expect(restored?.targetVersion, '');
+    expect(restored?.nativeTransferEngaged, false);
   });
 
   test('malformed record is removed', () async {
@@ -70,6 +114,11 @@ FirmwareUpdateSession _session({
     releaseId: 'release-1',
     fromVersion: '1.0.0',
     targetVersion: '2.0.0',
+    artifactReference: 'cache-reference',
+    artifactSha256: 'sha256',
+    artifactSizeBytes: 123,
+    artifactDownloaded: true,
+    artifactVerified: true,
     state: state,
     startedAt: now,
     updatedAt: now,

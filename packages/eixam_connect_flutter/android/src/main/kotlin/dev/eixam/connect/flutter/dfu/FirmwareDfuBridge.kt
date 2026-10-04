@@ -21,6 +21,7 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import no.nordicsemi.android.dfu.DfuProgressListenerAdapter
+import no.nordicsemi.android.dfu.DfuBaseService
 import no.nordicsemi.android.dfu.DfuServiceController
 import no.nordicsemi.android.dfu.DfuServiceInitiator
 import no.nordicsemi.android.dfu.DfuServiceListenerHelper
@@ -60,8 +61,11 @@ internal object FirmwareDfuBridge {
     }
 
     fun unregister() {
-        activeSession?.controller?.abort()
-        activeSession = null
+        activeSession?.let { session ->
+            session.controller?.abort()
+            cleanupSession(session)
+        }
+        mainHandler.removeCallbacksAndMessages(null)
         eventSink = null
         applicationContext = null
     }
@@ -72,6 +76,9 @@ internal object FirmwareDfuBridge {
         context: Context,
     ) {
         when (call.method) {
+            "firmwareArtifactCacheDirectory" -> result.success(
+                java.io.File(context.filesDir, "firmware-artifacts").absolutePath,
+            )
             "startDfu" -> startDfu(call, result, context)
             "cancelDfu" -> cancelDfu(call, result)
             else -> result.notImplemented()
@@ -108,6 +115,7 @@ internal object FirmwareDfuBridge {
             return
         }
 
+        var uploadStarted = false
         val listener = object : DfuProgressListenerAdapter() {
             override fun onDeviceConnecting(deviceAddress: String) {
                 emit(
@@ -162,6 +170,7 @@ internal object FirmwareDfuBridge {
                 currentPart: Int,
                 partsTotal: Int,
             ) {
+                if (percent > 0) uploadStarted = true
                 emit(
                     sessionId = sessionId,
                     state = "uploading",
@@ -235,7 +244,12 @@ internal object FirmwareDfuBridge {
                     "onError address=$deviceAddress error=$error type=$errorType " +
                         "message=${message ?: ""}",
                 )
-                val mapped = mapDfuError(error = error, errorType = errorType, message = message)
+                val mapped = mapDfuError(
+                    error = error,
+                    errorType = errorType,
+                    message = message,
+                    uploadStarted = uploadStarted,
+                )
                 emit(
                     sessionId = sessionId,
                     state = "dfuError",
@@ -377,14 +391,14 @@ internal object FirmwareDfuBridge {
             result.success(null)
             return
         }
-        session.controller?.abort()
-        emit(
-            sessionId = session.sessionId,
-            state = "dfuAborted",
-            errorCode = "cancelled",
-            errorMessage = "Firmware DFU cancellation requested.",
-        )
-        result.success(null)
+        // Complete the method only when Nordic reports its terminal callback;
+        // that callback follows synchronous GATT disconnect/close.
+        session.cancelResults.add(result)
+        if (session.controller == null) {
+            cleanupSession(session)
+        } else {
+            session.controller.abort()
+        }
     }
 
     private fun validateStart(
@@ -447,7 +461,9 @@ internal object FirmwareDfuBridge {
         applicationContext?.let {
             DfuServiceListenerHelper.unregisterProgressListener(it, session.listener)
         }
-        activeSession = null
+        if (activeSession === session) activeSession = null
+        session.cancelResults.forEach { it.success(null) }
+        session.cancelResults.clear()
     }
 
     private fun emit(
@@ -490,9 +506,12 @@ internal object FirmwareDfuBridge {
         error: Int,
         errorType: Int,
         message: String?,
+        uploadStarted: Boolean,
     ): DfuFailure {
         val normalized = message?.lowercase().orEmpty()
         val code = when {
+            errorType == DfuBaseService.ERROR_TYPE_COMMUNICATION_STATE ||
+                errorType == DfuBaseService.ERROR_TYPE_COMMUNICATION -> "dfuTransportFailed"
             normalized.contains("permission") -> "missingPermission"
             normalized.contains("bluetooth") && normalized.contains("disabled") ->
                 "bluetoothDisabled"
@@ -501,7 +520,8 @@ internal object FirmwareDfuBridge {
             normalized.contains("not found") -> "deviceNotFound"
             else -> "dfuFailed"
         }
-        val requiresRecovery = code == "deviceDisconnected" || normalized.contains("bootloader")
+        val requiresRecovery = code == "deviceDisconnected" || normalized.contains("bootloader") ||
+            uploadInterruptedByTransportFailure(uploadStarted, error, errorType)
         return DfuFailure(
             code = code,
             message = message ?: "DFU failed with error=$error type=$errorType.",
@@ -514,6 +534,7 @@ internal object FirmwareDfuBridge {
         val listener: DfuProgressListenerAdapter,
         val controller: DfuServiceController? = null,
         val targetVersion: String? = null,
+        val cancelResults: MutableList<MethodChannel.Result> = mutableListOf(),
     )
 
     private data class DfuStartError(
@@ -527,3 +548,15 @@ internal object FirmwareDfuBridge {
         val requiresRecovery: Boolean,
     )
 }
+
+/** A transport failure after upload is not evidence of a running application. */
+internal fun uploadInterruptedByTransportFailure(
+    uploadStarted: Boolean,
+    error: Int,
+    errorType: Int,
+): Boolean = uploadStarted && (
+    errorType == DfuBaseService.ERROR_TYPE_COMMUNICATION_STATE ||
+        errorType == DfuBaseService.ERROR_TYPE_COMMUNICATION ||
+        error == DfuBaseService.ERROR_DEVICE_DISCONNECTED ||
+        error == DfuBaseService.ERROR_BLUETOOTH_DISABLED
+    )

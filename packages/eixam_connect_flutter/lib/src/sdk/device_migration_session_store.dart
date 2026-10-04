@@ -74,7 +74,6 @@ final class SharedPrefsDeviceMigrationSessionStore
         'nextAction': session.nextAction.name,
         'canCancel': session.canCancel,
         'failureCode': session.failureCode,
-        'failureMessage': session.failureMessage,
         'createdAt': session.createdAt.toUtc().toIso8601String(),
         'updatedAt': session.updatedAt.toUtc().toIso8601String(),
       };
@@ -86,8 +85,20 @@ final class SharedPrefsDeviceMigrationSessionStore
       sessionId: _requiredString(json, 'sessionId'),
       schemaVersion: json['schemaVersion'] as int,
       candidate: _decodeCandidate(candidateJson),
-      releaseId: _requiredString(json, 'releaseId'),
-      targetVersion: _requiredString(json, 'targetVersion'),
+      releaseId: _requiredString(
+        json,
+        'releaseId',
+        allowEmpty:
+            json['firmwareSession'] == null &&
+            json['state'] == DeviceMigrationState.prepared.name,
+      ),
+      targetVersion: _requiredString(
+        json,
+        'targetVersion',
+        allowEmpty:
+            json['firmwareSession'] == null &&
+            json['state'] == DeviceMigrationState.prepared.name,
+      ),
       firmwareSession: _optionalMap(json['firmwareSession'], _decodeFirmware),
       migratedDevice: _optionalMap(json['migratedDevice'], _decodeScan),
       state: _enumByName(DeviceMigrationState.values, json['state']),
@@ -102,7 +113,6 @@ final class SharedPrefsDeviceMigrationSessionStore
       ),
       canCancel: json['canCancel'] as bool,
       failureCode: json['failureCode'] as String?,
-      failureMessage: json['failureMessage'] as String?,
       createdAt: DateTime.parse(_requiredString(json, 'createdAt')),
       updatedAt: DateTime.parse(_requiredString(json, 'updatedAt')),
     );
@@ -162,8 +172,18 @@ final class SharedPrefsDeviceMigrationSessionStore
         'startedAt': value.startedAt.toUtc().toIso8601String(),
         'completedAt': value.completedAt?.toUtc().toIso8601String(),
         'failureCode': value.failureCode,
-        'failureMessage': value.failureMessage,
+        'migrationOwned': value.migrationOwned,
+        'artifactReference': value.artifactReference,
+        'artifactSha256': value.artifactSha256,
+        'artifactSizeBytes': value.artifactSizeBytes,
+        'artifactDownloaded': value.artifactDownloaded,
+        'artifactVerified': value.artifactVerified,
         'nativeTransferEngaged': value.nativeTransferEngaged,
+        'recoveryDeviceMatched': value.recoveryDeviceMatched,
+        'remoteRecoveryAttempts': value.remoteRecoveryAttempts,
+        'remoteRecoveryFailed': value.remoteRecoveryFailed,
+        'recoveryReconciliationAttempts': value.recoveryReconciliationAttempts,
+        'remoteRecoveryExhausted': value.remoteRecoveryExhausted,
         'requiresRecovery': value.requiresRecovery,
         'schemaVersion': value.schemaVersion,
         'hardwareId': value.hardwareId,
@@ -185,8 +205,20 @@ final class SharedPrefsDeviceMigrationSessionStore
             ? null
             : DateTime.parse(json['completedAt'] as String),
         failureCode: json['failureCode'] as String?,
-        failureMessage: json['failureMessage'] as String?,
+        migrationOwned: json['migrationOwned'] as bool? ?? true,
+        artifactReference: json['artifactReference'] as String?,
+        artifactSha256: json['artifactSha256'] as String?,
+        artifactSizeBytes: json['artifactSizeBytes'] as int?,
+        artifactDownloaded: json['artifactDownloaded'] as bool? ?? false,
+        artifactVerified: json['artifactVerified'] as bool? ?? false,
         nativeTransferEngaged: json['nativeTransferEngaged'] as bool? ?? false,
+        recoveryDeviceMatched: json['recoveryDeviceMatched'] as bool? ?? false,
+        remoteRecoveryAttempts: json['remoteRecoveryAttempts'] as int? ?? 0,
+        remoteRecoveryFailed: json['remoteRecoveryFailed'] as bool? ?? false,
+        recoveryReconciliationAttempts:
+            json['recoveryReconciliationAttempts'] as int? ?? 0,
+        remoteRecoveryExhausted:
+            json['remoteRecoveryExhausted'] as bool? ?? false,
         requiresRecovery: json['requiresRecovery'] as bool? ?? false,
         schemaVersion:
             json['schemaVersion'] as int? ??
@@ -251,9 +283,15 @@ final class SharedPrefsDeviceMigrationSessionStore
     return _enumByName(values, name);
   }
 
-  String _requiredString(Map<String, dynamic> json, String key) {
+  String _requiredString(
+    Map<String, dynamic> json,
+    String key, {
+    bool allowEmpty = false,
+  }) {
     final value = json[key];
-    if (value is! String || value.isEmpty) throw const FormatException();
+    if (value is! String || (!allowEmpty && value.isEmpty)) {
+      throw const FormatException();
+    }
     return value;
   }
 }

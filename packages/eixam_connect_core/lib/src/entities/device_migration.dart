@@ -83,6 +83,7 @@ enum DeviceMigrationState {
   waitingForDevice,
   reconciling,
   recoveryRequired,
+  physicalRecoveryRequired,
   completed,
   blocked,
   failed,
@@ -95,6 +96,7 @@ enum DeviceMigrationNextAction {
   reinspect,
   retry,
   recover,
+  physicalRecovery,
   continueMigration,
   completed,
 }

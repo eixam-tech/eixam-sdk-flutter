@@ -14,9 +14,38 @@ enum FirmwareUpdateState {
   failed,
   cancelled,
   recoveryRequired,
+  physicalRecoveryRequired,
 }
 
-enum FirmwareUpdateNextAction { none, retry, waitForDevice, recover, completed }
+/// Positive device evidence from an SDK platform inspection. Silence or a
+/// transport timeout cannot establish this condition.
+class FirmwarePhysicalRecoveryEvidence {
+  const FirmwarePhysicalRecoveryEvidence({
+    required this.deviceId,
+    required this.hardwareId,
+    required this.applicationInvalid,
+    required this.remoteRecoveryUnsupported,
+  });
+
+  final String deviceId;
+  final String hardwareId;
+  final bool applicationInvalid;
+  final bool remoteRecoveryUnsupported;
+}
+
+enum FirmwareUpdateNextAction {
+  none,
+  retry,
+  waitForDevice,
+  recover,
+  completed,
+  retryDownload,
+  startTransfer,
+  retryTransfer,
+  verifyInstalledVersion,
+  physicalRecovery,
+  retryRemoteRecovery,
+}
 
 enum FirmwareUpdateReconciliationOutcome {
   deviceFound,
@@ -168,6 +197,17 @@ class FirmwareUpdateSession {
     this.updatedAt,
     this.nextAction = FirmwareUpdateNextAction.none,
     this.reconciliationOutcome,
+    this.artifactReference,
+    this.artifactSha256,
+    this.artifactSizeBytes,
+    this.artifactDownloaded = false,
+    this.artifactVerified = false,
+    this.migrationOwned = false,
+    this.recoveryDeviceMatched = false,
+    this.remoteRecoveryAttempts = 0,
+    this.remoteRecoveryFailed = false,
+    this.recoveryReconciliationAttempts = 0,
+    this.remoteRecoveryExhausted = false,
   });
 
   static const int currentSchemaVersion = 1;
@@ -182,6 +222,12 @@ class FirmwareUpdateSession {
   final DateTime? completedAt;
   final String? failureCode;
   final String? failureMessage;
+  final bool migrationOwned;
+  final String? artifactReference;
+  final String? artifactSha256;
+  final int? artifactSizeBytes;
+  final bool artifactDownloaded;
+  final bool artifactVerified;
   final bool nativeTransferEngaged;
   final bool requiresRecovery;
   final int schemaVersion;
@@ -190,9 +236,41 @@ class FirmwareUpdateSession {
   final FirmwareUpdateNextAction nextAction;
   final FirmwareUpdateReconciliationOutcome? reconciliationOutcome;
 
+  /// SDK evidence of a strongly matched, supported recovery advertisement.
+  final bool recoveryDeviceMatched;
+  final int remoteRecoveryAttempts;
+
+  /// A native recovery invocation returned a terminal transport/recovery error.
+  /// This is not a claim about the validity of the installed application.
+  final bool remoteRecoveryFailed;
+  final int recoveryReconciliationAttempts;
+  final bool remoteRecoveryExhausted;
+
+  bool get manualRecoveryRequired =>
+      !isCompleted &&
+      requiresRecovery &&
+      nativeTransferEngaged &&
+      recoveryDeviceMatched &&
+      remoteRecoveryAttempts > 0 &&
+      remoteRecoveryFailed &&
+      remoteRecoveryExhausted;
+
   bool get isCompleted => state == FirmwareUpdateState.completed;
 
+  bool get canCancel =>
+      !nativeTransferEngaged && _firmwarePreparationCanCancel(state);
+
   FirmwareUpdateSession copyWith({
+    bool? recoveryDeviceMatched,
+    int? remoteRecoveryAttempts,
+    bool? remoteRecoveryFailed,
+    int? recoveryReconciliationAttempts,
+    bool? remoteRecoveryExhausted,
+    String? artifactReference,
+    String? artifactSha256,
+    int? artifactSizeBytes,
+    bool? artifactDownloaded,
+    bool? artifactVerified,
     FirmwareUpdateState? state,
     DateTime? completedAt,
     bool clearCompletedAt = false,
@@ -206,6 +284,21 @@ class FirmwareUpdateSession {
     FirmwareUpdateReconciliationOutcome? reconciliationOutcome,
   }) {
     return FirmwareUpdateSession(
+      recoveryDeviceMatched:
+          recoveryDeviceMatched ?? this.recoveryDeviceMatched,
+      remoteRecoveryAttempts:
+          remoteRecoveryAttempts ?? this.remoteRecoveryAttempts,
+      remoteRecoveryFailed: remoteRecoveryFailed ?? this.remoteRecoveryFailed,
+      recoveryReconciliationAttempts:
+          recoveryReconciliationAttempts ?? this.recoveryReconciliationAttempts,
+      remoteRecoveryExhausted:
+          remoteRecoveryExhausted ?? this.remoteRecoveryExhausted,
+      migrationOwned: migrationOwned,
+      artifactReference: artifactReference ?? this.artifactReference,
+      artifactSha256: artifactSha256 ?? this.artifactSha256,
+      artifactSizeBytes: artifactSizeBytes ?? this.artifactSizeBytes,
+      artifactDownloaded: artifactDownloaded ?? this.artifactDownloaded,
+      artifactVerified: artifactVerified ?? this.artifactVerified,
       sessionId: sessionId,
       deviceId: deviceId,
       releaseId: releaseId,
@@ -256,6 +349,9 @@ class FirmwareUpdateProgress {
   final bool requiresRecovery;
   final DateTime updatedAt;
 
+  bool get canCancel =>
+      !nativeTransferEngaged && _firmwarePreparationCanCancel(state);
+
   /// The completion percentage (0–100) to display, preferring the native
   /// [progressPercentage] and falling back to one derived from
   /// [bytesTransferred] / [totalBytes] when the native layer reports only byte
@@ -275,3 +371,12 @@ class FirmwareUpdateProgress {
     return null;
   }
 }
+
+// The SDK owns cancellation safety; hosts only render this verdict.
+bool _firmwarePreparationCanCancel(FirmwareUpdateState state) =>
+    switch (state) {
+      FirmwareUpdateState.downloading ||
+      FirmwareUpdateState.verifying ||
+      FirmwareUpdateState.readyToTransfer => true,
+      _ => false,
+    };

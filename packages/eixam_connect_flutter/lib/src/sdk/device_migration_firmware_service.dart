@@ -10,6 +10,12 @@ typedef FirmwareDfuStatusRefreshHook =
 abstract interface class DeviceMigrationFirmwareService {
   Future<FirmwareUpdateSession?> getActiveMigrationFirmwareUpdate();
 
+  Future<FirmwareUpdateSession?> inspectMigrationPhysicalRecovery();
+
+  Future<FirmwareUpdateSession?> verifyRecoveredMigrationFirmware({
+    required DeviceStatus verifiedStatus,
+  });
+
   Future<FirmwareRelease?> resolveMigrationRelease({
     required String hardwareModel,
   });

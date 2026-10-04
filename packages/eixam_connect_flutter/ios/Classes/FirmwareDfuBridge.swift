@@ -34,6 +34,21 @@ final class FirmwareDfuBridge: NSObject, FlutterPlugin, FlutterStreamHandler {
 
   func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
+    case "firmwareArtifactCacheDirectory":
+      do {
+        let directory = try FileManager.default.url(
+          for: .applicationSupportDirectory, in: .userDomainMask,
+          appropriateFor: nil, create: true
+        ).appendingPathComponent("firmware-artifacts", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var cacheDirectory = directory
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try cacheDirectory.setResourceValues(values)
+        result(directory.path)
+      } catch {
+        result(FlutterError(code: "firmwareCacheUnavailable", message: error.localizedDescription, details: nil))
+      }
     case "startDfu":
       startDfu(arguments: call.arguments as? [String: Any], result: result)
     case "cancelDfu":

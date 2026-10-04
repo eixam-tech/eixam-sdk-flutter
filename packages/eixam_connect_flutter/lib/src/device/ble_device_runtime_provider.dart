@@ -1162,6 +1162,14 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
             mode: mode,
           )
         : currentStatus.firmwareVersion;
+    if (forceFirmwareRead &&
+        connected &&
+        (firmwareVersion == null || firmwareVersion.trim().isEmpty)) {
+      throw const DeviceException(
+        'E_FIRMWARE_VERSION_UNAVAILABLE',
+        'Installed firmware could not be inspected.',
+      );
+    }
     final signalQuality = connected
         ? await _resolveSignalQualityForRefresh(
             currentStatus,

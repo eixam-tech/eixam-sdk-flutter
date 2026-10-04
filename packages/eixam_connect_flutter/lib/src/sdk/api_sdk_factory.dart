@@ -193,6 +193,10 @@ class ApiSdkFactory {
       remoteDataSource: firmwareRemoteDataSource,
       dfuTransport: buildDefaultFirmwareDfuTransport(),
       bleClient: bleClient,
+      firmwareStatusRefresh: () =>
+          deviceRepository.refreshDeviceStatusForFirmwareValidation(
+            reason: 'firmware_status_validation',
+          ),
       sessionStore: SharedPrefsFirmwareUpdateSessionStore(localStore: store),
       protectionStatusProvider: () => sdk.getProtectionStatus(),
       deviceSosStatusProvider:

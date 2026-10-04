@@ -39,12 +39,15 @@ class BleScanResult {
     );
   }
 
-  // Nordic Secure DFU service (0xFE59): present when the device is advertising
-  // in bootloader mode rather than as a running application.
+  // Nordic Secure DFU and the legacy Nordic/Adafruit DFU service identify
+  // recovery mode independently of a peripheral's friendly name.
   bool get _isDfuBootloader {
-    return advertisedServiceUuids.any(
-      (uuid) => uuid.trim().toLowerCase().contains('fe59'),
-    );
+    return advertisedServiceUuids.any((uuid) {
+      final normalized = uuid.trim().toLowerCase();
+      return normalized == 'fe59' ||
+          normalized == '0000fe59-0000-1000-8000-00805f9b34fb' ||
+          normalized == '00001530-1212-efde-1523-785feabcd123';
+    });
   }
 
   bool get _isEixamDevice {

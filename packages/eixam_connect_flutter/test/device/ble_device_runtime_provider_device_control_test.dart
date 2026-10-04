@@ -14,6 +14,34 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/builders/device_status_builder.dart';
 
 void main() {
+  for (final missingVersion in <String?>[null, '']) {
+    test(
+      'forced firmware inspection rejects missing version $missingVersion',
+      () async {
+        final client = _MissingFirmwareBleClient();
+        await client.initialize();
+        final provider = BleDeviceRuntimeProvider(bleClient: client);
+        addTearDown(() async {
+          await provider.dispose();
+          await client.dispose();
+        });
+        final status = await _pairDemoDevice(provider);
+        expect(status.firmwareVersion, '2.7.21-mock');
+        client.missing = true;
+        client.missingVersion = missingVersion;
+        await expectLater(
+          provider.refresh(status, forceFirmwareRead: true),
+          throwsA(
+            isA<DeviceException>().having(
+              (error) => error.code,
+              'code',
+              'E_FIRMWARE_VERSION_UNAVAILABLE',
+            ),
+          ),
+        );
+      },
+    );
+  }
   group('BleDeviceRuntimeProvider device control', () {
     late MockBleClient bleClient;
     late BleDeviceRuntimeProvider runtimeProvider;
@@ -756,6 +784,16 @@ void main() {
       );
     });
   });
+}
+
+class _MissingFirmwareBleClient extends MockBleClient {
+  bool missing = false;
+  String? missingVersion;
+
+  @override
+  Future<String?> readFirmwareVersion(String deviceId) => missing
+      ? Future<String?>.value(missingVersion)
+      : super.readFirmwareVersion(deviceId);
 }
 
 Future<DeviceStatus> _pairDemoDevice(
