@@ -10,11 +10,10 @@ import 'location_debug_log.dart';
 import 'sos_location_trace.dart';
 
 typedef OperationalTelemetrySessionProvider = EixamSession? Function();
-typedef OperationalTelemetryPayloadPublisher = Future<void> Function(
-  SdkTelemetryPayload payload,
-);
-typedef OperationalResolvedLocationProvider = Future<SdkResolvedLocation?>
-    Function();
+typedef OperationalTelemetryPayloadPublisher =
+    Future<void> Function(SdkTelemetryPayload payload);
+typedef OperationalResolvedLocationProvider =
+    Future<SdkResolvedLocation?> Function();
 typedef OperationalTelemetryClock = DateTime Function();
 typedef OperationalTelemetryLogger = void Function(String message);
 
@@ -30,17 +29,18 @@ class OperationalTelemetryCoordinator {
     double sosMovementThresholdMeters = 7,
     OperationalTelemetryClock? clock,
     OperationalTelemetryLogger? logger,
-  })  : _trackingRepository = trackingRepository,
-        _authoritativeSosCadenceStream = authoritativeSosCadenceStream,
-        _sessionProvider = sessionProvider,
-        _publishTelemetry = publishTelemetry,
-        _resolvedLocationProvider = resolvedLocationProvider,
-        _normalInterval = normalInterval,
-        _sosInterval = sosInterval,
-        _sosMovementThresholdMeters = sosMovementThresholdMeters,
-        _clock = clock ?? (() => DateTime.now().toUtc()),
-        _logger = logger ??
-            ((message) => BleDebugRegistry.instance.recordEvent(message));
+  }) : _trackingRepository = trackingRepository,
+       _authoritativeSosCadenceStream = authoritativeSosCadenceStream,
+       _sessionProvider = sessionProvider,
+       _publishTelemetry = publishTelemetry,
+       _resolvedLocationProvider = resolvedLocationProvider,
+       _normalInterval = normalInterval,
+       _sosInterval = sosInterval,
+       _sosMovementThresholdMeters = sosMovementThresholdMeters,
+       _clock = clock ?? (() => DateTime.now().toUtc()),
+       _logger =
+           logger ??
+           ((message) => BleDebugRegistry.instance.recordEvent(message));
 
   final TrackingRepository _trackingRepository;
   final Stream<AuthoritativeSosCadence> _authoritativeSosCadenceStream;
@@ -180,9 +180,7 @@ class OperationalTelemetryCoordinator {
     if (distance < _sosMovementThresholdMeters) {
       return;
     }
-    unawaited(
-      _publishFromCurrentLocation(reason: 'sos_moved'),
-    );
+    unawaited(_publishFromCurrentLocation(reason: 'sos_moved'));
   }
 
   Future<void> _primeSosMovementAnchor() async {
@@ -204,7 +202,8 @@ class OperationalTelemetryCoordinator {
     _timer = null;
     if (!_intervalPublishingEnabled) {
       _logger(
-          '[SDK_TELEMETRY_LOOP] action=pause reason=native_background_owner');
+        '[SDK_TELEMETRY_LOOP] action=pause reason=native_background_owner',
+      );
       SosLocationTrace.emit('publication_loop', {
         'action': 'pause',
         'reason': 'native_background_owner',
@@ -243,9 +242,7 @@ class OperationalTelemetryCoordinator {
     });
     _timer = Timer.periodic(
       _normalInterval,
-      (_) => unawaited(
-        _publishFromCurrentLocation(reason: 'normal_heartbeat'),
-      ),
+      (_) => unawaited(_publishFromCurrentLocation(reason: 'normal_heartbeat')),
     );
   }
 
@@ -332,6 +329,9 @@ class OperationalTelemetryCoordinator {
           SdkLocationSource.remoteRelayDevice => 'remote_relay',
           _ => null,
         },
+        horizontalAccuracyMeters: location.source == SdkLocationSource.phone
+            ? finiteHorizontalAccuracyMeters(location.accuracyMeters)
+            : null,
       );
       LocationDebugLog.telemetryPayload(
         flow: 'telemetry_publish_final',
@@ -422,7 +422,8 @@ class OperationalTelemetryCoordinator {
     final lat2 = _degreesToRadians(b.latitude);
     final deltaLat = _degreesToRadians(b.latitude - a.latitude);
     final deltaLon = _degreesToRadians(b.longitude - a.longitude);
-    final haversine = math.sin(deltaLat / 2) * math.sin(deltaLat / 2) +
+    final haversine =
+        math.sin(deltaLat / 2) * math.sin(deltaLat / 2) +
         math.cos(lat1) *
             math.cos(lat2) *
             math.sin(deltaLon / 2) *

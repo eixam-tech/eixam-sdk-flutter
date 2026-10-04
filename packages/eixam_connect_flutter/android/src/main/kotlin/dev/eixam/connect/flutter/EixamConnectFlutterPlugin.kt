@@ -5,6 +5,7 @@ import dev.eixam.connect.flutter.inspection.MeshtasticInspectionBridge
 import dev.eixam.connect.flutter.dfu.FirmwareDfuBridge
 import dev.eixam.connect.flutter.protection.ProtectionRuntimeBridge
 import dev.eixam.connect.flutter.telemetry.BackgroundTelemetryBridge
+import dev.eixam.connect.flutter.telemetry.PhoneRadioBridge
 import dev.eixam.connect.flutter.storage.SecureStorageBridge
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 
@@ -24,6 +25,10 @@ class EixamConnectFlutterPlugin : FlutterPlugin {
             messenger = binding.binaryMessenger,
             context = binding.applicationContext,
         )
+        PhoneRadioBridge.register(
+            messenger = binding.binaryMessenger,
+            context = binding.applicationContext,
+        )
         FirmwareDfuBridge.register(
             messenger = binding.binaryMessenger,
             context = binding.applicationContext,
@@ -38,6 +43,7 @@ class EixamConnectFlutterPlugin : FlutterPlugin {
         applicationContext?.let {
             protectionBridgeGeneration?.let(ProtectionRuntimeBridge::unregister)
             BackgroundTelemetryBridge.unregister()
+            PhoneRadioBridge.unregister()
             FirmwareDfuBridge.unregister()
             SecureStorageBridge.unregister()
         }

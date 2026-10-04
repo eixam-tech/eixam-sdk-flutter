@@ -31,6 +31,40 @@ void main() {
       });
     });
 
+    test('serializes phone radio and horizontal accuracy', () {
+      final json = _payload(
+        horizontalAccuracyMeters: 12.5,
+        radio: const SdkRadioSnapshot(
+          generation: '5g',
+          fiveGMode: 'nsa',
+          connected: true,
+        ),
+      ).toJson();
+
+      expect(json['horizontalAccuracyMeters'], 12.5);
+      expect(json['radio'], <String, dynamic>{
+        'generation': '5g',
+        'fiveGMode': 'nsa',
+        'connected': true,
+      });
+      expect(json.containsKey('phoneRadio'), isFalse);
+    });
+
+    test('omits radio and a negative accuracy', () {
+      final json = _payload(horizontalAccuracyMeters: -1).toJson();
+
+      expect(json.containsKey('horizontalAccuracyMeters'), isFalse);
+      expect(json.containsKey('radio'), isFalse);
+    });
+
+    test('omits an unknown fiveGMode', () {
+      final json = _payload(
+        radio: const SdkRadioSnapshot(generation: '5g', fiveGMode: 'logo'),
+      ).toJson();
+
+      expect(json['radio'], <String, dynamic>{'generation': '5g'});
+    });
+
     test('serializes mobileBattery as clamped integer', () {
       expect(_payload(mobileBattery: 61.6).toJson()['mobileBattery'], 62);
       expect(_payload(mobileBattery: -1).toJson()['mobileBattery'], 0);
@@ -43,6 +77,8 @@ SdkTelemetryPayload _payload({
   double? deviceBattery,
   int? deviceCoverage,
   double? mobileBattery,
+  double? horizontalAccuracyMeters,
+  SdkRadioSnapshot? radio,
 }) {
   return SdkTelemetryPayload(
     timestamp: DateTime.utc(2026, 3, 31, 10, 15),
@@ -52,5 +88,7 @@ SdkTelemetryPayload _payload({
     deviceBattery: deviceBattery,
     deviceCoverage: deviceCoverage,
     mobileBattery: mobileBattery,
+    horizontalAccuracyMeters: horizontalAccuracyMeters,
+    radio: radio,
   );
 }

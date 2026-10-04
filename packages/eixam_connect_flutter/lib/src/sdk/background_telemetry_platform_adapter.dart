@@ -56,10 +56,7 @@ class BackgroundTelemetryDiagnostics {
       permissionStatus:
           (json['backgroundPermissionStatus'] as String?) ?? 'unknown',
       lastTelemetryAt: lastAtMs is num
-          ? DateTime.fromMillisecondsSinceEpoch(
-              lastAtMs.toInt(),
-              isUtc: true,
-            )
+          ? DateTime.fromMillisecondsSinceEpoch(lastAtMs.toInt(), isUtc: true)
           : null,
       lastTelemetryError: json['lastBackgroundTelemetryError'] as String?,
       lastLocationMode: json['lastBackgroundLocationMode'] as String?,
@@ -101,7 +98,8 @@ class NativeBackgroundTelemetryItem {
 
 abstract class BackgroundTelemetryPlatformAdapter {
   Future<void> startBackgroundTelemetry(
-      BackgroundTelemetryStartRequest request);
+    BackgroundTelemetryStartRequest request,
+  );
   Future<void> updateBackgroundTelemetry({
     required bool sosOpen,
     String? deviceId,
@@ -123,8 +121,7 @@ abstract class BackgroundTelemetryPlatformAdapter {
 class AndroidBackgroundTelemetryPlatformAdapter
     implements BackgroundTelemetryPlatformAdapter {
   AndroidBackgroundTelemetryPlatformAdapter({MethodChannel? methodChannel})
-      : _methodChannel =
-            methodChannel ?? const MethodChannel(_methodChannelName);
+    : _methodChannel = methodChannel ?? const MethodChannel(_methodChannelName);
 
   static const String _methodChannelName =
       'dev.eixam.connect_flutter/background_telemetry/methods';
@@ -148,15 +145,13 @@ class AndroidBackgroundTelemetryPlatformAdapter
     SdkDeviceBatterySnapshot? deviceBattery,
     SdkCoverageSnapshot? deviceCoverage,
   }) {
-    return _methodChannel.invokeMethod<void>(
-      'updateBackgroundTelemetry',
-      <String, dynamic>{
-        'sosOpen': sosOpen,
-        'deviceId': deviceId,
-        'deviceBattery': deviceBattery?.toJson(),
-        'deviceCoverage': deviceCoverage?.toJson(),
-      },
-    );
+    return _methodChannel
+        .invokeMethod<void>('updateBackgroundTelemetry', <String, dynamic>{
+          'sosOpen': sosOpen,
+          'deviceId': deviceId,
+          'deviceBattery': deviceBattery?.toJson(),
+          'deviceCoverage': deviceCoverage?.toJson(),
+        });
   }
 
   @override
@@ -166,7 +161,7 @@ class AndroidBackgroundTelemetryPlatformAdapter
 
   @override
   Future<BackgroundTelemetryDiagnostics>
-      getBackgroundTelemetryDiagnostics() async {
+  getBackgroundTelemetryDiagnostics() async {
     final raw = await _methodChannel.invokeMapMethod<dynamic, dynamic>(
       'getBackgroundTelemetryDiagnostics',
     );
@@ -205,18 +200,26 @@ class AndroidBackgroundTelemetryPlatformAdapter
   }) {
     return _methodChannel.invokeMethod<void>(
       'markQueuedBackgroundTelemetryFlushFailed',
-      <String, dynamic>{
-        'signature': signature,
-        'error': error,
-      },
+      <String, dynamic>{'signature': signature, 'error': error},
     );
   }
 
   NativeBackgroundTelemetryItem? _mapNativeTelemetryItem(dynamic value) {
+    try {
+      return _mapNativeTelemetryItemUnchecked(value);
+    } catch (_) {
+      // One bad queue item must not stall the rest of the flush.
+      return null;
+    }
+  }
+
+  NativeBackgroundTelemetryItem? _mapNativeTelemetryItemUnchecked(
+    dynamic value,
+  ) {
     if (value is! Map) {
       return null;
     }
-    final signature = (value['signature'] as String?)?.trim();
+    final signature = _asString(value['signature'])?.trim();
     final payloadRaw = value['payload'];
     if (signature == null || signature.isEmpty || payloadRaw is! Map) {
       return null;
@@ -236,20 +239,22 @@ class AndroidBackgroundTelemetryPlatformAdapter
             )
           : DateTime.now().toUtc(),
       retryCount: (value['retryCount'] as num?)?.toInt() ?? 0,
-      reason: value['reason'] as String?,
-      locationMode: value['locationMode'] as String?,
+      reason: _asString(value['reason']),
+      locationMode: _asString(value['locationMode']),
       sosContext: value['sosContext'] == true,
     );
   }
 
   SdkTelemetryPayload? _sdkTelemetryPayloadFromJson(
-      Map<dynamic, dynamic> json) {
+    Map<dynamic, dynamic> json,
+  ) {
     final timestampRaw = json['timestamp'] as String?;
-    final timestamp =
-        timestampRaw == null ? null : DateTime.tryParse(timestampRaw)?.toUtc();
-    final latitude = (json['latitude'] as num?)?.toDouble();
-    final longitude = (json['longitude'] as num?)?.toDouble();
-    final altitude = (json['altitude'] as num?)?.toDouble();
+    final timestamp = timestampRaw == null
+        ? null
+        : DateTime.tryParse(timestampRaw)?.toUtc();
+    final latitude = _asDouble(json['latitude']);
+    final longitude = _asDouble(json['longitude']);
+    final altitude = _asDouble(json['altitude']);
     if (timestamp == null ||
         latitude == null ||
         longitude == null ||
@@ -261,21 +266,23 @@ class AndroidBackgroundTelemetryPlatformAdapter
       latitude: latitude,
       longitude: longitude,
       altitude: altitude,
-      kind: json['kind'] as String?,
-      eventId: json['eventId'] as String?,
-      userId: json['userId'] as String?,
-      deviceId: json['deviceId'] as String?,
-      hardwareId: json['hardwareId'] as String?,
-      identitySource: json['identitySource'] as String?,
-      deviceBatterySnapshot:
-          _deviceBatterySnapshotFromJson(json['deviceBattery']),
-      deviceCoverageSnapshot: _coverageSnapshotFromJson(
-        json['deviceCoverage'],
+      kind: _asString(json['kind']),
+      eventId: _asString(json['eventId']),
+      userId: _asString(json['userId']),
+      deviceId: _asString(json['deviceId']),
+      hardwareId: _asString(json['hardwareId']),
+      identitySource: _asString(json['identitySource']),
+      deviceBatterySnapshot: _deviceBatterySnapshotFromJson(
+        json['deviceBattery'],
       ),
-      mobileBattery: (json['mobileBattery'] as num?)?.toDouble(),
-      mobileCoverageSnapshot: _coverageSnapshotFromJson(
-        json['mobileCoverage'],
+      deviceCoverageSnapshot: _coverageSnapshotFromJson(json['deviceCoverage']),
+      mobileBattery: _asDouble(json['mobileBattery']),
+      mobileCoverageSnapshot: _coverageSnapshotFromJson(json['mobileCoverage']),
+      horizontalAccuracyMeters: finiteHorizontalAccuracyMeters(
+        _asDouble(json['horizontalAccuracyMeters']),
       ),
+      radio: _radioFromQueuedPayload(json),
+      phoneRadioSampled: json['phoneRadio'] is Map,
     );
   }
 
@@ -283,25 +290,51 @@ class AndroidBackgroundTelemetryPlatformAdapter
     if (value is! Map) {
       return null;
     }
-    final rawValue = value['rawValue'] as num?;
-    final range = value['range'] as String?;
-    if (rawValue == null || range == null) {
+    final rawValue = value['rawValue'];
+    final range = value['range'];
+    if (rawValue is! num || range is! String) {
       return null;
     }
-    return SdkDeviceBatterySnapshot(
-      rawValue: rawValue.toInt(),
-      range: range,
-    );
+    return SdkDeviceBatterySnapshot(rawValue: rawValue.toInt(), range: range);
+  }
+
+  SdkRadioSnapshot? _radioFromQueuedPayload(Map<dynamic, dynamic> json) {
+    try {
+      final reading = SdkPhoneRadioReading.tryParse(json['phoneRadio']);
+      if (reading == null) {
+        return null;
+      }
+      return mapPhoneRadio(reading);
+    } catch (_) {
+      // A bad radio snapshot must not drop the queued fix.
+      return null;
+    }
+  }
+
+  double? _asDouble(Object? value) {
+    if (value is num) {
+      return value.toDouble();
+    }
+    return null;
+  }
+
+  String? _asString(Object? value) {
+    if (value is String) {
+      return value;
+    }
+    return null;
   }
 
   SdkCoverageSnapshot? _coverageSnapshotFromJson(Object? value) {
     if (value is! Map) {
       return null;
     }
-    final signalStrength = value['signalStrength'] as num?;
-    final networkType = value['networkType'] as String?;
-    final isConnected = value['isConnected'] as bool?;
-    if (signalStrength == null || networkType == null || isConnected == null) {
+    final signalStrength = value['signalStrength'];
+    final networkType = value['networkType'];
+    final isConnected = value['isConnected'];
+    if (signalStrength is! num ||
+        networkType is! String ||
+        isConnected is! bool) {
       return null;
     }
     return SdkCoverageSnapshot(
@@ -334,7 +367,7 @@ class NoopBackgroundTelemetryPlatformAdapter
 
   @override
   Future<BackgroundTelemetryDiagnostics>
-      getBackgroundTelemetryDiagnostics() async {
+  getBackgroundTelemetryDiagnostics() async {
     return const BackgroundTelemetryDiagnostics();
   }
 
