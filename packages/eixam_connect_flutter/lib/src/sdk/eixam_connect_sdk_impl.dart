@@ -24751,11 +24751,13 @@ class EixamConnectSdkImpl
   }) {
     final connectedDevice =
         statusOverride ?? _lastPublicDeviceStatus ?? _lastDeviceStatus;
-    final canonicalIdentityConnected =
-        connectedDevice?.connected == true &&
-        _physicalHardwareIdForStatus(connectedDevice) != null;
     final protectionStatus = _protectionModeController.currentStatus;
     final nativeOwner = _protectionNativeOwnerDeclared(protectionStatus);
+    final canonicalIdentityConnected =
+        connectedDevice?.connected == true &&
+        (_physicalHardwareIdForStatus(connectedDevice) != null ||
+            (!nativeOwner &&
+                _hasVerifiedPeripheralCommandIdentity(connectedDevice!)));
     final nativeReadiness = nativeOwner
         ? _nativeCommandReadinessForStatus(protectionStatus)
         : null;
@@ -24784,6 +24786,22 @@ class EixamConnectSdkImpl
       serviceConnected: serviceConnected,
       commandWriterReady: commandWriterReady,
     );
+  }
+
+  // CoreBluetooth's local peripheral UUID is a transport handle, never a MAC.
+  // A hydrated TAG node plus the matching selected transport binds the writer
+  // without fabricating a canonical hardware address. Native-owned routes keep
+  // their existing canonical identity proof.
+  bool _hasVerifiedPeripheralCommandIdentity(DeviceStatus status) {
+    final nodeId = status.nodeId;
+    if (nodeId == null || nodeId <= 0 || nodeId >= 0xffffffff) return false;
+    return RegExp(
+          r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+        ).hasMatch(status.deviceId.trim()) &&
+        BleDebugRegistry.instance.currentState.selectedDeviceId
+                ?.trim()
+                .toLowerCase() ==
+            status.deviceId.trim().toLowerCase();
   }
 
   bool _flutterCommandTargetMatchesConnectedIdentity(DeviceStatus status) {

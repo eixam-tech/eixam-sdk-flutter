@@ -108,6 +108,103 @@ void main() {
 
   group('SOS-01..SOS-16 SDK lifecycle matrix', () {
     test(
+      'CoreBluetooth command channel uses bound peripheral identity',
+      () async {
+        const peripheral = 'B748445B-FDEA-2426-48F1-FD1A086627FA';
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          connectedDeviceId: peripheral,
+          connectedNodeId: 1435727214,
+          connectedCanonicalHardwareId: null,
+        );
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          BleDebugRegistry.instance.update(
+            selectedDeviceId: peripheral,
+            eixamServiceFound: true,
+            cmdFound: true,
+          );
+          await harness.deviceSosController.attach(
+            commandWriter: (_) async {},
+            shortCommandAvailable: true,
+            longCommandAvailable: true,
+          );
+          final readiness = await harness.sdk.getDeviceCommandChannelStatus();
+          expect(readiness.serviceConnected, isTrue);
+          expect(readiness.commandWriterReady, isTrue);
+          expect(readiness.hasSelectedDevice, isTrue);
+          expect(readiness.isReady, isTrue);
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    for (final scenario in [
+      'late-discovery',
+      'incomplete',
+      'wrong-target',
+      'unknown-node',
+      'reconnect',
+    ]) {
+      test('CoreBluetooth command identity $scenario', () async {
+        const peripheral = 'B748445B-FDEA-2426-48F1-FD1A086627FA';
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          connectedDeviceId: peripheral,
+          connectedNodeId: scenario == 'unknown-node' ? null : 1435727214,
+          connectedCanonicalHardwareId: null,
+        );
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          BleDebugRegistry.instance.update(
+            selectedDeviceId: scenario == 'wrong-target'
+                ? '00000000-0000-0000-0000-000000000001'
+                : peripheral,
+          );
+          expect(
+            (await harness.sdk.getDeviceCommandChannelStatus()).isReady,
+            isFalse,
+          );
+          await harness.deviceSosController.attach(
+            commandWriter: (_) async {},
+            shortCommandAvailable: true,
+            longCommandAvailable: scenario != 'incomplete',
+          );
+          await pumpEventQueue(times: 2);
+          expect(
+            (await harness.sdk.getDeviceCommandChannelStatus()).isReady,
+            scenario != 'incomplete' &&
+                scenario != 'wrong-target' &&
+                scenario != 'unknown-node',
+          );
+          if (scenario == 'reconnect') {
+            await harness.deviceSosController.detach();
+            expect(
+              (await harness.sdk.getDeviceCommandChannelStatus()).isReady,
+              isFalse,
+            );
+            await harness.deviceSosController.attach(
+              commandWriter: (_) async {},
+              shortCommandAvailable: true,
+              longCommandAvailable: true,
+            );
+            expect(
+              (await harness.sdk.getDeviceCommandChannelStatus()).isReady,
+              isTrue,
+            );
+          }
+        } finally {
+          await harness.dispose();
+        }
+      });
+    }
+
+    test(
       'public command channel follows Flutter-owned EA04 readiness',
       () async {
         final harness = _SdkSosHarness(connectedBle: true);
