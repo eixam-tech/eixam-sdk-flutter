@@ -4,6 +4,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/device/ble_adapter_state.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/ble_device_runtime_provider.dart';
+import 'package:eixam_connect_flutter/src/device/ble_transport_observation.dart';
 import 'package:eixam_connect_flutter/src/device/ble_scan_result.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_notification.dart';
@@ -42,6 +43,34 @@ void main() {
       },
     );
   }
+  test(
+    'service reset revokes the writer until rediscovery supplies current EA04',
+    () async {
+      final client = _ResetAwareBleClient();
+      await client.initialize();
+      final provider = BleDeviceRuntimeProvider(bleClient: client);
+      addTearDown(() async {
+        await provider.dispose();
+        await client.dispose();
+      });
+      await _pairDemoDevice(provider);
+      expect(provider.deviceSosController.longCommandAvailable, isTrue);
+      expect(
+        provider.deviceSosController.commandTransportId,
+        MockBleClient.demoDeviceId,
+      );
+      client.cmdPresent = false;
+      client.resets.add(MockBleClient.demoDeviceId);
+      expect(provider.deviceSosController.longCommandAvailable, isFalse);
+      await pumpEventQueue(times: 10);
+      expect(provider.deviceSosController.longCommandAvailable, isFalse);
+      client.cmdPresent = true;
+      client.resets.add(MockBleClient.demoDeviceId);
+      await pumpEventQueue(times: 10);
+      expect(provider.deviceSosController.longCommandAvailable, isTrue);
+    },
+  );
+
   group('BleDeviceRuntimeProvider device control', () {
     late MockBleClient bleClient;
     late BleDeviceRuntimeProvider runtimeProvider;
@@ -1001,4 +1030,26 @@ final class _OverlappingHydrationBleClient extends MockBleClient {
   Future<int?> readSignalQuality(String deviceId) {
     return _overlap('rssi', () => super.readSignalQuality(deviceId));
   }
+}
+
+class _ResetAwareBleClient extends MockBleClient
+    implements BleTransportObservationSource {
+  final resets = StreamController<String>.broadcast(sync: true);
+  bool cmdPresent = true;
+  @override
+  Future<void> dispose() async {
+    await resets.close();
+    await super.dispose();
+  }
+  @override
+  Stream<String> get serviceResets => resets.stream;
+  @override
+  BleTransportObservation transportObservation(String deviceId) =>
+      BleTransportObservation(
+        transportId: deviceId,
+        connected: true,
+        servicePresent: true,
+        commandCharacteristicPresent: cmdPresent,
+        shortCommandCharacteristicPresent: true,
+      );
 }

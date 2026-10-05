@@ -8,11 +8,11 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
   private static let eventChannelName = "dev.eixam.connect_flutter/protection_runtime/events"
   private static let prefsName = "eixam_protection_runtime_ios"
   private static let restorationIdentifier = "dev.eixam.connect.flutter.protection.central"
-  private static let eixamServiceUuid = CBUUID(string: "EA00")
-  private static let telCharacteristicUuid = CBUUID(string: "EA01")
-  private static let sosCharacteristicUuid = CBUUID(string: "EA02")
-  private static let inetCharacteristicUuid = CBUUID(string: "EA03")
-  private static let cmdCharacteristicUuid = CBUUID(string: "EA04")
+  private static let eixamServiceUuid = CBUUID(string: "6ba1b218-15a8-461f-9fa8-5dcae273ea00")
+  private static let telCharacteristicUuid = CBUUID(string: "6ba1b218-15a8-461f-9fa8-5dcae273ea01")
+  private static let sosCharacteristicUuid = CBUUID(string: "6ba1b218-15a8-461f-9fa8-5dcae273ea02")
+  private static let inetCharacteristicUuid = CBUUID(string: "6ba1b218-15a8-461f-9fa8-5dcae273ea03")
+  private static let cmdCharacteristicUuid = CBUUID(string: "6ba1b218-15a8-461f-9fa8-5dcae273ea04")
   private static let sosNotificationDedupeWindowMs = 10 * 60 * 1000
 
   private enum RuntimeState: String {
@@ -93,6 +93,8 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
   private var notificationReceiveSequence = 0
   private var inFlightProtectionWrite: PendingProtectionWrite?
   private var protectionWriteQueue: [PendingProtectionWrite] = []
+  private var commandQueueHealthy = true
+  private var protectionWriteTimeout: Timer?
 
   @objc static func register(with registrar: FlutterPluginRegistrar) {
     let instance = ProtectionRuntimeBridge()
@@ -374,6 +376,8 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
   }
 
   private func handleConnectedPeripheral(_ peripheral: CBPeripheral, restored: Bool) {
+    guard let target = defaults.string(forKey: Keys.protectedDeviceId),
+          UUID(uuidString: target) == peripheral.identifier else { return }
     protectedPeripheral = peripheral
     peripheral.delegate = self
     servicesDiscovered = false
@@ -382,6 +386,7 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     sosCharacteristic = nil
     inetCharacteristic = nil
     cmdCharacteristic = nil
+    commandQueueHealthy = true
     updateRuntimeState(.recovering)
     defaults.removeObject(forKey: Keys.lastFailureReason)
     defaults.removeObject(forKey: Keys.readinessFailureReason)
@@ -507,6 +512,15 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     let runtimeState = currentRuntimeState
     let degradationReason = degradationReason()
     let readinessFailureReason = defaults.string(forKey: Keys.readinessFailureReason)
+    let connected = centralManager?.state == .poweredOn && protectedPeripheral?.state == .connected
+    let serviceReady = connected && protectedPeripheral?.services?.contains(where: {
+      $0.uuid == Self.eixamServiceUuid
+    }) == true && servicesDiscovered
+    let ea04Ready = connected && cmdCharacteristic?.properties.contains(.write) == true
+    let identityReady = connected && defaults.string(forKey: Keys.protectedDeviceId).flatMap {
+      UUID(uuidString: $0)
+    } == protectedPeripheral?.identifier
+    let commandReady = isArmed && connected && serviceReady && ea04Ready && identityReady && commandQueueHealthy
     return [
       "backgroundCapabilityReady": backgroundCapabilityReady(),
       "backgroundCapabilityState": backgroundCapabilityState(),
@@ -525,6 +539,11 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       "bleOwner": isArmed ? "iosPlugin" : "flutter",
       "serviceBleConnected": protectedPeripheral?.state == .connected,
       "serviceBleReady": subscriptionsActive,
+      "nativeCommandServiceReady": serviceReady,
+      "nativeCommandEa04Ready": ea04Ready,
+      "nativeCommandIdentityReady": identityReady,
+      "nativeCommandQueueHealthy": commandQueueHealthy,
+      "nativeCommandReady": commandReady,
       "pendingSosCount": 0,
       "pendingTelemetryCount": 0,
       "lastRestorationEvent": defaults.string(forKey: Keys.lastRestorationEvent),
@@ -534,8 +553,8 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       "reconnectAttemptCount": defaults.integer(forKey: Keys.reconnectAttemptCount),
       "lastReconnectAttemptAt": defaults.object(forKey: Keys.lastReconnectAttemptAt) as? Int,
       "degradationReason": degradationReason,
-      "expectedBleServiceUuid": "ea00",
-      "expectedBleCharacteristicUuids": ["ea01", "ea02", "ea03", "ea04"],
+      "expectedBleServiceUuid": Self.eixamServiceUuid.uuidString.lowercased(),
+      "expectedBleCharacteristicUuids": [Self.telCharacteristicUuid, Self.sosCharacteristicUuid, Self.inetCharacteristicUuid, Self.cmdCharacteristicUuid].map { $0.uuidString.lowercased() },
       "discoveredBleServicesSummary": defaults.string(forKey: Keys.discoveredBleServicesSummary),
       "readinessFailureReason": readinessFailureReason,
       "nativeBackendConfigValid": true,
@@ -617,6 +636,10 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       result(commandResult(success: false, route: route, result: nil, error: error))
       return
     }
+    guard commandQueueHealthy else {
+      result(commandResult(success: false, route: route, result: nil, error: "The native command queue requires reconnection."))
+      return
+    }
     guard !bytes.isEmpty else {
       let error = "Protection command payload is empty."
       defaults.set(error, forKey: Keys.lastCommandError)
@@ -666,6 +689,13 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     }
 
     inFlightProtectionWrite = command
+    protectionWriteTimeout?.invalidate()
+    protectionWriteTimeout = Timer.scheduledTimer(withTimeInterval: 10, repeats: false) { [weak self] _ in
+      guard let self else { return }
+      self.commandQueueHealthy = false
+      self.failPendingProtectionWrites(error: "The iOS protection command write timed out.")
+      self.recordBleEvent(type: "nativeCommandReadinessChanged")
+    }
     let accepted = "\(command.label) native write accepted via iosPlugin."
     defaults.set(accepted, forKey: Keys.lastCommandResult)
     defaults.removeObject(forKey: Keys.lastCommandError)
@@ -680,6 +710,8 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
   }
 
   private func failPendingProtectionWrites(error: String) {
+    protectionWriteTimeout?.invalidate()
+    protectionWriteTimeout = nil
     let route = "iosPlugin"
     defaults.set(error, forKey: Keys.lastCommandError)
     let inFlight = inFlightProtectionWrite
@@ -697,6 +729,8 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       return
     }
     inFlightProtectionWrite = nil
+    protectionWriteTimeout?.invalidate()
+    protectionWriteTimeout = nil
     let route = "iosPlugin"
     if let error {
       let reason = "The iOS Protection runtime failed to write \(command.label): \(error.localizedDescription)"
@@ -797,10 +831,11 @@ extension ProtectionRuntimeBridge: CBCentralManagerDelegate {
     recordRestorationEvent(type: "restorationDetected", reason: "corebluetooth_restoration")
 
     if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral],
-       let restoredPeripheral = peripherals.first {
+       let target = defaults.string(forKey: Keys.protectedDeviceId),
+       let targetUuid = UUID(uuidString: target),
+       let restoredPeripheral = peripherals.first(where: { $0.identifier == targetUuid }) {
       protectedPeripheral = restoredPeripheral
       restoredPeripheral.delegate = self
-      defaults.set(restoredPeripheral.identifier.uuidString, forKey: Keys.protectedDeviceId)
       if isArmed {
         handleConnectedPeripheral(restoredPeripheral, restored: true)
       }
@@ -848,6 +883,11 @@ extension ProtectionRuntimeBridge: CBCentralManagerDelegate {
 }
 
 extension ProtectionRuntimeBridge: CBPeripheralDelegate {
+  func peripheral(_ peripheral: CBPeripheral, didModifyServices invalidatedServices: [CBService]) {
+    guard peripheral.identifier == protectedPeripheral?.identifier else { return }
+    failPendingProtectionWrites(error: "The protected peripheral services changed.")
+    handleConnectedPeripheral(peripheral, restored: false)
+  }
   func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
     if let error {
       updateRuntimeState(.failed)

@@ -144,6 +144,8 @@ class DeviceSosController {
       StreamController<bool>.broadcast();
 
   DeviceCommandWriter? _commandWriter;
+  String? _commandTransportId;
+  String? get commandTransportId => _commandTransportId;
   bool _shortCommandAvailable = false;
   bool _longCommandAvailable = false;
   DeviceSosStatus _status = DeviceSosStatus.initial();
@@ -195,12 +197,14 @@ class DeviceSosController {
 
   Future<void> attach({
     required DeviceCommandWriter commandWriter,
+    String? transportId,
     bool shortCommandAvailable = true,
     bool longCommandAvailable = true,
   }) async {
     final previousAvailability = hasSosCommandPath;
     final previousControlAvailability = hasCommandChannel;
     _commandWriter = commandWriter;
+    _commandTransportId = transportId;
     _shortCommandAvailable = shortCommandAvailable;
     _longCommandAvailable = longCommandAvailable;
     BleDebugRegistry.instance.recordEvent(
@@ -221,6 +225,7 @@ class DeviceSosController {
     final previousAvailability = hasSosCommandPath;
     final previousControlAvailability = hasCommandChannel;
     _commandWriter = null;
+    _commandTransportId = null;
     _shortCommandAvailable = false;
     _longCommandAvailable = false;
     _awaitingObservedAppActivation = false;

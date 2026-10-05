@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:eixam_connect_flutter/src/device/ble_adapter_state.dart';
 import 'package:eixam_connect_flutter/src/device/ble_client.dart';
+import 'package:eixam_connect_flutter/src/device/ble_transport_observation.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/ble_scan_result.dart';
 import 'package:eixam_connect_flutter/src/device/ble_scan_result_brand_classifier.dart';
@@ -11,7 +12,18 @@ import 'package:eixam_connect_flutter/src/device/eixam_ble_notification.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
 import 'package:eixam_connect_flutter/src/public/enums/discovered_device_brand.dart';
 
-class MockBleClient implements BleClient {
+class MockBleClient implements BleClient, BleTransportObservationSource {
+  @override
+  Stream<String> get serviceResets => const Stream<String>.empty();
+  @override
+  BleTransportObservation transportObservation(String deviceId) =>
+      BleTransportObservation(
+        transportId: deviceId,
+        connected: true,
+        servicePresent: true,
+        commandCharacteristicPresent: true,
+        shortCommandCharacteristicPresent: true,
+      );
   final StreamController<BleAdapterState> _adapterController =
       StreamController<BleAdapterState>.broadcast();
   final Map<String, StreamController<EixamBleNotification>> _notifyControllers =

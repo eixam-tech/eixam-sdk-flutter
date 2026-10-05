@@ -2,17 +2,43 @@ import 'dart:async';
 
 import 'ble_adapter_state.dart';
 import 'ble_client.dart';
+import 'ble_transport_observation.dart';
 import 'ble_debug_registry.dart';
 import 'ble_scan_result.dart';
 import 'eixam_ble_command.dart';
 import 'eixam_ble_notification.dart';
 
-final class LazyInitializingBleClient implements BleClient {
+final class LazyInitializingBleClient
+    implements BleClient, BleTransportObservationSource {
   LazyInitializingBleClient(this._delegate) {
     BleDebugRegistry.instance.registerScanner(scan);
   }
 
   final BleClient _delegate;
+
+  @override
+  BleTransportObservation transportObservation(String deviceId) {
+    final delegate = _delegate;
+    return delegate is BleTransportObservationSource
+        ? (delegate as BleTransportObservationSource).transportObservation(
+            deviceId,
+          )
+        : BleTransportObservation(
+            transportId: deviceId,
+            connected: false,
+            servicePresent: false,
+            commandCharacteristicPresent: false,
+          );
+  }
+
+  @override
+  Stream<String> get serviceResets {
+    final delegate = _delegate;
+    return delegate is BleTransportObservationSource
+        ? (delegate as BleTransportObservationSource).serviceResets
+        : const Stream<String>.empty();
+  }
+
   Future<void>? _initializeFuture;
 
   Future<void> _ensureInitialized() {
