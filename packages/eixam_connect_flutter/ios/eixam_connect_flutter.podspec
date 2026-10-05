@@ -16,7 +16,7 @@ EIXAM Connect Flutter plugin runtime and Protection Mode platform bridge.
   s.dependency 'Flutter'
   s.dependency 'NordicDFU', '~> 4.16'
   s.frameworks = 'CoreTelephony', 'Network'
-  s.platform = :ios, '13.0'
+  s.platform = :ios, '15.0'
   s.swift_version = '5.0'
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
