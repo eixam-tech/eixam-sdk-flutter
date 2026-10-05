@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 
 import 'ble_adapter_state.dart';
 import 'ble_client.dart';
+import 'ble_transport_observation.dart';
 import 'ble_connection_status.dart';
 import 'ble_debug_registry.dart';
 import 'ble_incoming_event.dart';
@@ -47,7 +48,55 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     @visibleForTesting bool Function()? isIosPlatform,
   }) : _bleClient = bleClient,
        _deviceSosController = deviceSosController ?? DeviceSosController(),
-       _isIosPlatform = isIosPlatform ?? (() => Platform.isIOS);
+       _isIosPlatform = isIosPlatform ?? (() => Platform.isIOS) {
+    if (bleClient is BleTransportObservationSource) {
+      _serviceResetSubscription = (bleClient as BleTransportObservationSource)
+          .serviceResets
+          .listen(_onServicesReset);
+    }
+  }
+
+  StreamSubscription<String>? _serviceResetSubscription;
+  int _serviceResetRevision = 0;
+  Future<void> _serviceResetTail = Future<void>.value();
+  void _onServicesReset(String deviceId) {
+    if (_disposed || _ownershipSuspended || deviceId != _connectedDeviceId) {
+      return;
+    }
+    final revision = ++_serviceResetRevision;
+    // Detach synchronously at the observation boundary. Serialize subsequent
+    // discovery so an older failed callback cannot detach a newer writer.
+    final detached = _deviceSosController.detach();
+    _serviceResetTail = _serviceResetTail.then((_) async {
+      await detached;
+      if (_disposed || revision != _serviceResetRevision) {
+        return;
+      }
+      await _notificationSubscription?.cancel();
+      _notificationSubscription = null;
+      try {
+        if (!await _bleClient.isConnected(deviceId)) {
+          return;
+        }
+        final compatible = await _bleClient.isEixamCompatible(deviceId);
+        if (!compatible ||
+            _disposed ||
+            _ownershipSuspended ||
+            deviceId != _connectedDeviceId ||
+            revision != _serviceResetRevision) {
+          return;
+        }
+        await _bindNotifications(deviceId);
+      } catch (error) {
+        if (!_disposed && revision == _serviceResetRevision) {
+          await _deviceSosController.detach();
+        }
+        BleDebugRegistry.instance.recordEvent(
+          'BLE service reset rediscovery failed: $error',
+        );
+      }
+    });
+  }
 
   final BleClient _bleClient;
   final DeviceSosController _deviceSosController;
@@ -905,7 +954,11 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   }
 
   Future<void> _bindNotifications(String deviceId) async {
+    final serviceRevision = _serviceResetRevision;
     await _notificationSubscription?.cancel();
+    if (_disposed || serviceRevision != _serviceResetRevision) {
+      return;
+    }
     Future<void> commandWriter(EixamDeviceCommand command) {
       _lastAppCommandAt = DateTime.now();
       BleDebugRegistry.instance.recordEvent(
@@ -918,10 +971,18 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     BleDebugRegistry.instance.recordEvent(
       'BLE SOS runtime attach requested -> hardwareId=$deviceId inetAvailable=${BleDebugRegistry.instance.currentState.inetFound} cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound}',
     );
+    final source = _bleClient;
+    final observation = source is BleTransportObservationSource
+        ? (source as BleTransportObservationSource).transportObservation(
+            deviceId,
+          )
+        : null;
     await _deviceSosController.attach(
       commandWriter: commandWriter,
-      shortCommandAvailable: BleDebugRegistry.instance.currentState.inetFound,
-      longCommandAvailable: BleDebugRegistry.instance.currentState.cmdFound,
+      transportId: deviceId,
+      shortCommandAvailable:
+          observation?.shortCommandCharacteristicPresent ?? false,
+      longCommandAvailable: observation?.commandCharacteristicPresent ?? false,
     );
     BleDebugRegistry.instance.recordEvent(
       'BLE_RECONNECT_LIFECYCLE command_ready=true',
@@ -931,6 +992,9 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     );
 
     final stream = await _bleClient.subscribeEixamNotifications(deviceId);
+    if (_disposed || serviceRevision != _serviceResetRevision) {
+      return;
+    }
     BleDebugRegistry.instance.recordEvent(
       'BLE_RECONNECT_LIFECYCLE tel_notify_ready=true sos_notify_ready=true',
     );
@@ -3541,6 +3605,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   }
 
   Future<void> dispose() async {
+    await _serviceResetSubscription?.cancel();
     if (_disposed) {
       return;
     }

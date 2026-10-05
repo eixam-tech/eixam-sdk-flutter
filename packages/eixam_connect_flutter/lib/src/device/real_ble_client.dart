@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 
 import 'ble_adapter_state.dart';
 import 'ble_client.dart';
+import 'ble_transport_observation.dart';
 import 'canonical_hardware_id.dart';
 import 'ble_debug_registry.dart';
 import 'ble_security_policy.dart';
@@ -38,7 +39,7 @@ final class _SdkDiscoveryPrecheck {
   final String reason;
 }
 
-class RealBleClient implements BleClient {
+class RealBleClient implements BleClient, BleTransportObservationSource {
   RealBleClient({
     int? Function(EixamBleChannel channel, List<int> payload)? meshPortResolver,
     @visibleForTesting Future<bool> Function()? isSupportedProvider,
@@ -49,6 +50,10 @@ class RealBleClient implements BleClient {
     @visibleForTesting Stream<List<ScanResult>> Function()? scanResultsProvider,
     @visibleForTesting NativeBleStartScan? startScan,
     @visibleForTesting NativeBleStopScan? stopScan,
+    @visibleForTesting
+    Future<List<BluetoothService>> Function(BluetoothDevice)? serviceDiscoverer,
+    @visibleForTesting
+    Stream<void> Function(BluetoothDevice)? serviceResetProvider,
     @visibleForTesting
     Future<void> Function(BluetoothDevice device)? androidGattCacheClearer,
   }) : _meshPortResolver = meshPortResolver,
@@ -71,6 +76,9 @@ class RealBleClient implements BleClient {
              androidCheckLocationServices: false,
            )),
        _stopScan = stopScan ?? (() => FlutterBluePlus.stopScan()),
+       _serviceDiscoverer = serviceDiscoverer,
+       _serviceResetProvider =
+           serviceResetProvider ?? ((device) => device.onServicesReset),
        _androidGattCacheClearer =
            androidGattCacheClearer ?? _defaultAndroidGattCacheClearer;
 
@@ -85,7 +93,53 @@ class RealBleClient implements BleClient {
 
   final Map<String, BluetoothDevice> _devices = {};
   final Map<String, List<BluetoothService>> _servicesCache = {};
+  final Map<String, int> _serviceGenerations = {};
   StreamSubscription<BluetoothAdapterState>? _adapterStateSub;
+  final Map<String, StreamSubscription<void>> _serviceResetSubscriptions = {};
+  final StreamController<String> _serviceResets =
+      StreamController<String>.broadcast(sync: true);
+
+  @override
+  Stream<String> get serviceResets => _serviceResets.stream;
+
+  @override
+  BleTransportObservation transportObservation(String deviceId) {
+    final services = _servicesCache[deviceId] ?? const <BluetoothService>[];
+    final eixam = services.where((s) => s.uuid == eixamServiceUuid);
+    final characteristics = eixam.expand((s) => s.characteristics);
+    return BleTransportObservation(
+      transportId: deviceId,
+      connected: _devices[deviceId]?.isConnected == true,
+      servicePresent: eixam.isNotEmpty,
+      commandCharacteristicPresent: characteristics.any(
+        (c) => c.uuid == cmdWriteCharUuid,
+      ),
+      shortCommandCharacteristicPresent: characteristics.any(
+        (c) => c.uuid == inetWriteCharUuid,
+      ),
+    );
+  }
+
+  void _observeServiceResets(String deviceId, BluetoothDevice device) {
+    if (_serviceResetSubscriptions.containsKey(deviceId)) return;
+    _serviceResetSubscriptions[deviceId] = _serviceResetProvider(device).listen(
+      (_) {
+        _serviceGenerations[deviceId] =
+            (_serviceGenerations[deviceId] ?? 0) + 1;
+        _servicesCache.remove(deviceId);
+        if (BleDebugRegistry.instance.currentState.selectedDeviceId ==
+            deviceId) {
+          BleDebugRegistry.instance.update(
+            eixamServiceFound: false,
+            cmdFound: false,
+            inetFound: false,
+          );
+        }
+        _serviceResets.add(deviceId);
+      },
+    );
+  }
+
   final int? Function(EixamBleChannel channel, List<int> payload)?
   _meshPortResolver;
   final Future<bool> Function() _isSupportedProvider;
@@ -95,6 +149,9 @@ class RealBleClient implements BleClient {
   final Stream<List<ScanResult>> Function() _scanResultsProvider;
   final NativeBleStartScan _startScan;
   final NativeBleStopScan _stopScan;
+  final Future<List<BluetoothService>> Function(BluetoothDevice)?
+  _serviceDiscoverer;
+  final Stream<void> Function(BluetoothDevice) _serviceResetProvider;
   final Future<void> Function(BluetoothDevice device) _androidGattCacheClearer;
 
   static final Guid eixamServiceUuid = Guid(EixamBleProtocol.serviceUuid);
@@ -445,11 +502,19 @@ class RealBleClient implements BleClient {
         'BLE_CONNECTED hardwareId=$deviceId',
       );
 
+      _observeServiceResets(deviceId, device);
       _servicesCache.remove(deviceId);
+      final generation = _serviceGenerations[deviceId] ?? 0;
       final services = await _discoverServicesWithReconnectRetry(
         deviceId: deviceId,
         device: device,
       );
+      if ((_serviceGenerations[deviceId] ?? 0) != generation) {
+        throw const DeviceException(
+          'E_BLE_SERVICES_RESET',
+          'E_BLE_SERVICES_RESET',
+        );
+      }
       _servicesCache[deviceId] = services;
 
       BleDebugRegistry.instance.update(
@@ -508,6 +573,7 @@ class RealBleClient implements BleClient {
       await device.disconnect();
     }
     _servicesCache.remove(deviceId);
+    await _serviceResetSubscriptions.remove(deviceId)?.cancel();
     BleDebugRegistry.instance.clearCommandWriter();
     BleDebugRegistry.instance.update(
       telNotifySubscribed: false,
@@ -1082,10 +1148,18 @@ class RealBleClient implements BleClient {
       return [];
     }
 
+    _observeServiceResets(deviceId, device);
+    final generation = _serviceGenerations[deviceId] ?? 0;
     final services = await _discoverServicesWithReconnectRetry(
       deviceId: deviceId,
       device: device,
     );
+    if ((_serviceGenerations[deviceId] ?? 0) != generation) {
+      throw const DeviceException(
+        'E_BLE_SERVICES_RESET',
+        'E_BLE_SERVICES_RESET',
+      );
+    }
     _servicesCache[deviceId] = services;
     return services;
   }
@@ -1251,10 +1325,17 @@ class RealBleClient implements BleClient {
     _servicesCache.remove(deviceId);
     await _clearAndroidGattCache(device);
     try {
+      final generation = _serviceGenerations[deviceId] ?? 0;
       final services = await _discoverServicesWithReconnectRetry(
         deviceId: deviceId,
         device: device,
       );
+      if ((_serviceGenerations[deviceId] ?? 0) != generation) {
+        throw const DeviceException(
+          'E_BLE_SERVICES_RESET',
+          'E_BLE_SERVICES_RESET',
+        );
+      }
       _servicesCache[deviceId] = services;
       return true;
     } catch (_) {
@@ -1271,6 +1352,7 @@ class RealBleClient implements BleClient {
     BluetoothDevice device,
   ) async {
     _servicesCache.remove(deviceId);
+    await _serviceResetSubscriptions.remove(deviceId)?.cancel();
     BleDebugRegistry.instance.clearCommandWriter();
     BleDebugRegistry.instance.update(
       telNotifySubscribed: false,
@@ -1287,6 +1369,7 @@ class RealBleClient implements BleClient {
     required String deviceId,
     required BluetoothDevice device,
   }) async {
+    if (_serviceDiscoverer != null) return _serviceDiscoverer(device);
     const retryDelays = <Duration>[
       Duration.zero,
       Duration(milliseconds: 350),
@@ -1313,10 +1396,11 @@ class RealBleClient implements BleClient {
         _log(
           'BLE discoverServices() start -> hardwareId=$deviceId attempt=${attempt + 1}',
         );
+        _observeServiceResets(deviceId, device);
         await _clearAndroidGattCache(device);
-        // Reconnect always rediscovers. The Services Changed CCCD is extra
-        // GATT traffic we do not consume (`onServicesReset` is unused).
-        // Android still serves a per-MAC handle cache after provision /
+        // Reconnect always rediscovers. Darwin reports native service resets
+        // without a Services Changed CCCD subscription; retain Android
+        // discovery behavior. Android serves a per-MAC cache after provision /
         // unprovision reboot unless we call clearGattCache first.
         final services = await device.discoverServices(
           subscribeToServicesChanged: false,

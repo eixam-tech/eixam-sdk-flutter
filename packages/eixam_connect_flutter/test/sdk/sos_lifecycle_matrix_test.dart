@@ -128,6 +128,7 @@ void main() {
           );
           await harness.deviceSosController.attach(
             commandWriter: (_) async {},
+            transportId: peripheral,
             shortCommandAvailable: true,
             longCommandAvailable: true,
           );
@@ -136,6 +137,11 @@ void main() {
           expect(readiness.commandWriterReady, isTrue);
           expect(readiness.hasSelectedDevice, isTrue);
           expect(readiness.isReady, isTrue);
+          BleDebugRegistry.instance.reset();
+          expect(
+            (await harness.sdk.getDeviceCommandChannelStatus()).isReady,
+            isTrue,
+          );
         } finally {
           await harness.dispose();
         }
@@ -172,6 +178,9 @@ void main() {
           );
           await harness.deviceSosController.attach(
             commandWriter: (_) async {},
+            transportId: scenario == 'wrong-target'
+                ? '00000000-0000-0000-0000-000000000001'
+                : peripheral,
             shortCommandAvailable: true,
             longCommandAvailable: scenario != 'incomplete',
           );
@@ -190,6 +199,9 @@ void main() {
             );
             await harness.deviceSosController.attach(
               commandWriter: (_) async {},
+              transportId: scenario == 'wrong-target'
+                  ? '00000000-0000-0000-0000-000000000001'
+                  : peripheral,
               shortCommandAvailable: true,
               longCommandAvailable: true,
             );
@@ -235,6 +247,55 @@ void main() {
         }
       },
     );
+
+    for (final missing in ['none', 'ea04', 'target', 'queue', 'identity']) {
+      test(
+        'iOS native public command readiness requires explicit $missing proof',
+        () async {
+          const peripheral = 'B748445B-FDEA-2426-48F1-FD1A086627FA';
+          final adapter = _SnapshotProtectionPlatformAdapter(
+            ProtectionPlatformSnapshot(
+              backgroundCapabilityReady: true,
+              runtimeActive: true,
+              platform: ProtectionPlatform.ios,
+              bleOwner: ProtectionBleOwner.iosPlugin,
+              serviceBleConnected: true,
+              serviceBleReady: true,
+              nativeCommandServiceReady: true,
+              nativeCommandEa04Ready: missing != 'ea04',
+              nativeCommandIdentityReady: missing != 'identity',
+              nativeCommandQueueHealthy: missing != 'queue',
+              nativeCommandReady: missing == 'none',
+              protectedDeviceId: missing == 'target'
+                  ? '00000000-0000-0000-0000-000000000001'
+                  : peripheral,
+              activeDeviceId: missing == 'target'
+                  ? '00000000-0000-0000-0000-000000000001'
+                  : peripheral,
+            ),
+          );
+          final harness = _SdkSosHarness(
+            connectedBle: true,
+            connectedDeviceId: peripheral,
+            connectedNodeId: 1435727214,
+            connectedCanonicalHardwareId: null,
+            protectionPlatformAdapter: adapter,
+          );
+          try {
+            await harness.sdk.initialize(
+              const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+            );
+            await harness.sdk.rehydrateProtectionState();
+            expect(
+              (await harness.sdk.getDeviceCommandChannelStatus()).isReady,
+              missing == 'none',
+            );
+          } finally {
+            await harness.dispose();
+          }
+        },
+      );
+    }
 
     test(
       'public command channel follows native-owned EA04 readiness',

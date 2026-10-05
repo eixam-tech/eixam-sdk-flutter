@@ -28,6 +28,7 @@ import '../device/ble_incoming_payload_classifier.dart';
 import '../device/canonical_hardware_id.dart';
 import '../device/device_sos_controller.dart';
 import '../device/ble_debug_registry.dart';
+import '../device/ble_transport_observation.dart';
 import '../device/ble_debug_state.dart';
 import '../device/eixam_ble_command.dart';
 import '../device/eixam_ble_protocol.dart';
@@ -191,7 +192,10 @@ evaluateNativeProtectionCommandReadinessForStatus({
     serviceBleConnected: status.serviceBleConnected,
     serviceReady: status.nativeCommandServiceReady,
     cmdEa04Ready: status.nativeCommandEa04Ready,
-    exactTargetIdentityMatch: exactTargetIdentityMatch,
+    exactTargetIdentityMatch:
+        exactTargetIdentityMatch &&
+        (status.bleOwner != ProtectionBleOwner.iosPlugin ||
+            status.nativeCommandIdentityReady),
     // lastCommandError is historical diagnostics. The typed queue-health
     // predicate is the authoritative current-session readiness signal.
     operationQueueOperational: status.nativeCommandQueueHealthy,
@@ -21426,21 +21430,6 @@ class EixamConnectSdkImpl
   NativeProtectionCommandReadiness _nativeCommandReadinessForStatus(
     ProtectionStatus status,
   ) {
-    final legacyIosCommandReady =
-        status.bleOwner == ProtectionBleOwner.iosPlugin &&
-        status.serviceBleReady;
-    if (legacyIosCommandReady) {
-      return evaluateNativeProtectionCommandReadiness(
-        declaredOwner: status.bleOwner,
-        serviceBleConnected: status.serviceBleConnected,
-        serviceReady: true,
-        cmdEa04Ready: true,
-        exactTargetIdentityMatch: _nativeProtectionTargetMatchesConnectedDevice(
-          status,
-        ),
-        operationQueueOperational: status.nativeCommandQueueHealthy,
-      );
-    }
     return evaluateNativeProtectionCommandReadinessForStatus(
       status: status,
       exactTargetIdentityMatch: _nativeProtectionTargetMatchesConnectedDevice(
@@ -24757,7 +24746,14 @@ class EixamConnectSdkImpl
         connectedDevice?.connected == true &&
         (_physicalHardwareIdForStatus(connectedDevice) != null ||
             (!nativeOwner &&
-                _hasVerifiedPeripheralCommandIdentity(connectedDevice!)));
+                _hasVerifiedPeripheralCommandIdentity(connectedDevice!)) ||
+            (nativeOwner &&
+                protectionStatus.bleOwner == ProtectionBleOwner.iosPlugin &&
+                protectionStatus.nativeCommandIdentityReady &&
+                _hasVerifiedPeripheralCommandIdentity(
+                  connectedDevice!,
+                  transportId: protectionStatus.activeDeviceId,
+                )));
     final nativeReadiness = nativeOwner
         ? _nativeCommandReadinessForStatus(protectionStatus)
         : null;
@@ -24773,11 +24769,32 @@ class EixamConnectSdkImpl
         ? nativeReadiness?.ready == true
         : canonicalIdentityConnected &&
               deviceSosController.longCommandAvailable;
+    final observation = BleTransportObservation(
+      transportId: nativeOwner
+          ? protectionStatus.activeDeviceId
+          : deviceSosController.commandTransportId,
+      canonicalHardwareId: connectedDevice?.canonicalHardwareId,
+      nodeId: connectedDevice?.nodeId,
+      connected: serviceConnected,
+      servicePresent: nativeOwner
+          ? protectionStatus.nativeCommandServiceReady
+          : serviceConnected,
+      commandCharacteristicPresent: nativeOwner
+          ? protectionStatus.nativeCommandEa04Ready
+          : deviceSosController.longCommandAvailable,
+      writerAttached: commandWriterReady,
+      nativeOwned: nativeOwner,
+      targetIdentityMatched: hasSelectedDevice,
+      queueHealthy: !nativeOwner || protectionStatus.nativeCommandQueueHealthy,
+    );
     final ready =
         canonicalIdentityConnected &&
-        serviceConnected &&
-        hasSelectedDevice &&
-        commandWriterReady;
+        observation.connected &&
+        observation.servicePresent &&
+        observation.commandCharacteristicPresent &&
+        observation.targetIdentityMatched &&
+        observation.writerAttached &&
+        observation.queueHealthy;
     return BleCommandChannelStatus(
       readiness: ready
           ? BleCommandChannelReadiness.ready
@@ -24790,23 +24807,25 @@ class EixamConnectSdkImpl
 
   // CoreBluetooth's local peripheral UUID is a transport handle, never a MAC.
   // A hydrated TAG node plus the matching selected transport binds the writer
-  // without fabricating a canonical hardware address. Native-owned routes keep
-  // their existing canonical identity proof.
-  bool _hasVerifiedPeripheralCommandIdentity(DeviceStatus status) {
+  // without fabricating a canonical hardware address. Native iOS routes also
+  // require their explicit target-binding observation.
+  bool _hasVerifiedPeripheralCommandIdentity(
+    DeviceStatus status, {
+    String? transportId,
+  }) {
     final nodeId = status.nodeId;
     if (nodeId == null || nodeId <= 0 || nodeId >= 0xffffffff) return false;
     return RegExp(
           r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
         ).hasMatch(status.deviceId.trim()) &&
-        BleDebugRegistry.instance.currentState.selectedDeviceId
+        (transportId ?? deviceSosController.commandTransportId)
                 ?.trim()
                 .toLowerCase() ==
             status.deviceId.trim().toLowerCase();
   }
 
   bool _flutterCommandTargetMatchesConnectedIdentity(DeviceStatus status) {
-    final selectedDeviceId =
-        BleDebugRegistry.instance.currentState.selectedDeviceId;
+    final selectedDeviceId = deviceSosController.commandTransportId;
     if (selectedDeviceId == null || selectedDeviceId.trim().isEmpty) {
       return true;
     }

@@ -36,23 +36,14 @@ ProtectionPlatformSnapshot mapIosProtectionPlatformSnapshot(
     serviceBleConnected: snapshot['serviceBleConnected'] as bool? ?? false,
     serviceBleReady: snapshot['serviceBleReady'] as bool? ?? false,
     nativeCommandServiceReady:
-        snapshot['nativeCommandServiceReady'] as bool? ??
-        snapshot['serviceBleReady'] as bool? ??
-        false,
+        snapshot['nativeCommandServiceReady'] as bool? ?? false,
     nativeCommandEa04Ready:
-        snapshot['nativeCommandEa04Ready'] as bool? ??
-        snapshot['serviceBleReady'] as bool? ??
-        false,
+        snapshot['nativeCommandEa04Ready'] as bool? ?? false,
     nativeCommandIdentityReady:
-        snapshot['nativeCommandIdentityReady'] as bool? ??
-        snapshot['serviceBleReady'] as bool? ??
-        false,
+        snapshot['nativeCommandIdentityReady'] as bool? ?? false,
     nativeCommandQueueHealthy:
         snapshot['nativeCommandQueueHealthy'] as bool? ?? true,
-    nativeCommandReady:
-        snapshot['nativeCommandReady'] as bool? ??
-        snapshot['serviceBleReady'] as bool? ??
-        false,
+    nativeCommandReady: snapshot['nativeCommandReady'] as bool? ?? false,
     pendingSosCount: snapshot['pendingSosCount'] as int? ?? 0,
     pendingTelemetryCount: snapshot['pendingTelemetryCount'] as int? ?? 0,
     lastRestorationEvent: snapshot['lastRestorationEvent'] as String?,
