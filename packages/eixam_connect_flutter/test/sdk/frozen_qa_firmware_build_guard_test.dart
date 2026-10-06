@@ -36,6 +36,7 @@ void main() {
         FirmwareVerificationPolicy.exactCandidate,
       );
       final download = await source.prepareDownload(release.releaseId);
+      expect(download.sha256Hash, hash);
       const path = String.fromEnvironment('EIXAM_QA_TEST_ZIP_PATH');
       final bytes = await File(path).readAsBytes();
       final directory = await Directory.systemTemp.createTemp('qa-cache-');

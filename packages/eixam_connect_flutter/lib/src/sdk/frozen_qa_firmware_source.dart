@@ -21,8 +21,9 @@ SdkFirmwareRemoteDataSource composeFirmwareSource(
     debugBuild: kDebugMode,
     physicalQa: physicalQa,
     candidateEnabled: requested,
-  ))
+  )) {
     return normal;
+  }
   const sourceSha = String.fromEnvironment('EIXAM_QA_FIRMWARE_SHA');
   const version = String.fromEnvironment('EIXAM_QA_FIRMWARE_VERSION');
   const model = String.fromEnvironment('EIXAM_QA_FIRMWARE_MODEL');
