@@ -353,6 +353,8 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
       releaseId: releaseId,
       fromVersion: check.device.currentVersion ?? '',
       targetVersion: release?.version ?? '',
+      verificationPolicy:
+          release?.verificationPolicy ?? FirmwareVerificationPolicy.normal,
       state: FirmwareUpdateState.idle,
       startedAt: now,
       hardwareId: check.device.hardwareId,
@@ -484,6 +486,7 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
       releaseId: release.releaseId,
       fromVersion: sourceStatus.firmwareVersion ?? '',
       targetVersion: release.version,
+      verificationPolicy: release.verificationPolicy,
       migrationOwned: true,
       state: FirmwareUpdateState.idle,
       startedAt: now,
@@ -856,9 +859,10 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
       );
     }
     if (status.connected && _statusMatchesSession(status, current)) {
-      if (eixamFirmwareVersionsMatch(
+      if (firmwareIdentityMatches(
         status.firmwareVersion,
         current.targetVersion,
+        policy: current.verificationPolicy,
       )) {
         return _settleReconciliation(
           current,
@@ -996,9 +1000,10 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
       return current;
     }
     await _persistTail;
-    if (eixamFirmwareVersionsMatch(
+    if (firmwareIdentityMatches(
       verifiedStatus.firmwareVersion,
       current.targetVersion,
+      policy: current.verificationPolicy,
     )) {
       return _settleReconciliation(
         current,
@@ -1126,7 +1131,11 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
         !active.isCompleted &&
         (active.nativeTransferEngaged || active.requiresRecovery) &&
         active.releaseId == releaseId &&
-        eixamFirmwareVersionsMatch(active.targetVersion, targetVersion) &&
+        firmwareIdentityMatches(
+          active.targetVersion,
+          targetVersion,
+          policy: active.verificationPolicy,
+        ) &&
         _sameIdentity(
           active.deviceId,
           active.hardwareId,
@@ -1331,6 +1340,9 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
       releaseId: releaseId,
       fromVersion: replacingSession?.fromVersion ?? '',
       targetVersion: targetVersion,
+      verificationPolicy:
+          replacingSession?.verificationPolicy ??
+          FirmwareVerificationPolicy.normal,
       state: FirmwareUpdateState.idle,
       startedAt: replacingSession?.startedAt ?? now,
       hardwareId: hardwareId ?? replacingSession?.hardwareId,
@@ -1355,6 +1367,7 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
       final release = FirmwareRelease(
         releaseId: releaseId,
         version: targetVersion,
+        verificationPolicy: session.verificationPolicy,
         sha256Hash: replacingSession?.artifactSha256,
         fileSizeBytes: replacingSession?.artifactSizeBytes,
       );
@@ -2014,8 +2027,24 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
         );
       }
       latest = status;
-      final installed = status.firmwareVersion?.trim();
-      final matches = eixamFirmwareVersionsMatch(installed, targetVersion);
+      final installed =
+          session.verificationPolicy ==
+              FirmwareVerificationPolicy.exactCandidate
+          ? status.firmwareVersion
+          : status.firmwareVersion?.trim();
+      final matches = firmwareIdentityMatches(
+        installed,
+        targetVersion,
+        policy: session.verificationPolicy,
+      );
+      if (session.verificationPolicy ==
+          FirmwareVerificationPolicy.exactCandidate) {
+        _debugLog(
+          'OTA_COORDINATOR exact_candidate_verification '
+          'expected=$targetVersion actual=${installed ?? 'unknown'} '
+          'matched=$matches connected=${status.connected}',
+        );
+      }
       if (status.connected &&
           matches &&
           _statusMatchesSession(status, session)) {

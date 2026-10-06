@@ -1,3 +1,5 @@
+import 'package:eixam_connect_core/eixam_connect_core.dart';
+
 String normalizeEixamFirmwareVersion(String? version) {
   if (version == null) return '';
   var normalized =
@@ -90,3 +92,22 @@ String? _firmwareBuildHash(String normalized) {
   final match = RegExp(r'^\d+\.\d+\.\d+\.([0-9a-f]+)$').firstMatch(normalized);
   return match?.group(1);
 }
+
+/// Exact QA identity uses the device-readable string without aliases or
+/// normalization. Normal releases retain the existing compatibility semantics.
+bool firmwareIdentityMatches(
+  String? installed,
+  String? expected, {
+  FirmwareVerificationPolicy policy = FirmwareVerificationPolicy.normal,
+}) => switch (policy) {
+  FirmwareVerificationPolicy.normal => eixamFirmwareVersionsMatch(
+    installed,
+    expected,
+  ),
+  FirmwareVerificationPolicy.exactCandidate =>
+    installed != null &&
+        expected != null &&
+        expected.isNotEmpty &&
+        expected.toLowerCase() != 'unknown' &&
+        installed == expected,
+};

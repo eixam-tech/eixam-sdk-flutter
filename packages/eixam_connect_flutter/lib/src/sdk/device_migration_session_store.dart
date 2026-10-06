@@ -62,6 +62,7 @@ final class SharedPrefsDeviceMigrationSessionStore
         'candidate': _encodeCandidate(session.candidate),
         'releaseId': session.releaseId,
         'targetVersion': session.targetVersion,
+        'verificationPolicy': session.verificationPolicy.name,
         'firmwareSession': session.firmwareSession == null
             ? null
             : _encodeFirmwareSession(session.firmwareSession!),
@@ -99,6 +100,12 @@ final class SharedPrefsDeviceMigrationSessionStore
             json['firmwareSession'] == null &&
             json['state'] == DeviceMigrationState.prepared.name,
       ),
+      verificationPolicy: json['verificationPolicy'] == null
+          ? FirmwareVerificationPolicy.normal
+          : _enumByName(
+              FirmwareVerificationPolicy.values,
+              json['verificationPolicy'],
+            ),
       firmwareSession: _optionalMap(json['firmwareSession'], _decodeFirmware),
       migratedDevice: _optionalMap(json['migratedDevice'], _decodeScan),
       state: _enumByName(DeviceMigrationState.values, json['state']),
@@ -168,6 +175,7 @@ final class SharedPrefsDeviceMigrationSessionStore
         'releaseId': value.releaseId,
         'fromVersion': value.fromVersion,
         'targetVersion': value.targetVersion,
+        'verificationPolicy': value.verificationPolicy.name,
         'state': value.state.name,
         'startedAt': value.startedAt.toUtc().toIso8601String(),
         'completedAt': value.completedAt?.toUtc().toIso8601String(),
@@ -199,6 +207,12 @@ final class SharedPrefsDeviceMigrationSessionStore
         releaseId: _requiredString(json, 'releaseId'),
         fromVersion: _requiredString(json, 'fromVersion'),
         targetVersion: _requiredString(json, 'targetVersion'),
+        verificationPolicy: json['verificationPolicy'] == null
+            ? FirmwareVerificationPolicy.normal
+            : _enumByName(
+                FirmwareVerificationPolicy.values,
+                json['verificationPolicy'],
+              ),
         state: _enumByName(FirmwareUpdateState.values, json['state']),
         startedAt: DateTime.parse(_requiredString(json, 'startedAt')),
         completedAt: (json['completedAt'] as String?) == null

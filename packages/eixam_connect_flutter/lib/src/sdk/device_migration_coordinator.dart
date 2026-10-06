@@ -192,6 +192,9 @@ final class DeviceMigrationCoordinator {
         candidate: revalidated,
         releaseId: activeFirmware?.releaseId ?? '',
         targetVersion: activeFirmware?.targetVersion ?? '',
+        verificationPolicy:
+            activeFirmware?.verificationPolicy ??
+            FirmwareVerificationPolicy.normal,
         firmwareSession: activeFirmware,
         state: DeviceMigrationState.prepared,
         nextAction: DeviceMigrationNextAction.waitForDevice,
@@ -221,6 +224,7 @@ final class DeviceMigrationCoordinator {
         candidate: revalidated,
         releaseId: release.releaseId,
         targetVersion: release.version,
+        verificationPolicy: release.verificationPolicy,
         state: DeviceMigrationState.prepared,
         nextAction: DeviceMigrationNextAction.continueMigration,
         canCancel: true,
@@ -359,9 +363,10 @@ final class DeviceMigrationCoordinator {
     }
     final connected = await _verifyAlreadyConnected(current.candidate);
     if (connected != null &&
-        eixamFirmwareVersionsMatch(
+        firmwareIdentityMatches(
           connected.firmwareVersion,
           current.targetVersion,
+          policy: current.verificationPolicy,
         )) {
       return _completeReconciledMigration(
         current,
@@ -415,9 +420,10 @@ final class DeviceMigrationCoordinator {
       final match = matchingEixam.single;
       final status = await _verifyMigratedScan(scan: match);
       if (status.connected &&
-          eixamFirmwareVersionsMatch(
+          firmwareIdentityMatches(
             status.firmwareVersion,
             current.targetVersion,
+            policy: current.verificationPolicy,
           )) {
         return _completeReconciledMigration(current, status, match);
       }

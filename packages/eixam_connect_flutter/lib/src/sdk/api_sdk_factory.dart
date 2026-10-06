@@ -38,6 +38,7 @@ import 'device_migration_coordinator.dart';
 import 'device_migration_session_store.dart';
 import 'firmware_dfu_transport_factory.dart';
 import 'firmware_update_coordinator.dart';
+import 'frozen_qa_firmware_source.dart';
 import 'firmware_update_session_store.dart';
 import 'mqtt5_sdk_transport.dart';
 import 'mqtt_realtime_client.dart';
@@ -123,8 +124,8 @@ class ApiSdkFactory {
     final feedbackRemoteDataSource = HttpSdkFeedbackRemoteDataSource(
       transport: httpTransport,
     );
-    final firmwareRemoteDataSource = HttpSdkFirmwareRemoteDataSource(
-      transport: httpTransport,
+    final firmwareRemoteDataSource = composeFirmwareSource(
+      HttpSdkFirmwareRemoteDataSource(transport: httpTransport),
     );
     final deviceConfigRemoteDataSource = HttpSdkDeviceConfigRemoteDataSource(
       transport: httpTransport,
