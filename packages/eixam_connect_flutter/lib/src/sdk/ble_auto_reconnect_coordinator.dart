@@ -721,6 +721,19 @@ class BleAutoReconnectCoordinator {
     String? platformRemoteId,
     bool allowDuringProvisioningOwnership = false,
   }) async {
+    // Reject admission before creating any campaign while suspension owns BLE.
+    if (_manualDisconnectRequested) {
+      _traceReconnect(
+        'sdk_reconnect_admission_blocked reason=manual_disconnect source=$trigger',
+      );
+      _recordNoProviderCall(
+        attemptId: attemptId,
+        reason: 'connect_guard_blocked',
+      );
+      return const PreferredDeviceReconnectResult.failed(
+        reason: 'manual_disconnect_requested',
+      );
+    }
     if (_provisioningReconnectOwned && !allowDuringProvisioningOwnership) {
       _recordProvisioningReconnectSuppressed(trigger: trigger);
       _recordNoProviderCall(
