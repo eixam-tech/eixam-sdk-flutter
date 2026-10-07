@@ -4869,6 +4869,18 @@ class EixamConnectSdkImpl
 
   @override
   Future<DeviceRuntimeStatus> getDeviceRuntimeStatus() async {
+    if (_isProtectionPlatformOwningBle) {
+      final repository = deviceRepository;
+      if (repository is! InMemoryDeviceRepository) {
+        _throwDeviceCommandNotReady();
+      }
+      return repository.getDeviceRuntimeStatus(
+        commandSender: (command) => _sendDeviceControlCommandThroughActiveOwner(
+          action: 'get_device_runtime_status',
+          command: command,
+        ),
+      );
+    }
     final repository = await _ensureCommandCapableDeviceRepository(
       action: 'get_device_runtime_status',
     );

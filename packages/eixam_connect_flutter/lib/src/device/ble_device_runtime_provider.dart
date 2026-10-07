@@ -1614,6 +1614,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
   Future<DeviceRuntimeStatus> requestDeviceRuntimeStatus({
     Duration timeout = const Duration(seconds: 5),
+    Future<void> Function(EixamDeviceCommand command)? commandSender,
   }) async {
     final pending = _pendingRuntimeStatusRequest;
     if (pending != null) {
@@ -1631,14 +1632,21 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     final completer = Completer<DeviceRuntimeStatus>();
     _pendingRuntimeStatusRequest = completer;
     try {
-      await _runDeviceCommand(
-        command: EixamDeviceCommand.getDeviceStatus(),
-        missingDeviceMessage: _deviceCommandNotReadyCode,
-        missingDeviceError: const DeviceException(
-          _deviceCommandNotReadyCode,
-          _deviceCommandNotReadyCode,
-        ),
-      );
+      // Native-owner responses use the same decoder and pending request. Arm
+      // that request before submitting the command through either transport.
+      final command = EixamDeviceCommand.getDeviceStatus();
+      if (commandSender != null) {
+        await commandSender(command);
+      } else {
+        await _runDeviceCommand(
+          command: command,
+          missingDeviceMessage: _deviceCommandNotReadyCode,
+          missingDeviceError: const DeviceException(
+            _deviceCommandNotReadyCode,
+            _deviceCommandNotReadyCode,
+          ),
+        );
+      }
       return await completer.future.timeout(
         timeout,
         onTimeout: () => throw const DeviceException(

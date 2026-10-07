@@ -6,6 +6,7 @@ import '../../device/ble_debug_registry.dart';
 import '../../device/device_runtime_provider.dart';
 import '../../device/ble_device_runtime_provider.dart';
 import '../../device/eixam_ble_protocol.dart';
+import '../../device/eixam_ble_command.dart';
 import '../../device/known_device_reconnect_repository.dart';
 import '../../device/preferred_device_connection_suspension_repository.dart';
 import '../../device/preferred_device_availability_repository.dart';
@@ -427,7 +428,9 @@ class InMemoryDeviceRepository
     await runtimeProvider.setSosVolume(volume);
   }
 
-  Future<DeviceRuntimeStatus> getDeviceRuntimeStatus() async {
+  Future<DeviceRuntimeStatus> getDeviceRuntimeStatus({
+    Future<void> Function(EixamDeviceCommand command)? commandSender,
+  }) async {
     final runtimeProvider = _runtimeProvider;
     if (runtimeProvider is! BleDeviceRuntimeProvider) {
       throw const DeviceException(
@@ -435,7 +438,9 @@ class InMemoryDeviceRepository
         'E_DEVICE_COMMAND_NOT_READY',
       );
     }
-    return runtimeProvider.requestDeviceRuntimeStatus();
+    return runtimeProvider.requestDeviceRuntimeStatus(
+      commandSender: commandSender,
+    );
   }
 
   Future<void> rebootDevice() async {
