@@ -1174,6 +1174,16 @@ class RealBleClient implements BleClient, BleTransportObservationSource {
       return cached;
     }
 
+    // Android remote IDs are stable MAC addresses. A passive status read must
+    // not enumerate system devices: that API can request Nearby Devices while
+    // the host's permission dialog is active and strand the plugin queue after
+    // denial. Reconnect still checks the system bond before creating GATT.
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      final restored = BluetoothDevice.fromId(normalized);
+      _devices[normalized] = restored;
+      return restored;
+    }
+
     final systemDevice = await _findSystemDevice(normalized);
     if (systemDevice != null) {
       _devices[normalized] = systemDevice;
