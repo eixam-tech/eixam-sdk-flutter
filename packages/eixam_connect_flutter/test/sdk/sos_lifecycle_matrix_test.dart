@@ -111,6 +111,152 @@ void main() {
       ProtectionPlatform.android,
       ProtectionPlatform.ios,
     ]) {
+      for (final terminalDuringHandoff in [false, true]) {
+        test(
+          'B1 ACK silence survives detached mirror during handoff $platform terminalDuringHandoff=$terminalDuringHandoff',
+          () async {
+            final events = StreamController<BleIncomingEvent>.broadcast();
+            final adapter = _SnapshotProtectionPlatformAdapter(
+              ProtectionPlatformSnapshot(
+                platform: platform,
+                backgroundCapabilityReady: false,
+              ),
+            );
+            final repository = FakeSosRepository()
+              ..currentIncident = SosIncident(
+                id: '2f4b59af-3bc2-4ba4-a9bc-b7ff71b7a478',
+                state: SosState.idle,
+                createdAt: DateTime.now().toUtc(),
+                isBackendConfirmed: true,
+                originatorNodeId: 0x1234,
+              );
+            final harness = _SdkSosHarness(
+              connectedBle: true,
+              connectedNodeId: 0x1234,
+              deviceCountdown: Duration.zero,
+              sosRepository: repository,
+              bleIncomingEvents: events.stream,
+              protectionPlatformAdapter: adapter,
+            );
+            final commands = <int>[];
+            Future<void> write(EixamDeviceCommand command) async {
+              commands.add(command.opcode);
+              if (command.opcode == 0x09) {
+                const payload = [0xE9, 0x7A, 0x01, 0x09, 0x00, 0x00];
+                scheduleMicrotask(
+                  () => events.add(
+                    BleIncomingEvent(
+                      deviceId: 'ble-1',
+                      type: BleIncomingEventType.provisioningCommandResult,
+                      channel: EixamBleChannel.tel,
+                      payload: payload,
+                      payloadHex: EixamBleProtocol.hex(payload),
+                      source: DeviceSosTransitionSource.device,
+                      receivedAt: DateTime.now().toUtc(),
+                      provisioningCommandResult:
+                          ProvisioningCommandResult.tryParse(payload),
+                    ),
+                  ),
+                );
+              }
+            }
+
+            try {
+              await harness.deviceSosController.attach(commandWriter: write);
+              await harness.sdk.initialize(
+                const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+              );
+              await harness.setSession();
+              await harness.sdk.triggerSosAuthoritatively(
+                const SosTriggerPayload(triggerSource: 'commercial_app'),
+              );
+              harness.deviceSosController.handleIncomingSosPacket(
+                _deviceOriginActivePacket(),
+                source: DeviceSosTransitionSource.device,
+                resolutionContext: _physicalResolutionContext(
+                  receiveSequence: 1,
+                  terminal: false,
+                  receiveSequenceDomain: 'ack-handoff',
+                ),
+              );
+              await pumpEventQueue(times: 5);
+              final original = await harness.sdk.getSosLifecycle();
+              expect(original.nodeId, 0x1234);
+              await harness.deviceSosController.detach();
+              repository.currentIncident = repository.currentIncident.copyWith(
+                state: SosState.acknowledged,
+              );
+              repository.stateController.add(SosState.acknowledged);
+              await pumpEventQueue(times: 8);
+              expect(
+                _hasDebugMessage('E_DEVICE_SOS_SILENCE_NO_ACTIVE_LOCAL_SOS'),
+                isTrue,
+              );
+              expect(commands.where((opcode) => opcode == 0x09), isEmpty);
+
+              if (terminalDuringHandoff) {
+                repository.currentIncident = repository.currentIncident
+                    .copyWith(state: SosState.cancelled);
+                repository.stateController.add(SosState.cancelled);
+                await pumpEventQueue(times: 10);
+                expect(
+                  (await harness.sdk.getSosLifecycle()).isTerminal,
+                  isTrue,
+                );
+              }
+              await harness.deviceSosController.attach(commandWriter: write);
+              harness.deviceSosController.handleIncomingSosPacket(
+                // A fresh firmware status read uses minimal sosType=3 and
+                // retains the existing packet/cycle identity across the handoff.
+                EixamSosPacket.tryParse([0x34, 0x12, 0, 0, 0, 0xC0, 2])!,
+                source: DeviceSosTransitionSource.device,
+                resolutionContext: _physicalResolutionContext(
+                  receiveSequence: 2,
+                  terminal: false,
+                  receiveSequenceDomain: 'ack-handoff',
+                ),
+              );
+              await Future<void>.delayed(const Duration(milliseconds: 20));
+              await pumpEventQueue(times: 12);
+              if (terminalDuringHandoff) {
+                expect(
+                  commands.where((opcode) => opcode == 0x09),
+                  isEmpty,
+                  reason:
+                      'old ACK must not silence a TAG after its lifecycle closed',
+                );
+                return;
+              }
+              expect(commands.where((opcode) => opcode == 0x09), hasLength(1));
+              expect(_hasDebugMessage('SOS_WEB_ACK_SILENCED'), isTrue);
+              expect(
+                (await harness.sdk.getSosLifecycle()).generation,
+                original.generation,
+              );
+              expect(
+                (await harness.sdk.getSosLifecycle()).stage,
+                SosLifecycleStage.active,
+              );
+              expect(
+                commands.where(
+                  (opcode) =>
+                      opcode == 0x04 || opcode == 0x07 || opcode == 0x12,
+                ),
+                isEmpty,
+              );
+            } finally {
+              await harness.dispose();
+              await adapter.dispose();
+              await events.close();
+            }
+          },
+        );
+      }
+    }
+    for (final platform in [
+      ProtectionPlatform.android,
+      ProtectionPlatform.ios,
+    ]) {
       for (final acknowledged in [false, true]) {
         for (final duplicateAfterBackend in [false, true]) {
           test(
@@ -296,7 +442,10 @@ void main() {
                 expect(afterStaleCancel.generation, rearmed.generation);
                 expect(afterStaleCancel.lifecycleId, rearmed.lifecycleId);
                 expect(afterStaleCancel.isOpen, isTrue);
-                expect(afterStaleCancel.stage, isNot(SosLifecycleStage.cancelling));
+                expect(
+                  afterStaleCancel.stage,
+                  isNot(SosLifecycleStage.cancelling),
+                );
               } finally {
                 repository.releaseCancel();
                 await subscription.cancel();

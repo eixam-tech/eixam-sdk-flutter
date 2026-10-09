@@ -4655,6 +4655,7 @@ class EixamConnectSdkImpl
         (status.state == DeviceSosState.preConfirm ||
             status.state == DeviceSosState.active ||
             status.state == DeviceSosState.acknowledged) &&
+        (lifecycle.nodeId == null || status.nodeId == lifecycle.nodeId) &&
         (status.relayCount ?? 0) == 0;
     if (!isLocalOpenDeviceSos) {
       throw const DeviceException(
@@ -4760,6 +4761,7 @@ class EixamConnectSdkImpl
       generation: lifecycle.generation,
       lifecycleId: lifecycle.lifecycleId,
       incidentId: expectedIncidentId,
+      nodeId: lifecycle.nodeId,
     );
     _pendingWebAckSilence = pending;
     try {
@@ -4768,8 +4770,15 @@ class EixamConnectSdkImpl
         _pendingWebAckSilence = null;
       }
     } on DeviceException catch (error) {
+      final awaitingActiveTag =
+          error.code == 'E_DEVICE_SOS_SILENCE_NO_ACTIVE_LOCAL_SOS' &&
+          lifecycle.stage == SosLifecycleStage.active &&
+          lifecycle.localActionable &&
+          !lifecycle.externalOnly &&
+          lifecycle.nodeId != null;
       if (error.code != 'E_DEVICE_COMMAND_NOT_READY' &&
-          error.code != 'E_BLE_COMMAND_WRITER_NOT_READY') {
+          error.code != 'E_BLE_COMMAND_WRITER_NOT_READY' &&
+          !awaitingActiveTag) {
         if (identical(_pendingWebAckSilence, pending)) {
           _pendingWebAckSilence = null;
         }
@@ -4797,6 +4806,11 @@ class EixamConnectSdkImpl
         'SOS_WEB_ACK_SILENCE_RETRY_SKIPPED generation=${pending.generation} '
         'reason=stale_lifecycle',
       );
+      return;
+    }
+    if (pending.nodeId != lifecycle.nodeId ||
+        (pending.nodeId != null &&
+            deviceSosController.currentStatus.nodeId != pending.nodeId)) {
       return;
     }
     BleDebugRegistry.instance.recordEvent(
@@ -5665,6 +5679,14 @@ class EixamConnectSdkImpl
     // the local surface — otherwise the host stays on active/sending after
     // the tag has already stopped.
     await _reconcileAuthoritativeLifecycleFromDeviceStatus(status);
+
+    if ((status.derivedFromBlePacket || isDeviceTimeoutPromotion) &&
+        (status.state == DeviceSosState.active ||
+            status.state == DeviceSosState.acknowledged) &&
+        _pendingWebAckSilence != null &&
+        status.nodeId == _sosLifecycle.current.nodeId) {
+      unawaited(_retryPendingWebAckSilence());
+    }
 
     if (_isSosCycleClosed(status.state)) {
       final terminalState =
@@ -26304,11 +26326,13 @@ final class _PendingWebAckSilence {
     required this.generation,
     required this.lifecycleId,
     required this.incidentId,
+    required this.nodeId,
   });
 
   final int generation;
   final String lifecycleId;
   final String incidentId;
+  final int? nodeId;
 }
 
 final class _SosGenerationDispatchOperation {
