@@ -11248,6 +11248,11 @@ class EixamConnectSdkImpl
     DeviceSosStatus status, {
     required String? cycleKey,
   }) {
+    if (_deferDeviceTerminalDuringPublicCancellation(
+      source: 'app_origin_device_terminal_cleanup',
+    )) {
+      return;
+    }
     final runtimeIncidentId = _currentDeviceRuntimeUiIncidentId();
     _clearPreSosSession(
       reason: 'app_origin_device_terminal_cleanup',
@@ -22773,6 +22778,12 @@ class EixamConnectSdkImpl
     if (!_isTerminalSuppressionCloseReason(reason)) {
       return;
     }
+    if (_deferDeviceTerminalDuringPublicCancellation(source: reason)) {
+      if (terminalReason == SosTerminalReason.deviceAckTimeout) {
+        _lastPublicSosTerminalReason = terminalReason;
+      }
+      return;
+    }
     final currentRuntimeIncidentId = _currentDeviceRuntimeUiIncidentId();
     final activeIncident = _lastKnownActiveSosIncident;
     final fallbackIncident = _publicSosFallbackIncident;
@@ -22873,6 +22884,23 @@ class EixamConnectSdkImpl
     );
     _emitPublicSosState(terminalState, source: 'device_terminal_event');
     _emitOperationalDiagnostics();
+  }
+
+  bool _deferDeviceTerminalDuringPublicCancellation({required String source}) {
+    final lifecycle = _sosLifecycle.current;
+    if (_publicSosClosureInFlight != _SosClosureIntent.cancel ||
+        lifecycle.stage != SosLifecycleStage.cancelling) {
+      return false;
+    }
+    // A TAG mirror acknowledgement is transport proof, not confirmation that
+    // the canonical incident has closed. The active cancel operation owns
+    // backend reconciliation and terminalization for this same generation.
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_DEVICE_TERMINAL_PROJECTION_DEFERRED source=$source '
+      'generation=${lifecycle.generation} '
+      'reason=authoritative_cancellation_pending',
+    );
+    return true;
   }
 
   SosTerminalReason _publicSosTerminalReasonForClose({

@@ -107,6 +107,207 @@ void main() {
   });
 
   group('SOS-01..SOS-16 SDK lifecycle matrix', () {
+    for (final platform in [
+      ProtectionPlatform.android,
+      ProtectionPlatform.ios,
+    ]) {
+      for (final acknowledged in [false, true]) {
+        for (final duplicateAfterBackend in [false, true]) {
+          test(
+            'B1 cancel convergence $platform acknowledged=$acknowledged duplicateAfterBackend=$duplicateAfterBackend',
+            () async {
+              final repository = _BlockingCancelSosRepository()
+                ..currentIncident = SosIncident(
+                  id: '2f4b59af-3bc2-4ba4-a9bc-b7ff71b7a478',
+                  state: SosState.idle,
+                  createdAt: DateTime.now().toUtc(),
+                  isBackendConfirmed: true,
+                );
+              final adapter = _SnapshotProtectionPlatformAdapter(
+                ProtectionPlatformSnapshot(
+                  platform: platform,
+                  backgroundCapabilityReady: false,
+                ),
+              );
+              final harness = _SdkSosHarness(
+                sosRepository: repository,
+                connectedBle: true,
+                connectedNodeId: 0x1234,
+                deviceCountdown: Duration.zero,
+                protectionPlatformAdapter: adapter,
+              );
+              final states = <SosState>[];
+              final subscription = harness.sdk.watchSosState().listen(
+                states.add,
+              );
+              final e2 = EixamSosEventPacket.tryParse([
+                0xE2,
+                0x02,
+                0x34,
+                0x12,
+                0,
+                0,
+              ])!;
+              try {
+                await harness.deviceSosController.attach(
+                  commandWriter: (command) async {
+                    if (command.opcode == 0x05) {
+                      scheduleMicrotask(
+                        () =>
+                            harness.deviceSosController.handleIncomingSosPacket(
+                              _deviceOriginActivePacket(),
+                              source: DeviceSosTransitionSource.device,
+                            ),
+                      );
+                    }
+                    if (command.opcode == 0x04) {
+                      scheduleMicrotask(
+                        () => harness.deviceSosController
+                            .handleIncomingSosEventPacket(
+                              e2,
+                              source: DeviceSosTransitionSource.device,
+                            ),
+                      );
+                    }
+                  },
+                );
+                await harness.sdk.initialize(
+                  const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+                );
+                await harness.setSession();
+                await harness.sdk.triggerSosAuthoritatively(
+                  const SosTriggerPayload(triggerSource: 'commercial_app'),
+                );
+                harness.deviceSosController.handleIncomingSosPacket(
+                  _deviceOriginActivePacket(),
+                  source: DeviceSosTransitionSource.device,
+                );
+                await pumpEventQueue(times: 5);
+                if (acknowledged) {
+                  repository.currentIncident = repository.currentIncident
+                      .copyWith(state: SosState.acknowledged);
+                  repository.stateController.add(SosState.acknowledged);
+                  await pumpEventQueue(times: 5);
+                  expect(
+                    await harness.sdk.getSosState(),
+                    SosState.acknowledged,
+                  );
+                }
+                final original = await harness.sdk.getSosLifecycle();
+                states.clear();
+                final cancellation = harness.sdk.cancelSosAuthoritatively();
+                await repository.cancelStarted.timeout(
+                  const Duration(seconds: 2),
+                );
+                // The second genuine E2 reproduces the physical B1 ordering.
+                if (!duplicateAfterBackend) {
+                  harness.deviceSosController.handleIncomingSosEventPacket(
+                    e2,
+                    source: DeviceSosTransitionSource.device,
+                  );
+                }
+                harness.sdk.didChangeAppLifecycleState(
+                  AppLifecycleState.paused,
+                );
+                await pumpEventQueue(times: 10);
+                expect(
+                  harness.deviceSosController.currentStatus.state,
+                  DeviceSosState.inactive,
+                );
+                expect(
+                  (await harness.sdk.getSosLifecycle()).stage,
+                  SosLifecycleStage.cancelling,
+                );
+                expect(
+                  await harness.sdk.getSosState(),
+                  SosState.cancelRequested,
+                );
+                expect(
+                  states,
+                  isNot(
+                    contains(
+                      anyOf(
+                        SosState.cancelled,
+                        SosState.resolved,
+                        SosState.idle,
+                      ),
+                    ),
+                  ),
+                );
+                expect(
+                  (await harness.sdk.getSosCapability()).canTriggerSos,
+                  isFalse,
+                );
+
+                final ownIncident = repository.currentIncident;
+                repository.currentIncident = SosIncident(
+                  id: 'unrelated-incident',
+                  state: SosState.cancelled,
+                  createdAt: ownIncident.createdAt,
+                  triggerSource: 'commercial_app',
+                  isBackendConfirmed: true,
+                );
+                repository.stateController.add(SosState.cancelled);
+                await pumpEventQueue(times: 5);
+                expect(
+                  (await harness.sdk.getSosLifecycle()).stage,
+                  SosLifecycleStage.cancelling,
+                );
+                expect(
+                  (await harness.sdk.getSosLifecycle()).backendIncidentId,
+                  original.backendIncidentId,
+                );
+                repository.currentIncident = ownIncident;
+                repository.releaseCancel();
+                final result = await cancellation;
+                if (duplicateAfterBackend) {
+                  harness.deviceSosController.handleIncomingSosEventPacket(
+                    e2,
+                    source: DeviceSosTransitionSource.device,
+                  );
+                }
+                harness.sdk.didChangeAppLifecycleState(
+                  AppLifecycleState.resumed,
+                );
+                await pumpEventQueue(times: 10);
+                expect(result.lifecycle.stage, SosLifecycleStage.cancelled);
+                expect(result.lifecycle.generation, original.generation);
+                expect(
+                  result.lifecycle.backendIncidentId,
+                  original.backendIncidentId,
+                );
+                expect(
+                  (await harness.sdk.getSosCapability()).canTriggerSos,
+                  isTrue,
+                );
+                expect(
+                  states.where((state) => state == SosState.cancelled),
+                  hasLength(1),
+                );
+
+                await harness.sdk.startPreSos();
+                final rearmed = await harness.sdk.getSosLifecycle();
+                expect(rearmed.stage, SosLifecycleStage.arming);
+                expect(rearmed.generation, greaterThan(original.generation));
+                expect(rearmed.lifecycleId, isNot(original.lifecycleId));
+                repository.stateController.add(SosState.cancelled);
+                await pumpEventQueue(times: 5);
+                final afterStaleCancel = await harness.sdk.getSosLifecycle();
+                expect(afterStaleCancel.generation, rearmed.generation);
+                expect(afterStaleCancel.lifecycleId, rearmed.lifecycleId);
+                expect(afterStaleCancel.isOpen, isTrue);
+                expect(afterStaleCancel.stage, isNot(SosLifecycleStage.cancelling));
+              } finally {
+                repository.releaseCancel();
+                await subscription.cancel();
+                await harness.dispose();
+                await adapter.dispose();
+              }
+            },
+          );
+        }
+      }
+    }
     test(
       'CoreBluetooth command channel uses bound peripheral identity',
       () async {
