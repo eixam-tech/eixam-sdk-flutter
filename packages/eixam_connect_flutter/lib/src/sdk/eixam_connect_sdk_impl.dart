@@ -11645,7 +11645,9 @@ class EixamConnectSdkImpl
       'cycle=${snapshot.iosBleSosCycleKey ?? "none"}',
     );
 
-    if ((normalizedKind == 'active' || normalizedKind == 'preSos') &&
+    if ((normalizedKind == 'active' ||
+            normalizedKind == 'preSos' ||
+            normalizedKind == 'cancelled') &&
         _terminalWatermarkRejectsRestoredEvidence(
           observedAt:
               snapshot.iosBleSosReceivedAt ??
@@ -11660,7 +11662,10 @@ class EixamConnectSdkImpl
         'SOS_TERMINAL_WATERMARK_REJECTED source=ios_snapshot '
         'kind=$normalizedKind',
       );
-      return SosState.idle;
+      // Ignoring old evidence must not hide the newer incident or countdown.
+      return _hasNewAuthoritativeGenerationSinceTerminal()
+          ? null
+          : SosState.idle;
     }
 
     if (normalizedKind == 'cancelled') {
@@ -15220,6 +15225,66 @@ class EixamConnectSdkImpl
       return false;
     }
     if (current.isOpen && current.generation > terminal.generation) {
+      final incomingCycle = cycleKey?.trim();
+      final currentCycle = _deviceCycleKeyCorrelatedToLifecycle(current);
+      final terminalCycle = _deviceCycleKeyCorrelatedToLifecycle(terminal);
+      final currentCycleIds = <String?>{
+        current.lifecycleId,
+        current.deviceCycleKey,
+        current.incident?.cycleKey,
+        current.localIncidentId,
+        currentCycle,
+        _preSosSession?.cycleKey,
+      };
+      final terminalCycleIds = <String?>{
+        terminal.lifecycleId,
+        terminal.deviceCycleKey,
+        terminal.incident?.cycleKey,
+        terminal.localIncidentId,
+        terminalCycle,
+      };
+      bool matches(Set<String?> identities) =>
+          incomingCycle != null &&
+          incomingCycle.isNotEmpty &&
+          (identities.contains(incomingCycle) ||
+              identities.contains('device-runtime-$incomingCycle') ||
+              identities.contains('device-cycle:$incomingCycle'));
+      final matchesCurrent = matches(currentCycleIds);
+      final matchesTerminal = matches(terminalCycleIds);
+      // Generation allocation never releases the previous generation's fence.
+      // Packet IDs may be reused; a current cycle match still needs evidence
+      // observed after the terminal boundary. Unresolved snapshots fail closed.
+      final observation = observedAt?.toUtc();
+      final generationStart =
+          _preSosSession?.startedAt.toUtc() ?? current.activationTimestamp;
+      final reason = observation == null
+          ? 'unresolved_observation'
+          : !observation.isAfter(terminal.lastAuthoritativeObservation)
+          ? 'older_terminal_generation'
+          : nodeId != null &&
+                (current.nodeId ?? terminal.nodeId) != null &&
+                nodeId != (current.nodeId ?? terminal.nodeId)
+          ? 'node_mismatch'
+          : matchesTerminal && !matchesCurrent
+          ? 'older_terminal_cycle'
+          : !matchesCurrent &&
+                (incomingCycle == null ||
+                    incomingCycle.isEmpty ||
+                    generationStart == null ||
+                    observation.isBefore(generationStart))
+          ? 'unresolved_generation'
+          : null;
+      if (reason != null) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_STALE_GENERATION_OBSERVATION_REJECTED '
+          'terminalGeneration=${terminal.generation} '
+          'currentGeneration=${current.generation} '
+          'cycle=${incomingCycle ?? "none"} '
+          'observedAt=${observation?.toIso8601String() ?? "none"} '
+          'reason=$reason',
+        );
+        return true;
+      }
       return false;
     }
     if (_deviceInactiveBoundaryAfterTerminalGeneration == terminal.generation &&
@@ -17203,12 +17268,15 @@ class EixamConnectSdkImpl
           ? "correlated_active_incident"
           : "repository_evidence_not_admitted"}',
     );
-    if (repositoryHasTerminalIncident &&
+    if ((repositoryHasTerminalIncident ||
+            (state == SosState.sent &&
+                repositoryIncident?.isBackendConfirmed == true) ||
+            state == SosState.acknowledged) &&
         lifecycle.isOpen &&
         _hasNewAuthoritativeGenerationSinceTerminal() &&
         !repositoryIncidentMatchesLifecycle) {
       BleDebugRegistry.instance.recordEvent(
-        'SOS_STALE_TERMINAL_IGNORED_FOR_NEW_GENERATION '
+        '${repositoryHasTerminalIncident ? "SOS_STALE_TERMINAL_IGNORED_FOR_NEW_GENERATION" : "SOS_STALE_REPOSITORY_STATE_IGNORED_FOR_NEW_GENERATION"} '
         'terminalGeneration=${_sosLifecycle.activeTerminalWatermark?.generation ?? 0} '
         'activeGeneration=${lifecycle.generation} reason=identity_mismatch',
       );
@@ -20261,7 +20329,10 @@ class EixamConnectSdkImpl
         return _publicSosState;
       }
     }
-    if (_isTerminalPublicSosState(repositoryState) &&
+    if ((_isTerminalPublicSosState(repositoryState) ||
+            (repositoryState == SosState.sent &&
+                repositoryIncident?.isBackendConfirmed == true) ||
+            repositoryState == SosState.acknowledged) &&
         _hasNewAuthoritativeGenerationSinceTerminal() &&
         (repositoryIncident == null ||
             !sosIncidentEvidenceMatchesLifecycle(
@@ -20269,7 +20340,7 @@ class EixamConnectSdkImpl
               repositoryIncident,
             ))) {
       BleDebugRegistry.instance.recordEvent(
-        'SOS_STALE_TERMINAL_IGNORED_FOR_NEW_GENERATION '
+        '${_isTerminalPublicSosState(repositoryState) ? "SOS_STALE_TERMINAL_IGNORED_FOR_NEW_GENERATION" : "SOS_STALE_REPOSITORY_STATE_IGNORED_FOR_NEW_GENERATION"} '
         'terminalGeneration=${_sosLifecycle.activeTerminalWatermark?.generation ?? 0} '
         'activeGeneration=${_sosLifecycle.current.generation} '
         'source=getSosState reason=identity_mismatch',

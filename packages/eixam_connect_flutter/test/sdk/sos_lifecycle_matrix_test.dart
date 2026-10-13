@@ -12049,6 +12049,308 @@ void main() {
       },
     );
 
+    group('SOS generation ordering after immediate rearm', () {
+      for (final kind in ['active', 'preSos', 'cancelled']) {
+        for (final activate in [false, true]) {
+          test(
+            'old native $kind cannot overwrite newer ${activate ? "ACTIVE" : "ARMING"}',
+            () async {
+              final terminalAt = DateTime.now().toUtc().subtract(
+                const Duration(minutes: 1),
+              );
+              final secureStore = InMemorySecureKeyValueStore();
+              await _seedTerminalDeviceLifecycle(
+                secureStore: secureStore,
+                terminalAt: terminalAt,
+                deviceCycleKey: 'sos:4660:1',
+              );
+              final adapter = _SnapshotProtectionPlatformAdapter(
+                const ProtectionPlatformSnapshot(
+                  backgroundCapabilityReady: true,
+                  platform: ProtectionPlatform.ios,
+                ),
+              );
+              final harness = _SdkSosHarness(
+                sosLifecycleSecureStore: secureStore,
+                protectionPlatformAdapter: adapter,
+                sosRepository: _IncidentIdAwareSosRepository(),
+              );
+              try {
+                await harness.sdk.initialize(
+                  const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+                );
+                await harness.setSession();
+                await harness.sdk.startPreSos(
+                  countdown: const Duration(minutes: 1),
+                );
+                expect((await harness.sdk.getSosLifecycle()).generation, 2);
+                if (activate) {
+                  await harness.sdk.triggerSosAuthoritatively(
+                    const SosTriggerPayload(triggerSource: 'commercial_app'),
+                  );
+                }
+                final fresh = await harness.sdk.getSosLifecycle();
+                final incident = await harness.sdk.getCurrentSosIncident();
+                adapter.snapshot = ProtectionPlatformSnapshot(
+                  backgroundCapabilityReady: true,
+                  platform: ProtectionPlatform.ios,
+                  iosBleSosSnapshotKind: kind,
+                  iosBleSosReceivedAt: terminalAt.subtract(
+                    const Duration(seconds: 1),
+                  ),
+                  iosBleSosDeadlineAt: DateTime.now().toUtc().add(
+                    const Duration(minutes: 1),
+                  ),
+                  iosBleSosNodeId: 0x1234,
+                  iosBleSosCycleKey: 'sos:4660:1',
+                );
+                expect(
+                  await harness.sdk.getSosState(),
+                  activate ? SosState.sent : SosState.arming,
+                );
+                expect(
+                  (await harness.sdk.getCurrentSosIncident())?.id,
+                  incident?.id,
+                );
+                harness.sdk.didChangeAppLifecycleState(
+                  AppLifecycleState.paused,
+                );
+                harness.sdk.didChangeAppLifecycleState(
+                  AppLifecycleState.resumed,
+                );
+                harness.realtimeClient.emitConnectionState(
+                  RealtimeConnectionState.reconnecting,
+                );
+                harness.realtimeClient.emitConnectionState(
+                  RealtimeConnectionState.connected,
+                );
+                await pumpEventQueue(times: 8);
+                expect(
+                  await harness.sdk.getSosState(),
+                  activate ? SosState.sent : SosState.arming,
+                );
+                final after = await harness.sdk.getSosLifecycle();
+                expect(after.lifecycleId, fresh.lifecycleId);
+                expect(after.generation, fresh.generation);
+                expect(after.stage, fresh.stage);
+                if (!activate) {
+                  expect(await harness.sdk.getPreSosStatus(), isNotNull);
+                }
+                expect(
+                  _hasDebugMessage(
+                    'SOS_STALE_GENERATION_OBSERVATION_REJECTED terminalGeneration=1 currentGeneration=2',
+                  ),
+                  isTrue,
+                );
+              } finally {
+                await harness.dispose();
+                await adapter.dispose();
+              }
+            },
+          );
+        }
+      }
+
+      for (final evidence in [
+        'terminal_cycle_fresh_receipt',
+        'unknown_timestamp',
+        'unknown_cycle',
+        'cross_node',
+      ]) {
+        test(
+          'restored $evidence cannot mutate a known newer generation',
+          () async {
+            final terminalAt = DateTime.now().toUtc().subtract(
+              const Duration(minutes: 1),
+            );
+            final secureStore = InMemorySecureKeyValueStore();
+            await _seedTerminalDeviceLifecycle(
+              secureStore: secureStore,
+              terminalAt: terminalAt,
+              deviceCycleKey: 'sos:4660:1',
+            );
+            final adapter = _SnapshotProtectionPlatformAdapter(
+              const ProtectionPlatformSnapshot(
+                backgroundCapabilityReady: true,
+                platform: ProtectionPlatform.ios,
+              ),
+            );
+            final harness = _SdkSosHarness(
+              sosLifecycleSecureStore: secureStore,
+              protectionPlatformAdapter: adapter,
+              connectedBle: evidence == 'cross_node',
+              connectedNodeId: 0x1234,
+            );
+            try {
+              await harness.sdk.initialize(
+                const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+              );
+              await harness.setSession();
+              await harness.sdk.startPreSos(
+                countdown: const Duration(minutes: 1),
+              );
+              final fresh = await harness.sdk.getSosLifecycle();
+              adapter.snapshot = ProtectionPlatformSnapshot(
+                backgroundCapabilityReady: true,
+                platform: ProtectionPlatform.ios,
+                iosBleSosSnapshotKind: 'active',
+                iosBleSosReceivedAt: evidence == 'unknown_timestamp'
+                    ? null
+                    : DateTime.now().toUtc(),
+                iosBleSosNodeId: evidence == 'cross_node' ? 0x5678 : 0x1234,
+                iosBleSosCycleKey: evidence == 'unknown_cycle'
+                    ? null
+                    : evidence == 'terminal_cycle_fresh_receipt'
+                    ? 'sos:4660:1'
+                    : 'sos:4660:2',
+              );
+              expect(await harness.sdk.getSosState(), SosState.arming);
+              expect(
+                (await harness.sdk.getSosLifecycle()).lifecycleId,
+                fresh.lifecycleId,
+              );
+              expect(await harness.sdk.getPreSosStatus(), isNotNull);
+              expect(
+                _hasDebugMessage('SOS_STALE_GENERATION_OBSERVATION_REJECTED'),
+                isTrue,
+              );
+            } finally {
+              await harness.dispose();
+              await adapter.dispose();
+            }
+          },
+        );
+      }
+
+      for (final platform in [
+        ProtectionPlatform.android,
+        ProtectionPlatform.ios,
+      ]) {
+        for (final incoming in [
+          SosState.sent,
+          SosState.acknowledged,
+          SosState.cancelled,
+          SosState.resolved,
+        ]) {
+          test(
+            '${platform.name} stale backend ${incoming.name} cannot affect next ACTIVE',
+            () async {
+              final repository = _IncidentIdAwareSosRepository();
+              final adapter = _SnapshotProtectionPlatformAdapter(
+                ProtectionPlatformSnapshot(
+                  backgroundCapabilityReady: true,
+                  platform: platform,
+                ),
+              );
+              final harness = _SdkSosHarness(
+                sosRepository: repository,
+                protectionPlatformAdapter: adapter,
+              );
+              try {
+                await harness.sdk.initialize(
+                  const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+                );
+                await harness.setSession();
+                final first = await harness.sdk.triggerSosAuthoritatively(
+                  const SosTriggerPayload(triggerSource: 'commercial_app'),
+                );
+                await harness.sdk.cancelSosAuthoritatively();
+                await harness.sdk.startPreSos(
+                  countdown: const Duration(minutes: 1),
+                );
+                await harness.sdk.triggerSosAuthoritatively(
+                  const SosTriggerPayload(triggerSource: 'commercial_app'),
+                );
+                final fresh = await harness.sdk.getSosLifecycle();
+                final freshIncident = repository.currentIncident;
+                expect(fresh.generation, first.lifecycle.generation + 1);
+                repository.currentIncident = first.incident!.copyWith(
+                  state: incoming,
+                );
+                repository.stateController.add(incoming);
+                await pumpEventQueue(times: 8);
+                expect(await harness.sdk.getSosState(), SosState.sent);
+                final after = await harness.sdk.getSosLifecycle();
+                expect(after.generation, fresh.generation);
+                expect(after.stage, SosLifecycleStage.active);
+                expect(after.incident?.id, fresh.incident?.id);
+                expect(adapter.commands, isEmpty);
+                // The current generation still accepts its own ACK.
+                repository.currentIncident = freshIncident.copyWith(
+                  state: SosState.acknowledged,
+                );
+                repository.stateController.add(SosState.acknowledged);
+                await pumpEventQueue(times: 8);
+                expect(await harness.sdk.getSosState(), SosState.acknowledged);
+                expect(
+                  (await harness.sdk.getSosLifecycle()).generation,
+                  fresh.generation,
+                );
+              } finally {
+                await harness.dispose();
+                await adapter.dispose();
+              }
+            },
+          );
+        }
+      }
+
+      test(
+        'fresh same-generation native ACTIVE survives previous terminal fence',
+        () async {
+          final terminalAt = DateTime.now().toUtc().subtract(
+            const Duration(minutes: 1),
+          );
+          final secureStore = InMemorySecureKeyValueStore();
+          await _seedTerminalDeviceLifecycle(
+            secureStore: secureStore,
+            terminalAt: terminalAt,
+            deviceCycleKey: 'sos:4660:1',
+          );
+          final adapter = _SnapshotProtectionPlatformAdapter(
+            const ProtectionPlatformSnapshot(
+              backgroundCapabilityReady: true,
+              platform: ProtectionPlatform.ios,
+            ),
+          );
+          final harness = _SdkSosHarness(
+            sosLifecycleSecureStore: secureStore,
+            protectionPlatformAdapter: adapter,
+          );
+          try {
+            await harness.sdk.initialize(
+              const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+            );
+            await harness.setSession();
+            await harness.sdk.startPreSos(
+              countdown: const Duration(minutes: 1),
+            );
+            final fresh = await harness.sdk.getSosLifecycle();
+            adapter.snapshot = ProtectionPlatformSnapshot(
+              backgroundCapabilityReady: true,
+              platform: ProtectionPlatform.ios,
+              iosBleSosSnapshotKind: 'active',
+              iosBleSosReceivedAt: DateTime.now().toUtc(),
+              iosBleSosNodeId: 0x1234,
+              iosBleSosCycleKey: 'sos:4660:2',
+            );
+            expect(await harness.sdk.getSosState(), SosState.sent);
+            expect(
+              (await harness.sdk.getSosLifecycle()).generation,
+              fresh.generation,
+            );
+            expect(
+              _hasDebugMessage('SOS_STALE_GENERATION_OBSERVATION_REJECTED'),
+              isFalse,
+            );
+          } finally {
+            await harness.dispose();
+            await adapter.dispose();
+          }
+        },
+      );
+    });
+
     test(
       'persisted iOS ACTIVE snapshot cannot override terminal watermark',
       () async {

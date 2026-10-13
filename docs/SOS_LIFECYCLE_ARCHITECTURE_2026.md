@@ -66,6 +66,17 @@ from merging consecutive incidents. A confirmed terminal boundary permits the
 next generation; duplicate observations enrich the current generation without
 creating another one.
 
+The terminal watermark remains authoritative after a newer generation opens.
+Restored native/device evidence must belong to the current cycle or prove a
+fresh observation after its start and the terminal boundary. Evidence from the
+terminal cycle, an older observation, a different known node, or unresolved
+identity/timing cannot replace the newer countdown, incident, or public state.
+A receipt timestamp alone does not make an old cycle new. Firmware packet IDs
+are correlation data, not generation counters, and may be reused only with
+current-generation evidence. Backend ACTIVE, ACK, CANCEL and RESOLVE publication
+also requires current incident correlation after rearm; provisional device
+transport handoff retains its existing rules.
+
 ## Activation and already-active recovery
 
 `triggerSosAuthoritatively` publishes `activating`, invokes the existing
