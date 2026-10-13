@@ -3,6 +3,9 @@ import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:flutter/foundation.dart';
+
+import '../device/ble_debug_registry.dart';
 
 import '../storage/secure_store_operation_diagnostics.dart';
 import 'authoritative_sos_cadence.dart';
@@ -279,12 +282,38 @@ final class AuthoritativeSosLifecycleController {
     bool startNewGenerationAfterTerminal = false,
     bool emitToStream = true,
   }) async {
+    final generationBefore = _current.generation;
+    final caller = StackTrace.current
+        .toString()
+        .split('\n')
+        .skip(1)
+        .take(3)
+        .map((frame) => frame.trim())
+        .join('|');
+    void trace(String decision, int allocatedGeneration) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_ARM_CALL_SITE '
+        'timestamp=${_now().toUtc().toIso8601String()} '
+        'caller=$caller source=${origin.name} '
+        'platform=${defaultTargetPlatform.name} '
+        'generationBefore=$generationBefore '
+        'generationAllocated=$allocatedGeneration '
+        'currentLifecycle=${_current.lifecycleId} '
+        'stage=${_current.stage.name} '
+        'incidentId=${_current.backendIncidentId ?? _current.localIncidentId ?? "none"} '
+        'triggerType=${triggerSource ?? "unknown"} '
+        'intentIdentitySupported=false decision=$decision',
+      );
+    }
+
+    trace('requested', generationBefore);
     final terminalFence = _terminalWatermark;
     final replacingFencedGeneration =
         terminalFence != null &&
         _current.generation <= terminalFence.generation;
     if (replacingFencedGeneration) {
       if (!startNewGenerationAfterTerminal) {
+        trace('terminal_fence_rejected', generationBefore);
         return _rejectFencedOpenTransition(
           source: 'begin_arming',
           candidateStage: SosLifecycleStage.arming,
@@ -293,9 +322,11 @@ final class AuthoritativeSosLifecycleController {
       _generation = terminalFence.generation;
     }
     if (_current.isOpen && !replacingFencedGeneration) {
+      trace('joined_current_generation', generationBefore);
       return _current;
     }
     _generation += 1;
+    trace('allocated', _generation);
     final now = _now();
     final identity = nodeId?.toString() ?? deviceId ?? 'local';
     final requestedLifecycleId = lifecycleId;

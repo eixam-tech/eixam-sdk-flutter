@@ -134,3 +134,23 @@ See [`../SOS_LIFECYCLE_ARCHITECTURE_2026.md`](../SOS_LIFECYCLE_ARCHITECTURE_2026
 for the complete lifecycle, secure provenance, recovery, cancellation, and
 revision contract. Preserve current typed behavior when older legacy-state
 documentation differs.
+
+## Admission after a mirrored terminal generation
+
+A BLE SOS packet's `packetId` is a transmission counter, not an episode ID.
+The deployed firmware increments it in `sendSOSPacket()` for every absolute,
+delta or minimal transmission. Changed counters and unconsumed fingerprints
+cannot reopen a mirrored terminal generation while physical closure is missing.
+Shared physical-start admission requires current-domain terminal receive evidence
+before accepting the next physical edge in that case. Explicit public APP
+activation remains an independent new-generation path.
+
+`SOS_ARM_CALL_SITE` records the actual allocation caller and before/after
+generation at `beginArming`, including rejected and joined requests.
+`SOS_PHYSICAL_START_ADMISSION` records the receive producer, protocol counter,
+retry count and correlation. `SOS_BACKEND_CREATE_CALL_SITE` records the local
+dispatch generation/attempt before the repository call. Standard diagnostic
+redaction still applies; QA records the diagnostic event time and correlates
+typed public lifecycle/incident identities separately. The public activation
+API carries no user-intent token; diagnostics must not invent one or infer a
+human caller from lifecycle origin.

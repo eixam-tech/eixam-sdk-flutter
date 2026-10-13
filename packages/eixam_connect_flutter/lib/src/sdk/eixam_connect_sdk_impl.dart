@@ -5,7 +5,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_core/src/interfaces/realtime_client.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart'
-    show TargetPlatform, kDebugMode, visibleForTesting;
+    show TargetPlatform, defaultTargetPlatform, kDebugMode, visibleForTesting;
 import 'package:flutter/widgets.dart';
 
 import '../data/datasources_local/device_config_store.dart';
@@ -13336,6 +13336,14 @@ class EixamConnectSdkImpl
         'SOS_GENERATION_DISPATCH_CLAIMED owner=${owner.name} '
         'generation=$generation attempt=$dispatchAttempt',
       );
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_BACKEND_CREATE_CALL_SITE '
+        'generation=$generation caller=_dispatchSosGeneration '
+        'owner=${owner.name} triggerType=$triggerSource '
+        'dispatchCorrelation=g$generation-a$dispatchAttempt '
+        'platform=${defaultTargetPlatform.name} '
+        'lifecycle=${lifecycle.lifecycleId}',
+      );
       final incident = await sosRepository.triggerSos(
         message: message,
         triggerSource: triggerSource,
@@ -14628,16 +14636,6 @@ class EixamConnectSdkImpl
     final pendingTerminalFence =
         _terminalDeviceMirrorIsPending || _terminalConvergenceFence != null;
     final incomingCycleKey = 'sos:${packet.nodeId}:${packet.packetId}';
-    final terminalFence = _terminalDeviceCycleFence;
-    final fencedCycleKey =
-        (terminalFence?.generation == terminal?.generation
-            ? terminalFence?.runtimeCycleKey
-            : null) ??
-        terminal?.deviceCycleKey?.trim() ??
-        _runtimeDeviceSosCycleKey(
-          status: currentDeviceStatus,
-          nodeId: currentDeviceStatus.nodeId ?? packet.nodeId,
-        );
     final packetWasPreviouslyConsumed = _devicePacketSignaturesByGeneration
         .values
         .any((signatures) => signatures.contains(evidence.packetFingerprint));
@@ -14704,27 +14702,24 @@ class EixamConnectSdkImpl
             terminalEvidence.receiveSequenceDomain ==
                 evidence.receiveSequenceDomain &&
             evidence.receiveSequence > terminalEvidence.receiveSequence;
-        final distinctProtocolCycle =
-            fencedCycleKey?.isNotEmpty == true &&
-            incomingCycleKey != fencedCycleKey;
         final terminalFromPreviousProcess =
             _terminalBoundaryFromPreviousProcessGeneration ==
             terminal.generation;
         final backendOnlyAppGeneration =
             terminal.origin == SosLifecycleOrigin.localApp &&
             !_deviceMirrorDispatchedGenerations.contains(terminal.generation);
+        // packetId is a transmission counter: the firmware advances it on
+        // retries within the same physical episode. Neither a changed counter
+        // nor unconsumed bytes prove that a mirrored terminal episode ended.
+        // Require an observed physical closure before reopening that episode.
         final canAccept =
-            (distinctProtocolCycle && !packetWasPreviouslyConsumed) ||
             freshReceiveAfterTerminal ||
             terminalFromPreviousProcess ||
-            backendOnlyAppGeneration ||
-            (fencedCycleKey == null && !packetWasPreviouslyConsumed);
+            backendOnlyAppGeneration;
         if (canAccept) {
           admission = PhysicalSosStartAdmission(
             decision: PhysicalSosStartAdmissionDecision.acceptNewGeneration,
-            reason: distinctProtocolCycle
-                ? 'new_protocol_cycle_after_terminal'
-                : freshReceiveAfterTerminal
+            reason: freshReceiveAfterTerminal
                 ? 'fresh_physical_receive_after_terminal'
                 : terminalFromPreviousProcess
                 ? 'current_session_start_after_restored_terminal'
@@ -14754,7 +14749,7 @@ class EixamConnectSdkImpl
             decision: PhysicalSosStartAdmissionDecision.rejectReplay,
             reason: packetWasPreviouslyConsumed
                 ? 'packet_fingerprint_consumed_by_terminal_generation'
-                : 'same_protocol_cycle_without_new_physical_edge',
+                : 'physical_episode_closure_not_observed',
           );
         }
       }
@@ -14804,6 +14799,10 @@ class EixamConnectSdkImpl
       'terminalSummaryGeneration=${_publicTerminalGeneration ?? terminal?.generation ?? "none"} '
       'deviceMirrorState=${_sosDeviceMirrorState.name} '
       'nodeId=${packet.nodeId} packetId=${packet.packetId} '
+      'packetSequence=${packet.sequence ?? "none"} retryCount=${packet.retryCount} '
+      'correlationId=${evidence.correlationId} '
+      'receiveSequenceDomain=${evidence.receiveSequenceDomain} '
+      'characteristic=${evidence.characteristic} '
       'runtimeCycleKey=$runtimeCycleKey '
       'packetFingerprint=${_sosFingerprintDiagnosticMarker(evidence.packetFingerprint)} '
       'receiveSequence=${evidence.receiveSequence} '
