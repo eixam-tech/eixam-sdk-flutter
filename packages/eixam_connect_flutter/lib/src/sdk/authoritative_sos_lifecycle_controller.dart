@@ -6,6 +6,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:flutter/foundation.dart';
 
 import '../device/ble_debug_registry.dart';
+import '../diagnostics/security_diagnostics_redactor.dart';
 
 import '../storage/secure_store_operation_diagnostics.dart';
 import 'authoritative_sos_cadence.dart';
@@ -298,7 +299,7 @@ final class AuthoritativeSosLifecycleController {
         'platform=${defaultTargetPlatform.name} '
         'generationBefore=$generationBefore '
         'generationAllocated=$allocatedGeneration '
-        'currentLifecycle=${_current.lifecycleId} '
+        'currentLifecycleMarker=${SecurityDiagnosticsRedactor.stableIdentifierMarker(_current.lifecycleId)} '
         'stage=${_current.stage.name} '
         'incidentId=${_current.backendIncidentId ?? _current.localIncidentId ?? "none"} '
         'triggerType=${triggerSource ?? "unknown"} '

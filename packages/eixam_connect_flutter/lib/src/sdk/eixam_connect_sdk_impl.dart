@@ -13342,7 +13342,7 @@ class EixamConnectSdkImpl
         'owner=${owner.name} triggerType=$triggerSource '
         'dispatchCorrelation=g$generation-a$dispatchAttempt '
         'platform=${defaultTargetPlatform.name} '
-        'lifecycle=${lifecycle.lifecycleId}',
+        'lifecycleMarker=${SecurityDiagnosticsRedactor.stableIdentifierMarker(lifecycle.lifecycleId)}',
       );
       final incident = await sosRepository.triggerSos(
         message: message,
