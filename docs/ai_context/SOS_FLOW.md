@@ -181,3 +181,22 @@ An old E3/E1 receive boundary and a later receive sequence do not authorize
 another countdown once the shared lifecycle has already admitted the next
 generation. The standalone fallback only consumes that edge from a closed
 device state. Terminal watermarks and terminal command propagation are unchanged.
+
+## Physical cancellation at the APP dispatch boundary
+
+A confirmed own-TAG `0xE1` invalidates a matching pending APP activation before
+asynchronous repository lookup or handoff processing. Confirmation continuations
+retain their pending generation and revalidate it after lookup, device status,
+position loading and repository completion. `confirmPreSos` cannot implicitly
+arm a terminal generation; a new explicit arm remains valid immediately after
+terminal settlement.
+
+The dispatch commit is recorded immediately before the repository create call,
+after the generation claim and its awaited persistence. A cancellation before
+that boundary prevents creation. If creation is already in flight, cancellation
+waits for that same operation and closes its incident even if BLE has already
+published ACTIVE. Its completion cannot publish ACTIVE or manufacture another
+generation. `SOS CONFIRM` (`0x05`) has no wire cycle ID, so the SDK checks the
+captured generation again before writer dispatch and native fallback. Retries,
+B1 transport-only handoff rules, and B2 `0x07`/E3 terminal propagation remain
+enabled.

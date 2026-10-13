@@ -107,6 +107,209 @@ void main() {
   });
 
   group('SOS-01..SOS-16 SDK lifecycle matrix', () {
+    test('B3 physical cancel fences a suspended confirmation lookup', () async {
+      final repository = _BlockingConfirmationLookupRepository();
+      final harness = _SdkSosHarness(
+        sosRepository: repository,
+        connectedBle: true,
+        connectedNodeId: 0x1234,
+      );
+      final commands = <int>[];
+      try {
+        await harness.deviceSosController.attach(
+          commandWriter: (command) async => commands.add(command.opcode),
+        );
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await harness.setSession();
+        await harness.sdk.startPreSos(countdown: const Duration(seconds: 20));
+        final armed = await harness.sdk.getSosLifecycle();
+        repository.blockNextLookup = true;
+        final confirmation = harness.sdk.confirmPreSos(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        final rejected = expectLater(
+          confirmation,
+          throwsA(
+            isA<SosException>().having(
+              (error) => error.code,
+              'code',
+              'E_SOS_PENDING_ACTIVATION_CANCELLED',
+            ),
+          ),
+        );
+        await repository.lookupStarted.future;
+        harness.deviceSosController.handleIncomingSosEventPacket(
+          _deviceCancelPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await pumpEventQueue(times: 20);
+        repository.releaseLookup();
+        await rejected;
+        await pumpEventQueue(times: 20);
+        final terminal = await harness.sdk.getSosLifecycle();
+        expect(terminal.generation, armed.generation);
+        expect(terminal.stage, SosLifecycleStage.cancelled);
+        expect(repository.triggerCallCount, 0);
+        expect(commands.where((opcode) => opcode == 0x05), isEmpty);
+      } finally {
+        repository.releaseLookup();
+        await harness.dispose();
+      }
+    });
+
+    test('B3 physical cancel fences a queued backend dispatch claim', () async {
+      final claimStarted = Completer<void>();
+      final releaseClaim = Completer<void>();
+      final harness = _SdkSosHarness(
+        connectedBle: true,
+        connectedNodeId: 0x1234,
+        beforeSosDispatchClaim: (_) async {
+          if (!claimStarted.isCompleted) claimStarted.complete();
+          await releaseClaim.future;
+        },
+      );
+      try {
+        await harness.deviceSosController.attach(commandWriter: (_) async {});
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await harness.setSession();
+        await harness.sdk.startPreSos(countdown: const Duration(seconds: 20));
+        final armed = await harness.sdk.getSosLifecycle();
+        final confirmation = harness.sdk.confirmPreSos(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        final rejected = expectLater(
+          confirmation,
+          throwsA(
+            isA<SosException>().having(
+              (error) => error.code,
+              'code',
+              'E_SOS_PENDING_ACTIVATION_CANCELLED',
+            ),
+          ),
+        );
+        await claimStarted.future;
+        harness.deviceSosController.handleIncomingSosEventPacket(
+          _devicePostFireCancelPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await pumpEventQueue(times: 20);
+        releaseClaim.complete();
+        await rejected;
+        await pumpEventQueue(times: 20);
+        final terminal = await harness.sdk.getSosLifecycle();
+        expect(terminal.generation, armed.generation);
+        expect(terminal.stage, SosLifecycleStage.cancelled);
+        expect(harness.sosRepository.triggerCallCount, 0);
+      } finally {
+        if (!releaseClaim.isCompleted) releaseClaim.complete();
+        await harness.dispose();
+      }
+    });
+
+    test(
+      'B3 physical cancel settles an in-flight create without publishing ACTIVE',
+      () async {
+        final repository = _BlockingTriggerSosRepository();
+        final harness = _SdkSosHarness(
+          sosRepository: repository,
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+        );
+        try {
+          await harness.deviceSosController.attach(commandWriter: (_) async {});
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await harness.sdk.startPreSos(countdown: const Duration(seconds: 20));
+          final armed = await harness.sdk.getSosLifecycle();
+          final confirmation = harness.sdk.confirmPreSos(
+            const SosTriggerPayload(triggerSource: 'commercial_app'),
+          );
+          final rejected = expectLater(
+            confirmation,
+            throwsA(
+              isA<SosException>().having(
+                (error) => error.code,
+                'code',
+                'E_SOS_PENDING_ACTIVATION_CANCELLED',
+              ),
+            ),
+          );
+          await repository.triggerStarted.future;
+          harness.deviceSosController.handleIncomingSosEventPacket(
+            _devicePostFireCancelPacket(),
+            source: DeviceSosTransitionSource.device,
+          );
+          await pumpEventQueue(times: 20);
+          expect(
+            (await harness.sdk.getSosLifecycle()).stage,
+            SosLifecycleStage.cancelling,
+          );
+          repository.releaseTrigger();
+          await rejected;
+          await _waitForCondition(
+            () async =>
+                (await harness.sdk.getSosLifecycle()).stage ==
+                SosLifecycleStage.cancelled,
+          );
+          final terminal = await harness.sdk.getSosLifecycle();
+          expect(terminal.generation, armed.generation);
+          expect(repository.triggerCallCount, 1);
+          expect(repository.cancelCallCount, 1);
+          expect(repository.currentIncident.state, SosState.cancelled);
+        } finally {
+          repository.releaseTrigger();
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'B3 duplicate confirmation after CANCEL cannot allocate another generation',
+      () async {
+        final harness = _SdkSosHarness();
+        try {
+          await harness.sdk.startPreSos(countdown: const Duration(seconds: 20));
+          final terminal = await harness.sdk.cancelSosAuthoritatively();
+          await expectLater(
+            harness.sdk.confirmPreSos(const SosTriggerPayload()),
+            throwsA(
+              isA<SosException>().having(
+                (error) => error.code,
+                'code',
+                'E_SOS_PENDING_ACTIVATION_CANCELLED',
+              ),
+            ),
+          );
+          expect(
+            (await harness.sdk.getSosLifecycle()).generation,
+            terminal.lifecycle.generation,
+          );
+          expect(
+            (await harness.sdk.getSosLifecycle()).stage,
+            SosLifecycleStage.cancelled,
+          );
+          expect(harness.sosRepository.triggerCallCount, 0);
+          await harness.sdk.startPreSos(countdown: const Duration(seconds: 20));
+          final next = await harness.sdk.getSosLifecycle();
+          expect(next.generation, terminal.lifecycle.generation + 1);
+          await harness.sdk.confirmPreSos(const SosTriggerPayload());
+          expect(harness.sosRepository.triggerCallCount, 1);
+          expect(
+            (await harness.sdk.getSosLifecycle()).generation,
+            next.generation,
+          );
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
     group('transport-only SOS handoff preserves lifecycle', () {
       for (final platform in [
         ProtectionPlatform.android,
@@ -14072,6 +14275,26 @@ final class _AlreadyActiveLookupRepository extends FakeSosRepository
   }) async {
     await _triggerResponse.future;
     throw const SosException('E_SOS_ALREADY_ACTIVE', 'E_SOS_ALREADY_ACTIVE');
+  }
+}
+
+final class _BlockingConfirmationLookupRepository extends FakeSosRepository {
+  bool blockNextLookup = false;
+  final Completer<void> lookupStarted = Completer<void>();
+  final Completer<void> _releaseLookup = Completer<void>();
+
+  void releaseLookup() {
+    if (!_releaseLookup.isCompleted) _releaseLookup.complete();
+  }
+
+  @override
+  Future<SosIncident?> getCurrentIncident() async {
+    if (blockNextLookup) {
+      blockNextLookup = false;
+      lookupStarted.complete();
+      await _releaseLookup.future;
+    }
+    return super.getCurrentIncident();
   }
 }
 

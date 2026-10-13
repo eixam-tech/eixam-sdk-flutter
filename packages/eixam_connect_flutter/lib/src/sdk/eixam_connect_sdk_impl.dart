@@ -5515,6 +5515,32 @@ class EixamConnectSdkImpl
       );
       return;
     }
+    final pendingActivation = _pendingSosActivation;
+    final lifecycleAtPhysicalCancel = _sosLifecycle.current;
+    if (_isOwnDeviceUserDeactivatedEvent(status) &&
+        status.transitionSource == DeviceSosTransitionSource.device &&
+        _isConnectedOwnDeviceSosStatus(status) &&
+        pendingActivation != null &&
+        pendingActivation.generation == lifecycleAtPhysicalCancel.generation &&
+        lifecycleAtPhysicalCancel.isOpen &&
+        (lifecycleAtPhysicalCancel.activationTimestamp == null ||
+            !status.updatedAt.isBefore(
+              lifecycleAtPhysicalCancel.activationTimestamp!,
+            ))) {
+      // A physical terminal packet must invalidate its pending operation before
+      // repository lookups, storage or BLE handoff can yield to the countdown.
+      // Reuse the generation-scoped cancellation path, including settlement of
+      // a create that has already crossed the dispatch boundary.
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_PHYSICAL_CANCEL_PENDING_ACTIVATION '
+        'generation=${pendingActivation.generation} '
+        'dispatchCommitted=${pendingActivation.dispatchCommitted} '
+        'nodeId=${status.nodeId} packetId=${status.packetId} '
+        'opcode=0xE1 observedAt=${status.updatedAt.toUtc().toIso8601String()}',
+      );
+      await cancelSosAuthoritatively();
+      return;
+    }
     _emitOperationalDiagnostics();
     _consumePendingAppTriggeredSosBridge(status);
     final deviceOwnedPreSosActivation =
@@ -7470,6 +7496,10 @@ class EixamConnectSdkImpl
     bool allowDeviceRuntimeActiveShortCircuit = true,
     _PendingSosActivationOperation? pendingActivation,
   }) async {
+    _requireCurrentPendingSosActivation(
+      pendingActivation,
+      callbackSource: 'activate_public_sos_entry',
+    );
     final originDecision = classifySosOrigin(
       triggerSource: payload.triggerSource,
       forBackendPublish: true,
@@ -7509,6 +7539,10 @@ class EixamConnectSdkImpl
     _publicSosActionInFlight = true;
     try {
       final positionSnapshot = await _loadPositionSnapshotForSos();
+      _requireCurrentPendingSosActivation(
+        pendingActivation,
+        callbackSource: 'activate_public_sos_after_position',
+      );
       final metadata = _buildOperationalSosMetadata();
       final capabilitySnapshot = _computeCurrentSosCapabilitySnapshot(
         reason: 'trigger_sos_start',
@@ -7559,13 +7593,10 @@ class EixamConnectSdkImpl
       }
       final dispatchGeneration =
           pendingActivation?.generation ?? _sosLifecycle.current.generation;
-      if (pendingActivation != null &&
-          !_commitPendingSosDispatch(pendingActivation)) {
-        throw const SosException(
-          'E_SOS_PENDING_ACTIVATION_CANCELLED',
-          'Pending SOS activation was cancelled before dispatch.',
-        );
-      }
+      _requireCurrentPendingSosActivation(
+        pendingActivation,
+        callbackSource: 'backend_dispatch_preparation',
+      );
       if (!_loggedBackgroundSosPublishTraceV2) {
         _loggedBackgroundSosPublishTraceV2 = true;
         BleDebugRegistry.instance.recordEvent(
@@ -7701,6 +7732,10 @@ class EixamConnectSdkImpl
         backendSucceeded: backendIncident != null,
         deviceSucceeded: deviceSync.succeeded,
       );
+      _requireCurrentPendingSosActivation(
+        pendingActivation,
+        callbackSource: 'activate_public_sos_repository_completion',
+      );
       BleDebugRegistry.instance.recordEvent(
         'triggerSos() channel decision -> backendSucceeded=${backendIncident != null} deviceAvailable=${deviceSync.available} deviceAttempted=${deviceSync.attempted} deviceSucceeded=${deviceSync.succeeded} activeOwner=$_currentDeviceCommandOwnerRoute delivery=${deliveryChannel?.name ?? "-"}',
       );
@@ -7824,10 +7859,28 @@ class EixamConnectSdkImpl
     SosTriggerPayload payload, {
     required _PendingSosActivationOperation? pendingActivation,
   }) async {
+    _requireCurrentPendingSosActivation(
+      pendingActivation,
+      callbackSource: 'confirm_pre_sos_entry',
+    );
     final lifecycleAtConfirmation = _sosLifecycle.current;
+    if (lifecycleAtConfirmation.isTerminal) {
+      _logLateSosActivationRejected(
+        operation: pendingActivation,
+        callbackSource: 'confirm_pre_sos_terminal_generation',
+      );
+      throw const SosException(
+        'E_SOS_PENDING_ACTIVATION_CANCELLED',
+        'A terminal SOS generation requires a new explicit arm.',
+      );
+    }
     final recordedDispatchIncident =
         lifecycleAtConfirmation.incident ??
         await sosRepository.getCurrentIncident();
+    _requireCurrentPendingSosActivation(
+      pendingActivation,
+      callbackSource: 'confirm_pre_sos_after_repository_lookup',
+    );
     final generationAlreadyDispatched =
         lifecycleAtConfirmation.origin == SosLifecycleOrigin.localApp &&
         (lifecycleAtConfirmation.stage == SosLifecycleStage.active ||
@@ -7851,6 +7904,10 @@ class EixamConnectSdkImpl
     }
     final session = _preSosSession;
     var deviceStatus = await deviceSosController.getStatus();
+    _requireCurrentPendingSosActivation(
+      pendingActivation,
+      callbackSource: 'confirm_pre_sos_after_device_status',
+    );
     if (_shouldBlockPreSosActivationForDeviceTerminalCancel(
       session: session,
       deviceStatus: deviceStatus,
@@ -7929,6 +7986,7 @@ class EixamConnectSdkImpl
           skipDeviceAction: true,
           deviceAlreadyActive: true,
           allowDeviceRuntimeActiveShortCircuit: false,
+          pendingActivation: pendingActivation,
         );
       }
       return _activatePublicSos(
@@ -8598,7 +8656,10 @@ class EixamConnectSdkImpl
       );
     }
 
-    if (pendingStage && pending != null && pending.dispatchCommitted) {
+    if (pending != null &&
+        pending.generation == current.generation &&
+        pending.dispatchCommitted &&
+        !pending.dispatchResult.isCompleted) {
       pending.cancellationRequested = true;
       await _sosLifecycle.beginCancellation();
       try {
@@ -13160,9 +13221,25 @@ class EixamConnectSdkImpl
     final lifecycle = _sosLifecycle.current;
     return identical(_pendingSosActivation, operation) &&
         !operation.cancelled &&
+        !operation.cancellationRequested &&
         operation.operationRevision == _pendingSosActivationRevision &&
         lifecycle.generation == operation.generation &&
         !lifecycle.isTerminal;
+  }
+
+  void _requireCurrentPendingSosActivation(
+    _PendingSosActivationOperation? operation, {
+    required String callbackSource,
+  }) {
+    if (operation == null || _isPendingSosActivationCurrent(operation)) return;
+    _logLateSosActivationRejected(
+      operation: operation,
+      callbackSource: callbackSource,
+    );
+    throw const SosException(
+      'E_SOS_PENDING_ACTIVATION_CANCELLED',
+      'Pending SOS activation was cancelled before completion.',
+    );
   }
 
   bool _commitPendingSosDispatch(_PendingSosActivationOperation operation) {
@@ -13316,7 +13393,7 @@ class EixamConnectSdkImpl
           return claim.lifecycle.incident ??
               await sosRepository.getCurrentIncident();
         }
-        lifecycle = claim.lifecycle;
+        lifecycle = _sosLifecycle.current;
       } else if (lifecycle.dispatchOwner != owner) {
         BleDebugRegistry.instance.recordEvent(
           'SOS_GENERATION_DISPATCH_JOINED '
@@ -13329,6 +13406,21 @@ class EixamConnectSdkImpl
         return lifecycle.incident ?? await sosRepository.getCurrentIncident();
       }
 
+      if (lifecycle.generation != generation ||
+          lifecycle.isTerminal ||
+          lifecycle.stage == SosLifecycleStage.cancelling) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_GENERATION_DUPLICATE_PUBLISH_SUPPRESSED '
+          'reason=cancelled_before_repository_call generation=$generation',
+        );
+        return null;
+      }
+      final pendingActivation = _pendingSosActivation;
+      if (pendingActivation != null &&
+          pendingActivation.generation == generation &&
+          !_commitPendingSosDispatch(pendingActivation)) {
+        return null;
+      }
       final dispatchAttempt =
           (_sosDispatchAttemptsByGeneration[generation] ?? 0) + 1;
       _sosDispatchAttemptsByGeneration[generation] = dispatchAttempt;
@@ -21643,6 +21735,29 @@ class EixamConnectSdkImpl
   Future<void> _sendDeviceCommandThroughActiveOwner(
     EixamDeviceCommand command,
   ) async {
+    final commandGeneration = _sosLifecycle.current.generation;
+    void requireCurrentConfirmation() {
+      if (command.opcode != 0x05) return;
+      final lifecycle = _sosLifecycle.current;
+      final pending = _pendingSosActivation;
+      if (lifecycle.generation != commandGeneration ||
+          lifecycle.isTerminal ||
+          lifecycle.stage == SosLifecycleStage.cancelling ||
+          pending?.cancelled == true ||
+          pending?.cancellationRequested == true) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_LATE_CONFIRM_REJECTED generation=$commandGeneration '
+          'currentGeneration=${lifecycle.generation} '
+          'stage=${lifecycle.stage.name} command=0x05',
+        );
+        throw const SosException(
+          'E_SOS_PENDING_ACTIVATION_CANCELLED',
+          'SOS confirmation belongs to a cancelled or superseded generation.',
+        );
+      }
+    }
+
+    requireCurrentConfirmation();
     final flutterReady = _flutterWriterReadyFor(command);
     // Foreground protection often *claims* native owner while Flutter still
     // holds GATT. TEL RX works; CMD TX through native then fails. Prefer the
@@ -21734,6 +21849,7 @@ class EixamConnectSdkImpl
       );
     }
 
+    requireCurrentConfirmation();
     final result = await protectionPlatformAdapter.sendProtectionCommand(
       request: ProtectionPlatformCommandRequest(
         label: command.label,
