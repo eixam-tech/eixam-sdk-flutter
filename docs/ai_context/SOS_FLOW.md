@@ -154,3 +154,21 @@ redaction still applies; QA records the diagnostic event time and correlates
 typed public lifecycle/incident identities separately. The public activation
 API carries no user-intent token; diagnostics must not invent one or infer a
 human caller from lifecycle origin.
+
+## Terminal propagation to a CoreBluetooth peripheral
+
+A connected iOS peripheral UUID is a transport handle and must not be stored
+as a canonical MAC. The same selected-peripheral plus hydrated own-node proof
+used by command readiness also authorizes a current-cycle terminal target when
+no canonical hardware address is available. Canonical MAC matching remains
+unchanged when an address exists.
+
+Remote RESOLVE captures an immutable account/lifecycle/generation/incident and
+TAG target, sends `SOS_ACK` (`0x07`) on EA04 through the authorized writer, and
+waits for physical E3 terminal evidence. A not-ready writer preserves the
+current target and queued terminal operation until an authorized writer can
+deliver it. Revalidation rejects another peripheral or TAG node and an obsolete
+lifecycle before dispatch or ACK consumption. Backend/UI terminal state alone
+is not a physical TAG ACK. WEB ACK remains the separate nonterminal silence
+operation. This target rule does not change SOS start admission or terminal
+generation watermarks.

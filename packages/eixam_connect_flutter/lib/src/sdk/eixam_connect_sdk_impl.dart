@@ -14125,7 +14125,47 @@ class EixamConnectSdkImpl
         captured.device?.nodeId == current.device?.nodeId;
     return current.devicePresent &&
         nodeMatches &&
-        _samePhysicalHardwareId(currentHardwareId, capturedHardwareId);
+        (_samePhysicalHardwareId(currentHardwareId, capturedHardwareId) ||
+            (capturedHardwareId == null &&
+                captured.device!.deviceId.trim().toLowerCase() ==
+                    current.device?.deviceId.trim().toLowerCase() &&
+                _hasVerifiedPeripheralTerminationIdentity(
+                  current.device,
+                  captured.device!.nodeId,
+                )));
+  }
+
+  bool _hasVerifiedPeripheralTerminationIdentity(
+    DeviceStatus? device,
+    int? nodeId,
+  ) {
+    if (device == null || nodeId == null || device.nodeId != nodeId) {
+      return false;
+    }
+    final transportId = _isProtectionPlatformOwningBle
+        ? _protectionModeController.currentStatus.activeDeviceId
+        : deviceSosController.commandTransportId;
+    return _hasVerifiedPeripheralCommandIdentity(
+      device,
+      transportId: transportId,
+    );
+  }
+
+  bool _terminationTargetMatchesConnection(
+    _PhysicalSosTerminationTarget proof,
+    DeviceStatus? device,
+  ) {
+    if (proof.hardwareId != null) {
+      return _samePhysicalHardwareId(
+        _physicalHardwareIdForStatus(device),
+        proof.hardwareId,
+      );
+    }
+    // A CoreBluetooth UUID is a bound transport handle, never a canonical MAC.
+    // Revalidate both that selected peripheral and its hydrated own TAG node.
+    return device?.deviceId.trim().toLowerCase() ==
+            proof.deviceId.toLowerCase() &&
+        _hasVerifiedPeripheralTerminationIdentity(device, proof.nodeId);
   }
 
   _PhysicalSosTerminationTarget? _captureCurrentPhysicalSosTarget({
@@ -14183,6 +14223,14 @@ class EixamConnectSdkImpl
     final incidentIdentityPresent = terminalIncident.id.trim().isNotEmpty;
     final connectedDevicePresent = connection.devicePresent;
     final commandChannelReady = connection.commandChannelReady;
+    final peripheralIdentityVerified =
+        _hasVerifiedPeripheralTerminationIdentity(device, nodeId);
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_REMOTE_TERMINAL_DEVICE_TARGET_IDENTITY '
+      'generation=${lifecycle.generation} '
+      'canonicalAddressAvailable=${connectedHardwareId != null} '
+      'peripheralBindingVerified=$peripheralIdentityVerified',
+    );
     final deviceSosOpen =
         deviceSos.state == DeviceSosState.preConfirm ||
         deviceSos.state == DeviceSosState.active ||
@@ -14200,7 +14248,7 @@ class EixamConnectSdkImpl
         !connectedDevicePresent ||
         connectedDeviceId == null ||
         connectedDeviceId.isEmpty ||
-        connectedHardwareId == null ||
+        (connectedHardwareId == null && !peripheralIdentityVerified) ||
         (!isBackendResolve &&
             !connection.shortCommandReady &&
             !connection.commandChannelReady) ||
@@ -14361,7 +14409,6 @@ class EixamConnectSdkImpl
       reason: 'terminal_device_target_current_validation',
     ).connection;
     final device = connection.device;
-    final hardwareId = _physicalHardwareIdForStatus(device);
     return !_disposed &&
         !_supersededRemoteTerminalDeviceClearKeys.contains(
           proof.operationKey,
@@ -14383,7 +14430,7 @@ class EixamConnectSdkImpl
         (proof.nodeId == null ||
             device.nodeId == null ||
             device.nodeId == proof.nodeId) &&
-        _samePhysicalHardwareId(hardwareId, proof.hardwareId);
+        _terminationTargetMatchesConnection(proof, device);
   }
 
   bool _consumeRemoteTerminalDeviceClearAck(DeviceSosStatus status) {
@@ -14489,10 +14536,9 @@ class EixamConnectSdkImpl
       reason: 'terminal_device_ack_current_validation',
     ).connection;
     final device = connection.device;
-    final hardwareId = _physicalHardwareIdForStatus(device);
     if (!connection.devicePresent ||
         device == null ||
-        !_samePhysicalHardwareId(hardwareId, proof.hardwareId)) {
+        !_terminationTargetMatchesConnection(proof, device)) {
       return false;
     }
     return proof.runtimeCycleKey == null ||
@@ -25889,7 +25935,7 @@ class _PhysicalSosTerminationTarget {
   final SosState terminalState;
   final String incidentId;
   final String deviceId;
-  final String hardwareId;
+  final String? hardwareId;
   final int? nodeId;
   final String? runtimeCycleKey;
   final int? packetId;
