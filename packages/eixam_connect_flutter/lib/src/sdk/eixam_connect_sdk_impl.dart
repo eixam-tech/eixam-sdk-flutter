@@ -5501,6 +5501,12 @@ class EixamConnectSdkImpl
     if (_isNoOpInactiveDeviceSosStatus(status)) {
       return;
     }
+    if (_ignoreTransportOnlyDeviceSosStatus(
+      status,
+      source: 'device_status_stream',
+    )) {
+      return;
+    }
     if (_shouldRejectStalePreSosPhysicalCancel(status)) {
       BleDebugRegistry.instance.recordEvent(
         'SOS_PHYSICAL_PRE_SOS_CANCEL_REJECTED '
@@ -6014,6 +6020,28 @@ class EixamConnectSdkImpl
 
   bool _isSosCycleClosed(DeviceSosState state) {
     return state == DeviceSosState.inactive || state == DeviceSosState.resolved;
+  }
+
+  bool _ignoreTransportOnlyDeviceSosStatus(
+    DeviceSosStatus status, {
+    required String source,
+  }) {
+    if (!_isDeviceSosCycleClosed(status.state) ||
+        status.derivedFromBlePacket ||
+        status.transitionSource != DeviceSosTransitionSource.unknown) {
+      return false;
+    }
+    // Detaching a command path (handoff, disconnect or service rediscovery)
+    // reports local transport inactivity, not a device cancellation. Reject it
+    // before deriving cycle identity or mutating SOS ownership/terminal fences.
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_TRANSPORT_OBSERVATION_IGNORED source=$source '
+      'deviceState=${status.state.name} '
+      'generation=${_sosLifecycle.current.generation} '
+      'lifecycleStage=${_sosLifecycle.current.stage.name} '
+      'reason=no_explicit_terminal_evidence',
+    );
+    return true;
   }
 
   bool _isNoOpInactiveDeviceSosStatus(DeviceSosStatus status) {
@@ -17486,6 +17514,9 @@ class EixamConnectSdkImpl
     required bool emitResolvedState,
   }) async {
     final status = deviceStatus ?? await deviceSosController.getStatus();
+    if (_ignoreTransportOnlyDeviceSosStatus(status, source: trigger)) {
+      return null;
+    }
     final session = _preSosSession;
     final sessionExpired = session != null && _isPreSosSessionExpired(session);
     final deviceCountdownExpired =

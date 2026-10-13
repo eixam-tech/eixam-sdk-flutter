@@ -115,6 +115,16 @@ cancellation is idempotent.
 
 ## Process and BLE recovery
 
+BLE ownership release, disconnect and service rediscovery are transport facts.
+`DeviceSosController.detach()` reports an unknown-origin local inactive status
+without physical terminal evidence. Shared SDK reconciliation ignores that
+status for SOS control flow and passive hydration; it cannot clear the current
+incident, countdown, ACK presentation, ownership or terminal-generation fences.
+Command readiness may become unavailable while the authoritative SOS remains
+active, acknowledged or cancelling. Explicit device terminal events and
+correlated backend cancellation/resolution continue through their existing
+lifecycle rules.
+
 Initialization and session attachment restore same-account provenance before
 publishing lifecycle state. An active record initially becomes
 `recoveryRequired/reconciling`; a pending cancellation restores as

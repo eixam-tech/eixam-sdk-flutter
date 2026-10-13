@@ -107,6 +107,165 @@ void main() {
   });
 
   group('SOS-01..SOS-16 SDK lifecycle matrix', () {
+    group('transport-only SOS handoff preserves lifecycle', () {
+      for (final platform in [
+        ProtectionPlatform.android,
+        ProtectionPlatform.ios,
+      ]) {
+        for (final acknowledged in [false, true]) {
+          for (final phase in [
+            'detach',
+            'disconnect',
+            'empty_native_snapshot',
+          ]) {
+            test(
+              '${platform.name} ${acknowledged ? "ACKED" : "ACTIVE"} $phase',
+              () async {
+                final adapter = _SnapshotProtectionPlatformAdapter(
+                  ProtectionPlatformSnapshot(
+                    platform: platform,
+                    backgroundCapabilityReady: false,
+                  ),
+                );
+                final repository = _IncidentIdAwareSosRepository();
+                final harness = _SdkSosHarness(
+                  sosRepository: repository,
+                  connectedBle: true,
+                  connectedNodeId: 0x1234,
+                  deviceCountdown: Duration.zero,
+                  protectionPlatformAdapter: adapter,
+                );
+                final states = <SosState>[];
+                final subscription = harness.sdk.watchSosState().listen(
+                  states.add,
+                );
+                try {
+                  await harness.deviceSosController.attach(
+                    commandWriter: (_) async {},
+                  );
+                  await harness.sdk.initialize(
+                    const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+                  );
+                  await harness.setSession();
+                  await harness.sdk.triggerSosAuthoritatively(
+                    const SosTriggerPayload(triggerSource: 'commercial_app'),
+                  );
+                  harness.deviceSosController.handleIncomingSosPacket(
+                    _deviceOriginActivePacket(),
+                    source: DeviceSosTransitionSource.device,
+                  );
+                  await pumpEventQueue(times: 8);
+                  if (acknowledged) {
+                    repository.currentIncident = repository.currentIncident
+                        .copyWith(state: SosState.acknowledged);
+                    repository.stateController.add(SosState.acknowledged);
+                    await pumpEventQueue(times: 8);
+                  }
+                  final before = await harness.sdk.getSosLifecycle();
+                  final incident = await harness.sdk.getCurrentSosIncident();
+                  states.clear();
+                  harness.sdk.didChangeAppLifecycleState(
+                    AppLifecycleState.paused,
+                  );
+                  if (phase == 'disconnect') {
+                    harness.deviceRepository.emitStatus(
+                      buildDeviceStatus(
+                        deviceId: 'ble-1',
+                        nodeId: 0x1234,
+                        connected: false,
+                        paired: true,
+                        activated: true,
+                      ),
+                    );
+                  }
+                  await harness.deviceSosController.detach();
+                  if (phase == 'empty_native_snapshot') {
+                    adapter.snapshot = ProtectionPlatformSnapshot(
+                      platform: platform,
+                      backgroundCapabilityReady: false,
+                    );
+                    adapter.emit(
+                      ProtectionPlatformEvent(
+                        type: ProtectionPlatformEventType.deviceDisconnected,
+                        timestamp: DateTime.now().toUtc(),
+                        reason: 'temporary_handoff_snapshot',
+                      ),
+                    );
+                  }
+                  await pumpEventQueue(times: 8);
+                  expect(
+                    await harness.sdk.getSosState(),
+                    acknowledged ? SosState.acknowledged : SosState.sent,
+                  );
+                  expect(
+                    (await harness.sdk.getCurrentSosIncident())?.id,
+                    incident?.id,
+                  );
+                  final during = await harness.sdk.getSosLifecycle();
+                  expect(during.lifecycleId, before.lifecycleId);
+                  expect(during.generation, before.generation);
+                  expect(during.stage, SosLifecycleStage.active);
+                  expect(
+                    states,
+                    isNot(
+                      contains(
+                        anyOf(
+                          SosState.cancelled,
+                          SosState.resolved,
+                          SosState.idle,
+                        ),
+                      ),
+                    ),
+                  );
+                  harness.sdk.didChangeAppLifecycleState(
+                    AppLifecycleState.resumed,
+                  );
+                  await harness.deviceSosController.attach(
+                    commandWriter: (_) async {},
+                  );
+                  harness.deviceSosController.handleIncomingSosPacket(
+                    _deviceOriginActivePacket(),
+                    source: DeviceSosTransitionSource.device,
+                  );
+                  harness.realtimeClient.emitConnectionState(
+                    RealtimeConnectionState.reconnecting,
+                  );
+                  harness.realtimeClient.emitConnectionState(
+                    RealtimeConnectionState.connected,
+                  );
+                  await pumpEventQueue(times: 8);
+                  expect(
+                    await harness.sdk.getSosState(),
+                    acknowledged ? SosState.acknowledged : SosState.sent,
+                  );
+                  expect(
+                    (await harness.sdk.getSosLifecycle()).generation,
+                    before.generation,
+                  );
+                  expect(
+                    states,
+                    isNot(
+                      contains(
+                        anyOf(
+                          SosState.cancelled,
+                          SosState.resolved,
+                          SosState.idle,
+                        ),
+                      ),
+                    ),
+                  );
+                } finally {
+                  await subscription.cancel();
+                  await harness.dispose();
+                  await adapter.dispose();
+                }
+              },
+            );
+          }
+        }
+      }
+    });
+
     for (final platform in [
       ProtectionPlatform.android,
       ProtectionPlatform.ios,
@@ -183,6 +342,16 @@ void main() {
               final original = await harness.sdk.getSosLifecycle();
               expect(original.nodeId, 0x1234);
               await harness.deviceSosController.detach();
+              await pumpEventQueue(times: 8);
+              expect(
+                await harness.sdk.getSosState(),
+                SosState.sent,
+                reason: 'command-path detachment is not SOS cancellation',
+              );
+              expect(
+                (await harness.sdk.getSosLifecycle()).stage,
+                SosLifecycleStage.active,
+              );
               repository.currentIncident = repository.currentIncident.copyWith(
                 state: SosState.acknowledged,
               );
