@@ -67,8 +67,8 @@ next generation; duplicate observations enrich the current generation without
 creating another one.
 
 The terminal watermark remains authoritative after a newer generation opens.
-Restored native/device evidence must belong to the current cycle or prove a
-fresh observation after its start and the terminal boundary. Evidence from the
+Restored native/device evidence must correlate to the current cycle and carry
+an observation after the terminal boundary. Evidence from the
 terminal cycle, an older observation, a different known node, or unresolved
 identity/timing cannot replace the newer countdown, incident, or public state.
 A receipt timestamp alone does not make an old cycle new. Firmware packet IDs

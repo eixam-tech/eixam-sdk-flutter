@@ -12155,6 +12155,7 @@ void main() {
         'terminal_cycle_fresh_receipt',
         'unknown_timestamp',
         'unknown_cycle',
+        'uncorrelated_fresh_cycle',
         'cross_node',
       ]) {
         test(
@@ -12332,7 +12333,8 @@ void main() {
               iosBleSosSnapshotKind: 'active',
               iosBleSosReceivedAt: DateTime.now().toUtc(),
               iosBleSosNodeId: 0x1234,
-              iosBleSosCycleKey: 'sos:4660:2',
+              iosBleSosCycleKey:
+                  (await harness.sdk.getPreSosStatus())!.cycleKey,
             );
             expect(await harness.sdk.getSosState(), SosState.sent);
             expect(
@@ -12340,7 +12342,9 @@ void main() {
               fresh.generation,
             );
             expect(
-              _hasDebugMessage('SOS_STALE_GENERATION_OBSERVATION_REJECTED'),
+              _hasDebugMessage(
+                'SOS_TERMINAL_WATERMARK_REJECTED source=ios_snapshot kind=active',
+              ),
               isFalse,
             );
           } finally {

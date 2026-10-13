@@ -15255,8 +15255,6 @@ class EixamConnectSdkImpl
       // Packet IDs may be reused; a current cycle match still needs evidence
       // observed after the terminal boundary. Unresolved snapshots fail closed.
       final observation = observedAt?.toUtc();
-      final generationStart =
-          _preSosSession?.startedAt.toUtc() ?? current.activationTimestamp;
       final reason = observation == null
           ? 'unresolved_observation'
           : !observation.isAfter(terminal.lastAuthoritativeObservation)
@@ -15267,11 +15265,7 @@ class EixamConnectSdkImpl
           ? 'node_mismatch'
           : matchesTerminal && !matchesCurrent
           ? 'older_terminal_cycle'
-          : !matchesCurrent &&
-                (incomingCycle == null ||
-                    incomingCycle.isEmpty ||
-                    generationStart == null ||
-                    observation.isBefore(generationStart))
+          : !matchesCurrent
           ? 'unresolved_generation'
           : null;
       if (reason != null) {
