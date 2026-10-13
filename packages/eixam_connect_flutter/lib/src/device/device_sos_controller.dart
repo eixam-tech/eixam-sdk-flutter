@@ -1058,7 +1058,12 @@ class DeviceSosController {
     final physicalStartAdmission = physicalEvidence == null
         ? null
         : resolutionContext?.physicalStartAdmission ??
-              evaluatePhysicalSosStartAdmission(packet, physicalEvidence);
+              (_physicalSosStartAdmissionPolicy == null
+                  ? null
+                  : evaluatePhysicalSosStartAdmission(
+                      packet,
+                      physicalEvidence,
+                    ));
     if (physicalStartAdmission != null &&
         !physicalStartAdmission.shouldProcess) {
       if (physicalStartAdmission.decision ==
@@ -1086,10 +1091,14 @@ class DeviceSosController {
             BleIncomingPayloadKind.ownDeviceSos &&
         physicalEvidence.receiveSequence >
             terminalPhysicalEvidence.receiveSequence;
+    // Shared admission owns whether this is a new episode or current-cycle
+    // evidence. A later receive sequence alone must not restart an explicit
+    // app rearm or keep resetting the countdown of an already admitted start.
+    // Without shared admission, only a closed device state consumes the edge.
     final allowFreshPhysicalStartAfterTerminal =
         resolutionContext?.allowFreshPhysicalStartAfterTerminal == true ||
-        physicalStartAdmission?.allowFreshStartAfterTerminal == true ||
-        freshPhysicalReceiveEdge;
+        (physicalStartAdmission?.allowFreshStartAfterTerminal ??
+            (freshPhysicalReceiveEdge && _isClosedState(_status.state)));
     final afterTerminalBoundary =
         resolutionContext?.afterTerminalBoundary == true ||
         terminalPhysicalEvidence != null;

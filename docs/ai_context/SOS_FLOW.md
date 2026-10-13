@@ -172,3 +172,12 @@ lifecycle before dispatch or ACK consumption. Backend/UI terminal state alone
 is not a physical TAG ACK. WEB ACK remains the separate nonterminal silence
 operation. This target rule does not change SOS start admission or terminal
 generation watermarks.
+
+## Physical evidence during explicit rearm
+
+`DeviceSosController` respects shared physical-start admission: `sameCycle`
+evidence preserves the current countdown and app origin, then confirms ACTIVE.
+An old E3/E1 receive boundary and a later receive sequence do not authorize
+another countdown once the shared lifecycle has already admitted the next
+generation. The standalone fallback only consumes that edge from a closed
+device state. Terminal watermarks and terminal command propagation are unchanged.

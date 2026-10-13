@@ -12666,6 +12666,128 @@ void main() {
     );
 
     group('SOS generation ordering after immediate rearm', () {
+      test(
+        'physical gen N+1 ACTIVE after E3 reaches public SDK once',
+        () async {
+          var now = DateTime.now().toUtc();
+          final terminalAt = now.subtract(const Duration(minutes: 1));
+          final secureStore = InMemorySecureKeyValueStore();
+          await _seedTerminalDeviceLifecycle(
+            secureStore: secureStore,
+            terminalAt: terminalAt,
+            deviceCycleKey: 'sos:4660:1',
+          );
+          final repository = _IncidentIdAwareSosRepository();
+          final harness = _SdkSosHarness(
+            sosRepository: repository,
+            sosLifecycleSecureStore: secureStore,
+            connectedBle: true,
+            connectedNodeId: 0x1234,
+            deviceClock: () => now,
+          );
+          try {
+            await harness.deviceSosController.attach(
+              commandWriter: (_) async {},
+            );
+            await harness.deviceSosController.triggerSos();
+            now = now.add(const Duration(seconds: 21));
+            harness.deviceSosController.handleIncomingSosPacket(
+              _deviceOriginActivePacket(),
+              source: DeviceSosTransitionSource.device,
+            );
+            harness.deviceSosController.handleIncomingSosEventPacket(
+              _deviceBackendResolvedPacket(),
+              source: DeviceSosTransitionSource.device,
+              resolutionContext: _physicalResolutionContext(
+                receiveSequence: 30,
+                terminal: true,
+                receiveSequenceDomain: 'flutter_gatt:rearm-matrix:1',
+              ),
+            );
+            expect(
+              harness.deviceSosController.currentStatus.state,
+              DeviceSosState.resolved,
+            );
+            await harness.sdk.initialize(
+              const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+            );
+            await harness.setSession();
+            now = DateTime.now().toUtc();
+            await harness.sdk.startPreSos(
+              countdown: const Duration(minutes: 1),
+            );
+            final rearmed = await harness.sdk.getSosLifecycle();
+            expect(rearmed.generation, 2);
+            expect(rearmed.stage, SosLifecycleStage.arming);
+            final deadline =
+                harness.deviceSosController.currentStatus.expectedActivationAt!;
+            now = now.add(const Duration(seconds: 1));
+            harness.deviceSosController.handleIncomingSosPacket(
+              _minimalAppSosPacket(sosType: 3, packetId: 4),
+              source: DeviceSosTransitionSource.device,
+              resolutionContext: _physicalResolutionContext(
+                receiveSequence: 31,
+                terminal: false,
+                receiveSequenceDomain: 'flutter_gatt:rearm-matrix:1',
+              ),
+            );
+            expect(
+              harness.deviceSosController.currentStatus.expectedActivationAt,
+              deadline,
+            );
+            await pumpEventQueue(times: 12);
+            now = deadline.add(const Duration(milliseconds: 300));
+            harness.deviceSosController.handleIncomingSosPacket(
+              _minimalAppSosPacket(sosType: 3, packetId: 0),
+              source: DeviceSosTransitionSource.device,
+              resolutionContext: _physicalResolutionContext(
+                receiveSequence: 37,
+                terminal: false,
+                receiveSequenceDomain: 'flutter_gatt:rearm-matrix:1',
+              ),
+            );
+            final status = harness.deviceSosController.currentStatus;
+            expect(status.state, DeviceSosState.active);
+            expect(status.optimistic, isFalse);
+            expect(status.derivedFromBlePacket, isTrue);
+            expect(status.triggerOrigin, DeviceSosTransitionSource.app);
+            await pumpEventQueue(times: 12);
+            expect(await harness.sdk.getSosState(), SosState.sent);
+            expect(
+              (await harness.sdk.getSosLifecycle()).generation,
+              rearmed.generation,
+            );
+            expect(
+              (await harness.sdk.getSosLifecycle()).stage,
+              SosLifecycleStage.active,
+            );
+            expect(repository.triggerCallCount, 1);
+            now = now.add(const Duration(seconds: 1));
+            harness.deviceSosController.handleIncomingSosPacket(
+              _minimalAppSosPacket(sosType: 3, packetId: 1),
+              source: DeviceSosTransitionSource.device,
+              resolutionContext: _physicalResolutionContext(
+                receiveSequence: 39,
+                terminal: false,
+                receiveSequenceDomain: 'flutter_gatt:rearm-matrix:1',
+              ),
+            );
+            expect(
+              harness.deviceSosController.currentStatus.state,
+              DeviceSosState.active,
+            );
+            await pumpEventQueue(times: 12);
+            expect(
+              (await harness.sdk.getSosLifecycle()).generation,
+              rearmed.generation,
+            );
+            expect(repository.triggerCallCount, 1);
+          } finally {
+            await harness.dispose();
+          }
+        },
+      );
+
       for (final kind in ['active', 'preSos', 'cancelled']) {
         for (final activate in [false, true]) {
           test(
@@ -14412,4 +14534,20 @@ DeviceSosStateResolutionContext _physicalResolutionContext({
     incomingClassification: terminal ? 'sosClear' : 'ownDeviceSos',
     incomingReceiveSequence: receiveSequence,
   );
+}
+
+EixamSosPacket _minimalAppSosPacket({
+  required int sosType,
+  required int packetId,
+}) {
+  final flags = EixamSosPacket.packFlags(sosType: sosType);
+  return EixamSosPacket.tryParse([
+    0x34,
+    0x12,
+    0,
+    0,
+    flags & 0xff,
+    flags >> 8,
+    0,
+  ])!;
 }

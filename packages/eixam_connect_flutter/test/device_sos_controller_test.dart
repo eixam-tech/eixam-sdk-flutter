@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
+import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_position_data.dart';
@@ -11,6 +12,111 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('DeviceSosController countdown flows', () {
+    for (final sharedAdmission in [false, true]) {
+      test('rearm ACTIVE after E3 preserves the current countdown '
+          '(shared admission=$sharedAdmission)', () async {
+        var now = DateTime.utc(2026, 10, 13, 12, 47, 0);
+        final controller = DeviceSosController(now: () => now);
+        addTearDown(controller.dispose);
+        await controller.attach(commandWriter: (_) async {});
+        await controller.triggerSos();
+        now = now.add(const Duration(seconds: 21));
+        controller.handleIncomingSosPacket(
+          _activePacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        expect(controller.currentStatus.state, DeviceSosState.active);
+        controller.handleIncomingSosEventPacket(
+          _backendResolvedPacket(),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: _receivedAfterTerminal(
+            sequence: 30,
+            terminal: true,
+            at: now,
+          ),
+        );
+        expect(controller.currentStatus.state, DeviceSosState.resolved);
+        if (sharedAdmission) {
+          controller.setPhysicalSosStartAdmissionPolicy(
+            (packet, evidence, status) => const PhysicalSosStartAdmission(
+              decision: PhysicalSosStartAdmissionDecision.sameCycle,
+              reason: 'current_generation_open',
+            ),
+          );
+        }
+        now = now.add(const Duration(seconds: 75));
+        await controller.triggerSos();
+        final deadline = controller.currentStatus.expectedActivationAt;
+        now = now.add(const Duration(seconds: 1));
+        controller.handleIncomingSosPacket(
+          _countdownPacket(packetId: 4),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: _receivedAfterTerminal(sequence: 31, at: now),
+        );
+        expect(controller.currentStatus.expectedActivationAt, deadline);
+        expect(
+          controller.currentStatus.triggerOrigin,
+          DeviceSosTransitionSource.app,
+        );
+        now = deadline!.add(const Duration(milliseconds: 300));
+        controller.handleIncomingSosPacket(
+          _activePacket(),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: _receivedAfterTerminal(sequence: 37, at: now),
+        );
+        expect(controller.currentStatus.state, DeviceSosState.active);
+        expect(controller.currentStatus.optimistic, isFalse);
+        expect(controller.currentStatus.derivedFromBlePacket, isTrue);
+        now = now.add(const Duration(seconds: 1));
+        controller.handleIncomingSosPacket(
+          _activePacket(packetId: 1),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: _receivedAfterTerminal(sequence: 39, at: now),
+        );
+        expect(controller.currentStatus.state, DeviceSosState.active);
+      });
+    }
+
+    test('physical restart consumes the terminal edge once', () {
+      var now = DateTime.utc(2026, 10, 13);
+      final controller = DeviceSosController(now: () => now);
+      addTearDown(controller.dispose);
+      controller.handleIncomingSosPacket(
+        _activePacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+      controller.handleIncomingSosEventPacket(
+        _deviceClearPacket(),
+        source: DeviceSosTransitionSource.device,
+        resolutionContext: _receivedAfterTerminal(
+          sequence: 30,
+          terminal: true,
+          at: now,
+        ),
+      );
+      now = now.add(const Duration(seconds: 1));
+      controller.handleIncomingSosPacket(
+        _activePacket(),
+        source: DeviceSosTransitionSource.device,
+        resolutionContext: _receivedAfterTerminal(sequence: 31, at: now),
+      );
+      final deadline = controller.currentStatus.expectedActivationAt!;
+      now = now.add(const Duration(seconds: 1));
+      controller.handleIncomingSosPacket(
+        _activePacket(packetId: 1),
+        source: DeviceSosTransitionSource.device,
+        resolutionContext: _receivedAfterTerminal(sequence: 32, at: now),
+      );
+      expect(controller.currentStatus.expectedActivationAt, deadline);
+      now = deadline.add(const Duration(milliseconds: 1));
+      controller.handleIncomingSosPacket(
+        _activePacket(packetId: 2),
+        source: DeviceSosTransitionSource.device,
+        resolutionContext: _receivedAfterTerminal(sequence: 33, at: now),
+      );
+      expect(controller.currentStatus.state, DeviceSosState.active);
+    });
+
     test('app trigger -> preConfirm -> cancel -> inactive', () async {
       final commands = <EixamDeviceCommand>[];
       final controller = DeviceSosController(
@@ -1612,3 +1718,28 @@ EixamSosEventPacket _backendResolvedPacket() {
     0x00,
   ])!;
 }
+
+DeviceSosStateResolutionContext _receivedAfterTerminal({
+  required int sequence,
+  required DateTime at,
+  bool terminal = false,
+}) => DeviceSosStateResolutionContext.fromPhysicalEvidence(
+  PhysicalSosReceiveEvidence(
+    classification: terminal
+        ? BleIncomingPayloadKind.sosClear
+        : BleIncomingPayloadKind.ownDeviceSos,
+    receiveSequence: sequence,
+    receiveSequenceDomain: 'flutter_gatt:rearm-test:1',
+    processSessionId: 'rearm-test',
+    producer: 'flutter_gatt',
+    characteristic: 'ea02',
+    correlationId: 'receive-$sequence',
+    exactPhysicalIdentityMatch: true,
+    packetType: terminal ? 'sos_event' : 'sos',
+    hasStartSemantics: !terminal,
+    hasTerminalSemantics: terminal,
+    packetFingerprint: 'packet-$sequence',
+    cycleIdentity: 'sos:4660:0',
+    receivedAt: at,
+  ),
+);
