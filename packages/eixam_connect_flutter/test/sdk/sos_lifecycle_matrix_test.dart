@@ -107,6 +107,232 @@ void main() {
   });
 
   group('SOS-01..SOS-16 SDK lifecycle matrix', () {
+    for (final scenario in [
+      'foreground',
+      'handoff',
+      'changed_transport',
+      'missing_transport',
+      'wrong_hardware',
+      'wrong_node',
+      'unverified_active',
+      'ambiguous_native',
+      'wrong_writer',
+      'stale_generation',
+      'changed_peer_after_capture',
+    ]) {
+      test('B3 current-cycle CANCEL target $scenario', () async {
+        const hardware = 'CF:82:00:00:00:01';
+        const otherHardware = 'CF:82:00:00:00:02';
+        final adapter = _SnapshotProtectionPlatformAdapter(
+          const ProtectionPlatformSnapshot(
+            platform: ProtectionPlatform.android,
+            backgroundCapabilityReady: false,
+          ),
+        );
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+          deviceCountdown: Duration.zero,
+          protectionPlatformAdapter: adapter,
+        );
+        final commands = <int>[];
+        void observeTerminal() => scheduleMicrotask(
+          () => harness.deviceSosController.handleIncomingSosEventPacket(
+            _deviceResolveAckPacket(),
+            source: DeviceSosTransitionSource.device,
+            resolutionContext: _physicalResolutionContext(
+              receiveSequence: 2,
+              terminal: true,
+              receiveSequenceDomain: 'b3-target',
+            ),
+          ),
+        );
+        Future<void> write(EixamDeviceCommand command) async {
+          commands.add(command.opcode);
+          if (command.opcode == 0x04) observeTerminal();
+        }
+
+        int cancelWrites() =>
+            commands.where((opcode) => opcode == 0x04).length +
+            adapter.commands
+                .where((request) => request.bytes.first == 0x04)
+                .length;
+        try {
+          await harness.deviceSosController.attach(
+            transportId: 'ble-1',
+            commandWriter: write,
+          );
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await harness.sdk.triggerSosAuthoritatively(
+            const SosTriggerPayload(triggerSource: 'commercial_app'),
+          );
+          if (scenario != 'unverified_active') {
+            harness.deviceSosController.handleIncomingSosPacket(
+              _deviceOriginActivePacket(),
+              source: DeviceSosTransitionSource.device,
+              resolutionContext: _physicalResolutionContext(
+                receiveSequence: 1,
+                terminal: false,
+                receiveSequenceDomain: 'b3-target',
+              ),
+            );
+          }
+          await pumpEventQueue(times: 10);
+          final original = await harness.sdk.getSosLifecycle();
+          final originalIncident = harness.sosRepository.currentIncident;
+          expect(original.stage, SosLifecycleStage.active);
+          if (scenario != 'foreground') {
+            await harness.deviceSosController.detach();
+            harness.deviceRepository.emitStatus(
+              buildDeviceStatus(
+                deviceId: 'ble-1',
+                canonicalHardwareId: hardware,
+                nodeId: 0x1234,
+                connected: false,
+              ),
+            );
+            await pumpEventQueue(times: 8);
+          }
+          if (scenario == 'wrong_node') {
+            harness.deviceRepository.emitStatus(
+              buildDeviceStatus(
+                deviceId: 'ble-1',
+                canonicalHardwareId: hardware,
+                nodeId: 0x5678,
+                connected: false,
+              ),
+            );
+            await pumpEventQueue(times: 8);
+          }
+          if (scenario == 'wrong_hardware') {
+            harness.deviceRepository.emitStatus(
+              buildDeviceStatus(
+                deviceId: 'ble-1',
+                canonicalHardwareId: otherHardware,
+                nodeId: 0x1234,
+                connected: false,
+              ),
+            );
+            await pumpEventQueue(times: 8);
+          }
+          harness.sosRepository.currentIncident = originalIncident.copyWith(
+            state: SosState.cancelled,
+            isBackendConfirmed: true,
+          );
+          harness.sosRepository.stateController.add(SosState.cancelled);
+          await pumpEventQueue(times: 20);
+          expect(
+            (await harness.sdk.getSosLifecycle()).stage,
+            SosLifecycleStage.cancelled,
+          );
+          if (scenario != 'foreground') {
+            expect(cancelWrites(), 0);
+            if (scenario == 'stale_generation') {
+              await harness.sdk.startPreSos(
+                countdown: const Duration(seconds: 20),
+              );
+              expect(
+                (await harness.sdk.getSosLifecycle()).generation,
+                original.generation + 1,
+              );
+            }
+            if (scenario == 'changed_peer_after_capture') {
+              harness.deviceRepository.emitStatus(
+                buildDeviceStatus(
+                  deviceId: 'ble-2',
+                  canonicalHardwareId: otherHardware,
+                  nodeId: 0x5678,
+                  connected: false,
+                ),
+              );
+              await pumpEventQueue(times: 8);
+            }
+            if (scenario == 'wrong_writer') {
+              harness.deviceRepository.emitStatus(
+                buildDeviceStatus(
+                  deviceId: 'ble-1',
+                  canonicalHardwareId: hardware,
+                  nodeId: 0x1234,
+                ),
+              );
+              await pumpEventQueue(times: 8);
+              await harness.deviceSosController.attach(
+                transportId: otherHardware,
+                commandWriter: write,
+              );
+            } else {
+              final transport = scenario == 'changed_transport'
+                  ? 'native-handle-2'
+                  : scenario == 'missing_transport'
+                  ? null
+                  : 'ble-1';
+              adapter.snapshot = ProtectionPlatformSnapshot(
+                platform: ProtectionPlatform.android,
+                backgroundCapabilityReady: true,
+                serviceRunning: true,
+                runtimeActive: true,
+                runtimeState: ProtectionRuntimeState.active,
+                coverageLevel: ProtectionCoverageLevel.full,
+                bleOwner: ProtectionBleOwner.androidService,
+                serviceBleConnected: true,
+                serviceBleReady: true,
+                nativeCommandServiceReady: true,
+                nativeCommandEa04Ready: true,
+                nativeCommandIdentityReady: true,
+                nativeCommandQueueHealthy: true,
+                nativeCommandReady: true,
+                protectedDeviceId: scenario == 'ambiguous_native'
+                    ? otherHardware
+                    : hardware,
+                activeDeviceId: transport,
+                bleHardwareId: hardware,
+              );
+              adapter.commandObserver = (request) {
+                if (request.bytes.first == 0x04) observeTerminal();
+              };
+              await harness.sdk.rehydrateProtectionState();
+            }
+            await pumpEventQueue(times: 20);
+          }
+          final delivered = [
+            'foreground',
+            'handoff',
+            'changed_transport',
+            'missing_transport',
+          ].contains(scenario);
+          expect(
+            cancelWrites(),
+            delivered ? 1 : 0,
+            reason:
+                'same-cycle physical target must survive transport handoff; conflicts fail closed',
+          );
+          if (delivered) {
+            expect(
+              harness.deviceSosController.currentStatus.state,
+              DeviceSosState.inactive,
+            );
+            expect(
+              harness.deviceSosController.currentStatus.derivedFromBlePacket,
+              isTrue,
+            );
+            harness.sosRepository.stateController.add(SosState.cancelled);
+            await pumpEventQueue(times: 10);
+            expect(cancelWrites(), 1);
+            expect(
+              (await harness.sdk.getSosLifecycle()).generation,
+              original.generation,
+            );
+          }
+        } finally {
+          await harness.dispose();
+          await adapter.dispose();
+        }
+      });
+    }
+
     test(
       'B3 rearmed physical cancel cannot acknowledge an older WEB CANCEL',
       () async {
