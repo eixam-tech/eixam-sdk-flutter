@@ -14460,10 +14460,28 @@ class EixamConnectSdkImpl
         terminalState == SosState.cancelled &&
         retainedTarget != null &&
         _physicalSosTargetMatchesLifecycle(retainedTarget, lifecycle);
-    final deviceSos = retainedAcrossHandoff
+    // Keep the latest verified receive/counter for this same generation. The
+    // retained ACTIVE observation proves physical ownership; it must not rewind
+    // a newer native mirror to the foreground packet counter during capture.
+    final currentPhysicalObservationAvailable =
+        snapshot.deviceSos.derivedFromBlePacket ||
+        (snapshot.activePhysicalEvidence?.exactPhysicalIdentityMatch == true &&
+            snapshot.deviceSos.lastPacketAt != null &&
+            snapshot.deviceSos.lastPacketSignature?.isNotEmpty == true);
+    final useRetainedObservation =
+        retainedAcrossHandoff &&
+        (!currentPhysicalObservationAvailable ||
+            snapshot.deviceSos.optimistic ||
+            snapshot.deviceSos.nodeId != retainedTarget.status.nodeId ||
+            (snapshot.deviceSos.lastPacketAt ?? snapshot.deviceSos.updatedAt)
+                .isBefore(
+                  retainedTarget.status.lastPacketAt ??
+                      retainedTarget.status.updatedAt,
+                ));
+    final deviceSos = useRetainedObservation
         ? retainedTarget.status
         : snapshot.deviceSos;
-    final activePhysicalEvidence = retainedAcrossHandoff
+    final activePhysicalEvidence = useRetainedObservation
         ? retainedTarget.activePhysicalEvidence
         : snapshot.activePhysicalEvidence;
     if (session == null ||

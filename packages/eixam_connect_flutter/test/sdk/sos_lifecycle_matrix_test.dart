@@ -333,6 +333,172 @@ void main() {
       });
     }
 
+    for (final counter in [0, 3]) {
+      test(
+        'B3 native current-cycle counter $counter keeps CANCEL E2 proof',
+        () async {
+          final adapter = _SnapshotProtectionPlatformAdapter(
+            const ProtectionPlatformSnapshot(
+              platform: ProtectionPlatform.android,
+              backgroundCapabilityReady: false,
+            ),
+          );
+          final harness = _SdkSosHarness(
+            connectedBle: true,
+            connectedNodeId: 0x1234,
+            deviceCountdown: Duration.zero,
+            protectionPlatformAdapter: adapter,
+          );
+          final nativePacket = EixamSosPacket.tryParse([
+            0x34,
+            0x12,
+            0,
+            0,
+            counter,
+            0xC0,
+            2,
+          ])!;
+          void receiveNativePacket(int sequence) =>
+              harness.deviceSosController.handleIncomingSosPacket(
+                nativePacket,
+                source: DeviceSosTransitionSource.device,
+                resolutionContext: _physicalResolutionContext(
+                  receiveSequence: sequence,
+                  terminal: false,
+                  receiveSequenceDomain: 'b3-native-current-counter',
+                ),
+              );
+          try {
+            await harness.deviceSosController.attach(
+              transportId: 'ble-1',
+              commandWriter: (_) async {},
+            );
+            await harness.sdk.initialize(
+              const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+            );
+            await harness.setSession();
+            await harness.sdk.triggerSosAuthoritatively(
+              const SosTriggerPayload(triggerSource: 'commercial_app'),
+            );
+            harness.deviceSosController.handleIncomingSosPacket(
+              _deviceOriginActivePacket(),
+              source: DeviceSosTransitionSource.device,
+              resolutionContext: _physicalResolutionContext(
+                receiveSequence: 1,
+                terminal: false,
+                receiveSequenceDomain: 'b3-foreground-counter',
+              ),
+            );
+            await pumpEventQueue(times: 10);
+            final original = await harness.sdk.getSosLifecycle();
+            await harness.deviceSosController.detach();
+            harness.deviceRepository.emitStatus(
+              buildDeviceStatus(
+                deviceId: 'ble-1',
+                nodeId: 0x1234,
+                canonicalHardwareId: 'CF:82:00:00:00:01',
+                connected: false,
+              ),
+            );
+            adapter.snapshot = const ProtectionPlatformSnapshot(
+              platform: ProtectionPlatform.android,
+              backgroundCapabilityReady: true,
+              serviceRunning: true,
+              runtimeActive: true,
+              runtimeState: ProtectionRuntimeState.active,
+              coverageLevel: ProtectionCoverageLevel.full,
+              bleOwner: ProtectionBleOwner.androidService,
+              serviceBleConnected: true,
+              serviceBleReady: true,
+              nativeCommandServiceReady: true,
+              nativeCommandEa04Ready: true,
+              nativeCommandIdentityReady: true,
+              nativeCommandQueueHealthy: true,
+              nativeCommandReady: true,
+              protectedDeviceId: 'CF:82:00:00:00:01',
+              activeDeviceId: 'CF:82:00:00:00:01',
+              bleHardwareId: 'CF:82:00:00:00:01',
+            );
+            await harness.sdk.rehydrateProtectionState();
+            receiveNativePacket(2);
+            await pumpEventQueue(times: 10);
+            expect(
+              (await harness.sdk.getSosLifecycle()).generation,
+              original.generation,
+            );
+            expect(harness.deviceSosController.currentStatus.packetId, counter);
+            adapter.commandObserver = (request) {
+              if (request.bytes.first != 0x04) return;
+              scheduleMicrotask(() {
+                // Current native snapshot is re-emitted while CANCEL is in flight.
+                receiveNativePacket(3);
+                scheduleMicrotask(
+                  () =>
+                      harness.deviceSosController.handleIncomingSosEventPacket(
+                        EixamSosEventPacket.tryParse([
+                          0xE2,
+                          0x02,
+                          0x34,
+                          0x12,
+                          0,
+                          0,
+                        ])!,
+                        source: DeviceSosTransitionSource.device,
+                        resolutionContext: _physicalResolutionContext(
+                          receiveSequence: 4,
+                          terminal: true,
+                          receiveSequenceDomain: 'b3-native-current-counter',
+                        ),
+                      ),
+                );
+              });
+            };
+            harness.sosRepository.currentIncident = harness
+                .sosRepository
+                .currentIncident
+                .copyWith(state: SosState.cancelled, isBackendConfirmed: true);
+            harness.sosRepository.stateController.add(SosState.cancelled);
+            await pumpEventQueue(times: 30);
+            expect(
+              adapter.commands.where((request) => request.bytes.first == 0x04),
+              hasLength(1),
+            );
+            expect(
+              harness.deviceSosController.currentStatus.state,
+              DeviceSosState.inactive,
+            );
+            expect(harness.deviceSosController.currentStatus.lastOpcode, 0xE2);
+            expect(
+              harness.deviceSosController.currentStatus.derivedFromBlePacket,
+              isTrue,
+            );
+            expect(
+              _hasDebugMessage('SOS_REMOTE_TERMINAL_DEVICE_CLEAR_ACKNOWLEDGED'),
+              isTrue,
+            );
+            expect(
+              _hasDebugMessage('SOS_REMOTE_TERMINAL_DEVICE_CLEAR_SUPERSEDED'),
+              isFalse,
+            );
+            expect(
+              (await harness.sdk.getSosLifecycle()).generation,
+              original.generation,
+            );
+            await harness.sdk.startPreSos(
+              countdown: const Duration(seconds: 20),
+            );
+            expect(
+              (await harness.sdk.getSosLifecycle()).generation,
+              original.generation + 1,
+            );
+          } finally {
+            await harness.dispose();
+            await adapter.dispose();
+          }
+        },
+      );
+    }
+
     test(
       'B3 rearmed physical cancel cannot acknowledge an older WEB CANCEL',
       () async {
