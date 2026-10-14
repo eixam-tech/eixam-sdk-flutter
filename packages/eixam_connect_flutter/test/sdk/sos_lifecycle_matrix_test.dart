@@ -336,7 +336,7 @@ void main() {
                       : scenario == 'wrong_peer'
                       ? 'ble-2'
                       : 'ble-1',
-                  shortCommandAvailable: false,
+                  shortCommandAvailable: scenario == 'delayed_terminal',
                 );
               }
             }
@@ -350,6 +350,21 @@ void main() {
                 scenario == 'recovery_exhausted' ||
                 scenario == 'wrong_peer' ||
                 scenario == 'stale_generation') {
+              if (scenario == 'delayed_terminal') {
+                await pumpEventQueue(times: 8);
+                expect(
+                  completed,
+                  isFalse,
+                  reason: 'await the physical terminal reply',
+                );
+                for (var duplicate = 0; duplicate < 2; duplicate++) {
+                  await harness.deviceSosController.attach(
+                    commandWriter: write,
+                    transportId: 'ble-1',
+                    shortCommandAvailable: true,
+                  );
+                }
+              }
               final result = await observedCancellation.timeout(
                 const Duration(seconds: 2),
               );

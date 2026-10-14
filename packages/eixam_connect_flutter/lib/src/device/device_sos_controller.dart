@@ -156,6 +156,7 @@ class DeviceSosController {
   Timer? _countdownTimer;
   bool _awaitingObservedAppActivation = false;
   _PendingTerminalDeviceCommand? _pendingTerminalCommand;
+  bool _terminalCommandDispatchInFlight = false;
   String? _lastPromotedPreConfirmCycleKey;
   DateTime? _lastPromotedPreConfirmAt;
   final Set<String> _openCyclePacketSignatures = <String>{};
@@ -387,6 +388,7 @@ class DeviceSosController {
       operationIsCurrent: operationIsCurrent,
     );
     late final bool sent;
+    _terminalCommandDispatchInFlight = true;
     try {
       sent = await _dispatchTerminalCommand(
         writer: writer,
@@ -401,6 +403,8 @@ class DeviceSosController {
     } on _StaleDeviceTerminalOperation {
       _recordStaleTerminalOperation(commandRouteLabel);
       return _status;
+    } finally {
+      _terminalCommandDispatchInFlight = false;
     }
     if (!sent) {
       return _queueTerminalCommand(
@@ -897,7 +901,7 @@ class DeviceSosController {
   Future<void> _flushPendingTerminalCommand({required String reason}) async {
     final pending = _pendingTerminalCommand;
     final writer = pending?.commandWriterOverride ?? _commandWriter;
-    if (pending == null || writer == null) {
+    if (pending == null || writer == null || _terminalCommandDispatchInFlight) {
       return;
     }
     if (!_terminalOperationIsCurrent(pending.operationIsCurrent)) {
@@ -912,6 +916,14 @@ class DeviceSosController {
       return;
     }
     final sentAt = pending.sentAt;
+    if (reason == 'command_path_attached' &&
+        sentAt != null &&
+        pending.operationIsCurrent != null) {
+      // Readiness is not a new terminal request. A guarded operation already
+      // submitted to its authorized writer waits for physical acknowledgement;
+      // only later observed ACTIVE evidence may request a bounded retry.
+      return;
+    }
     if (reason == 'sos_still_observed_after_terminal' &&
         sentAt != null &&
         _now().difference(sentAt) < _terminalCommandRetryInterval) {
@@ -923,6 +935,7 @@ class DeviceSosController {
       );
     }
     late final bool sent;
+    _terminalCommandDispatchInFlight = true;
     try {
       sent = await _dispatchTerminalCommand(
         writer: writer,
@@ -944,6 +957,8 @@ class DeviceSosController {
         pending.commandRouteLabel ?? 'attached_writer',
       );
       return;
+    } finally {
+      _terminalCommandDispatchInFlight = false;
     }
     if (sent) {
       _pendingTerminalCommand = pending.copyWith(sentAt: _now());

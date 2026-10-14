@@ -12,6 +12,54 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('DeviceSosController countdown flows', () {
+    for (final writeBlocked in [false, true]) {
+      test(
+        'guarded CANCEL ignores duplicate attach while writeBlocked=$writeBlocked',
+        () async {
+          final controller = DeviceSosController();
+          final release = Completer<void>();
+          var writes = 0;
+          Future<void> write(EixamDeviceCommand command) async {
+            if (command.opcode != 0x04) return;
+            writes++;
+            if (writeBlocked) await release.future;
+          }
+
+          try {
+            await controller.attach(commandWriter: write);
+            await controller.triggerSos();
+            final cancelled = controller.cancelSos(
+              commandWriterOverride: write,
+              terminalCmdAvailable: true,
+              waitForCloseAcknowledgement: true,
+              operationIsCurrent: () => true,
+            );
+            await pumpEventQueue(times: 8);
+            expect(writes, 1);
+            for (var duplicate = 0; duplicate < 3; duplicate++) {
+              await controller.attach(commandWriter: write);
+            }
+            await pumpEventQueue(times: 8);
+            expect(writes, 1);
+            if (!release.isCompleted) release.complete();
+            await pumpEventQueue(times: 8);
+            controller.handleIncomingSosEventPacket(
+              _deviceClearPacket(),
+              source: DeviceSosTransitionSource.device,
+            );
+            final status = await cancelled;
+            expect(status.derivedFromBlePacket, isTrue);
+            expect(status.state, DeviceSosState.inactive);
+            await controller.attach(commandWriter: write);
+            await pumpEventQueue(times: 8);
+            expect(writes, 1);
+          } finally {
+            if (!release.isCompleted) release.complete();
+            await controller.dispose();
+          }
+        },
+      );
+    }
     for (final sharedAdmission in [false, true]) {
       test('rearm ACTIVE after E3 preserves the current countdown '
           '(shared admission=$sharedAdmission)', () async {
