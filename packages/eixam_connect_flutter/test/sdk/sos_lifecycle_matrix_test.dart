@@ -2895,6 +2895,8 @@ void main() {
       'native_detached',
       'native_detached_tag',
       'native_detached_tag_raw_e3',
+      'native_detached_tag_raw_legacy_reason',
+      'native_detached_raw_invalid_explicit_payload',
       'native_detached_raw_wrong_peer',
       'native_detached_raw_wrong_node',
       'native_detached_raw_wrong_characteristic',
@@ -2915,7 +2917,7 @@ void main() {
           final nativeRawAck = delivery.contains('_raw_');
           final tagOrigin =
               delivery == 'native_detached_tag' ||
-              delivery == 'native_detached_tag_raw_e3';
+              delivery.startsWith('native_detached_tag_raw_');
           final nativeAdapter =
               delivery == 'native_handoff' ||
                   delivery.startsWith('native_detached')
@@ -3157,7 +3159,22 @@ void main() {
                           type: ProtectionPlatformEventType
                               .ownDeviceSosLifecycleObserved,
                           timestamp: timestamp,
-                          reason: 'own:sos:${packet.rawHex}',
+                          reason:
+                              delivery ==
+                                      'native_detached_tag_raw_legacy_reason' ||
+                                  delivery ==
+                                      'native_detached_raw_invalid_explicit_payload'
+                              ? 'own:sos:${packet.rawHex}'
+                              : 'ios_ble_sos_snapshot_persisted',
+                          payloadHex:
+                              delivery ==
+                                  'native_detached_tag_raw_legacy_reason'
+                              ? null
+                              : delivery ==
+                                    'native_detached_raw_invalid_explicit_payload'
+                              ? 'not_hex'
+                              : packet.rawHex,
+                          source: 'sos',
                           classification: 'ownDeviceSos',
                         ),
                       );
@@ -3311,7 +3328,9 @@ void main() {
                 delivery == 'native_detached_tag' ||
                 delivery == 'native_detached_deferred';
             expect(terminalWrites(), delivered || nativeRawAck ? 1 : 0);
-            final validNativeRawAck = delivery == 'native_detached_tag_raw_e3';
+            final validNativeRawAck =
+                delivery == 'native_detached_tag_raw_e3' ||
+                delivery == 'native_detached_tag_raw_legacy_reason';
             if (nativeRawAck && !validNativeRawAck) {
               expect(
                 _hasDebugMessage(

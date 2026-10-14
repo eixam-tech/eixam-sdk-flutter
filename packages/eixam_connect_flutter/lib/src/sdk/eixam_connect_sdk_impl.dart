@@ -25946,7 +25946,10 @@ class EixamConnectSdkImpl
     ProtectionPlatformEvent event,
   ) {
     final reason = _parseProtectionSosPayloadReason(event.reason);
-    final payloadHex = reason.payloadHex ?? event.payloadHex?.trim();
+    // Native bridges carry the received bytes explicitly. A descriptive reason
+    // must not shadow them; reason-encoded payloads remain a legacy fallback.
+    // Invalid explicit bytes must fail decoding rather than use other bytes.
+    final payloadHex = event.payloadHex?.trim() ?? reason.payloadHex;
     final source =
         reason.source ??
         (event.source == null
