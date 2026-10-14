@@ -4551,6 +4551,14 @@ class EixamConnectSdkImpl
                           'stale or unavailable remote terminal writer',
                         );
                       }
+                      if (capturedTarget.terminalState == SosState.resolved &&
+                          _currentDeviceCommandOwnerRoute ==
+                              'native_protection') {
+                        capturedTarget.nativeWriteReceiveBoundary =
+                            _latestNativeReceiveSequence ?? 0;
+                        capturedTarget.nativeWriteStartedAt = DateTime.now()
+                            .toUtc();
+                      }
                     },
                   );
                 } catch (_) {
@@ -15103,13 +15111,27 @@ class EixamConnectSdkImpl
     if (proof.terminalState == SosState.resolved) {
       final terminalEvidence =
           deviceSosController.terminalPhysicalReceiveEvidence;
+      final nativeWriteEvidence =
+          terminalEvidence != null &&
+          terminalEvidence.producer == 'native_bridge' &&
+          terminalEvidence.receiveSequenceDomain ==
+              'process:$_processSessionId' &&
+          proof.nativeWriteReceiveBoundary != null &&
+          terminalEvidence.receiveSequence >
+              proof.nativeWriteReceiveBoundary! &&
+          proof.nativeWriteStartedAt != null &&
+          !terminalEvidence.receivedAt.toUtc().isBefore(
+            proof.nativeWriteStartedAt!,
+          );
       if (terminalEvidence != null &&
           (!terminalEvidence.hasTerminalSemantics ||
               !terminalEvidence.exactPhysicalIdentityMatch ||
-              (proof.activeReceiveSequenceDomain != null &&
+              (!nativeWriteEvidence &&
+                  proof.activeReceiveSequenceDomain != null &&
                   terminalEvidence.receiveSequenceDomain !=
                       proof.activeReceiveSequenceDomain) ||
-              (proof.activeReceiveSequence != null &&
+              (!nativeWriteEvidence &&
+                  proof.activeReceiveSequence != null &&
                   terminalEvidence.receiveSequence <=
                       proof.activeReceiveSequence!))) {
         return false;
@@ -15138,6 +15160,36 @@ class EixamConnectSdkImpl
   bool get _terminalDeviceMirrorIsPending =>
       _sosDeviceMirrorState == _SosDeviceMirrorState.pendingResolve ||
       _sosDeviceMirrorState == _SosDeviceMirrorState.pendingCancel;
+
+  bool _nativeResolveAckMatchesCurrentWrite({
+    required _PhysicalSosTerminationTarget proof,
+    required EixamSosEventPacket packet,
+    required DateTime receivedAt,
+    required int? receiveSequence,
+    required String? receiveCorrelation,
+    required String? characteristicUuid,
+    required String? connectedDeviceMarker,
+  }) {
+    final characteristic = characteristicUuid?.toLowerCase();
+    final expectedPeripheral = proof.deviceId.trim().toUpperCase();
+    return packet.isBackendResolved &&
+        proof.terminalState == SosState.resolved &&
+        _currentDeviceCommandOwnerRoute == 'native_protection' &&
+        packet.nodeId == proof.nodeId &&
+        proof.nativeWriteReceiveBoundary != null &&
+        receiveSequence != null &&
+        receiveSequence > proof.nativeWriteReceiveBoundary! &&
+        proof.nativeWriteStartedAt != null &&
+        !receivedAt.toUtc().isBefore(proof.nativeWriteStartedAt!) &&
+        receiveCorrelation?.trim().isNotEmpty == true &&
+        (characteristic == EixamBleProtocol.sosNotifyCharacteristicUuid ||
+            characteristic == EixamBleProtocol.telNotifyCharacteristicUuid ||
+            characteristic == 'ea01' ||
+            characteristic == 'ea02') &&
+        connectedDeviceMarker?.trim().toUpperCase() == expectedPeripheral &&
+        _physicalSosTerminationTargetIsCurrent(proof) &&
+        _remoteTerminalWriterIsReady(proof);
+  }
 
   void _armTerminalConvergenceFenceFromProof(
     _PhysicalSosTerminationTarget proof,
@@ -22775,6 +22827,28 @@ class EixamConnectSdkImpl
     final connectedDeviceMarker = matchesRawNotification
         ? _lastNativeRawConnectedDeviceMarker
         : null;
+    final nativeResolveProof = _remoteTerminalDeviceClearAwaitingAckProof;
+    final isPendingNativeResolveAck =
+        isNativeApprovedOwnLifecycle &&
+        platformSosEventPacket?.isBackendResolved == true &&
+        nativeResolveProof?.terminalState == SosState.resolved;
+    final nativeResolveAckMatches =
+        isPendingNativeResolveAck &&
+        _nativeResolveAckMatchesCurrentWrite(
+          proof: nativeResolveProof!,
+          packet: platformSosEventPacket!,
+          receivedAt: event.timestamp,
+          receiveSequence: receiveSequence,
+          receiveCorrelation: receiveCorrelation,
+          characteristicUuid: characteristicUuid,
+          connectedDeviceMarker: connectedDeviceMarker,
+        );
+    if (isPendingNativeResolveAck && !nativeResolveAckMatches) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_NATIVE_RESOLVE_ACK_REJECTED reason=current_write_identity_or_freshness_unproven',
+      );
+      return;
+    }
     BleDebugRegistry.instance.recordEvent(
       'BLE_SOS_CLASSIFY_DECISION raw=$rawHex '
       'packetType=${platformSosEventPacket == null ? "sos" : "sos_event"} '
@@ -22807,12 +22881,14 @@ class EixamConnectSdkImpl
         originatorNodeId,
       );
       exactPhysicalIdentityMatch =
-          physicalIdentityMatch &&
-          connectedDevice?.connected == true &&
-          connectedNodeId != null &&
-          normalizedOriginatorNodeId != null &&
-          connectedNodeId == normalizedOriginatorNodeId &&
-          _physicalHardwareIdForStatus(connectedDevice)?.isNotEmpty == true;
+          nativeResolveAckMatches ||
+          (physicalIdentityMatch &&
+              connectedDevice?.connected == true &&
+              connectedNodeId != null &&
+              normalizedOriginatorNodeId != null &&
+              connectedNodeId == normalizedOriginatorNodeId &&
+              _physicalHardwareIdForStatus(connectedDevice)?.isNotEmpty ==
+                  true);
       hasCurrentBleSessionEvidence =
           matchesRawNotification &&
           receiveSequence != null &&
@@ -26548,7 +26624,7 @@ class _AppOriginActiveSosBridge {
 }
 
 class _PhysicalSosTerminationTarget {
-  const _PhysicalSosTerminationTarget({
+  _PhysicalSosTerminationTarget({
     required this.lifecycleId,
     required this.generation,
     required this.ownerScope,
@@ -26593,6 +26669,10 @@ class _PhysicalSosTerminationTarget {
   final String capturedOwner;
   final String capturedIdentityMarker;
   final bool retainedAcrossHandoff;
+  // Native and Flutter notification counters have separate domains. Bind an
+  // E3 to the native counter and time at the validated command write boundary.
+  int? nativeWriteReceiveBoundary;
+  DateTime? nativeWriteStartedAt;
 
   String get operationKey => '$lifecycleId:$generation:${terminalState.name}';
 }

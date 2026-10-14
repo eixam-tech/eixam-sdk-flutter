@@ -2894,6 +2894,12 @@ void main() {
       'wrong_node',
       'native_detached',
       'native_detached_tag',
+      'native_detached_tag_raw_e3',
+      'native_detached_raw_wrong_peer',
+      'native_detached_raw_wrong_node',
+      'native_detached_raw_wrong_characteristic',
+      'native_detached_raw_old_sequence',
+      'native_detached_raw_stale_time',
       'native_detached_deferred',
       'native_detached_wrong_peer',
       'native_detached_wrong_binding',
@@ -2906,6 +2912,10 @@ void main() {
         () async {
           const peripheral = 'B748445B-FDEA-2426-48F1-FD1A086627FA';
           const otherPeripheral = '00000000-0000-0000-0000-000000000001';
+          final nativeRawAck = delivery.contains('_raw_');
+          final tagOrigin =
+              delivery == 'native_detached_tag' ||
+              delivery == 'native_detached_tag_raw_e3';
           final nativeAdapter =
               delivery == 'native_handoff' ||
                   delivery.startsWith('native_detached')
@@ -2921,7 +2931,7 @@ void main() {
             connectedDeviceId: peripheral,
             connectedNodeId: 0x1234,
             connectedCanonicalHardwareId: null,
-            sosRepository: delivery == 'native_detached_tag'
+            sosRepository: tagOrigin
                 ? (_IncidentIdAwareSosRepository()
                     ..currentIncident = SosIncident(
                       id: '2f4b59af-3bc2-4ba4-a9bc-b7ff71b7a478',
@@ -2930,7 +2940,7 @@ void main() {
                       isBackendConfirmed: true,
                     ))
                 : null,
-            deviceCountdown: delivery == 'native_detached_tag'
+            deviceCountdown: tagOrigin
                 ? Duration.zero
                 : const Duration(seconds: 20),
             protectionPlatformAdapter: nativeAdapter,
@@ -3012,7 +3022,7 @@ void main() {
             );
             await harness.setSession();
             final SosLifecycleSnapshot original;
-            if (delivery == 'native_detached_tag') {
+            if (tagOrigin) {
               await harness.deviceRegistryRepository.upsertRegisteredDevice(
                 hardwareId: '4660',
                 firmwareVersion: '2.7.54',
@@ -3078,9 +3088,82 @@ void main() {
               nativeAdapter!.snapshot = nativeSnapshot(
                 ready: delivery != 'native_detached_deferred',
               );
+              if (nativeRawAck) {
+                nativeAdapter.emit(
+                  ProtectionPlatformEvent(
+                    type: ProtectionPlatformEventType.bleNotificationReceived,
+                    timestamp: DateTime.now().toUtc(),
+                    payloadHex: '00',
+                    source: 'sos_notify',
+                    characteristicUuid:
+                        EixamBleProtocol.sosNotifyCharacteristicUuid,
+                    receiveSequence: 10,
+                    receiveCorrelation: 'native-before-resolve-10',
+                    connectedDeviceMarker: peripheral,
+                  ),
+                );
+                await pumpEventQueue(times: 8);
+              }
               nativeAdapter.commandObserver = (request) {
                 if (request.bytes.first == 0x07) {
                   expect(request.forceCmdCharacteristic, isTrue);
+                  if (nativeRawAck) {
+                    scheduleMicrotask(() {
+                      final packet =
+                          delivery == 'native_detached_raw_wrong_node'
+                          ? EixamSosEventPacket.tryParse(<int>[
+                              0xE3,
+                              0x02,
+                              0x78,
+                              0x56,
+                              0,
+                              0,
+                            ])!
+                          : _deviceBackendResolvedPacket();
+                      final timestamp =
+                          delivery == 'native_detached_raw_stale_time'
+                          ? DateTime.now().toUtc().subtract(
+                              const Duration(days: 1),
+                            )
+                          : DateTime.now().toUtc();
+                      nativeAdapter.emit(
+                        ProtectionPlatformEvent(
+                          type: ProtectionPlatformEventType
+                              .bleNotificationReceived,
+                          timestamp: timestamp,
+                          payloadHex: packet.rawHex,
+                          source: 'sos_notify',
+                          characteristicUuid:
+                              delivery ==
+                                  'native_detached_raw_wrong_characteristic'
+                              ? 'wrong-characteristic'
+                              : EixamBleProtocol.sosNotifyCharacteristicUuid,
+                          byteLength: packet.rawBytes.length,
+                          packetType: 'sos_event',
+                          firstOpcode: '0xe3',
+                          receiveSequence:
+                              delivery == 'native_detached_raw_old_sequence'
+                              ? 10
+                              : 11,
+                          receiveCorrelation: 'native-resolve-e3-11',
+                          connectedDeviceMarker:
+                              delivery == 'native_detached_raw_wrong_peer'
+                              ? otherPeripheral
+                              : peripheral,
+                        ),
+                      );
+                      nativeAdapter.emit(
+                        ProtectionPlatformEvent(
+                          type: ProtectionPlatformEventType
+                              .ownDeviceSosLifecycleObserved,
+                          timestamp: timestamp,
+                          reason: 'own:sos:${packet.rawHex}',
+                          classification: 'ownDeviceSos',
+                        ),
+                      );
+                    });
+                    return;
+                  }
                   scheduleMicrotask(
                     () => harness.deviceSosController
                         .handleIncomingSosEventPacket(
@@ -3227,8 +3310,19 @@ void main() {
                 delivery == 'native_detached' ||
                 delivery == 'native_detached_tag' ||
                 delivery == 'native_detached_deferred';
-            expect(terminalWrites(), delivered ? 1 : 0);
-            if (delivered) {
+            expect(terminalWrites(), delivered || nativeRawAck ? 1 : 0);
+            final validNativeRawAck = delivery == 'native_detached_tag_raw_e3';
+            if (nativeRawAck && !validNativeRawAck) {
+              expect(
+                _hasDebugMessage(
+                  'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_ACKNOWLEDGED terminal=resolved',
+                ),
+                isFalse,
+                reason:
+                    'unbound or stale native E3 must not acknowledge this write',
+              );
+            }
+            if (delivered || validNativeRawAck) {
               expect(
                 harness.deviceSosController.currentStatus.state,
                 DeviceSosState.resolved,
