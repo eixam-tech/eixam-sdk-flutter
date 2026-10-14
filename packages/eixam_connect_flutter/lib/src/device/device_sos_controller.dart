@@ -359,16 +359,27 @@ class DeviceSosController {
     bool? terminalCmdAvailable,
     bool? waitForCloseAcknowledgement,
     DeviceTerminalOperationGuard? operationIsCurrent,
+    DeviceSosStatus? terminalCorrelationStatus,
   }) async {
     BleDebugRegistry.instance.recordEvent(
       'SOS_DEVICE_CANCEL_CONTROLLER_ENTERED '
       'route=$commandRouteLabel state=${_status.state.name}',
     );
     final writer = commandWriterOverride ?? _commandWriter;
+    final retainedResolveStatus =
+        terminalAction == 'resolve' &&
+            operationIsCurrent != null &&
+            _terminalOperationIsCurrent(operationIsCurrent) &&
+            terminalCorrelationStatus?.derivedFromBlePacket == true &&
+            terminalCorrelationStatus?.optimistic == false &&
+            _isOpenSosState(terminalCorrelationStatus!.state)
+        ? terminalCorrelationStatus
+        : null;
     if (writer == null) {
       return _queueTerminalCommand(
         action: terminalAction,
         reason: 'no_command_characteristic_ready',
+        physicalStatus: retainedResolveStatus,
         commandWriterOverride: commandWriterOverride,
         commandRouteLabel: commandRouteLabel,
         operationIsCurrent: operationIsCurrent,
@@ -383,6 +394,7 @@ class DeviceSosController {
     final previous = _status;
     _prepareTerminalCommandCorrelation(
       action: terminalAction,
+      physicalStatus: retainedResolveStatus,
       commandWriterOverride: commandWriterOverride,
       commandRouteLabel: commandRouteLabel,
       operationIsCurrent: operationIsCurrent,
@@ -410,6 +422,7 @@ class DeviceSosController {
       return _queueTerminalCommand(
         action: terminalAction,
         reason: 'no_command_characteristic_ready',
+        physicalStatus: retainedResolveStatus,
         commandWriterOverride: commandWriterOverride,
         commandRouteLabel: commandRouteLabel,
         operationIsCurrent: operationIsCurrent,
@@ -840,6 +853,7 @@ class DeviceSosController {
   DeviceSosStatus _queueTerminalCommand({
     required String action,
     required String reason,
+    DeviceSosStatus? physicalStatus,
     DeviceCommandWriter? commandWriterOverride,
     String? commandRouteLabel,
     DeviceTerminalOperationGuard? operationIsCurrent,
@@ -851,7 +865,8 @@ class DeviceSosController {
     final now = _now();
     _pendingTerminalCommand = _PendingTerminalDeviceCommand(
       action: action,
-      nodeId: _status.nodeId,
+      nodeId: physicalStatus?.nodeId ?? _status.nodeId,
+      physicalStatus: physicalStatus,
       requestedAt: now,
       commandWriterOverride: commandWriterOverride,
       commandRouteLabel: commandRouteLabel,
@@ -877,6 +892,7 @@ class DeviceSosController {
 
   void _prepareTerminalCommandCorrelation({
     required String action,
+    DeviceSosStatus? physicalStatus,
     DeviceCommandWriter? commandWriterOverride,
     String? commandRouteLabel,
     DeviceTerminalOperationGuard? operationIsCurrent,
@@ -886,7 +902,8 @@ class DeviceSosController {
     }
     _pendingTerminalCommand = _PendingTerminalDeviceCommand(
       action: action,
-      nodeId: _status.nodeId,
+      nodeId: physicalStatus?.nodeId ?? _status.nodeId,
+      physicalStatus: physicalStatus,
       requestedAt: _now(),
       commandWriterOverride: commandWriterOverride,
       commandRouteLabel: commandRouteLabel,
@@ -1390,6 +1407,22 @@ class DeviceSosController {
         pendingTerminalCommand?.action == 'cancel' &&
         _terminalOperationIsCurrent(pendingTerminalCommand?.operationIsCurrent);
     final physicalEvidence = resolutionContext?.physicalEvidence;
+    final acknowledgesRetainedResolve =
+        packet.isBackendResolved &&
+        pendingTerminalCommand?.action == 'resolve' &&
+        // Physical E3 may arrive before the transport write future completes.
+        (pendingTerminalCommand?.sentAt != null ||
+            _terminalCommandDispatchInFlight) &&
+        pendingTerminalCommand?.physicalStatus != null &&
+        pendingTerminalCommand?.nodeId == packet.nodeId &&
+        _terminalOperationIsCurrent(
+          pendingTerminalCommand?.operationIsCurrent,
+        ) &&
+        physicalEvidence?.hasTerminalSemantics == true &&
+        physicalEvidence?.exactPhysicalIdentityMatch == true;
+    final correlatedStatus = acknowledgesRetainedResolve
+        ? pendingTerminalCommand!.physicalStatus!
+        : _status;
     if (_isMirroredTerminalDelivery(
       incoming: physicalEvidence,
       accepted: _terminalPhysicalReceiveEvidence,
@@ -1405,6 +1438,8 @@ class DeviceSosController {
     }
     final nextState = acknowledgesPendingAppCancel
         ? DeviceSosState.inactive
+        : acknowledgesRetainedResolve
+        ? DeviceSosState.resolved
         : _resolveEventState(packet, previous);
     final classification = _classifyEventPacket(
       packet,
@@ -1468,14 +1503,14 @@ class DeviceSosController {
       }
     }
     _emit(
-      _status.copyWith(
+      correlatedStatus.copyWith(
         state: nextState,
         previousState: previous,
         transitionSource: source,
         triggerOrigin:
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
-            ? _status.triggerOrigin
+            ? correlatedStatus.triggerOrigin
             : _resolveObservedTriggerOrigin(source, nodeId: packet.nodeId),
         lastEvent: event,
         updatedAt: now,
@@ -1491,43 +1526,43 @@ class DeviceSosController {
         packetId:
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
-            ? _status.packetId
+            ? correlatedStatus.packetId
             : null,
-        hasLocation: _status.hasLocation,
+        hasLocation: correlatedStatus.hasLocation,
         flags:
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
-            ? _status.flags
+            ? correlatedStatus.flags
             : null,
         sosType:
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
-            ? _status.sosType
+            ? correlatedStatus.sosType
             : null,
         retryCount:
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
-            ? _status.retryCount
+            ? correlatedStatus.retryCount
             : null,
         relayCount:
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
-            ? _status.relayCount
+            ? correlatedStatus.relayCount
             : null,
         batteryLevel:
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
-            ? _status.batteryLevel
+            ? correlatedStatus.batteryLevel
             : null,
         batteryState:
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
-            ? _status.batteryState
+            ? correlatedStatus.batteryState
             : null,
         gpsQuality:
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
-            ? _status.gpsQuality
+            ? correlatedStatus.gpsQuality
             : null,
         decoderNote:
             'DEVICE_SOS_CONTROL_EVENT_DECODED event=$controlEventLabel',
@@ -1535,17 +1570,17 @@ class DeviceSosController {
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
             ? null
-            : _status.countdownStartedAt,
+            : correlatedStatus.countdownStartedAt,
         expectedActivationAt:
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
             ? null
-            : _status.expectedActivationAt,
+            : correlatedStatus.expectedActivationAt,
         countdownRemainingSeconds:
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
             ? null
-            : _status.countdownRemainingSeconds,
+            : correlatedStatus.countdownRemainingSeconds,
       ),
     );
   }
@@ -2366,6 +2401,7 @@ class _PendingTerminalDeviceCommand {
     required this.action,
     required this.nodeId,
     required this.requestedAt,
+    this.physicalStatus,
     this.commandWriterOverride,
     this.commandRouteLabel,
     this.operationIsCurrent,
@@ -2375,6 +2411,7 @@ class _PendingTerminalDeviceCommand {
   final String action;
   final int? nodeId;
   final DateTime requestedAt;
+  final DeviceSosStatus? physicalStatus;
   final DeviceCommandWriter? commandWriterOverride;
   final String? commandRouteLabel;
   final DeviceTerminalOperationGuard? operationIsCurrent;
@@ -2385,6 +2422,7 @@ class _PendingTerminalDeviceCommand {
       action: action,
       nodeId: nodeId,
       requestedAt: requestedAt,
+      physicalStatus: physicalStatus,
       commandWriterOverride: commandWriterOverride,
       commandRouteLabel: commandRouteLabel,
       operationIsCurrent: operationIsCurrent,

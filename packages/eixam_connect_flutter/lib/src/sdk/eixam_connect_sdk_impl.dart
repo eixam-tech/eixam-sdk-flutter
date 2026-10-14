@@ -1155,7 +1155,7 @@ class EixamConnectSdkImpl
                 ),
               );
               unawaited(_retryPendingWebAckSilence());
-              _retryPendingRemoteCancel();
+              _retryPendingRemoteTerminalCommand();
             }
             await _refreshOperationalDiagnostics(
               trigger: 'device_control_command_path_changed',
@@ -1351,7 +1351,7 @@ class EixamConnectSdkImpl
         unawaited(_emitSosCapability(reason: capabilityReason));
         if (status.nativeCommandReady) {
           unawaited(_retryPendingWebAckSilence());
-          _retryPendingRemoteCancel();
+          _retryPendingRemoteTerminalCommand();
         }
       }
       if (nativeOwnsBle &&
@@ -4546,9 +4546,9 @@ class EixamConnectSdkImpl
                             capturedTarget,
                           ) ||
                           (capturedTarget.retainedAcrossHandoff &&
-                              !_remoteCancelWriterIsReady(capturedTarget))) {
+                              !_remoteTerminalWriterIsReady(capturedTarget))) {
                         throw StateError(
-                          'stale or unavailable remote cancel writer',
+                          'stale or unavailable remote terminal writer',
                         );
                       }
                     },
@@ -4566,6 +4566,7 @@ class EixamConnectSdkImpl
               },
         commandRouteLabel: _currentDeviceCommandOwnerRoute,
         terminalAction: intent.name,
+        terminalCorrelationStatus: capturedTarget?.physicalStatus,
         terminalCmdAvailable: capabilitySnapshot.longCommandAvailable,
         waitForCloseAcknowledgement: shouldWaitForDeviceAcknowledgement,
         operationIsCurrent: capturedTarget == null
@@ -14620,11 +14621,12 @@ class EixamConnectSdkImpl
     final terminalState = terminalIncident.state;
     final isBackendResolve = terminalState == SosState.resolved;
     // Physical ACTIVE proof belongs to the cycle, not to its transient writer.
-    // Reuse the admitted own-TAG proof when CANCEL arrives during a handoff.
+    // Reuse the admitted own-TAG proof for backend termination during handoff.
+    // A detached mirror's synthetic inactive state is not physical closure.
     // Dispatch still requires a live, identity-bound current owner below.
     final retainedTarget = _physicalSosSilenceTarget;
     final retainedAcrossHandoff =
-        terminalState == SosState.cancelled &&
+        (terminalState == SosState.cancelled || isBackendResolve) &&
         retainedTarget != null &&
         _physicalSosTargetMatchesLifecycle(retainedTarget, lifecycle);
     // Keep the latest verified receive/counter for this same generation. The
@@ -14787,6 +14789,7 @@ class EixamConnectSdkImpl
       activeReceiveSequence: activePhysicalEvidence?.receiveSequence,
       activeReceiveSequenceDomain:
           activePhysicalEvidence?.receiveSequenceDomain,
+      physicalStatus: deviceSos,
       retainedAcrossHandoff: retainedAcrossHandoff,
       capturedDevicePresent: connection.devicePresent,
       capturedCommandChannelReady: isBackendResolve
@@ -14798,7 +14801,7 @@ class EixamConnectSdkImpl
     );
     if (retainedAcrossHandoff) {
       BleDebugRegistry.instance.recordEvent(
-        'SOS_REMOTE_CANCEL_TARGET_REBOUND generation=${proof.generation} '
+        '${isBackendResolve ? "SOS_REMOTE_RESOLVE_TARGET_REBOUND" : "SOS_REMOTE_CANCEL_TARGET_REBOUND"} generation=${proof.generation} '
         'packetId=${proof.packetId ?? "none"} '
         'identity=${proof.capturedIdentityMarker} '
         'capturedOwner=${retainedTarget.connection.owner} currentOwner=${connection.owner} '
@@ -14936,6 +14939,21 @@ class EixamConnectSdkImpl
 
   bool _cancelOwnerIdentityMatches(String? hardwareId, DeviceStatus device) {
     final protection = _protectionModeController.currentStatus;
+    if (hardwareId == null && _isProtectionPlatformOwningBle) {
+      final selectedPeripheral = device.deviceId.trim().toLowerCase();
+      // An opaque peripheral binding cannot reconcile contradictory aliases.
+      // A matching active UUID must not hide a different protected UUID.
+      if (<String?>[
+        protection.activeDeviceId,
+        protection.protectedDeviceId,
+      ].whereType<String>().any(
+        (identity) =>
+            identity.trim().isNotEmpty &&
+            identity.trim().toLowerCase() != selectedPeripheral,
+      )) {
+        return false;
+      }
+    }
     final identities = <String?>[
       device.deviceId,
       device.canonicalHardwareId,
@@ -14959,20 +14977,22 @@ class EixamConnectSdkImpl
         );
   }
 
-  bool _remoteCancelWriterIsReady(_PhysicalSosTerminationTarget proof) {
+  bool _remoteTerminalWriterIsReady(_PhysicalSosTerminationTarget proof) {
     final connection = _captureTerminalDeviceSnapshot(
       reason: 'remote_cancel_writer_rebinding',
     ).connection;
     final device = connection.device;
     return connection.devicePresent &&
         device != null &&
-        (connection.shortCommandReady || connection.commandChannelReady) &&
+        (proof.terminalState == SosState.resolved
+            ? connection.commandChannelReady
+            : connection.shortCommandReady || connection.commandChannelReady) &&
         _terminalTargetOwnerIdentityMatches(proof, device) &&
         (_isProtectionPlatformOwningBle ||
             _flutterCommandTargetMatchesConnectedIdentity(device));
   }
 
-  void _retryPendingRemoteCancel() {
+  void _retryPendingRemoteTerminalCommand() {
     final proof = _remoteTerminalDeviceClearPendingProof;
     if (proof == null || !proof.retainedAcrossHandoff) return;
     if (!_physicalSosTerminationTargetIsCurrent(proof)) {
@@ -14983,7 +15003,7 @@ class EixamConnectSdkImpl
       );
       return;
     }
-    if (_remoteCancelWriterIsReady(proof)) {
+    if (_remoteTerminalWriterIsReady(proof)) {
       _scheduleRemoteTerminalDeviceClear(proof);
     }
   }
@@ -15629,7 +15649,7 @@ class EixamConnectSdkImpl
         _logRemoteTerminalDeviceClearSkipped('stale_before_dispatch');
         return;
       }
-      if (proof.retainedAcrossHandoff && !_remoteCancelWriterIsReady(proof)) {
+      if (proof.retainedAcrossHandoff && !_remoteTerminalWriterIsReady(proof)) {
         BleDebugRegistry.instance.recordEvent(
           'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_DEFERRED '
           'terminal=${proof.terminalState.name} reason=current_owner_writer_not_ready '
@@ -26543,6 +26563,7 @@ class _PhysicalSosTerminationTarget {
     required this.deviceActiveObservedAt,
     required this.activeReceiveSequence,
     required this.activeReceiveSequenceDomain,
+    required this.physicalStatus,
     required this.capturedDevicePresent,
     required this.capturedCommandChannelReady,
     required this.capturedNativeGattConnected,
@@ -26565,6 +26586,7 @@ class _PhysicalSosTerminationTarget {
   final DateTime deviceActiveObservedAt;
   final int? activeReceiveSequence;
   final String? activeReceiveSequenceDomain;
+  final DeviceSosStatus physicalStatus;
   final bool capturedDevicePresent;
   final bool capturedCommandChannelReady;
   final bool capturedNativeGattConnected;

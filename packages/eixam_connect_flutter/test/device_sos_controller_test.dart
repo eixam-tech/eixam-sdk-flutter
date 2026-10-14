@@ -12,6 +12,80 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('DeviceSosController countdown flows', () {
+    for (final reply in [
+      'during_write',
+      'after_write',
+      'wrong_node',
+      'stale_operation',
+      'missing_evidence',
+    ]) {
+      test('retained RESOLVE correlates physical E3 $reply', () async {
+        final controller = DeviceSosController(
+          countdownDuration: const Duration(milliseconds: 5),
+          countdownTick: const Duration(milliseconds: 1),
+        );
+        addTearDown(controller.dispose);
+        await controller.attach(commandWriter: (_) async {});
+        await _promoteDeviceSosToActive(controller);
+        controller.handleIncomingSosPacket(
+          _activePacket(),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: _receivedAfterTerminal(
+            sequence: 1,
+            at: DateTime.now(),
+          ),
+        );
+        final verified = controller.currentStatus;
+        expect(verified.derivedFromBlePacket, isTrue);
+        await controller.detach();
+        var current = true;
+        final commands = <EixamDeviceCommand>[];
+        void emitReply() => controller.handleIncomingSosEventPacket(
+          reply == 'wrong_node'
+              ? EixamSosEventPacket.tryParse([0xE3, 2, 0x78, 0x56, 0, 0])!
+              : _backendResolvedPacket(),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: reply == 'missing_evidence'
+              ? null
+              : _receivedAfterTerminal(
+                  sequence: 3,
+                  at: DateTime.now(),
+                  terminal: true,
+                ),
+        );
+        await controller.cancelSos(
+          terminalAction: 'resolve',
+          terminalCmdAvailable: true,
+          waitForCloseAcknowledgement: false,
+          terminalCorrelationStatus: verified,
+          operationIsCurrent: () => current,
+          commandWriterOverride: (command) async {
+            commands.add(command);
+            if (reply == 'during_write') emitReply();
+          },
+        );
+        if (reply != 'during_write') {
+          if (reply == 'stale_operation') current = false;
+          emitReply();
+        }
+        expect(commands.map((command) => command.opcode), [0x07]);
+        final accepted = reply == 'during_write' || reply == 'after_write';
+        expect(
+          controller.currentStatus.state,
+          accepted ? DeviceSosState.resolved : DeviceSosState.inactive,
+        );
+        if (accepted) {
+          expect(controller.currentStatus.packetId, verified.packetId);
+          expect(controller.currentStatus.flags, verified.flags);
+          expect(
+            controller.currentStatus.triggerOrigin,
+            verified.triggerOrigin,
+          );
+          expect(controller.currentStatus.derivedFromBlePacket, isTrue);
+          expect(controller.currentStatus.lastOpcode, 0xE3);
+        }
+      });
+    }
     for (final writeBlocked in [false, true]) {
       test(
         'guarded CANCEL ignores duplicate attach while writeBlocked=$writeBlocked',

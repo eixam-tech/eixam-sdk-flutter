@@ -2892,13 +2892,23 @@ void main() {
       'changed_peer',
       'wrong_binding',
       'wrong_node',
+      'native_detached',
+      'native_detached_tag',
+      'native_detached_deferred',
+      'native_detached_wrong_peer',
+      'native_detached_wrong_binding',
+      'native_detached_wrong_node',
+      'native_detached_ambiguous',
+      'native_detached_closed',
     ]) {
       test(
         'current iOS peripheral UUID RESOLVE delivers terminal command without MAC $delivery',
         () async {
           const peripheral = 'B748445B-FDEA-2426-48F1-FD1A086627FA';
           const otherPeripheral = '00000000-0000-0000-0000-000000000001';
-          final nativeAdapter = delivery == 'native_handoff'
+          final nativeAdapter =
+              delivery == 'native_handoff' ||
+                  delivery.startsWith('native_detached')
               ? _SnapshotProtectionPlatformAdapter(
                   const ProtectionPlatformSnapshot(
                     backgroundCapabilityReady: false,
@@ -2911,6 +2921,18 @@ void main() {
             connectedDeviceId: peripheral,
             connectedNodeId: 0x1234,
             connectedCanonicalHardwareId: null,
+            sosRepository: delivery == 'native_detached_tag'
+                ? (_IncidentIdAwareSosRepository()
+                    ..currentIncident = SosIncident(
+                      id: '2f4b59af-3bc2-4ba4-a9bc-b7ff71b7a478',
+                      state: SosState.idle,
+                      createdAt: DateTime.now().toUtc(),
+                      isBackendConfirmed: true,
+                    ))
+                : null,
+            deviceCountdown: delivery == 'native_detached_tag'
+                ? Duration.zero
+                : const Duration(seconds: 20),
             protectionPlatformAdapter: nativeAdapter,
           );
           final commands = <int>[];
@@ -2950,6 +2972,30 @@ void main() {
             }
           }
 
+          ProtectionPlatformSnapshot nativeSnapshot({bool ready = true}) =>
+              ProtectionPlatformSnapshot(
+                platform: ProtectionPlatform.ios,
+                backgroundCapabilityReady: true,
+                serviceRunning: true,
+                runtimeActive: true,
+                runtimeState: ProtectionRuntimeState.active,
+                coverageLevel: ProtectionCoverageLevel.full,
+                bleOwner: ProtectionBleOwner.iosPlugin,
+                serviceBleConnected: true,
+                serviceBleReady: true,
+                nativeCommandServiceReady: true,
+                nativeCommandEa04Ready: ready,
+                nativeCommandIdentityReady: true,
+                nativeCommandQueueHealthy: true,
+                nativeCommandReady: ready,
+                protectedDeviceId: delivery == 'native_detached_ambiguous'
+                    ? otherPeripheral
+                    : peripheral,
+                activeDeviceId: delivery == 'native_detached_wrong_binding'
+                    ? otherPeripheral
+                    : peripheral,
+              );
+
           int terminalWrites() =>
               commands.where((opcode) => opcode == 0x07).length +
               (nativeAdapter?.commands
@@ -2965,9 +3011,39 @@ void main() {
               const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
             );
             await harness.setSession();
-            final first = await harness.sdk.triggerSosAuthoritatively(
-              const SosTriggerPayload(triggerSource: 'commercial_app'),
-            );
+            final SosLifecycleSnapshot original;
+            if (delivery == 'native_detached_tag') {
+              await harness.deviceRegistryRepository.upsertRegisteredDevice(
+                hardwareId: '4660',
+                firmwareVersion: '2.7.54',
+                hardwareModel: 'EIXAM R1',
+                pairedAt: DateTime.now().toUtc(),
+              );
+              for (var sequence = 1; sequence <= 2; sequence++) {
+                harness.deviceSosController.handleIncomingSosPacket(
+                  _minimalAppSosPacket(sosType: 3, packetId: 0),
+                  source: DeviceSosTransitionSource.device,
+                  resolutionContext: _physicalResolutionContext(
+                    receiveSequence: sequence,
+                    terminal: false,
+                    receiveSequenceDomain: 'ios-resolve-uuid',
+                  ),
+                );
+                await Future<void>.delayed(const Duration(milliseconds: 30));
+              }
+              await pumpEventQueue(times: 30);
+              original = await harness.sdk.getSosLifecycle();
+              expect(original.origin, SosLifecycleOrigin.connectedLocalDevice);
+              expect(original.stage, SosLifecycleStage.active);
+              expect(
+                original.backendIncidentId,
+                harness.sosRepository.currentIncident.id,
+              );
+            } else {
+              original = (await harness.sdk.triggerSosAuthoritatively(
+                const SosTriggerPayload(triggerSource: 'commercial_app'),
+              )).lifecycle;
+            }
             await pumpEventQueue(times: 8);
             expect(
               harness.deviceSosController.currentStatus.state,
@@ -2977,6 +3053,65 @@ void main() {
               (await harness.sdk.getDeviceCommandChannelStatus()).isReady,
               isTrue,
             );
+            if (delivery.startsWith('native_detached')) {
+              if (delivery == 'native_detached_closed') {
+                harness.deviceSosController.handleIncomingSosEventPacket(
+                  _deviceBackendResolvedPacket(),
+                  source: DeviceSosTransitionSource.device,
+                  resolutionContext: _physicalResolutionContext(
+                    receiveSequence: 3,
+                    terminal: true,
+                    receiveSequenceDomain: 'ios-resolve-uuid',
+                  ),
+                );
+                await pumpEventQueue(times: 12);
+              }
+              await harness.deviceSosController.detach();
+              expect(
+                harness.deviceSosController.currentStatus.state,
+                DeviceSosState.inactive,
+              );
+              expect(
+                harness.deviceSosController.currentStatus.derivedFromBlePacket,
+                isFalse,
+              );
+              nativeAdapter!.snapshot = nativeSnapshot(
+                ready: delivery != 'native_detached_deferred',
+              );
+              nativeAdapter.commandObserver = (request) {
+                if (request.bytes.first == 0x07) {
+                  expect(request.forceCmdCharacteristic, isTrue);
+                  scheduleMicrotask(
+                    () => harness.deviceSosController
+                        .handleIncomingSosEventPacket(
+                          _deviceBackendResolvedPacket(),
+                          source: DeviceSosTransitionSource.device,
+                          resolutionContext: _physicalResolutionContext(
+                            receiveSequence: 3,
+                            terminal: true,
+                            receiveSequenceDomain: 'ios-resolve-uuid',
+                          ),
+                        ),
+                  );
+                }
+              };
+              if (delivery == 'native_detached_wrong_peer' ||
+                  delivery == 'native_detached_wrong_node') {
+                harness.deviceRepository.emitStatus(
+                  buildDeviceStatus(
+                    deviceId: delivery == 'native_detached_wrong_peer'
+                        ? otherPeripheral
+                        : peripheral,
+                    nodeId: delivery == 'native_detached_wrong_node'
+                        ? 0x5678
+                        : 0x1234,
+                    canonicalHardwareId: null,
+                  ),
+                );
+              }
+              await harness.sdk.rehydrateProtectionState();
+              await pumpEventQueue(times: 12);
+            }
             if ((delivery == 'deferred' || delivery == 'native_handoff') ||
                 delivery == 'changed_peer') {
               await harness.deviceSosController.attach(
@@ -3007,12 +3142,18 @@ void main() {
             await pumpEventQueue(times: 20);
             expect(
               (await harness.sdk.getSosLifecycle()).generation,
-              first.lifecycle.generation,
+              original.generation,
             );
             expect(
               (await harness.sdk.getSosLifecycle()).stage,
               SosLifecycleStage.resolved,
             );
+            if (delivery == 'native_detached_deferred') {
+              expect(terminalWrites(), 0);
+              nativeAdapter!.snapshot = nativeSnapshot();
+              await harness.sdk.rehydrateProtectionState();
+              await pumpEventQueue(times: 20);
+            }
             if ((delivery == 'deferred' || delivery == 'native_handoff') ||
                 delivery == 'changed_peer') {
               expect(terminalWrites(), 0);
@@ -3082,12 +3223,22 @@ void main() {
             }
             final delivered =
                 delivery == 'ready' ||
-                (delivery == 'deferred' || delivery == 'native_handoff');
+                (delivery == 'deferred' || delivery == 'native_handoff') ||
+                delivery == 'native_detached' ||
+                delivery == 'native_detached_tag' ||
+                delivery == 'native_detached_deferred';
             expect(terminalWrites(), delivered ? 1 : 0);
             if (delivered) {
               expect(
                 harness.deviceSosController.currentStatus.state,
                 DeviceSosState.resolved,
+              );
+              expect(
+                _hasDebugMessage(
+                  'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_ACKNOWLEDGED terminal=resolved',
+                ),
+                isTrue,
+                reason: 'physical E3 must match the captured cycle proof',
               );
               harness.sosRepository.stateController.add(SosState.resolved);
               await pumpEventQueue(times: 12);
