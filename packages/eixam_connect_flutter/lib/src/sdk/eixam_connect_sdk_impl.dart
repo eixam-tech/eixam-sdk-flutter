@@ -14591,6 +14591,20 @@ class EixamConnectSdkImpl
     DeviceSosStatus status,
     _PhysicalSosTerminationTarget proof,
   ) {
+    // E1 is a physical user cancellation, not an acknowledgement of an older
+    // command. Counters/cycle keys can be reused after an explicit rearm; let
+    // the current generation's terminal path invalidate its pending countdown.
+    // Late E2/E3 command acknowledgements still belong to their captured proof.
+    if (_isOwnDeviceUserDeactivatedEvent(status) &&
+        _sosLifecycle.current.generation > proof.generation) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_TERMINAL_CLEAR_PROOF_REJECTED '
+        'reason=physical_cancel_new_generation '
+        'proofGeneration=${proof.generation} '
+        'currentGeneration=${_sosLifecycle.current.generation}',
+      );
+      return false;
+    }
     if (!_isDeviceSosCycleClosed(status.state) ||
         !status.derivedFromBlePacket ||
         (proof.terminalState == SosState.resolved &&

@@ -107,6 +107,139 @@ void main() {
   });
 
   group('SOS-01..SOS-16 SDK lifecycle matrix', () {
+    test(
+      'B3 rearmed physical cancel cannot acknowledge an older WEB CANCEL',
+      () async {
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+        );
+        final messages = <String>[];
+        final debug = BleDebugRegistry.instance.watch().listen((state) {
+          if (state.events.isNotEmpty) messages.add(state.events.last.message);
+        });
+        try {
+          await harness.deviceSosController.attach(
+            commandWriter: (command) async {
+              if (command.opcode == 0x04) {
+                scheduleMicrotask(() {
+                  harness.deviceSosController.handleIncomingSosEventPacket(
+                    _deviceCancelAckPacket(),
+                    source: DeviceSosTransitionSource.device,
+                  );
+                });
+              }
+            },
+          );
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await harness.sdk.triggerSosAuthoritatively(
+            const SosTriggerPayload(triggerSource: 'commercial_app'),
+          );
+          harness.deviceSosController.handleIncomingSosPacket(
+            _deviceOriginActivePacket(packetId: 4),
+            source: DeviceSosTransitionSource.device,
+          );
+          await pumpEventQueue(times: 20);
+          harness.sosRepository.currentIncident = harness
+              .sosRepository
+              .currentIncident
+              .copyWith(state: SosState.cancelled, isBackendConfirmed: true);
+          harness.sosRepository.stateController.add(SosState.cancelRequested);
+          harness.sosRepository.stateController.add(SosState.cancelled);
+          await _waitForCondition(
+            () => messages.any(
+              (m) =>
+                  m.contains('SOS_REMOTE_TERMINAL_DEVICE_CLEAR_ACKNOWLEDGED'),
+            ),
+          );
+
+          await harness.sdk.startPreSos(countdown: const Duration(seconds: 20));
+          await harness.sdk.cancelSosAuthoritatively();
+          await pumpEventQueue(times: 20);
+          await harness.sdk.startPreSos(countdown: const Duration(seconds: 20));
+          final armed = await harness.sdk.getSosLifecycle();
+          // Old command ACKs remain cleanup-only while the new countdown is open.
+          harness.deviceSosController.handleIncomingSosEventPacket(
+            _deviceCancelAckPacket(),
+            source: DeviceSosTransitionSource.device,
+          );
+          await pumpEventQueue(times: 10);
+          expect(
+            (await harness.sdk.getSosLifecycle()).stage,
+            SosLifecycleStage.arming,
+          );
+          final beforeCancel = messages.length;
+          harness.deviceSosController.handleIncomingSosEventPacket(
+            _deviceCancelPacket(),
+            source: DeviceSosTransitionSource.device,
+          );
+          await pumpEventQueue(times: 30);
+          final terminal = await harness.sdk.getSosLifecycle();
+          expect(
+            terminal.stage,
+            SosLifecycleStage.cancelled,
+            reason: messages.skip(beforeCancel).join('\n'),
+          );
+          expect(terminal.generation, armed.generation);
+          expect(await harness.sdk.getPreSosStatus(), isNull);
+          expect(harness.sosRepository.triggerCallCount, 1);
+          expect(
+            messages
+                .skip(beforeCancel)
+                .any(
+                  (m) =>
+                      m.contains('SOS_TERMINAL_CLEAR_PROOF_REJECTED') &&
+                      m.contains('physical_cancel_new_generation'),
+                ),
+            isTrue,
+          );
+          expect(
+            messages
+                .skip(beforeCancel)
+                .any((m) => m.contains('DEVICE_TERMINAL_ACK_CONSUMED')),
+            isFalse,
+          );
+          await expectLater(
+            Future<void>.delayed(
+              Duration.zero,
+            ).then((_) => harness.sdk.confirmPreSos(const SosTriggerPayload())),
+            throwsA(
+              isA<SosException>().having(
+                (e) => e.code,
+                'code',
+                'E_SOS_PENDING_ACTIVATION_CANCELLED',
+              ),
+            ),
+          );
+          expect(harness.sosRepository.triggerCallCount, 1);
+          expect(
+            (await harness.sdk.getSosLifecycle()).generation,
+            armed.generation,
+          );
+          harness.sosRepository.currentIncident = SosIncident(
+            id: 'B3-explicit-next-incident',
+            state: SosState.idle,
+            createdAt: DateTime.now(),
+          );
+          await harness.sdk.startPreSos(countdown: const Duration(seconds: 20));
+          final rearmed = await harness.sdk.getSosLifecycle();
+          expect(rearmed.generation, armed.generation + 1);
+          await harness.sdk.confirmPreSos(const SosTriggerPayload());
+          expect(harness.sosRepository.triggerCallCount, 2);
+          expect(
+            (await harness.sdk.getSosLifecycle()).generation,
+            rearmed.generation,
+          );
+        } finally {
+          await debug.cancel();
+          await harness.dispose();
+        }
+      },
+    );
+
     test('B3 physical cancel fences a suspended confirmation lookup', () async {
       final repository = _BlockingConfirmationLookupRepository();
       final harness = _SdkSosHarness(

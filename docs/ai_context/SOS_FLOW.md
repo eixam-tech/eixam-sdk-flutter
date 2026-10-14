@@ -69,6 +69,15 @@ redundancy or enrichment only.
 - Device closure uses `_closeDeviceSos(intent: cancel, ...)`.
 - If the cycle closes, SDK clears SOS notifications and resets cycle suppression state.
 
+A physical `0xE1` user cancellation from a newer generation must never be
+consumed as an older remote-terminal clear acknowledgement, even if the TAG
+reuses its packet counter/cycle key. It proceeds through the current generation's
+pending-activation cancellation path. Late `0xE2`/`0xE3` command acknowledgements
+remain cleanup evidence for their captured operation and do not cancel a newer
+generation. Android B3 reproduced the failure after WEB CANCEL, explicit rearm,
+APP countdown cancellation, and a second rearm: the old clear proof previously
+swallowed the new physical cancel and left countdown/backend handoff alive.
+
 ## Resolve Flow
 
 - Public `resolveSos()` mirrors cancel orchestration.
