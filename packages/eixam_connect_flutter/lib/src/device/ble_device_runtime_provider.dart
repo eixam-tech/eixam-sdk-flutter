@@ -118,7 +118,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   String? _connectedCanonicalHardwareId;
   StreamSubscription<EixamBleNotification>? _notificationSubscription;
   StreamSubscription<bool>? _connectionStateSubscription;
-  DateTime? _lastAppCommandAt;
+  DateTime? _lastAppSosTriggerAt;
   DeviceStatus? _lastRuntimeStatus;
   int? _lastTelBatteryLevel;
   int? _lastSosBatteryLevel;
@@ -960,7 +960,11 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       return;
     }
     Future<void> commandWriter(EixamDeviceCommand command) {
-      _lastAppCommandAt = DateTime.now();
+      // Rebind/configuration writes and confirmation of a device countdown
+      // carry no new APP start intent. Only SOS TRIGGER APP can infer it.
+      if (command.opcode == EixamDeviceCommand.sosTriggerApp().opcode) {
+        _lastAppSosTriggerAt = DateTime.now();
+      }
       BleDebugRegistry.instance.recordEvent(
         'BLE app command tracked -> hardwareId=$deviceId command=${command.label} payload=${command.diagnosticPayload}',
       );
@@ -1108,7 +1112,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     _connectedDeviceId = null;
     _connectedDeviceAlias = null;
     _connectedCanonicalHardwareId = null;
-    _lastAppCommandAt = null;
+    _lastAppSosTriggerAt = null;
     _lastTelBatteryLevel = null;
     _lastSosBatteryLevel = null;
     _connectedBleTagNodeId = null;
@@ -1478,7 +1482,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     _connectedDeviceId = null;
     _connectedDeviceAlias = null;
     _connectedCanonicalHardwareId = null;
-    _lastAppCommandAt = null;
+    _lastAppSosTriggerAt = null;
     _lastTelBatteryLevel = null;
     _lastSosBatteryLevel = null;
     _connectedBleTagNodeId = null;
@@ -1540,7 +1544,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     _connectedDeviceId = null;
     _connectedDeviceAlias = null;
     _connectedCanonicalHardwareId = null;
-    _lastAppCommandAt = null;
+    _lastAppSosTriggerAt = null;
     _lastTelBatteryLevel = null;
     _lastSosBatteryLevel = null;
     _connectedBleTagNodeId = null;
@@ -1664,11 +1668,11 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   void _log(String message) {}
 
   DeviceSosTransitionSource _inferPacketSource() {
-    final lastAppCommandAt = _lastAppCommandAt;
-    if (lastAppCommandAt == null) {
+    final lastAppSosTriggerAt = _lastAppSosTriggerAt;
+    if (lastAppSosTriggerAt == null) {
       return DeviceSosTransitionSource.device;
     }
-    final elapsed = DateTime.now().difference(lastAppCommandAt);
+    final elapsed = DateTime.now().difference(lastAppSosTriggerAt);
     if (elapsed <= const Duration(milliseconds: 1200)) {
       return DeviceSosTransitionSource.app;
     }
