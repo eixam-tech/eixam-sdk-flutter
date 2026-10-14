@@ -107,6 +107,196 @@ void main() {
   });
 
   group('SOS-01..SOS-16 SDK lifecycle matrix', () {
+    test(
+      'C1 rearm physical ACTIVE before backend claim cannot count as dispatched',
+      () async {
+        final repository = _IncidentIdAwareSosRepository();
+        final harness = _SdkSosHarness(
+          sosRepository: repository,
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+          deviceCountdown: const Duration(milliseconds: 200),
+        );
+        var sequence = 0;
+        Future<void> write(EixamDeviceCommand command) async {
+          if (command.opcode == 0x06) {
+            scheduleMicrotask(
+              () => harness.deviceSosController.handleIncomingSosPacket(
+                _deviceOriginCountdownPacket(),
+                source: DeviceSosTransitionSource.device,
+              ),
+            );
+          } else if (command.opcode == 0x05) {
+            scheduleMicrotask(
+              () => harness.deviceSosController.handleIncomingSosPacket(
+                _minimalAppSosPacket(sosType: 3, packetId: 0),
+                source: DeviceSosTransitionSource.device,
+                resolutionContext: _physicalResolutionContext(
+                  receiveSequence: ++sequence,
+                  terminal: false,
+                  receiveSequenceDomain: 'C1-rearm-before-claim',
+                ),
+              ),
+            );
+          } else if (command.opcode == 0x04) {
+            scheduleMicrotask(
+              () => harness.deviceSosController.handleIncomingSosEventPacket(
+                _deviceResolveAckPacket(),
+                source: DeviceSosTransitionSource.device,
+                resolutionContext: _physicalResolutionContext(
+                  receiveSequence: ++sequence,
+                  terminal: true,
+                  receiveSequenceDomain: 'C1-rearm-before-claim',
+                ),
+              ),
+            );
+          }
+        }
+
+        try {
+          await harness.deviceSosController.attach(
+            commandWriter: write,
+            transportId: 'ble-1',
+          );
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          final first = await harness.sdk.triggerSosAuthoritatively(
+            const SosTriggerPayload(triggerSource: 'commercial_app'),
+          );
+          await harness.sdk.cancelSosAuthoritatively();
+          await harness.sdk.startPreSos(
+            countdown: const Duration(milliseconds: 200),
+          );
+          final rearm = await harness.sdk.getSosLifecycle();
+          expect(rearm.generation, first.lifecycle.generation + 1);
+          harness.deviceSosController.handleIncomingSosPacket(
+            _minimalAppSosPacket(sosType: 3, packetId: 0),
+            source: DeviceSosTransitionSource.device,
+            resolutionContext: _physicalResolutionContext(
+              receiveSequence: ++sequence,
+              terminal: false,
+              receiveSequenceDomain: 'C1-rearm-before-claim',
+            ),
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 350));
+          await pumpEventQueue(times: 15);
+          expect(
+            repository.triggerCallCount,
+            2,
+            reason:
+                'physical ACTIVE plus the previous cancelled repository incident is not a backend dispatch receipt',
+          );
+          final accepted = await harness.sdk.getSosLifecycle();
+          expect(accepted.generation, rearm.generation);
+          expect(accepted.stage, SosLifecycleStage.active);
+          expect(accepted.incident?.id, isNot(first.incident!.id));
+          await harness.sdk.confirmPreSos(const SosTriggerPayload());
+          expect(repository.triggerCallCount, 2);
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+    for (final nativeSource in [
+      'queued',
+      'succeeded',
+      'snapshot_create_pending',
+      'snapshot_elapsed',
+    ]) {
+      test(
+        'C1 rearm keeps pending APP countdown across stale native create $nativeSource',
+        () async {
+          final adapter = _SnapshotProtectionPlatformAdapter(
+            const ProtectionPlatformSnapshot(
+              platform: ProtectionPlatform.android,
+              backgroundCapabilityReady: true,
+            ),
+          );
+          final repository = _IncidentIdAwareSosRepository();
+          final harness = _SdkSosHarness(
+            sosRepository: repository,
+            protectionPlatformAdapter: adapter,
+          );
+          try {
+            await harness.sdk.initialize(
+              const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+            );
+            await harness.setSession();
+            final first = await harness.sdk.triggerSosAuthoritatively(
+              const SosTriggerPayload(triggerSource: 'commercial_app'),
+            );
+            await harness.sdk.cancelSosAuthoritatively();
+            await harness.sdk.startPreSos(
+              countdown: const Duration(milliseconds: 200),
+            );
+            final rearmed = await harness.sdk.getSosLifecycle();
+            expect(rearmed.generation, first.lifecycle.generation + 1);
+            expect(rearmed.stage, SosLifecycleStage.arming);
+            adapter.pendingNativeSosCreate = ProtectionPendingNativeSosCreate(
+              signature: 'C1-old-native-create',
+              incidentId: first.incident!.id,
+              cycleKey: first.incident!.cycleKey ?? 'C1-old-native-cycle',
+              correlationId: 'C1-old-native-correlation',
+              createdAt: first.incident!.createdAt,
+              updatedAt: DateTime.now().toUtc(),
+              retryCount: 1,
+              state: 'pending',
+            );
+            if (nativeSource.startsWith('snapshot')) {
+              final countdown = (await harness.sdk.getPreSosStatus())!;
+              adapter.snapshot = ProtectionPlatformSnapshot(
+                platform: ProtectionPlatform.android,
+                backgroundCapabilityReady: true,
+                bleOwner: ProtectionBleOwner.androidService,
+                serviceRunning: true,
+                preSosLifecycleState: nativeSource == 'snapshot_create_pending'
+                    ? 'createPending'
+                    : 'preConfirmSeen',
+                preSosOwner: 'app',
+                preSosCycleKey: countdown.cycleKey,
+                preSosStartedAt: countdown.startedAt,
+                preSosExpectedActivationAt: DateTime.now().subtract(
+                  const Duration(milliseconds: 1),
+                ),
+              );
+            } else {
+              adapter.emit(
+                ProtectionPlatformEvent(
+                  type: nativeSource == 'queued'
+                      ? ProtectionPlatformEventType.nativeBackendSyncQueued
+                      : ProtectionPlatformEventType.nativeBackendSyncSucceeded,
+                  timestamp: DateTime.now().toUtc(),
+                  reason: 'create:scheduled_retry',
+                ),
+              );
+            }
+            await pumpEventQueue(times: 15);
+            expect(
+              await harness.sdk.getPreSosStatus(),
+              isNotNull,
+              reason:
+                  'an unverified native create must not consume the explicit current APP activation',
+            );
+            await Future<void>.delayed(const Duration(milliseconds: 280));
+            await pumpEventQueue(times: 15);
+            final accepted = await harness.sdk.getSosLifecycle();
+            expect(repository.triggerCallCount, 2);
+            expect(accepted.generation, rearmed.generation);
+            expect(accepted.stage, SosLifecycleStage.active);
+            expect(accepted.incident?.id, isNot(first.incident!.id));
+            expect(adapter.pendingNativeSosCreate, isNull);
+            expect(adapter.droppedNativeSosCreateSignatures, [
+              'C1-old-native-create',
+            ]);
+          } finally {
+            await harness.dispose();
+            await adapter.dispose();
+          }
+        },
+      );
+    }
     for (final platform in [
       ProtectionPlatform.android,
       ProtectionPlatform.ios,

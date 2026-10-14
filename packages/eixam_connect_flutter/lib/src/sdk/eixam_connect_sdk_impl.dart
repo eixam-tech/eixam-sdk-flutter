@@ -11968,6 +11968,11 @@ class EixamConnectSdkImpl
       return;
     }
     if (state == 'createPending') {
+      if (_reconcileNativeCreateWithPendingAppActivation(
+        trigger: 'native_pre_sos_create_pending',
+      )) {
+        return;
+      }
       _clearPreSosSession(
         reason: 'native_pre_sos_create_pending',
         emitIdleState: false,
@@ -11982,6 +11987,11 @@ class EixamConnectSdkImpl
     }
     if (!DateTime.now().isBefore(expectedActivationAt)) {
       if (state == 'preConfirmSeen') {
+        if (_reconcileNativeCreateWithPendingAppActivation(
+          trigger: 'native_pre_sos_elapsed',
+        )) {
+          return;
+        }
         _clearPreSosSession(
           reason: 'native_pre_sos_elapsed',
           emitIdleState: false,
@@ -12427,6 +12437,29 @@ class EixamConnectSdkImpl
       );
     }
     _emitPublicSosState(SosState.sending, source: trigger);
+  }
+
+  bool _reconcileNativeCreateWithPendingAppActivation({
+    required String trigger,
+  }) {
+    final operation = _pendingSosActivation;
+    if (_preSosSession?.owner != _SosOwner.app ||
+        operation == null ||
+        !_isPendingSosActivationCurrent(operation) ||
+        operation.dispatchCommitted) {
+      return false;
+    }
+    // A native event describes a queue entry, not proof that this generation
+    // dispatched. Validate that entry through the existing strict fences while
+    // retaining the explicit APP countdown and its backend dispatch authority.
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_NATIVE_CREATE_APP_ACTIVATION_RETAINED '
+      'generation=${operation.generation} trigger=$trigger',
+    );
+    unawaited(
+      _publishNativePreSosPendingOverMqtt(trigger: trigger, attempt: 1),
+    );
+    return true;
   }
 
   Future<void> _publishNativePreSosPendingOverMqtt({
@@ -23154,6 +23187,12 @@ class EixamConnectSdkImpl
         if (queuedCancel) {
           _pendingNativeBackendCancelGeneration = queuedLifecycle.generation;
         }
+        if (!queuedCancel &&
+            _reconcileNativeCreateWithPendingAppActivation(
+              trigger: 'native_backend_sync_queued',
+            )) {
+          return true;
+        }
         BleDebugRegistry.instance.recordEvent(
           '[NATIVE_PRE_SOS_BACKEND] action=queued '
           'reason_category=${queuedCancel ? "cancel" : "sync"} '
@@ -23224,6 +23263,12 @@ class EixamConnectSdkImpl
             'activeGeneration=${succeededLifecycle.generation} '
             'reason=generation_mismatch',
           );
+          return true;
+        }
+        if (!succeededCancel &&
+            _reconcileNativeCreateWithPendingAppActivation(
+              trigger: 'native_backend_sync_succeeded',
+            )) {
           return true;
         }
         BleDebugRegistry.instance.recordEvent(
