@@ -15186,7 +15186,8 @@ class EixamConnectSdkImpl
             characteristic == EixamBleProtocol.telNotifyCharacteristicUuid ||
             characteristic == 'ea01' ||
             characteristic == 'ea02') &&
-        connectedDeviceMarker?.trim().toUpperCase() == expectedPeripheral &&
+        (connectedDeviceMarker?.trim().toUpperCase() == expectedPeripheral ||
+            _samePhysicalHardwareId(connectedDeviceMarker, proof.hardwareId)) &&
         _physicalSosTerminationTargetIsCurrent(proof) &&
         _remoteTerminalWriterIsReady(proof);
   }
