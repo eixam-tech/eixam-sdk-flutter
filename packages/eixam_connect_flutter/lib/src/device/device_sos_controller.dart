@@ -415,11 +415,13 @@ class DeviceSosController {
       _recordStaleTerminalOperation(commandRouteLabel);
       return _status;
     }
-    if (_isClosedState(previous.state)) {
-      return _status;
-    }
     final shouldWaitForCloseAcknowledgement =
         waitForCloseAcknowledgement ?? _isOpenSosState(previous.state);
+    // A handoff detach resets the mirror to inactive without physical proof.
+    // The SDK's retained cycle can still require a real terminal observation.
+    if (_isClosedState(previous.state) && !shouldWaitForCloseAcknowledgement) {
+      return _status;
+    }
     if (!shouldWaitForCloseAcknowledgement) {
       BleDebugRegistry.instance.recordEvent(
         'DEVICE_SOS_CLOSE_COMMAND_DISPATCHED_WITHOUT_ACK_WAIT route=$commandRouteLabel previousState=${previous.state.name}',

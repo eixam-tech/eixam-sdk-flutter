@@ -107,6 +107,301 @@ void main() {
   });
 
   group('SOS-01..SOS-16 SDK lifecycle matrix', () {
+    for (final platform in [
+      ProtectionPlatform.android,
+      ProtectionPlatform.ios,
+    ]) {
+      for (final scenario in [
+        'ready',
+        'flutter_rebind',
+        'native_rebind',
+        'delayed_terminal',
+        'recovery_exhausted',
+        'wrong_peer',
+        'wrong_writer',
+        'ambiguous_native',
+        'stale_generation',
+      ]) {
+        test('C1 local cleanup CANCEL $platform $scenario', () async {
+          const hardware = 'CF:82:00:00:00:01';
+          const otherHardware = 'CF:82:00:00:00:02';
+          final adapter = _SnapshotProtectionPlatformAdapter(
+            ProtectionPlatformSnapshot(
+              platform: platform,
+              backgroundCapabilityReady: false,
+            ),
+          );
+          final harness = _SdkSosHarness(
+            sosRepository: _IncidentIdAwareSosRepository()
+              ..currentIncident = SosIncident(
+                id: '2f4b59af-3bc2-4ba4-a9bc-b7ff71b7a478',
+                state: SosState.idle,
+                createdAt: DateTime.now().toUtc(),
+                isBackendConfirmed: true,
+              ),
+            connectedBle: true,
+            connectedNodeId: 0x1234,
+            deviceCountdown: Duration.zero,
+            protectionPlatformAdapter: adapter,
+          );
+          final commands = <EixamDeviceCommand>[];
+          void emitTerminal() =>
+              harness.deviceSosController.handleIncomingSosEventPacket(
+                _deviceResolveAckPacket(),
+                source: DeviceSosTransitionSource.device,
+                resolutionContext: _physicalResolutionContext(
+                  receiveSequence: 3,
+                  terminal: true,
+                  receiveSequenceDomain: 'c1-local-cleanup',
+                ),
+              );
+          void observeTerminal() {
+            if (scenario == 'delayed_terminal') {
+              Timer(const Duration(milliseconds: 50), emitTerminal);
+            } else {
+              scheduleMicrotask(emitTerminal);
+            }
+          }
+
+          Future<void> write(EixamDeviceCommand command) async {
+            commands.add(command);
+            if (command.opcode == 0x04) observeTerminal();
+          }
+
+          int cancelWrites() =>
+              commands.where((command) => command.opcode == 0x04).length +
+              adapter.commands
+                  .where((request) => request.bytes.first == 0x04)
+                  .length;
+          try {
+            await harness.deviceSosController.attach(
+              commandWriter: write,
+              transportId: 'ble-1',
+            );
+            await harness.sdk.initialize(
+              const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+            );
+            await harness.setSession();
+            await harness.deviceRegistryRepository.upsertRegisteredDevice(
+              hardwareId: '4660',
+              firmwareVersion: '2.7.54',
+              hardwareModel: 'EIXAM R1',
+              pairedAt: DateTime.now().toUtc(),
+            );
+            harness.deviceSosController.handleIncomingSosPacket(
+              _minimalAppSosPacket(sosType: 3, packetId: 0),
+              source: DeviceSosTransitionSource.device,
+              resolutionContext: _physicalResolutionContext(
+                receiveSequence: 1,
+                terminal: false,
+                receiveSequenceDomain: 'c1-local-cleanup',
+              ),
+            );
+            await Future<void>.delayed(const Duration(milliseconds: 30));
+            harness.deviceSosController.handleIncomingSosPacket(
+              _minimalAppSosPacket(sosType: 3, packetId: 0),
+              source: DeviceSosTransitionSource.device,
+              resolutionContext: _physicalResolutionContext(
+                receiveSequence: 2,
+                terminal: false,
+                receiveSequenceDomain: 'c1-local-cleanup',
+              ),
+            );
+            await pumpEventQueue(times: 30);
+            final original = await harness.sdk.getSosLifecycle();
+            expect(original.stage, SosLifecycleStage.active);
+            harness.sosRepository.currentIncident = harness
+                .sosRepository
+                .currentIncident
+                .copyWith(
+                  state: SosState.acknowledged,
+                  isBackendConfirmed: true,
+                );
+            harness.sosRepository.stateController.add(SosState.acknowledged);
+            await pumpEventQueue(times: 15);
+            expect(await harness.sdk.getSosState(), SosState.acknowledged);
+            expect(
+              (await harness.sdk.getSosLifecycle()).backendIncidentId,
+              harness.sosRepository.currentIncident.id,
+            );
+            commands.clear();
+            if (scenario != 'ready') {
+              await harness.deviceSosController.attach(
+                transportId: 'ble-1',
+                commandWriter: write,
+                shortCommandAvailable: false,
+                longCommandAvailable: false,
+              );
+              await pumpEventQueue(times: 8);
+            }
+            var completed = false;
+            final cancellation = harness.sdk.cancelDeviceSos();
+            final observedCancellation = cancellation.then<Object>(
+              (status) {
+                completed = true;
+                return status;
+              },
+              onError: (Object error) {
+                completed = true;
+                return error;
+              },
+            );
+            await pumpEventQueue(times: 12);
+            if (scenario != 'ready') {
+              expect(cancelWrites(), 0);
+              expect(
+                completed,
+                isFalse,
+                reason: 'cleanup must await the retained current-cycle command',
+              );
+              // Reproduce the detach that used to clear the controller queue.
+              await harness.deviceSosController.detach();
+              if (scenario == 'recovery_exhausted') {
+                final result = await observedCancellation.timeout(
+                  const Duration(seconds: 12),
+                );
+                expect(result, isA<DeviceException>());
+                expect(
+                  (result as DeviceException).code,
+                  'E_SOS_CANCEL_WRITER_RECOVERY_EXHAUSTED',
+                );
+              }
+              if (scenario == 'stale_generation') {
+                harness.deviceSosController.handleIncomingSosEventPacket(
+                  _deviceCancelPacket(),
+                  source: DeviceSosTransitionSource.device,
+                  resolutionContext: _physicalResolutionContext(
+                    receiveSequence: 3,
+                    terminal: true,
+                    receiveSequenceDomain: 'c1-local-cleanup',
+                  ),
+                );
+                await pumpEventQueue(times: 12);
+                expect(
+                  (await harness.sdk.getSosLifecycle()).isTerminal,
+                  isTrue,
+                );
+                await harness.sdk.triggerSosAuthoritatively(
+                  const SosTriggerPayload(triggerSource: 'commercial_app'),
+                );
+                expect(
+                  (await harness.sdk.getSosLifecycle()).generation,
+                  greaterThan(original.generation),
+                );
+              }
+              harness.deviceRepository.emitStatus(
+                buildDeviceStatus(
+                  deviceId: scenario == 'wrong_peer' ? 'ble-2' : 'ble-1',
+                  canonicalHardwareId: scenario == 'wrong_peer'
+                      ? otherHardware
+                      : hardware,
+                  nodeId: 0x1234,
+                ),
+              );
+              await pumpEventQueue(times: 8);
+              if (scenario == 'native_rebind' ||
+                  scenario == 'ambiguous_native') {
+                adapter.snapshot = ProtectionPlatformSnapshot(
+                  platform: platform,
+                  backgroundCapabilityReady: true,
+                  serviceRunning: true,
+                  runtimeActive: true,
+                  runtimeState: ProtectionRuntimeState.active,
+                  coverageLevel: ProtectionCoverageLevel.full,
+                  bleOwner: platform == ProtectionPlatform.android
+                      ? ProtectionBleOwner.androidService
+                      : ProtectionBleOwner.iosPlugin,
+                  serviceBleConnected: true,
+                  serviceBleReady: true,
+                  nativeCommandServiceReady: true,
+                  nativeCommandEa04Ready: true,
+                  nativeCommandIdentityReady: true,
+                  nativeCommandQueueHealthy: true,
+                  nativeCommandReady: true,
+                  activeDeviceId: 'ble-1',
+                  protectedDeviceId: scenario == 'ambiguous_native'
+                      ? otherHardware
+                      : hardware,
+                  bleHardwareId: hardware,
+                );
+                adapter.commandObserver = (request) {
+                  if (request.bytes.first == 0x04) observeTerminal();
+                };
+                await harness.sdk.rehydrateProtectionState();
+              } else {
+                await harness.deviceSosController.attach(
+                  commandWriter: write,
+                  transportId: scenario == 'wrong_writer'
+                      ? otherHardware
+                      : scenario == 'wrong_peer'
+                      ? 'ble-2'
+                      : 'ble-1',
+                  shortCommandAvailable: false,
+                );
+              }
+            }
+            final delivered = [
+              'ready',
+              'flutter_rebind',
+              'native_rebind',
+              'delayed_terminal',
+            ].contains(scenario);
+            if (delivered ||
+                scenario == 'recovery_exhausted' ||
+                scenario == 'wrong_peer' ||
+                scenario == 'stale_generation') {
+              final result = await observedCancellation.timeout(
+                const Duration(seconds: 2),
+              );
+              if (delivered) {
+                expect(result, isA<DeviceSosStatus>());
+                expect(
+                  (result as DeviceSosStatus).derivedFromBlePacket,
+                  isTrue,
+                );
+                await pumpEventQueue(times: 12);
+                expect(
+                  harness
+                      .deviceSosController
+                      .currentStatus
+                      .derivedFromBlePacket,
+                  isTrue,
+                );
+                expect(
+                  harness.deviceSosController.currentStatus.state,
+                  DeviceSosState.inactive,
+                );
+              } else {
+                expect(result, isA<DeviceException>());
+              }
+            } else {
+              expect(completed, isFalse);
+              // End the bounded waiter without delivering it to an ambiguous
+              // or wrong writer, then prove that future callbacks cannot retry.
+              await harness.sdk.clearSession();
+              await observedCancellation.timeout(const Duration(seconds: 2));
+            }
+            expect(cancelWrites(), delivered ? 1 : 0);
+            for (var duplicate = 0; duplicate < 3; duplicate++) {
+              await harness.sdk.rehydrateProtectionState();
+            }
+            await pumpEventQueue(times: 12);
+            expect(cancelWrites(), delivered ? 1 : 0);
+            if (scenario == 'flutter_rebind') {
+              expect(
+                commands
+                    .singleWhere((c) => c.opcode == 0x04)
+                    .usesCmdCharacteristic,
+                isTrue,
+              );
+            }
+          } finally {
+            await harness.dispose();
+            await adapter.dispose();
+          }
+        });
+      }
+    }
     for (final scenario in [
       'foreground',
       'handoff',

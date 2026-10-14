@@ -4462,7 +4462,22 @@ class EixamConnectSdkImpl
     void Function()? onCommandSubmit,
     void Function()? onCommandDispatch,
   }) async {
-    if (capturedTarget == null && capturedDeviceConnection == null) {
+    // Local cleanup must retain the admitted cycle/physical target, just like
+    // remote CANCEL. A callable owner router is not a writable BLE channel.
+    _rememberPhysicalSosSilenceTarget(deviceSosController.currentStatus);
+    final localCancelTarget =
+        intent == _SosClosureIntent.cancel &&
+            capturedTarget == null &&
+            _physicalSosSilenceTarget != null &&
+            _localCancelTargetIsCurrent(_physicalSosSilenceTarget!)
+        ? _physicalSosSilenceTarget
+        : null;
+    final cancelWriterDeadline = DateTime.now().add(
+      const Duration(seconds: 10),
+    );
+    if (localCancelTarget != null) {
+      await _waitForLocalCancelWriter(localCancelTarget, cancelWriterDeadline);
+    } else if (capturedTarget == null && capturedDeviceConnection == null) {
       await _loadRuntimeReadyDeviceStatusForSosSync(action: intent.name);
     } else if (capturedTarget != null &&
         !_physicalSosTerminationTargetIsCurrent(capturedTarget)) {
@@ -4474,7 +4489,8 @@ class EixamConnectSdkImpl
     final currentStatus = await deviceSosController.getStatus();
     final shouldWaitForDeviceAcknowledgement =
         waitForDeviceAcknowledgement ??
-        (currentStatus.state == DeviceSosState.active ||
+        (localCancelTarget != null ||
+            currentStatus.state == DeviceSosState.active ||
             currentStatus.state == DeviceSosState.acknowledged);
     final capabilitySnapshot = _computeCurrentSosCapabilitySnapshot(
       reason: 'device_terminal_${intent.name}_command',
@@ -4496,7 +4512,26 @@ class EixamConnectSdkImpl
     try {
       status = await deviceSosController.cancelSos(
         commandWriterOverride: capturedTarget == null
-            ? _sendDeviceCommandThroughActiveOwner
+            ? localCancelTarget == null
+                  ? _sendDeviceCommandThroughActiveOwner
+                  : (command) async {
+                      await _waitForLocalCancelWriter(
+                        localCancelTarget,
+                        cancelWriterDeadline,
+                      );
+                      await _sendDeviceCommandThroughActiveOwner(
+                        command,
+                        validateOperation: () {
+                          if (!_localCancelTargetIsCurrent(localCancelTarget) ||
+                              !_localCancelWriterIsReady(localCancelTarget)) {
+                            throw const DeviceException(
+                              'E_SOS_CANCEL_TARGET_STALE',
+                              'Current-cycle CANCEL target is no longer valid.',
+                            );
+                          }
+                        },
+                      );
+                    }
             : (command) async {
                 if (!_physicalSosTerminationTargetIsCurrent(capturedTarget)) {
                   throw StateError('stale remote terminal device clear');
@@ -4534,7 +4569,9 @@ class EixamConnectSdkImpl
         terminalCmdAvailable: capabilitySnapshot.longCommandAvailable,
         waitForCloseAcknowledgement: shouldWaitForDeviceAcknowledgement,
         operationIsCurrent: capturedTarget == null
-            ? capturedDeviceConnection == null
+            ? localCancelTarget != null
+                  ? () => _localCancelTargetIsCurrent(localCancelTarget)
+                  : capturedDeviceConnection == null
                   ? null
                   : () =>
                         _sosLifecycle.current.generation == commandGeneration &&
@@ -4590,6 +4627,102 @@ class EixamConnectSdkImpl
       );
     }
     return status;
+  }
+
+  bool _localCancelTargetIsCurrent(_PhysicalSosSilenceTarget target) {
+    final lifecycle = _sosLifecycle.current;
+    return !_disposed &&
+        (lifecycle.isOpen || lifecycle.stage == SosLifecycleStage.cancelled) &&
+        _physicalSosTargetMatchesLifecycle(
+          target,
+          lifecycle,
+          requireRetainedTarget: false,
+        ) &&
+        (target.lifecycle.deviceCycleKey == null ||
+            lifecycle.deviceCycleKey == null ||
+            target.lifecycle.deviceCycleKey == lifecycle.deviceCycleKey);
+  }
+
+  bool _localCancelWriterIsReady(_PhysicalSosSilenceTarget target) {
+    final connection = _captureTerminalDeviceSnapshot(
+      reason: 'local_cancel_writer_rebinding',
+    ).connection;
+    final device = connection.device;
+    return connection.devicePresent &&
+        device != null &&
+        (connection.commandChannelReady || connection.shortCommandReady) &&
+        _cancelOwnerIdentityMatches(
+          _physicalHardwareIdForStatus(target.connection.device),
+          device,
+        ) &&
+        (_isProtectionPlatformOwningBle ||
+            _flutterCommandTargetMatchesConnectedIdentity(device));
+  }
+
+  Future<void> _waitForLocalCancelWriter(
+    _PhysicalSosSilenceTarget target,
+    DateTime deadline,
+  ) async {
+    bool ready() {
+      if (!_localCancelTargetIsCurrent(target)) {
+        throw const DeviceException(
+          'E_SOS_CANCEL_TARGET_STALE',
+          'Current-cycle CANCEL target is no longer valid.',
+        );
+      }
+      return _localCancelWriterIsReady(target);
+    }
+
+    if (ready()) return;
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_LOCAL_CANCEL_RETAINED generation=${target.lifecycle.generation} '
+      'reason=current_owner_writer_not_ready retryOwner=shared_sdk',
+    );
+    final remaining = deadline.difference(DateTime.now());
+    if (remaining <= Duration.zero) {
+      throw const DeviceException(
+        'E_SOS_CANCEL_WRITER_RECOVERY_EXHAUSTED',
+        'Current-cycle CANCEL writer recovery exhausted.',
+      );
+    }
+    // The SDK subscription survives DeviceSosController.detach(). Readiness
+    // only releases this one awaiting operation; repeated callbacks cannot
+    // submit another CANCEL. Revalidate again at the actual owner write.
+    final completion = Completer<void>();
+    final subscription = watchOperationalDiagnostics().listen(
+      (_) {
+        if (completion.isCompleted) return;
+        try {
+          if (ready()) completion.complete();
+        } catch (error, stack) {
+          completion.completeError(error, stack);
+        }
+      },
+      onError: (Object error, StackTrace stack) {
+        if (!completion.isCompleted) completion.completeError(error, stack);
+      },
+      onDone: () {
+        if (!completion.isCompleted) {
+          completion.completeError(
+            StateError('SDK disposed during CANCEL recovery'),
+          );
+        }
+      },
+    );
+    try {
+      await completion.future.timeout(remaining);
+    } on TimeoutException {
+      throw const DeviceException(
+        'E_SOS_CANCEL_WRITER_RECOVERY_EXHAUSTED',
+        'Current-cycle CANCEL writer recovery exhausted.',
+      );
+    } finally {
+      await subscription.cancel();
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_LOCAL_CANCEL_REBOUND generation=${target.lifecycle.generation} '
+      'owner=$_currentDeviceCommandOwnerRoute',
+    );
   }
 
   @override
@@ -4735,11 +4868,12 @@ class EixamConnectSdkImpl
 
   bool _physicalSosTargetMatchesLifecycle(
     _PhysicalSosSilenceTarget target,
-    SosLifecycleSnapshot lifecycle,
-  ) {
+    SosLifecycleSnapshot lifecycle, {
+    bool requireRetainedTarget = true,
+  }) {
     final session = _session;
     final device = _lastPublicDeviceStatus ?? _lastDeviceStatus;
-    if (_physicalSosSilenceTarget == null ||
+    if ((requireRetainedTarget && _physicalSosSilenceTarget == null) ||
         session == null ||
         !lifecycle.localActionable ||
         lifecycle.externalOnly ||
@@ -14764,6 +14898,10 @@ class EixamConnectSdkImpl
     DeviceStatus device,
   ) {
     if (!proof.retainedAcrossHandoff) return true;
+    return _cancelOwnerIdentityMatches(proof.hardwareId, device);
+  }
+
+  bool _cancelOwnerIdentityMatches(String? hardwareId, DeviceStatus device) {
     final protection = _protectionModeController.currentStatus;
     final identities = <String?>[
       device.deviceId,
@@ -14775,9 +14913,9 @@ class EixamConnectSdkImpl
       ],
     ].map(normalizeCanonicalHardwareId).whereType<String>();
     // Matching one alias must never override contradictory canonical evidence.
-    if (proof.hardwareId != null &&
+    if (hardwareId != null &&
         identities.any(
-          (identity) => !_samePhysicalHardwareId(identity, proof.hardwareId),
+          (identity) => !_samePhysicalHardwareId(identity, hardwareId),
         )) {
       return false;
     }
