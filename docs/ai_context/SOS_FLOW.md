@@ -182,6 +182,21 @@ is not a physical TAG ACK. WEB ACK remains the separate nonterminal silence
 operation. This target rule does not change SOS start admission or terminal
 generation watermarks.
 
+## ACK silence through command ownership handoff
+
+WEB ACK sends nonterminal `SOS SILENCE` (`0x09`) on EA04 and waits for its
+`E9` command result. An admitted own-TAG ACTIVE observation captures its
+account, lifecycle/generation, node, and physical connection identity. A
+transport-only `DeviceSosController.detach()` may reset the live mirror but
+does not discard that physical proof or a correlated pending ACK intent.
+Writer readiness retries the intent without requiring another SOS packet.
+Each write, including native fallback, revalidates the current lifecycle and
+target. Physical closure, session changes, another generation, or another TAG
+invalidate the proof. CoreBluetooth targets retain their selected UUID and
+hydrated own-node binding; UUIDs are never canonical MACs. Duplicate ACKs share
+one operation. Silence leaves SOS ACTIVE and configured volume unchanged;
+RESOLVE remains the separate `0x07`/E3 terminal operation.
+
 ## Physical evidence during explicit rearm
 
 `DeviceSosController` respects shared physical-start admission: `sameCycle`

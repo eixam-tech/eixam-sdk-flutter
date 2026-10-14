@@ -602,6 +602,355 @@ void main() {
       }
     });
 
+    test(
+      'B1 ACK native fallback cannot outlive cancelled generation',
+      () async {
+        final adapter = _SnapshotProtectionPlatformAdapter(
+          const ProtectionPlatformSnapshot(
+            platform: ProtectionPlatform.android,
+            backgroundCapabilityReady: false,
+          ),
+        );
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+          deviceCountdown: Duration.zero,
+          protectionPlatformAdapter: adapter,
+        );
+        final started = Completer<void>();
+        final release = Completer<void>();
+        final flutterCommands = <int>[];
+        try {
+          await harness.deviceSosController.attach(
+            commandWriter: (command) async {
+              flutterCommands.add(command.opcode);
+              if (command.opcode == 0x09) {
+                if (!started.isCompleted) started.complete();
+                await release.future;
+                throw const DeviceException(
+                  'E_BLE_COMMAND_WRITER_NOT_READY',
+                  'handoff during write',
+                );
+              }
+            },
+            transportId: 'ble-1',
+          );
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await harness.sdk.triggerSosAuthoritatively(
+            const SosTriggerPayload(triggerSource: 'commercial_app'),
+          );
+          harness.deviceSosController.handleIncomingSosPacket(
+            _deviceOriginActivePacket(),
+            source: DeviceSosTransitionSource.device,
+            resolutionContext: _physicalResolutionContext(
+              receiveSequence: 1,
+              terminal: false,
+              receiveSequenceDomain: 'b1-fallback',
+            ),
+          );
+          await pumpEventQueue(times: 10);
+          final original = await harness.sdk.getSosLifecycle();
+          adapter.snapshot = const ProtectionPlatformSnapshot(
+            platform: ProtectionPlatform.android,
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            runtimeState: ProtectionRuntimeState.active,
+            coverageLevel: ProtectionCoverageLevel.full,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: true,
+            serviceBleReady: true,
+            nativeCommandServiceReady: true,
+            nativeCommandEa04Ready: true,
+            nativeCommandIdentityReady: true,
+            nativeCommandQueueHealthy: true,
+            nativeCommandReady: true,
+            protectedDeviceId: 'ble-1',
+            activeDeviceId: 'ble-1',
+            bleHardwareId: 'CF:82:00:00:00:01',
+          );
+          await harness.sdk.rehydrateProtectionState();
+          harness.sosRepository.currentIncident = harness
+              .sosRepository
+              .currentIncident
+              .copyWith(state: SosState.acknowledged, isBackendConfirmed: true);
+          harness.sosRepository.stateController.add(SosState.acknowledged);
+          await started.future.timeout(const Duration(seconds: 1));
+          harness.sosRepository.currentIncident = harness
+              .sosRepository
+              .currentIncident
+              .copyWith(state: SosState.cancelled);
+          harness.sosRepository.stateController.add(SosState.cancelled);
+          await pumpEventQueue(times: 15);
+          expect((await harness.sdk.getSosLifecycle()).isTerminal, isTrue);
+          release.complete();
+          await pumpEventQueue(times: 20);
+          expect(
+            flutterCommands.where((opcode) => opcode == 0x09),
+            hasLength(1),
+          );
+          expect(
+            adapter.commands.where((command) => command.bytes.first == 0x09),
+            isEmpty,
+          );
+          expect(
+            (await harness.sdk.getSosLifecycle()).generation,
+            original.generation,
+          );
+          expect(harness.sosRepository.triggerCallCount, 1);
+        } finally {
+          if (!release.isCompleted) release.complete();
+          await harness.dispose();
+          await adapter.dispose();
+        }
+      },
+    );
+
+    for (final peer in ['android_mac', 'ios_uuid']) {
+      final platform = peer == 'android_mac'
+          ? ProtectionPlatform.android
+          : ProtectionPlatform.ios;
+      final deviceId = peer == 'android_mac'
+          ? 'ble-1'
+          : 'B748445B-FDEA-2426-48F1-FD1A086627FA';
+      final hardwareId = peer == 'android_mac' ? 'CF:82:00:00:00:01' : null;
+      for (final delivery in [
+        'native_before_ack',
+        'native_after_ack',
+        'flutter_reattach',
+        'terminal_before_ready',
+        'new_generation_before_ready',
+        'wrong_peer',
+        'wrong_node',
+      ]) {
+        test(
+          'B1 retained physical ACTIVE delivers ACK without a new SOS packet $peer $delivery',
+          () async {
+            final events = StreamController<BleIncomingEvent>.broadcast();
+            final adapter = _SnapshotProtectionPlatformAdapter(
+              ProtectionPlatformSnapshot(
+                platform: platform,
+                backgroundCapabilityReady: false,
+              ),
+            );
+            final harness = _SdkSosHarness(
+              connectedBle: true,
+              connectedNodeId: 0x1234,
+              connectedDeviceId: deviceId,
+              connectedCanonicalHardwareId: hardwareId,
+              deviceCountdown: const Duration(seconds: 20),
+              protectionPlatformAdapter: adapter,
+              bleIncomingEvents: events.stream,
+            );
+            final flutterCommands = <int>[];
+            void acknowledgeSilence() {
+              const payload = [0xE9, 0x7A, 0x01, 0x09, 0x00, 0x00];
+              scheduleMicrotask(
+                () => events.add(
+                  BleIncomingEvent(
+                    deviceId: deviceId,
+                    type: BleIncomingEventType.provisioningCommandResult,
+                    channel: EixamBleChannel.tel,
+                    payload: payload,
+                    payloadHex: EixamBleProtocol.hex(payload),
+                    source: DeviceSosTransitionSource.device,
+                    receivedAt: DateTime.now().toUtc(),
+                    provisioningCommandResult:
+                        ProvisioningCommandResult.tryParse(payload),
+                  ),
+                ),
+              );
+            }
+
+            Future<void> write(EixamDeviceCommand command) async {
+              flutterCommands.add(command.opcode);
+              if (command.opcode == 0x09) acknowledgeSilence();
+            }
+
+            Future<void> nativeReady({bool expectReady = true}) async {
+              adapter.snapshot = ProtectionPlatformSnapshot(
+                platform: platform,
+                backgroundCapabilityReady: true,
+                serviceRunning: true,
+                runtimeActive: true,
+                runtimeState: ProtectionRuntimeState.active,
+                coverageLevel: ProtectionCoverageLevel.full,
+                bleOwner: platform == ProtectionPlatform.android
+                    ? ProtectionBleOwner.androidService
+                    : ProtectionBleOwner.iosPlugin,
+                serviceBleConnected: true,
+                serviceBleReady: true,
+                nativeCommandServiceReady: true,
+                nativeCommandEa04Ready: true,
+                nativeCommandIdentityReady: true,
+                nativeCommandQueueHealthy: true,
+                nativeCommandReady: true,
+                protectedDeviceId: deviceId,
+                activeDeviceId: deviceId,
+                bleHardwareId: hardwareId,
+              );
+              adapter.commandObserver = (request) {
+                if (request.bytes.first == 0x09) acknowledgeSilence();
+              };
+              await harness.sdk.rehydrateProtectionState();
+              await pumpEventQueue(times: 12);
+              expect(
+                (await harness.sdk.getDeviceCommandChannelStatus()).isReady,
+                expectReady,
+              );
+            }
+
+            try {
+              await harness.deviceSosController.attach(
+                commandWriter: write,
+                transportId: deviceId,
+              );
+              await harness.sdk.initialize(
+                const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+              );
+              await harness.setSession();
+              await harness.sdk.triggerSosAuthoritatively(
+                const SosTriggerPayload(triggerSource: 'commercial_app'),
+              );
+              await harness.deviceSosController.confirmSos();
+              harness.deviceSosController.handleIncomingSosPacket(
+                _deviceOriginActivePacket(),
+                source: DeviceSosTransitionSource.device,
+                resolutionContext: _physicalResolutionContext(
+                  receiveSequence: 1,
+                  terminal: false,
+                  receiveSequenceDomain: 'b1-owner-handoff',
+                ),
+              );
+              await pumpEventQueue(times: 10);
+              expect(
+                harness.deviceSosController.currentStatus.state,
+                DeviceSosState.active,
+              );
+              expect(
+                harness.deviceSosController.currentStatus.derivedFromBlePacket,
+                isTrue,
+              );
+              final original = await harness.sdk.getSosLifecycle();
+              expect(original.stage, SosLifecycleStage.active);
+              await harness.deviceSosController.detach();
+              await pumpEventQueue(times: 8);
+              if (delivery == 'native_before_ack') await nativeReady();
+              harness.sosRepository.currentIncident = harness
+                  .sosRepository
+                  .currentIncident
+                  .copyWith(
+                    state: SosState.acknowledged,
+                    isBackendConfirmed: true,
+                  );
+              harness.sosRepository.stateController.add(SosState.acknowledged);
+              await pumpEventQueue(times: 12);
+              if (delivery == 'native_after_ack') await nativeReady();
+              if (delivery == 'flutter_reattach') {
+                await harness.deviceSosController.attach(
+                  commandWriter: write,
+                  transportId: deviceId,
+                );
+              }
+              final shouldDeliver = ![
+                'terminal_before_ready',
+                'new_generation_before_ready',
+                'wrong_peer',
+                'wrong_node',
+              ].contains(delivery);
+              if (delivery == 'terminal_before_ready' ||
+                  delivery == 'new_generation_before_ready') {
+                harness.sosRepository.currentIncident = harness
+                    .sosRepository
+                    .currentIncident
+                    .copyWith(state: SosState.cancelled);
+                harness.sosRepository.stateController.add(SosState.cancelled);
+                await pumpEventQueue(times: 12);
+                expect(
+                  (await harness.sdk.getSosLifecycle()).isTerminal,
+                  isTrue,
+                );
+                if (delivery == 'new_generation_before_ready') {
+                  await harness.deviceSosController.attach(
+                    commandWriter: write,
+                    transportId: deviceId,
+                  );
+                  await harness.sdk.startPreSos();
+                  expect(
+                    (await harness.sdk.getSosLifecycle()).generation,
+                    original.generation + 1,
+                  );
+                  harness.sosRepository.currentIncident = harness
+                      .sosRepository
+                      .currentIncident
+                      .copyWith(state: SosState.acknowledged);
+                  harness.sosRepository.stateController.add(
+                    SosState.acknowledged,
+                  );
+                  await pumpEventQueue(times: 12);
+                  expect(
+                    (await harness.sdk.getSosLifecycle()).stage,
+                    SosLifecycleStage.arming,
+                  );
+                }
+                await nativeReady();
+              }
+              if (delivery == 'wrong_peer' || delivery == 'wrong_node') {
+                harness.deviceRepository.emitStatus(
+                  buildDeviceStatus(
+                    deviceId: delivery == 'wrong_peer'
+                        ? '00000000-0000-0000-0000-000000000001'
+                        : deviceId,
+                    canonicalHardwareId: delivery == 'wrong_peer'
+                        ? 'CF:82:00:00:00:02'
+                        : hardwareId,
+                    nodeId: delivery == 'wrong_node' ? 0x5678 : 0x1234,
+                  ),
+                );
+                await pumpEventQueue(times: 8);
+                await nativeReady(expectReady: delivery != 'wrong_peer');
+              }
+              await pumpEventQueue(times: 20);
+              final delivered =
+                  flutterCommands.where((opcode) => opcode == 0x09).length +
+                  adapter.commands
+                      .where((command) => command.bytes.first == 0x09)
+                      .length;
+              expect(
+                delivered,
+                shouldDeliver ? 1 : 0,
+                reason:
+                    'ACK must survive transport-only detach and writer readiness without waiting for another SOS packet',
+              );
+              expect(_hasDebugMessage('SOS_WEB_ACK_SILENCED'), shouldDeliver);
+              if (!shouldDeliver) return;
+              expect(
+                (await harness.sdk.getSosLifecycle()).generation,
+                original.generation,
+              );
+              expect((await harness.sdk.getSosLifecycle()).isOpen, isTrue);
+              harness.sosRepository.stateController.add(SosState.acknowledged);
+              await pumpEventQueue(times: 12);
+              expect(
+                flutterCommands.where((opcode) => opcode == 0x09).length +
+                    adapter.commands
+                        .where((command) => command.bytes.first == 0x09)
+                        .length,
+                1,
+              );
+            } finally {
+              await harness.dispose();
+              await adapter.dispose();
+              await events.close();
+            }
+          },
+        );
+      }
+    }
+
     for (final platform in [
       ProtectionPlatform.android,
       ProtectionPlatform.ios,
@@ -693,10 +1042,7 @@ void main() {
               );
               repository.stateController.add(SosState.acknowledged);
               await pumpEventQueue(times: 8);
-              expect(
-                _hasDebugMessage('E_DEVICE_SOS_SILENCE_NO_ACTIVE_LOCAL_SOS'),
-                isTrue,
-              );
+              expect(_hasDebugMessage('E_DEVICE_COMMAND_NOT_READY'), isTrue);
               expect(commands.where((opcode) => opcode == 0x09), isEmpty);
 
               if (terminalDuringHandoff) {

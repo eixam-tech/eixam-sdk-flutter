@@ -425,6 +425,13 @@ class EixamConnectSdkImpl
           .listen(_handleRejectedTerminalReconciliationRequest);
     }
     _sosCapabilityLifecycleSub = _sosLifecycle.stream.listen((lifecycle) {
+      final silenceTarget = _physicalSosSilenceTarget;
+      if (silenceTarget != null &&
+          (!lifecycle.isOpen ||
+              lifecycle.generation != silenceTarget.lifecycle.generation ||
+              lifecycle.lifecycleId != silenceTarget.lifecycle.lifecycleId)) {
+        _physicalSosSilenceTarget = null;
+      }
       if (lifecycle.isTerminal) {
         _recordTerminalNativeReceiveBoundary(lifecycle);
         final status = deviceSosController.currentStatus;
@@ -691,6 +698,7 @@ class EixamConnectSdkImpl
   final Map<String, SosSilenceResult> _completedSosSilenceOperations =
       <String, SosSilenceResult>{};
   _PendingWebAckSilence? _pendingWebAckSilence;
+  _PhysicalSosSilenceTarget? _physicalSosSilenceTarget;
   int? _pendingNativeBackendCancelGeneration;
   int? _lastDiagnosticRuntimeGeneration;
   final Map<int, _SosGenerationDispatchOperation> _generationDispatches =
@@ -2437,6 +2445,7 @@ class EixamConnectSdkImpl
     _backendResolveWriteSuccessKeys.clear();
     _authoritativeTerminalOperationKeys.clear();
     _pendingWebAckSilence = null;
+    _physicalSosSilenceTarget = null;
     _completedSosSilenceOperations.clear();
     _sosDeviceMirrorState = _SosDeviceMirrorState.synchronized;
     _terminalConvergenceFence = null;
@@ -4644,19 +4653,121 @@ class EixamConnectSdkImpl
     );
   }
 
+  void _rememberPhysicalSosSilenceTarget(DeviceSosStatus status) {
+    if (!identical(status, deviceSosController.currentStatus) ||
+        !status.derivedFromBlePacket ||
+        status.optimistic) {
+      return;
+    }
+    if (_isDeviceSosCycleClosed(status.state)) {
+      if (status.nodeId == _physicalSosSilenceTarget?.status.nodeId) {
+        _physicalSosSilenceTarget = null;
+      }
+      return;
+    }
+    final lifecycle = _sosLifecycle.current;
+    final session = _session;
+    final observedAt = status.lastPacketAt ?? status.updatedAt;
+    if (session == null ||
+        !lifecycle.isOpen ||
+        !lifecycle.localActionable ||
+        lifecycle.externalOnly ||
+        lifecycle.nodeId == null ||
+        status.nodeId != lifecycle.nodeId ||
+        (status.relayCount ?? 0) != 0 ||
+        (status.state != DeviceSosState.active &&
+            status.state != DeviceSosState.acknowledged) ||
+        (lifecycle.activationTimestamp != null &&
+            observedAt.isBefore(lifecycle.activationTimestamp!))) {
+      return;
+    }
+    final connection = _captureTerminalDeviceSnapshot(
+      reason: 'ack_silence_target_capture',
+    ).connection;
+    final device = connection.device;
+    final hardware = _physicalHardwareIdForStatus(device);
+    final lifecycleHardware = normalizeCanonicalHardwareId(
+      lifecycle.hardwareId,
+    );
+    if (!connection.devicePresent ||
+        device == null ||
+        (device.nodeId != null && device.nodeId != status.nodeId) ||
+        (hardware == null &&
+            !_hasVerifiedPeripheralTerminationIdentity(
+              device,
+              status.nodeId,
+            )) ||
+        (hardware != null &&
+            lifecycleHardware != null &&
+            !_samePhysicalHardwareId(hardware, lifecycleHardware))) {
+      return;
+    }
+    _physicalSosSilenceTarget = _PhysicalSosSilenceTarget(
+      lifecycle: lifecycle,
+      ownerScope: AuthoritativeSosLifecycleController.ownerScopeFor(session),
+      connection: connection,
+      status: status,
+    );
+  }
+
+  bool _physicalSosSilenceTargetIsCurrent(_PhysicalSosSilenceTarget target) {
+    final lifecycle = _sosLifecycle.current;
+    final session = _session;
+    final device = _lastPublicDeviceStatus ?? _lastDeviceStatus;
+    if (_physicalSosSilenceTarget == null ||
+        session == null ||
+        !lifecycle.isOpen ||
+        lifecycle.stage == SosLifecycleStage.cancelling ||
+        !lifecycle.localActionable ||
+        lifecycle.externalOnly ||
+        lifecycle.generation != target.lifecycle.generation ||
+        lifecycle.lifecycleId != target.lifecycle.lifecycleId ||
+        lifecycle.nodeId != target.status.nodeId ||
+        AuthoritativeSosLifecycleController.ownerScopeFor(session) !=
+            target.ownerScope ||
+        device == null ||
+        (device.nodeId != null && device.nodeId != target.status.nodeId)) {
+      return false;
+    }
+    final capturedHardware = _physicalHardwareIdForStatus(
+      target.connection.device,
+    );
+    if (capturedHardware != null) {
+      return _samePhysicalHardwareId(
+        _physicalHardwareIdForStatus(device),
+        capturedHardware,
+      );
+    }
+    // CoreBluetooth UUID is a selected peripheral handle, never a MAC. Native
+    // dispatch separately revalidates its live writer binding and readiness.
+    return device.deviceId.trim().toLowerCase() ==
+            target.connection.device?.deviceId.trim().toLowerCase() &&
+        device.nodeId == target.status.nodeId;
+  }
+
   @override
   Future<SosSilenceResult> silenceActiveSos() {
     final lifecycle = _sosLifecycle.current;
     final status = deviceSosController.currentStatus;
+    _rememberPhysicalSosSilenceTarget(status);
+    final physicalTarget = _physicalSosSilenceTarget;
+    final retainedPhysicalSos =
+        !status.derivedFromBlePacket &&
+        status.transitionSource == DeviceSosTransitionSource.unknown &&
+        _isDeviceSosCycleClosed(status.state) &&
+        physicalTarget != null &&
+        _physicalSosSilenceTargetIsCurrent(physicalTarget);
     final isLocalOpenDeviceSos =
         lifecycle.isOpen &&
         lifecycle.localActionable &&
         !lifecycle.externalOnly &&
-        (status.state == DeviceSosState.preConfirm ||
-            status.state == DeviceSosState.active ||
-            status.state == DeviceSosState.acknowledged) &&
-        (lifecycle.nodeId == null || status.nodeId == lifecycle.nodeId) &&
-        (status.relayCount ?? 0) == 0;
+        (retainedPhysicalSos ||
+            ((status.state == DeviceSosState.preConfirm ||
+                    status.state == DeviceSosState.active ||
+                    status.state == DeviceSosState.acknowledged) &&
+                (lifecycle.nodeId == null ||
+                    status.nodeId == lifecycle.nodeId) &&
+                (status.relayCount ?? 0) == 0));
     if (!isLocalOpenDeviceSos) {
       throw const DeviceException(
         'E_DEVICE_SOS_SILENCE_NO_ACTIVE_LOCAL_SOS',
@@ -4686,6 +4797,7 @@ class EixamConnectSdkImpl
       lifecycle: lifecycle,
       operationKey: operationKey,
       incidentId: incidentId,
+      physicalTarget: physicalTarget,
     );
     _sosSilenceOperations[operationKey] = operation;
     return operation.whenComplete(() {
@@ -4697,12 +4809,45 @@ class EixamConnectSdkImpl
     required SosLifecycleSnapshot lifecycle,
     required String operationKey,
     required String? incidentId,
+    required _PhysicalSosSilenceTarget? physicalTarget,
   }) async {
+    final session = _session;
+    final ownerScope = session == null
+        ? null
+        : AuthoritativeSosLifecycleController.ownerScopeFor(session);
+    void validateOperation() {
+      final current = _sosLifecycle.current;
+      final currentSession = _session;
+      if (!current.isOpen ||
+          current.stage == SosLifecycleStage.cancelling ||
+          current.generation != lifecycle.generation ||
+          current.lifecycleId != lifecycle.lifecycleId ||
+          currentSession == null ||
+          AuthoritativeSosLifecycleController.ownerScopeFor(currentSession) !=
+              ownerScope ||
+          (physicalTarget != null &&
+              !_physicalSosSilenceTargetIsCurrent(physicalTarget))) {
+        throw const DeviceException(
+          'E_DEVICE_SOS_SILENCE_STALE_RESULT',
+          'E_DEVICE_SOS_SILENCE_STALE_RESULT',
+        );
+      }
+    }
+
+    final command = EixamDeviceCommand.sosSilence();
     final outcome = await _sosSilenceCommandCoordinator.run(
-      write: () => _sendDeviceControlCommandThroughActiveOwner(
-        action: 'silence_active_sos',
-        command: EixamDeviceCommand.sosSilence(),
-      ),
+      write: () async {
+        validateOperation();
+        if (!_flutterWriterReadyFor(command) &&
+            !_isAuthoritativeNativeProtectionBleOwner) {
+          _throwDeviceCommandNotReady();
+        }
+        await _sendDeviceControlCommandThroughActiveOwner(
+          action: 'silence_active_sos',
+          command: command,
+          validateOperation: validateOperation,
+        );
+      },
     );
     final current = _sosLifecycle.current;
     if (!current.isOpen ||
@@ -4810,7 +4955,11 @@ class EixamConnectSdkImpl
     }
     if (pending.nodeId != lifecycle.nodeId ||
         (pending.nodeId != null &&
-            deviceSosController.currentStatus.nodeId != pending.nodeId)) {
+            deviceSosController.currentStatus.nodeId != pending.nodeId &&
+            !(_physicalSosSilenceTarget != null &&
+                _physicalSosSilenceTargetIsCurrent(
+                  _physicalSosSilenceTarget!,
+                )))) {
       return;
     }
     BleDebugRegistry.instance.recordEvent(
@@ -5515,6 +5664,9 @@ class EixamConnectSdkImpl
       );
       return;
     }
+    // Keep admitted physical truth separate from the transport-only mirror
+    // reset. Capture before asynchronous handoff work can detach that mirror.
+    _rememberPhysicalSosSilenceTarget(status);
     final pendingActivation = _pendingSosActivation;
     final lifecycleAtPhysicalCancel = _sosLifecycle.current;
     if (_isOwnDeviceUserDeactivatedEvent(status) &&
@@ -5711,6 +5863,8 @@ class EixamConnectSdkImpl
     // the local surface — otherwise the host stays on active/sending after
     // the tag has already stopped.
     await _reconcileAuthoritativeLifecycleFromDeviceStatus(status);
+    // A TAG-originated packet may have allocated its lifecycle in this call.
+    _rememberPhysicalSosSilenceTarget(status);
 
     if ((status.derivedFromBlePacket || isDeviceTimeoutPromotion) &&
         (status.state == DeviceSosState.active ||
@@ -21747,10 +21901,12 @@ class EixamConnectSdkImpl
   }
 
   Future<void> _sendDeviceCommandThroughActiveOwner(
-    EixamDeviceCommand command,
-  ) async {
+    EixamDeviceCommand command, {
+    void Function()? validateOperation,
+  }) async {
     final commandGeneration = _sosLifecycle.current.generation;
     void requireCurrentConfirmation() {
+      validateOperation?.call();
       if (command.opcode != 0x05) return;
       final lifecycle = _sosLifecycle.current;
       final pending = _pendingSosActivation;
@@ -23264,6 +23420,7 @@ class EixamConnectSdkImpl
   }
 
   void _clearDeviceRuntimeResidueAfterManualDisconnect() {
+    _physicalSosSilenceTarget = null;
     _sosRuntimeNodeIdByHardwareId.clear();
     _knownLocalDeviceNodeId = null;
     _activeDeviceSosCycleKey = null;
@@ -25273,7 +25430,9 @@ class EixamConnectSdkImpl
   Future<void> _sendDeviceControlCommandThroughActiveOwner({
     required String action,
     required EixamDeviceCommand command,
+    void Function()? validateOperation,
   }) async {
+    validateOperation?.call();
     if (_isProtectionPlatformOwningBle &&
         !_isAuthoritativeNativeProtectionBleOwner) {
       _throwDeviceCommandNotReady();
@@ -25282,7 +25441,10 @@ class EixamConnectSdkImpl
         !deviceSosController.hasSosCommandPath) {
       await _ensureCommandCapableDeviceRepository(action: action);
     }
-    await _sendDeviceCommandThroughActiveOwner(command);
+    await _sendDeviceCommandThroughActiveOwner(
+      command,
+      validateOperation: validateOperation,
+    );
   }
 
   void _validateDeviceVolume(int volume) {
@@ -26590,6 +26752,20 @@ final class _PendingSosActivationOperation {
   bool cancelled = false;
   bool dispatchCommitted = false;
   bool cancellationRequested = false;
+}
+
+final class _PhysicalSosSilenceTarget {
+  const _PhysicalSosSilenceTarget({
+    required this.lifecycle,
+    required this.ownerScope,
+    required this.connection,
+    required this.status,
+  });
+
+  final SosLifecycleSnapshot lifecycle;
+  final String ownerScope;
+  final _CapturedPhysicalDeviceConnection connection;
+  final DeviceSosStatus status;
 }
 
 final class _PendingWebAckSilence {
