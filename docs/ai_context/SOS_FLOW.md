@@ -239,3 +239,12 @@ generation. `SOS CONFIRM` (`0x05`) has no wire cycle ID, so the SDK checks the
 captured generation again before writer dispatch and native fallback. Retries,
 B1 transport-only handoff rules, and B2 `0x07`/E3 terminal propagation remain
 enabled.
+
+## Native RESOLVE confirmation during foreground handoff
+
+After an identity-bound backend RESOLVE write succeeds through the native owner,
+`exitProtectionMode` joins that same physical confirmation operation before
+stopping the receiver. It uses the existing device acknowledgement deadline;
+missing E3 still times out and releases the owner. An explicit newer generation
+supersedes the old exit request, so late N evidence cannot stop or terminalize
+N+1. This changes neither RESOLVE encoding nor LoRa return routing.

@@ -726,6 +726,8 @@ class EixamConnectSdkImpl
   _AppOriginActiveSosBridge? _appOriginActiveSosBridge;
   _AppOriginDeviceOwnershipContext? _appOriginDeviceOwnershipContext;
   String? _remoteTerminalDeviceClearInFlightKey;
+  final Map<String, Completer<void>> _remoteTerminalDeviceClearCompletions =
+      <String, Completer<void>>{};
   _PhysicalSosTerminationTarget? _remoteTerminalDeviceClearPendingProof;
   _PhysicalSosTerminationTarget? _remoteTerminalDeviceClearAwaitingAckProof;
   _PhysicalSosTerminationTarget? _remoteTerminalDeviceClearAcknowledgedProof;
@@ -2483,6 +2485,7 @@ class EixamConnectSdkImpl
     _clearAppOriginDeviceOwnershipContext(reason: 'session_cleared');
     _remoteTerminalDeviceClearPendingProof = null;
     _remoteTerminalDeviceClearAwaitingAckProof = null;
+    _remoteTerminalDeviceClearCompletions.clear();
     _remoteTerminalDeviceClearAcknowledgedProof = null;
     _supersededRemoteTerminalDeviceClearKeys.clear();
     _backendResolvePhysicalTerminalResultKeys.clear();
@@ -5744,7 +5747,34 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Future<ProtectionStatus> exitProtectionMode() {
+  Future<ProtectionStatus> exitProtectionMode() async {
+    final proof = _remoteTerminalDeviceClearAwaitingAckProof;
+    final confirmation = proof == null
+        ? null
+        : _remoteTerminalDeviceClearCompletions[proof.operationKey];
+    if (proof != null &&
+        confirmation != null &&
+        proof.terminalState == SosState.resolved &&
+        proof.nativeWriteStartedAt != null &&
+        _backendResolveWriteSuccessKeys.contains(proof.operationKey) &&
+        _physicalSosTerminationTargetIsCurrent(proof) &&
+        _isProtectionPlatformOwningBle) {
+      // A foreground handoff must not disconnect the receiver after the TAG
+      // accepted RESOLVE but before its E3 arrives. Join the already-bounded
+      // confirmation operation; do not extend its existing device deadline.
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_BACKEND_RESOLVE_OWNER_EXIT_DEFERRED '
+        'generation=${proof.generation} reason=await_current_native_confirmation',
+      );
+      await confirmation.future;
+      if (_disposed || _sosLifecycle.current.generation != proof.generation) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_BACKEND_RESOLVE_OWNER_EXIT_SKIPPED '
+          'generation=${proof.generation} reason=superseded_generation',
+        );
+        return _protectionModeController.getStatus();
+      }
+    }
     return _protectionModeController.exit();
   }
 
@@ -15742,6 +15772,8 @@ class EixamConnectSdkImpl
   Future<void> _runRemoteTerminalDeviceClear(
     _PhysicalSosTerminationTarget proof,
   ) async {
+    final completion = Completer<void>();
+    _remoteTerminalDeviceClearCompletions[proof.operationKey] = completion;
     var submitted = false;
     var dispatched = false;
     try {
@@ -15895,6 +15927,13 @@ class EixamConnectSdkImpl
         );
       }
     } finally {
+      if (identical(
+        _remoteTerminalDeviceClearCompletions[proof.operationKey],
+        completion,
+      )) {
+        _remoteTerminalDeviceClearCompletions.remove(proof.operationKey);
+      }
+      completion.complete();
       if (_remoteTerminalDeviceClearInFlightKey == proof.operationKey) {
         _remoteTerminalDeviceClearInFlightKey = null;
       }

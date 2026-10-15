@@ -2896,6 +2896,9 @@ void main() {
       'native_detached_tag',
       'native_detached_tag_raw_e3',
       'native_detached_tag_raw_preconfirm',
+      'native_detached_tag_raw_exit_before_e3',
+      'native_detached_tag_raw_exit_timeout',
+      'native_detached_tag_raw_exit_superseded',
       'native_detached_tag_raw_legacy_reason',
       'native_detached_raw_invalid_explicit_payload',
       'native_detached_raw_wrong_peer',
@@ -2949,6 +2952,7 @@ void main() {
             protectionPlatformAdapter: nativeAdapter,
           );
           final commands = <int>[];
+          void Function()? heldNativeAck;
           Future<void> write(EixamDeviceCommand command) async {
             commands.add(command.opcode);
             if (command.opcode == 0x06) {
@@ -3111,7 +3115,7 @@ void main() {
                 if (request.bytes.first == 0x07) {
                   expect(request.forceCmdCharacteristic, isTrue);
                   if (nativeRawAck) {
-                    scheduleMicrotask(() {
+                    void emitNativeAck() {
                       final packet =
                           delivery == 'native_detached_raw_wrong_node'
                           ? EixamSosEventPacket.tryParse(<int>[
@@ -3179,7 +3183,13 @@ void main() {
                           classification: 'ownDeviceSos',
                         ),
                       );
-                    });
+                    }
+
+                    if (delivery.startsWith('native_detached_tag_raw_exit_')) {
+                      heldNativeAck = emitNativeAck;
+                    } else {
+                      scheduleMicrotask(emitNativeAck);
+                    }
                     return;
                   }
                   scheduleMicrotask(
@@ -3259,6 +3269,49 @@ void main() {
                 .copyWith(state: SosState.resolved, isBackendConfirmed: true);
             harness.sosRepository.stateController.add(SosState.resolved);
             await pumpEventQueue(times: 20);
+            if (delivery.startsWith('native_detached_tag_raw_exit_')) {
+              expect(terminalWrites(), 1);
+              expect(heldNativeAck, isNotNull);
+              final exit = harness.sdk.exitProtectionMode();
+              await pumpEventQueue(times: 8);
+              expect(
+                nativeAdapter!.stopCalls,
+                0,
+                reason: 'accepted native RESOLVE must retain its E3 receiver',
+              );
+              if (delivery == 'native_detached_tag_raw_exit_superseded') {
+                await harness.sdk.startPreSos(
+                  countdown: const Duration(minutes: 1),
+                );
+                final rearmed = await harness.sdk.getSosLifecycle();
+                expect(rearmed.generation, greaterThan(original.generation));
+                expect(rearmed.stage, SosLifecycleStage.arming);
+                heldNativeAck!();
+                await exit;
+                await pumpEventQueue(times: 12);
+                expect(nativeAdapter.stopCalls, 0);
+                final afterLateAck = await harness.sdk.getSosLifecycle();
+                expect(afterLateAck.generation, rearmed.generation);
+                // This fixture's zero device countdown legitimately promotes
+                // N+1 while the old confirmation wait settles. Late N must
+                // neither terminalize it nor stop its native owner.
+                expect(afterLateAck.stage, SosLifecycleStage.active);
+                expect(
+                  _hasDebugMessage(
+                    'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_ACKNOWLEDGED terminal=resolved',
+                  ),
+                  isFalse,
+                );
+                expect(terminalWrites(), 1);
+                return;
+              }
+              if (delivery == 'native_detached_tag_raw_exit_before_e3') {
+                heldNativeAck!();
+              }
+              await exit;
+              await pumpEventQueue(times: 12);
+              expect(nativeAdapter.stopCalls, 1);
+            }
             expect(
               (await harness.sdk.getSosLifecycle()).generation,
               original.generation,
@@ -3350,6 +3403,7 @@ void main() {
             final validNativeRawAck =
                 delivery == 'native_detached_tag_raw_e3' ||
                 delivery == 'native_detached_tag_raw_preconfirm' ||
+                delivery == 'native_detached_tag_raw_exit_before_e3' ||
                 delivery == 'native_detached_tag_raw_legacy_reason';
             if (nativeRawAck && !validNativeRawAck) {
               expect(
@@ -15762,6 +15816,7 @@ final class _SnapshotProtectionPlatformAdapter extends Fake
       <ProtectionPlatformCommandRequest>[];
   final List<String> ensureRuntimeReasons = <String>[];
   int watchPlatformEventsCallCount = 0;
+  int stopCalls = 0;
   ProtectionPendingNativeSosCreate? pendingNativeSosCreate;
   final List<String> droppedNativeSosCreateSignatures = <String>[];
   final StreamController<ProtectionPlatformEvent> _events =
@@ -15776,6 +15831,15 @@ final class _SnapshotProtectionPlatformAdapter extends Fake
 
   @override
   Future<ProtectionPlatformSnapshot> getPlatformSnapshot() async => snapshot;
+
+  @override
+  Future<void> stopProtectionRuntime() async {
+    stopCalls++;
+    snapshot = ProtectionPlatformSnapshot(
+      platform: snapshot.platform,
+      backgroundCapabilityReady: snapshot.backgroundCapabilityReady,
+    );
+  }
 
   @override
   Future<void> ensureProtectionRuntimeActive({
