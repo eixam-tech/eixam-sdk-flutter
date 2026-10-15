@@ -3,6 +3,7 @@ import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/ble_device_runtime_provider.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_payload_classifier.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
 import 'package:eixam_connect_flutter/src/provisioning/provisioning_command_result.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -30,6 +31,211 @@ void main() {
       await runtimeProvider.dispose();
       await bleClient.dispose();
     });
+
+    for (final channel in <EixamBleChannel>[
+      EixamBleChannel.sos,
+      EixamBleChannel.tel,
+    ]) {
+      test(
+        'captured no-fix bound receipt retains TX cycle on ${channel.name}',
+        () async {
+          await runtimeProvider.requestDeviceRuntimeStatus();
+          final next = runtimeProvider.watchIncomingEvents().firstWhere(
+            (event) => event.remoteRelaySosSnapshot != null,
+          );
+          // Actual committed-firmware D1 receipt, first TEL START ID3049112611.
+          const captured = <int>[
+            0xe4,
+            1,
+            0x23,
+            0xc4,
+            0xbd,
+            0xb5,
+            7,
+            1,
+            0xa8,
+            0x1a,
+            0x4b,
+            0x59,
+            0,
+            0xc3,
+            0,
+          ];
+          bleClient.emitNotification(
+            MockBleClient.demoDeviceId,
+            channel: channel,
+            payload: captured,
+          );
+          final snapshot = (await next.timeout(
+            const Duration(seconds: 2),
+          )).remoteRelaySosSnapshot!;
+          expect(snapshot.originatorNodeId, 0x594b1aa8);
+          expect(snapshot.relayNodeId, 0x1234);
+          expect(snapshot.originPacketId, 3049112611);
+          expect(snapshot.rawPayload, captured);
+          expect(snapshot.location, isNull);
+          expect(
+            runtimeProvider.deviceSosController.currentStatus.state,
+            DeviceSosState.inactive,
+          );
+        },
+      );
+
+      for (final command in <EixamDeviceCommand>[
+        EixamDeviceCommand.nearbyOwnerNameFragment(<int>[
+          EixamBleProtocol.nearbyOwnerNameOpcode,
+          0,
+          1,
+          0x51,
+        ]),
+        EixamDeviceCommand.getDeviceStatus(),
+        EixamDeviceCommand.notificationVolume(10),
+        EixamDeviceCommand.sosVolume(10),
+      ]) {
+        test(
+          'C1 physical SOS after ${command.label} retains device origin on ${channel.name}',
+          () async {
+            await runtimeProvider.requestDeviceRuntimeStatus();
+            await runtimeProvider.deviceSosController.sendAttachedCommand(
+              command,
+            );
+            final active = runtimeProvider.deviceSosController
+                .watchStatus()
+                .firstWhere(
+                  (status) =>
+                      status.nodeId == 0x1234 &&
+                      (status.state == DeviceSosState.active ||
+                          status.state == DeviceSosState.preConfirm) &&
+                      status.derivedFromBlePacket,
+                );
+            bleClient.emitNotification(
+              MockBleClient.demoDeviceId,
+              channel: channel,
+              payload: _sosPayloadForNode(0x1234),
+            );
+            final status = await active.timeout(const Duration(seconds: 2));
+            expect(status.triggerOrigin, DeviceSosTransitionSource.device);
+            expect(status.transitionSource, DeviceSosTransitionSource.device);
+          },
+        );
+      }
+
+      test(
+        'C1 current TAG cycle retains origin through owner-name rebind on ${channel.name}',
+        () async {
+          await runtimeProvider.requestDeviceRuntimeStatus();
+          // Establish the device cycle outside the old command-time heuristic.
+          await Future<void>.delayed(const Duration(milliseconds: 1250));
+          final initial = runtimeProvider.deviceSosController
+              .watchStatus()
+              .firstWhere(
+                (status) =>
+                    status.nodeId == 0x1234 &&
+                    (status.state == DeviceSosState.active ||
+                        status.state == DeviceSosState.preConfirm) &&
+                    status.derivedFromBlePacket,
+              );
+          bleClient.emitNotification(
+            MockBleClient.demoDeviceId,
+            channel: channel,
+            payload: _sosPayloadForNode(0x1234),
+          );
+          expect(
+            (await initial.timeout(const Duration(seconds: 2))).triggerOrigin,
+            DeviceSosTransitionSource.device,
+          );
+          await runtimeProvider.deviceSosController.sendAttachedCommand(
+            EixamDeviceCommand.nearbyOwnerNameFragment(<int>[
+              EixamBleProtocol.nearbyOwnerNameOpcode,
+              0,
+              1,
+              0x51,
+            ]),
+          );
+          final next = runtimeProvider.deviceSosController
+              .watchStatus()
+              .firstWhere(
+                (status) => status.packetId == 1 && status.derivedFromBlePacket,
+              );
+          bleClient.emitNotification(
+            MockBleClient.demoDeviceId,
+            channel: channel,
+            payload: _sosPayloadForNode(0x1234)..[4] = 1,
+          );
+          expect(
+            (await next.timeout(const Duration(seconds: 2))).triggerOrigin,
+            DeviceSosTransitionSource.device,
+          );
+        },
+      );
+
+      test(
+        'C1 confirmation of TAG SOS preserves device origin on ${channel.name}',
+        () async {
+          await runtimeProvider.requestDeviceRuntimeStatus();
+          await Future<void>.delayed(const Duration(milliseconds: 1250));
+          final initial = runtimeProvider.deviceSosController
+              .watchStatus()
+              .firstWhere(
+                (status) =>
+                    status.nodeId == 0x1234 &&
+                    status.state == DeviceSosState.preConfirm &&
+                    status.derivedFromBlePacket,
+              );
+          bleClient.emitNotification(
+            MockBleClient.demoDeviceId,
+            channel: channel,
+            payload: _sosPayloadForNode(0x1234),
+          );
+          expect(
+            (await initial.timeout(const Duration(seconds: 2))).triggerOrigin,
+            DeviceSosTransitionSource.device,
+          );
+          await runtimeProvider.deviceSosController.confirmSos();
+          final next = runtimeProvider.deviceSosController
+              .watchStatus()
+              .firstWhere(
+                (status) => status.packetId == 1 && status.derivedFromBlePacket,
+              );
+          bleClient.emitNotification(
+            MockBleClient.demoDeviceId,
+            channel: channel,
+            payload: _sosPayloadForNode(0x1234)..[4] = 1,
+          );
+          expect(
+            (await next.timeout(const Duration(seconds: 2))).triggerOrigin,
+            DeviceSosTransitionSource.device,
+          );
+        },
+      );
+
+      test(
+        'C1 explicit APP SOS retains app origin after unrelated command on ${channel.name}',
+        () async {
+          await runtimeProvider.requestDeviceRuntimeStatus();
+          await runtimeProvider.deviceSosController.triggerSos();
+          await runtimeProvider.setNotificationVolume(10);
+          final active = runtimeProvider.deviceSosController
+              .watchStatus()
+              .firstWhere(
+                (status) =>
+                    status.nodeId == 0x1234 &&
+                    (status.state == DeviceSosState.active ||
+                        status.state == DeviceSosState.preConfirm) &&
+                    status.derivedFromBlePacket,
+              );
+          bleClient.emitNotification(
+            MockBleClient.demoDeviceId,
+            channel: channel,
+            payload: _sosPayloadForNode(0x1234),
+          );
+          expect(
+            (await active.timeout(const Duration(seconds: 2))).triggerOrigin,
+            DeviceSosTransitionSource.app,
+          );
+        },
+      );
+    }
 
     test(
       'classifies a 12-byte TEL notify as SOS when SOS decode is valid',

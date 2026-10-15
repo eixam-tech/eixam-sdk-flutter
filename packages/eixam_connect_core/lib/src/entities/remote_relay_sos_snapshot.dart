@@ -2,12 +2,7 @@ import 'tracking_position.dart';
 
 enum RemoteRelaySosKind { sos, clear, cancel }
 
-enum RemoteRelaySosSource {
-  bleRelay,
-  telRelay,
-  sosNotify,
-  d2Relay,
-}
+enum RemoteRelaySosSource { bleRelay, telRelay, sosNotify, d2Relay }
 
 class RemoteRelaySosSnapshot {
   const RemoteRelaySosSnapshot({
@@ -18,6 +13,7 @@ class RemoteRelaySosSnapshot {
     required this.receivedAt,
     required this.rawPayload,
     this.relayNodeId,
+    this.originPacketId,
     this.location,
     this.payloadHex,
     this.relayCount,
@@ -28,6 +24,9 @@ class RemoteRelaySosSnapshot {
   final RemoteRelaySosKind kind;
   final int originatorNodeId;
   final int? relayNodeId;
+
+  /// Actual first TEL START mesh packet ID, received in a v1 bound receipt.
+  final int? originPacketId;
   final RemoteRelaySosSource source;
   final int sosType;
   final TrackingPosition? location;

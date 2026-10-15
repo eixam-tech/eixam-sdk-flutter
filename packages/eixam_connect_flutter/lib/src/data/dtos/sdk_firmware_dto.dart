@@ -9,6 +9,7 @@ class SdkFirmwareDto {
     this.fileSizeBytes,
     this.releaseNotes,
     this.isActive,
+    this.verificationPolicy = FirmwareVerificationPolicy.normal,
   });
 
   factory SdkFirmwareDto.fromJson(Map<String, dynamic> json) {
@@ -42,6 +43,7 @@ class SdkFirmwareDto {
   final int? fileSizeBytes;
   final String? releaseNotes;
   final bool? isActive;
+  final FirmwareVerificationPolicy verificationPolicy;
 
   FirmwareRelease toDomain() {
     return FirmwareRelease(
@@ -53,6 +55,7 @@ class SdkFirmwareDto {
       releaseNotes: releaseNotes,
       bootloaderType: 'nordic_adafruit_secure_dfu',
       artifactKind: 'dfu_zip',
+      verificationPolicy: verificationPolicy,
     );
   }
 }

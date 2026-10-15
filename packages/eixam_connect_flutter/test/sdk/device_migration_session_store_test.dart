@@ -11,6 +11,18 @@ void main() {
     SharedPreferences.setMockInitialValues(<String, Object>{});
   });
 
+  test('exact migration identity policy survives restart', () async {
+    final store = SharedPrefsDeviceMigrationSessionStore();
+    final session = _session(
+      verificationPolicy: FirmwareVerificationPolicy.exactCandidate,
+    );
+    await store.save(session.copyWith(canCancel: false));
+    expect(
+      (await store.load())?.verificationPolicy,
+      FirmwareVerificationPolicy.exactCandidate,
+    );
+  });
+
   test('no record returns no active migration', () async {
     final store = SharedPrefsDeviceMigrationSessionStore();
 
@@ -113,6 +125,8 @@ void main() {
 }
 
 DeviceMigrationSession _session({
+  FirmwareVerificationPolicy verificationPolicy =
+      FirmwareVerificationPolicy.normal,
   DeviceMigrationState state = DeviceMigrationState.prepared,
   DeviceMigrationNextAction nextAction =
       DeviceMigrationNextAction.continueMigration,
@@ -133,6 +147,7 @@ DeviceMigrationSession _session({
     ),
     releaseId: 'release-1',
     targetVersion: '3.0.0',
+    verificationPolicy: verificationPolicy,
     state: state,
     nextAction: nextAction,
     canCancel: state == DeviceMigrationState.prepared,

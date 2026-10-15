@@ -77,6 +77,7 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     case preSos
     case active
     case cancelled
+    case resolved
   }
 
   private var eventSink: FlutterEventSink?
@@ -89,6 +90,7 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
   private var subscriptionsActive = false
   private let telReassembler = TelAggregateReassembler()
   private var servicesDiscovered = false
+  private var connectionPreparation = ProtectionConnectionPreparation()
   private var restoredLastLaunch = false
   private var notificationReceiveSequence = 0
   private var inFlightProtectionWrite: PendingProtectionWrite?
@@ -161,6 +163,7 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       defaults.removeObject(forKey: Keys.lastFailureReason)
       defaults.removeObject(forKey: Keys.readinessFailureReason)
       ensureCentralManager()
+      connectionPreparation.finish()
       subscriptionsActive = false
       servicesDiscovered = false
       protectedPeripheral = nil
@@ -236,6 +239,7 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
   }
 
   private func stopProtectionRuntime(reason: String) {
+    connectionPreparation.finish()
     failPendingProtectionWrites(
       error: "The iOS Protection runtime stopped before the BLE write completed."
     )
@@ -336,8 +340,6 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       return
     }
 
-    recordWake(reason: trigger)
-
     guard centralManager.state == .poweredOn else {
       updateRuntimeState(.recovering)
       let reason = "CoreBluetooth is not powered on, so the iOS plugin runtime is waiting before it can reconnect."
@@ -345,6 +347,16 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       defaults.set(reason, forKey: Keys.readinessFailureReason)
       return
     }
+
+    if protectedPeripheral?.identifier == uuid,
+       protectedPeripheral?.state == .connected,
+       servicesDiscovered && subscriptionsActive {
+      return
+    }
+    // Publish wake/reconnect events only after acquiring the preparation gate:
+    // their SDK listeners can immediately request another platform snapshot.
+    guard connectionPreparation.begin(uuid) else { return }
+    recordWake(reason: trigger)
 
     let nextAttemptCount = defaults.integer(forKey: Keys.reconnectAttemptCount) + 1
     defaults.set(nextAttemptCount, forKey: Keys.reconnectAttemptCount)
@@ -359,6 +371,7 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       defaults.set(reason, forKey: Keys.readinessFailureReason)
       defaults.set(reason, forKey: Keys.lastFailureReason)
       recordEvent(type: "reconnectFailed", reason: reason)
+      connectionPreparation.finish(uuid)
       return
     }
 
@@ -376,8 +389,10 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
   }
 
   private func handleConnectedPeripheral(_ peripheral: CBPeripheral, restored: Bool) {
-    guard let target = defaults.string(forKey: Keys.protectedDeviceId),
+    guard isArmed,
+          let target = defaults.string(forKey: Keys.protectedDeviceId),
           UUID(uuidString: target) == peripheral.identifier else { return }
+    _ = connectionPreparation.begin(peripheral.identifier)
     protectedPeripheral = peripheral
     peripheral.delegate = self
     servicesDiscovered = false
@@ -796,6 +811,9 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
 
 extension ProtectionRuntimeBridge: CBCentralManagerDelegate {
   func centralManagerDidUpdateState(_ central: CBCentralManager) {
+    if central.state != .poweredOn {
+      connectionPreparation.finish()
+    }
     switch central.state {
     case .poweredOn:
       recordEvent(type: "bluetoothTurnedOn", reason: nil)
@@ -858,9 +876,11 @@ extension ProtectionRuntimeBridge: CBCentralManagerDelegate {
     defaults.set(reason, forKey: Keys.lastFailureReason)
     defaults.set(reason, forKey: Keys.readinessFailureReason)
     recordEvent(type: "reconnectFailed", reason: reason)
+    connectionPreparation.finish(peripheral.identifier)
   }
 
   func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+    connectionPreparation.finish(peripheral.identifier)
     failPendingProtectionWrites(
       error: "The iOS Protection runtime disconnected before the BLE write completed."
     )
@@ -886,6 +906,7 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
   func peripheral(_ peripheral: CBPeripheral, didModifyServices invalidatedServices: [CBService]) {
     guard peripheral.identifier == protectedPeripheral?.identifier else { return }
     failPendingProtectionWrites(error: "The protected peripheral services changed.")
+    connectionPreparation.finish(peripheral.identifier)
     handleConnectedPeripheral(peripheral, restored: false)
   }
   func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
@@ -895,6 +916,7 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       defaults.set(reason, forKey: Keys.lastFailureReason)
       defaults.set(reason, forKey: Keys.readinessFailureReason)
       recordEvent(type: "runtimeFailed", reason: reason)
+      connectionPreparation.finish(peripheral.identifier)
       return
     }
     let services = peripheral.services ?? []
@@ -909,6 +931,7 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       defaults.set(reason, forKey: Keys.readinessFailureReason)
       defaults.set(reason, forKey: Keys.degradationReason)
       recordEvent(type: "runtimeFailed", reason: reason)
+      connectionPreparation.finish(peripheral.identifier)
       return
     }
     peripheral.discoverCharacteristics(
@@ -929,6 +952,7 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       defaults.set(reason, forKey: Keys.lastFailureReason)
       defaults.set(reason, forKey: Keys.readinessFailureReason)
       recordEvent(type: "runtimeFailed", reason: reason)
+      connectionPreparation.finish(peripheral.identifier)
       return
     }
 
@@ -954,6 +978,7 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       defaults.set(reason, forKey: Keys.readinessFailureReason)
       defaults.set(reason, forKey: Keys.degradationReason)
       recordEvent(type: "runtimeFailed", reason: reason)
+      connectionPreparation.finish(peripheral.identifier)
       return
     }
 
@@ -968,6 +993,7 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       defaults.set(reason, forKey: Keys.lastFailureReason)
       defaults.set(reason, forKey: Keys.degradationReason)
       recordEvent(type: "runtimeError", reason: reason)
+      connectionPreparation.finish(peripheral.identifier)
       return
     }
 
@@ -976,6 +1002,7 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     subscriptionsActive = telReady && sosReady
 
     if subscriptionsActive {
+      connectionPreparation.finish(peripheral.identifier)
       updateRuntimeState(.active)
       defaults.removeObject(forKey: Keys.degradationReason)
       defaults.removeObject(forKey: Keys.readinessFailureReason)
@@ -1070,6 +1097,11 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       return
     }
     let source = sourceName(for: characteristic)
+    if (bytes.count == 15 || bytes.count == 20), bytes[0] == 0xE4 {
+      guard BoundSosReceipt.body(bytes) != nil else { return }
+      emitTelNotify(bytes, source: source)
+      return
+    }
     let characteristicUuid = characteristic.uuid.uuidString.lowercased()
     let timestamp = Date().millisecondsSince1970
     let payloadHex = bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
@@ -1144,6 +1176,10 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     let payloadHex = bytes.map { String(format: "%02x", $0) }.joined()
     let assembled = telReassembler.ingest(bytes)
     if eventSink == nil {
+      if BoundSosReceipt.body(bytes) != nil {
+        enqueueTelNotify(payloadHex: payloadHex, source: source)
+        return
+      }
       // GPS/TEL D0 would fill the 64-slot queue while Dart is detached.
       // Reassemble first; keep Nearby RX/TX-status/group ACK only.
       if let assembled, isNearbyTelNotify(assembled) {
@@ -1218,7 +1254,7 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     parsed: (kind: IosBleSosSnapshotKind, nodeId: Int?, packetId: Int?, cycleKey: String?, deadlineAt: Int?),
     receivedAt: Int
   ) -> Bool {
-    guard parsed.kind != .cancelled,
+    guard parsed.kind == .preSos || parsed.kind == .active,
           defaults.string(forKey: Keys.iosBleSosSnapshotKind) == IosBleSosSnapshotKind.cancelled.rawValue,
           let cancelledAt = defaults.object(forKey: Keys.iosBleSosReceivedAt) as? Int,
           receivedAt - cancelledAt <= 30_000 else {
@@ -1384,6 +1420,8 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       return 42002
     case .cancelled:
       return 42004
+    case .resolved:
+      return 42003
     }
   }
 
@@ -1430,6 +1468,11 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
         notificationText(Keys.notificationProtectionSosCancelledTitle, fallback: notificationText(Keys.notificationProtectionSosResolvedTitle, fallback: "SOS cancelled")),
         notificationText(Keys.notificationProtectionSosCancelledBody, fallback: notificationText(Keys.notificationProtectionSosResolvedBody, fallback: "The SOS incident was cancelled."))
       )
+    case .resolved:
+      return (
+        notificationText(Keys.notificationProtectionSosResolvedTitle, fallback: "SOS resolved"),
+        notificationText(Keys.notificationProtectionSosResolvedBody, fallback: "The SOS incident was resolved.")
+      )
     }
   }
 
@@ -1449,9 +1492,12 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       return nil
     }
     if bytes.count == 6,
-       (bytes[0] == 0xE1 || bytes[0] == 0xE2) {
+       (bytes[0] == 0xE1 || bytes[0] == 0xE2 || bytes[0] == 0xE3) {
       let nodeId = readUInt32(bytes, offset: 2)
-      return (.cancelled, nodeId, nil, nodeId.map { "sos:\($0)" }, nil)
+      // E3 closes the TAG episode through backend resolution. Persist and
+      // forward its real packet, preserving the distinction from user cancel.
+      let kind: IosBleSosSnapshotKind = bytes[0] == 0xE3 ? .resolved : .cancelled
+      return (kind, nodeId, nil, nodeId.map { "sos:\($0)" }, nil)
     }
 
     let packetLength: Int

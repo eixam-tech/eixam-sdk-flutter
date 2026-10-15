@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — cycle-bound LoRa return (2026-10-15)
+
+- Preserve the bound SOS packet reference when enriching a no-fix receipt with last-known position. The stopped D1 exposed this missing copy before WEB ACK; captured-receipt runtime regressions cover SOS/TEL and retained fix age. Physical return validation remains pending.
+
+- Bind ACK/RESOLVE/CANCEL to the actual first completed SOS packet, canonical backend incident and observed relay transport. New versioned E4 receipt and0B command fail closed without cycle proof. Android/iOS native ingress retains remote identity; both hosts must pin this SDK. Details: `docs/LORA_CYCLE_BOUND_RETURN.md`. Local implementation only; D1–D3 physical validation pending.
+
 All notable changes to the EIXAM Connect Flutter SDK are documented here.
 
 ## Unreleased - 2026-07-27

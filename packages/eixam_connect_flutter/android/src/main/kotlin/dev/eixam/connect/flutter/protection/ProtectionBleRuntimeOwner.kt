@@ -1854,6 +1854,7 @@ internal class ProtectionBleRuntimeOwner(
     }
 
     private fun readPacketOriginatorNodeId(payload: List<Int>): Int? {
+        ProtectionBleSosIdentityClassifier.boundSosBody(payload)?.let { return readU32OrNull(it, 0) }
         if (
             payload.size == 6 &&
             (payload[0] == 0xE1 || payload[0] == 0xE2 || payload[0] == 0xE3)

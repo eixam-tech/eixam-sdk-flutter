@@ -66,6 +66,17 @@ from merging consecutive incidents. A confirmed terminal boundary permits the
 next generation; duplicate observations enrich the current generation without
 creating another one.
 
+The terminal watermark remains authoritative after a newer generation opens.
+Restored native/device evidence must correlate to the current cycle and carry
+an observation after the terminal boundary. Evidence from the
+terminal cycle, an older observation, a different known node, or unresolved
+identity/timing cannot replace the newer countdown, incident, or public state.
+A receipt timestamp alone does not make an old cycle new. Firmware packet IDs
+are correlation data, not generation counters, and may be reused only with
+current-generation evidence. Backend ACTIVE, ACK, CANCEL and RESOLVE publication
+also requires current incident correlation after rearm; provisional device
+transport handoff retains its existing rules.
+
 ## Activation and already-active recovery
 
 `triggerSosAuthoritatively` publishes `activating`, invokes the existing
@@ -103,6 +114,16 @@ provenance, remains locally actionable, and permits retry. Repeated terminal
 cancellation is idempotent.
 
 ## Process and BLE recovery
+
+BLE ownership release, disconnect and service rediscovery are transport facts.
+`DeviceSosController.detach()` reports an unknown-origin local inactive status
+without physical terminal evidence. Shared SDK reconciliation ignores that
+status for SOS control flow and passive hydration; it cannot clear the current
+incident, countdown, ACK presentation, ownership or terminal-generation fences.
+Command readiness may become unavailable while the authoritative SOS remains
+active, acknowledged or cancelling. Explicit device terminal events and
+correlated backend cancellation/resolution continue through their existing
+lifecycle rules.
 
 Initialization and session attachment restore same-account provenance before
 publishing lifecycle state. An active record initially becomes

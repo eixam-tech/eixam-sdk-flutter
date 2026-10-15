@@ -685,6 +685,36 @@ void main() {
     expect(session?.canCancel, isTrue);
   });
 
+  for (final alreadyConnected in [false, true]) {
+    for (final actual in ['3.0.0.abc1234', '3.0.0', '0', '3.0.0.def5678']) {
+      test(
+        'exact candidate restart connected=$alreadyConnected live=$actual',
+        () async {
+          final ble = _MigrationBleClient(
+            firmwareVersion: actual,
+            scans: [_eixamScan(selectedId, selectedId)],
+          );
+          if (alreadyConnected) ble.connectedIds.add(selectedId);
+          final coordinator = build(
+            probe: _FakeProbe(_probe(model: 105)),
+            ble: ble,
+            store: _MemoryMigrationStore()
+              ..value = _durableSession(
+                DeviceMigrationState.waitingForDevice,
+                verificationPolicy: FirmwareVerificationPolicy.exactCandidate,
+                targetVersion: '3.0.0.abc1234',
+              ),
+          );
+          final result = await coordinator.reconcile();
+          expect(
+            result?.state == DeviceMigrationState.completed,
+            actual == '3.0.0.abc1234',
+          );
+        },
+      );
+    }
+  }
+
   test('restart verifies migrated identity and installed target', () async {
     final store = _MemoryMigrationStore()
       ..value = _durableSession(DeviceMigrationState.waitingForDevice);
@@ -912,7 +942,12 @@ BleScanResult _dfuScan(String deviceId, String canonicalId) => BleScanResult(
   discoveredAt: DateTime.now(),
 );
 
-DeviceMigrationSession _durableSession(DeviceMigrationState state) {
+DeviceMigrationSession _durableSession(
+  DeviceMigrationState state, {
+  FirmwareVerificationPolicy verificationPolicy =
+      FirmwareVerificationPolicy.normal,
+  String targetVersion = '3.0.0',
+}) {
   final now = DateTime.utc(2026, 1, 1);
   return DeviceMigrationSession(
     sessionId: 'migration-1',
@@ -927,7 +962,8 @@ DeviceMigrationSession _durableSession(DeviceMigrationState state) {
       inspectedAt: now,
     ),
     releaseId: 'release-1',
-    targetVersion: '3.0.0',
+    targetVersion: targetVersion,
+    verificationPolicy: verificationPolicy,
     state: state,
     nextAction: state == DeviceMigrationState.recoveryRequired
         ? DeviceMigrationNextAction.recover

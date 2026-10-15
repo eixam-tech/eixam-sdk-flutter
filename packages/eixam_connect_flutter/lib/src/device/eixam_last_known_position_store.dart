@@ -65,6 +65,7 @@ class EixamLastKnownPositionStore {
         kind: snapshot.kind,
         originatorNodeId: snapshot.originatorNodeId,
         relayNodeId: snapshot.relayNodeId,
+        originPacketId: snapshot.originPacketId,
         source: snapshot.source,
         sosType: snapshot.sosType,
         location: lastKnown,

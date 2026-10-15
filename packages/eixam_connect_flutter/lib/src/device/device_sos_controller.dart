@@ -156,6 +156,7 @@ class DeviceSosController {
   Timer? _countdownTimer;
   bool _awaitingObservedAppActivation = false;
   _PendingTerminalDeviceCommand? _pendingTerminalCommand;
+  bool _terminalCommandDispatchInFlight = false;
   String? _lastPromotedPreConfirmCycleKey;
   DateTime? _lastPromotedPreConfirmAt;
   final Set<String> _openCyclePacketSignatures = <String>{};
@@ -358,16 +359,30 @@ class DeviceSosController {
     bool? terminalCmdAvailable,
     bool? waitForCloseAcknowledgement,
     DeviceTerminalOperationGuard? operationIsCurrent,
+    DeviceSosStatus? terminalCorrelationStatus,
   }) async {
     BleDebugRegistry.instance.recordEvent(
       'SOS_DEVICE_CANCEL_CONTROLLER_ENTERED '
       'route=$commandRouteLabel state=${_status.state.name}',
     );
     final writer = commandWriterOverride ?? _commandWriter;
+    final retainedResolveStatus =
+        terminalAction == 'resolve' &&
+            operationIsCurrent != null &&
+            _terminalOperationIsCurrent(operationIsCurrent) &&
+            terminalCorrelationStatus?.derivedFromBlePacket == true &&
+            terminalCorrelationStatus?.optimistic == false &&
+            // Native rehydration can still project preConfirm for the same
+            // SDK-guarded terminal target. Keep its physical correlation;
+            // only a current, identity-matched E3 can complete this resolve.
+            _isPacketTrackingOpenState(terminalCorrelationStatus!.state)
+        ? terminalCorrelationStatus
+        : null;
     if (writer == null) {
       return _queueTerminalCommand(
         action: terminalAction,
         reason: 'no_command_characteristic_ready',
+        physicalStatus: retainedResolveStatus,
         commandWriterOverride: commandWriterOverride,
         commandRouteLabel: commandRouteLabel,
         operationIsCurrent: operationIsCurrent,
@@ -382,11 +397,13 @@ class DeviceSosController {
     final previous = _status;
     _prepareTerminalCommandCorrelation(
       action: terminalAction,
+      physicalStatus: retainedResolveStatus,
       commandWriterOverride: commandWriterOverride,
       commandRouteLabel: commandRouteLabel,
       operationIsCurrent: operationIsCurrent,
     );
     late final bool sent;
+    _terminalCommandDispatchInFlight = true;
     try {
       sent = await _dispatchTerminalCommand(
         writer: writer,
@@ -401,11 +418,14 @@ class DeviceSosController {
     } on _StaleDeviceTerminalOperation {
       _recordStaleTerminalOperation(commandRouteLabel);
       return _status;
+    } finally {
+      _terminalCommandDispatchInFlight = false;
     }
     if (!sent) {
       return _queueTerminalCommand(
         action: terminalAction,
         reason: 'no_command_characteristic_ready',
+        physicalStatus: retainedResolveStatus,
         commandWriterOverride: commandWriterOverride,
         commandRouteLabel: commandRouteLabel,
         operationIsCurrent: operationIsCurrent,
@@ -415,11 +435,13 @@ class DeviceSosController {
       _recordStaleTerminalOperation(commandRouteLabel);
       return _status;
     }
-    if (_isClosedState(previous.state)) {
-      return _status;
-    }
     final shouldWaitForCloseAcknowledgement =
         waitForCloseAcknowledgement ?? _isOpenSosState(previous.state);
+    // A handoff detach resets the mirror to inactive without physical proof.
+    // The SDK's retained cycle can still require a real terminal observation.
+    if (_isClosedState(previous.state) && !shouldWaitForCloseAcknowledgement) {
+      return _status;
+    }
     if (!shouldWaitForCloseAcknowledgement) {
       BleDebugRegistry.instance.recordEvent(
         'DEVICE_SOS_CLOSE_COMMAND_DISPATCHED_WITHOUT_ACK_WAIT route=$commandRouteLabel previousState=${previous.state.name}',
@@ -586,6 +608,22 @@ class DeviceSosController {
       commandRouteLabel: commandRouteLabel,
     );
   }
+
+  Future<void> sendBoundRelayReturn({
+    required int nodeId,
+    required int originPacketId,
+    required bool terminal,
+    DeviceCommandWriter? commandWriterOverride,
+    String commandRouteLabel = 'attached_writer',
+  }) => _sendNonSosCommand(
+    EixamDeviceCommand.boundSosReturn(
+      nodeId: nodeId,
+      originPacketId: originPacketId,
+      terminal: terminal,
+    ),
+    commandWriterOverride: commandWriterOverride,
+    commandRouteLabel: commandRouteLabel,
+  );
 
   Future<void> sendShutdown({
     DeviceCommandWriter? commandWriterOverride,
@@ -834,6 +872,7 @@ class DeviceSosController {
   DeviceSosStatus _queueTerminalCommand({
     required String action,
     required String reason,
+    DeviceSosStatus? physicalStatus,
     DeviceCommandWriter? commandWriterOverride,
     String? commandRouteLabel,
     DeviceTerminalOperationGuard? operationIsCurrent,
@@ -845,7 +884,8 @@ class DeviceSosController {
     final now = _now();
     _pendingTerminalCommand = _PendingTerminalDeviceCommand(
       action: action,
-      nodeId: _status.nodeId,
+      nodeId: physicalStatus?.nodeId ?? _status.nodeId,
+      physicalStatus: physicalStatus,
       requestedAt: now,
       commandWriterOverride: commandWriterOverride,
       commandRouteLabel: commandRouteLabel,
@@ -871,6 +911,7 @@ class DeviceSosController {
 
   void _prepareTerminalCommandCorrelation({
     required String action,
+    DeviceSosStatus? physicalStatus,
     DeviceCommandWriter? commandWriterOverride,
     String? commandRouteLabel,
     DeviceTerminalOperationGuard? operationIsCurrent,
@@ -880,7 +921,8 @@ class DeviceSosController {
     }
     _pendingTerminalCommand = _PendingTerminalDeviceCommand(
       action: action,
-      nodeId: _status.nodeId,
+      nodeId: physicalStatus?.nodeId ?? _status.nodeId,
+      physicalStatus: physicalStatus,
       requestedAt: _now(),
       commandWriterOverride: commandWriterOverride,
       commandRouteLabel: commandRouteLabel,
@@ -895,7 +937,7 @@ class DeviceSosController {
   Future<void> _flushPendingTerminalCommand({required String reason}) async {
     final pending = _pendingTerminalCommand;
     final writer = pending?.commandWriterOverride ?? _commandWriter;
-    if (pending == null || writer == null) {
+    if (pending == null || writer == null || _terminalCommandDispatchInFlight) {
       return;
     }
     if (!_terminalOperationIsCurrent(pending.operationIsCurrent)) {
@@ -910,6 +952,14 @@ class DeviceSosController {
       return;
     }
     final sentAt = pending.sentAt;
+    if (reason == 'command_path_attached' &&
+        sentAt != null &&
+        pending.operationIsCurrent != null) {
+      // Readiness is not a new terminal request. A guarded operation already
+      // submitted to its authorized writer waits for physical acknowledgement;
+      // only later observed ACTIVE evidence may request a bounded retry.
+      return;
+    }
     if (reason == 'sos_still_observed_after_terminal' &&
         sentAt != null &&
         _now().difference(sentAt) < _terminalCommandRetryInterval) {
@@ -921,6 +971,7 @@ class DeviceSosController {
       );
     }
     late final bool sent;
+    _terminalCommandDispatchInFlight = true;
     try {
       sent = await _dispatchTerminalCommand(
         writer: writer,
@@ -942,6 +993,8 @@ class DeviceSosController {
         pending.commandRouteLabel ?? 'attached_writer',
       );
       return;
+    } finally {
+      _terminalCommandDispatchInFlight = false;
     }
     if (sent) {
       _pendingTerminalCommand = pending.copyWith(sentAt: _now());
@@ -1058,7 +1111,12 @@ class DeviceSosController {
     final physicalStartAdmission = physicalEvidence == null
         ? null
         : resolutionContext?.physicalStartAdmission ??
-              evaluatePhysicalSosStartAdmission(packet, physicalEvidence);
+              (_physicalSosStartAdmissionPolicy == null
+                  ? null
+                  : evaluatePhysicalSosStartAdmission(
+                      packet,
+                      physicalEvidence,
+                    ));
     if (physicalStartAdmission != null &&
         !physicalStartAdmission.shouldProcess) {
       if (physicalStartAdmission.decision ==
@@ -1086,10 +1144,14 @@ class DeviceSosController {
             BleIncomingPayloadKind.ownDeviceSos &&
         physicalEvidence.receiveSequence >
             terminalPhysicalEvidence.receiveSequence;
+    // Shared admission owns whether this is a new episode or current-cycle
+    // evidence. A later receive sequence alone must not restart an explicit
+    // app rearm or keep resetting the countdown of an already admitted start.
+    // Without shared admission, only a closed device state consumes the edge.
     final allowFreshPhysicalStartAfterTerminal =
         resolutionContext?.allowFreshPhysicalStartAfterTerminal == true ||
-        physicalStartAdmission?.allowFreshStartAfterTerminal == true ||
-        freshPhysicalReceiveEdge;
+        (physicalStartAdmission?.allowFreshStartAfterTerminal ??
+            (freshPhysicalReceiveEdge && _isClosedState(_status.state)));
     final afterTerminalBoundary =
         resolutionContext?.afterTerminalBoundary == true ||
         terminalPhysicalEvidence != null;
@@ -1364,6 +1426,22 @@ class DeviceSosController {
         pendingTerminalCommand?.action == 'cancel' &&
         _terminalOperationIsCurrent(pendingTerminalCommand?.operationIsCurrent);
     final physicalEvidence = resolutionContext?.physicalEvidence;
+    final acknowledgesRetainedResolve =
+        packet.isBackendResolved &&
+        pendingTerminalCommand?.action == 'resolve' &&
+        // Physical E3 may arrive before the transport write future completes.
+        (pendingTerminalCommand?.sentAt != null ||
+            _terminalCommandDispatchInFlight) &&
+        pendingTerminalCommand?.physicalStatus != null &&
+        pendingTerminalCommand?.nodeId == packet.nodeId &&
+        _terminalOperationIsCurrent(
+          pendingTerminalCommand?.operationIsCurrent,
+        ) &&
+        physicalEvidence?.hasTerminalSemantics == true &&
+        physicalEvidence?.exactPhysicalIdentityMatch == true;
+    final correlatedStatus = acknowledgesRetainedResolve
+        ? pendingTerminalCommand!.physicalStatus!
+        : _status;
     if (_isMirroredTerminalDelivery(
       incoming: physicalEvidence,
       accepted: _terminalPhysicalReceiveEvidence,
@@ -1379,6 +1457,8 @@ class DeviceSosController {
     }
     final nextState = acknowledgesPendingAppCancel
         ? DeviceSosState.inactive
+        : acknowledgesRetainedResolve
+        ? DeviceSosState.resolved
         : _resolveEventState(packet, previous);
     final classification = _classifyEventPacket(
       packet,
@@ -1442,14 +1522,14 @@ class DeviceSosController {
       }
     }
     _emit(
-      _status.copyWith(
+      correlatedStatus.copyWith(
         state: nextState,
         previousState: previous,
         transitionSource: source,
         triggerOrigin:
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
-            ? _status.triggerOrigin
+            ? correlatedStatus.triggerOrigin
             : _resolveObservedTriggerOrigin(source, nodeId: packet.nodeId),
         lastEvent: event,
         updatedAt: now,
@@ -1465,43 +1545,43 @@ class DeviceSosController {
         packetId:
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
-            ? _status.packetId
+            ? correlatedStatus.packetId
             : null,
-        hasLocation: _status.hasLocation,
+        hasLocation: correlatedStatus.hasLocation,
         flags:
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
-            ? _status.flags
+            ? correlatedStatus.flags
             : null,
         sosType:
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
-            ? _status.sosType
+            ? correlatedStatus.sosType
             : null,
         retryCount:
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
-            ? _status.retryCount
+            ? correlatedStatus.retryCount
             : null,
         relayCount:
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
-            ? _status.relayCount
+            ? correlatedStatus.relayCount
             : null,
         batteryLevel:
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
-            ? _status.batteryLevel
+            ? correlatedStatus.batteryLevel
             : null,
         batteryState:
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
-            ? _status.batteryState
+            ? correlatedStatus.batteryState
             : null,
         gpsQuality:
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
-            ? _status.gpsQuality
+            ? correlatedStatus.gpsQuality
             : null,
         decoderNote:
             'DEVICE_SOS_CONTROL_EVENT_DECODED event=$controlEventLabel',
@@ -1509,17 +1589,17 @@ class DeviceSosController {
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
             ? null
-            : _status.countdownStartedAt,
+            : correlatedStatus.countdownStartedAt,
         expectedActivationAt:
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
             ? null
-            : _status.expectedActivationAt,
+            : correlatedStatus.expectedActivationAt,
         countdownRemainingSeconds:
             nextState == DeviceSosState.inactive ||
                 nextState == DeviceSosState.resolved
             ? null
-            : _status.countdownRemainingSeconds,
+            : correlatedStatus.countdownRemainingSeconds,
       ),
     );
   }
@@ -2340,6 +2420,7 @@ class _PendingTerminalDeviceCommand {
     required this.action,
     required this.nodeId,
     required this.requestedAt,
+    this.physicalStatus,
     this.commandWriterOverride,
     this.commandRouteLabel,
     this.operationIsCurrent,
@@ -2349,6 +2430,7 @@ class _PendingTerminalDeviceCommand {
   final String action;
   final int? nodeId;
   final DateTime requestedAt;
+  final DeviceSosStatus? physicalStatus;
   final DeviceCommandWriter? commandWriterOverride;
   final String? commandRouteLabel;
   final DeviceTerminalOperationGuard? operationIsCurrent;
@@ -2359,6 +2441,7 @@ class _PendingTerminalDeviceCommand {
       action: action,
       nodeId: nodeId,
       requestedAt: requestedAt,
+      physicalStatus: physicalStatus,
       commandWriterOverride: commandWriterOverride,
       commandRouteLabel: commandRouteLabel,
       operationIsCurrent: operationIsCurrent,

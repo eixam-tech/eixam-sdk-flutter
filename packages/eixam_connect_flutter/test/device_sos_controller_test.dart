@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
+import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_position_data.dart';
@@ -11,6 +12,307 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('DeviceSosController countdown flows', () {
+    for (final reply in [
+      'during_write',
+      'after_write',
+      'wrong_node',
+      'stale_operation',
+      'missing_evidence',
+      'unguarded',
+    ]) {
+      test('guarded RESOLVE confirms native countdown mirror $reply', () async {
+        final controller = DeviceSosController(
+          appActivationObservationTimeout: const Duration(milliseconds: 50),
+        );
+        addTearDown(controller.dispose);
+        await controller.attach(commandWriter: (_) async {});
+        controller.handleIncomingSosPacket(
+          _countdownPacket(),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: _receivedAfterTerminal(
+            sequence: 1,
+            at: DateTime.now(),
+          ),
+        );
+        final verified = controller.currentStatus;
+        expect(verified.state, DeviceSosState.preConfirm);
+        expect(verified.derivedFromBlePacket, isTrue);
+        var current = true;
+        final commands = <EixamDeviceCommand>[];
+        final written = Completer<void>();
+        void emitReply() => controller.handleIncomingSosEventPacket(
+          reply == 'wrong_node'
+              ? EixamSosEventPacket.tryParse([0xE3, 2, 0x78, 0x56, 0, 0])!
+              : _backendResolvedPacket(),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: reply == 'missing_evidence'
+              ? null
+              : _receivedAfterTerminal(
+                  sequence: 3,
+                  at: DateTime.now(),
+                  terminal: true,
+                ),
+        );
+        final closing = controller.cancelSos(
+          terminalAction: 'resolve',
+          terminalCmdAvailable: true,
+          waitForCloseAcknowledgement: true,
+          terminalCorrelationStatus: verified,
+          operationIsCurrent: reply == 'unguarded' ? null : () => current,
+          commandWriterOverride: (command) async {
+            commands.add(command);
+            if (reply == 'during_write') emitReply();
+            written.complete();
+          },
+        );
+        await written.future;
+        await pumpEventQueue(times: 4);
+        if (reply != 'during_write') {
+          if (reply == 'stale_operation') current = false;
+          emitReply();
+        }
+        await closing;
+        expect(commands.map((command) => command.opcode), [0x07]);
+        final accepted = reply == 'during_write' || reply == 'after_write';
+        expect(
+          controller.currentStatus.state,
+          accepted ? DeviceSosState.resolved : DeviceSosState.preConfirm,
+        );
+        if (accepted) {
+          expect(controller.currentStatus.derivedFromBlePacket, isTrue);
+          expect(controller.currentStatus.optimistic, isFalse);
+          expect(controller.currentStatus.lastOpcode, 0xE3);
+          expect(controller.currentStatus.packetId, verified.packetId);
+        }
+      });
+    }
+    for (final reply in [
+      'during_write',
+      'after_write',
+      'wrong_node',
+      'stale_operation',
+      'missing_evidence',
+    ]) {
+      test('retained RESOLVE correlates physical E3 $reply', () async {
+        final controller = DeviceSosController(
+          countdownDuration: const Duration(milliseconds: 5),
+          countdownTick: const Duration(milliseconds: 1),
+        );
+        addTearDown(controller.dispose);
+        await controller.attach(commandWriter: (_) async {});
+        await _promoteDeviceSosToActive(controller);
+        controller.handleIncomingSosPacket(
+          _activePacket(),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: _receivedAfterTerminal(
+            sequence: 1,
+            at: DateTime.now(),
+          ),
+        );
+        final verified = controller.currentStatus;
+        expect(verified.derivedFromBlePacket, isTrue);
+        await controller.detach();
+        var current = true;
+        final commands = <EixamDeviceCommand>[];
+        void emitReply() => controller.handleIncomingSosEventPacket(
+          reply == 'wrong_node'
+              ? EixamSosEventPacket.tryParse([0xE3, 2, 0x78, 0x56, 0, 0])!
+              : _backendResolvedPacket(),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: reply == 'missing_evidence'
+              ? null
+              : _receivedAfterTerminal(
+                  sequence: 3,
+                  at: DateTime.now(),
+                  terminal: true,
+                ),
+        );
+        await controller.cancelSos(
+          terminalAction: 'resolve',
+          terminalCmdAvailable: true,
+          waitForCloseAcknowledgement: false,
+          terminalCorrelationStatus: verified,
+          operationIsCurrent: () => current,
+          commandWriterOverride: (command) async {
+            commands.add(command);
+            if (reply == 'during_write') emitReply();
+          },
+        );
+        if (reply != 'during_write') {
+          if (reply == 'stale_operation') current = false;
+          emitReply();
+        }
+        expect(commands.map((command) => command.opcode), [0x07]);
+        final accepted = reply == 'during_write' || reply == 'after_write';
+        expect(
+          controller.currentStatus.state,
+          accepted ? DeviceSosState.resolved : DeviceSosState.inactive,
+        );
+        if (accepted) {
+          expect(controller.currentStatus.packetId, verified.packetId);
+          expect(controller.currentStatus.flags, verified.flags);
+          expect(
+            controller.currentStatus.triggerOrigin,
+            verified.triggerOrigin,
+          );
+          expect(controller.currentStatus.derivedFromBlePacket, isTrue);
+          expect(controller.currentStatus.lastOpcode, 0xE3);
+        }
+      });
+    }
+    for (final writeBlocked in [false, true]) {
+      test(
+        'guarded CANCEL ignores duplicate attach while writeBlocked=$writeBlocked',
+        () async {
+          final controller = DeviceSosController();
+          final release = Completer<void>();
+          var writes = 0;
+          Future<void> write(EixamDeviceCommand command) async {
+            if (command.opcode != 0x04) return;
+            writes++;
+            if (writeBlocked) await release.future;
+          }
+
+          try {
+            await controller.attach(commandWriter: write);
+            await controller.triggerSos();
+            final cancelled = controller.cancelSos(
+              commandWriterOverride: write,
+              terminalCmdAvailable: true,
+              waitForCloseAcknowledgement: true,
+              operationIsCurrent: () => true,
+            );
+            await pumpEventQueue(times: 8);
+            expect(writes, 1);
+            for (var duplicate = 0; duplicate < 3; duplicate++) {
+              await controller.attach(commandWriter: write);
+            }
+            await pumpEventQueue(times: 8);
+            expect(writes, 1);
+            if (!release.isCompleted) release.complete();
+            await pumpEventQueue(times: 8);
+            controller.handleIncomingSosEventPacket(
+              _deviceClearPacket(),
+              source: DeviceSosTransitionSource.device,
+            );
+            final status = await cancelled;
+            expect(status.derivedFromBlePacket, isTrue);
+            expect(status.state, DeviceSosState.inactive);
+            await controller.attach(commandWriter: write);
+            await pumpEventQueue(times: 8);
+            expect(writes, 1);
+          } finally {
+            if (!release.isCompleted) release.complete();
+            await controller.dispose();
+          }
+        },
+      );
+    }
+    for (final sharedAdmission in [false, true]) {
+      test('rearm ACTIVE after E3 preserves the current countdown '
+          '(shared admission=$sharedAdmission)', () async {
+        var now = DateTime.utc(2026, 10, 13, 12, 47, 0);
+        final controller = DeviceSosController(now: () => now);
+        addTearDown(controller.dispose);
+        await controller.attach(commandWriter: (_) async {});
+        await controller.triggerSos();
+        now = now.add(const Duration(seconds: 21));
+        controller.handleIncomingSosPacket(
+          _activePacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        expect(controller.currentStatus.state, DeviceSosState.active);
+        controller.handleIncomingSosEventPacket(
+          _backendResolvedPacket(),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: _receivedAfterTerminal(
+            sequence: 30,
+            terminal: true,
+            at: now,
+          ),
+        );
+        expect(controller.currentStatus.state, DeviceSosState.resolved);
+        if (sharedAdmission) {
+          controller.setPhysicalSosStartAdmissionPolicy(
+            (packet, evidence, status) => const PhysicalSosStartAdmission(
+              decision: PhysicalSosStartAdmissionDecision.sameCycle,
+              reason: 'current_generation_open',
+            ),
+          );
+        }
+        now = now.add(const Duration(seconds: 75));
+        await controller.triggerSos();
+        final deadline = controller.currentStatus.expectedActivationAt;
+        now = now.add(const Duration(seconds: 1));
+        controller.handleIncomingSosPacket(
+          _countdownPacket(packetId: 4),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: _receivedAfterTerminal(sequence: 31, at: now),
+        );
+        expect(controller.currentStatus.expectedActivationAt, deadline);
+        expect(
+          controller.currentStatus.triggerOrigin,
+          DeviceSosTransitionSource.app,
+        );
+        now = deadline!.add(const Duration(milliseconds: 300));
+        controller.handleIncomingSosPacket(
+          _activePacket(),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: _receivedAfterTerminal(sequence: 37, at: now),
+        );
+        expect(controller.currentStatus.state, DeviceSosState.active);
+        expect(controller.currentStatus.optimistic, isFalse);
+        expect(controller.currentStatus.derivedFromBlePacket, isTrue);
+        now = now.add(const Duration(seconds: 1));
+        controller.handleIncomingSosPacket(
+          _activePacket(packetId: 1),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: _receivedAfterTerminal(sequence: 39, at: now),
+        );
+        expect(controller.currentStatus.state, DeviceSosState.active);
+      });
+    }
+
+    test('physical restart consumes the terminal edge once', () {
+      var now = DateTime.utc(2026, 10, 13);
+      final controller = DeviceSosController(now: () => now);
+      addTearDown(controller.dispose);
+      controller.handleIncomingSosPacket(
+        _activePacket(),
+        source: DeviceSosTransitionSource.device,
+      );
+      controller.handleIncomingSosEventPacket(
+        _deviceClearPacket(),
+        source: DeviceSosTransitionSource.device,
+        resolutionContext: _receivedAfterTerminal(
+          sequence: 30,
+          terminal: true,
+          at: now,
+        ),
+      );
+      now = now.add(const Duration(seconds: 1));
+      controller.handleIncomingSosPacket(
+        _activePacket(),
+        source: DeviceSosTransitionSource.device,
+        resolutionContext: _receivedAfterTerminal(sequence: 31, at: now),
+      );
+      final deadline = controller.currentStatus.expectedActivationAt!;
+      now = now.add(const Duration(seconds: 1));
+      controller.handleIncomingSosPacket(
+        _activePacket(packetId: 1),
+        source: DeviceSosTransitionSource.device,
+        resolutionContext: _receivedAfterTerminal(sequence: 32, at: now),
+      );
+      expect(controller.currentStatus.expectedActivationAt, deadline);
+      now = deadline.add(const Duration(milliseconds: 1));
+      controller.handleIncomingSosPacket(
+        _activePacket(packetId: 2),
+        source: DeviceSosTransitionSource.device,
+        resolutionContext: _receivedAfterTerminal(sequence: 33, at: now),
+      );
+      expect(controller.currentStatus.state, DeviceSosState.active);
+    });
+
     test('app trigger -> preConfirm -> cancel -> inactive', () async {
       final commands = <EixamDeviceCommand>[];
       final controller = DeviceSosController(
@@ -1612,3 +1914,28 @@ EixamSosEventPacket _backendResolvedPacket() {
     0x00,
   ])!;
 }
+
+DeviceSosStateResolutionContext _receivedAfterTerminal({
+  required int sequence,
+  required DateTime at,
+  bool terminal = false,
+}) => DeviceSosStateResolutionContext.fromPhysicalEvidence(
+  PhysicalSosReceiveEvidence(
+    classification: terminal
+        ? BleIncomingPayloadKind.sosClear
+        : BleIncomingPayloadKind.ownDeviceSos,
+    receiveSequence: sequence,
+    receiveSequenceDomain: 'flutter_gatt:rearm-test:1',
+    processSessionId: 'rearm-test',
+    producer: 'flutter_gatt',
+    characteristic: 'ea02',
+    correlationId: 'receive-$sequence',
+    exactPhysicalIdentityMatch: true,
+    packetType: terminal ? 'sos_event' : 'sos',
+    hasStartSemantics: !terminal,
+    hasTerminalSemantics: terminal,
+    packetFingerprint: 'packet-$sequence',
+    cycleIdentity: 'sos:4660:0',
+    receivedAt: at,
+  ),
+);

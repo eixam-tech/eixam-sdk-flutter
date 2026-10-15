@@ -89,6 +89,33 @@ class EixamDeviceCommand {
     );
   }
 
+  factory EixamDeviceCommand.boundSosReturn({
+    required int nodeId,
+    required int originPacketId,
+    required bool terminal,
+  }) {
+    if (nodeId <= 0 ||
+        nodeId > 0xFFFFFFFF ||
+        originPacketId <= 0 ||
+        originPacketId > 0xFFFFFFFF) {
+      throw ArgumentError(
+        'Bound return requires uint32 origin and packet identities.',
+      );
+    }
+    return EixamDeviceCommand._(
+      opcode: 0x0B,
+      label: terminal ? 'BOUND SOS TERMINAL' : 'BOUND SOS SILENCE',
+      bytes: <int>[
+        0x0B,
+        1,
+        terminal ? 2 : 4,
+        for (var i = 0; i < 4; i++) (nodeId >> (8 * i)) & 0xFF,
+        for (var i = 0; i < 4; i++) (originPacketId >> (8 * i)) & 0xFF,
+      ],
+      forceCmdCharacteristic: true,
+    );
+  }
+
   factory EixamDeviceCommand.shutdown() => const EixamDeviceCommand._(
     opcode: 0x10,
     label: 'SHUTDOWN',
@@ -298,6 +325,7 @@ class EixamDeviceCommand {
       0x04 ||
       0x07 ||
       0x0A ||
+      0x0B ||
       0x06 ||
       0x10 ||
       0x20 ||

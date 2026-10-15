@@ -9,6 +9,26 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues(<String, Object>{}));
 
+  test('exact policy persists and copyWith cannot downgrade it', () async {
+    final now = DateTime.now();
+    final session = FirmwareUpdateSession(
+      sessionId: 'qa',
+      deviceId: 'tag',
+      releaseId: 'qa-release',
+      fromVersion: '1.0.0',
+      targetVersion: '2.0.0.abc1234',
+      verificationPolicy: FirmwareVerificationPolicy.exactCandidate,
+      state: FirmwareUpdateState.verifyingInstalledVersion,
+      startedAt: now,
+    );
+    final store = SharedPrefsFirmwareUpdateSessionStore();
+    await store.save(session.copyWith(requiresRecovery: true));
+    expect(
+      (await store.load())?.verificationPolicy,
+      FirmwareVerificationPolicy.exactCandidate,
+    );
+  });
+
   test('no active update returns null', () async {
     expect(await SharedPrefsFirmwareUpdateSessionStore().load(), isNull);
   });
@@ -19,6 +39,7 @@ void main() {
 
     final restored = await store.load();
 
+    expect(restored?.verificationPolicy, FirmwareVerificationPolicy.normal);
     expect(restored?.sessionId, 'fw-1');
     expect(restored?.hardwareId, 'AA:BB:CC:DD:EE:FF');
     expect(restored?.targetVersion, '2.0.0');

@@ -1,3 +1,6 @@
+/// Normal catalog compatibility or immutable physical QA image identity.
+enum FirmwareVerificationPolicy { normal, exactCandidate }
+
 enum FirmwareUpdateState {
   idle,
   checking,
@@ -135,6 +138,7 @@ class FirmwareRelease {
     this.bootloaderType,
     this.artifactKind,
     this.mandatory = false,
+    this.verificationPolicy = FirmwareVerificationPolicy.normal,
   });
 
   final String releaseId;
@@ -146,6 +150,7 @@ class FirmwareRelease {
   final String? bootloaderType;
   final String? artifactKind;
   final bool mandatory;
+  final FirmwareVerificationPolicy verificationPolicy;
 }
 
 class FirmwareUpdateEligibility {
@@ -203,6 +208,7 @@ class FirmwareUpdateSession {
     this.artifactDownloaded = false,
     this.artifactVerified = false,
     this.migrationOwned = false,
+    this.verificationPolicy = FirmwareVerificationPolicy.normal,
     this.recoveryDeviceMatched = false,
     this.remoteRecoveryAttempts = 0,
     this.remoteRecoveryFailed = false,
@@ -223,6 +229,7 @@ class FirmwareUpdateSession {
   final String? failureCode;
   final String? failureMessage;
   final bool migrationOwned;
+  final FirmwareVerificationPolicy verificationPolicy;
   final String? artifactReference;
   final String? artifactSha256;
   final int? artifactSizeBytes;
@@ -294,6 +301,7 @@ class FirmwareUpdateSession {
       remoteRecoveryExhausted:
           remoteRecoveryExhausted ?? this.remoteRecoveryExhausted,
       migrationOwned: migrationOwned,
+      verificationPolicy: verificationPolicy,
       artifactReference: artifactReference ?? this.artifactReference,
       artifactSha256: artifactSha256 ?? this.artifactSha256,
       artifactSizeBytes: artifactSizeBytes ?? this.artifactSizeBytes,

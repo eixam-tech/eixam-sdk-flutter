@@ -29,6 +29,7 @@
 
 - SOS availability depends on a live SOS write path.
 - Device commands such as notification volume, SOS volume, reboot, and runtime status require a compatible connected command-capable device.
+- Runtime-status reads (`getDeviceRuntimeStatus()`, `0x23`) use the current BLE owner, including native protection after backgrounding. Native readiness and target identity must pass the existing command guards; the shared decoder awaits the live response rather than returning a cached status.
 - Lab unprovision is SDK-owned (`unprovisionDevice()` → `0x25` then `0x22`). Hosts never write the opcode. Firmware ≥ 2.7.53. Always reboot after OK / OK_NOCHANGE so the Eixam stack drops, even if `0x23` already reads unprovisioned. Skip reboot on REJECT. Advertising keeps the Eixam UUID so the app can reconnect. CMD is write-with-response: a dropped ATT ACK after `0x22` is still success if the reboot disconnect is in window (900 ms–12 s from write start, raw GATT status — not the protection-bridged public `connected` flag). Android often reports the drop as `LINK_SUPERVISION_TIMEOUT` after the 1.5 s scheduled reboot. Post-reconnect `0x23` is retried for both unprovision and SoftSIM+SOS RF apply — GATT/notify is often not ready on the first attempt after reboot.
 - `E_DEVICE_COMMAND_NOT_READY` is the expected failure when command routing is unavailable.
 

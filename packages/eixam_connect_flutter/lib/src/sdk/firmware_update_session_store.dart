@@ -53,6 +53,7 @@ final class SharedPrefsFirmwareUpdateSessionStore
       'hardwareId': session.hardwareId,
       'releaseId': session.releaseId,
       'migrationOwned': session.migrationOwned,
+      'verificationPolicy': session.verificationPolicy.name,
       'artifactReference': session.artifactReference,
       'artifactSha256': session.artifactSha256,
       'artifactSizeBytes': session.artifactSizeBytes,
@@ -91,6 +92,12 @@ final class SharedPrefsFirmwareUpdateSessionStore
       hardwareId: json['hardwareId'] as String?,
       releaseId: _string(json, 'releaseId'),
       migrationOwned: json['migrationOwned'] as bool? ?? false,
+      verificationPolicy: json['verificationPolicy'] == null
+          ? FirmwareVerificationPolicy.normal
+          : _enum(
+              FirmwareVerificationPolicy.values,
+              json['verificationPolicy'],
+            ),
       artifactReference: json['artifactReference'] as String?,
       artifactSha256: json['artifactSha256'] as String?,
       artifactSizeBytes: json['artifactSizeBytes'] as int?,

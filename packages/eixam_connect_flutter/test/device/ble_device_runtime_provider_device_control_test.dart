@@ -172,6 +172,78 @@ void main() {
       expect(status.telIntervalSeconds, 60);
     });
 
+    test(
+      'native owner reads live status without a Flutter GATT connection',
+      () async {
+        final commands = <EixamDeviceCommand>[];
+        final status = await runtimeProvider.requestDeviceRuntimeStatus(
+          commandSender: (command) async {
+            commands.add(command);
+            await runtimeProvider.ingestNativeNotification(
+              payload: bleClient.runtimeStatusPayload,
+              channel: EixamBleChannel.tel,
+              deviceId: MockBleClient.demoDeviceId,
+            );
+          },
+        );
+
+        expect(
+          await bleClient.isConnected(MockBleClient.demoDeviceId),
+          isFalse,
+        );
+        expect(bleClient.writtenCommands, isEmpty);
+        expect(commands.single.opcode, 0x23);
+        expect(status.nodeId, 0x1234);
+        expect(status.isProvisioned, isTrue);
+        expect(status.batteryPercent, 88);
+      },
+    );
+
+    test(
+      'native status write rejection clears the waiter without fallback',
+      () async {
+        await expectLater(
+          runtimeProvider.requestDeviceRuntimeStatus(
+            commandSender: (_) async => throw const DeviceException(
+              'E_DEVICE_COMMAND_NOT_READY',
+              'E_DEVICE_COMMAND_NOT_READY',
+            ),
+          ),
+          throwsA(isA<DeviceException>()),
+        );
+
+        final status = await runtimeProvider.requestDeviceRuntimeStatus(
+          commandSender: (_) => runtimeProvider.ingestNativeNotification(
+            payload: bleClient.runtimeStatusPayload,
+            channel: EixamBleChannel.tel,
+            deviceId: MockBleClient.demoDeviceId,
+          ),
+        );
+        expect(status.nodeId, 0x1234);
+        expect(bleClient.writtenCommands, isEmpty);
+      },
+    );
+
+    test(
+      'native write acceptance without a response cannot report status',
+      () async {
+        await expectLater(
+          runtimeProvider.requestDeviceRuntimeStatus(
+            timeout: const Duration(milliseconds: 10),
+            commandSender: (_) async {},
+          ),
+          throwsA(
+            isA<DeviceException>().having(
+              (error) => error.code,
+              'code',
+              'E_DEVICE_STATUS_TIMEOUT',
+            ),
+          ),
+        );
+        expect(bleClient.writtenCommands, isEmpty);
+      },
+    );
+
     test('pairing resolves node id and device health immediately', () async {
       final status = await _pairDemoDevice(runtimeProvider);
 

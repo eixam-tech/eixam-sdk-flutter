@@ -69,6 +69,15 @@ redundancy or enrichment only.
 - Device closure uses `_closeDeviceSos(intent: cancel, ...)`.
 - If the cycle closes, SDK clears SOS notifications and resets cycle suppression state.
 
+A physical `0xE1` user cancellation from a newer generation must never be
+consumed as an older remote-terminal clear acknowledgement, even if the TAG
+reuses its packet counter/cycle key. It proceeds through the current generation's
+pending-activation cancellation path. Late `0xE2`/`0xE3` command acknowledgements
+remain cleanup evidence for their captured operation and do not cancel a newer
+generation. Android B3 reproduced the failure after WEB CANCEL, explicit rearm,
+APP countdown cancellation, and a second rearm: the old clear proof previously
+swallowed the new physical cancel and left countdown/backend handoff alive.
+
 ## Resolve Flow
 
 - Public `resolveSos()` mirrors cancel orchestration.
@@ -134,3 +143,108 @@ See [`../SOS_LIFECYCLE_ARCHITECTURE_2026.md`](../SOS_LIFECYCLE_ARCHITECTURE_2026
 for the complete lifecycle, secure provenance, recovery, cancellation, and
 revision contract. Preserve current typed behavior when older legacy-state
 documentation differs.
+
+## Admission after a mirrored terminal generation
+
+A BLE SOS packet's `packetId` is a transmission counter, not an episode ID.
+The deployed firmware increments it in `sendSOSPacket()` for every absolute,
+delta or minimal transmission. Changed counters and unconsumed fingerprints
+cannot reopen a mirrored terminal generation while physical closure is missing.
+Shared physical-start admission requires current-domain terminal receive evidence
+before accepting the next physical edge in that case. Explicit public APP
+activation remains an independent new-generation path.
+
+`SOS_ARM_CALL_SITE` records the actual allocation caller and before/after
+generation at `beginArming`, including rejected and joined requests.
+`SOS_PHYSICAL_START_ADMISSION` records the receive producer, protocol counter,
+retry count and correlation. `SOS_BACKEND_CREATE_CALL_SITE` records the local
+dispatch generation/attempt before the repository call. Standard diagnostic
+redaction still applies; QA records the diagnostic event time and correlates
+typed public lifecycle/incident identities separately. The public activation
+API carries no user-intent token; diagnostics must not invent one or infer a
+human caller from lifecycle origin.
+
+## Terminal propagation to a CoreBluetooth peripheral
+
+A connected iOS peripheral UUID is a transport handle and must not be stored
+as a canonical MAC. The same selected-peripheral plus hydrated own-node proof
+used by command readiness also authorizes a current-cycle terminal target when
+no canonical hardware address is available. Canonical MAC matching remains
+unchanged when an address exists.
+
+Remote RESOLVE captures an immutable account/lifecycle/generation/incident and
+TAG target, sends `SOS_ACK` (`0x07`) on EA04 through the authorized writer, and
+waits for physical E3 terminal evidence. A not-ready writer preserves the
+current target and queued terminal operation until an authorized writer can
+deliver it. Revalidation rejects another peripheral or TAG node and an obsolete
+lifecycle before dispatch or ACK consumption. Backend/UI terminal state alone
+is not a physical TAG ACK. WEB ACK remains the separate nonterminal silence
+operation. This target rule does not change SOS start admission or terminal
+generation watermarks.
+
+The iOS native snapshot parser accepts the six-byte `E3` event on SOS and TEL,
+persists its kind as `resolved`, and forwards the original bytes through
+`ownDeviceSosLifecycleObserved`. It must not classify `E3` as user cancellation.
+The persisted resolved kind prevents replay of the preceding active snapshot;
+the Dart snapshot merge leaves logical authority with the backend lifecycle and
+requires the real native receive event for physical terminal acknowledgement.
+
+An SDK-guarded RESOLVE target can retain a physically observed `preConfirm`
+mirror after native rehydration while its authoritative generation is already
+active/terminal. `DeviceSosController` retains that correlation just as target
+capture does; a current operation, matching node and exact physical E3 receive
+evidence are still required. An unguarded, wrong-node or uncorrelated E3 cannot
+close a countdown. This changes no backend authority, start admission, LoRa
+return routing, wire command or generation fence.
+
+## ACK silence through command ownership handoff
+
+WEB ACK sends nonterminal `SOS SILENCE` (`0x09`) on EA04 and waits for its
+`E9` command result. An admitted own-TAG ACTIVE observation captures its
+account, lifecycle/generation, node, and physical connection identity. A
+transport-only `DeviceSosController.detach()` may reset the live mirror but
+does not discard that physical proof or a correlated pending ACK intent.
+Writer readiness retries the intent without requiring another SOS packet.
+Each write, including native fallback, revalidates the current lifecycle and
+target. Physical closure, session changes, another generation, or another TAG
+invalidate the proof. CoreBluetooth targets retain their selected UUID and
+hydrated own-node binding; UUIDs are never canonical MACs. Duplicate ACKs share
+one operation. Silence leaves SOS ACTIVE and configured volume unchanged;
+RESOLVE remains the separate `0x07`/E3 terminal operation.
+
+## Physical evidence during explicit rearm
+
+`DeviceSosController` respects shared physical-start admission: `sameCycle`
+evidence preserves the current countdown and app origin, then confirms ACTIVE.
+An old E3/E1 receive boundary and a later receive sequence do not authorize
+another countdown once the shared lifecycle has already admitted the next
+generation. The standalone fallback only consumes that edge from a closed
+device state. Terminal watermarks and terminal command propagation are unchanged.
+
+## Physical cancellation at the APP dispatch boundary
+
+A confirmed own-TAG `0xE1` invalidates a matching pending APP activation before
+asynchronous repository lookup or handoff processing. Confirmation continuations
+retain their pending generation and revalidate it after lookup, device status,
+position loading and repository completion. `confirmPreSos` cannot implicitly
+arm a terminal generation; a new explicit arm remains valid immediately after
+terminal settlement.
+
+The dispatch commit is recorded immediately before the repository create call,
+after the generation claim and its awaited persistence. A cancellation before
+that boundary prevents creation. If creation is already in flight, cancellation
+waits for that same operation and closes its incident even if BLE has already
+published ACTIVE. Its completion cannot publish ACTIVE or manufacture another
+generation. `SOS CONFIRM` (`0x05`) has no wire cycle ID, so the SDK checks the
+captured generation again before writer dispatch and native fallback. Retries,
+B1 transport-only handoff rules, and B2 `0x07`/E3 terminal propagation remain
+enabled.
+
+## Native RESOLVE confirmation during foreground handoff
+
+After an identity-bound backend RESOLVE write succeeds through the native owner,
+`exitProtectionMode` joins that same physical confirmation operation before
+stopping the receiver. It uses the existing device acknowledgement deadline;
+missing E3 still times out and releases the owner. An explicit newer generation
+supersedes the old exit request, so late N evidence cannot stop or terminalize
+N+1. This changes neither RESOLVE encoding nor LoRa return routing.

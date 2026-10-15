@@ -103,6 +103,12 @@ class BleIncomingPayloadClassifier {
     }
 
     final sosPacket = EixamSosPacket.tryParse(payload);
+    if (sosPacket?.originPacketId != null &&
+        sosPacket!.nodeId == connectedBleTagNodeId) {
+      return const BleIncomingPayloadClassification(
+        kind: BleIncomingPayloadKind.unknown,
+      );
+    }
     if (sosPacket != null && sosPacket.isClear) {
       final isRemoteClear = _isExternalBackendClearPacket(
         sosPacket,
@@ -154,6 +160,7 @@ class BleIncomingPayloadClassifier {
                 rawPayload: List<int>.unmodifiable(payload),
                 payloadHex: payloadHex,
                 relayCount: sosPacket.relayCount,
+                originPacketId: sosPacket.originPacketId,
               )
             : null,
       );
@@ -207,6 +214,7 @@ class BleIncomingPayloadClassifier {
                 rawPayload: List<int>.unmodifiable(payload),
                 payloadHex: payloadHex,
                 relayCount: sosPacket.relayCount,
+                originPacketId: sosPacket.originPacketId,
               )
             : null,
       );

@@ -2045,6 +2045,58 @@ void main() {
       },
     );
 
+    for (final ios in <bool>[false, true]) {
+      test(
+        'suspended reconnect admission remains quiescent ios=$ios',
+        () async {
+          SharedPreferences.setMockInitialValues(<String, Object>{});
+          BleDebugRegistry.instance.reset();
+          final repository = _FakeDeviceRepository();
+          final store = PreferredBleDeviceStore(
+            localStore: SharedPrefsSdkStore(),
+          );
+          await store.savePreferredDevice(
+            PreferredBleDevice(
+              deviceId: 'saved-tag',
+              displayName: 'TAG',
+              lastConnectedAt: DateTime(2026),
+            ),
+          );
+          final coordinator = BleAutoReconnectCoordinator(
+            deviceRepository: repository,
+            preferredDeviceStore: store,
+            isIosPlatform: () => ios,
+          );
+          await coordinator.initialize(
+            initialStatus: await repository.getDeviceStatus(),
+            deviceStatusStream: repository.watchDeviceStatus(),
+          );
+          await coordinator.suspendPreferredDeviceConnection();
+          BleDebugRegistry.instance.reset();
+          final results = await Future.wait([
+            for (final reason in ['startup', 'resume', 'deferred_runtime'])
+              coordinator.tryAutoConnectForHandoff(trigger: reason),
+          ]);
+          expect(
+            results.every((r) => r.reason == 'manual_disconnect_requested'),
+            isTrue,
+          );
+          expect(coordinator.reconnectCampaignActive, isFalse);
+          expect(coordinator.connectionAttemptActive, isFalse);
+          expect(repository.reconnectCallCount, 0);
+          expect(repository.pairCallCount, 0);
+          expect(
+            BleDebugRegistry.instance.currentState.events.any(
+              (e) => e.message.contains('reason=campaign_created'),
+            ),
+            isFalse,
+          );
+          expect((await store.getPreferredDevice())?.deviceId, 'saved-tag');
+          await coordinator.dispose();
+        },
+      );
+    }
+
     test('skips auto-connect when manual disconnect is active', () async {
       SharedPreferences.setMockInitialValues(<String, Object>{});
       BleDebugRegistry.instance.reset();

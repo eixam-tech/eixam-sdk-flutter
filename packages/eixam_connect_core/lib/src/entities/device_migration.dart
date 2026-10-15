@@ -128,6 +128,7 @@ class DeviceMigrationSession {
     required this.createdAt,
     required this.updatedAt,
     this.firmwareSession,
+    this.verificationPolicy = FirmwareVerificationPolicy.normal,
     this.migratedDevice,
     this.outcome,
     this.reconciliationOutcome,
@@ -143,6 +144,7 @@ class DeviceMigrationSession {
   final String releaseId;
   final String targetVersion;
   final FirmwareUpdateSession? firmwareSession;
+  final FirmwareVerificationPolicy verificationPolicy;
   final EixamBleScanResult? migratedDevice;
   final DeviceMigrationState state;
   final DeviceMigrationOutcome? outcome;
@@ -177,6 +179,7 @@ class DeviceMigrationSession {
     releaseId: releaseId,
     targetVersion: targetVersion,
     firmwareSession: firmwareSession ?? this.firmwareSession,
+    verificationPolicy: verificationPolicy,
     migratedDevice: migratedDevice ?? this.migratedDevice,
     state: state ?? this.state,
     outcome: outcome ?? this.outcome,

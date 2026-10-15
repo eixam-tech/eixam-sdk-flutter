@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:eixam_connect_flutter/src/sdk/firmware_artifact_cache.dart';
+import 'package:eixam_connect_flutter/src/sdk/frozen_qa_firmware_source.dart';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_firmware_remote_data_source.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_http_transport.dart';
@@ -85,6 +86,7 @@ void main() {
 
     FirmwareUpdateCoordinator buildCoordinator({
       FirmwareDfuTransport? transport,
+      SdkFirmwareRemoteDataSource? remoteDataSource,
       DeviceStatus? initialStatus,
       Future<ProtectionStatus> Function()? protectionStatusProvider,
       Future<DeviceSosStatus> Function()? deviceSosStatusProvider,
@@ -110,7 +112,7 @@ void main() {
         deviceRepository: deviceRepository,
         sosRepository: sosRepository,
         deathManRepository: deathManRepository,
-        remoteDataSource: remote,
+        remoteDataSource: remoteDataSource ?? remote,
         dfuTransport: transport ?? const UnsupportedFirmwareDfuTransport(),
         sessionStore: sessionStore ?? _MemoryFirmwareStore(),
         artifactCache: FileFirmwareArtifactCache(
@@ -684,6 +686,139 @@ void main() {
         expect(release?.releaseId, 'safe');
       },
     );
+
+    for (final actual in <String?>[
+      '3.0.0.abc1234',
+      '3.0.0',
+      '0',
+      '3.0.0.def5678',
+      '2.9.0.abc1234',
+      null,
+      'unknown',
+    ]) {
+      test('exact migration candidate live identity: $actual', () async {
+        final store = _MemoryFirmwareStore();
+        final coordinator = buildCoordinator(
+          transport: _SuccessfulDfuTransport(),
+          sessionStore: store,
+          postDfuVerificationTimeout: Duration.zero,
+        );
+        addTearDown(coordinator.dispose);
+        final result = await coordinator.startMigrationFirmwareUpdate(
+          sourceStatus: _readyStatus().copyWith(model: 'EIXAM R1'),
+          release: FirmwareRelease(
+            releaseId: 'candidate',
+            version: '3.0.0.abc1234',
+            hardwareModel: 'EIXAM R1',
+            sha256Hash: _sha256(remote.artifactBytes),
+            fileSizeBytes: remote.artifactBytes.length,
+            verificationPolicy: FirmwareVerificationPolicy.exactCandidate,
+          ),
+          postMigrationStatusRefresh:
+              ({
+                required deviceId,
+                required attempt,
+                required targetVersion,
+              }) async => _readyStatus().copyWith(
+                model: 'EIXAM R1',
+                firmwareVersion: actual ?? 'unknown',
+              ),
+        );
+        expect(
+          result.verificationPolicy,
+          FirmwareVerificationPolicy.exactCandidate,
+        );
+        expect(result.releaseId, 'candidate');
+        expect(
+          result.state,
+          actual == '3.0.0.abc1234'
+              ? FirmwareUpdateState.completed
+              : FirmwareUpdateState.failed,
+        );
+        if (!result.isCompleted) {
+          expect(result.failureCode, 'installedVersionMismatch');
+          expect(
+            store.value?.verificationPolicy,
+            FirmwareVerificationPolicy.exactCandidate,
+          );
+          final recovered = await coordinator.verifyRecoveredMigrationFirmware(
+            verifiedStatus: _readyStatus(
+              firmwareVersion: '3.0.0',
+            ).copyWith(model: 'EIXAM R1'),
+          );
+          expect(recovered?.isCompleted, isFalse);
+        }
+      });
+    }
+
+    for (final corrupt in [false, true]) {
+      test(
+        'frozen QA catalog uses verified preseed only; corrupt=$corrupt',
+        () async {
+          final bytes = remote.artifactBytes;
+          final hash = _sha256(bytes);
+          final source = FrozenQaFirmwareSource(
+            sourceSha: 'a' * 40,
+            expectedLiveVersion: '3.0.0.abc1234',
+            hardwareModel: 'EIXAM R1',
+            artifactSha256: hash,
+            artifactSizeBytes: bytes.length,
+          );
+          final store = _MemoryFirmwareStore();
+          final coordinator = buildCoordinator(
+            remoteDataSource: source,
+            sessionStore: store,
+            transport: _SuccessfulDfuTransport(),
+          );
+          addTearDown(coordinator.dispose);
+          final release = (await coordinator.resolveMigrationRelease(
+            hardwareModel: 'EIXAM R1',
+          ))!;
+          expect(
+            await coordinator.resolveMigrationRelease(hardwareModel: 'other'),
+            isNull,
+          );
+          final reference = firmwareArtifactReference(
+            release.releaseId,
+            release.version,
+            hash,
+          );
+          await FileFirmwareArtifactCache(
+            directoryProvider: () async => cacheDirectory,
+          ).writeVerified(reference, corrupt ? [9, 8, 7] : bytes);
+          final result = await coordinator.startMigrationFirmwareUpdate(
+            sourceStatus: _readyStatus().copyWith(model: 'EIXAM R1'),
+            release: release,
+            postMigrationStatusRefresh:
+                ({
+                  required deviceId,
+                  required attempt,
+                  required targetVersion,
+                }) async => _readyStatus(
+                  firmwareVersion: '3.0.0.abc1234',
+                ).copyWith(model: 'EIXAM R1'),
+          );
+          expect(result.releaseId, release.releaseId);
+          expect(
+            result.verificationPolicy,
+            FirmwareVerificationPolicy.exactCandidate,
+          );
+          expect(
+            result.state,
+            corrupt
+                ? FirmwareUpdateState.failed
+                : FirmwareUpdateState.completed,
+          );
+          if (corrupt) {
+            expect(result.failureCode, 'qaArtifactNotPreseeded');
+            expect(result.nativeTransferEngaged, isFalse);
+          } else {
+            expect(result.artifactVerified, isTrue);
+            expect(result.artifactSha256, hash);
+          }
+        },
+      );
+    }
 
     test(
       'migration reuses download, SHA validation, DFU and version check',
