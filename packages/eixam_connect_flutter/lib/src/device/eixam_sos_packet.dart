@@ -22,6 +22,7 @@ class EixamSosPacket {
     required this.packetId,
     required this.hasPosition,
     this.sequence,
+    this.originPacketId,
     this.deltaLatMeters,
     this.deltaLonMeters,
     this.position,
@@ -42,6 +43,7 @@ class EixamSosPacket {
   final int packetId;
   final bool hasPosition;
   final int? sequence;
+  final int? originPacketId;
   final int? deltaLatMeters;
   final int? deltaLonMeters;
   final EixamPositionData? position;
@@ -56,10 +58,7 @@ class EixamSosPacket {
     if (!hasPosition || decoded == null) {
       return false;
     }
-    return EixamGeoCoordinates.isValidFix(
-      decoded.latitude,
-      decoded.longitude,
-    );
+    return EixamGeoCoordinates.isValidFix(decoded.latitude, decoded.longitude);
   }
 
   bool get isClear => format == EixamSosPacketFormat.minimal && sosType == 0;
@@ -118,10 +117,24 @@ class EixamSosPacket {
     if (bytes.any((byte) => byte < 0 || byte > 0xFF)) {
       return null;
     }
+    int? originPacketId;
+    if ((bytes.length == 15 || bytes.length == 20) && bytes.first == 0xE4) {
+      if (bytes[1] != 1 ||
+          bytes[7] != 1 ||
+          bytes[6] + 8 != bytes.length ||
+          (bytes[6] != 7 && bytes[6] != 12)) {
+        return null;
+      }
+      originPacketId = _readU32(bytes, 2);
+      if (originPacketId == 0) {
+        return null;
+      }
+      bytes = bytes.sublist(8);
+    }
     final hasRemoteDeviceId =
         bytes.length == EixamBleProtocol.sosPacketLengthWithPosition + 6 ||
-            bytes.length == EixamBleProtocol.sosPacketLengthDelta + 6 ||
-            bytes.length == EixamBleProtocol.sosPacketLengthMinimal + 6;
+        bytes.length == EixamBleProtocol.sosPacketLengthDelta + 6 ||
+        bytes.length == EixamBleProtocol.sosPacketLengthMinimal + 6;
     final packetLength = hasRemoteDeviceId ? bytes.length - 6 : bytes.length;
     final format = _formatForLength(packetLength);
     if (format == null) {
@@ -132,10 +145,12 @@ class EixamSosPacket {
     final flagsOffset = hasPosition ? 10 : 4;
     final flagsWord = bytes[flagsOffset] | (bytes[flagsOffset + 1] << 8);
     final sosType = (flagsWord >> 14) & 0x03;
-    final decodedPosition =
-        hasPosition ? EixamPositionData.decode(bytes, offset: 4) : null;
-    final delta =
-        format == EixamSosPacketFormat.delta ? _decodeDelta(bytes) : null;
+    final decodedPosition = hasPosition
+        ? EixamPositionData.decode(bytes, offset: 4)
+        : null;
+    final delta = format == EixamSosPacketFormat.delta
+        ? _decodeDelta(bytes)
+        : null;
 
     return EixamSosPacket(
       rawBytes: List<int>.unmodifiable(bytes),
@@ -151,6 +166,7 @@ class EixamSosPacket {
       speedEstimate: (flagsWord >> 4) & 0x03,
       packetId: flagsWord & 0x0F,
       hasPosition: hasPosition,
+      originPacketId: originPacketId,
       sequence: hasPosition ? null : bytes[6],
       deltaLatMeters: delta?.$1,
       deltaLonMeters: delta?.$2,

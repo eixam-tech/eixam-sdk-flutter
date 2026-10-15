@@ -235,3 +235,8 @@ Until that contract is finalized, provisioning remains internal/deferred by desi
 - Public BLE contract lives in the SDK/runtime layers, not host widgets
 - BLE packet parsing stays internal to the Flutter runtime package
 - Public models are added only where the SDK can provide a stable typed contract
+
+
+## Local cycle-bound LoRa return integration (2026-10-15)
+
+See [cycle-bound return contract](../../docs/LORA_CYCLE_BOUND_RETURN.md). This adds optional typed `originPacketId`, new BLE receipt E4v1 and forced-CMD0Bv1. Unbound legacy receipts do not authorize remote controls. No physical PASS is implied.

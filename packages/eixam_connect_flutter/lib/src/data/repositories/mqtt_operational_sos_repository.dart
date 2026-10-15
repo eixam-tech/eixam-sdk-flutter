@@ -45,6 +45,7 @@ final class MqttRemoteRelayLifecycleTransition {
     required this.occurredAt,
     required this.rawStatus,
     required this.source,
+    this.cycleKey,
   });
 
   final SosState state;
@@ -55,6 +56,7 @@ final class MqttRemoteRelayLifecycleTransition {
   final DateTime occurredAt;
   final String rawStatus;
   final String source;
+  final String? cycleKey;
 }
 
 class MqttOperationalSosRepository
@@ -2126,6 +2128,7 @@ class MqttOperationalSosRepository
     if (matchesPendingCanonical) {
       final context = _ExternalRelayLifecycleContext(
         incidentId: update.incidentId,
+        cycleKey: pending.cycleKey,
         occurredAt: pending.occurredAt,
         originatorNodeId: pending.originatorNodeId,
         relayNodeId: pending.relayNodeId,
@@ -2159,6 +2162,14 @@ class MqttOperationalSosRepository
         !_sameIdentity(update.incidentId, context.incidentId) ||
         !_isTrustedUserScopedAckTopic(update)) {
       return false;
+    }
+    if (context.cycleKey?.startsWith('lora:') == true &&
+        (update.incidentOccurredAt == null ||
+            update.incidentOccurredAt!.toUtc() != context.occurredAt)) {
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_REMOTE_RELAY_LIFECYCLE_REJECTED reason=canonical_cycle_timestamp_mismatch localStateMutation=false',
+      );
+      return true; // consumed as a rejected remote event; never fall into the local lifecycle
     }
     _emitRemoteRelayLifecycleTransition(
       context: context,
@@ -2221,6 +2232,7 @@ class MqttOperationalSosRepository
       <String, dynamic>{
         'sessionScope': sessionScope,
         'incidentId': incidentId,
+        if (context.cycleKey != null) 'cycleKey': context.cycleKey,
         'occurredAt': context.occurredAt.toUtc().toIso8601String(),
         if (context.originatorNodeId != null)
           'originatorNodeId': context.originatorNodeId,
@@ -2256,6 +2268,7 @@ class MqttOperationalSosRepository
         MqttRemoteRelayLifecycleTransition(
           state: state,
           incidentId: context.incidentId,
+          cycleKey: context.cycleKey,
           originatorNodeId: context.originatorNodeId,
           relayNodeId: context.relayNodeId,
           relayHardwareId: context.relayHardwareId,
@@ -3274,6 +3287,7 @@ class _PendingExternalRelayHandoff {
 class _ExternalRelayLifecycleContext {
   const _ExternalRelayLifecycleContext({
     required this.incidentId,
+    this.cycleKey,
     required this.occurredAt,
     required this.originatorNodeId,
     required this.relayNodeId,
@@ -3281,6 +3295,7 @@ class _ExternalRelayLifecycleContext {
   });
 
   final String incidentId;
+  final String? cycleKey;
   final DateTime occurredAt;
   final int? originatorNodeId;
   final int? relayNodeId;
@@ -3331,6 +3346,7 @@ class _PersistedExternalRelayLifecycleContext {
       sessionScope: sessionScope,
       context: _ExternalRelayLifecycleContext(
         incidentId: incidentId,
+        cycleKey: json['cycleKey'] as String?,
         occurredAt: occurredAt,
         originatorNodeId: originatorNodeId,
         relayNodeId: relayNodeId,

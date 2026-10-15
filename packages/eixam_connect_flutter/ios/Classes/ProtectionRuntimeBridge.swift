@@ -1097,6 +1097,11 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       return
     }
     let source = sourceName(for: characteristic)
+    if (bytes.count == 15 || bytes.count == 20), bytes[0] == 0xE4 {
+      guard BoundSosReceipt.body(bytes) != nil else { return }
+      emitTelNotify(bytes, source: source)
+      return
+    }
     let characteristicUuid = characteristic.uuid.uuidString.lowercased()
     let timestamp = Date().millisecondsSince1970
     let payloadHex = bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
@@ -1171,6 +1176,10 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     let payloadHex = bytes.map { String(format: "%02x", $0) }.joined()
     let assembled = telReassembler.ingest(bytes)
     if eventSink == nil {
+      if BoundSosReceipt.body(bytes) != nil {
+        enqueueTelNotify(payloadHex: payloadHex, source: source)
+        return
+      }
       // GPS/TEL D0 would fill the 64-slot queue while Dart is detached.
       // Reassemble first; keep Nearby RX/TX-status/group ACK only.
       if let assembled, isNearbyTelNotify(assembled) {

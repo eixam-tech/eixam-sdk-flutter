@@ -1984,6 +1984,12 @@ class EixamConnectSdkImpl
       if (context != null &&
           relayNodeId != null &&
           context.relayNodeId == relayNodeId &&
+          (context.originPacketId == null ||
+              transition.cycleKey ==
+                  _boundRelayCycleKey(
+                    originatorNodeId,
+                    context.originPacketId!,
+                  )) &&
           (existingIncidentId == null ||
               existingIncidentId.isEmpty ||
               existingIncidentId == transition.incidentId.trim()) &&
@@ -2020,6 +2026,7 @@ class EixamConnectSdkImpl
         await _sendRemoteRelaySilence(
           _RemoteRelaySilenceCommand(
             incidentId: transition.incidentId,
+            cycleKey: transition.cycleKey,
             originatorNodeId: originatorNodeId,
             relayNodeId: transition.relayNodeId,
             relayHardwareId: transition.relayHardwareId,
@@ -2030,7 +2037,7 @@ class EixamConnectSdkImpl
           'incidentId=${transition.incidentId} '
           'originatorNodeId=$originatorNodeId '
           'relayNodeId=${transition.relayNodeId?.toString() ?? "none"} '
-          'command=REMOTE_SOS_SILENCE_0x0A rescueCommand=BUZZER_OFF_0x04 '
+          'command=BOUND_SOS_RETURN_0x0B rescueCommand=BUZZER_OFF_0x04 '
           'localStateMutation=false',
         );
       } catch (error) {
@@ -2052,6 +2059,7 @@ class EixamConnectSdkImpl
       await _sendRemoteRelayTerminal(
         _RemoteRelayTerminalCommand(
           incidentId: transition.incidentId,
+          cycleKey: transition.cycleKey,
           originatorNodeId: originatorNodeId,
           relayNodeId: transition.relayNodeId,
           relayHardwareId: transition.relayHardwareId,
@@ -2063,7 +2071,7 @@ class EixamConnectSdkImpl
       BleDebugRegistry.instance.recordEvent(
         'SOS_REMOTE_RELAY_TERMINAL_COMMAND_SENT '
         'incidentId=${transition.incidentId} '
-        'terminal=${transition.state.name} command=SOS_ACK_RELAY_0x08 '
+        'terminal=${transition.state.name} command=BOUND_SOS_RETURN_0x0B '
         'originatorNodeId=$originatorNodeId '
         'relayNodeId=${transition.relayNodeId?.toString() ?? "none"} '
         'localStateMutation=false',
@@ -2091,7 +2099,7 @@ class EixamConnectSdkImpl
       BleDebugRegistry.instance.recordEvent(
         'SOS_REMOTE_RELAY_TERMINAL_COMMAND_FAILED '
         'incidentId=${transition.incidentId} '
-        'terminal=${transition.state.name} command=SOS_ACK_RELAY_0x08 '
+        'terminal=${transition.state.name} command=BOUND_SOS_RETURN_0x0B '
         'originatorNodeId=$originatorNodeId '
         'relayNodeId=${transition.relayNodeId?.toString() ?? "none"} '
         'error=$error localStateMutation=false',
@@ -2108,7 +2116,7 @@ class EixamConnectSdkImpl
     final relayHardwareId = request.relayHardwareId?.trim();
     final dedupeKey =
         '$incidentId:$originatorNodeId:'
-        '${relayNodeId?.toString() ?? "none"}:terminal';
+        '${relayNodeId?.toString() ?? "none"}:${request.cycleKey ?? "unbound"}:terminal';
     if (_completedRemoteRelayTerminalCommands.contains(dedupeKey)) {
       BleDebugRegistry.instance.recordEvent(
         'SOS_REMOTE_RELAY_TERMINAL_COMMAND_SKIPPED '
@@ -2163,6 +2171,17 @@ class EixamConnectSdkImpl
       );
     }
 
+    final originPacketId = context.originPacketId;
+    if (originPacketId == null ||
+        originPacketId == 0 ||
+        request.cycleKey !=
+            _boundRelayCycleKey(originatorNodeId, originPacketId)) {
+      throw const DeviceException(
+        'E_REMOTE_RELAY_CYCLE_UNPROVEN',
+        'A canonical cycle-bound relay receipt is required.',
+      );
+    }
+
     final refreshedStatus = await deviceRepository.getDeviceStatus();
     _lastDeviceStatus = refreshedStatus;
     final connectedStatus = _lastPublicDeviceStatus?.connected == true
@@ -2190,16 +2209,22 @@ class EixamConnectSdkImpl
       );
     }
 
-    final command = EixamDeviceCommand.sosAckRelay(nodeId: originatorNodeId);
+    final command = EixamDeviceCommand.boundSosReturn(
+      nodeId: originatorNodeId,
+      originPacketId: originPacketId,
+      terminal: true,
+    );
     final commandBytes = EixamBleProtocol.hex(command.encode());
     final ownerRoute = _currentDeviceCommandOwnerRoute;
     BleDebugRegistry.instance.recordEvent(
       'SOS_REMOTE_RELAY_TERMINAL_GATT_SUBMISSION '
       'incidentId=$incidentId terminal=${request.action.name} '
       'originatorNodeId=$originatorNodeId relayNodeId=$relayNodeId '
-      'owner=$ownerRoute commandBytes=$commandBytes',
+      'originPacketId=$originPacketId owner=$ownerRoute commandBytes=$commandBytes',
     );
-    await deviceSosController.sendAckRelay(
+    await deviceSosController.sendBoundRelayReturn(
+      originPacketId: originPacketId,
+      terminal: true,
       nodeId: originatorNodeId,
       commandWriterOverride: _sendDeviceCommandThroughActiveOwner,
       commandRouteLabel: ownerRoute,
@@ -2209,7 +2234,7 @@ class EixamConnectSdkImpl
       'SOS_REMOTE_RELAY_TERMINAL_GATT_COMPLETED '
       'incidentId=$incidentId terminal=${request.action.name} '
       'originatorNodeId=$originatorNodeId relayNodeId=$relayNodeId '
-      'owner=$ownerRoute commandBytes=$commandBytes',
+      'originPacketId=$originPacketId owner=$ownerRoute commandBytes=$commandBytes',
     );
   }
 
@@ -2226,6 +2251,9 @@ class EixamConnectSdkImpl
     await _sendRemoteRelaySilence(
       _RemoteRelaySilenceCommand(
         incidentId: incidentId,
+        cycleKey: context?.originPacketId == null
+            ? null
+            : _boundRelayCycleKey(victimNodeId, context!.originPacketId!),
         originatorNodeId: victimNodeId,
         relayNodeId: relayNodeId,
         relayHardwareId: context?.relayHardwareId,
@@ -2241,7 +2269,7 @@ class EixamConnectSdkImpl
     final relayNodeId = _normalizeNodeIdOrNull(request.relayNodeId);
     final relayHardwareId = request.relayHardwareId?.trim();
     final dedupeKey =
-        '$incidentId:$originatorNodeId:${relayNodeId?.toString() ?? "none"}:silence';
+        '$incidentId:$originatorNodeId:${relayNodeId?.toString() ?? "none"}:${request.cycleKey ?? "unbound"}:silence';
     if (_completedRemoteRelaySilenceCommands.contains(dedupeKey)) {
       BleDebugRegistry.instance.recordEvent(
         'SOS_REMOTE_RELAY_SILENCE_SKIPPED incidentId=$incidentId '
@@ -2278,6 +2306,17 @@ class EixamConnectSdkImpl
         'E_REMOTE_RELAY_CONTEXT_MISMATCH',
       );
     }
+    final originPacketId = context.originPacketId;
+    if (originPacketId == null ||
+        originPacketId == 0 ||
+        request.cycleKey !=
+            _boundRelayCycleKey(originatorNodeId, originPacketId)) {
+      throw const DeviceException(
+        'E_REMOTE_RELAY_CYCLE_UNPROVEN',
+        'A canonical cycle-bound relay receipt is required.',
+      );
+    }
+
     final refreshedStatus = await deviceRepository.getDeviceStatus();
     _lastDeviceStatus = refreshedStatus;
     final connectedStatus = _lastPublicDeviceStatus?.connected == true
@@ -2297,15 +2336,19 @@ class EixamConnectSdkImpl
         'E_REMOTE_RELAY_TARGET_MISMATCH',
       );
     }
-    final command = EixamDeviceCommand.remoteSosSilence(
+    final command = EixamDeviceCommand.boundSosReturn(
+      originPacketId: originPacketId,
+      terminal: false,
       nodeId: originatorNodeId,
     );
     BleDebugRegistry.instance.recordEvent(
       'SOS_REMOTE_RELAY_SILENCE_GATT_SUBMISSION incidentId=$incidentId '
       'originatorNodeId=$originatorNodeId relayNodeId=$relayNodeId '
-      'commandBytes=${EixamBleProtocol.hex(command.encode())}',
+      'originPacketId=$originPacketId commandBytes=${EixamBleProtocol.hex(command.encode())}',
     );
-    await deviceSosController.sendRemoteSosSilence(
+    await deviceSosController.sendBoundRelayReturn(
+      originPacketId: originPacketId,
+      terminal: false,
       nodeId: originatorNodeId,
       commandWriterOverride: _sendDeviceCommandThroughActiveOwner,
       commandRouteLabel: _currentDeviceCommandOwnerRoute,
@@ -19017,6 +19060,7 @@ class EixamConnectSdkImpl
         relayNodeId: normalizedRelayNodeId,
         relayHardwareId: relayHardwareId,
         backendIncidentId: backendIncidentId,
+        originPacketId: (value['originPacketId'] as num?)?.toInt(),
         triggerDeviceId: _normalizeNodeIdDeviceIdString(triggerDeviceId),
         triggerObservedAt: triggerObservedAt ?? now,
         baselineTerminal: baselineTerminal,
@@ -19050,6 +19094,8 @@ class EixamConnectSdkImpl
         for (final entry in _recentExternalRelaySosContexts.entries)
           entry.key: <String, dynamic>{
             'originatorNodeId': entry.value.originatorNodeId,
+            if (entry.value.originPacketId != null)
+              'originPacketId': entry.value.originPacketId,
             if (entry.value.relayNodeId != null)
               'relayNodeId': entry.value.relayNodeId,
             if (entry.value.relayHardwareId != null)
@@ -19816,11 +19862,19 @@ class EixamConnectSdkImpl
       originatorNodeId: originatorNodeId,
       relayNodeId: relayNodeId,
     );
-    final existing = exactExisting?.backendIncidentId?.trim().isNotEmpty == true
+    var existing = exactExisting?.backendIncidentId?.trim().isNotEmpty == true
         ? exactExisting
         : bestExisting?.backendIncidentId?.trim().isNotEmpty == true
         ? bestExisting
         : exactExisting ?? bestExisting;
+    if (snapshot.originPacketId != null &&
+        existing?.originPacketId != null &&
+        snapshot.originPacketId != existing!.originPacketId) {
+      if (backendIncidentId != null) {
+        return; // stale async handoff for a superseded packet
+      }
+      existing = null;
+    }
     final triggerObservedAt =
         existing?.triggerObservedAt ?? snapshot.receivedAt.toUtc();
     final normalizedBackendIncidentId = backendIncidentId?.trim();
@@ -19848,6 +19902,7 @@ class EixamConnectSdkImpl
         : null;
     final incomingContext = _RecentExternalRelaySosContext(
       originatorNodeId: originatorNodeId,
+      originPacketId: snapshot.originPacketId ?? existing?.originPacketId,
       relayNodeId: relayNodeId,
       relayHardwareId: relayHardwareId ?? existing?.relayHardwareId,
       backendIncidentId: normalizedBackendIncidentId?.isNotEmpty == true
@@ -20005,6 +20060,7 @@ class EixamConnectSdkImpl
     );
     return _RecentExternalRelaySosContext(
       originatorNodeId: incoming.originatorNodeId,
+      originPacketId: incoming.originPacketId ?? previous.originPacketId,
       relayNodeId: incoming.relayNodeId ?? previous.relayNodeId,
       relayHardwareId: incoming.relayHardwareId ?? previous.relayHardwareId,
       backendIncidentId: incomingIncidentId?.isNotEmpty == true
@@ -24484,6 +24540,7 @@ class EixamConnectSdkImpl
       kind: snapshot.kind,
       originatorNodeId: originatorNodeId,
       relayNodeId: relayNodeId,
+      originPacketId: snapshot.originPacketId,
       source: snapshot.source,
       sosType: snapshot.sosType,
       location: snapshot.location,
@@ -24968,6 +25025,12 @@ class EixamConnectSdkImpl
         relayDeviceId: relayDeviceId,
         relayHardwareId: relayHardwareId,
         relaySource: relaySource,
+        cycleKey: snapshot.originPacketId == null
+            ? null
+            : _boundRelayCycleKey(
+                snapshot.originatorNodeId,
+                snapshot.originPacketId!,
+              ),
       );
       _logRemoteRelayBackendResponse(
         correlationId: correlationId,
@@ -25006,6 +25069,12 @@ class EixamConnectSdkImpl
           source: relaySource,
           triggerSource: relaySource,
           relaySource: relaySource,
+          cycleKey: snapshot.originPacketId == null
+              ? null
+              : _boundRelayCycleKey(
+                  snapshot.originatorNodeId,
+                  snapshot.originPacketId!,
+                ),
           owner: 'device',
         ),
       );
@@ -25048,7 +25117,16 @@ class EixamConnectSdkImpl
         '${snapshot.receivedAt.toUtc().microsecondsSinceEpoch}';
   }
 
+  String _boundRelayCycleKey(int origin, int packet) =>
+      'lora:${_normalizeNodeId(origin)}:$packet';
+
   String _remoteRelayCycleCorrelation(RemoteRelaySosSnapshot snapshot) {
+    if (snapshot.originPacketId != null) {
+      return _boundRelayCycleKey(
+        snapshot.originatorNodeId,
+        snapshot.originPacketId!,
+      );
+    }
     final packet = EixamSosPacket.tryParse(snapshot.rawPayload);
     if (packet != null) {
       return '${_normalizeNodeId(snapshot.originatorNodeId)}:${packet.packetId}';
@@ -25302,7 +25380,8 @@ class EixamConnectSdkImpl
     return '${_normalizeNodeId(snapshot.originatorNodeId)}:'
         '${snapshot.sosType}:'
         '${_normalizeNodeIdOrNull(snapshot.relayNodeId)?.toString() ?? "none"}:'
-        '${_lastDeviceStatus?.canonicalHardwareId ?? "none"}';
+        '${_lastDeviceStatus?.canonicalHardwareId ?? "none"}:'
+        '${snapshot.originPacketId ?? "unbound"}';
   }
 
   void _publishSdkEvent(EixamSdkEvent event) {
@@ -26090,6 +26169,7 @@ class EixamConnectSdkImpl
       relayNodeId: null,
       source: source ?? RemoteRelaySosSource.sosNotify,
       sosType: sosPacket.sosType,
+      originPacketId: sosPacket.originPacketId,
       location:
           sosPacket.trackingPositionAt(receivedAt) ??
           _lastKnownTrackingPositionForNode(sosPacket.nodeId),
@@ -26934,6 +27014,7 @@ enum _RemoteRelayTerminalAction { cancel, resolve }
 class _RemoteRelayTerminalCommand {
   const _RemoteRelayTerminalCommand({
     required this.incidentId,
+    this.cycleKey,
     required this.originatorNodeId,
     required this.relayNodeId,
     required this.relayHardwareId,
@@ -26941,6 +27022,7 @@ class _RemoteRelayTerminalCommand {
   });
 
   final String incidentId;
+  final String? cycleKey;
   final int originatorNodeId;
   final int? relayNodeId;
   final String? relayHardwareId;
@@ -26950,12 +27032,14 @@ class _RemoteRelayTerminalCommand {
 class _RemoteRelaySilenceCommand {
   const _RemoteRelaySilenceCommand({
     required this.incidentId,
+    this.cycleKey,
     required this.originatorNodeId,
     required this.relayNodeId,
     required this.relayHardwareId,
   });
 
   final String incidentId;
+  final String? cycleKey;
   final int originatorNodeId;
   final int? relayNodeId;
   final String? relayHardwareId;
@@ -26988,9 +27072,11 @@ class _RecentExternalRelaySosContext {
     required this.baselineTerminalObservedAt,
     required this.baselineEventSequence,
     required this.expiresAt,
+    this.originPacketId,
   });
 
   final int originatorNodeId;
+  final int? originPacketId;
   final int? relayNodeId;
   final String? relayHardwareId;
   final String? backendIncidentId;

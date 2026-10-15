@@ -1790,7 +1790,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   }
 
   bool _isSosLikePayload(List<int> payload) {
-    return payload.length == 6 ||
+    return EixamSosPacket.tryParse(payload)?.originPacketId != null ||
+        payload.length == 6 ||
         payload.length == EixamBleProtocol.sosPacketLengthMinimal ||
         payload.length == EixamBleProtocol.sosPacketLengthDelta ||
         payload.length == EixamBleProtocol.sosPacketLengthWithPosition ||

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — cycle-bound LoRa return (2026-10-15)
+
+- Bind ACK/RESOLVE/CANCEL to the actual first completed SOS packet, canonical backend incident and observed relay transport. New versioned E4 receipt and0B command fail closed without cycle proof. Android/iOS native ingress retains remote identity; both hosts must pin this SDK. Details: `docs/LORA_CYCLE_BOUND_RETURN.md`. Local implementation only; D1–D3 physical validation pending.
+
 All notable changes to the EIXAM Connect Flutter SDK are documented here.
 
 ## Unreleased - 2026-07-27

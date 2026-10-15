@@ -606,6 +606,22 @@ class DeviceSosController {
     );
   }
 
+  Future<void> sendBoundRelayReturn({
+    required int nodeId,
+    required int originPacketId,
+    required bool terminal,
+    DeviceCommandWriter? commandWriterOverride,
+    String commandRouteLabel = 'attached_writer',
+  }) => _sendNonSosCommand(
+    EixamDeviceCommand.boundSosReturn(
+      nodeId: nodeId,
+      originPacketId: originPacketId,
+      terminal: terminal,
+    ),
+    commandWriterOverride: commandWriterOverride,
+    commandRouteLabel: commandRouteLabel,
+  );
+
   Future<void> sendShutdown({
     DeviceCommandWriter? commandWriterOverride,
     String commandRouteLabel = 'attached_writer',

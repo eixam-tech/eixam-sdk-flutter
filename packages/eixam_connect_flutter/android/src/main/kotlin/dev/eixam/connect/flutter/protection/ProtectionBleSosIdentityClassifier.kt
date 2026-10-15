@@ -98,6 +98,9 @@ internal object ProtectionBleSosIdentityClassifier {
                 reason = identity.reason,
             )
         }
+        if (boundSosBody(payload) != null && sosPacket.nodeId == identity.localNodeId) {
+            return ProtectionBleSosIdentityClassification.Unknown
+        }
         if (sosPacket.nodeId == identity.localNodeId) {
             return ProtectionBleSosIdentityClassification.OwnSos(
                 identityProof = identity.identityProof,
@@ -173,7 +176,16 @@ internal object ProtectionBleSosIdentityClassifier {
     private fun normalizeHardwareId(value: String?): String? =
         value?.trim()?.uppercase(Locale.US)?.takeIf { it.isNotBlank() }
 
-    private fun tryParseSosPacket(payload: List<Int>): SosPacket? {
+    internal fun boundSosBody(payload: List<Int>): List<Int>? {
+        if ((payload.size != 15 && payload.size != 20) || payload[0] != 0xE4 ||
+            payload[1] != 1 || payload[7] != 1 || payload[6] + 8 != payload.size ||
+            (payload[6] != 7 && payload[6] != 12) || readU32(payload, 2) == 0 ||
+            payload.any { it !in 0..255 }) return null
+        return payload.drop(8)
+    }
+
+    private fun tryParseSosPacket(input: List<Int>): SosPacket? {
+        val payload = boundSosBody(input) ?: input
         if (payload.size != 7 && payload.size != 12) {
             return null
         }

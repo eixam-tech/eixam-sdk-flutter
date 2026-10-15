@@ -6,6 +6,35 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ProtectionBleSosIdentityClassifierTest {
+    @Test
+    fun `bound receipt remains remote and preserves envelope for canonical cycle handoff`() {
+        val raw=listOf(0xA8,0x1A,0x4B,0x59,0,0xC0,0)
+        val envelope=listOf(0xE4,1,0x44,0x33,0x22,0x11,7,1)+raw
+        for (source in listOf(ProtectionBleSosRelaySource.tel,ProtectionBleSosRelaySource.sos)) {
+            val result=ProtectionBleSosIdentityClassifier.classify(payload=envelope,
+                connectedNodeId=0x5593756E,source=source)
+            assertTrue(result is ProtectionBleSosIdentityClassification.RemoteSos)
+            result as ProtectionBleSosIdentityClassification.RemoteSos
+            assertEquals(0x594B1AA8,result.originatorNodeId)
+            assertEquals(0x5593756E,result.relayNodeId)
+            assertEquals(envelope,result.rawPayload)
+            assertFalse(ProtectionBleSosNativeRouting.route(result).observeLocalLifecycle)
+        }
+    }
+    @Test
+    fun `malformed bound receipt grants no remote lifecycle authority`() {
+        val envelope=listOf(0xE4,1,0x44,0x33,0x22,0x11,7,1,0xA8,0x1A,0x4B,0x59,0,0xC0,0)
+        val self=ProtectionBleSosIdentityClassifier.classify(payload=envelope,
+            connectedNodeId=0x594B1AA8,source=ProtectionBleSosRelaySource.sos)
+        assertTrue(self is ProtectionBleSosIdentityClassification.Unknown)
+        for (index in listOf(1,6,7)) {
+            val bad=envelope.toMutableList();bad[index]=0
+            assertEquals(null,ProtectionBleSosIdentityClassifier.boundSosBody(bad))
+        }
+        val zero=envelope.toMutableList(); for(i in 2..5) zero[i]=0
+        assertEquals(null,ProtectionBleSosIdentityClassifier.boundSosBody(zero))
+    }
+
     private val firmwareFullSosFixture = listOf(
         0xA8,
         0x1A,

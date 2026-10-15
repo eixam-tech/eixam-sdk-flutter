@@ -85,3 +85,8 @@
 ## Needs Verification
 
 - The docs and code clearly define relay ingest behavior, but the exact partner UX wording for a remote-node SOS screen is not defined in this repo. Keep rendering based on typed SDK state/diagnostics, not custom app logic.
+
+
+## Local cycle-bound LoRa return integration (2026-10-15)
+
+See [cycle-bound return contract](../LORA_CYCLE_BOUND_RETURN.md). This adds optional typed `originPacketId`, new BLE receipt E4v1 and forced-CMD0Bv1. Unbound legacy receipts do not authorize remote controls. No physical PASS is implied.
