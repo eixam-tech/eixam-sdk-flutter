@@ -14626,7 +14626,7 @@ void main() {
         },
       );
 
-      for (final kind in ['active', 'preSos', 'cancelled']) {
+      for (final kind in ['active', 'preSos', 'cancelled', 'resolved']) {
         for (final activate in [false, true]) {
           test(
             'old native $kind cannot overwrite newer ${activate ? "ACTIVE" : "ARMING"}',
@@ -14712,12 +14712,14 @@ void main() {
                 if (!activate) {
                   expect(await harness.sdk.getPreSosStatus(), isNotNull);
                 }
-                expect(
-                  _hasDebugMessage(
-                    'SOS_STALE_GENERATION_OBSERVATION_REJECTED terminalGeneration=1 currentGeneration=2',
-                  ),
-                  isTrue,
-                );
+                if (kind != 'resolved') {
+                  expect(
+                    _hasDebugMessage(
+                      'SOS_STALE_GENERATION_OBSERVATION_REJECTED terminalGeneration=1 currentGeneration=2',
+                    ),
+                    isTrue,
+                  );
+                }
               } finally {
                 await harness.dispose();
                 await adapter.dispose();

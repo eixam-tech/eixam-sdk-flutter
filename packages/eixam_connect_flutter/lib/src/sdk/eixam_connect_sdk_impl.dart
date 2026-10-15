@@ -12092,6 +12092,14 @@ class EixamConnectSdkImpl
       return SosState.idle;
     }
 
+    if (normalizedKind == 'resolved') {
+      // Native E3 is routed through ownDeviceSosLifecycleObserved with its
+      // real bytes and receive evidence. The persisted snapshot prevents an
+      // old active snapshot from being restored; it cannot replace physical
+      // terminal proof or override the authoritative backend lifecycle.
+      return null;
+    }
+
     if (normalizedKind == 'active') {
       _applyIosBleSosActiveSnapshot(snapshot, trigger: trigger);
       return SosState.sent;

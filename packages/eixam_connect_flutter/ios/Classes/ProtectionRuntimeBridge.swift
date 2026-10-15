@@ -77,6 +77,7 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     case preSos
     case active
     case cancelled
+    case resolved
   }
 
   private var eventSink: FlutterEventSink?
@@ -1244,7 +1245,7 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     parsed: (kind: IosBleSosSnapshotKind, nodeId: Int?, packetId: Int?, cycleKey: String?, deadlineAt: Int?),
     receivedAt: Int
   ) -> Bool {
-    guard parsed.kind != .cancelled,
+    guard parsed.kind == .preSos || parsed.kind == .active,
           defaults.string(forKey: Keys.iosBleSosSnapshotKind) == IosBleSosSnapshotKind.cancelled.rawValue,
           let cancelledAt = defaults.object(forKey: Keys.iosBleSosReceivedAt) as? Int,
           receivedAt - cancelledAt <= 30_000 else {
@@ -1410,6 +1411,8 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       return 42002
     case .cancelled:
       return 42004
+    case .resolved:
+      return 42003
     }
   }
 
@@ -1456,6 +1459,11 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
         notificationText(Keys.notificationProtectionSosCancelledTitle, fallback: notificationText(Keys.notificationProtectionSosResolvedTitle, fallback: "SOS cancelled")),
         notificationText(Keys.notificationProtectionSosCancelledBody, fallback: notificationText(Keys.notificationProtectionSosResolvedBody, fallback: "The SOS incident was cancelled."))
       )
+    case .resolved:
+      return (
+        notificationText(Keys.notificationProtectionSosResolvedTitle, fallback: "SOS resolved"),
+        notificationText(Keys.notificationProtectionSosResolvedBody, fallback: "The SOS incident was resolved.")
+      )
     }
   }
 
@@ -1475,9 +1483,12 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       return nil
     }
     if bytes.count == 6,
-       (bytes[0] == 0xE1 || bytes[0] == 0xE2) {
+       (bytes[0] == 0xE1 || bytes[0] == 0xE2 || bytes[0] == 0xE3) {
       let nodeId = readUInt32(bytes, offset: 2)
-      return (.cancelled, nodeId, nil, nodeId.map { "sos:\($0)" }, nil)
+      // E3 closes the TAG episode through backend resolution. Persist and
+      // forward its real packet, preserving the distinction from user cancel.
+      let kind: IosBleSosSnapshotKind = bytes[0] == 0xE3 ? .resolved : .cancelled
+      return (kind, nodeId, nil, nodeId.map { "sos:\($0)" }, nil)
     }
 
     let packetLength: Int

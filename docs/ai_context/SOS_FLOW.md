@@ -182,6 +182,13 @@ is not a physical TAG ACK. WEB ACK remains the separate nonterminal silence
 operation. This target rule does not change SOS start admission or terminal
 generation watermarks.
 
+The iOS native snapshot parser accepts the six-byte `E3` event on SOS and TEL,
+persists its kind as `resolved`, and forwards the original bytes through
+`ownDeviceSosLifecycleObserved`. It must not classify `E3` as user cancellation.
+The persisted resolved kind prevents replay of the preceding active snapshot;
+the Dart snapshot merge leaves logical authority with the backend lifecycle and
+requires the real native receive event for physical terminal acknowledgement.
+
 ## ACK silence through command ownership handoff
 
 WEB ACK sends nonterminal `SOS SILENCE` (`0x09`) on EA04 and waits for its
