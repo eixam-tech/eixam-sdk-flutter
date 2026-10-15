@@ -189,6 +189,14 @@ The persisted resolved kind prevents replay of the preceding active snapshot;
 the Dart snapshot merge leaves logical authority with the backend lifecycle and
 requires the real native receive event for physical terminal acknowledgement.
 
+An SDK-guarded RESOLVE target can retain a physically observed `preConfirm`
+mirror after native rehydration while its authoritative generation is already
+active/terminal. `DeviceSosController` retains that correlation just as target
+capture does; a current operation, matching node and exact physical E3 receive
+evidence are still required. An unguarded, wrong-node or uncorrelated E3 cannot
+close a countdown. This changes no backend authority, start admission, LoRa
+return routing, wire command or generation fence.
+
 ## ACK silence through command ownership handoff
 
 WEB ACK sends nonterminal `SOS SILENCE` (`0x09`) on EA04 and waits for its

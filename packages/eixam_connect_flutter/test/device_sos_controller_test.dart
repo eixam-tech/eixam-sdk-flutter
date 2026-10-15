@@ -18,6 +18,80 @@ void main() {
       'wrong_node',
       'stale_operation',
       'missing_evidence',
+      'unguarded',
+    ]) {
+      test('guarded RESOLVE confirms native countdown mirror $reply', () async {
+        final controller = DeviceSosController(
+          appActivationObservationTimeout: const Duration(milliseconds: 50),
+        );
+        addTearDown(controller.dispose);
+        await controller.attach(commandWriter: (_) async {});
+        controller.handleIncomingSosPacket(
+          _countdownPacket(),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: _receivedAfterTerminal(
+            sequence: 1,
+            at: DateTime.now(),
+          ),
+        );
+        final verified = controller.currentStatus;
+        expect(verified.state, DeviceSosState.preConfirm);
+        expect(verified.derivedFromBlePacket, isTrue);
+        var current = true;
+        final commands = <EixamDeviceCommand>[];
+        final written = Completer<void>();
+        void emitReply() => controller.handleIncomingSosEventPacket(
+          reply == 'wrong_node'
+              ? EixamSosEventPacket.tryParse([0xE3, 2, 0x78, 0x56, 0, 0])!
+              : _backendResolvedPacket(),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: reply == 'missing_evidence'
+              ? null
+              : _receivedAfterTerminal(
+                  sequence: 3,
+                  at: DateTime.now(),
+                  terminal: true,
+                ),
+        );
+        final closing = controller.cancelSos(
+          terminalAction: 'resolve',
+          terminalCmdAvailable: true,
+          waitForCloseAcknowledgement: true,
+          terminalCorrelationStatus: verified,
+          operationIsCurrent: reply == 'unguarded' ? null : () => current,
+          commandWriterOverride: (command) async {
+            commands.add(command);
+            if (reply == 'during_write') emitReply();
+            written.complete();
+          },
+        );
+        await written.future;
+        await pumpEventQueue(times: 4);
+        if (reply != 'during_write') {
+          if (reply == 'stale_operation') current = false;
+          emitReply();
+        }
+        await closing;
+        expect(commands.map((command) => command.opcode), [0x07]);
+        final accepted = reply == 'during_write' || reply == 'after_write';
+        expect(
+          controller.currentStatus.state,
+          accepted ? DeviceSosState.resolved : DeviceSosState.preConfirm,
+        );
+        if (accepted) {
+          expect(controller.currentStatus.derivedFromBlePacket, isTrue);
+          expect(controller.currentStatus.optimistic, isFalse);
+          expect(controller.currentStatus.lastOpcode, 0xE3);
+          expect(controller.currentStatus.packetId, verified.packetId);
+        }
+      });
+    }
+    for (final reply in [
+      'during_write',
+      'after_write',
+      'wrong_node',
+      'stale_operation',
+      'missing_evidence',
     ]) {
       test('retained RESOLVE correlates physical E3 $reply', () async {
         final controller = DeviceSosController(

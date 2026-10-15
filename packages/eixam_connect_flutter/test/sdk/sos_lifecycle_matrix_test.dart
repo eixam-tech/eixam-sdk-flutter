@@ -2895,6 +2895,7 @@ void main() {
       'native_detached',
       'native_detached_tag',
       'native_detached_tag_raw_e3',
+      'native_detached_tag_raw_preconfirm',
       'native_detached_tag_raw_legacy_reason',
       'native_detached_raw_invalid_explicit_payload',
       'native_detached_raw_wrong_peer',
@@ -3211,6 +3212,24 @@ void main() {
               }
               await harness.sdk.rehydrateProtectionState();
               await pumpEventQueue(times: 12);
+              if (delivery == 'native_detached_tag_raw_preconfirm') {
+                // A restored native countdown mirror can coexist with the
+                // already-active authoritative generation after handoff.
+                harness.deviceSosController.handleIncomingSosPacket(
+                  _deviceOriginCountdownPacket(),
+                  source: DeviceSosTransitionSource.device,
+                  resolutionContext: _physicalResolutionContext(
+                    receiveSequence: 3,
+                    terminal: false,
+                    receiveSequenceDomain: 'ios-resolve-uuid',
+                  ),
+                );
+                await pumpEventQueue(times: 8);
+                expect(
+                  harness.deviceSosController.currentStatus.state,
+                  DeviceSosState.preConfirm,
+                );
+              }
             }
             if ((delivery == 'deferred' || delivery == 'native_handoff') ||
                 delivery == 'changed_peer') {
@@ -3330,6 +3349,7 @@ void main() {
             expect(terminalWrites(), delivered || nativeRawAck ? 1 : 0);
             final validNativeRawAck =
                 delivery == 'native_detached_tag_raw_e3' ||
+                delivery == 'native_detached_tag_raw_preconfirm' ||
                 delivery == 'native_detached_tag_raw_legacy_reason';
             if (nativeRawAck && !validNativeRawAck) {
               expect(

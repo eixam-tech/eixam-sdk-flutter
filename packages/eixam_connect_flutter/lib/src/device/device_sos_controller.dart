@@ -372,7 +372,10 @@ class DeviceSosController {
             _terminalOperationIsCurrent(operationIsCurrent) &&
             terminalCorrelationStatus?.derivedFromBlePacket == true &&
             terminalCorrelationStatus?.optimistic == false &&
-            _isOpenSosState(terminalCorrelationStatus!.state)
+            // Native rehydration can still project preConfirm for the same
+            // SDK-guarded terminal target. Keep its physical correlation;
+            // only a current, identity-matched E3 can complete this resolve.
+            _isPacketTrackingOpenState(terminalCorrelationStatus!.state)
         ? terminalCorrelationStatus
         : null;
     if (writer == null) {
