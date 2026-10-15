@@ -6,8 +6,63 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_sos_packet.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_last_known_position_store.dart';
 
 void main() {
+  for (final hasPriorFix in [false, true]) {
+    test('no-fix receipt keeps cycle when prior fix exists=$hasPriorFix', () {
+      final store = EixamLastKnownPositionStore();
+      final prior = TrackingPosition(
+        latitude: 41.4,
+        longitude: 2.1,
+        altitude: 10,
+        timestamp: DateTime.utc(2026, 10, 15, 10),
+        source: DeliveryMode.mesh,
+      );
+      if (hasPriorFix) store.remember(0x594b1aa8, prior);
+      const bytes = <int>[
+        0xe4,
+        1,
+        0x23,
+        0xc4,
+        0xbd,
+        0xb5,
+        7,
+        1,
+        0xa8,
+        0x1a,
+        0x4b,
+        0x59,
+        0,
+        0xc3,
+        0,
+      ];
+      final received = DateTime.utc(2026, 10, 15, 14, 27, 53);
+      final classified = const BleIncomingPayloadClassifier()
+          .classifySosPayload(
+            payload: bytes,
+            payloadHex: EixamBleProtocol.hex(bytes),
+            receivedAt: received,
+            source: DeviceSosTransitionSource.device,
+            channel: EixamBleChannel.sos,
+            connectedBleTagNodeId: 0x5593756e,
+            fallbackOnUnknownConnectedNode:
+                const BleIncomingPayloadClassification(
+                  kind: BleIncomingPayloadKind.unknown,
+                ),
+          );
+      final snapshot = store
+          .bind(classified, receivedAt: received)
+          .remoteRelaySosSnapshot!;
+      expect(snapshot.originPacketId, 3049112611);
+      expect(snapshot.originatorNodeId, 0x594b1aa8);
+      expect(snapshot.relayNodeId, 0x5593756e);
+      expect(snapshot.rawPayload, bytes);
+      expect(snapshot.receivedAt, received);
+      expect(snapshot.location, hasPriorFix ? same(prior) : isNull);
+      if (hasPriorFix) expect(snapshot.location!.timestamp, prior.timestamp);
+    });
+  }
   const receipt = <int>[
     0xE4,
     1,

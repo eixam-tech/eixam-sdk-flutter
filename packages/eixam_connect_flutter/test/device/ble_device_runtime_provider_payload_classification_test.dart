@@ -36,6 +36,51 @@ void main() {
       EixamBleChannel.sos,
       EixamBleChannel.tel,
     ]) {
+      test(
+        'captured no-fix bound receipt retains TX cycle on ${channel.name}',
+        () async {
+          await runtimeProvider.requestDeviceRuntimeStatus();
+          final next = runtimeProvider.watchIncomingEvents().firstWhere(
+            (event) => event.remoteRelaySosSnapshot != null,
+          );
+          // Actual committed-firmware D1 receipt, first TEL START ID3049112611.
+          const captured = <int>[
+            0xe4,
+            1,
+            0x23,
+            0xc4,
+            0xbd,
+            0xb5,
+            7,
+            1,
+            0xa8,
+            0x1a,
+            0x4b,
+            0x59,
+            0,
+            0xc3,
+            0,
+          ];
+          bleClient.emitNotification(
+            MockBleClient.demoDeviceId,
+            channel: channel,
+            payload: captured,
+          );
+          final snapshot = (await next.timeout(
+            const Duration(seconds: 2),
+          )).remoteRelaySosSnapshot!;
+          expect(snapshot.originatorNodeId, 0x594b1aa8);
+          expect(snapshot.relayNodeId, 0x1234);
+          expect(snapshot.originPacketId, 3049112611);
+          expect(snapshot.rawPayload, captured);
+          expect(snapshot.location, isNull);
+          expect(
+            runtimeProvider.deviceSosController.currentStatus.state,
+            DeviceSosState.inactive,
+          );
+        },
+      );
+
       for (final command in <EixamDeviceCommand>[
         EixamDeviceCommand.nearbyOwnerNameFragment(<int>[
           EixamBleProtocol.nearbyOwnerNameOpcode,

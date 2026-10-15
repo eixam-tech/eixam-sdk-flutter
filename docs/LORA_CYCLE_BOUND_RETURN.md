@@ -2,7 +2,13 @@
 
 This is a new coordinated firmware/SDK contract. It is not supported by the
 recorded firmware 0b8e429 or the transport-only firmware 11f3dc7. No new physical
-D1 PASS is claimed. The backend fanout fix remains a separate local commit.
+D1 PASS is claimed. The backend fanout fix is tracked separately.
+
+The no-fix/last-known-location enrichment must retain `originPacketId` alongside
+the exact raw receipt and receipt time. Physical D1 exposed a missed copy in
+that path before WEB ACK; the SDK corrects it and tests the captured E4 receipt
+through the actual BLE runtime on both channels, with and without a prior fix.
+This correction does not promote that stopped attempt to a return-path PASS.
 
 The first **TX-completed TEL START mesh packet ID** identifies the origin's
 current SOS cycle. Allocation/enqueue alone does not authorize a return. Zero
