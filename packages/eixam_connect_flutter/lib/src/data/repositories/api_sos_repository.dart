@@ -293,9 +293,16 @@ class ApiSosRepository
   @override
   Stream<SosIncident?> watchCurrentIncident() async* {
     yield _activeIncident;
-    await for (final _ in _stateController.stream) {
-      yield _activeIncident;
-    }
+    // Delegate cancellation even while idle; retain await-for's error-then-done.
+    yield* _stateController.stream.transform(
+      StreamTransformer<SosState, SosIncident?>.fromHandlers(
+        handleData: (_, sink) => sink.add(_activeIncident),
+        handleError: (error, stack, sink) {
+          sink.addError(error, stack);
+          sink.close();
+        },
+      ),
+    );
   }
 
   @override
