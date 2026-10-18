@@ -45,6 +45,9 @@ import '../mappers/local_state_serializers.dart';
 import 'android_protection_platform_adapter.dart';
 import 'android_tracking_owner_arbiter.dart';
 import 'activity_session_controller.dart';
+import 'activity_availability_controller.dart';
+import '../data/datasources_local/activity_availability_store.dart';
+import '../data/datasources_remote/sdk_activity_availability_remote_data_source.dart';
 import '../data/datasources_local/activity_session_store.dart';
 import 'authoritative_sos_lifecycle_controller.dart';
 import 'background_location_platform_adapter.dart';
@@ -215,6 +218,7 @@ class EixamConnectSdkImpl
         EixamConnectSdk,
         BackgroundLocationControl,
         ActivitySessionControl,
+        ActivityAvailabilityControl,
         SosIncidentProgressProvider {
   EixamConnectSdkImpl({
     required this.sosRepository,
@@ -254,6 +258,9 @@ class EixamConnectSdkImpl
     PhoneRadioPlatformProbe? phoneRadioProbe,
     SharedPrefsSdkStore? localStore,
     ActivitySessionStore? activitySessionStore,
+    ActivityAvailabilityStore? activityAvailabilityStore,
+    SdkActivityAvailabilityRemoteDataSource?
+    activityAvailabilityRemoteDataSource,
     DateTime Function()? clock,
     Duration appTriggeredSosBridgeWindow = _defaultAppTriggeredSosBridgeWindow,
     SosLocationOwnershipEffectMode sosLocationOwnershipEffectMode =
@@ -278,6 +285,13 @@ class EixamConnectSdkImpl
     _activitySessions = ActivitySessionController(
       store:
           activitySessionStore ?? SharedPrefsActivitySessionStore(_localStore),
+      clock: _clock,
+    );
+    _activityAvailability = ActivityAvailabilityController(
+      store:
+          activityAvailabilityStore ??
+          SharedPrefsActivityAvailabilityStore(_localStore),
+      remote: activityAvailabilityRemoteDataSource,
       clock: _clock,
     );
     _devicePositionBacklogCoordinator = DevicePositionBacklogCoordinator(
@@ -580,6 +594,7 @@ class EixamConnectSdkImpl
   String? _lastDeviceCountryConfigCheckDeviceKey;
   final SharedPrefsSdkStore _localStore;
   late final ActivitySessionController _activitySessions;
+  late final ActivityAvailabilityController _activityAvailability;
   final Future<void> Function()? disposeCallback;
 
   final StreamController<EixamSdkEvent> _eventsController =
@@ -906,14 +921,43 @@ class EixamConnectSdkImpl
         protectionSosResolvedBody: '',
       );
 
+  // Fence both optional capabilities synchronously. Each owns its own storage
+  // queue; the existing identity action still runs in ActivitySession order.
+  Future<T> _withActivityIdentityChange<T>(
+    Future<T> Function() action, {
+    required EixamSession? Function() currentSession,
+    required String Function() backend,
+    bool restoreExisting = false,
+    bool clearData = false,
+  }) {
+    late final Future<T> identityWork;
+    final availabilityWork = _activityAvailability.withIdentityChange(
+      () => identityWork,
+      currentSession: currentSession,
+      backend: backend,
+      restoreExisting: restoreExisting,
+      clearData: clearData,
+    );
+    identityWork = _activitySessions.withIdentityChange(
+      action,
+      currentSession: currentSession,
+      backend: backend,
+      restoreExisting: restoreExisting,
+      clearData: clearData,
+    );
+    // Availability may be waiting for a prior checked storage write. Handle an
+    // early rejection now, while preserving it for the awaited public result.
+    identityWork.ignore();
+    return availabilityWork;
+  }
+
   @override
-  Future<void> initialize(EixamSdkConfig config) =>
-      _activitySessions.withIdentityChange(
-        () => _initialize(config),
-        currentSession: () => _session,
-        backend: () => config.apiBaseUrl,
-        restoreExisting: true,
-      );
+  Future<void> initialize(EixamSdkConfig config) => _withActivityIdentityChange(
+    () => _initialize(config),
+    currentSession: () => _session,
+    backend: () => config.apiBaseUrl,
+    restoreExisting: true,
+  );
 
   Future<void> _initialize(EixamSdkConfig config) async {
     _sosLifecycleConsumerReady = false;
@@ -1624,7 +1668,7 @@ class EixamConnectSdkImpl
   Future<void> setSession(
     EixamSession session, {
     bool deferRuntimeWork = false,
-  }) => _activitySessions.withIdentityChange(
+  }) => _withActivityIdentityChange(
     () => _setSession(session, deferRuntimeWork: deferRuntimeWork),
     currentSession: () => _session,
     backend: () => _sdkConfig?.apiBaseUrl ?? '',
@@ -1795,7 +1839,7 @@ class EixamConnectSdkImpl
 
   @override
   Future<EixamSession> refreshCanonicalIdentity() =>
-      _activitySessions.withIdentityChange(
+      _withActivityIdentityChange(
         _refreshCanonicalIdentity,
         currentSession: () => _session,
         backend: () => _sdkConfig?.apiBaseUrl ?? '',
@@ -2496,7 +2540,7 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Future<void> clearLocalUserData() => _activitySessions.withIdentityChange(
+  Future<void> clearLocalUserData() => _withActivityIdentityChange(
     _clearLocalUserData,
     currentSession: () => _session,
     backend: () => _sdkConfig?.apiBaseUrl ?? '',
@@ -2509,7 +2553,7 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Future<void> clearSession() => _activitySessions.withIdentityChange(
+  Future<void> clearSession() => _withActivityIdentityChange(
     _clearSession,
     currentSession: () => _session,
     backend: () => _sdkConfig?.apiBaseUrl ?? '',
@@ -7047,6 +7091,18 @@ class EixamConnectSdkImpl
     final normalized = nodeId & 0xFFFFFFFF;
     return '0x${normalized.toRadixString(16).padLeft(8, '0')} ($nodeId)';
   }
+
+  @override
+  Future<SdkActivityAvailability?> getCachedActivityAvailability() =>
+      _activityAvailability.getCachedActivityAvailability();
+
+  @override
+  Future<SdkActivityAvailability> refreshActivityAvailability() =>
+      _activityAvailability.refreshActivityAvailability();
+
+  @override
+  Stream<SdkActivityAvailability?> watchActivityAvailability() =>
+      _activityAvailability.watchActivityAvailability();
 
   @override
   Future<SdkActivitySession?> getActiveActivitySession() =>
@@ -26409,7 +26465,17 @@ class EixamConnectSdkImpl
       return;
     }
     _disposed = true;
-    await _activitySessions.dispose();
+    final activityDisposal = _activitySessions.dispose();
+    Object? availabilityDisposalError;
+    StackTrace? availabilityDisposalStack;
+    try {
+      await _activityAvailability.dispose();
+    } catch (error, stack) {
+      // Optional cache cleanup must never skip the existing runtime teardown.
+      availabilityDisposalError = error;
+      availabilityDisposalStack = stack;
+    }
+    await activityDisposal;
     SosLocationTrace.emit('sdk_runtime', {
       'action': 'dispose_begin',
       'recurring_publication_owner': 'sdk',
@@ -26474,6 +26540,12 @@ class EixamConnectSdkImpl
       'ownership_accepting': false,
       'tracking_owners': 0,
     });
+    if (availabilityDisposalError != null) {
+      Error.throwWithStackTrace(
+        availabilityDisposalError,
+        availabilityDisposalStack!,
+      );
+    }
   }
 
   Future<EixamPermissionPreflightResult> _buildPermissionPreflight({

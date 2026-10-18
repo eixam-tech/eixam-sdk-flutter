@@ -28,8 +28,12 @@ class SharedPrefsSdkStore {
   // Cleared by ActivitySessionController under its writer lease, not by the
   // unchecked bulk cleanup below (which could race another live SDK runtime).
   static const String activitySessionKey = 'eixam.activity.session.v1';
+  // Availability is also cleared through its controller's checked writer lease.
+  static const String activityAvailabilityKey =
+      'eixam.activity.availability.v1';
   static const List<String> checkedLocalUserDataKeys = <String>[
     activitySessionKey,
+    activityAvailabilityKey,
   ];
   static const String preSosSessionKey = 'eixam.sos.pre_sos_session';
 

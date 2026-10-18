@@ -7,6 +7,7 @@ export 'package:eixam_connect_core/src/interfaces/eixam_connect_sdk.dart';
 export 'package:eixam_connect_core/src/interfaces/background_location_control.dart';
 
 export 'package:eixam_connect_core/src/interfaces/activity_session_control.dart';
+export 'package:eixam_connect_core/src/interfaces/activity_availability_control.dart';
 
 // Registers the Flutter bootstrap implementation behind the public
 // `EixamConnectSdk.bootstrap(...)` entrypoint when the package is imported.

@@ -18,6 +18,7 @@ import '../data/datasources_remote/sdk_contacts_remote_data_source.dart';
 import '../data/datasources_remote/sdk_devices_remote_data_source.dart';
 import '../data/datasources_remote/sdk_firmware_remote_data_source.dart';
 import '../data/datasources_remote/sdk_http_transport.dart';
+import '../data/datasources_remote/sdk_activity_availability_remote_data_source.dart';
 import '../data/repositories/api_contacts_repository.dart';
 import '../data/repositories/api_sdk_device_registry_repository.dart';
 import '../data/repositories/geolocator_tracking_repository.dart';
@@ -244,6 +245,8 @@ class ApiSdkFactory {
       identityRemoteDataSource: HttpSdkIdentityRemoteDataSource(
         transport: httpTransport,
       ),
+      activityAvailabilityRemoteDataSource:
+          HttpSdkActivityAvailabilityRemoteDataSource(transport: httpTransport),
       profileRemoteDataSource: profileRemoteDataSource,
       feedbackRemoteDataSource: feedbackRemoteDataSource,
       geoCountryRemoteDataSource: geoCountryRemoteDataSource,

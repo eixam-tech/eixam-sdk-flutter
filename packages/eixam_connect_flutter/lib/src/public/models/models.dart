@@ -55,3 +55,5 @@ export '../../device/ble_security_policy.dart'
         BleSecurityPolicy;
 
 export 'package:eixam_connect_core/src/entities/activity_session.dart';
+
+export 'package:eixam_connect_core/src/entities/activity_availability.dart';

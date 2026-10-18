@@ -270,3 +270,66 @@ but accessing its activity capability returns `E_ACTIVITY_UNAVAILABLE` while
 another controller owns the lease. Disposal releases it. Identity replacement
 also rejects stale commands with that code. Cross-isolate/process activity
 writers and automatic activity-owned tracking are unsupported.
+
+
+## Remote activity availability (optional)
+
+Detect `sdk is ActivityAvailabilityControl` before using this additive capability.
+It reads the authenticated app's assignment from `GET /v1/sdk/activities`:
+`{"activities":[{"id":"6f1c2a3e-8b4d-4c1e-9f2a-1b3c4d5e6f70","key":"mountain"}]}`.
+Results are immutable complete snapshots in backend array order; duplicate rows
+are preserved. `id` is the stable backend UUID; `key` is preserved exactly.
+
+```dart
+if (sdk is ActivityAvailabilityControl) {
+  final availability = sdk as ActivityAvailabilityControl;
+  final cached = await availability.getCachedActivityAvailability(); // no HTTP
+  final subscription = availability.watchActivityAvailability().listen(
+    (snapshot) { /* render a snapshot or an invalidation */ },
+    onError: (Object error) { /* report cache/refresh failure */ },
+  ); // seeds cached/current state; never fetches
+  final fresh = await availability.refreshActivityAvailability();
+  // Cancel subscription when the host no longer needs it.
+}
+```
+
+`null` means no usable snapshot. A non-null snapshot with `activities.isEmpty`
+is an authoritative empty assignment, persisted like any successful response.
+`fetchedAt` is SDK UTC metadata; `fromCache` is true for cache getters and watch
+seeds/restoration, false for a successful refresh and its live publication.
+Cached data may be stale indefinitely: M2B has no TTL, polling, push, or implicit
+fetch. The host chooses explicit refresh triggers. Same-identity concurrent
+refreshes coalesce. Temporary network/server/rate-limit/invalid-response failures
+report errors and retain last-known-good data; they never become empty results.
+
+Cache writes require read-back confirmation before publication. Corrupt,
+unreadable, or unsupported cache raises `ActivityAvailabilityException` with
+`E_ACTIVITY_AVAILABILITY_RESTORE_FAILED`; it is never treated as empty. Explicit
+refresh can replace it. Local write/cleanup failures use
+`E_ACTIVITY_AVAILABILITY_PERSISTENCE_FAILED`. Transport failures retain existing
+`NetworkException` behavior (429 uses `E_ACTIVITY_AVAILABILITY_RATE_LIMITED`);
+401 uses `AuthException` and invalidates the snapshot and cache. If that cleanup
+cannot be confirmed, persistence failure takes precedence and cache access stays
+blocked until checked cleanup succeeds. Errors are also delivered to observers.
+
+The versioned private cache distinguishes backend URL (ignoring trailing slashes),
+app ID, and external user ID, and checks canonical SDK user ID when available.
+Signing-hash rotation and canonical enrichment preserve the logical principal.
+Production transports have fixed endpoints: bootstrap a new SDK instance when
+changing backends. A mismatched reinitialization fails availability refresh closed
+without sending a request to the old backend.
+Identity changes immediately fence old observations/results; account changes and
+local-user wipe/logout clear checked storage. Invalidation emits `null`, which
+does not claim successful disk deletion. Failed deletion blocks cache adoption.
+Disposed/obsolete work cannot publish; an already-started disk write is drained
+and reconciled away before a new identity reads. Arbitration covers SDK runtimes
+in the same isolate, as for ActivitySession; cross-isolate writers are unsupported.
+
+Availability has no selected/default activity, partner, branding, UI/catalog, or
+host-support semantics. It neither starts nor ends ActivitySession, tracking, SOS,
+or DMP. Session operations never consult availability. Backend keys follow
+`[a-z0-9_-]{1,50}`, which differs from the frozen ActivitySession grammar. Hosts
+must only start sessions for keys compatible with their implemented activity/session
+contract. The commercial app will later intersect remote keys with its local
+ActivityCatalog; M2B does not perform that intersection, alias, normalize, or drop
+keys because ActivitySession would reject them.

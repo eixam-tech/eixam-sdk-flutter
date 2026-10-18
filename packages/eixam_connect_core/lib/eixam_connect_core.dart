@@ -103,3 +103,7 @@ export 'src/usecases/get_sos_state_use_case.dart';
 export 'src/entities/activity_session.dart';
 export 'src/interfaces/activity_session_control.dart';
 export 'src/errors/activity_session_exception.dart';
+
+export 'src/entities/activity_availability.dart';
+export 'src/interfaces/activity_availability_control.dart';
+export 'src/errors/activity_availability_exception.dart';
