@@ -567,7 +567,8 @@ extension EixamConnectSdkIncidentProgress on EixamConnectSdk {
   Future<SosIncidentProgress?> getCurrentSosIncidentProgress() async {
     final sdk = this;
     if (sdk is SosIncidentProgressProvider) {
-      return sdk.getCurrentSosIncidentProgress();
+      return (sdk as SosIncidentProgressProvider)
+          .getCurrentSosIncidentProgress();
     }
     return (await getCurrentSosIncident())?.progress;
   }
@@ -575,7 +576,8 @@ extension EixamConnectSdkIncidentProgress on EixamConnectSdk {
   Stream<SosIncidentProgress?> get currentSosIncidentProgressStream {
     final sdk = this;
     if (sdk is SosIncidentProgressProvider) {
-      return sdk.currentSosIncidentProgressStream;
+      return (sdk as SosIncidentProgressProvider)
+          .currentSosIncidentProgressStream;
     }
     return currentSosStateStream.asyncMap(
       (_) async => (await getCurrentSosIncident())?.progress,
