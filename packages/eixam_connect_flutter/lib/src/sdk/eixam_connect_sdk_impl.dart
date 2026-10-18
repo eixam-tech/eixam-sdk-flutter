@@ -44,6 +44,8 @@ import '../data/repositories/sos_runtime_rehydration_support.dart';
 import '../mappers/local_state_serializers.dart';
 import 'android_protection_platform_adapter.dart';
 import 'android_tracking_owner_arbiter.dart';
+import 'activity_session_controller.dart';
+import '../data/datasources_local/activity_session_store.dart';
 import 'authoritative_sos_lifecycle_controller.dart';
 import 'background_location_platform_adapter.dart';
 import 'background_location_platform_adapter_factory.dart';
@@ -212,6 +214,7 @@ class EixamConnectSdkImpl
     implements
         EixamConnectSdk,
         BackgroundLocationControl,
+        ActivitySessionControl,
         SosIncidentProgressProvider {
   EixamConnectSdkImpl({
     required this.sosRepository,
@@ -250,6 +253,7 @@ class EixamConnectSdkImpl
     BackgroundTelemetryPlatformAdapter? backgroundTelemetryPlatformAdapter,
     PhoneRadioPlatformProbe? phoneRadioProbe,
     SharedPrefsSdkStore? localStore,
+    ActivitySessionStore? activitySessionStore,
     DateTime Function()? clock,
     Duration appTriggeredSosBridgeWindow = _defaultAppTriggeredSosBridgeWindow,
     SosLocationOwnershipEffectMode sosLocationOwnershipEffectMode =
@@ -271,6 +275,11 @@ class EixamConnectSdkImpl
            backgroundTelemetryPlatformAdapter ??
            buildDefaultBackgroundTelemetryPlatformAdapter(),
        _phoneRadioProbe = phoneRadioProbe ?? const PhoneRadioPlatformProbe() {
+    _activitySessions = ActivitySessionController(
+      store:
+          activitySessionStore ?? SharedPrefsActivitySessionStore(_localStore),
+      clock: _clock,
+    );
     _devicePositionBacklogCoordinator = DevicePositionBacklogCoordinator(
       writeCommand: backlogCommandWriter ?? _writePositionBacklogCommand,
       normalizer: _devicePositionBatchNormalizer,
@@ -570,6 +579,7 @@ class EixamConnectSdkImpl
   DateTime? _lastDeviceCountryConfigCheckAt;
   String? _lastDeviceCountryConfigCheckDeviceKey;
   final SharedPrefsSdkStore _localStore;
+  late final ActivitySessionController _activitySessions;
   final Future<void> Function()? disposeCallback;
 
   final StreamController<EixamSdkEvent> _eventsController =
@@ -897,7 +907,15 @@ class EixamConnectSdkImpl
       );
 
   @override
-  Future<void> initialize(EixamSdkConfig config) async {
+  Future<void> initialize(EixamSdkConfig config) =>
+      _activitySessions.withIdentityChange(
+        () => _initialize(config),
+        currentSession: () => _session,
+        backend: () => config.apiBaseUrl,
+        restoreExisting: true,
+      );
+
+  Future<void> _initialize(EixamSdkConfig config) async {
     _sosLifecycleConsumerReady = false;
     SosLocationTrace.emit('sdk_runtime', {
       'action': 'initialize_begin',
@@ -1606,6 +1624,15 @@ class EixamConnectSdkImpl
   Future<void> setSession(
     EixamSession session, {
     bool deferRuntimeWork = false,
+  }) => _activitySessions.withIdentityChange(
+    () => _setSession(session, deferRuntimeWork: deferRuntimeWork),
+    currentSession: () => _session,
+    backend: () => _sdkConfig?.apiBaseUrl ?? '',
+  );
+
+  Future<void> _setSession(
+    EixamSession session, {
+    required bool deferRuntimeWork,
   }) async {
     final previousSession = _session;
     final nextSession = (await _bootstrapSessionIfNeeded(session))!;
@@ -1767,7 +1794,14 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Future<EixamSession> refreshCanonicalIdentity() async {
+  Future<EixamSession> refreshCanonicalIdentity() =>
+      _activitySessions.withIdentityChange(
+        _refreshCanonicalIdentity,
+        currentSession: () => _session,
+        backend: () => _sdkConfig?.apiBaseUrl ?? '',
+      );
+
+  Future<EixamSession> _refreshCanonicalIdentity() async {
     final session = _session;
     if (session == null) {
       throw const AuthException(
@@ -2462,13 +2496,27 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Future<void> clearLocalUserData() async {
+  Future<void> clearLocalUserData() => _activitySessions.withIdentityChange(
+    _clearLocalUserData,
+    currentSession: () => _session,
+    backend: () => _sdkConfig?.apiBaseUrl ?? '',
+    clearData: true,
+  );
+
+  Future<void> _clearLocalUserData() async {
     await _sosLifecycle.deleteAccountData();
     await _localStore.clearLocalUserData();
   }
 
   @override
-  Future<void> clearSession() async {
+  Future<void> clearSession() => _activitySessions.withIdentityChange(
+    _clearSession,
+    currentSession: () => _session,
+    backend: () => _sdkConfig?.apiBaseUrl ?? '',
+    clearData: true,
+  );
+
+  Future<void> _clearSession() async {
     _bleAutoReconnectCoordinator.clearReconnectOwnership();
     await _stopBackgroundTelemetry(reason: 'clear_session');
     await _operationalTelemetryCoordinator.stop();
@@ -2521,7 +2569,7 @@ class EixamConnectSdkImpl
       sessionContext!.currentSession = null;
     }
     await sessionStore?.clear();
-    await clearLocalUserData();
+    await _clearLocalUserData();
     _emitOperationalDiagnostics();
     await realtimeClient.disconnect();
   }
@@ -6999,6 +7047,23 @@ class EixamConnectSdkImpl
     final normalized = nodeId & 0xFFFFFFFF;
     return '0x${normalized.toRadixString(16).padLeft(8, '0')} ($nodeId)';
   }
+
+  @override
+  Future<SdkActivitySession?> getActiveActivitySession() =>
+      _activitySessions.getActiveActivitySession();
+
+  @override
+  Stream<SdkActivitySession?> watchActiveActivitySession() =>
+      _activitySessions.watchActiveActivitySession();
+
+  @override
+  Future<SdkActivitySession> startActivitySession({
+    required String activityKey,
+  }) => _activitySessions.startActivitySession(activityKey: activityKey);
+
+  @override
+  Future<void> endActivitySession({required String sessionId}) =>
+      _activitySessions.endActivitySession(sessionId: sessionId);
 
   @override
   Future<void> startTracking() {
@@ -26344,6 +26409,7 @@ class EixamConnectSdkImpl
       return;
     }
     _disposed = true;
+    await _activitySessions.dispose();
     SosLocationTrace.emit('sdk_runtime', {
       'action': 'dispose_begin',
       'recurring_publication_owner': 'sdk',

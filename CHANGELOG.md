@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — logical activity sessions
+
+- Add optional `ActivitySessionControl` and `SdkActivitySession` without adding
+  required SDK facade members or expanding the sealed SDK error hierarchy.
+- Serialize identity-scoped start/end/restoration with checked persistence,
+  private end tombstones, safe observation, and an in-isolate writer lease.
+- Keep product activity catalogs, partner context, tracking, SOS, and DMP outside
+  the capability. Existing consumers need no source changes to compile.
+
+
 ## Unreleased — cycle-bound LoRa return (2026-10-15)
 
 - Preserve the bound SOS packet reference when enriching a no-fix receipt with last-known position. The stopped D1 exposed this missing copy before WEB ACK; captured-receipt runtime regressions cover SOS/TEL and retained fix age. Physical return validation remains pending.

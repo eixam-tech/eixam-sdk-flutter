@@ -25,6 +25,12 @@ class SharedPrefsSdkStore {
   // Sensitive SDK session-restore key. Persists signed identity only; the
   // optional refresh token is intentionally not written by SdkSessionStore.
   static const String sdkSessionKey = 'eixam.sdk.session';
+  // Cleared by ActivitySessionController under its writer lease, not by the
+  // unchecked bulk cleanup below (which could race another live SDK runtime).
+  static const String activitySessionKey = 'eixam.activity.session.v1';
+  static const List<String> checkedLocalUserDataKeys = <String>[
+    activitySessionKey,
+  ];
   static const String preSosSessionKey = 'eixam.sos.pre_sos_session';
 
   /// Removed ACK-volume workaround key. Retained only to delete data written
@@ -71,6 +77,26 @@ class SharedPrefsSdkStore {
   ];
 
   SharedPreferences? _prefs;
+
+  /// Identifies the physical store for in-isolate writer arbitration.
+  Object get storageNamespace => 'shared_preferences:default';
+
+  /// Opt-in checked operations; existing subsystem persistence is unchanged.
+  Future<String?> readFreshString(String key) async {
+    final prefs = await _instance;
+    await prefs.reload();
+    return prefs.getString(key);
+  }
+
+  Future<bool> writeStringChecked(String key, String value) async {
+    final prefs = await _instance;
+    return prefs.setString(key, value);
+  }
+
+  Future<bool> removeChecked(String key) async {
+    final prefs = await _instance;
+    return prefs.remove(key);
+  }
 
   Future<SharedPreferences> get _instance async {
     _prefs ??= await SharedPreferences.getInstance();

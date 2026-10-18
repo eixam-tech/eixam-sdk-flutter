@@ -34,6 +34,7 @@ import '../device/real_ble_client.dart';
 import '../device/meshtastic_metadata_probe.dart';
 import '../provisioning/strict_device_provisioning_config.dart';
 import 'eixam_connect_sdk_impl.dart';
+import '../data/datasources_local/activity_session_store.dart';
 import 'device_migration_coordinator.dart';
 import 'device_migration_session_store.dart';
 import 'firmware_dfu_transport_factory.dart';
@@ -259,6 +260,7 @@ class ApiSdkFactory {
         sessionStore: SharedPrefsDeviceMigrationSessionStore(localStore: store),
       ),
       localStore: store,
+      activitySessionStore: SharedPrefsActivitySessionStore(store),
       notificationPolicy: notificationPolicy,
       notificationTexts: notificationTexts,
       permissionDisclosureConfig: permissionDisclosureConfig,

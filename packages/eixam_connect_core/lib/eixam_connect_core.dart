@@ -99,3 +99,7 @@ export 'src/state/death_man_state_machine.dart';
 export 'src/usecases/trigger_sos_use_case.dart';
 export 'src/usecases/cancel_sos_use_case.dart';
 export 'src/usecases/get_sos_state_use_case.dart';
+
+export 'src/entities/activity_session.dart';
+export 'src/interfaces/activity_session_control.dart';
+export 'src/errors/activity_session_exception.dart';

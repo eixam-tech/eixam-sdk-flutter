@@ -3,6 +3,24 @@ import 'package:eixam_connect_flutter/src/data/datasources_local/shared_prefs_sd
 class MemorySharedPrefsSdkStore extends SharedPrefsSdkStore {
   MemorySharedPrefsSdkStore();
 
+  @override
+  Object get storageNamespace => this;
+
+  @override
+  Future<String?> readFreshString(String key) => readString(key);
+
+  @override
+  Future<bool> writeStringChecked(String key, String value) async {
+    await saveString(key, value);
+    return true;
+  }
+
+  @override
+  Future<bool> removeChecked(String key) async {
+    await remove(key);
+    return true;
+  }
+
   final Map<String, Map<String, dynamic>> jsonValues =
       <String, Map<String, dynamic>>{};
   final Map<String, String> stringValues = <String, String>{};

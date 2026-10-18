@@ -192,3 +192,81 @@ Firmware information, release eligibility, and reconciliation request a fresh
 installed-version inspection from the connected runtime. A missing or failed
 inspection cannot confirm the target using a cached version. A disconnected
 snapshot remains waiting until the actual application can be verified.
+
+## Optional logical activity sessions
+
+Production SDK instances implement `ActivitySessionControl`. Detect support with
+`sdk is ActivitySessionControl`; the base `EixamConnectSdk` interface has no new
+required members. The public model is named `SdkActivitySession` to avoid a source
+collision with host applications' existing activity models.
+
+```dart
+if (sdk is ActivitySessionControl) {
+  final session = await sdk.startActivitySession(
+    activityKey: 'org.example.paddling',
+  );
+  // Render sdk.watchActiveActivitySession(): SdkActivitySession or null.
+  await sdk.endActivitySession(sessionId: session.sessionId);
+}
+```
+
+A session is logical context. Starting, restoring, or ending it does not request
+permissions, start/stop GPS, acquire native location ownership, or change SOS or
+DMP. Continuous tracking is a separate capability. Activity catalogs, allowed
+activities, default/selected activity, and partner context belong to the host;
+a default never starts a session.
+
+Keys are extensible strings: 1–64 ASCII characters matching
+`^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$`. Unknown keys are accepted; uppercase and
+whitespace are rejected without normalization. Examples: `mountain`,
+`trail_running`, `via-ferrata`, `org.example.paddling`.
+
+`getActiveActivitySession()` returns the active session or null.
+`watchActiveActivitySession()` seeds that state and emits ordered, persisted
+changes. A successful end emits null; ended records are never exposed. A failed
+initial restoration emits an error and closes that subscription; retry the read
+or subscribe again after resolving storage availability.
+
+Only one session can be active. Repeating start with its key returns the same
+session without another transition. Another key produces `E_ACTIVITY_CONFLICT`;
+end the matching session explicitly before starting another. End with the current
+ID persists a private ended tombstone. Repeating that end succeeds, including
+after restart. A different stored ID conflicts. End against absent storage is a
+safe no-op. Starting after an end creates a new ID, even for the same key.
+
+SDK-produced `startedAt` is UTC, sampled when the serialized start is accepted
+for persistence. Publication waits for verified persistence; the timestamp is
+not the later acknowledgement time. It remains unchanged on retries and restart.
+
+Commands require an authenticated SDK identity (`E_SDK_SESSION_REQUIRED`). Storage
+is scoped by installation, backend URL (trailing slashes ignored), `appId`, and
+`externalUserId`; canonical SDK identity enrichment and signing-hash rotation do
+not create another identity. Different established SDK user IDs invalidate the
+record. Logout, account replacement, and local account-data deletion clear the
+activity under its writer lease. Without a restored authenticated identity,
+orphan data is discarded before a fresh login. Disposal preserves the session.
+
+Persistence uses one versioned record, UTC timestamps, and verified backend
+readback before publishing a transition. Corrupt/unsupported matching records
+are preserved and produce `E_ACTIVITY_RESTORE_FAILED`; they are never silently
+treated as absent. Explicit account-data cleanup can remove them. Rejected or
+thrown writes are reconciled against storage: confirmed intended content permits
+success, otherwise `E_ACTIVITY_PERSISTENCE_FAILED` leaves mutations gated by a
+fresh successful reload. Cleanup failures remain gated until verified cleanup
+succeeds; observers receive an error instead of an unconfirmed empty state.
+No credentials, GPS history, partner configuration, or emergency
+content are stored. SharedPreferences is not a transactional database or a
+power-loss durability guarantee.
+
+`ActivitySessionException implements Exception` exposes stable `code` and
+`message` fields. Catch it explicitly; it intentionally does not expand the
+sealed `EixamSdkException` hierarchy. Codes are `E_ACTIVITY_INVALID_KEY`,
+`E_ACTIVITY_CONFLICT`, `E_ACTIVITY_PERSISTENCE_FAILED`,
+`E_ACTIVITY_RESTORE_FAILED`, and `E_ACTIVITY_UNAVAILABLE`.
+
+The supported writer boundary is one live activity controller per physical
+SharedPreferences namespace in one Dart isolate. A second SDK can bootstrap,
+but accessing its activity capability returns `E_ACTIVITY_UNAVAILABLE` while
+another controller owns the lease. Disposal releases it. Identity replacement
+also rejects stale commands with that code. Cross-isolate/process activity
+writers and automatic activity-owned tracking are unsupported.
