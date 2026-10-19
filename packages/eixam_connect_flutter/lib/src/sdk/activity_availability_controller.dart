@@ -43,13 +43,16 @@ final class ActivityAvailabilityController
     required String Function() backend,
     bool restoreExisting = false,
     bool clearData = false,
+    bool preserveLocalState = false,
   }) {
-    final generation = ++_generation;
-    _observationGeneration++;
-    _refresh = null;
-    _loaded = false;
-    _snapshot = null;
-    _publish(null);
+    final generation = preserveLocalState ? _generation : ++_generation;
+    if (!preserveLocalState) {
+      _observationGeneration++;
+      _refresh = null;
+      _loaded = false;
+      _snapshot = null;
+      _publish(null);
+    }
     return _serialize(() async {
       _checkAlive();
       final previous = _identity;
@@ -112,6 +115,24 @@ final class ActivityAvailabilityController
       }
       _checkGeneration(generation);
       return result;
+    });
+  }
+
+  /// Reject authorization on the captured identity only. A later identity
+  /// fence makes this queued invalidation a no-op before it touches storage.
+  Future<void> invalidateAuthorization(void Function() checkIdentity) {
+    final generation = _generation;
+    return _serialize(() async {
+      _checkGeneration(generation);
+      checkIdentity();
+      final invalidatedGeneration = ++_generation;
+      _observationGeneration++;
+      _refresh = null;
+      _snapshot = null;
+      _loaded = false;
+      _pendingClear = true;
+      _publish(null);
+      await _prepare(invalidatedGeneration);
     });
   }
 

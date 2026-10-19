@@ -37,8 +37,9 @@ final class ActivitySessionController implements ActivitySessionControl {
     required String Function() backend,
     bool restoreExisting = false,
     bool clearData = false,
+    bool preserveLocalState = false,
   }) {
-    final generation = ++_generation;
+    final generation = preserveLocalState ? _generation : ++_generation;
     _loaded = false;
     return _serialize(() async {
       _checkAlive();

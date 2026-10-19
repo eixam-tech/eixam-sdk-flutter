@@ -1943,6 +1943,58 @@ void main() {
       },
     );
 
+    for (final transition in ['bind', 'same_scope_bind', 'clear', 'dispose']) {
+      test('late idle REST lookup cannot outlive $transition', () async {
+        final activeLookup = Completer<SosIncidentDto?>();
+        final remoteDataSource = _FakeSosRemoteDataSource()
+          ..getActiveSosCompleter = activeLookup;
+        final store = _CountingSosStore();
+        await repository.dispose();
+        repository = MqttOperationalSosRepository(
+          realtimeClient: realtimeClient,
+          remoteDataSource: remoteDataSource,
+          localStore: store,
+        );
+        await repository.bindSosRuntimeSessionScope('scope-a');
+        final states = <SosState>[];
+        final subscription = repository.watchSosState().listen(states.add);
+        try {
+          final reconciliation = repository.rehydrateRuntimeStateFromBackend();
+          expect(remoteDataSource.getActiveSosCalls, 1);
+          expect(await repository.getSosState(), SosState.idle);
+          expect(await repository.getCurrentIncident(), isNull);
+
+          if (transition == 'dispose') {
+            await repository.dispose();
+          } else if (transition == 'clear') {
+            await repository.clearSosRuntimeForSessionChange();
+          } else {
+            await repository.bindSosRuntimeSessionScope(
+              transition == 'same_scope_bind' ? 'scope-a' : 'scope-b',
+            );
+          }
+          await _pumpRealtime();
+          final writesAfterTransition = store.writes;
+          final statesAfterTransition = List<SosState>.of(states);
+          activeLookup.complete(_localActiveDto(id: 'old-principal-active'));
+          final result = await reconciliation;
+          await _pumpRealtime();
+
+          expect(
+            result.outcome,
+            SosRuntimeRehydrationOutcome.keptLocalFallback,
+          );
+          expect(await repository.getSosState(), SosState.idle);
+          expect(await repository.getCurrentIncident(), isNull);
+          expect(store.writes, writesAfterTransition);
+          expect(states, statesAfterTransition);
+        } finally {
+          if (!activeLookup.isCompleted) activeLookup.complete(null);
+          await subscription.cancel();
+        }
+      });
+    }
+
     test('REST absence cannot erase a newer MQTT-confirmed SOS', () async {
       final activeLookup = Completer<SosIncidentDto?>();
       final remoteDataSource = _FakeSosRemoteDataSource()
@@ -2234,6 +2286,28 @@ SosIncidentDto _externalActiveDto({required String id}) {
 Future<void> _pumpRealtime() async {
   await Future<void>.delayed(Duration.zero);
   await Future<void>.delayed(Duration.zero);
+}
+
+final class _CountingSosStore extends MemorySharedPrefsSdkStore {
+  int writes = 0;
+
+  @override
+  Future<void> saveJson(String key, Map<String, dynamic> value) async {
+    writes++;
+    await super.saveJson(key, value);
+  }
+
+  @override
+  Future<void> saveString(String key, String value) async {
+    writes++;
+    await super.saveString(key, value);
+  }
+
+  @override
+  Future<void> remove(String key) async {
+    writes++;
+    await super.remove(key);
+  }
 }
 
 final class _FakeSosRemoteDataSource implements SosRemoteDataSource {

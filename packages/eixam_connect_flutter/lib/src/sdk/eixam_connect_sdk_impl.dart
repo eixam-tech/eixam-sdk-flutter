@@ -705,6 +705,9 @@ class EixamConnectSdkImpl
   String? _notifiedDeviceSosCycleKey;
   DeviceSosState? _notifiedDeviceSosState;
   EixamSession? _session;
+  int _identityRevision = 0;
+  int? _sosRuntimeRehydrationRevision;
+  String? _identityBackend;
   EixamSdkEvent? _lastSosEvent;
   String? _pendingCancelledIncidentId;
   String? _lastSosRehydrationNote;
@@ -929,6 +932,7 @@ class EixamConnectSdkImpl
     required String Function() backend,
     bool restoreExisting = false,
     bool clearData = false,
+    bool preserveLocalState = false,
   }) {
     late final Future<T> identityWork;
     final availabilityWork = _activityAvailability.withIdentityChange(
@@ -937,6 +941,7 @@ class EixamConnectSdkImpl
       backend: backend,
       restoreExisting: restoreExisting,
       clearData: clearData,
+      preserveLocalState: preserveLocalState,
     );
     identityWork = _activitySessions.withIdentityChange(
       action,
@@ -944,6 +949,7 @@ class EixamConnectSdkImpl
       backend: backend,
       restoreExisting: restoreExisting,
       clearData: clearData,
+      preserveLocalState: preserveLocalState,
     );
     // Availability may be waiting for a prior checked storage write. Handle an
     // early rejection now, while preserving it for the awaited public result.
@@ -952,12 +958,15 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Future<void> initialize(EixamSdkConfig config) => _withActivityIdentityChange(
-    () => _initialize(config),
-    currentSession: () => _session,
-    backend: () => config.apiBaseUrl,
-    restoreExisting: true,
-  );
+  Future<void> initialize(EixamSdkConfig config) {
+    _advanceIdentityRevision();
+    return _withActivityIdentityChange(
+      () => _initialize(config),
+      currentSession: () => _session,
+      backend: () => config.apiBaseUrl,
+      restoreExisting: true,
+    );
+  }
 
   Future<void> _initialize(EixamSdkConfig config) async {
     _sosLifecycleConsumerReady = false;
@@ -981,7 +990,27 @@ class EixamConnectSdkImpl
     _session = await sessionStore?.load(
       recoverUnreadableEntry: recoverUnreadablePersistedSession,
     );
-    _session = await _bootstrapSessionIfNeeded(_session);
+    _identityBackend = sessionStore?.backend;
+    if (_identityBackend != null &&
+        _identityBackend != _normalizedIdentityBackend) {
+      _session = null;
+    }
+    // Legacy identities have no backend provenance. Upgrade only after remote
+    // authentication; never assign the current backend merely from config.
+    if (_session != null &&
+        _identityBackend == null &&
+        identityRemoteDataSource != null) {
+      final trusted = _session!;
+      final refreshed = await identityRemoteDataSource!.bootstrapSession(
+        trusted,
+      );
+      _checkCanonicalCompatibility(trusted, refreshed);
+      _session = refreshed;
+      await sessionStore?.save(_session!, backend: _normalizedIdentityBackend);
+      _identityBackend = _normalizedIdentityBackend;
+    } else {
+      _session = await _bootstrapSessionIfNeeded(_session);
+    }
     await _sosLifecycle.restoreFor(_session, emitToStream: false);
     await _localStore.remove(SharedPrefsSdkStore.legacyWebAckSosVolumeKey);
     _recordRestoredTerminalBoundaryFromPreviousProcess();
@@ -1009,7 +1038,9 @@ class EixamConnectSdkImpl
       trigger: 'initialize',
     );
     await _restorePersistedPreSosSession(trigger: 'initialize');
-    await _rehydrateSosRuntimeState();
+    if (!config.deferRuntimeStartup) {
+      await _rehydrateSosRuntimeState();
+    }
     final restoredLifecycle = _sosLifecycle.current;
     if (restoredLifecycle.stage == SosLifecycleStage.recoveryRequired) {
       final recoverySource = restoredLifecycle.backendIncidentId != null
@@ -1668,18 +1699,23 @@ class EixamConnectSdkImpl
   Future<void> setSession(
     EixamSession session, {
     bool deferRuntimeWork = false,
-  }) => _withActivityIdentityChange(
-    () => _setSession(session, deferRuntimeWork: deferRuntimeWork),
-    currentSession: () => _session,
-    backend: () => _sdkConfig?.apiBaseUrl ?? '',
-  );
+  }) {
+    _advanceIdentityRevision();
+    return _withActivityIdentityChange(
+      () => _setSession(session, deferRuntimeWork: deferRuntimeWork),
+      currentSession: () => _session,
+      backend: () => _sdkConfig?.apiBaseUrl ?? '',
+    );
+  }
 
   Future<void> _setSession(
     EixamSession session, {
     required bool deferRuntimeWork,
   }) async {
     final previousSession = _session;
-    final nextSession = (await _bootstrapSessionIfNeeded(session))!;
+    final nextSession = (await _bootstrapSessionIfNeeded(
+      _reconcileSignedSession(session),
+    ))!;
     final authenticatedPrincipalChanged =
         previousSession != null &&
         !_sameAuthenticatedPrincipal(previousSession, nextSession);
@@ -1689,6 +1725,7 @@ class EixamConnectSdkImpl
       await _clearSosRuntimeForSessionChange();
     }
     _session = nextSession;
+    _identityBackend = _normalizedIdentityBackend;
     final repository = sosRepository;
     if (repository is SosRuntimeSessionScopeBinding) {
       await (repository as SosRuntimeSessionScopeBinding)
@@ -1701,7 +1738,9 @@ class EixamConnectSdkImpl
     if (sessionContext != null) {
       sessionContext!.currentSession = _session;
     }
-    await _rehydrateSosRuntimeState();
+    if (!deferRuntimeWork) {
+      await _rehydrateSosRuntimeState();
+    }
     _sosLifecycle.publishCurrent();
     final preserveCurrentLocalSos =
         _sosLifecycle.current.localActionable &&
@@ -1719,7 +1758,7 @@ class EixamConnectSdkImpl
       source: 'repository_load:set_session',
       emit: false,
     );
-    await sessionStore?.save(_session!);
+    await sessionStore?.save(_session!, backend: _normalizedIdentityBackend);
     _emitOperationalDiagnostics();
     if (deferRuntimeWork) {
       _deferredRuntimeWorkPending = true;
@@ -1757,7 +1796,14 @@ class EixamConnectSdkImpl
     required EixamSession session,
   }) async {
     const trigger = 'deferred_runtime';
-    await _startMandatorySessionRuntimeWork(trigger: trigger);
+    final revision = _identityRevision;
+    await _rehydrateSosRuntimeState();
+    _checkIdentityRevision(revision);
+    await _startMandatorySessionRuntimeWork(
+      trigger: trigger,
+      expectedRevision: revision,
+    );
+    _checkIdentityRevision(revision);
     _connectRealtimeInBackground(
       trigger: trigger,
       sessionForReconnect: session,
@@ -1768,9 +1814,15 @@ class EixamConnectSdkImpl
   Future<void> _startSessionRuntimeWork({
     required String trigger,
     required EixamSession session,
+    int? expectedRevision,
   }) async {
-    await _startMandatorySessionRuntimeWork(trigger: trigger);
+    await _startMandatorySessionRuntimeWork(
+      trigger: trigger,
+      expectedRevision: expectedRevision,
+    );
+    if (expectedRevision != null) _checkIdentityRevision(expectedRevision);
     await _bleAutoReconnectCoordinator.tryAutoConnectOnResume();
+    if (expectedRevision != null) _checkIdentityRevision(expectedRevision);
     _connectRealtimeInBackground(
       trigger: trigger,
       sessionForReconnect: session,
@@ -1779,15 +1831,26 @@ class EixamConnectSdkImpl
 
   Future<void> _startMandatorySessionRuntimeWork({
     required String trigger,
+    int? expectedRevision,
   }) async {
+    if (expectedRevision != null) _checkIdentityRevision(expectedRevision);
     _operationalTelemetryCoordinator.start(
       initialCadence: _sosLifecycle.currentCadence,
     );
-    await _reconcileBackgroundTelemetry(reason: trigger);
+    await _reconcileBackgroundTelemetry(
+      reason: trigger,
+      expectedRevision: expectedRevision,
+    );
+    if (expectedRevision != null) _checkIdentityRevision(expectedRevision);
     await _seedPreferredBleDeviceFromSystemAssociationIfNeeded(
       trigger: trigger,
     );
-    await _seedPreferredBleDeviceFromBackendRegistryIfNeeded(trigger: trigger);
+    if (expectedRevision != null) _checkIdentityRevision(expectedRevision);
+    await _seedPreferredBleDeviceFromBackendRegistryIfNeeded(
+      trigger: trigger,
+      expectedRevision: expectedRevision,
+    );
+    if (expectedRevision != null) _checkIdentityRevision(expectedRevision);
   }
 
   Future<void> _startBleReconnectInBackground({required String trigger}) async {
@@ -1838,14 +1901,8 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Future<EixamSession> refreshCanonicalIdentity() =>
-      _withActivityIdentityChange(
-        _refreshCanonicalIdentity,
-        currentSession: () => _session,
-        backend: () => _sdkConfig?.apiBaseUrl ?? '',
-      );
-
-  Future<EixamSession> _refreshCanonicalIdentity() async {
+  Future<EixamSession> refreshCanonicalIdentity() async {
+    final revision = _identityRevision;
     final session = _session;
     if (session == null) {
       throw const AuthException(
@@ -1853,21 +1910,57 @@ class EixamConnectSdkImpl
         'An SDK session must be configured before refreshing identity.',
       );
     }
-    final remoteDataSource = identityRemoteDataSource;
-    final refreshed = remoteDataSource == null
-        ? session
-        : await remoteDataSource.bootstrapSession(session);
+    late final EixamSession refreshed;
+    try {
+      refreshed =
+          await identityRemoteDataSource?.bootstrapSession(session) ?? session;
+    } catch (error) {
+      _checkIdentityRevision(revision);
+      if (error is AuthException) {
+        await _activityAvailability.invalidateAuthorization(
+          () => _checkIdentityRevision(revision),
+        );
+      }
+      rethrow;
+    }
+    _checkIdentityRevision(revision);
     if (refreshed.appId != session.appId ||
         refreshed.externalUserId != session.externalUserId ||
-        refreshed.userHash != session.userHash ||
-        refreshed.canonicalExternalUserId != session.canonicalExternalUserId) {
-      _clearVerifiedDeviceAssignments();
+        refreshed.userHash != session.userHash) {
+      throw const AuthException(
+        'E_SDK_IDENTITY_CONFLICT',
+        'Identity refresh changed the signed principal.',
+      );
     }
-    _session = refreshed;
-    if (sessionContext != null) {
-      sessionContext!.currentSession = refreshed;
-    }
+    _checkCanonicalCompatibility(session, refreshed);
+    final unchanged =
+        refreshed.sdkUserId == session.sdkUserId &&
+        refreshed.canonicalExternalUserId == session.canonicalExternalUserId;
+    await _withActivityIdentityChange(
+      () async {
+        _checkIdentityRevision(revision);
+        // Another successful refresh may have established canonical metadata
+        // while this request was in flight. Never overwrite a contradiction.
+        _checkCanonicalCompatibility(_session!, refreshed);
+        await sessionStore?.save(
+          refreshed,
+          backend: _normalizedIdentityBackend,
+        );
+        _checkIdentityRevision(revision);
+        _session = refreshed;
+        _identityBackend = _normalizedIdentityBackend;
+        sessionContext?.currentSession = refreshed;
+        _emitOperationalDiagnostics();
+      },
+      currentSession: () => _session,
+      backend: () => _sdkConfig?.apiBaseUrl ?? '',
+      preserveLocalState: unchanged,
+    );
+    _checkIdentityRevision(revision);
+    // Remote safety reconciliation retains its lifecycle generation checks,
+    // but does not occupy either Activity storage queue.
     await _rehydrateSosRuntimeState();
+    _checkIdentityRevision(revision);
     final preserveCurrentLocalSos =
         _sosLifecycle.current.localActionable &&
         !_sosLifecycle.current.externalOnly &&
@@ -1876,23 +1969,82 @@ class EixamConnectSdkImpl
       _publicSosFallbackIncident = null;
       _clearPendingAppTriggeredSosBridge(reason: 'identity_refreshed');
     }
+    final incoming = await sosRepository.getSosState();
+    _checkIdentityRevision(revision);
     _applyPublicSosState(
       _publicSosStateFromRepositoryLoad(
-        incoming: await sosRepository.getSosState(),
+        incoming: incoming,
         source: 'repository_load:refresh_identity',
       ),
       source: 'repository_load:refresh_identity',
       emit: false,
     );
-    await sessionStore?.save(refreshed);
-    _emitOperationalDiagnostics();
     if (!_deferredRuntimeWorkPending) {
       await _startSessionRuntimeWork(
         trigger: 'refresh_identity',
         session: refreshed,
+        expectedRevision: revision,
       );
     }
     return refreshed;
+  }
+
+  void _advanceIdentityRevision() {
+    _identityRevision++;
+    final repository = sosRepository;
+    if (repository is MqttOperationalSosRepository) {
+      repository.invalidatePendingRehydration();
+    }
+  }
+
+  void _checkIdentityRevision(int revision) {
+    if (_disposed || revision != _identityRevision) {
+      throw const AuthException(
+        'E_SDK_IDENTITY_STALE',
+        'Identity operation was superseded.',
+      );
+    }
+  }
+
+  String get _normalizedIdentityBackend =>
+      (_sdkConfig?.apiBaseUrl ?? '').replaceFirst(RegExp(r'/+$'), '');
+
+  static void _checkCanonicalCompatibility(
+    EixamSession trusted,
+    EixamSession incoming,
+  ) {
+    bool conflicts(String? a, String? b) =>
+        a != null && a.isNotEmpty && b != null && b.isNotEmpty && a != b;
+    if (conflicts(trusted.sdkUserId, incoming.sdkUserId) ||
+        conflicts(
+          trusted.canonicalExternalUserId,
+          incoming.canonicalExternalUserId,
+        )) {
+      throw const AuthException(
+        'E_SDK_IDENTITY_CONFLICT',
+        'Canonical identity conflicts with the trusted principal.',
+      );
+    }
+  }
+
+  EixamSession _reconcileSignedSession(EixamSession incoming) {
+    final trusted = _session;
+    if (trusted == null ||
+        _identityBackend != _normalizedIdentityBackend ||
+        incoming.appId != trusted.appId ||
+        incoming.externalUserId != trusted.externalUserId) {
+      return incoming;
+    }
+    _checkCanonicalCompatibility(trusted, incoming);
+    return incoming.copyWith(
+      sdkUserId: incoming.sdkUserId?.isNotEmpty == true
+          ? incoming.sdkUserId
+          : trusted.sdkUserId,
+      canonicalExternalUserId:
+          incoming.canonicalExternalUserId?.isNotEmpty == true
+          ? incoming.canonicalExternalUserId
+          : trusted.canonicalExternalUserId,
+    );
   }
 
   @override
@@ -2020,7 +2172,8 @@ class EixamConnectSdkImpl
       return session;
     }
     final bootstrapped = await remoteDataSource.bootstrapSession(session);
-    await sessionStore?.save(bootstrapped);
+    _checkCanonicalCompatibility(session, bootstrapped);
+    await sessionStore?.save(bootstrapped, backend: _normalizedIdentityBackend);
     return bootstrapped;
   }
 
@@ -2485,6 +2638,7 @@ class EixamConnectSdkImpl
   }
 
   Future<void> _handleRepositorySosState(SosState state) async {
+    if (_disposed) return;
     if (await _repositoryTerminalIsStaleForNewGeneration(state)) {
       _scheduleForegroundSosReconciliationIfNeeded();
       return;
@@ -2540,12 +2694,15 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Future<void> clearLocalUserData() => _withActivityIdentityChange(
-    _clearLocalUserData,
-    currentSession: () => _session,
-    backend: () => _sdkConfig?.apiBaseUrl ?? '',
-    clearData: true,
-  );
+  Future<void> clearLocalUserData() {
+    _advanceIdentityRevision();
+    return _withActivityIdentityChange(
+      _clearLocalUserData,
+      currentSession: () => _session,
+      backend: () => _sdkConfig?.apiBaseUrl ?? '',
+      clearData: true,
+    );
+  }
 
   Future<void> _clearLocalUserData() async {
     await _sosLifecycle.deleteAccountData();
@@ -2553,12 +2710,15 @@ class EixamConnectSdkImpl
   }
 
   @override
-  Future<void> clearSession() => _withActivityIdentityChange(
-    _clearSession,
-    currentSession: () => _session,
-    backend: () => _sdkConfig?.apiBaseUrl ?? '',
-    clearData: true,
-  );
+  Future<void> clearSession() {
+    _advanceIdentityRevision();
+    return _withActivityIdentityChange(
+      _clearSession,
+      currentSession: () => _session,
+      backend: () => _sdkConfig?.apiBaseUrl ?? '',
+      clearData: true,
+    );
+  }
 
   Future<void> _clearSession() async {
     _bleAutoReconnectCoordinator.clearReconnectOwnership();
@@ -2723,7 +2883,8 @@ class EixamConnectSdkImpl
     SosLifecycleSnapshot? expectedLifecycle,
   }) async {
     final inFlight = _sosRuntimeRehydrationInFlight;
-    if (inFlight != null) {
+    if (inFlight != null &&
+        _sosRuntimeRehydrationRevision == _identityRevision) {
       final inFlightExpectsTerminal =
           _sosRuntimeRehydrationInFlightExpectsTerminal;
       final result = await inFlight;
@@ -2742,6 +2903,7 @@ class EixamConnectSdkImpl
         expectedLifecycle: expectedLifecycle,
       );
     }
+    final identityRevision = _identityRevision;
     final operation = _performSosRuntimeRehydration(
       trigger: trigger,
       emitPublicState: emitPublicState,
@@ -2749,10 +2911,13 @@ class EixamConnectSdkImpl
       expectedLifecycle: expectedLifecycle,
     );
     _sosRuntimeRehydrationInFlight = operation;
+    _sosRuntimeRehydrationRevision = _identityRevision;
     _sosRuntimeRehydrationInFlightExpectsTerminal = terminalHint != null;
     try {
       final result = await operation;
-      _scheduleForegroundSosReconciliationIfNeeded();
+      if (!_disposed && identityRevision == _identityRevision) {
+        _scheduleForegroundSosReconciliationIfNeeded();
+      }
       return result;
     } finally {
       if (identical(_sosRuntimeRehydrationInFlight, operation)) {
@@ -2784,12 +2949,15 @@ class EixamConnectSdkImpl
       return null;
     }
 
+    final identityRevision = _identityRevision;
     try {
       final result = await rehydrationRepository
           .rehydrateRuntimeStateFromBackend(
             terminalAbsenceExpected: terminalHint != null,
           );
-      if (!_sameSosGeneration(_sosLifecycle.current, lifecycleBeforeLookup)) {
+      if (_disposed ||
+          identityRevision != _identityRevision ||
+          !_sameSosGeneration(_sosLifecycle.current, lifecycleBeforeLookup)) {
         _recordPublicSosGenerationProjection(
           action: 'ignore_stale_rehydration',
           reason: 'generation_changed_during_lookup',
@@ -2806,6 +2974,7 @@ class EixamConnectSdkImpl
       );
       return result;
     } catch (error) {
+      if (_disposed || identityRevision != _identityRevision) return null;
       _lastSosRehydrationNote =
           'SOS rehydration failed for $trigger. Error: $error';
       BleDebugRegistry.instance.recordEvent(
@@ -3239,7 +3408,11 @@ class EixamConnectSdkImpl
   @override
   Future<EixamSession?> getCurrentSession() async => _session;
 
-  Future<void> _reconcileBackgroundTelemetry({required String reason}) async {
+  Future<void> _reconcileBackgroundTelemetry({
+    required String reason,
+    int? expectedRevision,
+  }) async {
+    if (expectedRevision != null) _checkIdentityRevision(expectedRevision);
     final session = _session;
     final config = _sdkConfig;
     if (!_backgroundTelemetryEnabled || session == null || config == null) {
@@ -3255,13 +3428,18 @@ class EixamConnectSdkImpl
         runtimeStatus: status,
       ),
     );
+    if (expectedRevision != null) _checkIdentityRevision(expectedRevision);
     final fingerprint = _backgroundTelemetryFingerprint(
       apiBaseUrl: config.apiBaseUrl,
       session: session,
     );
     if (_backgroundTelemetryStarted &&
         _backgroundTelemetryStartFingerprint == fingerprint) {
-      await _updateBackgroundTelemetryState(reason: reason);
+      await _updateBackgroundTelemetryState(
+        reason: reason,
+        expectedRevision: expectedRevision,
+      );
+      if (expectedRevision != null) _checkIdentityRevision(expectedRevision);
       await _flushNativeBackgroundTelemetryQueue(
         reason: 'reconcile_existing:$reason',
       );
@@ -3280,9 +3458,11 @@ class EixamConnectSdkImpl
           notificationBody: _backgroundTelemetryNotificationBody,
         ),
       );
+      if (expectedRevision != null) _checkIdentityRevision(expectedRevision);
       _backgroundTelemetryStarted = true;
       _backgroundTelemetryStartFingerprint = fingerprint;
       await _refreshBackgroundTelemetryDiagnostics();
+      if (expectedRevision != null) _checkIdentityRevision(expectedRevision);
       BleDebugRegistry.instance.recordEvent(
         '[SDK_BACKGROUND_TELEMETRY] action=start reason=$reason',
       );
@@ -3290,6 +3470,7 @@ class EixamConnectSdkImpl
         reason: 'background_telemetry_started:$reason',
       );
     } catch (error) {
+      if (expectedRevision != null) _checkIdentityRevision(expectedRevision);
       _backgroundTelemetryStarted = false;
       _backgroundTelemetryStartFingerprint = null;
       _operationalTelemetryCoordinator.setIntervalPublishingEnabled(true);
@@ -3309,28 +3490,37 @@ class EixamConnectSdkImpl
     }
   }
 
-  Future<void> _updateBackgroundTelemetryState({required String reason}) async {
+  Future<void> _updateBackgroundTelemetryState({
+    required String reason,
+    int? expectedRevision,
+  }) async {
     if (!_backgroundTelemetryEnabled || !_backgroundTelemetryStarted) {
       return;
     }
     final status = _lastDeviceStatus;
     try {
+      final backendHardwareId =
+          await _loadBackendHardwareIdForOperationalPayloads(
+            runtimeStatus: status,
+          );
+      if (expectedRevision != null) _checkIdentityRevision(expectedRevision);
       await backgroundTelemetryPlatformAdapter.updateBackgroundTelemetry(
         sosOpen: _isOpenSosState(_publicSosState),
         deviceId: _resolveOperationalDeviceId(
           nodeId: status?.nodeId,
-          backendHardwareId: await _loadBackendHardwareIdForOperationalPayloads(
-            runtimeStatus: status,
-          ),
+          backendHardwareId: backendHardwareId,
         ),
         deviceBattery: _buildDeviceBatterySnapshot(status),
         deviceCoverage: _buildDeviceCoverageSnapshot(status),
       );
+      if (expectedRevision != null) _checkIdentityRevision(expectedRevision);
       await _refreshBackgroundTelemetryDiagnostics();
+      if (expectedRevision != null) _checkIdentityRevision(expectedRevision);
       await _flushNativeBackgroundTelemetryQueue(
         reason: 'background_telemetry_updated:$reason',
       );
     } catch (error) {
+      if (expectedRevision != null) _checkIdentityRevision(expectedRevision);
       _backgroundTelemetryDiagnostics = BackgroundTelemetryDiagnostics(
         enabled: _backgroundTelemetryEnabled,
         serviceRunning: _backgroundTelemetryDiagnostics.serviceRunning,
@@ -18839,6 +19029,7 @@ class EixamConnectSdkImpl
 
   Future<void> _seedPreferredBleDeviceFromBackendRegistryIfNeeded({
     required String trigger,
+    int? expectedRevision,
   }) async {
     final manualDisconnectRequested = await preferredBleDeviceStore
         .readManualDisconnectRequested();
@@ -18865,6 +19056,7 @@ class EixamConnectSdkImpl
 
     final registeredDevices = await deviceRegistryRepository
         .listRegisteredDevices();
+    if (expectedRevision != null) _checkIdentityRevision(expectedRevision);
     final candidate = _preferredReconnectCandidateFromRegistry(
       registeredDevices,
     );
@@ -26465,6 +26657,7 @@ class EixamConnectSdkImpl
       return;
     }
     _disposed = true;
+    _advanceIdentityRevision();
     final activityDisposal = _activitySessions.dispose();
     Object? availabilityDisposalError;
     StackTrace? availabilityDisposalStack;
