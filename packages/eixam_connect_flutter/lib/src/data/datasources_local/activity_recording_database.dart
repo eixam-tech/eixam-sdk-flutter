@@ -4,6 +4,8 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:sqflite/sqflite.dart';
 
 import 'activity_recording_record.dart';
+import 'activity_recording_route_data.dart';
+import 'activity_recording_route_sql.dart';
 import 'activity_recording_schema.dart';
 import 'activity_recording_store.dart';
 import 'activity_recording_storage_directory.dart';
@@ -58,7 +60,7 @@ final class ActivityRecordingDatabase implements ActivityRecordingStore {
             await db.execute('PRAGMA synchronous = FULL');
           },
           onCreate: ActivityRecordingSchema.create,
-          onUpgrade: (_, _, _) async => throw _restoreFailed,
+          onUpgrade: ActivityRecordingSchema.upgrade,
           onDowngrade: (_, _, _) async => throw _restoreFailed,
         ),
       );
@@ -230,6 +232,31 @@ final class _SqlRecordingTransaction implements ActivityRecordingTransaction {
     );
     if (changed != 1) throw _persistenceFailed;
   }
+
+  @override
+  Future<ActivityRecordingRecord> finishRoute(
+    ActivityRecordingRecord record,
+    DateTime cutoff,
+  ) => ActivityRecordingRouteSql(sql).finish(record, cutoff);
+
+  @override
+  Future<ActivityRecordingRecord> ingestRoute(
+    ActivityRecordingRecord record,
+    List<ActivityRecordingRouteEvidence> evidence,
+  ) => ActivityRecordingRouteSql(sql).ingest(record, evidence);
+
+  @override
+  Future<ActivityRecordingRouteSlice> routePage(
+    ActivityRecordingRecord record, {
+    DateTime? fromInclusive,
+    ActivityRecordingRouteCursor? after,
+    required int pageSize,
+  }) => ActivityRecordingRouteSql(sql).page(
+    record,
+    fromInclusive: fromInclusive,
+    after: after,
+    pageSize: pageSize,
+  );
 
   @override
   Future<void> verifyEmptyRoute(String recordingId) async {

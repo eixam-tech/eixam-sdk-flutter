@@ -6,6 +6,8 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import '../data/datasources_local/activity_recording_record.dart';
 import '../data/datasources_local/activity_recording_store.dart';
+import '../data/datasources_local/activity_recording_route_data.dart';
+import 'activity_recording_ingestor.dart';
 import '../device/canonical_hardware_id.dart';
 
 typedef ActivityRecordingSessionGuard =
@@ -23,7 +25,7 @@ final class ActivityRecordingDeviceEvidence {
   final bool connected;
 }
 
-/// Serialized metadata-only recorder. No device stream, GPS, backlog, safety,
+/// Serialized recorder. No phone GPS, backlog, safety,
 /// native ownership or periodic work is a dependency of this controller.
 final class ActivityRecordingController implements ActivityRecordingControl {
   ActivityRecordingController({
@@ -40,6 +42,7 @@ final class ActivityRecordingController implements ActivityRecordingControl {
   final DateTime Function() _clock;
   static final Map<Object, ActivityRecordingController> _writers = {};
   final Set<StreamController<_Observation>> _observers = {};
+  final Set<void Function()> _cancelRouteReads = {};
   Future<void> _tail = Future<void>.value();
   EixamSession? _identity;
   ActivityRecordingOwner? _owner;
@@ -65,6 +68,9 @@ final class ActivityRecordingController implements ActivityRecordingControl {
     final generation = preserveLocalState ? _generation : ++_generation;
     if (!preserveLocalState) {
       _identityReady = false;
+      for (final cancel in _cancelRouteReads.toList()) {
+        cancel();
+      }
       _observationGeneration++;
       _lastPublished = null;
     }
@@ -346,11 +352,10 @@ final class ActivityRecordingController implements ActivityRecordingControl {
       throw _invalidTime;
     }
     if (record.value.phase == ActivityRecordingPhase.active) {
-      record = record.transition(
-        phase: ActivityRecordingPhase.finalizing,
-        endedAt: cutoff,
+      record = await _transaction(
+        generation,
+        (tx) => tx.finishRoute(record, cutoff),
       );
-      await _transaction(generation, (tx) => tx.update(record));
       _publish(record, generation);
     }
     final finished = record.transition(phase: ActivityRecordingPhase.finished);
@@ -358,6 +363,85 @@ final class ActivityRecordingController implements ActivityRecordingControl {
     _publish(null, generation);
     return finished.value;
   });
+
+  /// Called synchronously at the private decoded-D3 tap, before public dedupe.
+  /// Captures the identity generation before queueing any asynchronous work.
+  Future<void> ingestLive(EixamDevicePositionBatch batch) {
+    if (!_used || _identity == null || _disposed) return Future.value();
+    final generationAtReceipt = _generation;
+    return _command(
+      (generation) => _withSession((session) async {
+        final record = await _transaction(generation, (tx) async {
+          final current = await tx.active(_owner!.scope);
+          if (current == null ||
+              current.value.phase != ActivityRecordingPhase.active ||
+              current.value.deviceIdentity == null ||
+              normalizeCanonicalHardwareId(batch.deviceIdentity) !=
+                  current.value.deviceIdentity ||
+              batch.source != SdkLocationSource.connectedDevice ||
+              batch.delivery != EixamDevicePositionDelivery.live) {
+            return null;
+          }
+          _matchSession(session, _sessionOf(current.value));
+          final updated = await const ActivityRecordingIngestor().ingest(
+            tx,
+            current,
+            batch,
+            _clock(),
+          );
+          final observing = updated.transition(
+            inputState: ActivityRecordingInputState.observing,
+          );
+          if (updated.value.inputState !=
+              ActivityRecordingInputState.observing) {
+            await tx.update(observing);
+          }
+          return observing;
+        });
+        if (record != null) _publish(record, generation);
+      }),
+    ).catchError((Object error, StackTrace stack) {
+      final safe = error is ActivityRecordingException
+          ? error
+          : const ActivityRecordingException(
+              'E_RECORDING_PERSISTENCE_FAILED',
+              'Recording input could not be committed.',
+            );
+      _publishError(safe, stack, generationAtReceipt);
+      Error.throwWithStackTrace(safe, stack);
+    });
+  }
+
+  /// Connectivity facts never manufacture disconnect/recovery gaps.
+  Future<void> inputDisconnected(String? currentDevice, bool connected) {
+    if (!_used || _identity == null || _disposed) return Future.value();
+    return _command((generation) async {
+      final updated = await _transaction(generation, (tx) async {
+        final current = await tx.active(_owner!.scope);
+        if (current == null ||
+            current.value.deviceIdentity == null ||
+            current.value.phase != ActivityRecordingPhase.active) {
+          return null;
+        }
+        final input =
+            connected &&
+                normalizeCanonicalHardwareId(currentDevice) ==
+                    current.value.deviceIdentity
+            ? ActivityRecordingInputState.unavailable
+            : ActivityRecordingInputState.disconnected;
+        if (current.value.inputState == input ||
+            (input == ActivityRecordingInputState.unavailable &&
+                current.value.inputState ==
+                    ActivityRecordingInputState.observing)) {
+          return null;
+        }
+        final updated = current.transition(inputState: input);
+        await tx.update(updated);
+        return updated;
+      });
+      if (updated != null) _publish(updated, generation);
+    });
+  }
 
   @override
   Stream<SdkActivityRoutePage> readActivityRecordingRoute({
@@ -368,8 +452,16 @@ final class ActivityRecordingController implements ActivityRecordingControl {
   }) {
     late final StreamController<_RouteObservation> output;
     var cancelled = false;
+    Completer<void>? paused;
+    void cancel() {
+      cancelled = true;
+      paused?.complete();
+      paused = null;
+    }
+
     output = StreamController<_RouteObservation>(
       onListen: () {
+        _cancelRouteReads.add(cancel);
         final observationGeneration = _observationGeneration;
         unawaited(
           _command((generation) async {
@@ -380,7 +472,9 @@ final class ActivityRecordingController implements ActivityRecordingControl {
                     'Must be positive.',
                   );
                 }
-                final record = await _transaction(generation, (tx) async {
+                // One transaction and actor turn define the finite route revision.
+                // Keyset pages keep memory bounded; pause/cancel owns the transaction.
+                await _transaction(generation, (tx) async {
                   final record = await tx.byId(_owner!.scope, recordingId);
                   if (record == null) throw _notFound;
                   if (expectedRouteRevision != null &&
@@ -390,23 +484,35 @@ final class ActivityRecordingController implements ActivityRecordingControl {
                       'Read fresh recording state before retrying the route read.',
                     );
                   }
-                  await tx.verifyEmptyRoute(recordingId);
-                  return record;
-                });
-                if (!cancelled) {
-                  output.add(
-                    _RouteObservation(
-                      observationGeneration,
-                      SdkActivityRoutePage(
-                        recordingId: recordingId,
-                        routeRevision: record.value.routeRevision,
-                        segments: const [],
-                        gaps: const [],
-                        isLast: true,
+                  ActivityRecordingRouteCursor? cursor;
+                  do {
+                    if (cancelled) break;
+                    _checkGeneration(generation);
+                    final slice = await tx.routePage(
+                      record,
+                      fromInclusive: fromInclusive,
+                      after: cursor,
+                      pageSize: pageSize,
+                    );
+                    if (cancelled) break;
+                    output.add(
+                      _RouteObservation(
+                        observationGeneration,
+                        SdkActivityRoutePage(
+                          recordingId: recordingId,
+                          routeRevision: record.value.routeRevision,
+                          segments: slice.segments,
+                          gaps: slice.gaps,
+                          isLast: slice.last,
+                        ),
                       ),
-                    ),
-                  );
-                }
+                    );
+                    if (slice.last) break;
+                    cursor = slice.next;
+                    await Future<void>.delayed(Duration.zero);
+                    if (paused != null) await paused!.future;
+                  } while (!cancelled);
+                });
               })
               .catchError((Object error, StackTrace stack) {
                 if (!cancelled) {
@@ -421,13 +527,19 @@ final class ActivityRecordingController implements ActivityRecordingControl {
                 }
               })
               .whenComplete(() {
+                _cancelRouteReads.remove(cancel);
                 unawaited(output.close());
               }),
         );
       },
-      onCancel: () {
-        cancelled = true;
+      onPause: () {
+        paused ??= Completer<void>();
       },
+      onResume: () {
+        paused?.complete();
+        paused = null;
+      },
+      onCancel: cancel,
     );
     return output.stream
         .where(
@@ -492,6 +604,17 @@ final class ActivityRecordingController implements ActivityRecordingControl {
             record!.transition(phase: ActivityRecordingPhase.finished),
           );
           return true;
+        }
+        if (record?.value.phase == ActivityRecordingPhase.active &&
+            record?.value.inputState == ActivityRecordingInputState.observing) {
+          // A persisted route survives restart; attachment to the previous
+          // runtime's input path does not. Only current TAG evidence restores
+          // observing. This changes no route or recovery revision.
+          await tx.update(
+            record!.transition(
+              inputState: ActivityRecordingInputState.disconnected,
+            ),
+          );
         }
         return false;
       });
@@ -650,6 +773,9 @@ final class ActivityRecordingController implements ActivityRecordingControl {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    for (final cancel in _cancelRouteReads.toList()) {
+      cancel();
+    }
     _generation++;
     _observationGeneration++;
     await _tail;

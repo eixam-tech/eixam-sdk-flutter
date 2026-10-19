@@ -46,7 +46,7 @@ final class ActivityRecordingOwner {
   }
 }
 
-/// Version-one metadata mapping. No route ingestion or metric calculation.
+/// Private metadata mapping; validates summary shape without loading route arrays.
 final class ActivityRecordingRecord {
   const ActivityRecordingRecord(this.owner, this.value);
 
@@ -117,28 +117,47 @@ final class ActivityRecordingRecord {
         ((device == null) != (input == ActivityRecordingInputState.unbound))) {
       throw const FormatException();
     }
-    // AR2A cannot honestly read route-bearing metadata. AR2B must migrate/extend
-    // this mapper and the route reader together, never emit fake empty pages.
-    for (final field in [
-      'point_count',
-      'segment_count',
-      'unresolved_gap_count',
-      'route_revision',
-      'previous_route_revision',
-    ]) {
-      if (count(field) != 0) throw const FormatException();
+    final points = count('point_count');
+    final segments = count('segment_count');
+    final gaps = count('unresolved_gap_count');
+    final revision = count('route_revision');
+    final previous = count('previous_route_revision');
+    final first = row['first_sample_at'] == null
+        ? null
+        : time('first_sample_at');
+    final last = row['last_sample_at'] == null ? null : time('last_sample_at');
+    final changed = row['route_changed_from'] == null
+        ? null
+        : time('route_changed_from');
+    final rawDistance = row['distance_meters'];
+    final distance = rawDistance is num ? rawDistance.toDouble() : null;
+    if (row.containsKey('distance_edge_count')) {
+      final edges = count('distance_edge_count');
+      if (edges > (points == 0 ? 0 : points - 1) ||
+          ((edges == 0) != (distance == null))) {
+        throw const FormatException();
+      }
     }
-    for (final field in [
-      'first_sample_at',
-      'last_sample_at',
-      'distance_meters',
-      'route_changed_from',
-    ]) {
-      if (row[field] != null) throw const FormatException();
-    }
-    if (quality != ActivityRecordingRouteQuality.unknown ||
-        recovery == ActivityRecordingRecoveryState.recovering ||
-        input == ActivityRecordingInputState.observing) {
+    if ((rawDistance != null &&
+            (distance == null || !distance.isFinite || distance < 0)) ||
+        (points == 0
+            ? first != null || last != null || segments != 0 || distance != null
+            : device == null ||
+                  first == null ||
+                  last == null ||
+                  segments < 1 ||
+                  segments > points) ||
+        (first != null && (first.isBefore(start) || last!.isBefore(first))) ||
+        (last != null && end != null && last.isAfter(end)) ||
+        (distance != null && points < 2) ||
+        (revision == 0
+            ? previous != 0 || changed != null || points != 0 || gaps != 0
+            : previous != revision - 1 || changed == null) ||
+        (changed != null && changed.isBefore(start)) ||
+        (gaps == 0
+            ? quality != ActivityRecordingRouteQuality.unknown
+            : quality != ActivityRecordingRouteQuality.partial) ||
+        recovery != ActivityRecordingRecoveryState.idle) {
       throw const FormatException();
     }
     return ActivityRecordingRecord(
@@ -160,6 +179,15 @@ final class ActivityRecordingRecord {
         recoveryState: recovery,
         routeQuality: quality,
         issues: issues,
+        pointCount: points,
+        segmentCount: segments,
+        unresolvedGapCount: gaps,
+        firstSampleAt: first,
+        lastSampleAt: last,
+        recordedDistanceMeters: distance,
+        routeRevision: revision,
+        previousRouteRevision: previous,
+        routeChangedFrom: changed,
       ),
     );
   }
@@ -172,23 +200,13 @@ final class ActivityRecordingRecord {
     DateTime? endedAt,
     String? deviceIdentity,
     ActivityRecordingInputState? inputState,
-  }) => ActivityRecordingRecord(
-    owner,
-    SdkActivityRecording(
-      recordingId: value.recordingId,
-      activitySessionId: value.activitySessionId,
-      activityKey: value.activityKey,
-      activitySessionStartedAt: value.activitySessionStartedAt,
-      recordingStartedAt: value.recordingStartedAt,
-      endedAt: endedAt ?? value.endedAt,
-      deviceIdentity: deviceIdentity ?? value.deviceIdentity,
-      phase: phase ?? value.phase,
-      inputState: inputState ?? value.inputState,
-      recoveryState: value.recoveryState,
-      routeQuality: value.routeQuality,
-      issues: value.issues,
-    ),
-  );
+  }) => ActivityRecordingRecord.decode({
+    ...encode(),
+    if (phase != null) 'phase': phase.name,
+    if (endedAt != null) 'ended_at': endedAt.toUtc().toIso8601String(),
+    if (deviceIdentity != null) 'device_identity': deviceIdentity,
+    if (inputState != null) 'input_state': inputState.name,
+  });
 
   Map<String, Object?> encode() => {
     'recording_id': value.recordingId,

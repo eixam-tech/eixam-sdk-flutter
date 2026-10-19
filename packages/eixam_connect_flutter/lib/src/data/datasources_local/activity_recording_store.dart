@@ -1,4 +1,5 @@
 import 'activity_recording_record.dart';
+import 'activity_recording_route_data.dart';
 
 /// Private transactional boundary. Implementations must roll back callback
 /// errors and resolve uncertain acknowledgements before reporting success.
@@ -21,4 +22,18 @@ abstract interface class ActivityRecordingTransaction {
   Future<void> insert(ActivityRecordingRecord record);
   Future<void> update(ActivityRecordingRecord record);
   Future<void> verifyEmptyRoute(String recordingId);
+  Future<ActivityRecordingRecord> finishRoute(
+    ActivityRecordingRecord record,
+    DateTime cutoff,
+  );
+  Future<ActivityRecordingRecord> ingestRoute(
+    ActivityRecordingRecord record,
+    List<ActivityRecordingRouteEvidence> evidence,
+  );
+  Future<ActivityRecordingRouteSlice> routePage(
+    ActivityRecordingRecord record, {
+    DateTime? fromInclusive,
+    ActivityRecordingRouteCursor? after,
+    required int pageSize,
+  });
 }

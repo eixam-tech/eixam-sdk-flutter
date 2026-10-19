@@ -345,7 +345,7 @@ contract. The commercial app will later intersect remote keys with its local
 ActivityCatalog; M2B does not perform that intersection, alias, normalize, or drop
 keys because ActivitySession would reject them.
 
-## Optional activity recording foundation (AR2A lifecycle + AR2B-P1 storage)
+## Optional activity recording (AR2A lifecycle + AR2B live TAG routes)
 
 AR1 exports `ActivityRecordingControl`, immutable recording/route models, state
 enums and `ActivityRecordingException` from `eixam_connect_core`, also re-exported
@@ -362,19 +362,35 @@ legacy AR2A directory migrates whole before destination use. Preparation and
 migration failures fail closed using existing errors. Consumers need no custom
 backup rules or native configuration. This adds no public API or ingestion.
 
-AR2A does **not** ingest TAG positions, calculate distance, detect route gaps or
-recover TAG backlog. Empty recordings have zero counters, null distance, unknown
-quality and stable route revision zero. Route reads return one terminal empty
-page; a mismatched expected revision fails before delivery. History recovery for
-a known active recording throws `E_RECORDING_UNAVAILABLE` without claiming work
-occurred. Connected, bound input is `unavailable` until ingestion exists; it is
-never reported as `observing`. Recovery remains `idle`.
+AR2B ingests eligible live D3 TAG positions through a private decoded delivery
+path before public transport dedupe. Recording dedupe is durable and transactional;
+public batch events keep their existing dedupe behavior. The recorder enforces
+immutable bound TAG identity, genuine sample UTC/window/geographic validation,
+canonical chronological ordering, continuity segments and conservative live
+integrity gaps. Phone/backend locations and timestamp-less Classic TEL are never
+route sources.
 
-This is not full ActivityRecording production readiness. Commercial integration
-belongs to AR3. The sections below preserve the complete public contract,
-including route/recovery behavior reserved for later AR2 slices. See
+Recorded horizontal distance uses Haversine (radius 6,371,000 m) across eligible
+adjacent edges only, excluding altitude, gaps and ambiguous ordering. No eligible
+edge means null; a genuine zero-length edge permits 0.0. Route points, topology,
+summary, metrics and revisions commit atomically; watchers publish committed
+summaries without route arrays. Consistent paged route reads support revision
+checks, segment continuations and suffix replacement.
+
+Routes and finished results restore locally/offline. AR2B does **not** implement
+TAG backlog/reconnect recovery or final catch-up, complete-route guarantees,
+ascent/descent, speed/pace/calories, backend sync or host UI integration. History
+recovery remains unavailable, and recovery state remains `idle`. Matching live
+input can be `observing`; this is path attachment, never a fresh-fix guarantee.
+Commercial integration belongs to AR3. The sections below preserve the frozen
+public contract, including recovery behavior reserved for AR2C. See
 [local engine implementation](../../docs/ACTIVITY_RECORDING_LOCAL_ENGINE.md)
-for the delivered lifecycle, ownership, storage and backup limitations.
+for storage, privacy, lifecycle, route semantics and verification limits.
+Physical live-D3 admission remains explicitly deferred under
+`AR2B-HW1 — REAL TAG D3 ACCEPTANCE`; that gate must pass before final M6 sign-off,
+M6C, merge to develop or release/store distribution. Automated and native
+synthetic acceptance permits continued SDK development without claiming physical
+route acceptance.
 
 ### Independent domains and optional discovery
 

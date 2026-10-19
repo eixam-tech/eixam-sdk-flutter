@@ -1503,6 +1503,39 @@ class EixamConnectSdkImpl
           unawaited(_devicePositionBacklogCoordinator.handleEvent(event));
           return;
         }
+        // Recorder sees decoded D3 evidence before transient/public dedupe.
+        // No receive-time substitute, transport-ID fallback or D1 recovery tap.
+        final live = event.telLiveBatchPacket;
+        final canonical = normalizeCanonicalHardwareId(
+          event.canonicalHardwareId,
+        );
+        final status = _lastPublicDeviceStatus ?? _lastDeviceStatus;
+        if (event.type == BleIncomingEventType.telLivePositionBatch &&
+            live != null &&
+            canonical != null &&
+            status?.connected == true &&
+            status?.paired == true &&
+            canonical ==
+                normalizeCanonicalHardwareId(status?.canonicalHardwareId) &&
+            live.telPackets.every(
+              (packet) => packet.nodeId == status?.nodeId,
+            )) {
+          unawaited(
+            _activityRecordings
+                .ingestLive(
+                  EixamDevicePositionBatch(
+                    samples: live.batch.samples,
+                    receivedAt: live.batch.receivedAt,
+                    source: live.batch.source,
+                    delivery: live.batch.delivery,
+                    deviceIdentity: canonical,
+                  ),
+                )
+                .catchError((Object _) {
+                  /* Typed error is delivered to recording observers. */
+                }),
+          );
+        }
         final positionBatch = _devicePositionBatchNormalizer.normalize(event);
         if (positionBatch != null && !_devicePositionBatchController.isClosed) {
           _devicePositionBatchController.add(positionBatch);
@@ -22120,6 +22153,14 @@ class EixamConnectSdkImpl
     final publicStatus = _toPublicDeviceStatus(rawStatus, reason: reason);
     final previous = _lastPublicDeviceStatus;
     _lastPublicDeviceStatus = publicStatus;
+    unawaited(
+      _activityRecordings
+          .inputDisconnected(
+            publicStatus.canonicalHardwareId,
+            publicStatus.connected,
+          )
+          .catchError((Object _) {}),
+    );
     if (publicStatus.nodeId != null) {
       _knownLocalDeviceNodeId = publicStatus.nodeId;
       final hardwareId = _canonicalHardwareIdForStatus(publicStatus);

@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/preferred_ble_device_store.dart';
+import 'package:eixam_connect_flutter/src/data/datasources_local/activity_recording_database.dart';
+import 'package:eixam_connect_flutter/src/data/datasources_local/activity_recording_store.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/sdk_session_store.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_activity_availability_remote_data_source.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_http_transport.dart';
@@ -10,6 +13,11 @@ import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_identity_r
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sdk_session_context.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_position_data.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_tel_live_batch_packet.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_tel_packet.dart';
 import 'package:eixam_connect_flutter/src/sdk/background_location_platform_adapter.dart';
 import 'package:eixam_connect_flutter/src/sdk/background_telemetry_platform_adapter.dart';
 import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
@@ -17,6 +25,9 @@ import 'package:eixam_connect_flutter/src/sdk/protection_platform_adapter.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+import '../activity/recording_test_support.dart' show FaultRecordingStore;
 
 import '../support/builders/device_status_builder.dart';
 import '../support/fakes/memory_shared_prefs_sdk_store.dart';
@@ -35,6 +46,8 @@ final _appSnapshot = _identity.copyWith(
   canonicalExternalUserId: null,
 );
 const _watchdog = Duration(seconds: 2);
+const _tag = 'AA:BB:CC:DD:EE:01';
+final _routeStart = DateTime.utc(2026, 10, 19, 12);
 
 void main() {
   test('production optional capability is local and safety isolated', () async {
@@ -244,6 +257,334 @@ void main() {
       },
     );
   }
+
+  test(
+    'old-generation in-flight D3 cannot publish or leak route to new principal',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'ar2b-sdk-generation-',
+      );
+      final store = FaultRecordingStore(
+        ActivityRecordingDatabase(
+          path: '${directory.path}/recordings.sqlite',
+          factory: databaseFactoryFfiNoIsolate,
+        ),
+      );
+      final h = _Harness(
+        _Disk(),
+        recordingStore: store,
+        clock: () => _routeStart,
+      );
+      final observations = <SdkActivityRecording?>[];
+      StreamSubscription<SdkActivityRecording?>? watcher;
+      final gate = Completer<void>();
+      try {
+        final original = await h.startBoundRoute();
+        watcher = h.sdk.watchActiveActivityRecording().listen(
+          observations.add,
+          onError: (Object _) {},
+        );
+        await pumpEventQueue();
+        store.writeGate = gate;
+        store.writeEntered = Completer<void>();
+        h.incoming.add(_liveEvent());
+        await store.writeEntered!.future.timeout(_watchdog);
+        final switching = h.sdk.setSession(
+          _identity.copyWith(
+            externalUserId: 'user-b',
+            sdkUserId: 'sdk-b',
+            canonicalExternalUserId: 'user-b',
+          ),
+          deferRuntimeWork: true,
+        );
+        gate.complete();
+        await switching;
+        expect(
+          observations.whereType<SdkActivityRecording>().every(
+            (r) => r.pointCount == 0,
+          ),
+          isTrue,
+        );
+        expect(await h.sdk.getActiveActivityRecording(), isNull);
+        expect(
+          await h.sdk.getActivityRecording(recordingId: original.recordingId),
+          isNull,
+        );
+        await expectLater(
+          h.sdk
+              .readActivityRecordingRoute(recordingId: original.recordingId)
+              .toList(),
+          throwsA(isA<ActivityRecordingException>()),
+        );
+        final replacement = await h.sdk.startActivityRecording(
+          activitySession: await h.sdk.startActivitySession(
+            activityKey: 'mountain',
+          ),
+        );
+        await h.deliver(_liveEvent());
+        final active = (await h.sdk.getActiveActivityRecording())!;
+        expect(active.recordingId, replacement.recordingId);
+        expect(active.deviceIdentity, isNull);
+        expect(active.pointCount, 0);
+        h.expectSafetyIdle();
+      } finally {
+        if (!gate.isCompleted) gate.complete();
+        await watcher?.cancel();
+        await h.dispose();
+        await directory.delete(recursive: true);
+      }
+    },
+  );
+
+  test('decoded D3 retry survives public dedupe after SQL rollback', () async {
+    final directory = await Directory.systemTemp.createTemp('ar2b-sdk-retry-');
+    final store = FaultRecordingStore(
+      ActivityRecordingDatabase(
+        path: '${directory.path}/recordings.sqlite',
+        factory: databaseFactoryFfiNoIsolate,
+      ),
+    );
+    final h = _Harness(
+      _Disk(),
+      recordingStore: store,
+      clock: () => _routeStart,
+    );
+    final public = <EixamDevicePositionBatch>[];
+    final errors = <Object>[];
+    StreamSubscription<EixamDevicePositionBatch>? positions;
+    StreamSubscription<SdkActivityRecording?>? observations;
+    try {
+      final recording = await h.startBoundRoute();
+      positions = h.sdk.testPositionBatches.listen(public.add);
+      observations = h.sdk.watchActiveActivityRecording().listen(
+        (_) {},
+        onError: errors.add,
+      );
+      await pumpEventQueue();
+      final event = _liveEvent();
+      store.failNextWrite = true;
+      await h.deliver(event);
+      expect(public, hasLength(1));
+      expect(public.single.samples, hasLength(2));
+      expect(errors, hasLength(1));
+      expect(errors.single, isA<ActivityRecordingException>());
+      final failed = await h.sdk.getActiveActivityRecording();
+      expect(failed!.pointCount, 0);
+      expect(failed.routeRevision, 0);
+      expect(failed.recordedDistanceMeters, isNull);
+
+      await h.deliver(event);
+      expect(
+        public,
+        hasLength(1),
+        reason: 'Public duplicates remain suppressed',
+      );
+      final committed = await h.sdk.getActiveActivityRecording();
+      expect(committed!.pointCount, 2);
+      expect(committed.routeRevision, 1);
+      expect(committed.recordedDistanceMeters, greaterThan(0));
+      final page = await h.sdk
+          .readActivityRecordingRoute(recordingId: recording.recordingId)
+          .single;
+      expect(page.segments.single.points, hasLength(2));
+      h.expectSafetyIdle();
+    } finally {
+      await positions?.cancel();
+      await observations?.cancel();
+      await h.dispose();
+      await directory.delete(recursive: true);
+    }
+  });
+
+  test(
+    'Classic TEL public suppression does not suppress timestamped D3 recording',
+    () async {
+      final h = _Harness(_Disk(), clock: () => _routeStart);
+      final public = <EixamDevicePositionBatch>[];
+      StreamSubscription<EixamDevicePositionBatch>? positions;
+      try {
+        await h.startBoundRoute();
+        positions = h.sdk.testPositionBatches.listen(public.add);
+        final wire = _wire(1);
+        await h.deliver(_classicEvent(wire));
+        expect((await h.sdk.getActiveActivityRecording())!.pointCount, 0);
+        expect(public.single.samples.single.sampledAt, isNull);
+        await h.deliver(_liveEvent(wires: [wire]));
+        expect(public, hasLength(1));
+        expect((await h.sdk.getActiveActivityRecording())!.pointCount, 1);
+        h.expectSafetyIdle();
+      } finally {
+        await positions?.cancel();
+        await h.dispose();
+      }
+    },
+  );
+
+  test(
+    'production D3 tap rejects wrong or missing canonical identity and node',
+    () async {
+      final h = _Harness(_Disk(), clock: () => _routeStart);
+      try {
+        await h.startBoundRoute();
+        for (final event in [
+          _liveEvent(canonical: null),
+          _liveEvent(canonical: 'AA:BB:CC:DD:EE:02'),
+          _liveEvent(canonical: 'transport-address'),
+          _liveEvent(wires: [_wire(1, node: 43)]),
+        ]) {
+          await h.deliver(event);
+          final unchanged = await h.sdk.getActiveActivityRecording();
+          expect(unchanged!.pointCount, 0);
+          expect(unchanged.routeRevision, 0);
+          expect(unchanged.recordedDistanceMeters, isNull);
+        }
+        await h.deliver(_liveEvent());
+        expect(
+          (await h.sdk.getActiveActivityRecording())!.pointCount,
+          2,
+          reason:
+              'Private recorder remains independent of public wrong-device dedupe',
+        );
+        h.expectSafetyIdle();
+      } finally {
+        await h.dispose();
+      }
+    },
+  );
+
+  test('unbound recording never follows connected TAG automatically', () async {
+    final h = _Harness(_Disk(), clock: () => _routeStart);
+    try {
+      await h.initialize();
+      await h.sdk.setSession(_identity, deferRuntimeWork: true);
+      final recording = await h.sdk.startActivityRecording(
+        activitySession: await h.sdk.startActivitySession(
+          activityKey: 'mountain',
+        ),
+      );
+      await h.verifyTag();
+      await h.deliver(_liveEvent());
+      final unchanged = await h.sdk.getActiveActivityRecording();
+      expect(unchanged!.deviceIdentity, isNull);
+      expect(unchanged.pointCount, 0);
+      expect(unchanged.routeRevision, 0);
+      expect(
+        (await h.sdk
+                .readActivityRecordingRoute(recordingId: recording.recordingId)
+                .single)
+            .segments,
+        isEmpty,
+      );
+      h.expectSafetyIdle();
+    } finally {
+      await h.dispose();
+    }
+  });
+
+  test(
+    'cold offline SDK restores route and protects finished data from live input',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'ar2b-sdk-offline-',
+      );
+      final path = '${directory.path}/recordings.sqlite';
+      final disk = _Disk();
+      var now = _routeStart;
+      _Harness create() => _Harness(
+        disk,
+        recordingStore: ActivityRecordingDatabase(
+          path: path,
+          factory: databaseFactoryFfiNoIsolate,
+        ),
+        clock: () => now,
+      );
+      final seed = create();
+      late SdkActivityRecording original;
+      late List<SdkActivityRoutePoint> originalPoints;
+      try {
+        final recording = await seed.startBoundRoute();
+        await seed.deliver(_liveEvent());
+        original = (await seed.sdk.getActiveActivityRecording())!;
+        originalPoints =
+            (await seed.sdk
+                    .readActivityRecordingRoute(
+                      recordingId: recording.recordingId,
+                    )
+                    .single)
+                .segments
+                .single
+                .points;
+        seed.expectSafetyIdle();
+      } finally {
+        await seed.dispose();
+      }
+      final restored = create();
+      try {
+        await restored.initialize();
+        restored.offline = true;
+        await restored.sdk.setSession(_appSnapshot, deferRuntimeWork: true);
+        final summary = (await restored.sdk.getActiveActivityRecording())!;
+        expect(summary.recordingId, original.recordingId);
+        expect(summary.deviceIdentity, original.deviceIdentity);
+        expect(summary.pointCount, original.pointCount);
+        expect(summary.segmentCount, original.segmentCount);
+        expect(summary.routeRevision, original.routeRevision);
+        expect(summary.firstSampleAt, original.firstSampleAt);
+        expect(summary.lastSampleAt, original.lastSampleAt);
+        expect(summary.recordedDistanceMeters, original.recordedDistanceMeters);
+        expect(restored.identityRequests, 0);
+        final route =
+            (await restored.sdk
+                    .readActivityRecordingRoute(
+                      recordingId: original.recordingId,
+                    )
+                    .single)
+                .segments
+                .single
+                .points;
+        expect(
+          route.map((p) => (p.sampledAt, p.latitude, p.longitude)),
+          originalPoints.map((p) => (p.sampledAt, p.latitude, p.longitude)),
+        );
+        await restored.verifyTag();
+        await restored.deliver(_liveEvent());
+        expect(
+          (await restored.sdk.getActiveActivityRecording())!.routeRevision,
+          original.routeRevision,
+        );
+        await restored.deliver(_liveEvent(offsetSeconds: 10));
+        expect(
+          (await restored.sdk.getActiveActivityRecording())!.pointCount,
+          4,
+        );
+        now = _routeStart.add(const Duration(minutes: 2));
+        final finished = await restored.sdk.finishActivityRecording(
+          recordingId: original.recordingId,
+        );
+        await restored.deliver(_liveEvent(offsetSeconds: 20));
+        final frozen = await restored.sdk.getActivityRecording(
+          recordingId: original.recordingId,
+        );
+        expect(frozen!.phase, ActivityRecordingPhase.finished);
+        expect(frozen.pointCount, finished.pointCount);
+        expect(frozen.routeRevision, finished.routeRevision);
+        expect(frozen.recordedDistanceMeters, finished.recordedDistanceMeters);
+        expect(
+          (await restored.sdk
+                  .readActivityRecordingRoute(recordingId: original.recordingId)
+                  .single)
+              .segments
+              .single
+              .points,
+          hasLength(4),
+        );
+        restored.expectSafetyIdle();
+      } finally {
+        await restored.dispose();
+        await directory.delete(recursive: true);
+      }
+    },
+  );
 }
 
 class _Disk {
@@ -258,6 +599,8 @@ class _Harness {
     _Disk disk, {
     FakeSosRepository? sos,
     SdkDeviceRegistryRepository? registry,
+    ActivityRecordingStore? recordingStore,
+    DateTime Function()? clock,
   }) : sos = sos ?? FakeSosRepository() {
     client = MockClient((request) async {
       if (request.url.path == '/v1/sdk/me') {
@@ -297,7 +640,12 @@ class _Harness {
       notificationsRepository: FakeNotificationsRepository(),
       realtimeClient: realtime,
       deviceSosController: DeviceSosController(),
-      bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+      bleIncomingEvents: incoming.stream,
+      activityRecordingStore: recordingStore,
+      clock: clock,
+      backlogCommandWriter: (command) async {
+        backlogCommands.add(command);
+      },
       preferredBleDeviceStore: PreferredBleDeviceStore(localStore: disk.local),
       sessionStore: SdkSessionStore(
         localStore: disk.local,
@@ -317,6 +665,8 @@ class _Harness {
           UnsupportedBackgroundLocationPlatformAdapter(),
     );
   }
+  final incoming = StreamController<BleIncomingEvent>.broadcast(sync: true);
+  final backlogCommands = <EixamDeviceCommand>[];
   final FakeSosRepository sos;
   final tracking = FakeTrackingRepository();
   final contacts = FakeContactsRepository();
@@ -352,8 +702,58 @@ class _Harness {
   Future<void> initialize({String backend = _backend}) => sdk.initialize(
     EixamSdkConfig(apiBaseUrl: backend, deferRuntimeStartup: true),
   );
+  Future<void> verifyTag() async {
+    device.emitStatus(
+      buildDeviceStatus(
+        connected: false,
+        nodeId: 42,
+        canonicalHardwareId: _tag,
+      ),
+    );
+    await pumpEventQueue();
+    await sdk.upsertRegisteredDevice(
+      hardwareId: '42',
+      firmwareVersion: '1',
+      hardwareModel: 'TAG',
+      pairedAt: _routeStart,
+    );
+    device.emitStatus(
+      buildDeviceStatus(connected: true, nodeId: 42, canonicalHardwareId: _tag),
+    );
+    await pumpEventQueue();
+  }
+
+  Future<SdkActivityRecording> startBoundRoute() async {
+    await initialize();
+    await sdk.setSession(_identity, deferRuntimeWork: true);
+    await verifyTag();
+    return sdk.startActivityRecording(
+      activitySession: await sdk.startActivitySession(activityKey: 'mountain'),
+      deviceIdentity: _tag,
+    );
+  }
+
+  Future<void> deliver(BleIncomingEvent event) async {
+    incoming.add(event);
+    await pumpEventQueue();
+    await sdk.getActiveActivityRecording();
+  }
+
+  void expectSafetyIdle() {
+    expect(sdk.forbiddenCalls, isEmpty);
+    expect(backlogCommands, isEmpty);
+    expect(tracking.startCallCount, 0);
+    expect(tracking.stopCallCount, 0);
+    expect(sos.triggerCallCount, 0);
+    expect(sos.cancelCallCount, 0);
+    expect(sos.resolveCallCount, 0);
+    expect(deathMan.activePlan, isNull);
+    expect(deathMan.updateCallCount, 0);
+  }
+
   Future<void> dispose() async {
     await sdk.dispose();
+    await incoming.close();
     await tracking.dispose();
     await contacts.dispose();
     await device.dispose();
@@ -387,7 +787,12 @@ class _RecordingSpySdk extends EixamConnectSdkImpl {
     required super.protectionPlatformAdapter,
     required super.backgroundTelemetryPlatformAdapter,
     required super.backgroundLocationPlatformAdapter,
+    super.activityRecordingStore,
+    super.clock,
+    super.backlogCommandWriter,
   });
+  Stream<EixamDevicePositionBatch> get testPositionBatches =>
+      super.watchDevicePositionBatches();
   final forbiddenCalls = <String>[];
   Never _forbidden(String name) {
     forbiddenCalls.add(name);
@@ -455,3 +860,70 @@ class _GatedAssignmentRegistry extends FakeSdkDeviceRegistryRepository {
     );
   }
 }
+
+List<int> _wire(int packetId, {int node = 42}) => [
+  node & 255,
+  (node >> 8) & 255,
+  (node >> 16) & 255,
+  (node >> 24) & 255,
+  ...EixamPositionData.encode(
+    latitude: 41 + packetId / 1000,
+    longitude: 2,
+    altitudeMeters: 40,
+  ),
+  0x80 | (packetId & 15),
+  0x25,
+];
+
+BleIncomingEvent _liveEvent({
+  String? canonical = _tag,
+  List<List<int>>? wires,
+  int offsetSeconds = 0,
+}) {
+  final payload = <int>[
+    0xD3,
+    (wires ?? [_wire(1), _wire(2)]).length,
+  ];
+  final samples = wires ?? [_wire(1), _wire(2)];
+  for (var index = 0; index < samples.length; index++) {
+    final timestamp =
+        _routeStart
+            .add(Duration(seconds: index + 1 + offsetSeconds))
+            .millisecondsSinceEpoch ~/
+        1000;
+    payload.addAll([
+      timestamp & 255,
+      (timestamp >> 8) & 255,
+      (timestamp >> 16) & 255,
+      (timestamp >> 24) & 255,
+      ...samples[index],
+    ]);
+  }
+  final receivedAt = _routeStart.add(const Duration(minutes: 1));
+  return BleIncomingEvent(
+    deviceId: 'transport-a',
+    canonicalHardwareId: canonical,
+    type: BleIncomingEventType.telLivePositionBatch,
+    channel: EixamBleChannel.tel,
+    payload: payload,
+    payloadHex: '',
+    source: DeviceSosTransitionSource.device,
+    receivedAt: receivedAt,
+    telLiveBatchPacket: EixamTelLiveBatchPacket.tryParse(
+      payload,
+      receivedAt: receivedAt,
+    )!,
+  );
+}
+
+BleIncomingEvent _classicEvent(List<int> wire) => BleIncomingEvent(
+  deviceId: 'transport-a',
+  canonicalHardwareId: _tag,
+  type: BleIncomingEventType.telPosition,
+  channel: EixamBleChannel.tel,
+  payload: wire,
+  payloadHex: '',
+  source: DeviceSosTransitionSource.device,
+  receivedAt: _routeStart.add(const Duration(minutes: 1)),
+  telPacket: EixamTelPacket.tryParse(wire)!,
+);

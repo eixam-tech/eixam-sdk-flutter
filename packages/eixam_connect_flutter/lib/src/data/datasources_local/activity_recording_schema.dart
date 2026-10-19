@@ -1,8 +1,8 @@
 import 'package:sqflite/sqflite.dart';
 
-/// Private schema; route tables are intentionally empty until AR2B/C.
+/// Private schema. Version two adds route ordering and incremental edge facts.
 abstract final class ActivityRecordingSchema {
-  static const version = 1;
+  static const version = 2;
 
   static Future<void> create(Database db, int version) async {
     await db.execute('''CREATE TABLE recording_store_metadata (
@@ -61,5 +61,44 @@ abstract final class ActivityRecordingSchema {
       reason TEXT NOT NULL,
       state TEXT NOT NULL
     )''');
+    await upgrade(db, 1, 2);
+  }
+
+  static Future<void> upgrade(
+    Database db,
+    int oldVersion,
+    int newVersion,
+  ) async {
+    if (oldVersion != 1 || newVersion != 2) {
+      throw StateError('Unsupported recording schema');
+    }
+    // Approved v1 has metadata only. Unexpected route artifacts are evidence,
+    // not permission to reset or invent ownership/topology for those rows.
+    final count = await db.rawQuery('''SELECT
+      (SELECT COUNT(*) FROM route_points) +
+      (SELECT COUNT(*) FROM route_gaps) AS n''');
+    if (count.single['n'] != 0) {
+      throw StateError('Unexpected legacy route data');
+    }
+    await db.execute(
+      'ALTER TABLE recordings ADD COLUMN distance_edge_count INTEGER NOT NULL DEFAULT 0',
+    );
+    await db.execute(
+      'ALTER TABLE route_points ADD COLUMN device_identity TEXT',
+    );
+    await db.execute(
+      'ALTER TABLE route_points ADD COLUMN sample_order INTEGER',
+    );
+    await db.execute('ALTER TABLE route_points ADD COLUMN previous_key TEXT');
+    await db.execute('ALTER TABLE route_points ADD COLUMN edge_distance REAL');
+    await db.execute('ALTER TABLE route_gaps ADD COLUMN from_order INTEGER');
+    await db.execute('ALTER TABLE route_gaps ADD COLUMN until_order INTEGER');
+    await db.execute('DROP INDEX route_points_time');
+    await db.execute(
+      'CREATE INDEX route_points_time ON route_points(recording_id, sample_order, sample_key)',
+    );
+    await db.execute(
+      'CREATE INDEX route_gaps_time ON route_gaps(recording_id, from_order, gap_id)',
+    );
   }
 }

@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'activity_test_support.dart' as logical;
+import 'package:eixam_connect_flutter/src/data/datasources_local/activity_recording_route_data.dart';
 
 const recordingUserA = EixamSession.signed(
   appId: 'app',
@@ -33,11 +34,15 @@ Matcher recordingError(String code) =>
     isA<ActivityRecordingException>().having((e) => e.code, 'code', code);
 
 final class RecordingFixture {
-  RecordingFixture._(this.directory, this.sessionStore) {
+  RecordingFixture._(
+    this.directory,
+    this.sessionStore,
+    DatabaseFactory? factory,
+  ) {
     sessions = ActivitySessionController(store: sessionStore, clock: () => now);
     database = ActivityRecordingDatabase(
       path: path,
-      factory: databaseFactoryFfiNoIsolate,
+      factory: factory ?? databaseFactoryFfiNoIsolate,
     );
     store = FaultRecordingStore(database);
     controller = ActivityRecordingController(
@@ -58,10 +63,12 @@ final class RecordingFixture {
     Directory? directory,
     logical.MemoryActivityStore? sessionStore,
     EixamSession? user = recordingUserA,
+    DatabaseFactory? factory,
   }) async {
     final f = RecordingFixture._(
       directory ?? await Directory.systemTemp.createTemp('ar2a-'),
       sessionStore ?? logical.MemoryActivityStore(),
+      factory,
     );
     await f.bind(user, restore: true);
     return f;
@@ -229,6 +236,41 @@ final class _WriteTrackingTransaction implements ActivityRecordingTransaction {
     await inner.update(record);
     lastWrite = record;
   }
+
+  @override
+  Future<ActivityRecordingRecord> finishRoute(
+    ActivityRecordingRecord record,
+    DateTime cutoff,
+  ) async {
+    final result = await inner.finishRoute(record, cutoff);
+    lastWrite = result;
+    return result;
+  }
+
+  @override
+  Future<ActivityRecordingRecord> ingestRoute(
+    ActivityRecordingRecord record,
+    List<ActivityRecordingRouteEvidence> evidence,
+  ) async {
+    final updated = await inner.ingestRoute(record, evidence);
+    if (updated.value.routeRevision != record.value.routeRevision) {
+      lastWrite = updated;
+    }
+    return updated;
+  }
+
+  @override
+  Future<ActivityRecordingRouteSlice> routePage(
+    ActivityRecordingRecord record, {
+    DateTime? fromInclusive,
+    ActivityRecordingRouteCursor? after,
+    required int pageSize,
+  }) => inner.routePage(
+    record,
+    fromInclusive: fromInclusive,
+    after: after,
+    pageSize: pageSize,
+  );
 
   @override
   Future<void> verifyEmptyRoute(String id) => inner.verifyEmptyRoute(id);
