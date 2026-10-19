@@ -274,14 +274,35 @@ increments once only when it changes canonical route data.
 
 ## Paged route reads and restoration
 
-A route read holds one serialized SQLite transaction for a finite consistent
-revision. Keyset pages bound memory; pause applies backpressure and cancellation,
-identity replacement and disposal release the read promptly. A slow paused reader
-holds the writer actor until resumed/cancelled. Writers queue rather than mixing
-revisions into an in-flight read. `expectedRouteRevision` mismatch fails before
-pages are delivered. Unknown IDs fail; ownership is checked before reading data.
-This limitation is accepted for AR2B continuation and must be reconsidered during
-AR2D performance/adversarial review if real App map consumption makes it material.
+A route read captures its revision in the first successful page transaction.
+Each page uses one recorder command and one SQLite transaction: ownership and
+current recording metadata are loaded, the captured revision is checked, and the
+page is read atomically. The transaction and command finish before stream page
+delivery. The existing cursor and page-size bound remain unchanged.
+
+Consumer pause/resume waits outside the recorder actor and database transaction.
+A paused reader retains only lightweight Dart stream/cursor state; it retains no
+native cursor, historical database snapshot or WAL end mark. Live writes,
+recovery, finish cutoff persistence and finalization commits do not wait for
+consumer resume/cancellation. An executing page still takes its ordinary finite
+SQL/actor time. At most one page command per reader is outstanding; no reader
+lease, timeout, admission limit or additional database connection is introduced.
+
+An initial `expectedRouteRevision` mismatch fails before page delivery. A route
+mutation between pages terminates the read with the existing
+`E_RECORDING_ROUTE_REVISION_CHANGED` before any page from the new revision is
+delivered. Already delivered pages all belong to the captured revision. Consumers
+refresh recording state and begin a new read; they must not treat a failed read
+as a completed route/suffix replacement or continue its cursor at a new revision.
+Metadata-only changes and identical sample replays preserve the read when they
+leave `routeRevision` unchanged. Unknown IDs fail; ownership is checked before
+reading data.
+
+Cancellation wakes a paused producer, prevents subsequent page commands and
+suppresses pending delivery. Identity replacement and SDK disposal immediately
+fence the reader. They drain only any finite page operation already executing;
+cleanup never awaits paused stream event delivery. Normal completion unregisters
+the reader and closes its stream.
 
 `pageSize` bounds combined point/gap entries. Segments may continue across pages
 with the same ID; clients concatenate consecutive matching fragments. No boundary
@@ -560,10 +581,11 @@ defect remains; complete is never exposed.
 All recovered insertion uses the AR2B canonical engine. Chronological insertion,
 dedupe, segment repair, edge replacement, distance, revision and earliest changed
 predecessor commit together. Committed data alone is exposed by summaries and
-route pages. A single paged read remains at one revision; the accepted paused
-reader/writer limitation still applies. A paused reader can consume recovery's
-bounded time budget; cancelling/resuming releases the writer without a second
-read implementation or mixed revisions.
+route pages. Each page validates the read's captured revision in its own
+transaction. A paused reader cannot retain the actor or consume recovery's time
+budget through consumer backpressure. Committed route changes invalidate the
+reader's next page with `E_RECORDING_ROUTE_REVISION_CHANGED`; revisions are never
+mixed within one read.
 
 Pending gaps, binding, cursor and partial points restore locally without backend
 readiness. Persisted recovering state becomes deferred after restart; an old
@@ -680,8 +702,9 @@ Expiry cancels/fences only the recording's own lease. Restart uses the remaining
 absolute window; expired/missing timing proof or now-before-start rollback gets
 no wait. Rollback can retain `clockUncertain`. A runtime timer cannot be extended
 by wall-clock rollback. Storage/queued actor latency is additional work, not a
-claim of a five-second end-to-end mobile SLA. The existing paused-reader writer
-hold and expensive suffix repair remain AR2D debt.
+claim of a five-second end-to-end mobile SLA. Route readers release their page
+command/transaction before delivery, so consumer pauses cannot hold cutoff or
+final commit. Expensive suffix repair remains separate AR2D work.
 
 Disconnected and busy paths do not wait for reconnection. They keep defensible
 committed points, mark pending disconnect evidence unresolved and finish. Empty
@@ -798,7 +821,8 @@ other actor/request setup overhead, so the stage columns need not sum to total.
 Measurements are representative synthetic host observations, not percentiles or
 a mobile SLA. Normal recovery benchmark totals for 1k+500, 10k+2k and 100k+100
 points were 1,375,901 / 33,839,339 / 16,958,011 microseconds, respectively. Expensive
-middle insertion, 100k paging and paused-reader writer holds remain AR2D debt.
+middle insertion and 100k paging remain separate AR2D performance work. The
+paused-reader writer hold is removed by the page-scoped reader described above.
 
 Independent correctness/Thermo review closed every confirmed finding:
 

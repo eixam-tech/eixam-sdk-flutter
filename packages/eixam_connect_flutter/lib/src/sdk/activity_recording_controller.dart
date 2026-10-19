@@ -466,57 +466,69 @@ final class ActivityRecordingController implements ActivityRecordingControl {
       onListen: () {
         _cancelRouteReads.add(cancel);
         final observationGeneration = _observationGeneration;
+        final generation = _generation;
         unawaited(
-          _command((generation) async {
-                if (pageSize <= 0) {
-                  throw ArgumentError.value(
-                    pageSize,
-                    'pageSize',
-                    'Must be positive.',
-                  );
-                }
-                // One transaction and actor turn define the finite route revision.
-                // Keyset pages keep memory bounded; pause/cancel owns the transaction.
-                await _transaction(generation, (tx) async {
-                  final record = await tx.byId(_owner!.scope, recordingId);
-                  if (record == null) throw _notFound;
-                  if (expectedRouteRevision != null &&
-                      expectedRouteRevision != record.value.routeRevision) {
-                    throw const ActivityRecordingException(
-                      'E_RECORDING_ROUTE_REVISION_CHANGED',
-                      'Read fresh recording state before retrying the route read.',
-                    );
-                  }
-                  ActivityRecordingRouteCursor? cursor;
-                  do {
-                    if (cancelled) break;
+          (() async {
+                int? revision = expectedRouteRevision;
+                ActivityRecordingRouteCursor? cursor;
+                while (!cancelled) {
+                  // Consumer backpressure never owns a recorder turn or transaction.
+                  if (paused != null) await paused!.future;
+                  if (cancelled) break;
+                  _checkGeneration(generation);
+                  final page = await _command((_) async {
                     _checkGeneration(generation);
-                    final slice = await tx.routePage(
-                      record,
-                      fromInclusive: fromInclusive,
-                      after: cursor,
-                      pageSize: pageSize,
-                    );
-                    if (cancelled) break;
-                    output.add(
-                      _RouteObservation(
-                        observationGeneration,
-                        SdkActivityRoutePage(
+                    // A pause/cancel may arrive while this page waits in the queue.
+                    if (cancelled || paused != null) return null;
+                    if (pageSize <= 0) {
+                      throw ArgumentError.value(
+                        pageSize,
+                        'pageSize',
+                        'Must be positive.',
+                      );
+                    }
+                    return _transaction(generation, (tx) async {
+                      final record = await tx.byId(_owner!.scope, recordingId);
+                      if (record == null) throw _notFound;
+                      if (revision != null &&
+                          revision != record.value.routeRevision) {
+                        throw const ActivityRecordingException(
+                          'E_RECORDING_ROUTE_REVISION_CHANGED',
+                          'Read fresh recording state before retrying the route read.',
+                        );
+                      }
+                      final slice = await tx.routePage(
+                        record,
+                        fromInclusive: fromInclusive,
+                        after: cursor,
+                        pageSize: pageSize,
+                      );
+                      return (
+                        value: SdkActivityRoutePage(
                           recordingId: recordingId,
                           routeRevision: record.value.routeRevision,
                           segments: slice.segments,
                           gaps: slice.gaps,
                           isLast: slice.last,
                         ),
-                      ),
-                    );
-                    if (slice.last) break;
-                    cursor = slice.next;
-                    await Future<void>.delayed(Duration.zero);
-                    if (paused != null) await paused!.future;
-                  } while (!cancelled);
-                });
-              })
+                        next: slice.next,
+                      );
+                    });
+                  });
+                  if (cancelled) break;
+                  _checkGeneration(generation);
+                  if (page == null) continue;
+                  revision = page.value.routeRevision;
+                  cursor = page.next;
+                  // Both the SQLite transaction and _command have completed here.
+                  output.add(
+                    _RouteObservation(observationGeneration, page.value),
+                  );
+                  if (page.value.isLast) break;
+                  // Let delivery propagate pause/cancel before requesting another page.
+                  await Future<void>.delayed(Duration.zero);
+                }
+              })()
               .catchError((Object error, StackTrace stack) {
                 if (!cancelled) {
                   output.add(
@@ -546,7 +558,10 @@ final class ActivityRecordingController implements ActivityRecordingControl {
     );
     return output.stream
         .where(
-          (event) => !_disposed && event.generation == _observationGeneration,
+          (event) =>
+              !cancelled &&
+              !_disposed &&
+              event.generation == _observationGeneration,
         )
         .transform(
           StreamTransformer.fromHandlers(

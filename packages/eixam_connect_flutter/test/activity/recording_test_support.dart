@@ -170,14 +170,28 @@ final class FaultRecordingStore implements ActivityRecordingStore {
   void Function(ActivityRecordingPhase)? onCommit;
   @override
   Object get writerNamespace => inner.writerNamespace;
+  int activeTransactions = 0;
+  Future<void> Function()? beforeRoutePage;
+
   @override
   Future<T> transaction<T>(
+    Future<T> Function(ActivityRecordingTransaction) action,
+  ) async {
+    activeTransactions++;
+    try {
+      return await _trackedTransaction(action);
+    } finally {
+      activeTransactions--;
+    }
+  }
+
+  Future<T> _trackedTransaction<T>(
     Future<T> Function(ActivityRecordingTransaction) action,
   ) async {
     var wrote = false;
     ActivityRecordingPhase? writtenPhase;
     final result = await inner.transaction((tx) async {
-      final tracking = _WriteTrackingTransaction(tx);
+      final tracking = _WriteTrackingTransaction(tx, beforeRoutePage);
       final result = await action(tracking);
       wrote = tracking.lastWrite != null;
       writtenPhase = tracking.lastWrite?.value.phase;
@@ -230,7 +244,8 @@ final class FaultRecordingStore implements ActivityRecordingStore {
 }
 
 final class _WriteTrackingTransaction implements ActivityRecordingTransaction {
-  _WriteTrackingTransaction(this.inner);
+  _WriteTrackingTransaction(this.inner, this.beforeRoutePage);
+  final Future<void> Function()? beforeRoutePage;
   final ActivityRecordingTransaction inner;
   ActivityRecordingRecord? lastWrite;
   @override
@@ -319,12 +334,15 @@ final class _WriteTrackingTransaction implements ActivityRecordingTransaction {
     DateTime? fromInclusive,
     ActivityRecordingRouteCursor? after,
     required int pageSize,
-  }) => inner.routePage(
-    record,
-    fromInclusive: fromInclusive,
-    after: after,
-    pageSize: pageSize,
-  );
+  }) async {
+    await beforeRoutePage?.call();
+    return inner.routePage(
+      record,
+      fromInclusive: fromInclusive,
+      after: after,
+      pageSize: pageSize,
+    );
+  }
 
   @override
   Future<void> verifyEmptyRoute(String id) => inner.verifyEmptyRoute(id);

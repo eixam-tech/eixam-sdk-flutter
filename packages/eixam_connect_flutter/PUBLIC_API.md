@@ -546,9 +546,24 @@ may be retained per point without promoting it to an elevation metric.
 
 `readActivityRecordingRoute(recordingId: ..., fromInclusive: ...,
 expectedRouteRevision: ..., pageSize: 512)` pages one known route, not activities.
-Each finite read captures a consistent local route revision when listened to.
-An empty route still emits a terminal page. Cancellation releases read resources.
-A nonpositive page size is invalid; page size bounds points per page.
+Each finite read captures one local route revision in its first successful page
+transaction after listening starts. Every later page atomically validates that
+revision and reads its data in a separate transaction. A committed route mutation
+between pages terminates the stream with `E_RECORDING_ROUTE_REVISION_CHANGED`
+before delivering any page from the new revision. Metadata-only changes and
+ignored duplicate samples do not invalidate a read whose revision is unchanged.
+Consumers refresh recording state and start a new read after that error; pages
+from a failed read are not a completed route or suffix replacement.
+
+Each page's recorder command and SQLite transaction finish before delivery.
+Pausing a subscription retains no writer ownership, database transaction, native
+cursor or historical snapshot, so live writes, recovery and Finish continue
+without consumer resume/cancellation. No pause timeout or reader admission limit
+is introduced. Cancellation prevents further page commands and suppresses pending
+delivery; identity replacement and SDK disposal fence readers without awaiting
+paused event delivery. An already executing page operation may finish draining.
+An empty route still emits a terminal page. A nonpositive page size is invalid;
+page size bounds points per page.
 
 `SdkActivityRoutePoint` retains opaque sample identity, original UTC TAG time,
 coordinates, optional coarse altitude and existing `EixamDevicePositionDelivery`

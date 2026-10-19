@@ -473,26 +473,32 @@ void main() {
     },
   );
   test(
-    'one revision stays consistent while a writer queues between pages',
+    'writer commits between pages and reader rejects the changed revision',
     () async {
       await ingest(
         List.generate(8, (i) => sample('p$i', start.add(Duration(seconds: i)))),
       );
       Future<void>? pending;
       var delivered = 0;
-      final pages = await f.controller
-          .readActivityRecordingRoute(recordingId: r.recordingId, pageSize: 1)
-          .map((page) {
-            if (delivered++ == 0) {
-              pending = ingest([
-                sample('new', start.add(const Duration(seconds: 10))),
-              ]);
-            }
-            return page;
-          })
-          .toList();
+      final pages = <SdkActivityRoutePage>[];
+      await expectLater(
+        f.controller
+            .readActivityRecordingRoute(recordingId: r.recordingId, pageSize: 1)
+            .map((page) {
+              pages.add(page);
+              if (delivered++ == 0) {
+                pending = ingest([
+                  sample('new', start.add(const Duration(seconds: 10))),
+                ]);
+              }
+              return page;
+            })
+            .drain<void>(),
+        throwsA(recordingError('E_RECORDING_ROUTE_REVISION_CHANGED')),
+      );
+      expect(pages, hasLength(1));
       expect(pages.every((p) => p.routeRevision == 1), isTrue);
-      expect(pages.expand((p) => p.segments).expand((s) => s.points).length, 8);
+      expect(pages.expand((p) => p.segments).expand((s) => s.points).length, 1);
       await pending;
       expect((await current()).pointCount, 9);
       expect((await current()).routeRevision, 2);

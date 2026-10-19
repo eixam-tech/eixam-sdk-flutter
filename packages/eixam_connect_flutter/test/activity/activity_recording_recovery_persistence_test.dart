@@ -253,7 +253,7 @@ void main() {
   });
 
   test(
-    'cancelled route reader releases recovered writer without mixing revisions',
+    'paused route reader permits recovered commit and rejects the new revision',
     () async {
       await pending();
       await h.ready();
@@ -264,32 +264,46 @@ void main() {
       await h.send(h.meta(1));
       final before = await current();
       final seen = <SdkActivityRoutePage>[];
+      final errors = <Object>[];
       final paused = Completer<void>();
+      final done = Completer<void>();
       late StreamSubscription<SdkActivityRoutePage> reader;
       reader = f.controller
           .readActivityRecordingRoute(recordingId: r.recordingId, pageSize: 1)
-          .listen((page) {
-            seen.add(page);
-            if (!page.isLast) {
-              reader.pause();
-              if (!paused.isCompleted) paused.complete();
-            }
-          });
-      await paused.future;
-      var committed = false;
-      final chunk = h.send(h.chunk(t + 2)).then((_) => committed = true);
-      await pumpEventQueue();
-      expect(committed, isFalse);
-      expect(
-        seen.every((page) => page.routeRevision == before.routeRevision),
-        isTrue,
-      );
-      await reader.cancel();
-      await chunk;
-      await h.send(h.end(1));
-      final after = await work;
-      expect(after.pointCount, 2);
-      expect(after.routeRevision, greaterThan(before.routeRevision));
+          .listen(
+            (page) {
+              seen.add(page);
+              if (!page.isLast && !paused.isCompleted) {
+                reader.pause();
+                paused.complete();
+              }
+            },
+            onError: errors.add,
+            onDone: done.complete,
+          );
+      try {
+        await paused.future;
+        var committed = false;
+        await h.send(h.chunk(t + 2)).then((_) => committed = true);
+        expect(committed, isTrue);
+        expect(reader.isPaused, isTrue);
+        expect(seen, hasLength(1));
+        expect(
+          seen.every((page) => page.routeRevision == before.routeRevision),
+          isTrue,
+        );
+        await h.send(h.end(1));
+        final after = await work;
+        expect(after.pointCount, 2);
+        expect(after.routeRevision, greaterThan(before.routeRevision));
+        expect(reader.isPaused, isTrue);
+        reader.resume();
+        await done.future;
+        expect(seen, hasLength(1));
+        expect(errors, [recordingError('E_RECORDING_ROUTE_REVISION_CHANGED')]);
+      } finally {
+        await reader.cancel();
+      }
       await expectLater(
         f.controller
             .readActivityRecordingRoute(
