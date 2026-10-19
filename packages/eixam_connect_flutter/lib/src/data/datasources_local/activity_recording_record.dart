@@ -48,7 +48,12 @@ final class ActivityRecordingOwner {
 
 /// Private metadata mapping; validates summary shape without loading route arrays.
 final class ActivityRecordingRecord {
-  const ActivityRecordingRecord(this.owner, this.value);
+  const ActivityRecordingRecord(
+    this.owner,
+    this.value, {
+    this.finalizationStartedAt,
+    this.finalizationDeadlineAt,
+  });
 
   factory ActivityRecordingRecord.decode(Map<String, Object?> row) {
     String text(String key) {
@@ -159,6 +164,19 @@ final class ActivityRecordingRecord {
             : quality != ActivityRecordingRouteQuality.partial)) {
       throw const FormatException();
     }
+    final finishStart = row['finalization_started_at'] == null
+        ? null
+        : time('finalization_started_at');
+    final finishDeadline = row['finalization_deadline_at'] == null
+        ? null
+        : time('finalization_deadline_at');
+    if ((finishStart == null) != (finishDeadline == null) ||
+        (finishStart != null &&
+            (phase == ActivityRecordingPhase.active ||
+                finishDeadline!.difference(finishStart) !=
+                    const Duration(seconds: 5)))) {
+      throw const FormatException();
+    }
     return ActivityRecordingRecord(
       ActivityRecordingOwner(
         scope,
@@ -188,14 +206,20 @@ final class ActivityRecordingRecord {
         previousRouteRevision: previous,
         routeChangedFrom: changed,
       ),
+      finalizationStartedAt: finishStart,
+      finalizationDeadlineAt: finishDeadline,
     );
   }
 
   final ActivityRecordingOwner owner;
   final SdkActivityRecording value;
+  final DateTime? finalizationStartedAt;
+  final DateTime? finalizationDeadlineAt;
 
   ActivityRecordingRecord transition({
     ActivityRecordingPhase? phase,
+    DateTime? finalizationStartedAt,
+    DateTime? finalizationDeadlineAt,
     DateTime? endedAt,
     String? deviceIdentity,
     ActivityRecordingInputState? inputState,
@@ -203,6 +227,14 @@ final class ActivityRecordingRecord {
     Set<ActivityRecordingIssue>? issues,
   }) => ActivityRecordingRecord.decode({
     ...encode(),
+    if (finalizationStartedAt != null)
+      'finalization_started_at': finalizationStartedAt
+          .toUtc()
+          .toIso8601String(),
+    if (finalizationDeadlineAt != null)
+      'finalization_deadline_at': finalizationDeadlineAt
+          .toUtc()
+          .toIso8601String(),
     if (phase != null) 'phase': phase.name,
     if (endedAt != null) 'ended_at': endedAt.toUtc().toIso8601String(),
     if (deviceIdentity != null) 'device_identity': deviceIdentity,
@@ -213,6 +245,10 @@ final class ActivityRecordingRecord {
   });
 
   Map<String, Object?> encode() => {
+    if (finalizationStartedAt != null)
+      'finalization_started_at': finalizationStartedAt!.toIso8601String(),
+    if (finalizationDeadlineAt != null)
+      'finalization_deadline_at': finalizationDeadlineAt!.toIso8601String(),
     'recording_id': value.recordingId,
     'owner_scope': owner.scope,
     'sdk_user_id': owner.sdkUserId,

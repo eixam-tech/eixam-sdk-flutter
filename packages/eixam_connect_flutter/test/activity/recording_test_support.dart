@@ -163,9 +163,11 @@ final class FaultRecordingStore implements ActivityRecordingStore {
   bool failClear = false;
   bool loseNextWriteAcknowledgement = false;
   ActivityRecordingPhase? failPhase;
+  ActivityRecordingPhase? loseAcknowledgementPhase;
   Completer<void>? writeGate;
   Completer<void>? writeEntered;
   int committedWrites = 0;
+  void Function(ActivityRecordingPhase)? onCommit;
   @override
   Object get writerNamespace => inner.writerNamespace;
   @override
@@ -173,10 +175,12 @@ final class FaultRecordingStore implements ActivityRecordingStore {
     Future<T> Function(ActivityRecordingTransaction) action,
   ) async {
     var wrote = false;
+    ActivityRecordingPhase? writtenPhase;
     final result = await inner.transaction((tx) async {
       final tracking = _WriteTrackingTransaction(tx);
       final result = await action(tracking);
       wrote = tracking.lastWrite != null;
+      writtenPhase = tracking.lastWrite?.value.phase;
       if (wrote) {
         final gate = writeGate;
         writeGate = null;
@@ -196,8 +200,11 @@ final class FaultRecordingStore implements ActivityRecordingStore {
     });
     if (wrote) {
       committedWrites++;
-      if (loseNextWriteAcknowledgement) {
+      if (writtenPhase != null) onCommit?.call(writtenPhase!);
+      if (loseNextWriteAcknowledgement ||
+          loseAcknowledgementPhase == writtenPhase) {
         loseNextWriteAcknowledgement = false;
+        loseAcknowledgementPhase = null;
         throw const ActivityRecordingException(
           'E_RECORDING_PERSISTENCE_FAILED',
           'Commit acknowledgement unavailable.',

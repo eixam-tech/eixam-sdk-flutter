@@ -1,8 +1,8 @@
 import 'package:sqflite/sqflite.dart';
 
-/// Private schema. Version three adds durable recording-owned recovery coverage.
+/// Private schema. Version four adds a bounded durable finalization deadline.
 abstract final class ActivityRecordingSchema {
-  static const version = 3;
+  static const version = 4;
 
   static Future<void> create(Database db, int version) async {
     await db.execute('''CREATE TABLE recording_store_metadata (
@@ -69,7 +69,7 @@ abstract final class ActivityRecordingSchema {
     int oldVersion,
     int newVersion,
   ) async {
-    if (oldVersion < 1 || oldVersion > 2 || newVersion != 3) {
+    if (oldVersion < 1 || oldVersion > 3 || newVersion != 4) {
       throw StateError('Unsupported recording schema');
     }
     if (oldVersion == 1) {
@@ -104,14 +104,22 @@ abstract final class ActivityRecordingSchema {
         'CREATE INDEX route_gaps_time ON route_gaps(recording_id, from_order, gap_id)',
       );
     }
-    await db.execute('''CREATE TABLE recording_recovery (
+    if (oldVersion < 3) {
+      await db.execute('''CREATE TABLE recording_recovery (
       recording_id TEXT PRIMARY KEY NOT NULL REFERENCES recordings(recording_id) ON DELETE CASCADE,
       processed_through INTEGER,
       needed INTEGER NOT NULL DEFAULT 0 CHECK(needed IN (0,1))
     )''');
-    await db.execute(
-      '''INSERT INTO recording_recovery(recording_id, needed)
+      await db.execute(
+        '''INSERT INTO recording_recovery(recording_id, needed)
       SELECT recording_id, CASE WHEN unresolved_gap_count > 0 THEN 1 ELSE 0 END FROM recordings''',
+      );
+    }
+    await db.execute(
+      'ALTER TABLE recordings ADD COLUMN finalization_started_at TEXT',
+    );
+    await db.execute(
+      'ALTER TABLE recordings ADD COLUMN finalization_deadline_at TEXT',
     );
   }
 }

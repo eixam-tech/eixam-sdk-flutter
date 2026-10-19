@@ -21,7 +21,7 @@ final class ActivityRecordingIngestor {
   }) {
     final r = record.value;
     final device = normalizeCanonicalHardwareId(batch.deviceIdentity);
-    if (r.phase != ActivityRecordingPhase.active ||
+    if (r.phase == ActivityRecordingPhase.finished ||
         r.deviceIdentity == null ||
         device != r.deviceIdentity ||
         batch.source != SdkLocationSource.connectedDevice ||
@@ -38,6 +38,7 @@ final class ActivityRecordingIngestor {
           sample.stableSampleKey.isEmpty ||
           at == null ||
           at.isBefore(r.recordingStartedAt) ||
+          (r.endedAt != null && at.isAfter(r.endedAt!)) ||
           (!recovered &&
               at.isBefore(
                 batch.receivedAt.toUtc().subtract(

@@ -97,6 +97,8 @@ void main() {
       expect(pending?.endedAt, cutoff);
       await reopen();
       f.now = f.now.add(const Duration(days: 3));
+      await f.controller.getActiveActivityRecording();
+      await pumpEventQueue();
       expect(await f.controller.getActiveActivityRecording(), isNull);
       final result = await f.controller.getActivityRecording(
         recordingId: original.recordingId,
@@ -404,10 +406,14 @@ void main() {
           f.store.failPhase = null;
         }
         f.store.loseNextWriteAcknowledgement = true;
-        await expectLater(
-          command(),
-          throwsA(recordingError('E_RECORDING_PERSISTENCE_FAILED')),
-        );
+        if (operation == 'finish') {
+          expect((await command()).phase, ActivityRecordingPhase.finished);
+        } else {
+          await expectLater(
+            command(),
+            throwsA(recordingError('E_RECORDING_PERSISTENCE_FAILED')),
+          );
+        }
         final result = await command();
         await pumpEventQueue();
         if (operation == 'finish') {

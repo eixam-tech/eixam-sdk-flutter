@@ -345,7 +345,7 @@ contract. The commercial app will later intersect remote keys with its local
 ActivityCatalog; M2B does not perform that intersection, alias, normalize, or drop
 keys because ActivitySession would reject them.
 
-## Optional activity recording (AR2A + AR2B + AR2C-A)
+## Optional activity recording (AR2A + AR2B + AR2C-A + AR2C-B)
 
 AR1 exports `ActivityRecordingControl`, immutable recording/route models, state
 enums and `ActivityRecordingException` from `eixam_connect_core`, also re-exported
@@ -388,8 +388,15 @@ point does not heal a gap. Recovery uses existing idle/recovering/deferred state
 known unresolved defects remain partial, otherwise quality remains unknown.
 Matching input can be observing; this means attachment, never fresh GPS.
 
-Final catch-up and finish-while-disconnected hardening remain **NOT IMPLEMENTED**
-(AR2C-B). Complete-route guarantees, ascent/descent, speed/pace/calories, backend
+AR2C-B implements durable bounded finalization. The first accepted finish fixes
+an inclusive UTC cutoff before final catch-up; all later D3/D1 points must be at
+or before it. An eligible recording-owned recovery gets at most five seconds
+of total finalization budget, including any existing recovery. Disconnected or
+busy paths finish promptly with committed evidence. Partial history and recovery
+timeout can produce a successful immutable partial result. Finish does not
+require the logical ActivitySession to remain active and never ends it.
+
+Complete-route guarantees, ascent/descent, speed/pace/calories, backend
 sync and host UI integration remain unimplemented. Commercial integration belongs
 to AR3. The sections below preserve the frozen public contract. See
 [local engine implementation](../../docs/ACTIVITY_RECORDING_LOCAL_ENGINE.md)
@@ -465,7 +472,13 @@ Keychain/SecureStorage. The commercial app must not create a second route store.
 `finishActivityRecording(recordingId: ..., endedAt: ...)` fixes the recording
 cutoff before bounded final reconciliation. Repeating finish for any retained
 matching ID returns the original result without changing its cutoff or touching
-another active recording. Missing IDs produce `E_RECORDING_NOT_FOUND`.
+another active recording. An explicit different cutoff on a finalizing or
+finished ID throws `E_RECORDING_INVALID_TIME`; omitted or equal UTC cutoffs are
+idempotent. Concurrent compatible calls coalesce. Missing IDs produce
+`E_RECORDING_NOT_FOUND`. Finished records project recovery as `idle` and input as
+`unavailable` when bound, otherwise `unbound`; route quality and issues preserve
+outcomes without claiming active observation. A lifecycle-only finish does not
+increment routeRevision. Known-ID route reads remain available after restart.
 
 `getActivityRecording(recordingId: ...)` retrieves a known active/finalizing or
 retained finished result for finish idempotence, navigation, immediate summary

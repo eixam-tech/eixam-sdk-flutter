@@ -1,4 +1,4 @@
-# Activity Recording local engine (AR2A + AR2B + AR2C-A)
+# Activity Recording local engine (AR2A + AR2B + AR2C-A + AR2C-B)
 
 The SDK implements durable recording lifecycle and live TAG route persistence
 behind the frozen optional `ActivityRecordingControl` contract. AR2B adds live
@@ -6,8 +6,10 @@ D3 ingestion, durable sample identity, canonical order/segments, conservative
 integrity gaps, route distance and paged reads. AR2B-P1 backup-safe storage remains
 unchanged. AR2C-A adds authoritative disconnect uncertainty, bounded retained
 D1 recovery through the existing coordinator, durable live/recovered dedupe and
-conservative gap reconciliation. There is no commercial host integration, final
-catch-up, complete-route guarantee, cloud synchronization or route upload.
+conservative gap reconciliation. AR2C-B adds robust bounded final catch-up and
+immutable partial results with durable process/offline restoration. There is no
+commercial host integration, complete-route guarantee, cloud synchronization or
+route upload.
 
 ## Storage and dependencies
 
@@ -89,7 +91,7 @@ path and applies exclusion in place without moving existing metadata.
 | `route_gaps` | Integrity and disconnect intervals with reason/state and indexed UTC boundaries |
 | `recording_recovery` | Recording-owned durable recovery need and inclusive processed-history cursor |
 
-SQLite's `user_version` is the explicit schema version (currently 3). Version 1 to 2 migrates
+SQLite's `user_version` is the explicit schema version (currently 4). Version 1 to 2 migrates
 transactionally without resetting metadata, bindings, active/finalizing or
 finished recordings. Approved v1 route tables are empty; unexpected legacy route
 evidence aborts migration and preserves the original database. Version 2 adds
@@ -99,7 +101,10 @@ existing `(recording_id, sample_key)` unique key; device identity is also persis
 and verified per point. Version 2 to 3 adds the recovery table without rewriting
 existing summary/point/gap rows. Existing unresolved gaps seed durable recovery
 need. Accepted v1 metadata migrates through both steps in the same transaction.
-Creation is transactional.
+Version 3 to 4 adds nullable private finalization start/deadline columns to
+`recordings`. Older active/finished rows and all route/recovery facts are retained;
+legacy finalizing rows with no timing proof complete without waiting. Creation
+and every accepted v1/v2/v3 migration are transactional.
 There are no destructive migration fallbacks. Unsupported older/future versions
 fail closed and preserve the file. Future versions must supply transactional
 migrations and extend the metadata mapper and route reader together. A route
@@ -142,16 +147,21 @@ current evidence arrives. A persisted attachment alone does not invent a new gap
 an authoritative current loss/disconnect fact does. Sparse fixes never establish
 a disconnect.
 
-Finish commits `finalizing` with a frozen UTC cutoff, then commits `finished`.
-The default cutoff is SDK acceptance time; explicit cutoffs cannot precede start
-or be in the future. Any already received samples after a caller's fixed cutoff
-are removed transactionally with the finalizing barrier, including affected gaps,
-summary/distance and route revision. Queued live work cannot cross that barrier;
-AR2B admits only active recordings and performs no final catch-up. A retry cannot change a finalizing cutoff. Repeating a
-retained finished ID returns its original result even if another recording is
-active or has an orphaned association. It does not finish that other recording.
-A process reconstructed after the first finish commit completes the persisted
-finish intent, preserving cutoff and metadata. It performs no device catch-up.
+Finish commits `finalizing` with a frozen UTC cutoff and private five-second
+absolute deadline, then attempts eligible final catch-up outside the serialized
+recorder actor. The default cutoff is SDK acceptance time; explicit cutoffs
+cannot precede recording start or be in the future when first accepted. Samples
+already received after a caller's earlier cutoff are clipped transactionally
+with gaps, metrics and summary. During finalizing, eligible live/recovered samples
+at or before the cutoff remain admissible. Later data is rejected.
+
+The final actor turn drains previously accepted ingestion, fences recording-owned
+recovery and commits `finished` atomically. Repeated retained finished IDs return
+the original result even if another recording has an orphaned association.
+Different explicit cutoffs throw `E_RECORDING_INVALID_TIME` for both finalizing
+and finished records. Reconstruction resumes the original intent/deadline;
+disconnected or expired restoration completes without a device wait. See the
+AR2C-B section for timing, terminal projection, failures and proof limits.
 
 Known-ID lookup returns active/finalizing/finished metadata or null for an
 unknown ID within the current owner. Active lookup returns null only after a
@@ -285,8 +295,8 @@ independently retrievable; later live deliveries cannot change finished data.
 Identity cleanup removes prior-owner points/gaps along with metadata, and late
 old-generation callbacks/pages cannot expose coordinates to a replacement owner.
 
-AR2C-A implements retained D1 recovery as described below. Final TAG catch-up and
-finish-while-disconnected hardening remain AR2C-B and are NOT IMPLEMENTED.
+AR2C-A implements retained D1 recovery as described below. AR2C-B adds bounded
+final catch-up, disconnected finish and immutable partial results.
 Ascent/descent, speed/pace/calories and complete-route guarantees remain
 unimplemented. The recorder never owns Tracking, SOS, DMP, Protection, OTA or
 provisioning actions.
@@ -624,6 +634,182 @@ packaging/toolchain debt was changed. Disposable probes were removed and only
 task-started simulators/emulators shut down. Physical TAGs/phones were untouched.
 
 AR2B-HW1 remains **DEFERRED**, mandatory before final M6 sign-off, M6C, develop
-merge or release/store distribution. Final finish catch-up and finish hardening
-remain **NOT IMPLEMENTED (AR2C-B)**. No host orchestration, History UI, backend
+merge or release/store distribution. The following AR2C-B section supersedes
+this stage's finalization deferral. No host orchestration, History UI, backend
 sync, route completeness guarantee or derived sports metrics are added.
+
+
+## AR2C-B robust recording finalization
+
+### Durable intent and cutoff
+
+`finishActivityRecording` remains the frozen optional API. The recorder actor
+validates trusted identity and known ID, normalizes time to UTC and fixes the
+first cutoff. Explicit earlier cutoffs clip already committed later evidence in
+the same transaction as finalizing and its private timing columns. Both
+finalizing and finished retries reject a different explicit time with
+`E_RECORDING_INVALID_TIME`. Equal/omitted retries retain the first cutoff.
+Concurrent compatible callers share one runtime future and recovery episode.
+No public models, enums, required SDK methods or ActivitySession behavior change.
+Finish neither requires an active ActivitySession nor ends it; the original
+session ID, activity key and session start remain on every result.
+
+Private `finalization_started_at` and `finalization_deadline_at` store the
+accepted finish time and exactly five seconds later. They are distinct from an
+earlier explicit cutoff. The deadline never resets on retry/restart. Recording ID,
+identity generation and recovery-generation fencing provide callback ownership;
+no additional public or durable lifecycle enum is needed. Same-identity offline
+restore schedules the durable intent to completion without backend readiness.
+Observers may briefly receive committed finalizing state before null.
+
+### Eligibility, budget and recovery
+
+Only a bound, matching TAG with the existing eligible command path may start a
+final transfer. An already recording-owned compatible recovery is adopted rather
+than replaced; unrelated public/subsystem ownership is neither stolen nor
+cancelled. Work uses durable gap/cursor boundaries through endedAt inclusively.
+An older on-wire request cannot be rewritten, so adopted results are additionally
+fenced by the stored cutoff. Coverage from clipped anchors is invalidated.
+
+Finalization has a separate five-second runtime timer, armed before cutoff IO,
+plus the persisted absolute deadline. Recovery does not inherit the normal 60 s
+budget or the backlog timeout multiplier. An adopted episode's deadline is
+shortened; a new final episode does not perform normal retries. Remaining time
+is checked again after recovery-state persistence before any command starts.
+Expiry cancels/fences only the recording's own lease. Restart uses the remaining
+absolute window; expired/missing timing proof or now-before-start rollback gets
+no wait. Rollback can retain `clockUncertain`. A runtime timer cannot be extended
+by wall-clock rollback. Storage/queued actor latency is additional work, not a
+claim of a five-second end-to-end mobile SLA. The existing paused-reader writer
+hold and expensive suffix repair remain AR2D debt.
+
+Disconnected and busy paths do not wait for reconnection. They keep defensible
+committed points, mark pending disconnect evidence unresolved and finish. Empty
+history does not prove coverage. Partial transfers retain useful points and
+unresolved gaps; recovery timeout adds the existing timeout issue where
+appropriate and succeeds when authoritative finish storage is available.
+
+### Commit barrier and immutable result
+
+The final actor turn runs behind already accepted point transactions. Accepted
+D1 transactions can finish even when the deadline fires during their IO. Before
+committing finished it fences the owned recovery, reconciles unresolved evidence
+and projects input as `unavailable` for bound records or `unbound` otherwise,
+with recovery `idle`. Input unavailable is the narrow existing representation for
+a recorder that no longer observes; it does not assert TAG disconnection.
+Quality is partial for known unresolved defects, otherwise unknown. No route
+means null distance; eligible zero-length edges may still yield zero.
+
+Finalizing and final commits are read back after ambiguous acknowledgements;
+authoritative committed intent continues and committed finished state returns in
+the same call. Transient optional recovery-state/settlement storage failure gets
+one conservative final transaction with `recoveryFailed`; inability to persist
+or reconcile that final state remains a true typed failure. No speculative
+finished summary is published. The active watcher ultimately emits null.
+
+Finished points, binding, sample bounds, segments, gaps, distance, quality,
+issues and revision remain immutable. Neither late D3 nor old D1 callbacks can
+mutate them or attach old recovery to a new recording/identity. Lifecycle-only
+finish does not change routeRevision; clipping, recovery and visible gap-state
+changes use normal canonical route transactions. A/B/C remain independently
+readable after restart and starting D. Dispose fences callbacks and closes IO
+without deleting durable intent or route data.
+
+### Validation and limits
+
+Deterministic fake-clock coverage exercises exact inclusive microsecond live
+cutoff, decoded D1 boundary filtering, normal-recovery adoption, five-second
+expiry, post-write expiry, remaining restart budget, clock rollback/forward,
+concurrent/equal/different finish, in-flight transaction barrier, all five crash
+boundaries, ambiguous acknowledgements, transient recovery writes, identity
+switch and multiple retained routes. Production SDK composition checks preserve
+zero automatic phone Tracking, SOS, DMP and Protection/OTA/provisioning actions.
+
+Native synthetic probes use byte-identical SDK runtime copies in disposable
+Android/iOS consumers: decoded D3, disconnect, decoded D1, cutoff, recovery,
+default native-prepared SQLite and the public known-ID route API. Each platform
+creates finished A, leaves B durably finalizing after a recovered chunk, completes
+B offline after abrupt process termination, then verifies both after another
+restart. The driver confirms SQLite still says finalizing after termination and
+before relaunch; no dispose is used for that first kill. No final route rows are directly inserted. Database/WAL/SHM privacy preparation
+is checked while open. This is SDK/controller native composition evidence,
+not full commercial-app orchestration or physical TAG validation.
+
+AR2B-HW1 stays **DEFERRED**, mandatory before final M6 sign-off, M6C, develop merge
+or release/distribution. Commercial app orchestration is AR3; History UI,
+list/search, GPX/share, backend sync, completeness guarantees, ascent/descent and
+speed/pace/calorie metrics remain unsupported.
+
+
+### AR2C-B validation results
+
+Final package regression commands (Flutter package working directory):
+
+```sh
+flutter test --concurrency=2 --name '^(?!.*middle D1 points through coordinator)(?!.*finish benchmark)' --reporter expanded
+flutter test test/activity/activity_recording_recovery_performance_test.dart --reporter expanded
+flutter test test/activity/activity_recording_finalization_performance_test.dart --reporter expanded
+flutter test test/activity/activity_recording_migration_test.dart --reporter expanded
+```
+
+The full regression set passed 2,091 tests. The isolated normal-recovery and
+finalization benchmarks passed three and seven cases respectively: 2,101 Flutter
+tests total, zero failures/skips. The finalization subset passed 32 deterministic
+cases. The strengthened migration rerun passed six cases, including preservation
+of a non-null v3 processed-history cursor. Core analysis was clean and 234 tests
+passed; Flutter analysis reported zero errors/warnings and the same seven baseline
+infos with `--no-fatal-infos`. UI analysis was clean and nine tests passed.
+Changed-file Dart formatting checked 15 files; `git diff --check` passed.
+
+Android SDK JVM tests passed 140 cases with zero failures/errors/skips. Gradle's
+initial direct invocation failed under default Java 26.0.1 (`What went wrong:
+26.0.1`); using Android Studio's JBR passed without source changes. The standalone
+Foundation storage helper passed eight cases. Android API 35 and iOS 26.5 arm64
+synthetic probes each passed initial finalizing, abrupt-kill/offline restoration
+and finished restart. Both preserved A at six points/revision 8/quality unknown;
+B restored three committed points and finished partial at revision 5, unchanged
+on the next restart. Native probes used fresh v4 databases; legacy migrations
+were exercised with FFI SQLite, not claimed as native migration proof.
+
+Earlier development runs caught obsolete finished-cutoff/finalizing-ingestion
+expectations, migration projections, a gap-benchmark fixture conflict, and the
+finished-A/orphaned-B observation regression. These were corrected before the
+final passes. Temporary syntax errors during brace formatting were also fixed.
+The first broad regression run passed 2,086 cases and failed the outdated
+finalizing-ingestion expectation; the final full sweep passed all 2,091. No SOS,
+DMP or unrelated baseline implementation was changed to obtain a pass.
+
+Final host SQLite finish measurements, microseconds:
+
+| Scenario | Persist finalizing | Recovery | Final commit interval | Total finish |
+| --- | ---: | ---: | ---: | ---: |
+| No route | 5,002 | 0 | 4,583 | 9,648 |
+| Connected, no gap | 1,852 | 2,534 | 3,022 | 13,921 |
+| Connected, recoverable gap | 1,676 | 9,875 | 3,575 | 17,397 |
+| Partial recovery | 1,556 | 3,281 | 3,536 | 10,250 |
+| Disconnected gap | 1,902 | 0 | 2,711 | 4,630 |
+| 10,000 points, empty final history | 1,433 | 612 | 1,651 | 5,420 |
+| 100,000 points, empty final history | 5,980 | 853 | 6,401 | 17,204 |
+
+Persist-finalizing measures entry to its first acknowledged transaction. Recovery
+measures command start to processed END return; the final-commit interval includes
+remaining recorder settlement/queueing and final persistence. Total includes
+other actor/request setup overhead, so the stage columns need not sum to total.
+Measurements are representative synthetic host observations, not percentiles or
+a mobile SLA. Normal recovery benchmark totals for 1k+500, 10k+2k and 100k+100
+points were 1,375,901 / 33,839,339 / 16,958,011 microseconds, respectively. Expensive
+middle insertion, 100k paging and paused-reader writer holds remain AR2D debt.
+
+Independent correctness/Thermo review closed every confirmed finding:
+
+| Finding | Severity | Disposition |
+| --- | --- | --- |
+| Adopted coverage could survive removal of its post-cutoff anchor | P1 | Invalidate clipped proof; regression passed |
+| Lost cutoff/finished acknowledgement required caller retry | P2 | Read authoritative state in the same call; regressions passed |
+| Transient optional recovery persistence failed finish unnecessarily | P2 | Attempt conservative authoritative partial finish; two regressions passed |
+| Recovering-state IO could launch a command after deadline expiry | P2 | Recheck expiry and remaining budget after IO; fake-clock regression passed |
+
+A separate read-only migration/evidence audit found no material findings and
+verified additive migrations, retained route/cursor snapshots, native source
+identity and probe artifacts. These reviews do not authorize commit, merge or
+release. AR2B-HW1 remains **DEFERRED**.

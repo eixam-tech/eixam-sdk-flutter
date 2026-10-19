@@ -294,25 +294,24 @@ void main() {
   );
 
   test(
-    'finish fences recovery without final catch-up or finished-route mutation',
+    'finish coalesces owned recovery and fences late finished-route mutation',
     () async {
       await h.ready();
       final work = f.controller.recoverActivityRecordingHistory(
         recordingId: r.recordingId,
       );
-      final expected = expectLater(
-        work,
-        throwsA(recordingError('E_RECORDING_UNAVAILABLE')),
-      );
       await pumpEventQueue();
       await h.send(h.meta(1));
-      final done = await f.controller.finishActivityRecording(
+      final finishing = f.controller.finishActivityRecording(
         recordingId: r.recordingId,
       );
+      await pumpEventQueue();
       await h.send(h.chunk(t + 1));
       await h.send(h.end(1));
-      await expected;
-      expect(done.pointCount, 0);
+      await work;
+      final done = await finishing;
+      await h.send(h.chunk(t + 2));
+      expect(done.pointCount, 1);
       expect(h.requests, hasLength(1));
       expect(
         (await f.controller.getActivityRecording(

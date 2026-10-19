@@ -13,6 +13,7 @@ import '../device/ble_incoming_event.dart';
 import 'device_position_backlog_coordinator.dart';
 
 part 'activity_recording_recovery.dart';
+part 'activity_recording_finalization.dart';
 
 typedef ActivityRecordingSessionGuard =
     Future<T> Function<T>(
@@ -53,6 +54,7 @@ final class ActivityRecordingController implements ActivityRecordingControl {
   _historyEventEligible;
   final Timer Function(Duration, void Function()) _recoveryTimer;
   _RecordingRecoveryEpisode? _recoveryEpisode;
+  final Map<String, _RecordingFinalization> _finalizations = {};
   int _recoveryGeneration = 0;
   bool _lastHistoryEligible = false;
   String? _lastPathDevice;
@@ -90,6 +92,7 @@ final class ActivityRecordingController implements ActivityRecordingControl {
     final generation = preserveLocalState ? _generation : ++_generation;
     if (!preserveLocalState) {
       _fenceRecovery();
+      _fenceFinalizations();
       _lastHistoryEligible = false;
       _identityReady = false;
       for (final cancel in _cancelRouteReads.toList()) {
@@ -345,50 +348,7 @@ final class ActivityRecordingController implements ActivityRecordingControl {
   Future<SdkActivityRecording> finishActivityRecording({
     required String recordingId,
     DateTime? endedAt,
-  }) => _command((generation) async {
-    var record = await _required(recordingId, generation);
-    if (record.value.phase == ActivityRecordingPhase.finished) {
-      // A prior commit may have succeeded without an acknowledgement. Reconcile
-      // observers without hiding a different recording that is active now.
-      try {
-        _publish(await _activeForObservation(generation), generation);
-      } on ActivityRecordingException catch (error, stack) {
-        if (error.code != 'E_RECORDING_SESSION_MISMATCH') rethrow;
-        _publishError(error, stack, generation);
-      }
-      return record.value;
-    }
-    final priorCutoff = record.value.endedAt;
-    if (priorCutoff != null &&
-        endedAt != null &&
-        priorCutoff != endedAt.toUtc()) {
-      throw _invalidTime;
-    }
-    final now = _clock().toUtc();
-    final cutoff = priorCutoff ?? endedAt?.toUtc() ?? now;
-    if (cutoff.isBefore(record.value.recordingStartedAt) ||
-        (priorCutoff == null && cutoff.isAfter(now))) {
-      throw _invalidTime;
-    }
-    if (record.value.phase == ActivityRecordingPhase.active) {
-      _fenceRecovery();
-      if (record.value.recoveryState ==
-          ActivityRecordingRecoveryState.recovering) {
-        record = record.transition(
-          recoveryState: ActivityRecordingRecoveryState.deferred,
-        );
-      }
-      record = await _transaction(
-        generation,
-        (tx) => tx.finishRoute(record, cutoff),
-      );
-      _publish(record, generation);
-    }
-    final finished = record.transition(phase: ActivityRecordingPhase.finished);
-    await _transaction(generation, (tx) => tx.update(finished));
-    _publish(null, generation);
-    return finished.value;
-  });
+  }) => _finish(recordingId, endedAt);
 
   /// Called synchronously at the private decoded-D3 tap, before public dedupe.
   /// Captures the identity generation before queueing any asynchronous work.
@@ -400,7 +360,7 @@ final class ActivityRecordingController implements ActivityRecordingControl {
         final record = await _transaction(generation, (tx) async {
           final current = await tx.active(_owner!.scope);
           if (current == null ||
-              current.value.phase != ActivityRecordingPhase.active ||
+              current.value.phase == ActivityRecordingPhase.finished ||
               current.value.deviceIdentity == null ||
               normalizeCanonicalHardwareId(batch.deviceIdentity) !=
                   current.value.deviceIdentity ||
@@ -408,7 +368,9 @@ final class ActivityRecordingController implements ActivityRecordingControl {
               batch.delivery != EixamDevicePositionDelivery.live) {
             return null;
           }
-          _matchSession(session, _sessionOf(current.value));
+          if (current.value.phase == ActivityRecordingPhase.active) {
+            _matchSession(session, _sessionOf(current.value));
+          }
           final updated = await const ActivityRecordingIngestor().ingest(
             tx,
             current,
@@ -641,10 +603,9 @@ final class ActivityRecordingController implements ActivityRecordingControl {
       final restored = await _transaction(generation, (tx) async {
         final record = await tx.active(_owner!.scope);
         if (record?.value.phase == ActivityRecordingPhase.finalizing) {
-          await tx.update(
-            record!.transition(phase: ActivityRecordingPhase.finished),
-          );
-          return true;
+          // The actor must remain free while retained-history commits queue.
+          scheduleMicrotask(() => _resumeFinalization(record!, generation));
+          return false;
         }
         if (record?.value.phase == ActivityRecordingPhase.active) {
           var current = record!;
@@ -824,6 +785,7 @@ final class ActivityRecordingController implements ActivityRecordingControl {
     if (_disposed) return;
     _disposed = true;
     _fenceRecovery();
+    _fenceFinalizations();
     for (final cancel in _cancelRouteReads.toList()) {
       cancel();
     }

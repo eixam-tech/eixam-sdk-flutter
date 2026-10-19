@@ -486,7 +486,7 @@ void main() {
   });
 
   test(
-    'production command readiness triggers owned D1 recovery before transport dedupe and rejects wrong nodes',
+    'production command readiness triggers owned D1 recovery and safe final catch-up before transport dedupe',
     () async {
       final directory = await Directory.systemTemp.createTemp('ar2ca-sdk-');
       final history = RecordingHistoryHarness();
@@ -567,6 +567,23 @@ void main() {
         await deliver(history.end(1));
         final settled = await recovery;
         expect(settled.pointCount, 3);
+        final finishing = h.sdk.finishActivityRecording(
+          recordingId: r.recordingId,
+          endedAt: now,
+        );
+        await pumpEventQueue();
+        expect(h.backlogCommands.where((c) => c.opcode == 0x30), hasLength(2));
+        await deliver(history.meta(0));
+        await deliver(history.end(0));
+        final finished = await finishing;
+        expect(finished.phase, ActivityRecordingPhase.finished);
+        expect(finished.recoveryState, ActivityRecordingRecoveryState.idle);
+        expect(finished.pointCount, 3);
+        expect(
+          (await h.sdk.getActiveActivitySession())!.sessionId,
+          r.activitySessionId,
+        );
+        expect(await h.sdk.getActiveActivityRecording(), isNull);
         expect(
           settled.routeQuality,
           ActivityRecordingRouteQuality.partial,

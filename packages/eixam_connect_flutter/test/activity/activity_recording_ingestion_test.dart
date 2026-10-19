@@ -679,7 +679,7 @@ void main() {
   );
 
   test(
-    'finalizing crash restores the already clipped route and rejects later live samples',
+    'finalizing crash restores the already clipped route and rejects post-cutoff live samples',
     () async {
       await ingest([
         sample('a', start),
@@ -693,7 +693,9 @@ void main() {
         ),
         throwsA(recordingError('E_RECORDING_PERSISTENCE_FAILED')),
       );
-      await ingest([sample('later', start)]);
+      await ingest([
+        sample('later', start.add(const Duration(microseconds: 1))),
+      ]);
       final directory = f.directory;
       final sessions = f.sessionStore;
       await f.dispose();
@@ -701,6 +703,8 @@ void main() {
         directory: directory,
         sessionStore: sessions,
       );
+      await f.controller.getActiveActivityRecording();
+      await pumpEventQueue();
       expect(await f.controller.getActiveActivityRecording(), isNull);
       final restored = (await f.controller.getActivityRecording(
         recordingId: r.recordingId,

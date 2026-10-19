@@ -14,7 +14,10 @@ final class _RecordingRecoveryEpisode {
   final int identityGeneration;
   final int generation;
   final DateTime since;
-  final DateTime until;
+  DateTime until;
+  bool finalizing = false;
+  Duration budget = const Duration(seconds: 60);
+  DateTime? deadlineAt;
   final Completer<SdkActivityRecording> result = Completer();
   final Completer<void> stopped = Completer();
   bool cancelled = false;
@@ -59,7 +62,7 @@ extension _ActivityRecordingRecovery on ActivityRecordingController {
             episode.record.value.recordingId,
             generation,
           );
-          if (record.value.phase != ActivityRecordingPhase.active) {
+          if (record.value.phase == ActivityRecordingPhase.finished) {
             throw _unavailable;
           }
           if (_recoveryEpisode != null) return record.value;
@@ -198,20 +201,22 @@ extension _ActivityRecordingRecovery on ActivityRecordingController {
     return request.result;
   }
 
+  void _expireHistory(_RecordingRecoveryEpisode e) {
+    e.expired = true;
+    e.accepting = false;
+    e.stop();
+    unawaited(_backlog?.cancelRecording(e));
+  }
+
   Future<void> _runHistoryEpisode(_RecordingRecoveryEpisode e) async {
     var completed = false;
     var timedOut = false;
-    e.deadline = _recoveryTimer(const Duration(seconds: 60), () {
-      e.expired = true;
-      e.accepting = false;
-      e.stop();
-      unawaited(_backlog?.cancelRecording(e));
-    });
-    final deadline = _clock().toUtc().add(const Duration(seconds: 60));
+    e.deadlineAt ??= _clock().toUtc().add(e.budget);
+    e.deadline ??= _recoveryTimer(e.budget, () => _expireHistory(e));
     try {
       for (
         var attempt = 0;
-        attempt < 3 && _currentEpisode(e) && !e.expired;
+        attempt < (e.finalizing ? 1 : 3) && _currentEpisode(e) && !e.expired;
         attempt++
       ) {
         if (!_historyEligible(e.record.value.deviceIdentity!)) break;
@@ -229,7 +234,7 @@ extension _ActivityRecordingRecovery on ActivityRecordingController {
             !_historyEligible(e.record.value.deviceIdentity!)) {
           break;
         }
-        final remaining = deadline.difference(_clock().toUtc());
+        final remaining = e.deadlineAt!.difference(_clock().toUtc());
         if (remaining <= Duration.zero) {
           e.expired = true;
           break;
@@ -281,7 +286,7 @@ extension _ActivityRecordingRecovery on ActivityRecordingController {
         final result = await _transaction(generation, (tx) async {
           var record = await tx.byId(_owner!.scope, e.record.value.recordingId);
           if (record == null ||
-              record.value.phase != ActivityRecordingPhase.active) {
+              record.value.phase == ActivityRecordingPhase.finished) {
             throw _unavailable;
           }
           record = record.transition(
@@ -324,27 +329,31 @@ extension _ActivityRecordingRecovery on ActivityRecordingController {
   ) async {
     if (!_currentEpisode(e) || !e.accepting || e.expired) throw _unavailable;
     await _command((generation) async {
-      if (!_currentEpisode(e) || !e.accepting || e.expired) throw _unavailable;
+      if (!_currentEpisode(e)) throw _unavailable;
       final record = await _transaction(generation, (tx) async {
         final record = await tx.byId(_owner!.scope, e.record.value.recordingId);
         if (record == null ||
-            record.value.phase != ActivityRecordingPhase.active ||
+            record.value.phase == ActivityRecordingPhase.finished ||
             record.value.deviceIdentity != batch.deviceIdentity ||
             batch.delivery != EixamDevicePositionDelivery.recovered ||
             batch.source != SdkLocationSource.connectedDevice) {
           throw _unavailable;
         }
-        await _withSession(
-          (session) async => _matchSession(
-            session,
-            ActivityRecordingController._sessionOf(record.value),
-          ),
-        );
+        if (record.value.phase == ActivityRecordingPhase.active) {
+          await _withSession(
+            (session) async => _matchSession(
+              session,
+              ActivityRecordingController._sessionOf(record.value),
+            ),
+          );
+        }
         for (final s in batch.samples) {
           final at = s.sampledAt?.toUtc();
           if (at == null ||
               at.isBefore(e.since) ||
               at.isAfter(e.until) ||
+              (record.value.endedAt != null &&
+                  at.isAfter(record.value.endedAt!)) ||
               s.stableSampleKey.isEmpty ||
               s.source != SdkLocationSource.connectedDevice ||
               !EixamGeoCoordinates.isValidFix(s.latitude, s.longitude) ||
@@ -363,15 +372,19 @@ extension _ActivityRecordingRecovery on ActivityRecordingController {
             record.value.unresolvedGapCount) {
           e.rejected = true;
         }
-        if (!_currentEpisode(e) || !e.accepting || e.expired) {
-          throw _unavailable;
-        }
+        if (!_currentEpisode(e)) throw _unavailable;
         return updated;
       });
       // Coverage is remembered only AFTER the transaction acknowledgement.
       for (final sample in batch.samples) {
         final at = sample.sampledAt;
-        if (at == null || at.isBefore(e.since) || at.isAfter(e.until)) continue;
+        if (at == null ||
+            at.isBefore(e.since) ||
+            at.isAfter(e.until) ||
+            (record.value.endedAt != null &&
+                at.isAfter(record.value.endedAt!))) {
+          continue;
+        }
         if (e.first == null || at.isBefore(e.first!)) e.first = at;
         if (e.last == null || at.isAfter(e.last!)) e.last = at;
       }

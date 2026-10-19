@@ -216,9 +216,16 @@ void main() {
     f.now = f.now.add(const Duration(hours: 1));
     final retry = await f.controller.finishActivityRecording(
       recordingId: r.recordingId,
-      endedAt: f.now,
+      endedAt: cutoff,
     );
     expect(retry.endedAt, result.endedAt);
+    await expectLater(
+      f.controller.finishActivityRecording(
+        recordingId: r.recordingId,
+        endedAt: f.now,
+      ),
+      throwsA(recordingError('E_RECORDING_INVALID_TIME')),
+    );
   });
 
   test(
