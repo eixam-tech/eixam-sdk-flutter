@@ -345,7 +345,7 @@ contract. The commercial app will later intersect remote keys with its local
 ActivityCatalog; M2B does not perform that intersection, alias, normalize, or drop
 keys because ActivitySession would reject them.
 
-## Optional activity recording foundation (AR2A: local lifecycle)
+## Optional activity recording foundation (AR2A lifecycle + AR2B-P1 storage)
 
 AR1 exports `ActivityRecordingControl`, immutable recording/route models, state
 enums and `ActivityRecordingException` from `eixam_connect_core`, also re-exported
@@ -354,6 +354,13 @@ implement the optional capability's local, durable metadata lifecycle: start,
 immutable verified TAG binding, committed observation, known-ID retrieval,
 finish, same-identity restoration and multiple finished-record retention.
 AR1's public contract remains unchanged.
+
+AR2B-P1 prepares recording storage through a private native bridge before SQLite
+opens: Android uses the SDK subtree under `Context.noBackupFilesDir`; iOS keeps
+Application Support and sets/verifies directory backup exclusion. Android's
+legacy AR2A directory migrates whole before destination use. Preparation and
+migration failures fail closed using existing errors. Consumers need no custom
+backup rules or native configuration. This adds no public API or ingestion.
 
 AR2A does **not** ingest TAG positions, calculate distance, detect route gaps or
 recover TAG backlog. Empty recordings have zero counters, null distance, unknown

@@ -1,28 +1,32 @@
 import 'dart:io';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
 import 'activity_recording_record.dart';
 import 'activity_recording_schema.dart';
 import 'activity_recording_store.dart';
+import 'activity_recording_storage_directory.dart';
 
-/// SDK-private SQLite store. Default file lives under Application Support,
-/// not Documents, public/external storage, SharedPreferences or secure storage.
-/// OS backup exclusion and database encryption are NOT provided by this class.
+/// SDK-private SQLite store. Native preparation establishes no-backup storage
+/// before any default-path SQLite open. Does not provide database encryption.
 final class ActivityRecordingDatabase implements ActivityRecordingStore {
   ActivityRecordingDatabase({
     String? path,
     DatabaseFactory? factory,
     Future<Directory> Function()? directory,
+    ActivityRecordingStorageDirectory storageDirectory =
+        const ActivityRecordingStorageDirectory(),
   }) : _configuredPath = path,
        _factory = factory,
-       _directory = directory ?? getApplicationSupportDirectory;
+       _directory = directory,
+       _storageDirectory = storageDirectory;
 
   final String? _configuredPath;
   final DatabaseFactory? _factory;
-  final Future<Directory> Function() _directory;
+  // Explicit path/directory overrides are private test seams only.
+  final Future<Directory> Function()? _directory;
+  final ActivityRecordingStorageDirectory _storageDirectory;
   Database? _database;
   bool _disposed = false;
 
@@ -30,9 +34,13 @@ final class ActivityRecordingDatabase implements ActivityRecordingStore {
   Object get writerNamespace =>
       _configuredPath ?? 'eixam.activity.recordings.v1';
 
-  Future<String> _path() async =>
-      _configuredPath ??
-      '${(await _directory()).path}/eixam/activity_recordings/recordings.sqlite';
+  Future<String> _path() async {
+    if (_configuredPath case final path?) return path;
+    if (_directory case final directory?) {
+      return '${(await directory()).path}/eixam/activity_recordings/recordings.sqlite';
+    }
+    return '${(await _storageDirectory.prepare()).path}/recordings.sqlite';
+  }
 
   Future<Database> _open() async {
     if (_disposed) throw _unavailable;
@@ -60,6 +68,8 @@ final class ActivityRecordingDatabase implements ActivityRecordingStore {
       }
       _database = db;
       return db;
+    } on ActivityRecordingException {
+      rethrow;
     } catch (_) {
       // Never expose SQLite messages, SQL arguments, paths or identity payloads.
       throw _restoreFailed;

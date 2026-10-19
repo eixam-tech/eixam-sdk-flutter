@@ -7,11 +7,13 @@ import dev.eixam.connect.flutter.protection.ProtectionRuntimeBridge
 import dev.eixam.connect.flutter.telemetry.BackgroundTelemetryBridge
 import dev.eixam.connect.flutter.telemetry.PhoneRadioBridge
 import dev.eixam.connect.flutter.storage.SecureStorageBridge
+import dev.eixam.connect.flutter.storage.ActivityRecordingStorageBridge
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 
 class EixamConnectFlutterPlugin : FlutterPlugin {
     private var inspectionBridge: MeshtasticInspectionBridge? = null
     private var applicationContext: Context? = null
+    private var activityRecordingStorageBridge: ActivityRecordingStorageBridge? = null
     private var protectionBridgeGeneration: Long? = null
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -37,6 +39,9 @@ class EixamConnectFlutterPlugin : FlutterPlugin {
             messenger = binding.binaryMessenger,
             context = binding.applicationContext,
         )
+        activityRecordingStorageBridge = ActivityRecordingStorageBridge.register(
+            binding.binaryMessenger, binding.applicationContext,
+        )
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -46,6 +51,8 @@ class EixamConnectFlutterPlugin : FlutterPlugin {
             PhoneRadioBridge.unregister()
             FirmwareDfuBridge.unregister()
             SecureStorageBridge.unregister()
+            activityRecordingStorageBridge?.unregister()
+            activityRecordingStorageBridge = null
         }
         inspectionBridge?.dispose()
         inspectionBridge = null
