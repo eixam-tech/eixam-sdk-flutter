@@ -107,3 +107,9 @@ export 'src/errors/activity_session_exception.dart';
 export 'src/entities/activity_availability.dart';
 export 'src/interfaces/activity_availability_control.dart';
 export 'src/errors/activity_availability_exception.dart';
+
+export 'src/entities/activity_recording.dart';
+export 'src/entities/activity_recording_route.dart';
+export 'src/enums/activity_recording.dart';
+export 'src/interfaces/activity_recording_control.dart';
+export 'src/errors/activity_recording_exception.dart';

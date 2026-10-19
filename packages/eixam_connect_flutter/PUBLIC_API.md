@@ -34,21 +34,32 @@ Those responsibilities stay inside the SDK/runtime layers.
 For a connected TAG `0xD3` live batch, only the newest sample updates that
 current marker.
 
-`watchDevicePositionBatches()` emits one `EixamDevicePositionBatch` per valid
-firmware `0xD3` message. Each batch contains 1–24 real TAG samples in firmware
-order (oldest to newest); the SDK does not fabricate or deduplicate samples.
+`watchDevicePositionBatches()` emits novel connected-TAG positions from live
+delivery and persistent backlog recovery. Firmware `0xD3` messages contain 1–24
+real samples in firmware order (oldest to newest). The SDK removes recognized
+replays using bounded in-memory deduplication; a fully duplicate delivery emits
+no batch. This is not durable recording storage or a route-completeness guarantee.
 `receivedAt` is phone/SDK reception time, while each sample's nullable
-`sampledAt` is the TAG time. `timestampValid` is true only when that TAG Unix
-time is within seven days before or ten minutes after reception. This is a
-live-transport plausibility safeguard, not proof of RTC synchronization.
+`sampledAt` is the TAG time. For live `0xD3` samples, `timestampValid` requires
+TAG Unix time within seven days before or ten minutes after reception. This is a
+live-transport plausibility safeguard, not proof of RTC synchronization. Backlog
+records use persistent-record plausibility checks and may be older than seven days.
 
-Each sample has an opaque SHA-256 `stableSampleKey` over its canonical 16-byte
-firmware record for application idempotency. For undated records, replay
-identity is necessarily limited to the identity present in those record bytes.
-The source is always `SdkLocationSource.connectedDevice`. Classic 12-byte TEL
-continues to update current location and does not emit a synthetic batch.
+Live/backlog records share an opaque `stableSampleKey` over the canonical
+timestamped firmware record. Hosts compare keys rather than parse them. The
+source is `SdkLocationSource.connectedDevice`; `delivery` distinguishes live
+from recovered samples. `deviceIdentity` identifies the originating TAG when
+available. Classic 12-byte TEL can emit a single-sample batch with null
+`sampledAt`; reception time must not be substituted for its missing TAG time.
 
-The SDK does not yet expose the firmware `0xD1` persistent-backlog protocol.
+`syncDevicePositionBacklog(since: ..., until: ..., timeout: ...)` retrieves
+retained TAG history through the existing `0xD1` protocol and emits novel samples
+on the same stream. Its result reports completion, partial delivery, counts and
+the latest processed sample time for inclusive retries. The timeout is an idle
+progress timeout; the coordinator also applies an overall bound, currently 12
+times that timeout. Successful transfer does not prove every physical sample
+was retained. Protocol v1 cannot prove retention loss.
+
 Actual live batch density depends on firmware sampling and scheduling; consumers
 must use the samples received and must not infer missing intermediate points.
 
@@ -333,3 +344,188 @@ must only start sessions for keys compatible with their implemented activity/ses
 contract. The commercial app will later intersect remote keys with its local
 ActivityCatalog; M2B does not perform that intersection, alias, normalize, or drop
 keys because ActivitySession would reject them.
+
+## Optional activity recording foundation (AR1: contract only)
+
+AR1 exports `ActivityRecordingControl`, immutable recording/route models, state
+enums and `ActivityRecordingException` from `eixam_connect_core`, also re-exported
+through the Flutter package's public entrypoint. Production SDK
+instances do **not** implement this capability yet. There is no recorder, route
+store, TAG ingestion, backlog integration or distance calculation in AR1.
+Runtime implementation belongs to AR2; commercial integration belongs to AR3.
+The following describes that contract, not currently delivered runtime behavior.
+
+### Independent domains and optional discovery
+
+- `ActivityAvailabilityControl`: which activity keys the app may offer, through
+  the existing unchanged `GET /v1/sdk/activities` endpoint.
+- `ActivitySessionControl`: the logical activity explicitly started by the user.
+- `ActivityRecordingControl`: an optional local TAG route associated with that
+  session, with its own recording ID, lifecycle and device binding.
+- Phone Tracking: the separate phone-location lifecycle.
+
+Discover recording with `sdk is ActivityRecordingControl`. No recording methods
+are added to the required `EixamConnectSdk` interface or facade. Existing SDK
+implementers, test doubles and session/availability consumers need no recording
+implementation. `SdkActivitySession` and `ActivitySessionControl` are unchanged.
+
+Recording never starts or stops a logical session, phone Tracking, SOS, DMP or
+Protection Mode. It never acquires OTA/provisioning ownership. Hosts separately
+coordinate Start/End and preserve their existing DMP End gate. Maps, localized
+status, activity catalogs and partner-specific presentation remain host-owned.
+
+### Identity, start and TAG-only binding
+
+Recording requires a trusted current SDK identity. Local ownership distinguishes
+installation, backend environment, SDK app and external user, and fences an
+established conflicting canonical identity. Signing rotation and temporary
+backend unavailability must not prevent trusted same-identity local restoration.
+Account/backend/app replacement never migrates a recording. Logout/account
+cleanup follows approved identity privacy semantics, including pending results
+and observers. Route data must not be dumped into diagnostics.
+
+`startActivityRecording(activitySession: ..., deviceIdentity: ...)` explicitly
+associates the current same-identity logical session. The session tuple must
+match. `recordingId` is a local SDK recording-domain ID, independent of
+`activitySessionId`; AR2 will generate secure random IDs. Activity keys remain
+opaque and use the frozen `SdkActivitySession.validateActivityKey` grammar;
+there is no recording-specific catalog or second key validator.
+
+A missing TAG does not block recording intent: `active + unbound` or
+`active + disconnected` are valid. A known, verifiable disconnected TAG may be
+bound. Later binding is explicit through `bindActivityRecordingDevice`; a display
+name, list position or merely appearing device never chooses the source.
+The bound identity is immutable. Another TAG cannot contribute or replace it;
+switching TAG requires another recording lifecycle.
+
+The route is **TAG only**. Phone GPS never fills, extends or reconstructs it.
+There is no backend reconstruction or silent fallback source. Only genuine,
+validated TAG samples inside the recording window may be accepted or recovered.
+
+### Lifecycle, retention and known-ID recovery
+
+At most **one active/finalizing recording** exists per logical identity.
+Repeating Start for the same association returns the existing active recording
+unchanged; a different association or conflicting supplied TAG conflicts.
+A retained finished association cannot silently restart.
+
+**Multiple finished recordings are retained locally.** Completing another
+recording never deletes earlier finished recordings. No arbitrary automatic
+age-based deletion is specified. Storage exhaustion must be explicit/degraded,
+without silently deleting active or finished routes. Storage representation,
+limits and benchmarks belong to AR2. Credentials/identity metadata stay separate
+from route-volume storage; large routes do not belong in SharedPreferences or
+Keychain/SecureStorage. The commercial app must not create a second route store.
+
+`finishActivityRecording(recordingId: ..., endedAt: ...)` fixes the recording
+cutoff before bounded final reconciliation. Repeating finish for any retained
+matching ID returns the original result without changing its cutoff or touching
+another active recording. Missing IDs produce `E_RECORDING_NOT_FOUND`.
+
+`getActivityRecording(recordingId: ...)` retrieves a known active/finalizing or
+retained finished result for finish idempotence, navigation, immediate summary
+or crash recovery. It returns null only for confirmed absence within the current
+identity, not a storage failure. There is no latest-only result assumption.
+There is no recording list/search/history API and no History UI in this stage.
+
+`getActiveActivityRecording()` and `watchActiveActivityRecording()` expose only
+active/finalizing state. The watcher seeds committed state and then committed
+changes; restore failures are errors, never fabricated null/empty state. Identity
+changes fence buffered values, errors and route pages. Process recreation must
+preserve active metadata/route rather than automatically finish the recording;
+runtime downtime remains uncertain until genuine TAG evidence can reconcile it.
+Continuous recording while the process is killed is not promised.
+
+### Orthogonal facts and honest metrics
+
+`SdkActivityRecording` contains identity/summary facts, not route arrays:
+
+| Fact | Values / meaning |
+| --- | --- |
+| `phase` | `active`, `finalizing`, `finished` |
+| `inputState` | `unbound`, `disconnected`, `observing`, `unavailable` |
+| `recoveryState` | `idle`, `recovering`, `deferred` |
+| `routeQuality` | `unknown`, `partial`; never guaranteed complete |
+| `issues` | Immutable current degradation facts, not permanent error history |
+
+`observing` means the matching input path is attached, not that fresh GPS fixes
+are arriving. Use original `firstSampleAt`/`lastSampleAt` for sample coverage and
+freshness. `idle` recovery does not prove completeness. Partial quality means a
+known interval lacks defensible continuity; unknown means no such interval is
+currently known, while completeness remains unproven.
+
+Gap states are `pending`, `recovering`, `unresolved` and `reconciled`. Reasons
+describe unavailable device/runtime, rejected samples, ambiguous timestamp or
+persistence failure. Reconciled means retained evidence supports continuity for
+that interval, not that every physical route sample was captured. A successful
+backlog transfer or a single interior recovered point is insufficient by itself.
+`recoverActivityRecordingHistory` requests/coalesces a bounded TAG reconciliation
+episode; unavailable recovery is deferred, not a fatal disconnect error.
+
+`recordedDistanceMeters` is nullable **recorded route distance**, not exact
+movement or sports-grade distance. Null means no defensible distance edge exists,
+including empty/one-point routes. A genuine zero requires eligible accepted edges
+that total zero. AR2 will calculate horizontal Haversine chords between adjacent
+accepted points within canonical continuity segments, never across pending,
+recovering or unresolved gaps. Duplicates add nothing; chronological recovered
+insertion changes affected edges. Altitude contributes no distance.
+
+Time facts remain distinct:
+
+- `activitySessionStartedAt`: logical session start; the canonical source for
+  Activity elapsed remains `SdkActivitySession.startedAt`.
+- `recordingStartedAt`: recording acceptance/persistence window start, possibly
+  later than the session and unchanged while waiting for a TAG.
+- `endedAt`: fixed recording cutoff when finalizing/finished; not the logical
+  session's private ended timestamp. Omitted finish cutoff uses command acceptance
+  time; explicit cutoff cannot precede recording start or lie in the future.
+
+The sample span is not recorded duration or moving time. V1 supplies no
+ascent/descent, speed, pace, calories or moving-time metrics. Real coarse altitude
+may be retained per point without promoting it to an elevation metric.
+
+### Finite paged route reads
+
+`readActivityRecordingRoute(recordingId: ..., fromInclusive: ...,
+expectedRouteRevision: ..., pageSize: 512)` pages one known route, not activities.
+Each finite read captures a consistent local route revision when listened to.
+An empty route still emits a terminal page. Cancellation releases read resources.
+A nonpositive page size is invalid; page size bounds points per page.
+
+`SdkActivityRoutePoint` retains opaque sample identity, original UTC TAG time,
+coordinates, optional coarse altitude and existing `EixamDevicePositionDelivery`
+live/recovered provenance. It has no phone-source or presentation fields.
+`SdkActivityRouteSegment` is a canonical continuity group, not a styled polyline.
+Pages may split a logical segment; equal `segmentId` identifies continuation at
+that revision. Page boundaries never create gaps.
+
+`SdkActivityRouteGap` carries UTC `from`, optional open `until`, domain reason
+and reconciliation state, including uncertainty before/after available points.
+Page `segments`/`gaps`, segment `points` and recording `issues` defensively copy
+their input collections and cannot be mutated externally. Models normalize UTC
+timestamps but do not implement runtime lifecycle or ingestion validation. They
+follow the existing activity models' identity equality and omit copy/serialization
+frameworks and route-bearing diagnostic string representations.
+
+`routeRevision` and `previousRouteRevision` describe local route/gap mutations,
+not cloud synchronization. `routeChangedFrom` identifies the earliest affected
+timestamp for the most recent mutation. Metadata-only observations do not invent
+a new route mutation. `fromInclusive` supports replacing a route suffix,
+including overlapping gaps. A consumer missing the previous revision must refresh
+rather than merge that suffix. A mismatched expected revision produces retryable
+`E_RECORDING_ROUTE_REVISION_CHANGED` before any page is delivered.
+
+### Errors and implementation boundary
+
+`ActivityRecordingException implements Exception` exposes stable `code` and
+`message`, independently of the sealed SDK exception hierarchy. Initial contract
+codes cover conflict, session mismatch, missing identity, device mismatch, invalid
+time, missing ID, already finished, changed route revision and unavailable
+capability/runtime. Concrete persistence/recovery failure codes are deferred to
+AR2 rather than exposing protocol/database details before implementation.
+
+All recording metadata, points, gaps, metrics, recovery facts, finished results
+and summaries are local-only. No recording endpoint, upload, cloud sync, server
+history, remote URL or background recording upload is introduced. Existing remote
+activity availability remains separate and unchanged. The public contract has no
+backend IDs, cloud state, partner IDs or activity-specific branches.
