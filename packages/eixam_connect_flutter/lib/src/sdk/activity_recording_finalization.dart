@@ -72,6 +72,17 @@ extension _ActivityRecordingFinalization on ActivityRecordingController {
         _publish(record, generation);
       } else {
         _armFinalization(finish, _remainingFinalization(record));
+        try {
+          // A prior process/version's finalizing intent is not proof that its
+          // persisted points are valid. Keep its frozen cutoff and deadline.
+          record = await _transaction(
+            generation,
+            (tx) => tx.finishRoute(record, cutoff),
+          );
+        } catch (_) {
+          finish.timer?.cancel();
+          rethrow;
+        }
       }
       _finalizations[id] = finish;
       scheduleMicrotask(() => unawaited(_runFinalization(record, finish)));

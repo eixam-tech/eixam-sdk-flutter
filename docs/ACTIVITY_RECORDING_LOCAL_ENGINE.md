@@ -282,7 +282,12 @@ recording's durable start/last-sample/end window. It is validated before recover
 filtering or mutation; wall-clock rollback is not treated as corruption. A user
 Finish cutoff can legitimately narrow an already validated cursor together with
 the retained samples, atomically. This is not a clamp of corrupt input. Finish
-also validates identifiers before clipping/deleting rows or aggregating topology.
+validates every persisted point with the same canonical point validator before
+clipping/deleting rows or aggregating topology/distance. Primary-key keyset
+batches of at most 512 points bound memory without trusting sample timestamps
+for traversal. Retained and post-cutoff points both validate in the authoritative
+cutoff transaction, before any point/gap mutation. Resumed finalizing intents
+repeat this validation without resetting their frozen cutoff or deadline.
 
 Malformed facts fail with existing sanitized restore/persistence errors. Active
 corruption is not reported as an absent recording. Rejected operations retain
@@ -719,6 +724,18 @@ Concurrent compatible callers share one runtime future and recovery episode.
 No public models, enums, required SDK methods or ActivitySession behavior change.
 Finish neither requires an active ActivitySession nor ends it; the original
 session ID, activity key and session start remain on every result.
+
+AR2D-FIX3 validates full persisted point integrity before cutoff deletion or
+count/distance aggregation, including points about to be clipped. Validation
+reuses the canonical point rules in bounded keyset batches inside the same
+transaction. A resumed durable finalizing intent validates again before recovery
+can settle it. Invalid data or a validation query failure aborts without clipping,
+publishing speculative state or repairing/deleting corrupt evidence. Repeated
+Finish against unchanged corruption fails again through existing sanitized
+errors. Local integrity/storage work is not itself capped at five seconds. It
+preserves the existing catch-up deadline, so elapsed storage time can reduce the
+remaining TAG catch-up window. It adds no schema, public API, source, metric or
+recovery-policy change.
 
 Private `finalization_started_at` and `finalization_deadline_at` store the
 accepted finish time and exactly five seconds later. They are distinct from an

@@ -277,7 +277,7 @@ final class _WriteTrackingTransaction implements ActivityRecordingTransaction {
     DateTime cutoff,
   ) async {
     final result = await inner.finishRoute(record, cutoff);
-    lastWrite = result;
+    if (!identical(result, record)) lastWrite = result;
     return result;
   }
 

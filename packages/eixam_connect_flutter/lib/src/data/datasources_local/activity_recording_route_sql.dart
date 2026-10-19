@@ -392,6 +392,9 @@ final class ActivityRecordingRouteSql {
     await ActivityRecordingIntegrity.beforeFinish(sql, record);
     await ActivityRecordingIntegrity.gaps(sql, record);
     final recovery = await ActivityRecordingIntegrity.recovery(sql, record);
+    // A resumed intent already owns its clipped route and cutoff. Validation
+    // above is required again; rewriting that committed intent is unnecessary.
+    if (record.value.phase == ActivityRecordingPhase.finalizing) return record;
     final time = cutoff.toUtc().microsecondsSinceEpoch;
     final removed = await sql.delete(
       'route_points',

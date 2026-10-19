@@ -129,19 +129,29 @@ abstract final class ActivityRecordingIntegrity {
     return row;
   }
 
-  /// Finish may delete/clamp rows and aggregate all segment IDs. Validate those
-  /// identifiers first. This finite lifecycle scan is never used by local repair.
+  /// Validate retained AND clipped points before Finish mutates or aggregates
+  /// them, in the caller's transaction. Keyset batches bound memory without
+  /// trusting potentially corrupt sample times. Never used by local repair.
   static Future<void> beforeFinish(
     DatabaseExecutor sql,
     ActivityRecordingRecord record,
   ) async {
-    final invalid = await sql.rawQuery(
-      '''SELECT 1 FROM route_points
-      WHERE recording_id = ? AND (typeof(sample_key) != 'text' OR sample_key = ''
-      OR typeof(segment_id) != 'text' OR length(segment_id) != 64
-      OR segment_id GLOB '*[^0-9a-f]*') LIMIT 1''',
-      [record.value.recordingId],
-    );
-    if (invalid.isNotEmpty) throw const FormatException();
+    String? after;
+    while (true) {
+      final rows = await sql.query(
+        'route_points',
+        where: after == null
+            ? 'recording_id = ?'
+            : 'recording_id = ? AND sample_key > ?',
+        whereArgs: [record.value.recordingId, if (after != null) after],
+        orderBy: 'sample_key',
+        limit: 512,
+      );
+      for (final row in rows) {
+        point(row, record);
+      }
+      if (rows.length < 512) return;
+      after = rows.last['sample_key'] as String;
+    }
   }
 }

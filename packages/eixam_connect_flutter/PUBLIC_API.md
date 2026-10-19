@@ -393,6 +393,13 @@ not trigger automatic repair, deletion or reset. Identity scoping and local
 evidence preservation remain in force. No public contract or schema change is
 introduced.
 
+Before Finish clips points/gaps or aggregates route facts, it validates every
+persisted point, including the post-cutoff tail, using the canonical point rules
+in bounded-memory batches in the same transaction. Resumed finalizing intents
+validate again while preserving their cutoff and deadline. Integrity/query
+failure preserves evidence and publishes no speculative clipped/finished state;
+unchanged corrupt storage keeps failing on retry. No automatic repair occurs.
+
 Routes and finished results restore locally/offline. AR2C-A adds confirmed TAG
 disconnect gaps, bounded D1 recovery through the existing backlog coordinator,
 chronological live/recovered durable dedupe and conservative gap reconciliation.
