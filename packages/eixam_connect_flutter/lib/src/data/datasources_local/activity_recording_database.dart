@@ -4,6 +4,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:sqflite/sqflite.dart';
 
 import 'activity_recording_record.dart';
+import 'activity_recording_integrity.dart';
 import 'activity_recording_route_data.dart';
 import 'activity_recording_route_sql.dart';
 import 'activity_recording_recovery_sql.dart';
@@ -192,7 +193,20 @@ final class _SqlRecordingTransaction implements ActivityRecordingTransaction {
         limit: 2,
       );
       if (rows.length > 1) throw _restoreFailed;
-      return rows.isEmpty ? null : ActivityRecordingRecord.decode(rows.single);
+      if (rows.isEmpty) return null;
+      final record = ActivityRecordingRecord.decode(rows.single);
+      await ActivityRecordingIntegrity.gaps(sql, record);
+      await ActivityRecordingIntegrity.recovery(sql, record);
+      // The primary key makes the proven empty-key guard independent of route size.
+      final invalidKey = await sql.query(
+        'route_points',
+        columns: ['sample_key'],
+        where: "recording_id = ? AND sample_key = ''",
+        whereArgs: [record.value.recordingId],
+        limit: 1,
+      );
+      if (invalidKey.isNotEmpty) throw const FormatException();
+      return record;
     } catch (_) {
       throw _restoreFailed;
     }

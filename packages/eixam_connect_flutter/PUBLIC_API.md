@@ -345,12 +345,12 @@ contract. The commercial app will later intersect remote keys with its local
 ActivityCatalog; M2B does not perform that intersection, alias, normalize, or drop
 keys because ActivitySession would reject them.
 
-## Optional activity recording (AR2A + AR2B + AR2C-A + AR2C-B)
+## Optional activity recording (AR2A + AR2B + AR2C-A + AR2C-B + AR2D fixes)
 
 AR1 exports `ActivityRecordingControl`, immutable recording/route models, state
 enums and `ActivityRecordingException` from `eixam_connect_core`, also re-exported
 through the Flutter package's public entrypoint. Production SDK instances now
-implement the optional capability's local, durable metadata lifecycle: start,
+implement the optional capability's local, durable recording lifecycle: start,
 immutable verified TAG binding, committed observation, known-ID retrieval,
 finish, same-identity restoration and multiple finished-record retention.
 AR1's public contract remains unchanged.
@@ -374,8 +374,24 @@ Recorded horizontal distance uses Haversine (radius 6,371,000 m) across eligible
 adjacent edges only, excluding altitude, gaps and ambiguous ordering. No eligible
 edge means null; a genuine zero-length edge permits 0.0. Route points, topology,
 summary, metrics and revisions commit atomically; watchers publish committed
-summaries without route arrays. Consistent paged route reads support revision
-checks, segment continuations and suffix replacement.
+summaries without route arrays. Production ingestion, recovery and finalization
+implement the frozen optional capability. Consistent paged route reads support
+revision checks, segment continuations and suffix replacement.
+
+Out-of-order/recovered insertion repairs affected canonical neighbours and
+topology intervals until persisted continuity stabilizes. Unchanged downstream
+segments are retained; genuine gap/segment changes may require broader repair.
+This changes internal work only, preserving distance, ordering, dedupe, gap
+semantics, revision and earliest changed suffix behavior. It introduces no timing
+guarantee or public paging change.
+
+Persisted route identifiers, recovery cursors and gap boundaries are validated
+before use. Inconsistent numeric/text gap bounds fail before overlap filtering,
+so corrupted gaps cannot silently disappear from suffix reads. Malformed stored
+facts fail closed through existing sanitized restore/persistence errors; they do
+not trigger automatic repair, deletion or reset. Identity scoping and local
+evidence preservation remain in force. No public contract or schema change is
+introduced.
 
 Routes and finished results restore locally/offline. AR2C-A adds confirmed TAG
 disconnect gaps, bounded D1 recovery through the existing backlog coordinator,

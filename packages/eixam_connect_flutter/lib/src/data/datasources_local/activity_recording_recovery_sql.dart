@@ -2,6 +2,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:sqflite/sqflite.dart';
 
 import 'activity_recording_record.dart';
+import 'activity_recording_integrity.dart';
 import 'activity_recording_route_data.dart';
 import 'activity_recording_route_sql.dart';
 
@@ -11,6 +12,8 @@ final class ActivityRecordingRecoverySql {
   final DatabaseExecutor sql;
 
   Future<void> need(ActivityRecordingRecord record) async {
+    await ActivityRecordingIntegrity.gaps(sql, record);
+    await ActivityRecordingIntegrity.recovery(sql, record);
     await sql.insert('recording_recovery', {
       'recording_id': record.value.recordingId,
       'needed': 1,
@@ -26,21 +29,15 @@ final class ActivityRecordingRecoverySql {
   Future<ActivityRecordingRecoveryWindow> window(
     ActivityRecordingRecord record,
   ) async {
-    final id = record.value.recordingId;
-    final rows = await sql.query(
-      'recording_recovery',
-      where: 'recording_id = ?',
-      whereArgs: [id],
+    final row = await ActivityRecordingIntegrity.recovery(sql, record);
+    final gaps = await ActivityRecordingIntegrity.gaps(sql, record);
+    final unresolved = gaps.where(
+      (gap) => gap['state'] != ActivityRecordingGapState.reconciled.name,
     );
-    final gaps = await sql.rawQuery(
-      '''SELECT MIN(from_order) AS earliest
-      FROM route_gaps WHERE recording_id = ? AND state != 'reconciled' ''',
-      [id],
-    );
-    final earliest = gaps.single['earliest'] as int?;
-    final cursor = rows.isEmpty
+    final earliest = unresolved.isEmpty
         ? null
-        : rows.single['processed_through'] as int?;
+        : unresolved.first['from_order'] as int;
+    final cursor = row?['processed_through'] as int?;
     // A new live tail must never skip an older unresolved interval. Re-request
     // the boundary inclusively; the durable route ledger removes replays.
     final since = earliest != null && (cursor == null || earliest < cursor)
@@ -50,7 +47,7 @@ final class ActivityRecordingRecoverySql {
       since == null
           ? record.value.recordingStartedAt
           : DateTime.fromMicrosecondsSinceEpoch(since, isUtc: true),
-      earliest != null || (rows.isNotEmpty && rows.single['needed'] == 1),
+      earliest != null || row?['needed'] == 1,
     );
   }
 
@@ -61,12 +58,17 @@ final class ActivityRecordingRecoverySql {
   ) async {
     final r = record.value;
     final id = r.recordingId;
-    final open = await sql.query(
-      'route_gaps',
-      where:
-          "recording_id = ? AND reason = 'deviceUnavailable' AND until_order IS NULL AND state != 'reconciled'",
-      whereArgs: [id],
-    );
+    final allGaps = await ActivityRecordingIntegrity.gaps(sql, record);
+    await ActivityRecordingIntegrity.recovery(sql, record);
+    final open = allGaps
+        .where(
+          (gap) =>
+              gap['reason'] ==
+                  ActivityRecordingGapReason.deviceUnavailable.name &&
+              gap['until_order'] == null &&
+              gap['state'] != ActivityRecordingGapState.reconciled.name,
+        )
+        .toList();
     int? changed;
     if (!connected && open.isEmpty) {
       final from = r.lastSampleAt ?? r.recordingStartedAt;
@@ -105,9 +107,14 @@ final class ActivityRecordingRecoverySql {
           : null,
     );
     if (changed != null) {
-      return ActivityRecordingRouteSql(
-        sql,
-      ).ingest(updated, const [], topologyChangedFrom: changed);
+      return ActivityRecordingRouteSql(sql).ingest(
+        updated,
+        const [],
+        topologyChangedFrom: changed,
+        topologyChangedUntil: connected
+            ? now.toUtc().microsecondsSinceEpoch
+            : null,
+      );
     }
     await sql.update(
       'recordings',
@@ -128,12 +135,17 @@ final class ActivityRecordingRecoverySql {
     DateTime? last,
   }) async {
     final id = record.value.recordingId;
-    final gaps = await sql.query(
-      'route_gaps',
-      where:
-          "recording_id = ? AND reason = 'deviceUnavailable' AND state != 'reconciled'",
-      whereArgs: [id],
-    );
+    final allGaps = await ActivityRecordingIntegrity.gaps(sql, record);
+    await ActivityRecordingIntegrity.recovery(sql, record);
+    final gaps = allGaps
+        .where(
+          (gap) =>
+              gap['reason'] ==
+                  ActivityRecordingGapReason.deviceUnavailable.name &&
+              gap['state'] != ActivityRecordingGapState.reconciled.name,
+        )
+        .toList();
+    int? changedUntil;
     int? changed;
     for (final gap in gaps) {
       final from = gap['from_order'] as int;
@@ -164,6 +176,11 @@ final class ActivityRecordingRecoverySql {
         whereArgs: [gap['gap_id']],
       );
       if (changed == null || from < changed) changed = from;
+      // Pending/unresolved both block the same edges. Only reconciliation
+      // changes downstream topology; a state-only change needs local context.
+      if (proved && (changedUntil == null || until > changedUntil)) {
+        changedUntil = until;
+      }
     }
     final remaining = Sqflite.firstIntValue(
       await sql.rawQuery(
@@ -190,9 +207,12 @@ final class ActivityRecordingRecoverySql {
           : ActivityRecordingRecoveryState.deferred,
     );
     if (changed != null) {
-      return ActivityRecordingRouteSql(
-        sql,
-      ).ingest(updated, const [], topologyChangedFrom: changed);
+      return ActivityRecordingRouteSql(sql).ingest(
+        updated,
+        const [],
+        topologyChangedFrom: changed,
+        topologyChangedUntil: changedUntil ?? changed,
+      );
     }
     await sql.update(
       'recordings',

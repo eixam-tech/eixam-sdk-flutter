@@ -6,27 +6,45 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:sqflite/sqflite.dart';
 
 import 'activity_recording_record.dart';
+import 'activity_recording_integrity.dart';
 import 'activity_recording_route_data.dart';
 
 /// Transaction-local canonical route engine. Normal append touches only the
-/// tail and new rows. Insertion/splits repair the affected suffix's segment
-/// labels; unchanged neighbour edges reuse their persisted distance.
+/// tail and new rows. Repairs stop when persisted predecessor, segment and edge
+/// facts stabilize beyond the changed interval; genuine relabeling may go farther.
 final class ActivityRecordingRouteSql {
-  ActivityRecordingRouteSql(this.sql);
+  ActivityRecordingRouteSql(this.sql, {this.onEdgeCalculation});
   final DatabaseExecutor sql;
+  // Private test seam; never emits route content or production diagnostics.
+  final void Function()? onEdgeCalculation;
 
   Future<ActivityRecordingRecord> ingest(
     ActivityRecordingRecord record,
     List<ActivityRecordingRouteEvidence> evidence, {
     int? topologyChangedFrom,
+    int? topologyChangedUntil,
   }) async {
     if (evidence.isEmpty && topologyChangedFrom == null) return record;
     final r = record.value;
     final id = r.recordingId;
+    final allGaps = await ActivityRecordingIntegrity.gaps(sql, record);
+    await ActivityRecordingIntegrity.recovery(sql, record);
+    var gapCreated = false;
     final inserted = <String>{};
+    var insertedCount = 0;
     int? changed = topologyChangedFrom;
-    void affect(int at) =>
-        changed = changed == null || at < changed! ? at : changed;
+    final affected = <({int from, int until})>[
+      if (topologyChangedFrom != null)
+        (
+          from: topologyChangedFrom,
+          until: topologyChangedUntil ?? 9223372036854775807,
+        ),
+    ];
+    void affect(int at, [int? until]) {
+      changed = changed == null || at < changed! ? at : changed;
+      affected.add((from: at, until: until ?? at));
+    }
+
     Future<void> gap(
       int from,
       int until,
@@ -50,7 +68,8 @@ final class ActivityRecordingRouteSql {
         'reason': reason.name,
         'state': ActivityRecordingGapState.unresolved.name,
       });
-      affect(from);
+      gapCreated = true;
+      affect(from, until);
     }
 
     // A deterministic first value also applies to collisions within one batch.
@@ -59,7 +78,6 @@ final class ActivityRecordingRouteSql {
         final key = a.key.compareTo(b.key);
         return key != 0 ? key : _content(a).compareTo(_content(b));
       });
-    final pending = sql.batch();
     // Inserts must be visible to later same-key/same-time checks in this txn.
     for (final item in ordered) {
       final at = item.at.microsecondsSinceEpoch;
@@ -74,6 +92,7 @@ final class ActivityRecordingRouteSql {
         whereArgs: [id, item.key],
       );
       if (old.isNotEmpty) {
+        ActivityRecordingIntegrity.point(old.single, record);
         if (!_same(old.single, point, r.deviceIdentity!)) {
           final prior = old.single['sample_order'] as int;
           await gap(
@@ -97,6 +116,7 @@ final class ActivityRecordingRouteSql {
         'segment_id': _segment(id, item.key),
       });
       inserted.add(item.key);
+      insertedCount++;
       affect(at);
       final peers = await sql.query(
         'route_points',
@@ -111,38 +131,20 @@ final class ActivityRecordingRouteSql {
     }
     if (changed == null) return record;
 
-    final prior = await sql.query(
-      'route_points',
-      where: 'recording_id = ? AND sample_order < ?',
-      whereArgs: [id, changed],
-      orderBy: 'sample_order DESC, sample_key DESC',
-      limit: 1,
-    );
-    final start = prior.isEmpty
-        ? changed!
-        : prior.single['sample_order'] as int;
-    // Include the predecessor's whole timestamp group. Closed gap intervals
-    // remove every edge incident to an ambiguous/rejected timestamp.
-    final rows = await sql.query(
-      'route_points',
-      where: 'recording_id = ? AND sample_order >= ?',
-      whereArgs: [id, start],
-      orderBy: 'sample_order, sample_key',
-    );
-    final before = await sql.query(
-      'route_points',
-      where: 'recording_id = ? AND sample_order < ?',
-      whereArgs: [id, start],
-      orderBy: 'sample_order DESC, sample_key DESC',
-      limit: 1,
-    );
-    final gaps = await sql.query(
-      'route_gaps',
-      where:
-          "recording_id = ? AND state != 'reconciled' AND (until_order IS NULL OR until_order >= ?)",
-      whereArgs: [id, start],
-      orderBy: 'from_order, gap_id',
-    );
+    final gaps = [
+      for (final g in allGaps)
+        if (g['state'] != ActivityRecordingGapState.reconciled.name) g,
+    ];
+    // Include integrity gaps added by this ingestion before repairing edges.
+    if (gapCreated) {
+      gaps
+        ..clear()
+        ..addAll(
+          (await ActivityRecordingIntegrity.gaps(sql, record)).where(
+            (g) => g['state'] != ActivityRecordingGapState.reconciled.name,
+          ),
+        );
+    }
     final counters = await sql.query(
       'recordings',
       columns: ['distance_edge_count'],
@@ -152,92 +154,136 @@ final class ActivityRecordingRouteSql {
     var edges = counters.single['distance_edge_count'] as int;
     var total = r.recordedDistanceMeters ?? 0.0;
     var segments = r.segmentCount;
-    Map<String, Object?>? previous = before.isEmpty ? null : before.single;
-    var gapIndex = 0;
-    for (final row in rows) {
-      final key = row['sample_key'] as String;
-      final time = row['sample_order'] as int;
-      if (row['device_identity'] != r.deviceIdentity ||
-          !EixamGeoCoordinates.isValidFix(
-            (row['latitude'] as num).toDouble(),
-            (row['longitude'] as num).toDouble(),
-          )) {
-        throw const FormatException();
+    affected.sort((a, b) => a.from.compareTo(b.from));
+    Future<List<Map<String, Object?>>> predecessor(int at) => sql.query(
+      'route_points',
+      where: 'recording_id = ? AND sample_order < ?',
+      whereArgs: [id, at],
+      orderBy: 'sample_order DESC, sample_key DESC',
+      limit: 1,
+    );
+    var interval = 0;
+    int? earliestStart;
+    List<Map<String, Object?>>? nextPrior;
+    while (interval < affected.length) {
+      final current = affected[interval++];
+      var through = current.until;
+      final prior = nextPrior ?? await predecessor(current.from);
+      nextPrior = null;
+      if (prior.isNotEmpty) {
+        ActivityRecordingIntegrity.point(prior.single, record);
       }
-      final prevTime = previous?['sample_order'] as int?;
-      if (prevTime != null) {
-        while (gapIndex < gaps.length &&
-            gaps[gapIndex]['until_order'] != null &&
-            (gaps[gapIndex]['until_order'] as int) < prevTime) {
-          gapIndex++;
-        }
+      final start = prior.isEmpty
+          ? current.from
+          : prior.single['sample_order'] as int;
+      earliestStart ??= start;
+      final before = await sql.query(
+        'route_points',
+        where: 'recording_id = ? AND sample_order < ?',
+        whereArgs: [id, start],
+        orderBy: 'sample_order DESC, sample_key DESC',
+        limit: 1,
+      );
+      if (before.isNotEmpty) {
+        ActivityRecordingIntegrity.point(before.single, record);
       }
-      var blocked = previous == null || time == prevTime;
-      if (!blocked) {
-        for (var i = gapIndex; i < gaps.length; i++) {
-          final gap = gaps[i];
-          final from = gap['from_order'] as int;
-          if (from > time) break;
-          final until = gap['until_order'] as int?;
-          final disconnect =
-              gap['reason'] ==
-              ActivityRecordingGapReason.deviceUnavailable.name;
-          if (disconnect
-              ? from < time && (until == null || until > prevTime!)
-              : until == null || until >= prevTime!) {
-            blocked = true;
-            break;
+      Map<String, Object?>? previous = before.isEmpty ? null : before.single;
+      var gapIndex = 0;
+      final pending = sql.batch();
+      await for (final row in _repairRows(id, start)) {
+        ActivityRecordingIntegrity.point(row, record);
+        final key = row['sample_key'] as String;
+        final time = row['sample_order'] as int;
+        final prevTime = previous?['sample_order'] as int?;
+        if (prevTime != null) {
+          while (gapIndex < gaps.length &&
+              gaps[gapIndex]['until_order'] != null &&
+              (gaps[gapIndex]['until_order'] as int) < prevTime) {
+            gapIndex++;
           }
         }
-      }
-      final oldEdge = (row['edge_distance'] as num?)?.toDouble();
-      final prevKey = previous?['sample_key'] as String?;
-      final edge = blocked
-          ? null
-          : row['previous_key'] == prevKey && oldEdge != null
-          ? oldEdge
-          : haversine(
-              previous!['latitude'] as num,
-              previous['longitude'] as num,
-              row['latitude'] as num,
-              row['longitude'] as num,
-            );
-      final segment = edge == null
-          ? _segment(id, key)
-          : previous!['segment_id'] as String;
-      final wasNew = inserted.contains(key);
-      if (!wasNew) {
-        if (oldEdge == null) {
-          segments--;
+        var blocked = previous == null || time == prevTime;
+        if (!blocked) {
+          for (var i = gapIndex; i < gaps.length; i++) {
+            final gap = gaps[i];
+            final from = gap['from_order'] as int;
+            if (from > time) break;
+            final until = gap['until_order'] as int?;
+            final disconnect =
+                gap['reason'] ==
+                ActivityRecordingGapReason.deviceUnavailable.name;
+            if (disconnect
+                ? from < time && (until == null || until > prevTime!)
+                : until == null || until >= prevTime!) {
+              blocked = true;
+              break;
+            }
+          }
+        }
+        final oldEdge = (row['edge_distance'] as num?)?.toDouble();
+        final prevKey = previous?['sample_key'] as String?;
+        final edge = blocked
+            ? null
+            : row['previous_key'] == prevKey && oldEdge != null
+            ? oldEdge
+            : _edgeDistance(previous!, row);
+        final segment = edge == null
+            ? _segment(id, key)
+            : previous!['segment_id'] as String;
+        final wasNew = inserted.remove(key);
+        if (!wasNew) {
+          if (oldEdge == null) {
+            segments--;
+          } else {
+            total -= oldEdge;
+            edges--;
+          }
+        }
+        if (edge == null) {
+          segments++;
         } else {
-          total -= oldEdge;
-          edges--;
+          total += edge;
+          edges++;
+        }
+        final stable =
+            !wasNew &&
+            row['previous_key'] == prevKey &&
+            row['segment_id'] == segment &&
+            oldEdge == edge;
+        if (!stable) {
+          pending.update(
+            'route_points',
+            {
+              'previous_key': prevKey,
+              'edge_distance': edge,
+              'segment_id': segment,
+            },
+            where: 'recording_id = ? AND sample_key = ?',
+            whereArgs: [id, key],
+          );
+        }
+        previous = {...row, 'segment_id': segment};
+        // Absorb overlapping/adjacent mutations while traversing their neighbours.
+        while (interval < affected.length && affected[interval].from <= time) {
+          through = math.max(through, affected[interval++].until);
+        }
+        if (stable && time > through) {
+          if (interval < affected.length) {
+            nextPrior = await predecessor(affected[interval].from);
+            if (nextPrior.isNotEmpty &&
+                ((nextPrior.single['sample_order'] as int) <= time ||
+                    nextPrior.single['previous_key'] == key)) {
+              through = math.max(through, affected[interval++].until);
+              nextPrior = null;
+              continue;
+            }
+          }
+          break;
         }
       }
-      if (edge == null) {
-        segments++;
-      } else {
-        total += edge;
-        edges++;
-      }
-      if (wasNew ||
-          row['previous_key'] != prevKey ||
-          row['segment_id'] != segment ||
-          oldEdge != edge) {
-        pending.update(
-          'route_points',
-          {
-            'previous_key': prevKey,
-            'edge_distance': edge,
-            'segment_id': segment,
-          },
-          where: 'recording_id = ? AND sample_key = ?',
-          whereArgs: [id, key],
-        );
-      }
-      previous = {...row, 'segment_id': segment};
+      // A later interval may use this repaired boundary as its predecessor.
+      await pending.commit(noResult: true);
     }
-    await pending.commit(noResult: true);
     final first = await sql.query(
       'route_points',
       columns: ['sampled_at'],
@@ -273,7 +319,7 @@ final class ActivityRecordingRouteSql {
     }
     final updated = ActivityRecordingRecord.decode({
       ...record.encode(),
-      'point_count': r.pointCount + inserted.length,
+      'point_count': r.pointCount + insertedCount,
       'segment_count': segments,
       'unresolved_gap_count': count,
       'first_sample_at': first.isEmpty ? null : first.single['sampled_at'],
@@ -281,7 +327,7 @@ final class ActivityRecordingRouteSql {
       'distance_meters': edges == 0 ? null : math.max(0.0, total),
       'route_revision': r.routeRevision + 1,
       'previous_route_revision': r.routeRevision,
-      'route_changed_from': _time(start),
+      'route_changed_from': _time(earliestStart!),
       'route_quality': count == 0
           ? ActivityRecordingRouteQuality.unknown.name
           : ActivityRecordingRouteQuality.partial.name,
@@ -296,12 +342,56 @@ final class ActivityRecordingRouteSql {
     return updated;
   }
 
+  double _edgeDistance(
+    Map<String, Object?> previous,
+    Map<String, Object?> row,
+  ) {
+    onEdgeCalculation?.call();
+    return haversine(
+      previous['latitude'] as num,
+      previous['longitude'] as num,
+      row['latitude'] as num,
+      row['longitude'] as num,
+    );
+  }
+
+  // This is repair traversal only; public route paging SQL remains unchanged.
+  Stream<Map<String, Object?>> _repairRows(String id, int start) async* {
+    Map<String, Object?>? after;
+    while (true) {
+      final rows = await sql.query(
+        'route_points',
+        where: after == null
+            ? 'recording_id = ? AND sample_order >= ?'
+            : 'recording_id = ? AND sample_order >= ? AND (sample_order > ? OR sample_key > ?)',
+        whereArgs: after == null
+            ? [id, start]
+            : [
+                id,
+                after['sample_order'],
+                after['sample_order'],
+                after['sample_key'],
+              ],
+        orderBy: 'sample_order, sample_key',
+        limit: 32,
+      );
+      for (final row in rows) {
+        yield row;
+      }
+      if (rows.length < 32) return;
+      after = rows.last;
+    }
+  }
+
   /// Clip a caller's fixed cutoff atomically with the finalizing barrier.
   Future<ActivityRecordingRecord> finish(
     ActivityRecordingRecord record,
     DateTime cutoff,
   ) async {
     final id = record.value.recordingId;
+    await ActivityRecordingIntegrity.beforeFinish(sql, record);
+    await ActivityRecordingIntegrity.gaps(sql, record);
+    final recovery = await ActivityRecordingIntegrity.recovery(sql, record);
     final time = cutoff.toUtc().microsecondsSinceEpoch;
     final removed = await sql.delete(
       'route_points',
@@ -397,6 +487,18 @@ final class ActivityRecordingRouteSql {
             : last.single['sampled_at'],
       });
     }
+    final cursor = recovery?['processed_through'] as int?;
+    final last = result.value.lastSampleAt?.microsecondsSinceEpoch;
+    if (cursor != null && (last == null || cursor > last)) {
+      // The OLD cursor was valid. A user cutoff narrows its durable window;
+      // this is part of clipping, never a clamp/repair of corrupt stored input.
+      await sql.update(
+        'recording_recovery',
+        {'processed_through': last},
+        where: 'recording_id = ?',
+        whereArgs: [id],
+      );
+    }
     await sql.update(
       'recordings',
       {...result.encode(), if (edges != null) 'distance_edge_count': edges},
@@ -413,6 +515,8 @@ final class ActivityRecordingRouteSql {
     required int pageSize,
   }) async {
     final id = record.value.recordingId;
+    await ActivityRecordingIntegrity.gaps(sql, record);
+    await ActivityRecordingIntegrity.recovery(sql, record);
     final from = fromInclusive?.toUtc().microsecondsSinceEpoch;
     final args = <Object?>[
       id,
@@ -478,6 +582,11 @@ final class ActivityRecordingRouteSql {
           ),
         );
       } else {
+        ActivityRecordingIntegrity.point({
+          ...row,
+          'sample_key': row['k'],
+          'sample_order': row['t'],
+        }, record);
         final lat = (row['latitude'] as num).toDouble();
         final lon = (row['longitude'] as num).toDouble();
         final alt = (row['altitude_meters'] as num?)?.toDouble();

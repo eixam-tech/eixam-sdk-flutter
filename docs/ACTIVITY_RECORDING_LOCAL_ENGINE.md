@@ -1,4 +1,4 @@
-# Activity Recording local engine (AR2A + AR2B + AR2C-A + AR2C-B)
+# Activity Recording local engine (AR2A + AR2B + AR2C-A + AR2C-B + AR2D fixes)
 
 The SDK implements durable recording lifecycle and live TAG route persistence
 behind the frozen optional `ActivityRecordingControl` contract. AR2B adds live
@@ -241,11 +241,55 @@ ambiguous continuity. Missing time, wrong source/device and outside-window
 rejections do not manufacture gaps. Sparse sampling alone creates no gap.
 
 Normal append touches the existing tail and new rows. Out-of-order insertion
-repairs canonical predecessor edges and affected suffix segment labels; unchanged
-edges reuse persisted distance. Summaries publish only after commit. Failed or
-ambiguous acknowledgements expose sanitized recording errors; retry/restoration
+repairs canonical predecessor edges and segment labels in affected intervals;
+unchanged edges reuse persisted distance. AR2D-FIX2 replaces unconditional suffix
+materialization with bounded internal repair batches. A simple insertion between
+A and C replaces A-to-C with A-to-B and B-to-C. Repair stops beyond the mutation
+interval only when persisted predecessor, segment ID and edge distance match the
+canonical result. Coordinates of existing samples remain immutable, so those
+facts prove downstream continuity is unchanged. Overlapping/adjacent mutations
+coalesce; disjoint intervals use the preceding interval's repaired context.
+
+Changed gaps or segment identities can require broader traversal until the same
+stability condition holds. Pending-to-unresolved gap-state changes preserve edge
+blocking, so they use local context while still committing their public revision. Integrity gaps ending at a context predecessor still
+block its outgoing edge; they must not disappear behind the repair start bound.
+Same-timestamp ambiguity, reconciliation proof, deterministic segment IDs,
+distance, revision and earliest changed predecessor retain their canonical
+semantics. Internal repair batching does not change public route paging SQL,
+page size or stream ownership.
+
+Summaries publish only after commit. Failed or ambiguous acknowledgements expose sanitized recording errors; retry/restoration
 reads authoritative SQL state without double-counting. Failed writes never
 advance durable identity, route revision or observer counts.
+
+### Persisted integrity and fail-closed behavior
+
+Persisted rows are not trusted merely because SQLite accepted them. Route rows
+validate sample keys and canonical segment IDs before dedupe/topology use or page
+composition, alongside UTC/window, device and geographic checks. Local repair
+validates the rows it consumes rather than scanning/materializing an otherwise
+unaffected route. The empty-key metadata guard uses the existing primary key.
+
+All gaps for an authorized recording validate before overlap, reason or state
+filtering. Canonical UTC text and integer boundaries must represent the same
+instant, nullability must agree, and closed intervals must be ordered. IDs,
+reason/state enums and lifecycle-appropriate open/closed boundaries must be valid.
+This prevents malformed numeric bounds from hiding an overlapping public gap.
+
+A non-null processed recovery cursor must be an integer timestamp within the
+recording's durable start/last-sample/end window. It is validated before recovery
+filtering or mutation; wall-clock rollback is not treated as corruption. A user
+Finish cutoff can legitimately narrow an already validated cursor together with
+the retained samples, atomically. This is not a clamp of corrupt input. Finish
+also validates identifiers before clipping/deleting rows or aggregating topology.
+
+Malformed facts fail with existing sanitized restore/persistence errors. Active
+corruption is not reported as an absent recording. Rejected operations retain
+the original evidence and roll back partial mutations; they perform no automatic
+repair, reset, deletion or schema recreation. Ownership reconciliation and
+identity fencing precede validation. Schema version four, native backup
+exclusions, local retention and backend independence remain unchanged.
 
 ## Route topology, distance and revisions
 
@@ -427,9 +471,9 @@ Host SQLite measurements, using 24-point live batches (microseconds):
 | 100,000 | 32,038,116 | 466 | 2,705,980 | 4,265 | 87,957 | 7,954 | 53,035,008 B |
 
 These are host process/SQLite measurements, not mobile latency/power guarantees
-or retention limits. Middle insertion includes affected suffix inspection;
-no hard product point limit is introduced. AR2D will revisit performance. Native
-physical acceptance is recorded separately from these synthetic measurements.
+or retention limits. These historical middle-insertion measurements include full
+suffix inspection; AR2D-FIX2 localizes that repair without introducing a product
+point limit. Native physical acceptance is recorded separately from these synthetic measurements.
 
 Final AR2B automated validation: Core analysis clean, 234 tests passed; Flutter
 analysis reports the same seven pre-existing infos, no errors/warnings (strict
@@ -633,9 +677,9 @@ Final isolated host SQLite measurements (microseconds):
 These tests use the actual coordinator/recovery/controller/SQL/route API, check
 canonical counts, distance, segment merging, gap quality, every page's revision
 and earliest changed predecessor. RSS is process memory observed after paging,
-including GC effects; it is not peak memory. Middle insertion still inspects the
-affected suffix. These are host measurements, not a mobile performance/power or
-retention SLA.
+including GC effects; it is not peak memory. These historical measurements
+predate AR2D-FIX2 localized interval repair. These are host measurements, not a
+mobile performance/power or retention SLA.
 
 Synthetic native recovery probes passed on Android API 35 emulator and iOS 26.5
 arm64 simulator, both first launch and process restart. Boundary: decoded D1 →
@@ -704,7 +748,7 @@ no wait. Rollback can retain `clockUncertain`. A runtime timer cannot be extende
 by wall-clock rollback. Storage/queued actor latency is additional work, not a
 claim of a five-second end-to-end mobile SLA. Route readers release their page
 command/transaction before delivery, so consumer pauses cannot hold cutoff or
-final commit. Expensive suffix repair remains separate AR2D work.
+final commit. AR2D-FIX2 separately localizes insertion repair to affected topology.
 
 Disconnected and busy paths do not wait for reconnection. They keep defensible
 committed points, mark pending disconnect evidence unresolved and finish. Empty
@@ -821,7 +865,8 @@ other actor/request setup overhead, so the stage columns need not sum to total.
 Measurements are representative synthetic host observations, not percentiles or
 a mobile SLA. Normal recovery benchmark totals for 1k+500, 10k+2k and 100k+100
 points were 1,375,901 / 33,839,339 / 16,958,011 microseconds, respectively. Expensive
-middle insertion and 100k paging remain separate AR2D performance work. The
+middle-insertion amplification is addressed by AR2D-FIX2 interval repair. Full
+100k/250k paging SQL remains accepted P3 work outside those fixes. The
 paused-reader writer hold is removed by the page-scoped reader described above.
 
 Independent correctness/Thermo review closed every confirmed finding:

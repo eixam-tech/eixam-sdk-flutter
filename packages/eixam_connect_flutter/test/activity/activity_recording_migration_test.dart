@@ -150,9 +150,18 @@ void main() {
         }
         final source = await f.raw();
         if (oldVersion == 3) {
+          final first = (await source.query(
+            'recordings',
+            where: 'recording_id = ?',
+            whereArgs: [ids.first],
+          )).single;
           await source.update(
             'recording_recovery',
-            {'processed_through': f.now.microsecondsSinceEpoch},
+            {
+              'processed_through': DateTime.parse(
+                first['last_sample_at'] as String,
+              ).microsecondsSinceEpoch,
+            },
             where: 'recording_id = ?',
             whereArgs: [ids.first],
           );
