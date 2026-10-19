@@ -45,6 +45,9 @@ import '../mappers/local_state_serializers.dart';
 import 'android_protection_platform_adapter.dart';
 import 'android_tracking_owner_arbiter.dart';
 import 'activity_session_controller.dart';
+import 'activity_recording_controller.dart';
+import '../data/datasources_local/activity_recording_store.dart';
+import '../data/datasources_local/activity_recording_database.dart';
 import 'activity_availability_controller.dart';
 import '../data/datasources_local/activity_availability_store.dart';
 import '../data/datasources_remote/sdk_activity_availability_remote_data_source.dart';
@@ -219,6 +222,7 @@ class EixamConnectSdkImpl
         BackgroundLocationControl,
         ActivitySessionControl,
         ActivityAvailabilityControl,
+        ActivityRecordingControl,
         SosIncidentProgressProvider {
   EixamConnectSdkImpl({
     required this.sosRepository,
@@ -259,6 +263,7 @@ class EixamConnectSdkImpl
     SharedPrefsSdkStore? localStore,
     ActivitySessionStore? activitySessionStore,
     ActivityAvailabilityStore? activityAvailabilityStore,
+    ActivityRecordingStore? activityRecordingStore,
     SdkActivityAvailabilityRemoteDataSource?
     activityAvailabilityRemoteDataSource,
     DateTime Function()? clock,
@@ -292,6 +297,12 @@ class EixamConnectSdkImpl
           activityAvailabilityStore ??
           SharedPrefsActivityAvailabilityStore(_localStore),
       remote: activityAvailabilityRemoteDataSource,
+      clock: _clock,
+    );
+    _activityRecordings = ActivityRecordingController(
+      store: activityRecordingStore ?? ActivityRecordingDatabase(),
+      sessionGuard: _activitySessions.withCurrentActivitySession,
+      verifyDevice: _recordingDeviceEvidence,
       clock: _clock,
     );
     _devicePositionBacklogCoordinator = DevicePositionBacklogCoordinator(
@@ -594,6 +605,7 @@ class EixamConnectSdkImpl
   String? _lastDeviceCountryConfigCheckDeviceKey;
   final SharedPrefsSdkStore _localStore;
   late final ActivitySessionController _activitySessions;
+  late final ActivityRecordingController _activityRecordings;
   late final ActivityAvailabilityController _activityAvailability;
   final Future<void> Function()? disposeCallback;
 
@@ -839,6 +851,7 @@ class EixamConnectSdkImpl
   bool _sdkInitialized = false;
   bool _sosLifecycleConsumerReady = true;
   final Set<String> _verifiedAssignedNodeIdsForSession = <String>{};
+  final Map<String, int> _recordingAssignmentRevisions = {};
   final Set<int> _assignmentClaimInFlight = <int>{};
   bool _manualDisconnectRequested = false;
   bool _lastDeviceControlCommandPathAvailable = false;
@@ -924,7 +937,7 @@ class EixamConnectSdkImpl
         protectionSosResolvedBody: '',
       );
 
-  // Fence both optional capabilities synchronously. Each owns its own storage
+  // Fence optional capabilities synchronously. Each owns its own storage
   // queue; the existing identity action still runs in ActivitySession order.
   Future<T> _withActivityIdentityChange<T>(
     Future<T> Function() action, {
@@ -934,6 +947,15 @@ class EixamConnectSdkImpl
     bool clearData = false,
     bool preserveLocalState = false,
   }) {
+    late final Future<T> activityWork;
+    final recordingWork = _activityRecordings.withIdentityChange(
+      () => activityWork,
+      currentSession: currentSession,
+      backend: backend,
+      restoreExisting: restoreExisting,
+      clearData: clearData,
+      preserveLocalState: preserveLocalState,
+    );
     late final Future<T> identityWork;
     final availabilityWork = _activityAvailability.withIdentityChange(
       () => identityWork,
@@ -954,7 +976,9 @@ class EixamConnectSdkImpl
     // Availability may be waiting for a prior checked storage write. Handle an
     // early rejection now, while preserving it for the awaited public result.
     identityWork.ignore();
-    return availabilityWork;
+    activityWork = availabilityWork;
+    activityWork.ignore();
+    return recordingWork;
   }
 
   @override
@@ -1902,6 +1926,19 @@ class EixamConnectSdkImpl
 
   @override
   Future<EixamSession> refreshCanonicalIdentity() async {
+    final revision = _identityRevision;
+    try {
+      return await _refreshCanonicalIdentity();
+    } on AuthException catch (error) {
+      if (error.code == 'E_SDK_IDENTITY_CONFLICT' &&
+          revision == _identityRevision) {
+        await _activityRecordings.rejectIdentity();
+      }
+      rethrow;
+    }
+  }
+
+  Future<EixamSession> _refreshCanonicalIdentity() async {
     final revision = _identityRevision;
     final session = _session;
     if (session == null) {
@@ -7310,6 +7347,88 @@ class EixamConnectSdkImpl
   @override
   Future<void> endActivitySession({required String sessionId}) =>
       _activitySessions.endActivitySession(sessionId: sessionId);
+
+  @override
+  Future<SdkActivityRecording?> getActiveActivityRecording() =>
+      _activityRecordings.getActiveActivityRecording();
+
+  @override
+  Stream<SdkActivityRecording?> watchActiveActivityRecording() =>
+      _activityRecordings.watchActiveActivityRecording();
+
+  @override
+  Future<SdkActivityRecording> startActivityRecording({
+    required SdkActivitySession activitySession,
+    String? deviceIdentity,
+  }) => _activityRecordings.startActivityRecording(
+    activitySession: activitySession,
+    deviceIdentity: deviceIdentity,
+  );
+
+  @override
+  Future<SdkActivityRecording> bindActivityRecordingDevice({
+    required String recordingId,
+    required String deviceIdentity,
+  }) => _activityRecordings.bindActivityRecordingDevice(
+    recordingId: recordingId,
+    deviceIdentity: deviceIdentity,
+  );
+
+  @override
+  Future<SdkActivityRecording> recoverActivityRecordingHistory({
+    required String recordingId,
+  }) => _activityRecordings.recoverActivityRecordingHistory(
+    recordingId: recordingId,
+  );
+
+  @override
+  Future<SdkActivityRecording> finishActivityRecording({
+    required String recordingId,
+    DateTime? endedAt,
+  }) => _activityRecordings.finishActivityRecording(
+    recordingId: recordingId,
+    endedAt: endedAt,
+  );
+
+  @override
+  Future<SdkActivityRecording?> getActivityRecording({
+    required String recordingId,
+  }) => _activityRecordings.getActivityRecording(recordingId: recordingId);
+
+  @override
+  Stream<SdkActivityRoutePage> readActivityRecordingRoute({
+    required String recordingId,
+    DateTime? fromInclusive,
+    int? expectedRouteRevision,
+    int pageSize = 512,
+  }) => _activityRecordings.readActivityRecordingRoute(
+    recordingId: recordingId,
+    fromInclusive: fromInclusive,
+    expectedRouteRevision: expectedRouteRevision,
+    pageSize: pageSize,
+  );
+
+  Future<ActivityRecordingDeviceEvidence?> _recordingDeviceEvidence(
+    String identity,
+  ) async {
+    final status = _lastPublicDeviceStatus ?? _lastDeviceStatus;
+    final canonical = normalizeCanonicalHardwareId(status?.canonicalHardwareId);
+    // Never reinterpret PreferredDevice.deviceId or a transport address as
+    // ownership. Initial binding requires the existing authenticated assignment
+    // verifier plus an exact canonical physical identity from the runtime.
+    if (canonical != identity ||
+        status == null ||
+        !status.paired ||
+        status.nodeId == null ||
+        _recordingAssignmentRevisions[status.nodeId.toString()] !=
+            _identityRevision) {
+      return null;
+    }
+    return ActivityRecordingDeviceEvidence(
+      canonical!,
+      connected: status.connected,
+    );
+  }
 
   @override
   Future<void> startTracking() {
@@ -19479,11 +19598,20 @@ class EixamConnectSdkImpl
 
   void _clearVerifiedDeviceAssignments() {
     _verifiedAssignedNodeIdsForSession.clear();
+    _recordingAssignmentRevisions.clear();
     _assignmentClaimInFlight.clear();
   }
 
   void _rememberVerifiedDeviceAssignment(int nodeId) {
     _verifiedAssignedNodeIdsForSession.add(nodeId.toString());
+  }
+
+  // Recording promotes assignment to ownership proof only when its async
+  // verification began and completed in the same identity generation.
+  void _rememberRecordingAssignment(int nodeId, int revision) {
+    if (!_disposed && revision == _identityRevision && _session != null) {
+      _recordingAssignmentRevisions[nodeId.toString()] = revision;
+    }
   }
 
   void _scheduleConnectedDeviceAssignmentClaim({
@@ -19502,6 +19630,7 @@ class EixamConnectSdkImpl
   }
 
   Future<void> _claimConnectedDeviceAssignment(DeviceStatus status) async {
+    final revision = _identityRevision;
     final nodeId = status.nodeId;
     if (nodeId == null || !_hasAuthenticatedDeviceRegistrySession()) {
       return;
@@ -19523,8 +19652,10 @@ class EixamConnectSdkImpl
       } catch (_) {
         matched = false;
       }
+      if (_disposed || revision != _identityRevision) return;
       if (matched) {
         _rememberVerifiedDeviceAssignment(nodeId);
+        _rememberRecordingAssignment(nodeId, revision);
         BleDebugRegistry.instance.recordEvent(
           'DEVICE_ASSIGNMENT result=matched action=auto_claim',
         );
@@ -19542,8 +19673,10 @@ class EixamConnectSdkImpl
             : hardwareModel,
         pairedAt: (status.lastSeen ?? DateTime.now()).toUtc(),
       );
+      if (_disposed || revision != _identityRevision) return;
       if (registeredHardwareIdMatchesNodeId(registered.hardwareId, nodeId)) {
         _rememberVerifiedDeviceAssignment(nodeId);
+        _rememberRecordingAssignment(nodeId, revision);
         BleDebugRegistry.instance.recordEvent(
           'DEVICE_ASSIGNMENT result=created action=auto_claim',
         );
@@ -19562,6 +19695,7 @@ class EixamConnectSdkImpl
   }
 
   Future<bool> _verifyExistingDeviceAssignment(int nodeId) async {
+    final revision = _identityRevision;
     if (_verifiedAssignedNodeIdsForSession.contains(nodeId.toString())) {
       return true;
     }
@@ -19571,8 +19705,10 @@ class EixamConnectSdkImpl
         (device) =>
             registeredHardwareIdMatchesNodeId(device.hardwareId, nodeId),
       );
+      if (_disposed || revision != _identityRevision) return false;
       if (matched) {
         _rememberVerifiedDeviceAssignment(nodeId);
+        _rememberRecordingAssignment(nodeId, revision);
       }
       return matched;
     } catch (_) {
@@ -21602,6 +21738,7 @@ class EixamConnectSdkImpl
     required String hardwareModel,
     required DateTime pairedAt,
   }) async {
+    final revision = _identityRevision;
     final registered = await deviceRegistryRepository.upsertRegisteredDevice(
       hardwareId: hardwareId,
       firmwareVersion: firmwareVersion,
@@ -21612,6 +21749,7 @@ class EixamConnectSdkImpl
     if (nodeId != null &&
         registeredHardwareIdMatchesNodeId(registered.hardwareId, nodeId)) {
       _rememberVerifiedDeviceAssignment(nodeId);
+      _rememberRecordingAssignment(nodeId, revision);
     }
     return registered;
   }
@@ -26658,6 +26796,7 @@ class EixamConnectSdkImpl
     }
     _disposed = true;
     _advanceIdentityRevision();
+    final recordingDisposal = _activityRecordings.dispose();
     final activityDisposal = _activitySessions.dispose();
     Object? availabilityDisposalError;
     StackTrace? availabilityDisposalStack;
@@ -26669,6 +26808,12 @@ class EixamConnectSdkImpl
       availabilityDisposalStack = stack;
     }
     await activityDisposal;
+    try {
+      await recordingDisposal;
+    } catch (error, stack) {
+      availabilityDisposalError ??= error;
+      availabilityDisposalStack ??= stack;
+    }
     SosLocationTrace.emit('sdk_runtime', {
       'action': 'dispose_begin',
       'recurring_publication_owner': 'sdk',

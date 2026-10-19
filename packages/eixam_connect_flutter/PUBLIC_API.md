@@ -345,15 +345,29 @@ contract. The commercial app will later intersect remote keys with its local
 ActivityCatalog; M2B does not perform that intersection, alias, normalize, or drop
 keys because ActivitySession would reject them.
 
-## Optional activity recording foundation (AR1: contract only)
+## Optional activity recording foundation (AR2A: local lifecycle)
 
 AR1 exports `ActivityRecordingControl`, immutable recording/route models, state
 enums and `ActivityRecordingException` from `eixam_connect_core`, also re-exported
-through the Flutter package's public entrypoint. Production SDK
-instances do **not** implement this capability yet. There is no recorder, route
-store, TAG ingestion, backlog integration or distance calculation in AR1.
-Runtime implementation belongs to AR2; commercial integration belongs to AR3.
-The following describes that contract, not currently delivered runtime behavior.
+through the Flutter package's public entrypoint. Production SDK instances now
+implement the optional capability's local, durable metadata lifecycle: start,
+immutable verified TAG binding, committed observation, known-ID retrieval,
+finish, same-identity restoration and multiple finished-record retention.
+AR1's public contract remains unchanged.
+
+AR2A does **not** ingest TAG positions, calculate distance, detect route gaps or
+recover TAG backlog. Empty recordings have zero counters, null distance, unknown
+quality and stable route revision zero. Route reads return one terminal empty
+page; a mismatched expected revision fails before delivery. History recovery for
+a known active recording throws `E_RECORDING_UNAVAILABLE` without claiming work
+occurred. Connected, bound input is `unavailable` until ingestion exists; it is
+never reported as `observing`. Recovery remains `idle`.
+
+This is not full ActivityRecording production readiness. Commercial integration
+belongs to AR3. The sections below preserve the complete public contract,
+including route/recovery behavior reserved for later AR2 slices. See
+[local engine implementation](../../docs/ACTIVITY_RECORDING_LOCAL_ENGINE.md)
+for the delivered lifecycle, ownership, storage and backup limitations.
 
 ### Independent domains and optional discovery
 
@@ -521,8 +535,10 @@ rather than merge that suffix. A mismatched expected revision produces retryable
 `message`, independently of the sealed SDK exception hierarchy. Initial contract
 codes cover conflict, session mismatch, missing identity, device mismatch, invalid
 time, missing ID, already finished, changed route revision and unavailable
-capability/runtime. Concrete persistence/recovery failure codes are deferred to
-AR2 rather than exposing protocol/database details before implementation.
+capability/runtime. AR2A adds concrete runtime failures through that existing
+exception: `E_RECORDING_RESTORE_FAILED` for unreadable/corrupt/unsupported local
+storage and `E_RECORDING_PERSISTENCE_FAILED` for a failed transaction or cleanup.
+Messages exclude database payloads. No public type or required SDK method changes.
 
 All recording metadata, points, gaps, metrics, recovery facts, finished results
 and summaries are local-only. No recording endpoint, upload, cloud sync, server

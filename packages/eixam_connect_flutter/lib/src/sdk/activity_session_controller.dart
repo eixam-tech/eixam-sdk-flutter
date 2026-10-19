@@ -121,6 +121,12 @@ final class ActivitySessionController implements ActivitySessionControl {
   Future<SdkActivitySession?> getActiveActivitySession() =>
       _command(() async => _record?.active);
 
+  /// Private composition guard: validate a recording association while this
+  /// queue prevents concurrent logical End/Start. Never mutates the session.
+  Future<T> withCurrentActivitySession<T>(
+    Future<T> Function(SdkActivitySession? session) action,
+  ) => _command(() => action(_record?.active));
+
   @override
   Stream<SdkActivitySession?> watchActiveActivitySession() {
     late final StreamController<_ActivityObservation> observer;
