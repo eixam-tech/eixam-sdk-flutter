@@ -29,3 +29,10 @@ final class ActivityRecordingRouteSlice {
   final bool last;
   final ActivityRecordingRouteCursor? next;
 }
+
+/// Inclusive retained-history window; live points never advance this cursor.
+final class ActivityRecordingRecoveryWindow {
+  const ActivityRecordingRecoveryWindow(this.since, this.needed);
+  final DateTime since;
+  final bool needed;
+}

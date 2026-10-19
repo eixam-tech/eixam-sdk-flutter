@@ -156,8 +156,7 @@ final class ActivityRecordingRecord {
         (changed != null && changed.isBefore(start)) ||
         (gaps == 0
             ? quality != ActivityRecordingRouteQuality.unknown
-            : quality != ActivityRecordingRouteQuality.partial) ||
-        recovery != ActivityRecordingRecoveryState.idle) {
+            : quality != ActivityRecordingRouteQuality.partial)) {
       throw const FormatException();
     }
     return ActivityRecordingRecord(
@@ -200,12 +199,17 @@ final class ActivityRecordingRecord {
     DateTime? endedAt,
     String? deviceIdentity,
     ActivityRecordingInputState? inputState,
+    ActivityRecordingRecoveryState? recoveryState,
+    Set<ActivityRecordingIssue>? issues,
   }) => ActivityRecordingRecord.decode({
     ...encode(),
     if (phase != null) 'phase': phase.name,
     if (endedAt != null) 'ended_at': endedAt.toUtc().toIso8601String(),
     if (deviceIdentity != null) 'device_identity': deviceIdentity,
     if (inputState != null) 'input_state': inputState.name,
+    if (recoveryState != null) 'recovery_state': recoveryState.name,
+    if (issues != null)
+      'issues': jsonEncode(issues.map((e) => e.name).toList()..sort()),
   });
 
   Map<String, Object?> encode() => {

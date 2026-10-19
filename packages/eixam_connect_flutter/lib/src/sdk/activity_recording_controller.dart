@@ -9,6 +9,10 @@ import '../data/datasources_local/activity_recording_store.dart';
 import '../data/datasources_local/activity_recording_route_data.dart';
 import 'activity_recording_ingestor.dart';
 import '../device/canonical_hardware_id.dart';
+import '../device/ble_incoming_event.dart';
+import 'device_position_backlog_coordinator.dart';
+
+part 'activity_recording_recovery.dart';
 
 typedef ActivityRecordingSessionGuard =
     Future<T> Function<T>(
@@ -25,16 +29,34 @@ final class ActivityRecordingDeviceEvidence {
   final bool connected;
 }
 
-/// Serialized recorder. No phone GPS, backlog, safety,
-/// native ownership or periodic work is a dependency of this controller.
+/// Serialized durable recorder; retained history reuses the SDK coordinator.
+/// No phone GPS, safety ownership or periodic polling is a dependency.
 final class ActivityRecordingController implements ActivityRecordingControl {
   ActivityRecordingController({
     required this.store,
     required this.sessionGuard,
     required this.verifyDevice,
     DateTime Function()? clock,
-  }) : _clock = clock ?? DateTime.now;
+    DevicePositionBacklogCoordinator? backlog,
+    bool Function(String device)? historyEligible,
+    Timer Function(Duration, void Function())? recoveryTimer,
+    bool Function(BleIncomingEvent event, String device)? historyEventEligible,
+  }) : _clock = clock ?? DateTime.now,
+       _backlog = backlog,
+       _historyEligible = historyEligible ?? ((_) => false),
+       _recoveryTimer = recoveryTimer ?? Timer.new,
+       _historyEventEligible = historyEventEligible ?? ((_, _) => true);
 
+  final DevicePositionBacklogCoordinator? _backlog;
+  final bool Function(String device) _historyEligible;
+  final bool Function(BleIncomingEvent event, String device)
+  _historyEventEligible;
+  final Timer Function(Duration, void Function()) _recoveryTimer;
+  _RecordingRecoveryEpisode? _recoveryEpisode;
+  int _recoveryGeneration = 0;
+  bool _lastHistoryEligible = false;
+  String? _lastPathDevice;
+  bool? _lastPathConnected;
   final ActivityRecordingStore store;
   final ActivityRecordingSessionGuard sessionGuard;
   final Future<ActivityRecordingDeviceEvidence?> Function(String identity)
@@ -67,6 +89,8 @@ final class ActivityRecordingController implements ActivityRecordingControl {
   }) {
     final generation = preserveLocalState ? _generation : ++_generation;
     if (!preserveLocalState) {
+      _fenceRecovery();
+      _lastHistoryEligible = false;
       _identityReady = false;
       for (final cancel in _cancelRouteReads.toList()) {
         cancel();
@@ -293,6 +317,8 @@ final class ActivityRecordingController implements ActivityRecordingControl {
       final bound = record.transition(
         deviceIdentity: evidence.identity,
         inputState: _input(evidence),
+        issues: {...record.value.issues}
+          ..remove(ActivityRecordingIssue.deviceIdentityUnavailable),
       );
       await _transaction(generation, (tx) => tx.update(bound));
       _publish(bound, generation);
@@ -313,14 +339,7 @@ final class ActivityRecordingController implements ActivityRecordingControl {
   @override
   Future<SdkActivityRecording> recoverActivityRecordingHistory({
     required String recordingId,
-  }) => _command((generation) async {
-    final record = await _required(recordingId, generation);
-    if (record.value.phase != ActivityRecordingPhase.active) throw _conflict;
-    throw const ActivityRecordingException(
-      'E_RECORDING_UNAVAILABLE',
-      'TAG history recovery is not implemented in AR2A.',
-    );
-  });
+  }) => _recover(recordingId);
 
   @override
   Future<SdkActivityRecording> finishActivityRecording({
@@ -352,6 +371,13 @@ final class ActivityRecordingController implements ActivityRecordingControl {
       throw _invalidTime;
     }
     if (record.value.phase == ActivityRecordingPhase.active) {
+      _fenceRecovery();
+      if (record.value.recoveryState ==
+          ActivityRecordingRecoveryState.recovering) {
+        record = record.transition(
+          recoveryState: ActivityRecordingRecoveryState.deferred,
+        );
+      }
       record = await _transaction(
         generation,
         (tx) => tx.finishRoute(record, cutoff),
@@ -412,8 +438,16 @@ final class ActivityRecordingController implements ActivityRecordingControl {
     });
   }
 
-  /// Connectivity facts never manufacture disconnect/recovery gaps.
+  /// Authoritative current TAG path fact, never inferred from GPS cadence.
   Future<void> inputDisconnected(String? currentDevice, bool connected) {
+    final device = normalizeCanonicalHardwareId(currentDevice);
+    final observedAt = _clock().toUtc();
+    if (_lastPathDevice != device || _lastPathConnected != connected) {
+      _fenceRecovery(defer: true);
+      _lastPathDevice = device;
+      _lastPathConnected = connected;
+      _lastHistoryEligible = false;
+    }
     if (!_used || _identity == null || _disposed) return Future.value();
     return _command((generation) async {
       final updated = await _transaction(generation, (tx) async {
@@ -423,24 +457,31 @@ final class ActivityRecordingController implements ActivityRecordingControl {
             current.value.phase != ActivityRecordingPhase.active) {
           return null;
         }
-        final input =
-            connected &&
-                normalizeCanonicalHardwareId(currentDevice) ==
-                    current.value.deviceIdentity
-            ? ActivityRecordingInputState.unavailable
-            : ActivityRecordingInputState.disconnected;
-        if (current.value.inputState == input ||
-            (input == ActivityRecordingInputState.unavailable &&
-                current.value.inputState ==
+        final matching = device == current.value.deviceIdentity;
+        if (!matching &&
+            device != null &&
+            (!connected ||
+                current.value.inputState !=
                     ActivityRecordingInputState.observing)) {
           return null;
         }
-        final updated = current.transition(inputState: input);
-        await tx.update(updated);
-        return updated;
+        final attached = matching && connected;
+        final input = attached
+            ? ActivityRecordingInputState.observing
+            : ActivityRecordingInputState.disconnected;
+        if (current.value.inputState == input && attached) return null;
+        return tx.inputPath(current, attached, observedAt);
       });
       if (updated != null) _publish(updated, generation);
+    }).whenComplete(() {
+      if (connected) reconcileHistoryReadiness();
     });
+  }
+
+  /// Event-driven readiness edge; repeated diagnostics never restart an exhausted episode.
+  void reconcileHistoryReadiness({bool runtimeResumed = false}) {
+    _reconcileHistoryReadiness();
+    if (runtimeResumed) _triggerHistory();
   }
 
   @override
@@ -605,16 +646,25 @@ final class ActivityRecordingController implements ActivityRecordingControl {
           );
           return true;
         }
-        if (record?.value.phase == ActivityRecordingPhase.active &&
-            record?.value.inputState == ActivityRecordingInputState.observing) {
-          // A persisted route survives restart; attachment to the previous
-          // runtime's input path does not. Only current TAG evidence restores
-          // observing. This changes no route or recovery revision.
-          await tx.update(
-            record!.transition(
+        if (record?.value.phase == ActivityRecordingPhase.active) {
+          var current = record!;
+          if (current.value.inputState ==
+              ActivityRecordingInputState.observing) {
+            current = current.transition(
               inputState: ActivityRecordingInputState.disconnected,
-            ),
-          );
+            );
+            await tx.update(current);
+          }
+          if (current.value.recoveryState ==
+              ActivityRecordingRecoveryState.recovering) {
+            current = current.transition(
+              recoveryState: ActivityRecordingRecoveryState.deferred,
+            );
+            await tx.update(current);
+            await tx.needRecovery(current);
+          }
+          final window = await tx.recoveryWindow(current);
+          if (window.needed) scheduleMicrotask(_triggerHistory);
         }
         return false;
       });
@@ -773,6 +823,7 @@ final class ActivityRecordingController implements ActivityRecordingControl {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    _fenceRecovery();
     for (final cancel in _cancelRouteReads.toList()) {
       cancel();
     }

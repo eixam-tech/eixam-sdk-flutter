@@ -1,11 +1,13 @@
-# Activity Recording local engine (AR2A + AR2B)
+# Activity Recording local engine (AR2A + AR2B + AR2C-A)
 
 The SDK implements durable recording lifecycle and live TAG route persistence
 behind the frozen optional `ActivityRecordingControl` contract. AR2B adds live
 D3 ingestion, durable sample identity, canonical order/segments, conservative
 integrity gaps, route distance and paged reads. AR2B-P1 backup-safe storage remains
-unchanged. There is no commercial host integration, TAG backlog/reconnect or
-final catch-up, complete-route guarantee, cloud synchronization or route upload.
+unchanged. AR2C-A adds authoritative disconnect uncertainty, bounded retained
+D1 recovery through the existing coordinator, durable live/recovered dedupe and
+conservative gap reconciliation. There is no commercial host integration, final
+catch-up, complete-route guarantee, cloud synchronization or route upload.
 
 ## Storage and dependencies
 
@@ -84,16 +86,20 @@ path and applies exclusion in place without moving existing metadata.
 | `recording_store_metadata` | Singleton ownership namespace and established canonical IDs |
 | `recordings` | Recording ID, immutable logical session tuple, owner, optional TAG, timestamps, lifecycle, issues, counters and revision |
 | `route_points` | Accepted TAG sample facts, bound device, integer UTC ordering, segment ID, predecessor key and nullable inbound horizontal distance |
-| `route_gaps` | Proven live-integrity intervals with reason/state and indexed UTC boundaries |
+| `route_gaps` | Integrity and disconnect intervals with reason/state and indexed UTC boundaries |
+| `recording_recovery` | Recording-owned durable recovery need and inclusive processed-history cursor |
 
-SQLite's `user_version` is the explicit schema version. Version 1 to 2 migrates
+SQLite's `user_version` is the explicit schema version (currently 3). Version 1 to 2 migrates
 transactionally without resetting metadata, bindings, active/finalizing or
 finished recordings. Approved v1 route tables are empty; unexpected legacy route
 evidence aborts migration and preserves the original database. Version 2 adds
 integer microsecond ordering, device/predecessor/edge facts, gap boundary indexes
 and a private distance-edge counter. The recording's immutable binding scopes the
 existing `(recording_id, sample_key)` unique key; device identity is also persisted
-and verified per point. Creation is transactional.
+and verified per point. Version 2 to 3 adds the recovery table without rewriting
+existing summary/point/gap rows. Existing unresolved gaps seed durable recovery
+need. Accepted v1 metadata migrates through both steps in the same transaction.
+Creation is transactional.
 There are no destructive migration fallbacks. Unsupported older/future versions
 fail closed and preserve the file. Future versions must supply transactional
 migrations and extend the metadata mapper and route reader together. A route
@@ -129,10 +135,12 @@ binding returns `E_RECORDING_DEVICE_MISMATCH`; no remote request is initiated by
 the recorder. A committed binding is immutable and restores offline without
 reverification. Same-binding retries are idempotent. A disconnected verified TAG
 has `disconnected` input. A matching admitted live D3 path establishes
-`observing`, which describes attachment rather than fresh GPS. Connection alone
-may remain `unavailable` until that evidence exists. Reconstructed runtimes
-conservatively restore active input as `disconnected` until current evidence
-arrives. Connectivity changes create no disconnect/recovery gaps in AR2B.
+`observing`, which describes attachment rather than fresh GPS. AR2C-A also uses
+authoritative matching TAG connection facts to restore `observing`. Reconstructed
+runtimes conservatively restore previously attached input as `disconnected` until
+current evidence arrives. A persisted attachment alone does not invent a new gap;
+an authoritative current loss/disconnect fact does. Sparse fixes never establish
+a disconnect.
 
 Finish commits `finalizing` with a frozen UTC cutoff, then commits `finished`.
 The default cutoff is SDK acceptance time; explicit cutoffs cannot precede start
@@ -277,9 +285,9 @@ independently retrievable; later live deliveries cannot change finished data.
 Identity cleanup removes prior-owner points/gaps along with metadata, and late
 old-generation callbacks/pages cannot expose coordinates to a replacement owner.
 
-History recovery remains unavailable for a known active recording; no D1 polling,
-reconnect reconciliation, retries or final TAG catch-up are integrated. Those are
-AR2C. Ascent/descent, speed/pace/calories and complete-route guarantees remain
+AR2C-A implements retained D1 recovery as described below. Final TAG catch-up and
+finish-while-disconnected hardening remain AR2C-B and are NOT IMPLEMENTED.
+Ascent/descent, speed/pace/calories and complete-route guarantees remain
 unimplemented. The recorder never owns Tracking, SOS, DMP, Protection, OTA or
 provisioning actions.
 
@@ -319,7 +327,9 @@ cold offline production SDK composition, signing rotation, replacement/logout,
 cleanup quarantine, delayed writes/callbacks, paused watchers, ambiguous commit
 acknowledgements, corruption, future schema, duplicate-active rejection, rollback
 and SQLite disk-full rollback. Safety spies reject recording-triggered Tracking,
-SOS, DMP, Protection, OTA, provisioning, backlog and position-stream work.
+SOS, DMP, Protection, OTA, provisioning and public position-stream orchestration.
+AR2C-A exercises the private existing backlog coordinator; it does not invoke a
+host/public backlog override or displace another transfer.
 
 The metadata benchmark tests measure open, start, lookup, finish and restore with
 1/100/1000 finished rows. They impose no timing SLA or retention limit. These are
@@ -436,3 +446,184 @@ route restored. Prefer at least three valid D3 points with actual movement, and
 compare persisted coordinates with the TAG source. No real-route distance or
 real-route restart acceptance is claimed until this gate passes. Deferring this
 gate permits continued SDK development; it does not waive release acceptance.
+
+
+## AR2C-A disconnect and recovery
+
+The production current-device projection supplies canonical TAG identity and
+connection facts. Loss of the bound path opens `deviceUnavailable` uncertainty;
+replacement of a previously observed bound path by a different current TAG also
+stops that path. An unrelated TAG cannot close a gap or change the binding.
+The boundary is the last accepted sample, or recording start for leading loss.
+The SDK captures the observed reconnect time before queueing persistence. A
+clock rollback before the lower boundary leaves the gap open. Loss is never
+inferred from GPS cadence, a stale fix, or backend availability.
+
+Disconnect leaves the recording active and bound. It persists a pending, open
+gap and deferred recovery need. Reconnect closes the observed interval and
+restores observing; it does not prove continuity. Edges ending at the last
+pre-disconnect sample remain valid. Edges crossing an unreconciled disconnect
+interval are excluded, including newly recovered points inside that interval.
+Integrity gaps retain their stricter closed-boundary rules.
+
+### Episodes and command ownership
+
+The recorder uses `DevicePositionBacklogCoordinator.syncRecording`, a private
+lease on the existing D1 coordinator. The public backlog signature, normalization,
+deduplication and timeout policy are unchanged. Recording sees genuine decoded
+D1 chunks before public transport dedupe and awaits its SQLite transaction before
+ACK/END processing. Decoding remains in the existing protocol implementation.
+
+Triggers are matching reconnect, a current command/assignment readiness edge,
+reconstruction with durable pending work, an existing SDK foreground-resume
+transition, and explicit `recoverActivityRecordingHistory(recordingId)`. Repeated
+resumed notifications do not rearm an episode. Existing runtime capability
+refreshes also reconcile readiness. There is no app lifecycle dependency, new
+polling, periodic timer, or automatic rearming after exhaustion without a future
+eligibility edge or explicit request. Duplicate triggers share one episode.
+
+Defaults are an immediate attempt and at most two retries after 1 s and 5 s.
+A recording-owned 60 s timer bounds the whole episode, including retries and
+progressing transfers. Every attempt receives only the remaining budget, rather
+than the public coordinator's 12-times-idle budget. The 5 s idle timeout still
+applies inside an attempt. Timer creation is a private deterministic test seam.
+
+Protection/native BLE ownership, OTA, provisioning, an absent command path or
+an already active backlog transfer defer recovery. The recorder does not acquire
+ownership or cancel another subsystem/transfer. A lease token permits cancelling
+only the recording's transfer. Temporary command/connection loss returns committed
+deferred state for the same active recording. Identity replacement, disposal or
+finish fences the old episode and its explicit caller. Finish performs no final
+history request.
+
+`recovering` is summary state while an episode runs. Gap rows keep pending or
+unresolved state during transfer; this implementation does not publish transient
+`recovering` gap rows. Settling changes a pending gap to unresolved or reconciled.
+Each visible gap change increments route revision once with topology/distance
+repair in that transaction. Recovery/input/issue-only changes do not increment
+route revision. Identical point replays and repeated unchanged unresolved results
+also leave revision unchanged.
+
+### Acceptance, cursor and proof
+
+Acceptance requires the current principal, recording, immutable canonical TAG,
+current connection/recovery generation, and genuine coordinator-delivered D1
+provenance. Production also checks the decoded TEL node against current runtime
+node identity. Sample UTC must be defensible, inside the recording and the
+captured recovery window, with a durable sample key and valid coordinates.
+Classic TEL, phone/backend locations and reception timestamps remain excluded.
+
+D1 and D3 share the same durable `(recording_id, sample_key)` ledger. Delivery
+provenance is the first committed delivery and is not content inequality.
+Conflicting coordinates/time/altitude preserve the first committed value and
+persist integrity uncertainty. An intersecting unresolved integrity gap prevents
+disconnect reconciliation even on a later duplicate-only transfer.
+
+The private cursor is inclusive and advances only on a complete accepted D1
+transfer, after all relevant samples have durably committed. It records the last
+processed retained sample time, never command receipt or a newer live tail.
+The next request starts at the earlier of this cursor and the oldest unresolved
+gap, or recording start if neither exists. Partial/failed transfers retain their
+committed points and replay inclusively from the prior cursor/gap on retry.
+They do not advance coverage past failed or undurably processed evidence.
+Empty history cannot advance the cursor or prove a disconnect interval.
+
+A closed disconnect gap reconciles only if all of these hold in one episode's
+successful attempt:
+
+- META describes a contiguous logical-index range and all expected CHUNK indexes
+  and successful END totals validate in the existing coordinator.
+- Every relevant delivered in-window sample is accepted durably without rejected
+  coordinates/time, conflicting identity content, or unprocessed evidence.
+- Retained sample times span both boundaries: earliest <= gap.from and latest >=
+  gap.until, with at least two distinct times. One interior point is insufficient.
+- No unresolved rejected/ambiguous integrity interval intersects that gap.
+
+This is evidence for continuity of that retained interval, not proof of every
+physical fix or total route completeness. Open gaps, empty history, missing
+boundary anchors and partial/malformed transfers remain unresolved/partial.
+Valid recovered points survive independently of the proof outcome. Reconciled
+gaps remain visible with their state, but no longer block edges or contribute to
+unresolved count/partial quality. Route quality returns to unknown when no known
+defect remains; complete is never exposed.
+
+All recovered insertion uses the AR2B canonical engine. Chronological insertion,
+dedupe, segment repair, edge replacement, distance, revision and earliest changed
+predecessor commit together. Committed data alone is exposed by summaries and
+route pages. A single paged read remains at one revision; the accepted paused
+reader/writer limitation still applies. A paused reader can consume recovery's
+bounded time budget; cancelling/resuming releases the writer without a second
+read implementation or mixed revisions.
+
+Pending gaps, binding, cursor and partial points restore locally without backend
+readiness. Persisted recovering state becomes deferred after restart; an old
+in-memory command is never resumed. Same-principal restoration retains multiple
+finished routes. Identity cleanup also deletes private recovery rows, and late
+D1 callbacks/watch emissions remain fenced. All coordinates use the unchanged
+backup-safe store. Recording request diagnostics omit history window timestamps;
+no new coordinate/sample-key/device-identity logs or backend sync are introduced.
+
+
+### AR2C-A validation evidence
+
+Final validation passed: Core analysis clean and 234 tests; Flutter analysis has
+zero errors/warnings and the same seven baseline infos; UI analysis clean and
+nine tests. The full Flutter set passed as 2,058 regression tests plus three
+isolated recovery benchmarks, with zero final failures/skips. The final focused
+recovery/restore/migration/SDK-composition set passed 42 tests (a subset of that
+full set). Android JVM tests passed 140 cases and the standalone Foundation
+storage helper passed eight.
+
+Regression command (Flutter package):
+
+```sh
+flutter test --concurrency=2 --name '^(?!.*middle D1 points through coordinator)' --reporter expanded
+flutter test test/activity/activity_recording_recovery_performance_test.dart --reporter expanded
+```
+
+The benchmark file runs separately so competing native builds do not consume
+its production 60 s episode deadline. A loaded intermediate sweep retained
+11,988 of the expected 12,000 points when that deadline correctly stopped the
+10,000 + 2,000 case. That sweep also failed two existing iOS SOS pending-command
+timing assertions (`wrong_writer`, `ambiguous_native`, expected
+`completed=false`, actual `completed=true`); the full regression repeat passed both without changing
+SOS code. An earlier full sweep passed all 2,061 tests. These intermediate results
+are not hidden as final passes or used to relax the production deadline.
+
+Final isolated host SQLite measurements (microseconds):
+
+| Live + recovered points | Insert + distance repair | Gap reconciliation | Recovery total | Paged read | RSS delta / ending RSS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1,000 + 500 | 1,333,167 | 18,219 | 1,351,386 | 8,534 | -20,414,464 / 189,677,568 B |
+| 10,000 + 2,000 | 29,361,681 | 116,594 | 29,478,275 | 65,782 | 31,096,832 / 236,617,728 B |
+| 100,000 + 100 | 15,566,157 | 968,975 | 16,535,132 | 3,851,078 | 86,671,360 / 324,272,128 B |
+
+These tests use the actual coordinator/recovery/controller/SQL/route API, check
+canonical counts, distance, segment merging, gap quality, every page's revision
+and earliest changed predecessor. RSS is process memory observed after paging,
+including GC effects; it is not peak memory. Middle insertion still inspects the
+affected suffix. These are host measurements, not a mobile performance/power or
+retention SLA.
+
+Synthetic native recovery probes passed on Android API 35 emulator and iOS 26.5
+arm64 simulator, both first launch and process restart. Boundary: decoded D1 →
+existing backlog coordinator → recording controller/recovery → default native
+SQLite → public route API. Both produced six points, one segment, a reconciled
+gap, quality unknown, route revision 8, four pages and 1,221.6239499524274 m,
+with matching route digests before any new restart delivery. Reverse D1/live
+replay did not mutate the route. Native preparation and open DB/WAL/SHM backup
+exclusion checks passed. These probes validate the final portable SQL recovery
+path; subsequent foreground-trigger wiring is covered by deterministic package
+tests, not claimed as native full-SDK orchestration evidence.
+
+The universal-simulator Flutter packaging command failed on its combined
+arm64/x86_64 architecture check; the bounded arm64 build and simulator probes
+passed. Native backup-attribute tests required ordinary native filesystem access
+to temporary files; the same helper then passed all eight cases. No unrelated
+packaging/toolchain debt was changed. Disposable probes were removed and only
+task-started simulators/emulators shut down. Physical TAGs/phones were untouched.
+
+AR2B-HW1 remains **DEFERRED**, mandatory before final M6 sign-off, M6C, develop
+merge or release/store distribution. Final finish catch-up and finish hardening
+remain **NOT IMPLEMENTED (AR2C-B)**. No host orchestration, History UI, backend
+sync, route completeness guarantee or derived sports metrics are added.

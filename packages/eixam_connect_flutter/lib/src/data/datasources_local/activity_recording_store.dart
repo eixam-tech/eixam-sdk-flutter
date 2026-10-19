@@ -30,6 +30,21 @@ abstract interface class ActivityRecordingTransaction {
     ActivityRecordingRecord record,
     List<ActivityRecordingRouteEvidence> evidence,
   );
+  Future<ActivityRecordingRecord> inputPath(
+    ActivityRecordingRecord record,
+    bool connected,
+    DateTime now,
+  );
+  Future<ActivityRecordingRecoveryWindow> recoveryWindow(
+    ActivityRecordingRecord record,
+  );
+  Future<void> needRecovery(ActivityRecordingRecord record);
+  Future<ActivityRecordingRecord> settleRecovery(
+    ActivityRecordingRecord record, {
+    required bool completed,
+    DateTime? first,
+    DateTime? last,
+  });
   Future<ActivityRecordingRouteSlice> routePage(
     ActivityRecordingRecord record, {
     DateTime? fromInclusive,

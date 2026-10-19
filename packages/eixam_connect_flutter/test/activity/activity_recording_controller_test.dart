@@ -341,18 +341,15 @@ void main() {
   );
 
   test(
-    'history recovery explicitly unavailable with unchanged idle/unknown facts',
+    'history recovery unbound defers without changing route facts',
     () async {
       final r = await f.start();
-      await expectLater(
-        f.controller.recoverActivityRecordingHistory(
-          recordingId: r.recordingId,
-        ),
-        throwsA(recordingError('E_RECORDING_UNAVAILABLE')),
+      final after = await f.controller.recoverActivityRecordingHistory(
+        recordingId: r.recordingId,
       );
-      final after = await f.controller.getActiveActivityRecording();
-      expect(after?.recoveryState, ActivityRecordingRecoveryState.idle);
-      expect(after?.routeQuality, ActivityRecordingRouteQuality.unknown);
+      expect(after.recoveryState, ActivityRecordingRecoveryState.deferred);
+      expect(after.routeQuality, ActivityRecordingRouteQuality.unknown);
+      expect(after.routeRevision, 0);
     },
   );
 

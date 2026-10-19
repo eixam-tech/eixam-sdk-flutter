@@ -6,7 +6,7 @@ import '../data/datasources_local/activity_recording_store.dart';
 import '../device/canonical_hardware_id.dart';
 import '../device/eixam_tel_live_batch_packet.dart';
 
-/// Consumes decoded live TAG evidence, never phone/resolved/backend positions.
+/// Consumes decoded TAG evidence, never phone/resolved/backend positions.
 /// The controller owns generation/session/lifecycle serialization; SQL owns the
 /// durable ledger, topology and metrics in the same transaction as the summary.
 final class ActivityRecordingIngestor {
@@ -16,15 +16,19 @@ final class ActivityRecordingIngestor {
     ActivityRecordingTransaction tx,
     ActivityRecordingRecord record,
     EixamDevicePositionBatch batch,
-    DateTime now,
-  ) {
+    DateTime now, {
+    bool recovered = false,
+  }) {
     final r = record.value;
     final device = normalizeCanonicalHardwareId(batch.deviceIdentity);
     if (r.phase != ActivityRecordingPhase.active ||
         r.deviceIdentity == null ||
         device != r.deviceIdentity ||
         batch.source != SdkLocationSource.connectedDevice ||
-        batch.delivery != EixamDevicePositionDelivery.live) {
+        batch.delivery !=
+            (recovered
+                ? EixamDevicePositionDelivery.recovered
+                : EixamDevicePositionDelivery.live)) {
       return Future.value(record);
     }
     final evidence = <ActivityRecordingRouteEvidence>[];
@@ -34,18 +38,21 @@ final class ActivityRecordingIngestor {
           sample.stableSampleKey.isEmpty ||
           at == null ||
           at.isBefore(r.recordingStartedAt) ||
-          at.isBefore(
-            batch.receivedAt.toUtc().subtract(
-              EixamTelLiveBatchPacket.maximumPastAge,
-            ),
-          ) ||
+          (!recovered &&
+              at.isBefore(
+                batch.receivedAt.toUtc().subtract(
+                  EixamTelLiveBatchPacket.maximumPastAge,
+                ),
+              )) ||
           at.isAfter(
             batch.receivedAt.toUtc().add(
               EixamTelLiveBatchPacket.maximumFutureSkew,
             ),
           ) ||
           at.isAfter(
-            now.toUtc().add(EixamTelLiveBatchPacket.maximumFutureSkew),
+            recovered
+                ? now.toUtc()
+                : now.toUtc().add(EixamTelLiveBatchPacket.maximumFutureSkew),
           )) {
         continue;
       }

@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'recording_test_support.dart';
+import 'activity_recording_ingestion_test.dart' show batch, sample;
 
 void main() {
   late RecordingFixture f;
@@ -72,7 +73,7 @@ void main() {
 
   for (final phase in ActivityRecordingPhase.values) {
     test(
-      'schema1→2 preserves $phase plus all finished metadata and binding',
+      'schema1→3 preserves $phase plus all finished metadata and binding',
       () async {
         final path = await seed(phase);
         final db = ActivityRecordingDatabase(
@@ -104,7 +105,7 @@ void main() {
           path,
           options: OpenDatabaseOptions(singleInstance: false),
         );
-        expect(await raw.getVersion(), 2);
+        expect(await raw.getVersion(), 3);
         expect((await raw.query('recordings')).length, 3);
         expect(
           (await raw.query(
@@ -116,6 +117,103 @@ void main() {
       },
     );
   }
+
+  test(
+    'schema2→3 preserves active integrity gap and multiple finished routes byte-for-byte',
+    () async {
+      final ids = <String>[];
+      for (var i = 0; i < 3; i++) {
+        final r = await f.start(device: tagA);
+        ids.add(r.recordingId);
+        f.now = f.now.add(const Duration(seconds: 10));
+        await f.controller.ingestLive(
+          batch(f, [
+            sample('a', r.recordingStartedAt),
+            sample(
+              'b',
+              r.recordingStartedAt.add(const Duration(seconds: 1)),
+              longitude: 2,
+            ),
+          ]),
+        );
+        if (i == 2) {
+          await f.controller.ingestLive(
+            batch(f, [sample('a', r.recordingStartedAt, longitude: 5)]),
+          );
+        } else {
+          await f.controller.finishActivityRecording(
+            recordingId: r.recordingId,
+          );
+          await f.sessions.endActivitySession(sessionId: r.activitySessionId);
+        }
+      }
+      final source = await f.raw();
+      final snapshot = <String, List<Map<String, Object?>>>{};
+      for (final table in [
+        'recording_store_metadata',
+        'recordings',
+        'route_points',
+        'route_gaps',
+      ]) {
+        snapshot[table] = await source.query(table);
+      }
+      await source.close();
+      final path = '${f.directory.path}/v2.sqlite';
+      final legacy = await databaseFactoryFfiNoIsolate.openDatabase(
+        path,
+        options: OpenDatabaseOptions(
+          version: 2,
+          singleInstance: false,
+          onCreate: (db, _) async {
+            for (final statement in (await File(
+              'test/activity/fixtures/activity_recording_v2.sql',
+            ).readAsString()).split(';')) {
+              if (statement.trim().isNotEmpty) await db.execute(statement);
+            }
+          },
+        ),
+      );
+      for (final entry in snapshot.entries) {
+        for (final row in entry.value) {
+          await legacy.insert(entry.key, row);
+        }
+      }
+      await legacy.close();
+      final migrated = ActivityRecordingDatabase(
+        path: path,
+        factory: databaseFactoryFfiNoIsolate,
+      );
+      final owner = ActivityRecordingOwner.forIdentity(
+        f.backend,
+        recordingUserA,
+      );
+      for (final id in ids) {
+        final record = await migrated.transaction(
+          (tx) => tx.byId(owner.scope, id),
+        );
+        expect(record!.value.pointCount, 2);
+        expect(record.value.deviceIdentity, tagA);
+      }
+      await migrated.dispose();
+      final raw = await databaseFactoryFfiNoIsolate.openDatabase(
+        path,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      expect(await raw.getVersion(), 3);
+      for (final entry in snapshot.entries) {
+        expect(await raw.query(entry.key), entry.value);
+      }
+      expect(
+        (await raw.query(
+          'recording_recovery',
+          where: 'recording_id = ?',
+          whereArgs: [ids.last],
+        )).single['needed'],
+        1,
+      );
+      await raw.close();
+    },
+  );
 
   test(
     'unexpected v1 route evidence aborts migration and preserves original schema/data',

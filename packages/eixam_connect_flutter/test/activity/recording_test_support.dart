@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'activity_test_support.dart' as logical;
+import 'package:eixam_connect_flutter/src/sdk/device_position_backlog_coordinator.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/activity_recording_route_data.dart';
 
 const recordingUserA = EixamSession.signed(
@@ -38,6 +39,7 @@ final class RecordingFixture {
     this.directory,
     this.sessionStore,
     DatabaseFactory? factory,
+    DevicePositionBacklogCoordinator? backlog,
   ) {
     sessions = ActivitySessionController(store: sessionStore, clock: () => now);
     database = ActivityRecordingDatabase(
@@ -55,7 +57,12 @@ final class RecordingFixture {
             ? ActivityRecordingDeviceEvidence(identity, connected: connected)
             : null;
       },
-      clock: () => now,
+      clock: () => time?.call() ?? now,
+      backlog: backlog,
+      recoveryTimer: (duration, callback) =>
+          recoveryTimer?.call(duration, callback) ?? Timer(duration, callback),
+      historyEligible: (device) =>
+          historyReady && connected && verified.contains(device),
     );
   }
 
@@ -64,11 +71,13 @@ final class RecordingFixture {
     logical.MemoryActivityStore? sessionStore,
     EixamSession? user = recordingUserA,
     DatabaseFactory? factory,
+    DevicePositionBacklogCoordinator? backlog,
   }) async {
     final f = RecordingFixture._(
       directory ?? await Directory.systemTemp.createTemp('ar2a-'),
       sessionStore ?? logical.MemoryActivityStore(),
       factory,
+      backlog,
     );
     await f.bind(user, restore: true);
     return f;
@@ -86,6 +95,9 @@ final class RecordingFixture {
   EixamSession? user;
   Set<String> verified = {tagA, tagB};
   bool connected = false;
+  bool historyReady = false;
+  DateTime Function()? time;
+  Timer Function(Duration, void Function())? recoveryTimer;
   int verifyCalls = 0;
   Completer<void>? verifyGate;
   bool _disposed = false;
@@ -257,6 +269,41 @@ final class _WriteTrackingTransaction implements ActivityRecordingTransaction {
       lastWrite = updated;
     }
     return updated;
+  }
+
+  @override
+  Future<ActivityRecordingRecord> inputPath(
+    ActivityRecordingRecord record,
+    bool connected,
+    DateTime now,
+  ) async {
+    final result = await inner.inputPath(record, connected, now);
+    lastWrite = result;
+    return result;
+  }
+
+  @override
+  Future<ActivityRecordingRecoveryWindow> recoveryWindow(
+    ActivityRecordingRecord record,
+  ) => inner.recoveryWindow(record);
+  @override
+  Future<void> needRecovery(ActivityRecordingRecord record) =>
+      inner.needRecovery(record);
+  @override
+  Future<ActivityRecordingRecord> settleRecovery(
+    ActivityRecordingRecord record, {
+    required bool completed,
+    DateTime? first,
+    DateTime? last,
+  }) async {
+    final result = await inner.settleRecovery(
+      record,
+      completed: completed,
+      first: first,
+      last: last,
+    );
+    lastWrite = result;
+    return result;
   }
 
   @override

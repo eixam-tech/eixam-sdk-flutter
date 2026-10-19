@@ -17,13 +17,14 @@ final class ActivityRecordingRouteSql {
 
   Future<ActivityRecordingRecord> ingest(
     ActivityRecordingRecord record,
-    List<ActivityRecordingRouteEvidence> evidence,
-  ) async {
-    if (evidence.isEmpty) return record;
+    List<ActivityRecordingRouteEvidence> evidence, {
+    int? topologyChangedFrom,
+  }) async {
+    if (evidence.isEmpty && topologyChangedFrom == null) return record;
     final r = record.value;
     final id = r.recordingId;
     final inserted = <String>{};
-    int? changed;
+    int? changed = topologyChangedFrom;
     void affect(int at) =>
         changed = changed == null || at < changed! ? at : changed;
     Future<void> gap(
@@ -137,7 +138,8 @@ final class ActivityRecordingRouteSql {
     );
     final gaps = await sql.query(
       'route_gaps',
-      where: 'recording_id = ? AND (until_order IS NULL OR until_order >= ?)',
+      where:
+          "recording_id = ? AND state != 'reconciled' AND (until_order IS NULL OR until_order >= ?)",
       whereArgs: [id, start],
       orderBy: 'from_order, gap_id',
     );
@@ -170,11 +172,24 @@ final class ActivityRecordingRouteSql {
           gapIndex++;
         }
       }
-      final blocked =
-          previous == null ||
-          time == prevTime ||
-          (gapIndex < gaps.length &&
-              (gaps[gapIndex]['from_order'] as int) <= time);
+      var blocked = previous == null || time == prevTime;
+      if (!blocked) {
+        for (var i = gapIndex; i < gaps.length; i++) {
+          final gap = gaps[i];
+          final from = gap['from_order'] as int;
+          if (from > time) break;
+          final until = gap['until_order'] as int?;
+          final disconnect =
+              gap['reason'] ==
+              ActivityRecordingGapReason.deviceUnavailable.name;
+          if (disconnect
+              ? from < time && (until == null || until > prevTime!)
+              : until == null || until >= prevTime!) {
+            blocked = true;
+            break;
+          }
+        }
+      }
       final oldEdge = (row['edge_distance'] as num?)?.toDouble();
       final prevKey = previous?['sample_key'] as String?;
       final edge = blocked
@@ -182,7 +197,7 @@ final class ActivityRecordingRouteSql {
           : row['previous_key'] == prevKey && oldEdge != null
           ? oldEdge
           : haversine(
-              previous['latitude'] as num,
+              previous!['latitude'] as num,
               previous['longitude'] as num,
               row['latitude'] as num,
               row['longitude'] as num,
@@ -241,7 +256,7 @@ final class ActivityRecordingRouteSql {
     );
     final count = Sqflite.firstIntValue(
       await sql.rawQuery(
-        'SELECT COUNT(*) FROM route_gaps WHERE recording_id = ?',
+        "SELECT COUNT(*) FROM route_gaps WHERE recording_id = ? AND state != 'reconciled'",
         [id],
       ),
     )!;
@@ -337,7 +352,7 @@ final class ActivityRecordingRouteSql {
       );
       final gapCount = Sqflite.firstIntValue(
         await sql.rawQuery(
-          'SELECT COUNT(*) FROM route_gaps WHERE recording_id = ?',
+          "SELECT COUNT(*) FROM route_gaps WHERE recording_id = ? AND state != 'reconciled'",
           [id],
         ),
       )!;
@@ -531,8 +546,7 @@ final class ActivityRecordingRouteSql {
       row['sample_order'] == p.sampledAt.microsecondsSinceEpoch &&
       row['latitude'] == p.latitude &&
       row['longitude'] == p.longitude &&
-      row['altitude_meters'] == p.altitudeMeters &&
-      row['delivery'] == p.delivery.name;
+      row['altitude_meters'] == p.altitudeMeters;
 
   static double haversine(num lat1, num lon1, num lat2, num lon2) {
     final radians = math.pi / 180;

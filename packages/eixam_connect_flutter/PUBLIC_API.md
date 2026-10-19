@@ -345,7 +345,7 @@ contract. The commercial app will later intersect remote keys with its local
 ActivityCatalog; M2B does not perform that intersection, alias, normalize, or drop
 keys because ActivitySession would reject them.
 
-## Optional activity recording (AR2A lifecycle + AR2B live TAG routes)
+## Optional activity recording (AR2A + AR2B + AR2C-A)
 
 AR1 exports `ActivityRecordingControl`, immutable recording/route models, state
 enums and `ActivityRecordingException` from `eixam_connect_core`, also re-exported
@@ -377,13 +377,21 @@ summary, metrics and revisions commit atomically; watchers publish committed
 summaries without route arrays. Consistent paged route reads support revision
 checks, segment continuations and suffix replacement.
 
-Routes and finished results restore locally/offline. AR2B does **not** implement
-TAG backlog/reconnect recovery or final catch-up, complete-route guarantees,
-ascent/descent, speed/pace/calories, backend sync or host UI integration. History
-recovery remains unavailable, and recovery state remains `idle`. Matching live
-input can be `observing`; this is path attachment, never a fresh-fix guarantee.
-Commercial integration belongs to AR3. The sections below preserve the frozen
-public contract, including recovery behavior reserved for AR2C. See
+Routes and finished results restore locally/offline. AR2C-A adds confirmed TAG
+disconnect gaps, bounded D1 recovery through the existing backlog coordinator,
+chronological live/recovered durable dedupe and conservative gap reconciliation.
+Recovery triggers coalesce, with up to three attempts (1 s/5 s retry delays) in a
+60 s episode; unavailable command ownership defers without displacing any owner.
+A complete validated retained transfer must durably span both closed gap
+boundaries without rejected/conflicting evidence. Empty history or one interior
+point does not heal a gap. Recovery uses existing idle/recovering/deferred states;
+known unresolved defects remain partial, otherwise quality remains unknown.
+Matching input can be observing; this means attachment, never fresh GPS.
+
+Final catch-up and finish-while-disconnected hardening remain **NOT IMPLEMENTED**
+(AR2C-B). Complete-route guarantees, ascent/descent, speed/pace/calories, backend
+sync and host UI integration remain unimplemented. Commercial integration belongs
+to AR3. The sections below preserve the frozen public contract. See
 [local engine implementation](../../docs/ACTIVITY_RECORDING_LOCAL_ENGINE.md)
 for storage, privacy, lifecycle, route semantics and verification limits.
 Physical live-D3 admission remains explicitly deferred under

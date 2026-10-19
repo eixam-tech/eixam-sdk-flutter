@@ -422,7 +422,7 @@ void main() {
 
   for (final mutation in <String, Object?>{
     'input_state': 'invalid',
-    'recovery_state': 'recovering',
+    'recovery_state': 'invalid-recovery-state',
     'activity_session_id': '',
     'activity_key': 'INVALID KEY',
     'session_started_at': 'not-a-date',

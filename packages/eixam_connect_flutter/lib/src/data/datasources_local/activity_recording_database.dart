@@ -6,6 +6,7 @@ import 'package:sqflite/sqflite.dart';
 import 'activity_recording_record.dart';
 import 'activity_recording_route_data.dart';
 import 'activity_recording_route_sql.dart';
+import 'activity_recording_recovery_sql.dart';
 import 'activity_recording_schema.dart';
 import 'activity_recording_store.dart';
 import 'activity_recording_storage_directory.dart';
@@ -104,6 +105,7 @@ final class ActivityRecordingDatabase implements ActivityRecordingStore {
     await transaction((tx) async {
       final sql = (tx as _SqlRecordingTransaction).sql;
       // Explicitly remove every table even if corrupt legacy rows lack FKs.
+      await sql.delete('recording_recovery');
       await sql.delete('route_points');
       await sql.delete('route_gaps');
       await sql.delete('recordings');
@@ -154,6 +156,7 @@ final class _SqlRecordingTransaction implements ActivityRecordingTransaction {
       sameOwner = old.scope == owner.scope;
       conflict = old.scope == owner.scope && old.conflicts(owner);
       if (old.scope != owner.scope || conflict) {
+        await sql.delete('recording_recovery');
         await sql.delete('route_points');
         await sql.delete('route_gaps');
         await sql.delete('recordings');
@@ -244,6 +247,32 @@ final class _SqlRecordingTransaction implements ActivityRecordingTransaction {
     ActivityRecordingRecord record,
     List<ActivityRecordingRouteEvidence> evidence,
   ) => ActivityRecordingRouteSql(sql).ingest(record, evidence);
+
+  @override
+  Future<ActivityRecordingRecord> inputPath(
+    ActivityRecordingRecord record,
+    bool connected,
+    DateTime now,
+  ) => ActivityRecordingRecoverySql(sql).inputPath(record, connected, now);
+
+  @override
+  Future<ActivityRecordingRecoveryWindow> recoveryWindow(
+    ActivityRecordingRecord record,
+  ) => ActivityRecordingRecoverySql(sql).window(record);
+
+  @override
+  Future<void> needRecovery(ActivityRecordingRecord record) =>
+      ActivityRecordingRecoverySql(sql).need(record);
+
+  @override
+  Future<ActivityRecordingRecord> settleRecovery(
+    ActivityRecordingRecord record, {
+    required bool completed,
+    DateTime? first,
+    DateTime? last,
+  }) => ActivityRecordingRecoverySql(
+    sql,
+  ).settle(record, completed: completed, first: first, last: last);
 
   @override
   Future<ActivityRecordingRouteSlice> routePage(

@@ -64,6 +64,7 @@ import 'ble_sos_notification_payload.dart';
 import 'device_country_config_controller.dart';
 import 'device_position_batch_normalizer.dart';
 import 'device_position_backlog_coordinator.dart';
+import '../device/eixam_position_backlog_packet.dart';
 import 'firmware_update_coordinator.dart';
 import 'device_migration_coordinator.dart';
 import 'nearby_text_controller.dart';
@@ -299,12 +300,6 @@ class EixamConnectSdkImpl
       remote: activityAvailabilityRemoteDataSource,
       clock: _clock,
     );
-    _activityRecordings = ActivityRecordingController(
-      store: activityRecordingStore ?? ActivityRecordingDatabase(),
-      sessionGuard: _activitySessions.withCurrentActivitySession,
-      verifyDevice: _recordingDeviceEvidence,
-      clock: _clock,
-    );
     _devicePositionBacklogCoordinator = DevicePositionBacklogCoordinator(
       writeCommand: backlogCommandWriter ?? _writePositionBacklogCommand,
       normalizer: _devicePositionBatchNormalizer,
@@ -312,6 +307,20 @@ class EixamConnectSdkImpl
         if (!_devicePositionBatchController.isClosed) {
           _devicePositionBatchController.add(batch);
         }
+      },
+    );
+    _activityRecordings = ActivityRecordingController(
+      store: activityRecordingStore ?? ActivityRecordingDatabase(),
+      sessionGuard: _activitySessions.withCurrentActivitySession,
+      verifyDevice: _recordingDeviceEvidence,
+      clock: _clock,
+      backlog: _devicePositionBacklogCoordinator,
+      historyEligible: _recordingHistoryEligible,
+      historyEventEligible: (event, device) {
+        final packet = event.positionBacklogPacket;
+        return packet is! EixamPositionBacklogChunk ||
+            packet.telPacket.nodeId ==
+                (_lastPublicDeviceStatus ?? _lastDeviceStatus)?.nodeId;
       },
     );
     _nearbyTextController = NearbyTextController(
@@ -1248,6 +1257,7 @@ class EixamConnectSdkImpl
         .watchControlCommandPathAvailability()
         .listen(
           (available) async {
+            _activityRecordings.reconcileHistoryReadiness();
             final previous = _lastDeviceControlCommandPathAvailable;
             _lastDeviceControlCommandPathAvailable = available;
             BleDebugRegistry.instance.recordEvent(
@@ -1504,7 +1514,7 @@ class EixamConnectSdkImpl
           return;
         }
         // Recorder sees decoded D3 evidence before transient/public dedupe.
-        // No receive-time substitute, transport-ID fallback or D1 recovery tap.
+        // No receive-time substitute or transport-ID fallback. D1 uses the coordinator tap.
         final live = event.telLiveBatchPacket;
         final canonical = normalizeCanonicalHardwareId(
           event.canonicalHardwareId,
@@ -4682,9 +4692,13 @@ class EixamConnectSdkImpl
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    final wasResumed = _appLifecycleState == AppLifecycleState.resumed;
     _appLifecycleState = state;
     switch (state) {
       case AppLifecycleState.resumed:
+        if (!wasResumed) {
+          _activityRecordings.reconcileHistoryReadiness(runtimeResumed: true);
+        }
         _bleAutoReconnectCoordinator.setAppForeground(true);
         unawaited(_rehydrateSosStateOnAppResume());
         if (_isProtectionPlatformOwningBle) {
@@ -7440,6 +7454,21 @@ class EixamConnectSdkImpl
     expectedRouteRevision: expectedRouteRevision,
     pageSize: pageSize,
   );
+
+  bool _recordingHistoryEligible(String identity) {
+    final status = _lastPublicDeviceStatus ?? _lastDeviceStatus;
+    return !_disposed &&
+        !_isProtectionPlatformOwningBle &&
+        !_firmwareOtaInProgress &&
+        !(_deviceProvisioningCoordinator?.isBusy ?? false) &&
+        status?.connected == true &&
+        status?.paired == true &&
+        status?.nodeId != null &&
+        normalizeCanonicalHardwareId(status?.canonicalHardwareId) == identity &&
+        _recordingAssignmentRevisions[status!.nodeId.toString()] ==
+            _identityRevision &&
+        deviceSosController.longCommandAvailable;
+  }
 
   Future<ActivityRecordingDeviceEvidence?> _recordingDeviceEvidence(
     String identity,
@@ -19644,6 +19673,7 @@ class EixamConnectSdkImpl
   void _rememberRecordingAssignment(int nodeId, int revision) {
     if (!_disposed && revision == _identityRevision && _session != null) {
       _recordingAssignmentRevisions[nodeId.toString()] = revision;
+      _activityRecordings.reconcileHistoryReadiness();
     }
   }
 
@@ -26135,6 +26165,7 @@ class EixamConnectSdkImpl
   }
 
   Future<void> _emitSosCapability({required String reason}) async {
+    _activityRecordings.reconcileHistoryReadiness();
     if (_sosCapabilityController.isClosed) {
       return;
     }
