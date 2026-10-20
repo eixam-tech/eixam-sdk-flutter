@@ -8,7 +8,8 @@ import '../data/datasources_local/activity_recording_record.dart';
 import '../data/datasources_local/activity_recording_store.dart';
 import '../data/datasources_local/activity_recording_route_data.dart';
 import 'activity_recording_ingestor.dart';
-import '../device/canonical_hardware_id.dart';
+import '../activity/activity_recording_source_identity.dart';
+import '../device/eixam_position_backlog_packet.dart';
 import '../device/ble_incoming_event.dart';
 import 'device_position_backlog_coordinator.dart';
 
@@ -58,6 +59,7 @@ final class ActivityRecordingController implements ActivityRecordingControl {
   int _recoveryGeneration = 0;
   bool _lastHistoryEligible = false;
   String? _lastPathDevice;
+  int? _lastPathNodeId;
   bool? _lastPathConnected;
   final ActivityRecordingStore store;
   final ActivityRecordingSessionGuard sessionGuard;
@@ -253,10 +255,13 @@ final class ActivityRecordingController implements ActivityRecordingControl {
                 activitySession.startedAt.toUtc()) {
           throw _conflict;
         }
-        if (deviceIdentity != null &&
-            normalizeCanonicalHardwareId(deviceIdentity) !=
-                existing.value.deviceIdentity) {
-          throw _deviceMismatch;
+        if (deviceIdentity != null) {
+          final supplied = ActivityRecordingSourceIdentity.normalize(
+            deviceIdentity,
+          );
+          if (supplied == null || supplied != existing.value.deviceIdentity) {
+            throw _deviceMismatch;
+          }
         }
         if (existing.value.phase != ActivityRecordingPhase.active) {
           throw _conflict;
@@ -309,7 +314,9 @@ final class ActivityRecordingController implements ActivityRecordingControl {
       final record = await _required(recordingId, generation);
       if (record.value.phase != ActivityRecordingPhase.active) throw _conflict;
       _matchSession(session, _sessionOf(record.value));
-      final canonical = normalizeCanonicalHardwareId(deviceIdentity);
+      final canonical = ActivityRecordingSourceIdentity.normalize(
+        deviceIdentity,
+      );
       if (canonical == null) throw _deviceMismatch;
       if (record.value.deviceIdentity case final existing?) {
         if (existing != canonical) throw _deviceMismatch;
@@ -352,18 +359,26 @@ final class ActivityRecordingController implements ActivityRecordingControl {
 
   /// Called synchronously at the private decoded-D3 tap, before public dedupe.
   /// Captures the identity generation before queueing any asynchronous work.
-  Future<void> ingestLive(EixamDevicePositionBatch batch) {
+  Future<void> ingestLive(
+    EixamDevicePositionBatch batch, {
+    int? registeredNodeId,
+  }) {
     if (!_used || _identity == null || _disposed) return Future.value();
     final generationAtReceipt = _generation;
     return _command(
       (generation) => _withSession((session) async {
         final record = await _transaction(generation, (tx) async {
           final current = await tx.active(_owner!.scope);
+          final source = ActivityRecordingSourceIdentity.parse(
+            current?.value.deviceIdentity,
+          );
+          final incoming = source?.nodeId != null
+              ? ActivityRecordingSourceIdentity.forNode(registeredNodeId)?.value
+              : ActivityRecordingSourceIdentity.normalize(batch.deviceIdentity);
           if (current == null ||
               current.value.phase == ActivityRecordingPhase.finished ||
-              current.value.deviceIdentity == null ||
-              normalizeCanonicalHardwareId(batch.deviceIdentity) !=
-                  current.value.deviceIdentity ||
+              source == null ||
+              incoming != source.value ||
               batch.source != SdkLocationSource.connectedDevice ||
               batch.delivery != EixamDevicePositionDelivery.live) {
             return null;
@@ -374,7 +389,7 @@ final class ActivityRecordingController implements ActivityRecordingControl {
           final updated = await const ActivityRecordingIngestor().ingest(
             tx,
             current,
-            batch,
+            source.stamp(batch),
             _clock(),
           );
           final observing = updated.transition(
@@ -401,12 +416,19 @@ final class ActivityRecordingController implements ActivityRecordingControl {
   }
 
   /// Authoritative current TAG path fact, never inferred from GPS cadence.
-  Future<void> inputDisconnected(String? currentDevice, bool connected) {
-    final device = normalizeCanonicalHardwareId(currentDevice);
+  Future<void> inputDisconnected(
+    String? currentDevice,
+    bool connected, {
+    int? registeredNodeId,
+  }) {
+    final device = ActivityRecordingSourceIdentity.normalize(currentDevice);
     final observedAt = _clock().toUtc();
-    if (_lastPathDevice != device || _lastPathConnected != connected) {
+    if (_lastPathDevice != device ||
+        _lastPathNodeId != registeredNodeId ||
+        _lastPathConnected != connected) {
       _fenceRecovery(defer: true);
       _lastPathDevice = device;
+      _lastPathNodeId = registeredNodeId;
       _lastPathConnected = connected;
       _lastHistoryEligible = false;
     }
@@ -419,9 +441,15 @@ final class ActivityRecordingController implements ActivityRecordingControl {
             current.value.phase != ActivityRecordingPhase.active) {
           return null;
         }
-        final matching = device == current.value.deviceIdentity;
+        final source = ActivityRecordingSourceIdentity.parse(
+          current.value.deviceIdentity,
+        )!;
+        final pathDevice = source.nodeId == null
+            ? device
+            : ActivityRecordingSourceIdentity.forNode(registeredNodeId)?.value;
+        final matching = pathDevice == source.value;
         if (!matching &&
-            device != null &&
+            pathDevice != null &&
             (!connected ||
                 current.value.inputState !=
                     ActivityRecordingInputState.observing)) {
@@ -690,12 +718,13 @@ final class ActivityRecordingController implements ActivityRecordingControl {
     String requested,
     int generation,
   ) async {
-    final normalized = normalizeCanonicalHardwareId(requested);
+    final normalized = ActivityRecordingSourceIdentity.normalize(requested);
     if (normalized == null) throw _deviceMismatch;
     final evidence = await verifyDevice(normalized);
     _checkGeneration(generation);
     if (evidence == null ||
-        normalizeCanonicalHardwareId(evidence.identity) != normalized) {
+        ActivityRecordingSourceIdentity.normalize(evidence.identity) !=
+            normalized) {
       throw _deviceMismatch;
     }
     return ActivityRecordingDeviceEvidence(

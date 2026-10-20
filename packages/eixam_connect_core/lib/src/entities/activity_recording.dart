@@ -61,6 +61,8 @@ final class SdkActivityRecording {
 
   /// Opaque verified TAG identity; null until explicitly bound, then immutable
   /// for the recording. It is not a display name or a BLE list position.
+  /// Supports a legacy canonical MAC or `node:<decimal>` registered-node source;
+  /// this Recording-specific encoding does not redefine device hardware IDs.
   final String? deviceIdentity;
 
   final ActivityRecordingPhase phase;

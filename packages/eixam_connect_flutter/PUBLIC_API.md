@@ -473,6 +473,54 @@ name, list position or merely appearing device never chooses the source.
 The bound identity is immutable. Another TAG cannot contribute or replace it;
 switching TAG requires another recording lifecycle.
 
+#### Recording source identity kinds
+
+The existing `deviceIdentity` String supports two disjoint Recording-specific
+source kinds; public method signatures and result shapes are unchanged:
+
+- Legacy canonical hardware MAC, such as `AA:BB:CC:DD:EE:01`. Existing input
+  normalization and persisted bindings remain supported.
+- Registered node, encoded exactly as `node:<decimal>`, for example `node:42`.
+  The decimal domain is `1..4294967294`: unsigned 32-bit node IDs excluding
+  unset zero and broadcast `0xffffffff`. Signs, leading zeroes, whitespace,
+  hexadecimal, alternate encodings and unknown namespaces are rejected.
+
+Node Start/Bind checks the current paired device's node and provisioned status,
+then reads its existing assignment using `RegisteredDeviceAssignmentVerifier`.
+The device and authenticated owner generation are checked again after that read.
+Recording verification never creates/claims an assignment, provisions a device,
+or chooses/connects another peer. A failed registry read reports sanitized
+`E_RECORDING_DEVICE_UNREADABLE`; missing assignment or mismatched source reports
+`E_RECORDING_DEVICE_MISMATCH`. Same-binding retries remain idempotent without a
+new device read; another binding cannot replace the existing source.
+
+Provisioning comes from the SDK's existing device-status state. Recording does
+not perform a fresh status command or claim that cached state is fresh. A host
+requiring a connected TAG at new Activity Start owns that fresh-status preflight
+and its saved preferred-peer/registered-node selection. This commercial policy
+is not imposed on generic SDK Session or unbound Recording callers.
+
+For node-bound D3, the current device must be connected, paired and provisioned,
+and every decoded packet node must equal both the current node and immutable
+binding. No canonical hardware MAC is required; an iOS peripheral UUID remains
+only the transport/reconnect reference. D1 uses the same bound/current node and
+provisioning checks, verifies each chunk node, and preserves transfer session,
+connection/account generation, command ownership and commit-before-ACK rules.
+META/END remain subject to that eligible source and existing transfer ownership.
+Only the private Recording adapter stamps node identities; public position-batch
+identities and normalization remain unchanged.
+
+Disconnect preserves Session, Recording and binding, marks input unavailable,
+and defers recovery. The same provisioned node may resume D3 and eligible D1 on
+normal reconnect without recreating the Recording or resetting its route.
+SQLite accepts both identity kinds without rewriting legacy records or changing
+schema; malformed/unknown stored identities fail closed. Older MAC-only SDK
+builds cannot restore node-bound records and fail closed rather than reinterpret
+them. Generic unbound
+Recording still accepts no route input until explicitly bound. These are
+operational source identities, not hardware attestation. Global
+`DeviceStatus.canonicalHardwareId` and its normalizer are unchanged.
+
 The route is **TAG only**. Phone GPS never fills, extends or reconstructs it.
 There is no backend reconstruction or silent fallback source. Only genuine,
 validated TAG samples inside the recording window may be accepted or recovered.

@@ -36,13 +36,18 @@ abstract interface class ActivityRecordingControl {
   /// retained finished association fails with E_RECORDING_ALREADY_FINISHED.
   /// A missing TAG permits active/unbound or active/disconnected intent.
   /// A supplied TAG must be verifiable, but need not currently be connected.
+  /// Supported source identities are legacy canonical MACs and registered nodes
+  /// encoded exactly as `node:<decimal>` (1..4294967294, no leading zeroes).
+  /// Node binding verifies the current paired, provisioned device's node and
+  /// authenticated assignment without creating an assignment. Hosts own fresh
+  /// connected-device preflight when their product requires it at Session Start.
   /// No phone fallback, permissions request or implicit device selection occurs.
   Future<SdkActivityRecording> startActivityRecording({
     required SdkActivitySession activitySession,
     String? deviceIdentity,
   });
 
-  /// Explicitly binds a verifiable canonical TAG identity to an unbound active
+  /// Explicitly binds a supported, verifiable TAG source to an unbound active
   /// recording. Repeating the same binding is idempotent; another TAG conflicts.
   /// Once bound, the identity is immutable for the recording. Switching TAG
   /// requires another recording lifecycle, never a display-name/list match.

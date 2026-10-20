@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
-import '../../device/canonical_hardware_id.dart';
+import '../../activity/activity_recording_source_identity.dart';
 
 /// Private identity provenance. Never persists credentials or signing hashes.
 final class ActivityRecordingOwner {
@@ -102,7 +102,8 @@ final class ActivityRecordingRecord {
       ActivityRecordingRouteQuality.values,
     );
     final device = optionalText('device_identity');
-    if (device != null && normalizeCanonicalHardwareId(device) != device) {
+    if (device != null &&
+        ActivityRecordingSourceIdentity.normalize(device) != device) {
       throw const FormatException();
     }
     final issuesJson = jsonDecode(text('issues'));

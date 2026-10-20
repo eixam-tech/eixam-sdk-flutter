@@ -46,6 +46,7 @@ import 'android_protection_platform_adapter.dart';
 import 'android_tracking_owner_arbiter.dart';
 import 'activity_session_controller.dart';
 import 'activity_recording_controller.dart';
+import '../activity/activity_recording_source_identity.dart';
 import '../data/datasources_local/activity_recording_store.dart';
 import '../data/datasources_local/activity_recording_database.dart';
 import 'activity_availability_controller.dart';
@@ -317,6 +318,11 @@ class EixamConnectSdkImpl
       backlog: _devicePositionBacklogCoordinator,
       historyEligible: _recordingHistoryEligible,
       historyEventEligible: (event, device) {
+        final status = _lastPublicDeviceStatus ?? _lastDeviceStatus;
+        if (ActivityRecordingSourceIdentity.parse(device)?.nodeId != null &&
+            event.deviceId != status?.deviceId) {
+          return false;
+        }
         final packet = event.positionBacklogPacket;
         return packet is! EixamPositionBacklogChunk ||
             packet.telPacket.nodeId ==
@@ -1520,13 +1526,19 @@ class EixamConnectSdkImpl
           event.canonicalHardwareId,
         );
         final status = _lastPublicDeviceStatus ?? _lastDeviceStatus;
+        final legacyMatches =
+            canonical != null &&
+            canonical ==
+                normalizeCanonicalHardwareId(status?.canonicalHardwareId);
+        final registeredNode =
+            status?.provisioningStatus == DeviceProvisioningStatus.provisioned
+            ? ActivityRecordingSourceIdentity.forNode(status?.nodeId)?.nodeId
+            : null;
         if (event.type == BleIncomingEventType.telLivePositionBatch &&
             live != null &&
-            canonical != null &&
             status?.connected == true &&
             status?.paired == true &&
-            canonical ==
-                normalizeCanonicalHardwareId(status?.canonicalHardwareId) &&
+            (legacyMatches || registeredNode != null) &&
             live.telPackets.every(
               (packet) => packet.nodeId == status?.nodeId,
             )) {
@@ -1538,8 +1550,9 @@ class EixamConnectSdkImpl
                     receivedAt: live.batch.receivedAt,
                     source: live.batch.source,
                     delivery: live.batch.delivery,
-                    deviceIdentity: canonical,
+                    deviceIdentity: legacyMatches ? canonical : null,
                   ),
+                  registeredNodeId: registeredNode,
                 )
                 .catchError((Object _) {
                   /* Typed error is delivered to recording observers. */
@@ -7457,6 +7470,7 @@ class EixamConnectSdkImpl
 
   bool _recordingHistoryEligible(String identity) {
     final status = _lastPublicDeviceStatus ?? _lastDeviceStatus;
+    final source = ActivityRecordingSourceIdentity.parse(identity);
     return !_disposed &&
         !_isProtectionPlatformOwningBle &&
         !_firmwareOtaInProgress &&
@@ -7464,7 +7478,7 @@ class EixamConnectSdkImpl
         status?.connected == true &&
         status?.paired == true &&
         status?.nodeId != null &&
-        normalizeCanonicalHardwareId(status?.canonicalHardwareId) == identity &&
+        source?.matchesDevice(status!) == true &&
         _recordingAssignmentRevisions[status!.nodeId.toString()] ==
             _identityRevision &&
         deviceSosController.longCommandAvailable;
@@ -7474,6 +7488,47 @@ class EixamConnectSdkImpl
     String identity,
   ) async {
     final status = _lastPublicDeviceStatus ?? _lastDeviceStatus;
+    final source = ActivityRecordingSourceIdentity.parse(identity);
+    if (source?.nodeId case final node?) {
+      final revision = _identityRevision;
+      if (_disposed ||
+          _session == null ||
+          status == null ||
+          !status.paired ||
+          !source!.matchesDevice(status)) {
+        return null;
+      }
+      final bool assigned;
+      try {
+        assigned = await RegisteredDeviceAssignmentVerifier(
+          repository: deviceRegistryRepository,
+        ).verifyAssignment(nodeId: node);
+      } catch (_) {
+        throw const ActivityRecordingException(
+          'E_RECORDING_DEVICE_UNREADABLE',
+          'The registered TAG assignment could not be read.',
+        );
+      }
+      if (_disposed || revision != _identityRevision || _session == null) {
+        throw const ActivityRecordingException(
+          'E_RECORDING_UNAVAILABLE',
+          'The recording owner changed during device verification.',
+        );
+      }
+      final current = _lastPublicDeviceStatus ?? _lastDeviceStatus;
+      if (!assigned ||
+          current == null ||
+          !current.paired ||
+          current.deviceId != status.deviceId ||
+          !source.matchesDevice(current)) {
+        return null;
+      }
+      _rememberRecordingAssignment(node, revision);
+      return ActivityRecordingDeviceEvidence(
+        source.value,
+        connected: current.connected,
+      );
+    }
     final canonical = normalizeCanonicalHardwareId(status?.canonicalHardwareId);
     // Never reinterpret PreferredDevice.deviceId or a transport address as
     // ownership. Initial binding requires the existing authenticated assignment
@@ -22188,6 +22243,12 @@ class EixamConnectSdkImpl
           .inputDisconnected(
             publicStatus.canonicalHardwareId,
             publicStatus.connected,
+            registeredNodeId:
+                publicStatus.paired &&
+                    publicStatus.provisioningStatus ==
+                        DeviceProvisioningStatus.provisioned
+                ? publicStatus.nodeId
+                : null,
           )
           .catchError((Object _) {}),
     );

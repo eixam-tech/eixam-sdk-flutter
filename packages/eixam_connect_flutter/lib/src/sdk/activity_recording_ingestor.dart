@@ -3,7 +3,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import '../data/datasources_local/activity_recording_record.dart';
 import '../data/datasources_local/activity_recording_route_data.dart';
 import '../data/datasources_local/activity_recording_store.dart';
-import '../device/canonical_hardware_id.dart';
+import '../activity/activity_recording_source_identity.dart';
 import '../device/eixam_tel_live_batch_packet.dart';
 
 /// Consumes decoded TAG evidence, never phone/resolved/backend positions.
@@ -20,7 +20,9 @@ final class ActivityRecordingIngestor {
     bool recovered = false,
   }) {
     final r = record.value;
-    final device = normalizeCanonicalHardwareId(batch.deviceIdentity);
+    final device = ActivityRecordingSourceIdentity.normalize(
+      batch.deviceIdentity,
+    );
     if (r.phase == ActivityRecordingPhase.finished ||
         r.deviceIdentity == null ||
         device != r.deviceIdentity ||

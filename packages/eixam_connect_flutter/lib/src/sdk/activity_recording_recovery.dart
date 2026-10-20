@@ -124,10 +124,13 @@ extension _ActivityRecordingRecovery on ActivityRecordingController {
   void _reconcileHistoryReadiness() {
     if (!_used || _disposed || _identity == null) return;
     final device = _lastPathDevice;
+    final node = ActivityRecordingSourceIdentity.forNode(
+      _lastPathNodeId,
+    )?.value;
     final eligible =
-        device != null &&
         _lastPathConnected == true &&
-        _historyEligible(device);
+        ((device != null && _historyEligible(device)) ||
+            (node != null && _historyEligible(node)));
     final becameReady = eligible && !_lastHistoryEligible;
     _lastHistoryEligible = eligible;
     if (becameReady) _triggerHistory();
@@ -209,6 +212,9 @@ extension _ActivityRecordingRecovery on ActivityRecordingController {
   }
 
   Future<void> _runHistoryEpisode(_RecordingRecoveryEpisode e) async {
+    final source = ActivityRecordingSourceIdentity.parse(
+      e.record.value.deviceIdentity,
+    )!;
     var completed = false;
     var timedOut = false;
     e.deadlineAt ??= _clock().toUtc().add(e.budget);
@@ -259,9 +265,11 @@ extension _ActivityRecordingRecovery on ActivityRecordingController {
                     event,
                     e.record.value.deviceIdentity!,
                   ) &&
-                  normalizeCanonicalHardwareId(event.canonicalHardwareId) ==
-                      e.record.value.deviceIdentity,
-              commit: (batch) => _commitHistory(e, batch),
+                  _historySourceMatches(source, event),
+              commit: (batch) => _commitHistory(
+                e,
+                source.nodeId != null ? source.stamp(batch) : batch,
+              ),
             ),
             e.stopped.future.then((_) => null),
           ]);
@@ -390,5 +398,20 @@ extension _ActivityRecordingRecovery on ActivityRecordingController {
       }
       _publish(record, generation);
     });
+  }
+
+  bool _historySourceMatches(
+    ActivityRecordingSourceIdentity source,
+    BleIncomingEvent event,
+  ) {
+    if (source.nodeId == null) {
+      return ActivityRecordingSourceIdentity.normalize(
+            event.canonicalHardwareId,
+          ) ==
+          source.value;
+    }
+    final packet = event.positionBacklogPacket;
+    return packet is! EixamPositionBacklogChunk ||
+        packet.telPacket.nodeId == source.nodeId;
   }
 }

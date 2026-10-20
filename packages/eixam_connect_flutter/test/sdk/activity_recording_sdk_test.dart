@@ -35,6 +35,8 @@ import '../support/builders/device_status_builder.dart';
 import '../support/fakes/memory_shared_prefs_sdk_store.dart';
 import '../support/fakes/sdk_contract_fakes.dart';
 
+part 'activity_recording_registered_node_cases.dart';
+
 const _backend = 'https://sdk.test';
 const _identity = EixamSession.signed(
   appId: 'partner-app',
@@ -52,6 +54,7 @@ const _tag = 'AA:BB:CC:DD:EE:01';
 final _routeStart = DateTime.utc(2026, 10, 19, 12);
 
 void main() {
+  _registeredNodeTests();
   test('production optional capability is local and safety isolated', () async {
     final h = _Harness(_Disk());
     try {
