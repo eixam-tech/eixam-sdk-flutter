@@ -62,6 +62,7 @@ void main() {
       await h.sdk.setSession(_identity, deferRuntimeWork: true);
       final EixamConnectSdk facade = h.sdk;
       expect(facade, isA<ActivityRecordingControl>());
+      expect(facade, isA<ActivityRecordingHistoryControl>());
       final control = facade as ActivityRecordingControl;
       final session = await h.sdk.startActivitySession(
         activityKey: 'org.example.paddle',
@@ -89,6 +90,14 @@ void main() {
         ActivityRecordingRecoveryState.deferred,
       );
       await control.finishActivityRecording(recordingId: r.recordingId);
+      expect(
+        (await (facade as ActivityRecordingHistoryControl)
+                .listFinishedActivityRecordings())
+            .items
+            .single
+            .recordingId,
+        r.recordingId,
+      );
       expect(
         (await h.sdk.getActiveActivitySession())?.sessionId,
         session.sessionId,

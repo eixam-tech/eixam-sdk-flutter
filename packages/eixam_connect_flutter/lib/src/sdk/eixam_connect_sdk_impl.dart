@@ -225,6 +225,7 @@ class EixamConnectSdkImpl
         ActivitySessionControl,
         ActivityAvailabilityControl,
         ActivityRecordingControl,
+        ActivityRecordingHistoryControl,
         SosIncidentProgressProvider {
   EixamConnectSdkImpl({
     required this.sosRepository,
@@ -7407,6 +7408,15 @@ class EixamConnectSdkImpl
   @override
   Future<void> endActivitySession({required String sessionId}) =>
       _activitySessions.endActivitySession(sessionId: sessionId);
+
+  @override
+  Future<SdkActivityRecordingHistoryPage> listFinishedActivityRecordings({
+    int limit = 20,
+    String? cursor,
+  }) => _activityRecordings.listFinishedActivityRecordings(
+    limit: limit,
+    cursor: cursor,
+  );
 
   @override
   Future<SdkActivityRecording?> getActiveActivityRecording() =>

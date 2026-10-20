@@ -60,3 +60,4 @@ export 'package:eixam_connect_core/src/entities/activity_availability.dart';
 
 export 'package:eixam_connect_core/src/entities/activity_recording.dart';
 export 'package:eixam_connect_core/src/entities/activity_recording_route.dart';
+export 'package:eixam_connect_core/src/entities/activity_recording_history_page.dart';

@@ -555,7 +555,8 @@ increment routeRevision. Known-ID route reads remain available after restart.
 retained finished result for finish idempotence, navigation, immediate summary
 or crash recovery. It returns null only for confirmed absence within the current
 identity, not a storage failure. There is no latest-only result assumption.
-There is no recording list/search/history API and no History UI in this stage.
+Finished history browsing is exposed by the separate optional capability below.
+The SDK provides no History UI or search API.
 
 `getActiveActivityRecording()` and `watchActiveActivityRecording()` expose only
 active/finalizing state. The watcher seeds committed state and then committed
@@ -675,3 +676,68 @@ and summaries are local-only. No recording endpoint, upload, cloud sync, server
 history, remote URL or background recording upload is introduced. Existing remote
 activity availability remains separate and unchanged. The public contract has no
 backend IDs, cloud state, partner IDs or activity-specific branches.
+
+## Optional local finished ActivityRecording history (HISTORY-P1)
+
+Discover `sdk is ActivityRecordingHistoryControl`, independently of
+`ActivityRecordingControl`. Existing generic SDK and recording implementers need
+no new methods. Both the capability and `SdkActivityRecordingHistoryPage` are
+exported through core and the Flutter public entrypoint.
+
+`listFinishedActivityRecordings(limit: 20, cursor: ...)` returns an immutable list
+of existing `SdkActivityRecording` summaries and an opaque nullable `nextCursor`.
+`hasMore` is derived from that cursor. Limits are 1 through 100 inclusive;
+out-of-range values throw `RangeError`, rather than being clamped. Empty and
+terminal pages have no next cursor. There is no total-count query or live watcher.
+
+Only committed `finished` recordings appear. Active/finalizing results stay on
+the existing active observation path. A successfully finished partial route,
+unresolved gaps, issues, unknown quality and nullable distance remain valid,
+unchanged history facts. Null distance does not mean zero; neither unknown nor
+partial quality proves completeness or failure.
+
+Ordering is fixed Recording `endedAt` descending at exact integer microsecond
+precision, then `recordingId` descending with binary comparison. It does not use
+finalization commit time, route revision or raw ISO text ordering. Logical
+`activitySessionStartedAt` and `recordingStartedAt` retain their distinct meanings;
+`endedAt` remains the Recording cutoff, not the ActivitySession's end timestamp.
+
+Pass the returned cursor unchanged; do not construct, decode or persist a second
+history index in the host. Tokens are versioned and owner scoped. Malformed,
+unsupported or foreign tokens fail with sanitized `E_RECORDING_INVALID_CURSOR`.
+The cursor is not authorization: queries independently require the trusted current
+Recording owner. Signing rotation preserves same-principal history and cursor
+scope; account/app/backend replacement, canonical conflicts and logout follow the
+existing Recording purge/quarantine rules. Pending results are generation fenced.
+
+Continuation reads strictly below the last delivered `(endedAt, recordingId)`.
+Pagination is not a snapshot across requests. A newer head insertion does not
+shift or duplicate older results; refresh page one to see it. A delayed finish
+with an older cutoff below the cursor may appear on a subsequent page. Hosts may
+refresh after finish, summary dismissal or return to their activity screen. No
+polling is required.
+
+History reads summary/order metadata only. It loads no route points, gaps,
+recovery bookkeeping or geometry, recalculates no distance, and performs no active
+restoration, recovery, finalization or session/safety lifecycle operations.
+Known-ID detail remains `getActivityRecording`; route data remains
+`readActivityRecordingRoute`. Listing certifies readable summary/order metadata,
+not route integrity: corruption confined to route storage is checked by the
+existing detail/route paths. Encountered invalid summaries/order entries fail the
+whole page with `E_RECORDING_RESTORE_FAILED`, without skipping, defaults, deletion
+or silent repair. The initial metadata integrity audit checks index completeness;
+its prepared state is cached under the single-writer and owner identity boundary.
+
+Private schema version 5 adds only ordering keys in `recording_history_order`
+inside the same no-backup Recording database. Forward migration validates and
+backfills in bounded metadata batches, without rewriting existing summary rows
+or changing route schema. Finished transitions and ordering entries commit in the
+same transaction. Initial migration/integrity preparation may be linear in stored
+summary count; ordinary pages use bounded indexed seeks and summary primary-key
+lookups. The integer index supports the existing SQLite platform floor without
+expression indexes or floating-point datetime conversion.
+
+History remains installation-local. There is no backend endpoint, upload, cloud
+or cross-device synchronization, delete/archive API, age limit or pruning.
+Long-term storage growth remains a deferred policy concern. Firmware, phone GPS,
+SOS, DMP, Tracking and Protection ownership are unrelated and unchanged.

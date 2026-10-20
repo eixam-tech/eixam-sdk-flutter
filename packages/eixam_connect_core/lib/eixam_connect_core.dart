@@ -113,3 +113,6 @@ export 'src/entities/activity_recording_route.dart';
 export 'src/enums/activity_recording.dart';
 export 'src/interfaces/activity_recording_control.dart';
 export 'src/errors/activity_recording_exception.dart';
+
+export 'src/interfaces/activity_recording_history_control.dart';
+export 'src/entities/activity_recording_history_page.dart';

@@ -1,8 +1,10 @@
 import 'package:sqflite/sqflite.dart';
 
-/// Private schema. Version four adds a bounded durable finalization deadline.
+import 'activity_recording_history_sql.dart';
+
+/// Private schema. Version five adds exact finished-history ordering keys.
 abstract final class ActivityRecordingSchema {
-  static const version = 4;
+  static const version = 5;
 
   static Future<void> create(Database db, int version) async {
     await db.execute('''CREATE TABLE recording_store_metadata (
@@ -69,7 +71,7 @@ abstract final class ActivityRecordingSchema {
     int oldVersion,
     int newVersion,
   ) async {
-    if (oldVersion < 1 || oldVersion > 3 || newVersion != 4) {
+    if (oldVersion < 1 || oldVersion > 4 || newVersion != 5) {
       throw StateError('Unsupported recording schema');
     }
     if (oldVersion == 1) {
@@ -115,11 +117,14 @@ abstract final class ActivityRecordingSchema {
       SELECT recording_id, CASE WHEN unresolved_gap_count > 0 THEN 1 ELSE 0 END FROM recordings''',
       );
     }
-    await db.execute(
-      'ALTER TABLE recordings ADD COLUMN finalization_started_at TEXT',
-    );
-    await db.execute(
-      'ALTER TABLE recordings ADD COLUMN finalization_deadline_at TEXT',
-    );
+    if (oldVersion < 4) {
+      await db.execute(
+        'ALTER TABLE recordings ADD COLUMN finalization_started_at TEXT',
+      );
+      await db.execute(
+        'ALTER TABLE recordings ADD COLUMN finalization_deadline_at TEXT',
+      );
+    }
+    await ActivityRecordingHistorySql.create(db);
   }
 }

@@ -171,7 +171,9 @@ final class FaultRecordingStore implements ActivityRecordingStore {
   @override
   Object get writerNamespace => inner.writerNamespace;
   int activeTransactions = 0;
+  int historyPrepareCalls = 0;
   Future<void> Function()? beforeRoutePage;
+  Future<void> Function()? beforeHistoryPage;
 
   @override
   Future<T> transaction<T>(
@@ -191,7 +193,14 @@ final class FaultRecordingStore implements ActivityRecordingStore {
     var wrote = false;
     ActivityRecordingPhase? writtenPhase;
     final result = await inner.transaction((tx) async {
-      final tracking = _WriteTrackingTransaction(tx, beforeRoutePage);
+      final tracking = _WriteTrackingTransaction(
+        tx,
+        beforeRoutePage,
+        beforeHistoryPage,
+        () {
+          historyPrepareCalls++;
+        },
+      );
       final result = await action(tracking);
       wrote = tracking.lastWrite != null;
       writtenPhase = tracking.lastWrite?.value.phase;
@@ -244,13 +253,42 @@ final class FaultRecordingStore implements ActivityRecordingStore {
 }
 
 final class _WriteTrackingTransaction implements ActivityRecordingTransaction {
-  _WriteTrackingTransaction(this.inner, this.beforeRoutePage);
+  _WriteTrackingTransaction(
+    this.inner,
+    this.beforeRoutePage,
+    this.beforeHistoryPage,
+    this.onPrepareHistory,
+  );
   final Future<void> Function()? beforeRoutePage;
+  final Future<void> Function()? beforeHistoryPage;
+  final void Function() onPrepareHistory;
   final ActivityRecordingTransaction inner;
   ActivityRecordingRecord? lastWrite;
   @override
   Future<bool> reconcileOwner(ActivityRecordingOwner owner) =>
       inner.reconcileOwner(owner);
+  @override
+  Future<void> prepareHistory(String scope) {
+    onPrepareHistory();
+    return inner.prepareHistory(scope);
+  }
+
+  @override
+  Future<List<ActivityRecordingRecord>> finishedHistory(
+    String scope, {
+    required int limit,
+    int? endedAtUs,
+    String? recordingId,
+  }) async {
+    await beforeHistoryPage?.call();
+    return inner.finishedHistory(
+      scope,
+      limit: limit,
+      endedAtUs: endedAtUs,
+      recordingId: recordingId,
+    );
+  }
+
   @override
   Future<ActivityRecordingRecord?> active(String scope) => inner.active(scope);
   @override

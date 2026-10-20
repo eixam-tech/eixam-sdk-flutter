@@ -4,6 +4,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:sqflite/sqflite.dart';
 
 import 'activity_recording_record.dart';
+import 'activity_recording_history_sql.dart';
 import 'activity_recording_integrity.dart';
 import 'activity_recording_route_data.dart';
 import 'activity_recording_route_sql.dart';
@@ -106,6 +107,7 @@ final class ActivityRecordingDatabase implements ActivityRecordingStore {
     await transaction((tx) async {
       final sql = (tx as _SqlRecordingTransaction).sql;
       // Explicitly remove every table even if corrupt legacy rows lack FKs.
+      await sql.delete('recording_history_order');
       await sql.delete('recording_recovery');
       await sql.delete('route_points');
       await sql.delete('route_gaps');
@@ -157,6 +159,7 @@ final class _SqlRecordingTransaction implements ActivityRecordingTransaction {
       sameOwner = old.scope == owner.scope;
       conflict = old.scope == owner.scope && old.conflicts(owner);
       if (old.scope != owner.scope || conflict) {
+        await sql.delete('recording_history_order');
         await sql.delete('recording_recovery');
         await sql.delete('route_points');
         await sql.delete('route_gaps');
@@ -166,7 +169,10 @@ final class _SqlRecordingTransaction implements ActivityRecordingTransaction {
       final count = Sqflite.firstIntValue(
         await sql.rawQuery('SELECT COUNT(*) FROM recordings'),
       );
-      if (count != 0) throw _restoreFailed;
+      if (count != 0 ||
+          (await sql.query('recording_history_order', limit: 1)).isNotEmpty) {
+        throw _restoreFailed;
+      }
     }
     await sql.insert('recording_store_metadata', {
       'singleton': 1,
@@ -180,6 +186,20 @@ final class _SqlRecordingTransaction implements ActivityRecordingTransaction {
     }, conflictAlgorithm: ConflictAlgorithm.replace);
     return conflict;
   }
+
+  @override
+  Future<void> prepareHistory(String scope) =>
+      ActivityRecordingHistorySql(sql).prepare(scope);
+
+  @override
+  Future<List<ActivityRecordingRecord>> finishedHistory(
+    String scope, {
+    required int limit,
+    int? endedAtUs,
+    String? recordingId,
+  }) => ActivityRecordingHistorySql(
+    sql,
+  ).page(scope, limit: limit, endedAtUs: endedAtUs, recordingId: recordingId);
 
   Future<ActivityRecordingRecord?> _read(
     String where,
@@ -237,10 +257,17 @@ final class _SqlRecordingTransaction implements ActivityRecordingTransaction {
   @override
   Future<void> insert(ActivityRecordingRecord record) async {
     await sql.insert('recordings', record.encode());
+    await ActivityRecordingHistorySql(sql).write(record, wasFinished: false);
   }
 
   @override
   Future<void> update(ActivityRecordingRecord record) async {
+    final previous = await sql.query(
+      'recordings',
+      columns: ['phase'],
+      where: 'owner_scope = ? AND recording_id = ?',
+      whereArgs: [record.owner.scope, record.value.recordingId],
+    );
     final changed = await sql.update(
       'recordings',
       record.encode(),
@@ -248,6 +275,9 @@ final class _SqlRecordingTransaction implements ActivityRecordingTransaction {
       whereArgs: [record.owner.scope, record.value.recordingId],
     );
     if (changed != 1) throw _persistenceFailed;
+    await ActivityRecordingHistorySql(
+      sql,
+    ).write(record, wasFinished: previous.single['phase'] == 'finished');
   }
 
   @override

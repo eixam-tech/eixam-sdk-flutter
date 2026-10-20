@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:crypto/crypto.dart';
 
 import '../data/datasources_local/activity_recording_record.dart';
 import '../data/datasources_local/activity_recording_store.dart';
@@ -15,6 +16,7 @@ import 'device_position_backlog_coordinator.dart';
 
 part 'activity_recording_recovery.dart';
 part 'activity_recording_finalization.dart';
+part 'activity_recording_history.dart';
 
 typedef ActivityRecordingSessionGuard =
     Future<T> Function<T>(
@@ -33,7 +35,8 @@ final class ActivityRecordingDeviceEvidence {
 
 /// Serialized durable recorder; retained history reuses the SDK coordinator.
 /// No phone GPS, safety ownership or periodic polling is a dependency.
-final class ActivityRecordingController implements ActivityRecordingControl {
+final class ActivityRecordingController
+    implements ActivityRecordingControl, ActivityRecordingHistoryControl {
   ActivityRecordingController({
     required this.store,
     required this.sessionGuard,
@@ -74,6 +77,8 @@ final class ActivityRecordingController implements ActivityRecordingControl {
   ActivityRecordingOwner? _owner;
   bool _pendingClear = false;
   bool _restored = false;
+  bool _ownerPrepared = false;
+  bool _historyPrepared = false;
   bool _used = false;
   bool _disposed = false;
   bool _identityReady = false;
@@ -134,6 +139,8 @@ final class ActivityRecordingController implements ActivityRecordingControl {
       _identity = next;
       _owner = owner;
       _restored = false;
+      _ownerPrepared = false;
+      _historyPrepared = false;
       Object? cleanupError;
       StackTrace? cleanupStack;
       try {
@@ -180,6 +187,12 @@ final class ActivityRecordingController implements ActivityRecordingControl {
     backend: () => '',
     clearData: true,
   );
+
+  @override
+  Future<SdkActivityRecordingHistoryPage> listFinishedActivityRecordings({
+    int limit = 20,
+    String? cursor,
+  }) => _listFinished(limit: limit, cursor: cursor);
 
   @override
   Future<SdkActivityRecording?> getActiveActivityRecording() => _command(
@@ -607,6 +620,7 @@ final class ActivityRecordingController implements ActivityRecordingControl {
   Future<T> _command<T>(
     Future<T> Function(int generation) action, {
     bool requireIdentity = true,
+    bool restoreActive = true,
   }) {
     final generation = _generation;
     return _serialize(() async {
@@ -623,7 +637,8 @@ final class ActivityRecordingController implements ActivityRecordingControl {
       if (_identity == null) {
         if (requireIdentity) throw _identityRequired;
       } else {
-        await _prepare(generation);
+        await _prepareOwner(generation);
+        if (restoreActive) await _prepare(generation);
       }
       final result = await action(generation);
       _checkGeneration(generation);
@@ -633,14 +648,7 @@ final class ActivityRecordingController implements ActivityRecordingControl {
 
   Future<void> _prepare(int generation) async {
     if (_restored) return;
-    final conflict = await _transaction(
-      generation,
-      (tx) => tx.reconcileOwner(_owner!),
-    );
-    if (conflict) {
-      _identityReady = false;
-      throw _identityRequired;
-    }
+    await _prepareOwner(generation);
     if (!_restored) {
       // Only an already committed user finish intent is completed on restart.
       final restored = await _transaction(generation, (tx) async {

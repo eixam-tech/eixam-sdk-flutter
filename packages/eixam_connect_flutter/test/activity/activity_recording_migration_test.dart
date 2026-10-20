@@ -73,7 +73,7 @@ void main() {
 
   for (final phase in ActivityRecordingPhase.values) {
     test(
-      'schema1→4 preserves $phase plus all finished metadata and binding',
+      'schema1→5 preserves $phase plus all finished metadata and binding',
       () async {
         final path = await seed(phase);
         final db = ActivityRecordingDatabase(
@@ -105,8 +105,12 @@ void main() {
           path,
           options: OpenDatabaseOptions(singleInstance: false),
         );
-        expect(await raw.getVersion(), 4);
+        expect(await raw.getVersion(), 5);
         expect((await raw.query('recordings')).length, 3);
+        expect(
+          await raw.query('recording_history_order'),
+          hasLength(phase == ActivityRecordingPhase.finished ? 3 : 2),
+        );
         expect(
           (await raw.query(
             'recording_store_metadata',
@@ -120,7 +124,7 @@ void main() {
 
   for (final oldVersion in [2, 3]) {
     test(
-      'schema$oldVersion→4 preserves active integrity gap and multiple finished routes byte-for-byte',
+      'schema$oldVersion→5 preserves active integrity gap and multiple finished routes byte-for-byte',
       () async {
         final ids = <String>[];
         for (var i = 0; i < 3; i++) {
@@ -224,7 +228,8 @@ void main() {
           path,
           options: OpenDatabaseOptions(singleInstance: false),
         );
-        expect(await raw.getVersion(), 4);
+        expect(await raw.getVersion(), 5);
+        expect(await raw.query('recording_history_order'), hasLength(2));
         for (final entry in snapshot.entries) {
           expect(
             (await raw.query(entry.key))

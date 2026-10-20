@@ -16,6 +16,17 @@ abstract interface class ActivityRecordingTransaction {
   /// Adopts only this principal, purging other ownership atomically. Returns
   /// true after purging a confirmed canonical conflict so callers can quarantine.
   Future<bool> reconcileOwner(ActivityRecordingOwner owner);
+
+  /// Validates complete summary/order correspondence without route access.
+  Future<void> prepareHistory(String scope);
+
+  /// Returns at most [limit] validated summaries, strictly below the cursor key.
+  Future<List<ActivityRecordingRecord>> finishedHistory(
+    String scope, {
+    required int limit,
+    int? endedAtUs,
+    String? recordingId,
+  });
   Future<ActivityRecordingRecord?> active(String scope);
   Future<ActivityRecordingRecord?> byId(String scope, String recordingId);
   Future<ActivityRecordingRecord?> forSession(String scope, String sessionId);
