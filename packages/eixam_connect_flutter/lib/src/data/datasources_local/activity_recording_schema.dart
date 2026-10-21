@@ -2,9 +2,9 @@ import 'package:sqflite/sqflite.dart';
 
 import 'activity_recording_history_sql.dart';
 
-/// Private schema. Version five adds exact finished-history ordering keys.
+/// Private schema. Version six adds local finished-recording soft deletion.
 abstract final class ActivityRecordingSchema {
-  static const version = 5;
+  static const version = 6;
 
   static Future<void> create(Database db, int version) async {
     await db.execute('''CREATE TABLE recording_store_metadata (
@@ -71,7 +71,7 @@ abstract final class ActivityRecordingSchema {
     int oldVersion,
     int newVersion,
   ) async {
-    if (oldVersion < 1 || oldVersion > 4 || newVersion != 5) {
+    if (oldVersion < 1 || oldVersion > 5 || newVersion != 6) {
       throw StateError('Unsupported recording schema');
     }
     if (oldVersion == 1) {
@@ -125,6 +125,9 @@ abstract final class ActivityRecordingSchema {
         'ALTER TABLE recordings ADD COLUMN finalization_deadline_at TEXT',
       );
     }
-    await ActivityRecordingHistorySql.create(db);
+    if (oldVersion < 5) await ActivityRecordingHistorySql.create(db);
+    await db.execute(
+      'ALTER TABLE recordings ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0',
+    );
   }
 }

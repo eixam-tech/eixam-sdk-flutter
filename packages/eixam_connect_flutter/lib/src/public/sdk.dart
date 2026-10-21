@@ -11,6 +11,7 @@ export 'package:eixam_connect_core/src/interfaces/activity_availability_control.
 export 'package:eixam_connect_core/src/interfaces/activity_recording_control.dart';
 
 export 'package:eixam_connect_core/src/interfaces/activity_recording_history_control.dart';
+export 'package:eixam_connect_core/src/interfaces/activity_recording_delete_control.dart';
 
 // Registers the Flutter bootstrap implementation behind the public
 // `EixamConnectSdk.bootstrap(...)` entrypoint when the package is imported.

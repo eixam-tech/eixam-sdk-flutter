@@ -14,12 +14,13 @@ final class ActivityRecordingHistorySql {
     h.ended_at_us AS history_end
     FROM recordings r LEFT JOIN recording_history_order h
     ON h.recording_id = r.recording_id''';
+  // Keep orphan/invalid rows visible to validation; exclude only tombstones.
   static const _page = '''SELECT r.*,
     h.recording_id AS history_id, h.owner_scope AS history_owner,
     h.ended_at_us AS history_end
     FROM recording_history_order h INDEXED BY recording_history_page
     LEFT JOIN recordings r ON r.recording_id = h.recording_id
-    WHERE h.owner_scope = ?''';
+    WHERE h.owner_scope = ? AND r.is_deleted IS NOT 1''';
   static const _order =
       ' ORDER BY h.ended_at_us DESC, h.recording_id DESC LIMIT ?';
 

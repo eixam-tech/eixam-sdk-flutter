@@ -36,7 +36,10 @@ final class ActivityRecordingDeviceEvidence {
 /// Serialized durable recorder; retained history reuses the SDK coordinator.
 /// No phone GPS, safety ownership or periodic polling is a dependency.
 final class ActivityRecordingController
-    implements ActivityRecordingControl, ActivityRecordingHistoryControl {
+    implements
+        ActivityRecordingControl,
+        ActivityRecordingHistoryControl,
+        ActivityRecordingDeleteControl {
   ActivityRecordingController({
     required this.store,
     required this.sessionGuard,
@@ -193,6 +196,26 @@ final class ActivityRecordingController
     int limit = 20,
     String? cursor,
   }) => _listFinished(limit: limit, cursor: cursor);
+
+  @override
+  Future<void> deleteFinishedActivityRecording({required String recordingId}) =>
+      _command(
+        (generation) => _transaction(generation, (tx) async {
+          final record = await tx.byId(
+            _owner!.scope,
+            recordingId,
+            includeDeleted: true,
+          );
+          if (record == null) throw _notFound;
+          if (record.value.phase != ActivityRecordingPhase.finished) {
+            throw _conflict;
+          }
+          if (!record.isDeleted) {
+            await tx.update(record.transition(isDeleted: true));
+          }
+        }),
+        restoreActive: false,
+      );
 
   @override
   Future<SdkActivityRecording?> getActiveActivityRecording() => _command(

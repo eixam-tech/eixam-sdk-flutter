@@ -226,6 +226,7 @@ class EixamConnectSdkImpl
         ActivityAvailabilityControl,
         ActivityRecordingControl,
         ActivityRecordingHistoryControl,
+        ActivityRecordingDeleteControl,
         SosIncidentProgressProvider {
   EixamConnectSdkImpl({
     required this.sosRepository,
@@ -7417,6 +7418,12 @@ class EixamConnectSdkImpl
     limit: limit,
     cursor: cursor,
   );
+
+  @override
+  Future<void> deleteFinishedActivityRecording({required String recordingId}) =>
+      _activityRecordings.deleteFinishedActivityRecording(
+        recordingId: recordingId,
+      );
 
   @override
   Future<SdkActivityRecording?> getActiveActivityRecording() =>

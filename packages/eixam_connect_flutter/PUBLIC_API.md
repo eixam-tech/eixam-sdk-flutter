@@ -738,6 +738,34 @@ lookups. The integer index supports the existing SQLite platform floor without
 expression indexes or floating-point datetime conversion.
 
 History remains installation-local. There is no backend endpoint, upload, cloud
-or cross-device synchronization, delete/archive API, age limit or pruning.
+or cross-device synchronization, age limit or pruning.
 Long-term storage growth remains a deferred policy concern. Firmware, phone GPS,
 SOS, DMP, Tracking and Protection ownership are unrelated and unchanged.
+
+### Optional local finished Recording deletion
+
+Feature-detect `sdk is ActivityRecordingDeleteControl`, then call
+`deleteFinishedActivityRecording(recordingId: id)`. This owner-scoped capability
+marks only a finished local Recording deleted. Repeating deletion succeeds;
+absent/inaccessible IDs use `E_RECORDING_NOT_FOUND`, while active/finalizing
+Recordings use `E_RECORDING_CONFLICT`. Existing sanitized Recording storage
+errors remain authoritative. No method is added to the base SDK interface.
+
+Private schema version 6 adds only
+`is_deleted INTEGER NOT NULL DEFAULT 0` to `recordings`. The additive migration
+preserves all existing Recordings and routes. History, including pagination,
+filters the Recording flag; known-ID detail returns null and route reads fail
+with `E_RECORDING_NOT_FOUND`. Normal finish/recovery calls cannot resolve a
+deleted Recording. These rules survive restart. The internal Session association
+remains reserved, preserving Recording Start semantics.
+
+This is local-only soft deletion, not payload erasure. Route points, gaps,
+recovery metadata and History ordering rows may remain in local storage until
+normal account/local-user cleanup physically removes Recording storage. No
+backend or TAG deletion, HTTP, MQTT, BLE command, Session mutation, SOS or DMP
+operation occurs. Active/finalizing restoration is not triggered by deletion.
+
+Hosts guard their own pending End/summary handoff lifecycle before deletion and
+refresh authoritative History, close Detail and invalidate route presentation
+after success. No delete event stream is provided. Previously delivered values
+cannot be retracted; subsequent reads enforce deletion.

@@ -53,6 +53,7 @@ final class ActivityRecordingRecord {
     this.value, {
     this.finalizationStartedAt,
     this.finalizationDeadlineAt,
+    this.isDeleted = false,
   });
 
   factory ActivityRecordingRecord.decode(Map<String, Object?> row) {
@@ -92,6 +93,12 @@ final class ActivityRecordingRecord {
     final start = time('recording_started_at');
     final end = row['ended_at'] == null ? null : time('ended_at');
     final phase = choice('phase', ActivityRecordingPhase.values);
+    // Legacy migration backfill decodes rows before the additive v6 column.
+    final deleted = row.containsKey('is_deleted') ? row['is_deleted'] : 0;
+    if ((deleted != 0 && deleted != 1) ||
+        (deleted == 1 && phase != ActivityRecordingPhase.finished)) {
+      throw const FormatException();
+    }
     final input = choice('input_state', ActivityRecordingInputState.values);
     final recovery = choice(
       'recovery_state',
@@ -209,6 +216,7 @@ final class ActivityRecordingRecord {
       ),
       finalizationStartedAt: finishStart,
       finalizationDeadlineAt: finishDeadline,
+      isDeleted: deleted == 1,
     );
   }
 
@@ -216,8 +224,10 @@ final class ActivityRecordingRecord {
   final SdkActivityRecording value;
   final DateTime? finalizationStartedAt;
   final DateTime? finalizationDeadlineAt;
+  final bool isDeleted;
 
   ActivityRecordingRecord transition({
+    bool? isDeleted,
     ActivityRecordingPhase? phase,
     DateTime? finalizationStartedAt,
     DateTime? finalizationDeadlineAt,
@@ -228,6 +238,7 @@ final class ActivityRecordingRecord {
     Set<ActivityRecordingIssue>? issues,
   }) => ActivityRecordingRecord.decode({
     ...encode(),
+    if (isDeleted != null) 'is_deleted': isDeleted ? 1 : 0,
     if (finalizationStartedAt != null)
       'finalization_started_at': finalizationStartedAt
           .toUtc()
@@ -246,6 +257,7 @@ final class ActivityRecordingRecord {
   });
 
   Map<String, Object?> encode() => {
+    'is_deleted': isDeleted ? 1 : 0,
     if (finalizationStartedAt != null)
       'finalization_started_at': finalizationStartedAt!.toIso8601String(),
     if (finalizationDeadlineAt != null)

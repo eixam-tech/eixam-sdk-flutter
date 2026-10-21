@@ -247,8 +247,14 @@ final class _SqlRecordingTransaction implements ActivityRecordingTransaction {
   }
 
   @override
-  Future<ActivityRecordingRecord?> byId(String scope, String id) =>
-      _read('owner_scope = ? AND recording_id = ?', [scope, id]);
+  Future<ActivityRecordingRecord?> byId(
+    String scope,
+    String id, {
+    bool includeDeleted = false,
+  }) => _read(
+    'owner_scope = ? AND recording_id = ?${includeDeleted ? '' : ' AND is_deleted IS NOT 1'}',
+    [scope, id],
+  );
 
   @override
   Future<ActivityRecordingRecord?> forSession(String scope, String id) =>

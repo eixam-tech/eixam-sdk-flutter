@@ -28,6 +28,7 @@ void main() {
     'session_started_at': 'not-a-timestamp',
     'recording_started_at': '2026-10-20T00:00:00+00:00',
     'device_identity': 'not-a-device',
+    'is_deleted': 2,
   };
   for (final corruption in corruptions.entries) {
     for (final prepared in [false, true]) {

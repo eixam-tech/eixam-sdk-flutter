@@ -4,7 +4,8 @@ import '../entities/activity_recording_history_page.dart';
 /// Discover with `sdk is ActivityRecordingHistoryControl`.
 ///
 /// Results contain authoritative summary metadata only, without route payloads,
-/// backend/cloud synchronization, deletion or age-based retention. Active and
+/// backend/cloud synchronization or age-based retention. Soft-deleted recordings
+/// are excluded; optional deletion uses ActivityRecordingDeleteControl. Active and
 /// finalizing recordings remain available through ActivityRecordingControl.
 abstract interface class ActivityRecordingHistoryControl {
   /// Orders by fixed recording cutoff (`endedAt`) descending, then recording ID

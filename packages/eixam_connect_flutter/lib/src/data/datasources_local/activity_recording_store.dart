@@ -28,7 +28,11 @@ abstract interface class ActivityRecordingTransaction {
     String? recordingId,
   });
   Future<ActivityRecordingRecord?> active(String scope);
-  Future<ActivityRecordingRecord?> byId(String scope, String recordingId);
+  Future<ActivityRecordingRecord?> byId(
+    String scope,
+    String recordingId, {
+    bool includeDeleted = false,
+  });
   Future<ActivityRecordingRecord?> forSession(String scope, String sessionId);
   Future<void> insert(ActivityRecordingRecord record);
   Future<void> update(ActivityRecordingRecord record);

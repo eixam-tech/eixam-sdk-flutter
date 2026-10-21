@@ -55,6 +55,68 @@ final _routeStart = DateTime.utc(2026, 10, 19, 12);
 
 void main() {
   _registeredNodeTests();
+  test(
+    'soft deletion through public capability has zero remote or safety effects',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'recording-delete-sdk-',
+      );
+      final h = _Harness(
+        _Disk(),
+        recordingStore: ActivityRecordingDatabase(
+          path: '${directory.path}/recordings.sqlite',
+          factory: databaseFactoryFfiNoIsolate,
+        ),
+      );
+      try {
+        await h.initialize();
+        await h.sdk.setSession(_identity, deferRuntimeWork: true);
+        final EixamConnectSdk facade = h.sdk;
+        expect(facade, isA<ActivityRecordingDeleteControl>());
+        final session = await h.sdk.startActivitySession(
+          activityKey: 'mountain',
+        );
+        final r = await h.sdk.startActivityRecording(activitySession: session);
+        await h.sdk.finishActivityRecording(recordingId: r.recordingId);
+        final httpRequests = h.httpRequests;
+        final mqttConnections = h.realtime.connectCallCount;
+        final mqttDisconnections = h.realtime.disconnectCallCount;
+        final deviceCalls = (
+          h.device.pairCallCount,
+          h.device.reconnectCallCount,
+          h.device.refreshCallCount,
+          h.device.unpairCallCount,
+        );
+        await (facade as ActivityRecordingDeleteControl)
+            .deleteFinishedActivityRecording(recordingId: r.recordingId);
+        await (facade as ActivityRecordingDeleteControl)
+            .deleteFinishedActivityRecording(recordingId: r.recordingId);
+        expect(
+          await h.sdk.getActivityRecording(recordingId: r.recordingId),
+          isNull,
+        );
+        expect((await h.sdk.listFinishedActivityRecordings()).items, isEmpty);
+        expect(
+          (await h.sdk.getActiveActivitySession())?.sessionId,
+          session.sessionId,
+        );
+        expect(h.httpRequests, httpRequests);
+        expect(h.realtime.connectCallCount, mqttConnections);
+        expect(h.realtime.disconnectCallCount, mqttDisconnections);
+        expect(h.realtime.publishedSos, isEmpty);
+        expect((
+          h.device.pairCallCount,
+          h.device.reconnectCallCount,
+          h.device.refreshCallCount,
+          h.device.unpairCallCount,
+        ), deviceCalls);
+        h.expectSafetyIdle();
+      } finally {
+        await h.dispose();
+        await directory.delete(recursive: true);
+      }
+    },
+  );
   test('production optional capability is local and safety isolated', () async {
     final h = _Harness(_Disk());
     try {
@@ -746,6 +808,7 @@ class _Harness {
     DateTime Function()? clock,
   }) : sos = sos ?? FakeSosRepository() {
     client = MockClient((request) async {
+      httpRequests++;
       if (request.url.path == '/v1/sdk/me') {
         identityRequests++;
         if (identityGate case final gate?) return gate.future;
@@ -829,6 +892,7 @@ class _Harness {
   int identityStatus = 200;
   String canonicalId = 'sdk-a';
   int identityRequests = 0;
+  int httpRequests = 0;
   List<String> keys = ['mountain'];
   Completer<http.Response>? identityGate;
   Completer<http.Response>? availabilityGate;

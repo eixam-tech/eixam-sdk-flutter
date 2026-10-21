@@ -46,7 +46,7 @@ void main() {
     final record = ActivityRecordingRecord(owner, r);
     for (var i = 0; i < 3; i++) {
       final values = {
-        ...record.encode(),
+        ...record.encode()..remove('is_deleted'),
         'recording_id': i.toRadixString(16).padLeft(32, '0'),
         'activity_session_id': 'session-$i',
         'phase': i == 0 ? phase.name : ActivityRecordingPhase.finished.name,
@@ -73,7 +73,7 @@ void main() {
 
   for (final phase in ActivityRecordingPhase.values) {
     test(
-      'schema1→5 preserves $phase plus all finished metadata and binding',
+      'schema1→6 preserves $phase plus all finished metadata and binding',
       () async {
         final path = await seed(phase);
         final db = ActivityRecordingDatabase(
@@ -105,7 +105,7 @@ void main() {
           path,
           options: OpenDatabaseOptions(singleInstance: false),
         );
-        expect(await raw.getVersion(), 5);
+        expect(await raw.getVersion(), 6);
         expect((await raw.query('recordings')).length, 3);
         expect(
           await raw.query('recording_history_order'),
@@ -124,7 +124,7 @@ void main() {
 
   for (final oldVersion in [2, 3]) {
     test(
-      'schema$oldVersion→5 preserves active integrity gap and multiple finished routes byte-for-byte',
+      'schema$oldVersion→6 preserves active integrity gap and multiple finished routes byte-for-byte',
       () async {
         final ids = <String>[];
         for (var i = 0; i < 3; i++) {
@@ -182,7 +182,8 @@ void main() {
               .map(
                 (row) => Map<String, Object?>.of(row)
                   ..remove('finalization_started_at')
-                  ..remove('finalization_deadline_at'),
+                  ..remove('finalization_deadline_at')
+                  ..remove('is_deleted'),
               )
               .toList();
         }
@@ -228,7 +229,7 @@ void main() {
           path,
           options: OpenDatabaseOptions(singleInstance: false),
         );
-        expect(await raw.getVersion(), 5);
+        expect(await raw.getVersion(), 6);
         expect(await raw.query('recording_history_order'), hasLength(2));
         for (final entry in snapshot.entries) {
           expect(
@@ -236,7 +237,8 @@ void main() {
                 .map(
                   (row) => Map<String, Object?>.of(row)
                     ..remove('finalization_started_at')
-                    ..remove('finalization_deadline_at'),
+                    ..remove('finalization_deadline_at')
+                    ..remove('is_deleted'),
                 )
                 .toList(),
             entry.value,

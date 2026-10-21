@@ -292,8 +292,11 @@ final class _WriteTrackingTransaction implements ActivityRecordingTransaction {
   @override
   Future<ActivityRecordingRecord?> active(String scope) => inner.active(scope);
   @override
-  Future<ActivityRecordingRecord?> byId(String scope, String id) =>
-      inner.byId(scope, id);
+  Future<ActivityRecordingRecord?> byId(
+    String scope,
+    String id, {
+    bool includeDeleted = false,
+  }) => inner.byId(scope, id, includeDeleted: includeDeleted);
   @override
   Future<ActivityRecordingRecord?> forSession(String scope, String id) =>
       inner.forSession(scope, id);

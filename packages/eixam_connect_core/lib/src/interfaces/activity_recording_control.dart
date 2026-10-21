@@ -80,7 +80,8 @@ abstract interface class ActivityRecordingControl {
   });
 
   /// Looks up an active/finalizing or retained finished recording by known ID
-  /// within the current identity. Null means absent, not unreadable storage.
+  /// within the current identity. Soft-deleted recordings return null.
+  /// Null means absent, not unreadable storage.
   /// Supports immediate-summary/crash recovery, not history browsing or listing.
   Future<SdkActivityRecording?> getActivityRecording({
     required String recordingId,
@@ -98,6 +99,7 @@ abstract interface class ActivityRecordingControl {
   /// A mismatched [expectedRouteRevision] fails before page delivery with
   /// E_RECORDING_ROUTE_REVISION_CHANGED (retryable via fresh state/read).
   /// This pages one known recording's route, never a list of activities.
+  /// Soft-deleted recordings fail with E_RECORDING_NOT_FOUND.
   Stream<SdkActivityRoutePage> readActivityRecordingRoute({
     required String recordingId,
     DateTime? fromInclusive,
