@@ -23,6 +23,39 @@ void main() {
     );
   });
 
+  test(
+    'failed pre-artifact intent and recovery deadline survive process death',
+    () async {
+      final now = DateTime.now();
+      final initial = _session();
+      final failed = DeviceMigrationSession(
+        sessionId: initial.sessionId,
+        schemaVersion: DeviceMigrationSession.currentSchemaVersion,
+        candidate: initial.candidate,
+        releaseId: '',
+        targetVersion: '',
+        state: DeviceMigrationState.failed,
+        nextAction: DeviceMigrationNextAction.retry,
+        outcome: DeviceMigrationOutcome.failed,
+        failureCode: 'migrationArtifactUnavailable',
+        canCancel: false,
+        createdAt: now,
+        updatedAt: now,
+        reconciliationDeadline: now.add(const Duration(minutes: 3)),
+      );
+      final store = SharedPrefsDeviceMigrationSessionStore();
+      await store.save(failed);
+      final restored = await SharedPrefsDeviceMigrationSessionStore().load();
+      expect(restored?.failureCode, failed.failureCode);
+      expect(restored?.releaseId, isEmpty);
+      expect(restored?.state, DeviceMigrationState.failed);
+      expect(
+        restored?.reconciliationDeadline,
+        failed.reconciliationDeadline?.toUtc(),
+      );
+    },
+  );
+
   test('no record returns no active migration', () async {
     final store = SharedPrefsDeviceMigrationSessionStore();
 

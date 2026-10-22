@@ -45,9 +45,11 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   BleDeviceRuntimeProvider({
     required BleClient bleClient,
     DeviceSosController? deviceSosController,
+    Future<bool> Function(String deviceId)? retainMigrationRecovery,
     @visibleForTesting bool Function()? isIosPlatform,
   }) : _bleClient = bleClient,
        _deviceSosController = deviceSosController ?? DeviceSosController(),
+       _retainMigrationRecovery = retainMigrationRecovery,
        _isIosPlatform = isIosPlatform ?? (() => Platform.isIOS) {
     if (bleClient is BleTransportObservationSource) {
       _serviceResetSubscription = (bleClient as BleTransportObservationSource)
@@ -99,6 +101,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   }
 
   final BleClient _bleClient;
+  final Future<bool> Function(String deviceId)? _retainMigrationRecovery;
   final DeviceSosController _deviceSosController;
   final bool Function() _isIosPlatform;
   final StreamController<BleIncomingEvent> _incomingEventsController =
@@ -397,15 +400,19 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         'Compatibility result for ${candidate.deviceId}: $compatible',
       );
       if (!compatible) {
+        final recovering =
+            await _retainMigrationRecovery?.call(candidate.deviceId) ?? false;
+        final code = recovering
+            ? 'migrationRuntimeUnavailable'
+            : 'E_DEVICE_INCOMPATIBLE';
         BleDebugRegistry.instance.update(
-          connectionStatus: BleConnectionStatus.incompatible,
-          connectionError: 'E_DEVICE_INCOMPATIBLE',
+          connectionStatus: recovering
+              ? BleConnectionStatus.failed
+              : BleConnectionStatus.incompatible,
+          connectionError: code,
         );
         await _bleClient.disconnect(candidate.deviceId);
-        throw const DeviceException(
-          'E_DEVICE_INCOMPATIBLE',
-          'E_DEVICE_INCOMPATIBLE',
-        );
+        throw DeviceException(code, code);
       }
 
       _connectedDeviceId = candidate.deviceId;
@@ -587,15 +594,19 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         'Reconnect compatibility result for $deviceId: $compatible',
       );
       if (!compatible) {
+        final recovering =
+            await _retainMigrationRecovery?.call(deviceId) ?? false;
+        final code = recovering
+            ? 'migrationRuntimeUnavailable'
+            : 'E_DEVICE_INCOMPATIBLE';
         BleDebugRegistry.instance.update(
-          connectionStatus: BleConnectionStatus.incompatible,
-          connectionError: 'E_DEVICE_INCOMPATIBLE',
+          connectionStatus: recovering
+              ? BleConnectionStatus.failed
+              : BleConnectionStatus.incompatible,
+          connectionError: code,
         );
         await _bleClient.disconnect(deviceId);
-        throw const DeviceException(
-          'E_DEVICE_INCOMPATIBLE',
-          'E_DEVICE_INCOMPATIBLE',
-        );
+        throw DeviceException(code, code);
       }
 
       _connectedDeviceId = deviceId;

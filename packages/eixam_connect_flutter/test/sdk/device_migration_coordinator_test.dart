@@ -11,10 +11,60 @@ import 'package:eixam_connect_flutter/src/sdk/device_migration_coordinator.dart'
 import 'package:eixam_connect_flutter/src/sdk/device_migration_firmware_service.dart';
 import 'package:eixam_connect_flutter/src/sdk/device_migration_session_store.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:eixam_connect_flutter/src/device/ble_device_runtime_provider.dart';
+import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
+import '../support/device/mock_ble_client.dart';
+import '../support/builders/device_status_builder.dart';
 
 const selectedId = 'AA:BB:CC:DD:EE:FF';
 
 void main() {
+  for (final hasRecoveryContext in [false, true]) {
+    test(
+      'missing runtime GATT retains strict compatibility unless migration owns same TAG: $hasRecoveryContext',
+      () async {
+        BleDebugRegistry.instance.reset();
+        final client = _NoRuntimeBleClient();
+        await client.initialize();
+        BleDebugRegistry.instance.selectDevice(MockBleClient.demoDeviceId);
+        final checked = <String>[];
+        final provider = BleDeviceRuntimeProvider(
+          bleClient: client,
+          retainMigrationRecovery: (id) async {
+            checked.add(id);
+            return hasRecoveryContext && id == MockBleClient.demoDeviceId;
+          },
+        );
+        addTearDown(() async {
+          await provider.dispose();
+          await client.dispose();
+        });
+        await expectLater(
+          provider.pair(
+            currentStatus: buildDeviceStatus(
+              paired: false,
+              activated: false,
+              connected: false,
+              lifecycleState: DeviceLifecycleState.unpaired,
+            ),
+            pairingCode: '1234',
+          ),
+          throwsA(
+            isA<DeviceException>().having(
+              (e) => e.code,
+              'code',
+              hasRecoveryContext
+                  ? 'migrationRuntimeUnavailable'
+                  : 'E_DEVICE_INCOMPATIBLE',
+            ),
+          ),
+        );
+        expect(checked, [MockBleClient.demoDeviceId]);
+        expect(await client.isConnected(MockBleClient.demoDeviceId), isFalse);
+      },
+    );
+  }
+
   DeviceMigrationCoordinator build({
     required _FakeProbe probe,
     _FakeMigrationFirmwareService? firmware,
@@ -27,6 +77,281 @@ void main() {
     sessionStore: store ?? _MemoryMigrationStore(),
     rediscoveryTimeout: const Duration(milliseconds: 1),
   );
+
+  test(
+    'artifact unavailable persists retryable truth and survives restore',
+    () async {
+      final store = _MemoryMigrationStore();
+      final firmware = _FakeMigrationFirmwareService(releaseUnavailable: true);
+      final coordinator = build(
+        probe: _FakeProbe(_probe(model: 105)),
+        firmware: firmware,
+        store: store,
+      );
+      final candidate = await coordinator.inspect(deviceId: selectedId);
+      final result = await coordinator.migrate(candidate);
+      expect(result.outcome, DeviceMigrationOutcome.failed);
+      expect(store.value?.outcome, result.outcome);
+      expect(store.value?.failureCode, result.failureCode);
+      expect(store.value?.failureCode, 'migrationArtifactUnavailable');
+      expect(store.value?.state, DeviceMigrationState.failed);
+      expect(store.value?.nextAction, DeviceMigrationNextAction.retry);
+      expect(
+        (await build(
+          probe: _FakeProbe(_probe(model: 105)),
+          store: store,
+        ).getActiveSession())?.failureCode,
+        result.failureCode,
+      );
+    },
+  );
+
+  for (final model in [0, 9]) {
+    test(
+      'revalidation model $model persists its distinct eligibility verdict',
+      () async {
+        final store = _MemoryMigrationStore();
+        final coordinator = build(
+          probe: _FakeProbe(_probe(model: model)),
+          store: store,
+        );
+        final candidate = DeviceMigrationCandidate(
+          deviceId: selectedId,
+          compatibility: DeviceMigrationCompatibility.compatible,
+          sourceHardwareModel: 105,
+          identityKind: DeviceMigrationIdentityKind.hardwareMac,
+          stableIdentity: selectedId,
+          inspectedAt: DateTime.now(),
+        );
+        final result = await coordinator.migrate(candidate);
+        expect(store.value?.failureCode, result.failureCode);
+        expect(store.value?.outcome, result.outcome);
+        expect(
+          store.value?.candidate.compatibility,
+          model == 0
+              ? DeviceMigrationCompatibility.unableToVerify
+              : DeviceMigrationCompatibility.unsupportedHardware,
+        );
+        expect(
+          store.value?.nextAction,
+          model == 0
+              ? DeviceMigrationNextAction.retry
+              : DeviceMigrationNextAction.none,
+        );
+      },
+    );
+  }
+
+  test(
+    'temporary reinspection failure persists retry without unsupported verdict',
+    () async {
+      final store = _MemoryMigrationStore();
+      final coordinator = build(
+        probe: _FakeProbe.error(
+          const MeshtasticInspectionException(
+            DeviceMigrationInspectionFailure.metadataTimedOut,
+          ),
+        ),
+        store: store,
+      );
+      final result = await coordinator.migrate(
+        _durableSession(DeviceMigrationState.prepared).candidate,
+      );
+      expect(result.outcome, DeviceMigrationOutcome.failed);
+      expect(
+        store.value?.candidate.compatibility,
+        DeviceMigrationCompatibility.unableToVerify,
+      );
+      expect(store.value?.nextAction, DeviceMigrationNextAction.retry);
+      expect(store.value?.failureCode, result.failureCode);
+    },
+  );
+
+  test(
+    'preparation exception persists retryable authoritative session',
+    () async {
+      final store = _MemoryMigrationStore();
+      final coordinator = build(
+        probe: _FakeProbe(_probe(model: 105)),
+        store: store,
+        firmware: _FakeMigrationFirmwareService(
+          startError: const FirmwareUpdateException(
+            'firmwareUpdateResumeRequired',
+            'reconcile first',
+          ),
+        ),
+      );
+      final candidate = await coordinator.inspect(deviceId: selectedId);
+      final result = await coordinator.migrate(candidate);
+      expect(store.value?.failureCode, result.failureCode);
+      expect(store.value?.state, DeviceMigrationState.failed);
+      expect(store.value?.nextAction, DeviceMigrationNextAction.retry);
+    },
+  );
+
+  test(
+    'expired recovery remains retryable across passive checks until explicit retry',
+    () async {
+      final ble = _MigrationBleClient(
+        scanBatches: [
+          [_eixamScan(selectedId, selectedId)],
+        ],
+      );
+      final store = _MemoryMigrationStore()
+        ..value = _durableSession(DeviceMigrationState.waitingForDevice)
+            .copyWith(
+              reconciliationDeadline: DateTime.now().subtract(
+                const Duration(seconds: 1),
+              ),
+            );
+      final coordinator = build(
+        probe: _FakeProbe(_probe(model: 105)),
+        store: store,
+        ble: ble,
+      );
+      final expired = await coordinator.reconcile();
+      expect(expired?.state, DeviceMigrationState.failed);
+      expect(expired?.failureCode, 'migrationRecoveryWindowExpired');
+      expect(expired?.nextAction, DeviceMigrationNextAction.retry);
+      await coordinator.reconcile();
+      expect(ble.scanCalls, 0);
+      final completed = await coordinator.reconcile(attemptRecovery: true);
+      expect(completed?.state, DeviceMigrationState.completed);
+      expect(completed?.failureCode, isNull);
+      expect(store.value, isNull);
+    },
+  );
+
+  test(
+    'same TAG without runtime GATT waits without unsupported hardware',
+    () async {
+      final ble = _MigrationBleClient(
+        scans: [_eixamScan(selectedId, selectedId)],
+        compatible: false,
+      );
+      final store = _MemoryMigrationStore()
+        ..value = _durableSession(DeviceMigrationState.waitingForDevice);
+      final coordinator = build(
+        probe: _FakeProbe(_probe(model: 105)),
+        store: store,
+        ble: ble,
+      );
+      final session = await coordinator.reconcile();
+      expect(session?.state, DeviceMigrationState.waitingForDevice);
+      expect(session?.failureCode, 'migrationRuntimeUnavailable');
+      expect(session?.candidate.isCompatible, isTrue);
+      expect(session?.reconciliationDeadline, isNotNull);
+      final deadline = session?.reconciliationDeadline;
+      expect((await coordinator.reconcile())?.reconciliationDeadline, deadline);
+    },
+  );
+
+  test(
+    'identity-changing reinspection never retargets persisted recovery',
+    () async {
+      final original = _durableSession(DeviceMigrationState.failed);
+      final store = _MemoryMigrationStore()..value = original;
+      final probe = _FakeProbe(_probe(model: 105, mac: '11:22:33:44:55:66'));
+      final coordinator = build(probe: probe, store: store);
+      final result = await coordinator.migrate(original.candidate);
+      expect(result.failureCode, 'migrationIdentityChanged');
+      expect(result.candidate.stableIdentity, selectedId);
+      expect(store.value?.candidate.stableIdentity, selectedId);
+      expect(store.value?.candidate.deviceId, selectedId);
+      expect(store.value?.failureCode, result.failureCode);
+    },
+  );
+
+  test(
+    'positive unsupported verdict cannot be resumed or auto-reconciled',
+    () async {
+      final ble = _MigrationBleClient(
+        scans: [_eixamScan(selectedId, selectedId)],
+      );
+      final probe = _FakeProbe(_probe(model: 9));
+      final store = _MemoryMigrationStore();
+      final coordinator = build(probe: probe, ble: ble, store: store);
+      final unsupported = await coordinator.inspect(deviceId: selectedId);
+      await coordinator.migrate(unsupported);
+      final verdict = store.value;
+      expect(
+        (await coordinator.reconcile())?.candidate.compatibility,
+        DeviceMigrationCompatibility.unsupportedHardware,
+      );
+      expect(await coordinator.reconcile(attemptRecovery: true), same(verdict));
+      expect(ble.scanCalls, 0);
+      expect(probe.calls, 1);
+    },
+  );
+
+  test('firmware resume rejection persists matching operation truth', () async {
+    final original = _durableSession(DeviceMigrationState.waitingForDevice);
+    final store = _MemoryMigrationStore()..value = original;
+    final firmware = _FakeMigrationFirmwareService(
+      activeFirmware: FirmwareUpdateSession(
+        sessionId: 'engaged',
+        deviceId: selectedId,
+        hardwareId: selectedId,
+        releaseId: 'release-1',
+        fromVersion: '2.4.0',
+        targetVersion: '3.0.0',
+        state: FirmwareUpdateState.reconnecting,
+        startedAt: DateTime.now(),
+        nativeTransferEngaged: true,
+        requiresRecovery: true,
+      ),
+    );
+    final coordinator = build(
+      probe: _FakeProbe(_probe(model: 105)),
+      store: store,
+      firmware: firmware,
+    );
+    final result = await coordinator.migrate(original.candidate);
+    expect(result.failureCode, 'firmwareUpdateResumeRequired');
+    expect(store.value?.state, DeviceMigrationState.failed);
+    expect(store.value?.nextAction, DeviceMigrationNextAction.retry);
+    expect(store.value?.outcome, result.outcome);
+    expect(store.value?.candidate.stableIdentity, selectedId);
+  });
+
+  test(
+    'temporary retry inspection cannot erase known supported recovery context',
+    () async {
+      final original = _durableSession(DeviceMigrationState.failed);
+      final store = _MemoryMigrationStore()..value = original;
+      final coordinator = build(
+        probe: _FakeProbe.error(
+          const MeshtasticInspectionException(
+            DeviceMigrationInspectionFailure.metadataTimedOut,
+          ),
+        ),
+        store: store,
+      );
+      final result = await coordinator.migrate(original.candidate);
+      expect(
+        result.candidate.compatibility,
+        DeviceMigrationCompatibility.unableToVerify,
+      );
+      expect(result.candidate.sourceHardwareModel, 105);
+      expect(await coordinator.retainRuntimeRecovery(selectedId), isTrue);
+      expect(store.value?.failureCode, 'migrationRuntimeUnavailable');
+      expect(await coordinator.retainRuntimeRecovery('other-device'), isFalse);
+    },
+  );
+
+  test('runtime recovery context never accepts another peripheral', () async {
+    final store = _MemoryMigrationStore()
+      ..value = _durableSession(DeviceMigrationState.waitingForDevice);
+    final coordinator = build(
+      probe: _FakeProbe(_probe(model: 105)),
+      store: store,
+    );
+    expect(await coordinator.retainRuntimeRecovery('other-device'), isFalse);
+    expect(store.value?.state, DeviceMigrationState.waitingForDevice);
+    expect(await coordinator.retainRuntimeRecovery(selectedId), isTrue);
+    expect(store.value?.state, DeviceMigrationState.failed);
+    expect(store.value?.failureCode, 'migrationRuntimeUnavailable');
+  });
 
   test(
     'reconciliation cannot scan or overwrite an in-process migration',
@@ -205,7 +530,12 @@ void main() {
         );
         if (model != 105) {
           final result = await coordinator.migrate(candidate);
-          expect(result.outcome, DeviceMigrationOutcome.blocked);
+          expect(
+            result.outcome,
+            model == 0
+                ? DeviceMigrationOutcome.failed
+                : DeviceMigrationOutcome.blocked,
+          );
         }
       },
     );
@@ -320,7 +650,7 @@ void main() {
           ),
         );
 
-    expect(result.outcome, DeviceMigrationOutcome.blocked);
+    expect(result.outcome, DeviceMigrationOutcome.failed);
     expect(firmware.resolveCalls, 0);
   });
 
@@ -425,7 +755,8 @@ void main() {
     final result = await coordinator.migrate(candidate);
 
     expect(result.outcome, DeviceMigrationOutcome.failed);
-    expect(result.failureCode, 'postMigrationGattIncompatible');
+    expect(result.failureCode, 'installedVersionMismatch');
+    expect(result.candidate.isCompatible, isTrue);
     expect(ble.connectedIds, isEmpty);
     expect(ble.disconnectedIds, <String>[selectedId]);
     await coordinator.dispose();
@@ -568,10 +899,16 @@ void main() {
       inspectedAt: DateTime.now(),
     );
 
-    final result = await coordinator.migrate(other);
-
-    expect(result.outcome, DeviceMigrationOutcome.blocked);
-    expect(result.failureCode, 'migrationActiveForAnotherDevice');
+    await expectLater(
+      coordinator.migrate(other),
+      throwsA(
+        isA<FirmwareUpdateException>().having(
+          (e) => e.code,
+          'code',
+          'migrationActiveForAnotherDevice',
+        ),
+      ),
+    );
     expect(store.value?.candidate.stableIdentity, selectedId);
   });
 
@@ -624,10 +961,16 @@ void main() {
     );
     final candidate = await coordinator.inspect(deviceId: selectedId);
 
-    final result = await coordinator.migrate(candidate);
-
-    expect(result.outcome, DeviceMigrationOutcome.blocked);
-    expect(result.failureCode, 'firmwareUpdateActiveForAnotherDevice');
+    await expectLater(
+      coordinator.migrate(candidate),
+      throwsA(
+        isA<FirmwareUpdateException>().having(
+          (e) => e.code,
+          'code',
+          'firmwareUpdateActiveForAnotherDevice',
+        ),
+      ),
+    );
     expect(firmware.resolveCalls, 0);
   });
 
@@ -1005,8 +1348,12 @@ final class _FakeMigrationFirmwareService
     this.transferEntered,
     this.recoveryError,
     this.recoveryGate,
+    this.releaseUnavailable = false,
+    this.startError,
   });
 
+  final bool releaseUnavailable;
+  final FirmwareUpdateException? startError;
   final Completer<void>? transferGate;
   final FirmwareUpdateException? recoveryError;
   final Completer<void>? recoveryGate;
@@ -1076,6 +1423,7 @@ final class _FakeMigrationFirmwareService
     required String hardwareModel,
   }) async {
     resolveCalls += 1;
+    if (releaseUnavailable) return null;
     return const FirmwareRelease(
       releaseId: 'release-1',
       version: '3.0.0',
@@ -1092,6 +1440,7 @@ final class _FakeMigrationFirmwareService
     required FirmwareDfuStatusRefreshHook postMigrationStatusRefresh,
     FirmwareUpdatePolicy policy = const FirmwareUpdatePolicy(),
   }) async {
+    if (startError != null) throw startError!;
     transferEntered?.complete();
     if (transferGate != null) await transferGate!.future;
     final started = DateTime.now();
@@ -1244,4 +1593,9 @@ final class _MigrationBleClient implements BleClient {
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+final class _NoRuntimeBleClient extends MockBleClient {
+  @override
+  Future<bool> isEixamCompatible(String deviceId) async => false;
 }

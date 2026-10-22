@@ -77,6 +77,9 @@ final class SharedPrefsDeviceMigrationSessionStore
         'failureCode': session.failureCode,
         'createdAt': session.createdAt.toUtc().toIso8601String(),
         'updatedAt': session.updatedAt.toUtc().toIso8601String(),
+        'reconciliationDeadline': session.reconciliationDeadline
+            ?.toUtc()
+            .toIso8601String(),
       };
 
   DeviceMigrationSession _decode(Map<String, dynamic> json) {
@@ -89,16 +92,12 @@ final class SharedPrefsDeviceMigrationSessionStore
       releaseId: _requiredString(
         json,
         'releaseId',
-        allowEmpty:
-            json['firmwareSession'] == null &&
-            json['state'] == DeviceMigrationState.prepared.name,
+        allowEmpty: json['firmwareSession'] == null,
       ),
       targetVersion: _requiredString(
         json,
         'targetVersion',
-        allowEmpty:
-            json['firmwareSession'] == null &&
-            json['state'] == DeviceMigrationState.prepared.name,
+        allowEmpty: json['firmwareSession'] == null,
       ),
       verificationPolicy: json['verificationPolicy'] == null
           ? FirmwareVerificationPolicy.normal
@@ -122,6 +121,9 @@ final class SharedPrefsDeviceMigrationSessionStore
       failureCode: json['failureCode'] as String?,
       createdAt: DateTime.parse(_requiredString(json, 'createdAt')),
       updatedAt: DateTime.parse(_requiredString(json, 'updatedAt')),
+      reconciliationDeadline: json['reconciliationDeadline'] == null
+          ? null
+          : DateTime.parse(json['reconciliationDeadline'] as String),
     );
   }
 

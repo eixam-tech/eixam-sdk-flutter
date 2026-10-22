@@ -166,8 +166,11 @@ class ApiSdkFactory {
 
     final deathManRepository = InMemoryDeathManRepository(localStore: store);
 
+    late final DeviceMigrationCoordinator migrationCoordinator;
     final deviceRuntimeProvider = BleDeviceRuntimeProvider(
       bleClient: bleClient,
+      retainMigrationRecovery: (deviceId) =>
+          migrationCoordinator.retainRuntimeRecovery(deviceId),
     );
     final deviceRepository = InMemoryDeviceRepository(
       runtimeProvider: deviceRuntimeProvider,
@@ -220,6 +223,12 @@ class ApiSdkFactory {
                 targetVersion: targetVersion,
               ),
     );
+    migrationCoordinator = DeviceMigrationCoordinator(
+      bleClient: bleClient,
+      metadataProbe: FlutterBlueMeshtasticMetadataProbe(),
+      firmwareUpdates: firmwareUpdateCoordinator,
+      sessionStore: SharedPrefsDeviceMigrationSessionStore(localStore: store),
+    );
     sdk = EixamConnectSdkImpl(
       sosRepository: sosRepository,
       trackingRepository: trackingRepository,
@@ -256,12 +265,7 @@ class ApiSdkFactory {
       provisioningBackendUrl: apiBaseUrl,
       deviceConfigStore: deviceConfigStore,
       firmwareUpdateCoordinator: firmwareUpdateCoordinator,
-      deviceMigrationCoordinator: DeviceMigrationCoordinator(
-        bleClient: bleClient,
-        metadataProbe: FlutterBlueMeshtasticMetadataProbe(),
-        firmwareUpdates: firmwareUpdateCoordinator,
-        sessionStore: SharedPrefsDeviceMigrationSessionStore(localStore: store),
-      ),
+      deviceMigrationCoordinator: migrationCoordinator,
       localStore: store,
       activitySessionStore: SharedPrefsActivitySessionStore(store),
       notificationPolicy: notificationPolicy,
