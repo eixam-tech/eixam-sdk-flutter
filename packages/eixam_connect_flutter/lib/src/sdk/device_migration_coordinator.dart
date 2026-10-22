@@ -47,7 +47,42 @@ final class DeviceMigrationCoordinator {
 
   Future<DeviceMigrationSession?> getActiveSession() async {
     await _restore();
-    return _session?.state == DeviceMigrationState.completed ? null : _session;
+    return _session;
+  }
+
+  /// Dismisses a quiescent operation without discarding its recovery evidence.
+  /// Route dismissal alone must not call this: it explicitly releases ownership.
+  Future<void> retire(String sessionId) async {
+    if (ownsBleOperation) {
+      throw const FirmwareUpdateException(
+        'migrationAlreadyRunning',
+        'The migration operation is not safely dismissible.',
+      );
+    }
+    _migrationInProgress = true;
+    try {
+      await _restore();
+      await _writeTail;
+      final current = _session;
+      if (current == null) return;
+      if (current.sessionId != sessionId) {
+        throw const FirmwareUpdateException(
+          'migrationIdentityChanged',
+          'Only the selected migration can be dismissed.',
+        );
+      }
+      // Archive first. A crash before clearing leaves the original operation
+      // recoverable; no replacement can inherit this device's evidence.
+      await sessionStore.archive(current);
+      await firmwareUpdates.retireMigrationFirmwareUpdate(
+        current.firmwareSession?.sessionId,
+      );
+      await sessionStore.clear();
+      _session = null;
+      _verifiedMigratedDevice = null;
+    } finally {
+      _migrationInProgress = false;
+    }
   }
 
   Stream<DeviceMigrationSession> watchSession() async* {
@@ -312,7 +347,6 @@ final class DeviceMigrationCoordinator {
           canCancel: false,
           updatedAt: DateTime.now(),
         ),
-        clearPersisted: true,
       );
       return DeviceMigrationResult(
         outcome: DeviceMigrationOutcome.completed,
@@ -806,10 +840,7 @@ final class DeviceMigrationCoordinator {
     return _session!;
   }
 
-  Future<void> _publish(
-    DeviceMigrationSession session, {
-    bool clearPersisted = false,
-  }) async {
+  Future<void> _publish(DeviceMigrationSession session) async {
     if (session.reconciliationDeadline == null &&
         (session.state == DeviceMigrationState.waitingForDevice ||
             session.state == DeviceMigrationState.reconciling ||
@@ -824,11 +855,7 @@ final class DeviceMigrationCoordinator {
       'state=${session.state.name} action=${session.nextAction.name} '
       'reason=${session.failureCode ?? "none"}',
     );
-    if (clearPersisted) {
-      await sessionStore.clear();
-    } else {
-      await sessionStore.save(session);
-    }
+    await sessionStore.save(session);
     if (!_sessionController.isClosed) _sessionController.add(session);
   }
 
@@ -882,7 +909,7 @@ final class DeviceMigrationCoordinator {
       canCancel: false,
       updatedAt: DateTime.now(),
     );
-    await _publish(completed, clearPersisted: true);
+    await _publish(completed);
     return completed;
   }
 

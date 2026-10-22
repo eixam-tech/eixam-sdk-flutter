@@ -79,6 +79,85 @@ void main() {
   );
 
   test(
+    'retirement archives identity, releases ownership, and survives restart',
+    () async {
+      final store = _MemoryMigrationStore()
+        ..value = _durableSession(DeviceMigrationState.failed);
+      final firmware = _FakeMigrationFirmwareService();
+      final coordinator = build(
+        probe: _FakeProbe(_probe(model: 105)),
+        store: store,
+        firmware: firmware,
+      );
+      final original = await coordinator.getActiveSession();
+      final replacement = await coordinator.inspect(
+        deviceId: '11:22:33:44:55:66',
+      );
+      await expectLater(
+        coordinator.migrate(replacement),
+        throwsA(isA<FirmwareUpdateException>()),
+      );
+      expect(store.value?.candidate.deviceId, selectedId);
+      await coordinator.retire(original!.sessionId);
+      expect(store.archived.single.candidate.deviceId, selectedId);
+      expect(store.archived.single.state, DeviceMigrationState.failed);
+      expect(store.value, isNull);
+      expect(await coordinator.getActiveSession(), isNull);
+      expect(
+        await build(
+          probe: _FakeProbe(_probe(model: 105)),
+          store: store,
+        ).getActiveSession(),
+        isNull,
+      );
+      final other = (await coordinator.inspect(deviceId: '11:22:33:44:55:66'));
+      await coordinator.migrate(other);
+      expect(
+        (await coordinator.getActiveSession())?.candidate.deviceId,
+        other.deviceId,
+      );
+      expect(store.archived.single.candidate.deviceId, selectedId);
+    },
+  );
+
+  test(
+    'retirement rejects wrong session and preserves original evidence',
+    () async {
+      final store = _MemoryMigrationStore()
+        ..value = _durableSession(DeviceMigrationState.failed);
+      final coordinator = build(
+        probe: _FakeProbe(_probe(model: 105)),
+        store: store,
+      );
+      await expectLater(
+        coordinator.retire('other-session'),
+        throwsA(isA<FirmwareUpdateException>()),
+      );
+      expect(store.value?.candidate.deviceId, selectedId);
+      expect(store.archived, isEmpty);
+    },
+  );
+
+  test(
+    'completed migration survives restart until setup handoff retires it',
+    () async {
+      final store = _MemoryMigrationStore()
+        ..value = _durableSession(DeviceMigrationState.completed);
+      final coordinator = build(
+        probe: _FakeProbe(_probe(model: 105)),
+        store: store,
+      );
+      expect(
+        (await coordinator.getActiveSession())?.state,
+        DeviceMigrationState.completed,
+      );
+      await coordinator.retire(store.value!.sessionId);
+      expect(await coordinator.getActiveSession(), isNull);
+      expect(store.archived.single.state, DeviceMigrationState.completed);
+    },
+  );
+
+  test(
     'artifact unavailable persists retryable truth and survives restore',
     () async {
       final store = _MemoryMigrationStore();
@@ -218,7 +297,7 @@ void main() {
       final completed = await coordinator.reconcile(attemptRecovery: true);
       expect(completed?.state, DeviceMigrationState.completed);
       expect(completed?.failureCode, isNull);
-      expect(store.value, isNull);
+      expect(store.value?.state, DeviceMigrationState.completed);
     },
   );
 
@@ -373,6 +452,10 @@ void main() {
       final operation = coordinator.migrate(candidate);
       await entered.future;
       final before = await coordinator.getActiveSession();
+      await expectLater(
+        coordinator.retire(before!.sessionId),
+        throwsA(isA<FirmwareUpdateException>()),
+      );
       expect(await coordinator.reconcile(attemptRecovery: true), same(before));
       expect(ble.scanCalls, 0);
       gate.complete();
@@ -699,7 +782,7 @@ void main() {
       expect(ble.scanCalls, 0);
       expect(ble.connectedIds, contains(selectedId));
       expect(ble.disconnectedIds, isEmpty);
-      expect(store.value, isNull);
+      expect(store.value?.state, DeviceMigrationState.completed);
     },
   );
 
@@ -1073,7 +1156,7 @@ void main() {
 
     expect(session?.state, DeviceMigrationState.completed);
     expect(session?.nextAction, DeviceMigrationNextAction.completed);
-    expect(store.value, isNull);
+    expect(store.value?.state, DeviceMigrationState.completed);
   });
 
   test('ambiguous Eixam candidates are not guessed', () async {
@@ -1366,6 +1449,9 @@ final class _FakeMigrationFirmwareService
   int resolveCalls = 0;
 
   @override
+  Future<void> retireMigrationFirmwareUpdate(String? sessionId) async {}
+
+  @override
   Future<FirmwareUpdateSession?> verifyRecoveredMigrationFirmware({
     required DeviceStatus verifiedStatus,
   }) async => activeFirmware?.copyWith(
@@ -1517,6 +1603,11 @@ final class _FakeMigrationFirmwareService
 
 final class _MemoryMigrationStore implements DeviceMigrationSessionStore {
   DeviceMigrationSession? value;
+  final archived = <DeviceMigrationSession>[];
+
+  @override
+  Future<void> archive(DeviceMigrationSession session) async =>
+      archived.add(session);
 
   @override
   Future<void> clear() async => value = null;

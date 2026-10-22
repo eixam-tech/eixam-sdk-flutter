@@ -3985,6 +3985,18 @@ class EixamConnectSdkImpl
   }
 
   @override
+  Future<void> retireDeviceMigration(String sessionId) async {
+    final coordinator = deviceMigrationCoordinator;
+    if (coordinator == null) {
+      throw const FirmwareUpdateException(
+        'migrationUnavailable',
+        'Device migration is unavailable.',
+      );
+    }
+    await coordinator.retire(sessionId);
+  }
+
+  @override
   Stream<DeviceMigrationSession> watchDeviceMigration() {
     return deviceMigrationCoordinator?.watchSession() ??
         const Stream<DeviceMigrationSession>.empty();

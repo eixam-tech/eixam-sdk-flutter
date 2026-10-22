@@ -10,6 +10,9 @@ typedef FirmwareDfuStatusRefreshHook =
 abstract interface class DeviceMigrationFirmwareService {
   Future<FirmwareUpdateSession?> getActiveMigrationFirmwareUpdate();
 
+  /// Releases a quiescent migration firmware record after its evidence is archived.
+  Future<void> retireMigrationFirmwareUpdate(String? sessionId);
+
   Future<FirmwareUpdateSession?> inspectMigrationPhysicalRecovery();
 
   Future<FirmwareUpdateSession?> verifyRecoveredMigrationFirmware({

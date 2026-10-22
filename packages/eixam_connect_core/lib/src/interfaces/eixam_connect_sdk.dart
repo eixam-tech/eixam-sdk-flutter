@@ -212,8 +212,12 @@ abstract class EixamConnectSdk {
     required DeviceMigrationCandidate candidate,
   });
 
-  /// Returns the durable non-terminal physical-device migration, if any.
+  /// Returns durable recovery or a completed migration awaiting host handoff.
   Future<DeviceMigrationSession?> getActiveDeviceMigration();
+
+  /// Archives recovery evidence and releases ownership once operations settle.
+  /// This never cancels an active transfer or changes the physical device.
+  Future<void> retireDeviceMigration(String sessionId);
 
   /// Watches authoritative migration-domain state, including terminal events.
   Stream<DeviceMigrationSession> watchDeviceMigration();

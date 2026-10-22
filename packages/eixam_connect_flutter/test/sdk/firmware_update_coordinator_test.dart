@@ -159,6 +159,51 @@ void main() {
     );
 
     test(
+      'retiring a quiescent migration releases persisted firmware ownership',
+      () async {
+        final session = _durableFirmwareSession(
+          FirmwareUpdateState.failed,
+          migrationOwned: true,
+        );
+        final store = _MemoryFirmwareStore()..value = session;
+        final coordinator = buildCoordinator(sessionStore: store);
+        addTearDown(coordinator.dispose);
+        await coordinator.retireMigrationFirmwareUpdate(session.sessionId);
+        expect(await coordinator.getActiveMigrationFirmwareUpdate(), isNull);
+        expect(store.value, isNull);
+        final restored = buildCoordinator(sessionStore: store);
+        addTearDown(restored.dispose);
+        expect(await restored.getActiveMigrationFirmwareUpdate(), isNull);
+      },
+    );
+
+    for (final normalOwner in [true, false]) {
+      test(
+        'retirement preserves ${normalOwner ? "normal firmware" : "different session"} ownership',
+        () async {
+          final session = _durableFirmwareSession(
+            FirmwareUpdateState.failed,
+            migrationOwned: !normalOwner,
+          );
+          final store = _MemoryFirmwareStore()..value = session;
+          final coordinator = buildCoordinator(sessionStore: store);
+          addTearDown(coordinator.dispose);
+          await expectLater(
+            coordinator.retireMigrationFirmwareUpdate(
+              normalOwner ? session.sessionId : 'other',
+            ),
+            throwsA(isA<FirmwareUpdateException>()),
+          );
+          expect(store.value?.sessionId, session.sessionId);
+          expect(
+            (await coordinator.getActiveMigrationFirmwareUpdate())?.sessionId,
+            session.sessionId,
+          );
+        },
+      );
+    }
+
+    test(
       'recovery cannot complete from cached target when fresh firmware is old',
       () async {
         final store = _MemoryFirmwareStore()
@@ -461,6 +506,10 @@ void main() {
       await entered.future;
       expect(store.value?.artifactVerified, true);
       expect(store.value?.nativeTransferEngaged, false);
+      await expectLater(
+        coordinator.retireMigrationFirmwareUpdate(store.value!.sessionId),
+        throwsA(isA<FirmwareUpdateException>()),
+      );
       await coordinator.dispose();
       release.complete();
       await operation;
@@ -2196,10 +2245,12 @@ DeviceStatus _readyStatus({
 FirmwareUpdateSession _durableFirmwareSession(
   FirmwareUpdateState state, {
   bool? requiresRecovery,
+  bool migrationOwned = false,
 }) {
   final now = DateTime.utc(2026, 1, 1);
   return FirmwareUpdateSession(
     sessionId: 'fw-restored',
+    migrationOwned: migrationOwned,
     deviceId: 'demo-device',
     hardwareId: 'AA:BB:CC:DD:EE:FF',
     releaseId: 'fw-1',

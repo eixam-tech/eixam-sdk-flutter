@@ -169,6 +169,13 @@ temporarily unavailable device. `recover` and `retryRemoteRecovery` identify a
 supported remote opportunity. `physicalRecovery` / `physicalRecoveryRequired`
 represent the manual recovery verdict.
 
+`retireDeviceMigration(sessionId)` releases a quiescent migration and its firmware
+ownership after archiving the original SDK record, including identity and firmware
+evidence. It rejects running operations and never cancels a transfer or changes the
+TAG. Hosts use it when choosing another TAG; route dismissal alone does not retire
+recovery. A completed migration remains durable across restart until the host has
+paired the verified TAG and retires the completed handoff record.
+
 For an interrupted transfer, manual recovery requires durable evidence that
 native transfer engaged, the correct supported recovery endpoint was strongly
 matched, a native remote recovery invocation actually ran and failed terminally,

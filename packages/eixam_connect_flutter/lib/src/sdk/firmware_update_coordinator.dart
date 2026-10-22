@@ -154,6 +154,32 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
     return getActiveFirmwareUpdate();
   }
 
+  @override
+  Future<void> retireMigrationFirmwareUpdate(String? sessionId) async {
+    await _restore();
+    final active = _activeSession;
+    if (_operationInProgress ||
+        _reconciliationFuture != null ||
+        (active != null &&
+            !active.isCompleted &&
+            (!active.migrationOwned || active.sessionId != sessionId))) {
+      throw const FirmwareUpdateException(
+        'firmwareOperationOwned',
+        'The firmware operation is not safely dismissible.',
+      );
+    }
+    if (active == null || active.sessionId != sessionId) return;
+    _operationInProgress = true;
+    try {
+      await _persistTail;
+      await sessionStore.clear();
+      _sessions.remove(active.sessionId);
+      _activeSession = null;
+    } finally {
+      _operationInProgress = false;
+    }
+  }
+
   Stream<FirmwareUpdateSession> watchFirmwareUpdate() async* {
     await _restore();
     final current = _activeSession;

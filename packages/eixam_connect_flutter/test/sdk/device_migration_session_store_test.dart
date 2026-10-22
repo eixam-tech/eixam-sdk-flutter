@@ -138,7 +138,28 @@ void main() {
     );
   });
 
-  test('completed record is stale and removed on restore', () async {
+  test(
+    'archive preserves original recovery evidence after active record is released',
+    () async {
+      final store = SharedPrefsDeviceMigrationSessionStore();
+      final original = _session(
+        state: DeviceMigrationState.failed,
+        nextAction: DeviceMigrationNextAction.retry,
+      );
+      await store.save(original);
+      await store.archive(original);
+      await store.clear();
+      expect(await store.load(), isNull);
+      final prefs = await SharedPreferences.getInstance();
+      final archive = prefs.getString(
+        '${SharedPrefsSdkStore.deviceMigrationSessionKey}.retired.${original.sessionId}',
+      );
+      expect(archive, contains(original.candidate.deviceId));
+      expect(archive, contains(original.sessionId));
+    },
+  );
+
+  test('completed record remains available for setup handoff', () async {
     final store = SharedPrefsDeviceMigrationSessionStore();
     await store.save(
       _session(
@@ -147,12 +168,12 @@ void main() {
       ),
     );
 
-    expect(await store.load(), isNull);
+    expect((await store.load())?.state, DeviceMigrationState.completed);
     expect(
       (await SharedPreferences.getInstance()).containsKey(
         SharedPrefsSdkStore.deviceMigrationSessionKey,
       ),
-      isFalse,
+      isTrue,
     );
   });
 }

@@ -6,6 +6,7 @@ abstract interface class DeviceMigrationSessionStore {
   Future<DeviceMigrationSession?> load();
   Future<void> save(DeviceMigrationSession session);
   Future<void> clear();
+  Future<void> archive(DeviceMigrationSession session);
 }
 
 final class SharedPrefsDeviceMigrationSessionStore
@@ -31,10 +32,6 @@ final class SharedPrefsDeviceMigrationSessionStore
         return null;
       }
       final session = _decode(json);
-      if (session.state == DeviceMigrationState.completed) {
-        await clear();
-        return null;
-      }
       return session;
     } catch (_) {
       await clear();
@@ -54,6 +51,12 @@ final class SharedPrefsDeviceMigrationSessionStore
   Future<void> clear() {
     return _localStore.remove(SharedPrefsSdkStore.deviceMigrationSessionKey);
   }
+
+  @override
+  Future<void> archive(DeviceMigrationSession session) => _localStore.saveJson(
+    '${SharedPrefsSdkStore.deviceMigrationSessionKey}.retired.${session.sessionId}',
+    _encode(session),
+  );
 
   Map<String, dynamic> _encode(DeviceMigrationSession session) =>
       <String, dynamic>{
