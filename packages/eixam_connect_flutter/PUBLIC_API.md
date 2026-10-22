@@ -178,6 +178,13 @@ non-connectable advertisements are not candidates. Count distinct peripheral
 IDs across the complete snapshot: zero is `notFound`, multiple is `ambiguous`,
 and one is only `inspectionRequired`. Never choose by RSSI or list order.
 
+`lookup(sdk, payload)` performs one bounded fresh scan and only the necessary
+read-only identity inspection. A unique current Eixam discovery result can be
+confirmed by `verifyCurrentDiscovery` when its canonical MAC matches all six
+code digits, without pairing or requiring an existing connection. A name or
+platform UUID alone remains unverified. Legacy results use the existing SDK
+inspection and `verifyLegacy`; no migration or acquisition API is called.
+
 `verifyLegacy` accepts the existing migration inspection result for exactly the
 selected peripheral and requires compatible hardware plus a canonical MAC
 `stableIdentity` matching all six code hex digits. A verified candidate can then

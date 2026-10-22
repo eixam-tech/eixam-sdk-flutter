@@ -27,6 +27,53 @@ final class TagPairingCodeMatch {
 /// Stateless policy shared by manual-acquisition adapters and future QR hosts.
 /// Supply one complete, fresh discovery snapshot; RSSI and list order are ignored.
 abstract final class TagPairingCodeCorrelator {
+  /// One bounded read-only lookup. Never enters acquisition or provisioning.
+  static Future<TagPairingCodeMatch> lookup(
+    EixamConnectSdk sdk,
+    String payload, {
+    Duration timeout = const Duration(seconds: 8),
+  }) async {
+    final parsed = TagPairingCode.inspect(payload);
+    if (parsed.code == null) return find(payload, const []);
+    final lookup = find(payload, await sdk.scanBleDevices(timeout: timeout));
+    if (lookup.state != TagPairingCodeMatchState.inspectionRequired) {
+      return lookup;
+    }
+    if (lookup.candidate!.brandClassification ==
+        BleDiscoveredDeviceBrand.meshtastic) {
+      final inspected = await sdk.inspectDeviceMigrationCandidate(
+        deviceId: lookup.candidate!.deviceId,
+        advertisedName: lookup.candidate!.name,
+      );
+      return verifyLegacy(lookup, inspected);
+    }
+    return verifyCurrentDiscovery(lookup);
+  }
+
+  /// Fresh discovery can provide the canonical MAC without pairing on Android.
+  /// Names and UUID-only results still cannot confirm the identity.
+  static TagPairingCodeMatch verifyCurrentDiscovery(
+    TagPairingCodeMatch lookup,
+  ) {
+    if (lookup.state != TagPairingCodeMatchState.inspectionRequired &&
+        lookup.state != TagPairingCodeMatchState.matched) {
+      return lookup;
+    }
+    final candidate = lookup.candidate!;
+    if (candidate.brandClassification != BleDiscoveredDeviceBrand.eixam) {
+      return _result(lookup, TagPairingCodeMatchState.identityUnverified);
+    }
+    final mac = normalizeCanonicalHardwareId(candidate.canonicalHardwareId);
+    return _result(
+      lookup,
+      mac == null
+          ? TagPairingCodeMatchState.identityUnverified
+          : _macMatches(lookup.code!, mac)
+          ? TagPairingCodeMatchState.matched
+          : TagPairingCodeMatchState.identityMismatch,
+    );
+  }
+
   static TagPairingCodeMatch find(
     String payload,
     Iterable<EixamBleScanResult> devices,

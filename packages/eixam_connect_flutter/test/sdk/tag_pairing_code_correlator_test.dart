@@ -2,6 +2,67 @@ import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'read-only lookup validates before scanning and never acquires a current TAG',
+    () async {
+      final sdk = _ReadOnlySdk([
+        scan(
+          'target',
+          name: 'EIXAM_A693756E',
+          brand: BleDiscoveredDeviceBrand.eixam,
+          mac: 'E9:B4:55:93:75:6E',
+        ),
+      ]);
+      expect(
+        (await TagPairingCodeCorrelator.lookup(
+          sdk,
+          'https://example.com',
+        )).state,
+        TagPairingCodeMatchState.unsupportedCode,
+      );
+      expect(sdk.scans, 0);
+      final result = await TagPairingCodeCorrelator.lookup(sdk, 'N693756E');
+      expect(result.state, TagPairingCodeMatchState.matched);
+      expect(result.candidate!.deviceId, 'target');
+      expect(sdk.inspections, 0);
+      expect(sdk.scans, 1);
+    },
+  );
+
+  test('read-only lookup inspects only the unique legacy candidate', () async {
+    final sdk = _ReadOnlySdk([scan('selected')]);
+    expect(
+      (await TagPairingCodeCorrelator.lookup(sdk, 'N693756E')).state,
+      TagPairingCodeMatchState.matched,
+    );
+    expect(sdk.inspections, 1);
+    sdk.devices = [scan('selected'), scan('other')];
+    expect(
+      (await TagPairingCodeCorrelator.lookup(sdk, 'N693756E')).state,
+      TagPairingCodeMatchState.ambiguous,
+    );
+    expect(sdk.inspections, 1);
+  });
+
+  test('current discovery rejects missing and contradictory MAC evidence', () {
+    for (final mac in [null, 'E1:5F:27:D4:47:DB']) {
+      final lookup = TagPairingCodeCorrelator.find('N693756E', [
+        scan(
+          'target',
+          name: 'EIXAM_A693756E',
+          brand: BleDiscoveredDeviceBrand.eixam,
+          mac: mac,
+        ),
+      ]);
+      expect(
+        TagPairingCodeCorrelator.verifyCurrentDiscovery(lookup).state,
+        mac == null
+            ? TagPairingCodeMatchState.identityUnverified
+            : TagPairingCodeMatchState.identityMismatch,
+      );
+    }
+  });
+
   test('invalid and unsupported QR values never produce candidates', () {
     expect(
       TagPairingCodeCorrelator.find('', []).state,
@@ -323,3 +384,27 @@ DeviceStatus status({
   activated: true,
   connected: connected,
 );
+
+final class _ReadOnlySdk extends Fake implements EixamConnectSdk {
+  _ReadOnlySdk(this.devices);
+  List<EixamBleScanResult> devices;
+  int scans = 0;
+  int inspections = 0;
+  @override
+  Future<List<EixamBleScanResult>> scanBleDevices({
+    Duration timeout = const Duration(seconds: 8),
+  }) async {
+    scans++;
+    return devices;
+  }
+
+  @override
+  Future<DeviceMigrationCandidate> inspectDeviceMigrationCandidate({
+    required String deviceId,
+    String? advertisedName,
+  }) async {
+    inspections++;
+    return inspected(id: deviceId);
+  }
+  // Fake throws on every acquisition/provisioning method: none are permitted.
+}
