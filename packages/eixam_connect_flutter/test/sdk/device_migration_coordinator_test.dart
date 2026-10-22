@@ -10,6 +10,7 @@ import 'package:eixam_connect_flutter/src/device/meshtastic_metadata_probe.dart'
 import 'package:eixam_connect_flutter/src/sdk/device_migration_coordinator.dart';
 import 'package:eixam_connect_flutter/src/sdk/device_migration_firmware_service.dart';
 import 'package:eixam_connect_flutter/src/sdk/device_migration_session_store.dart';
+import 'package:eixam_connect_flutter/src/sdk/tag_pairing_code_correlator.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:eixam_connect_flutter/src/device/ble_device_runtime_provider.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
@@ -746,6 +747,33 @@ void main() {
 
     expect(probe.calls, 2);
   });
+
+  test(
+    'QR verified legacy candidate uses existing migration and same-TAG return',
+    () async {
+      final lookup = TagPairingCodeCorrelator.find('N6DDEEFF', [
+        _sourceScan(selectedId).toPublic(),
+      ]);
+      final ble = _MigrationBleClient(
+        scans: [_eixamScan(selectedId, selectedId)],
+      );
+      final probe = _FakeProbe(_probe(model: 105, mac: selectedId));
+      final coordinator = build(probe: probe, ble: ble);
+      final candidate = await coordinator.inspect(
+        deviceId: lookup.candidate!.deviceId,
+        advertisedName: lookup.candidate!.name,
+      );
+      expect(
+        TagPairingCodeCorrelator.verifyLegacy(lookup, candidate).state,
+        TagPairingCodeMatchState.matched,
+      );
+      final result = await coordinator.migrate(candidate);
+      expect(result.outcome, DeviceMigrationOutcome.completed);
+      expect(result.migratedDevice!.deviceId, selectedId);
+      expect(probe.inspectedDeviceIds, everyElement(selectedId));
+      expect(ble.compatibilityChecks, [selectedId]);
+    },
+  );
 
   test('successful DFU returns strongly correlated Eixam device', () async {
     final ble = _MigrationBleClient(

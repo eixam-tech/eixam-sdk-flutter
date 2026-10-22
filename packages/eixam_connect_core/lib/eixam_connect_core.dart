@@ -7,6 +7,7 @@ export 'src/config/eixam_custom_endpoints.dart';
 export 'src/config/eixam_bootstrap_config.dart';
 export 'src/entities/device_status.dart';
 export 'src/entities/device_migration.dart';
+export 'src/entities/tag_pairing_code.dart';
 export 'src/entities/device_ready.dart';
 export 'src/entities/device_unprovision.dart';
 export 'src/entities/device_runtime.dart';

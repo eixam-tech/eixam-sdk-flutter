@@ -160,6 +160,46 @@ Firmware ≥ **2.7.56** is required; 2.7.55 plaza-only framing is not compatible
 Firmware ≥ **2.7.57** enforces the 231 B cap and ignores SECONDARY group keys
 on TEL/SOS/cluster ports. Firmware ≥ **2.7.58** for owner-name `0x42` / `0xDB`.
 
+## TAG box-code correlation
+
+`TagPairingCode.inspect(payload)` recognizes only `N6` or `A6` followed by six
+ASCII hexadecimal characters, trims surrounding whitespace, and retains the
+uppercase prefix. Recognition is structural, not manufacturing validation or
+authentication. Other QR formats are unsupported; malformed recognized codes
+are invalid. The SDK does not execute URLs or log the payload.
+
+`TagPairingCodeCorrelator.find(payload, freshDiscoverySnapshot)` is a read-only
+policy, not a second acquisition engine. A legacy candidate needs the exact
+case-insensitive name `Meshtastic_` plus the final four code characters and SDK
+Meshtastic brand semantics. Current Eixam candidates need Eixam brand semantics
+plus a documented full name (`EIXAM_A6` plus six hex, or historical `N6` plus six
+hex), or a canonical MAC whose final three bytes match the code. DFU and
+non-connectable advertisements are not candidates. Count distinct peripheral
+IDs across the complete snapshot: zero is `notFound`, multiple is `ambiguous`,
+and one is only `inspectionRequired`. Never choose by RSSI or list order.
+
+`verifyLegacy` accepts the existing migration inspection result for exactly the
+selected peripheral and requires compatible hardware plus a canonical MAC
+`stableIdentity` matching all six code hex digits. A verified candidate can then
+enter the unchanged migration API, which revalidates eligibility and retains
+same-TAG recovery ownership. `verifyCurrent` checks the selected peripheral's
+connected SDK `DeviceStatus` and canonical MAC. Another already-connected TAG
+is `identityMismatch`; a name or node ID alone is `identityUnverified`.
+
+Firmware docs describe `N6` plus MAC bytes 3–5; current nRF52 source advertises
+`EIXAM_A6` plus those same bytes and identifies an older N6 naming error. Both
+label prefixes are recognized without assuming either is a MAC/node-ID byte.
+This is a 24-bit manufacturing correlation hint, never globally unique identity
+or authentication. Preserve ambiguity and do not add backend lookup heuristics.
+
+This capability does not scan, connect, pair, assign, provision, flash or persist
+new bindings. Hosts must stop scanning before inspection, reject late scan
+generations, verify the intended target before success/assignment, and preserve
+the requested code across their future acquisition handoff. Platforms exposing
+only a UUID and node number cannot confirm a current TAG with this API; an
+authoritative MAC or another separately proven identity source is required.
+Manual pairing behavior and the base SDK interface are unchanged.
+
 ## Firmware recovery contract
 
 Firmware and migration sessions are SDK-owned. Hosts render `nextAction` and
