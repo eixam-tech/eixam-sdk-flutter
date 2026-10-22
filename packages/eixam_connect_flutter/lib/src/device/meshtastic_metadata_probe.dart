@@ -52,6 +52,9 @@ abstract interface class MeshtasticInspectionTransport {
   bool get hasRequiredCharacteristics;
   bool get hasBattery;
   Future<void> connect();
+
+  /// Refresh Android's per-peripheral service cache; a no-op elsewhere.
+  Future<void> refreshGattCache();
   Future<void> discoverServices();
   Future<int?> readBattery();
   Future<void> enableNotifications();
@@ -376,7 +379,16 @@ final class _InspectionOperation {
         'discoveringServices',
         probe.serviceTimeout,
         DeviceMigrationInspectionFailure.serviceDiscoveryFailed,
-        transport.discoverServices,
+        () async {
+          await transport.refreshGattCache();
+          // Cancellation may have won while the platform refresh settled.
+          if (_terminal || probe.cancellation?.isCancelled == true) {
+            throw const MeshtasticInspectionException(
+              DeviceMigrationInspectionFailure.cancelled,
+            );
+          }
+          await transport.discoverServices();
+        },
       );
       if (!transport.hasRequiredCharacteristics) {
         throw const MeshtasticInspectionException(
@@ -607,7 +619,26 @@ final class _FlutterBlueInspectionTransport
   Future<void> connect() =>
       device.connect(timeout: const Duration(seconds: 10), mtu: null);
   @override
+  Future<void> refreshGattCache() async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    try {
+      // The inspection owns this connection. Match the normal runtime path:
+      // firmware changes can leave Android serving the old service table.
+      await device.clearGattCache();
+      safeSdkDebugPrint('MIGRATION_INSPECTION_GATT cacheRefresh=completed');
+    } catch (_) {
+      // Some Android stacks do not expose refresh. Discovery must still prove
+      // every required characteristic; refresh never grants compatibility.
+      safeSdkDebugPrint('MIGRATION_INSPECTION_GATT cacheRefresh=unavailable');
+    }
+  }
+
+  @override
   Future<void> discoverServices() async {
+    _toRadio = null;
+    _fromRadio = null;
+    _fromNum = null;
+    _battery = null;
     final response = await _native(
       FlutterBluePlusPlatform.instance.onDiscoveredServices.where(
         (p) => p.remoteId == device.remoteId,
@@ -639,6 +670,11 @@ final class _FlutterBlueInspectionTransport
         }
       }
     }
+    safeSdkDebugPrint(
+      'MIGRATION_INSPECTION_GATT '
+      'toRadio=${_toRadio != null} fromRadio=${_fromRadio != null} '
+      'fromNum=${_fromNum != null}',
+    );
   }
 
   @override

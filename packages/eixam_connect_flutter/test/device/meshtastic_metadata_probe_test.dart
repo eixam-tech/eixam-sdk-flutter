@@ -184,6 +184,7 @@ void main() {
     expect(result.firmwareVersion, '2.7.26');
     expect(t.events, [
       'connect',
+      'refresh',
       'discover',
       'battery',
       'enable',
@@ -194,6 +195,66 @@ void main() {
     expect(t.framesController.hasListener, false);
     expect(t.bonds.hasListener, false);
     expect(t.isConnected, false);
+  });
+
+  test(
+    'stale service cache is refreshed before proving characteristics',
+    () async {
+      final t = _Transport()..staleCache = true;
+      expect((await probe(t).inspect(_id)).hardwareModel, 105);
+      expect(
+        t.events.indexOf('refresh'),
+        lessThan(t.events.indexOf('discover')),
+      );
+      expect(t.events.where((e) => e == 'refresh'), hasLength(1));
+    },
+  );
+
+  test(
+    'cache refresh does not bypass missing required characteristics',
+    () async {
+      final t = _Transport()..missingCharacteristics = true;
+      await expectLater(
+        probe(t).inspect(_id),
+        throwsA(failure(DeviceMigrationInspectionFailure.serviceIncomplete)),
+      );
+      expect(t.events.contains('request'), false);
+      expect(t.connected, false);
+    },
+  );
+
+  test('cancel during refresh awaits settlement without discovery', () async {
+    final cancellation = MeshtasticInspectionCancellation();
+    final t = _Transport()..pendingRefresh = Completer<void>();
+    var returned = false;
+    final checked = expectLater(
+      probe(
+        t,
+        cancellation: cancellation,
+      ).inspect(_id).whenComplete(() => returned = true),
+      throwsA(failure(DeviceMigrationInspectionFailure.cancelled)),
+    );
+    await t.refreshing.future;
+    cancellation.cancel();
+    await t.disconnecting.future;
+    expect(returned, false);
+    t.pendingRefresh!.complete();
+    await checked;
+    expect(t.events.contains('discover'), false);
+    expect(t.connected, false);
+  });
+
+  test('refresh shares the service deadline without late discovery', () async {
+    final t = _Transport()..pendingRefresh = Completer<void>();
+    final checked = expectLater(
+      probe(t).inspect(_id),
+      throwsA(failure(DeviceMigrationInspectionFailure.serviceDiscoveryFailed)),
+    );
+    await t.disconnecting.future;
+    t.pendingRefresh!.complete();
+    await checked;
+    expect(t.events.contains('discover'), false);
+    expect(t.connected, false);
   });
 
   test('bond-none is not terminal; bonding then bonded continues', () async {
@@ -390,6 +451,10 @@ final class _Transport implements MeshtasticInspectionTransport {
   final bonds = StreamController<BluetoothBondState>.broadcast(sync: true);
   final events = <String>[];
   bool connected = false;
+  bool staleCache = false;
+  bool missingCharacteristics = false;
+  Completer<void>? pendingRefresh;
+  final refreshing = Completer<void>();
   BluetoothBondState initialBond = BluetoothBondState.none;
   Completer<void>? bondCleanupGate;
   final finishingBond = Completer<void>();
@@ -423,13 +488,21 @@ final class _Transport implements MeshtasticInspectionTransport {
   @override
   Stream<List<int>> get frames => framesController.stream;
   @override
-  bool get hasRequiredCharacteristics => true;
+  bool get hasRequiredCharacteristics => !staleCache && !missingCharacteristics;
   @override
   bool get hasBattery => true;
   @override
   Future<void> connect() async {
     event('connect');
     connected = true;
+  }
+
+  @override
+  Future<void> refreshGattCache() async {
+    event('refresh');
+    if (!refreshing.isCompleted) refreshing.complete();
+    await pendingRefresh?.future;
+    staleCache = false;
   }
 
   @override
