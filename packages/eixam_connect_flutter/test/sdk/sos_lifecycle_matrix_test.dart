@@ -10567,6 +10567,20 @@ void main() {
           connectedBle: true,
           deviceCountdown: const Duration(milliseconds: 5),
         );
+        final stages = <SosLifecycleStage>[];
+        final active = Completer<SosLifecycleSnapshot>();
+        final cancelled = Completer<SosLifecycleSnapshot>();
+        final subscription = harness.sdk.sosLifecycleStream.listen((snapshot) {
+          stages.add(snapshot.stage);
+          if (snapshot.stage == SosLifecycleStage.active &&
+              !active.isCompleted) {
+            active.complete(snapshot);
+          }
+          if (snapshot.stage == SosLifecycleStage.cancelled &&
+              !cancelled.isCompleted) {
+            cancelled.complete(snapshot);
+          }
+        });
         try {
           await harness.sdk.initialize(
             const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
@@ -10582,7 +10596,7 @@ void main() {
             _deviceOriginActivePacket(),
             source: DeviceSosTransitionSource.device,
           );
-          await Future<void>.delayed(const Duration(milliseconds: 15));
+          final activated = await active.future;
           expect(
             (await harness.deviceSosController.getStatus()).state,
             DeviceSosState.active,
@@ -10596,15 +10610,25 @@ void main() {
             _devicePostFireCancelPacket(),
             source: DeviceSosTransitionSource.device,
           );
-          await pumpEventQueue(times: 3);
+          final terminal = await cancelled.future;
 
           expect(harness.sosRepository.cancelCallCount, 1);
+          expect(terminal.generation, activated.generation);
+          expect(
+            stages,
+            containsAllInOrder([
+              SosLifecycleStage.activating,
+              SosLifecycleStage.active,
+              SosLifecycleStage.cancelled,
+            ]),
+          );
           expect(
             (await harness.sdk.getSosLifecycle()).stage,
             SosLifecycleStage.cancelled,
           );
           expect(await harness.sdk.getSosState(), SosState.cancelled);
         } finally {
+          await subscription.cancel();
           await harness.dispose();
         }
       },

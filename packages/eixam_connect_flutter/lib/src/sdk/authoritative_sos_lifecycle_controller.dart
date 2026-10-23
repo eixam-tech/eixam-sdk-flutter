@@ -142,7 +142,7 @@ final class AuthoritativeSosLifecycleController {
       final json = jsonDecode(encoded) as Map<String, dynamic>;
       if (json['ownerScope'] != ownerScope) {
         // Preserve the other account's record without exposing or adopting it.
-        return _acceptRestoration(
+        return await _acceptRestoration(
           SosLifecycleSnapshot.idle(_now()),
           ownerScope: ownerScope,
           revisionAtStart: revisionAtStart,
@@ -152,7 +152,7 @@ final class AuthoritativeSosLifecycleController {
       }
       final restored = _decode(json);
       if (restored.isTerminal) {
-        return _acceptRestoration(
+        return await _acceptRestoration(
           restored.copyWith(
             localActionable: false,
             externalOnly: false,
@@ -168,7 +168,7 @@ final class AuthoritativeSosLifecycleController {
           ? SosLifecycleStage.cancelling
           : SosLifecycleStage.recoveryRequired;
       final restoredExternal = restored.externalOnly;
-      return _acceptRestoration(
+      return await _acceptRestoration(
         restored.copyWith(
           stage: recoveryStage,
           localActionable: !restoredExternal,

@@ -1434,7 +1434,7 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
             'The recovery upload never started (the bootloader could not be '
             'reconnected).',
       );
-      return _settleReconciliation(
+      return await _settleReconciliation(
         _sessions[session.sessionId]!.copyWith(
           remoteRecoveryFailed: false,
           remoteRecoveryExhausted: false,

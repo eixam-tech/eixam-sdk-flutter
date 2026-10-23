@@ -9482,7 +9482,7 @@ class EixamConnectSdkImpl
       );
       if (deliveryChannel == null) {
         if (canSettleLocally) {
-          return _settlePublicCancelLocally(
+          return await _settlePublicCancelLocally(
             incident: cancellableIncident,
             deviceSucceeded: deviceSync.succeeded,
             backendError: backendError,
@@ -9523,7 +9523,7 @@ class EixamConnectSdkImpl
             : null,
       );
       if (!backendTerminal && canSettleLocally) {
-        return _settlePublicCancelLocally(
+        return await _settlePublicCancelLocally(
           incident: incident,
           deviceSucceeded: deviceSync.succeeded,
           backendError: backendError,
