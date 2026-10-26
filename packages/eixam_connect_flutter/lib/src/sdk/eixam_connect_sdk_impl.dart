@@ -6010,7 +6010,9 @@ class EixamConnectSdkImpl
 
   @override
   Future<PermissionState> requestNotificationPermission() async {
-    await notificationsRepository.requestPermission();
+    if (notificationPolicy != EixamNotificationPolicy.hostAppManaged) {
+      await notificationsRepository.requestPermission();
+    }
     return permissionsRepository.requestNotificationPermission();
   }
 
