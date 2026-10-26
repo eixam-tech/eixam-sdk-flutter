@@ -366,15 +366,15 @@ class DeviceSosController {
       'route=$commandRouteLabel state=${_status.state.name}',
     );
     final writer = commandWriterOverride ?? _commandWriter;
-    final retainedResolveStatus =
-        terminalAction == 'resolve' &&
+    final retainedTerminalStatus =
+        (terminalAction == 'resolve' || terminalAction == 'cancel') &&
             operationIsCurrent != null &&
             _terminalOperationIsCurrent(operationIsCurrent) &&
             terminalCorrelationStatus?.derivedFromBlePacket == true &&
             terminalCorrelationStatus?.optimistic == false &&
-            // Native rehydration can still project preConfirm for the same
-            // SDK-guarded terminal target. Keep its physical correlation;
-            // only a current, identity-matched E3 can complete this resolve.
+            // Native rehydration can detach the same SDK-guarded target.
+            // Retain correlation; only a current identity-matched E2/E3
+            // can acknowledge the matching submitted terminal operation.
             _isPacketTrackingOpenState(terminalCorrelationStatus!.state)
         ? terminalCorrelationStatus
         : null;
@@ -382,7 +382,7 @@ class DeviceSosController {
       return _queueTerminalCommand(
         action: terminalAction,
         reason: 'no_command_characteristic_ready',
-        physicalStatus: retainedResolveStatus,
+        physicalStatus: retainedTerminalStatus,
         commandWriterOverride: commandWriterOverride,
         commandRouteLabel: commandRouteLabel,
         operationIsCurrent: operationIsCurrent,
@@ -397,7 +397,7 @@ class DeviceSosController {
     final previous = _status;
     _prepareTerminalCommandCorrelation(
       action: terminalAction,
-      physicalStatus: retainedResolveStatus,
+      physicalStatus: retainedTerminalStatus,
       commandWriterOverride: commandWriterOverride,
       commandRouteLabel: commandRouteLabel,
       operationIsCurrent: operationIsCurrent,
@@ -425,7 +425,7 @@ class DeviceSosController {
       return _queueTerminalCommand(
         action: terminalAction,
         reason: 'no_command_characteristic_ready',
-        physicalStatus: retainedResolveStatus,
+        physicalStatus: retainedTerminalStatus,
         commandWriterOverride: commandWriterOverride,
         commandRouteLabel: commandRouteLabel,
         operationIsCurrent: operationIsCurrent,
@@ -1426,10 +1426,12 @@ class DeviceSosController {
         pendingTerminalCommand?.action == 'cancel' &&
         _terminalOperationIsCurrent(pendingTerminalCommand?.operationIsCurrent);
     final physicalEvidence = resolutionContext?.physicalEvidence;
-    final acknowledgesRetainedResolve =
-        packet.isBackendResolved &&
-        pendingTerminalCommand?.action == 'resolve' &&
-        // Physical E3 may arrive before the transport write future completes.
+    final acknowledgesRetainedTerminal =
+        ((packet.isBackendResolved &&
+                pendingTerminalCommand?.action == 'resolve') ||
+            (packet.isAppCancelAck &&
+                pendingTerminalCommand?.action == 'cancel')) &&
+        // Physical E2/E3 may precede transport write completion.
         (pendingTerminalCommand?.sentAt != null ||
             _terminalCommandDispatchInFlight) &&
         pendingTerminalCommand?.physicalStatus != null &&
@@ -1439,7 +1441,7 @@ class DeviceSosController {
         ) &&
         physicalEvidence?.hasTerminalSemantics == true &&
         physicalEvidence?.exactPhysicalIdentityMatch == true;
-    final correlatedStatus = acknowledgesRetainedResolve
+    final correlatedStatus = acknowledgesRetainedTerminal
         ? pendingTerminalCommand!.physicalStatus!
         : _status;
     if (_isMirroredTerminalDelivery(
@@ -1457,7 +1459,7 @@ class DeviceSosController {
     }
     final nextState = acknowledgesPendingAppCancel
         ? DeviceSosState.inactive
-        : acknowledgesRetainedResolve
+        : acknowledgesRetainedTerminal
         ? DeviceSosState.resolved
         : _resolveEventState(packet, previous);
     final classification = _classifyEventPacket(

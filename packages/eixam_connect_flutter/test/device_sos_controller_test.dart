@@ -160,6 +160,98 @@ void main() {
         }
       });
     }
+    for (final reply in [
+      'during_write',
+      'after_write',
+      'wrong_node',
+      'stale_operation',
+      'missing_evidence',
+      'unguarded',
+      'unsubmitted',
+      'user_e1',
+    ]) {
+      test('retained CANCEL correlates submitted physical E2 $reply', () async {
+        final controller = DeviceSosController(
+          countdownDuration: const Duration(milliseconds: 5),
+          countdownTick: const Duration(milliseconds: 1),
+        );
+        addTearDown(controller.dispose);
+        await controller.attach(commandWriter: (_) async {});
+        await _promoteDeviceSosToActive(controller);
+        controller.handleIncomingSosPacket(
+          _activePacket(),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: _receivedAfterTerminal(
+            sequence: 1,
+            at: DateTime.now(),
+          ),
+        );
+        final verified = controller.currentStatus;
+        expect(verified.packetId, isNotNull);
+        await controller.detach();
+        var current = true;
+        final commands = <EixamDeviceCommand>[];
+        void emitReply() => controller.handleIncomingSosEventPacket(
+          reply == 'user_e1'
+              ? _deviceClearPacket()
+              : EixamSosEventPacket.tryParse([
+                  0xE2,
+                  1,
+                  reply == 'wrong_node' ? 0x78 : 0x34,
+                  reply == 'wrong_node' ? 0x56 : 0x12,
+                  0,
+                  0,
+                ])!,
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: reply == 'missing_evidence'
+              ? null
+              : _receivedAfterTerminal(
+                  sequence: 3,
+                  at: DateTime.now(),
+                  terminal: true,
+                ),
+        );
+        await controller.cancelSos(
+          terminalAction: 'cancel',
+          terminalCmdAvailable: true,
+          waitForCloseAcknowledgement: false,
+          terminalCorrelationStatus: verified,
+          operationIsCurrent: reply == 'unguarded' ? null : () => current,
+          commandWriterOverride: reply == 'unsubmitted'
+              ? null
+              : (command) async {
+                  commands.add(command);
+                  if (reply == 'during_write') emitReply();
+                },
+        );
+        if (reply != 'during_write') {
+          if (reply == 'stale_operation') current = false;
+          emitReply();
+        }
+        expect(
+          commands.map((command) => command.opcode),
+          reply == 'unsubmitted' ? isEmpty : [0x04],
+        );
+        final accepted = reply == 'during_write' || reply == 'after_write';
+        if (accepted) {
+          expect(controller.currentStatus.packetId, verified.packetId);
+          expect(controller.currentStatus.flags, verified.flags);
+          expect(
+            controller.currentStatus.triggerOrigin,
+            verified.triggerOrigin,
+          );
+          expect(controller.currentStatus.derivedFromBlePacket, isTrue);
+          expect(controller.currentStatus.lastOpcode, 0xE2);
+        } else {
+          expect(
+            controller.currentStatus.packetId,
+            isNot(verified.packetId),
+            reason: 'Unproven E2/E1 must not restore retained cycle metadata',
+          );
+        }
+      });
+    }
+
     for (final writeBlocked in [false, true]) {
       test(
         'guarded CANCEL ignores duplicate attach while writeBlocked=$writeBlocked',

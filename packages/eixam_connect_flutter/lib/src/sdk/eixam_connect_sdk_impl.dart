@@ -4993,6 +4993,7 @@ class EixamConnectSdkImpl
                     },
                     onWriterSelected: (owner) {
                       capturedTarget.lastSubmittedOwner = owner;
+                      capturedTarget.lastSubmittedCommand = command;
                       if (capturedTarget.terminalState == SosState.resolved &&
                           owner == 'native_protection') {
                         capturedTarget.nativeWriteReceiveBoundary =
@@ -15673,9 +15674,8 @@ class EixamConnectSdkImpl
       return;
     }
     if (_remoteTerminalWriterIsReady(proof)) {
-      if (proof.terminalState == SosState.resolved &&
-          proof.lastSubmittedOwner != null &&
-          proof.lastSubmittedOwner != _remoteResolveCommandOwner) {
+      if (proof.lastSubmittedOwner != null &&
+          proof.lastSubmittedOwner != _remoteTerminalCommandOwner(proof)) {
         if (_remoteTerminalDeviceClearInFlightKey == proof.operationKey ||
             proof.ownerRebindAttempted) {
           return;
@@ -15694,8 +15694,9 @@ class EixamConnectSdkImpl
     }
   }
 
-  String get _remoteResolveCommandOwner {
-    return _flutterWriterReadyFor(EixamDeviceCommand.sosAck())
+  String _remoteTerminalCommandOwner(_PhysicalSosTerminationTarget proof) {
+    final command = proof.lastSubmittedCommand;
+    return command != null && _flutterWriterReadyFor(command)
         ? 'flutter_writer'
         : _currentDeviceCommandOwnerRoute;
   }
@@ -16541,9 +16542,8 @@ class EixamConnectSdkImpl
         _remoteTerminalDeviceClearInFlightKey = null;
       }
       _supersededRemoteTerminalDeviceClearKeys.remove(proof.operationKey);
-      if (proof.terminalState == SosState.resolved &&
-          proof.lastSubmittedOwner != null &&
-          proof.lastSubmittedOwner != _remoteResolveCommandOwner &&
+      if (proof.lastSubmittedOwner != null &&
+          proof.lastSubmittedOwner != _remoteTerminalCommandOwner(proof) &&
           !proof.ownerRebindAttempted) {
         _retryPendingRemoteTerminalCommand();
       }
@@ -27475,6 +27475,7 @@ class _PhysicalSosTerminationTarget {
   final String capturedIdentityMarker;
   final bool retainedAcrossHandoff;
   String? lastSubmittedOwner;
+  EixamDeviceCommand? lastSubmittedCommand;
   bool ownerRebindAttempted = false;
   // Native and Flutter notification counters have separate domains. Bind an
   // E3 to the native counter and time at the validated command write boundary.
