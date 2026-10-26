@@ -23,6 +23,7 @@ import 'package:eixam_connect_flutter/src/mappers/local_state_serializers.dart';
 import 'package:eixam_connect_flutter/src/provisioning/provisioning_command_result.dart';
 import 'package:eixam_connect_flutter/src/sdk/authoritative_sos_lifecycle_controller.dart';
 import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
+import 'package:eixam_connect_flutter/src/sdk/latest_phone_position_sink.dart';
 import 'package:eixam_connect_flutter/src/sdk/operational_realtime_client.dart';
 import 'package:eixam_connect_flutter/src/sdk/protection_platform_adapter.dart';
 import 'package:eixam_connect_flutter/src/sdk/sdk_mqtt_contract.dart';
@@ -15657,6 +15658,181 @@ void main() {
       },
     );
 
+    test(
+      'SOS snapshot cannot wait indefinitely for a phone position',
+      () async {
+        final tracking = _BlockedSosSnapshotTrackingRepository();
+        final harness = _SdkSosHarness(trackingRepository: tracking);
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+          );
+          await harness.setSession();
+          tracking.block = true;
+
+          final result = await harness.sdk
+              .triggerSosAuthoritatively(
+                const SosTriggerPayload(triggerSource: 'commercial_app'),
+              )
+              .timeout(const Duration(seconds: 4));
+
+          expect(result.outcome, SosActivationOutcome.activated);
+          expect(harness.sosRepository.triggerCallCount, 1);
+          await harness.sdk.cancelSos();
+          tracking.release.complete(
+            TrackingPosition(
+              latitude: 41.38,
+              longitude: 2.17,
+              timestamp: DateTime.now().toUtc(),
+              source: DeliveryMode.mobile,
+            ),
+          );
+          await pumpEventQueue(times: 8);
+          expect(harness.sosRepository.triggerCallCount, 1);
+          expect((await harness.sdk.getSosLifecycle()).isOpen, isFalse);
+        } finally {
+          if (!tracking.release.isCompleted) tracking.release.complete(null);
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'SOS snapshot uses a fresh cache without requesting a phone fix',
+      () async {
+        final tracking = _BlockedSosSnapshotTrackingRepository();
+        final harness = _SdkSosHarness(trackingRepository: tracking);
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+          );
+          await harness.setSession();
+          tracking.latestPhonePosition = TrackingPosition(
+            latitude: 41.38,
+            longitude: 2.17,
+            timestamp: DateTime.now().toUtc(),
+            source: DeliveryMode.mobile,
+          );
+          tracking.block = true;
+          final result = await harness.sdk.triggerSosAuthoritatively(
+            const SosTriggerPayload(triggerSource: 'commercial_app'),
+          );
+          expect(result.outcome, SosActivationOutcome.activated);
+          expect(tracking.blocked.isCompleted, isFalse);
+          expect(harness.sosRepository.lastPositionSnapshot?.latitude, 41.38);
+          await harness.sdk.cancelSos();
+        } finally {
+          if (!tracking.release.isCompleted) tracking.release.complete(null);
+          await harness.dispose();
+        }
+      },
+    );
+
+    test('SOS snapshot timeout respects cancellation while waiting', () async {
+      final tracking = _BlockedSosSnapshotTrackingRepository();
+      final harness = _SdkSosHarness(trackingRepository: tracking);
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+        tracking.block = true;
+        final activation = harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        await pumpEventQueue(times: 8);
+        await harness.sdk.cancelSos();
+        await activation.timeout(const Duration(seconds: 4));
+        expect(harness.sosRepository.triggerCallCount, 0);
+        tracking.release.complete(null);
+        await pumpEventQueue(times: 8);
+        expect(harness.sosRepository.triggerCallCount, 0);
+        expect((await harness.sdk.getSosLifecycle()).isOpen, isFalse);
+      } finally {
+        if (!tracking.release.isCompleted) tracking.release.complete(null);
+        await harness.dispose();
+      }
+    });
+
+    for (final nativeCase in [
+      'active',
+      'cancel',
+      'removed',
+      'cleanup_failure',
+      'snapshot_unavailable',
+    ]) {
+      final cancelWhileWaiting =
+          nativeCase != 'active' && nativeCase != 'snapshot_unavailable';
+      test('native SOS snapshot timeout $nativeCase', () async {
+        final tracking = _BlockedSosSnapshotTrackingRepository();
+        final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+          const ProtectionPlatformSnapshot(
+            platform: ProtectionPlatform.android,
+            backgroundCapabilityReady: true,
+          ),
+        );
+        final harness = _SdkSosHarness(
+          trackingRepository: tracking,
+          protectionPlatformAdapter: adapter,
+        );
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+          );
+          await harness.setSession();
+          tracking.block = true;
+          adapter.pendingNativeSosCreate = ProtectionPendingNativeSosCreate(
+            signature: 'snapshot-timeout-native-create',
+            incidentId: 'snapshot-timeout-incident',
+            cycleKey: 'snapshot-timeout-cycle',
+            correlationId: 'snapshot-timeout-correlation',
+            createdAt: DateTime.now().toUtc(),
+            updatedAt: DateTime.now().toUtc(),
+            retryCount: 0,
+            state: 'pending',
+          );
+          adapter.emit(
+            ProtectionPlatformEvent(
+              type: ProtectionPlatformEventType.nativeBackendSyncQueued,
+              timestamp: DateTime.now().toUtc(),
+              reason: 'create:scheduled_retry',
+            ),
+          );
+          await tracking.blocked.future.timeout(const Duration(seconds: 4));
+          if (cancelWhileWaiting) {
+            adapter.snapshot = const ProtectionPlatformSnapshot(
+              platform: ProtectionPlatform.android,
+              backgroundCapabilityReady: true,
+              preSosLifecycleState: 'cancelPending',
+            );
+            if (nativeCase == 'removed') adapter.pendingNativeSosCreate = null;
+            adapter.failDrop = nativeCase == 'cleanup_failure';
+          }
+          final deadline = DateTime.now().add(const Duration(seconds: 4));
+          while (harness.sosRepository.triggerCallCount == 0 &&
+              DateTime.now().isBefore(deadline)) {
+            await Future<void>.delayed(const Duration(milliseconds: 20));
+          }
+          expect(
+            harness.sosRepository.triggerCallCount,
+            cancelWhileWaiting ? 0 : 1,
+          );
+          if (!cancelWhileWaiting) await harness.sdk.cancelSos();
+          tracking.release.complete(null);
+          await pumpEventQueue(times: 8);
+          expect(
+            harness.sosRepository.triggerCallCount,
+            cancelWhileWaiting ? 0 : 1,
+          );
+          expect((await harness.sdk.getSosLifecycle()).isOpen, isFalse);
+        } finally {
+          if (!tracking.release.isCompleted) tracking.release.complete(null);
+          await harness.dispose();
+          await adapter.dispose();
+        }
+      });
+    }
+
     test('missing location degrades but does not block app SOS', () async {
       final harness = _SdkSosHarness(hasLocation: false);
       try {
@@ -15764,8 +15940,40 @@ final class _BlockingNextWriteSecureKeyValueStore
   }
 }
 
+final class _BlockedSosSnapshotTrackingRepository extends FakeTrackingRepository
+    implements LatestPhonePositionSink {
+  @override
+  TrackingPosition? latestPhonePosition = TrackingPosition(
+    latitude: 41.38,
+    longitude: 2.17,
+    timestamp: DateTime.now().toUtc().subtract(const Duration(minutes: 3)),
+    source: DeliveryMode.mobile,
+  );
+
+  bool block = false;
+  final blocked = Completer<void>();
+  final release = Completer<TrackingPosition?>();
+
+  @override
+  Future<bool> acceptPhonePosition(
+    TrackingPosition position, {
+    required PhonePositionSource source,
+  }) async {
+    latestPhonePosition = position;
+    return true;
+  }
+
+  @override
+  Future<TrackingPosition?> getCurrentPosition() {
+    if (!block) return super.getCurrentPosition();
+    if (!blocked.isCompleted) blocked.complete();
+    return release.future;
+  }
+}
+
 final class _SdkSosHarness {
   _SdkSosHarness({
+    FakeTrackingRepository? trackingRepository,
     FakeSosRepository? sosRepository,
     SosRepository? sdkSosRepository,
     FakeRealtimeClient? realtimeClient,
@@ -15786,16 +15994,18 @@ final class _SdkSosHarness {
     Stream<BleIncomingEvent> bleIncomingEvents =
         const Stream<BleIncomingEvent>.empty(),
   }) : sosRepository = sosRepository ?? FakeSosRepository(),
-       trackingRepository = FakeTrackingRepository(
-         currentPosition: hasLocation
-             ? TrackingPosition(
-                 latitude: 41.38,
-                 longitude: 2.17,
-                 timestamp: DateTime.utc(2026, 1, 1, 10),
-                 source: DeliveryMode.mobile,
-               )
-             : null,
-       ),
+       trackingRepository =
+           trackingRepository ??
+           FakeTrackingRepository(
+             currentPosition: hasLocation
+                 ? TrackingPosition(
+                     latitude: 41.38,
+                     longitude: 2.17,
+                     timestamp: DateTime.utc(2026, 1, 1, 10),
+                     source: DeliveryMode.mobile,
+                   )
+                 : null,
+           ),
        telemetryRepository = FakeTelemetryRepository(),
        contactsRepository = FakeContactsRepository(),
        deviceRepository = FakeDeviceRepository(
@@ -15833,7 +16043,7 @@ final class _SdkSosHarness {
        ) {
     sdk = EixamConnectSdkImpl(
       sosRepository: sdkSosRepository ?? this.sosRepository,
-      trackingRepository: trackingRepository,
+      trackingRepository: this.trackingRepository,
       telemetryRepository: telemetryRepository,
       contactsRepository: contactsRepository,
       deviceRepository: deviceRepository,
@@ -16218,7 +16428,7 @@ final class _DelayedCancelSosRemoteDataSource
   }
 }
 
-final class _SnapshotProtectionPlatformAdapter extends Fake
+class _SnapshotProtectionPlatformAdapter extends Fake
     implements ProtectionPlatformAdapter {
   _SnapshotProtectionPlatformAdapter(
     this.snapshot, {
@@ -16318,6 +16528,45 @@ final class _SnapshotProtectionPlatformAdapter extends Fake
     pendingNativeSosCreate = null;
     return true;
   }
+}
+
+final class _SnapshotTimeoutProtectionPlatformAdapter
+    extends _SnapshotProtectionPlatformAdapter {
+  _SnapshotTimeoutProtectionPlatformAdapter(super.snapshot);
+
+  bool failDrop = false;
+  bool failSnapshot = false;
+
+  @override
+  Future<ProtectionPlatformSnapshot> getPlatformSnapshot() {
+    if (failSnapshot) throw StateError('native snapshot unavailable');
+    return super.getPlatformSnapshot();
+  }
+
+  @override
+  Future<bool> dropPendingNativeSosCreate(
+    String signature, {
+    required String reason,
+  }) {
+    if (failDrop) throw StateError('native queue cleanup unavailable');
+    return super.dropPendingNativeSosCreate(signature, reason: reason);
+  }
+
+  @override
+  Future<void> markPendingNativeSosCreateMqttFlushStarted(
+    String signature,
+  ) async {}
+
+  @override
+  Future<void> markPendingNativeSosCreateMqttPublished(
+    String signature,
+  ) async {}
+
+  @override
+  Future<void> retainPendingNativeSosCreate(
+    String signature, {
+    required String reason,
+  }) async {}
 }
 
 final class _IncidentIdAwareSosRepository extends FakeSosRepository {

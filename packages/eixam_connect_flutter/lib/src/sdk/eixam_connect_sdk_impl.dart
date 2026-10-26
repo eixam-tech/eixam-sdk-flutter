@@ -10127,10 +10127,11 @@ class EixamConnectSdkImpl
     try {
       final location = await _resolveLocation(
         useCase: SdkResolvedLocationUseCase.emergencyBackend,
-      );
+      ).timeout(const Duration(seconds: 2));
       return location?.toTrackingPosition();
     } catch (_) {
-      // Best-effort snapshot: SOS should continue even if location lookup fails.
+      // A stalled platform lookup is also best effort. It must not delay SOS
+      // activation indefinitely when a fresh/cached snapshot is unavailable.
     }
     return null;
   }
@@ -13293,6 +13294,26 @@ class EixamConnectSdkImpl
         );
       }
 
+      // Snapshot acquisition yields to native cancellation/terminal events.
+      // Revalidate their existing authoritative fences before publishing.
+      if (_terminalWatermarkRejectsRestoredEvidence(
+        observedAt: pending.updatedAt,
+        nodeId: pending.nodeId,
+        cycleKey: pending.cycleKey,
+      )) {
+        await protectionPlatformAdapter.dropPendingNativeSosCreate(
+          pending.signature,
+          reason: 'authoritative_terminal_watermark',
+        );
+        return;
+      }
+      if (await _dropPendingNativeSosCreateIfCancelled(
+        pending,
+        trigger: trigger,
+      )) {
+        return;
+      }
+
       final localIdentity = await _resolveLocalOperationalSosIdentity();
       final originatorNodeId =
           pending.nodeId ?? status.nodeId ?? _knownLocalDeviceNodeId;
@@ -13574,43 +13595,42 @@ class EixamConnectSdkImpl
     ProtectionPendingNativeSosCreate pending, {
     required String trigger,
   }) async {
+    String? cancellationReason;
     if (_publicSosState == SosState.cancelled ||
         _publicSosState == SosState.resolved) {
+      cancellationReason = 'public_terminal:${_publicSosState.name}';
+    } else {
+      try {
+        final snapshot = await protectionPlatformAdapter.getPlatformSnapshot();
+        if (snapshot.preSosLifecycleState == 'cancelPending') {
+          cancellationReason = 'native_cancel_pending';
+        }
+      } catch (_) {
+        // An unavailable snapshot is not evidence of cancellation.
+      }
+    }
+    if (cancellationReason == null) return false;
+
+    // Cancellation authority is independent of storage cleanup. The queue
+    // entry may already be absent/replaced, or its deletion may fail.
+    try {
       final dropped = await protectionPlatformAdapter
           .dropPendingNativeSosCreate(
             pending.signature,
-            reason: 'public_terminal:${_publicSosState.name}',
+            reason: cancellationReason,
           );
-      if (dropped) {
-        BleDebugRegistry.instance.recordEvent(
-          'NATIVE_SOS_PENDING_DROPPED_CANCELLED '
-          'signature=${pending.signature} trigger=$trigger '
-          'state=${_publicSosState.name}',
-        );
-      }
-      return dropped;
-    }
-    try {
-      final snapshot = await protectionPlatformAdapter.getPlatformSnapshot();
-      if (snapshot.preSosLifecycleState == 'cancelPending') {
-        final dropped = await protectionPlatformAdapter
-            .dropPendingNativeSosCreate(
-              pending.signature,
-              reason: 'native_cancel_pending',
-            );
-        if (dropped) {
-          BleDebugRegistry.instance.recordEvent(
-            'NATIVE_SOS_PENDING_DROPPED_CANCELLED '
-            'signature=${pending.signature} trigger=$trigger '
-            'state=native_cancel_pending',
-          );
-        }
-        return dropped;
-      }
+      BleDebugRegistry.instance.recordEvent(
+        'NATIVE_SOS_PENDING_CANCELLED '
+        'signature=${pending.signature} trigger=$trigger '
+        'state=$cancellationReason cleanupRemoved=$dropped',
+      );
     } catch (_) {
-      // Keep the pending create if the native snapshot is temporarily unavailable.
+      BleDebugRegistry.instance.recordEvent(
+        'NATIVE_SOS_PENDING_CANCELLED_CLEANUP_FAILED '
+        'trigger=$trigger state=$cancellationReason',
+      );
     }
-    return false;
+    return true;
   }
 
   void _syncPreSosSession({
