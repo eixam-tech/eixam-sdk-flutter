@@ -6141,6 +6141,45 @@ class EixamConnectSdkImpl
         ],
       );
     }
+    final proof = _remoteTerminalDeviceClearAwaitingAckProof;
+    final confirmation = proof == null
+        ? null
+        : _remoteTerminalDeviceClearCompletions[proof.operationKey];
+    if (proof != null &&
+        confirmation != null &&
+        proof.lastSubmittedOwner == 'flutter_writer' &&
+        _remoteTerminalDeviceClearInFlightKey == proof.operationKey &&
+        _physicalSosTerminationTargetIsCurrent(proof) &&
+        !_isProtectionPlatformOwningBle) {
+      // Keep the current receiver until the submitted terminal operation's
+      // existing observation window finishes. Do this before publishing native
+      // ownership or starting its GATT, including while the write is in flight.
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_TERMINAL_OWNER_ENTRY_DEFERRED '
+        'generation=${proof.generation} terminal=${proof.terminalState.name} '
+        'reason=await_current_flutter_confirmation',
+      );
+      await confirmation.future;
+      if (!_physicalSosTerminationTargetIsCurrent(proof) ||
+          _firmwareOtaInProgress) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_TERMINAL_OWNER_ENTRY_SKIPPED '
+          'generation=${proof.generation} reason=target_or_operation_changed',
+        );
+        return EnterProtectionModeResult(
+          success: false,
+          status: await _protectionModeController.getStatus(),
+          blockingIssues: const <ProtectionBlockingIssue>[
+            ProtectionBlockingIssue(
+              type: ProtectionBlockingIssueType.hostRuntimeStartFailed,
+              message:
+                  'Protection entry changed while awaiting device confirmation.',
+              canBeResolvedInline: false,
+            ),
+          ],
+        );
+      }
+    }
     return _protectionModeController.enter(options: options);
   }
 

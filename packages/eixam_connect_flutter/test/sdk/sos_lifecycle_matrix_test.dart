@@ -1601,6 +1601,162 @@ void main() {
       },
     );
 
+    for (final terminal in [SosState.cancelled, SosState.resolved]) {
+      for (final platform in [
+        ProtectionPlatform.android,
+        ProtectionPlatform.ios,
+      ]) {
+        for (final delivery in [
+          'confirmed',
+          'timeout',
+          'superseded',
+          'wrong_peer',
+          'no_pending',
+        ]) {
+          test(
+            'Flutter terminal receiver survives protection entry ${terminal.name} ${platform.name} $delivery',
+            () async {
+              const deviceId = 'CF:82:00:00:00:01';
+              final releaseWrite = Completer<void>();
+              final writeStarted = Completer<void>();
+              final adapter = _SnapshotProtectionPlatformAdapter(
+                ProtectionPlatformSnapshot(
+                  platform: platform,
+                  backgroundCapabilityReady: true,
+                  bluetoothEnabled: true,
+                ),
+              );
+              final harness = _SdkSosHarness(
+                connectedBle: true,
+                connectedNodeId: 0x1234,
+                connectedDeviceId: deviceId,
+                connectedCanonicalHardwareId: deviceId,
+                protectionPlatformAdapter: adapter,
+              );
+              final opcode = terminal == SosState.cancelled ? 0x04 : 0x07;
+              try {
+                await harness.deviceSosController.attach(
+                  transportId: deviceId,
+                  commandWriter: (command) async {
+                    if (command.opcode == opcode) {
+                      if (!writeStarted.isCompleted) writeStarted.complete();
+                      await releaseWrite.future;
+                    }
+                  },
+                );
+                await harness.sdk.initialize(
+                  const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+                );
+                await harness.setSession();
+                if (delivery != 'no_pending') {
+                  await harness.sdk.triggerSosAuthoritatively(
+                    const SosTriggerPayload(triggerSource: 'commercial_app'),
+                  );
+                  await harness.deviceSosController.confirmSos();
+                  harness.deviceSosController.handleIncomingSosPacket(
+                    _deviceOriginActivePacket(),
+                    source: DeviceSosTransitionSource.device,
+                    resolutionContext: _physicalResolutionContext(
+                      receiveSequence: 1,
+                      terminal: false,
+                      receiveSequenceDomain: 'entry-terminal',
+                    ),
+                  );
+                  await pumpEventQueue(times: 12);
+                  harness.sosRepository.currentIncident = harness
+                      .sosRepository
+                      .currentIncident
+                      .copyWith(state: terminal, isBackendConfirmed: true);
+                  harness.sosRepository.stateController.add(terminal);
+                  await writeStarted.future.timeout(const Duration(seconds: 3));
+                }
+                final entry = harness.sdk.enterProtectionMode();
+                await pumpEventQueue(times: 16);
+                if (delivery == 'no_pending') {
+                  final result = await entry;
+                  expect(
+                    adapter.startCalls,
+                    1,
+                    reason: result.blockingIssues
+                        .map((issue) => issue.message)
+                        .join(','),
+                  );
+                  return;
+                }
+                expect(
+                  adapter.startCalls,
+                  0,
+                  reason:
+                      'pending Flutter terminal must retain its receiver before native entry',
+                );
+                expect(harness.deviceSosController.hasCommandChannel, isTrue);
+                expect(
+                  _hasDebugMessage(
+                    'SOS_BLE_OWNER_DECISION owner=native_protection action=release_flutter',
+                  ),
+                  isFalse,
+                );
+                if (delivery == 'superseded') {
+                  await harness.sdk.startPreSos(
+                    countdown: const Duration(minutes: 1),
+                  );
+                } else if (delivery == 'wrong_peer') {
+                  harness.deviceRepository.emitStatus(
+                    buildDeviceStatus(
+                      deviceId: 'CF:82:00:00:00:02',
+                      nodeId: 0x5678,
+                      canonicalHardwareId: 'CF:82:00:00:00:02',
+                    ),
+                  );
+                  await pumpEventQueue(times: 8);
+                }
+                releaseWrite.complete();
+                await pumpEventQueue(times: 8);
+                if (delivery == 'confirmed') {
+                  expect(adapter.startCalls, 0);
+                  harness.deviceSosController.handleIncomingSosEventPacket(
+                    terminal == SosState.cancelled
+                        ? _deviceCancelAckPacket()
+                        : _deviceBackendResolvedPacket(),
+                    source: DeviceSosTransitionSource.device,
+                    resolutionContext: _physicalResolutionContext(
+                      receiveSequence: 2,
+                      terminal: true,
+                      receiveSequenceDomain: 'entry-terminal',
+                    ),
+                  );
+                }
+                final result = await entry.timeout(const Duration(seconds: 5));
+                await pumpEventQueue(times: 12);
+                if (delivery == 'superseded' || delivery == 'wrong_peer') {
+                  expect(result.success, isFalse);
+                  expect(adapter.startCalls, 0);
+                } else {
+                  expect(
+                    adapter.startCalls,
+                    1,
+                    reason: result.blockingIssues
+                        .map((issue) => issue.message)
+                        .join(','),
+                  );
+                  expect(
+                    _hasDebugMessage(
+                      'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_ACKNOWLEDGED terminal=${terminal.name}',
+                    ),
+                    delivery == 'confirmed',
+                  );
+                }
+              } finally {
+                if (!releaseWrite.isCompleted) releaseWrite.complete();
+                await harness.dispose();
+                await adapter.dispose();
+              }
+            },
+          );
+        }
+      }
+    }
+
     for (final terminal in [SosState.resolved, SosState.cancelled]) {
       final label = terminal == SosState.resolved ? 'RESOLVE' : 'CANCEL';
       final terminalOpcode = terminal == SosState.resolved ? 0x07 : 0x04;
@@ -16078,6 +16234,7 @@ final class _SnapshotProtectionPlatformAdapter extends Fake
   final List<String> ensureRuntimeReasons = <String>[];
   int watchPlatformEventsCallCount = 0;
   int stopCalls = 0;
+  int startCalls = 0;
   ProtectionPendingNativeSosCreate? pendingNativeSosCreate;
   final List<String> droppedNativeSosCreateSignatures = <String>[];
   final StreamController<ProtectionPlatformEvent> _events =
@@ -16092,6 +16249,14 @@ final class _SnapshotProtectionPlatformAdapter extends Fake
 
   @override
   Future<ProtectionPlatformSnapshot> getPlatformSnapshot() async => snapshot;
+
+  @override
+  Future<ProtectionPlatformStartResult> startProtectionRuntime({
+    required ProtectionPlatformStartRequest request,
+  }) async {
+    startCalls++;
+    return const ProtectionPlatformStartResult(success: true);
+  }
 
   @override
   Future<void> stopProtectionRuntime() async {
