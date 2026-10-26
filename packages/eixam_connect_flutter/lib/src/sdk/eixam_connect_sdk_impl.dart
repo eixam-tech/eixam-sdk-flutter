@@ -687,7 +687,9 @@ class EixamConnectSdkImpl
       SosBleOwnershipState.flutterOwner;
   bool _firmwareOtaInProgress = false;
   bool _migrationInspectionInProgress = false;
-  bool _bleOwnershipHandoffInFlight = false;
+  Completer<void>? _bleOwnershipHandoffCompletion;
+  ProtectionBleOwner? _bleOwnershipHandoffOwner;
+  ProtectionBleOwner? _pendingBleOwnershipHandoffOwner;
   bool _nativeCommandReadinessRefreshInFlight = false;
   bool _flutterBleReleaseCompletedForNativeOwnership = false;
   bool _nativePreparationRequestedForOwnership = false;
@@ -23224,107 +23226,166 @@ class EixamConnectSdkImpl
     );
   }
 
-  Future<void> _handleProtectionBleOwnershipChanged(
+  Future<void> _handleProtectionBleOwnershipChanged(ProtectionBleOwner owner) {
+    final running = _bleOwnershipHandoffCompletion;
+    if (_disposed ||
+        (owner != ProtectionBleOwner.flutter &&
+            !_nativeBleHandoffIsCurrent(owner)) ||
+        (owner == ProtectionBleOwner.flutter &&
+            _protectionModeController.currentStatus.bleOwner != owner)) {
+      return running?.future ?? Future<void>.value();
+    }
+    if (running != null) {
+      // Coalesce duplicate requests, but retain an opposite ownership request.
+      // Exit must join the actual reclaim, not return while release is pending.
+      _pendingBleOwnershipHandoffOwner = owner == _bleOwnershipHandoffOwner
+          ? null
+          : owner;
+      return running.future;
+    }
+    final completion = Completer<void>();
+    _bleOwnershipHandoffCompletion = completion;
+    _pendingBleOwnershipHandoffOwner = owner;
+    unawaited(_drainProtectionBleOwnershipChanges(completion));
+    return completion.future;
+  }
+
+  Future<void> _drainProtectionBleOwnershipChanges(
+    Completer<void> completion,
+  ) async {
+    try {
+      while (!_disposed && _pendingBleOwnershipHandoffOwner != null) {
+        final owner = _pendingBleOwnershipHandoffOwner!;
+        _pendingBleOwnershipHandoffOwner = null;
+        _bleOwnershipHandoffOwner = owner;
+        await _applyProtectionBleOwnershipChanged(owner);
+      }
+      completion.complete();
+    } catch (error, stackTrace) {
+      completion.completeError(error, stackTrace);
+    } finally {
+      _bleOwnershipHandoffCompletion = null;
+      _bleOwnershipHandoffOwner = null;
+      _pendingBleOwnershipHandoffOwner = null;
+    }
+  }
+
+  bool _nativeBleHandoffIsCurrent(ProtectionBleOwner owner) {
+    final status = _protectionModeController.currentStatus;
+    return !_disposed &&
+        owner != ProtectionBleOwner.flutter &&
+        status.bleOwner == owner &&
+        status.modeState != ProtectionModeState.off &&
+        status.modeState != ProtectionModeState.stopping;
+  }
+
+  Future<void> _applyProtectionBleOwnershipChanged(
     ProtectionBleOwner owner,
   ) async {
-    if (_bleOwnershipHandoffInFlight) {
-      BleDebugRegistry.instance.recordEvent(
-        'SOS_BLE_OWNER_DECISION owner=${owner.name} action=dedupe_handoff',
-      );
+    if (_disposed ||
+        (owner != ProtectionBleOwner.flutter &&
+            !_nativeBleHandoffIsCurrent(owner))) {
       return;
     }
-    _bleOwnershipHandoffInFlight = true;
-    try {
-      final protectionStatus = _protectionModeController.currentStatus;
-      _logSosBleOwnerState(
-        reason: 'handoff_requested:${owner.name}',
-        status: protectionStatus,
+    final protectionStatus = _protectionModeController.currentStatus;
+    _logSosBleOwnerState(
+      reason: 'handoff_requested:${owner.name}',
+      status: protectionStatus,
+    );
+    BleDebugRegistry.instance.recordEvent(
+      '[DEVICE_FLOW] ble_owner_transition '
+      'flutterConnected=${_lastDeviceStatus?.connected ?? false} '
+      'protectionDeviceConnected=${protectionStatus.deviceConnected} '
+      'serviceBleConnected=${protectionStatus.serviceBleConnected} '
+      'serviceBleReady=${protectionStatus.serviceBleReady} '
+      'bleOwner=${owner.name} '
+      'finalPublicConnected=${_lastPublicDeviceStatus?.connected ?? _lastDeviceStatus?.connected ?? false} '
+      'deviceId=${_lastDeviceStatus?.nodeId?.toString() ?? "-"} nodeId=${_lastDeviceStatus?.nodeId?.toString() ?? "-"} hardwareId=${_lastDeviceStatus?.deviceId ?? "-"}',
+    );
+    if (owner != ProtectionBleOwner.flutter) {
+      final nativeLive = _protectionReportsLiveBleConnection(protectionStatus);
+      _bleAutoReconnectCoordinator.cancelPreferredReconnect(
+        reason: 'native_protection_ble_owner',
       );
       BleDebugRegistry.instance.recordEvent(
-        '[DEVICE_FLOW] ble_owner_transition '
-        'flutterConnected=${_lastDeviceStatus?.connected ?? false} '
-        'protectionDeviceConnected=${protectionStatus.deviceConnected} '
-        'serviceBleConnected=${protectionStatus.serviceBleConnected} '
-        'serviceBleReady=${protectionStatus.serviceBleReady} '
-        'bleOwner=${owner.name} '
-        'finalPublicConnected=${_lastPublicDeviceStatus?.connected ?? _lastDeviceStatus?.connected ?? false} '
-        'deviceId=${_lastDeviceStatus?.nodeId?.toString() ?? "-"} nodeId=${_lastDeviceStatus?.nodeId?.toString() ?? "-"} hardwareId=${_lastDeviceStatus?.deviceId ?? "-"}',
+        'SOS_BLE_OWNER_DECISION owner=native_protection '
+        'action=release_flutter '
+        'reason=${nativeLive ? "native_live" : "native_preparing"}',
       );
-      if (owner != ProtectionBleOwner.flutter) {
-        final nativeLive = _protectionReportsLiveBleConnection(
-          protectionStatus,
-        );
-        _bleAutoReconnectCoordinator.cancelPreferredReconnect(
-          reason: 'native_protection_ble_owner',
-        );
-        BleDebugRegistry.instance.recordEvent(
-          'SOS_BLE_OWNER_DECISION owner=native_protection '
-          'action=release_flutter '
-          'reason=${nativeLive ? "native_live" : "native_preparing"}',
-        );
-        if (deviceRepository is InMemoryDeviceRepository) {
-          final repository = deviceRepository as InMemoryDeviceRepository;
-          _lastDeviceStatus = await repository
-              .releaseBleOwnershipToProtectionMode(
-                reason: 'Protection Mode native runtime is armed',
-              );
-          _publishPublicDeviceStatus(
-            rawStatus: _lastDeviceStatus!,
-            reason: 'protection_ble_ownership_released',
-          );
-          _flutterBleReleaseCompletedForNativeOwnership = true;
-          _logSosBleOwnerState(
-            reason: 'flutter_release_completed',
-            status: protectionStatus,
-          );
-        }
-        final nativeReady = _nativeCommandReadinessForStatus(
-          protectionStatus,
-        ).ready;
-        if (!nativeReady && !_nativePreparationRequestedForOwnership) {
-          _nativePreparationRequestedForOwnership = true;
-          try {
-            await _delegateBleToNativeProtection(
-              reason: 'flutter_yielded_ble_to_native_preparation',
+      if (deviceRepository is InMemoryDeviceRepository) {
+        final repository = deviceRepository as InMemoryDeviceRepository;
+        _lastDeviceStatus = await repository
+            .releaseBleOwnershipToProtectionMode(
+              reason: 'Protection Mode native runtime is armed',
             );
-          } catch (_) {
-            _nativePreparationRequestedForOwnership = false;
-            rethrow;
-          }
-        } else if (nativeReady) {
-          _bleAutoReconnectCoordinator.setAppForeground(false);
-        }
-        return;
-      }
-      if (deviceRepository is! InMemoryDeviceRepository) {
-        return;
-      }
-      final repository = deviceRepository as InMemoryDeviceRepository;
-      await repository.reclaimBleOwnershipFromProtectionMode(
-        reason: 'Protection Mode returned BLE ownership to Flutter',
-      );
-      _flutterBleReleaseCompletedForNativeOwnership = false;
-      BleDebugRegistry.instance.recordEvent(
-        'SOS_BLE_OWNER_DECISION owner=flutter action=reclaim '
-        'reason=platform_owner_returned',
-      );
-      _logSosBleOwnerState(
-        reason: 'flutter_reclaim_requested',
-        status: protectionStatus,
-      );
-      _bleAutoReconnectCoordinator.setAppForeground(true);
-      unawaited(
-        _bleAutoReconnectCoordinator.tryAutoConnect(
-          trigger: 'flutter_ble_ownership_reclaimed',
-        ),
-      );
-      if ((_lastPublicDeviceStatus ?? _lastDeviceStatus)?.connected == true) {
-        unawaited(
-          _maybeCheckDeviceCountryConfig('flutter_ble_ownership_reclaimed'),
+        _publishPublicDeviceStatus(
+          rawStatus: _lastDeviceStatus!,
+          reason: 'protection_ble_ownership_released',
+        );
+        _flutterBleReleaseCompletedForNativeOwnership = true;
+        _logSosBleOwnerState(
+          reason: 'flutter_release_completed',
+          status: protectionStatus,
         );
       }
-    } finally {
-      _bleOwnershipHandoffInFlight = false;
+      // Release can yield to protection exit. Never resume a stopped native
+      // runtime from the old captured owner; the queued Flutter reclaim runs
+      // after this release settles.
+      if (!_nativeBleHandoffIsCurrent(owner)) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_BLE_OWNER_HANDOFF_SUPERSEDED reason=owner_changed_during_release',
+        );
+        return;
+      }
+      final nativeReady = _nativeCommandReadinessForStatus(
+        protectionStatus,
+      ).ready;
+      if (!nativeReady && !_nativePreparationRequestedForOwnership) {
+        _nativePreparationRequestedForOwnership = true;
+        try {
+          await _delegateBleToNativeProtection(
+            reason: 'flutter_yielded_ble_to_native_preparation',
+          );
+        } catch (_) {
+          _nativePreparationRequestedForOwnership = false;
+          rethrow;
+        }
+      } else if (nativeReady) {
+        _bleAutoReconnectCoordinator.setAppForeground(false);
+      }
+      return;
+    }
+    if (deviceRepository is! InMemoryDeviceRepository) {
+      return;
+    }
+    final repository = deviceRepository as InMemoryDeviceRepository;
+    await repository.reclaimBleOwnershipFromProtectionMode(
+      reason: 'Protection Mode returned BLE ownership to Flutter',
+    );
+    if (_disposed ||
+        _protectionModeController.currentStatus.bleOwner !=
+            ProtectionBleOwner.flutter) {
+      return;
+    }
+    _flutterBleReleaseCompletedForNativeOwnership = false;
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_BLE_OWNER_DECISION owner=flutter action=reclaim '
+      'reason=platform_owner_returned',
+    );
+    _logSosBleOwnerState(
+      reason: 'flutter_reclaim_requested',
+      status: protectionStatus,
+    );
+    _bleAutoReconnectCoordinator.setAppForeground(true);
+    unawaited(
+      _bleAutoReconnectCoordinator.tryAutoConnect(
+        trigger: 'flutter_ble_ownership_reclaimed',
+      ),
+    );
+    if ((_lastPublicDeviceStatus ?? _lastDeviceStatus)?.connected == true) {
+      unawaited(
+        _maybeCheckDeviceCountryConfig('flutter_ble_ownership_reclaimed'),
+      );
     }
   }
 
