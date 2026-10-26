@@ -4990,9 +4990,11 @@ class EixamConnectSdkImpl
                           'stale or unavailable remote terminal writer',
                         );
                       }
+                    },
+                    onWriterSelected: (owner) {
+                      capturedTarget.lastSubmittedOwner = owner;
                       if (capturedTarget.terminalState == SosState.resolved &&
-                          _currentDeviceCommandOwnerRoute ==
-                              'native_protection') {
+                          owner == 'native_protection') {
                         capturedTarget.nativeWriteReceiveBoundary =
                             _latestNativeReceiveSequence ?? 0;
                         capturedTarget.nativeWriteStartedAt = DateTime.now()
@@ -15671,8 +15673,31 @@ class EixamConnectSdkImpl
       return;
     }
     if (_remoteTerminalWriterIsReady(proof)) {
+      if (proof.terminalState == SosState.resolved &&
+          proof.lastSubmittedOwner != null &&
+          proof.lastSubmittedOwner != _remoteResolveCommandOwner) {
+        if (_remoteTerminalDeviceClearInFlightKey == proof.operationKey ||
+            proof.ownerRebindAttempted) {
+          return;
+        }
+        proof.ownerRebindAttempted = true;
+        // A successful write through the old owner cannot keep a detached
+        // receiver waiting forever. Rebind this still-current, same-TAG
+        // operation once to the newly ready owner; readiness alone on the
+        // same owner never authorizes another write.
+        if (_remoteTerminalDeviceClearAwaitingAckProof?.operationKey ==
+            proof.operationKey) {
+          _remoteTerminalDeviceClearAwaitingAckProof = null;
+        }
+      }
       _scheduleRemoteTerminalDeviceClear(proof);
     }
+  }
+
+  String get _remoteResolveCommandOwner {
+    return _flutterWriterReadyFor(EixamDeviceCommand.sosAck())
+        ? 'flutter_writer'
+        : _currentDeviceCommandOwnerRoute;
   }
 
   bool _consumeRemoteTerminalDeviceClearAck(DeviceSosStatus status) {
@@ -16516,6 +16541,12 @@ class EixamConnectSdkImpl
         _remoteTerminalDeviceClearInFlightKey = null;
       }
       _supersededRemoteTerminalDeviceClearKeys.remove(proof.operationKey);
+      if (proof.terminalState == SosState.resolved &&
+          proof.lastSubmittedOwner != null &&
+          proof.lastSubmittedOwner != _remoteResolveCommandOwner &&
+          !proof.ownerRebindAttempted) {
+        _retryPendingRemoteTerminalCommand();
+      }
     }
   }
 
@@ -23010,6 +23041,7 @@ class EixamConnectSdkImpl
   Future<void> _sendDeviceCommandThroughActiveOwner(
     EixamDeviceCommand command, {
     void Function()? validateOperation,
+    void Function(String owner)? onWriterSelected,
   }) async {
     final commandGeneration = _sosLifecycle.current.generation;
     void requireCurrentConfirmation() {
@@ -23047,6 +23079,7 @@ class EixamConnectSdkImpl
     );
     if (flutterReady) {
       try {
+        onWriterSelected?.call('flutter_writer');
         await deviceSosController.sendAttachedCommand(command);
         BleDebugRegistry.instance.recordEvent(
           'Flutter writer command accepted -> owner=$ownerRoute command=${command.label}',
@@ -23127,6 +23160,7 @@ class EixamConnectSdkImpl
     }
 
     requireCurrentConfirmation();
+    onWriterSelected?.call('native_protection');
     final result = await protectionPlatformAdapter.sendProtectionCommand(
       request: ProtectionPlatformCommandRequest(
         label: command.label,
@@ -27440,6 +27474,8 @@ class _PhysicalSosTerminationTarget {
   final String capturedOwner;
   final String capturedIdentityMarker;
   final bool retainedAcrossHandoff;
+  String? lastSubmittedOwner;
+  bool ownerRebindAttempted = false;
   // Native and Flutter notification counters have separate domains. Bind an
   // E3 to the native counter and time at the validated command write boundary.
   int? nativeWriteReceiveBoundary;

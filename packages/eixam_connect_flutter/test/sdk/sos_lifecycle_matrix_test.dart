@@ -1601,6 +1601,186 @@ void main() {
       },
     );
 
+    for (final platform in [
+      ProtectionPlatform.android,
+      ProtectionPlatform.ios,
+    ]) {
+      for (final delivery in [
+        'confirmed',
+        'write_failure',
+        'flutter_stays_writable',
+        'wrong_peer',
+        'superseded',
+      ]) {
+        test(
+          'RESOLVE confirmation survives owner change after write ${platform.name} $delivery',
+          () async {
+            const deviceId = 'CF:82:00:00:00:01';
+            final nativeWrite = Completer<void>();
+            final adapter = _SnapshotProtectionPlatformAdapter(
+              ProtectionPlatformSnapshot(
+                platform: platform,
+                backgroundCapabilityReady: false,
+              ),
+            );
+            final harness = _SdkSosHarness(
+              connectedBle: true,
+              connectedNodeId: 0x1234,
+              connectedDeviceId: deviceId,
+              connectedCanonicalHardwareId: deviceId,
+              deviceCountdown: const Duration(seconds: 20),
+              protectionPlatformAdapter: adapter,
+            );
+            final commands = <int>[];
+            try {
+              await harness.deviceSosController.attach(
+                transportId: deviceId,
+                commandWriter: (command) async {
+                  commands.add(command.opcode);
+                  if (command.opcode == 0x07) {
+                    // GATT accepted the write, but the Flutter receiver detached
+                    // before it could observe the TAG's terminal acknowledgement.
+                    if (delivery != 'flutter_stays_writable') {
+                      await harness.deviceSosController.detach();
+                    }
+                  }
+                },
+              );
+              await harness.sdk.initialize(
+                const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+              );
+              await harness.setSession();
+              await harness.sdk.triggerSosAuthoritatively(
+                const SosTriggerPayload(triggerSource: 'commercial_app'),
+              );
+              await harness.deviceSosController.confirmSos();
+              harness.deviceSosController.handleIncomingSosPacket(
+                _deviceOriginActivePacket(),
+                source: DeviceSosTransitionSource.device,
+                resolutionContext: _physicalResolutionContext(
+                  receiveSequence: 1,
+                  terminal: false,
+                  receiveSequenceDomain: 'resolve-owner-handoff',
+                ),
+              );
+              await pumpEventQueue(times: 12);
+              final original = await harness.sdk.getSosLifecycle();
+              harness.sosRepository.currentIncident = harness
+                  .sosRepository
+                  .currentIncident
+                  .copyWith(state: SosState.resolved, isBackendConfirmed: true);
+              harness.sosRepository.stateController.add(SosState.resolved);
+              await pumpEventQueue(times: 30);
+              expect(commands.where((opcode) => opcode == 0x07), hasLength(1));
+              if (delivery == 'superseded') {
+                await harness.sdk.triggerSosAuthoritatively(
+                  const SosTriggerPayload(triggerSource: 'commercial_app'),
+                );
+              }
+              final expectedDevice = delivery == 'wrong_peer'
+                  ? 'CF:82:00:00:00:02'
+                  : deviceId;
+              adapter.snapshot = ProtectionPlatformSnapshot(
+                platform: platform,
+                backgroundCapabilityReady: true,
+                serviceRunning: true,
+                runtimeActive: true,
+                runtimeState: ProtectionRuntimeState.active,
+                coverageLevel: ProtectionCoverageLevel.full,
+                bleOwner: platform == ProtectionPlatform.android
+                    ? ProtectionBleOwner.androidService
+                    : ProtectionBleOwner.iosPlugin,
+                serviceBleConnected: true,
+                serviceBleReady: true,
+                nativeCommandServiceReady: true,
+                nativeCommandEa04Ready: true,
+                nativeCommandIdentityReady: true,
+                nativeCommandQueueHealthy: true,
+                nativeCommandReady: true,
+                protectedDeviceId: expectedDevice,
+                activeDeviceId: expectedDevice,
+                bleHardwareId: expectedDevice,
+              );
+              adapter.commandObserver = (request) {
+                if (request.bytes.first == 0x07) {
+                  if (!nativeWrite.isCompleted) nativeWrite.complete();
+                  if (delivery == 'write_failure') {
+                    throw StateError('native write rejected');
+                  }
+                  scheduleMicrotask(
+                    () => harness.deviceSosController
+                        .handleIncomingSosEventPacket(
+                          _deviceBackendResolvedPacket(),
+                          source: DeviceSosTransitionSource.device,
+                          resolutionContext: _physicalResolutionContext(
+                            receiveSequence: 2,
+                            terminal: true,
+                            receiveSequenceDomain: 'resolve-owner-handoff',
+                          ),
+                        ),
+                  );
+                }
+              };
+              await harness.sdk.rehydrateProtectionState();
+              final canRebind =
+                  delivery == 'confirmed' || delivery == 'write_failure';
+              if (canRebind) {
+                await nativeWrite.future.timeout(const Duration(seconds: 5));
+              } else {
+                await Future<void>.delayed(const Duration(seconds: 4));
+              }
+              await pumpEventQueue(times: 30);
+              expect(
+                adapter.commands.where(
+                  (request) => request.bytes.first == 0x07,
+                ),
+                hasLength(canRebind ? 1 : 0),
+              );
+              if (delivery == 'confirmed') {
+                expect(
+                  harness.deviceSosController.currentStatus.state,
+                  DeviceSosState.resolved,
+                );
+                expect(
+                  harness
+                      .deviceSosController
+                      .currentStatus
+                      .derivedFromBlePacket,
+                  isTrue,
+                );
+                expect(
+                  _hasDebugMessage(
+                    'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_ACKNOWLEDGED terminal=resolved',
+                  ),
+                  isTrue,
+                  reason: 'SDK must consume the rebound same-cycle proof',
+                );
+              }
+              final lifecycle = await harness.sdk.getSosLifecycle();
+              if (delivery == 'superseded') {
+                expect(lifecycle.generation, greaterThan(original.generation));
+              } else {
+                expect(lifecycle.generation, original.generation);
+                expect(lifecycle.stage, SosLifecycleStage.resolved);
+              }
+              await harness.sdk.rehydrateProtectionState();
+              await pumpEventQueue(times: 12);
+              expect(commands.where((opcode) => opcode == 0x07), hasLength(1));
+              expect(
+                adapter.commands.where(
+                  (request) => request.bytes.first == 0x07,
+                ),
+                hasLength(canRebind ? 1 : 0),
+              );
+            } finally {
+              await harness.dispose();
+              await adapter.dispose();
+            }
+          },
+        );
+      }
+    }
+
     for (final peer in ['android_mac', 'ios_uuid']) {
       final platform = peer == 'android_mac'
           ? ProtectionPlatform.android
