@@ -5,7 +5,12 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_core/src/interfaces/realtime_client.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart'
-    show TargetPlatform, defaultTargetPlatform, kDebugMode, visibleForTesting;
+    show
+        TargetPlatform,
+        defaultTargetPlatform,
+        kDebugMode,
+        kIsWeb,
+        visibleForTesting;
 import 'package:flutter/widgets.dart';
 
 import '../data/datasources_local/device_config_store.dart';
@@ -4007,7 +4012,20 @@ class EixamConnectSdkImpl
   @override
   Future<DeviceMigrationSession?> reconcileDeviceMigration({
     bool attemptRecovery = false,
-  }) {
+  }) async {
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+      final coordinator = deviceMigrationCoordinator;
+      final session = await coordinator?.getActiveSession();
+      if (session?.nextAction == DeviceMigrationNextAction.repairBluetooth) {
+        return _bleAutoReconnectCoordinator.runWithCandidateInspectionPriority(
+          reason: 'post_migration_bluetooth_repair',
+          selectedMarker: SecurityDiagnosticsRedactor.stableIdentifierMarker(
+            session!.candidate.deviceId,
+          ),
+          operation: () => coordinator!.reconcile(),
+        );
+      }
+    }
     return deviceMigrationCoordinator?.reconcile(
           attemptRecovery: attemptRecovery,
         ) ??

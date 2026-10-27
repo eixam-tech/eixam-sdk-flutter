@@ -56,6 +56,27 @@ void main() {
     },
   );
 
+  test(
+    'Bluetooth repair state and exact manufacturing identity survive restart',
+    () async {
+      final store = SharedPrefsDeviceMigrationSessionStore();
+      await store.save(
+        _session().copyWith(
+          state: DeviceMigrationState.bluetoothRepairRequired,
+          nextAction: DeviceMigrationNextAction.repairBluetooth,
+          canCancel: false,
+          failureCode: 'bluetoothBondRepairRequired',
+        ),
+      );
+      final restored = await SharedPrefsDeviceMigrationSessionStore().load();
+      expect(restored!.state, DeviceMigrationState.bluetoothRepairRequired);
+      expect(restored.nextAction, DeviceMigrationNextAction.repairBluetooth);
+      expect(restored.expectedEixamAdvertisingName, 'EIXAM_A6DDEEFF');
+      expect(restored.isTerminal, isFalse);
+      expect(restored.canCancel, isFalse);
+    },
+  );
+
   test('no record returns no active migration', () async {
     final store = SharedPrefsDeviceMigrationSessionStore();
 

@@ -1,10 +1,13 @@
 import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:flutter/foundation.dart';
 
 import '../device/ble_client.dart';
 import '../device/ble_scan_result.dart';
+import '../device/ble_transport_observation.dart';
 import '../device/canonical_hardware_id.dart';
+import '../device/ios_stale_gatt_error.dart';
 import '../device/meshtastic_metadata_probe.dart';
 import '../device/ble_debug_registry.dart';
 import '../diagnostics/security_diagnostics_redactor.dart';
@@ -12,6 +15,7 @@ import '../firmware_version.dart';
 import 'device_migration_firmware_service.dart';
 import 'device_migration_session_store.dart';
 import 'firmware_update_retry_policy.dart';
+import 'tag_pairing_code_correlator.dart';
 
 final class DeviceMigrationCoordinator {
   DeviceMigrationCoordinator({
@@ -21,7 +25,11 @@ final class DeviceMigrationCoordinator {
     DeviceMigrationSessionStore? sessionStore,
     this.rediscoveryTimeout = const Duration(seconds: 12),
     this.reconciliationTimeout = const Duration(minutes: 3),
-  }) : sessionStore = sessionStore ?? SharedPrefsDeviceMigrationSessionStore();
+    @visibleForTesting bool Function()? isIosPlatform,
+  }) : sessionStore = sessionStore ?? SharedPrefsDeviceMigrationSessionStore(),
+       _isIosPlatform =
+           isIosPlatform ??
+           (() => !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS);
 
   static const int wisMeshTagHardwareModel = 105;
   static const String eixamFirmwareCatalogModel = 'EIXAM R1';
@@ -33,6 +41,7 @@ final class DeviceMigrationCoordinator {
   final DeviceMigrationSessionStore sessionStore;
   final Duration rediscoveryTimeout;
   final Duration reconciliationTimeout;
+  final bool Function() _isIosPlatform;
 
   bool _migrationInProgress = false;
   Future<DeviceMigrationSession?>? _reconciliationFuture;
@@ -180,6 +189,17 @@ final class DeviceMigrationCoordinator {
     DeviceMigrationCandidate? verifiedSource,
   }) async {
     await _restore();
+    final repair = _session;
+    if (repair?.state == DeviceMigrationState.bluetoothRepairRequired) {
+      // A verified installation must never return to artifact selection/DFU.
+      return DeviceMigrationResult(
+        outcome: DeviceMigrationOutcome.recoveryRequired,
+        candidate: repair!.candidate,
+        firmwareSession: repair.firmwareSession,
+        migratedDevice: repair.migratedDevice,
+        failureCode: 'bluetoothBondRepairRequired',
+      );
+    }
     final activeFirmware = await firmwareUpdates
         .getActiveMigrationFirmwareUpdate();
     if (activeFirmware != null &&
@@ -417,6 +437,9 @@ final class DeviceMigrationCoordinator {
   }) async {
     await _restore();
     final restored = _session;
+    if (restored?.state == DeviceMigrationState.bluetoothRepairRequired) {
+      return _reconcileBluetoothRepair(restored!);
+    }
     if (_migrationInProgress ||
         restored == null ||
         restored.state == DeviceMigrationState.completed) {
@@ -727,7 +750,9 @@ final class DeviceMigrationCoordinator {
     return _restoreFuture ??= () async {
       _session = await sessionStore.load();
       final current = _session;
-      if (current != null && !current.isTerminal) {
+      if (current != null &&
+          !current.isTerminal &&
+          current.state != DeviceMigrationState.bluetoothRepairRequired) {
         final firmware = await firmwareUpdates
             .getActiveMigrationFirmwareUpdate();
         if (firmware != null &&
@@ -1094,9 +1119,138 @@ final class DeviceMigrationCoordinator {
   );
 
   /// A runtime protocol failure is recoverable only for this inspected TAG.
+  /// Only a verified installation plus an actual connected GATT failure may
+  /// enter repair. Generic transport, permission and backend errors cannot.
+  Future<bool> retainBluetoothRepair(String deviceId, Object error) async {
+    if (!_isIosPlatform() || !isIosStaleGattError(error)) return false;
+    await _restore();
+    final current = _session;
+    if (current == null ||
+        !current.candidate.isCompatible ||
+        current.candidate.sourceHardwareModel != wisMeshTagHardwareModel ||
+        current.targetVersion.isEmpty ||
+        current.firmwareSession?.state != FirmwareUpdateState.completed ||
+        current.migratedDevice?.deviceId != deviceId ||
+        current.expectedEixamAdvertisingName == null ||
+        (current.state != DeviceMigrationState.completed &&
+            current.state != DeviceMigrationState.bluetoothRepairRequired) ||
+        !await bleClient.isConnected(deviceId)) {
+      return false;
+    }
+    await _publish(
+      current.copyWith(
+        state: DeviceMigrationState.bluetoothRepairRequired,
+        outcome: DeviceMigrationOutcome.recoveryRequired,
+        nextAction: DeviceMigrationNextAction.repairBluetooth,
+        canCancel: false,
+        failureCode: 'bluetoothBondRepairRequired',
+        updatedAt: DateTime.now(),
+      ),
+    );
+    return true;
+  }
+
+  Future<DeviceMigrationSession> _reconcileBluetoothRepair(
+    DeviceMigrationSession current,
+  ) async {
+    // This branch has no firmware-service calls, even for explicit retries.
+    // Keep the actionable durable state when Bluetooth is unavailable or the
+    // user returns without forgetting the device. One request = one attempt.
+    if (!_isIosPlatform()) return current;
+    String? connectedId;
+    StreamSubscription<Object?>? notifications;
+    try {
+      final scans = await bleClient.scan(timeout: rediscoveryTimeout);
+      final matches = scans
+          .where((scan) {
+            if (!scan.connectable || scan.toPublic().isDfuBootloader) {
+              return false;
+            }
+            final expected = current.expectedEixamAdvertisingName;
+            if (expected == null) return false;
+            final mac = normalizeCanonicalHardwareId(scan.canonicalHardwareId);
+            if (mac != null &&
+                mac !=
+                    normalizeCanonicalHardwareId(
+                      current.candidate.stableIdentity,
+                    )) {
+              return false;
+            }
+            final lookup = TagPairingCodeCorrelator.find(
+              expected.substring('EIXAM_'.length),
+              [scan.toPublic()],
+            );
+            return TagPairingCodeCorrelator.verifyCurrentDiscovery(
+                  lookup,
+                ).state ==
+                TagPairingCodeMatchState.matched;
+          })
+          .toList(growable: false);
+      if (matches.length != 1) return current;
+      final match = matches.single;
+      connectedId = match.deviceId;
+      await bleClient.connect(connectedId);
+      if (!await bleClient.isConnected(connectedId) ||
+          !await bleClient.isEixamCompatible(connectedId)) {
+        return current;
+      }
+      final transport = bleClient;
+      if (transport is BleTransportObservationSource) {
+        final observed = (transport as BleTransportObservationSource)
+            .transportObservation(connectedId);
+        if (!observed.servicePresent ||
+            !observed.commandCharacteristicPresent ||
+            !observed.shortCommandCharacteristicPresent) {
+          return current;
+        }
+      }
+      final version = await bleClient.readFirmwareVersion(connectedId);
+      if (!firmwareIdentityMatches(
+        version,
+        current.targetVersion,
+        policy: current.verificationPolicy,
+      )) {
+        return current;
+      }
+      // RealBleClient performs fresh discovery on connect and enables both
+      // EA01 and EA02 here. Successful discovery alone is insufficient proof.
+      notifications = (await bleClient.subscribeEixamNotifications(
+        connectedId,
+      )).listen((_) {}, onError: (Object error) {});
+      await notifications.cancel();
+      notifications = null;
+      await bleClient.disconnect(connectedId);
+      connectedId = null;
+      final repaired = current.copyWith(
+        migratedDevice: match.toPublic(),
+        state: DeviceMigrationState.completed,
+        outcome: DeviceMigrationOutcome.completed,
+        reconciliationOutcome: DeviceMigrationReconciliationOutcome.completed,
+        nextAction: DeviceMigrationNextAction.completed,
+        clearFailure: true,
+        updatedAt: DateTime.now(),
+      );
+      await _publish(repaired);
+      return repaired;
+    } catch (error) {
+      safeSdkDebugPrint('MIGRATION_BLUETOOTH_REPAIR_WAIT error=$error');
+      return current;
+    } finally {
+      await notifications?.cancel();
+      if (connectedId != null) {
+        try {
+          await bleClient.disconnect(connectedId);
+        } catch (_) {}
+      }
+    }
+  }
+
   Future<bool> retainRuntimeRecovery(String deviceId) async {
     await _restore();
     final current = _session;
+    if (current?.state == DeviceMigrationState.bluetoothRepairRequired) {
+      return current!.migratedDevice?.deviceId == deviceId;
+    }
     if (current == null ||
         current.state == DeviceMigrationState.completed ||
         current.candidate.deviceId != deviceId ||

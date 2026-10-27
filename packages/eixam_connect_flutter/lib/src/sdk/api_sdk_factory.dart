@@ -171,6 +171,8 @@ class ApiSdkFactory {
       bleClient: bleClient,
       retainMigrationRecovery: (deviceId) =>
           migrationCoordinator.retainRuntimeRecovery(deviceId),
+      retainBluetoothRepair: (deviceId, error) =>
+          migrationCoordinator.retainBluetoothRepair(deviceId, error),
     );
     final deviceRepository = InMemoryDeviceRepository(
       runtimeProvider: deviceRuntimeProvider,

@@ -46,10 +46,12 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     required BleClient bleClient,
     DeviceSosController? deviceSosController,
     Future<bool> Function(String deviceId)? retainMigrationRecovery,
+    Future<bool> Function(String deviceId, Object error)? retainBluetoothRepair,
     @visibleForTesting bool Function()? isIosPlatform,
   }) : _bleClient = bleClient,
        _deviceSosController = deviceSosController ?? DeviceSosController(),
        _retainMigrationRecovery = retainMigrationRecovery,
+       _retainBluetoothRepair = retainBluetoothRepair,
        _isIosPlatform = isIosPlatform ?? (() => Platform.isIOS) {
     if (bleClient is BleTransportObservationSource) {
       _serviceResetSubscription = (bleClient as BleTransportObservationSource)
@@ -102,6 +104,8 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
   final BleClient _bleClient;
   final Future<bool> Function(String deviceId)? _retainMigrationRecovery;
+  final Future<bool> Function(String deviceId, Object error)?
+  _retainBluetoothRepair;
   final DeviceSosController _deviceSosController;
   final bool Function() _isIosPlatform;
   final StreamController<BleIncomingEvent> _incomingEventsController =
@@ -1006,7 +1010,19 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       'BLE SOS runtime attached -> hardwareId=$deviceId inetAvailable=${BleDebugRegistry.instance.currentState.inetFound} cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound}',
     );
 
-    final stream = await _bleClient.subscribeEixamNotifications(deviceId);
+    late final Stream<EixamBleNotification> stream;
+    try {
+      stream = await _bleClient.subscribeEixamNotifications(deviceId);
+    } catch (error) {
+      if (_isIosPlatform() &&
+          await _retainBluetoothRepair?.call(deviceId, error) == true) {
+        throw const DeviceException(
+          'bluetoothBondRepairRequired',
+          'bluetoothBondRepairRequired',
+        );
+      }
+      rethrow;
+    }
     if (_disposed || serviceRevision != _serviceResetRevision) {
       return;
     }

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/device/ble_client.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_ble_notification.dart';
 import 'package:eixam_connect_flutter/src/device/ble_scan_result.dart';
 import 'package:eixam_connect_flutter/src/device/ble_scan_result_brand_classifier.dart';
 import 'package:eixam_connect_flutter/src/device/meshtastic_ble_protocol.dart';
@@ -12,6 +13,8 @@ import 'package:eixam_connect_flutter/src/sdk/device_migration_firmware_service.
 import 'package:eixam_connect_flutter/src/sdk/device_migration_session_store.dart';
 import 'package:eixam_connect_flutter/src/sdk/tag_pairing_code_correlator.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart'
+    show FlutterBluePlusException, ErrorPlatform;
 import 'package:eixam_connect_flutter/src/device/ble_device_runtime_provider.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import '../support/device/mock_ble_client.dart';
@@ -20,6 +23,54 @@ import '../support/builders/device_status_builder.dart';
 const selectedId = 'AA:BB:CC:DD:EE:FF';
 
 void main() {
+  for (final ios in [true, false]) {
+    test(
+      'runtime notification failure reaches semantic repair boundary only on iOS: $ios',
+      () async {
+        BleDebugRegistry.instance.reset();
+        final client = _StaleRuntimeBleClient();
+        await client.initialize();
+        BleDebugRegistry.instance.selectDevice(MockBleClient.demoDeviceId);
+        var repairCalls = 0;
+        final provider = BleDeviceRuntimeProvider(
+          bleClient: client,
+          isIosPlatform: () => ios,
+          retainBluetoothRepair: (id, error) async {
+            expect(id, MockBleClient.demoDeviceId);
+            expect(error, isA<FlutterBluePlusException>());
+            repairCalls++;
+            return true;
+          },
+        );
+        addTearDown(() async {
+          await provider.dispose();
+          await client.dispose();
+        });
+        await expectLater(
+          provider.pair(
+            currentStatus: buildDeviceStatus(
+              paired: false,
+              activated: false,
+              connected: false,
+              lifecycleState: DeviceLifecycleState.unpaired,
+            ),
+            pairingCode: '1234',
+          ),
+          throwsA(
+            ios
+                ? isA<DeviceException>().having(
+                    (e) => e.code,
+                    'semantic code',
+                    'bluetoothBondRepairRequired',
+                  )
+                : isA<FlutterBluePlusException>(),
+          ),
+        );
+        expect(repairCalls, ios ? 1 : 0);
+      },
+    );
+  }
+
   for (final hasRecoveryContext in [false, true]) {
     test(
       'missing runtime GATT retains strict compatibility unless migration owns same TAG: $hasRecoveryContext',
@@ -71,13 +122,297 @@ void main() {
     _FakeMigrationFirmwareService? firmware,
     _MigrationBleClient? ble,
     DeviceMigrationSessionStore? store,
+    bool ios = false,
   }) => DeviceMigrationCoordinator(
     bleClient: ble ?? _MigrationBleClient(),
     metadataProbe: probe,
     firmwareUpdates: firmware ?? _FakeMigrationFirmwareService(),
     sessionStore: store ?? _MemoryMigrationStore(),
+    isIosPlatform: () => ios,
     rediscoveryTimeout: const Duration(milliseconds: 1),
   );
+
+  group('iOS post-migration Bluetooth repair', () {
+    Object stale() => FlutterBluePlusException(
+      ErrorPlatform.apple,
+      'setNotifyValue',
+      1,
+      'The handle is invalid.',
+    );
+    DeviceMigrationSession verified() =>
+        _durableSession(DeviceMigrationState.completed).copyWith(
+          firmwareSession: FirmwareUpdateSession(
+            sessionId: 'verified-firmware',
+            deviceId: selectedId,
+            releaseId: 'release-1',
+            fromVersion: '2.5.0',
+            targetVersion: '3.0.0',
+            state: FirmwareUpdateState.completed,
+            startedAt: DateTime.utc(2026),
+          ),
+          migratedDevice: _repairScan(selectedId).toPublic(),
+          nextAction: DeviceMigrationNextAction.completed,
+        );
+
+    for (final ios in [true, false]) {
+      test('verified stale handle requires repair only on iOS: $ios', () async {
+        final store = _MemoryMigrationStore()..value = verified();
+        final ble = _MigrationBleClient()..connectedIds.add(selectedId);
+        final coordinator = build(
+          probe: _FakeProbe(_probe(model: 105)),
+          store: store,
+          ble: ble,
+          ios: ios,
+        );
+        expect(
+          await coordinator.retainBluetoothRepair(selectedId, stale()),
+          ios,
+        );
+        expect(
+          store.value!.state,
+          ios
+              ? DeviceMigrationState.bluetoothRepairRequired
+              : DeviceMigrationState.completed,
+        );
+        expect(store.value!.candidate.stableIdentity, selectedId);
+        expect(store.value!.expectedEixamAdvertisingName, 'EIXAM_A6DDEEFF');
+      });
+    }
+
+    for (final error in <Object>[
+      TimeoutException('timeout'),
+      const DeviceException('E_DEVICE_BLUETOOTH_OFF', 'off'),
+      const DeviceException('permissionDenied', 'permission'),
+      const DeviceException('backendFailure', 'backend'),
+      const DeviceException('E_DEVICE_NOT_FOUND', 'absent'),
+      FlutterBluePlusException(
+        ErrorPlatform.android,
+        'setNotifyValue',
+        1,
+        'The handle is invalid.',
+      ),
+      FlutterBluePlusException(
+        ErrorPlatform.apple,
+        'connect',
+        6,
+        'Connection failed',
+      ),
+    ]) {
+      test('unrelated failure never enters repair: $error', () async {
+        final store = _MemoryMigrationStore()..value = verified();
+        final coordinator = build(
+          probe: _FakeProbe(_probe(model: 105)),
+          store: store,
+          ble: _MigrationBleClient()..connectedIds.add(selectedId),
+          ios: true,
+        );
+        expect(
+          await coordinator.retainBluetoothRepair(selectedId, error),
+          isFalse,
+        );
+        expect(store.value!.state, DeviceMigrationState.completed);
+      });
+    }
+
+    test(
+      'localized iOS notification error and background checks retain repair',
+      () async {
+        final store = _MemoryMigrationStore()..value = verified();
+        final ble = _MigrationBleClient()..connectedIds.add(selectedId);
+        final coordinator = build(
+          probe: _FakeProbe(_probe(model: 105)),
+          store: store,
+          ble: ble,
+          ios: true,
+        );
+        expect(
+          await coordinator.retainBluetoothRepair(
+            selectedId,
+            FlutterBluePlusException(
+              ErrorPlatform.apple,
+              'setNotifyValue',
+              1,
+              'Identificador no válido',
+            ),
+          ),
+          isTrue,
+        );
+        expect(await coordinator.retainRuntimeRecovery(selectedId), isTrue);
+        expect(
+          store.value!.state,
+          DeviceMigrationState.bluetoothRepairRequired,
+        );
+        expect(await coordinator.retainRuntimeRecovery('control'), isFalse);
+        expect(
+          store.value!.nextAction,
+          DeviceMigrationNextAction.repairBluetooth,
+        );
+      },
+    );
+
+    test(
+      'requires verified firmware, exact transport and reconnection',
+      () async {
+        for (final session in [
+          verified(),
+          _durableSession(DeviceMigrationState.failed),
+        ]) {
+          final store = _MemoryMigrationStore()..value = session;
+          final ble = _MigrationBleClient();
+          final coordinator = build(
+            probe: _FakeProbe(_probe(model: 105)),
+            store: store,
+            ble: ble,
+            ios: true,
+          );
+          expect(
+            await coordinator.retainBluetoothRepair(selectedId, stale()),
+            isFalse,
+          );
+          ble.connectedIds.add('control');
+          expect(
+            await coordinator.retainBluetoothRepair('control', stale()),
+            isFalse,
+          );
+        }
+      },
+    );
+
+    test(
+      'restart, stale retry, exact reacquisition and retirement never reflash',
+      () async {
+        final store = _MemoryMigrationStore()..value = verified();
+        final ble = _MigrationBleClient(
+          scans: [
+            _repairScan('control', suffix: '112233', rssi: -10),
+            _repairScan('new-ios-uuid'),
+          ],
+        )..connectedIds.add(selectedId);
+        final firmware = _FakeMigrationFirmwareService();
+        final coordinator = build(
+          probe: _FakeProbe(_probe(model: 105)),
+          store: store,
+          ble: ble,
+          firmware: firmware,
+          ios: true,
+        );
+        expect(
+          await coordinator.retainBluetoothRepair(selectedId, stale()),
+          isTrue,
+        );
+        ble.connectedIds.clear();
+        final restored = build(
+          probe: _FakeProbe(_probe(model: 105)),
+          store: store,
+          ble: ble,
+          firmware: firmware,
+          ios: true,
+        );
+        expect(
+          (await restored.getActiveSession())!.nextAction,
+          DeviceMigrationNextAction.repairBluetooth,
+        );
+        ble.notifyError = stale();
+        expect(
+          (await restored.reconcile(attemptRecovery: true))!.state,
+          DeviceMigrationState.bluetoothRepairRequired,
+        );
+        expect(ble.connectedTargets, ['new-ios-uuid']);
+        expect(
+          (await restored.migrate(store.value!.candidate)).succeeded,
+          isFalse,
+        );
+        ble.notifyError = null;
+        final fresh = await restored.reconcile();
+        expect(fresh!.state, DeviceMigrationState.completed);
+        expect(fresh.migratedDevice!.deviceId, 'new-ios-uuid');
+        expect(fresh.candidate.stableIdentity, selectedId);
+        final lookup = TagPairingCodeCorrelator.find('N6DDEEFF', [
+          EixamBleScanResult(
+            deviceId: selectedId,
+            name: 'Meshtastic_EEFF',
+            rssi: -100,
+            connectable: true,
+            isEixamDevice: false,
+            brandClassification: BleDiscoveredDeviceBrand.meshtastic,
+            discoveredAt: DateTime.now(),
+          ),
+        ]);
+        final connected = buildDeviceStatus(
+          deviceId: 'new-ios-uuid',
+          firmwareVersion: '3.0.0',
+        );
+        expect(
+          TagPairingCodeCorrelator.verifyMigrated(
+            lookup,
+            fresh,
+            connected,
+          ).state,
+          TagPairingCodeMatchState.matched,
+        );
+        expect(
+          TagPairingCodeCorrelator.verifyMigrated(
+            lookup,
+            fresh,
+            buildDeviceStatus(deviceId: 'control', firmwareVersion: '3.0.0'),
+          ).state,
+          TagPairingCodeMatchState.identityUnverified,
+        );
+        expect(
+          TagPairingCodeCorrelator.verifyMigrated(
+            lookup,
+            fresh.copyWith(state: DeviceMigrationState.bluetoothRepairRequired),
+            connected,
+          ).state,
+          TagPairingCodeMatchState.identityUnverified,
+        );
+        expect(
+          TagPairingCodeCorrelator.verifyMigrated(
+            lookup,
+            fresh,
+            buildDeviceStatus(
+              deviceId: 'new-ios-uuid',
+              canonicalHardwareId: '11:22:33:44:55:66',
+              firmwareVersion: '3.0.0',
+            ),
+          ).state,
+          TagPairingCodeMatchState.identityMismatch,
+        );
+
+        expect(ble.connectedTargets, ['new-ios-uuid', 'new-ios-uuid']);
+        expect(ble.notifyCalls, 2);
+        expect(firmware.startCalls, 0);
+        expect(firmware.recoveryCalls, 0);
+        await restored.retire(fresh.sessionId);
+        expect(store.value, isNull);
+      },
+    );
+
+    test('wrong and ambiguous nearby TAGs never connect', () async {
+      for (final scans in [
+        [_repairScan('control', suffix: '112233', rssi: -10)],
+        [_repairScan('one'), _repairScan('two')],
+      ]) {
+        final store = _MemoryMigrationStore()
+          ..value = verified().copyWith(
+            state: DeviceMigrationState.bluetoothRepairRequired,
+            nextAction: DeviceMigrationNextAction.repairBluetooth,
+          );
+        final ble = _MigrationBleClient(scans: scans);
+        final coordinator = build(
+          probe: _FakeProbe(_probe(model: 105)),
+          store: store,
+          ble: ble,
+          ios: true,
+        );
+        expect(
+          (await coordinator.reconcile())!.state,
+          DeviceMigrationState.bluetoothRepairRequired,
+        );
+        expect(ble.connectedTargets, isEmpty);
+      }
+    });
+  });
 
   test(
     'retirement archives identity, releases ownership, and survives restart',
@@ -1475,6 +1810,8 @@ final class _FakeMigrationFirmwareService
   final StreamController<FirmwareUpdateProgress> _progress =
       StreamController<FirmwareUpdateProgress>.broadcast(sync: true);
   int resolveCalls = 0;
+  int startCalls = 0;
+  int recoveryCalls = 0;
 
   @override
   Future<void> retireMigrationFirmwareUpdate(String? sessionId) async {}
@@ -1506,6 +1843,7 @@ final class _FakeMigrationFirmwareService
     required String releaseId,
     required String targetVersion,
   }) async {
+    recoveryCalls++;
     if (recoveryError != null) throw recoveryError!;
     if (recoveryGate != null) {
       _progress.add(
@@ -1554,6 +1892,7 @@ final class _FakeMigrationFirmwareService
     required FirmwareDfuStatusRefreshHook postMigrationStatusRefresh,
     FirmwareUpdatePolicy policy = const FirmwareUpdatePolicy(),
   }) async {
+    startCalls++;
     if (startError != null) throw startError!;
     transferEntered?.complete();
     if (transferGate != null) await transferGate!.future;
@@ -1657,6 +1996,19 @@ final class _MigrationBleClient implements BleClient {
     this.scanError,
   });
 
+  Object? notifyError;
+  int notifyCalls = 0;
+  final connectedTargets = <String>[];
+
+  @override
+  Future<Stream<EixamBleNotification>> subscribeEixamNotifications(
+    String deviceId,
+  ) async {
+    notifyCalls++;
+    if (notifyError != null) throw notifyError!;
+    return const Stream.empty();
+  }
+
   final Object? scanError;
   final List<BleScanResult> scans;
   final List<List<BleScanResult>> scanBatches;
@@ -1688,6 +2040,7 @@ final class _MigrationBleClient implements BleClient {
 
   @override
   Future<void> connect(String deviceId) async {
+    connectedTargets.add(deviceId);
     connectedIds.add(deviceId);
   }
 
@@ -1717,4 +2070,31 @@ final class _MigrationBleClient implements BleClient {
 final class _NoRuntimeBleClient extends MockBleClient {
   @override
   Future<bool> isEixamCompatible(String deviceId) async => false;
+}
+
+BleScanResult _repairScan(
+  String id, {
+  String suffix = 'DDEEFF',
+  int rssi = -70,
+}) => BleScanResult(
+  deviceId: id,
+  name: 'EIXAM_A6$suffix',
+  advertisedLocalName: 'EIXAM_A6$suffix',
+  advertisedServiceUuids: [EixamBleProtocol.serviceUuid],
+  rssi: rssi,
+  connectable: true,
+  brandClassification: BleDiscoveredDeviceBrand.eixam,
+  discoveredAt: DateTime.now(),
+);
+
+final class _StaleRuntimeBleClient extends MockBleClient {
+  @override
+  Future<Stream<EixamBleNotification>> subscribeEixamNotifications(
+    String deviceId,
+  ) async => throw FlutterBluePlusException(
+    ErrorPlatform.apple,
+    'setNotifyValue',
+    1,
+    'The handle is invalid.',
+  );
 }

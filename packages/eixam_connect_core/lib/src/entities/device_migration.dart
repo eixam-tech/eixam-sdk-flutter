@@ -84,6 +84,7 @@ enum DeviceMigrationState {
   reconciling,
   recoveryRequired,
   physicalRecoveryRequired,
+  bluetoothRepairRequired,
   completed,
   blocked,
   failed,
@@ -97,6 +98,7 @@ enum DeviceMigrationNextAction {
   retry,
   recover,
   physicalRecovery,
+  repairBluetooth,
   continueMigration,
   completed,
 }
@@ -159,6 +161,17 @@ class DeviceMigrationSession {
 
   /// Bounds automatic reconciliation across navigation and process restarts.
   final DateTime? reconciliationDeadline;
+
+  /// Manufacturing identity captured by the SDK before firmware replacement.
+  /// Transport UUIDs and mesh node numbers are never converted into TAG names.
+  String? get expectedEixamAdvertisingName {
+    if (candidate.identityKind != DeviceMigrationIdentityKind.hardwareMac) {
+      return null;
+    }
+    final mac = candidate.stableIdentity?.replaceAll(':', '').toUpperCase();
+    if (mac == null || !RegExp(r'^[0-9A-F]{12}$').hasMatch(mac)) return null;
+    return 'EIXAM_A6${mac.substring(6)}';
+  }
 
   bool get isTerminal =>
       state == DeviceMigrationState.completed ||

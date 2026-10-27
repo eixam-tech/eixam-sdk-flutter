@@ -261,6 +261,7 @@ final class SharedPrefsDeviceMigrationSessionStore
       <String, dynamic>{
         'deviceId': value.deviceId,
         'canonicalHardwareId': value.canonicalHardwareId,
+        'advertisedEixamIdentity': value.advertisedEixamIdentity,
         'name': value.name,
         'rssi': value.rssi,
         'connectable': value.connectable,
@@ -274,6 +275,7 @@ final class SharedPrefsDeviceMigrationSessionStore
       EixamBleScanResult(
         deviceId: _requiredString(json, 'deviceId'),
         canonicalHardwareId: json['canonicalHardwareId'] as String?,
+        advertisedEixamIdentity: json['advertisedEixamIdentity'] as String?,
         name: _requiredString(json, 'name'),
         rssi: json['rssi'] as int,
         connectable: json['connectable'] as bool,

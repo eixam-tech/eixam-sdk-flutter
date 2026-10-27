@@ -833,3 +833,28 @@ Hosts guard their own pending End/summary handoff lifecycle before deletion and
 refresh authoritative History, close Detail and invalidate route presentation
 after success. No delete event stream is provided. Previously delivered values
 cannot be retracted; subsequent reads enforce deletion.
+
+
+### iOS post-migration Bluetooth repair
+
+A verified legacy migration can retain `DeviceMigrationState.bluetoothRepairRequired`
+with `DeviceMigrationNextAction.repairBluetooth` and reason
+`bluetoothBondRepairRequired`. This requires the migrated target to be connected,
+its installation verified, and an iOS notification failure compatible with stale
+handles. Generic connection, timeout, permission and backend failures do not
+create this state. The pinned BLE plugin preserves operation/platform/error code,
+but does not expose the native NSError domain; descriptions are not used because
+they may be localized.
+
+`expectedEixamAdvertisingName` exposes the safe display name derived from retained
+manufacturing identity. Hosts may guide the user to forget that exact device in
+Settings. Resume and the host CTA call `reconcileDeviceMigration()`; one bounded
+attempt scans and validates the same identity, checks fresh GATT/version and
+notification subscription, then returns `completed` for normal acquisition and
+provisioning. Missing, ambiguous or still-stale targets remain actionable. The
+repair branch never invokes DFU, including after restart or explicit retry.
+
+`TagPairingCodeCorrelator.verifyMigrated` validates retained migration identity
+against a connected post-migration target whose iOS UUID may have changed. The
+existing canonical-identity validation remains available for other platforms.
+Hosts retire the migration only after successful exact-target acquisition.

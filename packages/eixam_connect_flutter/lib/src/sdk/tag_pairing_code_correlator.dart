@@ -1,6 +1,7 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import '../device/canonical_hardware_id.dart';
+import '../firmware_version.dart';
 
 enum TagPairingCodeMatchState {
   invalidCode,
@@ -184,6 +185,41 @@ abstract final class TagPairingCodeCorrelator {
           ? TagPairingCodeMatchState.matched
           : TagPairingCodeMatchState.identityMismatch,
     );
+  }
+
+  /// A completed migration retains the authoritative manufacturing identity
+  /// across iOS Forget/re-pair, where the transport UUID may change.
+  static TagPairingCodeMatch verifyMigrated(
+    TagPairingCodeMatch lookup,
+    DeviceMigrationSession? session,
+    DeviceStatus status,
+  ) {
+    if (lookup.code == null ||
+        lookup.candidate == null ||
+        session == null ||
+        session.state != DeviceMigrationState.completed ||
+        session.firmwareSession?.state != FirmwareUpdateState.completed ||
+        session.candidate.identityKind !=
+            DeviceMigrationIdentityKind.hardwareMac ||
+        session.candidate.deviceId != lookup.candidate!.deviceId ||
+        session.migratedDevice?.deviceId != status.deviceId ||
+        !status.connected ||
+        !firmwareIdentityMatches(
+          status.firmwareVersion,
+          session.targetVersion,
+          policy: session.verificationPolicy,
+        )) {
+      return _result(lookup, TagPairingCodeMatchState.identityUnverified);
+    }
+    final original = normalizeCanonicalHardwareId(
+      session.candidate.stableIdentity,
+    );
+    final connected = normalizeCanonicalHardwareId(status.canonicalHardwareId);
+    if (!_macMatches(lookup.code!, original) ||
+        (connected != null && connected != original)) {
+      return _result(lookup, TagPairingCodeMatchState.identityMismatch);
+    }
+    return _result(lookup, TagPairingCodeMatchState.matched);
   }
 
   static TagPairingCodeMatch _result(
