@@ -12324,11 +12324,7 @@ class EixamConnectSdkImpl
           'SOS_APP_PRE_SOS_LOCAL_COUNTDOWN_ELAPSED '
           'action=publish_backend_without_device_ack',
         );
-        unawaited(
-          confirmPreSos(
-            _preSosSession?.activationPayload ?? const SosTriggerPayload(),
-          ),
-        );
+        unawaited(_confirmPreSosFromAppOwnedBleActivation());
       }
       return;
     }
@@ -12351,10 +12347,22 @@ class EixamConnectSdkImpl
     if (_pendingPreSosConfirmation == null &&
         !_publicSosActionInFlight &&
         _pendingAppTriggeredSosBridge == null) {
-      unawaited(
-        confirmPreSos(
-          _preSosSession?.activationPayload ?? const SosTriggerPayload(),
-        ),
+      unawaited(_confirmPreSosFromAppOwnedBleActivation());
+    }
+  }
+
+  Future<void> _confirmPreSosFromAppOwnedBleActivation() async {
+    try {
+      await confirmPreSos(
+        _preSosSession?.activationPayload ?? const SosTriggerPayload(),
+      );
+    } on SosException catch (error) {
+      if (error.code != 'E_SOS_PENDING_ACTIVATION_CANCELLED') rethrow;
+      // BLE callbacks have no awaiting caller. A cancellation that supersedes
+      // the optional position lookup is expected, not an uncaught async error.
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_APP_ORIGIN_DETACHED_CONFIRM_CANCELLED '
+        'reason=pending_activation_superseded',
       );
     }
   }

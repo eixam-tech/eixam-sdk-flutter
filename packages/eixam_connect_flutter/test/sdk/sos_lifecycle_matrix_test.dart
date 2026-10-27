@@ -15754,6 +15754,87 @@ void main() {
       }
     });
 
+    test(
+      'detached BLE confirmation cancellation preserves terminal truth',
+      () async {
+        var deviceNow = DateTime.now();
+        final tracking = _BlockedSosSnapshotTrackingRepository();
+        final harness = _SdkSosHarness(
+          trackingRepository: tracking,
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+          deviceClock: () => deviceNow,
+        );
+        var sequence = 0;
+        try {
+          await harness.deviceSosController.attach(
+            commandWriter: (command) async {
+              if (command.opcode == 0x06) {
+                scheduleMicrotask(() {
+                  harness.deviceSosController.handleIncomingSosPacket(
+                    _deviceOriginCountdownPacket(),
+                    source: DeviceSosTransitionSource.device,
+                  );
+                });
+              } else if (command.opcode == 0x04) {
+                scheduleMicrotask(() {
+                  harness.deviceSosController.handleIncomingSosEventPacket(
+                    _deviceCancelAckPacket(),
+                    source: DeviceSosTransitionSource.device,
+                    resolutionContext: _physicalResolutionContext(
+                      receiveSequence: ++sequence,
+                      terminal: true,
+                      receiveSequenceDomain: 'detached-ble-confirmation',
+                    ),
+                  );
+                });
+              }
+            },
+            transportId: 'ble-1',
+          );
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await harness.sdk.startPreSos(countdown: const Duration(seconds: 20));
+          final armed = await harness.sdk.getSosLifecycle();
+          tracking.block = true;
+          deviceNow = deviceNow.add(const Duration(seconds: 21));
+          harness.deviceSosController.handleIncomingSosPacket(
+            _minimalAppSosPacket(sosType: 3, packetId: 0),
+            source: DeviceSosTransitionSource.device,
+            resolutionContext: _physicalResolutionContext(
+              receiveSequence: ++sequence,
+              terminal: false,
+              receiveSequenceDomain: 'detached-ble-confirmation',
+            ),
+          );
+          await tracking.blocked.future.timeout(const Duration(seconds: 1));
+          await harness.sdk.cancelSosAuthoritatively();
+          tracking.release.complete(null);
+          await pumpEventQueue(times: 30);
+          final terminal = await harness.sdk.getSosLifecycle();
+          expect(terminal.stage, SosLifecycleStage.cancelled);
+          expect(terminal.generation, armed.generation);
+          expect(harness.sosRepository.triggerCallCount, 0);
+          expect(await harness.sdk.getPreSosStatus(), isNull);
+          await expectLater(
+            harness.sdk.confirmPreSos(const SosTriggerPayload()),
+            throwsA(
+              isA<SosException>().having(
+                (error) => error.code,
+                'code',
+                'E_SOS_PENDING_ACTIVATION_CANCELLED',
+              ),
+            ),
+          );
+        } finally {
+          if (!tracking.release.isCompleted) tracking.release.complete(null);
+          await harness.dispose();
+        }
+      },
+    );
+
     for (final nativeCase in [
       'active',
       'cancel',
