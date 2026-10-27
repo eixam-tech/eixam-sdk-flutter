@@ -48,6 +48,66 @@ void main() {
       );
 
   test(
+    'fresh iOS encrypted inspection authenticates before notifications',
+    () async {
+      final t = _Transport()
+        ..android = false
+        ..requiresEncryption = true
+        ..emitStaleSecurityMetadata = true;
+
+      expect((await probe(t).inspect(_id)).hardwareModel, 105);
+      expect(t.securityPrepared, true);
+      expect(
+        t.events.indexOf('security'),
+        lessThan(t.events.indexOf('enable')),
+      );
+      expect(t.isConnected, false);
+    },
+  );
+
+  test('security setup timeout interrupts the read before returning', () async {
+    final t = _Transport()
+      ..android = false
+      ..pendingSecurity = Completer<void>();
+
+    await expectLater(
+      probe(t).inspect(_id),
+      throwsA(failure(DeviceMigrationInspectionFailure.bondingTimedOut)),
+    );
+    expect(t.securitySettled, true);
+    expect(t.events.contains('enable'), false);
+    expect(t.events.contains('request'), false);
+    expect(t.framesController.hasListener, false);
+    expect(t.isConnected, false);
+  });
+
+  test('security cancellation waits for native connection cleanup', () async {
+    final t = _Transport()
+      ..android = false
+      ..pendingSecurity = Completer<void>()
+      ..cleanupGate = Completer<void>();
+    final cancel = MeshtasticInspectionCancellation();
+    var returned = false;
+    final checked = expectLater(
+      probe(
+        t,
+        cancellation: cancel,
+      ).inspect(_id).whenComplete(() => returned = true),
+      throwsA(failure(DeviceMigrationInspectionFailure.cancelled)),
+    );
+    await t.securing.future;
+    cancel.cancel();
+    await t.disconnecting.future;
+    expect(returned, false);
+    expect(t.events.contains('enable'), false);
+    expect(t.events.contains('request'), false);
+    t.cleanupGate!.complete();
+    await checked;
+    expect(t.securitySettled, true);
+    expect(t.isConnected, false);
+  });
+
+  test(
     'SDK inspection priority remains held until transport cleanup completes',
     () async {
       SharedPreferences.setMockInitialValues({});
@@ -187,6 +247,7 @@ void main() {
       'refresh',
       'discover',
       'battery',
+      'security',
       'enable',
       'request',
       'read',
@@ -412,12 +473,19 @@ void main() {
     expect(t.isConnected, true);
   });
 
-  for (final stage in ['connect', 'discover', 'enable', 'request']) {
+  for (final stage in [
+    'connect',
+    'discover',
+    'security',
+    'enable',
+    'request',
+  ]) {
     test('$stage failure retains stage and performs cleanup', () async {
       final t = _Transport()..failAt = stage;
       final f = switch (stage) {
         'connect' => DeviceMigrationInspectionFailure.connectionFailed,
         'discover' => DeviceMigrationInspectionFailure.serviceDiscoveryFailed,
+        'security' => DeviceMigrationInspectionFailure.bondingFailed,
         'enable' => DeviceMigrationInspectionFailure.notificationSetupFailed,
         _ => DeviceMigrationInspectionFailure.metadataRequestFailed,
       };
@@ -459,6 +527,12 @@ final class _Transport implements MeshtasticInspectionTransport {
   Completer<void>? bondCleanupGate;
   final finishingBond = Completer<void>();
   bool android = true;
+  bool requiresEncryption = false;
+  bool emitStaleSecurityMetadata = false;
+  bool securityPrepared = false;
+  bool securitySettled = false;
+  Completer<void>? pendingSecurity;
+  final securing = Completer<void>();
   bool enableSettled = false;
   bool readSettled = false;
   String? failAt;
@@ -517,8 +591,26 @@ final class _Transport implements MeshtasticInspectionTransport {
   }
 
   @override
+  Future<void> prepareSecurity() async {
+    event('security');
+    if (!securing.isCompleted) securing.complete();
+    try {
+      await pendingSecurity?.future;
+      if (emitStaleSecurityMetadata) {
+        framesController.add([..._metadata.take(_metadata.length - 1), 106]);
+      }
+      securityPrepared = true;
+    } finally {
+      securitySettled = true;
+    }
+  }
+
+  @override
   Future<void> enableNotifications() async {
     event('enable');
+    if (requiresEncryption && !securityPrepared) {
+      throw StateError('Encryption is insufficient.');
+    }
     if (enableError != null) throw enableError!;
     if (!enabling.isCompleted) enabling.complete();
     try {
@@ -548,6 +640,9 @@ final class _Transport implements MeshtasticInspectionTransport {
   Future<void> disconnect() async {
     event('disconnect');
     if (!disconnecting.isCompleted) disconnecting.complete();
+    if (pendingSecurity?.isCompleted == false) {
+      pendingSecurity!.completeError(StateError('disconnected'));
+    }
     if (interruptEnable && pendingEnable?.isCompleted == false) {
       pendingEnable!.completeError(StateError('disconnected'));
     }

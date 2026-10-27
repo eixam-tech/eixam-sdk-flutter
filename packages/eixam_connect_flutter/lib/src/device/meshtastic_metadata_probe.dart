@@ -57,6 +57,10 @@ abstract interface class MeshtasticInspectionTransport {
   Future<void> refreshGattCache();
   Future<void> discoverServices();
   Future<int?> readBattery();
+
+  /// Establish access to encrypted attributes before subscribing on iOS.
+  /// Must not supply metadata for this inspection's later fresh request.
+  Future<void> prepareSecurity();
   Future<void> enableNotifications();
   Future<void> requestMetadata(List<int> bytes);
   Future<List<int>> readMetadata();
@@ -195,7 +199,9 @@ final class _InspectionOperation {
       deadline,
       () => expired.completeError(
         MeshtasticInspectionException(
-          stage == 'enablingNotifications'
+          stage == 'establishingSecurity'
+              ? DeviceMigrationInspectionFailure.bondingTimedOut
+              : stage == 'enablingNotifications'
               ? (_sawBonding
                     ? DeviceMigrationInspectionFailure.bondingTimedOut
                     : DeviceMigrationInspectionFailure
@@ -229,7 +235,11 @@ final class _InspectionOperation {
           error.platform == ErrorPlatform.fbp &&
           error.code == FbpErrorCode.timeout.index;
       throw MeshtasticInspectionException(
-        stage == 'enablingNotifications'
+        stage == 'establishingSecurity'
+            ? (nativeTimeout
+                  ? DeviceMigrationInspectionFailure.bondingTimedOut
+                  : DeviceMigrationInspectionFailure.bondingFailed)
+            : stage == 'enablingNotifications'
             ? (nativeTimeout
                   ? (_sawBonding
                         ? DeviceMigrationInspectionFailure.bondingTimedOut
@@ -413,6 +423,12 @@ final class _InspectionOperation {
           _trace('batteryUnavailable');
         }
       }
+      await _stage(
+        'establishingSecurity',
+        probe.notificationTimeout,
+        DeviceMigrationInspectionFailure.bondingFailed,
+        transport.prepareSecurity,
+      );
       _frameSubscription = transport.frames.listen(
         _consume,
         onError: (Object error) {
@@ -681,6 +697,15 @@ final class _FlutterBlueInspectionTransport
   Future<int?> readBattery() async {
     final bytes = await _read(_battery!);
     return bytes.isNotEmpty && bytes.first <= 100 ? bytes.first : null;
+  }
+
+  @override
+  Future<void> prepareSecurity() async {
+    if (kIsWeb || !Platform.isIOS || !_fromRadio!.properties.read) return;
+    // A protected value read lets CoreBluetooth establish encryption before
+    // the CCCD write, which can otherwise fail immediately with ATT error 15.
+    // Discard queued data: identity must come from the fresh config request.
+    await _read(_fromRadio!);
   }
 
   @override
