@@ -50,8 +50,8 @@ abstract final class TagPairingCodeCorrelator {
     return verifyCurrentDiscovery(lookup);
   }
 
-  /// Fresh discovery can provide the canonical MAC without pairing on Android.
-  /// Names and UUID-only results still cannot confirm the identity.
+  /// Confirm canonical MAC evidence, or an exact service-backed manufacturing
+  /// identity from the fresh advertisement. The transport ID stays opaque.
   static TagPairingCodeMatch verifyCurrentDiscovery(
     TagPairingCodeMatch lookup,
   ) {
@@ -63,14 +63,19 @@ abstract final class TagPairingCodeCorrelator {
     if (candidate.brandClassification != BleDiscoveredDeviceBrand.eixam) {
       return _result(lookup, TagPairingCodeMatchState.identityUnverified);
     }
+    final advertised = candidate.advertisedEixamIdentity;
+    final advertisedMatches =
+        advertised?.toUpperCase() == 'EIXAM_A6${lookup.code!.hardwareSuffix}';
     final mac = normalizeCanonicalHardwareId(candidate.canonicalHardwareId);
+    if ((mac != null && !_macMatches(lookup.code!, mac)) ||
+        (advertised != null && !advertisedMatches)) {
+      return _result(lookup, TagPairingCodeMatchState.identityMismatch);
+    }
     return _result(
       lookup,
-      mac == null
-          ? TagPairingCodeMatchState.identityUnverified
-          : _macMatches(lookup.code!, mac)
+      mac != null || advertisedMatches
           ? TagPairingCodeMatchState.matched
-          : TagPairingCodeMatchState.identityMismatch,
+          : TagPairingCodeMatchState.identityUnverified,
     );
   }
 
@@ -165,9 +170,13 @@ abstract final class TagPairingCodeCorrelator {
         status.deviceId != lookup.candidate!.deviceId) {
       return _result(lookup, TagPairingCodeMatchState.identityMismatch);
     }
-    if (!status.connected ||
-        normalizeCanonicalHardwareId(status.canonicalHardwareId) == null) {
+    if (!status.connected) {
       return _result(lookup, TagPairingCodeMatchState.identityUnverified);
+    }
+    final discovery = verifyCurrentDiscovery(lookup);
+    if (discovery.state == TagPairingCodeMatchState.identityMismatch ||
+        normalizeCanonicalHardwareId(status.canonicalHardwareId) == null) {
+      return discovery;
     }
     return _result(
       lookup,

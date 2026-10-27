@@ -317,6 +317,7 @@ class RealBleClient implements BleClient, BleTransportObservationSource {
           deviceId: id,
           canonicalHardwareId: normalizeCanonicalHardwareId(id),
           name: name,
+          advertisedLocalName: r.advertisementData.advName,
           rssi: r.rssi,
           connectable: r.advertisementData.connectable,
           advertisedServiceUuids: advertisedServiceUuids,

@@ -9,6 +9,7 @@ class EixamBleScanResult {
   const EixamBleScanResult({
     required this.deviceId,
     this.canonicalHardwareId,
+    this.advertisedEixamIdentity,
     required this.name,
     required this.rssi,
     required this.connectable,
@@ -20,6 +21,11 @@ class EixamBleScanResult {
 
   final String deviceId;
   final String? canonicalHardwareId;
+
+  /// Exact structured Eixam local name observed with the Eixam service in the
+  /// same fresh advertisement. Never a cached platform name or transport ID.
+  /// This 24-bit manufacturing correlation evidence is not authentication.
+  final String? advertisedEixamIdentity;
   final String name;
   final int rssi;
   final bool connectable;

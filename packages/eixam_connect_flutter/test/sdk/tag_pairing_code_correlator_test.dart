@@ -1,5 +1,7 @@
 import 'package:eixam_connect_flutter/eixam_connect_flutter.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:eixam_connect_flutter/src/device/ble_scan_result.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
 
 void main() {
   test(
@@ -61,6 +63,180 @@ void main() {
             : TagPairingCodeMatchState.identityMismatch,
       );
     }
+  });
+
+  group('exact advertised Eixam manufacturing identity', () {
+    const opaqueA = 'B748445B-FDEA-2426-48F1-FD1A086627FA';
+    const opaqueB = '56580000-0000-0000-0000-0000000071AC';
+
+    EixamBleScanResult advertisement({
+      String id = opaqueA,
+      String localName = 'EIXAM_A693756E',
+      List<String> services = const [EixamBleProtocol.serviceUuid],
+      BleDiscoveredDeviceBrand brand = BleDiscoveredDeviceBrand.eixam,
+      String? mac,
+      int rssi = -90,
+      bool includeLocalName = true,
+    }) => BleScanResult(
+      deviceId: id,
+      name: localName,
+      advertisedLocalName: includeLocalName ? localName : null,
+      advertisedServiceUuids: services,
+      canonicalHardwareId: mac,
+      brandClassification: brand,
+      connectable: true,
+      rssi: rssi,
+      discoveredAt: DateTime.utc(2026),
+    ).toPublic();
+
+    test('opaque iOS UUID and exact service-backed local name match', () async {
+      final sdk = _ReadOnlySdk([
+        advertisement(id: opaqueB, localName: 'EIXAM_A6D447DB', rssi: -10),
+        advertisement(localName: 'eixam_a693756e'),
+      ]);
+      final result = await TagPairingCodeCorrelator.lookup(sdk, ' n693756e ');
+      expect(result.state, TagPairingCodeMatchState.matched);
+      expect(result.candidate!.deviceId, opaqueA);
+      expect(result.candidate!.canonicalHardwareId, isNull);
+      expect(sdk.inspections, 0);
+      expect(
+        TagPairingCodeCorrelator.verifyCurrent(
+          result,
+          status(id: opaqueA, mac: null),
+        ).state,
+        TagPairingCodeMatchState.matched,
+      );
+      expect(
+        TagPairingCodeCorrelator.verifyCurrent(
+          result,
+          status(id: opaqueB, mac: null),
+        ).state,
+        TagPairingCodeMatchState.identityMismatch,
+      );
+      expect(
+        TagPairingCodeCorrelator.verifyCurrent(
+          result,
+          status(id: opaqueA, mac: 'E1:5F:27:D4:47:DB'),
+        ).state,
+        TagPairingCodeMatchState.identityMismatch,
+      );
+      expect(
+        TagPairingCodeCorrelator.verifyCurrent(
+          result,
+          status(id: opaqueA, mac: null, connected: false),
+        ).state,
+        TagPairingCodeMatchState.identityUnverified,
+      );
+    });
+
+    test('six digits and exact structured name are required', () {
+      for (final name in [
+        'EIXAM_756E',
+        'MYTAG_93756E',
+        'EIXAM_A693756F',
+        'Meshtastic_756E',
+        'OTHER_93756E',
+        'EIXAM_A612756E',
+        'EIXAM_A693756E_extra',
+        ' EIXAM_A693756E',
+      ]) {
+        expect(
+          TagPairingCodeCorrelator.find('N693756E', [
+            advertisement(localName: name),
+          ]).state,
+          TagPairingCodeMatchState.notFound,
+          reason: name,
+        );
+      }
+    });
+
+    test('brand service and actual local name are required', () {
+      for (final candidate in [
+        advertisement(services: []),
+        advertisement(services: ['180f']),
+        advertisement(brand: BleDiscoveredDeviceBrand.unknown),
+        advertisement(includeLocalName: false),
+      ]) {
+        expect(candidate.advertisedEixamIdentity, isNull);
+        expect(
+          TagPairingCodeCorrelator.verifyCurrentDiscovery(
+            TagPairingCodeCorrelator.find('N693756E', [candidate]),
+          ).state,
+          isNot(TagPairingCodeMatchState.matched),
+        );
+      }
+    });
+
+    test('duplicate exact identities remain ambiguous regardless of RSSI', () {
+      final weak = advertisement();
+      final strong = advertisement(id: opaqueB, rssi: -10);
+      for (final candidates in [
+        [weak, strong],
+        [strong, weak],
+      ]) {
+        final lookup = TagPairingCodeCorrelator.find('N693756E', candidates);
+        expect(lookup.state, TagPairingCodeMatchState.ambiguous);
+        expect(lookup.candidate, isNull);
+        expect(
+          TagPairingCodeCorrelator.verifyCurrent(
+            lookup,
+            status(id: opaqueA, mac: null),
+          ).state,
+          TagPairingCodeMatchState.ambiguous,
+        );
+      }
+    });
+
+    test('discovery MAC conflict cannot be promoted after connect', () {
+      final lookup = TagPairingCodeCorrelator.find('N693756E', [
+        advertisement(mac: 'E1:5F:27:D4:47:DB'),
+      ]);
+      expect(
+        TagPairingCodeCorrelator.verifyCurrentDiscovery(lookup).state,
+        TagPairingCodeMatchState.identityMismatch,
+      );
+      expect(
+        TagPairingCodeCorrelator.verifyCurrent(
+          lookup,
+          status(id: opaqueA, mac: null),
+        ).state,
+        TagPairingCodeMatchState.identityMismatch,
+      );
+    });
+
+    test('MAC-backed Android lookup retains six-digit verification', () {
+      for (final mac in ['E9:B4:55:93:75:6E', 'E1:5F:27:D4:47:DB']) {
+        final lookup = TagPairingCodeCorrelator.find('N693756E', [
+          advertisement(id: mac, mac: mac),
+        ]);
+        expect(
+          TagPairingCodeCorrelator.verifyCurrentDiscovery(lookup).state,
+          mac.endsWith('93:75:6E')
+              ? TagPairingCodeMatchState.matched
+              : TagPairingCodeMatchState.identityMismatch,
+        );
+      }
+    });
+
+    test(
+      'legacy last-four remains inspectionRequired without hardware identity',
+      () {
+        final legacy = advertisement(
+          localName: 'Meshtastic_756E',
+          brand: BleDiscoveredDeviceBrand.meshtastic,
+        );
+        final lookup = TagPairingCodeCorrelator.find('N693756E', [legacy]);
+        expect(lookup.state, TagPairingCodeMatchState.inspectionRequired);
+        expect(legacy.advertisedEixamIdentity, isNull);
+        expect(
+          TagPairingCodeCorrelator.verifyLegacy(
+            lookup,
+            inspected(id: opaqueA, kind: DeviceMigrationIdentityKind.none),
+          ).state,
+          TagPairingCodeMatchState.identityUnverified,
+        );
+      },
+    );
   });
 
   test('invalid and unsupported QR values never produce candidates', () {

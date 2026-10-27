@@ -181,8 +181,13 @@ and one is only `inspectionRequired`. Never choose by RSSI or list order.
 `lookup(sdk, payload)` performs one bounded fresh scan and only the necessary
 read-only identity inspection. A unique current Eixam discovery result can be
 confirmed by `verifyCurrentDiscovery` when its canonical MAC matches all six
-code digits, without pairing or requiring an existing connection. A name or
-platform UUID alone remains unverified. Legacy results use the existing SDK
+code digits, or when `advertisedEixamIdentity` exactly matches `EIXAM_A6` plus
+those digits. The SDK emits this evidence only from an actual structured local
+name and the Eixam service in the same fresh advertisement, with Eixam brand
+classification. A display/cached name or platform UUID alone remains unverified.
+The UUID is only the selected peripheral's opaque transport handle. Conflicting
+canonical MAC or advertised identity evidence is `identityMismatch`. Legacy
+results use the existing SDK
 inspection and `verifyLegacy`; no migration or acquisition API is called.
 
 `verifyLegacy` accepts the existing migration inspection result for exactly the
@@ -190,8 +195,11 @@ selected peripheral and requires compatible hardware plus a canonical MAC
 `stableIdentity` matching all six code hex digits. A verified candidate can then
 enter the unchanged migration API, which revalidates eligibility and retains
 same-TAG recovery ownership. `verifyCurrent` checks the selected peripheral's
-connected SDK `DeviceStatus` and canonical MAC. Another already-connected TAG
-is `identityMismatch`; a name or node ID alone is `identityUnverified`.
+connected SDK `DeviceStatus`, retaining the verified discovery evidence when
+iOS has no canonical MAC. Any available runtime MAC must also match all six
+digits. Another already-connected TAG is `identityMismatch`; a node ID alone is
+`identityUnverified`. Normal GATT/runtime compatibility validation remains part
+of the existing SDK connection flow.
 
 Firmware docs describe `N6` plus MAC bytes 3–5; current nRF52 source advertises
 `EIXAM_A6` plus those same bytes and identifies an older N6 naming error. Both
@@ -202,9 +210,11 @@ or authentication. Preserve ambiguity and do not add backend lookup heuristics.
 This capability does not scan, connect, pair, assign, provision, flash or persist
 new bindings. Hosts must stop scanning before inspection, reject late scan
 generations, verify the intended target before success/assignment, and preserve
-the requested code across their future acquisition handoff. Platforms exposing
-only a UUID and node number cannot confirm a current TAG with this API; an
-authoritative MAC or another separately proven identity source is required.
+the requested code across acquisition. Platforms exposing only a UUID and node
+number, without the service-backed structured advertising identity, cannot
+confirm a current TAG. Legacy last-four discovery still requires compatible
+migration inspection and a matching full six-digit hardware MAC; it never uses
+the current-Eixam advertising fallback.
 Manual pairing behavior and the base SDK interface are unchanged.
 
 ## Firmware recovery contract

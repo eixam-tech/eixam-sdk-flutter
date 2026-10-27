@@ -10,6 +10,7 @@ class BleScanResult {
     required this.deviceId,
     this.canonicalHardwareId,
     required this.name,
+    this.advertisedLocalName,
     required this.rssi,
     required this.connectable,
     this.advertisedServiceUuids = const <String>[],
@@ -19,6 +20,7 @@ class BleScanResult {
   final String deviceId;
   final String? canonicalHardwareId;
   final String name;
+  final String? advertisedLocalName;
   final int rssi;
   final bool connectable;
   final List<String> advertisedServiceUuids;
@@ -29,6 +31,7 @@ class BleScanResult {
     return EixamBleScanResult(
       deviceId: deviceId,
       canonicalHardwareId: canonicalHardwareId,
+      advertisedEixamIdentity: _advertisedEixamIdentity,
       name: name,
       rssi: rssi,
       connectable: connectable,
@@ -38,6 +41,21 @@ class BleScanResult {
       isDfuBootloader: _isDfuBootloader,
     );
   }
+
+  String? get _advertisedEixamIdentity {
+    final localName = advertisedLocalName?.toUpperCase();
+    if (brandClassification != BleDiscoveredDeviceBrand.eixam ||
+        !_hasEixamService ||
+        localName == null ||
+        !RegExp(r'^EIXAM_A6[0-9A-F]{6}$').hasMatch(localName)) {
+      return null;
+    }
+    return localName;
+  }
+
+  bool get _hasEixamService => advertisedServiceUuids.any(
+    (uuid) => uuid.trim().toLowerCase() == EixamBleProtocol.serviceUuid,
+  );
 
   // Nordic Secure DFU and the legacy Nordic/Adafruit DFU service identify
   // recovery mode independently of a peripheral's friendly name.
@@ -51,11 +69,7 @@ class BleScanResult {
   }
 
   bool get _isEixamDevice {
-    final eixamServiceUuid = EixamBleProtocol.serviceUuid.toLowerCase();
-    final hasEixamService = advertisedServiceUuids.any(
-      (uuid) => uuid.trim().toLowerCase() == eixamServiceUuid,
-    );
-    return hasEixamService ||
+    return _hasEixamService ||
         brandClassification == BleDiscoveredDeviceBrand.eixam ||
         name.trim().toLowerCase().contains('eixam');
   }
