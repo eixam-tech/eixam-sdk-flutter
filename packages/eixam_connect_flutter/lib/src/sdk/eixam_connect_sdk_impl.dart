@@ -4218,7 +4218,13 @@ class EixamConnectSdkImpl
       backendUrl: apiBaseUrl,
       writeCommand: _sendDeviceCommandThroughActiveOwner,
       incomingPackets: bleIncomingEvents.map((event) => event.payload),
-      deviceStatusChanges: deviceRepository.watchDeviceStatus(),
+      // iOS can restore a usable link through an explicit refresh without a
+      // changed repository event. Provisioning writes use the active owner;
+      // observe that same authoritative, seeded SDK connection status.
+      deviceStatusChanges:
+          !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS
+          ? watchDeviceStatus()
+          : deviceRepository.watchDeviceStatus(),
       reboot: _rebootDeviceAndAwaitExpectedDisconnect,
       reconnectSameDevice: _reconnectProvisionedDevice,
       acquireReconnectOwnership:

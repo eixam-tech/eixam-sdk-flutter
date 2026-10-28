@@ -100,3 +100,23 @@ analysis passed. Restart fixtures reuse a fake canonical firmware service and do
 not establish atomic crash recovery between firmware completion and durable
 migration-state publication. Physical guided repair/provisioning remain separate
 acceptance requirements.
+
+## iOS fresh provisioning connection observations
+
+An explicitly authorized target-only unprovision exposed a separate fresh
+provisioning failure after GATT recovery. The normal App read unprovisioned
+state, fetched configuration and sent all 20 SoftSIM chunks, then COMMIT
+admission reported `epochValid=false cancelled=false` with typed
+`connectionEpochInvalid`. A subsequent trace showed a raw disconnected status,
+followed by repository `runtime_status` connected=true with `emit_skipped`; the
+ACK listener never received that connected transition.
+
+iOS provisioning now observes the existing seeded SDK public device-status
+stream, which also publishes authoritative explicit refresh/active-owner status.
+Its writes already use the active owner. Android retains the raw repository
+stream. The ACK coordinator and its uncertainty safeguards are unchanged: a
+connected-only sample after an ACK timeout cannot reset the poisoned epoch.
+Functional regressions reproduce the raw disconnected/silent-connected-refresh
+gap through the real SDK stream and transfer all 20 chunks plus COMMIT only
+with authoritative status. The focused provisioning/stream/assignment suite
+passed 110 tests before immutable physical validation.

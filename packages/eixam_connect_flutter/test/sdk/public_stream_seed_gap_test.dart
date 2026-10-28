@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
@@ -13,6 +14,9 @@ import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
 import 'package:eixam_connect_flutter/src/sdk/latest_phone_position_sink.dart';
 import 'package:eixam_connect_flutter/src/sdk/protection_platform_adapter.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:eixam_connect_flutter/src/provisioning/provisioning_command_result.dart';
+import 'package:eixam_connect_flutter/src/provisioning/softsim_transport.dart';
+import 'package:eixam_connect_flutter/src/provisioning/softsim_provisioning.dart';
 
 import '../support/builders/device_status_builder.dart';
 import '../support/fakes/memory_shared_prefs_sdk_store.dart';
@@ -22,6 +26,78 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('public stream async seed gap', () {
+    for (final authoritative in [false, true]) {
+      test(
+        'provisioning COMMIT follows refreshed SDK connection; authoritative=$authoritative',
+        () async {
+          final repository = _SilentRefreshDeviceRepository();
+          final sdk = _buildSdk(deviceRepository: repository);
+          final packets = StreamController<List<int>>.broadcast();
+          final ack = ProvisioningAckCoordinator(packets: packets.stream);
+          final statusSubscription =
+              (authoritative
+                      ? sdk.watchDeviceStatus()
+                      : repository.watchDeviceStatus())
+                  .listen((status) {
+                    if (status.connected) {
+                      ack.markConnected();
+                    } else {
+                      ack.markDisconnected();
+                    }
+                  });
+          await pumpEventQueue();
+          repository.raw.add(buildDeviceStatus(connected: false));
+          await pumpEventQueue();
+          expect(ack.connectionEpochValid, false);
+          repository.connected = true;
+          expect((await sdk.refreshDeviceStatus()).connected, true);
+          await pumpEventQueue();
+          final material = buildSoftSim(
+            psk: Uint8List(32),
+            nodeId: 4660,
+            backendUrl: 'https://api.example.test',
+            telSpreadingFactor: 9,
+            sosPowerDbm: 22,
+          );
+          final writes = <List<int>>[];
+          final transport = SoftSimProvisioningTransport(
+            packets: packets.stream,
+            ackCoordinator: ack,
+            rejectionObservationInterval: Duration.zero,
+            write: (command) async {
+              final frame = List<int>.of(command.encode());
+              writes.add(frame);
+              if (frame.length == 2 && frame[1] == 3) {
+                scheduleMicrotask(
+                  () => packets.add([0xe9, 0x7a, 1, 0x24, 0, 3]),
+                );
+              }
+            },
+          );
+          if (authoritative) {
+            await transport.transfer(material);
+            expect(writes.last, [0x24, 3]);
+          } else {
+            await expectLater(
+              transport.transfer(material),
+              throwsA(isA<ProvisioningConnectionEpochInvalidException>()),
+            );
+            expect(
+              writes.any((frame) => frame.length == 2 && frame[1] == 3),
+              false,
+            );
+          }
+          expect(writes.where((frame) => frame[1] == 2), hasLength(20));
+          material.dispose();
+          await statusSubscription.cancel();
+          await ack.dispose();
+          await packets.close();
+          await sdk.dispose();
+          await repository.close();
+        },
+      );
+    }
+
     test(
         'watchDeviceSosStatus buffers SOS status emitted while seed is pending',
         () async {
@@ -322,6 +398,7 @@ void main() {
 
 EixamConnectSdkImpl _buildSdk({
   SosRepository? sosRepository,
+  DeviceRepository? deviceRepository,
   TrackingRepository? trackingRepository,
   DeviceSosController? deviceSosController,
   BackgroundLocationPlatformAdapter? backgroundLocationPlatformAdapter,
@@ -334,7 +411,8 @@ EixamConnectSdkImpl _buildSdk({
     trackingRepository: trackingRepository ?? FakeTrackingRepository(),
     telemetryRepository: FakeTelemetryRepository(),
     contactsRepository: FakeContactsRepository(),
-    deviceRepository: FakeDeviceRepository(initialStatus: buildDeviceStatus()),
+    deviceRepository: deviceRepository ??
+        FakeDeviceRepository(initialStatus: buildDeviceStatus()),
     deviceRegistryRepository: FakeSdkDeviceRegistryRepository(),
     deathManRepository: FakeDeathManRepository(),
     permissionsRepository: FakePermissionsRepository(),
@@ -619,4 +697,20 @@ class _SampleBackgroundLocationAdapter
 
   @override
   Stream<IosBackgroundLocationSample> watchLocationSamples() => _samples.stream;
+}
+
+final class _SilentRefreshDeviceRepository extends FakeDeviceRepository {
+  _SilentRefreshDeviceRepository()
+    : super(initialStatus: buildDeviceStatus(connected: false));
+  final raw = StreamController<DeviceStatus>.broadcast();
+  bool connected = false;
+  Future<void> close() => raw.close();
+  @override
+  Stream<DeviceStatus> watchDeviceStatus() => raw.stream;
+  @override
+  Future<DeviceStatus> getDeviceStatus() async =>
+      buildDeviceStatus(connected: connected);
+  @override
+  Future<DeviceStatus> refreshDeviceStatus() async =>
+      buildDeviceStatus(connected: connected);
 }
